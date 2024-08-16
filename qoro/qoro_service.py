@@ -49,7 +49,7 @@ class QoroService:
         """
         assert len(qubits) == len(classical_bits) == len(architectures) == len(
             system_kinds), "All lists of the QPU systems must be of the same length"
-        
+
         system_details = zip(qubits, classical_bits,
                              architectures, system_kinds)
         system_info = {
@@ -68,8 +68,12 @@ class QoroService:
                                  )
         if response.status_code == 201:
             return response.json()['id']
+        elif response.status_code == 401:
+            raise requests.exceptions.HTTPError(
+                "401 Unauthorized: Invalid API token")
         else:
-            raise ("Error setting QPU configuration", response.reason)
+            raise requests.exceptions.HTTPError(
+                f"{response.status_code}: {response.reason}")
 
     def delete_architecture(self, system_id):
         """
@@ -85,7 +89,7 @@ class QoroService:
                                    timeout=10
                                    )
         return response
-    
+
     def send_circuits(self, circuits, shots=1000, tag="default"):
         """
         Send circuits to the Qoro API for execution
@@ -111,8 +115,28 @@ class QoroService:
         if response.status_code == 201:
             job_id = response.json()['job_id']
             return job_id
+        elif response.status_code == 401:
+            raise requests.exceptions.HTTPError(
+                "401 Unauthorized: Invalid API token")
         else:
-            print("Failed to send circuits")
+            raise requests.exceptions.HTTPError(
+                f"{response.status_code}: {response.reason}")
+
+
+    def delete_job(self, job_id):
+        """
+        Delete a job from the Qoro Database.
+
+        args:
+            job_id: The ID of the job to be deleted
+        return:
+            response: The response from the API
+        """
+        response = requests.delete(API_URL+f"/job/{job_id}",
+                                   headers={"Authorization": self.auth_token},
+                                   timeout=10
+                                   )
+        return response
 
     def job_status(self, job_id, loop_until_complete=False, on_complete=None,  timeout=5, max_retries=50):
         """
@@ -135,7 +159,7 @@ class QoroService:
                                     timeout=10
                                     )
             if response.status_code == 200:
-                return response.json()['status'], response
+                return response.json()['status']
             else:
                 raise ("Error getting job status")
 
