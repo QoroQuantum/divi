@@ -1,6 +1,6 @@
 import pytest
 import requests
-from qoro_service import QoroService, JobStatus
+from qoro_service import QoroService, JobStatus, MaxRetriesReachedError
 
 
 @pytest.mark.requires_api_token
@@ -65,6 +65,23 @@ def test_get_job_status(setup_module):
     res = service.delete_job(job_id)
     res.status_code == 204, "Deletion should be successful"
 
+
+@pytest.mark.requires_api_token
+def test_retry_get_job_status(setup_module):
+    # Test getting the job status with retries
+    api_token = setup_module
+    circuit = "OPENQASM 2.0;\ninclude \"qelib1.inc\";\nqreg q[4];\ncreg c[4];\nx q[0];\nx q[1];\nry(0) q[2];\ncx q[2],q[3];\ncx q[2],q[0];\ncx q[3],q[1];\nmeasure q[0] -> c[0];\nmeasure q[1] -> c[1];\nmeasure q[2] -> c[2];\nmeasure q[3] -> c[3];\n"
+    circuits = {}
+    for i in range(10):
+        circuits[f"circuit_{i}"] = circuit
+
+    service = QoroService(api_token)
+    job_id = service.send_circuits(circuits)
+    pytest.raises(MaxRetriesReachedError, service.job_status, job_id, loop_until_complete=True, max_retries=5, timeout=0.05)
+    res = service.delete_job(job_id)
+    res.status_code == 204, "Deletion should be successful"
+
+    
 
 def test_fail_declare_architecture(setup_module):
     # Test if QoroService fails to connect declare a QPU architecture

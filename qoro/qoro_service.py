@@ -15,6 +15,15 @@ class JobStatus(Enum):
     CANCELLED = "CANCELLED"
 
 
+class MaxRetriesReachedError(Exception):
+    """Exception raised when the maximum number of retries is reached."""
+
+    def __init__(self, retries, message="Maximum retries reached"):
+        self.retries = retries
+        self.message = f"{message}: {retries} retries attempted"
+        super().__init__(self.message)
+
+
 class QoroService:
 
     def __init__(self, auth_token) -> None:
@@ -122,7 +131,6 @@ class QoroService:
             raise requests.exceptions.HTTPError(
                 f"{response.status_code}: {response.reason}")
 
-
     def delete_job(self, job_id):
         """
         Delete a job from the Qoro Database.
@@ -159,7 +167,7 @@ class QoroService:
                                     timeout=10
                                     )
             if response.status_code == 200:
-                return response.json()['status']
+                return response.json()['status'], response
             else:
                 raise ("Error getting job status")
 
@@ -168,7 +176,7 @@ class QoroService:
             completed = False
             while True:
                 job_status, response = _poll_job_status()
-                if job_status == JobStatus.COMPLETED:
+                if job_status == JobStatus.COMPLETED.value:
                     results = response.json()['results']
                     completed = True
                     break
@@ -181,6 +189,6 @@ class QoroService:
             elif completed:
                 return results
             else:
-                raise ("Max retries reached, job did not complete")
+                raise MaxRetriesReachedError(retries)
         else:
-            return _poll_job_status()
+            return _poll_job_status()[0]
