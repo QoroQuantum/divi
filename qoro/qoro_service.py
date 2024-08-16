@@ -53,8 +53,8 @@ class QoroService:
         system_details = zip(qubits, classical_bits,
                              architectures, system_kinds)
         system_info = {
-            "qpus": [{"qubits": details[0],
-                      "classical_bits": details[1],
+            "qpus": [{"q_bits": details[0],
+                      "c_bits": details[1],
                       "architecture": details[2],
                       "system_kind": details[3]} for details in system_details],
             "name": system_name
@@ -71,6 +71,21 @@ class QoroService:
         else:
             raise ("Error setting QPU configuration", response.reason)
 
+    def delete_architecture(self, system_id):
+        """
+        Delete a QPU architecture from the Qoro Database.
+        args:
+            system_id: The ID of the system to be deleted
+        return:
+            response: The response from the API
+        """
+        assert system_id is not None, "System ID must be provided"
+        response = requests.delete(API_URL+f"/qpusystem/{system_id}",
+                                   headers={"Authorization": self.auth_token},
+                                   timeout=10
+                                   )
+        return response
+    
     def send_circuits(self, circuits, shots=1000, tag="default"):
         """
         Send circuits to the Qoro API for execution
