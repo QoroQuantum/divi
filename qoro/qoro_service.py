@@ -4,7 +4,7 @@ import time
 
 from enum import Enum
 
-API_URL = "https://qoroquantum.net/api/"
+API_URL = "https://app.qoroquantum.net/api/"
 
 
 class JobStatus(Enum):
@@ -31,6 +31,7 @@ class QoroService:
             print("Connection successful")
         else:
             print("Connection failed")
+        return response
 
     def declare_architecture(self, system_name, qubits, classical_bits, architectures, system_kinds):
         """
@@ -48,8 +49,7 @@ class QoroService:
         """
         assert len(qubits) == len(classical_bits) == len(architectures) == len(
             system_kinds), "All lists of the QPU systems must be of the same length"
-
-        num_systems = len(qubits)
+        
         system_details = zip(qubits, classical_bits,
                              architectures, system_kinds)
         system_info = {
