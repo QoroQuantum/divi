@@ -4,7 +4,7 @@ import qiskit.qasm2
 class Circuit:
     _id_counter = 0
 
-    def __init__(self, circuit, tag, circuit_type="pennylane"):
+    def __init__(self, circuit, tag="", circuit_type="pennylane"):
         self.circuit = circuit
         self.tag = tag
         self.circuit_type = circuit_type
