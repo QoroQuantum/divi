@@ -2,8 +2,12 @@ certifi==2024.7.4
 charset-normalizer==3.3.2
 idna==3.7
 iniconfig==2.0.0
+numpy==1.26.4
 packaging==24.1
 pluggy==1.5.0
+PennyLane==0.37.0
+PennyLane-qiskit==0.37.0
 pytest==8.3.2
+qiskit==1.2.0
 requests==2.32.3
 urllib3==2.2.2
