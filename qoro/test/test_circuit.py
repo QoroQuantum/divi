@@ -1,10 +1,12 @@
 import pytest
 from circuit import Circuit
+import warnings
+
 
 
 def test_initialization():
     import pennylane as qml
-    device = qml.device("default.qubit", wires=4)
+    device = qml.device("qiskit.aer", wires=4)
     qml.RX(0.5, wires=0)
     qml.RX(0.5, wires=1)
     qml.RY(0.5, wires=2)
