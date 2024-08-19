@@ -6,6 +6,8 @@ from pennylane import numpy as np
 from qprog.quantum_program import QuantumProgram
 from circuit import Circuit
 from enum import Enum
+from qoro_service import JobStatus
+from qiskit.result import marginal_counts
 
 try:
     import openfermionpyscf
@@ -108,6 +110,13 @@ class VQE(QuantumProgram):
         return hamiltonian_ops
 
     def _set_ansatz(self, ansatz, params, num_layers=1):
+        """
+        Set the ansatz for the VQE problem.
+        args:
+            ansatz (Ansatze): The ansatz to use
+            params (list): The parameters to use for the ansatz
+            num_layers (int): The number of layers to use for the ansatz        
+        """
         def _add_hw_efficient_ansatz(params, num_layers):
             qml.RX(params[0], wires=[0])
 
@@ -212,6 +221,13 @@ class VQE(QuantumProgram):
                 qml.adjoint(qml.S(wires=wire))
 
         def _prepare_circuit(ansatz, hamiltonian, params):
+            """
+            Prepare the circuit for the VQE problem.
+            args:   
+                ansatz (Ansatze): The ansatz to use
+                hamiltonian (qml.Hamiltonian): The Hamiltonian to use
+                params (list): The parameters to use for the ansatz
+            """
             self._set_ansatz(ansatz, params)
             measurement_basis = _determine_measurement_basis(hamiltonian)
             if measurement_basis is not None:
@@ -235,6 +251,12 @@ class VQE(QuantumProgram):
                         self.circuits[(i, ansatz)].append(circuit)
 
     def _get_num_params_for_ansatz(self, ansatz):
+        """
+        Get the number of parameters for the given ansatz.
+
+        args:
+            ansatz (Ansatze): The ansatz to get the number of parameters for
+        """
         if ansatz == Ansatze.UCCSD:
             return self.num_qubits
         elif ansatz == Ansatze.HARTREE_FOCK:
@@ -250,7 +272,10 @@ class VQE(QuantumProgram):
         elif ansatz == Ansatze.QAOA:
             return 1
 
-    def run_iteration(self):
+    def run_iteration(self, store_data=False, data_file=None):
+        """
+        Run an iteration of the VQE problem.
+        """
         assert self.hamiltonian_ops is not None and len(
             self.hamiltonian_ops) > 0, "Hamiltonian operators must be generated before running the VQE"
 
@@ -267,15 +292,108 @@ class VQE(QuantumProgram):
 
         self._generate_circuits()
 
+        if self.qoro_service is not None:
+            job_circuits = {}
+            for circuits in self.circuits.values():
+                for circuit in circuits:
+                    job_circuits[circuit.tag] = circuit.qasm_circuit
+            job_id = self.qoro_service.send_circuits(
+                job_circuits, shots=self.shots)
+
+        if store_data:
+            self.job_id = job_id if job_id is not None else None
+            self.save_iteration(data_file)
+
+    def post_process_results(self):
+        """
+        Post-process the results of the VQE problem.
+
+        return:
+            (dict) The energies for each bond length, ansatz, and parameter set grouping.
+        """
+
+        def expectation_value(results):
+            eigenvalue = 0
+            total_shots = 0
+
+            for key, val in results.items():
+                if key.count("1") % 2 == 1:
+                    eigenvalue += -val
+                else:
+                    eigenvalue += val
+                total_shots += val
+
+            return eigenvalue / total_shots
+
+        status = self.qoro_service.job_status(self.job_id)
+        if status != JobStatus.COMPLETED:
+            raise Exception(
+                "Job has not completed yet, cannot post-process results")
+        results = self.qoro_service.get_job_results(self.job_id)
+        energies = {}
+        for i, _ in enumerate(self.bond_lengths):
+            energies[i] = {}
+            for ansatz in self.ansatze:
+                energies[i][ansatz] = {}
+                for p, _ in enumerate(self.params[ansatz]):
+                    energies[i][ansatz][p] = 0
+                    cur_result = {key: value for key, value in results.items(
+                    ) if key.startswith(f"{i}_{ansatz.value}_{p}")}
+                    marginal_results = []
+                    for c in cur_result.keys():
+                        ham_op_index = c.split("_")[-1]
+                        ham_op = self.hamiltonian_ops[i][ham_op_index]
+                        pair = (ham_op, cur_result[c], marginal_counts(
+                            cur_result[c], ham_op.wires.tolist()))
+                        marginal_results.append(pair)
+                    for result in marginal_results:
+                        energies[i][ansatz][p] += result[0].coeff * \
+                            expectation_value(result[2])
+        return energies
+
+    def save_iteration(self, data_file):
+        """
+        Save the current iteration of the VQE problem to a file.
+
+        args:
+            data_file (str): The file to save the iteration to.
+        """
+        import pickle
+        with open(data_file, "wb") as f:
+            pickle.dump(self, f)
+
+    @staticmethod
+    def import_iteration(data_file):
+        """
+        Import an iteration of the VQE problem from a file.
+
+        args:
+            data_file (str): The file to import the iteration from.
+        """
+        import pickle
+        with open(data_file, "rb") as f:
+            return pickle.load(f)
+
+    def visualize_results(self):
+        """
+        Visualize the results of the VQE problem.
+        """
+        pass
+
 
 if __name__ == "__main__":
+    from qoro_service import QoroService
+
+    q_service = QoroService("6a539a765fe0b20f409b3c0bbd5d46875598f230")
+
     vqe_problem = VQE(symbols=["H", "H"],
                       bond_lengths=[0.5, 1.0],
                       coordinate_structure=[(-1, -1, 0), (-1, 0.5, 0)],
-                      ansatze=[Ansatze.HARTREE_FOCK, Ansatze.RYRZ])
+                      ansatze=[Ansatze.HARTREE_FOCK, Ansatze.RYRZ],
+                      qoro_service=q_service)
     vqe_problem.run_iteration()
-    c = 0
 
+    c = 0
     for circuits in vqe_problem.circuits.values():
         for circuit in circuits:
             print(circuit.qasm_circuit)

@@ -1,10 +1,13 @@
 import requests
-import json
 import time
 
 from enum import Enum
 
-API_URL = "https://app.qoroquantum.net/api/"
+LOCAL = True
+if LOCAL:
+    API_URL = "http://127.0.0.1:8000/api"
+else:
+    API_URL = "https://app.qoroquantum.net/api"
 
 
 class JobStatus(Enum):
@@ -32,7 +35,7 @@ class QoroService:
     def test_connection(self):
         """Test the connection to the Qoro API"""
 
-        response = requests.get(API_URL+"/",
+        response = requests.get(API_URL,
                                 headers={"Authorization": self.auth_token},
                                 timeout=10
                                 )
@@ -40,63 +43,6 @@ class QoroService:
             print("Connection successful")
         else:
             print("Connection failed")
-        return response
-
-    def declare_architecture(self, system_name, qubits, classical_bits, architectures, system_kinds):
-        """
-        Declare a QPU architecture to the Qoro API.
-
-        args:
-            system_name: The name of the QPU system
-            qubits (list): The number of qubits per system
-            classical_bits (list): The number of classical bits per system
-            architecture (list): The architectures of the system
-            system_kind (list): The kinds of systems
-            names (list): The names of the QPU systems
-        return:
-            The system ID of the system created
-        """
-        assert len(qubits) == len(classical_bits) == len(architectures) == len(
-            system_kinds), "All lists of the QPU systems must be of the same length"
-
-        system_details = zip(qubits, classical_bits,
-                             architectures, system_kinds)
-        system_info = {
-            "qpus": [{"q_bits": details[0],
-                      "c_bits": details[1],
-                      "architecture": details[2],
-                      "system_kind": details[3]} for details in system_details],
-            "name": system_name
-        }
-        response = requests.post(API_URL+"/qpusystem/",
-                                 data=json.dumps(system_info),
-                                 headers={
-                                     "Authorization": self.auth_token,
-                                     "Content-Type": "application/json"},
-                                 timeout=10
-                                 )
-        if response.status_code == 201:
-            return response.json()['id']
-        elif response.status_code == 401:
-            raise requests.exceptions.HTTPError(
-                "401 Unauthorized: Invalid API token")
-        else:
-            raise requests.exceptions.HTTPError(
-                f"{response.status_code}: {response.reason}")
-
-    def delete_architecture(self, system_id):
-        """
-        Delete a QPU architecture from the Qoro Database.
-        args:
-            system_id: The ID of the system to be deleted
-        return:
-            response: The response from the API
-        """
-        assert system_id is not None, "System ID must be provided"
-        response = requests.delete(API_URL+f"/qpusystem/{system_id}",
-                                   headers={"Authorization": self.auth_token},
-                                   timeout=10
-                                   )
         return response
 
     def send_circuits(self, circuits, shots=1000, tag="default"):
@@ -146,7 +92,29 @@ class QoroService:
                                    )
         return response
 
-    def job_status(self, job_id, loop_until_complete=False, on_complete=None,  timeout=5, max_retries=50):
+    def get_job_results(self, job_id):
+        """
+        Get the results of a job from the Qoro Database.
+
+        args:
+            job_id: The ID of the job to get results from
+        return:
+            results: The results of the job
+        """
+        response = requests.get(API_URL+f"/job/{job_id}/results",
+                                headers={"Authorization": self.auth_token},
+                                timeout=10
+                                )
+        if response.status_code == 200:
+            return response.json()
+        elif response.status_code == 400:
+            raise requests.exceptions.HTTPError(
+                "400 Bad Request: Job results not available, likely job is still running")
+        else:
+            raise requests.exceptions.HTTPError(
+                f"{response.status_code}: {response.reason}")
+
+    def job_status(self, job_id, loop_until_complete=False, on_complete=None,  timeout=5, max_retries=50, verbose=False):
         """
         Get the status of a job and optionally execute function *on_complete* on the results 
         if the status is COMPLETE.
@@ -157,6 +125,7 @@ class QoroService:
             on_complete (optional): A function to be called when the job is completed
             timeout (optional): The time to wait between retries
             max_retries (optional): The maximum number of retries
+            verbose (optional): A flag to print the when retrying
         return:
             status: The status of the job
         """
@@ -184,10 +153,12 @@ class QoroService:
                     break
                 retries += 1
                 time.sleep(timeout)
+                if verbose:
+                    print(f"Retrying: {retries} times")
             if completed and on_complete:
                 return on_complete(results)
             elif completed:
-                return results
+                return JobStatus.COMPLETED
             else:
                 raise MaxRetriesReachedError(retries)
         else:
