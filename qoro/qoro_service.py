@@ -3,7 +3,7 @@ import time
 
 from enum import Enum
 
-LOCAL = True
+LOCAL = False
 if LOCAL:
     API_URL = "http://127.0.0.1:8000/api"
 else:
@@ -114,7 +114,7 @@ class QoroService:
             raise requests.exceptions.HTTPError(
                 f"{response.status_code}: {response.reason}")
 
-    def job_status(self, job_id, loop_until_complete=False, on_complete=None,  timeout=5, max_retries=50, verbose=False):
+    def job_status(self, job_id, loop_until_complete=False, on_complete=None,  timeout=5, max_retries=50, verbose=True):
         """
         Get the status of a job and optionally execute function *on_complete* on the results 
         if the status is COMPLETE.
@@ -133,7 +133,7 @@ class QoroService:
             response = requests.get(API_URL+f"/job/{job_id}/status",
                                     headers={"Authorization": self.auth_token,
                                              "Content-Type": "application/json"},
-                                    timeout=10
+                                    timeout=200
                                     )
             if response.status_code == 200:
                 return response.json()['status'], response

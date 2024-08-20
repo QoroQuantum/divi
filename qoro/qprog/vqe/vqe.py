@@ -282,7 +282,7 @@ class VQE(QuantumProgram):
         if self.optimizer == Optimizers.NELDER_MEAD:
             num_param_sets = 1
         elif self.optimizer == Optimizers.MONTE_CARLO:
-            num_param_sets = 10
+            num_param_sets = 3
 
         if self.current_iteration == 0:
             for ansatz in self.ansatze:
@@ -300,7 +300,7 @@ class VQE(QuantumProgram):
             job_id = self.qoro_service.send_circuits(
                 job_circuits, shots=self.shots)
             self.job_id = job_id if job_id is not None else None
-        if store_data:            
+        if store_data:
             self.save_iteration(data_file)
 
     def post_process_results(self):
@@ -329,7 +329,8 @@ class VQE(QuantumProgram):
 
             return eigenvalue / total_shots
 
-        status = self.qoro_service.job_status(self.job_id, loop_until_complete=True)
+        status = self.qoro_service.job_status(
+            self.job_id, loop_until_complete=True)
         if status != JobStatus.COMPLETED:
             raise Exception(
                 "Job has not completed yet, cannot post-process results")
@@ -393,11 +394,12 @@ if __name__ == "__main__":
     vqe_problem = VQE(symbols=["H", "H"],
                       bond_lengths=[0.5, 1.0],
                       coordinate_structure=[(-1, -1, 0), (-1, 0.5, 0)],
-                      ansatze=[Ansatze.HARTREE_FOCK, Ansatze.RYRZ],
+                      ansatze=[Ansatze.RYRZ],
                       optimizer=Optimizers.MONTE_CARLO,
                       qoro_service=q_service)
     vqe_problem.run_iteration()
-    vqe_problem.post_process_results()
+    energies = vqe_problem.post_process_results()
+    print(energies)
 
     c = 0
     for circuits in vqe_problem.circuits.values():

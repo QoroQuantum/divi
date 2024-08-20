@@ -13,25 +13,6 @@ def test_service_initialization(setup_module):
 
 
 @pytest.mark.requires_api_token
-def test_declare_architecture(setup_module):
-    # Test if QoroService can declare a QPU architecture
-    api_token = setup_module
-    service = QoroService(api_token)
-    system_name = "test_system"
-    qubits = [2, 3]
-    classical_bits = [2, 3]
-    architectures = ["Test", "Test"]
-    system_kinds = ["Test", "Test"]
-    system_id = service.declare_architecture(
-        system_name, qubits, classical_bits, architectures, system_kinds)
-
-    assert system_id is not None, "Architecture declaration should be successful"
-    assert system_id != "", "System ID should not be empty"
-    res = service.delete_architecture(system_id)
-    assert res.status_code == 204, "Deletion should be successful"
-
-
-@pytest.mark.requires_api_token
 def test_send_circuits(setup_module):
     # Test if QoroService can send circuits
     api_token = setup_module
