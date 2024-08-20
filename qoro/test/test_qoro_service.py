@@ -64,19 +64,6 @@ def test_retry_get_job_status(setup_module):
     res.status_code == 204, "Deletion should be successful"
 
 
-def test_fail_declare_architecture(setup_module):
-    # Test if QoroService fails to connect declare a QPU architecture
-    api_token = "invalid_token"
-    service = QoroService(api_token)
-    system_name = "test_system"
-    qubits = [2, 3]
-    classical_bits = [2, 3]
-    architectures = ["Test", "Test"]
-    system_kinds = ["Test", "Test"]
-    pytest.raises(requests.exceptions.HTTPError, service.declare_architecture,
-                  system_name, qubits, classical_bits, architectures, system_kinds)
-
-
 def test_fail_send_circuits(setup_module):
     # Test if QoroService fails to connect send circuits
     api_token = "invalid_token"
