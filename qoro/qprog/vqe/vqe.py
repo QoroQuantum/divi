@@ -299,9 +299,8 @@ class VQE(QuantumProgram):
                     job_circuits[circuit.tag] = circuit.qasm_circuit
             job_id = self.qoro_service.send_circuits(
                 job_circuits, shots=self.shots)
-
-        if store_data:
             self.job_id = job_id if job_id is not None else None
+        if store_data:            
             self.save_iteration(data_file)
 
     def post_process_results(self):
@@ -311,6 +310,11 @@ class VQE(QuantumProgram):
         return:
             (dict) The energies for each bond length, ansatz, and parameter set grouping.
         """
+        def process_results(results):
+            processed_results = {}
+            for r in results:
+                processed_results[r["label"]] = r["results"]
+            return processed_results
 
         def expectation_value(results):
             eigenvalue = 0
@@ -325,11 +329,12 @@ class VQE(QuantumProgram):
 
             return eigenvalue / total_shots
 
-        status = self.qoro_service.job_status(self.job_id)
+        status = self.qoro_service.job_status(self.job_id, loop_until_complete=True)
         if status != JobStatus.COMPLETED:
             raise Exception(
                 "Job has not completed yet, cannot post-process results")
         results = self.qoro_service.get_job_results(self.job_id)
+        results = process_results(results)
         energies = {}
         for i, _ in enumerate(self.bond_lengths):
             energies[i] = {}
@@ -341,13 +346,13 @@ class VQE(QuantumProgram):
                     ) if key.startswith(f"{i}_{ansatz.value}_{p}")}
                     marginal_results = []
                     for c in cur_result.keys():
-                        ham_op_index = c.split("_")[-1]
+                        ham_op_index = int(c.split("_")[-1])
                         ham_op = self.hamiltonian_ops[i][ham_op_index]
                         pair = (ham_op, cur_result[c], marginal_counts(
                             cur_result[c], ham_op.wires.tolist()))
                         marginal_results.append(pair)
                     for result in marginal_results:
-                        energies[i][ansatz][p] += result[0].coeff * \
+                        energies[i][ansatz][p] += float(result[0].scalar) * \
                             expectation_value(result[2])
         return energies
 
@@ -385,19 +390,18 @@ if __name__ == "__main__":
     from qoro_service import QoroService
 
     q_service = QoroService("6a539a765fe0b20f409b3c0bbd5d46875598f230")
-
     vqe_problem = VQE(symbols=["H", "H"],
                       bond_lengths=[0.5, 1.0],
                       coordinate_structure=[(-1, -1, 0), (-1, 0.5, 0)],
                       ansatze=[Ansatze.HARTREE_FOCK, Ansatze.RYRZ],
+                      optimizer=Optimizers.MONTE_CARLO,
                       qoro_service=q_service)
     vqe_problem.run_iteration()
+    vqe_problem.post_process_results()
 
     c = 0
     for circuits in vqe_problem.circuits.values():
         for circuit in circuits:
-            print(circuit.qasm_circuit)
-            print("\n")
             c += 1
 
     print(f"Total circuits: {c}")
