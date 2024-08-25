@@ -10,7 +10,7 @@ import os
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join('..', '..', 'qoro')))
 
-project = 'Divi'
+project = 'divi'
 copyright = '2024, Qoro Quantum Ltd.'
 author = 'Qoro Quantum'
 release = '0.0.1'
@@ -33,3 +33,4 @@ exclude_patterns = []
 
 html_theme = 'sphinx_rtd_theme'
 html_static_path = ['_static']
+html_favicon = '_static/favicon.ico'

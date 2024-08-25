@@ -1,11 +1,11 @@
-qoro.simulator package
-======================
+Local Simulation
+================
 
 Submodules
 ----------
 
-qoro.simulator.simulator module
--------------------------------
+Parallelized Simulator
+----------------------
 
 .. automodule:: qoro.simulator.simulator
    :members:
