@@ -1,9 +1,10 @@
 import requests
 import time
+import os
 
 from enum import Enum
 
-LOCAL = True
+LOCAL = os.environ.get("LOCAL", "True") == "True"
 if LOCAL:
     API_URL = "http://127.0.0.1:8000/api"
 else:
