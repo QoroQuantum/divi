@@ -21,14 +21,6 @@ qoro.circuit module
    :undoc-members:
    :show-inheritance:
 
-qoro.example module
--------------------
-
-.. automodule:: qoro.example
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
 qoro.qoro\_service module
 -------------------------
 
