@@ -442,18 +442,18 @@ class VQE(QuantumProgram):
         colors = ['b', 'g', 'r', 'c', 'm', 'y', 'k']
         ansatz_list = list(Ansatze)
         for _, energies in enumerate(self.energies):
-            for i, _ in enumerate(self.bond_lengths):
+            for i, length in enumerate(self.bond_lengths):
                 min_energies = []
                 for ansatz in self.ansatze:
                     cur_energies = energies[i][ansatz]
                     min_energies.append(
-                        (i, min(cur_energies.values()), colors[ansatz_list.index(ansatz)]))
+                        (length, min(cur_energies.values()), colors[ansatz_list.index(ansatz)]))
                 data.extend(min_energies)
 
         x, y, z = zip(*data)
         plt.scatter(x, y, color=z)
 
-        plt.xlabel('Bond length index')
+        plt.xlabel('Bond length')
         plt.ylabel('Energy level')
         plt.show()
 
@@ -467,7 +467,7 @@ if __name__ == "__main__":
                       coordinate_structure=[(-1, -1, 0), (-1, 0.5, 0)],
                       ansatze=[Ansatze.RYRZ, Ansatze.HARTREE_FOCK],
                       optimizer=Optimizers.MONTE_CARLO,
-                      qoro_service=q_service, 
+                      qoro_service=q_service,
                       max_interations=3)
 
     while vqe_problem.current_iteration < vqe_problem.max_iterations:
