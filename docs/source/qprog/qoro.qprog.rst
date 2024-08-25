@@ -1,4 +1,4 @@
-qoro.qprog package
+divi.qprog package
 ==================
 
 Subpackages
@@ -7,15 +7,15 @@ Subpackages
 .. toctree::
    :maxdepth: 4
 
-   qoro.qprog.vqe
+   divi.qprog.vqe
 
 Submodules
 ----------
 
-qoro.qprog.quantum\_program module
+divi.qprog.quantum\_program module
 ----------------------------------
 
-.. automodule:: qoro.qprog.quantum_program
+.. automodule:: divi.qprog.quantum_program
    :members:
    :undoc-members:
    :show-inheritance:
@@ -23,7 +23,7 @@ qoro.qprog.quantum\_program module
 Module contents
 ---------------
 
-.. automodule:: qoro.qprog
+.. automodule:: divi.qprog
    :members:
    :undoc-members:
    :show-inheritance:

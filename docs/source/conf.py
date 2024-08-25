@@ -8,7 +8,7 @@
 
 import os
 import sys
-sys.path.insert(0, os.path.abspath(os.path.join('..', '..', 'qoro')))
+sys.path.insert(0, os.path.abspath(os.path.join('..', '..', 'divi')))
 
 project = 'divi'
 copyright = '2024, Qoro Quantum Ltd.'

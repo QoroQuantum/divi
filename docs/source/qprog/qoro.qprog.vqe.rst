@@ -1,13 +1,13 @@
-qoro.qprog.vqe package
+divi.qprog.vqe package
 ======================
 
 Submodules
 ----------
 
-qoro.qprog.vqe.vqe module
+divi.qprog.vqe.vqe module
 -------------------------
 
-.. automodule:: qoro.qprog.vqe.vqe
+.. automodule:: divi.qprog.vqe.vqe
    :members:
    :undoc-members:
    :show-inheritance:
@@ -15,7 +15,7 @@ qoro.qprog.vqe.vqe module
 Module contents
 ---------------
 
-.. automodule:: qoro.qprog.vqe
+.. automodule:: divi.qprog.vqe
    :members:
    :undoc-members:
    :show-inheritance:

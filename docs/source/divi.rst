@@ -1,5 +1,5 @@
-qoro package
-============
+divi
+====
 
 Subpackages
 -----------
@@ -7,24 +7,24 @@ Subpackages
 .. toctree::
    :maxdepth: 4
 
-   qoro.qprog
-   qoro.simulator
+   divi.qprog
+   divi.simulator
 
 Submodules
 ----------
 
-qoro.circuit module
+divi.circuit module
 -------------------
 
-.. automodule:: qoro.circuit
+.. automodule:: divi.circuit
    :members:
    :undoc-members:
    :show-inheritance:
 
-qoro.qoro\_service module
+divi.qoro\_service module
 -------------------------
 
-.. automodule:: qoro.qoro_service
+.. automodule:: divi.qoro_service
    :members:
    :undoc-members:
    :show-inheritance:
@@ -32,7 +32,7 @@ qoro.qoro\_service module
 Module contents
 ---------------
 
-.. automodule:: qoro
+.. automodule:: divi
    :members:
    :undoc-members:
    :show-inheritance:

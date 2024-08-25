@@ -7,7 +7,7 @@ Submodules
 Parallelized Simulator
 ----------------------
 
-.. automodule:: qoro.simulator.simulator
+.. automodule:: divi.simulator.simulator
    :members:
    :undoc-members:
    :show-inheritance:
@@ -15,7 +15,7 @@ Parallelized Simulator
 Module contents
 ---------------
 
-.. automodule:: qoro.simulator
+.. automodule:: divi.simulator
    :members:
    :undoc-members:
    :show-inheritance:
