@@ -296,7 +296,11 @@ class VQE(QuantumProgram):
 
     def run_iteration(self, store_data=False, data_file=None):
         """
-        Run an iteration of the VQE problem.
+        Run an iteration of the VQE problem. The outputs are stored in the VQE object. Optionally, the data can be stored in a file.
+
+        args:
+            store_data (bool): Whether to store the data for the iteration
+            data_file (str): The file to store the data in        
         """
 
         if self.current_iteration == self.max_iterations:
