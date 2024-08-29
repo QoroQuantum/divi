@@ -7,6 +7,7 @@ from qprog.quantum_program import QuantumProgram
 from circuit import Circuit
 from enum import Enum
 from qoro_service import JobStatus
+from simulator.parallel_simulator import ParallelSimulator
 from qiskit.result import marginal_counts
 
 
@@ -62,7 +63,7 @@ class Optimizers(Enum):
         if self == Optimizers.NELDER_MEAD:
             return 1
         elif self == Optimizers.MONTE_CARLO:
-            return 2
+            return 10
 
     def update_params(self, params, iteration):
         if self == Optimizers.MONTE_CARLO:
@@ -314,11 +315,12 @@ class VQE(QuantumProgram):
         self.params_list.append(self.params)
         self._generate_circuits()
 
+        job_circuits = {}
+        for circuits in self.circuits.values():
+            for circuit in circuits:
+                job_circuits[circuit.tag] = circuit.qasm_circuit
+
         if self.qoro_service is not None:
-            job_circuits = {}
-            for circuits in self.circuits.values():
-                for circuit in circuits:
-                    job_circuits[circuit.tag] = circuit.qasm_circuit
             job_id = self.qoro_service.send_circuits(
                 job_circuits, shots=self.shots)
             self.job_id = job_id if job_id is not None else None
@@ -326,6 +328,12 @@ class VQE(QuantumProgram):
                 self._post_process_results()
             else:
                 raise Exception("Job ID is None, cannot post-process results")
+        else:
+            circuit_simulator = ParallelSimulator()
+            circuit_results = circuit_simulator.simulate(
+                job_circuits, shots=self.shots)
+            self._post_process_results(circuit_results)
+
         if store_data:
             self.save_iteration(data_file)
 
@@ -357,7 +365,7 @@ class VQE(QuantumProgram):
                     self.params[i][ansatz] = new_params
         self.current_iteration += 1
 
-    def _post_process_results(self):
+    def _post_process_results(self, results=None):
         """
         Post-process the results of the VQE problem.
 
@@ -383,12 +391,14 @@ class VQE(QuantumProgram):
 
             return eigenvalue / total_shots
 
-        status = self.qoro_service.job_status(
-            self.job_id, loop_until_complete=True)
-        if status != JobStatus.COMPLETED:
-            raise Exception(
-                "Job has not completed yet, cannot post-process results")
-        results = self.qoro_service.get_job_results(self.job_id)
+        if results is None and self.qoro_service is not None:
+            status = self.qoro_service.job_status(
+                self.job_id, loop_until_complete=True)
+            if status != JobStatus.COMPLETED:
+                raise Exception(
+                    "Job has not completed yet, cannot post-process results")
+            results = self.qoro_service.get_job_results(self.job_id)
+
         results = process_results(results)
         energies = {}
         for i, _ in enumerate(self.bond_lengths):
@@ -465,13 +475,13 @@ class VQE(QuantumProgram):
 if __name__ == "__main__":
     from qoro_service import QoroService
 
-    q_service = QoroService("71ec99c9c94cf37499a2b725244beac1f51b8ee4")
+    # q_service = QoroService("71ec99c9c94cf37499a2b725244beac1f51b8ee4")
     vqe_problem = VQE(symbols=["H", "H"],
-                      bond_lengths=[0.5, 1],
-                      coordinate_structure=[(-1, -1, 0), (-1, 0.5, 0)],
-                      ansatze=[Ansatze.RYRZ, Ansatze.HARTREE_FOCK],
+                      bond_lengths=[0.5, 1, 1.5, 2],
+                      coordinate_structure=[(0, 0, 0), (0, 0, 1)],
+                      ansatze=[Ansatze.RYRZ, Ansatze.RY],
                       optimizer=Optimizers.MONTE_CARLO,
-                      qoro_service=q_service,
+                      qoro_service=None,
                       max_interations=3)
 
     while vqe_problem.current_iteration < vqe_problem.max_iterations:
