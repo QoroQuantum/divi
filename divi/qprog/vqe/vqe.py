@@ -10,7 +10,6 @@ from qoro_service import JobStatus
 from simulator.parallel_simulator import ParallelSimulator
 from qiskit.result import marginal_counts
 
-
 try:
     import openfermionpyscf
 except ImportError:
@@ -63,7 +62,12 @@ class Optimizers(Enum):
         if self == Optimizers.NELDER_MEAD:
             return 1
         elif self == Optimizers.MONTE_CARLO:
-            return 10
+            return 5
+
+    def samples(self):
+        if self == Optimizers.MONTE_CARLO:
+            return 5
+        return 1
 
     def update_params(self, params, iteration):
         if self == Optimizers.MONTE_CARLO:
@@ -337,7 +341,29 @@ class VQE(QuantumProgram):
         if store_data:
             self.save_iteration(data_file)
 
-    def _run_optimize(self, samples=10):
+    def _optimize(self):
+        """
+        Optimize the VQE problem.
+        """
+        if self.optimizer == Optimizers.NELDER_MEAD:
+            raise NotImplementedError
+
+        elif self.optimizer == Optimizers.MONTE_CARLO:
+            for i, _ in enumerate(self.bond_lengths):
+                for ansatz in self.ansatze:
+                    energies = self.energies[self.current_iteration - 1][i][ansatz]
+                    smallest_energy_keys = sorted(
+                        energies, key=lambda k: energies[k])[:self.optimizer.samples()]
+                    new_params = []
+                    for key in smallest_energy_keys:
+                        new_param_set = self.optimizer.update_params(
+                            self.params[i][ansatz][int(key)], self.current_iteration)
+                        new_params.extend(new_param_set)
+                    self.params[i][ansatz] = new_params
+        else:
+            raise NotImplementedError
+
+    def _run_optimize(self):
         """
         Run the optimization step for the VQE problem.
         """
@@ -350,19 +376,8 @@ class VQE(QuantumProgram):
                     num_params = ansatz.num_params(self.num_qubits)
                     self.params[i][ansatz] = [npp.random.uniform(
                         0, 2*np.pi, num_params) for _ in range(num_param_sets)]
-
         else:
-            for i, _ in enumerate(self.bond_lengths):
-                for ansatz in self.ansatze:
-                    energies = self.energies[self.current_iteration - 1][i][ansatz]
-                    smallest_energy_keys = sorted(
-                        energies, key=lambda k: energies[k])[:samples]
-                    new_params = []
-                    for key in smallest_energy_keys:
-                        new_param_set = self.optimizer.update_params(
-                            self.params[i][ansatz][int(key)], self.current_iteration)
-                        new_params.extend(new_param_set)
-                    self.params[i][ansatz] = new_params
+            self._optimize()
         self.current_iteration += 1
 
     def _post_process_results(self, results=None):
@@ -477,12 +492,12 @@ if __name__ == "__main__":
 
     # q_service = QoroService("71ec99c9c94cf37499a2b725244beac1f51b8ee4")
     vqe_problem = VQE(symbols=["H", "H"],
-                      bond_lengths=[0.5, 1, 1.5, 2],
+                      bond_lengths=[0.75, 1, 1.25, 1.5, 2],
                       coordinate_structure=[(0, 0, 0), (0, 0, 1)],
-                      ansatze=[Ansatze.RYRZ, Ansatze.RY],
+                      ansatze=[Ansatze.RY, Ansatze.RYRZ],
                       optimizer=Optimizers.MONTE_CARLO,
                       qoro_service=None,
-                      max_interations=3)
+                      max_interations=5)
 
     while vqe_problem.current_iteration < vqe_problem.max_iterations:
         print(f"Iteration: {vqe_problem.current_iteration}")
