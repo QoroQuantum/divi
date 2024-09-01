@@ -1,14 +1,19 @@
 import pennylane as qml
 import numpy as npp
 import warnings
+import time
+import logging
 
 from pennylane import numpy as np
 from qprog.quantum_program import QuantumProgram
 from circuit import Circuit
 from enum import Enum
-from qoro_service import JobStatus
+from qoro_service import JobStatus, JobTypes
 from simulator.parallel_simulator import ParallelSimulator
 from qiskit.result import marginal_counts
+from multiprocessing import Pool
+from scipy.optimize import minimize
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
     import openfermionpyscf
@@ -17,6 +22,8 @@ except ImportError:
         "openfermionpyscf not installed. Some functionality may be limited.")
 
 warnings.filterwarnings("ignore", category=UserWarning)
+
+logging.basicConfig(level=logging.DEBUG)
 
 
 class Ansatze(Enum):
@@ -62,11 +69,11 @@ class Optimizers(Enum):
         if self == Optimizers.NELDER_MEAD:
             return 1
         elif self == Optimizers.MONTE_CARLO:
-            return 5
+            return 3
 
     def samples(self):
         if self == Optimizers.MONTE_CARLO:
-            return 5
+            return 2
         return 1
 
     def update_params(self, params, iteration):
@@ -78,7 +85,7 @@ class Optimizers(Enum):
 
 
 class VQE(QuantumProgram):
-    def __init__(self, symbols, bond_lengths, coordinate_structure, optimizer=Optimizers.NELDER_MEAD, ansatze=(Ansatze.HARTREE_FOCK,),  max_interations=10, *args, **kwargs) -> None:
+    def __init__(self, symbols, bond_lengths, coordinate_structure, optimizer=Optimizers.NELDER_MEAD, ansatze=(Ansatze.HARTREE_FOCK,),  max_interations=10, shots=5000, *args, **kwargs) -> None:
         """
         Initialize the VQE problem.
 
@@ -99,7 +106,7 @@ class VQE(QuantumProgram):
         self.params_list = []
         self.current_iteration = 0
         self.optimizer = optimizer
-        self.shots = 1000
+        self.shots = shots
         self.max_iterations = max_interations
         self.energies = []
 
@@ -214,7 +221,7 @@ class VQE(QuantumProgram):
         elif ansatz == Ansatze.QAOA:
             _add_qaoa_ansatz(params, num_layers)
 
-    def _generate_circuits(self) -> None:
+    def _generate_circuits(self, params=None) -> None:
         """
         Generate the circuits for the VQE problem.
 
@@ -285,21 +292,95 @@ class VQE(QuantumProgram):
             return qml.sample()
 
         # Generate a circuit for each bond length, ansatz, and parameter set grouping
-        for i, _ in enumerate(self.bond_lengths):
-            for ansatz in self.ansatze:
-                self.circuits[(i, ansatz)] = []
-                params_list = self.params[i][ansatz]
-                for p, params in enumerate(params_list):
+        # TODO: This is very slow... Can we paralellize it? Or can we use Qiskit?
+        if params is None:
+            start = time.time()
+            for i, _ in enumerate(self.bond_lengths):
+                for ansatz in self.ansatze:
+                    self.circuits[(i, ansatz)] = []
+                    params_list = self.params[i][ansatz]
+                    for p, params in enumerate(params_list):
+                        for j, hamiltonian in enumerate(self.hamiltonian_ops[i]):
+                            device = qml.device(
+                                "qiskit.aer", wires=self.num_qubits, shots=self.shots)
+                            q_node = qml.QNode(_prepare_circuit, device)
+                            q_node(ansatz, hamiltonian, params)
+                            circuit = Circuit(
+                                device, tag=f"{i}_{ansatz.value}_{p}_{j}")
+                            self.circuits[(i, ansatz)].append(circuit)
+            end = time.time()
+            duration = end - start
+            logging.debug(f"Execution time: {round(duration, 4)} seconds")
+        else:
+            for i, _ in enumerate(self.bond_lengths):
+                for ansatz in self.ansatze:
+                    self.circuits[(i, ansatz)] = []
                     for j, hamiltonian in enumerate(self.hamiltonian_ops[i]):
                         device = qml.device(
                             "qiskit.aer", wires=self.num_qubits, shots=self.shots)
                         q_node = qml.QNode(_prepare_circuit, device)
                         q_node(ansatz, hamiltonian, params)
                         circuit = Circuit(
-                            device, tag=f"{i}_{ansatz.value}_{p}_{j}")
+                            device, tag=f"{i}_{ansatz.value}_{0}_{j}")
                         self.circuits[(i, ansatz)].append(circuit)
 
-    def run_iteration(self, store_data=False, data_file=None):
+    def run(self, store_data=False, data_file=None, type=JobTypes.EXECUTE):
+        """
+        Run the VQE problem. The outputs are stored in the VQE object. Optionally, the data can be stored in a file.
+
+        args:
+            store_data (bool): Whether to store the data for the iteration
+            data_file (str): The file to store the data in        
+        """
+
+        if self.optimizer == Optimizers.MONTE_CARLO:
+            while self.current_iteration < self.max_iterations:
+                logging.debug(f"Running iteration {self.current_iteration}")
+                self.run_iteration(store_data, data_file, type)
+        elif self.optimizer == Optimizers.NELDER_MEAD:
+            def cost_function(params, bond_length_index, ansatz):
+                self.params[bond_length_index][ansatz] = params
+                self._generate_circuits(params)
+                results, param = self._prepare_and_send_circuits()
+                if param == 'job_id':
+                    energies = self._post_process_results(job_id=results)
+                elif param == 'circuit_results':
+                    energies = self._post_process_results(results=results)
+                self.energies.append(energies)
+                return energies[bond_length_index][ansatz][0]
+
+            def optimize_single(args):
+                i, ansatz = args
+                logging.debug(
+                    'Running optimization for bond length:', i, ansatz)
+                params = self.params[i][ansatz][0]
+                result = minimize(cost_function, params, args=(
+                    i, ansatz), method="Nelder-Mead", options={"maxiter": self.max_iterations})
+                return i, ansatz, result.fun
+
+            self._reset_params()
+            num_param_sets = 1
+            args = []
+            energies = {}
+            for i in range(len(self.bond_lengths)):
+                energies[i] = {}
+                for ansatz in self.ansatze:
+                    energies[i][ansatz] = {}
+                    num_params = ansatz.num_params(self.num_qubits)
+                    self.params[i][ansatz] = [npp.random.uniform(
+                        0, 2*np.pi, num_params) for _ in range(num_param_sets)]
+                    args.append((i, ansatz))
+
+            with ThreadPoolExecutor() as executor:
+                futures = [executor.submit(optimize_single, arg)
+                           for arg in args]
+                for future in futures:
+                    i, ansatz, energy = future.result()
+                    energies[i][ansatz][0] = energy
+
+            return energies
+
+    def run_iteration(self, store_data=False, data_file=None, type=JobTypes.EXECUTE):
         """
         Run an iteration of the VQE problem. The outputs are stored in the VQE object. Optionally, the data can be stored in a file.
 
@@ -318,7 +399,16 @@ class VQE(QuantumProgram):
         self._run_optimize()
         self.params_list.append(self.params)
         self._generate_circuits()
+        results, param = self._prepare_and_send_circuits()
+        if param == 'job_id':
+            self._post_process_results(job_id=results)
+        elif param == 'circuit_results':
+            self._post_process_results(results=results)
 
+        if store_data:
+            self.save_iteration(data_file)
+
+    def _prepare_and_send_circuits(self):
         job_circuits = {}
         for circuits in self.circuits.values():
             for circuit in circuits:
@@ -326,20 +416,14 @@ class VQE(QuantumProgram):
 
         if self.qoro_service is not None:
             job_id = self.qoro_service.send_circuits(
-                job_circuits, shots=self.shots)
+                job_circuits, shots=self.shots, type=type)
             self.job_id = job_id if job_id is not None else None
-            if self.job_id:
-                self._post_process_results()
-            else:
-                raise Exception("Job ID is None, cannot post-process results")
+            return job_id, 'job_id'
         else:
             circuit_simulator = ParallelSimulator()
             circuit_results = circuit_simulator.simulate(
                 job_circuits, shots=self.shots)
-            self._post_process_results(circuit_results)
-
-        if store_data:
-            self.save_iteration(data_file)
+            return circuit_results, 'circuit_results'
 
     def _optimize(self):
         """
@@ -367,7 +451,6 @@ class VQE(QuantumProgram):
         """
         Run the optimization step for the VQE problem.
         """
-
         num_param_sets = self.optimizer.num_param_sets()
         if self.current_iteration == 0:
             self._reset_params()
@@ -380,7 +463,7 @@ class VQE(QuantumProgram):
             self._optimize()
         self.current_iteration += 1
 
-    def _post_process_results(self, results=None):
+    def _post_process_results(self, job_id=None, results=None):
         """
         Post-process the results of the VQE problem.
 
@@ -406,7 +489,7 @@ class VQE(QuantumProgram):
 
             return eigenvalue / total_shots
 
-        if results is None and self.qoro_service is not None:
+        if job_id is not None and self.qoro_service is not None:
             status = self.qoro_service.job_status(
                 self.job_id, loop_until_complete=True)
             if status != JobStatus.COMPLETED:
@@ -491,21 +574,27 @@ if __name__ == "__main__":
     from qoro_service import QoroService
 
     # q_service = QoroService("71ec99c9c94cf37499a2b725244beac1f51b8ee4")
+    q_service = None
     vqe_problem = VQE(symbols=["H", "H"],
-                      bond_lengths=[0.75, 1, 1.25, 1.5, 2],
-                      coordinate_structure=[(0, 0, 0), (0, 0, 1)],
-                      ansatze=[Ansatze.RY, Ansatze.RYRZ],
+                      bond_lengths=[0.5],
+                      coordinate_structure=[(0, 0, -0.5), (0, 0, 0.5)],
+                      ansatze=[Ansatze.HARTREE_FOCK],
                       optimizer=Optimizers.MONTE_CARLO,
-                      qoro_service=None,
-                      max_interations=5)
+                      qoro_service=q_service,
+                      shots=500,
+                      max_interations=4)
 
-    while vqe_problem.current_iteration < vqe_problem.max_iterations:
-        print(f"Iteration: {vqe_problem.current_iteration}")
-        vqe_problem.run_iteration()
-
+    vqe_problem.run()
     energies = vqe_problem.energies[vqe_problem.current_iteration - 1]
+    ansatz = vqe_problem.ansatze[0]
     print(energies)
-    vqe_problem.visualize_results()
+    for i in range(len(vqe_problem.bond_lengths)):
+        print(energies[i][ansatz][0])
+    # vqe_problem.visualize_results()
+
+    # data = []
+    # for energy in vqe_problem.energies:
+    #     data.append(energy[Ansatze.HARTREE_FOCK][0])
 
     c = 0
     for circuits in vqe_problem.circuits.values():

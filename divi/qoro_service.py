@@ -19,6 +19,12 @@ class JobStatus(Enum):
     CANCELLED = "CANCELLED"
 
 
+class JobTypes(Enum):
+    EXECUTE = "EXECUTE"
+    SIMULATE = "SIMULATE"
+    ESTIMATE = "ESTIMATE"
+
+
 class MaxRetriesReachedError(Exception):
     """Exception raised when the maximum number of retries is reached."""
 
@@ -46,7 +52,7 @@ class QoroService:
             print("Connection failed")
         return response
 
-    def send_circuits(self, circuits, shots=1000, tag="default"):
+    def send_circuits(self, circuits, shots=1000, tag="default", type=JobTypes.EXECUTE):
         """
         Send circuits to the Qoro API for execution
 
@@ -60,7 +66,8 @@ class QoroService:
         data = {
             "circuits": circuits,
             "shots": shots,
-            "tag": tag
+            "tag": tag,
+            "type": type.value
         }
         response = requests.post(API_URL+"/job/",
                                  headers={"Authorization": self.auth_token,
