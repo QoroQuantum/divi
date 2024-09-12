@@ -23,8 +23,22 @@ except ImportError:
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
-logging.basicConfig(level=logging.DEBUG)
+# Set up your logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
+# Create console handler and set level to debug
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+ch.setFormatter(formatter)
+
+# Add the handler to the logger
+logger.addHandler(ch)
+
+# Suppress debug logs from external libraries
+logging.getLogger().setLevel(logging.WARNING)
 
 class Ansatze(Enum):
     UCCSD = "UCCSD"
@@ -107,6 +121,7 @@ class VQE(QuantumProgram):
         self.current_iteration = 0
         self.optimizer = optimizer
         self.shots = shots
+        self.job_type = JobTypes.EXECUTE
         self.max_iterations = max_interations
         self.energies = []
 
@@ -293,24 +308,27 @@ class VQE(QuantumProgram):
 
         # Generate a circuit for each bond length, ansatz, and parameter set grouping
         # TODO: This is very slow... Can we paralellize it? Or can we use Qiskit?
+
         if params is None:
             start = time.time()
             for i, _ in enumerate(self.bond_lengths):
                 for ansatz in self.ansatze:
                     self.circuits[(i, ansatz)] = []
                     params_list = self.params[i][ansatz]
+
                     for p, params in enumerate(params_list):
                         for j, hamiltonian in enumerate(self.hamiltonian_ops[i]):
                             device = qml.device(
                                 "qiskit.aer", wires=self.num_qubits, shots=self.shots)
-                            q_node = qml.QNode(_prepare_circuit, device)
+                            # Maybe the two last parameters speed this up, has to be tested though
+                            q_node = qml.QNode(_prepare_circuit, device, interface=None, diff_method=None)
                             q_node(ansatz, hamiltonian, params)
                             circuit = Circuit(
                                 device, tag=f"{i}_{ansatz.value}_{p}_{j}")
                             self.circuits[(i, ansatz)].append(circuit)
             end = time.time()
             duration = end - start
-            logging.debug(f"Execution time: {round(duration, 4)} seconds")
+            logger.debug(f"Execution time: {round(duration, 4)} seconds")
         else:
             for i, _ in enumerate(self.bond_lengths):
                 for ansatz in self.ansatze:
@@ -335,7 +353,7 @@ class VQE(QuantumProgram):
 
         if self.optimizer == Optimizers.MONTE_CARLO:
             while self.current_iteration < self.max_iterations:
-                logging.debug(f"Running iteration {self.current_iteration}")
+                logger.debug(f"Running iteration {self.current_iteration}")
                 self.run_iteration(store_data, data_file, type)
         elif self.optimizer == Optimizers.NELDER_MEAD:
             def cost_function(params, bond_length_index, ansatz):
@@ -351,7 +369,7 @@ class VQE(QuantumProgram):
 
             def optimize_single(args):
                 i, ansatz = args
-                logging.debug(
+                logger.debug(
                     'Running optimization for bond length:', i, ansatz)
                 params = self.params[i][ansatz][0]
                 result = minimize(cost_function, params, args=(
@@ -416,7 +434,7 @@ class VQE(QuantumProgram):
 
         if self.qoro_service is not None:
             job_id = self.qoro_service.send_circuits(
-                job_circuits, shots=self.shots, type=type)
+                job_circuits, shots=self.shots, job_type=self.job_type)
             self.job_id = job_id if job_id is not None else None
             return job_id, 'job_id'
         else:

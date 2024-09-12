@@ -1,7 +1,11 @@
 import qiskit
+import logging
 
 from multiprocessing import Pool
 from qiskit_aer import AerSimulator
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 
 class ParallelSimulator:
@@ -21,8 +25,7 @@ class ParallelSimulator:
         return {'label': circuit_label, 'results': dict(counts)}
 
     def simulate(self, circuits, shots=1024):
-        print(f"Simulating {len(circuits)} circuits with {
-              self.processes} processes")
+        logger.debug(f"Simulating {len(circuits)} circuits with {self.processes} processes")
         with Pool(processes=self.processes) as pool:
             results = pool.starmap(self.simulate_circuit, [(
                 circuit, shots) for circuit in circuits.items()])

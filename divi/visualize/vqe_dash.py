@@ -1,30 +1,34 @@
 import plotly.express as px
 import plotly.graph_objects as go
-
+import dash_bootstrap_components as dbc
 import pandas as pd
 
-from dash import Dash, html, dcc, Input, Output, callback
+from dash import Dash, html, dcc, Input, Output, callback, no_update
 from qprog.vqe import VQE, Ansatze, Optimizers
 from qoro_service import QoroService
 
 
 app = Dash()
+app = Dash(external_stylesheets=[dbc.themes.BOOTSTRAP])
 app.layout = html.Div(
     html.Div([html.H2("VQE Results"),
               html.H4("Energy vs Bond Length"),
               dcc.Graph(id="energy-graph", figure={}),
               dcc.Graph(id="iterations", figure={}),
+              dcc.Loading(id="loading-1", type="default",
+                          children=html.Div(id="loading-output-1")),
               html.Button('Start VQE', id='start-button', n_clicks=0),
               html.Div(id='state', children=None)
               ])
 )
 
+# q_service = QoroService("71ec99c9c94cf37499a2b725244beac1f51b8ee4")
 q_service = None
 vqe_problem = VQE(symbols=["H", "H"],
-                  bond_lengths=[0.5],
+                  bond_lengths=[0.5, 1, 1.5],
                   coordinate_structure=[(0, 0, -0.5), (0, 0, 0.5)],
                   ansatze=[Ansatze.HARTREE_FOCK],
-                  optimizer=Optimizers.MONTE_CARLO,
+                  optimizer=Optimizers.NELDER_MEAD,
                   qoro_service=q_service,
                   shots=500,
                   max_interations=5)
@@ -42,15 +46,16 @@ def started(n_clicks):
 
 @callback(
     [Output(component_id="energy-graph", component_property="figure"),
-     Output(component_id="iterations", component_property="figure")],
+     Output(component_id="iterations", component_property="figure"),
+     Output("loading-1", "children"),],
     Input('start-button', 'n_clicks')
 )
 def run_vqe(n_clicks):
+    fig = go.Figure()
+    fig2 = go.Figure()
     if n_clicks > 0:
         vqe_problem.run()
         energies = vqe_problem.energies[vqe_problem.current_iteration - 1]
-        fig = go.Figure()
-        fig2 = go.Figure()
         for ansatz in vqe_problem.ansatze:
             ys = []
             for i in range(len(vqe_problem.bond_lengths)):
@@ -70,22 +75,14 @@ def run_vqe(n_clicks):
                                   y=data, mode='lines+markers', name="Hartree Fock"))
         fig2.update_layout(title="Energy vs Iterations",
                            xaxis_title="Iteration", yaxis_title="Energy")
-        return fig, fig2
-    return {}, {}
+        return fig, fig2, "done"
+
+    fig.update_layout(title="Energy vs Bond Length",
+                      xaxis_title="Bond Length", yaxis_title="Energy")
+    fig2.update_layout(title="Energy vs Iterations",
+                       xaxis_title="Iteration", yaxis_title="Energy")
+    return fig, fig2, no_update
 
 
 if __name__ == "__main__":
     app.run(debug=True)
-
-    # q_service = QoroService("71ec99c9c94cf37499a2b725244beac1f51b8ee4")
-    # q_service = None
-    # vqe_problem = VQE(symbols=["H", "H"],
-    #                   bond_lengths=[0.75, 1, 1.25],
-    #                   coordinate_structure=[(0, 0, 0), (0, 0, 1)],
-    #                   ansatze=[Ansatze.RY],
-    #                   optimizer=Optimizers.MONTE_CARLO,
-    #                   qoro_service=q_service,
-    #                   max_interations=2)
-    # vqe_problem.run(store_data=True, data_file="vqe_data.pkl")
-    # energies = vqe_problem.energies[vqe_problem.current_iteration - 1]
-    # print(energies)

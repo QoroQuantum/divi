@@ -52,7 +52,7 @@ class QoroService:
             print("Connection failed")
         return response
 
-    def send_circuits(self, circuits, shots=1000, tag="default", type=JobTypes.EXECUTE):
+    def send_circuits(self, circuits, shots=1000, tag="default", job_type=JobTypes.EXECUTE):
         """
         Send circuits to the Qoro API for execution
 
@@ -67,7 +67,7 @@ class QoroService:
             "circuits": circuits,
             "shots": shots,
             "tag": tag,
-            "type": type.value
+            "type": job_type.value
         }
         response = requests.post(API_URL+"/job/",
                                  headers={"Authorization": self.auth_token,
