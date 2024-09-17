@@ -13,6 +13,11 @@ app = Dash(external_stylesheets=[dbc.themes.BOOTSTRAP])
 app.layout = html.Div(
     html.Div([html.H2("VQE Results"),
               html.H4("Energy vs Bond Length"),
+              html.Div([
+                  html.P(id='Ansatze', children="Ansatz: N/A"),
+                  html.P(id='Optimizer', children="Optimizer: N/A"),
+                  html.P(id='Atoms', children="Atoms: N/A"),
+              ], style={'border': '1px solid black', 'padding': '10px', 'margin-bottom': '20px'}),
               dcc.Graph(id="energy-graph", figure={}),
               dcc.Graph(id="iterations", figure={}),
               dcc.Loading(id="loading-1", type="default",
@@ -33,7 +38,6 @@ vqe_problem = VQE(symbols=["H", "H"],
                   shots=500,
                   max_interations=5)
 
-
 @callback(
     Output(component_id="state", component_property="children"),
     Input('start-button', 'n_clicks')
@@ -42,6 +46,27 @@ def started(n_clicks):
     if n_clicks > 0:
         return f"VQE Execution Started"
     return ""
+
+@callback(
+    [Output('ansatze', 'children'),
+     Output('optimizer', 'children'),
+     Output('atoms', 'children'),],
+    Input('start-button', 'n_clicks')
+)
+
+def update_metadata(n_clicks):
+    if n_clicks > 0:
+        ansatz = f"Ansatze: {vqe_problem.ansatze}"
+        optimizer = f"Optimizer: {vqe_problem.optimizer}"
+        atoms = f"Atoms: {vqe_problem.symbols}"
+
+    else:
+        ansatz = "Ansatz: N/A"
+        optimizer = "Optimizer: N/A"
+        atoms = "Atoms: N/A"
+
+    # Return the updated metadata to the output components
+    return ansatz, optimizer, atoms
 
 
 @callback(
