@@ -47,15 +47,14 @@ vqe_problem = VQE(symbols=["H", "H"],
     Input('start-button', 'n_clicks')
 )
 def update_metadata(n_clicks):
-    if n_clicks > 0:
-        ansatz = f"Ansatze: {vqe_problem.ansatze}"
-        optimizer = f"Optimizer: {vqe_problem.optimizer}"
+    if n_clicks >= 0:
+        ansatz = f"Ansatze: {[v.name for v in vqe_problem.ansatze]}"
+        optimizer = f"Optimizer: {vqe_problem.optimizer.name}"
         atoms = f"Atoms: {vqe_problem.symbols}"
-
     else:
-        ansatz = "Ansatz: N/A"
-        optimizer = "Optimizer: N/A"
-        atoms = "Atoms: N/A"
+        ansatz = "Ansatz: "
+        optimizer = "Optimizer:"
+        atoms = "Atoms: "
 
     # Return the updated metadata to the output components
     return ansatz, optimizer, atoms
