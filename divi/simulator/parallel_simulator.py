@@ -25,7 +25,8 @@ class ParallelSimulator:
         return {'label': circuit_label, 'results': dict(counts)}
 
     def simulate(self, circuits, shots=1024):
-        logger.debug(f"Simulating {len(circuits)} circuits with {self.processes} processes")
+        logger.debug(f"Simulating {len(circuits)} circuits with {
+                     self.processes} processes")
         with Pool(processes=self.processes) as pool:
             results = pool.starmap(self.simulate_circuit, [(
                 circuit, shots) for circuit in circuits.items()])

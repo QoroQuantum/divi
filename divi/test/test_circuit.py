@@ -1,7 +1,7 @@
 import pytest
-from circuit import Circuit
 import warnings
 
+from divi.circuit import Circuit
 
 
 def test_initialization():

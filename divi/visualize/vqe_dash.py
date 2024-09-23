@@ -3,9 +3,10 @@ import plotly.graph_objects as go
 import dash_bootstrap_components as dbc
 import pandas as pd
 
+from divi.qprog.vqe import VQE, Ansatze, Optimizers
+from divi.services.qoro_service import QoroService
+
 from dash import Dash, html, dcc, Input, Output, callback, no_update
-from qprog.vqe import VQE, Ansatze, Optimizers
-from qoro_service import QoroService
 
 
 app = Dash()
