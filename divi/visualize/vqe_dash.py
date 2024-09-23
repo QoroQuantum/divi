@@ -10,42 +10,33 @@ from qoro_service import QoroService
 
 app = Dash()
 app = Dash(external_stylesheets=[dbc.themes.BOOTSTRAP])
-app.layout = html.Div(
-    html.Div([html.H2("VQE Results"),
-              html.H4("Energy vs Bond Length"),
-              html.Div([
-                  html.P(id='Ansatze', children="Ansatz: N/A"),
-                  html.P(id='Optimizer', children="Optimizer: N/A"),
-                  html.P(id='Atoms', children="Atoms: N/A"),
-              ], style={'border': '1px solid black', 'padding': '10px', 'margin-bottom': '20px'}),
-              dcc.Graph(id="energy-graph", figure={}),
-              dcc.Graph(id="iterations", figure={}),
+app.layout = dbc.Container(html.Div(
+    html.Div([html.H2("Parallelized VQE", style={'padding-top': '20px'}),
+              dbc.Row([
+                  dbc.Col(html.P(id='ansatze', children="Ansatz: N/A"), width=4),
+                  dbc.Col(html.P(id='optimizer',
+                          children="Optimizer: N/A"), width=4),
+                  dbc.Col(html.P(id='atoms', children="Atoms: N/A"), width=4),
+              ], style={'padding': '10px', 'margin-bottom': '20px'}),
+              dbc.Row([dbc.Col(dcc.Graph(id="energy-graph", figure={}), width=6),
+                       dbc.Col(dcc.Graph(id="iterations", figure={}), width=6)], style={'margin-top': '50px'}),
               dcc.Loading(id="loading-1", type="default",
                           children=html.Div(id="loading-output-1")),
-              html.Button('Start VQE', id='start-button', n_clicks=0),
-              html.Div(id='state', children=None)
+              html.Button('Run VQE', id='start-button', n_clicks=0)
               ])
-)
+))
 
-# q_service = QoroService("71ec99c9c94cf37499a2b725244beac1f51b8ee4")
-q_service = None
+q_service = QoroService("71ec99c9c94cf37499a2b725244beac1f51b8ee4")
+# q_service = None
 vqe_problem = VQE(symbols=["H", "H"],
                   bond_lengths=[0.5, 1, 1.5],
                   coordinate_structure=[(0, 0, -0.5), (0, 0, 0.5)],
                   ansatze=[Ansatze.HARTREE_FOCK],
-                  optimizer=Optimizers.NELDER_MEAD,
+                  optimizer=Optimizers.MONTE_CARLO,
                   qoro_service=q_service,
-                  shots=500,
-                  max_interations=5)
+                  shots=1500,
+                  max_interations=3)
 
-@callback(
-    Output(component_id="state", component_property="children"),
-    Input('start-button', 'n_clicks')
-)
-def started(n_clicks):
-    if n_clicks > 0:
-        return f"VQE Execution Started"
-    return ""
 
 @callback(
     [Output('ansatze', 'children'),
@@ -53,17 +44,15 @@ def started(n_clicks):
      Output('atoms', 'children'),],
     Input('start-button', 'n_clicks')
 )
-
 def update_metadata(n_clicks):
-    if n_clicks > 0:
-        ansatz = f"Ansatze: {vqe_problem.ansatze}"
-        optimizer = f"Optimizer: {vqe_problem.optimizer}"
+    if n_clicks >= 0:
+        ansatz = f"Ansatze: {[v.name for v in vqe_problem.ansatze]}"
+        optimizer = f"Optimizer: {vqe_problem.optimizer.name}"
         atoms = f"Atoms: {vqe_problem.symbols}"
-
     else:
-        ansatz = "Ansatz: N/A"
-        optimizer = "Optimizer: N/A"
-        atoms = "Atoms: N/A"
+        ansatz = "Ansatz: "
+        optimizer = "Optimizer:"
+        atoms = "Atoms: "
 
     # Return the updated metadata to the output components
     return ansatz, optimizer, atoms
