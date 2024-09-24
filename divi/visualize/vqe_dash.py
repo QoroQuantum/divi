@@ -29,12 +29,12 @@ app.layout = dbc.Container(html.Div(
                     'fontWeight': 'bold',
                     'position': 'absolute',
                     'bottom': '110px',
-                    'right': '510px'}),
+                    'right': '600px'}),
               dcc.Dropdown(id="Bond Length",options = [], value = None,
               style={'width': '150px',
                     'position': 'absolute',
                     'bottom': '35px',
-                    'right': '240px' }),
+                    'right': '283px' }),
               html.Button('Run VQE', id='start-button', n_clicks=0)
               ])
 ))
