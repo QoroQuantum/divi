@@ -23,7 +23,18 @@ app.layout = dbc.Container(html.Div(
                        dbc.Col(dcc.Graph(id="iterations", figure={}), width=6)], style={'margin-top': '50px'}),
               dcc.Loading(id="loading-1", type="default",
                           children=html.Div(id="loading-output-1")),
-              dcc.Dropdown(id="Bond Length",options = [], value = None,),
+              html.Label('Bond Length',
+                    style={
+                    'fontSize': '20px',
+                    'fontWeight': 'bold',
+                    'position': 'absolute',
+                    'bottom': '110px',
+                    'right': '510px'}),
+              dcc.Dropdown(id="Bond Length",options = [], value = None,
+              style={'width': '150px',
+                    'position': 'absolute',
+                    'bottom': '35px',
+                    'right': '240px' }),
               html.Button('Run VQE', id='start-button', n_clicks=0)
               ])
 ))
