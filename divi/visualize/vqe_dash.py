@@ -14,10 +14,11 @@ app = Dash(external_stylesheets=[dbc.themes.CYBORG])
 app.layout = dbc.Container(html.Div(
     html.Div([html.H2("Parallelized VQE", style={'padding-top': '20px'}),
               dbc.Row([
-                  dbc.Col(html.P(id='ansatze', children="Ansatz: N/A"), width=4),
+                  dbc.Col(html.P(id='ansatze', children="Ansatz: N/A"), width=4,
+                          style={'fontWeight': "bold"}),
                   dbc.Col(html.P(id='optimizer',
-                          children="Optimizer: N/A"), width=4),
-                  dbc.Col(html.P(id='atoms', children="Atoms: N/A"), width=4),
+                          children="Optimizer: N/A"), width=4, style={'fontWeight': "bold"}),
+                  dbc.Col(html.P(id='atoms', children="Atoms: N/A"), width=4, style={'fontWeight': "bold"}),
               ], style={'padding': '10px', 'margin-bottom': '20px'}),
               dbc.Row([dbc.Col(dcc.Graph(id="energy-graph", figure={}), width=6),
                        dbc.Col(dcc.Graph(id="iterations", figure={}), width=6)], style={'margin-top': '50px'}),
