@@ -4,13 +4,13 @@ import dash_bootstrap_components as dbc
 import pandas as pd
 import sys
 sys.path.append("/Users/salahedeenissa/PycharmProjects/project11/divi/divi")
-from dash import Dash, html, dcc, Input, Output, callback, no_update
+from dash import Dash, html, dcc, Input, Output, callback, no_update, State
 from qprog.vqe import VQE, Ansatze, Optimizers
 from qoro_service import QoroService
 
 
 app = Dash()
-app = Dash(external_stylesheets=[dbc.themes.BOOTSTRAP])
+app = Dash(external_stylesheets=[dbc.themes.CYBORG])
 app.layout = dbc.Container(html.Div(
     html.Div([html.H2("Parallelized VQE", style={'padding-top': '20px'}),
               dbc.Row([
@@ -28,8 +28,8 @@ app.layout = dbc.Container(html.Div(
               ])
 ))
 
-q_service = QoroService("71ec99c9c94cf37499a2b725244beac1f51b8ee4")
-# q_service = None
+# q_service = QoroService("71ec99c9c94cf37499a2b725244beac1f51b8ee4")
+q_service = None
 vqe_problem = VQE(symbols=["H", "H"],
                   bond_lengths=[0.5, 1, 1.5],
                   coordinate_structure=[(0, 0, -0.5), (0, 0, 0.5)],
@@ -72,9 +72,10 @@ def update_dropdown(n_clicks):
     [Output(component_id="energy-graph", component_property="figure"),
      Output(component_id="iterations", component_property="figure"),
      Output("loading-1", "children"),],
-    Input('start-button', 'n_clicks')
+    Input('start-button', 'n_clicks'),
+    State('Bond Length', 'value')
 )
-def run_vqe(n_clicks):
+def run_vqe(n_clicks, bond_length):
     fig = go.Figure()
     fig2 = go.Figure()
     if n_clicks > 0:
@@ -91,8 +92,11 @@ def run_vqe(n_clicks):
 
         data = []
         ansatz = vqe_problem.ansatze[0]
+        idx = 0
+        if bond_length is not None:
+            idx = vqe_problem.bond_lengths.index(bond_length)
         for energy in vqe_problem.energies:
-            data.append(energy[0][ansatz][0])
+            data.append(energy[idx][ansatz][0])
 
         print(data)
         fig2.add_trace(go.Scatter(x=list(range(1, len(data) + 1)),
