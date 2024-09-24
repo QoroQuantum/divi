@@ -2,7 +2,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 import dash_bootstrap_components as dbc
 import pandas as pd
-
+import sys
+sys.path.append("/Users/salahedeenissa/PycharmProjects/project11/divi/divi")
 from dash import Dash, html, dcc, Input, Output, callback, no_update
 from qprog.vqe import VQE, Ansatze, Optimizers
 from qoro_service import QoroService
@@ -22,6 +23,7 @@ app.layout = dbc.Container(html.Div(
                        dbc.Col(dcc.Graph(id="iterations", figure={}), width=6)], style={'margin-top': '50px'}),
               dcc.Loading(id="loading-1", type="default",
                           children=html.Div(id="loading-output-1")),
+              dcc.Dropdown(id="Bond Length",options = [], value = None,),
               html.Button('Run VQE', id='start-button', n_clicks=0)
               ])
 ))
@@ -57,6 +59,14 @@ def update_metadata(n_clicks):
     # Return the updated metadata to the output components
     return ansatz, optimizer, atoms
 
+@callback(
+    Output('Bond Length', 'options'),
+    Input('start-button', 'n_clicks')
+)
+def update_dropdown(n_clicks):
+    if n_clicks:
+        return [{'label': bond_length, 'value': bond_length} for bond_length in vqe_problem.bond_lengths]
+    return []
 
 @callback(
     [Output(component_id="energy-graph", component_property="figure"),
