@@ -12,6 +12,8 @@ class ParallelSimulator:
     def __init__(self, num_processes=2):
         self.processes = num_processes
         self.engine = 'qiskit'
+        self.qpus = 5
+        self.gate_times = {}        
 
     @staticmethod
     def simulate_circuit(circuit_data, shots):
@@ -32,6 +34,9 @@ class ParallelSimulator:
                 circuit, shots) for circuit in circuits.items()])
         return results
 
+    def runtime_estimate(self, circuits, qpus=5):
+        # TODO: Implement this function
+        return 0
 
 if __name__ == "__main__":
     para_simulator = ParallelSimulator(num_processes=2)

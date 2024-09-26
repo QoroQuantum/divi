@@ -435,7 +435,7 @@ class VQE(QuantumProgram):
         for circuits in self.circuits.values():
             for circuit in circuits:
                 job_circuits[circuit.tag] = circuit.qasm_circuit
-
+                
         if self.qoro_service is not None:
             job_id = self.qoro_service.send_circuits(
                 job_circuits, shots=self.shots, job_type=self.job_type)

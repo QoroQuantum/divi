@@ -65,6 +65,11 @@ def run_vqe(n_clicks):
                           y=ys, mode='lines+markers', name=ansatz.name))
         fig.update_layout(title="Energy vs Bond Length",
                           xaxis_title="Bond Length", yaxis_title="Energy")
+        
+        # circuits = vqe_problem.circuits
+        # simulator = ParallelSimulator(num_processes=2)        
+        # TODO: Display this on a plot
+        # runtimes = [simulator.runtime_estimate(circuits, qpus=i) for i in range(3, 10)]
 
         data = []
         ansatz = vqe_problem.ansatze[0]
