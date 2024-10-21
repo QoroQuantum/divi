@@ -374,7 +374,7 @@ class VQE(QuantumProgram):
             def optimize_single(args):
                 i, ansatz = args
                 logger.debug(
-                    'Running optimization for bond length:', i, ansatz)
+                    f'Running optimization for bond length: {i} {ansatz}')
                 params = self.params[i][ansatz][0]
                 result = minimize(cost_function, params, args=(
                     i, ansatz), method="Nelder-Mead", options={"maxiter": self.max_iterations})
