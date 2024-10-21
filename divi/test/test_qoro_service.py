@@ -1,6 +1,6 @@
 import pytest
 import requests
-from qoro_service import QoroService, JobStatus, MaxRetriesReachedError
+from divi.services.qoro_service import QoroService, JobStatus, MaxRetriesReachedError
 
 
 @pytest.mark.requires_api_token

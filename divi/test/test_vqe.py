@@ -1,5 +1,5 @@
 import pytest
-from qprog.vqe.vqe import VQE
+from divi.qprog.vqe.vqe import VQE
 
 
 @pytest.mark.algo

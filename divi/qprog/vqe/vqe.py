@@ -4,12 +4,13 @@ import warnings
 import time
 import logging
 
+from divi.qprog.quantum_program import QuantumProgram
+from divi.services.qoro_service import JobStatus, JobTypes
+from divi.circuit import Circuit
+from divi.simulator.parallel_simulator import ParallelSimulator
+
 from pennylane import numpy as np
-from qprog.quantum_program import QuantumProgram
-from circuit import Circuit
 from enum import Enum
-from qoro_service import JobStatus, JobTypes
-from simulator.parallel_simulator import ParallelSimulator
 from qiskit.result import marginal_counts
 from multiprocessing import Pool
 from scipy.optimize import minimize
@@ -31,7 +32,8 @@ logger.setLevel(logging.DEBUG)
 ch = logging.StreamHandler()
 ch.setLevel(logging.DEBUG)
 
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+formatter = logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 ch.setFormatter(formatter)
 
 # Add the handler to the logger
@@ -39,6 +41,7 @@ logger.addHandler(ch)
 
 # Suppress debug logs from external libraries
 logging.getLogger().setLevel(logging.WARNING)
+
 
 class Ansatze(Enum):
     UCCSD = "UCCSD"
@@ -321,7 +324,8 @@ class VQE(QuantumProgram):
                             device = qml.device(
                                 "qiskit.aer", wires=self.num_qubits, shots=self.shots)
                             # Maybe the two last parameters speed this up, has to be tested though
-                            q_node = qml.QNode(_prepare_circuit, device, interface=None, diff_method=None)
+                            q_node = qml.QNode(
+                                _prepare_circuit, device, interface=None, diff_method=None)
                             q_node(ansatz, hamiltonian, params)
                             circuit = Circuit(
                                 device, tag=f"{i}_{ansatz.value}_{p}_{j}")
@@ -431,7 +435,7 @@ class VQE(QuantumProgram):
         for circuits in self.circuits.values():
             for circuit in circuits:
                 job_circuits[circuit.tag] = circuit.qasm_circuit
-
+                
         if self.qoro_service is not None:
             job_id = self.qoro_service.send_circuits(
                 job_circuits, shots=self.shots, job_type=self.job_type)
@@ -589,7 +593,7 @@ class VQE(QuantumProgram):
 
 
 if __name__ == "__main__":
-    from qoro_service import QoroService
+    from divi.services.qoro_service import QoroService
 
     # q_service = QoroService("71ec99c9c94cf37499a2b725244beac1f51b8ee4")
     q_service = None
