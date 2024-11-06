@@ -18,6 +18,8 @@ jobs:
     - name: Run tests
       working-directory: ./divi/
       run: |
-        export PYTHONPATH=/divi/$PWD
+        cd ..
+        export PYTHONPATH=$PWD
+        cd ./divi
         export LOCAL=True
         pytest
