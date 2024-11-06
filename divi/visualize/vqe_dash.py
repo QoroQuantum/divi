@@ -7,18 +7,12 @@ from divi.services.qoro_service import QoroService
 from dash import Dash, html, dcc, Input, Output, callback, no_update
 
 app = Dash()
-app = Dash(external_stylesheets=[dbc.themes.CYBORG])
-app.layout = dbc.Container(html.Div(
-    html.Div([html.H2("Parallelized VQE", style={'padding-top': '20px'}),
-              dbc.Row([
-                  dbc.Col(html.P(id='ansatze', children="Ansatz: N/A"), width=4,
-                          style={'fontWeight': "bold"}),
-                  dbc.Col(html.P(id='optimizer',
-                          children="Optimizer: N/A"), width=4, style={'fontWeight': "bold"}),
-                  dbc.Col(html.P(id='atoms', children="Atoms: N/A"), width=4, style={'fontWeight': "bold"}),
-              ], style={'padding': '10px', 'margin-bottom': '20px'}),
-              dbc.Row([dbc.Col(dcc.Graph(id="energy-graph", figure={}), width=6),
-                       dbc.Col(dcc.Graph(id="iterations", figure={}), width=6)], style={'margin-top': '50px'}),
+app = Dash(external_stylesheets=[dbc.themes.BOOTSTRAP])
+app.layout = html.Div(
+    html.Div([html.H2("VQE Results"),
+              html.H4("Energy vs Bond Length"),
+              dcc.Graph(id="energy-graph", figure={}),
+              dcc.Graph(id="iterations", figure={}),
               dcc.Loading(id="loading-1", type="default",
                           children=html.Div(id="loading-output-1")),
               html.Label('Bond Length',
@@ -48,34 +42,17 @@ vqe_problem = VQE(symbols=["H", "H"],
                   shots=1500,
                   max_interations=3)
 
-
 @callback(
     [Output('ansatze', 'children'),
      Output('optimizer', 'children'),
      Output('atoms', 'children'),],
     Input('start-button', 'n_clicks')
 )
-def update_metadata(n_clicks):
-    if n_clicks >= 0:
-        ansatz = f"Ansatze: {[v.name for v in vqe_problem.ansatze]}"
-        optimizer = f"Optimizer: {vqe_problem.optimizer.name}"
-        atoms = f"Atoms: {vqe_problem.symbols}"
-    else:
-        ansatz = "Ansatz: "
-        optimizer = "Optimizer:"
-        atoms = "Atoms: "
+def started(n_clicks):
+    if n_clicks > 0:
+        return f"VQE Execution Started"
+    return ""
 
-    # Return the updated metadata to the output components
-    return ansatz, optimizer, atoms
-
-@callback(
-    Output('Bond Length', 'options'),
-    Input('start-button', 'n_clicks')
-)
-def update_dropdown(n_clicks):
-    if n_clicks:
-        return [{'label': bond_length, 'value': bond_length} for bond_length in vqe_problem.bond_lengths]
-    return []
 
 @callback(
     [Output(component_id="energy-graph", component_property="figure"),
