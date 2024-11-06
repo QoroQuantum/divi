@@ -13,7 +13,7 @@ class ParallelSimulator:
         self.processes = num_processes
         self.engine = 'qiskit'
         self.qpus = 5
-        self.gate_times = {}        
+        self.gate_times = {}
 
     @staticmethod
     def simulate_circuit(circuit_data, shots):
@@ -27,8 +27,7 @@ class ParallelSimulator:
         return {'label': circuit_label, 'results': dict(counts)}
 
     def simulate(self, circuits, shots=1024):
-        logger.debug(f"Simulating {len(circuits)} circuits with {
-                     self.processes} processes")
+        # logger.debug(f"Simulating {len(circuits)} circuits with {self.processes} processes")
         with Pool(processes=self.processes) as pool:
             results = pool.starmap(self.simulate_circuit, [(
                 circuit, shots) for circuit in circuits.items()])
@@ -37,6 +36,7 @@ class ParallelSimulator:
     def runtime_estimate(self, circuits, qpus=5):
         # TODO: Implement this function
         return 0
+
 
 if __name__ == "__main__":
     para_simulator = ParallelSimulator(num_processes=2)
