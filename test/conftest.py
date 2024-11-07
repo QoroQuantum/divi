@@ -31,5 +31,4 @@ def setup_module(request):
     yield api_token
 
     # Teardown code
-    print(
-        f"\nTeardown: Cleaning up resources initialized with API token: {api_token}")
+    print(f"\nTeardown: Cleaning up resources initialized with API token: {api_token}")

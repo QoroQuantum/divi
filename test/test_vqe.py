@@ -19,13 +19,15 @@ def test_vqe_initialization():
 @pytest.mark.algo
 def test_vqe_initialization_fail():
     # Need to have the same number of symbols and coordinates
-    pytest.raises(
+    with pytest.raises(
         AssertionError,
-        VQE,
-        symbols=["H", "H", "H"],
-        bond_lengths=[0.5, 1.0],
-        coordinate_structure=[(1, 0, 0), (0, -1, 0)],
-    )
+        match="The number of symbols must match the number of coordinates",
+    ):
+        VQE(
+            symbols=["H", "H", "H"],
+            bond_lengths=[0.5, 1.0],
+            coordinate_structure=[(1, 0, 0), (0, -1, 0)],
+        )
 
 
 @pytest.mark.algo
