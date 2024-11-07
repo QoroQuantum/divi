@@ -3,7 +3,6 @@ packaging==24.1
 pluggy==1.5.0
 PennyLane==0.37.0
 PennyLane-qiskit==0.37.0
-pytest==8.3.2
 qiskit==1.2.0
 requests==2.32.3
 dash==2.17.1
