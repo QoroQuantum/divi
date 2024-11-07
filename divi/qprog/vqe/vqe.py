@@ -55,15 +55,15 @@ class Ansatze(Enum):
     def describe(self):
         return self.name, self.value
 
-    def num_params(self, num_qubits):
+    def num_params(self, num_qubits, num_layers=1):
         if self == Ansatze.UCCSD:
             return num_qubits
         elif self == Ansatze.HARTREE_FOCK:
             return 1
         elif self == Ansatze.RY:
-            return num_qubits
+            return num_qubits * num_layers
         elif self == Ansatze.RYRZ:
-            return 2 * num_qubits
+            return 2 * num_qubits * num_layers
         elif self == Ansatze.HW_EFFICIENT:
             # TODO
             return 1
@@ -86,11 +86,11 @@ class Optimizers(Enum):
         if self == Optimizers.NELDER_MEAD:
             return 1
         elif self == Optimizers.MONTE_CARLO:
-            return 3
+            return 5
 
     def samples(self):
         if self == Optimizers.MONTE_CARLO:
-            return 2
+            return 7
         return 1
 
     def update_params(self, params, iteration):
@@ -127,6 +127,7 @@ class VQE(QuantumProgram):
         self.job_type = JobTypes.EXECUTE
         self.max_iterations = max_interations
         self.energies = []
+        self.num_layers = 2
 
         self.coordinate_structure = coordinate_structure
         assert len(self.coordinate_structure) == len(
@@ -208,12 +209,11 @@ class VQE(QuantumProgram):
             raise NotImplementedError
 
         def _add_ryrz_ansatz(params, num_layers):
-            p = 0
-            for _ in range(num_layers):
+            for i in range(num_layers):
                 for j in range(self.num_qubits):
-                    qml.RY(params[p], wires=[j])
-                    p += 1
-                    qml.RZ(params[p], wires=[j])
+                    index = self.num_qubits * i + j * num_layers
+                    qml.RY(params[index], wires=[j])
+                    qml.RZ(params[index + 1], wires=[j])
 
         def _add_uccsd_ansatz(params, num_layers):
             raise NotImplementedError
@@ -302,7 +302,7 @@ class VQE(QuantumProgram):
                 hamiltonian (qml.Hamiltonian): The Hamiltonian to use
                 params (list): The parameters to use for the ansatz
             """
-            self._set_ansatz(ansatz, params)
+            self._set_ansatz(ansatz, params, self.num_layers)
             measurement_basis = _determine_measurement_basis(hamiltonian)
             if measurement_basis is not None:
                 for wire, pauli in measurement_basis:
@@ -377,7 +377,9 @@ class VQE(QuantumProgram):
                     f'Running optimization for bond length: {i} {ansatz}')
                 params = self.params[i][ansatz][0]
                 result = minimize(cost_function, params, args=(
-                    i, ansatz), method="Nelder-Mead", options={"maxiter": self.max_iterations})
+                    i, ansatz), method="Nelder-Mead", options={"maxiter": self.max_iterations,
+                                                               "maxfev": self.max_iterations,
+                                                               "disp": True})
                 return i, ansatz, result.fun
 
             self._reset_params()
@@ -388,7 +390,8 @@ class VQE(QuantumProgram):
                 energies[i] = {}
                 for ansatz in self.ansatze:
                     energies[i][ansatz] = {}
-                    num_params = ansatz.num_params(self.num_qubits)
+                    num_params = ansatz.num_params(
+                        self.num_qubits, self.num_layers)
                     self.params[i][ansatz] = [npp.random.uniform(
                         0, 2*np.pi, num_params) for _ in range(num_param_sets)]
                     args.append((i, ansatz))
@@ -435,7 +438,7 @@ class VQE(QuantumProgram):
         for circuits in self.circuits.values():
             for circuit in circuits:
                 job_circuits[circuit.tag] = circuit.qasm_circuit
-                
+
         if self.qoro_service is not None:
             job_id = self.qoro_service.send_circuits(
                 job_circuits, shots=self.shots, job_type=self.job_type)
@@ -572,23 +575,42 @@ class VQE(QuantumProgram):
         """
         import matplotlib.pyplot as plt
 
-        data = []
-        colors = ['b', 'g', 'r', 'c', 'm', 'y', 'k']
+        colors = ['g', 'r', 'b', 'c', 'm', 'y', 'k']
         ansatz_list = list(Ansatze)
-        for _, energies in enumerate(self.energies):
-            for i, length in enumerate(self.bond_lengths):
+        for ansatz in self.ansatze:
+            data = []
+            for _, energies in enumerate(self.energies):
                 min_energies = []
-                for ansatz in self.ansatze:
+                for i, length in enumerate(self.bond_lengths):
                     cur_energies = energies[i][ansatz]
                     min_energies.append(
                         (length, min(cur_energies.values()), colors[ansatz_list.index(ansatz)]))
                 data.extend(min_energies)
-
-        x, y, z = zip(*data)
-        plt.scatter(x, y, color=z)
+            x, y, z = zip(*data)
+            plt.scatter(x, y, color=z, label=ansatz.value)
 
         plt.xlabel('Bond length')
         plt.ylabel('Energy level')
+        plt.legend(title="Ansatze")
+        plt.show()
+
+        min_energies = {}
+        energies = self.energies[-1]
+
+        for ansatz in self.ansatze:
+            min_energies[ansatz] = []
+            for i, length in enumerate(self.bond_lengths):
+                cur_energies = energies[i][ansatz]
+                min_energies[ansatz].append(
+                    (length, min(cur_energies.values())))
+
+        for ansatz in self.ansatze:
+            x, y = zip(*min_energies[ansatz])
+            plt.plot(x, y, label=ansatz.value)
+
+        plt.xlabel('Bond length')
+        plt.ylabel('Energy level')
+        plt.legend(title="Ansatze")
         plt.show()
 
 
@@ -598,13 +620,13 @@ if __name__ == "__main__":
     # q_service = QoroService("71ec99c9c94cf37499a2b725244beac1f51b8ee4")
     q_service = None
     vqe_problem = VQE(symbols=["H", "H"],
-                      bond_lengths=[0.5],
+                      bond_lengths=[0.1, 0.25, 0.5, 0.75, 1.0],
                       coordinate_structure=[(0, 0, -0.5), (0, 0, 0.5)],
                       ansatze=[Ansatze.HARTREE_FOCK],
-                      optimizer=Optimizers.MONTE_CARLO,
+                      optimizer=Optimizers.NELDER_MEAD,
                       qoro_service=q_service,
-                      shots=500,
-                      max_interations=4)
+                      shots=3000,
+                      max_interations=30)
 
     vqe_problem.run()
     energies = vqe_problem.energies[vqe_problem.current_iteration - 1]
@@ -612,7 +634,7 @@ if __name__ == "__main__":
     print(energies)
     for i in range(len(vqe_problem.bond_lengths)):
         print(energies[i][ansatz][0])
-    # vqe_problem.visualize_results()
+    vqe_problem.visualize_results()
 
     # data = []
     # for energy in vqe_problem.energies:
