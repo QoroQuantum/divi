@@ -273,49 +273,7 @@ class VQE(QuantumProgram):
                 - Generate the circuit
         """
 
-        def _determine_measurement_basis(H):
-            """
-            To go through with the post-processing of the VQE, we have to find the expectation values
-            of the pieces of the Hamiltonian. Since these pieces are different, it is easier
-            to find the expectation values for them when they are measured in their respective bases.
-
-            args:
-                H: The Hamiltonian to determine the measurement basis for, generally going to be a term
-                from a larger Hamiltonian
-            returns:
-                (list): A list containing the wires the Hamiltonian is acting on, as well as the operator to set the measurement basis
-                of.
-            """
-
-            if H.base.name == "PauliX":
-                return [(H.wires, qml.X)]
-            elif H.base.name == "PauliY":
-                return [(H.wires, qml.Y)]
-            elif H.base.name == "Prod":
-                wires = H.base.wires
-                obs = [ob.name for ob in H.base.obs]
-                bases = []
-                for i, wire in enumerate(wires):
-                    if obs[i] == "PauliX":
-                        bases.append(([wire], qml.X))
-                    elif obs[i] == "PauliY":
-                        bases.append(([wire], qml.Y))
-                return bases
-
-        def _add_measurement(wire, basis):
-            """
-            Add a measurement operation to the circuit.
-
-            args:
-                wire (qml.Wires): The wire to measure
-                pauli (qml.Pauli): The Pauli operator to measure with
-            """
-            if basis == qml.X:
-                qml.Hadamard(wires=wire)
-            elif basis == qml.Y:
-                qml.adjoint(qml.S(wires=wire))
-
-        def _prepare_circuit(ansatz, hamiltonian, params):
+        def _prepare_circuit(ansatz, hamiltonian_term, params):
             """
             Prepare the circuit for the VQE problem.
             args:
@@ -324,11 +282,8 @@ class VQE(QuantumProgram):
                 params (list): The parameters to use for the ansatz
             """
             self._set_ansatz(ansatz, params)
-            measurement_basis = _determine_measurement_basis(hamiltonian)
-            if measurement_basis is not None:
-                for wire, pauli in measurement_basis:
-                    _add_measurement(wire, pauli)
-            return qml.sample()
+
+            return qml.sample(hamiltonian_term)
 
         # Generate a circuit for each bond length, ansatz, and parameter set grouping
         params_list = (
@@ -347,9 +302,9 @@ class VQE(QuantumProgram):
 
                 for p, params in enumerate(params_list[i][ansatz]):
 
-                    for j, hamiltonian in enumerate(self.hamiltonian_ops[i]):
+                    for j, term in enumerate(hamiltonian):
                         qscript = qml.tape.make_qscript(_prepare_circuit)(
-                            ansatz, hamiltonian, params
+                            ansatz, term, params
                         )
 
                         self.circuits[(i, ansatz)].append(

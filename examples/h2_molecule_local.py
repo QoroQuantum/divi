@@ -18,7 +18,8 @@ energies = vqe_problem.energies[vqe_problem.current_iteration - 1]
 ansatz = vqe_problem.ansatze[0]
 print(energies)
 for i in range(len(vqe_problem.bond_lengths)):
-    print(energies[i][ansatz][0])
+    print(f"Minimum Energy Achieved: {min(energies[i][ansatz].values()):.4f}")
+
 vqe_problem.visualize_results()
 
 # data = []
