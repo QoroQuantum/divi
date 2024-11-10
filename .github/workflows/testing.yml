@@ -17,7 +17,9 @@ jobs:
         pip install -r requirements.txt -r requirements-dev.txt
         pip install .
     - name: Run tests
+      working-directory: ./divi/
       run: |
+        cd ..
         export PYTHONPATH=$PWD
         export LOCAL=False
         pytest tests
