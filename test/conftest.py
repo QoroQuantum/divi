@@ -19,7 +19,7 @@ def skip_if_no_api_token(request):
 
 
 @pytest.fixture(scope="module")
-def setup_module(request):
+def api_token(request):
     api_token = request.config.getoption("--api-token")
 
     # Setup code
