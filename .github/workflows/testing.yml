@@ -19,4 +19,4 @@ jobs:
     - name: Run tests
       run: |
         export LOCAL=False
-        pytest test
+        pytest test/
