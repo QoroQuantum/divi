@@ -10,9 +10,9 @@ from scipy.optimize import minimize
 
 from divi.circuit import Circuit
 from divi.qprog import QuantumProgram
+from divi.qprog.optimizers import Optimizers
 from divi.services.qoro_service import JobStatus, JobTypes
 from divi.simulator.parallel_simulator import ParallelSimulator
-
 
 try:
     import openfermionpyscf
@@ -39,7 +39,7 @@ logger.addHandler(ch)
 logging.getLogger().setLevel(logging.WARNING)
 
 
-class Ansatze(Enum):
+class VQEAnsatze(Enum):
     UCCSD = "UCCSD"
     RY = "RY"
     RYRZ = "RYRZ"
@@ -52,51 +52,23 @@ class Ansatze(Enum):
         return self.name, self.value
 
     def num_params(self, num_qubits):
-        if self == Ansatze.UCCSD:
+        if self == VQEAnsatze.UCCSD:
             return num_qubits
-        elif self == Ansatze.HARTREE_FOCK:
+        elif self == VQEAnsatze.HARTREE_FOCK:
             return 1
-        elif self == Ansatze.RY:
+        elif self == VQEAnsatze.RY:
             return num_qubits
-        elif self == Ansatze.RYRZ:
+        elif self == VQEAnsatze.RYRZ:
             return 2 * num_qubits
-        elif self == Ansatze.HW_EFFICIENT:
+        elif self == VQEAnsatze.HW_EFFICIENT:
             # TODO
             return 1
-        elif self == Ansatze.LAYERED:
+        elif self == VQEAnsatze.LAYERED:
             # TODO
             return 1
-        elif self == Ansatze.QAOA:
+        elif self == VQEAnsatze.QAOA:
             # TODO
             return 1
-
-
-class Optimizers(Enum):
-    NELDER_MEAD = "Nelder-Mead"
-    MONTE_CARLO = "Monte Carlo"
-
-    def describe(self):
-        return self.name, self.value
-
-    def num_param_sets(self):
-        if self == Optimizers.NELDER_MEAD:
-            return 1
-        elif self == Optimizers.MONTE_CARLO:
-            return 3
-
-    def samples(self):
-        if self == Optimizers.MONTE_CARLO:
-            return 2
-        return 1
-
-    def update_params(self, params, iteration):
-        if self == Optimizers.MONTE_CARLO:
-            return [
-                np.random.normal(params, 1 / iteration, size=params.shape)
-                for _ in range(self.num_param_sets())
-            ]
-        else:
-            raise NotImplementedError
 
 
 class VQE(QuantumProgram):
@@ -105,11 +77,10 @@ class VQE(QuantumProgram):
         symbols,
         bond_lengths,
         coordinate_structure,
-        optimizer=Optimizers.NELDER_MEAD,
-        ansatze=(Ansatze.HARTREE_FOCK,),
-        max_interations=10,
+        optimizer=Optimizers.MONTE_CARLO,
+        ansatze=(VQEAnsatze.HARTREE_FOCK,),
+        max_iterations=10,
         shots=5000,
-        *args,
         **kwargs,
     ) -> None:
         """
@@ -121,7 +92,7 @@ class VQE(QuantumProgram):
             coordinate_structure (list): The coordinate structure of the molecule
             ansatze (list): The ansatze to use for the VQE problem
         """
-        super().__init__(*args, **kwargs)
+        super().__init__(**kwargs)
         self.symbols = symbols
         self.bond_lengths = bond_lengths
         self.num_qubits = 0
@@ -134,7 +105,7 @@ class VQE(QuantumProgram):
         self.optimizer = optimizer
         self.shots = shots
         self.job_type = JobTypes.EXECUTE
-        self.max_iterations = max_interations
+        self.max_iterations = max_iterations
         self.energies = []
 
         self.coordinate_structure = coordinate_structure
@@ -245,19 +216,19 @@ class VQE(QuantumProgram):
             qml.BasisState(hf_state, wires=[i for i in range(self.num_qubits)])
             qml.DoubleExcitation(params[0], wires=range(self.num_qubits))
 
-        if ansatz == Ansatze.UCCSD:
+        if ansatz == VQEAnsatze.UCCSD:
             _add_uccsd_ansatz(params, num_layers)
-        elif ansatz == Ansatze.HARTREE_FOCK:
+        elif ansatz == VQEAnsatze.HARTREE_FOCK:
             _add_hartree_fock_ansatz(params, num_layers)
-        elif ansatz == Ansatze.RY:
+        elif ansatz == VQEAnsatze.RY:
             _add_ry_ansatz(params, num_layers)
-        elif ansatz == Ansatze.RYRZ:
+        elif ansatz == VQEAnsatze.RYRZ:
             _add_ryrz_ansatz(params, num_layers)
-        elif ansatz == Ansatze.HW_EFFICIENT:
+        elif ansatz == VQEAnsatze.HW_EFFICIENT:
             _add_hw_efficient_ansatz(params, num_layers)
-        elif ansatz == Ansatze.LAYERED:
+        elif ansatz == VQEAnsatze.LAYERED:
             _add_layered_ansatz(params, num_layers)
-        elif ansatz == Ansatze.QAOA:
+        elif ansatz == VQEAnsatze.QAOA:
             _add_qaoa_ansatz(params, num_layers)
 
     def _generate_circuits(self, params=None) -> None:
@@ -382,10 +353,6 @@ class VQE(QuantumProgram):
             store_data (bool): Whether to store the data for the iteration
             data_file (str): The file to store the data in
         """
-        if self.current_iteration == self.max_iterations:
-            raise Exception(
-                "Maximum number of iterations reached, cannot run another iteration"
-            )
 
         assert (
             self.hamiltonian_ops is not None and len(self.hamiltonian_ops) > 0
@@ -562,7 +529,7 @@ class VQE(QuantumProgram):
 
         data = []
         colors = ["b", "g", "r", "c", "m", "y", "k"]
-        ansatz_list = list(Ansatze)
+        ansatz_list = list(VQEAnsatze)
         for _, energies in enumerate(self.energies):
             for i, length in enumerate(self.bond_lengths):
                 min_energies = []

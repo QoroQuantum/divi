@@ -1,7 +1,3 @@
-import qiskit
-import qiskit.qasm2
-
-
 class Circuit:
     _id_counter = 0
 
@@ -13,11 +9,11 @@ class Circuit:
         self.circuit_type = circuit_type
         self.qasm_circuit = self.convert_to_qasm()
         self.circuit_id = Circuit._id_counter
-        self.circuit_generator = None
+        self.circuit_generator = circuit_generator
         Circuit._id_counter += 1
 
     def __str__(self):
-        return f"Circuit: self.circuit_id"
+        return f"Circuit: {self.circuit_id}"
 
     def convert_to_qasm(self):
         if self.circuit_type == "pennylane":

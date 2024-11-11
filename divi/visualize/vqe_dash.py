@@ -2,7 +2,7 @@ import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 from dash import Dash, Input, Output, callback, dcc, html, no_update
 
-from divi.qprog import VQE, Ansatze, Optimizers
+from divi.qprog import VQE, Optimizers, VQEAnsatze
 
 app = Dash()
 app = Dash(external_stylesheets=[dbc.themes.BOOTSTRAP])
@@ -28,11 +28,11 @@ vqe_problem = VQE(
     symbols=["H", "H"],
     bond_lengths=[0.5, 1, 1.5],
     coordinate_structure=[(0, 0, -0.5), (0, 0, 0.5)],
-    ansatze=[Ansatze.HARTREE_FOCK],
+    ansatze=[VQEAnsatze.HARTREE_FOCK],
     optimizer=Optimizers.NELDER_MEAD,
     qoro_service=q_service,
     shots=500,
-    max_interations=5,
+    max_iterations=5,
 )
 
 
