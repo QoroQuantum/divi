@@ -357,7 +357,6 @@ class VQE(QuantumProgram):
         assert (
             self.hamiltonian_ops is not None and len(self.hamiltonian_ops) > 0
         ), "Hamiltonian operators must be generated before running the VQE"
-
         self._run_optimize()
         self.params_list.append(self.params)
         self._generate_circuits()
@@ -408,6 +407,7 @@ class VQE(QuantumProgram):
                             self.params[i][ansatz][int(key)], self.current_iteration
                         )
                         new_params.extend(new_param_set)
+
                     self.params[i][ansatz] = new_params
         else:
             raise NotImplementedError

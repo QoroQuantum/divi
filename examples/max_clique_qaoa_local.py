@@ -14,3 +14,11 @@ if __name__ == "__main__":
     )
 
     qaoa_problem.run()
+
+    losses = qaoa_problem.losses[qaoa_problem.current_iteration - 1]
+    print(losses)
+    print(f"Minimum Energy Achieved: {min(losses.values()):.4f}")
+
+    print(f"Total circuits: {len(qaoa_problem.circuits)}")
+
+    # TODO: Print graph and solution

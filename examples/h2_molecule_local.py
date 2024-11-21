@@ -22,7 +22,6 @@ if __name__ == "__main__":
         print(f"Minimum Energy Achieved: {
               min(energies[i][ansatz].values()):.4f}")
 
-    breakpoint()
 
     vqe_problem.visualize_results()
 

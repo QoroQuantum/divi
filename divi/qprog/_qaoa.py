@@ -150,14 +150,19 @@ class QAOA(QuantumProgram):
         super().__init__(**kwargs)
 
     def _reset_params(self):
-        self.params = np.random.random(2)
+        self.params = []
 
     def _run_optimize(self):
         """
         Run the optimization step for the VQE problem.
         """
+        num_param_sets = self.optimizer.num_param_sets()
+
         if self.current_iteration == 0:
             self._reset_params()
+            self.params = [
+                np.random.uniform(0, 2 * np.pi, 2) for _ in range(num_param_sets)
+            ]
         else:
             self._optimize()
 
@@ -199,22 +204,28 @@ class QAOA(QuantumProgram):
             results = self.qoro_service.get_job_results(self.job_id)
 
         results = process_results(results)
+        losses = {}
 
-        curr_loss = 0.0
-        marginal_results = []
-        for c in results.keys():
-            ham_op = self.cost_hamiltonian[int(c)]
-            pair = (
-                ham_op,
-                marginal_counts(results[c], ham_op.wires.tolist()),
-            )
-            marginal_results.append(pair)
+        for p, _ in enumerate(self.params):
+            losses[p] = 0
+            cur_result = {
+                key: value for key, value in results.items() if key.startswith(f"{p}")
+            }
+            marginal_results = []
+            for c in cur_result.keys():
+                ham_op_index = int(c.split("_")[-1])
+                ham_op = self.cost_hamiltonian[ham_op_index]
+                pair = (
+                    ham_op,
+                    cur_result[c],
+                    marginal_counts(cur_result[c], ham_op.wires.tolist()),
+                )
+                marginal_results.append(pair)
+            for result in marginal_results:
+                losses[p] += float(result[0].scalar) * expectation_value(result[2])
 
-        for result in marginal_results:
-            curr_loss += float(result[0].scalar) * expectation_value(result[1])
-
-        self.losses.append(curr_loss)
-        return curr_loss
+        self.losses.append(losses)
+        return losses
 
     def run_iteration(self, store_data=False, data_file=None, type=JobTypes.EXECUTE):
         """
@@ -248,7 +259,7 @@ class QAOA(QuantumProgram):
             pqaoa.cost_layer(gamma, self.cost_hamiltonian)
             pqaoa.mixer_layer(alpha, self.mixer_hamiltonian)
 
-        def _prepare_circuit(hamiltonian_term):
+        def _prepare_circuit(hamiltonian_term, params):
             """
             Prepare the circuit for the VQE problem.
             args:
@@ -260,15 +271,14 @@ class QAOA(QuantumProgram):
             elif self.initial_state == "Superposition":
                 qml.Hadamard(wires=range(self.num_qubits))
 
-            qml.layer(
-                qaoa_layer, self.n_layers, gamma=self.params[0], alpha=self.params[1]
-            )
+            qml.layer(qaoa_layer, self.n_layers, gamma=params[0], alpha=params[1])
 
             return qml.sample(hamiltonian_term)
 
-        for i, term in enumerate(self.cost_hamiltonian):
-            qscript = qml.tape.make_qscript(_prepare_circuit)(term)
-            self.circuits.append(Circuit(qscript, tag=f"{i}"))
+        for p, params in enumerate(self.params):
+            for i, term in enumerate(self.cost_hamiltonian):
+                qscript = qml.tape.make_qscript(_prepare_circuit)(term, params)
+                self.circuits.append(Circuit(qscript, tag=f"{p}_{i}"))
 
     def run(self, store_data=False, data_file=None, type=JobTypes.EXECUTE):
         """
@@ -291,10 +301,10 @@ class QAOA(QuantumProgram):
                 self._generate_circuits(params)
                 results, param = self._prepare_and_send_circuits()
                 if param == "job_id":
-                    energies = self._post_process_results(job_id=results)
+                    losses = self._post_process_results(job_id=results)
                 elif param == "circuit_results":
-                    energies = self._post_process_results(results=results)
-                self.energies.append(energies)
+                    losses = self._post_process_results(results=results)
+                self.losses.append(losses)
                 return energies[bond_length_index][ansatz][0]
 
             def optimize_single(args):
@@ -351,23 +361,24 @@ class QAOA(QuantumProgram):
 
     def _optimize(self):
         """
-        Optimize the VQE problem.
+        Optimize the QAOA problem.
         """
         if self.optimizer == Optimizers.NELDER_MEAD:
             raise NotImplementedError
 
         elif self.optimizer == Optimizers.MONTE_CARLO:
             losses = self.losses[self.current_iteration - 1]
-            breakpoint()
-            smallest_loss_keys = sorted(losses, key=lambda k: losses[k])[
+
+            smallest_energy_keys = sorted(losses, key=lambda k: losses[k])[
                 : self.optimizer.samples()
             ]
             new_params = []
-            for key in smallest_loss_keys:
+            for key in smallest_energy_keys:
                 new_param_set = self.optimizer.update_params(
                     self.params[int(key)], self.current_iteration
                 )
                 new_params.extend(new_param_set)
+
             self.params = new_params
         else:
             raise NotImplementedError
