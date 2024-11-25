@@ -13,8 +13,8 @@ from scipy.optimize import minimize
 from divi.circuit import Circuit
 from divi.qprog import QuantumProgram
 from divi.qprog.optimizers import Optimizers
+from divi.qprog.utils import counts_to_expectation_value
 from divi.services.qoro_service import JobStatus, JobTypes
-from divi.simulator.parallel_simulator import ParallelSimulator
 
 # Set up your logger
 logger = logging.getLogger(__name__)
@@ -164,7 +164,18 @@ class QAOA(QuantumProgram):
                 np.random.uniform(0, 2 * np.pi, 2) for _ in range(num_param_sets)
             ]
         else:
-            self._optimize()
+            # Optimize the QAOA problem.
+            if self.optimizer == Optimizers.NELDER_MEAD:
+                raise NotImplementedError
+
+            elif self.optimizer == Optimizers.MONTE_CARLO:
+                self.params = self.optimizer.compute_new_parameters(
+                    self.params,
+                    self.current_iteration,
+                    losses=self.losses[self.current_iteration - 1],
+                )
+            else:
+                raise NotImplementedError
 
         self.current_iteration += 1
 
@@ -181,19 +192,6 @@ class QAOA(QuantumProgram):
             for r in results:
                 processed_results[r["label"]] = r["results"]
             return processed_results
-
-        def expectation_value(results):
-            eigenvalue = 0
-            total_shots = 0
-
-            for key, val in results.items():
-                if key.count("1") % 2 == 1:
-                    eigenvalue += -val
-                else:
-                    eigenvalue += val
-                total_shots += val
-
-            return eigenvalue / total_shots
 
         if job_id is not None and self.qoro_service is not None:
             status = self.qoro_service.job_status(self.job_id, loop_until_complete=True)
@@ -222,31 +220,12 @@ class QAOA(QuantumProgram):
                 )
                 marginal_results.append(pair)
             for result in marginal_results:
-                losses[p] += float(result[0].scalar) * expectation_value(result[2])
+                losses[p] += float(result[0].scalar) * counts_to_expectation_value(
+                    result[2]
+                )
 
         self.losses.append(losses)
         return losses
-
-    def run_iteration(self, store_data=False, data_file=None, type=JobTypes.EXECUTE):
-        """
-        Run an iteration of the VQE problem. The outputs are stored in the VQE object. Optionally, the data can be stored in a file.
-
-        args:
-            store_data (bool): Whether to store the data for the iteration
-            data_file (str): The file to store the data in
-        """
-
-        self._run_optimize()
-        self._generate_circuits()
-        results, param = self._prepare_and_send_circuits()
-
-        if param == "job_id":
-            self._post_process_results(job_id=results)
-        elif param == "circuit_results":
-            self._post_process_results(results=results)
-
-        if store_data:
-            self.save_iteration(data_file)
 
     def _generate_circuits(self):
         """
@@ -261,7 +240,7 @@ class QAOA(QuantumProgram):
 
         def _prepare_circuit(hamiltonian_term, params):
             """
-            Prepare the circuit for the VQE problem.
+            Prepare the circuit for the QAOA problem.
             args:
                 hamiltonian (qml.Hamiltonian): The Hamiltonian term to measure
             """
@@ -342,43 +321,3 @@ class QAOA(QuantumProgram):
                     energies[i][ansatz][0] = energy
 
             return energies
-
-    def _prepare_and_send_circuits(self):
-        job_circuits = {}
-        for circuit in self.circuits:
-            job_circuits[circuit.tag] = circuit.qasm_circuit
-
-        if self.qoro_service is not None:
-            job_id = self.qoro_service.send_circuits(
-                job_circuits, shots=self.shots, job_type=self.job_type
-            )
-            self.job_id = job_id if job_id is not None else None
-            return job_id, "job_id"
-        else:
-            circuit_simulator = ParallelSimulator()
-            circuit_results = circuit_simulator.simulate(job_circuits, shots=self.shots)
-            return circuit_results, "circuit_results"
-
-    def _optimize(self):
-        """
-        Optimize the QAOA problem.
-        """
-        if self.optimizer == Optimizers.NELDER_MEAD:
-            raise NotImplementedError
-
-        elif self.optimizer == Optimizers.MONTE_CARLO:
-            losses = self.losses[self.current_iteration - 1]
-
-            smallest_energy_keys = sorted(losses, key=lambda k: losses[k])[
-                : self.optimizer.samples()
-            ]
-            new_params = []
-            for key in smallest_energy_keys:
-                new_param_set = self.optimizer.update_params(
-                    self.params[int(key)], self.current_iteration
-                )
-                new_params.extend(new_param_set)
-
-            self.params = new_params
-        else:
-            raise NotImplementedError

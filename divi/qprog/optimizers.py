@@ -21,11 +21,23 @@ class Optimizers(Enum):
             return 2
         return 1
 
-    def update_params(self, params, iteration):
+    def compute_new_parameters(self, params, iteration, **kwargs):
         if self == Optimizers.MONTE_CARLO:
-            return [
-                np.random.normal(params, 1 / iteration, size=params.shape)
-                for _ in range(self.num_param_sets())
+            losses = kwargs.pop("losses")
+            smallest_energy_keys = sorted(losses, key=lambda k: losses[k])[
+                : self.samples()
             ]
+
+            new_params = []
+            for key in smallest_energy_keys:
+                new_param_set = [
+                    np.random.normal(
+                        params[int(key)], 1 / iteration, size=params[int(key)].shape
+                    )
+                    for _ in range(self.num_param_sets())
+                ]
+                new_params.extend(new_param_set)
+
+            return new_params
         else:
             raise NotImplementedError

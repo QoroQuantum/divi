@@ -11,8 +11,8 @@ from scipy.optimize import minimize
 from divi.circuit import Circuit
 from divi.qprog import QuantumProgram
 from divi.qprog.optimizers import Optimizers
+from divi.qprog.utils import counts_to_expectation_value
 from divi.services.qoro_service import JobStatus, JobTypes
-from divi.simulator.parallel_simulator import ParallelSimulator
 
 try:
     import openfermionpyscf
@@ -100,7 +100,6 @@ class VQE(QuantumProgram):
         self.results = {}
         self.ansatze = ansatze
         self.params = {}
-        self.params_list = []
         self.current_iteration = 0
         self.optimizer = optimizer
         self.shots = shots
@@ -293,6 +292,10 @@ class VQE(QuantumProgram):
 
         if self.optimizer == Optimizers.MONTE_CARLO:
             while self.current_iteration < self.max_iterations:
+                assert (
+                    self.hamiltonian_ops is not None and len(self.hamiltonian_ops) > 0
+                ), "Hamiltonian operators must be generated before running the VQE"
+
                 logger.debug(f"Running iteration {self.current_iteration}")
                 self.run_iteration(store_data, data_file, type)
 
@@ -345,73 +348,6 @@ class VQE(QuantumProgram):
 
             return energies
 
-    def run_iteration(self, store_data=False, data_file=None, type=JobTypes.EXECUTE):
-        """
-        Run an iteration of the VQE problem. The outputs are stored in the VQE object. Optionally, the data can be stored in a file.
-
-        args:
-            store_data (bool): Whether to store the data for the iteration
-            data_file (str): The file to store the data in
-        """
-
-        assert (
-            self.hamiltonian_ops is not None and len(self.hamiltonian_ops) > 0
-        ), "Hamiltonian operators must be generated before running the VQE"
-        self._run_optimize()
-        self.params_list.append(self.params)
-        self._generate_circuits()
-        results, param = self._prepare_and_send_circuits()
-
-        if param == "job_id":
-            self._post_process_results(job_id=results)
-        elif param == "circuit_results":
-            self._post_process_results(results=results)
-
-        if store_data:
-            self.save_iteration(data_file)
-
-    def _prepare_and_send_circuits(self):
-        job_circuits = {}
-        for circuits in self.circuits.values():
-            for circuit in circuits:
-                job_circuits[circuit.tag] = circuit.qasm_circuit
-
-        if self.qoro_service is not None:
-            job_id = self.qoro_service.send_circuits(
-                job_circuits, shots=self.shots, job_type=self.job_type
-            )
-            self.job_id = job_id if job_id is not None else None
-            return job_id, "job_id"
-        else:
-            circuit_simulator = ParallelSimulator()
-            circuit_results = circuit_simulator.simulate(job_circuits, shots=self.shots)
-            return circuit_results, "circuit_results"
-
-    def _optimize(self):
-        """
-        Optimize the VQE problem.
-        """
-        if self.optimizer == Optimizers.NELDER_MEAD:
-            raise NotImplementedError
-
-        elif self.optimizer == Optimizers.MONTE_CARLO:
-            for i, _ in enumerate(self.bond_lengths):
-                for ansatz in self.ansatze:
-                    energies = self.energies[self.current_iteration - 1][i][ansatz]
-                    smallest_energy_keys = sorted(energies, key=lambda k: energies[k])[
-                        : self.optimizer.samples()
-                    ]
-                    new_params = []
-                    for key in smallest_energy_keys:
-                        new_param_set = self.optimizer.update_params(
-                            self.params[i][ansatz][int(key)], self.current_iteration
-                        )
-                        new_params.extend(new_param_set)
-
-                    self.params[i][ansatz] = new_params
-        else:
-            raise NotImplementedError
-
     def _run_optimize(self):
         """
         Run the optimization step for the VQE problem.
@@ -427,7 +363,20 @@ class VQE(QuantumProgram):
                         for _ in range(num_param_sets)
                     ]
         else:
-            self._optimize()
+            # Optimize the VQE problem.
+            if self.optimizer == Optimizers.NELDER_MEAD:
+                raise NotImplementedError
+
+            elif self.optimizer == Optimizers.MONTE_CARLO:
+                for i, _ in enumerate(self.bond_lengths):
+                    for ansatz in self.ansatze:
+                        self.params[i][ansatz] = self.optimizer.compute_new_parameters(
+                            self.params[i][ansatz],
+                            self.current_iteration,
+                            losses=self.energies[self.current_iteration - 1][i][ansatz],
+                        )
+            else:
+                raise NotImplementedError
         self.current_iteration += 1
 
     def _post_process_results(self, job_id=None, results=None):
@@ -443,19 +392,6 @@ class VQE(QuantumProgram):
             for r in results:
                 processed_results[r["label"]] = r["results"]
             return processed_results
-
-        def expectation_value(results):
-            eigenvalue = 0
-            total_shots = 0
-
-            for key, val in results.items():
-                if key.count("1") % 2 == 1:
-                    eigenvalue += -val
-                else:
-                    eigenvalue += val
-                total_shots += val
-
-            return eigenvalue / total_shots
 
         if job_id is not None and self.qoro_service is not None:
             status = self.qoro_service.job_status(self.job_id, loop_until_complete=True)
@@ -491,35 +427,10 @@ class VQE(QuantumProgram):
                     for result in marginal_results:
                         energies[i][ansatz][p] += float(
                             result[0].scalar
-                        ) * expectation_value(result[2])
+                        ) * counts_to_expectation_value(result[2])
 
         self.energies.append(energies)
         return energies
-
-    def save_iteration(self, data_file):
-        """
-        Save the current iteration of the VQE problem to a file.
-
-        args:
-            data_file (str): The file to save the iteration to.
-        """
-        import pickle
-
-        with open(data_file, "wb") as f:
-            pickle.dump(self, f)
-
-    @staticmethod
-    def import_iteration(data_file):
-        """
-        Import an iteration of the VQE problem from a file.
-
-        args:
-            data_file (str): The file to import the iteration from.
-        """
-        import pickle
-
-        with open(data_file, "rb") as f:
-            return pickle.load(f)
 
     def visualize_results(self):
         """
