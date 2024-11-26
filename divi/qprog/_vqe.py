@@ -312,7 +312,7 @@ class VQE(QuantumProgram):
                 self.energies.append(energies)
                 return energies[bond_length_index][ansatz][0]
 
-            def optimize_single(args):
+            def optimizer_loop_body(args):
                 i, ansatz = args
                 logger.debug("Running optimization for bond length:", i, ansatz)
                 params = self.params[i][ansatz][0]
@@ -326,7 +326,6 @@ class VQE(QuantumProgram):
                 return i, ansatz, result.fun
 
             self._reset_params()
-            num_param_sets = 1
             args = []
             energies = {}
             for i in range(len(self.bond_lengths)):
@@ -336,12 +335,12 @@ class VQE(QuantumProgram):
                     num_params = ansatz.num_params(self.num_qubits)
                     self.params[i][ansatz] = [
                         np.random.uniform(0, 2 * np.pi, num_params)
-                        for _ in range(num_param_sets)
+                        for _ in range(self.optimizer.num_param_sets())
                     ]
                     args.append((i, ansatz))
 
             with ThreadPoolExecutor() as executor:
-                futures = [executor.submit(optimize_single, arg) for arg in args]
+                futures = [executor.submit(optimizer_loop_body, arg) for arg in args]
                 for future in futures:
                     i, ansatz, energy = future.result()
                     energies[i][ansatz][0] = energy

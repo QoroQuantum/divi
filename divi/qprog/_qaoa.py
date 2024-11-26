@@ -103,7 +103,7 @@ class QAOA(QuantumProgram):
         **kwargs,
     ):
         """
-        Initialize the VQE problem.
+        Initialize the QAOA problem.
 
         args:
             problem (str): The graph problem to solve.
@@ -154,7 +154,7 @@ class QAOA(QuantumProgram):
 
     def _run_optimize(self):
         """
-        Run the optimization step for the VQE problem.
+        Run the optimization step for the QAOA problem.
         """
         num_param_sets = self.optimizer.num_param_sets()
 
@@ -181,10 +181,10 @@ class QAOA(QuantumProgram):
 
     def _post_process_results(self, job_id=None, results=None):
         """
-        Post-process the results of the VQE problem.
+        Post-process the results of the QAOA problem.
 
         return:
-            (dict) The energies for each bond length, ansatz, and parameter set grouping.
+            (dict) The losses for each parameter set grouping.
         """
 
         def process_results(results):
@@ -225,9 +225,10 @@ class QAOA(QuantumProgram):
                 )
 
         self.losses.append(losses)
+
         return losses
 
-    def _generate_circuits(self):
+    def _generate_circuits(self, params=None):
         """
         Generate the circuits for the QAOA problem.
 
@@ -254,14 +255,16 @@ class QAOA(QuantumProgram):
 
             return qml.sample(hamiltonian_term)
 
-        for p, params in enumerate(self.params):
+        params = self.params if params is None else [params]
+
+        for p, params_group in enumerate(params):
             for i, term in enumerate(self.cost_hamiltonian):
-                qscript = qml.tape.make_qscript(_prepare_circuit)(term, params)
+                qscript = qml.tape.make_qscript(_prepare_circuit)(term, params_group)
                 self.circuits.append(Circuit(qscript, tag=f"{p}_{i}"))
 
     def run(self, store_data=False, data_file=None, type=JobTypes.EXECUTE):
         """
-        Run the VQE problem. The outputs are stored in the VQE object. Optionally, the data can be stored in a file.
+        Run the QAOA problem. The outputs are stored in the QAOA object. Optionally, the data can be stored in a file.
 
         args:
             store_data (bool): Whether to store the data for the iteration
@@ -275,49 +278,33 @@ class QAOA(QuantumProgram):
 
         elif self.optimizer == Optimizers.NELDER_MEAD:
 
-            def cost_function(params, bond_length_index, ansatz):
-                self.params[bond_length_index][ansatz] = params
+            def cost_function(params):
                 self._generate_circuits(params)
                 results, param = self._prepare_and_send_circuits()
                 if param == "job_id":
                     losses = self._post_process_results(job_id=results)
                 elif param == "circuit_results":
                     losses = self._post_process_results(results=results)
-                self.losses.append(losses)
-                return energies[bond_length_index][ansatz][0]
 
-            def optimize_single(args):
-                i, ansatz = args
-                logger.debug("Running optimization for bond length:", i, ansatz)
-                params = self.params[i][ansatz][0]
+                self.losses.append(losses)
+
+                return losses[0]
+
+            def optimizer_loop_body():
+                params = self.params[0]
                 result = minimize(
                     cost_function,
                     params,
-                    args=(i, ansatz),
                     method="Nelder-Mead",
                     options={"maxiter": self.max_iterations},
                 )
-                return i, ansatz, result.fun
+                return result.fun
 
             self._reset_params()
-            num_param_sets = 1
-            args = []
-            energies = {}
-            for i in range(len(self.bond_lengths)):
-                energies[i] = {}
-                for ansatz in self.ansatze:
-                    energies[i][ansatz] = {}
-                    num_params = ansatz.num_params(self.num_qubits)
-                    self.params[i][ansatz] = [
-                        np.random.uniform(0, 2 * np.pi, num_params)
-                        for _ in range(num_param_sets)
-                    ]
-                    args.append((i, ansatz))
 
-            with ThreadPoolExecutor() as executor:
-                futures = [executor.submit(optimize_single, arg) for arg in args]
-                for future in futures:
-                    i, ansatz, energy = future.result()
-                    energies[i][ansatz][0] = energy
+            self.params = [
+                np.random.uniform(0, 2 * np.pi, 2)
+                for _ in range(self.optimizer.num_param_sets())
+            ]
 
-            return energies
+            return [optimizer_loop_body()]
