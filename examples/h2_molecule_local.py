@@ -1,17 +1,20 @@
 from divi.qprog import VQE, VQEAnsatze
 from divi.qprog.optimizers import Optimizers
+from divi.services import QoroService
 
-# q_service = QoroService("71ec99c9c94cf37499a2b725244beac1f51b8ee4")
+# This is an API key that only works on my local deployment, no one else can use it
+q_service = QoroService("f634df7181c56dae4c7ba530ba0bfb2a0e6e3f4e")
+# q_service = None
 if __name__ == "__main__":
     vqe_problem = VQE(
         symbols=["H", "H"],
-        bond_lengths=[0.5, 0.75, 1, 1.25],
+        bond_lengths=[0.5, 0.75],
         coordinate_structure=[(0, 0, -0.5), (0, 0, 0.5)],
         ansatze=[VQEAnsatze.HARTREE_FOCK, VQEAnsatze.RY],
         optimizer=Optimizers.MONTE_CARLO,
         shots=5000,
-        max_iterations=4,
-        qoro_service=None,  # Run through the local simulator
+        max_iterations=2,
+        qoro_service=q_service,  # Run through the local simulator
     )
 
     vqe_problem.run()
@@ -19,7 +22,8 @@ if __name__ == "__main__":
     ansatz = vqe_problem.ansatze[0]
     print(energies)
     for i in range(len(vqe_problem.bond_lengths)):
-        print(f"Minimum Energy Achieved: {min(energies[i][ansatz].values()):.4f}")
+        print(f"Minimum Energy Achieved: {
+              min(energies[i][ansatz].values()):.4f}")
 
     vqe_problem.visualize_results()
 

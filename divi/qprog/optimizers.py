@@ -14,25 +14,24 @@ class Optimizers(Enum):
         if self == Optimizers.NELDER_MEAD:
             return 1
         elif self == Optimizers.MONTE_CARLO:
-            return 3
+            return 2
 
     def samples(self):
         if self == Optimizers.MONTE_CARLO:
-            return 2
+            return 200
         return 1
 
     def compute_new_parameters(self, params, iteration, **kwargs):
         if self == Optimizers.MONTE_CARLO:
             losses = kwargs.pop("losses")
             smallest_energy_keys = sorted(losses, key=lambda k: losses[k])[
-                : self.samples()
-            ]
+                :self.samples()]
 
             new_params = []
             for key in smallest_energy_keys:
                 new_param_set = [
                     np.random.normal(
-                        params[int(key)], 1 / iteration, size=params[int(key)].shape
+                        params[int(key)], 1 / (0.5 * iteration), size=params[int(key)].shape
                     )
                     for _ in range(self.num_param_sets())
                 ]

@@ -115,18 +115,21 @@ class QAOA(QuantumProgram):
 
         if problem not in _SUPPORTED_PROBLEMS:
             raise ValueError(
-                f"Unsupported Problem. Got {problem}. Must be one of: {_SUPPORTED_PROBLEMS}"
+                f"Unsupported Problem. Got {
+                    problem}. Must be one of: {_SUPPORTED_PROBLEMS}"
             )
         self.problem = problem
 
         if initial_state not in get_args(_SUPPPORTED_INITIAL_STATES_LITERAL):
             raise ValueError(
-                f"Unsupported Initial State. Got {initial_state}. Must be one of: {get_args(_SUPPPORTED_INITIAL_STATES_LITERAL)}"
+                f"Unsupported Initial State. Got {initial_state}. Must be one of: {
+                    get_args(_SUPPPORTED_INITIAL_STATES_LITERAL)}"
             )
 
         if n_layers < 1 or not isinstance(n_layers, int):
             raise ValueError(
-                f"Number of layers should be a positive integer. Got {n_layers}."
+                f"Number of layers should be a positive integer. Got {
+                    n_layers}."
             )
         self.n_layers = n_layers
 
@@ -194,7 +197,8 @@ class QAOA(QuantumProgram):
             return processed_results
 
         if job_id is not None and self.qoro_service is not None:
-            status = self.qoro_service.job_status(self.job_id, loop_until_complete=True)
+            status = self.qoro_service.job_status(
+                self.job_id, loop_until_complete=True)
             if status != JobStatus.COMPLETED:
                 raise Exception(
                     "Job has not completed yet, cannot post-process results"
@@ -251,7 +255,8 @@ class QAOA(QuantumProgram):
             elif self.initial_state == "Superposition":
                 qml.Hadamard(wires=range(self.num_qubits))
 
-            qml.layer(qaoa_layer, self.n_layers, gamma=params[0], alpha=params[1])
+            qml.layer(qaoa_layer, self.n_layers,
+                      gamma=params[0], alpha=params[1])
 
             return qml.sample(hamiltonian_term)
 
@@ -259,7 +264,8 @@ class QAOA(QuantumProgram):
 
         for p, params_group in enumerate(params):
             for i, term in enumerate(self.cost_hamiltonian):
-                qscript = qml.tape.make_qscript(_prepare_circuit)(term, params_group)
+                qscript = qml.tape.make_qscript(
+                    _prepare_circuit)(term, params_group)
                 self.circuits.append(Circuit(qscript, tag=f"{p}_{i}"))
 
     def run(self, store_data=False, data_file=None, type=JobTypes.EXECUTE):
