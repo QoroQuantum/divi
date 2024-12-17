@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from concurrent.futures import ALL_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import ThreadPoolExecutor
 
 
 class ProgramBatch(ABC):
@@ -53,7 +53,7 @@ class ProgramBatch(ABC):
 
     @property
     def total_circuit_count(self):
-        return sum(prog.total_circuit_count for prog in self.programs)
+        return sum(prog.total_circuit_count for prog in self.programs.values())
 
     @total_circuit_count.setter
     def _(self, value):

@@ -93,18 +93,18 @@ class VQEHyperparameterSweep(ProgramBatch):
 
         ansatz_list = list(VQEAnsatze)
 
-        for energies in self.energies:
-            for i, bond_length in enumerate(self.bond_lengths):
-                min_energies = []
-                for ansatz in self.ansatze:
-                    min_energies.append(
-                        (
-                            bond_length,
-                            min(energies[i][ansatz].values()),
-                            colors[ansatz_list.index(ansatz)],
-                        )
+        for ansatz, bond_length in product(self.ansatze, self.bond_lengths):
+            min_energies = []
+            for curr_energies in self.programs[(ansatz, bond_length)].energies:
+                min_energies.append(
+                    (
+                        bond_length,
+                        min(curr_energies.values()),
+                        colors[ansatz_list.index(ansatz)],
                     )
-                data.extend(min_energies)
+                )
+
+            data.extend(min_energies)
 
         x, y, z = zip(*data)
         plt.scatter(x, y, color=z)

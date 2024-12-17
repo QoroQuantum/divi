@@ -22,9 +22,3 @@ if __name__ == "__main__":
 
     print(f"Minimum Energy Achieved: {min(energies.values()):.4f}")
     print(f"Total circuits: {vqe_problem.total_circuit_count}")
-
-    # vqe_problem.visualize_results()
-
-    # data = []
-    # for energy in vqe_problem.energies:
-    #     data.append(energy[Ansatze.HARTREE_FOCK][0])
