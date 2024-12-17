@@ -5,9 +5,9 @@ from divi.qprog.optimizers import Optimizers
 if __name__ == "__main__":
     vqe_problem = VQE(
         symbols=["H", "H"],
-        bond_lengths=[0.5, 0.75, 1, 1.25],
+        bond_length=0.5,
         coordinate_structure=[(0, 0, -0.5), (0, 0, 0.5)],
-        ansatze=[VQEAnsatze.HARTREE_FOCK, VQEAnsatze.RY],
+        ansatz=VQEAnsatze.HARTREE_FOCK,
         optimizer=Optimizers.MONTE_CARLO,
         shots=5000,
         max_iterations=4,
@@ -15,21 +15,16 @@ if __name__ == "__main__":
     )
 
     vqe_problem.run()
-    energies = vqe_problem.energies[vqe_problem.current_iteration - 1]
-    ansatz = vqe_problem.ansatze[0]
-    print(energies)
-    for i in range(len(vqe_problem.bond_lengths)):
-        print(f"Minimum Energy Achieved: {min(energies[i][ansatz].values()):.4f}")
 
-    vqe_problem.visualize_results()
+    energies = vqe_problem.energies[vqe_problem.current_iteration - 1]
+
+    print(energies)
+
+    print(f"Minimum Energy Achieved: {min(energies.values()):.4f}")
+    print(f"Total circuits: {vqe_problem.total_circuit_count}")
+
+    # vqe_problem.visualize_results()
 
     # data = []
     # for energy in vqe_problem.energies:
     #     data.append(energy[Ansatze.HARTREE_FOCK][0])
-
-    c = 0
-    for circuits in vqe_problem.circuits.values():
-        for circuit in circuits:
-            c += 1
-
-    print(f"Total circuits: {c}")

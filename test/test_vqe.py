@@ -7,7 +7,7 @@ from divi.qprog import VQE
 def test_vqe_initialization():
     vqe_problem = VQE(
         symbols=["H", "H"],
-        bond_lengths=[0.5, 1.0],
+        bond_length=[0.5, 1.0],
         coordinate_structure=[(1, 0, 0), (0, -1, 0)],
     )
     assert vqe_problem is not None, "VQE should be initialized"
@@ -25,7 +25,7 @@ def test_vqe_initialization_fail():
     ):
         VQE(
             symbols=["H", "H", "H"],
-            bond_lengths=[0.5, 1.0],
+            bond_length=[0.5, 1.0],
             coordinate_structure=[(1, 0, 0), (0, -1, 0)],
         )
 

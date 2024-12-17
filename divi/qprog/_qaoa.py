@@ -135,7 +135,6 @@ class QAOA(QuantumProgram):
         self.max_iterations = max_iterations
         self.params = []
         self.num_qubits = graph.number_of_nodes()
-        self.circuits = []
         self.shots = shots
         self.losses = []
 
@@ -209,6 +208,7 @@ class QAOA(QuantumProgram):
             cur_result = {
                 key: value for key, value in results.items() if key.startswith(f"{p}")
             }
+
             marginal_results = []
             for c in cur_result.keys():
                 ham_op_index = int(c.split("_")[-1])
@@ -219,6 +219,7 @@ class QAOA(QuantumProgram):
                     marginal_counts(cur_result[c], ham_op.wires.tolist()),
                 )
                 marginal_results.append(pair)
+
             for result in marginal_results:
                 losses[p] += float(result[0].scalar) * counts_to_expectation_value(
                     result[2]
@@ -262,7 +263,7 @@ class QAOA(QuantumProgram):
                 qscript = qml.tape.make_qscript(_prepare_circuit)(term, params_group)
                 self.circuits.append(Circuit(qscript, tag=f"{p}_{i}"))
 
-    def run(self, store_data=False, data_file=None, type=JobTypes.EXECUTE):
+    def run(self, store_data=False, data_file=None):
         """
         Run the QAOA problem. The outputs are stored in the QAOA object. Optionally, the data can be stored in a file.
 
@@ -274,7 +275,7 @@ class QAOA(QuantumProgram):
         if self.optimizer == Optimizers.MONTE_CARLO:
             while self.current_iteration < self.max_iterations:
                 logger.debug(f"Running iteration {self.current_iteration}")
-                self.run_iteration(store_data, data_file, type)
+                self.run_iteration(store_data, data_file)
 
         elif self.optimizer == Optimizers.NELDER_MEAD:
 
@@ -291,10 +292,9 @@ class QAOA(QuantumProgram):
                 return losses[0]
 
             def optimizer_loop_body():
-                params = self.params[0]
                 result = minimize(
                     cost_function,
-                    params,
+                    self.params[0],
                     method="Nelder-Mead",
                     options={"maxiter": self.max_iterations},
                 )

@@ -1,6 +1,5 @@
 import logging
 import warnings
-from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 
 import numpy as np
@@ -12,7 +11,7 @@ from divi.circuit import Circuit
 from divi.qprog import QuantumProgram
 from divi.qprog.optimizers import Optimizers
 from divi.qprog.utils import counts_to_expectation_value
-from divi.services.qoro_service import JobStatus, JobTypes
+from divi.services.qoro_service import JobStatus
 
 try:
     import openfermionpyscf
@@ -75,10 +74,10 @@ class VQE(QuantumProgram):
     def __init__(
         self,
         symbols,
-        bond_lengths,
+        bond_length,
         coordinate_structure,
         optimizer=Optimizers.MONTE_CARLO,
-        ansatze=(VQEAnsatze.HARTREE_FOCK,),
+        ansatz=VQEAnsatze.HARTREE_FOCK,
         max_iterations=10,
         shots=5000,
         **kwargs,
@@ -88,26 +87,27 @@ class VQE(QuantumProgram):
 
         args:
             symbols (list): The symbols of the atoms in the molecule
-            bond_lengths (list): The bond lengths to consider
+            bond_length (float): The bond length to consider
             coordinate_structure (list): The coordinate structure of the molecule
-            ansatze (list): The ansatze to use for the VQE problem
+            ansatz (VQEAnsatz): The ansatz to use for the VQE problem
+            optimizer (Optimizers): The optimizer to use.
+            max_iterations (int): Maximum number of iteration optimizers.
+            shots (int): Number of shots for each circuit execution.
         """
         super().__init__(**kwargs)
         self.symbols = symbols
-        self.bond_lengths = bond_lengths
+        self.bond_length = bond_length
         self.num_qubits = 0
-        self.circuits = {}
         self.results = {}
-        self.ansatze = ansatze
+        self.ansatz = ansatz
         self.params = {}
         self.current_iteration = 0
         self.optimizer = optimizer
         self.shots = shots
-        self.job_type = JobTypes.EXECUTE
         self.max_iterations = max_iterations
         self.energies = []
-
         self.coordinate_structure = coordinate_structure
+
         assert len(self.coordinate_structure) == len(
             self.symbols
         ), "The number of symbols must match the number of coordinates"
@@ -115,14 +115,7 @@ class VQE(QuantumProgram):
         self.hamiltonian_ops = self._generate_hamiltonian_operations()
 
     def _reset_params(self):
-        """
-        Reset the parameters for the VQE problem.
-        """
-        self.params = {}
-        for i in range(len(self.bond_lengths)):
-            self.params[i] = {}
-            for ansatz in self.ansatze:
-                self.params[i][ansatz] = []
+        self.params = []
 
     def _generate_hamiltonian_operations(self):
         """
@@ -140,36 +133,38 @@ class VQE(QuantumProgram):
                 return True
             return all(first == x for x in iterator)
 
-        hamiltonian_ops = []
         num_qubits = []
         num_electrons = []
-        for bond_length in self.bond_lengths:
-            # Generate the Hamiltonian for the given bond length
-            coordinates = []
-            for coord_str in self.coordinate_structure:
-                coordinates.append(
-                    [
-                        coord_str[0] * bond_length,
-                        coord_str[1] * bond_length,
-                        coord_str[2] * bond_length,
-                    ]
-                )
-            coordinates = np.array(coordinates)
-            molecule = qml.qchem.Molecule(self.symbols, coordinates)
-            hamiltonian, qubits = qml.qchem.molecular_hamiltonian(molecule)
-            # , method="openfermion"
-            hamiltonian_ops.append(hamiltonian)
-            num_qubits.append(qubits)
-            num_electrons.append(molecule.n_electrons)
+
+        # Generate the Hamiltonian for the given bond length
+        coordinates = []
+        for coord_str in self.coordinate_structure:
+            coordinates.append(
+                [
+                    coord_str[0] * self.bond_length,
+                    coord_str[1] * self.bond_length,
+                    coord_str[2] * self.bond_length,
+                ]
+            )
+
+        coordinates = np.array(coordinates)
+        molecule = qml.qchem.Molecule(self.symbols, coordinates)
+        hamiltonian, qubits = qml.qchem.molecular_hamiltonian(molecule)
+
+        num_qubits.append(qubits)
+        num_electrons.append(molecule.n_electrons)
+
         assert all_equal(
             num_qubits
         ), "All Hamiltonians must have the same number of qubits"
         assert all_equal(
             num_electrons
         ), "All Hamiltonians must have the same number of electrons"
+
         self.num_qubits = num_qubits[0]
         self.num_electrons = num_electrons[0]
-        return hamiltonian_ops
+
+        return hamiltonian
 
     def _set_ansatz(self, ansatz, params, num_layers=1):
         """
@@ -255,33 +250,17 @@ class VQE(QuantumProgram):
 
             return qml.sample(hamiltonian_term)
 
-        # Generate a circuit for each bond length, ansatz, and parameter set grouping
-        params_list = (
-            self.params
-            if params is None
-            else [params] * (len(self.bond_lengths) * len(self.ansatze))
-        )
+        params = self.params if params is None else [params]
 
-        assert len(self.bond_lengths) == len(self.hamiltonian_ops), "Something is off."
+        for p, params_group in enumerate(params):
+            for i, term in enumerate(self.hamiltonian_ops):
+                qscript = qml.tape.make_qscript(_prepare_circuit)(
+                    self.ansatz, term, params_group
+                )
 
-        for i, (_, hamiltonian) in enumerate(
-            zip(self.bond_lengths, self.hamiltonian_ops)
-        ):
-            for ansatz in self.ansatze:
-                self.circuits[(i, ansatz)] = []
+                self.circuits.append(Circuit(qscript, tag=f"{p}_{i}"))
 
-                for p, params in enumerate(params_list[i][ansatz]):
-
-                    for j, term in enumerate(hamiltonian):
-                        qscript = qml.tape.make_qscript(_prepare_circuit)(
-                            ansatz, term, params
-                        )
-
-                        self.circuits[(i, ansatz)].append(
-                            Circuit(qscript, tag=f"{i}_{ansatz.value}_{p}_{j}")
-                        )
-
-    def run(self, store_data=False, data_file=None, type=JobTypes.EXECUTE):
+    def run(self, store_data=False, data_file=None):
         """
         Run the VQE problem. The outputs are stored in the VQE object. Optionally, the data can be stored in a file.
 
@@ -297,85 +276,73 @@ class VQE(QuantumProgram):
                 ), "Hamiltonian operators must be generated before running the VQE"
 
                 logger.debug(f"Running iteration {self.current_iteration}")
-                self.run_iteration(store_data, data_file, type)
+                self.run_iteration(store_data, data_file)
 
         elif self.optimizer == Optimizers.NELDER_MEAD:
 
-            def cost_function(params, bond_length_index, ansatz):
-                self.params[bond_length_index][ansatz] = params
+            def cost_function(params):
                 self._generate_circuits(params)
                 results, param = self._prepare_and_send_circuits()
                 if param == "job_id":
                     energies = self._post_process_results(job_id=results)
                 elif param == "circuit_results":
                     energies = self._post_process_results(results=results)
-                self.energies.append(energies)
-                return energies[bond_length_index][ansatz][0]
 
-            def optimizer_loop_body(args):
-                i, ansatz = args
-                logger.debug("Running optimization for bond length:", i, ansatz)
-                params = self.params[i][ansatz][0]
+                self.energies.append(energies)
+
+                return energies[0]
+
+            def optimizer_loop_body():
+
                 result = minimize(
                     cost_function,
-                    params,
-                    args=(i, ansatz),
+                    self.params[0],
                     method="Nelder-Mead",
-                    options={"maxiter": self.max_iterations},
+                    options={
+                        "maxiter": self.max_iterations,
+                        "disp": True,
+                    },
                 )
-                return i, ansatz, result.fun
+                return result.fun
 
             self._reset_params()
-            args = []
-            energies = {}
-            for i in range(len(self.bond_lengths)):
-                energies[i] = {}
-                for ansatz in self.ansatze:
-                    energies[i][ansatz] = {}
-                    num_params = ansatz.num_params(self.num_qubits)
-                    self.params[i][ansatz] = [
-                        np.random.uniform(0, 2 * np.pi, num_params)
-                        for _ in range(self.optimizer.num_param_sets())
-                    ]
-                    args.append((i, ansatz))
 
-            with ThreadPoolExecutor() as executor:
-                futures = [executor.submit(optimizer_loop_body, arg) for arg in args]
-                for future in futures:
-                    i, ansatz, energy = future.result()
-                    energies[i][ansatz][0] = energy
+            num_params = self.ansatz.num_params(self.num_qubits)
+            self.params = [
+                np.random.uniform(0, 2 * np.pi, num_params)
+                for _ in range(self.optimizer.num_param_sets())
+            ]
 
-            return energies
+            return [optimizer_loop_body()]
 
     def _run_optimize(self):
         """
         Run the optimization step for the VQE problem.
         """
         num_param_sets = self.optimizer.num_param_sets()
+
         if self.current_iteration == 0:
             self._reset_params()
-            for i in range(len(self.bond_lengths)):
-                for ansatz in self.ansatze:
-                    num_params = ansatz.num_params(self.num_qubits)
-                    self.params[i][ansatz] = [
-                        np.random.uniform(0, 2 * np.pi, num_params)
-                        for _ in range(num_param_sets)
-                    ]
+
+            num_params = self.ansatz.num_params(self.num_qubits)
+            self.params = [
+                np.random.uniform(0, 2 * np.pi, num_params)
+                for _ in range(num_param_sets)
+            ]
         else:
             # Optimize the VQE problem.
             if self.optimizer == Optimizers.NELDER_MEAD:
                 raise NotImplementedError
 
             elif self.optimizer == Optimizers.MONTE_CARLO:
-                for i, _ in enumerate(self.bond_lengths):
-                    for ansatz in self.ansatze:
-                        self.params[i][ansatz] = self.optimizer.compute_new_parameters(
-                            self.params[i][ansatz],
-                            self.current_iteration,
-                            losses=self.energies[self.current_iteration - 1][i][ansatz],
-                        )
+                self.params = self.optimizer.compute_new_parameters(
+                    self.params,
+                    self.current_iteration,
+                    losses=self.energies[self.current_iteration - 1],
+                )
             else:
                 raise NotImplementedError
+
         self.current_iteration += 1
 
     def _post_process_results(self, job_id=None, results=None):
@@ -383,7 +350,7 @@ class VQE(QuantumProgram):
         Post-process the results of the VQE problem.
 
         return:
-            (dict) The energies for each bond length, ansatz, and parameter set grouping.
+            (dict) The energies for each parameter set grouping.
         """
 
         def process_results(results):
@@ -402,61 +369,28 @@ class VQE(QuantumProgram):
 
         results = process_results(results)
         energies = {}
-        for i, _ in enumerate(self.bond_lengths):
-            energies[i] = {}
-            for ansatz in self.ansatze:
-                energies[i][ansatz] = {}
-                for p, _ in enumerate(self.params[i][ansatz]):
-                    energies[i][ansatz][p] = 0
-                    cur_result = {
-                        key: value
-                        for key, value in results.items()
-                        if key.startswith(f"{i}_{ansatz.value}_{p}")
-                    }
-                    marginal_results = []
-                    for c in cur_result.keys():
-                        ham_op_index = int(c.split("_")[-1])
-                        ham_op = self.hamiltonian_ops[i][ham_op_index]
-                        pair = (
-                            ham_op,
-                            cur_result[c],
-                            marginal_counts(cur_result[c], ham_op.wires.tolist()),
-                        )
-                        marginal_results.append(pair)
-                    for result in marginal_results:
-                        energies[i][ansatz][p] += float(
-                            result[0].scalar
-                        ) * counts_to_expectation_value(result[2])
+
+        for p, _ in enumerate(self.params):
+            energies[p] = 0
+            cur_result = {
+                key: value for key, value in results.items() if key.startswith(f"{p}")
+            }
+
+            marginal_results = []
+            for c in cur_result.keys():
+                ham_op_index = int(c.split("_")[-1])
+                ham_op = self.hamiltonian_ops[ham_op_index]
+                pair = (
+                    ham_op,
+                    cur_result[c],
+                    marginal_counts(cur_result[c], ham_op.wires.tolist()),
+                )
+                marginal_results.append(pair)
+            for result in marginal_results:
+                energies[p] += float(result[0].scalar) * counts_to_expectation_value(
+                    result[2]
+                )
 
         self.energies.append(energies)
+
         return energies
-
-    def visualize_results(self):
-        """
-        Visualize the results of the VQE problem.
-        """
-        import matplotlib.pyplot as plt
-
-        data = []
-        colors = ["b", "g", "r", "c", "m", "y", "k"]
-        ansatz_list = list(VQEAnsatze)
-        for _, energies in enumerate(self.energies):
-            for i, length in enumerate(self.bond_lengths):
-                min_energies = []
-                for ansatz in self.ansatze:
-                    cur_energies = energies[i][ansatz]
-                    min_energies.append(
-                        (
-                            length,
-                            min(cur_energies.values()),
-                            colors[ansatz_list.index(ansatz)],
-                        )
-                    )
-                data.extend(min_energies)
-
-        x, y, z = zip(*data)
-        plt.scatter(x, y, color=z)
-
-        plt.xlabel("Bond length")
-        plt.ylabel("Energy level")
-        plt.show()
