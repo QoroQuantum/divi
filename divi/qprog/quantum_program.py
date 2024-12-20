@@ -1,25 +1,31 @@
-from divi.services.qoro_service import JobTypes
+import pickle
+
 from divi.simulator.parallel_simulator import ParallelSimulator
 
 
 class QuantumProgram:
     def __init__(self, qoro_service=None):
+        self.circuits = []
+        self._total_circuit_count = 0
         self.qoro_service = qoro_service
         self.job_id = None
+
+    @property
+    def total_circuit_count(self):
+        return self._total_circuit_count
+
+    @total_circuit_count.setter
+    def _(self, value):
+        raise RuntimeError("Can not set total circuit count value.")
 
     def _prepare_and_send_circuits(self):
         job_circuits = {}
 
-        # This minor type check is needed because of how the VQE class is implemented. Revert to self.circuits once the behaviour is atomized
-        outer_loop_circuits = (
-            [self.circuits]
-            if isinstance(self.circuits, list)
-            else self.circuits.values()
-        )
+        for circuit in self.circuits:
+            job_circuits[circuit.tag] = circuit.qasm_circuit
 
-        for circuits in outer_loop_circuits:
-            for circuit in circuits:
-                job_circuits[circuit.tag] = circuit.qasm_circuit
+        self._total_circuit_count += len(self.circuits)
+        self.circuits.clear()
 
         if self.qoro_service is not None:
             job_id = self.qoro_service.send_circuits(
@@ -32,7 +38,7 @@ class QuantumProgram:
             circuit_results = circuit_simulator.simulate(job_circuits, shots=self.shots)
             return circuit_results, "circuit_results"
 
-    def run_iteration(self, store_data=False, data_file=None, type=JobTypes.SIMULATE):
+    def run_iteration(self, store_data=False, data_file=None):
         """
         Run an iteration of the program. The outputs are stored in the VQE object. Optionally, the data can be stored in a file.
 
@@ -60,7 +66,6 @@ class QuantumProgram:
         args:
             data_file (str): The file to save the iteration to.
         """
-        import pickle
 
         with open(data_file, "wb") as f:
             pickle.dump(self, f)
@@ -73,7 +78,6 @@ class QuantumProgram:
         args:
             data_file (str): The file to import the iteration from.
         """
-        import pickle
 
         with open(data_file, "rb") as f:
             return pickle.load(f)

@@ -90,9 +90,9 @@ app.css.append_css({
 q_service = None
 vqe_problem = VQE(
     symbols=["H", "H"],
-    bond_lengths=np.linspace(0.1, 1.2, 15),
+    bond_length=[0.5, 1, 1.5],
     coordinate_structure=[(0, 0, -0.5), (0, 0, 0.5)],
-    ansatze=[VQEAnsatze.HARTREE_FOCK, VQEAnsatze.RY],
+    ansatz=[VQEAnsatze.HARTREE_FOCK],
     optimizer=Optimizers.NELDER_MEAD,
     shots=8000,
     max_iterations=5,
