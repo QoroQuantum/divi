@@ -4,4 +4,3 @@ from ._qaoa import QAOA
 from ._vqe import VQE, VQEAnsatze
 from .optimizers import Optimizers
 from ._vqe_sweep import VQEHyperparameterSweep
-
