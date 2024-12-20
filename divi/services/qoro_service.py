@@ -1,6 +1,7 @@
 import os
 import time
 from enum import Enum
+from http import HTTPStatus
 
 import requests
 
@@ -45,14 +46,14 @@ class QoroService:
         response = requests.get(
             API_URL, headers={"Authorization": self.auth_token}, timeout=10
         )
-        if response.status_code == 200:
+        if response.status_code == HTTPStatus.OK:
             print("Connection successful")
         else:
             print("Connection failed")
         return response
 
     def send_circuits(
-        self, circuits, shots=1000, tag="default", job_type=JobTypes.EXECUTE
+        self, circuits, shots=1000, tag="default", job_type=JobTypes.SIMULATE
     ):
         """
         Send circuits to the Qoro API for execution
@@ -79,10 +80,10 @@ class QoroService:
             json=data,
             timeout=10,
         )
-        if response.status_code == 201:
+        if response.status_code == HTTPStatus.CREATED:
             job_id = response.json()["job_id"]
             return job_id
-        elif response.status_code == 401:
+        elif response.status_code == HTTPStatus.UNAUTHORIZED:
             raise requests.exceptions.HTTPError("401 Unauthorized: Invalid API token")
         else:
             raise requests.exceptions.HTTPError(
@@ -119,9 +120,9 @@ class QoroService:
             headers={"Authorization": self.auth_token},
             timeout=10,
         )
-        if response.status_code == 200:
+        if response.status_code == HTTPStatus.OK:
             return response.json()
-        elif response.status_code == 400:
+        elif response.status_code == HTTPStatus.BAD_REQUEST:
             raise requests.exceptions.HTTPError(
                 "400 Bad Request: Job results not available, likely job is still running"
             )
@@ -163,7 +164,7 @@ class QoroService:
                 },
                 timeout=200,
             )
-            if response.status_code == 200:
+            if response.status_code == HTTPStatus.OK:
                 return response.json()["status"], response
             else:
                 raise ("Error getting job status")

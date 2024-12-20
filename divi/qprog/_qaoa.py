@@ -268,7 +268,7 @@ class QAOA(QuantumProgram):
                     _prepare_circuit)(term, params_group)
                 self.circuits.append(Circuit(qscript, tag=f"{p}_{i}"))
 
-    def run(self, store_data=False, data_file=None, type=JobTypes.EXECUTE):
+    def run(self, store_data=False, data_file=None, type=JobTypes.SIMULATE):
         """
         Run the QAOA problem. The outputs are stored in the QAOA object. Optionally, the data can be stored in a file.
 

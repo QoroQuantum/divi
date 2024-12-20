@@ -103,7 +103,7 @@ class VQE(QuantumProgram):
         self.current_iteration = 0
         self.optimizer = optimizer
         self.shots = shots
-        self.job_type = JobTypes.EXECUTE
+        self.job_type = JobTypes.SIMULATE
         self.max_iterations = max_iterations
         self.energies = []
 
@@ -281,7 +281,7 @@ class VQE(QuantumProgram):
                             Circuit(qscript, tag=f"{i}_{ansatz.value}_{p}_{j}")
                         )
 
-    def run(self, store_data=False, data_file=None, type=JobTypes.EXECUTE):
+    def run(self, store_data=False, data_file=None, type=JobTypes.SIMULATE):
         """
         Run the VQE problem. The outputs are stored in the VQE object. Optionally, the data can be stored in a file.
 
