@@ -67,16 +67,17 @@ class VQEHyperparameterSweep(ProgramBatch):
             self.programs[(ansatz, bond_length)] = self._constructor(
                 bond_length=bond_length, ansatz=ansatz
             )
-
         return
 
     def aggregate_results(self):
         if self.executor is not None:
             self.wait_for_all()
 
-        all_energies = {key: prog.energies[-1] for key, prog in self.programs.items()}
+        all_energies = {key: prog.energies[-1]
+                        for key, prog in self.programs.items()}
 
-        smallest_key = min(all_energies, key=lambda k: min(all_energies[k].values()))
+        smallest_key = min(all_energies, key=lambda k: min(
+            all_energies[k].values()))
         smallest_value = min(all_energies[smallest_key].values())
 
         return smallest_key, smallest_value
@@ -95,20 +96,29 @@ class VQEHyperparameterSweep(ProgramBatch):
 
         for ansatz, bond_length in product(self.ansatze, self.bond_lengths):
             min_energies = []
-            for curr_energies in self.programs[(ansatz, bond_length)].energies:
-                min_energies.append(
-                    (
-                        bond_length,
-                        min(curr_energies.values()),
-                        colors[ansatz_list.index(ansatz)],
-                    )
+
+            curr_energies = self.programs[(ansatz, bond_length)].energies[-1]
+            min_energies.append(
+                (
+                    bond_length,
+                    min(curr_energies.values()),
+                    colors[ansatz_list.index(ansatz)],
                 )
+            )
+
+            # for curr_energies in self.programs[(ansatz, bond_length)].energies:
+            #     min_energies.append(
+            #         (
+            #             bond_length,
+            #             min(curr_energies.values()),
+            #             colors[ansatz_list.index(ansatz)],
+            #         )
+            #     )
 
             data.extend(min_energies)
 
         x, y, z = zip(*data)
         plt.scatter(x, y, color=z)
-
         plt.xlabel("Bond length")
         plt.ylabel("Energy level")
         plt.show()

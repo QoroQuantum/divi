@@ -16,7 +16,8 @@ from divi.services.qoro_service import JobStatus
 try:
     import openfermionpyscf
 except ImportError:
-    warnings.warn("openfermionpyscf not installed. Some functionality may be limited.")
+    warnings.warn(
+        "openfermionpyscf not installed. Some functionality may be limited.")
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -28,7 +29,8 @@ logger.setLevel(logging.DEBUG)
 ch = logging.StreamHandler()
 ch.setLevel(logging.DEBUG)
 
-formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+formatter = logging.Formatter(
+    "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 ch.setFormatter(formatter)
 
 # Add the handler to the logger
@@ -204,7 +206,8 @@ class VQE(QuantumProgram):
 
         def _add_hartree_fock_ansatz(params, num_layers):
             hf_state = np.array(
-                [1 if i < self.num_electrons else 0 for i in range(self.num_qubits)]
+                [1 if i < self.num_electrons else 0 for i in range(
+                    self.num_qubits)]
             )
 
             qml.BasisState(hf_state, wires=[i for i in range(self.num_qubits)])
@@ -272,7 +275,8 @@ class VQE(QuantumProgram):
         if self.optimizer == Optimizers.MONTE_CARLO:
             while self.current_iteration < self.max_iterations:
                 assert (
-                    self.hamiltonian_ops is not None and len(self.hamiltonian_ops) > 0
+                    self.hamiltonian_ops is not None and len(
+                        self.hamiltonian_ops) > 0
                 ), "Hamiltonian operators must be generated before running the VQE"
 
                 logger.debug(f"Running iteration {self.current_iteration}")
@@ -287,9 +291,7 @@ class VQE(QuantumProgram):
                     energies = self._post_process_results(job_id=results)
                 elif param == "circuit_results":
                     energies = self._post_process_results(results=results)
-
                 self.energies.append(energies)
-
                 return energies[0]
 
             def optimizer_loop_body():
@@ -360,7 +362,8 @@ class VQE(QuantumProgram):
             return processed_results
 
         if job_id is not None and self.qoro_service is not None:
-            status = self.qoro_service.job_status(self.job_id, loop_until_complete=True)
+            status = self.qoro_service.job_status(
+                self.job_id, loop_until_complete=True)
             if status != JobStatus.COMPLETED:
                 raise Exception(
                     "Job has not completed yet, cannot post-process results"

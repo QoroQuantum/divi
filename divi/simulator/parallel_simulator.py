@@ -1,4 +1,5 @@
 import logging
+import time
 from multiprocessing import Pool
 
 import qiskit
@@ -17,6 +18,7 @@ class ParallelSimulator:
 
     @staticmethod
     def simulate_circuit(circuit_data, shots):
+        t1 = time.time()
         circuit_label = circuit_data[0]
         circuit = circuit_data[1]
         qiskit_circuit = qiskit.QuantumCircuit.from_qasm_str(circuit)
@@ -24,11 +26,13 @@ class ParallelSimulator:
         job = aer_simulator.run(qiskit_circuit, shots=shots)
         result = job.result()
         counts = result.get_counts(0)
+        # print(f"Simulated {circuit_label} in {time.time() - t1} seconds")
         return {"label": circuit_label, "results": dict(counts)}
 
     def simulate(self, circuits, shots=1024):
         logger.debug(
-            f"Simulating {len(circuits)} circuits with {self.processes} processes"
+            f"Simulating {len(circuits)} circuits with {
+                self.processes} processes"
         )
         with Pool(processes=self.processes) as pool:
             results = pool.starmap(
