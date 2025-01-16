@@ -1,21 +1,33 @@
 import pytest
-from divi.qprog.vqe.vqe import VQE
+
+from divi.qprog import VQE
 
 
 @pytest.mark.algo
 def test_vqe_initialization():
-    vqe_problem = VQE(symbols=["H", "H"], bond_lengths=[
-                      0.5, 1.0], coordinate_structure=[(1, 0, 0), (0, -1, 0)])
+    vqe_problem = VQE(
+        symbols=["H", "H"],
+        bond_length=[0.5, 1.0],
+        coordinate_structure=[(1, 0, 0), (0, -1, 0)],
+    )
     assert vqe_problem is not None, "VQE should be initialized"
-    assert len(
-        vqe_problem.hamiltonian_ops) == 2, "Hamiltonian operators should be generated"
+    assert (
+        len(vqe_problem.hamiltonian_ops) == 2
+    ), "Hamiltonian operators should be generated"
 
 
 @pytest.mark.algo
 def test_vqe_initialization_fail():
     # Need to have the same number of symbols and coordinates
-    pytest.raises(AssertionError, VQE, symbols=["H", "H", "H"], bond_lengths=[
-        0.5, 1.0], coordinate_structure=[(1, 0, 0), (0, -1, 0)])
+    with pytest.raises(
+        AssertionError,
+        match="The number of symbols must match the number of coordinates",
+    ):
+        VQE(
+            symbols=["H", "H", "H"],
+            bond_length=[0.5, 1.0],
+            coordinate_structure=[(1, 0, 0), (0, -1, 0)],
+        )
 
 
 @pytest.mark.algo

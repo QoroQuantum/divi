@@ -3,13 +3,15 @@ from dash import Dash, html, dcc, Input, Output, callback, no_update
 from divi.simulator.parallel_simulator import ParallelSimulator
 from divi.services.qoro_service import QoroService
 from divi.qprog.vqe import VQE, Ansatze, Optimizers
+from qiskit.qasm2 import dumps
+from dash import Dash, html, dcc, Input, Output, callback, no_update
+from divi.simulator.parallel_simulator import ParallelSimulator
+from divi.services.qoro_service import QoroService
+from divi.qprog.vqe import VQE, Ansatze, Optimizers
 import plotly.express as px
 import plotly.graph_objects as go
 import dash_bootstrap_components as dbc
 import pandas as pd
-import sys
-sys.path.append("/Users/salahedeenissa/PycharmProjects/qoro/divi/divi")
-sys.path.append("/Users/salahedeenissa/PycharmProjects/pythonProject3/divi")
 
 
 app = Dash()
