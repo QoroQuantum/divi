@@ -1,14 +1,15 @@
+import networkx as nx
+
 from divi.qprog import QAOA
 from divi.qprog.optimizers import Optimizers
-
-import networkx as nx
 
 if __name__ == "__main__":
     qaoa_problem = QAOA(
         "max_clique",
-        nx.octahedral_graph(),
+        nx.krackhardt_kite_graph(),
         n_layers=2,
         optimizer=Optimizers.MONTE_CARLO,
+        max_iterations=5,
         is_constrained=True,
         qoro_service=None,
     )
@@ -21,4 +22,4 @@ if __name__ == "__main__":
 
     print(f"Total circuits: {qaoa_problem.total_circuit_count}")
 
-    # TODO: Print graph and solution
+    qaoa_problem.draw_solution()

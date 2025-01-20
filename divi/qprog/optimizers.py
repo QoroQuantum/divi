@@ -14,7 +14,7 @@ class Optimizers(Enum):
         if self == Optimizers.NELDER_MEAD:
             return 1
         elif self == Optimizers.MONTE_CARLO:
-            return 3
+            return 10
 
     def samples(self):
         if self == Optimizers.MONTE_CARLO:

@@ -1,7 +1,8 @@
 import logging
-from concurrent.futures import ThreadPoolExecutor
+import re
 from typing import Literal, get_args
 
+import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pennylane as qml
@@ -14,7 +15,7 @@ from divi.circuit import Circuit
 from divi.qprog import QuantumProgram
 from divi.qprog.optimizers import Optimizers
 from divi.qprog.utils import counts_to_expectation_value
-from divi.services.qoro_service import JobStatus, JobTypes
+from divi.services.qoro_service import JobStatus
 
 # Set up your logger
 logger = logging.getLogger(__name__)
@@ -69,13 +70,14 @@ def _resolve_circuit_layers(problem, graph, initial_state, **kwargs):
     optional metadata returned by Pennylane if applicable
     """
 
+    is_constrained = kwargs.pop("is_constrained", True)
+
     if problem in (
         "max_clique",
         "max_independent_set",
         "max_weight_cycle",
         "min_vertex_cover",
     ):
-        is_constrained = kwargs.pop("is_constrained", True)
         params = (graph, is_constrained)
     else:
         params = (graph,)
@@ -137,6 +139,7 @@ class QAOA(QuantumProgram):
         self.num_qubits = graph.number_of_nodes()
         self.shots = shots
         self.losses = []
+        self.probs = []
 
         (
             self.cost_hamiltonian,
@@ -202,6 +205,7 @@ class QAOA(QuantumProgram):
 
         results = process_results(results)
         losses = {}
+        aggregated_dicts = {}
 
         for p, _ in enumerate(self.params):
             losses[p] = 0
@@ -210,13 +214,13 @@ class QAOA(QuantumProgram):
             }
 
             marginal_results = []
-            for c in cur_result.keys():
-                ham_op_index = int(c.split("_")[-1])
+            for param_id, shots_dict in cur_result.items():
+                ham_op_index = int(param_id.split("_")[-1])
                 ham_op = self.cost_hamiltonian[ham_op_index]
                 pair = (
                     ham_op,
-                    cur_result[c],
-                    marginal_counts(cur_result[c], ham_op.wires.tolist()),
+                    shots_dict,
+                    marginal_counts(shots_dict, ham_op.wires.tolist()),
                 )
                 marginal_results.append(pair)
 
@@ -225,7 +229,36 @@ class QAOA(QuantumProgram):
                     result[2]
                 )
 
+            aggregated_results = {}
+            total_coeffs = 0
+            for term, term_dict, _ in marginal_results:
+                curr_coeff = float(term.scalar)
+
+                # Calculate total shots for this term
+                total_shots = sum(term_dict.values())
+
+                if total_shots == 0:
+                    continue
+
+                # Convert counts to probabilities and multiply by coefficient
+                for bitstring, count in term_dict.items():
+                    probability = count / total_shots
+                    weighted_contribution = curr_coeff * probability
+
+                    if bitstring in aggregated_results:
+                        aggregated_results[bitstring] = (
+                            aggregated_results[bitstring] * total_coeffs
+                            + weighted_contribution * curr_coeff
+                        ) / (total_coeffs + curr_coeff)
+                    else:
+                        aggregated_results[bitstring] = weighted_contribution
+
+                total_coeffs += curr_coeff
+
+            aggregated_dicts[p] = aggregated_results
+
         self.losses.append(losses)
+        self.probs.append(aggregated_dicts)
 
         return losses
 
@@ -247,10 +280,15 @@ class QAOA(QuantumProgram):
                 hamiltonian (qml.Hamiltonian): The Hamiltonian term to measure
             """
 
+            # Note: could've been done as qml.[Insert Gate](wires=range(self.num_qubits))
+            # but there seems to be a bug with program capture in Pennylane.
+            # Maybe check when a new version comes out?
             if self.initial_state == "Ones":
-                qml.PauliX(wires=range(self.num_qubits))
+                for i in range(self.num_qubits):
+                    qml.PauliX(wires=i)
             elif self.initial_state == "Superposition":
-                qml.Hadamard(wires=range(self.num_qubits))
+                for i in range(self.num_qubits):
+                    qml.Hadamard(wires=i)
 
             qml.layer(qaoa_layer, self.n_layers, gamma=params[0], alpha=params[1])
 
@@ -282,6 +320,7 @@ class QAOA(QuantumProgram):
             def cost_function(params):
                 self._generate_circuits(params)
                 results, param = self._prepare_and_send_circuits()
+
                 if param == "job_id":
                     losses = self._post_process_results(job_id=results)
                 elif param == "circuit_results":
@@ -308,3 +347,43 @@ class QAOA(QuantumProgram):
             ]
 
             return [optimizer_loop_body()]
+
+    def draw_solution(self):
+        # Convert losses dict to list to apply ordinal operations
+        losses_list = list(self.losses[self.current_iteration - 1].values())
+
+        # Get the index of the smallest loss in the last operation
+        best_solution_idx = min(
+            range(len(losses_list)), key=lambda x: losses_list.__getitem__(x)
+        )
+
+        # Retrieve the probability distribution dictionary of the best solution
+        best_solution_probs = self.probs[self.current_iteration - 1][best_solution_idx]
+
+        # Retrieve the bitstring with the actual best solution
+        best_solution_bitstring = max(best_solution_probs, key=best_solution_probs.get)
+
+        solution_nodes = [m.start() for m in re.finditer("1", best_solution_bitstring)]
+
+        # Create a dictionary for node colors
+        node_colors = [
+            "red" if node in solution_nodes else "lightblue"
+            for node in self.graph.nodes()
+        ]
+
+        plt.figure(figsize=(10, 8))
+
+        pos = nx.spring_layout(self.graph)
+
+        nx.draw_networkx_nodes(self.graph, pos, node_color=node_colors, node_size=500)
+
+        nx.draw_networkx_edges(self.graph, pos)
+
+        nx.draw_networkx_labels(self.graph, pos, font_size=10, font_weight="bold")
+
+        # Remove axes
+        plt.axis("off")
+
+        # Show the plot
+        plt.tight_layout()
+        plt.show()

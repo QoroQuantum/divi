@@ -52,16 +52,6 @@ class VQEHyperparameterSweep(ProgramBatch):
             **kwargs,
         )
 
-        self.args = (
-            symbols,
-            coordinate_structure,
-            optimizer,
-            max_iterations,
-            shots,
-        )
-
-        self.kwargs = kwargs
-
     def create_programs(self):
         for ansatz, bond_length in product(self.ansatze, self.bond_lengths):
             self.programs[(ansatz, bond_length)] = self._constructor(
