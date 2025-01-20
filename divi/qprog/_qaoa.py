@@ -8,13 +8,12 @@ import numpy as np
 import pennylane as qml
 import pennylane.qaoa as pqaoa
 import rustworkx as rx
-from qiskit.result import marginal_counts
+from qiskit.result import marginal_counts, sampled_expectation_value
 from scipy.optimize import minimize
 
 from divi.circuit import Circuit
 from divi.qprog import QuantumProgram
 from divi.qprog.optimizers import Optimizers
-from divi.qprog.utils import counts_to_expectation_value
 from divi.services.qoro_service import JobStatus
 
 # Set up your logger
@@ -225,9 +224,10 @@ class QAOA(QuantumProgram):
                 marginal_results.append(pair)
 
             for result in marginal_results:
-                losses[p] += float(result[0].scalar) * counts_to_expectation_value(
-                    result[2]
+                exp_value = sampled_expectation_value(
+                    result[2], "Z" * len(list(result[2].keys())[0])
                 )
+                losses[p] += float(result[0].scalar) * exp_value
 
             aggregated_results = {}
             total_coeffs = 0
@@ -254,7 +254,6 @@ class QAOA(QuantumProgram):
                         aggregated_results[bitstring] = weighted_contribution
 
                 total_coeffs += curr_coeff
-
             aggregated_dicts[p] = aggregated_results
 
         self.losses.append(losses)
