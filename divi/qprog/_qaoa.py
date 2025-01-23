@@ -135,7 +135,7 @@ class QAOA(QuantumProgram):
         self.current_iteration = 0
         self.max_iterations = max_iterations
         self.params = []
-        self.num_qubits = graph.number_of_nodes()
+        self.n_qubits = graph.number_of_nodes()
         self.shots = shots
         self.losses = []
         self.probs = []
@@ -279,14 +279,14 @@ class QAOA(QuantumProgram):
                 hamiltonian (qml.Hamiltonian): The Hamiltonian term to measure
             """
 
-            # Note: could've been done as qml.[Insert Gate](wires=range(self.num_qubits))
+            # Note: could've been done as qml.[Insert Gate](wires=range(self.n_qubits))
             # but there seems to be a bug with program capture in Pennylane.
             # Maybe check when a new version comes out?
             if self.initial_state == "Ones":
-                for i in range(self.num_qubits):
+                for i in range(self.n_qubits):
                     qml.PauliX(wires=i)
             elif self.initial_state == "Superposition":
-                for i in range(self.num_qubits):
+                for i in range(self.n_qubits):
                     qml.Hadamard(wires=i)
 
             qml.layer(qaoa_layer, self.n_layers, gamma=params[0], alpha=params[1])

@@ -49,15 +49,15 @@ class VQEAnsatze(Enum):
     def describe(self):
         return self.name, self.value
 
-    def num_params(self, num_qubits):
+    def num_params(self, n_qubits):
         if self == VQEAnsatze.UCCSD:
-            return num_qubits
+            return n_qubits
         elif self == VQEAnsatze.HARTREE_FOCK:
             return 1
         elif self == VQEAnsatze.RY:
-            return num_qubits
+            return n_qubits
         elif self == VQEAnsatze.RYRZ:
-            return 2 * num_qubits
+            return 2 * n_qubits
         elif self == VQEAnsatze.HW_EFFICIENT:
             # TODO
             return 1
@@ -96,7 +96,7 @@ class VQE(QuantumProgram):
         super().__init__(**kwargs)
         self.symbols = symbols
         self.bond_length = bond_length
-        self.num_qubits = 0
+        self.n_qubits = 0
         self.results = {}
         self.ansatz = ansatz
         self.params = {}
@@ -132,7 +132,7 @@ class VQE(QuantumProgram):
                 return True
             return all(first == x for x in iterator)
 
-        num_qubits = []
+        n_qubits = []
         num_electrons = []
 
         # Generate the Hamiltonian for the given bond length
@@ -150,17 +150,17 @@ class VQE(QuantumProgram):
         molecule = qml.qchem.Molecule(self.symbols, coordinates)
         hamiltonian, qubits = qml.qchem.molecular_hamiltonian(molecule)
 
-        num_qubits.append(qubits)
+        n_qubits.append(qubits)
         num_electrons.append(molecule.n_electrons)
 
         assert all_equal(
-            num_qubits
+            n_qubits
         ), "All Hamiltonians must have the same number of qubits"
         assert all_equal(
             num_electrons
         ), "All Hamiltonians must have the same number of electrons"
 
-        self.num_qubits = num_qubits[0]
+        self.n_qubits = n_qubits[0]
         self.num_electrons = num_electrons[0]
 
         return hamiltonian
@@ -180,7 +180,7 @@ class VQE(QuantumProgram):
         def _add_ry_ansatz(params, num_layers):
             p = 0
             for _ in range(num_layers):
-                for j in range(self.num_qubits):
+                for j in range(self.n_qubits):
                     qml.RY(params[p], wires=[j])
                     p += 1
 
@@ -193,7 +193,7 @@ class VQE(QuantumProgram):
         def _add_ryrz_ansatz(params, num_layers):
             p = 0
             for _ in range(num_layers):
-                for j in range(self.num_qubits):
+                for j in range(self.n_qubits):
                     qml.RY(params[p], wires=[j])
                     p += 1
                     qml.RZ(params[p], wires=[j])
@@ -203,11 +203,11 @@ class VQE(QuantumProgram):
 
         def _add_hartree_fock_ansatz(params, num_layers):
             hf_state = np.array(
-                [1 if i < self.num_electrons else 0 for i in range(self.num_qubits)]
+                [1 if i < self.num_electrons else 0 for i in range(self.n_qubits)]
             )
 
-            qml.BasisState(hf_state, wires=[i for i in range(self.num_qubits)])
-            qml.DoubleExcitation(params[0], wires=range(self.num_qubits))
+            qml.BasisState(hf_state, wires=[i for i in range(self.n_qubits)])
+            qml.DoubleExcitation(params[0], wires=range(self.n_qubits))
 
         if ansatz == VQEAnsatze.UCCSD:
             _add_uccsd_ansatz(params, num_layers)
@@ -304,7 +304,7 @@ class VQE(QuantumProgram):
 
             self._reset_params()
 
-            num_params = self.ansatz.num_params(self.num_qubits)
+            num_params = self.ansatz.num_params(self.n_qubits)
             self.params = [
                 np.random.uniform(0, 2 * np.pi, num_params)
                 for _ in range(self.optimizer.num_param_sets())
@@ -321,7 +321,7 @@ class VQE(QuantumProgram):
         if self.current_iteration == 0:
             self._reset_params()
 
-            num_params = self.ansatz.num_params(self.num_qubits)
+            num_params = self.ansatz.num_params(self.n_qubits)
             self.params = [
                 np.random.uniform(0, 2 * np.pi, num_params)
                 for _ in range(num_param_sets)
