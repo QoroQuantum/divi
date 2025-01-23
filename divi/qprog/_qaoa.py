@@ -243,13 +243,13 @@ class QAOA(QuantumProgram):
                 # Convert counts to probabilities and multiply by coefficient
                 for bitstring, count in term_dict.items():
                     probability = count / total_shots
-                    weighted_contribution = curr_coeff * probability
+                    weighted_contribution = abs(curr_coeff) * probability
 
                     if bitstring in aggregated_results:
                         aggregated_results[bitstring] = (
                             aggregated_results[bitstring] * total_coeffs
-                            + weighted_contribution * curr_coeff
-                        ) / (total_coeffs + curr_coeff)
+                            + weighted_contribution
+                        ) / (total_coeffs + abs(curr_coeff))
                     else:
                         aggregated_results[bitstring] = weighted_contribution
 
@@ -272,7 +272,7 @@ class QAOA(QuantumProgram):
             pqaoa.cost_layer(gamma, self.cost_hamiltonian)
             pqaoa.mixer_layer(alpha, self.mixer_hamiltonian)
 
-        def _prepare_circuit(hamiltonian_term, params):
+        def _prepare_circuit(hamiltonian, params):
             """
             Prepare the circuit for the QAOA problem.
             args:
@@ -291,14 +291,15 @@ class QAOA(QuantumProgram):
 
             qml.layer(qaoa_layer, self.n_layers, gamma=params[0], alpha=params[1])
 
-            return qml.sample(hamiltonian_term)
+            return [qml.sample(term) for term in hamiltonian]
 
         params = self.params if params is None else [params]
 
         for p, params_group in enumerate(params):
-            for i, term in enumerate(self.cost_hamiltonian):
-                qscript = qml.tape.make_qscript(_prepare_circuit)(term, params_group)
-                self.circuits.append(Circuit(qscript, tag=f"{p}_{i}"))
+            qscript = qml.tape.make_qscript(_prepare_circuit)(
+                self.cost_hamiltonian, params_group
+            )
+            self.circuits.append(Circuit(qscript, tag_prefix=f"{p}"))
 
     def run(self, store_data=False, data_file=None):
         """

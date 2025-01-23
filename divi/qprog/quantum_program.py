@@ -22,9 +22,10 @@ class QuantumProgram:
         job_circuits = {}
 
         for circuit in self.circuits:
-            job_circuits[circuit.tag] = circuit.qasm_circuit
+            for tag, qasm_circuit in zip(circuit.tags, circuit.qasm_circuits):
+                job_circuits[tag] = qasm_circuit
 
-        self._total_circuit_count += len(self.circuits)
+        self._total_circuit_count += len(job_circuits)
         self.circuits.clear()
 
         if self.qoro_service is not None:
@@ -48,6 +49,7 @@ class QuantumProgram:
         """
 
         self._run_optimize()
+
         self._generate_circuits()
         results, param = self._prepare_and_send_circuits()
 

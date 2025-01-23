@@ -237,7 +237,7 @@ class VQE(QuantumProgram):
                 - Generate the circuit
         """
 
-        def _prepare_circuit(ansatz, hamiltonian_term, params):
+        def _prepare_circuit(ansatz, hamiltonian, params):
             """
             Prepare the circuit for the VQE problem.
             args:
@@ -247,17 +247,15 @@ class VQE(QuantumProgram):
             """
             self._set_ansatz(ansatz, params)
 
-            return qml.sample(hamiltonian_term)
+            return [qml.sample(term) for term in hamiltonian]
 
         params = self.params if params is None else [params]
 
         for p, params_group in enumerate(params):
-            for i, term in enumerate(self.hamiltonian_ops):
-                qscript = qml.tape.make_qscript(_prepare_circuit)(
-                    self.ansatz, term, params_group
-                )
-
-                self.circuits.append(Circuit(qscript, tag=f"{p}_{i}"))
+            qscript = qml.tape.make_qscript(_prepare_circuit)(
+                self.ansatz, self.hamiltonian_ops, params_group
+            )
+            self.circuits.append(Circuit(qscript, tag_prefix=f"{p}"))
 
     def run(self, store_data=False, data_file=None):
         """
