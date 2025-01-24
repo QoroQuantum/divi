@@ -26,17 +26,17 @@ class Optimizers(Enum):
             losses = kwargs.pop("losses")
             smallest_energy_keys = sorted(losses, key=lambda k: losses[k])[
                 :self.samples()]
-
             new_params = []
             for key in smallest_energy_keys:
                 new_param_set = [
                     np.random.normal(
-                        params[int(key)], 1 / (1 * iteration), size=params[int(key)].shape
+                        params[int(key)], 1 / (2 * iteration), size=params[int(key)].shape
                     )
-                    for _ in range(self.num_param_sets())
+                    for _ in range(int(self.num_param_sets()))
                 ]
+                for new_param in new_param_set:
+                    new_param = np.clip(new_param, 0, 2 * np.pi)
                 new_params.extend(new_param_set)
-
             return new_params
         else:
             raise NotImplementedError

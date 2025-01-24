@@ -3,14 +3,15 @@ from itertools import product
 
 import matplotlib.pyplot as plt
 
-from divi.qprog import VQE, ProgramBatch, VQEAnsatze
+from divi.qprog import VQE
+from divi.qprog import ProgramBatch
+from divi.qprog import VQEAnsatze
 
 from .optimizers import Optimizers
 
 
 class VQEHyperparameterSweep(ProgramBatch):
-    """
-    Allows user to carry out a grid search across different values
+    """Allows user to carry out a grid search across different values
     for the ansatz and the bond length used in a VQE program.
     """
 
@@ -25,10 +26,9 @@ class VQEHyperparameterSweep(ProgramBatch):
         shots=5000,
         **kwargs,
     ):
-        """
-        Initiates the class.
+        """Initiates the class.
 
-        args:
+        Args:
             bond_lengths (list): The bond lengths to consider.
             ansatze (list): The ansatze to use for the VQE problem.
             symbols (list): The symbols of the atoms in the molecule.
@@ -82,9 +82,8 @@ class VQEHyperparameterSweep(ProgramBatch):
 
         return smallest_key, smallest_value
 
-    def visualize_results(self):
-        """
-        Visualize the results of the VQE problem.
+    def visualize_results(self, graph_type="line"):
+        """Visualize the results of the VQE problem.
         """
         if self.executor is not None:
             self.wait_for_all()
@@ -94,31 +93,37 @@ class VQEHyperparameterSweep(ProgramBatch):
 
         ansatz_list = list(VQEAnsatze)
 
-        for ansatz, bond_length in product(self.ansatze, self.bond_lengths):
-            min_energies = []
+        if graph_type == "scatter":
+            for ansatz, bond_length in product(self.ansatze, self.bond_lengths):
+                min_energies = []
 
-            curr_energies = self.programs[(ansatz, bond_length)].energies[-1]
-            min_energies.append(
-                (
-                    bond_length,
-                    min(curr_energies.values()),
-                    colors[ansatz_list.index(ansatz)],
+                curr_energies = self.programs[(
+                    ansatz, bond_length)].energies[-1]
+                min_energies.append(
+                    (
+                        bond_length,
+                        min(curr_energies.values()),
+                        colors[ansatz_list.index(ansatz)],
+                    )
                 )
-            )
+                data.extend(min_energies)
 
-            # for curr_energies in self.programs[(ansatz, bond_length)].energies:
-            #     min_energies.append(
-            #         (
-            #             bond_length,
-            #             min(curr_energies.values()),
-            #             colors[ansatz_list.index(ansatz)],
-            #         )
-            #     )
+            x, y, z = zip(*data)
+            plt.scatter(x, y, color=z)
+            plt.xlabel("Bond length")
+            plt.ylabel("Energy level")
+            plt.show()
 
-            data.extend(min_energies)
-
-        x, y, z = zip(*data)
-        plt.scatter(x, y, color=z)
-        plt.xlabel("Bond length")
-        plt.ylabel("Energy level")
-        plt.show()
+        elif graph_type == 'line':
+            for ansatz in self.ansatze:
+                energies = []
+                for bond_length in self.bond_lengths:
+                    energies.append(
+                        min(self.programs[(ansatz, bond_length)
+                                          ].energies[-1].values())
+                    )
+                plt.plot(self.bond_lengths, energies, label=ansatz)
+            plt.xlabel("Bond length")
+            plt.ylabel("Energy level")
+            plt.legend()
+            plt.show()

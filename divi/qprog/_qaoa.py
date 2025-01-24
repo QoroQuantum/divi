@@ -1,6 +1,6 @@
 import logging
-from concurrent.futures import ThreadPoolExecutor
-from typing import Literal, get_args
+from typing import Literal
+from typing import get_args
 
 import networkx as nx
 import numpy as np
@@ -14,7 +14,7 @@ from divi.circuit import Circuit
 from divi.qprog import QuantumProgram
 from divi.qprog.optimizers import Optimizers
 from divi.qprog.utils import counts_to_expectation_value
-from divi.services.qoro_service import JobStatus, JobTypes
+from divi.services.qoro_service import JobStatus
 
 # Set up your logger
 logger = logging.getLogger(__name__)
@@ -64,11 +64,9 @@ _PROBLEM_TO_INITIAL_STATE_MAP = dict(
 
 
 def _resolve_circuit_layers(problem, graph, initial_state, **kwargs):
-    """
-    Generates the cost and mixer hamiltonians for a given problem, in addition to
+    """Generates the cost and mixer hamiltonians for a given problem, in addition to
     optional metadata returned by Pennylane if applicable
     """
-
     if problem in (
         "max_clique",
         "max_independent_set",
@@ -102,10 +100,9 @@ class QAOA(QuantumProgram):
         shots=5000,
         **kwargs,
     ):
-        """
-        Initialize the QAOA problem.
+        """Initialize the QAOA problem.
 
-        args:
+        Args:
             problem (str): The graph problem to solve.
             graph (networkx.Graph or rustworkx.PyGraph): The graph representing the problem
             n_layers (int): number of QAOA layers
@@ -155,8 +152,7 @@ class QAOA(QuantumProgram):
         self.params = []
 
     def _run_optimize(self):
-        """
-        Run the optimization step for the QAOA problem.
+        """Run the optimization step for the QAOA problem.
         """
         num_param_sets = self.optimizer.num_param_sets()
 
@@ -182,10 +178,9 @@ class QAOA(QuantumProgram):
         self.current_iteration += 1
 
     def _post_process_results(self, job_id=None, results=None):
-        """
-        Post-process the results of the QAOA problem.
+        """Post-process the results of the QAOA problem.
 
-        return:
+        Return:
             (dict) The losses for each parameter set grouping.
         """
 
@@ -234,8 +229,7 @@ class QAOA(QuantumProgram):
         return losses
 
     def _generate_circuits(self, params=None):
-        """
-        Generate the circuits for the QAOA problem.
+        """Generate the circuits for the QAOA problem.
 
         In this method, we generate bulk circuits based on the selected parameters.
         """
@@ -245,12 +239,11 @@ class QAOA(QuantumProgram):
             pqaoa.mixer_layer(alpha, self.mixer_hamiltonian)
 
         def _prepare_circuit(hamiltonian_term, params):
-            """
-            Prepare the circuit for the QAOA problem.
-            args:
+            """Prepare the circuit for the QAOA problem.
+
+            Args:
                 hamiltonian (qml.Hamiltonian): The Hamiltonian term to measure
             """
-
             if self.initial_state == "Ones":
                 qml.PauliX(wires=range(self.num_qubits))
             elif self.initial_state == "Superposition":
@@ -270,14 +263,12 @@ class QAOA(QuantumProgram):
                 self.circuits.append(Circuit(qscript, tag=f"{p}_{i}"))
 
     def run(self, store_data=False, data_file=None):
-        """
-        Run the QAOA problem. The outputs are stored in the QAOA object. Optionally, the data can be stored in a file.
+        """Run the QAOA problem. The outputs are stored in the QAOA object. Optionally, the data can be stored in a file.
 
-        args:
+        Args:
             store_data (bool): Whether to store the data for the iteration
             data_file (str): The file to store the data in
         """
-
         if self.optimizer == Optimizers.MONTE_CARLO:
             while self.current_iteration < self.max_iterations:
                 logger.debug(f"Running iteration {self.current_iteration}")
