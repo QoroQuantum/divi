@@ -129,16 +129,24 @@ class QAOA(QuantumProgram):
             raise ValueError(
                 f"Number of layers should be a positive integer. Got {n_layers}."
             )
-        self.n_layers = n_layers
 
+        # Local Variables
+        self.n_layers = n_layers
         self.optimizer = optimizer
-        self.current_iteration = 0
-        self.max_iterations = max_iterations
-        self.params = []
-        self.n_qubits = graph.number_of_nodes()
         self.shots = shots
+        self.max_iterations = max_iterations
+        self.n_qubits = graph.number_of_nodes()
+        self.current_iteration = 0
+        self.params = []
+
+        # Shared Variables
         self.losses = []
+        if (m_list := kwargs.pop("losses", None)) is not None:
+            self.losses = m_list
+
         self.probs = []
+        if (m_list := kwargs.pop("probs", None)) is not None:
+            self.probs = m_list
 
         (
             self.cost_hamiltonian,

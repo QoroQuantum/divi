@@ -1,5 +1,6 @@
 from functools import partial
 from itertools import product
+from multiprocessing import Manager
 
 import matplotlib.pyplot as plt
 
@@ -53,9 +54,18 @@ class VQEHyperparameterSweep(ProgramBatch):
         )
 
     def create_programs(self):
+        if len(self.programs) > 0:
+            raise RuntimeError(
+                "Some programs already exist. "
+                "Clear the program dictionary before creating new ones by using batch.reset()."
+            )
+        self.manager = Manager()
+
         for ansatz, bond_length in product(self.ansatze, self.bond_lengths):
             self.programs[(ansatz, bond_length)] = self._constructor(
-                bond_length=bond_length, ansatz=ansatz
+                bond_length=bond_length,
+                ansatz=ansatz,
+                energies=self.manager.list(),
             )
 
         return
@@ -79,7 +89,7 @@ class VQEHyperparameterSweep(ProgramBatch):
             self.wait_for_all()
 
         data = []
-        colors = ["b", "g", "r", "c", "m", "y", "k"]
+        colors = ["blue", "g", "r", "c", "m", "y", "k"]
 
         ansatz_list = list(VQEAnsatze)
 

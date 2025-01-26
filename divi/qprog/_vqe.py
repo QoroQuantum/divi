@@ -93,25 +93,29 @@ class VQE(QuantumProgram):
             max_iterations (int): Maximum number of iteration optimizers.
             shots (int): Number of shots for each circuit execution.
         """
-        super().__init__(**kwargs)
+
+        # Local Variables
         self.symbols = symbols
         self.bond_length = bond_length
-        self.n_qubits = 0
-        self.results = {}
         self.ansatz = ansatz
-        self.params = {}
-        self.current_iteration = 0
         self.optimizer = optimizer
         self.shots = shots
         self.max_iterations = max_iterations
-        self.energies = []
         self.coordinate_structure = coordinate_structure
+        self.current_iteration = 0
+
+        # Shared Variables
+        self.energies = []
+        if (m_list := kwargs.pop("energies", None)) is not None:
+            self.energies = m_list
 
         assert len(self.coordinate_structure) == len(
             self.symbols
         ), "The number of symbols must match the number of coordinates"
 
         self.hamiltonian_ops = self._generate_hamiltonian_operations()
+
+        super().__init__(**kwargs)
 
     def _reset_params(self):
         self.params = []
@@ -335,7 +339,7 @@ class VQE(QuantumProgram):
                 self.params = self.optimizer.compute_new_parameters(
                     self.params,
                     self.current_iteration,
-                    losses=self.energies[self.current_iteration - 1],
+                    losses=self.energies[-1],
                 )
             else:
                 raise NotImplementedError

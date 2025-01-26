@@ -8,8 +8,8 @@ if __name__ == "__main__":
         "max_clique",
         nx.krackhardt_kite_graph(),
         n_layers=2,
-        optimizer=Optimizers.MONTE_CARLO,
-        max_iterations=5,
+        optimizer=Optimizers.NELDER_MEAD,
+        max_iterations=10,
         is_constrained=True,
         qoro_service=None,
     )

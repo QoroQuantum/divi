@@ -15,6 +15,5 @@ batch = VQEHyperparameterSweep(
 
 batch.create_programs()
 batch.run()
-batch.wait_for_all()
 result = batch.aggregate_results()
 batch.visualize_results()
