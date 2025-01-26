@@ -216,7 +216,7 @@ class GraphPartitioningQAOA(ProgramBatch):
                     self.main_graph, n_clusters=self.n_clusters
                 )
 
-            self.solutions = [0] * self.main_graph.number_of_nodes()
+            self.solution = [0] * self.main_graph.number_of_nodes()
             self.reverse_index_maps = {}
 
             for i, subgraph in enumerate(subgraphs):
@@ -258,4 +258,6 @@ class GraphPartitioningQAOA(ProgramBatch):
 
             for node in program.graph.nodes():
                 solution_index = reverse_index_maps[node]
-                self.solutions[solution_index] = int(max_prob_key[node])
+                self.solution[solution_index] = int(max_prob_key[node])
+
+        return self.solution
