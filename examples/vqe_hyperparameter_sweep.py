@@ -1,6 +1,5 @@
-from divi.qprog import VQEHyperparameterSweep, VQEAnsatze
+from divi.qprog import VQEAnsatze, VQEHyperparameterSweep
 from divi.qprog.optimizers import Optimizers
-
 
 batch = VQEHyperparameterSweep(
     bond_lengths=[0.5, 0.75, 1],

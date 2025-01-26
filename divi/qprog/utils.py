@@ -1,9 +1,9 @@
-from itertools import zip_longest
 from functools import partial
 from typing import Optional
+
 import pennylane as qml
-from pennylane.wires import Wires
 from pennylane.tape import QuantumScript
+from pennylane.wires import Wires
 
 OPENQASM_GATES = {
     "CNOT": "cx",

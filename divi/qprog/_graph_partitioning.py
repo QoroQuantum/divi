@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from functools import partial
-from typing import Optional
 from multiprocessing import Manager
+from typing import Optional
 
 import networkx as nx
 import numpy as np
