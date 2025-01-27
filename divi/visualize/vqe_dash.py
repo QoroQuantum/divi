@@ -1,17 +1,21 @@
+from divi.qprog import VQE, Ansatze, Optimizers
 from qiskit.qasm2 import dumps
 from dash import Dash, html, dcc, Input, Output, callback, no_update
 from divi.simulator.parallel_simulator import ParallelSimulator
 from divi.services.qoro_service import QoroService
-from divi.qprog.vqe import VQE, Ansatze, Optimizers
-from qiskit.qasm2 import dumps
-from dash import Dash, html, dcc, Input, Output, callback, no_update
-from divi.simulator.parallel_simulator import ParallelSimulator
-from divi.services.qoro_service import QoroService
-from divi.qprog.vqe import VQE, Ansatze, Optimizers
+
 import plotly.express as px
 import plotly.graph_objects as go
 import dash_bootstrap_components as dbc
-import pandas as pd
+import plotly.graph_objects as go
+from dash import Dash
+from dash import Input
+from dash import Output
+from dash import callback
+from dash import dcc
+from dash import html
+from dash import no_update
+from qiskit.qasm2 import dumps
 
 from divi.qprog import VQE, Optimizers, VQEAnsatze
 
@@ -72,7 +76,7 @@ noisy_vqe_problem = VQE(symbols=["H", "H"],
 )
 def started(n_clicks):
     if n_clicks > 0:
-        return f"VQE Execution Started"
+        return "VQE Execution Started"
     return ""
 
 

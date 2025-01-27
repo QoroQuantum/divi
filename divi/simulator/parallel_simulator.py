@@ -17,7 +17,6 @@ class ParallelSimulator:
 
     @staticmethod
     def simulate_circuit(circuit_data, shots):
-        t1 = time.time()
         circuit_label = circuit_data[0]
         circuit = circuit_data[1]
         qiskit_circuit = qiskit.QuantumCircuit.from_qasm_str(circuit)
