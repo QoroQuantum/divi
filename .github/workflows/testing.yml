@@ -18,5 +18,8 @@ jobs:
         pip install .
     - name: Run tests
       run: |
+        cd ..
+        export PYTHONPATH=$PWD
+        cd ./divi
         export LOCAL=False
         pytest test/

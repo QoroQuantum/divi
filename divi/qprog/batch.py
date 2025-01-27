@@ -3,8 +3,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 
 class ProgramBatch(ABC):
-    """
-    This abstract class provides the basic scaffolding for higher-order
+    """This abstract class provides the basic scaffolding for higher-order
     computations that require more than one quantum program to achieve its goal.
 
     Each implementation of this class has to have an implementation of two functions:
@@ -74,7 +73,8 @@ class ProgramBatch(ABC):
         if exceptions:
             for i, exc in enumerate(exceptions, 1):
                 print(f"Task {i} failed with exception: {exc}")
-            raise RuntimeError("One or more tasks failed. Check logs for details.")
+            raise RuntimeError(
+                "One or more tasks failed. Check logs for details.")
 
     @property
     def total_circuit_count(self):
