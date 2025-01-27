@@ -12,7 +12,8 @@ from .optimizers import Optimizers
 
 
 class VQEHyperparameterSweep(ProgramBatch):
-    """Allows user to carry out a grid search across different values
+    """
+    Allows user to carry out a grid search across different values
     for the ansatz and the bond length used in a VQE program.
     """
 
@@ -29,7 +30,7 @@ class VQEHyperparameterSweep(ProgramBatch):
     ):
         """Initiates the class.
 
-        Args:
+        args:
             bond_lengths (list): The bond lengths to consider.
             ansatze (list): The ansatze to use for the VQE problem.
             symbols (list): The symbols of the atoms in the molecule.
@@ -83,7 +84,8 @@ class VQEHyperparameterSweep(ProgramBatch):
         return smallest_key, smallest_value
 
     def visualize_results(self, graph_type="line"):
-        """Visualize the results of the VQE problem.
+        """
+        Visualize the results of the VQE problem.
         """
         if self.executor is not None:
             self.wait_for_all()
