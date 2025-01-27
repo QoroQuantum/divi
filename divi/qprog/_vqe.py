@@ -52,15 +52,18 @@ class VQEAnsatze(Enum):
     def describe(self):
         return self.name, self.value
 
-    def num_params(self, num_qubits):
+    def num_params(self, vqe):
         if self == VQEAnsatze.UCCSD:
-            return num_qubits
+            singles, doubles = qml.qchem.excitations(
+                vqe.num_electrons, vqe.num_qubits)
+            s_wires, d_wires = qml.qchem.excitations_to_wires(singles, doubles)
+            return len(s_wires) + len(d_wires)
         elif self == VQEAnsatze.HARTREE_FOCK:
             return 1
         elif self == VQEAnsatze.RY:
-            return num_qubits
+            return vqe.num_qubits
         elif self == VQEAnsatze.RYRZ:
-            return 2 * num_qubits
+            return 2 * vqe.num_qubits
         elif self == VQEAnsatze.HW_EFFICIENT:
             # TODO
             return 1
@@ -100,6 +103,7 @@ class VQE(QuantumProgram):
         self.symbols = symbols
         self.bond_length = bond_length
         self.num_qubits = 0
+        self.num_electrons = 0
         self.results = {}
         self.ansatz = ansatz
         self.params = {}
@@ -202,7 +206,12 @@ class VQE(QuantumProgram):
                     qml.RZ(params[p], wires=[j])
 
         def _add_uccsd_ansatz(params, num_layers):
-            raise NotImplementedError
+            hf_state = qml.qchem.hf_state(self.num_electrons, self.num_qubits)
+            singles, doubles = qml.qchem.excitations(
+                self.num_electrons, self.num_qubits)
+            s_wires, d_wires = qml.qchem.excitations_to_wires(singles, doubles)
+            qml.UCCSD(params, wires=[i for i in range(
+                self.num_qubits)], s_wires=s_wires, d_wires=d_wires, init_state=hf_state)
 
         def _add_hartree_fock_ansatz(params, num_layers):
             hf_state = np.array(
@@ -271,7 +280,6 @@ class VQE(QuantumProgram):
             store_data (bool): Whether to store the data for the iteration
             data_file (str): The file to store the data in
         """
-
         if self.optimizer == Optimizers.MONTE_CARLO:
             while self.current_iteration < self.max_iterations:
                 assert (
@@ -309,9 +317,9 @@ class VQE(QuantumProgram):
 
             self._reset_params()
 
-            num_params = self.ansatz.num_params(self.num_qubits)
+            num_params = self.ansatz.num_params(self)
             self.params = [
-                np.random.uniform(0, 2 * np.pi, num_params)
+                np.random.uniform(-2 * np.pi, -2 * np.pi, num_params)
                 for _ in range(self.optimizer.num_param_sets())
             ]
 
@@ -326,7 +334,7 @@ class VQE(QuantumProgram):
         if self.current_iteration == 0:
             self._reset_params()
 
-            num_params = self.ansatz.num_params(self.num_qubits)
+            num_params = self.ansatz.num_params(self)
             self.params = [
                 np.random.uniform(0, 2 * np.pi, num_params)
                 for _ in range(num_param_sets)

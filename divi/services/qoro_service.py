@@ -1,11 +1,15 @@
 import os
 import time
+import gzip
+import base64
+import json
+
 from enum import Enum
 from http import HTTPStatus
 
 import requests
 
-LOCAL = os.environ.get("LOCAL", "True") == "True"
+LOCAL = os.environ.get("LOCAL", "True") == "False"
 if LOCAL:
     API_URL = "http://127.0.0.1:8000/api"
 else:
@@ -42,7 +46,6 @@ class QoroService:
 
     def test_connection(self):
         """Test the connection to the Qoro API"""
-
         response = requests.get(
             API_URL, headers={"Authorization": self.auth_token}, timeout=10
         )
@@ -65,12 +68,16 @@ class QoroService:
         return:
             job_id: The job id of the job created
         """
+        def _compress_data(value):
+            return base64.b64encode(gzip.compress(value.encode("utf-8"))).decode("utf-8")
+
         data = {
-            "circuits": circuits,
+            "circuits": {key: _compress_data(value) for key, value in circuits.items()},
             "shots": shots,
             "tag": tag,
             "type": job_type.value,
         }
+
         response = requests.post(
             API_URL + "/job/",
             headers={
@@ -84,7 +91,8 @@ class QoroService:
             job_id = response.json()["job_id"]
             return job_id
         elif response.status_code == HTTPStatus.UNAUTHORIZED:
-            raise requests.exceptions.HTTPError("401 Unauthorized: Invalid API token")
+            raise requests.exceptions.HTTPError(
+                "401 Unauthorized: Invalid API token")
         else:
             raise requests.exceptions.HTTPError(
                 f"{response.status_code}: {response.reason}"
@@ -136,7 +144,7 @@ class QoroService:
         job_id,
         loop_until_complete=False,
         on_complete=None,
-        timeout=5,
+        timeout=3,
         max_retries=100,
         verbose=True,
     ):
@@ -157,7 +165,7 @@ class QoroService:
 
         def _poll_job_status():
             response = requests.get(
-                API_URL + f"/job/{job_id}/status",
+                API_URL + f"/job/{job_id}/status/",
                 headers={
                     "Authorization": self.auth_token,
                     "Content-Type": "application/json",
