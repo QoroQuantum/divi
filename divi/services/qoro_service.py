@@ -1,9 +1,7 @@
 import os
-import os
 import time
 import gzip
 import base64
-import json
 
 from enum import Enum
 from http import HTTPStatus
