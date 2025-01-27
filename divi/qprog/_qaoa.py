@@ -1,6 +1,6 @@
 import logging
-from typing import Literal
-from typing import get_args
+from concurrent.futures import ThreadPoolExecutor
+from typing import Literal, get_args
 
 import networkx as nx
 import numpy as np
@@ -14,7 +14,7 @@ from divi.circuit import Circuit
 from divi.qprog import QuantumProgram
 from divi.qprog.optimizers import Optimizers
 from divi.qprog.utils import counts_to_expectation_value
-from divi.services.qoro_service import JobStatus
+from divi.services.qoro_service import JobStatus, JobTypes
 
 # Set up your logger
 logger = logging.getLogger(__name__)
@@ -64,9 +64,11 @@ _PROBLEM_TO_INITIAL_STATE_MAP = dict(
 
 
 def _resolve_circuit_layers(problem, graph, initial_state, **kwargs):
-    """Generates the cost and mixer hamiltonians for a given problem, in addition to
+    """
+    Generates the cost and mixer hamiltonians for a given problem, in addition to
     optional metadata returned by Pennylane if applicable
     """
+
     if problem in (
         "max_clique",
         "max_independent_set",
@@ -100,9 +102,10 @@ class QAOA(QuantumProgram):
         shots=5000,
         **kwargs,
     ):
-        """Initialize the QAOA problem.
+        """
+        Initialize the QAOA problem.
 
-        Args:
+        args:
             problem (str): The graph problem to solve.
             graph (networkx.Graph or rustworkx.PyGraph): The graph representing the problem
             n_layers (int): number of QAOA layers
@@ -112,21 +115,18 @@ class QAOA(QuantumProgram):
 
         if problem not in _SUPPORTED_PROBLEMS:
             raise ValueError(
-                f"Unsupported Problem. Got {
-                    problem}. Must be one of: {_SUPPORTED_PROBLEMS}"
+                f"Unsupported Problem. Got {problem}. Must be one of: {_SUPPORTED_PROBLEMS}"
             )
         self.problem = problem
 
         if initial_state not in get_args(_SUPPPORTED_INITIAL_STATES_LITERAL):
             raise ValueError(
-                f"Unsupported Initial State. Got {initial_state}. Must be one of: {
-                    get_args(_SUPPPORTED_INITIAL_STATES_LITERAL)}"
+                f"Unsupported Initial State. Got {initial_state}. Must be one of: {get_args(_SUPPPORTED_INITIAL_STATES_LITERAL)}"
             )
 
         if n_layers < 1 or not isinstance(n_layers, int):
             raise ValueError(
-                f"Number of layers should be a positive integer. Got {
-                    n_layers}."
+                f"Number of layers should be a positive integer. Got {n_layers}."
             )
         self.n_layers = n_layers
 
@@ -152,7 +152,8 @@ class QAOA(QuantumProgram):
         self.params = []
 
     def _run_optimize(self):
-        """Run the optimization step for the QAOA problem.
+        """
+        Run the optimization step for the QAOA problem.
         """
         num_param_sets = self.optimizer.num_param_sets()
 
@@ -178,9 +179,10 @@ class QAOA(QuantumProgram):
         self.current_iteration += 1
 
     def _post_process_results(self, job_id=None, results=None):
-        """Post-process the results of the QAOA problem.
+        """
+        Post-process the results of the QAOA problem.
 
-        Return:
+        return:
             (dict) The losses for each parameter set grouping.
         """
 
@@ -191,8 +193,7 @@ class QAOA(QuantumProgram):
             return processed_results
 
         if job_id is not None and self.qoro_service is not None:
-            status = self.qoro_service.job_status(
-                self.job_id, loop_until_complete=True)
+            status = self.qoro_service.job_status(self.job_id, loop_until_complete=True)
             if status != JobStatus.COMPLETED:
                 raise Exception(
                     "Job has not completed yet, cannot post-process results"
@@ -229,7 +230,8 @@ class QAOA(QuantumProgram):
         return losses
 
     def _generate_circuits(self, params=None):
-        """Generate the circuits for the QAOA problem.
+        """
+        Generate the circuits for the QAOA problem.
 
         In this method, we generate bulk circuits based on the selected parameters.
         """
@@ -239,18 +241,18 @@ class QAOA(QuantumProgram):
             pqaoa.mixer_layer(alpha, self.mixer_hamiltonian)
 
         def _prepare_circuit(hamiltonian_term, params):
-            """Prepare the circuit for the QAOA problem.
-
-            Args:
+            """
+            Prepare the circuit for the QAOA problem.
+            args:
                 hamiltonian (qml.Hamiltonian): The Hamiltonian term to measure
             """
+
             if self.initial_state == "Ones":
                 qml.PauliX(wires=range(self.num_qubits))
             elif self.initial_state == "Superposition":
                 qml.Hadamard(wires=range(self.num_qubits))
 
-            qml.layer(qaoa_layer, self.n_layers,
-                      gamma=params[0], alpha=params[1])
+            qml.layer(qaoa_layer, self.n_layers, gamma=params[0], alpha=params[1])
 
             return qml.sample(hamiltonian_term)
 
@@ -258,17 +260,18 @@ class QAOA(QuantumProgram):
 
         for p, params_group in enumerate(params):
             for i, term in enumerate(self.cost_hamiltonian):
-                qscript = qml.tape.make_qscript(
-                    _prepare_circuit)(term, params_group)
+                qscript = qml.tape.make_qscript(_prepare_circuit)(term, params_group)
                 self.circuits.append(Circuit(qscript, tag=f"{p}_{i}"))
 
     def run(self, store_data=False, data_file=None):
-        """Run the QAOA problem. The outputs are stored in the QAOA object. Optionally, the data can be stored in a file.
+        """
+        Run the QAOA problem. The outputs are stored in the QAOA object. Optionally, the data can be stored in a file.
 
-        Args:
+        args:
             store_data (bool): Whether to store the data for the iteration
             data_file (str): The file to store the data in
         """
+
         if self.optimizer == Optimizers.MONTE_CARLO:
             while self.current_iteration < self.max_iterations:
                 logger.debug(f"Running iteration {self.current_iteration}")

@@ -13,6 +13,7 @@ import plotly.graph_objects as go
 import dash_bootstrap_components as dbc
 import pandas as pd
 
+from divi.qprog import VQE, Optimizers, VQEAnsatze
 
 app = Dash()
 app = Dash(external_stylesheets=[dbc.themes.BOOTSTRAP])
@@ -67,7 +68,7 @@ noisy_vqe_problem = VQE(symbols=["H", "H"],
 
 @callback(
     Output(component_id="state", component_property="children"),
-    Input('start-button', 'n_clicks')
+    Input("start-button", "n_clicks"),
 )
 def started(n_clicks):
     if n_clicks > 0:

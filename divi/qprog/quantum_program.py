@@ -29,14 +29,13 @@ class QuantumProgram:
 
         if self.qoro_service is not None:
             job_id = self.qoro_service.send_circuits(
-                job_circuits, shots=self.shots
+                job_circuits, shots=self.shots, job_type=self.job_type
             )
             self.job_id = job_id if job_id is not None else None
             return job_id, "job_id"
         else:
             circuit_simulator = ParallelSimulator()
-            circuit_results = circuit_simulator.simulate(
-                job_circuits, shots=self.shots)
+            circuit_results = circuit_simulator.simulate(job_circuits, shots=self.shots)
             return circuit_results, "circuit_results"
 
     def run_iteration(self, store_data=False, data_file=None):
@@ -47,7 +46,6 @@ class QuantumProgram:
             store_data (bool): Whether to store the data for the iteration
             data_file (str): The file to store the data in
         """
-        
 
         self._run_optimize()
         self._generate_circuits()

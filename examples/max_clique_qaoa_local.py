@@ -1,6 +1,7 @@
-import networkx as nx
 from divi.qprog import QAOA
 from divi.qprog.optimizers import Optimizers
+
+import networkx as nx
 
 if __name__ == "__main__":
     qaoa_problem = QAOA(
