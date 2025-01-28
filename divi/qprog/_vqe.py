@@ -321,7 +321,7 @@ class VQE(QuantumProgram):
 
             num_params = self.ansatz.num_params(self)
             self.params = [
-                np.random.uniform(-2 * np.pi, -2 * np.pi, num_params)
+                np.random.uniform(0, 2 * np.pi, num_params)
                 for _ in range(self.optimizer.num_param_sets())
             ]
 
