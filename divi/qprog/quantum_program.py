@@ -43,7 +43,7 @@ class QuantumProgram:
         """
         Run an iteration of the program. The outputs are stored in the VQE object. Optionally, the data can be stored in a file.
 
-        args:
+        Args:
             store_data (bool): Whether to store the data for the iteration
             data_file (str): The file to store the data in
         """
@@ -65,7 +65,7 @@ class QuantumProgram:
         """
         Save the current iteration of the program to a file.
 
-        args:
+        Args:
             data_file (str): The file to save the iteration to.
         """
 
@@ -77,7 +77,7 @@ class QuantumProgram:
         """
         Import an iteration of the program from a file.
 
-        args:
+        Args:
             data_file (str): The file to import the iteration from.
         """
 

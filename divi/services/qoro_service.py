@@ -60,11 +60,11 @@ class QoroService:
         """
         Send circuits to the Qoro API for execution
 
-        args:
+        Args:
             circuits: list of circuits to be sent as QASM strings
             shots (optional): number of shots to be executed for each circuit, default 1000
             tag (optional): tag to be used for the job, defaut "default"
-        return:
+        Returns:
             job_id: The job id of the job created
         """
         def _compress_data(value):
@@ -101,9 +101,9 @@ class QoroService:
         """
         Delete a job from the Qoro Database.
 
-        args:
+        Args:
             job_id: The ID of the job to be deleted
-        return:
+        Returns:
             response: The response from the API
         """
         response = requests.delete(
@@ -122,9 +122,9 @@ class QoroService:
         """
         Get the results of a job from the Qoro Database.
 
-        args:
+        Args:
             job_id: The ID of the job to get results from
-        return:
+        Returns:
             results: The results of the job
         """
         response = requests.get(
@@ -157,7 +157,7 @@ class QoroService:
         Get the status of a job and optionally execute function *on_complete* on the results
         if the status is COMPLETE.
 
-        args:
+        Args:
             job_id: The job id of the job
             job_id: The job id of the job
             loop_until_complete (optional): A flag to loop until the job is completed
@@ -165,7 +165,7 @@ class QoroService:
             timeout (optional): The time to wait between retries
             max_retries (optional): The maximum number of retries
             verbose (optional): A flag to print the when retrying
-        return:
+        Returns:
             status: The status of the job
         """
 

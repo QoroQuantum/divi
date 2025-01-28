@@ -106,7 +106,7 @@ class QAOA(QuantumProgram):
         """
         Initialize the QAOA problem.
 
-        args:
+        Args:
             problem (str): The graph problem to solve.
             graph (networkx.Graph or rustworkx.PyGraph): The graph representing the problem
             n_layers (int): number of QAOA layers
@@ -192,7 +192,7 @@ class QAOA(QuantumProgram):
         """
         Post-process the results of the QAOA problem.
 
-        return:
+        Returns:
             (dict) The losses for each parameter set grouping.
         """
 
@@ -283,7 +283,7 @@ class QAOA(QuantumProgram):
         def _prepare_circuit(hamiltonian, params):
             """
             Prepare the circuit for the QAOA problem.
-            args:
+            Args:
                 hamiltonian (qml.Hamiltonian): The Hamiltonian term to measure
             """
 
@@ -313,7 +313,7 @@ class QAOA(QuantumProgram):
         """
         Run the QAOA problem. The outputs are stored in the QAOA object. Optionally, the data can be stored in a file.
 
-        args:
+        Args:
             store_data (bool): Whether to store the data for the iteration
             data_file (str): The file to store the data in
         """

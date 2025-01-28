@@ -30,7 +30,7 @@ class VQEHyperparameterSweep(ProgramBatch):
     ):
         """Initiates the class.
 
-        args:
+        Args:
             bond_lengths (list): The bond lengths to consider.
             ansatze (list): The ansatze to use for the VQE problem.
             symbols (list): The symbols of the atoms in the molecule.

@@ -89,7 +89,7 @@ class VQE(QuantumProgram):
         """
         Initialize the VQE problem.
 
-        args:
+        Args:
             symbols (list): The symbols of the atoms in the molecule
             bond_length (float): The bond length to consider
             coordinate_structure (list): The coordinate structure of the molecule
@@ -132,7 +132,7 @@ class VQE(QuantumProgram):
         """
         Generate the Hamiltonian operators for the given bond lengths.
 
-        returns:
+        Returns:
             (list) Hamiltonians for each bond length.
         """
 
@@ -180,7 +180,7 @@ class VQE(QuantumProgram):
     def _set_ansatz(self, ansatz, params, num_layers=1):
         """
         Set the ansatz for the VQE problem.
-        args:
+        Args:
             ansatz (Ansatze): The ansatz to use
             params (list): The parameters to use for the ansatz
             num_layers (int): The number of layers to use for the ansatz
@@ -257,7 +257,7 @@ class VQE(QuantumProgram):
         def _prepare_circuit(ansatz, hamiltonian, params):
             """
             Prepare the circuit for the VQE problem.
-            args:
+            Args:
                 ansatz (Ansatze): The ansatz to use
                 hamiltonian (qml.Hamiltonian): The Hamiltonian to use
                 params (list): The parameters to use for the ansatz
@@ -278,7 +278,7 @@ class VQE(QuantumProgram):
         """
         Run the VQE problem. The outputs are stored in the VQE object. Optionally, the data can be stored in a file.
 
-        args:
+        Args:
             store_data (bool): Whether to store the data for the iteration
             data_file (str): The file to store the data in
         """
@@ -361,7 +361,7 @@ class VQE(QuantumProgram):
         """
         Post-process the results of the VQE problem.
 
-        return:
+        Returns:
             (dict) The energies for each parameter set grouping.
         """
 
