@@ -15,8 +15,7 @@ from divi.services.qoro_service import JobStatus
 try:
     import openfermionpyscf
 except ImportError:
-    warnings.warn(
-        "openfermionpyscf not installed. Some functionality may be limited.")
+    warnings.warn("openfermionpyscf not installed. Some functionality may be limited.")
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -28,8 +27,7 @@ logger.setLevel(logging.DEBUG)
 ch = logging.StreamHandler()
 ch.setLevel(logging.DEBUG)
 
-formatter = logging.Formatter(
-    "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+formatter = logging.Formatter( "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 ch.setFormatter(formatter)
 
 # Add the handler to the logger
