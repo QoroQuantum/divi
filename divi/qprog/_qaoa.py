@@ -261,7 +261,7 @@ class QAOA(QuantumProgram):
                     else:
                         aggregated_results[bitstring] = weighted_contribution
 
-                total_coeffs += curr_coeff
+                total_coeffs += abs(curr_coeff)
             aggregated_dicts[p] = aggregated_results
 
         self.losses.append(losses)

@@ -4,9 +4,7 @@ from multiprocessing import Manager
 
 import matplotlib.pyplot as plt
 
-from divi.qprog import VQE
-from divi.qprog import ProgramBatch
-from divi.qprog import VQEAnsatze
+from divi.qprog import VQE, ProgramBatch, VQEAnsatze
 
 from .optimizers import Optimizers
 
@@ -75,11 +73,9 @@ class VQEHyperparameterSweep(ProgramBatch):
         if self.executor is not None:
             self.wait_for_all()
 
-        all_energies = {key: prog.energies[-1]
-                        for key, prog in self.programs.items()}
+        all_energies = {key: prog.energies[-1] for key, prog in self.programs.items()}
 
-        smallest_key = min(all_energies, key=lambda k: min(
-            all_energies[k].values()))
+        smallest_key = min(all_energies, key=lambda k: min(all_energies[k].values()))
         smallest_value = min(all_energies[smallest_key].values())
 
         return smallest_key, smallest_value
@@ -100,8 +96,7 @@ class VQEHyperparameterSweep(ProgramBatch):
             for ansatz, bond_length in product(self.ansatze, self.bond_lengths):
                 min_energies = []
 
-                curr_energies = self.programs[(
-                    ansatz, bond_length)].energies[-1]
+                curr_energies = self.programs[(ansatz, bond_length)].energies[-1]
                 min_energies.append(
                     (
                         bond_length,
@@ -113,20 +108,17 @@ class VQEHyperparameterSweep(ProgramBatch):
 
             x, y, z = zip(*data)
             plt.scatter(x, y, color=z)
-            plt.xlabel("Bond length")
-            plt.ylabel("Energy level")
-            plt.show()
 
-        elif graph_type == 'line':
+        elif graph_type == "line":
             for ansatz in self.ansatze:
                 energies = []
                 for bond_length in self.bond_lengths:
                     energies.append(
-                        min(self.programs[(ansatz, bond_length)
-                                          ].energies[-1].values())
+                        min(self.programs[(ansatz, bond_length)].energies[-1].values())
                     )
                 plt.plot(self.bond_lengths, energies, label=ansatz)
-            plt.xlabel("Bond length")
-            plt.ylabel("Energy level")
-            plt.legend()
-            plt.show()
+
+        plt.xlabel("Bond length")
+        plt.ylabel("Energy level")
+        plt.legend()
+        plt.show()

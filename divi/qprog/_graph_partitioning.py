@@ -11,9 +11,9 @@ from sklearn.cluster import SpectralClustering
 
 from divi.qprog import QAOA, ProgramBatch
 from divi.qprog._qaoa import (
+    _SUPPORTED_INITIAL_STATES_LITERAL,
     _SUPPORTED_PROBLEMS,
     _SUPPORTED_PROBLEMS_LITERAL,
-    _SUPPORTED_INITIAL_STATES_LITERAL,
 )
 
 from .optimizers import Optimizers
@@ -231,14 +231,6 @@ class GraphPartitioningQAOA(ProgramBatch):
 
         return
 
-    # for each in subgraphs:
-    #     index_map = {node: idx for idx, node in enumerate(each.nodes())}
-    #     subgraph = nx.relabel_nodes(each, index_map)
-    #     probs = run_qaoa(subgraph, index_map)
-    #     print(probs)
-    #     for node in each.nodes():
-    #         index = index_map[node]
-    #         solutions[node] = int(probs[index])
     def aggregate_results(self):
         if self.executor is not None:
             self.wait_for_all()
@@ -258,6 +250,18 @@ class GraphPartitioningQAOA(ProgramBatch):
 
             for node in program.graph.nodes():
                 solution_index = reverse_index_maps[node]
-                self.solution[solution_index] = int(max_prob_key[node])
+
+                # Use existing assignment if dominant in previous solutions
+                # (e.g., more 0s than 1s or vice versa)
+                count_0 = self.solution.count(0)
+                count_1 = self.solution.count(1)
+
+                if (
+                    (count_0 > count_1 and self.solution[node] == 0)
+                    or (count_1 > count_0 and self.solution[node] == 1)
+                    or (count_0 == count_1)
+                ):
+                    # Assign based on QAOA if tie
+                    self.solution[solution_index] = int(max_prob_key[node])
 
         return self.solution

@@ -1,8 +1,7 @@
 import pytest
 import requests
-from divi.services.qoro_service import JobStatus
-from divi.services.qoro_service import MaxRetriesReachedError
-from divi.services.qoro_service import QoroService
+
+from divi.services.qoro_service import JobStatus, MaxRetriesReachedError, QoroService
 
 
 @pytest.fixture

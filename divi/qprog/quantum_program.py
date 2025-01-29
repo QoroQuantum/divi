@@ -29,9 +29,7 @@ class QuantumProgram:
         self.circuits.clear()
 
         if self.qoro_service is not None:
-            job_id = self.qoro_service.send_circuits(
-                job_circuits, shots=self.shots
-            )
+            job_id = self.qoro_service.send_circuits(job_circuits, shots=self.shots)
             self.job_id = job_id if job_id is not None else None
             return job_id, "job_id"
         else:

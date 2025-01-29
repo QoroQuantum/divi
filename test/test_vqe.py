@@ -1,4 +1,5 @@
 import pytest
+
 from divi.qprog import VQE
 
 

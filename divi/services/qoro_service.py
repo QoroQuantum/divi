@@ -1,8 +1,7 @@
+import base64
+import gzip
 import os
 import time
-import gzip
-import base64
-
 from enum import Enum
 from http import HTTPStatus
 
@@ -67,14 +66,17 @@ class QoroService:
         Returns:
             job_id: The job id of the job created
         """
+
         def _compress_data(value):
-            return base64.b64encode(gzip.compress(value.encode("utf-8"))).decode("utf-8")
+            return base64.b64encode(gzip.compress(value.encode("utf-8"))).decode(
+                "utf-8"
+            )
 
         data = {
             "circuits": {key: _compress_data(value) for key, value in circuits.items()},
             "shots": shots,
             "tag": tag,
-            "type": job_type.value
+            "type": job_type.value,
         }
 
         response = requests.post(
@@ -90,8 +92,7 @@ class QoroService:
             job_id = response.json()["job_id"]
             return job_id
         elif response.status_code == HTTPStatus.UNAUTHORIZED:
-            raise requests.exceptions.HTTPError(
-                "401 Unauthorized: Invalid API token")
+            raise requests.exceptions.HTTPError("401 Unauthorized: Invalid API token")
         else:
             raise requests.exceptions.HTTPError(
                 f"{response.status_code}: {response.reason}"
