@@ -49,15 +49,18 @@ class VQEAnsatze(Enum):
     def describe(self):
         return self.name, self.value
 
-    def num_params(self, n_qubits):
+    def num_params(self, vqe):
         if self == VQEAnsatze.UCCSD:
-            return n_qubits
+            singles, doubles = qml.qchem.excitations(
+                vqe.num_electrons, vqe.num_qubits)
+            s_wires, d_wires = qml.qchem.excitations_to_wires(singles, doubles)
+            return len(s_wires) + len(d_wires)
         elif self == VQEAnsatze.HARTREE_FOCK:
             return 1
         elif self == VQEAnsatze.RY:
-            return n_qubits
+            return vqe.num_qubits
         elif self == VQEAnsatze.RYRZ:
-            return 2 * n_qubits
+            return 2 * vqe.num_qubits
         elif self == VQEAnsatze.HW_EFFICIENT:
             # TODO
             return 1
@@ -84,7 +87,7 @@ class VQE(QuantumProgram):
         """
         Initialize the VQE problem.
 
-        args:
+        Args:
             symbols (list): The symbols of the atoms in the molecule
             bond_length (float): The bond length to consider
             coordinate_structure (list): The coordinate structure of the molecule
@@ -97,6 +100,9 @@ class VQE(QuantumProgram):
         # Local Variables
         self.symbols = symbols
         self.bond_length = bond_length
+        self.num_qubits = 0
+        self.num_electrons = 0
+        self.results = {}
         self.ansatz = ansatz
         self.optimizer = optimizer
         self.shots = shots
@@ -124,7 +130,7 @@ class VQE(QuantumProgram):
         """
         Generate the Hamiltonian operators for the given bond lengths.
 
-        returns:
+        Returns:
             (list) Hamiltonians for each bond length.
         """
 
@@ -172,7 +178,7 @@ class VQE(QuantumProgram):
     def _set_ansatz(self, ansatz, params, num_layers=1):
         """
         Set the ansatz for the VQE problem.
-        args:
+        Args:
             ansatz (Ansatze): The ansatz to use
             params (list): The parameters to use for the ansatz
             num_layers (int): The number of layers to use for the ansatz
@@ -203,7 +209,12 @@ class VQE(QuantumProgram):
                     qml.RZ(params[p], wires=[j])
 
         def _add_uccsd_ansatz(params, num_layers):
-            raise NotImplementedError
+            hf_state = qml.qchem.hf_state(self.num_electrons, self.num_qubits)
+            singles, doubles = qml.qchem.excitations(
+                self.num_electrons, self.num_qubits)
+            s_wires, d_wires = qml.qchem.excitations_to_wires(singles, doubles)
+            qml.UCCSD(params, wires=[i for i in range(
+                self.num_qubits)], s_wires=s_wires, d_wires=d_wires, init_state=hf_state)
 
         def _add_hartree_fock_ansatz(params, num_layers):
             hf_state = np.array(
@@ -244,7 +255,7 @@ class VQE(QuantumProgram):
         def _prepare_circuit(ansatz, hamiltonian, params):
             """
             Prepare the circuit for the VQE problem.
-            args:
+            Args:
                 ansatz (Ansatze): The ansatz to use
                 hamiltonian (qml.Hamiltonian): The Hamiltonian to use
                 params (list): The parameters to use for the ansatz
@@ -265,15 +276,15 @@ class VQE(QuantumProgram):
         """
         Run the VQE problem. The outputs are stored in the VQE object. Optionally, the data can be stored in a file.
 
-        args:
+        Args:
             store_data (bool): Whether to store the data for the iteration
             data_file (str): The file to store the data in
         """
-
         if self.optimizer == Optimizers.MONTE_CARLO:
             while self.current_iteration < self.max_iterations:
                 assert (
-                    self.hamiltonian_ops is not None and len(self.hamiltonian_ops) > 0
+                    self.hamiltonian_ops is not None and len(
+                        self.hamiltonian_ops) > 0
                 ), "Hamiltonian operators must be generated before running the VQE"
 
                 logger.debug(f"Running iteration {self.current_iteration}")
@@ -288,9 +299,7 @@ class VQE(QuantumProgram):
                     energies = self._post_process_results(job_id=results)
                 elif param == "circuit_results":
                     energies = self._post_process_results(results=results)
-
                 self.energies.append(energies)
-
                 return energies[0]
 
             def optimizer_loop_body():
@@ -308,7 +317,7 @@ class VQE(QuantumProgram):
 
             self._reset_params()
 
-            num_params = self.ansatz.num_params(self.n_qubits)
+            num_params = self.ansatz.num_params(self)
             self.params = [
                 np.random.uniform(0, 2 * np.pi, num_params)
                 for _ in range(self.optimizer.num_param_sets())
@@ -325,7 +334,7 @@ class VQE(QuantumProgram):
         if self.current_iteration == 0:
             self._reset_params()
 
-            num_params = self.ansatz.num_params(self.n_qubits)
+            num_params = self.ansatz.num_params(self)
             self.params = [
                 np.random.uniform(0, 2 * np.pi, num_params)
                 for _ in range(num_param_sets)
@@ -350,7 +359,7 @@ class VQE(QuantumProgram):
         """
         Post-process the results of the VQE problem.
 
-        return:
+        Returns:
             (dict) The energies for each parameter set grouping.
         """
 
@@ -361,7 +370,8 @@ class VQE(QuantumProgram):
             return processed_results
 
         if job_id is not None and self.qoro_service is not None:
-            status = self.qoro_service.job_status(self.job_id, loop_until_complete=True)
+            status = self.qoro_service.job_status(
+                self.job_id, loop_until_complete=True)
             if status != JobStatus.COMPLETED:
                 raise Exception(
                     "Job has not completed yet, cannot post-process results"

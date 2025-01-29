@@ -13,7 +13,7 @@ from divi.qprog import QAOA, ProgramBatch
 from divi.qprog._qaoa import (
     _SUPPORTED_PROBLEMS,
     _SUPPORTED_PROBLEMS_LITERAL,
-    _SUPPPORTED_INITIAL_STATES_LITERAL,
+    _SUPPORTED_INITIAL_STATES_LITERAL,
 )
 
 from .optimizers import Optimizers
@@ -169,7 +169,7 @@ class GraphPartitioningQAOA(ProgramBatch):
         n_layers: int,
         n_qubits: int = None,
         n_clusters: int = None,
-        initial_state: _SUPPPORTED_INITIAL_STATES_LITERAL = "Recommended",
+        initial_state: _SUPPORTED_INITIAL_STATES_LITERAL = "Recommended",
         optimizer=Optimizers.MONTE_CARLO,
         max_iterations=10,
         shots=5000,

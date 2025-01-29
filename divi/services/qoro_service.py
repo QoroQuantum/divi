@@ -1,6 +1,10 @@
 import os
 import time
+import gzip
+import base64
+
 from enum import Enum
+from http import HTTPStatus
 
 import requests
 
@@ -41,35 +45,38 @@ class QoroService:
 
     def test_connection(self):
         """Test the connection to the Qoro API"""
-
         response = requests.get(
             API_URL, headers={"Authorization": self.auth_token}, timeout=10
         )
-        if response.status_code == 200:
+        if response.status_code == HTTPStatus.OK:
             print("Connection successful")
         else:
             print("Connection failed")
         return response
 
     def send_circuits(
-        self, circuits, shots=1000, tag="default", job_type=JobTypes.EXECUTE
+        self, circuits, shots=1000, tag="default", job_type=JobTypes.SIMULATE
     ):
         """
         Send circuits to the Qoro API for execution
 
-        args:
+        Args:
             circuits: list of circuits to be sent as QASM strings
             shots (optional): number of shots to be executed for each circuit, default 1000
             tag (optional): tag to be used for the job, defaut "default"
-        return:
+        Returns:
             job_id: The job id of the job created
         """
+        def _compress_data(value):
+            return base64.b64encode(gzip.compress(value.encode("utf-8"))).decode("utf-8")
+
         data = {
-            "circuits": circuits,
+            "circuits": {key: _compress_data(value) for key, value in circuits.items()},
             "shots": shots,
             "tag": tag,
-            "type": job_type.value,
+            "type": job_type.value
         }
+
         response = requests.post(
             API_URL + "/job/",
             headers={
@@ -79,11 +86,12 @@ class QoroService:
             json=data,
             timeout=10,
         )
-        if response.status_code == 201:
+        if response.status_code == HTTPStatus.CREATED:
             job_id = response.json()["job_id"]
             return job_id
-        elif response.status_code == 401:
-            raise requests.exceptions.HTTPError("401 Unauthorized: Invalid API token")
+        elif response.status_code == HTTPStatus.UNAUTHORIZED:
+            raise requests.exceptions.HTTPError(
+                "401 Unauthorized: Invalid API token")
         else:
             raise requests.exceptions.HTTPError(
                 f"{response.status_code}: {response.reason}"
@@ -93,11 +101,16 @@ class QoroService:
         """
         Delete a job from the Qoro Database.
 
-        args:
+        Args:
             job_id: The ID of the job to be deleted
-        return:
+        Returns:
             response: The response from the API
         """
+        response = requests.delete(
+            API_URL + f"/job/{job_id}",
+            headers={"Authorization": self.auth_token},
+            timeout=10,
+        )
         response = requests.delete(
             API_URL + f"/job/{job_id}",
             headers={"Authorization": self.auth_token},
@@ -109,9 +122,9 @@ class QoroService:
         """
         Get the results of a job from the Qoro Database.
 
-        args:
+        Args:
             job_id: The ID of the job to get results from
-        return:
+        Returns:
             results: The results of the job
         """
         response = requests.get(
@@ -119,9 +132,9 @@ class QoroService:
             headers={"Authorization": self.auth_token},
             timeout=10,
         )
-        if response.status_code == 200:
+        if response.status_code == HTTPStatus.OK:
             return response.json()
-        elif response.status_code == 400:
+        elif response.status_code == HTTPStatus.BAD_REQUEST:
             raise requests.exceptions.HTTPError(
                 "400 Bad Request: Job results not available, likely job is still running"
             )
@@ -135,35 +148,37 @@ class QoroService:
         job_id,
         loop_until_complete=False,
         on_complete=None,
-        timeout=5,
+        timeout=3,
         max_retries=100,
         verbose=True,
     ):
         """
         Get the status of a job and optionally execute function *on_complete* on the results
+        Get the status of a job and optionally execute function *on_complete* on the results
         if the status is COMPLETE.
 
-        args:
+        Args:
+            job_id: The job id of the job
             job_id: The job id of the job
             loop_until_complete (optional): A flag to loop until the job is completed
             on_complete (optional): A function to be called when the job is completed
             timeout (optional): The time to wait between retries
             max_retries (optional): The maximum number of retries
             verbose (optional): A flag to print the when retrying
-        return:
+        Returns:
             status: The status of the job
         """
 
         def _poll_job_status():
             response = requests.get(
-                API_URL + f"/job/{job_id}/status",
+                API_URL + f"/job/{job_id}/status/",
                 headers={
                     "Authorization": self.auth_token,
                     "Content-Type": "application/json",
                 },
                 timeout=200,
             )
-            if response.status_code == 200:
+            if response.status_code == HTTPStatus.OK:
                 return response.json()["status"], response
             else:
                 raise ("Error getting job status")
@@ -175,6 +190,7 @@ class QoroService:
                 job_status, response = _poll_job_status()
                 if job_status == JobStatus.COMPLETED.value:
                     results = response.json()["results"]
+                    results = response.json()["results"]
                     completed = True
                     break
                 if retries >= max_retries:
@@ -182,6 +198,10 @@ class QoroService:
                 retries += 1
                 time.sleep(timeout)
                 if verbose:
+                    print(
+                        f"Retrying: {retries} times",
+                        f"Run time: {retries*timeout} seconds",
+                    )
                     print(
                         f"Retrying: {retries} times",
                         f"Run time: {retries*timeout} seconds",

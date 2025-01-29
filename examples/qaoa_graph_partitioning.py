@@ -4,7 +4,7 @@ import networkx as nx
 
 from divi.qprog import GraphPartitioningQAOA
 from divi.qprog.optimizers import Optimizers
-
+from divi.services import QoroService
 
 def generate_random_graph(n_nodes: int, n_edges: int) -> nx.DiGraph:
     """
@@ -42,15 +42,14 @@ def analyze_results(classical_solution, quantum_solution):
     true_positives = classical_ones & quantum_ones
 
     print(f"No. of Mismatch in Nodes = {difference}")
-
     print(f"Recall = {len(true_positives) / len(classical_ones)}")
     print(f"Precision = {len(true_positives) / len(quantum_ones)}")
     print(f"Accuracy = {(N_NODES - difference) / N_NODES}")
 
 
 if __name__ == "__main__":
-    N_NODES = 25
-    N_EDGES = 35
+    N_NODES = 15
+    N_EDGES = 10
 
     graph = generate_random_graph(N_NODES, N_EDGES)
 
@@ -59,13 +58,16 @@ if __name__ == "__main__":
     for node in partition[1]:
         classical_solution[node] = 1
 
+    q_service = QoroService("4497dcabd079bedbeeec9d16b3dcccb1344461b9")
+    
     qaoa_batch = GraphPartitioningQAOA(
         problem="maxcut",
         graph=graph,
         n_layers=1,
-        n_clusters=4,
+        n_clusters=2,
         optimizer=Optimizers.MONTE_CARLO,
-        max_iterations=5,
+        max_iterations=2,
+        qoro_service=q_service
     )
 
     qaoa_batch.create_programs()

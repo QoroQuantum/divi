@@ -42,7 +42,7 @@ _SUPPORTED_PROBLEMS_LITERAL = Literal[
 ]
 _SUPPORTED_PROBLEMS = get_args(_SUPPORTED_PROBLEMS_LITERAL)
 
-_SUPPPORTED_INITIAL_STATES_LITERAL = Literal[
+_SUPPORTED_INITIAL_STATES_LITERAL = Literal[
     "Zeros", "Ones", "Superposition", "Recommended"
 ]
 
@@ -97,7 +97,7 @@ class QAOA(QuantumProgram):
         problem: _SUPPORTED_PROBLEMS_LITERAL,
         graph: nx.Graph | rx.PyGraph,
         n_layers: int,
-        initial_state: _SUPPPORTED_INITIAL_STATES_LITERAL = "Recommended",
+        initial_state: _SUPPORTED_INITIAL_STATES_LITERAL = "Recommended",
         optimizer=Optimizers.MONTE_CARLO,
         max_iterations=10,
         shots=5000,
@@ -106,7 +106,7 @@ class QAOA(QuantumProgram):
         """
         Initialize the QAOA problem.
 
-        args:
+        Args:
             problem (str): The graph problem to solve.
             graph (networkx.Graph or rustworkx.PyGraph): The graph representing the problem
             n_layers (int): number of QAOA layers
@@ -120,9 +120,9 @@ class QAOA(QuantumProgram):
             )
         self.problem = problem
 
-        if initial_state not in get_args(_SUPPPORTED_INITIAL_STATES_LITERAL):
+        if initial_state not in get_args(_SUPPORTED_INITIAL_STATES_LITERAL):
             raise ValueError(
-                f"Unsupported Initial State. Got {initial_state}. Must be one of: {get_args(_SUPPPORTED_INITIAL_STATES_LITERAL)}"
+                f"Unsupported Initial State. Got {initial_state}. Must be one of: {get_args(_SUPPORTED_INITIAL_STATES_LITERAL)}"
             )
 
         if n_layers < 1 or not isinstance(n_layers, int):
@@ -192,7 +192,7 @@ class QAOA(QuantumProgram):
         """
         Post-process the results of the QAOA problem.
 
-        return:
+        Returns:
             (dict) The losses for each parameter set grouping.
         """
 
@@ -283,7 +283,7 @@ class QAOA(QuantumProgram):
         def _prepare_circuit(hamiltonian, params):
             """
             Prepare the circuit for the QAOA problem.
-            args:
+            Args:
                 hamiltonian (qml.Hamiltonian): The Hamiltonian term to measure
             """
 
@@ -313,7 +313,7 @@ class QAOA(QuantumProgram):
         """
         Run the QAOA problem. The outputs are stored in the QAOA object. Optionally, the data can be stored in a file.
 
-        args:
+        Args:
             store_data (bool): Whether to store the data for the iteration
             data_file (str): The file to store the data in
         """
@@ -370,7 +370,6 @@ class QAOA(QuantumProgram):
 
         # Retrieve the bitstring with the actual best solution
         best_solution_bitstring = max(best_solution_probs, key=best_solution_probs.get)
-
         solution_nodes = [m.start() for m in re.finditer("1", best_solution_bitstring)]
 
         # Create a dictionary for node colors
@@ -384,9 +383,7 @@ class QAOA(QuantumProgram):
         pos = nx.spring_layout(self.graph)
 
         nx.draw_networkx_nodes(self.graph, pos, node_color=node_colors, node_size=500)
-
         nx.draw_networkx_edges(self.graph, pos)
-
         nx.draw_networkx_labels(self.graph, pos, font_size=10, font_weight="bold")
 
         # Remove axes

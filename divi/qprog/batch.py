@@ -3,8 +3,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 
 class ProgramBatch(ABC):
-    """
-    This abstract class provides the basic scaffolding for higher-order
+    """This abstract class provides the basic scaffolding for higher-order
     computations that require more than one quantum program to achieve its goal.
 
     Each implementation of this class has to have an implementation of two functions:
