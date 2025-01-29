@@ -73,8 +73,7 @@ class ProgramBatch(ABC):
         if exceptions:
             for i, exc in enumerate(exceptions, 1):
                 print(f"Task {i} failed with exception: {exc}")
-            raise RuntimeError(
-                "One or more tasks failed. Check logs for details.")
+            raise RuntimeError("One or more tasks failed. Check logs for details.")
 
     @property
     def total_circuit_count(self):

@@ -28,7 +28,8 @@ class VQEHyperparameterSweep(ProgramBatch):
         shots=5000,
         **kwargs,
     ):
-        """Initiates the class.
+        """
+        Initiates the class.
 
         Args:
             bond_lengths (list): The bond lengths to consider.
