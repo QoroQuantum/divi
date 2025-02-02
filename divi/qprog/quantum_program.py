@@ -37,27 +37,27 @@ class QuantumProgram:
             circuit_results = circuit_simulator.simulate(job_circuits, shots=self.shots)
             return circuit_results, "circuit_results"
 
-    def run_iteration(self, store_data=False, data_file=None):
+    def _dispatch_circuits_and_process_results(self, store_data=False, data_file=None):
         """
-        Run an iteration of the program. The outputs are stored in the VQE object. Optionally, the data can be stored in a file.
+        Run an iteration of the program. The outputs are stored in the Program object.
+        Optionally, the data can be stored in a file.
 
         Args:
             store_data (bool): Whether to store the data for the iteration
             data_file (str): The file to store the data in
         """
 
-        self._run_optimize()
-
-        self._generate_circuits()
         results, param = self._prepare_and_send_circuits()
 
         if param == "job_id":
-            self._post_process_results(job_id=results)
+            result = self._post_process_results(job_id=results)
         elif param == "circuit_results":
-            self._post_process_results(results=results)
+            result = self._post_process_results(results=results)
 
         if store_data:
             self.save_iteration(data_file)
+
+        return result
 
     def save_iteration(self, data_file):
         """

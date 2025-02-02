@@ -138,15 +138,16 @@ class QAOA(QuantumProgram):
         self.n_qubits = graph.number_of_nodes()
         self.current_iteration = 0
         self.params = []
+        self._solution_nodes = None
 
         # Shared Variables
         self.losses = []
-        if (m_list := kwargs.pop("losses", None)) is not None:
-            self.losses = m_list
+        if (m_list_losses := kwargs.pop("losses", None)) is not None:
+            self.losses = m_list_losses
 
         self.probs = []
-        if (m_list := kwargs.pop("probs", None)) is not None:
-            self.probs = m_list
+        if (m_list_probs := kwargs.pop("probs", None)) is not None:
+            self.probs = m_list_probs
 
         (
             self.cost_hamiltonian,
@@ -174,10 +175,7 @@ class QAOA(QuantumProgram):
             ]
         else:
             # Optimize the QAOA problem.
-            if self.optimizer == Optimizers.NELDER_MEAD:
-                raise NotImplementedError
-
-            elif self.optimizer == Optimizers.MONTE_CARLO:
+            if self.optimizer == Optimizers.MONTE_CARLO:
                 self.params = self.optimizer.compute_new_parameters(
                     self.params,
                     self.current_iteration,
@@ -212,9 +210,19 @@ class QAOA(QuantumProgram):
 
         results = process_results(results)
         losses = {}
-        aggregated_dicts = {}
+        if self._is_compute_probabilies:
+            probs = {
+                outer_k: {
+                    inner_k: inner_v / self.shots
+                    for inner_k, inner_v in outer_v.items()
+                }
+                for outer_k, outer_v in results.items()
+            }
 
         for p, _ in enumerate(self.params):
+            if self._is_compute_probabilies:
+                break
+
             losses[p] = 0
             cur_result = {
                 key: value for key, value in results.items() if key.startswith(f"{p}")
@@ -237,39 +245,14 @@ class QAOA(QuantumProgram):
                 )
                 losses[p] += float(result[0].scalar) * exp_value
 
-            aggregated_results = {}
-            total_coeffs = 0
-            for term, term_dict, _ in marginal_results:
-                curr_coeff = float(term.scalar)
-
-                # Calculate total shots for this term
-                total_shots = sum(term_dict.values())
-
-                if total_shots == 0:
-                    continue
-
-                # Convert counts to probabilities and multiply by coefficient
-                for bitstring, count in term_dict.items():
-                    probability = count / total_shots
-                    weighted_contribution = abs(curr_coeff) * probability
-
-                    if bitstring in aggregated_results:
-                        aggregated_results[bitstring] = (
-                            aggregated_results[bitstring] * total_coeffs
-                            + weighted_contribution
-                        ) / (total_coeffs + abs(curr_coeff))
-                    else:
-                        aggregated_results[bitstring] = weighted_contribution
-
-                total_coeffs += abs(curr_coeff)
-            aggregated_dicts[p] = aggregated_results
-
-        self.losses.append(losses)
-        self.probs.append(aggregated_dicts)
+        if self._is_compute_probabilies:
+            self.probs.append(probs)
+        else:
+            self.losses.append(losses)
 
         return losses
 
-    def _generate_circuits(self, params=None):
+    def _generate_circuits(self, params=None, final_measurement=False):
         """
         Generate the circuits for the QAOA problem.
 
@@ -299,7 +282,10 @@ class QAOA(QuantumProgram):
 
             qml.layer(qaoa_layer, self.n_layers, gamma=params[0], alpha=params[1])
 
-            return [qml.sample(term) for term in hamiltonian]
+            if final_measurement:
+                return qml.probs()
+            else:
+                return [qml.sample(term) for term in hamiltonian]
 
         params = self.params if params is None else [params]
 
@@ -321,20 +307,39 @@ class QAOA(QuantumProgram):
         if self.optimizer == Optimizers.MONTE_CARLO:
             while self.current_iteration < self.max_iterations:
                 logger.debug(f"Running iteration {self.current_iteration}")
-                self.run_iteration(store_data, data_file)
+
+                self._run_optimize()
+
+                self._is_compute_probabilies = False
+                self._generate_circuits(final_measurement=False)
+                self._dispatch_circuits_and_process_results(
+                    store_data=store_data, data_file=data_file
+                )
+
+                self._is_compute_probabilies = True
+                self._generate_circuits(final_measurement=True)
+                self._dispatch_circuits_and_process_results(
+                    store_data=store_data, data_file=data_file
+                )
 
         elif self.optimizer == Optimizers.NELDER_MEAD:
 
             def cost_function(params):
                 self._generate_circuits(params)
-                results, param = self._prepare_and_send_circuits()
 
-                if param == "job_id":
-                    losses = self._post_process_results(job_id=results)
-                elif param == "circuit_results":
-                    losses = self._post_process_results(results=results)
+                self._is_compute_probabilies = False
+                self._generate_circuits(final_measurement=False)
+                losses = self._dispatch_circuits_and_process_results(
+                    store_data=store_data, data_file=data_file
+                )
 
                 self.losses.append(losses)
+
+                self._is_compute_probabilies = True
+                self._generate_circuits(final_measurement=True)
+                self._dispatch_circuits_and_process_results(
+                    store_data=store_data, data_file=data_file
+                )
 
                 return losses[0]
 
@@ -356,25 +361,34 @@ class QAOA(QuantumProgram):
 
             return [optimizer_loop_body()]
 
-    def draw_solution(self):
+    def compute_final_solution(self):
         # Convert losses dict to list to apply ordinal operations
-        losses_list = list(self.losses[self.current_iteration - 1].values())
+        final_losses_list = list(self.losses[-1].values())
 
         # Get the index of the smallest loss in the last operation
         best_solution_idx = min(
-            range(len(losses_list)), key=lambda x: losses_list.__getitem__(x)
+            range(len(final_losses_list)),
+            key=lambda x: final_losses_list.__getitem__(x),
         )
 
         # Retrieve the probability distribution dictionary of the best solution
-        best_solution_probs = self.probs[self.current_iteration - 1][best_solution_idx]
+        best_solution_probs = self.probs[-1][f"{best_solution_idx}_0"]
 
         # Retrieve the bitstring with the actual best solution
         best_solution_bitstring = max(best_solution_probs, key=best_solution_probs.get)
-        solution_nodes = [m.start() for m in re.finditer("1", best_solution_bitstring)]
+        self._solution_nodes = [
+            m.start() for m in re.finditer("1", best_solution_bitstring)
+        ]
+
+        return self._solution_nodes
+
+    def draw_solution(self):
+        if not self._solution_nodes:
+            self.compute_final_solution()
 
         # Create a dictionary for node colors
         node_colors = [
-            "red" if node in solution_nodes else "lightblue"
+            "red" if node in self._solution_nodes else "lightblue"
             for node in self.graph.nodes()
         ]
 

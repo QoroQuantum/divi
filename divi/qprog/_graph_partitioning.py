@@ -243,7 +243,7 @@ class GraphPartitioningQAOA(ProgramBatch):
             last_iteration_losses = program.losses[-1]
             minimum_key = min(last_iteration_losses, key=last_iteration_losses.get)
 
-            minimum_probabilities = program.probs[-1][minimum_key]
+            minimum_probabilities = program.probs[-1][f"{minimum_key}_0"]
 
             # The bitstring corresponding to the solution
             max_prob_key = max(minimum_probabilities, key=minimum_probabilities.get)

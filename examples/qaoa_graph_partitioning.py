@@ -62,7 +62,7 @@ if __name__ == "__main__":
         n_layers=2,
         n_clusters=2,
         optimizer=Optimizers.NELDER_MEAD,
-        max_iterations=10,
+        max_iterations=20,
         qoro_service=q_service,
     )
 
