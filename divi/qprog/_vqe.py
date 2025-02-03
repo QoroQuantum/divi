@@ -287,23 +287,30 @@ class VQE(QuantumProgram):
         """
         if self.optimizer == Optimizers.MONTE_CARLO:
             while self.current_iteration < self.max_iterations:
-                assert (
-                    self.hamiltonian_ops is not None and len(self.hamiltonian_ops) > 0
-                ), "Hamiltonian operators must be generated before running the VQE"
+                if self.hamiltonian_ops is None or len(self.hamiltonian_ops) == 0:
+                    raise RuntimeError(
+                        "Hamiltonian operators must be generated before running the VQE"
+                    )
 
                 logger.debug(f"Running iteration {self.current_iteration}")
-                self.run_iteration(store_data, data_file)
+
+                self._run_optimize()
+
+                self._generate_circuits()
+                self._dispatch_circuits_and_process_results(
+                    store_data=store_data, data_file=data_file
+                )
 
         elif self.optimizer == Optimizers.NELDER_MEAD:
 
             def cost_function(params):
                 self._generate_circuits(params)
-                results, param = self._prepare_and_send_circuits()
-                if param == "job_id":
-                    energies = self._post_process_results(job_id=results)
-                elif param == "circuit_results":
-                    energies = self._post_process_results(results=results)
+                energies = self._dispatch_circuits_and_process_results(
+                    store_data=store_data, data_file=data_file
+                )
+
                 self.energies.append(energies)
+
                 return energies[0]
 
             def optimizer_loop_body():
@@ -312,10 +319,7 @@ class VQE(QuantumProgram):
                     cost_function,
                     self.params[0],
                     method="Nelder-Mead",
-                    options={
-                        "maxiter": self.max_iterations,
-                        "disp": True,
-                    },
+                    options={"maxiter": self.max_iterations},
                 )
                 return result.fun
 

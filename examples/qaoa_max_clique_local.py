@@ -8,9 +8,9 @@ if __name__ == "__main__":
     qaoa_problem = QAOA(
         "max_clique",
         nx.bull_graph(),
-        n_layers=1,
-        optimizer=Optimizers.MONTE_CARLO,
-        max_iterations=10,
+        n_layers=2,
+        optimizer=Optimizers.NELDER_MEAD,
+        max_iterations=15,
         is_constrained=True,
         qoro_service=None,
     )

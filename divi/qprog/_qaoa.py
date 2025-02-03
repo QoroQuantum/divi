@@ -325,10 +325,8 @@ class QAOA(QuantumProgram):
         elif self.optimizer == Optimizers.NELDER_MEAD:
 
             def cost_function(params):
-                self._generate_circuits(params)
-
                 self._is_compute_probabilies = False
-                self._generate_circuits(final_measurement=False)
+                self._generate_circuits(params, final_measurement=False)
                 losses = self._dispatch_circuits_and_process_results(
                     store_data=store_data, data_file=data_file
                 )
@@ -336,7 +334,7 @@ class QAOA(QuantumProgram):
                 self.losses.append(losses)
 
                 self._is_compute_probabilies = True
-                self._generate_circuits(final_measurement=True)
+                self._generate_circuits(params, final_measurement=True)
                 self._dispatch_circuits_and_process_results(
                     store_data=store_data, data_file=data_file
                 )
