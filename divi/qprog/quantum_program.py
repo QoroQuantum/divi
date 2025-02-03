@@ -23,6 +23,10 @@ class QuantumProgram(ABC):
     def _generate_circuits(self, params=None, **kwargs):
         pass
 
+    @abstractmethod
+    def run(self, store_data=False, data_file=None):
+        pass
+
     def _prepare_and_send_circuits(self):
         job_circuits = {}
 
