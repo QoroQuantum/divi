@@ -1,13 +1,18 @@
 import base64
 import gzip
 import os
+import os
 import time
+import gzip
+import base64
+import json
+
 from enum import Enum
 from http import HTTPStatus
 
 import requests
 
-LOCAL = os.environ.get("LOCAL", "True") == "True"
+LOCAL = os.environ.get("LOCAL", "True") == "False"
 if LOCAL:
     API_URL = "http://127.0.0.1:8000/api"
 else:
@@ -159,6 +164,7 @@ class QoroService:
         if the status is COMPLETE.
 
         Args:
+            job_id: The job id of the job
             job_id: The job id of the job
             job_id: The job id of the job
             loop_until_complete (optional): A flag to loop until the job is completed

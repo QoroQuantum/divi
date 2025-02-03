@@ -80,7 +80,7 @@ class ProgramBatch(ABC):
         return sum(prog.total_circuit_count for prog in self.programs.values())
 
     @total_circuit_count.setter
-    def _(self, value):
+    def _(self, _):
         raise RuntimeError("Can not set total circuit count value.")
 
     @abstractmethod

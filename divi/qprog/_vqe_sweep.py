@@ -4,14 +4,15 @@ from multiprocessing import Manager
 
 import matplotlib.pyplot as plt
 
-from divi.qprog import VQE, ProgramBatch, VQEAnsatze
+from divi.qprog import VQE
+from divi.qprog import ProgramBatch
+from divi.qprog import VQEAnsatze
 
 from .optimizers import Optimizers
 
 
 class VQEHyperparameterSweep(ProgramBatch):
-    """
-    Allows user to carry out a grid search across different values
+    """Allows user to carry out a grid search across different values
     for the ansatz and the bond length used in a VQE program.
     """
 
@@ -26,8 +27,7 @@ class VQEHyperparameterSweep(ProgramBatch):
         shots=5000,
         **kwargs,
     ):
-        """
-        Initiates the class.
+        """Initiates the class.
 
         Args:
             bond_lengths (list): The bond lengths to consider.
