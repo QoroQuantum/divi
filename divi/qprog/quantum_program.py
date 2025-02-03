@@ -1,9 +1,10 @@
+from abc import ABC, abstractmethod
 import pickle
 
 from divi.simulator.parallel_simulator import ParallelSimulator
 
 
-class QuantumProgram:
+class QuantumProgram(ABC):
     def __init__(self, qoro_service=None):
         self.circuits = []
         self._total_circuit_count = 0
@@ -17,6 +18,10 @@ class QuantumProgram:
     @total_circuit_count.setter
     def _(self, value):
         raise RuntimeError("Can not set total circuit count value.")
+
+    @abstractmethod
+    def _generate_circuits(self, params=None, **kwargs):
+        pass
 
     def _prepare_and_send_circuits(self):
         job_circuits = {}

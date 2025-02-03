@@ -252,12 +252,13 @@ class QAOA(QuantumProgram):
 
         return losses
 
-    def _generate_circuits(self, params=None, final_measurement=False):
+    def _generate_circuits(self, params=None, **kwargs):
         """
         Generate the circuits for the QAOA problem.
 
         In this method, we generate bulk circuits based on the selected parameters.
         """
+        final_measurement = kwargs.pop("final_measurement", False)
 
         def qaoa_layer(gamma, alpha):
             pqaoa.cost_layer(gamma, self.cost_hamiltonian)

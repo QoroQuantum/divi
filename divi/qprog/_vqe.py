@@ -244,7 +244,7 @@ class VQE(QuantumProgram):
         elif ansatz == VQEAnsatze.QAOA:
             _add_qaoa_ansatz(params, num_layers)
 
-    def _generate_circuits(self, params=None) -> None:
+    def _generate_circuits(self, params=None):
         """
         Generate the circuits for the VQE problem.
 
