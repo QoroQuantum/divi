@@ -49,10 +49,10 @@ class VQEAnsatze(Enum):
     def describe(self):
         return self.name, self.value
 
-    def num_params(self, n_qubits):
+    def n_params(self, n_qubits, **kwargs):
         if self == VQEAnsatze.UCCSD:
             singles, doubles = qml.qchem.excitations(
-                n_qubits.num_electrons, n_qubits.num_qubits
+                kwargs.pop("n_electrons"), n_qubits
             )
             s_wires, d_wires = qml.qchem.excitations_to_wires(singles, doubles)
             return len(s_wires) + len(d_wires)
@@ -324,9 +324,9 @@ class VQE(QuantumProgram):
 
             self._reset_params()
 
-            num_params = self.ansatz.num_params(self.n_qubits)
+            n_params = self.ansatz.n_params(self.n_qubits, n_electrons=self.n_electrons)
             self.params = [
-                np.random.uniform(-2 * np.pi, -2 * np.pi, num_params)
+                np.random.uniform(-2 * np.pi, -2 * np.pi, n_params)
                 for _ in range(self.optimizer.num_param_sets())
             ]
 
@@ -341,7 +341,9 @@ class VQE(QuantumProgram):
         if self.current_iteration == 0:
             self._reset_params()
 
-            num_params = self.ansatz.num_params(self.n_qubits)
+            num_params = self.ansatz.n_params(
+                self.n_qubits, n_electrons=self.n_electrons
+            )
             self.params = [
                 np.random.uniform(0, 2 * np.pi, num_params)
                 for _ in range(num_param_sets)
