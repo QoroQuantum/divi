@@ -1,17 +1,10 @@
-from divi.qprog import VQE, Ansatze, Optimizers
-from qiskit.qasm2 import dumps
-from dash import Dash, html, dcc, Input, Output, callback, no_update
-from divi.simulator.parallel_simulator import ParallelSimulator
-from divi.services.qoro_service import QoroService
-
-import plotly.express as px
-import plotly.graph_objects as go
 import dash_bootstrap_components as dbc
+import numpy as np
 import plotly.graph_objects as go
 from dash import Dash, Input, Output, callback, dcc, html, no_update
 from qiskit.qasm2 import dumps
 
-from divi.qprog import VQE, Ansatze, Optimizers
+from divi.qprog import Optimizers, VQEAnsatze, VQEHyperparameterSweep
 from divi.simulator.parallel_simulator import ParallelSimulator
 
 app = Dash()
@@ -37,41 +30,41 @@ app.layout = html.Div(
 
 # q_service = QoroService("71ec99c9c94cf37499a2b725244beac1f51b8ee4")
 q_service = None
-vqe_problem = VQE(
+noiseless_vqe_problem = VQEHyperparameterSweep(
     symbols=["H", "H"],
-    bond_lengths=[0.5, 1.0, 1.5],
+    bond_lengths=list(np.linspace(0.1, 2.7, 5)),
     coordinate_structure=[(0, 0, -0.5), (0, 0, 0.5)],
-    ansatze=[Ansatze.HARTREE_FOCK],
+    ansatze=[VQEAnsatze.HARTREE_FOCK],
     optimizer=Optimizers.NELDER_MEAD,
-    qoro_service=q_service,
     shots=500,
-    max_interations=1,
+    max_iterations=1,
+    qoro_service=q_service,
 )
 
 
-zne_vqe_problem = VQE(
+zne_vqe_problem = VQEHyperparameterSweep(
     symbols=["H", "H"],
-    bond_lengths=[0.5, 1.0, 1.5],
+    bond_lengths=list(np.linspace(0.1, 2.7, 5)),
     coordinate_structure=[(0, 0, -0.5), (0, 0, 0.5)],
-    ansatze=[Ansatze.HARTREE_FOCK],
+    ansatze=[VQEAnsatze.HARTREE_FOCK],
     optimizer=Optimizers.MONTE_CARLO,
-    qoro_service=q_service,
     #   zne=True,
     #   noise=0.01,
     shots=500,
-    max_interations=5,
+    max_iterations=5,
+    qoro_service=q_service,
 )
 
-noisy_vqe_problem = VQE(
+noisy_vqe_problem = VQEHyperparameterSweep(
     symbols=["H", "H"],
     bond_lengths=[0.5, 1.0, 1.5],
     coordinate_structure=[(0, 0, -0.5), (0, 0, 0.5)],
-    ansatze=[Ansatze.HARTREE_FOCK],
+    ansatze=[VQEAnsatze.HARTREE_FOCK],
     optimizer=Optimizers.MONTE_CARLO,
-    qoro_service=q_service,
+    max_iterations=5,
     # noise=0.01,
     # shots=500,
-    max_interations=5,
+    qoro_service=q_service,
 )
 
 
@@ -104,26 +97,33 @@ def started(n_clicks):
     prevent_initial_call=True,
 )
 def run_vqe(n_clicks):
-    fig = go.Figure()
-    fig2 = go.Figure()
-    fig3 = go.Figure()
+    energy_v_bond_fig = go.Figure()
+    energy_v_iteration_fig = go.Figure()
+    runtime_fig = go.Figure()
+
     if n_clicks > 0:
-        vqe_problem.run()
-        energies = vqe_problem.energies[vqe_problem.current_iteration - 1]
-        for ansatz in vqe_problem.ansatze:
+        noiseless_vqe_problem.create_programs()
+        noiseless_vqe_problem.run()
+        noiseless_vqe_problem.wait_for_all()
+
+        for ansatz in noiseless_vqe_problem.ansatze:
             ys = []
-            for i in range(len(vqe_problem.bond_lengths)):
-                ys.append(energies[i][ansatz][0])
-            fig.add_trace(
+            for bond_length in noiseless_vqe_problem.bond_lengths:
+                ys.append(
+                    noiseless_vqe_problem.programs[(ansatz, bond_length)].energies[-1][
+                        0
+                    ]
+                )
+            energy_v_bond_fig.add_trace(
                 go.Scatter(
-                    x=vqe_problem.bond_lengths,
+                    x=noiseless_vqe_problem.bond_lengths,
                     y=ys,
                     mode="lines+markers",
                     name=ansatz.name,
                     line=dict(color="blue"),
                 )
             )
-        fig.update_layout(
+        energy_v_bond_fig.update_layout(
             title="Energy vs Bond Length",
             xaxis_title="Bond Length",
             yaxis_title="Energy",
@@ -131,10 +131,11 @@ def run_vqe(n_clicks):
         )
 
         data = []
-        ansatz = vqe_problem.ansatze[0]
-        for energy in vqe_problem.energies:
-            data.append(energy[0][ansatz][0])
-        fig2.add_trace(
+        ansatz = noiseless_vqe_problem.ansatze[0]
+        bond_length = noiseless_vqe_problem.bond_lengths[0]
+        for energy in noiseless_vqe_problem.programs[(ansatz, bond_length)].energies:
+            data.append(energy[0])
+        energy_v_iteration_fig.add_trace(
             go.Scatter(
                 x=list(range(1, len(data) + 1)),
                 y=data,
@@ -143,57 +144,59 @@ def run_vqe(n_clicks):
                 line=dict(color="blue"),
             )
         )
-        fig2.update_layout(
+        energy_v_iteration_fig.update_layout(
             title="Energy vs Iterations",
             xaxis_title="Iteration",
             yaxis_title="Energy",
             showlegend=True,
         )
-        qasm_circuits = []
-        for circuits in vqe_problem.circuits.values():
-            qasm_circuits += [circuit.qasm_circuit for circuit in circuits]
-        qpu_list = [i for i in range(1, 10)]
-        simulators = [ParallelSimulator(num_processes=2, qpus=i) for i in qpu_list]
-        runtimes = [
-            simulator.runtime_estimate(qasm_circuits) for simulator in simulators
-        ]
-        fig3.add_trace(
-            go.Scatter(
-                x=qpu_list,
-                y=runtimes,
-                mode="lines+markers",
-                name="Runtimes",
-                line=dict(color="blue"),
-            )
-        )
-        fig3.update_layout(
-            title="Runtime per Iteration vs QPUs",
-            xaxis_title="Num. of QPUs",
-            yaxis_title="Runtime per Iteration",
-            showlegend=True,
-        )
 
-        return fig, fig2, fig3, "done"
-    fig.update_layout(
+        # qasm_circuits = []
+        # for circuits in noiseless_vqe_problem.circuits.values():
+        #     qasm_circuits += [circuit.qasm_circuit for circuit in circuits]
+        # qpu_list = [i for i in range(1, 10)]
+        # simulators = [ParallelSimulator(num_processes=2, qpus=i) for i in qpu_list]
+        # runtimes = [
+        #     simulator.runtime_estimate(qasm_circuits) for simulator in simulators
+        # ]
+        # runtime_fig.add_trace(
+        #     go.Scatter(
+        #         x=qpu_list,
+        #         y=runtimes,
+        #         mode="lines+markers",
+        #         name="Runtimes",
+        #         line=dict(color="blue"),
+        #     )
+        # )
+        # runtime_fig.update_layout(
+        #     title="Runtime per Iteration vs QPUs",
+        #     xaxis_title="Num. of QPUs",
+        #     yaxis_title="Runtime per Iteration",
+        #     showlegend=True,
+        # )
+
+        return energy_v_bond_fig, energy_v_iteration_fig, runtime_fig, "done"
+
+    energy_v_bond_fig.update_layout(
         title="Energy vs Bond Length",
         xaxis_title="Bond Length",
         yaxis_title="Energy",
         showlegend=True,
     )
-    fig2.update_layout(
+    energy_v_iteration_fig.update_layout(
         title="Energy vs Iterations",
         xaxis_title="Iteration",
         yaxis_title="Energy",
         showlegend=True,
     )
-    fig3.update_layout(
+    runtime_fig.update_layout(
         title="Runtime per Iteration vs QPUs",
         xaxis_title="Num. of QPUs",
         yaxis_title="Runtime per Iteration",
         showlegend=True,
     )
 
-    return fig, fig2, fig3, no_update
+    return energy_v_bond_fig, energy_v_iteration_fig, runtime_fig, no_update
 
 
 @callback(
