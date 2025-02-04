@@ -1,3 +1,5 @@
+from qiskit.qasm2 import dumps
+
 from divi.qprog.utils import to_openqasm
 
 
@@ -8,12 +10,11 @@ class Circuit:
         self,
         main_circuit,
         tag_prefix: str = "",
-        circuit_type="pennylane",
         circuit_generator=None,
     ):
         self.main_circuit = main_circuit
         self.tag_prefix = tag_prefix
-        self.circuit_type = circuit_type
+        self.circuit_type = main_circuit.__module__.split(".")[0]
         self.convert_to_qasm()
 
         self.circuit_id = Circuit._id_counter
@@ -45,7 +46,9 @@ class Circuit:
             ]
             return
         except Exception as e:
-            raise ValueError(f"Error converting Pennylane circuit to QASM: {e}")
+            raise RuntimeError(f"Error converting Pennylane circuit to QASM: {e}")
 
     def _convert_qiskit_to_qasm(self):
-        pass
+        self.tags = [self.tag_prefix]
+        self.qasm_circuits = [dumps(self.main_circuit)]
+        return

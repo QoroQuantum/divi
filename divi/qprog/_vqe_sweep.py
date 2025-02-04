@@ -4,9 +4,7 @@ from multiprocessing import Manager
 
 import matplotlib.pyplot as plt
 
-from divi.qprog import VQE
-from divi.qprog import ProgramBatch
-from divi.qprog import VQEAnsatze
+from divi.qprog import VQE, ProgramBatch, VQEAnsatze
 
 from .optimizers import Optimizers
 

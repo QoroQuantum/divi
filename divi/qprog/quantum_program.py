@@ -1,5 +1,5 @@
-from abc import ABC, abstractmethod
 import pickle
+from abc import ABC, abstractmethod
 
 from divi.simulator.parallel_simulator import ParallelSimulator
 
@@ -25,6 +25,10 @@ class QuantumProgram(ABC):
 
     @abstractmethod
     def run(self, store_data=False, data_file=None):
+        pass
+
+    @abstractmethod
+    def _post_process_results(self, job_id=None, results=None):
         pass
 
     def _prepare_and_send_circuits(self):
@@ -56,11 +60,11 @@ class QuantumProgram(ABC):
             data_file (str): The file to store the data in
         """
 
-        results, param = self._prepare_and_send_circuits()
+        results, backend_return_type = self._prepare_and_send_circuits()
 
-        if param == "job_id":
+        if backend_return_type == "job_id":
             result = self._post_process_results(job_id=results)
-        elif param == "circuit_results":
+        elif backend_return_type == "circuit_results":
             result = self._post_process_results(results=results)
 
         if store_data:
