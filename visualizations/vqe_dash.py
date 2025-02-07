@@ -1,3 +1,5 @@
+from itertools import chain
+
 import dash_bootstrap_components as dbc
 import numpy as np
 import plotly.graph_objects as go
@@ -151,29 +153,41 @@ def run_vqe(n_clicks):
             showlegend=True,
         )
 
-        # qasm_circuits = []
-        # for circuits in noiseless_vqe_problem.circuits.values():
-        #     qasm_circuits += [circuit.qasm_circuit for circuit in circuits]
-        # qpu_list = [i for i in range(1, 10)]
-        # simulators = [ParallelSimulator(num_processes=2, qpus=i) for i in qpu_list]
-        # runtimes = [
-        #     simulator.runtime_estimate(qasm_circuits) for simulator in simulators
-        # ]
-        # runtime_fig.add_trace(
-        #     go.Scatter(
-        #         x=qpu_list,
-        #         y=runtimes,
-        #         mode="lines+markers",
-        #         name="Runtimes",
-        #         line=dict(color="blue"),
-        #     )
-        # )
-        # runtime_fig.update_layout(
-        #     title="Runtime per Iteration vs QPUs",
-        #     xaxis_title="Num. of QPUs",
-        #     yaxis_title="Runtime per Iteration",
-        #     showlegend=True,
-        # )
+        qasm_circuits = []
+        for circuit in chain.from_iterable(
+            program.circuits for program in noiseless_vqe_problem.programs.values()
+        ):
+            qasm_circuits.extend(circuit.qasm_circuits)
+
+        durations = [
+            ParallelSimulator.estimate_runtime_single_circuit(circuit)
+            for circuit in qasm_circuits
+        ]
+        qpu_range = tuple(range(1, 10))
+
+        runtimes = [
+            ParallelSimulator(n_processes=2, n_qpus=i).estimate_runtime_batch(
+                precomputed_duration=durations
+            )
+            for i in qpu_range
+        ]
+
+        runtime_fig.add_trace(
+            go.Scatter(
+                x=qpu_range,
+                y=runtimes,
+                mode="lines+markers",
+                name="Runtimes",
+                line=dict(color="blue"),
+            )
+        )
+
+        runtime_fig.update_layout(
+            title="Runtime per Iteration vs QPUs",
+            xaxis_title="Num. of QPUs",
+            yaxis_title="Runtime per Iteration",
+            showlegend=True,
+        )
 
         return energy_v_bond_fig, energy_v_iteration_fig, runtime_fig, "done"
 
@@ -277,9 +291,10 @@ def run_zne_vqe(n_clicks, existing_figure1, existing_figure2, existing_figure3):
         )
         qasm_circuits = [dumps(circuit) for circuit in zne_vqe_problem.zne_circuits]
         qpu_list = [i for i in range(1, 10)]
-        simulators = [ParallelSimulator(num_processes=2, qpus=i) for i in qpu_list]
+        simulators = [ParallelSimulator(n_processes=2, qpus=i) for i in qpu_list]
         runtimes = [
-            simulator.runtime_estimate(qasm_circuits) for simulator in simulators
+            simulator.estimate_runtime_single_circuit(qasm_circuits)
+            for simulator in simulators
         ]
         fig3.add_trace(
             go.Scatter(

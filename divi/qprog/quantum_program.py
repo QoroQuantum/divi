@@ -1,13 +1,19 @@
 import pickle
 from abc import ABC, abstractmethod
+from typing import Optional
 
+from divi.services import QoroService
 from divi.simulator.parallel_simulator import ParallelSimulator
 
 
 class QuantumProgram(ABC):
-    def __init__(self, qoro_service=None):
+    def __init__(self, qoro_service: Optional[QoroService] = None, **kwargs):
         self.circuits = []
+        if (m_list_circuits := kwargs.pop("circuits", None)) is not None:
+            self.circuits = m_list_circuits
+
         self._total_circuit_count = 0
+
         self.qoro_service = qoro_service
         self.job_id = None
 
@@ -39,12 +45,12 @@ class QuantumProgram(ABC):
                 job_circuits[tag] = qasm_circuit
 
         self._total_circuit_count += len(job_circuits)
-        self.circuits.clear()
 
         if self.qoro_service is not None:
-            job_id = self.qoro_service.send_circuits(job_circuits, shots=self.shots)
-            self.job_id = job_id if job_id is not None else None
-            return job_id, "job_id"
+            self.job_id = self.qoro_service.send_circuits(
+                job_circuits, shots=self.shots
+            )
+            return self.job_id, "job_id"
         else:
             circuit_simulator = ParallelSimulator()
             circuit_results = circuit_simulator.simulate(job_circuits, shots=self.shots)

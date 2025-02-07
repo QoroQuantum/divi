@@ -70,4 +70,5 @@ if __name__ == "__main__":
     qaoa_batch.run()
     quantum_solution = qaoa_batch.aggregate_results()
 
+    print(f"Total circuits: {qaoa_batch.total_circuit_count}")
     analyze_results(quantum_solution, classical_cut_size)

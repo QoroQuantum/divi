@@ -44,6 +44,7 @@ class Circuit:
             self.tags = [
                 f"{processed_tag_prefix}{i}" for i in range(len(self.qasm_circuits))
             ]
+
             return
         except Exception as e:
             raise RuntimeError(f"Error converting Pennylane circuit to QASM: {e}")
@@ -51,4 +52,5 @@ class Circuit:
     def _convert_qiskit_to_qasm(self):
         self.tags = [self.tag_prefix]
         self.qasm_circuits = [dumps(self.main_circuit)]
+
         return

@@ -227,6 +227,7 @@ class GraphPartitioningQAOA(ProgramBatch):
                     graph=_subgraph,
                     losses=self.manager.list(),
                     probs=self.manager.list(),
+                    circuits=self.manager.list(),
                 )
 
         return

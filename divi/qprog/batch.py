@@ -68,6 +68,9 @@ class ProgramBatch(ABC):
             if self.executor:
                 self.executor.shutdown(wait=True, cancel_futures=False)
                 self.executor = None
+                self._total_circuit_count = sum(
+                    future.result() for future in self.futures
+                )
                 self.futures = []
 
         if exceptions:
@@ -77,7 +80,7 @@ class ProgramBatch(ABC):
 
     @property
     def total_circuit_count(self):
-        return sum(prog.total_circuit_count for prog in self.programs.values())
+        return self._total_circuit_count
 
     @total_circuit_count.setter
     def _(self, _):

@@ -258,6 +258,10 @@ class QAOA(QuantumProgram):
 
         In this method, we generate bulk circuits based on the selected parameters.
         """
+
+        # Clear the previous circuit batch
+        self.circuits.clear()
+
         final_measurement = kwargs.pop("final_measurement", False)
 
         def qaoa_layer(gamma, alpha):
@@ -323,6 +327,8 @@ class QAOA(QuantumProgram):
                     store_data=store_data, data_file=data_file
                 )
 
+            return self.total_circuit_count
+
         elif self.optimizer == Optimizers.NELDER_MEAD:
 
             def cost_function(params):
@@ -342,15 +348,6 @@ class QAOA(QuantumProgram):
 
                 return losses[0]
 
-            def optimizer_loop_body():
-                result = minimize(
-                    cost_function,
-                    self.params[0],
-                    method="Nelder-Mead",
-                    options={"maxiter": self.max_iterations},
-                )
-                return result.fun
-
             self._reset_params()
 
             self.params = [
@@ -358,7 +355,14 @@ class QAOA(QuantumProgram):
                 for _ in range(self.optimizer.num_param_sets())
             ]
 
-            return [optimizer_loop_body()]
+            minimize(
+                cost_function,
+                self.params[0],
+                method="Nelder-Mead",
+                options={"maxiter": self.max_iterations},
+            )
+
+            return self.total_circuit_count
 
     def compute_final_solution(self):
         # Convert losses dict to list to apply ordinal operations

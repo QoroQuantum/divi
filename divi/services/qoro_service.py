@@ -155,12 +155,9 @@ class QoroService:
     ):
         """
         Get the status of a job and optionally execute function *on_complete* on the results
-        Get the status of a job and optionally execute function *on_complete* on the results
         if the status is COMPLETE.
 
         Args:
-            job_id: The job id of the job
-            job_id: The job id of the job
             job_id: The job id of the job
             loop_until_complete (optional): A flag to loop until the job is completed
             on_complete (optional): A function to be called when the job is completed
@@ -192,7 +189,6 @@ class QoroService:
                 job_status, response = _poll_job_status()
                 if job_status == JobStatus.COMPLETED.value:
                     results = response.json()["results"]
-                    results = response.json()["results"]
                     completed = True
                     break
                 if retries >= max_retries:
@@ -200,10 +196,6 @@ class QoroService:
                 retries += 1
                 time.sleep(timeout)
                 if verbose:
-                    print(
-                        f"Retrying: {retries} times",
-                        f"Run time: {retries*timeout} seconds",
-                    )
                     print(
                         f"Retrying: {retries} times",
                         f"Run time: {retries*timeout} seconds",

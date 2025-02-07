@@ -301,6 +301,8 @@ class VQE(QuantumProgram):
                     store_data=store_data, data_file=data_file
                 )
 
+            return self.total_circuit_count
+
         elif self.optimizer == Optimizers.NELDER_MEAD:
 
             def cost_function(params):
@@ -312,16 +314,6 @@ class VQE(QuantumProgram):
                 self.energies.append(energies)
                 return energies[0]
 
-            def optimizer_loop_body():
-
-                result = minimize(
-                    cost_function,
-                    self.params[0],
-                    method="Nelder-Mead",
-                    options={"maxiter": self.max_iterations},
-                )
-                return result.fun
-
             self._reset_params()
 
             n_params = self.ansatz.n_params(self.n_qubits, n_electrons=self.n_electrons)
@@ -330,7 +322,14 @@ class VQE(QuantumProgram):
                 for _ in range(self.optimizer.num_param_sets())
             ]
 
-            return [optimizer_loop_body()]
+            minimize(
+                cost_function,
+                self.params[0],
+                method="Nelder-Mead",
+                options={"maxiter": self.max_iterations},
+            )
+
+            return self.total_circuit_count
 
     def _run_optimize(self):
         """
