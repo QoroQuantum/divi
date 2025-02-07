@@ -54,38 +54,38 @@ def started(n_clicks):
     Input("start-button", "n_clicks"),
 )
 def run_mlae(n_clicks):
-    fig1 = go.Figure()
-    fig2 = go.Figure()
+    grover_fig = go.Figure()
+    max_likelihood_fig = go.Figure()
+
     if n_clicks > 0:
         a = np.linspace(0, 1, 100)  # set of amplitudes
-        fig1.add_shape(
-            type="line",
-            x0=mlae_problem.probability,
-            x1=mlae_problem.probability,
-            y0=-1,
-            y1=1,
-            line=dict(color="Red", width=2, dash="dashdot"),
-        )
-        fig2.add_shape(
-            type="line",
-            x0=mlae_problem.probability,
-            x1=mlae_problem.probability,
-            y0=-1,
-            y1=1,
-            line=dict(color="Red", width=2, dash="dashdot"),
-        )
+
         for func, grover in zip(
             mlae_problem.likelihood_functions, mlae_problem.grovers
         ):
-            fig1.add_trace(
+            grover_fig.add_trace(
                 go.Scatter(
                     x=a,
                     y=func(a),
                     mode="lines+markers",
-                    name=f"{grover} grover operators",
+                    name=f"{grover} Grover Operators",
                 )
             )
-        fig2.add_trace(
+
+        min_y, max_y = min(min(fn(a)) for fn in mlae_problem.likelihood_functions), max(
+            max(fn(a)) for fn in mlae_problem.likelihood_functions
+        )
+        for fig in (grover_fig, max_likelihood_fig):
+            fig.add_shape(
+                type="line",
+                x0=mlae_problem.probability,
+                x1=mlae_problem.probability,
+                y0=min_y,
+                y1=max_y,
+                line=dict(color="Red", width=2, dash="dashdot"),
+            )
+
+        max_likelihood_fig.add_trace(
             go.Scatter(
                 x=a,
                 y=mlae_problem.maximum_likelihood_fn(a),
@@ -93,31 +93,33 @@ def run_mlae(n_clicks):
                 name="Maximum Likelihood Function",
             )
         )
-        fig1.update_layout(
+        grover_fig.update_layout(
             title="Individual Amplitude Likelihood Functions",
             xaxis_title="Amplitude",
             yaxis_title="Likelihood",
             showlegend=True,
         )
 
-        fig2.update_layout(
+        max_likelihood_fig.update_layout(
             title="Maximum Likelihood Function",
             xaxis_title="Amplitude",
             yaxis_title="Likelihood",
         )
-        return fig1, fig2, "done"
-    fig1.update_layout(
+        return grover_fig, max_likelihood_fig, "done"
+
+    grover_fig.update_layout(
         title="Individual Amplitude Likelihood Functions",
         xaxis_title="Amplitude",
         yaxis_title="Likelihood",
         showlegend=True,
     )
-    fig2.update_layout(
+    max_likelihood_fig.update_layout(
         title="Maximum Likelihood Function",
         xaxis_title="Amplitude",
         yaxis_title="Likelihood",
     )
-    return fig1, fig2, no_update
+
+    return grover_fig, max_likelihood_fig, no_update
 
 
 if __name__ == "__main__":

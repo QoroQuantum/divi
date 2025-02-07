@@ -9,6 +9,7 @@ from qiskit_algorithms import EstimationProblem, MaximumLikelihoodAmplitudeEstim
 
 from divi.circuit import Circuit
 from divi.qprog.quantum_program import QuantumProgram
+from divi.services.qoro_service import JobStatus
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -34,7 +35,7 @@ class BernoulliA(QuantumCircuit):
     """A circuit representing the Bernoulli A operator."""
 
     def __init__(self, probability):
-        super().__init__(1)  # circuit on 1 qubit
+        super().__init__(1)
 
         theta_p = 2 * np.arcsin(np.sqrt(probability))
         self.ry(theta_p, 0)
@@ -44,7 +45,7 @@ class BernoulliQ(QuantumCircuit):
     """A circuit representing the Bernoulli Q operator."""
 
     def __init__(self, probability):
-        super().__init__(1)  # circuit on 1 qubit
+        super().__init__(1)
 
         self._theta_p = 2 * np.arcsin(np.sqrt(probability))
         self.ry(2 * self._theta_p, 0)
@@ -99,6 +100,8 @@ class MLAE(QuantumProgram):
         Returns:
             A list of QASM circuits to run on various devices
         """
+        self.circuits.clear()
+
         A = BernoulliA(self.probability)
         Q = BernoulliQ(self.probability)
 
@@ -132,6 +135,14 @@ class MLAE(QuantumProgram):
             A callable maximum likelihood function
         """
 
+        if job_id is not None and self.qoro_service is not None:
+            status = self.qoro_service.job_status(self.job_id, loop_until_complete=True)
+            if status != JobStatus.COMPLETED:
+                raise Exception(
+                    "Job has not completed yet, cannot post-process results"
+                )
+            results = self.qoro_service.get_job_results(self.job_id)
+
         # define the necessary variables Nk, Mk, Lk
         for result_entry in results:
             mk = int(result_entry["label"])
@@ -139,15 +150,12 @@ class MLAE(QuantumProgram):
             hk = 0
             for key, shots in result_entry["results"].items():
                 Nk += shots
-                if all(char == "1" for char in key):
-                    hk += shots
+                hk += shots if key.count("1") == len(key) else 0
 
             def likelihood_function(theta, mk=mk, hk=hk, Nk=Nk):
-                return (
-                    (np.sin((2 * mk + 1) * np.arcsin(np.sqrt(theta)))) ** (2 * hk)
-                ) * (
-                    (np.cos((2 * mk + 1) * np.arcsin(np.sqrt(theta))))
-                    ** (2 * (Nk - hk))
+                as_theta = np.arcsin(np.sqrt(theta))
+                return ((np.sin((2 * mk + 1) * as_theta)) ** (2 * hk)) * (
+                    (np.cos((2 * mk + 1) * as_theta)) ** (2 * (Nk - hk))
                 )
 
             self.likelihood_functions.append(likelihood_function)
