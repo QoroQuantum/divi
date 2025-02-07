@@ -74,10 +74,8 @@ def to_openqasm(
     A modified version of PennyLane's function that is more compatible with having several measurements.
     Serialize the circuit as an OpenQASM 2.0 program.
 
-    Measurements are assumed to be performed on all qubits in the computational basis. An
-    optional ``rotations`` argument can be provided so that output of the OpenQASM circuit is
-    diagonal in the eigenbasis of the quantum script's observables. The measurement outputs can be
-    restricted to only those specified in the script by setting ``measure_all=False``.
+    The measurement outputs can be restricted to only those specified in the script by
+    setting ``measure_all=False``.
 
     .. note::
 
@@ -86,9 +84,6 @@ def to_openqasm(
 
     Args:
         wires (Wires or None): the wires to use when serializing the circuit
-        rotations (bool): in addition to serializing user-specified
-            operations, also include the gates that diagonalize the
-            measured wires such that they are in the eigenbasis of the circuit observables.
         measure_all (bool): whether to perform a computational basis measurement on all qubits
             or just those specified in the script
         precision (int): decimal digits to display for parameters
