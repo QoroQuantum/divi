@@ -122,8 +122,6 @@ class MLAE(QuantumProgram):
             store_data=store_data, data_file=data_file
         )
 
-        self.maximum_likelihood_fn = self.generate_maximum_likelihood_function()
-
     def _post_process_results(self, job_id=None, results=None):
         """
         Generates the likelihood function for each circuit of the quantum
@@ -171,6 +169,8 @@ class MLAE(QuantumProgram):
                 * factor
             )
 
+        self.maximum_likelihood_fn = combined_likelihood_function
+
         return combined_likelihood_function
 
     def estimate_amplitude(self, factor):
@@ -183,6 +183,7 @@ class MLAE(QuantumProgram):
         """
 
         def minimum_likelihood_function(theta):
+            # The factor to set to -10e30 in the older branch
             return (
                 reduce(
                     lambda result, f: result * f(theta), self.likelihood_functions, 1.0

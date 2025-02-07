@@ -30,6 +30,7 @@ mlae_problem = MLAE(
     qoro_service=None,
 )
 mlae_problem.run()
+mlae_problem.generate_maximum_likelihood_function(factor=10e30)
 
 
 @callback(
