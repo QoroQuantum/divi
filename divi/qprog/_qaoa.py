@@ -166,12 +166,12 @@ class QAOA(QuantumProgram):
         """
         Run the optimization step for the QAOA problem.
         """
-        num_param_sets = self.optimizer.num_param_sets()
+        n_param_sets = self.optimizer.n_param_sets
 
         if self.current_iteration == 0:
             self._reset_params()
             self.params = [
-                np.random.uniform(0, 2 * np.pi, 2) for _ in range(num_param_sets)
+                np.random.uniform(0, 2 * np.pi, 2) for _ in range(n_param_sets)
             ]
         else:
             # Optimize the QAOA problem.
@@ -352,7 +352,7 @@ class QAOA(QuantumProgram):
 
             self.params = [
                 np.random.uniform(0, 2 * np.pi, 2)
-                for _ in range(self.optimizer.num_param_sets())
+                for _ in range(self.optimizer.n_param_sets)
             ]
 
             minimize(

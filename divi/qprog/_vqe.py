@@ -319,7 +319,7 @@ class VQE(QuantumProgram):
             n_params = self.ansatz.n_params(self.n_qubits, n_electrons=self.n_electrons)
             self.params = [
                 np.random.uniform(-2 * np.pi, -2 * np.pi, n_params)
-                for _ in range(self.optimizer.num_param_sets())
+                for _ in range(self.optimizer.n_param_sets)
             ]
 
             minimize(
@@ -335,7 +335,7 @@ class VQE(QuantumProgram):
         """
         Run the optimization step for the VQE problem.
         """
-        num_param_sets = self.optimizer.num_param_sets()
+        n_param_sets = self.optimizer.n_param_sets()
 
         if self.current_iteration == 0:
             self._reset_params()
@@ -344,8 +344,7 @@ class VQE(QuantumProgram):
                 self.n_qubits, n_electrons=self.n_electrons
             )
             self.params = [
-                np.random.uniform(0, 2 * np.pi, num_params)
-                for _ in range(num_param_sets)
+                np.random.uniform(0, 2 * np.pi, num_params) for _ in range(n_param_sets)
             ]
         else:
             # Optimize the VQE problem.
