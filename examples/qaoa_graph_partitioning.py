@@ -59,7 +59,7 @@ if __name__ == "__main__":
     qaoa_batch = GraphPartitioningQAOA(
         problem="maxcut",
         graph=graph,
-        n_layers=2,
+        n_layers=1,
         n_clusters=2,
         optimizer=Optimizers.NELDER_MEAD,
         max_iterations=20,

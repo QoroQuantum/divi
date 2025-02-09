@@ -36,7 +36,7 @@ class Optimizers(Enum):
                         1 / (2 * iteration),
                         size=params[int(key)].shape,
                     )
-                    for _ in range(int(self.n_param_sets()))
+                    for _ in range(self.n_param_sets)
                 ]
                 for new_param in new_param_set:
                     new_param = np.clip(new_param, 0, 2 * np.pi)

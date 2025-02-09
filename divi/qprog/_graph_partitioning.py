@@ -247,7 +247,9 @@ class GraphPartitioningQAOA(ProgramBatch):
             minimum_probabilities = program.probs[-1][f"{minimum_key}_0"]
 
             # The bitstring corresponding to the solution
-            max_prob_key = max(minimum_probabilities, key=minimum_probabilities.get)
+            max_prob_key = max(minimum_probabilities, key=minimum_probabilities.get)[
+                ::-1
+            ]
 
             for node in program.graph.nodes():
                 solution_index = reverse_index_maps[node]

@@ -171,7 +171,8 @@ class QAOA(QuantumProgram):
         if self.current_iteration == 0:
             self._reset_params()
             self.params = [
-                np.random.uniform(0, 2 * np.pi, 2) for _ in range(n_param_sets)
+                np.random.uniform(0, 2 * np.pi, (self.n_layers, 2))
+                for _ in range(n_param_sets)
             ]
         else:
             # Optimize the QAOA problem.
@@ -260,13 +261,14 @@ class QAOA(QuantumProgram):
         """
 
         # Clear the previous circuit batch
-        self.circuits.clear()
+        self.circuits[:] = []
 
         final_measurement = kwargs.pop("final_measurement", False)
 
-        def qaoa_layer(gamma, alpha):
+        def qaoa_layer(params):
+            gamma, beta = params
             pqaoa.cost_layer(gamma, self.cost_hamiltonian)
-            pqaoa.mixer_layer(alpha, self.mixer_hamiltonian)
+            pqaoa.mixer_layer(beta, self.mixer_hamiltonian)
 
         def _prepare_circuit(hamiltonian, params):
             """
@@ -285,19 +287,20 @@ class QAOA(QuantumProgram):
                 for i in range(self.n_qubits):
                     qml.Hadamard(wires=i)
 
-            qml.layer(qaoa_layer, self.n_layers, gamma=params[0], alpha=params[1])
+            qml.layer(qaoa_layer, self.n_layers, params)
 
             if final_measurement:
                 return qml.probs()
             else:
                 return [qml.sample(term) for term in hamiltonian]
 
-        params = self.params if params is None else [params]
+        params = self.params if params is None else [params.reshape(-1, 2)]
 
         for p, params_group in enumerate(params):
             qscript = qml.tape.make_qscript(_prepare_circuit)(
                 self.cost_hamiltonian, params_group
             )
+
             self.circuits.append(Circuit(qscript, tag_prefix=f"{p}"))
 
     def run(self, store_data=False, data_file=None):
@@ -351,7 +354,7 @@ class QAOA(QuantumProgram):
             self._reset_params()
 
             self.params = [
-                np.random.uniform(0, 2 * np.pi, 2)
+                np.random.uniform(0, 2 * np.pi, self.n_layers * 2)
                 for _ in range(self.optimizer.n_param_sets)
             ]
 
@@ -378,7 +381,11 @@ class QAOA(QuantumProgram):
         best_solution_probs = self.probs[-1][f"{best_solution_idx}_0"]
 
         # Retrieve the bitstring with the actual best solution
-        best_solution_bitstring = max(best_solution_probs, key=best_solution_probs.get)
+        # Reverse to account for the endianness difference
+        best_solution_bitstring = max(best_solution_probs, key=best_solution_probs.get)[
+            ::-1
+        ]
+
         self._solution_nodes = [
             m.start() for m in re.finditer("1", best_solution_bitstring)
         ]
