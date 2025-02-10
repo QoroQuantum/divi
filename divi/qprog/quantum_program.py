@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 from divi.services import QoroService
+from divi.services.qoro_service import JobStatus
 from divi.simulator.parallel_simulator import ParallelSimulator
 
 
@@ -69,9 +70,20 @@ class QuantumProgram(ABC):
         results, backend_return_type = self._prepare_and_send_circuits()
 
         if backend_return_type == "job_id":
-            result = self._post_process_results(job_id=results)
-        elif backend_return_type == "circuit_results":
-            result = self._post_process_results(results=results)
+            job_id = results
+            if job_id is not None and self.qoro_service is not None:
+                status = self.qoro_service.job_status(
+                    self.job_id, loop_until_complete=True
+                )
+                if status != JobStatus.COMPLETED:
+                    raise Exception(
+                        "Job has not completed yet, cannot post-process results"
+                    )
+                results = self.qoro_service.get_job_results(self.job_id)
+
+        results = {r["label"]: r["results"] for r in results}
+
+        result = self._post_process_results(results)
 
         if store_data:
             self.save_iteration(data_file)

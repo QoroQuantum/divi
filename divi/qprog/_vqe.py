@@ -10,7 +10,6 @@ from scipy.optimize import minimize
 from divi.circuit import Circuit
 from divi.qprog import QuantumProgram
 from divi.qprog.optimizers import Optimizers
-from divi.services.qoro_service import JobStatus
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -364,7 +363,7 @@ class VQE(QuantumProgram):
 
         self.current_iteration += 1
 
-    def _post_process_results(self, job_id=None, results=None):
+    def _post_process_results(self, results):
         """
         Post-process the results of the VQE problem.
 
@@ -372,15 +371,6 @@ class VQE(QuantumProgram):
             (dict) The energies for each parameter set grouping.
         """
 
-        if job_id is not None and self.qoro_service is not None:
-            status = self.qoro_service.job_status(self.job_id, loop_until_complete=True)
-            if status != JobStatus.COMPLETED:
-                raise Exception(
-                    "Job has not completed yet, cannot post-process results"
-                )
-            results = self.qoro_service.get_job_results(self.job_id)
-
-        results = {r["label"]: r["results"] for r in results}
         energies = {}
 
         for p, _ in enumerate(self.params):
