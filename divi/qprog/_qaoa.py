@@ -156,6 +156,11 @@ class QAOA(QuantumProgram):
             self.initial_state,
         ) = _resolve_circuit_layers(problem, graph, initial_state, **kwargs)
 
+        self.expval_hamiltonian_metadata = {
+            i: (term.wires, float(term.scalar))
+            for i, term in enumerate(self.cost_hamiltonian)
+        }
+
         self._meta_circuits = self._create_meta_circuits()
 
         kwargs.pop("is_constrained", None)
@@ -197,7 +202,6 @@ class QAOA(QuantumProgram):
             (dict) The losses for each parameter set grouping.
         """
 
-        losses = {}
         if self._is_compute_probabilies:
             probs = {
                 outer_k: {
@@ -206,35 +210,11 @@ class QAOA(QuantumProgram):
                 }
                 for outer_k, outer_v in results.items()
             }
-
-        for p, _ in enumerate(self.params):
-            if self._is_compute_probabilies:
-                break
-
-            losses[p] = 0
-            cur_result = {
-                key: value for key, value in results.items() if key.startswith(f"{p}")
-            }
-
-            marginal_results = []
-            for param_id, shots_dict in cur_result.items():
-                ham_op_index = int(param_id.split("_")[-1])
-                ham_op = self.cost_hamiltonian[ham_op_index]
-                pair = (
-                    ham_op,
-                    marginal_counts(shots_dict, ham_op.wires.tolist()),
-                )
-                marginal_results.append(pair)
-
-            for ham_op, marginal_shots in marginal_results:
-                exp_value = sampled_expectation_value(
-                    marginal_shots, "Z" * len(ham_op.wires)
-                )
-                losses[p] += float(ham_op.scalar) * exp_value
-
-        if self._is_compute_probabilies:
             self.probs.append(probs)
-        else:
+
+        losses = super()._post_process_results(results)
+
+        if not self._is_compute_probabilies:
             self.losses.append(losses)
 
         return losses

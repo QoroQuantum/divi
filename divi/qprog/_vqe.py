@@ -4,7 +4,6 @@ from enum import Enum
 
 import numpy as np
 import pennylane as qml
-from qiskit.result import marginal_counts, sampled_expectation_value
 from scipy.optimize import minimize
 
 from divi.circuit import Circuit
@@ -114,7 +113,12 @@ class VQE(QuantumProgram):
             self.symbols
         ), "The number of symbols must match the number of coordinates"
 
-        self.hamiltonian_ops = self._generate_hamiltonian_operations()
+        self.hamiltonian = self._generate_hamiltonian_operations()
+
+        self.expval_hamiltonian_metadata = {
+            i: (term.wires, float(term.scalar))
+            for i, term in enumerate(self.hamiltonian)
+        }
 
         super().__init__(**kwargs)
 
@@ -269,12 +273,12 @@ class VQE(QuantumProgram):
 
         for p, params_group in enumerate(params):
             qscript = qml.tape.make_qscript(_prepare_circuit)(
-                self.ansatz, self.hamiltonian_ops, params_group
+                self.ansatz, self.hamiltonian, params_group
             )
             self.circuits.append(
                 Circuit(
                     qscript,
-                    tags=[f"{p}_{ham}" for ham in range(len(self.hamiltonian_ops))],
+                    tags=[f"{p}_{ham}" for ham in range(len(self.hamiltonian))],
                 )
             )
 
@@ -288,7 +292,7 @@ class VQE(QuantumProgram):
         """
         if self.optimizer == Optimizers.MONTE_CARLO:
             while self.current_iteration < self.max_iterations:
-                if self.hamiltonian_ops is None or len(self.hamiltonian_ops) == 0:
+                if self.hamiltonian is None or len(self.hamiltonian) == 0:
                     raise RuntimeError(
                         "Hamiltonian operators must be generated before running the VQE"
                     )
@@ -298,9 +302,11 @@ class VQE(QuantumProgram):
                 self._run_optimize()
 
                 self._generate_circuits()
-                self._dispatch_circuits_and_process_results(
+                energies = self._dispatch_circuits_and_process_results(
                     store_data=store_data, data_file=data_file
                 )
+
+                self.energies.append(energies)
 
             return self.total_circuit_count, self.run_time
 
@@ -362,39 +368,3 @@ class VQE(QuantumProgram):
                 raise NotImplementedError
 
         self.current_iteration += 1
-
-    def _post_process_results(self, results):
-        """
-        Post-process the results of the VQE problem.
-
-        Returns:
-            (dict) The energies for each parameter set grouping.
-        """
-
-        energies = {}
-
-        for p, _ in enumerate(self.params):
-            energies[p] = 0
-            cur_result = {
-                key: value for key, value in results.items() if key.startswith(f"{p}")
-            }
-
-            marginal_results = []
-            for c in cur_result.keys():
-                ham_op_index = int(c.split("_")[-1])
-                ham_op = self.hamiltonian_ops[ham_op_index]
-                pair = (
-                    ham_op,
-                    marginal_counts(cur_result[c], ham_op.wires.tolist()),
-                )
-                marginal_results.append(pair)
-
-            for ham_op, marginal_shots in marginal_results:
-                exp_value = sampled_expectation_value(
-                    marginal_shots, "Z" * len(ham_op.wires)
-                )
-                energies[p] += float(ham_op.scalar) * exp_value
-
-        self.energies.append(energies)
-
-        return energies

@@ -117,7 +117,7 @@ class MLAE(QuantumProgram):
 
         for circuit, grover in zip(qiskit_circuits, self.grovers):
             circuit.measure_all()
-            self.circuits.append(Circuit(circuit, tag_prefix=f"{grover}"))
+            self.circuits.append(Circuit(circuit, tags=[f"{grover}"]))
 
     def run(self, store_data=False, data_file=None):
         self._generate_circuits()
@@ -125,7 +125,7 @@ class MLAE(QuantumProgram):
             store_data=store_data, data_file=data_file
         )
 
-    def _post_process_results(self, job_id=None, results=None):
+    def _post_process_results(self, results):
         """
         Generates the likelihood function for each circuit of the quantum
         amplitude amplification. These likelihood functions will then
@@ -135,20 +135,12 @@ class MLAE(QuantumProgram):
             A callable maximum likelihood function
         """
 
-        if job_id is not None and self.qoro_service is not None:
-            status = self.qoro_service.job_status(self.job_id, loop_until_complete=True)
-            if status != JobStatus.COMPLETED:
-                raise Exception(
-                    "Job has not completed yet, cannot post-process results"
-                )
-            results = self.qoro_service.get_job_results(self.job_id)
-
-        # define the necessary variables Nk, Mk, Lk
-        for result_entry in results:
-            mk = int(result_entry["label"])
+        # Define the necessary variables Nk, Mk, Lk
+        for label, shots_dict in results.items():
+            mk = int(label)
             Nk = 0
             hk = 0
-            for key, shots in result_entry["results"].items():
+            for key, shots in shots_dict.items():
                 Nk += shots
                 hk += shots if key.count("1") == len(key) else 0
 

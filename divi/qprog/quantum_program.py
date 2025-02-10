@@ -2,6 +2,8 @@ import pickle
 from abc import ABC, abstractmethod
 from typing import Optional
 
+from qiskit.result import marginal_counts, sampled_expectation_value
+
 from divi.services import QoroService
 from divi.services.qoro_service import JobStatus
 from divi.simulator.parallel_simulator import ParallelSimulator
@@ -43,9 +45,39 @@ class QuantumProgram(ABC):
     def run(self, store_data=False, data_file=None):
         pass
 
-    @abstractmethod
-    def _post_process_results(self, job_id=None, results=None):
-        pass
+    def _post_process_results(self, results):
+        """
+        Post-process the results of the VQE problem.
+
+        Returns:
+            (dict) The energies for each parameter set grouping.
+        """
+
+        losses = {}
+
+        for p, _ in enumerate(self.params):
+            losses[p] = 0
+            cur_result = {
+                key: value for key, value in results.items() if key.startswith(f"{p}")
+            }
+
+            marginal_results = []
+            for param_id, shots_dict in cur_result.items():
+                ham_op_index = int(param_id.split("_")[-1])
+                ham_op_metadata = self.expval_hamiltonian_metadata[ham_op_index]
+                pair = (
+                    ham_op_metadata,
+                    marginal_counts(shots_dict, ham_op_metadata[0].tolist()),
+                )
+                marginal_results.append(pair)
+
+            for ham_op_metadata, marginal_shots in marginal_results:
+                exp_value = sampled_expectation_value(
+                    marginal_shots, "Z" * len(ham_op_metadata[0])
+                )
+                losses[p] += ham_op_metadata[1] * exp_value
+
+        return losses
 
     def _prepare_and_send_circuits(self):
         job_circuits = {}
