@@ -12,11 +12,6 @@ from divi.qprog import QuantumProgram
 from divi.qprog.optimizers import Optimizers
 from divi.services.qoro_service import JobStatus
 
-try:
-    import openfermionpyscf
-except ImportError:
-    warnings.warn("openfermionpyscf not installed. Some functionality may be limited.")
-
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # Set up your logger
@@ -257,6 +252,8 @@ class VQE(QuantumProgram):
                 - Generate the circuit
         """
 
+        self.circuits[:] = []
+
         def _prepare_circuit(ansatz, hamiltonian, params):
             """
             Prepare the circuit for the VQE problem.
@@ -275,7 +272,12 @@ class VQE(QuantumProgram):
             qscript = qml.tape.make_qscript(_prepare_circuit)(
                 self.ansatz, self.hamiltonian_ops, params_group
             )
-            self.circuits.append(Circuit(qscript, tag_prefix=f"{p}"))
+            self.circuits.append(
+                Circuit(
+                    qscript,
+                    tags=[f"{p}_{ham}" for ham in range(len(self.hamiltonian_ops))],
+                )
+            )
 
     def run(self, store_data=False, data_file=None):
         """
@@ -335,7 +337,6 @@ class VQE(QuantumProgram):
         """
         Run the optimization step for the VQE problem.
         """
-        n_param_sets = self.optimizer.n_param_sets()
 
         if self.current_iteration == 0:
             self._reset_params()
@@ -344,7 +345,8 @@ class VQE(QuantumProgram):
                 self.n_qubits, n_electrons=self.n_electrons
             )
             self.params = [
-                np.random.uniform(0, 2 * np.pi, num_params) for _ in range(n_param_sets)
+                np.random.uniform(0, 2 * np.pi, num_params)
+                for _ in range(self.optimizer.n_param_sets)
             ]
         else:
             # Optimize the VQE problem.
@@ -370,12 +372,6 @@ class VQE(QuantumProgram):
             (dict) The energies for each parameter set grouping.
         """
 
-        def process_results(results):
-            processed_results = {}
-            for r in results:
-                processed_results[r["label"]] = r["results"]
-            return processed_results
-
         if job_id is not None and self.qoro_service is not None:
             status = self.qoro_service.job_status(self.job_id, loop_until_complete=True)
             if status != JobStatus.COMPLETED:
@@ -384,7 +380,7 @@ class VQE(QuantumProgram):
                 )
             results = self.qoro_service.get_job_results(self.job_id)
 
-        results = process_results(results)
+        results = {r["label"]: r["results"] for r in results}
         energies = {}
 
         for p, _ in enumerate(self.params):
@@ -399,15 +395,15 @@ class VQE(QuantumProgram):
                 ham_op = self.hamiltonian_ops[ham_op_index]
                 pair = (
                     ham_op,
-                    cur_result[c],
                     marginal_counts(cur_result[c], ham_op.wires.tolist()),
                 )
                 marginal_results.append(pair)
-            for result in marginal_results:
+
+            for ham_op, marginal_shots in marginal_results:
                 exp_value = sampled_expectation_value(
-                    result[2], "Z" * len(list(result[2].keys())[0])
+                    marginal_shots, "Z" * len(ham_op.wires)
                 )
-                energies[p] += float(result[0].scalar) * exp_value
+                energies[p] += float(ham_op.scalar) * exp_value
 
         self.energies.append(energies)
 

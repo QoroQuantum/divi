@@ -9,16 +9,19 @@ class Circuit:
     def __init__(
         self,
         main_circuit,
-        tag_prefix: str = "",
-        circuit_generator=None,
+        tags: list[str],
+        qasm_circuits: list[str] = None,
     ):
         self.main_circuit = main_circuit
-        self.tag_prefix = tag_prefix
         self.circuit_type = main_circuit.__module__.split(".")[0]
-        self.convert_to_qasm()
+        self.tags = tags
+
+        self.qasm_circuits = qasm_circuits
+
+        if self.qasm_circuits is None:
+            self.convert_to_qasm()
 
         self.circuit_id = Circuit._id_counter
-        self.circuit_generator = circuit_generator
         Circuit._id_counter += 1
 
     def __str__(self):
@@ -26,31 +29,40 @@ class Circuit:
 
     def convert_to_qasm(self):
         if self.circuit_type == "pennylane":
-            return self._convert_pennylane_to_qasm()
+            self.qasm_circuits = to_openqasm(self.main_circuit)
+
         elif self.circuit_type == "qiskit":
-            return self._convert_qiskit_to_qasm()
+            self.qasm_circuits = [dumps(self.main_circuit)]
+
         else:
             raise ValueError(
                 f"Invalid circuit type. Circuit type {self.circuit_type} not currently supported."
             )
 
-    def _convert_pennylane_to_qasm(self):
-        try:
-            self.qasm_circuits = to_openqasm(self.main_circuit)
 
-            processed_tag_prefix = (
-                f"{self.tag_prefix}_" if len(self.tag_prefix) > 0 else ""
+class MetaCircuit:
+    def __init__(self, main_circuit, symbols):
+        self.main_circuit = main_circuit
+        self.symbols = symbols
+
+        self.compiled_circuit, self.measurements = to_openqasm(
+            main_circuit, return_measurements_separately=True
+        )
+
+    def initialize_circuit_from_params(
+        self, param_list, tag_prefix: str = "", precision: int = 8
+    ) -> Circuit:
+        final_qasm_str = self.compiled_circuit
+        for param, symbol in zip(param_list, self.symbols):
+            final_qasm_str = final_qasm_str.replace(
+                str(symbol), f"{param:.{precision}f}"
             )
-            self.tags = [
-                f"{processed_tag_prefix}{i}" for i in range(len(self.qasm_circuits))
-            ]
 
-            return
-        except Exception as e:
-            raise RuntimeError(f"Error converting Pennylane circuit to QASM: {e}")
+        processed_tag_prefix = f"{tag_prefix}_" if len(tag_prefix) > 0 else ""
+        tags = []
+        qasm_circuits = []
+        for i, meas_str in enumerate(self.measurements):
+            qasm_circuits.append(final_qasm_str + meas_str)
+            tags.append(f"{processed_tag_prefix}{i}")
 
-    def _convert_qiskit_to_qasm(self):
-        self.tags = [self.tag_prefix]
-        self.qasm_circuits = [dumps(self.main_circuit)]
-
-        return
+        return Circuit(self.main_circuit, qasm_circuits=qasm_circuits, tags=tags)

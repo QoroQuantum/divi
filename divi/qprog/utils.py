@@ -69,6 +69,7 @@ def to_openqasm(
     wires: Optional[Wires] = None,
     measure_all: bool = True,
     precision: Optional[int] = None,
+    return_measurements_separately: bool = False,
 ) -> str:
     """
     A modified version of PennyLane's function that is more compatible with having several measurements.
@@ -87,6 +88,8 @@ def to_openqasm(
         measure_all (bool): whether to perform a computational basis measurement on all qubits
             or just those specified in the script
         precision (int): decimal digits to display for parameters
+        return_measurements_separately (bool): whether to not append the measurement instructions
+            and their diagonalizations to the main circuit QASM code or to return separately.
 
     Returns:
         str: OpenQASM serialization of the circuit
@@ -119,6 +122,7 @@ def to_openqasm(
     main_qasm_str += _to_qasm(operations)
 
     qasm_circuits = []
+    measurement_qasms = []
 
     # Create a copy of the program for every measurement that we have
     for meas in qscript.measurements:
@@ -142,6 +146,13 @@ def to_openqasm(
                 wire_indx = qscript.wires.index(w)
                 measure_qasm_str += f"measure q[{wire_indx}] -> c[{wire_indx}];\n"
 
-        qasm_circuits.append(main_qasm_str + diag_qasm_str + measure_qasm_str)
+        if return_measurements_separately:
+            measurement_qasms.append(diag_qasm_str + measure_qasm_str)
+        else:
+            qasm_circuits.append(main_qasm_str + diag_qasm_str + measure_qasm_str)
 
-    return qasm_circuits
+    return (
+        qasm_circuits
+        if not return_measurements_separately
+        else (main_qasm_str, measurement_qasms)
+    )

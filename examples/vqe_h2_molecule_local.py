@@ -31,7 +31,6 @@ if __name__ == "__main__":
     vqe_problem.run()
     energies = vqe_problem.energies[-1]
 
-    print(energies)
     print(f"Minimum Energy Achieved: {min(energies.values()):.4f}")
     print(f"Total circuits: {vqe_problem.total_circuit_count}")
     print(f"Time taken: {round(time.time() - t1, 5)} seconds")

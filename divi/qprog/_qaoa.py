@@ -8,10 +8,11 @@ import numpy as np
 import pennylane as qml
 import pennylane.qaoa as pqaoa
 import rustworkx as rx
+import sympy as sp
 from qiskit.result import marginal_counts, sampled_expectation_value
 from scipy.optimize import minimize
 
-from divi.circuit import Circuit
+from divi.circuit import MetaCircuit
 from divi.qprog import QuantumProgram
 from divi.qprog.optimizers import Optimizers
 from divi.services.qoro_service import JobStatus
@@ -156,6 +157,8 @@ class QAOA(QuantumProgram):
             self.initial_state,
         ) = _resolve_circuit_layers(problem, graph, initial_state, **kwargs)
 
+        self._meta_circuits = self._create_meta_circuits()
+
         kwargs.pop("is_constrained", None)
         super().__init__(**kwargs)
 
@@ -171,7 +174,7 @@ class QAOA(QuantumProgram):
         if self.current_iteration == 0:
             self._reset_params()
             self.params = [
-                np.random.uniform(0, 2 * np.pi, (self.n_layers, 2))
+                np.random.uniform(0, 2 * np.pi, self.n_layers * 2)
                 for _ in range(n_param_sets)
             ]
         else:
@@ -195,12 +198,6 @@ class QAOA(QuantumProgram):
             (dict) The losses for each parameter set grouping.
         """
 
-        def process_results(results):
-            processed_results = {}
-            for r in results:
-                processed_results[r["label"]] = r["results"]
-            return processed_results
-
         if job_id is not None and self.qoro_service is not None:
             status = self.qoro_service.job_status(self.job_id, loop_until_complete=True)
             if status != JobStatus.COMPLETED:
@@ -209,7 +206,7 @@ class QAOA(QuantumProgram):
                 )
             results = self.qoro_service.get_job_results(self.job_id)
 
-        results = process_results(results)
+        results = {r["label"]: r["results"] for r in results}
         losses = {}
         if self._is_compute_probabilies:
             probs = {
@@ -235,16 +232,15 @@ class QAOA(QuantumProgram):
                 ham_op = self.cost_hamiltonian[ham_op_index]
                 pair = (
                     ham_op,
-                    shots_dict,
                     marginal_counts(shots_dict, ham_op.wires.tolist()),
                 )
                 marginal_results.append(pair)
 
-            for result in marginal_results:
+            for ham_op, marginal_shots in marginal_results:
                 exp_value = sampled_expectation_value(
-                    result[2], "Z" * len(list(result[2].keys())[0])
+                    marginal_shots, "Z" * len(ham_op.wires)
                 )
-                losses[p] += float(result[0].scalar) * exp_value
+                losses[p] += float(ham_op.scalar) * exp_value
 
         if self._is_compute_probabilies:
             self.probs.append(probs)
@@ -253,24 +249,24 @@ class QAOA(QuantumProgram):
 
         return losses
 
-    def _generate_circuits(self, params=None, **kwargs):
+    def _create_meta_circuits(self):
         """
-        Generate the circuits for the QAOA problem.
+        Generate the meta circuits for the QAOA problem.
 
         In this method, we generate bulk circuits based on the selected parameters.
         """
 
-        # Clear the previous circuit batch
-        self.circuits[:] = []
+        betas = sp.symarray("β", self.n_layers)
+        gammas = sp.symarray("γ", self.n_layers)
 
-        final_measurement = kwargs.pop("final_measurement", False)
+        sym_params = np.vstack((betas, gammas)).transpose()
 
-        def qaoa_layer(params):
+        def _qaoa_layer(params):
             gamma, beta = params
             pqaoa.cost_layer(gamma, self.cost_hamiltonian)
             pqaoa.mixer_layer(beta, self.mixer_hamiltonian)
 
-        def _prepare_circuit(hamiltonian, params):
+        def _prepare_circuit(hamiltonian, params, final_measurement):
             """
             Prepare the circuit for the QAOA problem.
             Args:
@@ -287,21 +283,52 @@ class QAOA(QuantumProgram):
                 for i in range(self.n_qubits):
                     qml.Hadamard(wires=i)
 
-            qml.layer(qaoa_layer, self.n_layers, params)
+            qml.layer(_qaoa_layer, self.n_layers, params)
 
             if final_measurement:
                 return qml.probs()
             else:
                 return [qml.sample(term) for term in hamiltonian]
 
-        params = self.params if params is None else [params.reshape(-1, 2)]
+        return {
+            "opt_circuit": MetaCircuit(
+                qml.tape.make_qscript(_prepare_circuit)(
+                    self.cost_hamiltonian, sym_params, final_measurement=False
+                ),
+                symbols=sym_params.flatten(),
+            ),
+            "meas_circuit": MetaCircuit(
+                qml.tape.make_qscript(_prepare_circuit)(
+                    self.cost_hamiltonian, sym_params, final_measurement=True
+                ),
+                symbols=sym_params.flatten(),
+            ),
+        }
+
+    def _generate_circuits(self, params=None, **kwargs):
+        """
+        Generate the circuits for the QAOA problem.
+
+        In this method, we generate bulk circuits based on the selected parameters.
+        """
+
+        # Clear the previous circuit batch
+        self.circuits[:] = []
+
+        circuit_type = (
+            "opt_circuit"
+            if not kwargs.pop("measurement_phase", False)
+            else "meas_circuit"
+        )
+
+        params = self.params if params is None else [params]
 
         for p, params_group in enumerate(params):
-            qscript = qml.tape.make_qscript(_prepare_circuit)(
-                self.cost_hamiltonian, params_group
+            circuit = self._meta_circuits[circuit_type].initialize_circuit_from_params(
+                params_group, tag_prefix=f"{p}"
             )
 
-            self.circuits.append(Circuit(qscript, tag_prefix=f"{p}"))
+            self.circuits.append(circuit)
 
     def run(self, store_data=False, data_file=None):
         """
@@ -336,7 +363,7 @@ class QAOA(QuantumProgram):
 
             def cost_function(params):
                 self._is_compute_probabilies = False
-                self._generate_circuits(params, final_measurement=False)
+                self._generate_circuits(params, measurement_phase=False)
                 losses = self._dispatch_circuits_and_process_results(
                     store_data=store_data, data_file=data_file
                 )
@@ -344,7 +371,7 @@ class QAOA(QuantumProgram):
                 self.losses.append(losses)
 
                 self._is_compute_probabilies = True
-                self._generate_circuits(params, final_measurement=True)
+                self._generate_circuits(params, measurement_phase=True)
                 self._dispatch_circuits_and_process_results(
                     store_data=store_data, data_file=data_file
                 )
