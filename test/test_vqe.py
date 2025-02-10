@@ -12,7 +12,7 @@ def test_vqe_initialization():
     )
     assert vqe_problem is not None, "VQE should be initialized"
     assert (
-        len(vqe_problem.hamiltonian_ops) == 2
+        len(vqe_problem.hamiltonian) == 2
     ), "Hamiltonian operators should be generated"
 
 
