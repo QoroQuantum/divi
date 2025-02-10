@@ -1,6 +1,5 @@
-from abc import ABC
-from abc import abstractmethod
-from concurrent.futures import ThreadPoolExecutor
+from abc import ABC, abstractmethod
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 
 class ProgramBatch(ABC):
@@ -25,17 +24,26 @@ class ProgramBatch(ABC):
         super().__init__()
 
         self.executor = None
+        self.manager = None
         self.programs = {}
 
     @abstractmethod
     def create_programs(self):
         pass
 
+    def reset(self):
+        self.programs.clear()
+        self.executor = None
+        self.manager = None
+
     def run(self):
         if self.executor is not None:
             raise RuntimeError("A batch is already being run.")
 
-        self.executor = ThreadPoolExecutor()
+        if len(self.programs) == 0:
+            raise RuntimeError("No programs to run.")
+
+        self.executor = ProcessPoolExecutor()
 
         self.futures = [
             self.executor.submit(program.run) for program in self.programs.values()
@@ -48,15 +56,34 @@ class ProgramBatch(ABC):
         if self.executor is None:
             return
 
-        self.executor.shutdown(wait=True, cancel_futures=False)
-        self.executor = None
+        exceptions = []
+        try:
+            # Ensure all futures are completed and handle exceptions.
+            for future in as_completed(self.futures):
+                try:
+                    future.result()  # Raises an exception if the task failed.
+                except Exception as e:
+                    exceptions.append(e)
+        finally:
+            if self.executor:
+                self.executor.shutdown(wait=True, cancel_futures=False)
+                self.executor = None
+                self._total_circuit_count = sum(
+                    future.result() for future in self.futures
+                )
+                self.futures = []
+
+        if exceptions:
+            for i, exc in enumerate(exceptions, 1):
+                print(f"Task {i} failed with exception: {exc}")
+            raise RuntimeError("One or more tasks failed. Check logs for details.")
 
     @property
     def total_circuit_count(self):
-        return sum(prog.total_circuit_count for prog in self.programs.values())
+        return self._total_circuit_count
 
     @total_circuit_count.setter
-    def _(self, value):
+    def _(self, _):
         raise RuntimeError("Can not set total circuit count value.")
 
     @abstractmethod

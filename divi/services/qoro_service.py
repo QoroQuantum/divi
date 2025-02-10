@@ -1,10 +1,7 @@
-import os
+import base64
+import gzip
 import os
 import time
-import gzip
-import base64
-import json
-
 from enum import Enum
 from http import HTTPStatus
 
@@ -62,21 +59,24 @@ class QoroService:
         """
         Send circuits to the Qoro API for execution
 
-        args:
+        Args:
             circuits: list of circuits to be sent as QASM strings
             shots (optional): number of shots to be executed for each circuit, default 1000
             tag (optional): tag to be used for the job, defaut "default"
-        return:
+        Returns:
             job_id: The job id of the job created
         """
+
         def _compress_data(value):
-            return base64.b64encode(gzip.compress(value.encode("utf-8"))).decode("utf-8")
+            return base64.b64encode(gzip.compress(value.encode("utf-8"))).decode(
+                "utf-8"
+            )
 
         data = {
             "circuits": {key: _compress_data(value) for key, value in circuits.items()},
             "shots": shots,
             "tag": tag,
-            "type": job_type.value
+            "type": job_type.value,
         }
 
         response = requests.post(
@@ -92,8 +92,7 @@ class QoroService:
             job_id = response.json()["job_id"]
             return job_id
         elif response.status_code == HTTPStatus.UNAUTHORIZED:
-            raise requests.exceptions.HTTPError(
-                "401 Unauthorized: Invalid API token")
+            raise requests.exceptions.HTTPError("401 Unauthorized: Invalid API token")
         else:
             raise requests.exceptions.HTTPError(
                 f"{response.status_code}: {response.reason}"
@@ -103,9 +102,9 @@ class QoroService:
         """
         Delete a job from the Qoro Database.
 
-        args:
+        Args:
             job_id: The ID of the job to be deleted
-        return:
+        Returns:
             response: The response from the API
         """
         response = requests.delete(
@@ -124,9 +123,9 @@ class QoroService:
         """
         Get the results of a job from the Qoro Database.
 
-        args:
+        Args:
             job_id: The ID of the job to get results from
-        return:
+        Returns:
             results: The results of the job
         """
         response = requests.get(
@@ -156,18 +155,16 @@ class QoroService:
     ):
         """
         Get the status of a job and optionally execute function *on_complete* on the results
-        Get the status of a job and optionally execute function *on_complete* on the results
         if the status is COMPLETE.
 
-        args:
-            job_id: The job id of the job
+        Args:
             job_id: The job id of the job
             loop_until_complete (optional): A flag to loop until the job is completed
             on_complete (optional): A function to be called when the job is completed
             timeout (optional): The time to wait between retries
             max_retries (optional): The maximum number of retries
             verbose (optional): A flag to print the when retrying
-        return:
+        Returns:
             status: The status of the job
         """
 
@@ -192,7 +189,6 @@ class QoroService:
                 job_status, response = _poll_job_status()
                 if job_status == JobStatus.COMPLETED.value:
                     results = response.json()["results"]
-                    results = response.json()["results"]
                     completed = True
                     break
                 if retries >= max_retries:
@@ -200,10 +196,6 @@ class QoroService:
                 retries += 1
                 time.sleep(timeout)
                 if verbose:
-                    print(
-                        f"Retrying: {retries} times",
-                        f"Run time: {retries*timeout} seconds",
-                    )
                     print(
                         f"Retrying: {retries} times",
                         f"Run time: {retries*timeout} seconds",

@@ -10,7 +10,8 @@ class Optimizers(Enum):
     def describe(self):
         return self.name, self.value
 
-    def num_param_sets(self):
+    @property
+    def n_param_sets(self):
         if self == Optimizers.NELDER_MEAD:
             return 1
         elif self == Optimizers.MONTE_CARLO:
@@ -25,14 +26,17 @@ class Optimizers(Enum):
         if self == Optimizers.MONTE_CARLO:
             losses = kwargs.pop("losses")
             smallest_energy_keys = sorted(losses, key=lambda k: losses[k])[
-                :self.samples()]
+                : self.samples()
+            ]
             new_params = []
             for key in smallest_energy_keys:
                 new_param_set = [
                     np.random.normal(
-                        params[int(key)], 1 / (2 * iteration), size=params[int(key)].shape
+                        params[int(key)],
+                        1 / (2 * iteration),
+                        size=params[int(key)].shape,
                     )
-                    for _ in range(int(self.num_param_sets()))
+                    for _ in range(self.n_param_sets)
                 ]
                 for new_param in new_param_set:
                     new_param = np.clip(new_param, 0, 2 * np.pi)

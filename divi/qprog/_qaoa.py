@@ -1,20 +1,20 @@
 import logging
-from concurrent.futures import ThreadPoolExecutor
+import re
 from typing import Literal, get_args
 
+import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pennylane as qml
 import pennylane.qaoa as pqaoa
 import rustworkx as rx
-from qiskit.result import marginal_counts
+from qiskit.result import marginal_counts, sampled_expectation_value
 from scipy.optimize import minimize
 
 from divi.circuit import Circuit
 from divi.qprog import QuantumProgram
 from divi.qprog.optimizers import Optimizers
-from divi.qprog.utils import counts_to_expectation_value
-from divi.services.qoro_service import JobStatus, JobTypes
+from divi.services.qoro_service import JobStatus
 
 # Set up your logger
 logger = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ _SUPPORTED_PROBLEMS_LITERAL = Literal[
 ]
 _SUPPORTED_PROBLEMS = get_args(_SUPPORTED_PROBLEMS_LITERAL)
 
-_SUPPPORTED_INITIAL_STATES_LITERAL = Literal[
+_SUPPORTED_INITIAL_STATES_LITERAL = Literal[
     "Zeros", "Ones", "Superposition", "Recommended"
 ]
 
@@ -69,13 +69,14 @@ def _resolve_circuit_layers(problem, graph, initial_state, **kwargs):
     optional metadata returned by Pennylane if applicable
     """
 
+    is_constrained = kwargs.pop("is_constrained", True)
+
     if problem in (
         "max_clique",
         "max_independent_set",
         "max_weight_cycle",
         "min_vertex_cover",
     ):
-        is_constrained = kwargs.pop("is_constrained", True)
         params = (graph, is_constrained)
     else:
         params = (graph,)
@@ -96,7 +97,7 @@ class QAOA(QuantumProgram):
         problem: _SUPPORTED_PROBLEMS_LITERAL,
         graph: nx.Graph | rx.PyGraph,
         n_layers: int,
-        initial_state: _SUPPPORTED_INITIAL_STATES_LITERAL = "Recommended",
+        initial_state: _SUPPORTED_INITIAL_STATES_LITERAL = "Recommended",
         optimizer=Optimizers.MONTE_CARLO,
         max_iterations=10,
         shots=5000,
@@ -105,7 +106,7 @@ class QAOA(QuantumProgram):
         """
         Initialize the QAOA problem.
 
-        args:
+        Args:
             problem (str): The graph problem to solve.
             graph (networkx.Graph or rustworkx.PyGraph): The graph representing the problem
             n_layers (int): number of QAOA layers
@@ -119,24 +120,34 @@ class QAOA(QuantumProgram):
             )
         self.problem = problem
 
-        if initial_state not in get_args(_SUPPPORTED_INITIAL_STATES_LITERAL):
+        if initial_state not in get_args(_SUPPORTED_INITIAL_STATES_LITERAL):
             raise ValueError(
-                f"Unsupported Initial State. Got {initial_state}. Must be one of: {get_args(_SUPPPORTED_INITIAL_STATES_LITERAL)}"
+                f"Unsupported Initial State. Got {initial_state}. Must be one of: {get_args(_SUPPORTED_INITIAL_STATES_LITERAL)}"
             )
 
         if n_layers < 1 or not isinstance(n_layers, int):
             raise ValueError(
                 f"Number of layers should be a positive integer. Got {n_layers}."
             )
-        self.n_layers = n_layers
 
+        # Local Variables
+        self.n_layers = n_layers
         self.optimizer = optimizer
-        self.current_iteration = 0
-        self.max_iterations = max_iterations
-        self.params = []
-        self.num_qubits = graph.number_of_nodes()
         self.shots = shots
+        self.max_iterations = max_iterations
+        self.n_qubits = graph.number_of_nodes()
+        self.current_iteration = 0
+        self.params = []
+        self._solution_nodes = None
+
+        # Shared Variables
         self.losses = []
+        if (m_list_losses := kwargs.pop("losses", None)) is not None:
+            self.losses = m_list_losses
+
+        self.probs = []
+        if (m_list_probs := kwargs.pop("probs", None)) is not None:
+            self.probs = m_list_probs
 
         (
             self.cost_hamiltonian,
@@ -155,19 +166,17 @@ class QAOA(QuantumProgram):
         """
         Run the optimization step for the QAOA problem.
         """
-        num_param_sets = self.optimizer.num_param_sets()
+        n_param_sets = self.optimizer.n_param_sets
 
         if self.current_iteration == 0:
             self._reset_params()
             self.params = [
-                np.random.uniform(0, 2 * np.pi, 2) for _ in range(num_param_sets)
+                np.random.uniform(0, 2 * np.pi, (self.n_layers, 2))
+                for _ in range(n_param_sets)
             ]
         else:
             # Optimize the QAOA problem.
-            if self.optimizer == Optimizers.NELDER_MEAD:
-                raise NotImplementedError
-
-            elif self.optimizer == Optimizers.MONTE_CARLO:
+            if self.optimizer == Optimizers.MONTE_CARLO:
                 self.params = self.optimizer.compute_new_parameters(
                     self.params,
                     self.current_iteration,
@@ -182,7 +191,7 @@ class QAOA(QuantumProgram):
         """
         Post-process the results of the QAOA problem.
 
-        return:
+        Returns:
             (dict) The losses for each parameter set grouping.
         """
 
@@ -202,72 +211,103 @@ class QAOA(QuantumProgram):
 
         results = process_results(results)
         losses = {}
+        if self._is_compute_probabilies:
+            probs = {
+                outer_k: {
+                    inner_k: inner_v / self.shots
+                    for inner_k, inner_v in outer_v.items()
+                }
+                for outer_k, outer_v in results.items()
+            }
 
         for p, _ in enumerate(self.params):
+            if self._is_compute_probabilies:
+                break
+
             losses[p] = 0
             cur_result = {
                 key: value for key, value in results.items() if key.startswith(f"{p}")
             }
 
             marginal_results = []
-            for c in cur_result.keys():
-                ham_op_index = int(c.split("_")[-1])
+            for param_id, shots_dict in cur_result.items():
+                ham_op_index = int(param_id.split("_")[-1])
                 ham_op = self.cost_hamiltonian[ham_op_index]
                 pair = (
                     ham_op,
-                    cur_result[c],
-                    marginal_counts(cur_result[c], ham_op.wires.tolist()),
+                    shots_dict,
+                    marginal_counts(shots_dict, ham_op.wires.tolist()),
                 )
                 marginal_results.append(pair)
 
             for result in marginal_results:
-                losses[p] += float(result[0].scalar) * counts_to_expectation_value(
-                    result[2]
+                exp_value = sampled_expectation_value(
+                    result[2], "Z" * len(list(result[2].keys())[0])
                 )
+                losses[p] += float(result[0].scalar) * exp_value
 
-        self.losses.append(losses)
+        if self._is_compute_probabilies:
+            self.probs.append(probs)
+        else:
+            self.losses.append(losses)
 
         return losses
 
-    def _generate_circuits(self, params=None):
+    def _generate_circuits(self, params=None, **kwargs):
         """
         Generate the circuits for the QAOA problem.
 
         In this method, we generate bulk circuits based on the selected parameters.
         """
 
-        def qaoa_layer(gamma, alpha):
-            pqaoa.cost_layer(gamma, self.cost_hamiltonian)
-            pqaoa.mixer_layer(alpha, self.mixer_hamiltonian)
+        # Clear the previous circuit batch
+        self.circuits[:] = []
 
-        def _prepare_circuit(hamiltonian_term, params):
+        final_measurement = kwargs.pop("final_measurement", False)
+
+        def qaoa_layer(params):
+            gamma, beta = params
+            pqaoa.cost_layer(gamma, self.cost_hamiltonian)
+            pqaoa.mixer_layer(beta, self.mixer_hamiltonian)
+
+        def _prepare_circuit(hamiltonian, params):
             """
             Prepare the circuit for the QAOA problem.
-            args:
+            Args:
                 hamiltonian (qml.Hamiltonian): The Hamiltonian term to measure
             """
 
+            # Note: could've been done as qml.[Insert Gate](wires=range(self.n_qubits))
+            # but there seems to be a bug with program capture in Pennylane.
+            # Maybe check when a new version comes out?
             if self.initial_state == "Ones":
-                qml.PauliX(wires=range(self.num_qubits))
+                for i in range(self.n_qubits):
+                    qml.PauliX(wires=i)
             elif self.initial_state == "Superposition":
-                qml.Hadamard(wires=range(self.num_qubits))
+                for i in range(self.n_qubits):
+                    qml.Hadamard(wires=i)
 
-            qml.layer(qaoa_layer, self.n_layers, gamma=params[0], alpha=params[1])
+            qml.layer(qaoa_layer, self.n_layers, params)
 
-            return qml.sample(hamiltonian_term)
+            if final_measurement:
+                return qml.probs()
+            else:
+                return [qml.sample(term) for term in hamiltonian]
 
-        params = self.params if params is None else [params]
+        params = self.params if params is None else [params.reshape(-1, 2)]
 
         for p, params_group in enumerate(params):
-            for i, term in enumerate(self.cost_hamiltonian):
-                qscript = qml.tape.make_qscript(_prepare_circuit)(term, params_group)
-                self.circuits.append(Circuit(qscript, tag=f"{p}_{i}"))
+            qscript = qml.tape.make_qscript(_prepare_circuit)(
+                self.cost_hamiltonian, params_group
+            )
+
+            self.circuits.append(Circuit(qscript, tag_prefix=f"{p}"))
 
     def run(self, store_data=False, data_file=None):
         """
         Run the QAOA problem. The outputs are stored in the QAOA object. Optionally, the data can be stored in a file.
 
-        args:
+        Args:
             store_data (bool): Whether to store the data for the iteration
             data_file (str): The file to store the data in
         """
@@ -275,36 +315,104 @@ class QAOA(QuantumProgram):
         if self.optimizer == Optimizers.MONTE_CARLO:
             while self.current_iteration < self.max_iterations:
                 logger.debug(f"Running iteration {self.current_iteration}")
-                self.run_iteration(store_data, data_file)
+
+                self._run_optimize()
+
+                self._is_compute_probabilies = False
+                self._generate_circuits(final_measurement=False)
+                self._dispatch_circuits_and_process_results(
+                    store_data=store_data, data_file=data_file
+                )
+
+                self._is_compute_probabilies = True
+                self._generate_circuits(final_measurement=True)
+                self._dispatch_circuits_and_process_results(
+                    store_data=store_data, data_file=data_file
+                )
+
+            return self.total_circuit_count
 
         elif self.optimizer == Optimizers.NELDER_MEAD:
 
             def cost_function(params):
-                self._generate_circuits(params)
-                results, param = self._prepare_and_send_circuits()
-                if param == "job_id":
-                    losses = self._post_process_results(job_id=results)
-                elif param == "circuit_results":
-                    losses = self._post_process_results(results=results)
+                self._is_compute_probabilies = False
+                self._generate_circuits(params, final_measurement=False)
+                losses = self._dispatch_circuits_and_process_results(
+                    store_data=store_data, data_file=data_file
+                )
 
                 self.losses.append(losses)
 
-                return losses[0]
-
-            def optimizer_loop_body():
-                result = minimize(
-                    cost_function,
-                    self.params[0],
-                    method="Nelder-Mead",
-                    options={"maxiter": self.max_iterations},
+                self._is_compute_probabilies = True
+                self._generate_circuits(params, final_measurement=True)
+                self._dispatch_circuits_and_process_results(
+                    store_data=store_data, data_file=data_file
                 )
-                return result.fun
+
+                return losses[0]
 
             self._reset_params()
 
             self.params = [
-                np.random.uniform(0, 2 * np.pi, 2)
-                for _ in range(self.optimizer.num_param_sets())
+                np.random.uniform(0, 2 * np.pi, self.n_layers * 2)
+                for _ in range(self.optimizer.n_param_sets)
             ]
 
-            return [optimizer_loop_body()]
+            minimize(
+                cost_function,
+                self.params[0],
+                method="Nelder-Mead",
+                options={"maxiter": self.max_iterations},
+            )
+
+            return self.total_circuit_count
+
+    def compute_final_solution(self):
+        # Convert losses dict to list to apply ordinal operations
+        final_losses_list = list(self.losses[-1].values())
+
+        # Get the index of the smallest loss in the last operation
+        best_solution_idx = min(
+            range(len(final_losses_list)),
+            key=lambda x: final_losses_list.__getitem__(x),
+        )
+
+        # Retrieve the probability distribution dictionary of the best solution
+        best_solution_probs = self.probs[-1][f"{best_solution_idx}_0"]
+
+        # Retrieve the bitstring with the actual best solution
+        # Reverse to account for the endianness difference
+        best_solution_bitstring = max(best_solution_probs, key=best_solution_probs.get)[
+            ::-1
+        ]
+
+        self._solution_nodes = [
+            m.start() for m in re.finditer("1", best_solution_bitstring)
+        ]
+
+        return self._solution_nodes
+
+    def draw_solution(self):
+        if not self._solution_nodes:
+            self.compute_final_solution()
+
+        # Create a dictionary for node colors
+        node_colors = [
+            "red" if node in self._solution_nodes else "lightblue"
+            for node in self.graph.nodes()
+        ]
+
+        plt.figure(figsize=(10, 8))
+
+        pos = nx.spring_layout(self.graph)
+
+        nx.draw_networkx_nodes(self.graph, pos, node_color=node_colors, node_size=500)
+        nx.draw_networkx_edges(self.graph, pos)
+        nx.draw_networkx_labels(self.graph, pos, font_size=10, font_weight="bold")
+
+        # Remove axes
+        plt.axis("off")
+
+        # Show the plot
+        plt.tight_layout()
+        plt.show()
