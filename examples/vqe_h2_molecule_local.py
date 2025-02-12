@@ -19,6 +19,7 @@ if __name__ == "__main__":
         symbols=["H", "H"],
         bond_length=0.5,
         coordinate_structure=[(0, 0, 0), (0, 0, 1)],
+        n_layers=1,
         ansatz=VQEAnsatze.HARTREE_FOCK,
         optimizer=Optimizers.MONTE_CARLO,
         shots=5000,

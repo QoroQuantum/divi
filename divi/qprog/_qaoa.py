@@ -223,7 +223,8 @@ class QAOA(QuantumProgram):
         """
         Generate the meta circuits for the QAOA problem.
 
-        In this method, we generate bulk circuits based on the selected parameters.
+        In this method, we generate the scaffolding for the circuits that will be
+        executed during optimization.
         """
 
         betas = sp.symarray("β", self.n_layers)

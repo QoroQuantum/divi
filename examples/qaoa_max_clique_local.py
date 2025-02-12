@@ -11,7 +11,7 @@ if __name__ == "__main__":
         G,
         n_layers=2,
         optimizer=Optimizers.NELDER_MEAD,
-        max_iterations=5,
+        max_iterations=10,
         is_constrained=True,
         qoro_service=None,
     )
