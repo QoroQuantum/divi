@@ -335,7 +335,7 @@ class VQE(QuantumProgram):
         """
         Run the optimization step for the VQE problem.
         """
-        n_param_sets = self.optimizer.n_param_sets()
+        n_param_sets = self.optimizer.n_param_sets
 
         if self.current_iteration == 0:
             self._reset_params()
