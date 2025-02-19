@@ -69,7 +69,10 @@ class ProgramBatch(ABC):
                 self.executor.shutdown(wait=True, cancel_futures=False)
                 self.executor = None
                 self._total_circuit_count = sum(
-                    future.result() for future in self.futures
+                    future.result()[0] for future in self.futures
+                )
+                self._total_run_time = sum(
+                    future.result()[1] for future in self.futures
                 )
                 self.futures = []
 
@@ -85,6 +88,14 @@ class ProgramBatch(ABC):
     @total_circuit_count.setter
     def _(self, _):
         raise RuntimeError("Can not set total circuit count value.")
+
+    @property
+    def total_run_time(self):
+        return self._total_run_time
+
+    @total_run_time.setter
+    def _(self, _):
+        raise RuntimeError("Can not set total run time value.")
 
     @abstractmethod
     def aggregate_results(self):

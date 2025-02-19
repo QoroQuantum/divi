@@ -302,7 +302,7 @@ class VQE(QuantumProgram):
                     store_data=store_data, data_file=data_file
                 )
 
-            return self.total_circuit_count
+            return self.total_circuit_count, self.run_time
 
         elif self.optimizer == Optimizers.NELDER_MEAD:
 
@@ -330,7 +330,7 @@ class VQE(QuantumProgram):
                 options={"maxiter": self.max_iterations},
             )
 
-            return self.total_circuit_count
+            return self.total_circuit_count, self.run_time
 
     def _run_optimize(self):
         """

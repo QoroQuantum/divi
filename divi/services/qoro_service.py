@@ -188,7 +188,7 @@ class QoroService:
             while True:
                 job_status, response = _poll_job_status()
                 if job_status == JobStatus.COMPLETED.value:
-                    results = response.json()["results"]
+                    response = response.json()
                     completed = True
                     break
                 if retries >= max_retries:
@@ -201,7 +201,8 @@ class QoroService:
                         f"Run time: {retries*timeout} seconds",
                     )
             if completed and on_complete:
-                return on_complete(results)
+                on_complete(response)
+                return JobStatus.COMPLETED
             elif completed:
                 return JobStatus.COMPLETED
             else:
