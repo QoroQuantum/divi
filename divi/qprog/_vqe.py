@@ -299,7 +299,6 @@ class VQE(QuantumProgram):
                 )
 
                 self.energies.append(energies)
-
             return self.total_circuit_count, self.run_time
 
         elif self.optimizer == Optimizers.NELDER_MEAD:
