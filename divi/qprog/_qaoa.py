@@ -9,7 +9,6 @@ import pennylane as qml
 import pennylane.qaoa as pqaoa
 import rustworkx as rx
 import sympy as sp
-from qiskit.result import marginal_counts, sampled_expectation_value
 from scipy.optimize import minimize
 
 from divi.circuit import MetaCircuit
