@@ -4,9 +4,10 @@ from enum import Enum
 
 import numpy as np
 import pennylane as qml
+import sympy as sp
 from scipy.optimize import minimize
 
-from divi.circuit import Circuit
+from divi.circuit import Circuit, MetaCircuit
 from divi.qprog import QuantumProgram
 from divi.qprog.optimizers import Optimizers
 
@@ -151,7 +152,28 @@ class VQE(QuantumProgram):
         return hamiltonian
 
     def _create_meta_circuits(self):
-        pass
+        weights_syms = sp.symarray("w", (self.n_layers, self.n_params))
+
+        def _prepare_circuit(ansatz, hamiltonian, params):
+            """
+            Prepare the circuit for the VQE problem.
+            Args:
+                ansatz (Ansatze): The ansatz to use
+                hamiltonian (qml.Hamiltonian): The Hamiltonian to use
+                params (list): The parameters to use for the ansatz
+            """
+            self._set_ansatz(ansatz, params)
+
+            return [qml.sample(term) for term in hamiltonian]
+
+        return {
+            "circuit": MetaCircuit(
+                qml.tape.make_qscript(_prepare_circuit)(
+                    self.ansatz, self.hamiltonian, weights_syms
+                ),
+                symbols=weights_syms.flatten(),
+            )
+        }
 
     def _set_ansatz(self, ansatz: VQEAnsatze, params):
         """
@@ -249,30 +271,14 @@ class VQE(QuantumProgram):
 
         self.circuits[:] = []
 
-        def _prepare_circuit(ansatz, hamiltonian, params):
-            """
-            Prepare the circuit for the VQE problem.
-            Args:
-                ansatz (Ansatze): The ansatz to use
-                hamiltonian (qml.Hamiltonian): The Hamiltonian to use
-                params (list): The parameters to use for the ansatz
-            """
-            self._set_ansatz(ansatz, params)
-
-            return [qml.sample(term) for term in hamiltonian]
-
         params = self.params if params is None else [params]
 
         for p, params_group in enumerate(params):
-            qscript = qml.tape.make_qscript(_prepare_circuit)(
-                self.ansatz, self.hamiltonian, params_group
+            circuit = self._meta_circuits["circuit"].initialize_circuit_from_params(
+                params_group, tag_prefix=f"{p}"
             )
-            self.circuits.append(
-                Circuit(
-                    qscript,
-                    tags=[f"{p}_{ham}" for ham in range(len(self.hamiltonian))],
-                )
-            )
+
+            self.circuits.append(circuit)
 
     def run(self, store_data=False, data_file=None):
         """
