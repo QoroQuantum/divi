@@ -291,7 +291,7 @@ class QAOA(QuantumProgram):
             else "meas_circuit"
         )
 
-        params = self.params if params is None else [params]
+        params = self.params if params is None else [params.reshape(-1, 2)]
 
         for p, params_group in enumerate(params):
             circuit = self._meta_circuits[circuit_type].initialize_circuit_from_params(
