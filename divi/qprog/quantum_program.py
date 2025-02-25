@@ -19,6 +19,7 @@ class QuantumProgram(ABC):
 
         self.qoro_service = qoro_service
         self.job_id = None
+        self.run_time = 0
 
     @property
     def total_circuit_count(self):
@@ -27,6 +28,14 @@ class QuantumProgram(ABC):
     @total_circuit_count.setter
     def _(self, value):
         raise RuntimeError("Can not set total circuit count value.")
+
+    @property
+    def total_run_time(self):
+        return self.run_time
+
+    @total_run_time.setter
+    def _(self, value):
+        raise RuntimeError("Can not set total run time value.")
 
     @abstractmethod
     def _generate_circuits(self, params=None, **kwargs):
@@ -101,11 +110,16 @@ class QuantumProgram(ABC):
 
         results, backend_return_type = self._prepare_and_send_circuits()
 
+        def add_runtime(response):
+            self.run_time += float(response["run_time"])
+
         if backend_return_type == "job_id":
             job_id = results
             if job_id is not None and self.qoro_service is not None:
                 status = self.qoro_service.job_status(
-                    self.job_id, loop_until_complete=True
+                    self.job_id,
+                    loop_until_complete=True,
+                    on_complete=add_runtime,
                 )
                 if status != JobStatus.COMPLETED:
                     raise Exception(
