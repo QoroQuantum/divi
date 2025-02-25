@@ -88,7 +88,7 @@ class QuantumProgram(ABC):
 
         self._total_circuit_count += len(job_circuits)
 
-        if self.qoro_service is not None:            
+        if self.qoro_service is not None:
             self.job_id = self.qoro_service.send_circuits(
                 job_circuits, shots=self.shots
             )
