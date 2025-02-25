@@ -110,7 +110,7 @@ class QuantumProgram(ABC):
 
         results, backend_return_type = self._prepare_and_send_circuits()
 
-        def add_runtime(response):
+        def add_run_time(response):
             self.run_time += float(response["run_time"])
 
         if backend_return_type == "job_id":
@@ -119,7 +119,7 @@ class QuantumProgram(ABC):
                 status = self.qoro_service.job_status(
                     self.job_id,
                     loop_until_complete=True,
-                    on_complete=add_runtime,
+                    on_complete=add_run_time,
                 )
                 if status != JobStatus.COMPLETED:
                     raise Exception(

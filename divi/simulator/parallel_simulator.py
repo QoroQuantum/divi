@@ -48,7 +48,7 @@ class ParallelSimulator:
         return results
 
     @staticmethod
-    def estimate_runtime_single_circuit(
+    def estimate_run_time_single_circuit(
         circuit: str,
         backend: Optional[FakeBackendV2] = None,
         **transpilation_kwargs,
@@ -74,7 +74,7 @@ class ParallelSimulator:
 
         dag = circuit_to_dag(transpiled_circuit)
 
-        total_runtime_s = 0
+        total_run_time_s = 0
         for node in dag.longest_path():
             if not isinstance(node, DAGOpNode):
                 continue
@@ -88,7 +88,7 @@ class ParallelSimulator:
                 idx = tuple(qarg._index for qarg in node.qargs)
 
             try:
-                total_runtime_s += (
+                total_run_time_s += (
                     backend.instruction_durations.duration_by_name_qubits[
                         (op_name, idx)
                     ][0]
@@ -96,9 +96,9 @@ class ParallelSimulator:
             except KeyError:
                 warn(f"Instruction duration not found: {op_name}")
 
-        return total_runtime_s
+        return total_run_time_s
 
-    def estimate_runtime_batch(
+    def estimate_run_time_batch(
         self,
         circuits: Optional[list[str]] = None,
         precomputed_duration: Optional[list[float]] = None,
@@ -114,33 +114,33 @@ class ParallelSimulator:
             float: Estimated execution time in seconds.
         """
 
-        # Compute the runtime estimates for each given circuit, in descending order
+        # Compute the run time estimates for each given circuit, in descending order
         if precomputed_duration is None:
             with Pool() as p:
-                estimated_runtimes = p.map(
+                estimated_run_times = p.map(
                     partial(
-                        self.estimate_runtime_single_circuit, **transpilation_kwargs
+                        self.estimate_run_time_single_circuit, **transpilation_kwargs
                     ),
                     circuits,
                 )
-            estimated_runtimes_sorted = sorted(estimated_runtimes, reverse=True)
+            estimated_run_times_sorted = sorted(estimated_run_times, reverse=True)
         else:
-            estimated_runtimes_sorted = sorted(precomputed_duration, reverse=True)
+            estimated_run_times_sorted = sorted(precomputed_duration, reverse=True)
 
-        # Just return the longest runtime if there are enough QPUs
-        if self.n_qpus >= len(estimated_runtimes_sorted):
-            return estimated_runtimes_sorted[0]
+        # Just return the longest run time if there are enough QPUs
+        if self.n_qpus >= len(estimated_run_times_sorted):
+            return estimated_run_times_sorted[0]
 
-        # Initialize processor queue with (total_runtime, processor_id)
+        # Initialize processor queue with (total_run_time, processor_id)
         # Using a min heap to always get the processor that will be free first
         processors = [(0, i) for i in range(self.n_qpus)]
         heapq.heapify(processors)
 
         # Assign each task to the processor that will be free first
-        for runtime in estimated_runtimes_sorted:
-            current_runtime, processor_id = heapq.heappop(processors)
-            new_runtime = current_runtime + runtime
-            heapq.heappush(processors, (new_runtime, processor_id))
+        for run_time in estimated_run_times_sorted:
+            current_run_time, processor_id = heapq.heappop(processors)
+            new_run_time = current_run_time + run_time
+            heapq.heappush(processors, (new_run_time, processor_id))
 
-        # The total runtime is the maximum runtime across all processors
-        return max(runtime for runtime, _ in processors)
+        # The total run time is the maximum run time across all processors
+        return max(run_time for run_time, _ in processors)
