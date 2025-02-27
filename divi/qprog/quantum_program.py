@@ -10,13 +10,16 @@ from divi.simulator.parallel_simulator import ParallelSimulator
 
 
 class QuantumProgram(ABC):
-    def __init__(self, qoro_service: Optional[QoroService] = None, **kwargs):
+    def __init__(
+        self, shots: int = 5000, qoro_service: Optional[QoroService] = None, **kwargs
+    ):
         self.circuits = []
         if (m_list_circuits := kwargs.pop("circuits", None)) is not None:
             self.circuits = m_list_circuits
 
         self._total_circuit_count = 0
 
+        self.shots = shots
         self.qoro_service = qoro_service
         self.job_id = None
         self.run_time = 0

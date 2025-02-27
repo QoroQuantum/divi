@@ -99,7 +99,6 @@ class QAOA(QuantumProgram):
         initial_state: _SUPPORTED_INITIAL_STATES_LITERAL = "Recommended",
         optimizer=Optimizers.MONTE_CARLO,
         max_iterations=10,
-        shots=5000,
         **kwargs,
     ):
         """
@@ -115,7 +114,7 @@ class QAOA(QuantumProgram):
 
         if problem not in _SUPPORTED_PROBLEMS:
             raise ValueError(
-                f"Unsupported Problem. Got {problem}. Must be one of: {_SUPPORTED_PROBLEMS}"
+                f"Unsupported Problem. Got '{problem}'. Must be one of: {_SUPPORTED_PROBLEMS}"
             )
         self.problem = problem
 
@@ -124,15 +123,9 @@ class QAOA(QuantumProgram):
                 f"Unsupported Initial State. Got {initial_state}. Must be one of: {get_args(_SUPPORTED_INITIAL_STATES_LITERAL)}"
             )
 
-        if n_layers < 1 or not isinstance(n_layers, int):
-            raise ValueError(
-                f"Number of layers should be a positive integer. Got {n_layers}."
-            )
-
         # Local Variables
         self.n_layers = n_layers
         self.optimizer = optimizer
-        self.shots = shots
         self.max_iterations = max_iterations
         self.n_qubits = graph.number_of_nodes()
         self.current_iteration = 0
