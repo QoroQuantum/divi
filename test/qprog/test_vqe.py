@@ -17,7 +17,7 @@ def test_vqe_basic_initialization():
         qoro_service=None,
     )
 
-    assert vqe_problem.shots == 6000
+    assert vqe_problem.shots == 2000
     assert vqe_problem.qoro_service is None
 
     assert vqe_problem.symbols == ["H", "H"]
