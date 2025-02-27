@@ -2,8 +2,8 @@ numpy==1.26.4
 scipy==1.14.1
 packaging==24.1
 pluggy==1.5.0
-PennyLane==0.37.0
-PennyLane-qiskit==0.37.0
+PennyLane==0.40.0
+PennyLane-qiskit==0.40.0
 qiskit==1.2.0
 qiskit-algorithms==0.3.1
 requests==2.32.3

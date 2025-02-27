@@ -19,6 +19,7 @@ if __name__ == "__main__":
         symbols=["H", "H"],
         bond_length=0.5,
         coordinate_structure=[(0, 0, 0), (0, 0, 1)],
+        n_layers=1,
         ansatz=VQEAnsatze.HARTREE_FOCK,
         optimizer=Optimizers.MONTE_CARLO,
         shots=5000,
@@ -31,7 +32,6 @@ if __name__ == "__main__":
     vqe_problem.run()
     energies = vqe_problem.energies[-1]
 
-    print(energies)
     print(f"Minimum Energy Achieved: {min(energies.values()):.4f}")
     print(f"Total circuits: {vqe_problem.total_circuit_count}")
     print(f"Time taken: {round(time.time() - t1, 5)} seconds")

@@ -143,7 +143,7 @@ def _node_partition_graph(
         raise ValueError("'avg_partition_size' must be a positive number.")
 
     if not n_clusters:
-        n_clusters = int(graph.number_of_nodes / avg_partition_size)
+        n_clusters = int(graph.number_of_nodes() / avg_partition_size)
 
     adj_matrix = nx.to_numpy_array(graph)
 
@@ -154,10 +154,15 @@ def _node_partition_graph(
         subgraph = graph.subgraph(
             [node for node, cluster in enumerate(partition) if cluster == i]
         )
-        total_edges += subgraph.number_of_edges()
-        subgraphs.append(subgraph)
 
-    print(f"ATTENTION: Total edges are fewer than the original graph {total_edges}")
+        if subgraph.number_of_edges() > 0:
+            total_edges += subgraph.number_of_edges()
+            subgraphs.append(subgraph)
+
+    if total_edges != graph.number_of_edges():
+        print(
+            f"ATTENTION: Total edges {total_edges} are different than the original graph {graph.number_of_edges()}"
+        )
     return subgraphs
 
 

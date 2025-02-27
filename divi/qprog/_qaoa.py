@@ -8,13 +8,12 @@ import numpy as np
 import pennylane as qml
 import pennylane.qaoa as pqaoa
 import rustworkx as rx
-from qiskit.result import marginal_counts, sampled_expectation_value
+import sympy as sp
 from scipy.optimize import minimize
 
-from divi.circuit import Circuit
+from divi.circuit import MetaCircuit
 from divi.qprog import QuantumProgram
 from divi.qprog.optimizers import Optimizers
-from divi.services.qoro_service import JobStatus
 
 # Set up your logger
 logger = logging.getLogger(__name__)
@@ -156,6 +155,13 @@ class QAOA(QuantumProgram):
             self.initial_state,
         ) = _resolve_circuit_layers(problem, graph, initial_state, **kwargs)
 
+        self.expval_hamiltonian_metadata = {
+            i: (term.wires, float(term.scalar))
+            for i, term in enumerate(self.cost_hamiltonian)
+        }
+
+        self._meta_circuits = self._create_meta_circuits()
+
         kwargs.pop("is_constrained", None)
         super().__init__(**kwargs)
 
@@ -171,7 +177,7 @@ class QAOA(QuantumProgram):
         if self.current_iteration == 0:
             self._reset_params()
             self.params = [
-                np.random.uniform(0, 2 * np.pi, (self.n_layers, 2))
+                np.random.uniform(0, 2 * np.pi, self.n_layers * 2)
                 for _ in range(n_param_sets)
             ]
         else:
@@ -187,7 +193,7 @@ class QAOA(QuantumProgram):
 
         self.current_iteration += 1
 
-    def _post_process_results(self, job_id=None, results=None):
+    def _post_process_results(self, results):
         """
         Post-process the results of the QAOA problem.
 
@@ -195,22 +201,6 @@ class QAOA(QuantumProgram):
             (dict) The losses for each parameter set grouping.
         """
 
-        def process_results(results):
-            processed_results = {}
-            for r in results:
-                processed_results[r["label"]] = r["results"]
-            return processed_results
-
-        if job_id is not None and self.qoro_service is not None:
-            status = self.qoro_service.job_status(self.job_id, loop_until_complete=True)
-            if status != JobStatus.COMPLETED:
-                raise Exception(
-                    "Job has not completed yet, cannot post-process results"
-                )
-            results = self.qoro_service.get_job_results(self.job_id)
-
-        results = process_results(results)
-        losses = {}
         if self._is_compute_probabilies:
             probs = {
                 outer_k: {
@@ -219,58 +209,34 @@ class QAOA(QuantumProgram):
                 }
                 for outer_k, outer_v in results.items()
             }
-
-        for p, _ in enumerate(self.params):
-            if self._is_compute_probabilies:
-                break
-
-            losses[p] = 0
-            cur_result = {
-                key: value for key, value in results.items() if key.startswith(f"{p}")
-            }
-
-            marginal_results = []
-            for param_id, shots_dict in cur_result.items():
-                ham_op_index = int(param_id.split("_")[-1])
-                ham_op = self.cost_hamiltonian[ham_op_index]
-                pair = (
-                    ham_op,
-                    shots_dict,
-                    marginal_counts(shots_dict, ham_op.wires.tolist()),
-                )
-                marginal_results.append(pair)
-
-            for result in marginal_results:
-                exp_value = sampled_expectation_value(
-                    result[2], "Z" * len(list(result[2].keys())[0])
-                )
-                losses[p] += float(result[0].scalar) * exp_value
-
-        if self._is_compute_probabilies:
             self.probs.append(probs)
-        else:
+
+        losses = super()._post_process_results(results)
+
+        if not self._is_compute_probabilies:
             self.losses.append(losses)
 
         return losses
 
-    def _generate_circuits(self, params=None, **kwargs):
+    def _create_meta_circuits(self):
         """
-        Generate the circuits for the QAOA problem.
+        Generate the meta circuits for the QAOA problem.
 
-        In this method, we generate bulk circuits based on the selected parameters.
+        In this method, we generate the scaffolding for the circuits that will be
+        executed during optimization.
         """
 
-        # Clear the previous circuit batch
-        self.circuits[:] = []
+        betas = sp.symarray("β", self.n_layers)
+        gammas = sp.symarray("γ", self.n_layers)
 
-        final_measurement = kwargs.pop("final_measurement", False)
+        sym_params = np.vstack((betas, gammas)).transpose()
 
-        def qaoa_layer(params):
+        def _qaoa_layer(params):
             gamma, beta = params
             pqaoa.cost_layer(gamma, self.cost_hamiltonian)
             pqaoa.mixer_layer(beta, self.mixer_hamiltonian)
 
-        def _prepare_circuit(hamiltonian, params):
+        def _prepare_circuit(hamiltonian, params, final_measurement):
             """
             Prepare the circuit for the QAOA problem.
             Args:
@@ -287,21 +253,52 @@ class QAOA(QuantumProgram):
                 for i in range(self.n_qubits):
                     qml.Hadamard(wires=i)
 
-            qml.layer(qaoa_layer, self.n_layers, params)
+            qml.layer(_qaoa_layer, self.n_layers, params)
 
             if final_measurement:
                 return qml.probs()
             else:
                 return [qml.sample(term) for term in hamiltonian]
 
+        return {
+            "opt_circuit": MetaCircuit(
+                qml.tape.make_qscript(_prepare_circuit)(
+                    self.cost_hamiltonian, sym_params, final_measurement=False
+                ),
+                symbols=sym_params.flatten(),
+            ),
+            "meas_circuit": MetaCircuit(
+                qml.tape.make_qscript(_prepare_circuit)(
+                    self.cost_hamiltonian, sym_params, final_measurement=True
+                ),
+                symbols=sym_params.flatten(),
+            ),
+        }
+
+    def _generate_circuits(self, params=None, **kwargs):
+        """
+        Generate the circuits for the QAOA problem.
+
+        In this method, we generate bulk circuits based on the selected parameters.
+        """
+
+        # Clear the previous circuit batch
+        self.circuits[:] = []
+
+        circuit_type = (
+            "opt_circuit"
+            if not kwargs.pop("measurement_phase", False)
+            else "meas_circuit"
+        )
+
         params = self.params if params is None else [params.reshape(-1, 2)]
 
         for p, params_group in enumerate(params):
-            qscript = qml.tape.make_qscript(_prepare_circuit)(
-                self.cost_hamiltonian, params_group
+            circuit = self._meta_circuits[circuit_type].initialize_circuit_from_params(
+                params_group, tag_prefix=f"{p}"
             )
 
-            self.circuits.append(Circuit(qscript, tag_prefix=f"{p}"))
+            self.circuits.append(circuit)
 
     def run(self, store_data=False, data_file=None):
         """
@@ -330,13 +327,13 @@ class QAOA(QuantumProgram):
                     store_data=store_data, data_file=data_file
                 )
 
-            return self.total_circuit_count
+            return self.total_circuit_count, self.run_time
 
         elif self.optimizer == Optimizers.NELDER_MEAD:
 
             def cost_function(params):
                 self._is_compute_probabilies = False
-                self._generate_circuits(params, final_measurement=False)
+                self._generate_circuits(params, measurement_phase=False)
                 losses = self._dispatch_circuits_and_process_results(
                     store_data=store_data, data_file=data_file
                 )
@@ -344,7 +341,7 @@ class QAOA(QuantumProgram):
                 self.losses.append(losses)
 
                 self._is_compute_probabilies = True
-                self._generate_circuits(params, final_measurement=True)
+                self._generate_circuits(params, measurement_phase=True)
                 self._dispatch_circuits_and_process_results(
                     store_data=store_data, data_file=data_file
                 )
@@ -365,7 +362,7 @@ class QAOA(QuantumProgram):
                 options={"maxiter": self.max_iterations},
             )
 
-            return self.total_circuit_count
+            return self.total_circuit_count, self.run_time
 
     def compute_final_solution(self):
         # Convert losses dict to list to apply ordinal operations

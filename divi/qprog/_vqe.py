@@ -4,18 +4,12 @@ from enum import Enum
 
 import numpy as np
 import pennylane as qml
-from qiskit.result import marginal_counts, sampled_expectation_value
+import sympy as sp
 from scipy.optimize import minimize
 
-from divi.circuit import Circuit
+from divi.circuit import Circuit, MetaCircuit
 from divi.qprog import QuantumProgram
 from divi.qprog.optimizers import Optimizers
-from divi.services.qoro_service import JobStatus
-
-try:
-    import openfermionpyscf
-except ImportError:
-    warnings.warn("openfermionpyscf not installed. Some functionality may be limited.")
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -42,7 +36,6 @@ class VQEAnsatze(Enum):
     RY = "RY"
     RYRZ = "RYRZ"
     HW_EFFICIENT = "HW_EFFICIENT"
-    LAYERED = "LAYERED"
     QAOA = "QAOA"
     HARTREE_FOCK = "HF"
 
@@ -50,35 +43,30 @@ class VQEAnsatze(Enum):
         return self.name, self.value
 
     def n_params(self, n_qubits, **kwargs):
-        if self == VQEAnsatze.UCCSD:
+        if self in (VQEAnsatze.UCCSD, VQEAnsatze.HARTREE_FOCK):
             singles, doubles = qml.qchem.excitations(
                 kwargs.pop("n_electrons"), n_qubits
             )
             s_wires, d_wires = qml.qchem.excitations_to_wires(singles, doubles)
+
             return len(s_wires) + len(d_wires)
-        elif self == VQEAnsatze.HARTREE_FOCK:
-            return 1
         elif self == VQEAnsatze.RY:
-            return n_qubits.num_qubits
+            return n_qubits
         elif self == VQEAnsatze.RYRZ:
-            return 2 * n_qubits.num_qubits
+            return 2 * n_qubits
         elif self == VQEAnsatze.HW_EFFICIENT:
-            # TODO
-            return 1
-        elif self == VQEAnsatze.LAYERED:
-            # TODO
-            return 1
+            raise NotImplementedError
         elif self == VQEAnsatze.QAOA:
-            # TODO
-            return 1
+            return qml.QAOAEmbedding.shape(n_layers=1, n_wires=n_qubits)[1]
 
 
 class VQE(QuantumProgram):
     def __init__(
         self,
         symbols,
-        bond_length,
+        bond_length: float,
         coordinate_structure,
+        n_layers: int,
         optimizer=Optimizers.MONTE_CARLO,
         ansatz=VQEAnsatze.HARTREE_FOCK,
         max_iterations=10,
@@ -101,8 +89,7 @@ class VQE(QuantumProgram):
         # Local Variables
         self.symbols = symbols
         self.bond_length = bond_length
-        self.n_qubits = 0
-        self.n_electrons = 0
+        self.n_layers = n_layers
         self.results = {}
         self.ansatz = ansatz
         self.optimizer = optimizer
@@ -120,129 +107,154 @@ class VQE(QuantumProgram):
             self.symbols
         ), "The number of symbols must match the number of coordinates"
 
-        self.hamiltonian_ops = self._generate_hamiltonian_operations()
+        self.hamiltonian = self._generate_hamiltonian_operations()
+
+        self.expval_hamiltonian_metadata = {
+            i: (term.wires, float(term.scalar))
+            for i, term in enumerate(self.hamiltonian)
+        }
+
+        self._meta_circuits = self._create_meta_circuits()
 
         super().__init__(**kwargs)
 
     def _reset_params(self):
         self.params = []
 
-    def _generate_hamiltonian_operations(self):
+    def _generate_hamiltonian_operations(self) -> qml.operation.Operator:
         """
-        Generate the Hamiltonian operators for the given bond lengths.
+        Generate the Hamiltonian operators for the given bond length.
 
         Returns:
-            (list) Hamiltonians for each bond length.
+            The Hamiltonian corresponding to the VQE problem.
         """
 
-        def all_equal(iterator):
-            iterator = iter(iterator)
-            try:
-                first = next(iterator)
-            except StopIteration:
-                return True
-            return all(first == x for x in iterator)
-
-        n_qubits = []
-        n_electrons = []
-
-        # Generate the Hamiltonian for the given bond length
-        coordinates = []
-        for coord_str in self.coordinate_structure:
-            coordinates.append(
-                [
-                    coord_str[0] * self.bond_length,
-                    coord_str[1] * self.bond_length,
-                    coord_str[2] * self.bond_length,
-                ]
+        coordinates = [
+            (
+                coord_0 * self.bond_length,
+                coord_1 * self.bond_length,
+                coord_2 * self.bond_length,
             )
+            for (coord_0, coord_1, coord_2) in self.coordinate_structure
+        ]
 
         coordinates = np.array(coordinates)
         molecule = qml.qchem.Molecule(self.symbols, coordinates)
         hamiltonian, qubits = qml.qchem.molecular_hamiltonian(molecule)
 
-        n_qubits.append(qubits)
-        n_electrons.append(molecule.n_electrons)
+        self.n_qubits = qubits
+        self.n_electrons = molecule.n_electrons
 
-        assert all_equal(
-            n_qubits
-        ), "All Hamiltonians must have the same number of qubits"
-        assert all_equal(
-            n_electrons
-        ), "All Hamiltonians must have the same number of electrons"
-
-        self.n_qubits = n_qubits[0]
-        self.n_electrons = n_electrons[0]
+        self.n_params = self.ansatz.n_params(
+            self.n_qubits, n_electrons=self.n_electrons
+        )
 
         return hamiltonian
 
-    def _set_ansatz(self, ansatz, params, num_layers=1):
+    def _create_meta_circuits(self):
+        weights_syms = sp.symarray("w", (self.n_layers, self.n_params))
+
+        def _prepare_circuit(ansatz, hamiltonian, params):
+            """
+            Prepare the circuit for the VQE problem.
+            Args:
+                ansatz (Ansatze): The ansatz to use
+                hamiltonian (qml.Hamiltonian): The Hamiltonian to use
+                params (list): The parameters to use for the ansatz
+            """
+            self._set_ansatz(ansatz, params)
+
+            return [qml.sample(term) for term in hamiltonian]
+
+        return {
+            "circuit": MetaCircuit(
+                qml.tape.make_qscript(_prepare_circuit)(
+                    self.ansatz, self.hamiltonian, weights_syms
+                ),
+                symbols=weights_syms.flatten(),
+            )
+        }
+
+    def _set_ansatz(self, ansatz: VQEAnsatze, params):
         """
         Set the ansatz for the VQE problem.
         Args:
             ansatz (Ansatze): The ansatz to use
             params (list): The parameters to use for the ansatz
-            num_layers (int): The number of layers to use for the ansatz
+            n_layers (int): The number of layers to use for the ansatz
         """
 
-        def _add_hw_efficient_ansatz(params, num_layers):
-            qml.RX(params[0], wires=[0])
-
-        def _add_ry_ansatz(params, num_layers):
-            p = 0
-            for _ in range(num_layers):
-                for j in range(self.n_qubits):
-                    qml.RY(params[p], wires=[j])
-                    p += 1
-
-        def _add_layered_ansatz(params, num_layers):
+        def _add_hw_efficient_ansatz(params):
             raise NotImplementedError
 
-        def _add_qaoa_ansatz(params, num_layers):
-            raise NotImplementedError
+        def _add_qaoa_ansatz(params):
+            # This infers layers automatically from the parameters shape
+            qml.QAOAEmbedding(
+                features=[],
+                weights=params.reshape(self.n_layers, -1),
+                wires=range(self.n_qubits),
+            )
 
-        def _add_ryrz_ansatz(params, num_layers):
-            p = 0
-            for _ in range(num_layers):
-                for j in range(self.n_qubits):
-                    qml.RY(params[p], wires=[j])
-                    p += 1
-                    qml.RZ(params[p], wires=[j])
+        def _add_ry_ansatz(params):
+            qml.layer(
+                qml.AngleEmbedding,
+                self.n_layers,
+                params.reshape(self.n_layers, -1),
+                wires=range(self.n_qubits),
+                rotation="Y",
+            )
 
-        def _add_uccsd_ansatz(params, num_layers):
+        def _add_ryrz_ansatz(params):
+            def _ryrz(params, wires):
+                ry_rots, rz_rots = params.reshape(2, -1)
+                qml.AngleEmbedding(ry_rots, wires=wires, rotation="Y")
+                qml.AngleEmbedding(rz_rots, wires=wires, rotation="Z")
+
+            qml.layer(
+                _ryrz,
+                self.n_layers,
+                params.reshape(self.n_layers, -1),
+                wires=range(self.n_qubits),
+            )
+
+        def _add_uccsd_ansatz(params):
             hf_state = qml.qchem.hf_state(self.n_electrons, self.n_qubits)
+
             singles, doubles = qml.qchem.excitations(self.n_electrons, self.n_qubits)
             s_wires, d_wires = qml.qchem.excitations_to_wires(singles, doubles)
+
             qml.UCCSD(
-                params,
-                wires=[i for i in range(self.n_qubits)],
+                params.reshape(self.n_layers, -1),
+                wires=range(self.n_qubits),
                 s_wires=s_wires,
                 d_wires=d_wires,
                 init_state=hf_state,
+                n_repeats=self.n_layers,
             )
 
-        def _add_hartree_fock_ansatz(params, num_layers):
-            hf_state = np.array(
-                [1 if i < self.n_electrons else 0 for i in range(self.n_qubits)]
+        def _add_hartree_fock_ansatz(params):
+            singles, doubles = qml.qchem.excitations(self.n_electrons, self.n_qubits)
+            hf_state = qml.qchem.hf_state(self.n_electrons, self.n_qubits)
+
+            qml.layer(
+                qml.AllSinglesDoubles,
+                self.n_layers,
+                params.reshape(self.n_layers, -1),
+                wires=range(self.n_qubits),
+                hf_state=hf_state,
+                singles=singles,
+                doubles=doubles,
             )
 
-            qml.BasisState(hf_state, wires=[i for i in range(self.n_qubits)])
-            qml.DoubleExcitation(params[0], wires=range(self.n_qubits))
+            # Reset the BasisState operations after the first layer
+            # for behaviour similar to UCCSD ansatz
+            for op in qml.QueuingManager.active_context().queue[1:]:
+                op._hyperparameters["hf_state"] = 0
 
-        if ansatz == VQEAnsatze.UCCSD:
-            _add_uccsd_ansatz(params, num_layers)
-        elif ansatz == VQEAnsatze.HARTREE_FOCK:
-            _add_hartree_fock_ansatz(params, num_layers)
-        elif ansatz == VQEAnsatze.RY:
-            _add_ry_ansatz(params, num_layers)
-        elif ansatz == VQEAnsatze.RYRZ:
-            _add_ryrz_ansatz(params, num_layers)
-        elif ansatz == VQEAnsatze.HW_EFFICIENT:
-            _add_hw_efficient_ansatz(params, num_layers)
-        elif ansatz == VQEAnsatze.LAYERED:
-            _add_layered_ansatz(params, num_layers)
-        elif ansatz == VQEAnsatze.QAOA:
-            _add_qaoa_ansatz(params, num_layers)
+        if ansatz in VQEAnsatze:
+            locals()[f"_add_{ansatz.name.lower()}_ansatz"](params)
+        else:
+            raise ValueError(f"Invalid Ansatz Value. Got {ansatz}.")
 
     def _generate_circuits(self, params=None):
         """
@@ -257,25 +269,16 @@ class VQE(QuantumProgram):
                 - Generate the circuit
         """
 
-        def _prepare_circuit(ansatz, hamiltonian, params):
-            """
-            Prepare the circuit for the VQE problem.
-            Args:
-                ansatz (Ansatze): The ansatz to use
-                hamiltonian (qml.Hamiltonian): The Hamiltonian to use
-                params (list): The parameters to use for the ansatz
-            """
-            self._set_ansatz(ansatz, params)
-
-            return [qml.sample(term) for term in hamiltonian]
+        self.circuits[:] = []
 
         params = self.params if params is None else [params]
 
         for p, params_group in enumerate(params):
-            qscript = qml.tape.make_qscript(_prepare_circuit)(
-                self.ansatz, self.hamiltonian_ops, params_group
+            circuit = self._meta_circuits["circuit"].initialize_circuit_from_params(
+                params_group, tag_prefix=f"{p}"
             )
-            self.circuits.append(Circuit(qscript, tag_prefix=f"{p}"))
+
+            self.circuits.append(circuit)
 
     def run(self, store_data=False, data_file=None):
         """
@@ -287,7 +290,7 @@ class VQE(QuantumProgram):
         """
         if self.optimizer == Optimizers.MONTE_CARLO:
             while self.current_iteration < self.max_iterations:
-                if self.hamiltonian_ops is None or len(self.hamiltonian_ops) == 0:
+                if self.hamiltonian is None or len(self.hamiltonian) == 0:
                     raise RuntimeError(
                         "Hamiltonian operators must be generated before running the VQE"
                     )
@@ -297,11 +300,12 @@ class VQE(QuantumProgram):
                 self._run_optimize()
 
                 self._generate_circuits()
-                self._dispatch_circuits_and_process_results(
+                energies = self._dispatch_circuits_and_process_results(
                     store_data=store_data, data_file=data_file
                 )
 
-            return self.total_circuit_count
+                self.energies.append(energies)
+            return self.total_circuit_count, self.run_time
 
         elif self.optimizer == Optimizers.NELDER_MEAD:
 
@@ -316,9 +320,8 @@ class VQE(QuantumProgram):
 
             self._reset_params()
 
-            n_params = self.ansatz.n_params(self.n_qubits, n_electrons=self.n_electrons)
             self.params = [
-                np.random.uniform(-2 * np.pi, -2 * np.pi, n_params)
+                np.random.uniform(-2 * np.pi, -2 * np.pi, self.n_params * self.n_layers)
                 for _ in range(self.optimizer.n_param_sets)
             ]
 
@@ -329,22 +332,19 @@ class VQE(QuantumProgram):
                 options={"maxiter": self.max_iterations},
             )
 
-            return self.total_circuit_count
+            return self.total_circuit_count, self.run_time
 
     def _run_optimize(self):
         """
         Run the optimization step for the VQE problem.
         """
-        n_param_sets = self.optimizer.n_param_sets
 
         if self.current_iteration == 0:
             self._reset_params()
 
-            num_params = self.ansatz.n_params(
-                self.n_qubits, n_electrons=self.n_electrons
-            )
             self.params = [
-                np.random.uniform(0, 2 * np.pi, num_params) for _ in range(n_param_sets)
+                np.random.uniform(0, 2 * np.pi, self.n_params * self.n_layers)
+                for _ in range(self.optimizer.n_param_sets)
             ]
         else:
             # Optimize the VQE problem.
@@ -361,54 +361,3 @@ class VQE(QuantumProgram):
                 raise NotImplementedError
 
         self.current_iteration += 1
-
-    def _post_process_results(self, job_id=None, results=None):
-        """
-        Post-process the results of the VQE problem.
-
-        Returns:
-            (dict) The energies for each parameter set grouping.
-        """
-
-        def process_results(results):
-            processed_results = {}
-            for r in results:
-                processed_results[r["label"]] = r["results"]
-            return processed_results
-
-        if job_id is not None and self.qoro_service is not None:
-            status = self.qoro_service.job_status(self.job_id, loop_until_complete=True)
-            if status != JobStatus.COMPLETED:
-                raise Exception(
-                    "Job has not completed yet, cannot post-process results"
-                )
-            results = self.qoro_service.get_job_results(self.job_id)
-
-        results = process_results(results)
-        energies = {}
-
-        for p, _ in enumerate(self.params):
-            energies[p] = 0
-            cur_result = {
-                key: value for key, value in results.items() if key.startswith(f"{p}")
-            }
-
-            marginal_results = []
-            for c in cur_result.keys():
-                ham_op_index = int(c.split("_")[-1])
-                ham_op = self.hamiltonian_ops[ham_op_index]
-                pair = (
-                    ham_op,
-                    cur_result[c],
-                    marginal_counts(cur_result[c], ham_op.wires.tolist()),
-                )
-                marginal_results.append(pair)
-            for result in marginal_results:
-                exp_value = sampled_expectation_value(
-                    result[2], "Z" * len(list(result[2].keys())[0])
-                )
-                energies[p] += float(result[0].scalar) * exp_value
-
-        self.energies.append(energies)
-
-        return energies
