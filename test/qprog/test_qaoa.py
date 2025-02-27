@@ -1,8 +1,9 @@
 import networkx as nx
-from divi.qprog import QAOA
-from divi.qprog.optimizers import Optimizers
 import pytest
 from qprog_contracts import verify_hamiltonian_metadata, verify_metacircuit_dict
+
+from divi.qprog import QAOA
+from divi.qprog.optimizers import Optimizers
 
 pytestmark = pytest.mark.algo
 

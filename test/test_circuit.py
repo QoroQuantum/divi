@@ -1,19 +1,31 @@
 from divi.circuit import Circuit
 
 
-def test_initialization():
-    import pennylane as qml
+class TestCircuit:
+    def test_pennylane_circuit_initialization(self):
+        import pennylane as qml
 
-    def test_circuit():
-        qml.RX(0.5, wires=0)
-        qml.RX(0.5, wires=1)
-        qml.RY(0.5, wires=2)
-        qml.RZ(0.25, wires=3)
+        def test_circuit():
+            qml.RX(0.5, wires=0)
+            qml.RX(0.5, wires=1)
+            qml.RY(0.5, wires=2)
+            qml.RZ(0.25, wires=3)
 
-    qscript = qml.tape.make_qscript(test_circuit)()
+            return qml.expval(
+                qml.PauliZ(0) @ qml.PauliZ(1) @ qml.PauliX(2) @ qml.PauliY(3)
+            )
 
-    circuit = Circuit(qscript, circuit_type="pennylane")
+        qscript = qml.tape.make_qscript(test_circuit)()
 
-    assert circuit is not None, "Circuit should be initialized"
-    assert circuit.circuit_id == 0, "Circuit ID should be 0"
-    assert circuit.circuit_type == "pennylane", "Circuit type should be pennylane"
+        circuit = Circuit(qscript, tags=["test_circ"])
+
+        assert circuit.main_circuit == qscript
+        assert circuit.tags == ["test_circ"]
+        assert circuit.circuit_id == 0
+        assert circuit.circuit_type == "pennylane"
+
+        assert len(circuit.qasm_circuits) == 1
+
+
+class TestMetaCircuit:
+    pass
