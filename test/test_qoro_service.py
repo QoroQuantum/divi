@@ -74,16 +74,6 @@ def test_retry_get_job_status(qoro_service, circuits):
     assert res.status_code == 204, "Deletion should be successful"
 
 
-def test_fail_send_circuits(circuits):
-    # Test if QoroService fails to connect send circuits
-    api_token = "invalid_token"
-
-    service = QoroService(api_token)
-
-    with pytest.raises(requests.exceptions.HTTPError):
-        service.send_circuits(circuits)
-
-
 def test_fail_api_connection():
     # Test if QoroService fails to connect to the API
     api_token = "invalid_token"
@@ -93,3 +83,13 @@ def test_fail_api_connection():
     response = service.test_connection()
 
     assert response.status_code != 200, "Connection should fail with invalid token"
+
+
+def test_fail_send_circuits(circuits):
+    # Test if QoroService fails to connect send circuits
+    api_token = "invalid_token"
+
+    service = QoroService(api_token)
+
+    with pytest.raises(requests.exceptions.HTTPError):
+        service.send_circuits(circuits)
