@@ -6,8 +6,8 @@ import plotly.graph_objects as go
 from dash import Dash, Input, Output, callback, dcc, html, no_update
 from qiskit.qasm2 import dumps
 
+from divi.parallel_simulator import ParallelSimulator
 from divi.qprog import Optimizers, VQEAnsatze, VQEHyperparameterSweep
-from divi.simulator.parallel_simulator import ParallelSimulator
 
 app = Dash()
 app = Dash(external_stylesheets=[dbc.themes.BOOTSTRAP])

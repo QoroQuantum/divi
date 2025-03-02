@@ -1,3 +1,5 @@
+import re
+
 import pennylane as qml
 import pytest
 from qprog_contracts import verify_hamiltonian_metadata, verify_metacircuit_dict
@@ -35,6 +37,32 @@ def test_vqe_basic_initialization():
 
     # Check meta-circuits
     verify_metacircuit_dict(vqe_problem, ["circuit"])
+
+
+@pytest.mark.parametrize("ansatz", list(VQEAnsatze))
+@pytest.mark.parametrize("n_layers", [1, 2])
+def test_meta_circuit_qasm(ansatz, n_layers):
+    if ansatz == VQEAnsatze.HW_EFFICIENT:
+        pytest.skip("Skipping HW_EFFICIENT ansatz")
+
+    vqe_problem = VQE(
+        symbols=["H", "H"],
+        bond_length=0.5,
+        coordinate_structure=[(1, 0, 0), (0, -1, 0)],
+        n_layers=n_layers,
+        ansatz=ansatz,
+        qoro_service=None,
+    )
+
+    meta_circuit_obj = vqe_problem._meta_circuits["circuit"]
+    meta_circuit_qasm = meta_circuit_obj.compiled_circuit
+
+    pattern = r"w_(\d+)_(\d+)"
+    matches = re.findall(pattern, meta_circuit_qasm)
+
+    # Check that we have the correct number of unique parameters
+    assert len(set(matches)) == n_layers * vqe_problem.n_params
+    assert len(set(matches)) // n_layers == vqe_problem.n_params
 
 
 def test_vqe_symbol_coordinates_mismatch():

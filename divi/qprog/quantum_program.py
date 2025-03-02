@@ -4,9 +4,9 @@ from typing import Optional
 
 from qiskit.result import marginal_counts, sampled_expectation_value
 
+from divi.parallel_simulator import ParallelSimulator
 from divi.services import QoroService
 from divi.services.qoro_service import JobStatus
-from divi.simulator.parallel_simulator import ParallelSimulator
 
 
 class QuantumProgram(ABC):

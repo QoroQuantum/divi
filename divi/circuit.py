@@ -1,6 +1,6 @@
 from qiskit.qasm2 import dumps
 
-from divi.qprog.utils import to_openqasm
+from divi.utils import to_openqasm
 
 
 class Circuit:

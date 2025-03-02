@@ -1,9 +1,15 @@
-from divi.circuit import Circuit
+import re
+
+import numpy as np
+import pennylane as qml
+import pytest
+import sympy as sp
+
+from divi.circuit import Circuit, MetaCircuit
 
 
 class TestCircuit:
-    def test_pennylane_circuit_initialization(self):
-        import pennylane as qml
+    def test_pennylane_circuit_initialization(self, mocker):
 
         def test_circuit():
             qml.RX(0.5, wires=0)
@@ -17,15 +23,89 @@ class TestCircuit:
 
         qscript = qml.tape.make_qscript(test_circuit)()
 
-        circuit = Circuit(qscript, tags=["test_circ"])
+        circ1 = Circuit(qscript, tags=["test_circ"])
 
-        assert circuit.main_circuit == qscript
-        assert circuit.tags == ["test_circ"]
-        assert circuit.circuit_id == 0
-        assert circuit.circuit_type == "pennylane"
+        # Check basic attributes
+        assert circ1.main_circuit == qscript
+        assert circ1.tags == ["test_circ"]
+        assert circ1.circuit_id == 0
+        assert circ1.circuit_type == "pennylane"
+        assert len(circ1.qasm_circuits) == 1
 
-        assert len(circuit.qasm_circuits) == 1
+        # Ensure converter was called
+        method_mock = mocker.patch.object(Circuit, "convert_to_qasm")
+
+        Circuit(qscript, tags=["test_circ"])
+
+        method_mock.assert_called_once()
 
 
 class TestMetaCircuit:
-    pass
+    @pytest.fixture
+    def weights_syms(self):
+        return sp.symarray("w", 4)
+
+    @pytest.fixture
+    def sample_circuit(self, weights_syms):
+        def circ(weights):
+            qml.AngleEmbedding(weights, wires=range(4), rotation="Y")
+
+            qml.AngleEmbedding(weights, wires=range(4), rotation="X")
+
+            return qml.probs()
+
+        return qml.tape.make_qscript(circ)(weights_syms)
+
+    def test_correct_symbolization(self, sample_circuit, weights_syms):
+
+        meta_circuit = MetaCircuit(sample_circuit, weights_syms)
+
+        assert meta_circuit.main_circuit == sample_circuit
+
+        # Ensure we have all the symbols
+        np.testing.assert_equal(meta_circuit.symbols, weights_syms)
+
+        # Make sure the compiled circuit is correct
+        circ_pattern = r"w_(\d+)"
+        assert len(set(re.findall(circ_pattern, meta_circuit.compiled_circuit))) == 4
+        assert len(re.findall(circ_pattern, meta_circuit.compiled_circuit)) == 8
+
+        # Make sure the measurement qasm is correct
+        assert len(meta_circuit.measurements) == 1
+        meas_pattern = r"measure q\[(\d+)\]"
+        assert len(re.findall(meas_pattern, meta_circuit.measurements[0])) == 4
+
+    def test_correct_initialization(self, mocker, sample_circuit, weights_syms):
+
+        meta_circuit = MetaCircuit(sample_circuit, weights_syms)
+
+        param_list = [0.123456789, 0.212345678, 0.312345678, 0.412345678]
+        tag_prefix = "test"
+        precision = 8
+
+        method_mock = mocker.patch.object(Circuit, "convert_to_qasm")
+
+        circuit = meta_circuit.initialize_circuit_from_params(
+            param_list, tag_prefix=tag_prefix, precision=precision
+        )
+
+        # Ensure converter wasn't called since
+        # we are already providing the qasm
+        method_mock.assert_not_called()
+
+        # Check the new Circuit object
+        assert circuit.main_circuit == sample_circuit
+        assert circuit.circuit_type == "pennylane"
+        assert circuit.tags == [f"{tag_prefix}_0"]
+        assert len(circuit.qasm_circuits) == 1
+
+        # Ensure no more symbols exist
+        symbols_pattern = r"w_(\d+)"
+        assert len(re.findall(symbols_pattern, circuit.qasm_circuits[0])) == 0
+
+        # Ensure the symbols are correctly replaced
+        params_pattern = r"r[yx]\(([-+]?\d*\.?\d+)\)"
+        actual_params = re.findall(params_pattern, circuit.qasm_circuits[0])
+
+        for actual, expected in zip(actual_params, param_list * 2):
+            assert round(expected, precision) == float(actual)
