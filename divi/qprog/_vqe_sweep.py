@@ -1,6 +1,7 @@
 from functools import partial
 from itertools import product
 from multiprocessing import Manager
+from typing import Literal
 
 import matplotlib.pyplot as plt
 
@@ -69,6 +70,9 @@ class VQEHyperparameterSweep(ProgramBatch):
         return
 
     def aggregate_results(self):
+        if len(self.programs) == 0:
+            raise RuntimeError("No programs to aggregate. Run create_programs() first.")
+
         if self.executor is not None:
             self.wait_for_all()
 
@@ -79,10 +83,15 @@ class VQEHyperparameterSweep(ProgramBatch):
 
         return smallest_key, smallest_value
 
-    def visualize_results(self, graph_type="line"):
+    def visualize_results(self, graph_type: Literal["line", "scatter"] = "line"):
         """
         Visualize the results of the VQE problem.
         """
+        if graph_type not in ["line", "scatter"]:
+            raise ValueError(
+                f"Invalid graph type: {graph_type}. Choose between 'line' and 'scatter'."
+            )
+
         if self.executor is not None:
             self.wait_for_all()
 
@@ -92,7 +101,7 @@ class VQEHyperparameterSweep(ProgramBatch):
         ansatz_list = list(VQEAnsatze)
 
         if graph_type == "scatter":
-            for ansatz, bond_length in product(self.ansatze, self.bond_lengths):
+            for ansatz, bond_length in self.programs.keys():
                 min_energies = []
 
                 curr_energies = self.programs[(ansatz, bond_length)].energies[-1]
@@ -106,7 +115,7 @@ class VQEHyperparameterSweep(ProgramBatch):
                 data.extend(min_energies)
 
             x, y, z = zip(*data)
-            plt.scatter(x, y, color=z)
+            plt.scatter(x, y, color=z, label=ansatz)
 
         elif graph_type == "line":
             for ansatz in self.ansatze:

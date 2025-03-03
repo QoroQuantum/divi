@@ -65,4 +65,6 @@ class MetaCircuit:
             qasm_circuits.append(final_qasm_str + meas_str)
             tags.append(f"{processed_tag_prefix}{i}")
 
+        # Note: The main circuit's parameters are still in symbol form.
+        # Not sure if it is necessary for any useful application to parameterize them.
         return Circuit(self.main_circuit, qasm_circuits=qasm_circuits, tags=tags)
