@@ -284,7 +284,7 @@ class QAOA(QuantumProgram):
             else "meas_circuit"
         )
 
-        params = self.params if params is None else [params.reshape(-1, 2)]
+        params = self.params if params is None else [params]
 
         for p, params_group in enumerate(params):
             circuit = self._meta_circuits[circuit_type].initialize_circuit_from_params(
@@ -320,7 +320,7 @@ class QAOA(QuantumProgram):
                     store_data=store_data, data_file=data_file
                 )
 
-            return self.total_circuit_count, self.run_time
+            return self._total_circuit_count, self._total_run_time
 
         elif self.optimizer == Optimizers.NELDER_MEAD:
 
@@ -355,7 +355,7 @@ class QAOA(QuantumProgram):
                 options={"maxiter": self.max_iterations},
             )
 
-            return self.total_circuit_count, self.run_time
+            return self._total_circuit_count, self._total_run_time
 
     def compute_final_solution(self):
         # Convert losses dict to list to apply ordinal operations

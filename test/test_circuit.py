@@ -23,14 +23,15 @@ class TestCircuit:
 
         qscript = qml.tape.make_qscript(test_circuit)()
 
-        circ1 = Circuit(qscript, tags=["test_circ"])
+        Circuit._id_counter = 0
+        circ_1 = Circuit(qscript, tags=["test_circ"])
 
         # Check basic attributes
-        assert circ1.main_circuit == qscript
-        assert circ1.tags == ["test_circ"]
-        assert circ1.circuit_id == 0
-        assert circ1.circuit_type == "pennylane"
-        assert len(circ1.qasm_circuits) == 1
+        assert circ_1.main_circuit == qscript
+        assert circ_1.tags == ["test_circ"]
+        assert circ_1.circuit_id == 0
+        assert circ_1.circuit_type == "pennylane"
+        assert len(circ_1.qasm_circuits) == 1
 
         # Ensure converter was called
         method_mock = mocker.patch.object(Circuit, "convert_to_qasm")

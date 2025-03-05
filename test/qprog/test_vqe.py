@@ -4,8 +4,7 @@ import pennylane as qml
 import pytest
 from qprog_contracts import verify_hamiltonian_metadata, verify_metacircuit_dict
 
-from divi.qprog import VQE, VQEAnsatze
-from divi.qprog import Optimizers
+from divi.qprog import VQE, Optimizers, VQEAnsatze
 
 pytestmark = pytest.mark.algo
 
