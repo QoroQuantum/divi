@@ -22,9 +22,9 @@ if __name__ == "__main__":
         n_layers=1,
         ansatz=VQEAnsatze.HARTREE_FOCK,
         optimizer=Optimizers.MONTE_CARLO,
-        shots=5000,
         max_iterations=3,
         qoro_service=q_service,
+        shots=5000,
     )
 
     t1 = time.time()

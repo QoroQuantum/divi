@@ -1,5 +1,6 @@
 from functools import partial
 from typing import Optional
+from warnings import warn
 
 import pennylane as qml
 from pennylane.tape import QuantumScript
@@ -123,6 +124,12 @@ def to_openqasm(
 
     qasm_circuits = []
     measurement_qasms = []
+
+    if len(qscript.measurements) == 0:
+        warn(
+            "No measurements found in the circuit. Returning the main circuit qasm only."
+        )
+        return [main_qasm_str]
 
     # Create a copy of the program for every measurement that we have
     for meas in qscript.measurements:

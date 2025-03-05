@@ -4,37 +4,40 @@ from typing import Optional
 
 from qiskit.result import marginal_counts, sampled_expectation_value
 
+from divi.parallel_simulator import ParallelSimulator
 from divi.services import QoroService
 from divi.services.qoro_service import JobStatus
-from divi.simulator.parallel_simulator import ParallelSimulator
 
 
 class QuantumProgram(ABC):
-    def __init__(self, qoro_service: Optional[QoroService] = None, **kwargs):
+    def __init__(
+        self, shots: int = 5000, qoro_service: Optional[QoroService] = None, **kwargs
+    ):
         self.circuits = []
         if (m_list_circuits := kwargs.pop("circuits", None)) is not None:
             self.circuits = m_list_circuits
 
         self._total_circuit_count = 0
+        self._total_run_time = 0
 
+        self.shots = shots
         self.qoro_service = qoro_service
         self.job_id = None
-        self.run_time = 0
 
     @property
     def total_circuit_count(self):
         return self._total_circuit_count
 
     @total_circuit_count.setter
-    def _(self, value):
+    def total_circuit_count(self, _):
         raise RuntimeError("Can not set total circuit count value.")
 
     @property
     def total_run_time(self):
-        return self.run_time
+        return self._total_run_time
 
     @total_run_time.setter
-    def _(self, value):
+    def total_run_time(self, _):
         raise RuntimeError("Can not set total run time value.")
 
     @abstractmethod
@@ -111,7 +114,7 @@ class QuantumProgram(ABC):
         results, backend_return_type = self._prepare_and_send_circuits()
 
         def add_run_time(response):
-            self.run_time += float(response["run_time"])
+            self._total_run_time += float(response["run_time"])
 
         if backend_return_type == "job_id":
             job_id = results

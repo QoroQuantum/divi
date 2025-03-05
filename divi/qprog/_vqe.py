@@ -7,7 +7,7 @@ import pennylane as qml
 import sympy as sp
 from scipy.optimize import minimize
 
-from divi.circuit import Circuit, MetaCircuit
+from divi.circuit import MetaCircuit
 from divi.qprog import QuantumProgram
 from divi.qprog.optimizers import Optimizers
 
@@ -65,12 +65,11 @@ class VQE(QuantumProgram):
         self,
         symbols,
         bond_length: float,
-        coordinate_structure,
-        n_layers: int,
+        coordinate_structure: list[tuple[float, float, float]],
+        n_layers: int = 1,
         optimizer=Optimizers.MONTE_CARLO,
         ansatz=VQEAnsatze.HARTREE_FOCK,
         max_iterations=10,
-        shots=5000,
         **kwargs,
     ) -> None:
         """
@@ -88,24 +87,25 @@ class VQE(QuantumProgram):
 
         # Local Variables
         self.symbols = symbols
+        self.coordinate_structure = coordinate_structure
+
+        if len(self.coordinate_structure) != len(self.symbols):
+            raise ValueError(
+                "The number of symbols must match the number of coordinates"
+            )
+
         self.bond_length = bond_length
         self.n_layers = n_layers
         self.results = {}
         self.ansatz = ansatz
         self.optimizer = optimizer
-        self.shots = shots
         self.max_iterations = max_iterations
-        self.coordinate_structure = coordinate_structure
         self.current_iteration = 0
 
         # Shared Variables
         self.energies = []
         if (m_list := kwargs.pop("energies", None)) is not None:
             self.energies = m_list
-
-        assert len(self.coordinate_structure) == len(
-            self.symbols
-        ), "The number of symbols must match the number of coordinates"
 
         self.hamiltonian = self._generate_hamiltonian_operations()
 
@@ -305,7 +305,8 @@ class VQE(QuantumProgram):
                 )
 
                 self.energies.append(energies)
-            return self.total_circuit_count, self.run_time
+
+            return self._total_circuit_count, self._total_run_time
 
         elif self.optimizer == Optimizers.NELDER_MEAD:
 
@@ -325,14 +326,14 @@ class VQE(QuantumProgram):
                 for _ in range(self.optimizer.n_param_sets)
             ]
 
-            minimize(
+            self._minimize_res = minimize(
                 cost_function,
                 self.params[0],
                 method="Nelder-Mead",
                 options={"maxiter": self.max_iterations},
             )
 
-            return self.total_circuit_count, self.run_time
+            return self._total_circuit_count, self._total_run_time
 
     def _run_optimize(self):
         """

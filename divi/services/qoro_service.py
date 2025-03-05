@@ -7,11 +7,8 @@ from http import HTTPStatus
 
 import requests
 
-LOCAL = os.environ.get("LOCAL", "True") == "False"
-if LOCAL:
-    API_URL = "http://127.0.0.1:8000/api"
-else:
-    API_URL = "https://app.qoroquantum.net/api"
+LOCAL = os.environ.get("LOCAL", "True") == "True"
+API_URL = "http://127.0.0.1:8000/api" if LOCAL else "https://app.qoroquantum.net/api"
 
 
 class JobStatus(Enum):

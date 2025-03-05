@@ -95,11 +95,10 @@ class QAOA(QuantumProgram):
         self,
         problem: _SUPPORTED_PROBLEMS_LITERAL,
         graph: nx.Graph | rx.PyGraph,
-        n_layers: int,
+        n_layers: int = 1,
         initial_state: _SUPPORTED_INITIAL_STATES_LITERAL = "Recommended",
         optimizer=Optimizers.MONTE_CARLO,
         max_iterations=10,
-        shots=5000,
         **kwargs,
     ):
         """
@@ -115,7 +114,7 @@ class QAOA(QuantumProgram):
 
         if problem not in _SUPPORTED_PROBLEMS:
             raise ValueError(
-                f"Unsupported Problem. Got {problem}. Must be one of: {_SUPPORTED_PROBLEMS}"
+                f"Unsupported Problem. Got '{problem}'. Must be one of: {_SUPPORTED_PROBLEMS}"
             )
         self.problem = problem
 
@@ -124,15 +123,9 @@ class QAOA(QuantumProgram):
                 f"Unsupported Initial State. Got {initial_state}. Must be one of: {get_args(_SUPPORTED_INITIAL_STATES_LITERAL)}"
             )
 
-        if n_layers < 1 or not isinstance(n_layers, int):
-            raise ValueError(
-                f"Number of layers should be a positive integer. Got {n_layers}."
-            )
-
         # Local Variables
         self.n_layers = n_layers
         self.optimizer = optimizer
-        self.shots = shots
         self.max_iterations = max_iterations
         self.n_qubits = graph.number_of_nodes()
         self.current_iteration = 0
@@ -291,7 +284,7 @@ class QAOA(QuantumProgram):
             else "meas_circuit"
         )
 
-        params = self.params if params is None else [params.reshape(-1, 2)]
+        params = self.params if params is None else [params]
 
         for p, params_group in enumerate(params):
             circuit = self._meta_circuits[circuit_type].initialize_circuit_from_params(
@@ -327,7 +320,7 @@ class QAOA(QuantumProgram):
                     store_data=store_data, data_file=data_file
                 )
 
-            return self.total_circuit_count, self.run_time
+            return self._total_circuit_count, self._total_run_time
 
         elif self.optimizer == Optimizers.NELDER_MEAD:
 
@@ -355,14 +348,14 @@ class QAOA(QuantumProgram):
                 for _ in range(self.optimizer.n_param_sets)
             ]
 
-            minimize(
+            self._minimize_res = minimize(
                 cost_function,
                 self.params[0],
                 method="Nelder-Mead",
                 options={"maxiter": self.max_iterations},
             )
 
-            return self.total_circuit_count, self.run_time
+            return self._total_circuit_count, self._total_run_time
 
     def compute_final_solution(self):
         # Convert losses dict to list to apply ordinal operations
