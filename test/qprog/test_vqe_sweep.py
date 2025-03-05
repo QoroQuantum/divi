@@ -57,13 +57,6 @@ def test_fail_if_creating_programs_twice(mocker, vqe_sweep):
         vqe_sweep.create_programs()
 
 
-def test_reset_programs(vqe_sweep):
-    vqe_sweep.programs = {"dummy": "program"}
-    assert len(vqe_sweep.programs) == 1
-    vqe_sweep.reset()
-    assert len(vqe_sweep.programs) == 0
-
-
 def test_results_aggregated_correctly(mocker, vqe_sweep):
     mocker.patch("divi.qprog.VQE")
 

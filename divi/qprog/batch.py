@@ -23,9 +23,27 @@ class ProgramBatch(ABC):
     def __init__(self):
         super().__init__()
 
-        self.executor = None
-        self.manager = None
+        self._executor = None
         self.programs = {}
+
+        self._total_circuit_count = 0
+        self._total_run_time = 0
+
+    @property
+    def total_circuit_count(self):
+        return self._total_circuit_count
+
+    @total_circuit_count.setter
+    def total_circuit_count(self, _):
+        raise RuntimeError("Can not set total circuit count value.")
+
+    @property
+    def total_run_time(self):
+        return self._total_run_time
+
+    @total_run_time.setter
+    def total_run_time(self, _):
+        raise RuntimeError("Can not set total run time value.")
 
     @abstractmethod
     def create_programs(self):
@@ -33,27 +51,26 @@ class ProgramBatch(ABC):
 
     def reset(self):
         self.programs.clear()
-        self.executor = None
-        self.manager = None
+        self._executor = None
 
     def run(self):
-        if self.executor is not None:
+        if self._executor is not None:
             raise RuntimeError("A batch is already being run.")
 
         if len(self.programs) == 0:
             raise RuntimeError("No programs to run.")
 
-        self.executor = ProcessPoolExecutor()
+        self._executor = ProcessPoolExecutor()
 
         self.futures = [
-            self.executor.submit(program.run) for program in self.programs.values()
+            self._executor.submit(program.run) for program in self.programs.values()
         ]
 
     def check_all_done(self):
         return all(future.done() for future in self.futures)
 
     def wait_for_all(self):
-        if self.executor is None:
+        if self._executor is None:
             return
 
         exceptions = []
@@ -64,38 +81,18 @@ class ProgramBatch(ABC):
                     future.result()  # Raises an exception if the task failed.
                 except Exception as e:
                     exceptions.append(e)
+
+            if exceptions:
+                for i, exc in enumerate(exceptions, 1):
+                    print(f"Task {i} failed with exception: {exc}")
+                raise RuntimeError("One or more tasks failed. Check logs for details.")
         finally:
-            if self.executor:
-                self.executor.shutdown(wait=True, cancel_futures=False)
-                self.executor = None
-                self._total_circuit_count = sum(
-                    future.result()[0] for future in self.futures
-                )
-                self._total_run_time = sum(
-                    future.result()[1] for future in self.futures
-                )
-                self.futures = []
+            self._executor.shutdown(wait=True, cancel_futures=False)
+            self._executor = None
 
-        if exceptions:
-            for i, exc in enumerate(exceptions, 1):
-                print(f"Task {i} failed with exception: {exc}")
-            raise RuntimeError("One or more tasks failed. Check logs for details.")
-
-    @property
-    def total_circuit_count(self):
-        return self._total_circuit_count
-
-    @total_circuit_count.setter
-    def _(self, _):
-        raise RuntimeError("Can not set total circuit count value.")
-
-    @property
-    def total_run_time(self):
-        return self._total_run_time
-
-    @total_run_time.setter
-    def _(self, _):
-        raise RuntimeError("Can not set total run time value.")
+        self._total_circuit_count = sum(future.result()[0] for future in self.futures)
+        self._total_run_time = sum(future.result()[1] for future in self.futures)
+        self.futures = []
 
     @abstractmethod
     def aggregate_results(self):

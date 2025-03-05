@@ -238,7 +238,7 @@ class GraphPartitioningQAOA(ProgramBatch):
         return
 
     def aggregate_results(self):
-        if self.executor is not None:
+        if self._executor is not None:
             self.wait_for_all()
 
         # Extract the solutions from each program

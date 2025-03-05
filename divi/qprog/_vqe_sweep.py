@@ -73,7 +73,7 @@ class VQEHyperparameterSweep(ProgramBatch):
         if len(self.programs) == 0:
             raise RuntimeError("No programs to aggregate. Run create_programs() first.")
 
-        if self.executor is not None:
+        if self._executor is not None:
             self.wait_for_all()
 
         all_energies = {key: prog.energies[-1] for key, prog in self.programs.items()}
@@ -92,7 +92,7 @@ class VQEHyperparameterSweep(ProgramBatch):
                 f"Invalid graph type: {graph_type}. Choose between 'line' and 'scatter'."
             )
 
-        if self.executor is not None:
+        if self._executor is not None:
             self.wait_for_all()
 
         data = []
