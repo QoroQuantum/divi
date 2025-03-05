@@ -42,7 +42,6 @@ def test_qaoa_unsuppported_problem():
         QAOA(
             "travelling_salesman",
             nx.bull_graph(),
-            n_layers=2,
             qoro_service=None,
         )
 
@@ -52,7 +51,6 @@ def test_qaoa_unsuppported_initial_state():
         QAOA(
             "max_clique",
             nx.bull_graph(),
-            n_layers=2,
             initial_state="Bell",
             qoro_service=None,
         )
@@ -62,7 +60,6 @@ def test_qaoa_initial_state_recommended():
     qaoa_problem = QAOA(
         "max_clique",
         nx.bull_graph(),
-        n_layers=2,
         initial_state="Recommended",
         is_constrained=True,
         qoro_service=None,
@@ -75,7 +72,6 @@ def test_qaoa_initial_state_superposition():
     qaoa_problem = QAOA(
         "max_clique",
         nx.bull_graph(),
-        n_layers=2,
         initial_state="Superposition",
         qoro_service=None,
     )

@@ -333,7 +333,7 @@ class VQE(QuantumProgram):
                 options={"maxiter": self.max_iterations},
             )
 
-            return self.total_circuit_count, self.total_run_time
+            return self._total_circuit_count, self._total_run_time
 
     def _run_optimize(self):
         """

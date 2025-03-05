@@ -95,7 +95,7 @@ class QAOA(QuantumProgram):
         self,
         problem: _SUPPORTED_PROBLEMS_LITERAL,
         graph: nx.Graph | rx.PyGraph,
-        n_layers: int,
+        n_layers: int = 1,
         initial_state: _SUPPORTED_INITIAL_STATES_LITERAL = "Recommended",
         optimizer=Optimizers.MONTE_CARLO,
         max_iterations=10,
