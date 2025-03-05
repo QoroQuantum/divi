@@ -348,7 +348,7 @@ class QAOA(QuantumProgram):
                 for _ in range(self.optimizer.n_param_sets)
             ]
 
-            minimize(
+            self._minimize_res = minimize(
                 cost_function,
                 self.params[0],
                 method="Nelder-Mead",

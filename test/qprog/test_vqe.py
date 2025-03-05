@@ -5,6 +5,7 @@ import pytest
 from qprog_contracts import verify_hamiltonian_metadata, verify_metacircuit_dict
 
 from divi.qprog import VQE, VQEAnsatze
+from divi.qprog import Optimizers
 
 pytestmark = pytest.mark.algo
 
@@ -86,4 +87,30 @@ def test_vqe_fail_with_hw_efficient_ansatz():
             bond_length=0.5,
             coordinate_structure=[(1, 0, 0), (0, -1, 0)],
             ansatz=VQEAnsatze.HW_EFFICIENT,
+        )
+
+
+@pytest.mark.parametrize("optimizer", list(Optimizers))
+def test_vqe_generated_circuits_count(optimizer):
+    vqe_problem = VQE(
+        symbols=["H", "H"],
+        bond_length=0.5,
+        coordinate_structure=[(1, 0, 0), (0, -1, 0)],
+        n_layers=1,
+        ansatz=VQEAnsatze.HARTREE_FOCK,
+        optimizer=optimizer,
+        max_iterations=1,
+        qoro_service=None,
+    )
+
+    vqe_problem.run()
+
+    if optimizer == Optimizers.MONTE_CARLO:
+        assert (
+            vqe_problem.total_circuit_count
+            == vqe_problem.optimizer.n_param_sets * len(vqe_problem.hamiltonian)
+        )
+    elif optimizer == Optimizers.NELDER_MEAD:
+        assert vqe_problem.total_circuit_count == vqe_problem._minimize_res.nfev * len(
+            vqe_problem.hamiltonian
         )
