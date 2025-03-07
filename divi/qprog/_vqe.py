@@ -317,6 +317,7 @@ class VQE(QuantumProgram):
                 )
 
                 self.energies.append(energies)
+
                 return energies[0]
 
             self._reset_params()

@@ -90,7 +90,7 @@ def test_vqe_fail_with_hw_efficient_ansatz():
 
 
 @pytest.mark.parametrize("optimizer", list(Optimizers))
-def test_vqe_generated_circuits_count(optimizer):
+def test_vqe_correct_circuits_count_and_energies(optimizer):
     vqe_problem = VQE(
         symbols=["H", "H"],
         bond_length=0.5,
@@ -105,11 +105,13 @@ def test_vqe_generated_circuits_count(optimizer):
     vqe_problem.run()
 
     if optimizer == Optimizers.MONTE_CARLO:
+        assert len(vqe_problem.energies) == 1
         assert (
             vqe_problem.total_circuit_count
             == vqe_problem.optimizer.n_param_sets * len(vqe_problem.hamiltonian)
         )
     elif optimizer == Optimizers.NELDER_MEAD:
+        assert len(vqe_problem.energies) == vqe_problem._minimize_res.nfev
         assert vqe_problem.total_circuit_count == vqe_problem._minimize_res.nfev * len(
             vqe_problem.hamiltonian
         )

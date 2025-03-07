@@ -111,6 +111,35 @@ def test_qaoa_generate_circuits_called_with_correct_phases(mocker, optimizer):
         assert mock_generate_circuits.call_args_list[i + 1][1]["measurement_phase"]
 
 
+@pytest.mark.parametrize("optimizer", list(Optimizers))
+def test_qaoa_correct_circuits_count_and_energies(optimizer):
+    qaoa_problem = QAOA(
+        "max_clique",
+        nx.bull_graph(),
+        n_layers=1,
+        optimizer=optimizer,
+        max_iterations=1,
+        is_constrained=True,
+        qoro_service=None,
+    )
+
+    qaoa_problem.run()
+
+    # Need to add one here for the measurement phase
+    if optimizer == Optimizers.MONTE_CARLO:
+        assert len(qaoa_problem.losses) == 1
+        assert (
+            qaoa_problem.total_circuit_count
+            == qaoa_problem.optimizer.n_param_sets
+            * (len(qaoa_problem.cost_hamiltonian) + 1)
+        )
+    elif optimizer == Optimizers.NELDER_MEAD:
+        assert len(qaoa_problem.losses) == qaoa_problem._minimize_res.nfev
+        assert qaoa_problem.total_circuit_count == qaoa_problem._minimize_res.nfev * (
+            len(qaoa_problem.cost_hamiltonian) + 1
+        )
+
+
 @flaky(max_runs=3, min_passes=1)
 def test_qaoa_compute_final_solution():
     G = nx.bull_graph()

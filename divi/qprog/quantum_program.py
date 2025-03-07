@@ -50,7 +50,7 @@ class QuantumProgram(ABC):
 
     def _post_process_results(self, results):
         """
-        Post-process the results of the VQE problem.
+        Post-process the results of the quantum problem.
 
         Returns:
             (dict) The energies for each parameter set grouping.
