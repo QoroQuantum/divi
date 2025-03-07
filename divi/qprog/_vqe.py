@@ -103,9 +103,9 @@ class VQE(QuantumProgram):
         self.current_iteration = 0
 
         # Shared Variables
-        self.energies = []
-        if (m_list := kwargs.pop("energies", None)) is not None:
-            self.energies = m_list
+        self.losses = []
+        if (m_list := kwargs.pop("losses", None)) is not None:
+            self.losses = m_list
 
         self.hamiltonian = self._generate_hamiltonian_operations()
 
@@ -117,9 +117,6 @@ class VQE(QuantumProgram):
         self._meta_circuits = self._create_meta_circuits()
 
         super().__init__(**kwargs)
-
-    def _reset_params(self):
-        self.params = []
 
     def _generate_hamiltonian_operations(self) -> qml.operation.Operator:
         """
@@ -290,35 +287,43 @@ class VQE(QuantumProgram):
         """
         if self.optimizer == Optimizers.MONTE_CARLO:
             while self.current_iteration < self.max_iterations:
+                logger.debug(f"Running iteration {self.current_iteration}")
+
+                self._update_mc_params()
+
                 if self.hamiltonian is None or len(self.hamiltonian) == 0:
                     raise RuntimeError(
                         "Hamiltonian operators must be generated before running the VQE"
                     )
-
-                logger.debug(f"Running iteration {self.current_iteration}")
-
-                self._run_optimize()
 
                 self._generate_circuits()
                 energies = self._dispatch_circuits_and_process_results(
                     store_data=store_data, data_file=data_file
                 )
 
-                self.energies.append(energies)
+                self.losses.append(energies)
 
             return self._total_circuit_count, self._total_run_time
 
         elif self.optimizer == Optimizers.NELDER_MEAD:
 
             def cost_function(params):
+                if self.hamiltonian is None or len(self.hamiltonian) == 0:
+                    raise RuntimeError(
+                        "Hamiltonian operators must be generated before running the VQE"
+                    )
+
                 self._generate_circuits(params)
-                energies = self._dispatch_circuits_and_process_results(
+                losses = self._dispatch_circuits_and_process_results(
                     store_data=store_data, data_file=data_file
                 )
 
-                self.energies.append(energies)
+                self.losses.append(losses)
 
-                return energies[0]
+                return losses[0]
+
+            def _iteration_counter(_):
+                self.current_iteration += 1
 
             self._reset_params()
 
@@ -334,32 +339,9 @@ class VQE(QuantumProgram):
                 options={"maxiter": self.max_iterations},
             )
 
+            if self.max_iterations == 1:
+                # Need to handle this edge case for single
+                # iteration optimization
+                self.current_iteration += 1
+
             return self._total_circuit_count, self._total_run_time
-
-    def _run_optimize(self):
-        """
-        Run the optimization step for the VQE problem.
-        """
-
-        if self.current_iteration == 0:
-            self._reset_params()
-
-            self.params = [
-                np.random.uniform(0, 2 * np.pi, self.n_params * self.n_layers)
-                for _ in range(self.optimizer.n_param_sets)
-            ]
-        else:
-            # Optimize the VQE problem.
-            if self.optimizer == Optimizers.NELDER_MEAD:
-                raise NotImplementedError
-
-            elif self.optimizer == Optimizers.MONTE_CARLO:
-                self.params = self.optimizer.compute_new_parameters(
-                    self.params,
-                    self.current_iteration,
-                    losses=self.energies[-1],
-                )
-            else:
-                raise NotImplementedError
-
-        self.current_iteration += 1

@@ -61,10 +61,10 @@ def test_results_aggregated_correctly(mocker, vqe_sweep):
     mocker.patch("divi.qprog.VQE")
 
     mock_program_1 = mocker.MagicMock()
-    mock_program_1.energies = [{0: -1.0}]
+    mock_program_1.losses = [{0: -1.0}]
 
     mock_program_2 = mocker.MagicMock()
-    mock_program_2.energies = [{0: -2.0}]
+    mock_program_2.losses = [{0: -2.0}]
 
     vqe_sweep.programs = {
         (VQEAnsatze.UCCSD, 0.5): mock_program_1,
@@ -81,9 +81,9 @@ def test_results_aggregated_correctly_multiple_energies(mocker, vqe_sweep):
     mocker.patch("divi.qprog.VQE")
 
     mock_program_1 = mocker.MagicMock()
-    mock_program_1.energies = [{0: -1.0}, {0: -0.8}]
+    mock_program_1.losses = [{0: -1.0}, {0: -0.8}]
     mock_program_2 = mocker.MagicMock()
-    mock_program_2.energies = [{0: -0.9}, {0: -0.7}]
+    mock_program_2.losses = [{0: -0.9}, {0: -0.7}]
 
     vqe_sweep.programs = {
         (VQEAnsatze.UCCSD, 0.5): mock_program_1,
@@ -115,7 +115,7 @@ def test_visualize_results(mocker, vqe_sweep, graph_type):
     mock_show = mocker.patch("matplotlib.pyplot.show")
 
     mock_program = mocker.MagicMock()
-    mock_program.energies = [{0: -1.0}]
+    mock_program.losses = [{0: -1.0}]
 
     vqe_sweep.programs = {
         (ansatz, bond_length): mock_program
@@ -132,7 +132,7 @@ def test_visualize_results_with_invalid_graph_type(mocker, vqe_sweep):
     mock_show = mocker.patch("matplotlib.pyplot.show")
 
     mock_program = mocker.MagicMock()
-    mock_program.energies = [{0: -1.0}]
+    mock_program.losses = [{0: -1.0}]
 
     vqe_sweep.programs = {
         (ansatz, bond_length): mock_program

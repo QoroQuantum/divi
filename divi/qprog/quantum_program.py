@@ -2,6 +2,7 @@ import pickle
 from abc import ABC, abstractmethod
 from typing import Optional
 
+import numpy as np
 from qiskit.result import marginal_counts, sampled_expectation_value
 
 from divi.parallel_simulator import ParallelSimulator
@@ -40,6 +41,9 @@ class QuantumProgram(ABC):
     def total_run_time(self, _):
         raise RuntimeError("Can not set total run time value.")
 
+    def _reset_params(self):
+        self.params = []
+
     @abstractmethod
     def _generate_circuits(self, params=None, **kwargs):
         pass
@@ -47,6 +51,30 @@ class QuantumProgram(ABC):
     @abstractmethod
     def run(self, store_data=False, data_file=None):
         pass
+
+    def _update_mc_params(self):
+        """
+        Updates the parameters based on previous MC iteration.
+        """
+
+        if self.current_iteration == 0:
+            self._reset_params()
+            self.params = [
+                np.random.uniform(0, 2 * np.pi, self.n_layers * self.n_params)
+                for _ in range(self.optimizer.n_param_sets)
+            ]
+
+            self.current_iteration += 1
+
+            return
+
+        self.params = self.optimizer.compute_new_parameters(
+            self.params,
+            self.current_iteration,
+            losses=self.losses[-1],
+        )
+
+        self.current_iteration += 1
 
     def _post_process_results(self, results):
         """

@@ -64,7 +64,7 @@ class VQEHyperparameterSweep(ProgramBatch):
             self.programs[(ansatz, bond_length)] = self._constructor(
                 bond_length=bond_length,
                 ansatz=ansatz,
-                energies=self.manager.list(),
+                losses=self.manager.list(),
                 circuits=self.manager.list(),
             )
         return
@@ -76,7 +76,7 @@ class VQEHyperparameterSweep(ProgramBatch):
         if self._executor is not None:
             self.wait_for_all()
 
-        all_energies = {key: prog.energies[-1] for key, prog in self.programs.items()}
+        all_energies = {key: prog.losses[-1] for key, prog in self.programs.items()}
 
         smallest_key = min(all_energies, key=lambda k: min(all_energies[k].values()))
         smallest_value = min(all_energies[smallest_key].values())
@@ -104,7 +104,7 @@ class VQEHyperparameterSweep(ProgramBatch):
             for ansatz, bond_length in self.programs.keys():
                 min_energies = []
 
-                curr_energies = self.programs[(ansatz, bond_length)].energies[-1]
+                curr_energies = self.programs[(ansatz, bond_length)].losses[-1]
                 min_energies.append(
                     (
                         bond_length,
@@ -122,7 +122,7 @@ class VQEHyperparameterSweep(ProgramBatch):
                 energies = []
                 for bond_length in self.bond_lengths:
                     energies.append(
-                        min(self.programs[(ansatz, bond_length)].energies[-1].values())
+                        min(self.programs[(ansatz, bond_length)].losses[-1].values())
                     )
                 plt.plot(self.bond_lengths, energies, label=ansatz)
 

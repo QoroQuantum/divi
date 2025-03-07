@@ -65,7 +65,8 @@ def test_meta_circuit_qasm(ansatz, n_layers):
     assert len(set(matches)) // n_layers == vqe_problem.n_params
 
 
-def test_vqe_symbol_coordinates_mismatch():
+@pytest.mark.parametrize("optimizer", list(Optimizers))
+def test_vqe_symbol_coordinates_mismatch(optimizer):
     with pytest.raises(
         ValueError,
         match="The number of symbols must match the number of coordinates",
@@ -74,6 +75,7 @@ def test_vqe_symbol_coordinates_mismatch():
             symbols=["H", "H", "H"],
             bond_length=0.5,
             coordinate_structure=[(1, 0, 0), (0, -1, 0)],
+            optimizer=optimizer,
         )
 
 
@@ -104,14 +106,16 @@ def test_vqe_correct_circuits_count_and_energies(optimizer):
 
     vqe_problem.run()
 
+    assert vqe_problem.current_iteration == 1
+
     if optimizer == Optimizers.MONTE_CARLO:
-        assert len(vqe_problem.energies) == 1
+        assert len(vqe_problem.losses) == 1
         assert (
             vqe_problem.total_circuit_count
             == vqe_problem.optimizer.n_param_sets * len(vqe_problem.hamiltonian)
         )
     elif optimizer == Optimizers.NELDER_MEAD:
-        assert len(vqe_problem.energies) == vqe_problem._minimize_res.nfev
+        assert len(vqe_problem.losses) == vqe_problem._minimize_res.nfev
         assert vqe_problem.total_circuit_count == vqe_problem._minimize_res.nfev * len(
             vqe_problem.hamiltonian
         )

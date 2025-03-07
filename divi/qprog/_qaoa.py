@@ -131,6 +131,7 @@ class QAOA(QuantumProgram):
         self.current_iteration = 0
         self.params = []
         self._solution_nodes = None
+        self.n_params = 2
 
         # Shared Variables
         self.losses = []
@@ -157,34 +158,6 @@ class QAOA(QuantumProgram):
 
         kwargs.pop("is_constrained", None)
         super().__init__(**kwargs)
-
-    def _reset_params(self):
-        self.params = []
-
-    def _run_optimize(self):
-        """
-        Run the optimization step for the QAOA problem.
-        """
-        n_param_sets = self.optimizer.n_param_sets
-
-        if self.current_iteration == 0:
-            self._reset_params()
-            self.params = [
-                np.random.uniform(0, 2 * np.pi, self.n_layers * 2)
-                for _ in range(n_param_sets)
-            ]
-        else:
-            # Optimize the QAOA problem.
-            if self.optimizer == Optimizers.MONTE_CARLO:
-                self.params = self.optimizer.compute_new_parameters(
-                    self.params,
-                    self.current_iteration,
-                    losses=self.losses[self.current_iteration - 1],
-                )
-            else:
-                raise NotImplementedError
-
-        self.current_iteration += 1
 
     def _post_process_results(self, results):
         """
@@ -306,7 +279,7 @@ class QAOA(QuantumProgram):
             while self.current_iteration < self.max_iterations:
                 logger.debug(f"Running iteration {self.current_iteration}")
 
-                self._run_optimize()
+                self._update_mc_params()
 
                 self._is_compute_probabilies = False
                 self._generate_circuits(measurement_phase=False)
@@ -339,10 +312,13 @@ class QAOA(QuantumProgram):
 
                 return losses[0]
 
+            def _iteration_counter(_):
+                self.current_iteration += 1
+
             self._reset_params()
 
             self.params = [
-                np.random.uniform(0, 2 * np.pi, self.n_layers * 2)
+                np.random.uniform(0, 2 * np.pi, self.n_layers * self.n_params)
                 for _ in range(self.optimizer.n_param_sets)
             ]
 
@@ -350,8 +326,14 @@ class QAOA(QuantumProgram):
                 cost_function,
                 self.params[0],
                 method="Nelder-Mead",
+                callback=_iteration_counter,
                 options={"maxiter": self.max_iterations},
             )
+
+            if self.max_iterations == 1:
+                # Need to handle this edge case for single
+                # iteration optimization
+                self.current_iteration += 1
 
             return self._total_circuit_count, self._total_run_time
 

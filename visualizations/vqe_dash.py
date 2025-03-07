@@ -112,9 +112,7 @@ def run_vqe(n_clicks):
             ys = []
             for bond_length in noiseless_vqe_problem.bond_lengths:
                 ys.append(
-                    noiseless_vqe_problem.programs[(ansatz, bond_length)].energies[-1][
-                        0
-                    ]
+                    noiseless_vqe_problem.programs[(ansatz, bond_length)].losses[-1][0]
                 )
             energy_v_bond_fig.add_trace(
                 go.Scatter(
@@ -135,7 +133,7 @@ def run_vqe(n_clicks):
         data = []
         ansatz = noiseless_vqe_problem.ansatze[0]
         bond_length = noiseless_vqe_problem.bond_lengths[0]
-        for energy in noiseless_vqe_problem.programs[(ansatz, bond_length)].energies:
+        for energy in noiseless_vqe_problem.programs[(ansatz, bond_length)].losses:
             data.append(energy[0])
         energy_v_iteration_fig.add_trace(
             go.Scatter(
@@ -249,7 +247,7 @@ def run_zne_vqe(n_clicks, existing_figure1, existing_figure2, existing_figure3):
         fig3 = go.Figure()
     if n_clicks > 0:
         zne_vqe_problem.run()
-        energies = zne_vqe_problem.energies[zne_vqe_problem.current_iteration - 1]
+        energies = zne_vqe_problem.losses[zne_vqe_problem.current_iteration - 1]
         for ansatz in zne_vqe_problem.ansatze:
             ys = []
             for i in range(len(zne_vqe_problem.bond_lengths)):
@@ -272,7 +270,7 @@ def run_zne_vqe(n_clicks, existing_figure1, existing_figure2, existing_figure3):
 
         data = []
         ansatz = zne_vqe_problem.ansatze[0]
-        for energy in zne_vqe_problem.energies:
+        for energy in zne_vqe_problem.losses:
             data.append(energy[0][ansatz][0])
         fig2.add_trace(
             go.Scatter(
@@ -363,7 +361,7 @@ def run_noisy_vqe(n_clicks, existing_figure1, existing_figure2):
         fig2 = go.Figure()
     if n_clicks > 0:
         noisy_vqe_problem.run()
-        energies = noisy_vqe_problem.energies[noisy_vqe_problem.current_iteration - 1]
+        energies = noisy_vqe_problem.losses[noisy_vqe_problem.current_iteration - 1]
         for ansatz in noisy_vqe_problem.ansatze:
             ys = []
             for i in range(len(noisy_vqe_problem.bond_lengths)):
@@ -386,7 +384,7 @@ def run_noisy_vqe(n_clicks, existing_figure1, existing_figure2):
 
         data = []
         ansatz = noisy_vqe_problem.ansatze[0]
-        for energy in noisy_vqe_problem.energies:
+        for energy in noisy_vqe_problem.losses:
             data.append(energy[0][ansatz][0])
         fig2.add_trace(
             go.Scatter(

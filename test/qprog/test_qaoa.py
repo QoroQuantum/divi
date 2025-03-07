@@ -125,6 +125,8 @@ def test_qaoa_correct_circuits_count_and_energies(optimizer):
 
     qaoa_problem.run()
 
+    assert qaoa_problem.current_iteration == 1
+
     # Need to add one here for the measurement phase
     if optimizer == Optimizers.MONTE_CARLO:
         assert len(qaoa_problem.losses) == 1
