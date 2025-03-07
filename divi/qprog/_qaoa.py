@@ -309,13 +309,13 @@ class QAOA(QuantumProgram):
                 self._run_optimize()
 
                 self._is_compute_probabilies = False
-                self._generate_circuits(final_measurement=False)
+                self._generate_circuits(measurement_phase=False)
                 self._dispatch_circuits_and_process_results(
                     store_data=store_data, data_file=data_file
                 )
 
                 self._is_compute_probabilies = True
-                self._generate_circuits(final_measurement=True)
+                self._generate_circuits(measurement_phase=True)
                 self._dispatch_circuits_and_process_results(
                     store_data=store_data, data_file=data_file
                 )
@@ -330,8 +330,6 @@ class QAOA(QuantumProgram):
                 losses = self._dispatch_circuits_and_process_results(
                     store_data=store_data, data_file=data_file
                 )
-
-                self.losses.append(losses)
 
                 self._is_compute_probabilies = True
                 self._generate_circuits(params, measurement_phase=True)

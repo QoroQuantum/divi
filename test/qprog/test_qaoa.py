@@ -86,6 +86,31 @@ def test_qaoa_initial_state_superposition():
     )
 
 
+@pytest.mark.parametrize("optimizer", [Optimizers.NELDER_MEAD, Optimizers.MONTE_CARLO])
+def test_qaoa_generate_circuits_called_with_correct_phases(mocker, optimizer):
+    qaoa_problem = QAOA(
+        "max_clique",
+        nx.bull_graph(),
+        n_layers=1,
+        optimizer=optimizer,
+        max_iterations=1,
+        is_constrained=True,
+        qoro_service=None,
+    )
+
+    mock_generate_circuits = mocker.patch.object(qaoa_problem, "_generate_circuits")
+
+    qaoa_problem.run()
+
+    # Verify that _generate_circuits was called twice per iteration
+    assert mock_generate_circuits.call_count % 2 == 0
+
+    # Verify that _generate_circuits was called with measurement_phase=False first and then with measurement_phase=True
+    for i in range(mock_generate_circuits.call_count, 2):
+        assert not mock_generate_circuits.call_args_list[i][1]["measurement_phase"]
+        assert mock_generate_circuits.call_args_list[i + 1][1]["measurement_phase"]
+
+
 @flaky(max_runs=3, min_passes=1)
 def test_qaoa_compute_final_solution():
     G = nx.bull_graph()
