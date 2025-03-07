@@ -266,6 +266,21 @@ class QAOA(QuantumProgram):
 
             self.circuits.append(circuit)
 
+    def _run_optimization_step(self, store_data, data_file, params=None):
+        self._is_compute_probabilies = False
+        self._generate_circuits(params, measurement_phase=False)
+        losses = self._dispatch_circuits_and_process_results(
+            store_data=store_data, data_file=data_file
+        )
+
+        self._is_compute_probabilies = True
+        self._generate_circuits(params, measurement_phase=True)
+        self._dispatch_circuits_and_process_results(
+            store_data=store_data, data_file=data_file
+        )
+
+        return losses
+
     def run(self, store_data=False, data_file=None):
         """
         Run the QAOA problem. The outputs are stored in the QAOA object. Optionally, the data can be stored in a file.
@@ -281,33 +296,15 @@ class QAOA(QuantumProgram):
 
                 self._update_mc_params()
 
-                self._is_compute_probabilies = False
-                self._generate_circuits(measurement_phase=False)
-                self._dispatch_circuits_and_process_results(
-                    store_data=store_data, data_file=data_file
-                )
-
-                self._is_compute_probabilies = True
-                self._generate_circuits(measurement_phase=True)
-                self._dispatch_circuits_and_process_results(
-                    store_data=store_data, data_file=data_file
-                )
+                self._run_optimization_step(store_data, data_file)
 
             return self._total_circuit_count, self._total_run_time
 
         elif self.optimizer == Optimizers.NELDER_MEAD:
 
             def cost_function(params):
-                self._is_compute_probabilies = False
-                self._generate_circuits(params, measurement_phase=False)
-                losses = self._dispatch_circuits_and_process_results(
-                    store_data=store_data, data_file=data_file
-                )
-
-                self._is_compute_probabilies = True
-                self._generate_circuits(params, measurement_phase=True)
-                self._dispatch_circuits_and_process_results(
-                    store_data=store_data, data_file=data_file
+                losses = self._run_optimization_step(
+                    store_data, data_file, params=params
                 )
 
                 return losses[0]

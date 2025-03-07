@@ -277,6 +277,21 @@ class VQE(QuantumProgram):
 
             self.circuits.append(circuit)
 
+    def _run_optimization_step(self, store_data, data_file, params=None):
+        if self.hamiltonian is None or len(self.hamiltonian) == 0:
+            raise RuntimeError(
+                "Hamiltonian operators must be generated before running the VQE"
+            )
+
+        self._generate_circuits(params)
+        energies = self._dispatch_circuits_and_process_results(
+            store_data=store_data, data_file=data_file
+        )
+
+        self.losses.append(energies)
+
+        return energies
+
     def run(self, store_data=False, data_file=None):
         """
         Run the VQE problem. The outputs are stored in the VQE object. Optionally, the data can be stored in a file.
@@ -291,35 +306,16 @@ class VQE(QuantumProgram):
 
                 self._update_mc_params()
 
-                if self.hamiltonian is None or len(self.hamiltonian) == 0:
-                    raise RuntimeError(
-                        "Hamiltonian operators must be generated before running the VQE"
-                    )
-
-                self._generate_circuits()
-                energies = self._dispatch_circuits_and_process_results(
-                    store_data=store_data, data_file=data_file
-                )
-
-                self.losses.append(energies)
+                self._run_optimization_step(store_data, data_file)
 
             return self._total_circuit_count, self._total_run_time
 
         elif self.optimizer == Optimizers.NELDER_MEAD:
 
             def cost_function(params):
-                if self.hamiltonian is None or len(self.hamiltonian) == 0:
-                    raise RuntimeError(
-                        "Hamiltonian operators must be generated before running the VQE"
-                    )
-
-                self._generate_circuits(params)
-                losses = self._dispatch_circuits_and_process_results(
-                    store_data=store_data, data_file=data_file
+                losses = self._run_optimization_step(
+                    store_data, data_file, params=params
                 )
-
-                self.losses.append(losses)
-
                 return losses[0]
 
             def _iteration_counter(_):
@@ -336,6 +332,7 @@ class VQE(QuantumProgram):
                 cost_function,
                 self.params[0],
                 method="Nelder-Mead",
+                callback=_iteration_counter,
                 options={"maxiter": self.max_iterations},
             )
 
