@@ -194,7 +194,7 @@ class QoroService:
                 time.sleep(timeout)
                 if verbose:
                     print(
-                        f"Retrying: {retries} times",
+                        f"Polling job {job_id}: {retries} times / {max_retries} retries",
                         f"Run time: {retries*timeout} seconds",
                     )
             if completed and on_complete:
