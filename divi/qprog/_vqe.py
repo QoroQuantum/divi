@@ -1,5 +1,3 @@
-import logging
-import warnings
 from enum import Enum
 
 import numpy as np
@@ -10,25 +8,6 @@ from scipy.optimize import minimize
 from divi.circuit import MetaCircuit
 from divi.qprog import QuantumProgram
 from divi.qprog.optimizers import Optimizers
-
-warnings.filterwarnings("ignore", category=UserWarning)
-
-# Set up your logger
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-
-# Create console handler and set level to debug
-ch = logging.StreamHandler()
-ch.setLevel(logging.DEBUG)
-
-formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-ch.setFormatter(formatter)
-
-# Add the handler to the logger
-logger.addHandler(ch)
-
-# Suppress debug logs from external libraries
-logging.getLogger().setLevel(logging.WARNING)
 
 
 class VQEAnsatze(Enum):
@@ -291,54 +270,3 @@ class VQE(QuantumProgram):
         self.losses.append(energies)
 
         return energies
-
-    def run(self, store_data=False, data_file=None):
-        """
-        Run the VQE problem. The outputs are stored in the VQE object. Optionally, the data can be stored in a file.
-
-        Args:
-            store_data (bool): Whether to store the data for the iteration
-            data_file (str): The file to store the data in
-        """
-        if self.optimizer == Optimizers.MONTE_CARLO:
-            while self.current_iteration < self.max_iterations:
-                logger.debug(f"Running iteration {self.current_iteration}")
-
-                self._update_mc_params()
-
-                self._run_optimization_step(store_data, data_file)
-
-            return self._total_circuit_count, self._total_run_time
-
-        elif self.optimizer == Optimizers.NELDER_MEAD:
-
-            def cost_function(params):
-                losses = self._run_optimization_step(
-                    store_data, data_file, params=params
-                )
-                return losses[0]
-
-            def _iteration_counter(_):
-                self.current_iteration += 1
-
-            self._reset_params()
-
-            self.params = [
-                np.random.uniform(-2 * np.pi, -2 * np.pi, self.n_params * self.n_layers)
-                for _ in range(self.optimizer.n_param_sets)
-            ]
-
-            self._minimize_res = minimize(
-                cost_function,
-                self.params[0],
-                method="Nelder-Mead",
-                callback=_iteration_counter,
-                options={"maxiter": self.max_iterations},
-            )
-
-            if self.max_iterations == 1:
-                # Need to handle this edge case for single
-                # iteration optimization
-                self.current_iteration += 1
-
-            return self._total_circuit_count, self._total_run_time

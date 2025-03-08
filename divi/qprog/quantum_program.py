@@ -1,13 +1,33 @@
+import logging
 import pickle
 from abc import ABC, abstractmethod
 from typing import Optional
 
 import numpy as np
 from qiskit.result import marginal_counts, sampled_expectation_value
+from scipy.optimize import minimize
 
 from divi.parallel_simulator import ParallelSimulator
+from divi.qprog.optimizers import Optimizers
 from divi.services import QoroService
 from divi.services.qoro_service import JobStatus
+
+# Set up your logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+
+# Create console handler and set level to debug
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+
+formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+ch.setFormatter(formatter)
+
+# Add the handler to the logger
+logger.addHandler(ch)
+
+# Suppress debug logs from external libraries
+logging.getLogger().setLevel(logging.WARNING)
 
 
 class QuantumProgram(ABC):
@@ -166,6 +186,59 @@ class QuantumProgram(ABC):
             self.save_iteration(data_file)
 
         return result
+
+    def run(self, store_data=False, data_file=None):
+        """
+        Run the QAOA problem. The outputs are stored in the QAOA object. Optionally, the data can be stored in a file.
+
+        Args:
+            store_data (bool): Whether to store the data for the iteration
+            data_file (str): The file to store the data in
+        """
+
+        if self.optimizer == Optimizers.MONTE_CARLO:
+            while self.current_iteration < self.max_iterations:
+                logger.debug(f"Running iteration {self.current_iteration}")
+
+                self._update_mc_params()
+
+                self._run_optimization_step(store_data, data_file)
+
+            return self._total_circuit_count, self._total_run_time
+
+        elif self.optimizer == Optimizers.NELDER_MEAD:
+
+            def cost_function(params):
+                losses = self._run_optimization_step(
+                    store_data, data_file, params=params
+                )
+
+                return losses[0]
+
+            def _iteration_counter(_):
+                self.current_iteration += 1
+
+            self._reset_params()
+
+            self.params = [
+                np.random.uniform(0, 2 * np.pi, self.n_layers * self.n_params)
+                for _ in range(self.optimizer.n_param_sets)
+            ]
+
+            self._minimize_res = minimize(
+                cost_function,
+                self.params[0],
+                method="Nelder-Mead",
+                callback=_iteration_counter,
+                options={"maxiter": self.max_iterations},
+            )
+
+            if self.max_iterations == 1:
+                # Need to handle this edge case for single
+                # iteration optimization
+                self.current_iteration += 1
+
+            return self._total_circuit_count, self._total_run_time
 
     def save_iteration(self, data_file):
         """
