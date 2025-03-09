@@ -1,5 +1,3 @@
-import logging
-import warnings
 from functools import reduce
 
 import numpy as np
@@ -9,26 +7,6 @@ from qiskit_algorithms import EstimationProblem, MaximumLikelihoodAmplitudeEstim
 
 from divi.circuit import Circuit
 from divi.qprog.quantum_program import QuantumProgram
-from divi.services.qoro_service import JobStatus
-
-warnings.filterwarnings("ignore", category=UserWarning)
-
-# Set up your logger
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-
-# Create console handler and set level to debug
-ch = logging.StreamHandler()
-ch.setLevel(logging.DEBUG)
-
-formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-ch.setFormatter(formatter)
-
-# Add the handler to the logger
-logger.addHandler(ch)
-
-# Suppress debug logs from external libraries
-logging.getLogger().setLevel(logging.WARNING)
 
 
 class BernoulliA(QuantumCircuit):

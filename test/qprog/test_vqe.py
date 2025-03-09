@@ -36,7 +36,7 @@ def test_vqe_basic_initialization():
     verify_hamiltonian_metadata(vqe_problem)
 
     # Check meta-circuits
-    verify_metacircuit_dict(vqe_problem, ["circuit"])
+    verify_metacircuit_dict(vqe_problem, ["cost_circuit"])
 
 
 @pytest.mark.parametrize("ansatz", list(VQEAnsatze))
@@ -54,7 +54,7 @@ def test_meta_circuit_qasm(ansatz, n_layers):
         qoro_service=None,
     )
 
-    meta_circuit_obj = vqe_problem._meta_circuits["circuit"]
+    meta_circuit_obj = vqe_problem._meta_circuits["cost_circuit"]
     meta_circuit_qasm = meta_circuit_obj.compiled_circuit
 
     pattern = r"w_(\d+)_(\d+)"

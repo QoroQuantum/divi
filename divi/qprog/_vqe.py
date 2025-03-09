@@ -3,7 +3,6 @@ from enum import Enum
 import numpy as np
 import pennylane as qml
 import sympy as sp
-from scipy.optimize import minimize
 
 from divi.circuit import MetaCircuit
 from divi.qprog import QuantumProgram
@@ -143,7 +142,7 @@ class VQE(QuantumProgram):
             return [qml.sample(term) for term in hamiltonian]
 
         return {
-            "circuit": MetaCircuit(
+            "cost_circuit": MetaCircuit(
                 qml.tape.make_qscript(_prepare_circuit)(
                     self.ansatz, self.hamiltonian, weights_syms
                 ),
@@ -232,7 +231,7 @@ class VQE(QuantumProgram):
         else:
             raise ValueError(f"Invalid Ansatz Value. Got {ansatz}.")
 
-    def _generate_circuits(self, params=None):
+    def _generate_circuits(self):
         """
         Generate the circuits for the VQE problem.
 
@@ -245,28 +244,17 @@ class VQE(QuantumProgram):
                 - Generate the circuit
         """
 
-        self.circuits[:] = []
-
-        params = self.params if params is None else [params]
-
-        for p, params_group in enumerate(params):
-            circuit = self._meta_circuits["circuit"].initialize_circuit_from_params(
-                params_group, tag_prefix=f"{p}"
-            )
+        for p, params_group in enumerate(self._curr_params):
+            circuit = self._meta_circuits[
+                "cost_circuit"
+            ].initialize_circuit_from_params(params_group, tag_prefix=f"{p}")
 
             self.circuits.append(circuit)
 
-    def _run_optimization_step(self, store_data, data_file, params=None):
+    def _run_optimization_circuits(self, store_data, data_file):
         if self.hamiltonian is None or len(self.hamiltonian) == 0:
             raise RuntimeError(
                 "Hamiltonian operators must be generated before running the VQE"
             )
 
-        self._generate_circuits(params)
-        energies = self._dispatch_circuits_and_process_results(
-            store_data=store_data, data_file=data_file
-        )
-
-        self.losses.append(energies)
-
-        return energies
+        return super()._run_optimization_circuits(store_data, data_file)

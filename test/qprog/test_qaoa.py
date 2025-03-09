@@ -34,7 +34,7 @@ def test_qaoa_basic_initialization():
 
     verify_hamiltonian_metadata(qaoa_problem)
 
-    verify_metacircuit_dict(qaoa_problem, ["opt_circuit", "meas_circuit"])
+    verify_metacircuit_dict(qaoa_problem, ["cost_circuit", "meas_circuit"])
 
 
 def test_qaoa_unsuppported_problem():
@@ -80,7 +80,9 @@ def test_qaoa_initial_state_superposition():
     assert (
         sum(
             isinstance(op, qml.Hadamard)
-            for op in qaoa_problem._meta_circuits["opt_circuit"].main_circuit.operations
+            for op in qaoa_problem._meta_circuits[
+                "cost_circuit"
+            ].main_circuit.operations
         )
         == nx.bull_graph().number_of_nodes()
     )

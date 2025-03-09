@@ -110,9 +110,9 @@ class QAOA(QuantumProgram):
         self.max_iterations = max_iterations
         self.n_qubits = graph.number_of_nodes()
         self.current_iteration = 0
-        self.params = []
         self._solution_nodes = None
         self.n_params = 2
+        self._is_compute_probabilies = False
 
         # Shared Variables
         self.losses = []
@@ -139,31 +139,6 @@ class QAOA(QuantumProgram):
 
         kwargs.pop("is_constrained", None)
         super().__init__(**kwargs)
-
-    def _post_process_results(self, results):
-        """
-        Post-process the results of the QAOA problem.
-
-        Returns:
-            (dict) The losses for each parameter set grouping.
-        """
-
-        if self._is_compute_probabilies:
-            probs = {
-                outer_k: {
-                    inner_k: inner_v / self.shots
-                    for inner_k, inner_v in outer_v.items()
-                }
-                for outer_k, outer_v in results.items()
-            }
-            self.probs.append(probs)
-
-        losses = super()._post_process_results(results)
-
-        if not self._is_compute_probabilies:
-            self.losses.append(losses)
-
-        return losses
 
     def _create_meta_circuits(self):
         """
@@ -208,7 +183,7 @@ class QAOA(QuantumProgram):
                 return [qml.sample(term) for term in hamiltonian]
 
         return {
-            "opt_circuit": MetaCircuit(
+            "cost_circuit": MetaCircuit(
                 qml.tape.make_qscript(_prepare_circuit)(
                     self.cost_hamiltonian, sym_params, final_measurement=False
                 ),
@@ -222,45 +197,56 @@ class QAOA(QuantumProgram):
             ),
         }
 
-    def _generate_circuits(self, params=None, **kwargs):
+    def _generate_circuits(self):
         """
         Generate the circuits for the QAOA problem.
 
         In this method, we generate bulk circuits based on the selected parameters.
         """
 
-        # Clear the previous circuit batch
-        self.circuits[:] = []
-
         circuit_type = (
-            "opt_circuit"
-            if not kwargs.pop("measurement_phase", False)
-            else "meas_circuit"
+            "cost_circuit" if not self._is_compute_probabilies else "meas_circuit"
         )
 
-        params = self.params if params is None else [params]
-
-        for p, params_group in enumerate(params):
+        for p, params_group in enumerate(self._curr_params):
             circuit = self._meta_circuits[circuit_type].initialize_circuit_from_params(
                 params_group, tag_prefix=f"{p}"
             )
 
             self.circuits.append(circuit)
 
-    def _run_optimization_step(self, store_data, data_file, params=None):
-        self._is_compute_probabilies = False
-        self._generate_circuits(params, measurement_phase=False)
-        losses = self._dispatch_circuits_and_process_results(
-            store_data=store_data, data_file=data_file
-        )
+    def _post_process_results(self, results):
+        """
+        Post-process the results of the QAOA problem.
 
-        self._is_compute_probabilies = True
-        self._generate_circuits(params, measurement_phase=True)
-        self._dispatch_circuits_and_process_results(
-            store_data=store_data, data_file=data_file
-        )
+        Returns:
+            (dict) The losses for each parameter set grouping.
+        """
+
+        if self._is_compute_probabilies:
+            return {
+                outer_k: {
+                    inner_k: inner_v / self.shots
+                    for inner_k, inner_v in outer_v.items()
+                }
+                for outer_k, outer_v in results.items()
+            }
+
+        losses = super()._post_process_results(results)
 
         return losses
+
+    def _run_final_measurement(self):
+        self._is_compute_probabilies = True
+
+        self._curr_params = self.final_params
+        self.circuits[:] = []
+        self._generate_circuits()
+        probs = self._dispatch_circuits_and_process_results()
+
+        self._is_compute_probabilies = False
+
+        return probs
 
     def compute_final_solution(self):
         # Convert losses dict to list to apply ordinal operations
@@ -272,8 +258,11 @@ class QAOA(QuantumProgram):
             key=lambda x: final_losses_list.__getitem__(x),
         )
 
+        ## Insert the measurement circuit here
+        probs = self._run_final_measurement()
+
         # Retrieve the probability distribution dictionary of the best solution
-        best_solution_probs = self.probs[-1][f"{best_solution_idx}_0"]
+        best_solution_probs = probs[f"{best_solution_idx}_0"]
 
         # Retrieve the bitstring with the actual best solution
         # Reverse to account for the endianness difference

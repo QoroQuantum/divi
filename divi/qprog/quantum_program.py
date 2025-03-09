@@ -40,6 +40,11 @@ class QuantumProgram(ABC):
 
         self._total_circuit_count = 0
         self._total_run_time = 0
+        self._curr_params = []
+
+        # Lets child classes adapt their optimization
+        # step for grad calculation routine
+        self._grad_mode = False
 
         self.shots = shots
         self.qoro_service = qoro_service
@@ -62,15 +67,24 @@ class QuantumProgram(ABC):
         raise RuntimeError("Can not set total run time value.")
 
     def _reset_params(self):
-        self.params = []
+        self._curr_params = []
 
     @abstractmethod
-    def _generate_circuits(self, params=None, **kwargs):
+    def _generate_circuits(self, **kwargs):
         pass
 
     @abstractmethod
     def run(self, store_data=False, data_file=None):
         pass
+
+    def _run_optimization_circuits(self, store_data, data_file):
+        self.circuits[:] = []
+        self._generate_circuits()
+        losses = self._dispatch_circuits_and_process_results(
+            store_data=store_data, data_file=data_file
+        )
+
+        return losses
 
     def _update_mc_params(self):
         """
@@ -79,7 +93,7 @@ class QuantumProgram(ABC):
 
         if self.current_iteration == 0:
             self._reset_params()
-            self.params = [
+            self._curr_params = [
                 np.random.uniform(0, 2 * np.pi, self.n_layers * self.n_params)
                 for _ in range(self.optimizer.n_param_sets)
             ]
@@ -88,47 +102,13 @@ class QuantumProgram(ABC):
 
             return
 
-        self.params = self.optimizer.compute_new_parameters(
-            self.params,
+        self._curr_params = self.optimizer.compute_new_parameters(
+            self._curr_params,
             self.current_iteration,
             losses=self.losses[-1],
         )
 
         self.current_iteration += 1
-
-    def _post_process_results(self, results):
-        """
-        Post-process the results of the quantum problem.
-
-        Returns:
-            (dict) The energies for each parameter set grouping.
-        """
-
-        losses = {}
-
-        for p, _ in enumerate(self.params):
-            losses[p] = 0
-            cur_result = {
-                key: value for key, value in results.items() if key.startswith(f"{p}")
-            }
-
-            marginal_results = []
-            for param_id, shots_dict in cur_result.items():
-                ham_op_index = int(param_id.split("_")[-1])
-                ham_op_metadata = self.expval_hamiltonian_metadata[ham_op_index]
-                pair = (
-                    ham_op_metadata,
-                    marginal_counts(shots_dict, ham_op_metadata[0].tolist()),
-                )
-                marginal_results.append(pair)
-
-            for ham_op_metadata, marginal_shots in marginal_results:
-                exp_value = sampled_expectation_value(
-                    marginal_shots, "Z" * len(ham_op_metadata[0])
-                )
-                losses[p] += ham_op_metadata[1] * exp_value
-
-        return losses
 
     def _prepare_and_send_circuits(self):
         job_circuits = {}
@@ -187,6 +167,40 @@ class QuantumProgram(ABC):
 
         return result
 
+    def _post_process_results(self, results):
+        """
+        Post-process the results of the quantum problem.
+
+        Returns:
+            (dict) The energies for each parameter set grouping.
+        """
+
+        losses = {}
+
+        for p, _ in enumerate(self._curr_params):
+            losses[p] = 0
+            cur_result = {
+                key: value for key, value in results.items() if key.startswith(f"{p}")
+            }
+
+            marginal_results = []
+            for param_id, shots_dict in cur_result.items():
+                ham_op_index = int(param_id.split("_")[-1])
+                ham_op_metadata = self.expval_hamiltonian_metadata[ham_op_index]
+                pair = (
+                    ham_op_metadata,
+                    marginal_counts(shots_dict, ham_op_metadata[0].tolist()),
+                )
+                marginal_results.append(pair)
+
+            for ham_op_metadata, marginal_shots in marginal_results:
+                exp_value = sampled_expectation_value(
+                    marginal_shots, "Z" * len(ham_op_metadata[0])
+                )
+                losses[p] += ham_op_metadata[1] * exp_value
+
+        return losses
+
     def run(self, store_data=False, data_file=None):
         """
         Run the QAOA problem. The outputs are stored in the QAOA object. Optionally, the data can be stored in a file.
@@ -197,38 +211,63 @@ class QuantumProgram(ABC):
         """
 
         if self.optimizer == Optimizers.MONTE_CARLO:
+            logger.debug(f"Finished iteration {self.current_iteration}")
             while self.current_iteration < self.max_iterations:
-                logger.debug(f"Running iteration {self.current_iteration}")
 
                 self._update_mc_params()
 
-                self._run_optimization_step(store_data, data_file)
+                self._run_optimization_circuits(store_data, data_file)
+
+                logger.debug(f"Finished iteration {self.current_iteration}")
 
             return self._total_circuit_count, self._total_run_time
 
-        elif self.optimizer == Optimizers.NELDER_MEAD:
+        elif self.optimizer in (Optimizers.NELDER_MEAD, Optimizers.L_BFGS_B):
+            logger.debug(f"Finished iteration {self.current_iteration}")
 
-            def cost_function(params):
-                losses = self._run_optimization_step(
-                    store_data, data_file, params=params
-                )
+            def cost_fn(params):
+                self._curr_params = np.atleast_2d(params)
+
+                losses = self._run_optimization_circuits(store_data, data_file)
 
                 return losses[0]
 
-            def _iteration_counter(_):
+            def grad_fn(params):
+                self._grad_mode = True
+
+                shift_mask = self.optimizer.compute_parameter_shift_mask(len(params))
+
+                self._curr_params = shift_mask + params
+
+                exp_vals = self._run_optimization_circuits(store_data, data_file)
+
+                grads = np.zeros_like(params)
+                for i in range(len(params)):
+                    grads[i] = exp_vals[2 * i] - exp_vals[2 * i + 1]
+
+                self._grad_mode = False
+
+                return grads
+
+            def _iteration_counter(intermediate_result):
+                self.losses.append({0: intermediate_result.fun})
+                self.final_params = np.atleast_2d(intermediate_result.x)
+
                 self.current_iteration += 1
+                logger.debug(f"Finished iteration {self.current_iteration}")
 
             self._reset_params()
 
-            self.params = [
+            self._curr_params = [
                 np.random.uniform(0, 2 * np.pi, self.n_layers * self.n_params)
                 for _ in range(self.optimizer.n_param_sets)
             ]
 
             self._minimize_res = minimize(
-                cost_function,
-                self.params[0],
-                method="Nelder-Mead",
+                fun=cost_fn,
+                x0=self._curr_params[0],
+                method=self.optimizer.value,
+                jac=grad_fn if self.optimizer == Optimizers.L_BFGS_B else None,
                 callback=_iteration_counter,
                 options={"maxiter": self.max_iterations},
             )
