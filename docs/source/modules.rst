@@ -1,4 +1,4 @@
-qoro
+divi
 ====
 
 .. toctree::

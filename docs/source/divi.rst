@@ -1,5 +1,5 @@
-divi
-====
+divi package
+============
 
 Subpackages
 -----------
@@ -8,7 +8,7 @@ Subpackages
    :maxdepth: 4
 
    divi.qprog
-   divi.simulator
+   divi.services
 
 Submodules
 ----------
@@ -21,10 +21,18 @@ divi.circuit module
    :undoc-members:
    :show-inheritance:
 
-divi.qoro\_service module
--------------------------
+divi.parallel\_simulator module
+-------------------------------
 
-.. automodule:: divi.qoro_service
+.. automodule:: divi.parallel_simulator
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+divi.utils module
+-----------------
+
+.. automodule:: divi.utils
    :members:
    :undoc-members:
    :show-inheritance:

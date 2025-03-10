@@ -6,31 +6,42 @@
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
+# Set the path to your Python modules
 import os
 import sys
-sys.path.insert(0, os.path.abspath(os.path.join('..', '..', 'divi')))
 
-project = 'divi'
-copyright = '2024, Qoro Quantum Ltd.'
-author = 'Qoro Quantum'
-release = '0.0.1'
+sys.path.insert(0, os.path.abspath("../../"))  # Adjust path as needed
+
+project = "Divi"
+copyright = "2025, Qoro Quantum Ltd."
+author = "Qoro Quantum Ltd."
+release = "0.0.1"
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
 extensions = [
-    'sphinx.ext.autodoc',
-    'sphinx.ext.napoleon',
-    'sphinx.ext.viewcode',
+    "sphinx.ext.autodoc",
+    "sphinx.ext.napoleon",  # Supports Google-style and NumPy-style docstrings
+    "sphinx.ext.viewcode",
+    "sphinx.ext.githubpages",
+    "sphinx.ext.intersphinx",
+    "sphinx_autodoc_typehints",
 ]
 
-templates_path = ['_templates']
+templates_path = ["_templates"]
 exclude_patterns = []
 
 
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
-html_theme = 'sphinx_rtd_theme'
-html_static_path = ['_static']
-html_favicon = '_static/favicon.ico'
+html_theme = "alabaster"
+html_static_path = ["_static"]
+
+
+# Add Sphinx extensions
+
+
+# Use the ReadTheDocs theme
+html_theme = "sphinx_rtd_theme"

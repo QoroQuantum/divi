@@ -1,5 +1,0 @@
-Examples
-========
-
-..  toctree::
-    examples/vqe

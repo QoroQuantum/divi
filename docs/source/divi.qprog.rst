@@ -1,16 +1,24 @@
 divi.qprog package
 ==================
 
-Subpackages
------------
-
-.. toctree::
-   :maxdepth: 4
-
-   divi.qprog.vqe
-
 Submodules
 ----------
+
+divi.qprog.batch module
+-----------------------
+
+.. automodule:: divi.qprog.batch
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+divi.qprog.optimizers module
+----------------------------
+
+.. automodule:: divi.qprog.optimizers
+   :members:
+   :undoc-members:
+   :show-inheritance:
 
 divi.qprog.quantum\_program module
 ----------------------------------
