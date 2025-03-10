@@ -19,7 +19,7 @@ def skip_if_no_api_token(request):
 
 
 @pytest.fixture(scope="module")
-def setup_module(request):
+def api_token(request):
     api_token = request.config.getoption("--api-token")
 
     # Setup code
@@ -31,5 +31,4 @@ def setup_module(request):
     yield api_token
 
     # Teardown code
-    print(
-        f"\nTeardown: Cleaning up resources initialized with API token: {api_token}")
+    print(f"\nTeardown: Cleaning up resources initialized with API token: {api_token}")
