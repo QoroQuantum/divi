@@ -4,3 +4,9 @@ pytest==8.3.2
 pytest-mock==3.14.0
 flaky==3.8.1
 pre_commit==4.1.0
+
+# DOCS
+sphinx
+sphinx-autodoc-typehints
+sphinx-rtd-theme
+nbsphinx
