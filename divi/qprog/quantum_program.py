@@ -216,7 +216,9 @@ class QuantumProgram(ABC):
 
                 self._update_mc_params()
 
-                self._run_optimization_circuits(store_data, data_file)
+                curr_losses = self._run_optimization_circuits(store_data, data_file)
+
+                self.losses.append(curr_losses)
 
                 logger.debug(f"Finished iteration {self.current_iteration}")
 
