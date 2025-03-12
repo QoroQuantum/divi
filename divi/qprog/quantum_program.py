@@ -243,7 +243,7 @@ class QuantumProgram(ABC):
 
                 grads = np.zeros_like(params)
                 for i in range(len(params)):
-                    grads[i] = 0.5(exp_vals[2 * i] - exp_vals[2 * i + 1])
+                    grads[i] = 0.5 * (exp_vals[2 * i] - exp_vals[2 * i + 1])
 
                 self._grad_mode = False
 
