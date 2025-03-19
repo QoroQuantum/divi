@@ -27,7 +27,7 @@ _SUPPORTED_INITIAL_STATES_LITERAL = Literal[
 ]
 
 # Recommended initial state as per Pennylane's documentation.
-# Values are of the format (Constrained, Unonstrained).
+# Values are of the format (Constrained, Unconstrained).
 # Value is duplicated if not applicable to the problem
 _PROBLEM_TO_INITIAL_STATE_MAP = dict(
     zip(
