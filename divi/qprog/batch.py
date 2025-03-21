@@ -1,3 +1,4 @@
+import traceback
 from abc import ABC, abstractmethod
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -84,7 +85,8 @@ class ProgramBatch(ABC):
 
             if exceptions:
                 for i, exc in enumerate(exceptions, 1):
-                    print(f"Task {i} failed with exception: {exc}")
+                    print(f"Task {i} failed with exception:")
+                    traceback.print_exception(type(exc), exc, exc.__traceback__)
                 raise RuntimeError("One or more tasks failed. Check logs for details.")
         finally:
             self._executor.shutdown(wait=True, cancel_futures=False)
