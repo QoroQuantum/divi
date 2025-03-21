@@ -85,11 +85,11 @@ class VQE(QuantumProgram):
         if (m_list := kwargs.pop("losses", None)) is not None:
             self.losses = m_list
 
-        self.hamiltonian = self._generate_hamiltonian_operations()
+        self.cost_hamiltonian = self._generate_hamiltonian_operations()
 
         self.expval_hamiltonian_metadata = {
             i: (term.wires, float(term.scalar))
-            for i, term in enumerate(self.hamiltonian)
+            for i, term in enumerate(self.cost_hamiltonian)
         }
 
         self._meta_circuits = self._create_meta_circuits()
@@ -144,7 +144,7 @@ class VQE(QuantumProgram):
         return {
             "cost_circuit": MetaCircuit(
                 qml.tape.make_qscript(_prepare_circuit)(
-                    self.ansatz, self.hamiltonian, weights_syms
+                    self.ansatz, self.cost_hamiltonian, weights_syms
                 ),
                 symbols=weights_syms.flatten(),
             )
@@ -252,7 +252,7 @@ class VQE(QuantumProgram):
             self.circuits.append(circuit)
 
     def _run_optimization_circuits(self, store_data, data_file):
-        if self.hamiltonian is None or len(self.hamiltonian) == 0:
+        if self.cost_hamiltonian is None or len(self.cost_hamiltonian) == 0:
             raise RuntimeError(
                 "Hamiltonian operators must be generated before running the VQE"
             )

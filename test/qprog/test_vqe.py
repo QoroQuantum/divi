@@ -2,7 +2,11 @@ import re
 
 import pennylane as qml
 import pytest
-from qprog_contracts import verify_hamiltonian_metadata, verify_metacircuit_dict
+from qprog_contracts import (
+    verify_correct_circuit_count,
+    verify_hamiltonian_metadata,
+    verify_metacircuit_dict,
+)
 
 from divi.qprog import VQE, Optimizers, VQEAnsatze
 
@@ -29,7 +33,7 @@ def test_vqe_basic_initialization():
 
     # Check Hamiltonian type
     assert (
-        isinstance(vqe_problem.hamiltonian, qml.operation.Operator) == 1
+        isinstance(vqe_problem.cost_hamiltonian, qml.operation.Operator) == 1
     ), "Expected a pennylane Operator object for the hamiltonian"
 
     # Check Hamiltonian Meta-data exists in expected format
@@ -104,18 +108,4 @@ def test_vqe_correct_circuits_count_and_energies(optimizer):
         qoro_service=None,
     )
 
-    vqe_problem.run()
-
-    assert vqe_problem.current_iteration == 1
-
-    if optimizer == Optimizers.MONTE_CARLO:
-        assert len(vqe_problem.losses) == 1
-        assert (
-            vqe_problem.total_circuit_count
-            == vqe_problem.optimizer.n_param_sets * len(vqe_problem.hamiltonian)
-        )
-    elif optimizer == Optimizers.NELDER_MEAD:
-        assert len(vqe_problem.losses) == vqe_problem._minimize_res.nfev
-        assert vqe_problem.total_circuit_count == vqe_problem._minimize_res.nfev * len(
-            vqe_problem.hamiltonian
-        )
+    verify_correct_circuit_count(vqe_problem)

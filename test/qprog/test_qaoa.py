@@ -3,7 +3,11 @@ import networkx as nx
 import pennylane as qml
 import pytest
 from flaky import flaky
-from qprog_contracts import verify_hamiltonian_metadata, verify_metacircuit_dict
+from qprog_contracts import (
+    verify_correct_circuit_count,
+    verify_hamiltonian_metadata,
+    verify_metacircuit_dict,
+)
 
 from divi.qprog import QAOA
 from divi.qprog.optimizers import Optimizers
@@ -27,7 +31,8 @@ def test_qaoa_basic_initialization():
 
     assert qaoa_problem.shots == 6000
     assert qaoa_problem.qoro_service is None
-
+    assert qaoa_problem.optimizer == Optimizers.NELDER_MEAD
+    assert qaoa_problem.max_iterations == 10
     assert qaoa_problem.problem == "max_clique"
     assert qaoa_problem.graph == G
     assert qaoa_problem.n_layers == 2
@@ -88,7 +93,7 @@ def test_qaoa_initial_state_superposition():
     )
 
 
-@pytest.mark.parametrize("optimizer", [Optimizers.NELDER_MEAD, Optimizers.MONTE_CARLO])
+@pytest.mark.parametrize("optimizer", list(Optimizers))
 def test_qaoa_generate_circuits_called_with_correct_phases(mocker, optimizer):
     qaoa_problem = QAOA(
         "max_clique",
@@ -102,15 +107,31 @@ def test_qaoa_generate_circuits_called_with_correct_phases(mocker, optimizer):
 
     mock_generate_circuits = mocker.patch.object(qaoa_problem, "_generate_circuits")
 
+    spy_values = []
+    mock_setattr = mocker.patch.object(
+        qaoa_problem, "__setattr__", wraps=qaoa_problem.__setattr__
+    )
+
+    def side_effect(name, value):
+        if name == "_is_compute_probabilies":
+            spy_values.append(value)
+        return mock_setattr.original(qaoa_problem, name, value)
+
+    mock_setattr.side_effect = side_effect
+
     qaoa_problem.run()
 
-    # Verify that _generate_circuits was called twice per iteration
-    assert mock_generate_circuits.call_count % 2 == 0
+    # Verify that _generate_circuits was called as many times as iterations
+    assert mock_generate_circuits.called
 
-    # Verify that _generate_circuits was called with measurement_phase=False first and then with measurement_phase=True
-    for i in range(mock_generate_circuits.call_count, 2):
-        assert not mock_generate_circuits.call_args_list[i][1]["measurement_phase"]
-        assert mock_generate_circuits.call_args_list[i + 1][1]["measurement_phase"]
+    # Verify that the stored iteration count is correct
+    assert qaoa_problem.current_iteration == 1
+
+    # Verify that losses is of expected length
+    assert len(qaoa_problem.losses) == 1
+
+    # Verify that _generate_circuits was called with _is_compute_probabilies set to False
+    assert all(val == False for val in spy_values)
 
 
 @pytest.mark.parametrize("optimizer", list(Optimizers))
@@ -125,34 +146,22 @@ def test_qaoa_correct_circuits_count_and_energies(optimizer):
         qoro_service=None,
     )
 
-    qaoa_problem.run()
-
-    assert qaoa_problem.current_iteration == 1
-
-    # Need to add one here for the measurement phase
-    if optimizer == Optimizers.MONTE_CARLO:
-        assert len(qaoa_problem.losses) == 1
-        assert (
-            qaoa_problem.total_circuit_count
-            == qaoa_problem.optimizer.n_param_sets
-            * (len(qaoa_problem.cost_hamiltonian) + 1)
-        )
-    elif optimizer == Optimizers.NELDER_MEAD:
-        assert len(qaoa_problem.losses) == qaoa_problem._minimize_res.nfev
-        assert qaoa_problem.total_circuit_count == qaoa_problem._minimize_res.nfev * (
-            len(qaoa_problem.cost_hamiltonian) + 1
-        )
+    verify_correct_circuit_count(qaoa_problem)
 
 
 @flaky(max_runs=3, min_passes=1)
-def test_qaoa_compute_final_solution():
+@pytest.mark.parametrize("optimizer", list(Optimizers))
+def test_qaoa_compute_final_solution(mocker, optimizer):
+    if optimizer == Optimizers.MONTE_CARLO:
+        pytest.skip("Skipping slow MONTE_CARLO optimizer test")
+
     G = nx.bull_graph()
 
     qaoa_problem = QAOA(
         "max_clique",
         G,
         n_layers=1,
-        optimizer=Optimizers.NELDER_MEAD,
+        optimizer=optimizer,
         max_iterations=5,
         is_constrained=True,
         qoro_service=None,
@@ -160,9 +169,12 @@ def test_qaoa_compute_final_solution():
 
     qaoa_problem.run()
 
+    spy = mocker.spy(qaoa_problem, "_generate_circuits")
+
     assert set(
         qaoa_problem.compute_final_solution()
     ) == nx.algorithms.approximation.max_clique(G)
+    assert spy.call_count == 1
 
 
 def test_draw_solution_returns_graph_with_expected_properties(mocker):

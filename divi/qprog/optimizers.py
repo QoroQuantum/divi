@@ -18,7 +18,8 @@ class Optimizers(Enum):
         elif self == Optimizers.MONTE_CARLO:
             return 10
 
-    def samples(self):
+    @property
+    def n_samples(self):
         if self == Optimizers.MONTE_CARLO:
             return 10
         return 1
@@ -28,7 +29,7 @@ class Optimizers(Enum):
             raise NotImplementedError
 
         losses = kwargs.pop("losses")
-        smallest_energy_keys = sorted(losses, key=lambda k: losses[k])[: self.samples()]
+        smallest_energy_keys = sorted(losses, key=lambda k: losses[k])[: self.n_samples]
 
         new_params = []
 

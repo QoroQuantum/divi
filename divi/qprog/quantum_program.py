@@ -5,7 +5,7 @@ from typing import Optional
 
 import numpy as np
 from qiskit.result import marginal_counts, sampled_expectation_value
-from scipy.optimize import minimize
+from scipy.optimize import OptimizeResult, minimize
 
 from divi.parallel_simulator import ParallelSimulator
 from divi.qprog.optimizers import Optimizers
@@ -34,6 +34,9 @@ class QuantumProgram(ABC):
     def __init__(
         self, shots: int = 5000, qoro_service: Optional[QoroService] = None, **kwargs
     ):
+        if shots <= 0:
+            raise ValueError(f"Shots must be a positive integer. Got {shots}.")
+
         self.circuits = []
         if (m_list_circuits := kwargs.pop("circuits", None)) is not None:
             self.circuits = m_list_circuits
@@ -79,7 +82,9 @@ class QuantumProgram(ABC):
 
     def _run_optimization_circuits(self, store_data, data_file):
         self.circuits[:] = []
+
         self._generate_circuits()
+
         losses = self._dispatch_circuits_and_process_results(
             store_data=store_data, data_file=data_file
         )
@@ -210,8 +215,9 @@ class QuantumProgram(ABC):
             data_file (str): The file to store the data in
         """
 
+        logger.debug(f"Finished iteration {self.current_iteration}")
+
         if self.optimizer == Optimizers.MONTE_CARLO:
-            logger.debug(f"Finished iteration {self.current_iteration}")
             while self.current_iteration < self.max_iterations:
 
                 self._update_mc_params()
@@ -222,10 +228,11 @@ class QuantumProgram(ABC):
 
                 logger.debug(f"Finished iteration {self.current_iteration}")
 
+            self.final_params = np.atleast_2d(self._curr_params)
+
             return self._total_circuit_count, self._total_run_time
 
         elif self.optimizer in (Optimizers.NELDER_MEAD, Optimizers.L_BFGS_B):
-            logger.debug(f"Finished iteration {self.current_iteration}")
 
             def cost_fn(params):
                 self._curr_params = np.atleast_2d(params)
@@ -251,7 +258,7 @@ class QuantumProgram(ABC):
 
                 return grads
 
-            def _iteration_counter(intermediate_result):
+            def _iteration_counter(intermediate_result: OptimizeResult):
                 self.losses.append({0: intermediate_result.fun})
                 self.final_params = np.atleast_2d(intermediate_result.x)
 
@@ -274,10 +281,11 @@ class QuantumProgram(ABC):
                 options={"maxiter": self.max_iterations},
             )
 
-            if self.max_iterations == 1:
+            if self.max_iterations == 1 and self.current_iteration == 0:
                 # Need to handle this edge case for single
-                # iteration optimization
-                self.current_iteration += 1
+                # iteration optimization since Scipy doesn't
+                # call the callback function for initial guesses
+                _iteration_counter(self._minimize_res)
 
             return self._total_circuit_count, self._total_run_time
 
