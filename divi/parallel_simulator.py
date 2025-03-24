@@ -74,7 +74,7 @@ class ParallelSimulator:
 
         dag = circuit_to_dag(transpiled_circuit)
 
-        total_run_time_s = 0
+        total_run_time_s = 0.0
         for node in dag.longest_path():
             if not isinstance(node, DAGOpNode):
                 continue

@@ -171,9 +171,12 @@ def test_qaoa_compute_final_solution(mocker, optimizer):
 
     spy = mocker.spy(qaoa_problem, "_generate_circuits")
 
-    assert set(
-        qaoa_problem.compute_final_solution()
-    ) == nx.algorithms.approximation.max_clique(G)
+    qaoa_problem.compute_final_solution()
+
+    assert set(qaoa_problem._solution_nodes) == nx.algorithms.approximation.max_clique(
+        G
+    )
+
     assert spy.call_count == 1
 
 

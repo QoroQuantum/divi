@@ -65,7 +65,7 @@ class VQEHyperparameterSweep(ProgramBatch):
                 bond_length=bond_length,
                 ansatz=ansatz,
                 losses=self.manager.list(),
-                circuits=self.manager.list(),
+                final_params=self.manager.list(),
             )
         return
 

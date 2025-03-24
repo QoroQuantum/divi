@@ -1,7 +1,9 @@
 from collections.abc import Callable
+from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from multiprocessing import Manager
 from typing import Optional
+from warnings import warn
 
 import networkx as nx
 import numpy as np
@@ -74,7 +76,6 @@ def _fielder_laplacian_predicate(
 
     L = nx.laplacian_matrix(growing_graph).astype(float)
 
-    # _, eigenvectors = spla.eigs(L, k=2, which="SM")
     # Create an initial random guess for the eigenvectors
     n = L.shape[0]
     X = np.random.rand(n, 2)
@@ -160,8 +161,8 @@ def _node_partition_graph(
             subgraphs.append(subgraph)
 
     if total_edges != graph.number_of_edges():
-        print(
-            f"ATTENTION: Total edges {total_edges} are different than the original graph {graph.number_of_edges()}"
+        warn(
+            f"Sum of edges count of partitions ({total_edges}) is different from the original graph {graph.number_of_edges()}"
         )
     return subgraphs
 
@@ -204,6 +205,12 @@ class GraphPartitioningQAOA(ProgramBatch):
         )
 
     def create_programs(self):
+        if len(self.programs) > 0:
+            raise RuntimeError(
+                "Some programs already exist. "
+                "Clear the program dictionary before creating new ones by using batch.reset()."
+            )
+
         self.manager = Manager()
 
         if self.is_edge_problem:
@@ -231,15 +238,38 @@ class GraphPartitioningQAOA(ProgramBatch):
                 self.programs[i] = self._constructor(
                     graph=_subgraph,
                     losses=self.manager.list(),
-                    probs=self.manager.list(),
+                    probs=self.manager.dict(),
                     circuits=self.manager.list(),
+                    final_params=self.manager.list(),
                 )
 
         return
 
+    def compute_final_solutions(self):
+        if self._executor is not None:
+            self.wait_for_all()
+
+        if self._executor is not None:
+            raise RuntimeError("A batch is already being run.")
+
+        if len(self.programs) == 0:
+            raise RuntimeError("No programs to run.")
+
+        self._executor = ProcessPoolExecutor()
+
+        self.futures = [
+            self._executor.submit(program.compute_final_solution)
+            for program in self.programs.values()
+        ]
+
     def aggregate_results(self):
         if self._executor is not None:
             self.wait_for_all()
+
+        if any(len(program.probs) == 0 for program in self.programs.values()):
+            raise RuntimeError(
+                "Final probabilities not computed yet. Please call `compute_final_solutions()` first."
+            )
 
         # Extract the solutions from each program
         for program, reverse_index_maps in zip(
@@ -249,9 +279,9 @@ class GraphPartitioningQAOA(ProgramBatch):
             last_iteration_losses = program.losses[-1]
             minimum_key = min(last_iteration_losses, key=last_iteration_losses.get)
 
-            minimum_probabilities = program.probs[-1][f"{minimum_key}_0"]
+            minimum_probabilities = program.probs[f"{minimum_key}_0"]
 
-            # The bitstring corresponding to the solution
+            # The bitstring corresponding to the solution, with flip for correct endianness
             max_prob_key = max(minimum_probabilities, key=minimum_probabilities.get)[
                 ::-1
             ]

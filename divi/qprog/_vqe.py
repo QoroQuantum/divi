@@ -80,11 +80,6 @@ class VQE(QuantumProgram):
         self.max_iterations = max_iterations
         self.current_iteration = 0
 
-        # Shared Variables
-        self.losses = []
-        if (m_list := kwargs.pop("losses", None)) is not None:
-            self.losses = m_list
-
         self.cost_hamiltonian = self._generate_hamiltonian_operations()
 
         self.expval_hamiltonian_metadata = {

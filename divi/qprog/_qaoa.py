@@ -119,9 +119,9 @@ class QAOA(QuantumProgram):
         if (m_list_losses := kwargs.pop("losses", None)) is not None:
             self.losses = m_list_losses
 
-        self.probs = []
-        if (m_list_probs := kwargs.pop("probs", None)) is not None:
-            self.probs = m_list_probs
+        self.probs = {}
+        if (m_dict_probs := kwargs.pop("probs", None)) is not None:
+            self.probs = m_dict_probs
 
         (
             self.cost_hamiltonian,
@@ -239,14 +239,15 @@ class QAOA(QuantumProgram):
     def _run_final_measurement(self):
         self._is_compute_probabilies = True
 
-        self._curr_params = self.final_params
+        self._curr_params = np.array(self.final_params)
+
         self.circuits[:] = []
+
         self._generate_circuits()
-        probs = self._dispatch_circuits_and_process_results()
+
+        self.probs.update(self._dispatch_circuits_and_process_results())
 
         self._is_compute_probabilies = False
-
-        return probs
 
     def compute_final_solution(self):
         # Convert losses dict to list to apply ordinal operations
@@ -258,11 +259,11 @@ class QAOA(QuantumProgram):
             key=lambda x: final_losses_list.__getitem__(x),
         )
 
-        ## Insert the measurement circuit here
-        probs = self._run_final_measurement()
+        # Insert the measurement circuit here
+        self._run_final_measurement()
 
         # Retrieve the probability distribution dictionary of the best solution
-        best_solution_probs = probs[f"{best_solution_idx}_0"]
+        best_solution_probs = self.probs[f"{best_solution_idx}_0"]
 
         # Retrieve the bitstring with the actual best solution
         # Reverse to account for the endianness difference
@@ -274,7 +275,7 @@ class QAOA(QuantumProgram):
             m.start() for m in re.finditer("1", best_solution_bitstring)
         ]
 
-        return self._solution_nodes
+        return self._total_circuit_count, self._total_run_time
 
     def draw_solution(self):
         if not self._solution_nodes:

@@ -28,7 +28,7 @@ class ProgramBatch(ABC):
         self.programs = {}
 
         self._total_circuit_count = 0
-        self._total_run_time = 0
+        self._total_run_time = 0.0
 
     @property
     def total_circuit_count(self):
@@ -92,8 +92,8 @@ class ProgramBatch(ABC):
             self._executor.shutdown(wait=True, cancel_futures=False)
             self._executor = None
 
-        self._total_circuit_count = sum(future.result()[0] for future in self.futures)
-        self._total_run_time = sum(future.result()[1] for future in self.futures)
+        self._total_circuit_count += sum(future.result()[0] for future in self.futures)
+        self._total_run_time += sum(future.result()[1] for future in self.futures)
         self.futures = []
 
     @abstractmethod

@@ -37,12 +37,19 @@ class QuantumProgram(ABC):
         if shots <= 0:
             raise ValueError(f"Shots must be a positive integer. Got {shots}.")
 
+        # Shared Variables
+        self.losses = []
+        if (m_list := kwargs.pop("losses", None)) is not None:
+            self.losses = m_list
+
+        self.final_params = []
+        if (m_list_final_params := kwargs.pop("final_params", None)) is not None:
+            self.final_params = m_list_final_params
+
         self.circuits = []
-        if (m_list_circuits := kwargs.pop("circuits", None)) is not None:
-            self.circuits = m_list_circuits
 
         self._total_circuit_count = 0
-        self._total_run_time = 0
+        self._total_run_time = 0.0
         self._curr_params = []
 
         # Lets child classes adapt their optimization
@@ -228,7 +235,7 @@ class QuantumProgram(ABC):
 
                 logger.debug(f"Finished iteration {self.current_iteration}")
 
-            self.final_params = np.atleast_2d(self._curr_params)
+            self.final_params[:] = np.atleast_2d(self._curr_params)
 
             return self._total_circuit_count, self._total_run_time
 
@@ -260,7 +267,8 @@ class QuantumProgram(ABC):
 
             def _iteration_counter(intermediate_result: OptimizeResult):
                 self.losses.append({0: intermediate_result.fun})
-                self.final_params = np.atleast_2d(intermediate_result.x)
+
+                self.final_params[:] = np.atleast_2d(intermediate_result.x)
 
                 self.current_iteration += 1
                 logger.debug(f"Finished iteration {self.current_iteration}")
