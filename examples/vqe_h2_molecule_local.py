@@ -2,12 +2,9 @@ import time
 
 from divi.qprog import VQE, VQEAnsatze
 from divi.qprog.optimizers import Optimizers
-from divi.services import QoroService
-
-# This is an API key that only works on my local deployment, no one else can use it
-# q_service = QoroService("f634df7181c56dae4c7ba530ba0bfb2a0e6e3f4e")
 
 # This one is live
+# from divi.services import QoroService
 # q_service = QoroService("4497dcabd079bedbeeec9d16b3dcccb1344461b9")
 
 # This uses local sim
