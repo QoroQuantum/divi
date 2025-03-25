@@ -154,7 +154,10 @@ class QuantumProgram(ABC):
         results, backend_return_type = self._prepare_and_send_circuits()
 
         def add_run_time(response):
-            self._total_run_time += float(response["run_time"])
+            if isinstance(response, dict):
+                self._total_run_time += float(response["run_time"])
+            elif isinstance(response, list):
+                self._total_run_time += sum(float(r["run_time"]) for r in response)
 
         if backend_return_type == "job_id":
             job_id = results

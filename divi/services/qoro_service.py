@@ -173,7 +173,7 @@ class QoroService:
         responses = []
         for job_id in job_ids:
             response = requests.get(
-                API_URL + f"/job/{job_ids}/results",
+                API_URL + f"/job/{job_id}/results",
                 headers={"Authorization": self.auth_token},
                 timeout=10,
             )
