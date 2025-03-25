@@ -115,10 +115,6 @@ class QAOA(QuantumProgram):
         self._is_compute_probabilies = False
 
         # Shared Variables
-        self.losses = []
-        if (m_list_losses := kwargs.pop("losses", None)) is not None:
-            self.losses = m_list_losses
-
         self.probs = {}
         if (m_dict_probs := kwargs.pop("probs", None)) is not None:
             self.probs = m_dict_probs

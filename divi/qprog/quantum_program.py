@@ -39,8 +39,8 @@ class QuantumProgram(ABC):
 
         # Shared Variables
         self.losses = []
-        if (m_list := kwargs.pop("losses", None)) is not None:
-            self.losses = m_list
+        if (m_list_losses := kwargs.pop("losses", None)) is not None:
+            self.losses = m_list_losses
 
         self.final_params = []
         if (m_list_final_params := kwargs.pop("final_params", None)) is not None:

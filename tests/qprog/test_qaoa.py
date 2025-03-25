@@ -152,9 +152,6 @@ def test_qaoa_correct_circuits_count_and_energies(optimizer):
 @flaky(max_runs=3, min_passes=1)
 @pytest.mark.parametrize("optimizer", list(Optimizers))
 def test_qaoa_compute_final_solution(mocker, optimizer):
-    if optimizer == Optimizers.MONTE_CARLO:
-        pytest.skip("Skipping slow MONTE_CARLO optimizer test")
-
     G = nx.bull_graph()
 
     qaoa_problem = QAOA(
@@ -162,7 +159,7 @@ def test_qaoa_compute_final_solution(mocker, optimizer):
         G,
         n_layers=1,
         optimizer=optimizer,
-        max_iterations=5,
+        max_iterations=5 if optimizer != Optimizers.MONTE_CARLO else 2,
         is_constrained=True,
         qoro_service=None,
     )
