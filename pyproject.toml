@@ -26,6 +26,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 package-mode = false
+packages = [{ include = "divi" }]
 
 [tool.poetry.group.dev.dependencies]
 black = "^25.1.0"

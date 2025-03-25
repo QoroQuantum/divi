@@ -1,12 +1,11 @@
 import base64
 import gzip
-import os
+import json
 import time
 from enum import Enum
 from http import HTTPStatus
 
 import requests
-
 
 API_URL = "https://app.qoroquantum.net/api"
 
@@ -48,6 +47,7 @@ class QoroService:
             print("Connection successful")
         else:
             print("Connection failed")
+
         return response
 
     def send_circuits(
@@ -69,54 +69,96 @@ class QoroService:
                 "utf-8"
             )
 
-        data = {
-            "circuits": {key: _compress_data(value) for key, value in circuits.items()},
-            "shots": shots,
-            "tag": tag,
-            "type": job_type.value,
-        }
+        def _split_circuits(circuits, max_payload_size_mb):
+            """
+            Split circuits into smaller chunks if the payload size exceeds the maximum allowed size.
 
-        response = requests.post(
-            API_URL + "/job/",
-            headers={
-                "Authorization": self.auth_token,
-                "Content-Type": "application/json",
-            },
-            json=data,
-            timeout=10,
-        )
-        if response.status_code == HTTPStatus.CREATED:
-            job_id = response.json()["job_id"]
-            return job_id
-        elif response.status_code == HTTPStatus.UNAUTHORIZED:
-            raise requests.exceptions.HTTPError("401 Unauthorized: Invalid API token")
-        else:
-            raise requests.exceptions.HTTPError(
-                f"{response.status_code}: {response.reason}"
+            Args:
+            circuits: Dictionary of circuits to be sent
+            max_payload_size_mb: Maximum allowed payload size in MB
+            Returns:
+            List of circuit chunks
+            """
+
+            def _estimate_size(data):
+                payload_json = json.dumps(data)
+                return len(payload_json.encode("utf-8")) / 1024 / 1024
+
+            circuit_chunks = []
+            current_chunk = {}
+            current_size = 0
+
+            for key, value in circuits.items():
+                compressed_value = _compress_data(value)
+                estimated_size = _estimate_size({key: compressed_value})
+
+                if current_size + estimated_size > max_payload_size_mb:
+                    circuit_chunks.append(current_chunk)
+                    current_chunk = {key: compressed_value}
+                    current_size = estimated_size
+                else:
+                    current_chunk[key] = compressed_value
+                    current_size += estimated_size
+
+            if current_chunk:
+                circuit_chunks.append(current_chunk)
+
+            return circuit_chunks
+
+        max_payload_size_mb = 0.95  # Define the maximum payload size in MB
+        circuit_chunks = _split_circuits(circuits, max_payload_size_mb)
+
+        job_ids = []
+        for chunk in circuit_chunks:
+            response = requests.post(
+                API_URL + "/job/",
+                headers={
+                    "Authorization": self.auth_token,
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "circuits": chunk,
+                    "shots": shots,
+                    "tag": tag,
+                    "type": job_type.value,
+                },
+                timeout=10,
             )
 
-    def delete_job(self, job_id):
+            if response.status_code == HTTPStatus.CREATED:
+                job_ids.append(response.json()["job_id"])
+            else:
+                raise requests.exceptions.HTTPError(
+                    f"{response.status_code}: {response.reason}"
+                )
+
+        return job_ids if len(job_ids) > 1 else job_ids[0]
+
+    def delete_job(self, job_ids):
         """
         Delete a job from the Qoro Database.
 
         Args:
-            job_id: The ID of the job to be deleted
+            job_id: The ID of the jobs to be deleted
         Returns:
             response: The response from the API
         """
-        response = requests.delete(
-            API_URL + f"/job/{job_id}",
-            headers={"Authorization": self.auth_token},
-            timeout=10,
-        )
-        response = requests.delete(
-            API_URL + f"/job/{job_id}",
-            headers={"Authorization": self.auth_token},
-            timeout=10,
-        )
-        return response
+        if not isinstance(job_ids, list):
+            job_ids = [job_ids]
 
-    def get_job_results(self, job_id):
+        responses = []
+
+        for job_id in job_ids:
+            response = requests.delete(
+                API_URL + f"/job/{job_id}",
+                headers={"Authorization": self.auth_token},
+                timeout=10,
+            )
+            responses.append(response)
+
+        return responses if len(responses) > 1 else responses[0]
+
+    def get_job_results(self, job_ids):
         """
         Get the results of a job from the Qoro Database.
 
@@ -125,25 +167,37 @@ class QoroService:
         Returns:
             results: The results of the job
         """
-        response = requests.get(
-            API_URL + f"/job/{job_id}/results",
-            headers={"Authorization": self.auth_token},
-            timeout=10,
-        )
-        if response.status_code == HTTPStatus.OK:
-            return response.json()
-        elif response.status_code == HTTPStatus.BAD_REQUEST:
+        if not isinstance(job_ids, list):
+            job_ids = [job_ids]
+
+        responses = []
+        for job_id in job_ids:
+            response = requests.get(
+                API_URL + f"/job/{job_ids}/results",
+                headers={"Authorization": self.auth_token},
+                timeout=10,
+            )
+            responses.append(response)
+
+        if all(response.status_code == HTTPStatus.OK for response in responses):
+            responses = [response.json() for response in responses]
+            return sum(responses, [])
+        elif any(
+            response.status_code == HTTPStatus.BAD_REQUEST for response in responses
+        ):
             raise requests.exceptions.HTTPError(
                 "400 Bad Request: Job results not available, likely job is still running"
             )
         else:
-            raise requests.exceptions.HTTPError(
-                f"{response.status_code}: {response.reason}"
-            )
+            for response in responses:
+                if response.status_code not in [HTTPStatus.OK, HTTPStatus.BAD_REQUEST]:
+                    raise requests.exceptions.HTTPError(
+                        f"{response.status_code}: {response.reason}"
+                    )
 
-    def job_status(
+    def poll_job_status(
         self,
-        job_id,
+        job_ids,
         loop_until_complete=False,
         on_complete=None,
         timeout=3,
@@ -155,7 +209,7 @@ class QoroService:
         if the status is COMPLETE.
 
         Args:
-            job_id: The job id of the job
+            job_id: The job id of the jobs to check
             loop_until_complete (optional): A flag to loop until the job is completed
             on_complete (optional): A function to be called when the job is completed
             timeout (optional): The time to wait between retries
@@ -164,8 +218,10 @@ class QoroService:
         Returns:
             status: The status of the job
         """
+        if not isinstance(job_ids, list):
+            job_ids = [job_ids]
 
-        def _poll_job_status():
+        def _poll_job_status(job_id):
             response = requests.get(
                 API_URL + f"/job/{job_id}/status/",
                 headers={
@@ -174,35 +230,51 @@ class QoroService:
                 },
                 timeout=200,
             )
+
             if response.status_code == HTTPStatus.OK:
                 return response.json()["status"], response
             else:
-                raise ("Error getting job status")
+                raise requests.exceptions.HTTPError(
+                    f"{response.status_code}: {response.reason}"
+                )
 
         if loop_until_complete:
             retries = 0
             completed = False
             while True:
-                job_status, response = _poll_job_status()
-                if job_status == JobStatus.COMPLETED.value:
-                    response = response.json()
+                responses = []
+                statuses = []
+
+                for job_id in job_ids:
+                    job_status, response = _poll_job_status(job_id)
+                    statuses.append(job_status)
+                    responses.append(response)
+
+                if all(status == JobStatus.COMPLETED.value for status in statuses):
+                    responses = [response.json() for response in responses]
                     completed = True
                     break
+
                 if retries >= max_retries:
                     break
+
                 retries += 1
+
                 time.sleep(timeout)
+
                 if verbose:
                     print(
-                        f"Polling job {job_id}: {retries} times / {max_retries} retries",
+                        f"Polling job {job_ids}: {retries} times / {max_retries} retries",
                         f"Run time: {retries*timeout} seconds",
                     )
+
             if completed and on_complete:
-                on_complete(response)
+                on_complete(responses)
                 return JobStatus.COMPLETED
             elif completed:
                 return JobStatus.COMPLETED
             else:
                 raise MaxRetriesReachedError(retries)
         else:
-            return _poll_job_status()[0]
+            statuses = [_poll_job_status(job_id)[0] for job_id in job_ids]
+            return statuses if len(statuses) > 1 else statuses[0]

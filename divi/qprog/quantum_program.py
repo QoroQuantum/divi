@@ -159,15 +159,17 @@ class QuantumProgram(ABC):
         if backend_return_type == "job_id":
             job_id = results
             if job_id is not None and self.qoro_service is not None:
-                status = self.qoro_service.job_status(
+                status = self.qoro_service.poll_job_status(
                     self.job_id,
                     loop_until_complete=True,
                     on_complete=add_run_time,
                 )
+
                 if status != JobStatus.COMPLETED:
                     raise Exception(
                         "Job has not completed yet, cannot post-process results"
                     )
+
                 results = self.qoro_service.get_job_results(self.job_id)
 
         results = {r["label"]: r["results"] for r in results}
