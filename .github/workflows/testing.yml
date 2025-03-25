@@ -53,7 +53,8 @@ jobs:
     - name: Install library
       run: poetry install --no-interaction --only-root
 
+    - name: Freeze dependencies
+      run: poetry run pip freeze
+
     - name: Run tests
-      run: |
-        pip freeze
-        poetry run pytest test/
+      run: poetry run pytest test/
