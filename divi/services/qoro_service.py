@@ -8,6 +8,7 @@ from http import HTTPStatus
 import requests
 
 API_URL = "https://app.qoroquantum.net/api"
+MAX_PAYLOAD_SIZE_MB = 0.95
 
 
 class JobStatus(Enum):
@@ -43,10 +44,11 @@ class QoroService:
         response = requests.get(
             API_URL, headers={"Authorization": self.auth_token}, timeout=10
         )
-        if response.status_code == HTTPStatus.OK:
-            print("Connection successful")
-        else:
-            print("Connection failed")
+
+        if response.status_code != HTTPStatus.OK:
+            raise requests.exceptions.HTTPError(
+                f"Connection failed with error: {response.status_code}: {response.reason}"
+            )
 
         return response
 
@@ -69,15 +71,15 @@ class QoroService:
                 "utf-8"
             )
 
-        def _split_circuits(circuits, max_payload_size_mb):
+        def _split_circuits(circuits):
             """
             Split circuits into smaller chunks if the payload size exceeds the maximum allowed size.
 
             Args:
-            circuits: Dictionary of circuits to be sent
-            max_payload_size_mb: Maximum allowed payload size in MB
+                circuits: Dictionary of circuits to be sent
+
             Returns:
-            List of circuit chunks
+                List of circuit chunks
             """
 
             def _estimate_size(data):
@@ -91,8 +93,8 @@ class QoroService:
             for key, value in circuits.items():
                 compressed_value = _compress_data(value)
                 estimated_size = _estimate_size({key: compressed_value})
-
-                if current_size + estimated_size > max_payload_size_mb:
+                print(estimated_size)
+                if current_size + estimated_size > MAX_PAYLOAD_SIZE_MB:
                     circuit_chunks.append(current_chunk)
                     current_chunk = {key: compressed_value}
                     current_size = estimated_size
@@ -105,8 +107,7 @@ class QoroService:
 
             return circuit_chunks
 
-        max_payload_size_mb = 0.95  # Define the maximum payload size in MB
-        circuit_chunks = _split_circuits(circuits, max_payload_size_mb)
+        circuit_chunks = _split_circuits(circuits)
 
         job_ids = []
         for chunk in circuit_chunks:
@@ -154,6 +155,7 @@ class QoroService:
                 headers={"Authorization": self.auth_token},
                 timeout=10,
             )
+
             responses.append(response)
 
         return responses if len(responses) > 1 else responses[0]
