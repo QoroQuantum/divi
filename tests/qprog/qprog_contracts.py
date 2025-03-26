@@ -1,6 +1,7 @@
 import pennylane as qml
+import pytest
 
-from divi.qprog import Optimizers, QuantumProgram
+from divi.qprog import Optimizers, ProgramBatch, QuantumProgram
 
 
 def verify_hamiltonian_metadata(obj):
@@ -62,3 +63,24 @@ def verify_correct_circuit_count(obj: QuantumProgram):
             obj.total_circuit_count
             == evaluation_circuits_count + gradient_circuits_count
         )
+
+
+def verify_basic_program_batch_behaviour(mocker, obj: ProgramBatch):
+
+    with pytest.raises(RuntimeError, match="No programs to run"):
+        obj.run()
+
+    with pytest.raises(RuntimeError, match="No programs to aggregate"):
+        obj.aggregate_results()
+
+    obj.programs = {"dummy": "program"}
+
+    with pytest.raises(RuntimeError, match="Some programs already exist"):
+        obj.create_programs()
+
+    mock_program = mocker.MagicMock()
+
+    obj.programs = {"dummy": mock_program}
+
+    with pytest.raises(RuntimeError, match="Some/All programs have empty losses"):
+        obj.aggregate_results()

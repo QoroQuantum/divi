@@ -48,7 +48,7 @@ class ProgramBatch(ABC):
 
     @abstractmethod
     def create_programs(self):
-        pass
+        raise NotImplementedError
 
     def reset(self):
         self.programs.clear()
@@ -98,4 +98,4 @@ class ProgramBatch(ABC):
 
     @abstractmethod
     def aggregate_results(self):
-        pass
+        raise NotImplementedError

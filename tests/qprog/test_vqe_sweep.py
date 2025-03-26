@@ -1,6 +1,7 @@
 from itertools import product
 
 import pytest
+from qprog_contracts import verify_basic_program_batch_behaviour
 
 from divi.qprog import Optimizers, VQEAnsatze, VQEHyperparameterSweep
 
@@ -26,6 +27,10 @@ def vqe_sweep():
     )
 
 
+def test_verify_basic_behaviour(mocker, vqe_sweep):
+    verify_basic_program_batch_behaviour(mocker, vqe_sweep)
+
+
 def test_correct_number_of_programs_created(mocker, vqe_sweep):
     mocker.patch("divi.qprog.VQE")
 
@@ -49,35 +54,7 @@ def test_correct_number_of_programs_created(mocker, vqe_sweep):
         assert program.symbols == ["H", "H"]
 
 
-def test_fail_if_creating_programs_twice(mocker, vqe_sweep):
-    mocker.patch("divi.qprog.VQE")
-    vqe_sweep.programs = {"dummy": "program"}
-
-    with pytest.raises(RuntimeError, match="Some programs already exist"):
-        vqe_sweep.create_programs()
-
-
 def test_results_aggregated_correctly(mocker, vqe_sweep):
-    mocker.patch("divi.qprog.VQE")
-
-    mock_program_1 = mocker.MagicMock()
-    mock_program_1.losses = [{0: -1.0}]
-
-    mock_program_2 = mocker.MagicMock()
-    mock_program_2.losses = [{0: -2.0}]
-
-    vqe_sweep.programs = {
-        (VQEAnsatze.UCCSD, 0.5): mock_program_1,
-        (VQEAnsatze.RY, 1.0): mock_program_2,
-    }
-
-    smallest_key, smallest_value = vqe_sweep.aggregate_results()
-
-    assert smallest_key == (VQEAnsatze.RY, 1.0)
-    assert smallest_value == -2.0
-
-
-def test_results_aggregated_correctly_multiple_energies(mocker, vqe_sweep):
     mocker.patch("divi.qprog.VQE")
 
     mock_program_1 = mocker.MagicMock()
@@ -94,12 +71,6 @@ def test_results_aggregated_correctly_multiple_energies(mocker, vqe_sweep):
 
     assert smallest_key == (VQEAnsatze.UCCSD, 0.5)
     assert smallest_value == -0.8
-
-
-def test_fail_when_aggregating_with_no_programs(vqe_sweep):
-    vqe_sweep.programs = {}
-    with pytest.raises(RuntimeError, match="No programs to aggregate"):
-        vqe_sweep.aggregate_results()
 
 
 @pytest.mark.parametrize("graph_type", ["line", "scatter"])

@@ -76,6 +76,11 @@ class VQEHyperparameterSweep(ProgramBatch):
         if self._executor is not None:
             self.wait_for_all()
 
+        if any(len(program.losses) == 0 for program in self.programs.values()):
+            raise RuntimeError(
+                "Some/All programs have empty losses. Did you call run()?"
+            )
+
         all_energies = {key: prog.losses[-1] for key, prog in self.programs.items()}
 
         smallest_key = min(all_energies, key=lambda k: min(all_energies[k].values()))

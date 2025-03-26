@@ -154,12 +154,21 @@ def test_qaoa_correct_circuits_count_and_energies(optimizer):
 def test_qaoa_compute_final_solution(mocker, optimizer):
     G = nx.bull_graph()
 
+    if optimizer == Optimizers.MONTE_CARLO:
+        # Use smaller number of samples for faster testing
+        mocker.patch.object(
+            Optimizers.MONTE_CARLO.__class__,
+            "n_samples",
+            new_callable=mocker.PropertyMock,
+            return_value=3,
+        )
+
     qaoa_problem = QAOA(
         "max_clique",
         G,
         n_layers=1,
         optimizer=optimizer,
-        max_iterations=5 if optimizer != Optimizers.MONTE_CARLO else 2,
+        max_iterations=8 if optimizer != Optimizers.MONTE_CARLO else 2,
         is_constrained=True,
         qoro_service=None,
     )
@@ -169,6 +178,12 @@ def test_qaoa_compute_final_solution(mocker, optimizer):
     spy = mocker.spy(qaoa_problem, "_generate_circuits")
 
     qaoa_problem.compute_final_solution()
+
+    assert all(
+        len(bitstring) == G.number_of_nodes()
+        for probs_dict in qaoa_problem.probs.values()
+        for bitstring in probs_dict.keys()
+    )
 
     assert set(qaoa_problem._solution_nodes) == nx.algorithms.approximation.max_clique(
         G
