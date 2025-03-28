@@ -1,3 +1,4 @@
+import traceback
 from abc import ABC, abstractmethod
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -27,7 +28,7 @@ class ProgramBatch(ABC):
         self.programs = {}
 
         self._total_circuit_count = 0
-        self._total_run_time = 0
+        self._total_run_time = 0.0
 
     @property
     def total_circuit_count(self):
@@ -47,7 +48,7 @@ class ProgramBatch(ABC):
 
     @abstractmethod
     def create_programs(self):
-        pass
+        raise NotImplementedError
 
     def reset(self):
         self.programs.clear()
@@ -84,16 +85,17 @@ class ProgramBatch(ABC):
 
             if exceptions:
                 for i, exc in enumerate(exceptions, 1):
-                    print(f"Task {i} failed with exception: {exc}")
+                    print(f"Task {i} failed with exception:")
+                    traceback.print_exception(type(exc), exc, exc.__traceback__)
                 raise RuntimeError("One or more tasks failed. Check logs for details.")
         finally:
             self._executor.shutdown(wait=True, cancel_futures=False)
             self._executor = None
 
-        self._total_circuit_count = sum(future.result()[0] for future in self.futures)
-        self._total_run_time = sum(future.result()[1] for future in self.futures)
+        self._total_circuit_count += sum(future.result()[0] for future in self.futures)
+        self._total_run_time += sum(future.result()[1] for future in self.futures)
         self.futures = []
 
     @abstractmethod
     def aggregate_results(self):
-        pass
+        raise NotImplementedError

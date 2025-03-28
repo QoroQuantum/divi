@@ -1,0 +1,52 @@
+[project]
+name = "divi"
+version = "0.1.0"
+description = ""
+authors = []
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pennylane (>=0.40.0,<0.41.0)",
+    "numpy (<2.1)",
+    "networkx (>=3.4.2,<4.0.0)",
+    "scipy (>=1.15.2,<2.0.0)",
+    "scikit-learn (>=1.6.1,<2.0.0)",
+    "matplotlib (>=3.10.1,<4.0.0)",
+    "requests (>=2.32.3,<3.0.0)",
+    "qiskit (==1.2) ; python_version >= \"3.11\" and python_version < \"4\"",
+    "qiskit-algorithms (>=0.3.1,<0.4.0) ; python_version >= \"3.11\" and python_version < \"4\"",
+    "qiskit-aer (>=0.17.0,<0.18.0) ; python_version >= \"3.11\" and python_version < \"4\"",
+    "qiskit-ibm-runtime (<=0.36) ; python_version >= \"3.11\" and python_version < \"4\"",
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+package-mode = false
+packages = [{ include = "divi" }]
+
+[tool.poetry.group.dev.dependencies]
+black = "^25.1.0"
+isort = "^6.0.1"
+pre-commit = "^4.1.0"
+
+[tool.poetry.group.ui.dependencies]
+dash = "^2.18.2"
+dash-bootstrap-components = {version = "^1.7.1", python = ">=3.11,<4"}
+
+[tool.poetry.group.docs.dependencies]
+sphinx = ">=1.8,<8.2"
+nbsphinx = "^0.9.7"
+sphinx-rtd-theme = "^3.0.2"
+sphinx-autodoc-typehints = "^3.0.0"
+
+[tool.poetry.group.testing.dependencies]
+pytest = {version = "^8.3.5", python = ">=3.8"}
+pytest-mock = {version = "^3.14.0", python = ">=3.8"}
+flaky = {version = "^3.8.1", python = ">=3.5"}
+
+[tool.isort]
+profile = "black"

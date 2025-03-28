@@ -1,4 +1,3 @@
-import logging
 import re
 from typing import Literal, get_args
 
@@ -9,28 +8,10 @@ import pennylane as qml
 import pennylane.qaoa as pqaoa
 import rustworkx as rx
 import sympy as sp
-from scipy.optimize import minimize
 
 from divi.circuit import MetaCircuit
 from divi.qprog import QuantumProgram
 from divi.qprog.optimizers import Optimizers
-
-# Set up your logger
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-
-# Create console handler and set level to debug
-ch = logging.StreamHandler()
-ch.setLevel(logging.DEBUG)
-
-formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-ch.setFormatter(formatter)
-
-# Add the handler to the logger
-logger.addHandler(ch)
-
-# Suppress debug logs from external libraries
-logging.getLogger().setLevel(logging.WARNING)
 
 _SUPPORTED_PROBLEMS_LITERAL = Literal[
     "max_clique",
@@ -46,7 +27,7 @@ _SUPPORTED_INITIAL_STATES_LITERAL = Literal[
 ]
 
 # Recommended initial state as per Pennylane's documentation.
-# Values are of the format (Constrained, Unonstrained).
+# Values are of the format (Constrained, Unconstrained).
 # Value is duplicated if not applicable to the problem
 _PROBLEM_TO_INITIAL_STATE_MAP = dict(
     zip(
@@ -129,17 +110,14 @@ class QAOA(QuantumProgram):
         self.max_iterations = max_iterations
         self.n_qubits = graph.number_of_nodes()
         self.current_iteration = 0
-        self.params = []
         self._solution_nodes = None
+        self.n_params = 2
+        self._is_compute_probabilies = False
 
         # Shared Variables
-        self.losses = []
-        if (m_list_losses := kwargs.pop("losses", None)) is not None:
-            self.losses = m_list_losses
-
-        self.probs = []
-        if (m_list_probs := kwargs.pop("probs", None)) is not None:
-            self.probs = m_list_probs
+        self.probs = {}
+        if (m_dict_probs := kwargs.pop("probs", None)) is not None:
+            self.probs = m_dict_probs
 
         (
             self.cost_hamiltonian,
@@ -157,59 +135,6 @@ class QAOA(QuantumProgram):
 
         kwargs.pop("is_constrained", None)
         super().__init__(**kwargs)
-
-    def _reset_params(self):
-        self.params = []
-
-    def _run_optimize(self):
-        """
-        Run the optimization step for the QAOA problem.
-        """
-        n_param_sets = self.optimizer.n_param_sets
-
-        if self.current_iteration == 0:
-            self._reset_params()
-            self.params = [
-                np.random.uniform(0, 2 * np.pi, self.n_layers * 2)
-                for _ in range(n_param_sets)
-            ]
-        else:
-            # Optimize the QAOA problem.
-            if self.optimizer == Optimizers.MONTE_CARLO:
-                self.params = self.optimizer.compute_new_parameters(
-                    self.params,
-                    self.current_iteration,
-                    losses=self.losses[self.current_iteration - 1],
-                )
-            else:
-                raise NotImplementedError
-
-        self.current_iteration += 1
-
-    def _post_process_results(self, results):
-        """
-        Post-process the results of the QAOA problem.
-
-        Returns:
-            (dict) The losses for each parameter set grouping.
-        """
-
-        if self._is_compute_probabilies:
-            probs = {
-                outer_k: {
-                    inner_k: inner_v / self.shots
-                    for inner_k, inner_v in outer_v.items()
-                }
-                for outer_k, outer_v in results.items()
-            }
-            self.probs.append(probs)
-
-        losses = super()._post_process_results(results)
-
-        if not self._is_compute_probabilies:
-            self.losses.append(losses)
-
-        return losses
 
     def _create_meta_circuits(self):
         """
@@ -254,7 +179,7 @@ class QAOA(QuantumProgram):
                 return [qml.sample(term) for term in hamiltonian]
 
         return {
-            "opt_circuit": MetaCircuit(
+            "cost_circuit": MetaCircuit(
                 qml.tape.make_qscript(_prepare_circuit)(
                     self.cost_hamiltonian, sym_params, final_measurement=False
                 ),
@@ -268,94 +193,57 @@ class QAOA(QuantumProgram):
             ),
         }
 
-    def _generate_circuits(self, params=None, **kwargs):
+    def _generate_circuits(self):
         """
         Generate the circuits for the QAOA problem.
 
         In this method, we generate bulk circuits based on the selected parameters.
         """
 
-        # Clear the previous circuit batch
-        self.circuits[:] = []
-
         circuit_type = (
-            "opt_circuit"
-            if not kwargs.pop("measurement_phase", False)
-            else "meas_circuit"
+            "cost_circuit" if not self._is_compute_probabilies else "meas_circuit"
         )
 
-        params = self.params if params is None else [params]
-
-        for p, params_group in enumerate(params):
+        for p, params_group in enumerate(self._curr_params):
             circuit = self._meta_circuits[circuit_type].initialize_circuit_from_params(
                 params_group, tag_prefix=f"{p}"
             )
 
             self.circuits.append(circuit)
 
-    def run(self, store_data=False, data_file=None):
+    def _post_process_results(self, results):
         """
-        Run the QAOA problem. The outputs are stored in the QAOA object. Optionally, the data can be stored in a file.
+        Post-process the results of the QAOA problem.
 
-        Args:
-            store_data (bool): Whether to store the data for the iteration
-            data_file (str): The file to store the data in
+        Returns:
+            (dict) The losses for each parameter set grouping.
         """
 
-        if self.optimizer == Optimizers.MONTE_CARLO:
-            while self.current_iteration < self.max_iterations:
-                logger.debug(f"Running iteration {self.current_iteration}")
+        if self._is_compute_probabilies:
+            return {
+                outer_k: {
+                    inner_k: inner_v / self.shots
+                    for inner_k, inner_v in outer_v.items()
+                }
+                for outer_k, outer_v in results.items()
+            }
 
-                self._run_optimize()
+        losses = super()._post_process_results(results)
 
-                self._is_compute_probabilies = False
-                self._generate_circuits(final_measurement=False)
-                self._dispatch_circuits_and_process_results(
-                    store_data=store_data, data_file=data_file
-                )
+        return losses
 
-                self._is_compute_probabilies = True
-                self._generate_circuits(final_measurement=True)
-                self._dispatch_circuits_and_process_results(
-                    store_data=store_data, data_file=data_file
-                )
+    def _run_final_measurement(self):
+        self._is_compute_probabilies = True
 
-            return self._total_circuit_count, self._total_run_time
+        self._curr_params = np.array(self.final_params)
 
-        elif self.optimizer == Optimizers.NELDER_MEAD:
+        self.circuits[:] = []
 
-            def cost_function(params):
-                self._is_compute_probabilies = False
-                self._generate_circuits(params, measurement_phase=False)
-                losses = self._dispatch_circuits_and_process_results(
-                    store_data=store_data, data_file=data_file
-                )
+        self._generate_circuits()
 
-                self.losses.append(losses)
+        self.probs.update(self._dispatch_circuits_and_process_results())
 
-                self._is_compute_probabilies = True
-                self._generate_circuits(params, measurement_phase=True)
-                self._dispatch_circuits_and_process_results(
-                    store_data=store_data, data_file=data_file
-                )
-
-                return losses[0]
-
-            self._reset_params()
-
-            self.params = [
-                np.random.uniform(0, 2 * np.pi, self.n_layers * 2)
-                for _ in range(self.optimizer.n_param_sets)
-            ]
-
-            self._minimize_res = minimize(
-                cost_function,
-                self.params[0],
-                method="Nelder-Mead",
-                options={"maxiter": self.max_iterations},
-            )
-
-            return self._total_circuit_count, self._total_run_time
+        self._is_compute_probabilies = False
 
     def compute_final_solution(self):
         # Convert losses dict to list to apply ordinal operations
@@ -367,8 +255,11 @@ class QAOA(QuantumProgram):
             key=lambda x: final_losses_list.__getitem__(x),
         )
 
+        # Insert the measurement circuit here
+        self._run_final_measurement()
+
         # Retrieve the probability distribution dictionary of the best solution
-        best_solution_probs = self.probs[-1][f"{best_solution_idx}_0"]
+        best_solution_probs = self.probs[f"{best_solution_idx}_0"]
 
         # Retrieve the bitstring with the actual best solution
         # Reverse to account for the endianness difference
@@ -380,7 +271,7 @@ class QAOA(QuantumProgram):
             m.start() for m in re.finditer("1", best_solution_bitstring)
         ]
 
-        return self._solution_nodes
+        return self._total_circuit_count, self._total_run_time
 
     def draw_solution(self):
         if not self._solution_nodes:

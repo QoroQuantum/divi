@@ -1,0 +1,86 @@
+import pennylane as qml
+import pytest
+
+from divi.qprog import Optimizers, ProgramBatch, QuantumProgram
+
+
+def verify_hamiltonian_metadata(obj):
+    assert hasattr(
+        obj, "expval_hamiltonian_metadata"
+    ), "Hamiltonian metadata attribute does not exist"
+    assert isinstance(obj.expval_hamiltonian_metadata, dict), "Metadata not a dict"
+    assert all(
+        isinstance(key, int) for key in obj.expval_hamiltonian_metadata.keys()
+    ), "Wrong metadata dict key format"
+    assert all(
+        (
+            isinstance(val, tuple)
+            and len(val) == 2
+            and isinstance(val[0], qml.wires.Wires)
+            and isinstance(val[1], float)
+        )
+        for val in obj.expval_hamiltonian_metadata.values()
+    ), "Wrong metadata dict value format"
+
+
+def verify_metacircuit_dict(obj, expected_keys):
+    from divi.circuit import MetaCircuit
+
+    assert hasattr(obj, "_meta_circuits"), "Meta circuits attribute does not exist"
+    assert isinstance(obj._meta_circuits, dict), "Meta circuits object not a dict"
+    assert all(
+        isinstance(val, MetaCircuit) for val in obj._meta_circuits.values()
+    ), "All values on meta circuit must be of type MetaCircuit"
+    assert all(
+        key == expected
+        for key, expected in zip(obj._meta_circuits.keys(), expected_keys)
+    )
+
+
+def verify_correct_circuit_count(obj: QuantumProgram):
+    obj.run()
+
+    assert obj.current_iteration == 1
+
+    assert len(obj.losses) == 1
+
+    if obj.optimizer == Optimizers.MONTE_CARLO:
+        assert obj.total_circuit_count == obj.optimizer.n_param_sets * len(
+            obj.cost_hamiltonian
+        )
+    elif obj.optimizer == Optimizers.NELDER_MEAD:
+        assert obj.total_circuit_count == obj._minimize_res.nfev * len(
+            obj.cost_hamiltonian
+        )
+    elif obj.optimizer == Optimizers.NELDER_MEAD:
+        evaluation_circuits_count = obj._minimize_res.nfev * len(obj.cost_hamiltonian)
+
+        gradient_circuits_count = (
+            obj._minimize_res.njev * len(obj.cost_hamiltonian) * obj.n_params * 2
+        )
+
+        assert (
+            obj.total_circuit_count
+            == evaluation_circuits_count + gradient_circuits_count
+        )
+
+
+def verify_basic_program_batch_behaviour(mocker, obj: ProgramBatch):
+
+    with pytest.raises(RuntimeError, match="No programs to run"):
+        obj.run()
+
+    with pytest.raises(RuntimeError, match="No programs to aggregate"):
+        obj.aggregate_results()
+
+    obj.programs = {"dummy": "program"}
+
+    with pytest.raises(RuntimeError, match="Some programs already exist"):
+        obj.create_programs()
+
+    mock_program = mocker.MagicMock()
+
+    obj.programs = {"dummy": mock_program}
+
+    with pytest.raises(RuntimeError, match="Some/All programs have empty losses"):
+        obj.aggregate_results()

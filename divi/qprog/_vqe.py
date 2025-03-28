@@ -1,34 +1,12 @@
-import logging
-import warnings
 from enum import Enum
 
 import numpy as np
 import pennylane as qml
 import sympy as sp
-from scipy.optimize import minimize
 
 from divi.circuit import MetaCircuit
 from divi.qprog import QuantumProgram
 from divi.qprog.optimizers import Optimizers
-
-warnings.filterwarnings("ignore", category=UserWarning)
-
-# Set up your logger
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-
-# Create console handler and set level to debug
-ch = logging.StreamHandler()
-ch.setLevel(logging.DEBUG)
-
-formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-ch.setFormatter(formatter)
-
-# Add the handler to the logger
-logger.addHandler(ch)
-
-# Suppress debug logs from external libraries
-logging.getLogger().setLevel(logging.WARNING)
 
 
 class VQEAnsatze(Enum):
@@ -102,24 +80,16 @@ class VQE(QuantumProgram):
         self.max_iterations = max_iterations
         self.current_iteration = 0
 
-        # Shared Variables
-        self.energies = []
-        if (m_list := kwargs.pop("energies", None)) is not None:
-            self.energies = m_list
-
-        self.hamiltonian = self._generate_hamiltonian_operations()
+        self.cost_hamiltonian = self._generate_hamiltonian_operations()
 
         self.expval_hamiltonian_metadata = {
             i: (term.wires, float(term.scalar))
-            for i, term in enumerate(self.hamiltonian)
+            for i, term in enumerate(self.cost_hamiltonian)
         }
 
         self._meta_circuits = self._create_meta_circuits()
 
         super().__init__(**kwargs)
-
-    def _reset_params(self):
-        self.params = []
 
     def _generate_hamiltonian_operations(self) -> qml.operation.Operator:
         """
@@ -167,9 +137,9 @@ class VQE(QuantumProgram):
             return [qml.sample(term) for term in hamiltonian]
 
         return {
-            "circuit": MetaCircuit(
+            "cost_circuit": MetaCircuit(
                 qml.tape.make_qscript(_prepare_circuit)(
-                    self.ansatz, self.hamiltonian, weights_syms
+                    self.ansatz, self.cost_hamiltonian, weights_syms
                 ),
                 symbols=weights_syms.flatten(),
             )
@@ -256,7 +226,7 @@ class VQE(QuantumProgram):
         else:
             raise ValueError(f"Invalid Ansatz Value. Got {ansatz}.")
 
-    def _generate_circuits(self, params=None):
+    def _generate_circuits(self):
         """
         Generate the circuits for the VQE problem.
 
@@ -269,96 +239,17 @@ class VQE(QuantumProgram):
                 - Generate the circuit
         """
 
-        self.circuits[:] = []
-
-        params = self.params if params is None else [params]
-
-        for p, params_group in enumerate(params):
-            circuit = self._meta_circuits["circuit"].initialize_circuit_from_params(
-                params_group, tag_prefix=f"{p}"
-            )
+        for p, params_group in enumerate(self._curr_params):
+            circuit = self._meta_circuits[
+                "cost_circuit"
+            ].initialize_circuit_from_params(params_group, tag_prefix=f"{p}")
 
             self.circuits.append(circuit)
 
-    def run(self, store_data=False, data_file=None):
-        """
-        Run the VQE problem. The outputs are stored in the VQE object. Optionally, the data can be stored in a file.
-
-        Args:
-            store_data (bool): Whether to store the data for the iteration
-            data_file (str): The file to store the data in
-        """
-        if self.optimizer == Optimizers.MONTE_CARLO:
-            while self.current_iteration < self.max_iterations:
-                if self.hamiltonian is None or len(self.hamiltonian) == 0:
-                    raise RuntimeError(
-                        "Hamiltonian operators must be generated before running the VQE"
-                    )
-
-                logger.debug(f"Running iteration {self.current_iteration}")
-
-                self._run_optimize()
-
-                self._generate_circuits()
-                energies = self._dispatch_circuits_and_process_results(
-                    store_data=store_data, data_file=data_file
-                )
-
-                self.energies.append(energies)
-
-            return self._total_circuit_count, self._total_run_time
-
-        elif self.optimizer == Optimizers.NELDER_MEAD:
-
-            def cost_function(params):
-                self._generate_circuits(params)
-                energies = self._dispatch_circuits_and_process_results(
-                    store_data=store_data, data_file=data_file
-                )
-
-                self.energies.append(energies)
-                return energies[0]
-
-            self._reset_params()
-
-            self.params = [
-                np.random.uniform(-2 * np.pi, -2 * np.pi, self.n_params * self.n_layers)
-                for _ in range(self.optimizer.n_param_sets)
-            ]
-
-            self._minimize_res = minimize(
-                cost_function,
-                self.params[0],
-                method="Nelder-Mead",
-                options={"maxiter": self.max_iterations},
+    def _run_optimization_circuits(self, store_data, data_file):
+        if self.cost_hamiltonian is None or len(self.cost_hamiltonian) == 0:
+            raise RuntimeError(
+                "Hamiltonian operators must be generated before running the VQE"
             )
 
-            return self._total_circuit_count, self._total_run_time
-
-    def _run_optimize(self):
-        """
-        Run the optimization step for the VQE problem.
-        """
-
-        if self.current_iteration == 0:
-            self._reset_params()
-
-            self.params = [
-                np.random.uniform(0, 2 * np.pi, self.n_params * self.n_layers)
-                for _ in range(self.optimizer.n_param_sets)
-            ]
-        else:
-            # Optimize the VQE problem.
-            if self.optimizer == Optimizers.NELDER_MEAD:
-                raise NotImplementedError
-
-            elif self.optimizer == Optimizers.MONTE_CARLO:
-                self.params = self.optimizer.compute_new_parameters(
-                    self.params,
-                    self.current_iteration,
-                    losses=self.energies[-1],
-                )
-            else:
-                raise NotImplementedError
-
-        self.current_iteration += 1
+        return super()._run_optimization_circuits(store_data, data_file)

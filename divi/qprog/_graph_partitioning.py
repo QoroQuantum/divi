@@ -1,7 +1,9 @@
 from collections.abc import Callable
+from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from multiprocessing import Manager
 from typing import Optional
+from warnings import warn
 
 import networkx as nx
 import numpy as np
@@ -17,6 +19,10 @@ from divi.qprog._qaoa import (
 )
 
 from .optimizers import Optimizers
+
+AggregateFn = Callable[
+    [list[int], str, nx.Graph | rx.PyGraph, dict[int, int]], list[int]
+]
 
 
 def _divide_edges(
@@ -74,7 +80,6 @@ def _fielder_laplacian_predicate(
 
     L = nx.laplacian_matrix(growing_graph).astype(float)
 
-    # _, eigenvectors = spla.eigs(L, k=2, which="SM")
     # Create an initial random guess for the eigenvectors
     n = L.shape[0]
     X = np.random.rand(n, 2)
@@ -160,10 +165,40 @@ def _node_partition_graph(
             subgraphs.append(subgraph)
 
     if total_edges != graph.number_of_edges():
-        print(
-            f"ATTENTION: Total edges {total_edges} are different than the original graph {graph.number_of_edges()}"
+        warn(
+            f"Sum of edges count of partitions ({total_edges}) is different from the original graph {graph.number_of_edges()}"
         )
     return subgraphs
+
+
+def linear_aggregation(curr_solution, solution_bitstring, graph, reverse_index_maps):
+    for node in graph.nodes():
+        solution_index = reverse_index_maps[node]
+        curr_solution[solution_index] = int(solution_bitstring[node])
+
+    return curr_solution
+
+
+def domninance_aggregation(
+    curr_solution, solution_bitstring, graph, reverse_index_maps
+):
+    for node in graph.nodes():
+        solution_index = reverse_index_maps[node]
+
+        # Use existing assignment if dominant in previous solutions
+        # (e.g., more 0s than 1s or vice versa)
+        count_0 = curr_solution.count(0)
+        count_1 = curr_solution.count(1)
+
+        if (
+            (count_0 > count_1 and curr_solution[node] == 0)
+            or (count_1 > count_0 and curr_solution[node] == 1)
+            or (count_0 == count_1)
+        ):
+            # Assign based on QAOA if tie
+            curr_solution[solution_index] = int(solution_bitstring[node])
+
+    return curr_solution
 
 
 class GraphPartitioningQAOA(ProgramBatch):
@@ -175,6 +210,7 @@ class GraphPartitioningQAOA(ProgramBatch):
         n_qubits: int = None,
         n_clusters: int = None,
         initial_state: _SUPPORTED_INITIAL_STATES_LITERAL = "Recommended",
+        aggregate_fn: AggregateFn = linear_aggregation,
         optimizer=Optimizers.MONTE_CARLO,
         max_iterations=10,
         shots=5000,
@@ -192,6 +228,8 @@ class GraphPartitioningQAOA(ProgramBatch):
 
         self.is_edge_problem = problem not in _SUPPORTED_PROBLEMS
 
+        self.aggregate_fn = aggregate_fn
+
         self._constructor = partial(
             QAOA,
             initial_state=initial_state,
@@ -204,6 +242,12 @@ class GraphPartitioningQAOA(ProgramBatch):
         )
 
     def create_programs(self):
+        if len(self.programs) > 0:
+            raise RuntimeError(
+                "Some programs already exist. "
+                "Clear the program dictionary before creating new ones by using batch.reset()."
+            )
+
         self.manager = Manager()
 
         if self.is_edge_problem:
@@ -228,18 +272,49 @@ class GraphPartitioningQAOA(ProgramBatch):
                 index_map = {node: idx for idx, node in enumerate(subgraph.nodes())}
                 self.reverse_index_maps[i] = {v: k for k, v in index_map.items()}
                 _subgraph = nx.relabel_nodes(subgraph, index_map)
+
                 self.programs[i] = self._constructor(
                     graph=_subgraph,
                     losses=self.manager.list(),
-                    probs=self.manager.list(),
-                    circuits=self.manager.list(),
+                    probs=self.manager.dict(),
+                    final_params=self.manager.list(),
                 )
 
         return
 
-    def aggregate_results(self):
+    def compute_final_solutions(self):
         if self._executor is not None:
             self.wait_for_all()
+
+        if self._executor is not None:
+            raise RuntimeError("A batch is already being run.")
+
+        if len(self.programs) == 0:
+            raise RuntimeError("No programs to run.")
+
+        self._executor = ProcessPoolExecutor()
+
+        self.futures = [
+            self._executor.submit(program.compute_final_solution)
+            for program in self.programs.values()
+        ]
+
+    def aggregate_results(self):
+        if len(self.programs) == 0:
+            raise RuntimeError("No programs to aggregate. Run create_programs() first.")
+
+        if self._executor is not None:
+            self.wait_for_all()
+
+        if any(len(program.losses) == 0 for program in self.programs.values()):
+            raise RuntimeError(
+                "Some/All programs have empty losses. Did you call run()?"
+            )
+
+        if any(len(program.probs) == 0 for program in self.programs.values()):
+            raise RuntimeError(
+                "Not all final probabilities computed yet. Please call `compute_final_solutions()` first."
+            )
 
         # Extract the solutions from each program
         for program, reverse_index_maps in zip(
@@ -249,27 +324,15 @@ class GraphPartitioningQAOA(ProgramBatch):
             last_iteration_losses = program.losses[-1]
             minimum_key = min(last_iteration_losses, key=last_iteration_losses.get)
 
-            minimum_probabilities = program.probs[-1][f"{minimum_key}_0"]
+            minimum_probabilities = program.probs[f"{minimum_key}_0"]
 
-            # The bitstring corresponding to the solution
+            # The bitstring corresponding to the solution, with flip for correct endianness
             max_prob_key = max(minimum_probabilities, key=minimum_probabilities.get)[
                 ::-1
             ]
 
-            for node in program.graph.nodes():
-                solution_index = reverse_index_maps[node]
-
-                # Use existing assignment if dominant in previous solutions
-                # (e.g., more 0s than 1s or vice versa)
-                count_0 = self.solution.count(0)
-                count_1 = self.solution.count(1)
-
-                if (
-                    (count_0 > count_1 and self.solution[node] == 0)
-                    or (count_1 > count_0 and self.solution[node] == 1)
-                    or (count_0 == count_1)
-                ):
-                    # Assign based on QAOA if tie
-                    self.solution[solution_index] = int(max_prob_key[node])
+            self.solution = self.aggregate_fn(
+                self.solution, max_prob_key, program.graph, reverse_index_maps
+            )
 
         return self.solution
