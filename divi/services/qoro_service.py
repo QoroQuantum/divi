@@ -93,7 +93,7 @@ class QoroService:
             for key, value in circuits.items():
                 compressed_value = _compress_data(value)
                 estimated_size = _estimate_size({key: compressed_value})
-                print(estimated_size)
+
                 if current_size + estimated_size > MAX_PAYLOAD_SIZE_MB:
                     circuit_chunks.append(current_chunk)
                     current_chunk = {key: compressed_value}
