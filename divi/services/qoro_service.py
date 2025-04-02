@@ -4,11 +4,23 @@ import json
 import time
 from enum import Enum
 from http import HTTPStatus
-
 import requests
+from requests.adapters import HTTPAdapter, Retry
+
 
 API_URL = "https://app.qoroquantum.net/api"
 MAX_PAYLOAD_SIZE_MB = 0.95
+
+session = requests.Session()
+retries = Retry(
+    total=5,
+    backoff_factor=0.1,
+    status_forcelist=[502],
+    method_whitelist=["GET", "POST", "DELETE"],
+)
+
+session.mount("http://", HTTPAdapter(max_retries=retries))
+session.mount("https://", HTTPAdapter(max_retries=retries))
 
 
 class JobStatus(Enum):
@@ -41,7 +53,7 @@ class QoroService:
 
     def test_connection(self):
         """Test the connection to the Qoro API"""
-        response = requests.get(
+        response = session.get(
             API_URL, headers={"Authorization": self.auth_token}, timeout=10
         )
 
@@ -111,7 +123,7 @@ class QoroService:
 
         job_ids = []
         for chunk in circuit_chunks:
-            response = requests.post(
+            response = session.post(
                 API_URL + "/job/",
                 headers={
                     "Authorization": self.auth_token,
@@ -123,7 +135,7 @@ class QoroService:
                     "tag": tag,
                     "type": job_type.value,
                 },
-                timeout=10,
+                timeout=100,
             )
 
             if response.status_code == HTTPStatus.CREATED:
@@ -150,10 +162,10 @@ class QoroService:
         responses = []
 
         for job_id in job_ids:
-            response = requests.delete(
+            response = session.delete(
                 API_URL + f"/job/{job_id}",
                 headers={"Authorization": self.auth_token},
-                timeout=10,
+                timeout=50,
             )
 
             responses.append(response)
@@ -174,10 +186,10 @@ class QoroService:
 
         responses = []
         for job_id in job_ids:
-            response = requests.get(
+            response = session.get(
                 API_URL + f"/job/{job_id}/results",
                 headers={"Authorization": self.auth_token},
-                timeout=10,
+                timeout=100,
             )
             responses.append(response)
 
@@ -203,7 +215,7 @@ class QoroService:
         loop_until_complete=False,
         on_complete=None,
         timeout=3,
-        max_retries=100,
+        max_retries=5000,
         verbose=True,
     ):
         """
@@ -224,7 +236,7 @@ class QoroService:
             job_ids = [job_ids]
 
         def _poll_job_status(job_id):
-            response = requests.get(
+            response = session.get(
                 API_URL + f"/job/{job_id}/status/",
                 headers={
                     "Authorization": self.auth_token,
