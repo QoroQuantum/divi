@@ -4,9 +4,9 @@ import json
 import time
 from enum import Enum
 from http import HTTPStatus
+
 import requests
 from requests.adapters import HTTPAdapter, Retry
-
 
 API_URL = "https://app.qoroquantum.net/api"
 MAX_PAYLOAD_SIZE_MB = 0.95

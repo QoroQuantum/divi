@@ -33,7 +33,7 @@ def test_qaoa_basic_initialization():
     assert qaoa_problem.qoro_service is None
     assert qaoa_problem.optimizer == Optimizers.NELDER_MEAD
     assert qaoa_problem.max_iterations == 10
-    assert qaoa_problem.problem == "max_clique"
+    assert qaoa_problem.graph_problem == "max_clique"
     assert qaoa_problem.graph == G
     assert qaoa_problem.n_layers == 2
 

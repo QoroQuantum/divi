@@ -1,5 +1,7 @@
 import re
-from typing import Literal, get_args
+from functools import reduce
+from typing import Literal, Optional, get_args
+from warnings import warn
 
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -7,20 +9,28 @@ import numpy as np
 import pennylane as qml
 import pennylane.qaoa as pqaoa
 import rustworkx as rx
+import scipy.sparse as sps
 import sympy as sp
+from qiskit_optimization import QuadraticProgram
+from qiskit_optimization.converters import QuadraticProgramToQubo
+from qiskit_optimization.problems import VarType
 
 from divi.circuit import MetaCircuit
 from divi.qprog import QuantumProgram
 from divi.qprog.optimizers import Optimizers
+from divi.utils import convert_qubo_matrix_to_pennylane_ising
 
-_SUPPORTED_PROBLEMS_LITERAL = Literal[
+GraphProblemTypes = nx.Graph | rx.PyGraph
+QUBOProblemTypes = np.ndarray | sps.spmatrix | QuadraticProgram
+
+_SUPPORTED_GRAPH_PROBLEMS_LITERAL = Literal[
     "max_clique",
     "max_independent_set",
     "max_weight_cycle",
     "maxcut",
     "min_vertex_cover",
 ]
-_SUPPORTED_PROBLEMS = get_args(_SUPPORTED_PROBLEMS_LITERAL)
+_SUPPORTED_PROBLEMS = get_args(_SUPPORTED_GRAPH_PROBLEMS_LITERAL)
 
 _SUPPORTED_INITIAL_STATES_LITERAL = Literal[
     "Zeros", "Ones", "Superposition", "Recommended"
@@ -29,7 +39,7 @@ _SUPPORTED_INITIAL_STATES_LITERAL = Literal[
 # Recommended initial state as per Pennylane's documentation.
 # Values are of the format (Constrained, Unconstrained).
 # Value is duplicated if not applicable to the problem
-_PROBLEM_TO_INITIAL_STATE_MAP = dict(
+_GRAPH_PROBLEM_TO_INITIAL_STATE_MAP = dict(
     zip(
         _SUPPORTED_PROBLEMS,
         [
@@ -43,39 +53,80 @@ _PROBLEM_TO_INITIAL_STATE_MAP = dict(
 )
 
 
-def _resolve_circuit_layers(problem, graph, initial_state, **kwargs):
+def _convert_quadratic_program_to_pennylane_ising(qp: QuadraticProgram):
+    qiskit_sparse_op, constant = qp.to_ising()
+
+    pauli_list = qiskit_sparse_op.paulis
+
+    pennylane_ising = 0.0
+    for pauli_string, coeff in zip(pauli_list.z, qiskit_sparse_op.coeffs):
+        sanitized_coeff = coeff.real if np.isreal(coeff) else coeff
+
+        curr_term = (
+            reduce(
+                lambda x, y: x @ y,
+                map(lambda x: qml.Z(x), np.flatnonzero(pauli_string)),
+            )
+            * sanitized_coeff.item()
+        )
+
+        pennylane_ising += curr_term
+
+    return pennylane_ising, constant.item(), pauli_list.num_qubits
+
+
+def _resolve_circuit_layers(
+    initial_state, problem, graph_problem, **kwargs
+) -> tuple[qml.operation.Operator, qml.operation.Operator, Optional[dict], str]:
     """
     Generates the cost and mixer hamiltonians for a given problem, in addition to
     optional metadata returned by Pennylane if applicable
     """
 
-    is_constrained = kwargs.pop("is_constrained", True)
+    if isinstance(problem, GraphProblemTypes):
+        is_constrained = kwargs.pop("is_constrained", True)
 
-    if problem in (
-        "max_clique",
-        "max_independent_set",
-        "max_weight_cycle",
-        "min_vertex_cover",
-    ):
-        params = (graph, is_constrained)
+        if graph_problem in (
+            "max_clique",
+            "max_independent_set",
+            "max_weight_cycle",
+            "min_vertex_cover",
+        ):
+            params = (problem, is_constrained)
+        else:
+            params = (problem,)
+
+        if initial_state == "Recommended":
+            resolved_initial_state = _GRAPH_PROBLEM_TO_INITIAL_STATE_MAP[graph_problem][
+                0 if is_constrained else 1
+            ]
+        else:
+            resolved_initial_state = initial_state
+
+        return *getattr(pqaoa, graph_problem)(*params), resolved_initial_state
     else:
-        params = (graph,)
+        if isinstance(problem, QuadraticProgram):
+            cost_hamiltonian, constant, n_qubits = (
+                _convert_quadratic_program_to_pennylane_ising(problem)
+            )
+        else:
+            cost_hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(problem)
 
-    if initial_state == "Recommended":
-        resolved_initial_state = _PROBLEM_TO_INITIAL_STATE_MAP[problem][
-            0 if is_constrained else 1
-        ]
-    else:
-        resolved_initial_state = initial_state
+            n_qubits = problem.shape[0]
 
-    return *getattr(pqaoa, problem)(*params), resolved_initial_state
+        return (
+            cost_hamiltonian,
+            pqaoa.x_mixer(range(n_qubits)),
+            {"constant": constant},
+            "Superposition",
+        )
 
 
 class QAOA(QuantumProgram):
     def __init__(
         self,
-        problem: _SUPPORTED_PROBLEMS_LITERAL,
-        graph: nx.Graph | rx.PyGraph,
+        problem: GraphProblemTypes | QUBOProblemTypes,
+        graph_problem: Optional[_SUPPORTED_GRAPH_PROBLEMS_LITERAL] = None,
         n_layers: int = 1,
         initial_state: _SUPPORTED_INITIAL_STATES_LITERAL = "Recommended",
         optimizer=Optimizers.MONTE_CARLO,
@@ -86,17 +137,41 @@ class QAOA(QuantumProgram):
         Initialize the QAOA problem.
 
         Args:
-            problem (str): The graph problem to solve.
-            graph (networkx.Graph or rustworkx.PyGraph): The graph representing the problem
+            problem: The problem to solve, can either be a graph or a QUBO.
+                For graph inputs, the graph problem to solve must be provided
+                through the `graph_problem` variable.
+            graph_problem (str): The graph problem to solve.
             n_layers (int): number of QAOA layers
             initial_state (str): The initial state of the circuit
         """
-        self.graph = graph
 
-        if problem not in _SUPPORTED_PROBLEMS:
-            raise ValueError(
-                f"Unsupported Problem. Got '{problem}'. Must be one of: {_SUPPORTED_PROBLEMS}"
-            )
+        if isinstance(problem, QUBOProblemTypes):
+            if graph_problem is not None:
+                warn("Ignoring the 'problem' argument as it is not applicable to QUBO.")
+
+            self.graph_problem = None
+
+            if isinstance(problem, QuadraticProgram):
+                if any(var.vartype != VarType.BINARY for var in problem.variables):
+                    problem = QuadraticProgramToQubo().convert(problem)
+
+                self.n_qubits = problem.get_num_vars()
+            else:
+                if problem.ndim != 2 or problem.shape[0] != problem.shape[1]:
+                    raise ValueError(
+                        f"Invalid QUBO matrix. Got {problem.shape}. Must be a square matrix."
+                    )
+
+                self.n_qubits = problem.shape[1]
+        else:
+            if graph_problem not in _SUPPORTED_PROBLEMS:
+                raise ValueError(
+                    f"Unsupported Problem. Got '{graph_problem}'. Must be one of: {_SUPPORTED_PROBLEMS}"
+                )
+
+            self.graph_problem = graph_problem
+            self.n_qubits = problem.number_of_nodes()
+
         self.problem = problem
 
         if initial_state not in get_args(_SUPPORTED_INITIAL_STATES_LITERAL):
@@ -108,7 +183,6 @@ class QAOA(QuantumProgram):
         self.n_layers = n_layers
         self.optimizer = optimizer
         self.max_iterations = max_iterations
-        self.n_qubits = graph.number_of_nodes()
         self.current_iteration = 0
         self._solution_nodes = None
         self.n_params = 2
@@ -122,12 +196,18 @@ class QAOA(QuantumProgram):
         (
             self.cost_hamiltonian,
             self.mixer_hamiltonian,
-            *self.problem_metadata,
+            *problem_metadata,
             self.initial_state,
-        ) = _resolve_circuit_layers(problem, graph, initial_state, **kwargs)
+        ) = _resolve_circuit_layers(
+            initial_state=initial_state,
+            problem=problem,
+            graph_problem=graph_problem,
+            **kwargs,
+        )
+        self.problem_metadata = problem_metadata[0] if problem_metadata else {}
 
         self.expval_hamiltonian_metadata = {
-            i: (term.wires, float(term.scalar))
+            i: (term.wires, float(term.scalar) if hasattr(term, "scalar") else 1.0)
             for i, term in enumerate(self.cost_hamiltonian)
         }
 
@@ -135,6 +215,20 @@ class QAOA(QuantumProgram):
 
         kwargs.pop("is_constrained", None)
         super().__init__(**kwargs)
+
+    @property
+    def solution(self):
+        return (
+            self._solution_nodes
+            if self.graph_problem is not None
+            else self._solution_bitstring
+        )
+
+    @solution.setter
+    def solution(self, value):
+        raise RuntimeError(
+            "The solution property is read-only. Use compute_final_solution() to get the solution."
+        )
 
     def _create_meta_circuits(self):
         """
@@ -267,9 +361,15 @@ class QAOA(QuantumProgram):
             ::-1
         ]
 
-        self._solution_nodes = [
-            m.start() for m in re.finditer("1", best_solution_bitstring)
-        ]
+        if isinstance(self.problem, QUBOProblemTypes):
+            self._solution_bitstring = 1 - np.fromiter(
+                best_solution_bitstring, dtype=np.int32
+            )
+
+        if isinstance(self.problem, GraphProblemTypes):
+            self._solution_nodes = [
+                m.start() for m in re.finditer("1", best_solution_bitstring)
+            ]
 
         return self._total_circuit_count, self._total_run_time
 
@@ -277,19 +377,24 @@ class QAOA(QuantumProgram):
         if not self._solution_nodes:
             self.compute_final_solution()
 
+        if self.graph_problem is None:
+            raise RuntimeError(
+                "The problem is not a graph problem. Cannot draw solution."
+            )
+
         # Create a dictionary for node colors
         node_colors = [
             "red" if node in self._solution_nodes else "lightblue"
-            for node in self.graph.nodes()
+            for node in self.problem.nodes()
         ]
 
         plt.figure(figsize=(10, 8))
 
-        pos = nx.spring_layout(self.graph)
+        pos = nx.spring_layout(self.problem)
 
-        nx.draw_networkx_nodes(self.graph, pos, node_color=node_colors, node_size=500)
-        nx.draw_networkx_edges(self.graph, pos)
-        nx.draw_networkx_labels(self.graph, pos, font_size=10, font_weight="bold")
+        nx.draw_networkx_nodes(self.problem, pos, node_color=node_colors, node_size=500)
+        nx.draw_networkx_edges(self.problem, pos)
+        nx.draw_networkx_labels(self.problem, pos, font_size=10, font_weight="bold")
 
         # Remove axes
         plt.axis("off")

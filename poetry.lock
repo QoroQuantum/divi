@@ -765,6 +765,21 @@ files = [
 ]
 
 [[package]]
+name = "docplex"
+version = "2.29.241"
+description = "The IBM Decision Optimization CPLEX Modeling for Python"
+optional = false
+python-versions = "*"
+groups = ["main"]
+markers = "python_version < \"4\""
+files = [
+    {file = "docplex-2.29.241.tar.gz", hash = "sha256:ad5250396be0cea02b732710795bb9e345d9923bbb0bf66520f66eb8f1e988ad"},
+]
+
+[package.dependencies]
+six = "*"
+
+[[package]]
 name = "docutils"
 version = "0.21.2"
 description = "Docutils -- Python Documentation Utilities"
@@ -2604,6 +2619,34 @@ documentation = ["Sphinx (>=6)", "jupyter-sphinx", "nbsphinx", "packaging", "sph
 visualization = ["plotly (>=5.23.0)"]
 
 [[package]]
+name = "qiskit-optimization"
+version = "0.6.1"
+description = "Qiskit Optimization: A library for optimization applications using quantum computing"
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+markers = "python_version < \"4\""
+files = [
+    {file = "qiskit-optimization-0.6.1.tar.gz", hash = "sha256:0ad8c2bc83fe80657c788b5f282ce4055d0ec005c4876789e5069499ee3c00c0"},
+    {file = "qiskit_optimization-0.6.1-py3-none-any.whl", hash = "sha256:3f09f31289dfef66bbbb03b782a94d88a4ba5681c728b4b8e96884de5fc83879"},
+]
+
+[package.dependencies]
+docplex = ">=2.21.207,<2.24.231 || >2.24.231"
+networkx = ">=2.6.3"
+numpy = ">=1.17"
+qiskit = ">=0.44"
+qiskit-algorithms = ">=0.2.0"
+scipy = ">=1.9.0"
+setuptools = ">=40.1.0"
+
+[package.extras]
+cplex = ["cplex ; python_version < \"3.12\" and platform_machine != \"arm64\""]
+cvx = ["cvxpy"]
+gurobi = ["gurobipy"]
+matplotlib = ["matplotlib"]
+
+[[package]]
 name = "referencing"
 version = "0.36.2"
 description = "JSON Referencing + Python"
@@ -3570,4 +3613,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11"
-content-hash = "b4fd71320ca2084de3abb5b4e3a035602d171d0c1e4c75f92a860e12629eacc2"
+content-hash = "c93d9471ed5105b58179722c9c8c9c619b4243c6299e64e07fe3cdd58e131966"

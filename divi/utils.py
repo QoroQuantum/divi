@@ -1,8 +1,10 @@
-from functools import partial
+from functools import partial, reduce
 from typing import Optional
 from warnings import warn
 
+import numpy as np
 import pennylane as qml
+import scipy.sparse as sps
 from pennylane.tape import QuantumScript
 from pennylane.wires import Wires
 
@@ -163,3 +165,46 @@ def to_openqasm(
         if not return_measurements_separately
         else (main_qasm_str, measurement_qasms)
     )
+
+
+def convert_qubo_matrix_to_pennylane_ising(
+    qubo_matrix: np.ndarray | sps.spmatrix,
+) -> tuple[qml.operation.Operator, float]:
+    """Convert QUBO matrix to Ising Hamiltonian in Pennylane."""
+
+    if not np.allclose(qubo_matrix, qubo_matrix.T):
+        qubo_matrix = (qubo_matrix + qubo_matrix.T) / 2
+
+    # qubo_matrix = np.triu(qubo_matrix, k=0)
+    qubo_indices = np.argwhere(qubo_matrix)
+    qubo_weights = qubo_matrix[qubo_indices[:, 0], qubo_indices[:, 1]]
+
+    ising_terms, ising_weights = [], []
+    constant_term = 0
+    linear_terms = np.zeros(qubo_matrix.shape[0])
+
+    # Process the given terms and weights
+    for term, weight in zip(qubo_indices, qubo_weights):
+        u, v = term
+
+        if u != v:
+            ising_terms.append([u.item(), v.item()])
+            ising_weights.append(weight.item() / 4)
+        else:
+            constant_term += weight / 4
+
+        linear_terms[u.item()] += weight / 4
+        linear_terms[v.item()] += weight / 4
+        constant_term += weight / 4
+
+    for variable, linear_term in enumerate(linear_terms):
+        ising_terms.append([variable])
+        ising_weights.append(linear_term.item())
+
+    pauli_string = qml.Identity(0) * 0
+    for term, weight in zip(ising_terms, ising_weights):
+        curr_term = reduce(lambda x, y: x @ y, map(lambda x: qml.Z(x), term)) * weight
+
+        pauli_string += curr_term
+
+    return pauli_string.simplify(), constant_term.item()

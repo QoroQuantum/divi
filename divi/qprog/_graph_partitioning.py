@@ -13,9 +13,9 @@ from sklearn.cluster import SpectralClustering
 
 from divi.qprog import QAOA, ProgramBatch
 from divi.qprog._qaoa import (
+    _SUPPORTED_GRAPH_PROBLEMS_LITERAL,
     _SUPPORTED_INITIAL_STATES_LITERAL,
     _SUPPORTED_PROBLEMS,
-    _SUPPORTED_PROBLEMS_LITERAL,
 )
 
 from .optimizers import Optimizers
@@ -204,7 +204,7 @@ def domninance_aggregation(
 class GraphPartitioningQAOA(ProgramBatch):
     def __init__(
         self,
-        problem: _SUPPORTED_PROBLEMS_LITERAL,
+        problem: _SUPPORTED_GRAPH_PROBLEMS_LITERAL,
         graph: nx.Graph | rx.PyGraph,
         n_layers: int,
         n_qubits: int = None,

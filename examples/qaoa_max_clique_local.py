@@ -7,8 +7,8 @@ if __name__ == "__main__":
     G = nx.bull_graph()
 
     qaoa_problem = QAOA(
-        "max_clique",
-        G,
+        problem=G,
+        graph_problem="max_clique",
         n_layers=2,
         optimizer=Optimizers.NELDER_MEAD,
         max_iterations=10,
@@ -17,6 +17,7 @@ if __name__ == "__main__":
     )
 
     qaoa_problem.run()
+    qaoa_problem.compute_final_solution()
 
     losses = qaoa_problem.losses[-1]
     print(f"Minimum Energy Achieved: {min(losses.values()):.4f}")
@@ -24,6 +25,6 @@ if __name__ == "__main__":
     print(f"Total circuits: {qaoa_problem.total_circuit_count}")
 
     print(f"Classical solution:{nx.algorithms.approximation.max_clique(G)}")
-    print(f"Quantum Solution: {set(qaoa_problem.compute_final_solution())}")
+    print(f"Quantum Solution: {set(qaoa_problem._solution_nodes)}")
 
     qaoa_problem.draw_solution()
