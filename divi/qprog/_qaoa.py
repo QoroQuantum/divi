@@ -362,9 +362,12 @@ class QAOA(QuantumProgram):
         ]
 
         if isinstance(self.problem, QUBOProblemTypes):
-            self._solution_bitstring = 1 - np.fromiter(
-                best_solution_bitstring, dtype=np.int32
-            )
+            raw_solution = np.fromiter(best_solution_bitstring, dtype=np.int32)
+
+            if isinstance(self.problem, QuadraticProgram):
+                self._solution_bitstring = raw_solution
+            else:
+                self._solution_bitstring = 1 - raw_solution
 
         if isinstance(self.problem, GraphProblemTypes):
             self._solution_nodes = [
