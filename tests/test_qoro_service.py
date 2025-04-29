@@ -39,7 +39,7 @@ def test_service_connection_test_mock(mocker, qoro_service_mock):
     mock_response = mocker.Mock()
     mock_response.status_code = 200
 
-    mocker.patch("requests.get", return_value=mock_response)
+    mocker.patch("requests.Session.get", return_value=mock_response)
 
     response = qoro_service_mock.test_connection()
     assert response.status_code == 200
@@ -60,7 +60,7 @@ def test_send_circuits_single_chunk_mock(mocker, qoro_service_mock):
     mock_response.status_code = 201
     mock_response.json.return_value = {"job_id": "mock_job_id"}
 
-    mock_post = mocker.patch("requests.post", return_value=mock_response)
+    mock_post = mocker.patch("requests.Session.post", return_value=mock_response)
 
     job_id = qoro_service_mock.send_circuits({"circuit_1": "mock_qasm"})
     assert job_id == "mock_job_id"
@@ -82,7 +82,7 @@ def test_send_circuits_multiple_chunks_mock(mocker, qoro_service_mock):
     )
 
     mock_post = mocker.patch(
-        "requests.post", side_effect=[mock_response_1, mock_response_2]
+        "requests.Session.post", side_effect=[mock_response_1, mock_response_2]
     )
 
     job_ids = qoro_service_mock.send_circuits(
@@ -104,7 +104,7 @@ def test_poll_job_status_success_mock(mocker, qoro_service_mock):
     mock_response_completed.json.return_value = {"status": JobStatus.COMPLETED.value}
 
     mock_get = mocker.patch(
-        "requests.get",
+        "requests.Session.get",
         side_effect=[
             mock_response_pending,
             mock_response_pending,
@@ -137,7 +137,7 @@ def test_poll_job_status_failure_mock(mocker, qoro_service_mock):
     mock_response_failed.json.return_value = {"status": JobStatus.FAILED.value}
 
     mock_get = mocker.patch(
-        "requests.get",
+        "requests.Session.get",
         side_effect=[
             mock_response_pending,
             mock_response_pending,

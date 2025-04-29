@@ -204,8 +204,8 @@ def domninance_aggregation(
 class GraphPartitioningQAOA(ProgramBatch):
     def __init__(
         self,
-        problem: _SUPPORTED_GRAPH_PROBLEMS_LITERAL,
         graph: nx.Graph | rx.PyGraph,
+        graph_problem: _SUPPORTED_GRAPH_PROBLEMS_LITERAL,
         n_layers: int,
         n_qubits: int = None,
         n_clusters: int = None,
@@ -226,14 +226,14 @@ class GraphPartitioningQAOA(ProgramBatch):
         if not (bool(self.n_qubits) ^ bool(self.n_clusters)):
             raise ValueError("One of `n_qubits` and `n_clusters` must be provided.")
 
-        self.is_edge_problem = problem not in _SUPPORTED_PROBLEMS
+        self.is_edge_problem = graph_problem not in _SUPPORTED_PROBLEMS
 
         self.aggregate_fn = aggregate_fn
 
         self._constructor = partial(
             QAOA,
             initial_state=initial_state,
-            problem=problem,
+            graph_problem=graph_problem,
             optimizer=optimizer,
             max_iterations=max_iterations,
             shots=shots,
@@ -274,7 +274,7 @@ class GraphPartitioningQAOA(ProgramBatch):
                 _subgraph = nx.relabel_nodes(subgraph, index_map)
 
                 self.programs[i] = self._constructor(
-                    graph=_subgraph,
+                    problem=_subgraph,
                     losses=self.manager.list(),
                     probs=self.manager.dict(),
                     final_params=self.manager.list(),
@@ -332,7 +332,7 @@ class GraphPartitioningQAOA(ProgramBatch):
             ]
 
             self.solution = self.aggregate_fn(
-                self.solution, max_prob_key, program.graph, reverse_index_maps
+                self.solution, max_prob_key, program.problem, reverse_index_maps
             )
 
         return self.solution

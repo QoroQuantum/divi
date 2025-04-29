@@ -19,8 +19,8 @@ def test_qaoa_basic_initialization():
     G = nx.bull_graph()
 
     qaoa_problem = QAOA(
-        "max_clique",
-        G,
+        problem=G,
+        graph_problem="max_clique",
         n_layers=2,
         optimizer=Optimizers.NELDER_MEAD,
         max_iterations=10,
@@ -34,7 +34,7 @@ def test_qaoa_basic_initialization():
     assert qaoa_problem.optimizer == Optimizers.NELDER_MEAD
     assert qaoa_problem.max_iterations == 10
     assert qaoa_problem.graph_problem == "max_clique"
-    assert qaoa_problem.graph == G
+    assert qaoa_problem.problem == G
     assert qaoa_problem.n_layers == 2
 
     verify_hamiltonian_metadata(qaoa_problem)
@@ -45,8 +45,8 @@ def test_qaoa_basic_initialization():
 def test_qaoa_unsuppported_problem():
     with pytest.raises(ValueError, match="travelling_salesman"):
         QAOA(
-            "travelling_salesman",
-            nx.bull_graph(),
+            problem=nx.bull_graph(),
+            graph_problem="travelling_salesman",
             qoro_service=None,
         )
 
@@ -54,8 +54,8 @@ def test_qaoa_unsuppported_problem():
 def test_qaoa_unsuppported_initial_state():
     with pytest.raises(ValueError, match="Bell"):
         QAOA(
-            "max_clique",
-            nx.bull_graph(),
+            problem=nx.bull_graph(),
+            graph_problem="max_clique",
             initial_state="Bell",
             qoro_service=None,
         )
@@ -63,8 +63,8 @@ def test_qaoa_unsuppported_initial_state():
 
 def test_qaoa_initial_state_recommended():
     qaoa_problem = QAOA(
-        "max_clique",
-        nx.bull_graph(),
+        problem=nx.bull_graph(),
+        graph_problem="max_clique",
         initial_state="Recommended",
         is_constrained=True,
         qoro_service=None,
@@ -75,8 +75,8 @@ def test_qaoa_initial_state_recommended():
 
 def test_qaoa_initial_state_superposition():
     qaoa_problem = QAOA(
-        "max_clique",
-        nx.bull_graph(),
+        problem=nx.bull_graph(),
+        graph_problem="max_clique",
         initial_state="Superposition",
         qoro_service=None,
     )
@@ -96,8 +96,8 @@ def test_qaoa_initial_state_superposition():
 @pytest.mark.parametrize("optimizer", list(Optimizers))
 def test_qaoa_generate_circuits_called_with_correct_phases(mocker, optimizer):
     qaoa_problem = QAOA(
-        "max_clique",
-        nx.bull_graph(),
+        problem=nx.bull_graph(),
+        graph_problem="max_clique",
         n_layers=1,
         optimizer=optimizer,
         max_iterations=1,
@@ -137,8 +137,8 @@ def test_qaoa_generate_circuits_called_with_correct_phases(mocker, optimizer):
 @pytest.mark.parametrize("optimizer", list(Optimizers))
 def test_qaoa_correct_circuits_count_and_energies(optimizer):
     qaoa_problem = QAOA(
-        "max_clique",
-        nx.bull_graph(),
+        problem=nx.bull_graph(),
+        graph_problem="max_clique",
         n_layers=1,
         optimizer=optimizer,
         max_iterations=1,
@@ -164,8 +164,8 @@ def test_qaoa_compute_final_solution(mocker, optimizer):
         )
 
     qaoa_problem = QAOA(
-        "max_clique",
-        G,
+        graph_problem="max_clique",
+        problem=G,
         n_layers=1,
         optimizer=optimizer,
         max_iterations=8 if optimizer != Optimizers.MONTE_CARLO else 2,
@@ -196,8 +196,8 @@ def test_draw_solution_returns_graph_with_expected_properties(mocker):
     G = nx.bull_graph()
 
     qaoa_problem = QAOA(
-        "max_clique",
-        G,
+        graph_problem="max_clique",
+        problem=G,
         n_layers=1,
         optimizer=Optimizers.NELDER_MEAD,
         max_iterations=2,

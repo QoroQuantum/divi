@@ -57,7 +57,7 @@ if __name__ == "__main__":
     q_service = None
 
     qaoa_batch = GraphPartitioningQAOA(
-        problem="maxcut",
+        graph_problem="maxcut",
         graph=graph,
         n_layers=1,
         n_clusters=2,
