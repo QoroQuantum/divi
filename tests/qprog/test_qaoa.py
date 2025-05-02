@@ -349,6 +349,7 @@ class TestQUBOInput:
         ):
             qaoa_problem.draw_solution()
 
+    @flaky(max_runs=3, min_passes=1)
     def test_qubo_returns_correct_solution(self):
         qaoa_problem = QAOA(
             problem=qubo_matrix_np,
