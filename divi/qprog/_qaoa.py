@@ -21,7 +21,7 @@ from divi.qprog.optimizers import Optimizers
 from divi.utils import convert_qubo_matrix_to_pennylane_ising
 
 GraphProblemTypes = nx.Graph | rx.PyGraph
-QUBOProblemTypes = np.ndarray | sps.spmatrix | QuadraticProgram
+QUBOProblemTypes = list | np.ndarray | sps.spmatrix | QuadraticProgram
 
 _SUPPORTED_GRAPH_PROBLEMS_LITERAL = Literal[
     "max_clique",
@@ -153,13 +153,22 @@ class QAOA(QuantumProgram):
 
             if isinstance(problem, QuadraticProgram):
                 if any(var.vartype != VarType.BINARY for var in problem.variables):
-                    problem = QuadraticProgramToQubo().convert(problem)
+                    warn(
+                        "Quadratic Program contains non-binary variables. Converting to QUBO."
+                    )
+                    self._qp_converter = QuadraticProgramToQubo()
+                    problem = self._qp_converter.convert(problem)
 
                 self.n_qubits = problem.get_num_vars()
             else:
+                if isinstance(problem, list):
+                    problem = np.array(problem)
+
                 if problem.ndim != 2 or problem.shape[0] != problem.shape[1]:
                     raise ValueError(
-                        f"Invalid QUBO matrix. Got {problem.shape}. Must be a square matrix."
+                        "Invalid QUBO matrix."
+                        f" Got array of shape {problem.shape}."
+                        " Must be a square matrix."
                     )
 
                 self.n_qubits = problem.shape[1]
@@ -377,13 +386,13 @@ class QAOA(QuantumProgram):
         return self._total_circuit_count, self._total_run_time
 
     def draw_solution(self):
-        if not self._solution_nodes:
-            self.compute_final_solution()
-
         if self.graph_problem is None:
             raise RuntimeError(
                 "The problem is not a graph problem. Cannot draw solution."
             )
+
+        if not self._solution_nodes:
+            self.compute_final_solution()
 
         # Create a dictionary for node colors
         node_colors = [

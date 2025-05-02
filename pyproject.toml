@@ -51,3 +51,6 @@ flaky = {version = "^3.8.1", python = ">=3.5"}
 
 [tool.isort]
 profile = "black"
+
+[tool.pytest.ini_options]
+addopts = "--no-success-flaky-report"
