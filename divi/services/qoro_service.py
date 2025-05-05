@@ -23,6 +23,10 @@ session.mount("http://", HTTPAdapter(max_retries=retries))
 session.mount("https://", HTTPAdapter(max_retries=retries))
 
 
+def _compress_data(value):
+    return base64.b64encode(gzip.compress(value.encode("utf-8"))).decode("utf-8")
+
+
 class JobStatus(Enum):
     PENDING = "PENDING"
     RUNNING = "RUNNING"
@@ -35,6 +39,7 @@ class JobTypes(Enum):
     EXECUTE = "EXECUTE"
     SIMULATE = "SIMULATE"
     ESTIMATE = "ESTIMATE"
+    CIRCUIT_CUT = "CIRCUIT_CUT"
 
 
 class MaxRetriesReachedError(Exception):
@@ -64,6 +69,12 @@ class QoroService:
 
         return response
 
+    def send_circuit_cut_job(self, circuit):
+        return self.send_circuits(
+            circuits={"cut": circuit},
+            job_type=JobTypes.CIRCUIT_CUT,
+        )
+
     def send_circuits(
         self, circuits, shots=1000, tag="default", job_type=JobTypes.SIMULATE
     ):
@@ -77,11 +88,6 @@ class QoroService:
         Returns:
             job_id: The job id of the job created
         """
-
-        def _compress_data(value):
-            return base64.b64encode(gzip.compress(value.encode("utf-8"))).decode(
-                "utf-8"
-            )
 
         def _split_circuits(circuits):
             """
@@ -133,7 +139,7 @@ class QoroService:
                     "circuits": chunk,
                     "shots": shots,
                     "tag": tag,
-                    "type": job_type.value,
+                    "job_type": job_type.value,
                 },
                 timeout=100,
             )
