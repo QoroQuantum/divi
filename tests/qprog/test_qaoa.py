@@ -316,12 +316,15 @@ class TestQUBOInput:
             )
 
     def test_non_symmetrical_qubo_raises_warning(self):
+        test_array = np.array([[1, 2], [3, 4]])
+        test_array_sp = sps.csc_matrix(test_array)
+
         with pytest.warns(
             UserWarning,
-            match=r"The QUBO matrix is not symmetric\. Symmetrizing it for the Ising Hamiltonian creation\.",
+            match=r"The QUBO matrix is neither symmetric nor upper triangular\. Symmetrizing it for the Ising Hamiltonian creation\.",
         ):
             qaoa_problem = QAOA(
-                problem=np.array([[1, 2], [3, 4]]),
+                problem=test_array,
                 n_layers=2,
                 optimizer=Optimizers.NELDER_MEAD,
                 max_iterations=10,
@@ -333,6 +336,19 @@ class TestQUBOInput:
             qaoa_problem.problem,
             np.array([[1, 2], [3, 4]]),
         )
+
+        # Test again for sparse matrix
+        with pytest.warns(
+            UserWarning,
+            match=r"The QUBO matrix is neither symmetric nor upper triangular\. Symmetrizing it for the Ising Hamiltonian creation\.",
+        ):
+            QAOA(
+                problem=test_array_sp,
+                n_layers=2,
+                optimizer=Optimizers.NELDER_MEAD,
+                max_iterations=10,
+                qoro_service=None,
+            )
 
     def test_qubo_fails_when_drawing_solution(self):
         qaoa_problem = QAOA(
@@ -441,10 +457,10 @@ class TestQUBOInput:
 
         qaoa_problem = QAOA(
             problem=quadratic_program,
-            n_layers=1,
+            n_layers=2,
             optimizer=Optimizers.NELDER_MEAD,
             max_iterations=20,
-            shots=6000,
+            shots=10000,
             qoro_service=None,
         )
 

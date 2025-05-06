@@ -52,7 +52,7 @@ def verify_correct_circuit_count(obj: QuantumProgram):
         assert obj.total_circuit_count == obj._minimize_res.nfev * len(
             obj.cost_hamiltonian
         )
-    elif obj.optimizer == Optimizers.NELDER_MEAD:
+    elif obj.optimizer == Optimizers.L_BFGS_B:
         evaluation_circuits_count = obj._minimize_res.nfev * len(obj.cost_hamiltonian)
 
         gradient_circuits_count = (

@@ -167,6 +167,26 @@ def to_openqasm(
     )
 
 
+def _is_sanitized(
+    qubo_matrix: np.ndarray | sps.spmatrix,
+) -> np.ndarray | sps.spmatrix:
+    # Sanitize the QUBO matrix to ensure it is either symmetric or upper triangular.
+
+    is_sparse = sps.issparse(qubo_matrix)
+
+    return (
+        (
+            ((qubo_matrix != qubo_matrix.T).nnz == 0)
+            or ((qubo_matrix != sps.triu(qubo_matrix)).nnz == 0)
+        )
+        if is_sparse
+        else (
+            np.allclose(qubo_matrix, qubo_matrix.T)
+            or np.allclose(qubo_matrix, np.triu(qubo_matrix))
+        )
+    )
+
+
 def convert_qubo_matrix_to_pennylane_ising(
     qubo_matrix: np.ndarray | sps.spmatrix,
 ) -> tuple[qml.operation.Operator, float]:
@@ -186,11 +206,9 @@ def convert_qubo_matrix_to_pennylane_ising(
     is_sparse = sps.issparse(qubo_matrix)
     backend = sps if is_sparse else np
 
-    if (is_sparse and (qubo_matrix != qubo_matrix.T).nnz > 0) or (
-        not is_sparse and not np.allclose(qubo_matrix, qubo_matrix.T)
-    ):
+    if not _is_sanitized(qubo_matrix):
         warn(
-            "The QUBO matrix is not symmetric."
+            "The QUBO matrix is neither symmetric nor upper triangular."
             " Symmetrizing it for the Ising Hamiltonian creation."
         )
         qubo_matrix = (qubo_matrix + qubo_matrix.T) / 2
@@ -219,7 +237,7 @@ def convert_qubo_matrix_to_pennylane_ising(
 
         if i == j:
             # Diagonal elements
-            linear_terms[i] += weight / 2
+            linear_terms[i] -= weight / 2
             constant_term += weight / 2
         else:
             # Off-diagonal elements (i < j since we're using triu)
@@ -227,8 +245,8 @@ def convert_qubo_matrix_to_pennylane_ising(
             ising_weights.append(weight / 4)
 
             # Update linear terms
-            linear_terms[i] += weight / 4
-            linear_terms[j] += weight / 4
+            linear_terms[i] -= weight / 4
+            linear_terms[j] -= weight / 4
 
             # Update constant term
             constant_term += weight / 4

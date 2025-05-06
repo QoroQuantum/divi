@@ -1,4 +1,3 @@
-import numpy as np
 from qiskit_algorithms import NumPyMinimumEigensolver
 from qiskit_optimization import QuadraticProgram
 from qiskit_optimization.algorithms import MinimumEigenOptimizer

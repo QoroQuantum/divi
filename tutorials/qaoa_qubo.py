@@ -1,6 +1,6 @@
+from functools import partial
+
 import numpy as np
-from qiskit_algorithms import NumPyMinimumEigensolver
-from qiskit_optimization import QuadraticProgram
 
 from divi.qprog import QAOA
 from divi.qprog.optimizers import Optimizers
@@ -9,20 +9,26 @@ try:
     import dimod
 except ImportError:
     raise ImportError(
-        "This functionality requires the 'dimod' package. "
+        "This tutorial requires the 'dimod' package. "
         "Please install it with:\n"
         "    pip install dimod"
     )
 
 if __name__ == "__main__":
-    bqm = dimod.generators.randint(5, vartype="BINARY", low=-10, high=10, seed=1997)
+    bqm = dimod.generators.gnp_random_bqm(
+        10,
+        p=0.5,
+        vartype="BINARY",
+        random_state=1997,
+        bias_generator=partial(np.random.default_rng().uniform, -5, 5),
+    )
     qubo_array = bqm.to_numpy_matrix()
 
     qaoa_problem = QAOA(
         problem=qubo_array,
         n_layers=2,
         optimizer=Optimizers.NELDER_MEAD,
-        max_iterations=5,
+        max_iterations=10,
         shots=10000,
         qoro_service=None,
     )
