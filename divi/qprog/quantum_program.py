@@ -196,19 +196,20 @@ class QuantumProgram(ABC):
 
         for p, _ in enumerate(self._curr_params):
             losses[p] = 0
-            cur_result = {
+            curr_result = {
                 key: value for key, value in results.items() if key.startswith(f"{p}")
             }
 
             marginal_results = []
-            for param_id, shots_dict in cur_result.items():
+            for param_id, shots_dict in curr_result.items():
                 ham_op_index = int(param_id.split("_")[-1])
                 ham_op_metadata = self.expval_hamiltonian_metadata[ham_op_index]
-                pair = (
-                    ham_op_metadata,
-                    marginal_counts(shots_dict, ham_op_metadata[0].tolist()),
+                marginal_results.append(
+                    (
+                        ham_op_metadata,
+                        marginal_counts(shots_dict, ham_op_metadata[0].tolist()),
+                    )
                 )
-                marginal_results.append(pair)
 
             for ham_op_metadata, marginal_shots in marginal_results:
                 exp_value = sampled_expectation_value(
