@@ -10,7 +10,7 @@ if __name__ == "__main__":
                     h q4[0];
                     h q4[1];
                     h q4[2];
-                    cx q4[0],q4[8];                    
+                    cx q4[0],q4[8];
                     measure q4[0] -> c0[0];
                     measure q4[1] -> c0[1];
                     measure q4[2] -> c0[2];
