@@ -1,26 +1,6 @@
-import pennylane as qml
 import pytest
 
 from divi.qprog import Optimizers, ProgramBatch, QuantumProgram
-
-
-def verify_hamiltonian_metadata(obj):
-    assert hasattr(
-        obj, "expval_hamiltonian_metadata"
-    ), "Hamiltonian metadata attribute does not exist"
-    assert isinstance(obj.expval_hamiltonian_metadata, dict), "Metadata not a dict"
-    assert all(
-        isinstance(key, int) for key in obj.expval_hamiltonian_metadata.keys()
-    ), "Wrong metadata dict key format"
-    assert all(
-        (
-            isinstance(val, tuple)
-            and len(val) == 2
-            and isinstance(val[0], qml.wires.Wires)
-            and isinstance(val[1], float)
-        )
-        for val in obj.expval_hamiltonian_metadata.values()
-    ), "Wrong metadata dict value format"
 
 
 def verify_metacircuit_dict(obj, expected_keys):

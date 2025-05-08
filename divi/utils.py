@@ -68,14 +68,16 @@ def _ops_to_qasm(operations, precision, wires):
 
 
 def to_openqasm(
-    qscript,
+    main_qscript,
+    measurement_groups: list[list[qml.measurements.ExpectationMP]],
     wires: Optional[Wires] = None,
     measure_all: bool = True,
     precision: Optional[int] = None,
     return_measurements_separately: bool = False,
-) -> str:
+) -> str | tuple[str, list[str]]:
     """
-    A modified version of PennyLane's function that is more compatible with having several measurements.
+    A modified version of PennyLane's function that is more compatible with having
+    several measurements and incorporates modifications introduced by splitting transforms.
     Serialize the circuit as an OpenQASM 2.0 program.
 
     The measurement outputs can be restricted to only those specified in the script by
@@ -92,27 +94,27 @@ def to_openqasm(
             or just those specified in the script
         precision (int): decimal digits to display for parameters
         return_measurements_separately (bool): whether to not append the measurement instructions
-            and their diagonalizations to the main circuit QASM code or to return separately.
+            and their diagonalizations to the main circuit QASM code and return separately.
 
     Returns:
-        str: OpenQASM serialization of the circuit
+        str or tuple[str, list[str]]: OpenQASM serialization of the circuit
     """
-    wires = wires or qscript.wires
+
+    wires = wires or main_qscript.wires
     _to_qasm = partial(_ops_to_qasm, precision=precision, wires=wires)
 
     # add the QASM headers
     main_qasm_str = 'OPENQASM 2.0;\ninclude "qelib1.inc";\n'
 
-    if qscript.num_wires == 0:
+    if main_qscript.num_wires == 0:
         # empty circuit
         return main_qasm_str
-
     # create the quantum and classical registers
     main_qasm_str += f"qreg q[{len(wires)}];\n"
     main_qasm_str += f"creg c[{len(wires)}];\n"
 
     # get the user applied circuit operations without interface information
-    [transformed_tape], _ = qml.transforms.convert_to_numpy_parameters(qscript)
+    [transformed_tape], _ = qml.transforms.convert_to_numpy_parameters(main_qscript)
     operations = transformed_tape.operations
 
     # decompose the queue
@@ -127,38 +129,41 @@ def to_openqasm(
     qasm_circuits = []
     measurement_qasms = []
 
-    if len(qscript.measurements) == 0:
+    if len(measurement_groups) == 0:
         warn(
-            "No measurements found in the circuit. Returning the main circuit qasm only."
+            "No measurement groups provided. Returning the QASM of the circuit operations only."
         )
         return [main_qasm_str]
 
     # Create a copy of the program for every measurement that we have
-    for meas in qscript.measurements:
-        if diag_op := meas.diagonalizing_gates():
-            diag_qasm_str = _to_qasm(
-                QuantumScript(diag_op)
-                .expand(depth=10, stop_at=lambda obj: obj.name in OPENQASM_GATES)
-                .operations
+    for meas_group in measurement_groups:
+        curr_diag_qasm_str = (
+            _to_qasm(diag_ops)
+            if (
+                diag_ops := qml.tape.QuantumScript(
+                    measurements=meas_group
+                ).diagonalizing_gates
             )
-        else:
-            diag_qasm_str = ""
+            else ""
+        )
 
         measure_qasm_str = ""
         if measure_all:
             for wire in range(len(wires)):
                 measure_qasm_str += f"measure q[{wire}] -> c[{wire}];\n"
         else:
-            measured_wires = Wires.all_wires([m.wires for m in qscript.measurements])
+            measured_wires = Wires.all_wires(
+                [m.wires for m in main_qscript.measurements]
+            )
 
             for w in measured_wires:
-                wire_indx = qscript.wires.index(w)
+                wire_indx = main_qscript.wires.index(w)
                 measure_qasm_str += f"measure q[{wire_indx}] -> c[{wire_indx}];\n"
 
         if return_measurements_separately:
-            measurement_qasms.append(diag_qasm_str + measure_qasm_str)
+            measurement_qasms.append(curr_diag_qasm_str + measure_qasm_str)
         else:
-            qasm_circuits.append(main_qasm_str + diag_qasm_str + measure_qasm_str)
+            qasm_circuits.append(main_qasm_str + curr_diag_qasm_str + measure_qasm_str)
 
     return (
         qasm_circuits

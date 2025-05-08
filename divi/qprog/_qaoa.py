@@ -215,15 +215,12 @@ class QAOA(QuantumProgram):
         )
         self.problem_metadata = problem_metadata[0] if problem_metadata else {}
 
-        self.expval_hamiltonian_metadata = {
-            i: (term.wires, float(term.scalar) if hasattr(term, "scalar") else 1.0)
-            for i, term in enumerate(self.cost_hamiltonian)
-        }
-
-        self._meta_circuits = self._create_meta_circuits()
+        self.loss_constant = self.problem_metadata.get("constant", 0.0)
 
         kwargs.pop("is_constrained", None)
         super().__init__(**kwargs)
+
+        self._meta_circuits = self._create_meta_circuits_dict()
 
     @property
     def solution(self):
@@ -239,7 +236,7 @@ class QAOA(QuantumProgram):
             "The solution property is read-only. Use compute_final_solution() to get the solution."
         )
 
-    def _create_meta_circuits(self):
+    def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
         """
         Generate the meta circuits for the QAOA problem.
 
@@ -279,7 +276,7 @@ class QAOA(QuantumProgram):
             if final_measurement:
                 return qml.probs()
             else:
-                return [qml.sample(term) for term in hamiltonian]
+                return qml.expval(hamiltonian)
 
         return {
             "cost_circuit": MetaCircuit(
@@ -287,6 +284,7 @@ class QAOA(QuantumProgram):
                     self.cost_hamiltonian, sym_params, final_measurement=False
                 ),
                 symbols=sym_params.flatten(),
+                grouping_strategy=self._grouping_strategy,
             ),
             "meas_circuit": MetaCircuit(
                 qml.tape.make_qscript(_prepare_circuit)(

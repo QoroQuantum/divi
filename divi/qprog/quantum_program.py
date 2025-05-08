@@ -7,6 +7,7 @@ import numpy as np
 from qiskit.result import marginal_counts, sampled_expectation_value
 from scipy.optimize import OptimizeResult, minimize
 
+from divi.circuit import Circuit, MetaCircuit
 from divi.parallel_simulator import ParallelSimulator
 from divi.qprog.optimizers import Optimizers
 from divi.services import QoroService
@@ -46,7 +47,7 @@ class QuantumProgram(ABC):
         if (m_list_final_params := kwargs.pop("final_params", None)) is not None:
             self.final_params = m_list_final_params
 
-        self.circuits = []
+        self.circuits: list[Circuit] = []
 
         self._total_circuit_count = 0
         self._total_run_time = 0.0
@@ -59,6 +60,9 @@ class QuantumProgram(ABC):
         self.shots = shots
         self.qoro_service = qoro_service
         self.job_id = None
+
+        # Needed for Pennylane's transforms
+        self._grouping_strategy = kwargs.pop("grouping_strategy", None)
 
     @property
     def total_circuit_count(self):
@@ -78,6 +82,10 @@ class QuantumProgram(ABC):
 
     def _reset_params(self):
         self._curr_params = []
+
+    @abstractmethod
+    def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
+        pass
 
     @abstractmethod
     def _generate_circuits(self, **kwargs):
@@ -193,6 +201,7 @@ class QuantumProgram(ABC):
         """
 
         losses = {}
+        measurement_groups = self._meta_circuits["cost_circuit"].measurement_groups
 
         for p, _ in enumerate(self._curr_params):
             losses[p] = 0
@@ -203,19 +212,30 @@ class QuantumProgram(ABC):
             marginal_results = []
             for param_id, shots_dict in curr_result.items():
                 ham_op_index = int(param_id.split("_")[-1])
-                ham_op_metadata = self.expval_hamiltonian_metadata[ham_op_index]
-                marginal_results.append(
-                    (
-                        ham_op_metadata,
-                        marginal_counts(shots_dict, ham_op_metadata[0].tolist()),
+
+                curr_measurement_group = measurement_groups[ham_op_index]
+                curr_marginal_results = []
+                for observable in curr_measurement_group:
+                    marginal_counts(shots_dict, observable.wires.tolist())
+                    exp_value = sampled_expectation_value(
+                        marginal_counts(shots_dict, observable.wires.tolist()),
+                        "Z" * len(observable.wires),
                     )
+                    curr_marginal_results.append(exp_value)
+
+                marginal_results.append(
+                    curr_marginal_results
+                    if len(curr_marginal_results) > 1
+                    else curr_marginal_results[0]
                 )
 
-            for ham_op_metadata, marginal_shots in marginal_results:
-                exp_value = sampled_expectation_value(
-                    marginal_shots, "Z" * len(ham_op_metadata[0])
-                )
-                losses[p] += ham_op_metadata[1] * exp_value
+            pl_loss = (
+                self._meta_circuits["cost_circuit"]
+                .postprocessing_fn(marginal_results)[0]
+                .item()
+            )
+
+            losses[p] += pl_loss + self.loss_constant
 
         return losses
 

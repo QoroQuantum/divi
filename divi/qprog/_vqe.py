@@ -82,14 +82,9 @@ class VQE(QuantumProgram):
 
         self.cost_hamiltonian = self._generate_hamiltonian_operations()
 
-        self.expval_hamiltonian_metadata = {
-            i: (term.wires, float(term.scalar))
-            for i, term in enumerate(self.cost_hamiltonian)
-        }
-
-        self._meta_circuits = self._create_meta_circuits()
-
         super().__init__(**kwargs)
+
+        self._meta_circuits = self._create_meta_circuits_dict()
 
     def _generate_hamiltonian_operations(self) -> qml.operation.Operator:
         """
@@ -119,9 +114,25 @@ class VQE(QuantumProgram):
             self.n_qubits, n_electrons=self.n_electrons
         )
 
-        return hamiltonian
+        constant_terms_idx = list(
+            filter(
+                lambda x: all(
+                    isinstance(term, qml.I) for term in hamiltonian[x].terms()[1]
+                ),
+                range(len(hamiltonian)),
+            )
+        )
 
-    def _create_meta_circuits(self):
+        self.loss_constant = sum(
+            map(lambda x: hamiltonian[x].scalar.item(), constant_terms_idx)
+        )
+
+        for idx in constant_terms_idx:
+            hamiltonian -= hamiltonian[idx]
+
+        return hamiltonian.simplify()
+
+    def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
         weights_syms = sp.symarray("w", (self.n_layers, self.n_params))
 
         def _prepare_circuit(ansatz, hamiltonian, params):
@@ -134,7 +145,11 @@ class VQE(QuantumProgram):
             """
             self._set_ansatz(ansatz, params)
 
-            return [qml.sample(term) for term in hamiltonian]
+            # Even though in principle we want to sample from a state,
+            # we are applying an `expval` operation here to make it compatible
+            # with the pennylane transforms down the line, which complain about
+            # the `sample` operation.
+            return qml.expval(hamiltonian)
 
         return {
             "cost_circuit": MetaCircuit(
@@ -142,6 +157,7 @@ class VQE(QuantumProgram):
                     self.ansatz, self.cost_hamiltonian, weights_syms
                 ),
                 symbols=weights_syms.flatten(),
+                grouping_strategy=self._grouping_strategy,
             )
         }
 

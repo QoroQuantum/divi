@@ -9,7 +9,6 @@ from qiskit_optimization import QuadraticProgram
 from qiskit_optimization.converters import QuadraticProgramToQubo
 from qprog_contracts import (
     verify_correct_circuit_count,
-    verify_hamiltonian_metadata,
     verify_metacircuit_dict,
 )
 
@@ -33,6 +32,10 @@ class TestGeneralQAOA:
         )
 
         mock_generate_circuits = mocker.patch.object(qaoa_problem, "_generate_circuits")
+        mock_pl_postprocessing_fn = mocker.patch.object(
+            qaoa_problem._meta_circuits["cost_circuit"], "postprocessing_fn"
+        )
+        mock_pl_postprocessing_fn.return_value = (np.array(0.0),)
 
         spy_values = []
         mock_setattr = mocker.patch.object(
@@ -97,8 +100,6 @@ class TestGraphInput:
         assert qaoa_problem.graph_problem == "max_clique"
         assert qaoa_problem.problem == G
         assert qaoa_problem.n_layers == 2
-
-        verify_hamiltonian_metadata(qaoa_problem)
 
         verify_metacircuit_dict(qaoa_problem, ["cost_circuit", "meas_circuit"])
 
@@ -284,8 +285,6 @@ class TestQUBOInput:
             isinstance(op, qml.X) for op in qaoa_problem.mixer_hamiltonian.terms()[1]
         )
 
-        verify_hamiltonian_metadata(qaoa_problem)
-
         verify_metacircuit_dict(qaoa_problem, ["cost_circuit", "meas_circuit"])
 
     def test_redundant_graph_problem_raises_warning(self):
@@ -415,8 +414,6 @@ class TestQUBOInput:
         assert all(
             isinstance(op, qml.X) for op in qaoa_problem.mixer_hamiltonian.terms()[1]
         )
-
-        verify_hamiltonian_metadata(qaoa_problem)
 
         verify_metacircuit_dict(qaoa_problem, ["cost_circuit", "meas_circuit"])
 

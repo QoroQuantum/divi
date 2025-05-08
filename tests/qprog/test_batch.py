@@ -12,6 +12,9 @@ class SampleProgram(QuantumProgram):
 
         super().__init__(**kwargs)
 
+    def _create_meta_circuits_dict(self):
+        pass
+
     def _generate_circuits(self, params=None, **kwargs):
         pass
 
