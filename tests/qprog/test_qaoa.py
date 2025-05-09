@@ -12,7 +12,7 @@ from qprog_contracts import (
     verify_metacircuit_dict,
 )
 
-from divi.qprog import QAOA
+from divi.qprog import QAOA, GraphProblem
 from divi.qprog.optimizers import Optimizers
 
 pytestmark = pytest.mark.algo
@@ -23,7 +23,7 @@ class TestGeneralQAOA:
     def test_qaoa_generate_circuits_called_with_correct_phases(self, mocker, optimizer):
         qaoa_problem = QAOA(
             problem=nx.bull_graph(),
-            graph_problem="max_clique",
+            graph_problem=GraphProblem.MAX_CLIQUE,
             n_layers=1,
             optimizer=optimizer,
             max_iterations=1,
@@ -67,7 +67,7 @@ class TestGeneralQAOA:
     def test_graph_correct_circuits_count_and_energies(self, optimizer):
         qaoa_problem = QAOA(
             problem=nx.bull_graph(),
-            graph_problem="max_clique",
+            graph_problem=GraphProblem.MAX_CLIQUE,
             n_layers=1,
             optimizer=optimizer,
             max_iterations=1,
@@ -84,7 +84,7 @@ class TestGraphInput:
 
         qaoa_problem = QAOA(
             problem=G,
-            graph_problem="max_clique",
+            graph_problem=GraphProblem.MAX_CLIQUE,
             n_layers=2,
             optimizer=Optimizers.NELDER_MEAD,
             max_iterations=10,
@@ -97,7 +97,7 @@ class TestGraphInput:
         assert qaoa_problem.qoro_service is None
         assert qaoa_problem.optimizer == Optimizers.NELDER_MEAD
         assert qaoa_problem.max_iterations == 10
-        assert qaoa_problem.graph_problem == "max_clique"
+        assert qaoa_problem.graph_problem == GraphProblem.MAX_CLIQUE
         assert qaoa_problem.problem == G
         assert qaoa_problem.n_layers == 2
 
@@ -115,7 +115,7 @@ class TestGraphInput:
         with pytest.raises(ValueError, match="Bell"):
             QAOA(
                 problem=nx.bull_graph(),
-                graph_problem="max_clique",
+                graph_problem=GraphProblem.MAX_CLIQUE,
                 initial_state="Bell",
                 qoro_service=None,
             )
@@ -123,7 +123,7 @@ class TestGraphInput:
     def test_graph_initial_state_recommended(self):
         qaoa_problem = QAOA(
             problem=nx.bull_graph(),
-            graph_problem="max_clique",
+            graph_problem=GraphProblem.MAX_CLIQUE,
             initial_state="Recommended",
             is_constrained=True,
             qoro_service=None,
@@ -134,7 +134,7 @@ class TestGraphInput:
     def test_graph_initial_state_superposition(self):
         qaoa_problem = QAOA(
             problem=nx.bull_graph(),
-            graph_problem="max_clique",
+            graph_problem=GraphProblem.MAX_CLIQUE,
             initial_state="Superposition",
             qoro_service=None,
         )
@@ -165,7 +165,7 @@ class TestGraphInput:
             )
 
         qaoa_problem = QAOA(
-            graph_problem="max_clique",
+            graph_problem=GraphProblem.MAX_CLIQUE,
             problem=G,
             n_layers=1,
             optimizer=optimizer,
@@ -196,7 +196,7 @@ class TestGraphInput:
         G = nx.bull_graph()
 
         qaoa_problem = QAOA(
-            graph_problem="max_clique",
+            graph_problem=GraphProblem.MAX_CLIQUE,
             problem=G,
             n_layers=1,
             optimizer=Optimizers.NELDER_MEAD,

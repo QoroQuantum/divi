@@ -2,7 +2,7 @@ import random
 
 import networkx as nx
 
-from divi.qprog import GraphPartitioningQAOA
+from divi.qprog import GraphPartitioningQAOA, GraphProblem
 from divi.qprog.optimizers import Optimizers
 from divi.services import QoroService
 
@@ -57,7 +57,7 @@ if __name__ == "__main__":
     q_service = None
 
     qaoa_batch = GraphPartitioningQAOA(
-        graph_problem="maxcut",
+        graph_problem=GraphProblem.MAXCUT,
         graph=graph,
         n_layers=1,
         n_clusters=2,

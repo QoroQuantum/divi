@@ -12,11 +12,7 @@ import scipy.sparse.linalg as spla
 from sklearn.cluster import SpectralClustering
 
 from divi.qprog import QAOA, ProgramBatch
-from divi.qprog._qaoa import (
-    _SUPPORTED_GRAPH_PROBLEMS_LITERAL,
-    _SUPPORTED_INITIAL_STATES_LITERAL,
-    _SUPPORTED_PROBLEMS,
-)
+from divi.qprog._qaoa import _SUPPORTED_INITIAL_STATES_LITERAL, GraphProblem
 
 from .optimizers import Optimizers
 
@@ -205,7 +201,7 @@ class GraphPartitioningQAOA(ProgramBatch):
     def __init__(
         self,
         graph: nx.Graph | rx.PyGraph,
-        graph_problem: _SUPPORTED_GRAPH_PROBLEMS_LITERAL,
+        graph_problem: GraphProblem,
         n_layers: int,
         n_qubits: int = None,
         n_clusters: int = None,
@@ -226,7 +222,7 @@ class GraphPartitioningQAOA(ProgramBatch):
         if not (bool(self.n_qubits) ^ bool(self.n_clusters)):
             raise ValueError("One of `n_qubits` and `n_clusters` must be provided.")
 
-        self.is_edge_problem = graph_problem not in _SUPPORTED_PROBLEMS
+        self.is_edge_problem = graph_problem == GraphProblem.EDGE_PARTITIONING
 
         self.aggregate_fn = aggregate_fn
 

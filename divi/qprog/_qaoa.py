@@ -1,4 +1,5 @@
 import re
+from enum import Enum
 from functools import reduce
 from typing import Literal, Optional, get_args
 from warnings import warn
@@ -23,34 +24,34 @@ from divi.utils import convert_qubo_matrix_to_pennylane_ising
 GraphProblemTypes = nx.Graph | rx.PyGraph
 QUBOProblemTypes = list | np.ndarray | sps.spmatrix | QuadraticProgram
 
-_SUPPORTED_GRAPH_PROBLEMS_LITERAL = Literal[
-    "max_clique",
-    "max_independent_set",
-    "max_weight_cycle",
-    "maxcut",
-    "min_vertex_cover",
-]
-_SUPPORTED_PROBLEMS = get_args(_SUPPORTED_GRAPH_PROBLEMS_LITERAL)
+
+class GraphProblem(Enum):
+    MAX_CLIQUE = ("max_clique", "Zeros", "Superposition")
+    MAX_INDEPENDENT_SET = ("max_independent_set", "Zeros", "Superposition")
+    MAX_WEIGHT_CYCLE = ("max_weight_cycle", "Superposition", "Superposition")
+    MAXCUT = ("maxcut", "Superposition", "Superposition")
+    MIN_VERTEX_COVER = ("min_vertex_cover", "Ones", "Superposition")
+
+    # This is an internal problem with no pennylane equivalent
+    EDGE_PARTITIONING = ("", "", "")
+
+    def __init__(
+        self,
+        pl_string: str,
+        constrained_initial_state: str,
+        unconstrained_initial_state: str,
+    ):
+        self.pl_string = pl_string
+
+        # Recommended initial state as per Pennylane's documentation.
+        # Value is duplicated if not applicable to the problem
+        self.constrained_initial_state = constrained_initial_state
+        self.unconstrained_initial_state = unconstrained_initial_state
+
 
 _SUPPORTED_INITIAL_STATES_LITERAL = Literal[
     "Zeros", "Ones", "Superposition", "Recommended"
 ]
-
-# Recommended initial state as per Pennylane's documentation.
-# Values are of the format (Constrained, Unconstrained).
-# Value is duplicated if not applicable to the problem
-_GRAPH_PROBLEM_TO_INITIAL_STATE_MAP = dict(
-    zip(
-        _SUPPORTED_PROBLEMS,
-        [
-            ("Zeros", "Superposition"),
-            ("Zeros", "Superposition"),
-            ("Superposition", "Superposition"),
-            ("Superposition", "Superposition"),
-            ("Ones", "Superposition"),
-        ],
-    )
-)
 
 
 def _convert_quadratic_program_to_pennylane_ising(qp: QuadraticProgram):
@@ -86,24 +87,21 @@ def _resolve_circuit_layers(
     if isinstance(problem, GraphProblemTypes):
         is_constrained = kwargs.pop("is_constrained", True)
 
-        if graph_problem in (
-            "max_clique",
-            "max_independent_set",
-            "max_weight_cycle",
-            "min_vertex_cover",
-        ):
-            params = (problem, is_constrained)
-        else:
+        if graph_problem == GraphProblem.MAXCUT:
             params = (problem,)
+        else:
+            params = (problem, is_constrained)
 
         if initial_state == "Recommended":
-            resolved_initial_state = _GRAPH_PROBLEM_TO_INITIAL_STATE_MAP[graph_problem][
-                0 if is_constrained else 1
-            ]
+            resolved_initial_state = (
+                graph_problem.constrained_initial_state
+                if is_constrained
+                else graph_problem.constrained_initial_state
+            )
         else:
             resolved_initial_state = initial_state
 
-        return *getattr(pqaoa, graph_problem)(*params), resolved_initial_state
+        return *getattr(pqaoa, graph_problem.pl_string)(*params), resolved_initial_state
     else:
         if isinstance(problem, QuadraticProgram):
             cost_hamiltonian, constant, n_qubits = (
@@ -126,7 +124,7 @@ class QAOA(QuantumProgram):
     def __init__(
         self,
         problem: GraphProblemTypes | QUBOProblemTypes,
-        graph_problem: Optional[_SUPPORTED_GRAPH_PROBLEMS_LITERAL] = None,
+        graph_problem: Optional[GraphProblem] = None,
         n_layers: int = 1,
         initial_state: _SUPPORTED_INITIAL_STATES_LITERAL = "Recommended",
         optimizer=Optimizers.MONTE_CARLO,
@@ -173,9 +171,9 @@ class QAOA(QuantumProgram):
 
                 self.n_qubits = problem.shape[1]
         else:
-            if graph_problem not in _SUPPORTED_PROBLEMS:
+            if not isinstance(graph_problem, GraphProblem):
                 raise ValueError(
-                    f"Unsupported Problem. Got '{graph_problem}'. Must be one of: {_SUPPORTED_PROBLEMS}"
+                    f"Unsupported Problem. Got '{graph_problem}'. Must be one of type divi.qprog.GraphProblem."
                 )
 
             self.graph_problem = graph_problem

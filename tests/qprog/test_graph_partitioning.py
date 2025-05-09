@@ -2,11 +2,11 @@ import networkx as nx
 import pytest
 from qprog_contracts import verify_basic_program_batch_behaviour
 
-from divi.qprog import GraphPartitioningQAOA, Optimizers
+from divi.qprog import GraphPartitioningQAOA, GraphProblem, Optimizers
 
 problem_args = {
     "graph": nx.erdos_renyi_graph(15, 0.2, seed=1997),
-    "graph_problem": "maxcut",
+    "graph_problem": GraphProblem.MAXCUT,
     "n_layers": 1,
     "n_clusters": 2,
     "optimizer": Optimizers.NELDER_MEAD,
@@ -43,7 +43,7 @@ def test_fail_if_no_qubits_or_clusters_provided():
         ValueError, match="One of `n_qubits` and `n_clusters` must be provided."
     ):
         GraphPartitioningQAOA(
-            graph_problem="maxcut",
+            graph_problem=GraphProblem.MAXCUT,
             graph=None,
             n_layers=1,
             optimizer=Optimizers.NELDER_MEAD,
