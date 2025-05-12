@@ -57,7 +57,7 @@ jobs:
       run: poetry run pip freeze
 
     - name: Make tutorial runner executable
-      run: chmod +x run_tutorials.sh
+      run: chmod +x ./.github/workflows/run_tutorials.sh
 
     - name: Run tutorial scripts
       run: ./.github/workflows/run_tutorials.sh
