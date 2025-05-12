@@ -58,3 +58,39 @@ jobs:
 
     - name: Run tests
       run: poetry run pytest
+
+    - name: Run tutorial scripts
+      run: |
+        expected_failures=(
+          tutorial/qasm_thru_service.py
+        )
+
+        is_expected_to_fail() {
+          for expected in "${expected_failures[@]}"; do
+            if [[ "$1" == "$expected" ]]; then
+              return 0
+            fi
+          done
+          return 1
+        }
+
+        for file in tutorials/*.py; do
+          echo "🔹 Running $file"
+
+          if is_expected_to_fail "$file"; then
+            echo "⚠️ Expecting failure for $file"
+            if poetry run python "$file"; then
+              echo "❌ $file was expected to fail but passed"
+              exit 1
+            else
+              echo "✅ $file failed as expected"
+            fi
+          else
+            if ! poetry run python "$file"; then
+              echo "❌ $file failed unexpectedly"
+              exit 1
+            else
+              echo "✅ $file passed"
+            fi
+          fi
+        done

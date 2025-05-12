@@ -1,5 +1,3 @@
-import numpy as np
-
 from divi.qprog import MLAE
 
 if __name__ == "__main__":

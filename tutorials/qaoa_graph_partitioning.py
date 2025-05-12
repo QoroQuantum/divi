@@ -4,7 +4,6 @@ import networkx as nx
 
 from divi.qprog import GraphPartitioningQAOA, GraphProblem
 from divi.qprog.optimizers import Optimizers
-from divi.services import QoroService
 
 
 def generate_random_graph(n_nodes: int, n_edges: int) -> nx.DiGraph:
@@ -53,6 +52,7 @@ if __name__ == "__main__":
         graph, seed=1
     )
 
+    # from divi.services import QoroService
     # q_service = QoroService("4497dcabd079bedbeeec9d16b3dcccb1344461b9")
     q_service = None
 
