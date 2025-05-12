@@ -1,4 +1,4 @@
-name: Unit Tests
+name: Unit Tests and Tutorial Scripts
 
 on: [push]
 
@@ -61,6 +61,8 @@ jobs:
 
     - name: Run tutorial scripts
       run: |
+        export PYTHONPATH=$(pwd):$PYTHONPATH
+
         expected_failures=(
           tutorial/qasm_thru_service.py
         )
