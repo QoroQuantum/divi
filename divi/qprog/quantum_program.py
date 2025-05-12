@@ -7,7 +7,7 @@ import numpy as np
 from qiskit.result import marginal_counts, sampled_expectation_value
 from scipy.optimize import OptimizeResult, minimize
 
-from divi.circuit import Circuit, MetaCircuit
+from divi.circuits import Circuit, MetaCircuit
 from divi.parallel_simulator import ParallelSimulator
 from divi.qprog.optimizers import Optimizers
 from divi.services import QoroService
@@ -55,7 +55,9 @@ class QuantumProgram(ABC):
                 Must be a positive integer. Defaults to 5000.
             qoro_service (QoroService): An instance of QoroService to handle.
                 Defaults to None, which corresponds to local simulation.
-            seed (int): A seed for numpy's random number generator.
+            seed (int): A seed for numpy's random number generator, which will
+                be used for the parameter initialization and the local simulator's
+                sampling function.
                 Defaults to None.
 
             **kwargs: Additional keyword arguments that influence behaviour.

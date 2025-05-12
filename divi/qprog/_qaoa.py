@@ -16,7 +16,7 @@ from qiskit_optimization import QuadraticProgram
 from qiskit_optimization.converters import QuadraticProgramToQubo
 from qiskit_optimization.problems import VarType
 
-from divi.circuit import MetaCircuit
+from divi.circuits import MetaCircuit
 from divi.qprog import QuantumProgram
 from divi.qprog.optimizers import Optimizers
 from divi.utils import convert_qubo_matrix_to_pennylane_ising

@@ -4,7 +4,7 @@ import numpy as np
 import pennylane as qml
 import sympy as sp
 
-from divi.circuit import MetaCircuit
+from divi.circuits import MetaCircuit
 from divi.qprog import QuantumProgram
 from divi.qprog.optimizers import Optimizers
 

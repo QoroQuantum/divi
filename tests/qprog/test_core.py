@@ -1,8 +1,11 @@
 from concurrent.futures import Future
 
 import numpy as np
+import pennylane as qml
 import pytest
+import sympy as sp
 
+from divi.circuits import MetaCircuit
 from divi.qprog import ProgramBatch, QuantumProgram
 
 
@@ -14,7 +17,26 @@ class SampleProgram(QuantumProgram):
         super().__init__(**kwargs)
 
     def _create_meta_circuits_dict(self):
-        pass
+        # Define a simple circuit
+
+        def simple_circuit(params):
+            qml.RX(params[0], wires=0)
+            qml.RY(params[1], wires=1)
+            qml.CNOT(wires=[0, 1])
+            return qml.expval(qml.PauliZ(0))
+
+        # Create symbolic parameters
+        symbols = sp.symbols("theta_0 theta_1")
+
+        # Create a MetaCircuit using the grouping_strategy
+        meta_circuit = MetaCircuit(
+            main_circuit=qml.tape.make_qscript(simple_circuit)(symbols),
+            symbols=symbols,
+            grouping_strategy=self._grouping_strategy,
+        )
+
+        # Return a dictionary with the MetaCircuit
+        return {"test_circuit": meta_circuit}
 
     def _generate_circuits(self, params=None, **kwargs):
         pass

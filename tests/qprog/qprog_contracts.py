@@ -4,7 +4,7 @@ from divi.qprog import Optimizers, ProgramBatch, QuantumProgram
 
 
 def verify_metacircuit_dict(obj, expected_keys):
-    from divi.circuit import MetaCircuit
+    from divi.circuits import MetaCircuit
 
     assert hasattr(obj, "_meta_circuits"), "Meta circuits attribute does not exist"
     assert isinstance(obj._meta_circuits, dict), "Meta circuits object not a dict"

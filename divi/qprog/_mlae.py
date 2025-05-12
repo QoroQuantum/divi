@@ -5,7 +5,7 @@ import scipy.optimize as optimize
 from qiskit import QuantumCircuit
 from qiskit_algorithms import EstimationProblem, MaximumLikelihoodAmplitudeEstimation
 
-from divi.circuit import Circuit
+from divi.circuits import Circuit
 from divi.qprog.quantum_program import QuantumProgram
 
 

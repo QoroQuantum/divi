@@ -5,7 +5,7 @@ import pennylane as qml
 import pytest
 import sympy as sp
 
-from divi.circuit import Circuit, MetaCircuit
+from divi.circuits import Circuit, MetaCircuit
 
 
 class TestCircuit:
