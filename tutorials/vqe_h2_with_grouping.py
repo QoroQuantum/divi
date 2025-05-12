@@ -1,0 +1,77 @@
+from divi.qprog import VQE, VQEAnsatze
+from divi.qprog.optimizers import Optimizers
+
+if __name__ == "__main__":
+    vqe_input = dict(
+        symbols=["H", "H"],
+        bond_length=0.5,
+        coordinate_structure=[(0, 0, 0), (0, 0, 1)],
+        n_layers=1,
+        ansatz=VQEAnsatze.HARTREE_FOCK,
+        optimizer=Optimizers.NELDER_MEAD,
+        max_iterations=1,
+        qoro_service=None,
+        shots=5000,
+        seed=1997,
+    )
+
+    vqe_problem_no_grouping = VQE(
+        **vqe_input,
+        grouping_strategy=None,
+    )
+    no_grouping_measurement_groups = vqe_problem_no_grouping._meta_circuits[
+        "cost_circuit"
+    ].measurement_groups
+
+    vqe_problem_wire_grouping = VQE(
+        **vqe_input,
+        grouping_strategy="wires",
+    )
+    wire_grouping_measurement_groups = vqe_problem_wire_grouping._meta_circuits[
+        "cost_circuit"
+    ].measurement_groups
+
+    vqe_problem_qwc_grouping = VQE(
+        **vqe_input,
+        grouping_strategy="qwc",
+    )
+    qwc_grouping_measurement_groups = vqe_problem_qwc_grouping._meta_circuits[
+        "cost_circuit"
+    ].measurement_groups
+
+    print(
+        f"Number of measurement groups without grouping: {len(no_grouping_measurement_groups)}"
+    )
+    print(
+        f"Number of measurement groups with wires grouping: {len(wire_grouping_measurement_groups)}"
+    )
+    print(
+        f"Number of measurement groups with qwc grouping: {len(qwc_grouping_measurement_groups)}"
+    )
+
+    print("-" * 20)
+    vqe_problem_no_grouping.run()
+    vqe_problem_wire_grouping.run()
+    vqe_problem_qwc_grouping.run()
+    print("-" * 20)
+
+    no_grouping_loss = vqe_problem_no_grouping.losses[-1][0].item()
+    wire_grouping_loss = vqe_problem_wire_grouping.losses[-1][0].item()
+    qwc_grouping_loss = vqe_problem_qwc_grouping.losses[-1][0].item()
+
+    print(f"Final Loss (no grouping): {no_grouping_loss}")
+    print(f"Final Loss (wires grouping): {wire_grouping_loss}")
+    print(f"Final Loss (qwc grouping): {qwc_grouping_loss}")
+    print(
+        f"All losses equal? {'Yes' if no_grouping_loss == wire_grouping_loss == qwc_grouping_loss else 'No'}"
+    )
+
+    print("-" * 20)
+
+    print(f"Circuits Run (no grouping): {vqe_problem_no_grouping.total_circuit_count}")
+    print(
+        f"Circuits Run (wires grouping): {vqe_problem_wire_grouping.total_circuit_count}"
+    )
+    print(
+        f"Circuits Run (qwc grouping): {vqe_problem_qwc_grouping.total_circuit_count}"
+    )

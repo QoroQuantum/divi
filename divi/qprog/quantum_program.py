@@ -84,7 +84,9 @@ class QuantumProgram(ABC):
         self._total_circuit_count = 0
         self._total_run_time = 0.0
         self._curr_params = []
-        self._rng = np.random.default_rng(seed)
+
+        self._seed = seed
+        self._rng = np.random.default_rng(self._seed)
 
         # Lets child classes adapt their optimization
         # step for grad calculation routine
@@ -158,6 +160,7 @@ class QuantumProgram(ABC):
             self._curr_params,
             self.current_iteration,
             losses=self.losses[-1],
+            rng=self._rng,
         )
 
         self.current_iteration += 1
@@ -178,7 +181,9 @@ class QuantumProgram(ABC):
             return self.job_id, "job_id"
         else:
             circuit_simulator = ParallelSimulator()
-            circuit_results = circuit_simulator.simulate(job_circuits, shots=self.shots)
+            circuit_results = circuit_simulator.simulate(
+                job_circuits, shots=self.shots, simulation_seed=self._seed
+            )
             return circuit_results, "circuit_results"
 
     def _dispatch_circuits_and_process_results(self, store_data=False, data_file=None):

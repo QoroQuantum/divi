@@ -28,6 +28,8 @@ class Optimizers(Enum):
         if self != Optimizers.MONTE_CARLO:
             raise NotImplementedError
 
+        rng = kwargs.pop("rng", np.random.default_rng())
+
         losses = kwargs.pop("losses")
         smallest_energy_keys = sorted(losses, key=lambda k: losses[k])[: self.n_samples]
 
@@ -35,7 +37,7 @@ class Optimizers(Enum):
 
         for key in smallest_energy_keys:
             new_param_set = [
-                np.random.normal(
+                rng.normal(
                     params[int(key)],
                     1 / (2 * iteration),
                     size=params[int(key)].shape,

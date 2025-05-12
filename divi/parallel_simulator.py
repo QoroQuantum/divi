@@ -23,12 +23,13 @@ class ParallelSimulator:
         self.n_qpus = n_qpus
 
     @staticmethod
-    def simulate_circuit(circuit_data, shots):
+    def simulate_circuit(circuit_data, shots, simulation_seed):
         circuit_label, circuit = circuit_data
 
         qiskit_circuit = QuantumCircuit.from_qasm_str(circuit)
 
         aer_simulator = AerSimulator()
+        aer_simulator.set_option("seed_simulator", simulation_seed)
         job = aer_simulator.run(qiskit_circuit, shots=shots)
 
         result = job.result()
@@ -36,14 +37,14 @@ class ParallelSimulator:
 
         return {"label": circuit_label, "results": dict(counts)}
 
-    def simulate(self, circuits, shots=1024):
+    def simulate(self, circuits, shots=1024, simulation_seed=None):
         logger.debug(
             f"Simulating {len(circuits)} circuits with {self.n_processes} processes"
         )
         with Pool(processes=self.n_processes) as pool:
             results = pool.starmap(
                 self.simulate_circuit,
-                [(circuit, shots) for circuit in circuits.items()],
+                [(circuit, shots, simulation_seed) for circuit in circuits.items()],
             )
         return results
 
