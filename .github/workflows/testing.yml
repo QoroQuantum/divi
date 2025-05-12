@@ -60,4 +60,4 @@ jobs:
       run: chmod +x run_tutorials.sh
 
     - name: Run tutorial scripts
-      run: ./run_tutorials.sh
+      run: ./.github/workflows/run_tutorials.sh
