@@ -33,8 +33,40 @@ logging.getLogger().setLevel(logging.WARNING)
 
 class QuantumProgram(ABC):
     def __init__(
-        self, shots: int = 5000, qoro_service: Optional[QoroService] = None, **kwargs
+        self,
+        shots: int = 5000,
+        qoro_service: Optional[QoroService] = None,
+        seed: Optional[int] = None,
+        **kwargs,
     ):
+        """
+        Initializes the QuantumProgram class.
+
+        If a child class represents a hybrid quantum-classical algorithm,
+        the instance variables `n_layers` and `n_params` must be set, where:
+        - `n_layers` is the number of layers in the quantum circuit.
+        - `n_params` is the number of parameters per layer.
+
+        For exotic algorithms where these variables may not be applicable,
+        the `_initialize_params` method should be overridden to set the parameters.
+
+        Args:
+            shots (int): The number of shots for quantum circuit execution.
+                Must be a positive integer. Defaults to 5000.
+            qoro_service (QoroService): An instance of QoroService to handle.
+                Defaults to None, which corresponds to local simulation.
+            seed (int): A seed for numpy's random number generator.
+                Defaults to None.
+
+            **kwargs: Additional keyword arguments that influence behaviour.
+                - grouping_strategy (Optional[Any]): A strategy for grouping operations, used in Pennylane's transforms.
+                  Defaults to None.
+
+                The following key values are reserved for internal use and should not be set by the user:
+                - losses (Optional[list]): A list to initialize the `losses` attribute. Defaults to an empty list.
+                - final_params (Optional[list]): A list to initialize the `final_params` attribute. Defaults to an empty list.
+
+        """
         if shots <= 0:
             raise ValueError(f"Shots must be a positive integer. Got {shots}.")
 
@@ -52,6 +84,7 @@ class QuantumProgram(ABC):
         self._total_circuit_count = 0
         self._total_run_time = 0.0
         self._curr_params = []
+        self._rng = np.random.default_rng(seed)
 
         # Lets child classes adapt their optimization
         # step for grad calculation routine
@@ -80,9 +113,6 @@ class QuantumProgram(ABC):
     def total_run_time(self, _):
         raise RuntimeError("Can not set total run time value.")
 
-    def _reset_params(self):
-        self._curr_params = []
-
     @abstractmethod
     def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
         pass
@@ -94,6 +124,12 @@ class QuantumProgram(ABC):
     @abstractmethod
     def run(self, store_data=False, data_file=None):
         pass
+
+    def _initialize_params(self):
+        self._curr_params = [
+            self._rng.uniform(0, 2 * np.pi, self.n_layers * self.n_params)
+            for _ in range(self.optimizer.n_param_sets)
+        ]
 
     def _run_optimization_circuits(self, store_data, data_file):
         self.circuits[:] = []
@@ -112,11 +148,7 @@ class QuantumProgram(ABC):
         """
 
         if self.current_iteration == 0:
-            self._reset_params()
-            self._curr_params = [
-                np.random.uniform(0, 2 * np.pi, self.n_layers * self.n_params)
-                for _ in range(self.optimizer.n_param_sets)
-            ]
+            self._initialize_params()
 
             self.current_iteration += 1
 
@@ -299,12 +331,7 @@ class QuantumProgram(ABC):
                 self.current_iteration += 1
                 logger.debug(f"Finished iteration {self.current_iteration}")
 
-            self._reset_params()
-
-            self._curr_params = [
-                np.random.uniform(0, 2 * np.pi, self.n_layers * self.n_params)
-                for _ in range(self.optimizer.n_param_sets)
-            ]
+            self._initialize_params()
 
             self._minimize_res = minimize(
                 fun=cost_fn,
