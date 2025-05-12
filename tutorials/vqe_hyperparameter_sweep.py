@@ -15,6 +15,7 @@ if __name__ == "__main__":
         optimizer=Optimizers.MONTE_CARLO,
         shots=2000,
         qoro_service=None,
+        grouping_strategy="wires",
     )
 
     t1 = time.time()
