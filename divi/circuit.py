@@ -1,5 +1,6 @@
 from typing import Literal, Optional
 
+import dill
 import pennylane as qml
 from pennylane.transforms.core.transform_program import TransformProgram
 from qiskit.qasm2 import dumps
@@ -77,6 +78,16 @@ class MetaCircuit:
         self.measurement_groups = [
             [meas.obs for meas in qsc.measurements] for qsc in qscripts
         ]
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["postprocessing_fn"] = dill.dumps(self.postprocessing_fn)
+        return state
+
+    def __setstate__(self, state):
+        state["postprocessing_fn"] = dill.loads(state["postprocessing_fn"])
+
+        self.__dict__.update(state)
 
     def initialize_circuit_from_params(
         self, param_list, tag_prefix: str = "", precision: int = 8

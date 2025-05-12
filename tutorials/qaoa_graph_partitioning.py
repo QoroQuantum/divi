@@ -68,6 +68,7 @@ if __name__ == "__main__":
 
     qaoa_batch.create_programs()
     qaoa_batch.run()
+    qaoa_batch.compute_final_solutions()
     quantum_solution = qaoa_batch.aggregate_results()
 
     print(f"Total circuits: {qaoa_batch.total_circuit_count}")

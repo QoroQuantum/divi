@@ -8,7 +8,7 @@ from divi.qprog.optimizers import Optimizers
 if __name__ == "__main__":
     vqe_problem = VQEHyperparameterSweep(
         symbols=["H", "H"],
-        bond_lengths=list(np.linspace(0.1, 2.7, 10)),
+        bond_lengths=list(np.linspace(0.1, 2.7, 5)),
         ansatze=[VQEAnsatze.HARTREE_FOCK],
         coordinate_structure=[(0, 0, 0), (0, 0, 1)],
         max_iterations=3,
