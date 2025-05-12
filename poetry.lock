@@ -753,6 +753,45 @@ graph = ["objgraph (>=1.7.2)"]
 profile = ["gprof2dot (>=2022.7.29)"]
 
 [[package]]
+name = "dimod"
+version = "0.12.20"
+description = "A shared API for binary quadratic model samplers."
+optional = false
+python-versions = ">=3.9"
+groups = ["tutorials"]
+files = [
+    {file = "dimod-0.12.20-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:f239f3609c8f9f202207ab77cb280ba2a068dc3c348702bbe90dea21a31602e2"},
+    {file = "dimod-0.12.20-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:25e01236463c74b457203cf28ba904bec080af7a38aa5f7f46c874ceebf0dffc"},
+    {file = "dimod-0.12.20-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:24bc7cb7ba7c9ebb3dd701189e1b3309fba34c85c2502890fe54fce5629f0a9f"},
+    {file = "dimod-0.12.20-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:38ade49083192c3ab0304b741fc5700b614edffb60db757b822f10fc0c3f647a"},
+    {file = "dimod-0.12.20-cp310-cp310-win_amd64.whl", hash = "sha256:bde75e93597c147dae395bb07b0faab25044c43f0531ee23505ba2b486fdb20c"},
+    {file = "dimod-0.12.20-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:6412906032575b2bc5246930df3e43ddaa9e01fb17d89001bde26c34de4a9d7a"},
+    {file = "dimod-0.12.20-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:02442f496e8a3dec856773389f928b4377805a04c7ffbd08036099e1d533b7b1"},
+    {file = "dimod-0.12.20-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:c4df18e62666d5b0deb30a4bd13e6ba712833d978f0f56c46c1311392ffcba5b"},
+    {file = "dimod-0.12.20-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:527569d96ac2b67ea342e1899ef55afbe100ff8766979a6be260e395888937ea"},
+    {file = "dimod-0.12.20-cp311-cp311-win_amd64.whl", hash = "sha256:737ebb1ab9a8c00e97fc17eeb9344ae83b8301d5c51a8a5dbca5299ed2a8be8e"},
+    {file = "dimod-0.12.20-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:b3ceb9750dbb14a2acfdc7e00a6065f40759a41acc888fabf0ec8c6078ef98b5"},
+    {file = "dimod-0.12.20-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:480f847837b4cde5aaecdda97be99a46c6c5393a1441f413432d70fd8bcc1ce7"},
+    {file = "dimod-0.12.20-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:3c425fd3b2b50c3b38708e2c316c5113a3aab1cd11a7a3b4571cae292e72aa2a"},
+    {file = "dimod-0.12.20-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:e7f0a1a0d4de9a73cb874e8a9dc81f14fcb5b6575e0dba062c27d3ba386f2be0"},
+    {file = "dimod-0.12.20-cp312-cp312-win_amd64.whl", hash = "sha256:96906bf43bc9954f76999a67c51bc8010fc27ea009eadb2429fe2b927d848d0e"},
+    {file = "dimod-0.12.20-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:74097eee588c1fee357c851f06677141224352eb6c33b9a18ec05a1c1e6b36cf"},
+    {file = "dimod-0.12.20-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:90636ecddb9154a4b74cea9410b92ef74d998bd66ba9af9a925d774629857b7b"},
+    {file = "dimod-0.12.20-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:743789ec0792277d7c8a87e1098816d8a1d88da303f02643f3e8729a024822b1"},
+    {file = "dimod-0.12.20-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:3542b9bd0781d0256e55d100dcf9c9e2aa750b1f76d9fc6d21993784635d0b77"},
+    {file = "dimod-0.12.20-cp313-cp313-win_amd64.whl", hash = "sha256:65da7ba1b4a7989342004cb348f5d3b2e6dab25436e3864e8260a03cad43e278"},
+    {file = "dimod-0.12.20-cp39-cp39-macosx_10_9_x86_64.whl", hash = "sha256:1089a6a165dbbdba5c7ccec7c3eea4639064de580152f9ee63750d45acfd4941"},
+    {file = "dimod-0.12.20-cp39-cp39-macosx_11_0_arm64.whl", hash = "sha256:f81236d5f65ec1fa854348c054b6593023330f734102a9ab89c35958f05f96ea"},
+    {file = "dimod-0.12.20-cp39-cp39-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:1d572830ea1bac9101f07a067047ca35a57323a6b6daf3902cd2e6b3ed2ee3c1"},
+    {file = "dimod-0.12.20-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:a243613756e9be7f640b76484c06c46e37a8ab62bdb3a217329e367c6730eeb6"},
+    {file = "dimod-0.12.20-cp39-cp39-win_amd64.whl", hash = "sha256:fd96c88124791670aec430cfa9af4b89877a92075520e6d168417aeec78be0d1"},
+    {file = "dimod-0.12.20.tar.gz", hash = "sha256:da2811c5a6447056c011780ba7593177da575e1d35c2bf9990d7db4890962e5e"},
+]
+
+[package.dependencies]
+numpy = ">=1.17.3"
+
+[[package]]
 name = "distlib"
 version = "0.3.9"
 description = "Distribution utilities"
@@ -1660,7 +1699,7 @@ version = "2.0.2"
 description = "Fundamental package for array computing in Python"
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["main", "tutorials"]
 files = [
     {file = "numpy-2.0.2-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:51129a29dbe56f9ca83438b706e2e69a39892b5eda6cedcb6b0c9fdc9b0d3ece"},
     {file = "numpy-2.0.2-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:f15975dfec0cf2239224d80e32c3170b1d168335eaedee69da84fbe9f1f9cd04"},
@@ -3613,4 +3652,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11"
-content-hash = "c93d9471ed5105b58179722c9c8c9c619b4243c6299e64e07fe3cdd58e131966"
+content-hash = "9cb7efede3791235eb73520537370258d9e56b823ee4672b156ac0da37747899"
