@@ -67,6 +67,9 @@ class MLAE(QuantumProgram):
         self.shots = shots
         self.likelihood_functions = []
 
+    def _create_meta_circuits_dict(self):
+        return super()._create_meta_circuits_dict()
+
     def _generate_circuits(self, params=None, **kwargs):
         """
         Generates the circuits that perform step one of the MLAE algorithm,
