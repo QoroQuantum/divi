@@ -231,12 +231,23 @@ class QuantumProgram(ABC):
 
         return result
 
-    def _post_process_results(self, results):
+    def _post_process_results(
+        self, results: dict[str, dict[str, int]]
+    ) -> dict[int, float]:
         """
         Post-process the results of the quantum problem.
 
+        Args:
+            results (dict): The shot histograms of the quantum execution step.
+                The keys should be strings of format {param_id}_*_{measurement_group_id}.
+                i.e. An underscore-separated bunch of metadata, starting always with
+                the index of some parameter and ending with the index of some measurement group.
+                Any extra piece of metadata that might be relevant to the specific application can
+                be kept in the middle.
+
         Returns:
-            (dict) The energies for each parameter set grouping.
+            (dict) The energies for each parameter set grouping, where the dict keys
+                correspond to the parameter indices.
         """
 
         losses = {}

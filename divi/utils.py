@@ -74,7 +74,7 @@ def to_openqasm(
     measure_all: bool = True,
     precision: Optional[int] = None,
     return_measurements_separately: bool = False,
-) -> str | tuple[str, list[str]]:
+) -> list[str] | tuple[str, list[str]]:
     """
     A modified version of PennyLane's function that is more compatible with having
     several measurements and incorporates modifications introduced by splitting transforms.
@@ -97,7 +97,7 @@ def to_openqasm(
             and their diagonalizations to the main circuit QASM code and return separately.
 
     Returns:
-        str or tuple[str, list[str]]: OpenQASM serialization of the circuit
+        list[str] or tuple[str, list[str]]: OpenQASM serialization of the circuit
     """
 
     wires = wires or main_qscript.wires

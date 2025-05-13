@@ -14,19 +14,24 @@ class SampleProgram(QuantumProgram):
         self.circ_count = circ_count
         self.run_time = run_time
 
+        self.n_layers = 1
+        self.n_params = 4
+
         super().__init__(**kwargs)
 
+        self._meta_circuits = self._create_meta_circuits_dict()
+
     def _create_meta_circuits_dict(self):
-        # Define a simple circuit
 
         def simple_circuit(params):
             qml.RX(params[0], wires=0)
-            qml.RY(params[1], wires=1)
+            qml.U3(*params[1], wires=1)
             qml.CNOT(wires=[0, 1])
-            return qml.expval(qml.PauliZ(0))
+
+            return qml.expval(qml.PauliX(0) + qml.PauliZ(1) + qml.PauliX(0) @ qml.Z(1))
 
         # Create symbolic parameters
-        symbols = sp.symbols("theta_0 theta_1")
+        symbols = [sp.Symbol("beta"), sp.symarray("theta", 3)]
 
         # Create a MetaCircuit using the grouping_strategy
         meta_circuit = MetaCircuit(
@@ -35,8 +40,7 @@ class SampleProgram(QuantumProgram):
             grouping_strategy=self._grouping_strategy,
         )
 
-        # Return a dictionary with the MetaCircuit
-        return {"test_circuit": meta_circuit}
+        return {"cost_circuit": meta_circuit}
 
     def _generate_circuits(self, params=None, **kwargs):
         pass
@@ -64,8 +68,6 @@ def program_batch():
 class TestProgram:
     def test_correct_random_behavior(self, mocker):
         program = SampleProgram(10, 5.5, seed=1997)
-        program.n_layers = 2
-        program.n_params = 3
 
         program.optimizer = mocker.MagicMock()
         program.optimizer.n_param_sets = 1
@@ -78,6 +80,7 @@ class TestProgram:
         program._initialize_params()
         first_init = program._curr_params[0]
         assert first_init.shape == (program.n_layers * program.n_params,)
+
         program._initialize_params()
         second_init = program._curr_params[0]
 
@@ -85,6 +88,39 @@ class TestProgram:
         np.testing.assert_raises(
             AssertionError, np.testing.assert_array_equal, first_init, second_init
         )
+
+    @pytest.fixture(scope="session")
+    def expvals_collector(self):
+        return []
+
+    @pytest.mark.parametrize(
+        "strategy,expected_n_groups,expected_n_diag",
+        [[None, 3, 2], ["wires", 2, 2], ["qwc", 1, 1]],
+    )
+    def test_grouping_produces_expected_number_of_groups(
+        self, strategy, expected_n_groups, expected_n_diag, expvals_collector, mocker
+    ):
+        program = SampleProgram(10, 5.5, seed=1997, grouping_strategy=strategy)
+        program.loss_constant = 0.5
+        program.optimizer = mocker.MagicMock()
+        program.optimizer.n_param_sets = 1
+
+        meta_circuit = program._meta_circuits["cost_circuit"]
+        assert len(meta_circuit.measurement_groups) == expected_n_groups
+        assert len(meta_circuit.measurements) == expected_n_groups
+        assert (
+            len(tuple(filter(lambda x: "h" in x, meta_circuit.measurements)))
+            == expected_n_diag
+        )
+
+        program._initialize_params()
+        fake_shot_histogram = {"00": 23, "01": 27, "10": 15, "11": 35}
+        fake_results = {f"0_{i}": fake_shot_histogram for i in range(expected_n_groups)}
+        expvals_collector.append(program._post_process_results(fake_results)[0])
+
+    def test_assert_all_groupings_return_same_expval(self, expvals_collector):
+        assert len(expvals_collector) == 3
+        assert all(value == expvals_collector[0] for value in expvals_collector[1:])
 
 
 class TestProgramBatch:
