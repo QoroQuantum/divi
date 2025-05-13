@@ -113,7 +113,12 @@ def to_openqasm(
     main_qasm_str += f"qreg q[{len(wires)}];\n"
     main_qasm_str += f"creg c[{len(wires)}];\n"
 
-    # get the user applied circuit operations without interface information
+    # Wrapping Sympy Symbols in a numpy object to bypass
+    # Pennylane's sanitization
+    for op in main_qscript.operations:
+        if qml.math.get_interface(*op.data) == "sympy":
+            op.data = np.array(op.data)
+
     [transformed_tape], _ = qml.transforms.convert_to_numpy_parameters(main_qscript)
     operations = transformed_tape.operations
 
@@ -165,11 +170,7 @@ def to_openqasm(
         else:
             qasm_circuits.append(main_qasm_str + curr_diag_qasm_str + measure_qasm_str)
 
-    return (
-        qasm_circuits
-        if not return_measurements_separately
-        else (main_qasm_str, measurement_qasms)
-    )
+    return qasm_circuits or (main_qasm_str, measurement_qasms)
 
 
 def _is_sanitized(
