@@ -133,7 +133,7 @@ class QoroService:
                     "circuits": chunk,
                     "shots": shots,
                     "tag": tag,
-                    "type": job_type.value,
+                    "job_type": job_type.value,
                 },
                 timeout=100,
             )
