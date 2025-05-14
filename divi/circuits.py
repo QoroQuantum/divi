@@ -1,3 +1,4 @@
+from copy import deepcopy
 from typing import Literal, Optional
 
 import dill
@@ -63,9 +64,10 @@ class MetaCircuit:
         self.main_circuit = main_circuit
         self.symbols = symbols
 
-        TRANSFORM_PROGRAM[1].kwargs["grouping_strategy"] = grouping_strategy
+        transform_program = deepcopy(TRANSFORM_PROGRAM)
+        transform_program[1].kwargs["grouping_strategy"] = grouping_strategy
 
-        qscripts, self.postprocessing_fn = TRANSFORM_PROGRAM((main_circuit,))
+        qscripts, self.postprocessing_fn = transform_program((main_circuit,))
 
         self.compiled_circuit, self.measurements = to_openqasm(
             main_circuit,
