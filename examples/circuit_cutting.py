@@ -1,8 +1,9 @@
 from divi.services import QoroService
+from tests.benchmarking import Benchmarking
 
 # This one is live
 # from divi.services import QoroService
-q_service = QoroService("cf668392271cc93409eb0004037788eb86594277")
+q_service = QoroService("3ce4a6bdaa01a6ada69a5809a0dad69306adf995")
 
 # This uses local sim
 # q_service = None
@@ -10,18 +11,8 @@ q_service = QoroService("cf668392271cc93409eb0004037788eb86594277")
 
 if __name__ == "__main__":
 
-    qasm_str = """OPENQASM 2.0;
-                    include "qelib1.inc";
-                    qreg q4[9];
-                    creg c0[9];
-                    h q4[0];
-                    h q4[1];
-                    h q4[2];
-                    cx q4[0],q4[8];                    
-                    measure q4[0] -> c0[0];
-                    measure q4[1] -> c0[1];
-                    measure q4[2] -> c0[2];
-                    measure q4[8] -> c0[8];"""
+    qasm_str = Benchmarking(num_qubits=9).hea_ansatz(depth=1, entanglement='linear')
+    print(qasm_str)
 
     jobs = q_service.send_circuit_cut_job(qasm_str)
     q_service.poll_job_status(jobs, loop_until_complete=True)
