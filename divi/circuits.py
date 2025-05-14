@@ -1,6 +1,16 @@
+from copy import deepcopy
+from typing import Literal, Optional
+
+import dill
+import pennylane as qml
+from pennylane.transforms.core.transform_program import TransformProgram
 from qiskit.qasm2 import dumps
 
 from divi.utils import to_openqasm
+
+TRANSFORM_PROGRAM = TransformProgram()
+TRANSFORM_PROGRAM.add_transform(qml.transforms.split_to_single_terms)
+TRANSFORM_PROGRAM.add_transform(qml.transforms.split_non_commuting)
 
 
 class Circuit:
@@ -29,7 +39,11 @@ class Circuit:
 
     def convert_to_qasm(self):
         if self.circuit_type == "pennylane":
-            self.qasm_circuits = to_openqasm(self.main_circuit)
+            self.qasm_circuits = to_openqasm(
+                self.main_circuit,
+                measurement_groups=[self.main_circuit.measurements],
+                return_measurements_separately=False,
+            )
 
         elif self.circuit_type == "qiskit":
             self.qasm_circuits = [dumps(self.main_circuit)]
@@ -41,13 +55,41 @@ class Circuit:
 
 
 class MetaCircuit:
-    def __init__(self, main_circuit, symbols):
+    def __init__(
+        self,
+        main_circuit,
+        symbols,
+        grouping_strategy: Optional[Literal["wires", "default", "qwc"]] = None,
+    ):
         self.main_circuit = main_circuit
         self.symbols = symbols
 
+        transform_program = deepcopy(TRANSFORM_PROGRAM)
+        transform_program[1].kwargs["grouping_strategy"] = grouping_strategy
+
+        qscripts, self.postprocessing_fn = transform_program((main_circuit,))
+
         self.compiled_circuit, self.measurements = to_openqasm(
-            main_circuit, return_measurements_separately=True
+            main_circuit,
+            measurement_groups=[qsc.measurements for qsc in qscripts],
+            return_measurements_separately=True,
         )
+
+        # Need to store the measurement groups for computing
+        # expectation values later on, stripped of the `qml.expval` wrapper
+        self.measurement_groups = [
+            [meas.obs for meas in qsc.measurements] for qsc in qscripts
+        ]
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["postprocessing_fn"] = dill.dumps(self.postprocessing_fn)
+        return state
+
+    def __setstate__(self, state):
+        state["postprocessing_fn"] = dill.loads(state["postprocessing_fn"])
+
+        self.__dict__.update(state)
 
     def initialize_circuit_from_params(
         self, param_list, tag_prefix: str = "", precision: int = 8

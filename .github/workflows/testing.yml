@@ -1,4 +1,4 @@
-name: Unit Tests
+name: Unit Tests and Tutorial Scripts
 
 on: [push]
 
@@ -56,5 +56,10 @@ jobs:
     - name: Freeze dependencies
       run: poetry run pip freeze
 
-    - name: Run tests
-      run: poetry run pytest
+    - name: Make tutorial runner executable
+      run: chmod +x ./.github/workflows/run_tutorials.sh
+
+    # Make sure all tutorials work as expected
+    # These also act as pseudo-E2E tests
+    - name: Run tutorial scripts
+      run: ./.github/workflows/run_tutorials.sh

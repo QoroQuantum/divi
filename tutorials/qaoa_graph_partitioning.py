@@ -2,9 +2,8 @@ import random
 
 import networkx as nx
 
-from divi.qprog import GraphPartitioningQAOA
+from divi.qprog import GraphPartitioningQAOA, GraphProblem
 from divi.qprog.optimizers import Optimizers
-from divi.services import QoroService
 
 
 def generate_random_graph(n_nodes: int, n_edges: int) -> nx.DiGraph:
@@ -53,11 +52,12 @@ if __name__ == "__main__":
         graph, seed=1
     )
 
+    # from divi.services import QoroService
     # q_service = QoroService("4497dcabd079bedbeeec9d16b3dcccb1344461b9")
     q_service = None
 
     qaoa_batch = GraphPartitioningQAOA(
-        problem="maxcut",
+        graph_problem=GraphProblem.MAXCUT,
         graph=graph,
         n_layers=1,
         n_clusters=2,
@@ -68,6 +68,7 @@ if __name__ == "__main__":
 
     qaoa_batch.create_programs()
     qaoa_batch.run()
+    qaoa_batch.compute_final_solutions()
     quantum_solution = qaoa_batch.aggregate_results()
 
     print(f"Total circuits: {qaoa_batch.total_circuit_count}")

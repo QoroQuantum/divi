@@ -7,6 +7,7 @@ import numpy as np
 from qiskit.result import marginal_counts, sampled_expectation_value
 from scipy.optimize import OptimizeResult, minimize
 
+from divi.circuits import Circuit, MetaCircuit
 from divi.parallel_simulator import ParallelSimulator
 from divi.qprog.optimizers import Optimizers
 from divi.services import QoroService
@@ -32,8 +33,42 @@ logging.getLogger().setLevel(logging.WARNING)
 
 class QuantumProgram(ABC):
     def __init__(
-        self, shots: int = 5000, qoro_service: Optional[QoroService] = None, **kwargs
+        self,
+        shots: int = 5000,
+        qoro_service: Optional[QoroService] = None,
+        seed: Optional[int] = None,
+        **kwargs,
     ):
+        """
+        Initializes the QuantumProgram class.
+
+        If a child class represents a hybrid quantum-classical algorithm,
+        the instance variables `n_layers` and `n_params` must be set, where:
+        - `n_layers` is the number of layers in the quantum circuit.
+        - `n_params` is the number of parameters per layer.
+
+        For exotic algorithms where these variables may not be applicable,
+        the `_initialize_params` method should be overridden to set the parameters.
+
+        Args:
+            shots (int): The number of shots for quantum circuit execution.
+                Must be a positive integer. Defaults to 5000.
+            qoro_service (QoroService): An instance of QoroService to handle.
+                Defaults to None, which corresponds to local simulation.
+            seed (int): A seed for numpy's random number generator, which will
+                be used for the parameter initialization and the local simulator's
+                sampling function.
+                Defaults to None.
+
+            **kwargs: Additional keyword arguments that influence behaviour.
+                - grouping_strategy (Optional[Any]): A strategy for grouping operations, used in Pennylane's transforms.
+                  Defaults to None.
+
+                The following key values are reserved for internal use and should not be set by the user:
+                - losses (Optional[list]): A list to initialize the `losses` attribute. Defaults to an empty list.
+                - final_params (Optional[list]): A list to initialize the `final_params` attribute. Defaults to an empty list.
+
+        """
         if shots <= 0:
             raise ValueError(f"Shots must be a positive integer. Got {shots}.")
 
@@ -46,11 +81,14 @@ class QuantumProgram(ABC):
         if (m_list_final_params := kwargs.pop("final_params", None)) is not None:
             self.final_params = m_list_final_params
 
-        self.circuits = []
+        self.circuits: list[Circuit] = []
 
         self._total_circuit_count = 0
         self._total_run_time = 0.0
         self._curr_params = []
+
+        self._seed = seed
+        self._rng = np.random.default_rng(self._seed)
 
         # Lets child classes adapt their optimization
         # step for grad calculation routine
@@ -59,6 +97,9 @@ class QuantumProgram(ABC):
         self.shots = shots
         self.qoro_service = qoro_service
         self.job_id = None
+
+        # Needed for Pennylane's transforms
+        self._grouping_strategy = kwargs.pop("grouping_strategy", None)
 
     @property
     def total_circuit_count(self):
@@ -76,8 +117,9 @@ class QuantumProgram(ABC):
     def total_run_time(self, _):
         raise RuntimeError("Can not set total run time value.")
 
-    def _reset_params(self):
-        self._curr_params = []
+    @abstractmethod
+    def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
+        pass
 
     @abstractmethod
     def _generate_circuits(self, **kwargs):
@@ -86,6 +128,12 @@ class QuantumProgram(ABC):
     @abstractmethod
     def run(self, store_data=False, data_file=None):
         pass
+
+    def _initialize_params(self):
+        self._curr_params = [
+            self._rng.uniform(0, 2 * np.pi, self.n_layers * self.n_params)
+            for _ in range(self.optimizer.n_param_sets)
+        ]
 
     def _run_optimization_circuits(self, store_data, data_file):
         self.circuits[:] = []
@@ -104,11 +152,7 @@ class QuantumProgram(ABC):
         """
 
         if self.current_iteration == 0:
-            self._reset_params()
-            self._curr_params = [
-                np.random.uniform(0, 2 * np.pi, self.n_layers * self.n_params)
-                for _ in range(self.optimizer.n_param_sets)
-            ]
+            self._initialize_params()
 
             self.current_iteration += 1
 
@@ -118,6 +162,7 @@ class QuantumProgram(ABC):
             self._curr_params,
             self.current_iteration,
             losses=self.losses[-1],
+            rng=self._rng,
         )
 
         self.current_iteration += 1
@@ -138,7 +183,9 @@ class QuantumProgram(ABC):
             return self.job_id, "job_id"
         else:
             circuit_simulator = ParallelSimulator()
-            circuit_results = circuit_simulator.simulate(job_circuits, shots=self.shots)
+            circuit_results = circuit_simulator.simulate(
+                job_circuits, shots=self.shots, simulation_seed=self._seed
+            )
             return circuit_results, "circuit_results"
 
     def _dispatch_circuits_and_process_results(self, store_data=False, data_file=None):
@@ -184,37 +231,60 @@ class QuantumProgram(ABC):
 
         return result
 
-    def _post_process_results(self, results):
+    def _post_process_results(
+        self, results: dict[str, dict[str, int]]
+    ) -> dict[int, float]:
         """
         Post-process the results of the quantum problem.
 
+        Args:
+            results (dict): The shot histograms of the quantum execution step.
+                The keys should be strings of format {param_id}_*_{measurement_group_id}.
+                i.e. An underscore-separated bunch of metadata, starting always with
+                the index of some parameter and ending with the index of some measurement group.
+                Any extra piece of metadata that might be relevant to the specific application can
+                be kept in the middle.
+
         Returns:
-            (dict) The energies for each parameter set grouping.
+            (dict) The energies for each parameter set grouping, where the dict keys
+                correspond to the parameter indices.
         """
 
         losses = {}
+        measurement_groups = self._meta_circuits["cost_circuit"].measurement_groups
 
         for p, _ in enumerate(self._curr_params):
             losses[p] = 0
-            cur_result = {
+            curr_result = {
                 key: value for key, value in results.items() if key.startswith(f"{p}")
             }
 
             marginal_results = []
-            for param_id, shots_dict in cur_result.items():
+            for param_id, shots_dict in curr_result.items():
                 ham_op_index = int(param_id.split("_")[-1])
-                ham_op_metadata = self.expval_hamiltonian_metadata[ham_op_index]
-                pair = (
-                    ham_op_metadata,
-                    marginal_counts(shots_dict, ham_op_metadata[0].tolist()),
-                )
-                marginal_results.append(pair)
 
-            for ham_op_metadata, marginal_shots in marginal_results:
-                exp_value = sampled_expectation_value(
-                    marginal_shots, "Z" * len(ham_op_metadata[0])
+                curr_measurement_group = measurement_groups[ham_op_index]
+                curr_marginal_results = []
+                for observable in curr_measurement_group:
+                    exp_value = sampled_expectation_value(
+                        marginal_counts(shots_dict, observable.wires.tolist()),
+                        "Z" * len(observable.wires),
+                    )
+                    curr_marginal_results.append(exp_value)
+
+                marginal_results.append(
+                    curr_marginal_results
+                    if len(curr_marginal_results) > 1
+                    else curr_marginal_results[0]
                 )
-                losses[p] += ham_op_metadata[1] * exp_value
+
+            pl_loss = (
+                self._meta_circuits["cost_circuit"]
+                .postprocessing_fn(marginal_results)[0]
+                .item()
+            )
+
+            losses[p] += pl_loss + self.loss_constant
 
         return losses
 
@@ -278,12 +348,7 @@ class QuantumProgram(ABC):
                 self.current_iteration += 1
                 logger.debug(f"Finished iteration {self.current_iteration}")
 
-            self._reset_params()
-
-            self._curr_params = [
-                np.random.uniform(0, 2 * np.pi, self.n_layers * self.n_params)
-                for _ in range(self.optimizer.n_param_sets)
-            ]
+            self._initialize_params()
 
             self._minimize_res = minimize(
                 fun=cost_fn,

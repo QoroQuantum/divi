@@ -4,7 +4,6 @@ import pennylane as qml
 import pytest
 from qprog_contracts import (
     verify_correct_circuit_count,
-    verify_hamiltonian_metadata,
     verify_metacircuit_dict,
 )
 
@@ -35,9 +34,6 @@ def test_vqe_basic_initialization():
     assert (
         isinstance(vqe_problem.cost_hamiltonian, qml.operation.Operator) == 1
     ), "Expected a pennylane Operator object for the hamiltonian"
-
-    # Check Hamiltonian Meta-data exists in expected format
-    verify_hamiltonian_metadata(vqe_problem)
 
     # Check meta-circuits
     verify_metacircuit_dict(vqe_problem, ["cost_circuit"])

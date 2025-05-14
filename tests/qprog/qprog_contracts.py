@@ -1,30 +1,10 @@
-import pennylane as qml
 import pytest
 
 from divi.qprog import Optimizers, ProgramBatch, QuantumProgram
 
 
-def verify_hamiltonian_metadata(obj):
-    assert hasattr(
-        obj, "expval_hamiltonian_metadata"
-    ), "Hamiltonian metadata attribute does not exist"
-    assert isinstance(obj.expval_hamiltonian_metadata, dict), "Metadata not a dict"
-    assert all(
-        isinstance(key, int) for key in obj.expval_hamiltonian_metadata.keys()
-    ), "Wrong metadata dict key format"
-    assert all(
-        (
-            isinstance(val, tuple)
-            and len(val) == 2
-            and isinstance(val[0], qml.wires.Wires)
-            and isinstance(val[1], float)
-        )
-        for val in obj.expval_hamiltonian_metadata.values()
-    ), "Wrong metadata dict value format"
-
-
 def verify_metacircuit_dict(obj, expected_keys):
-    from divi.circuit import MetaCircuit
+    from divi.circuits import MetaCircuit
 
     assert hasattr(obj, "_meta_circuits"), "Meta circuits attribute does not exist"
     assert isinstance(obj._meta_circuits, dict), "Meta circuits object not a dict"
@@ -52,7 +32,7 @@ def verify_correct_circuit_count(obj: QuantumProgram):
         assert obj.total_circuit_count == obj._minimize_res.nfev * len(
             obj.cost_hamiltonian
         )
-    elif obj.optimizer == Optimizers.NELDER_MEAD:
+    elif obj.optimizer == Optimizers.L_BFGS_B:
         evaluation_circuits_count = obj._minimize_res.nfev * len(obj.cost_hamiltonian)
 
         gradient_circuits_count = (

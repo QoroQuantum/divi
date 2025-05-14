@@ -5,7 +5,7 @@ import scipy.optimize as optimize
 from qiskit import QuantumCircuit
 from qiskit_algorithms import EstimationProblem, MaximumLikelihoodAmplitudeEstimation
 
-from divi.circuit import Circuit
+from divi.circuits import Circuit
 from divi.qprog.quantum_program import QuantumProgram
 
 
@@ -66,6 +66,9 @@ class MLAE(QuantumProgram):
         self.probability = probability
         self.shots = shots
         self.likelihood_functions = []
+
+    def _create_meta_circuits_dict(self):
+        return super()._create_meta_circuits_dict()
 
     def _generate_circuits(self, params=None, **kwargs):
         """

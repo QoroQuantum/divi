@@ -2,11 +2,11 @@ import networkx as nx
 import pytest
 from qprog_contracts import verify_basic_program_batch_behaviour
 
-from divi.qprog import GraphPartitioningQAOA, Optimizers
+from divi.qprog import GraphPartitioningQAOA, GraphProblem, Optimizers
 
 problem_args = {
     "graph": nx.erdos_renyi_graph(15, 0.2, seed=1997),
-    "problem": "maxcut",
+    "graph_problem": GraphProblem.MAXCUT,
     "n_layers": 1,
     "n_clusters": 2,
     "optimizer": Optimizers.NELDER_MEAD,
@@ -43,7 +43,7 @@ def test_fail_if_no_qubits_or_clusters_provided():
         ValueError, match="One of `n_qubits` and `n_clusters` must be provided."
     ):
         GraphPartitioningQAOA(
-            problem="maxcut",
+            graph_problem=GraphProblem.MAXCUT,
             graph=None,
             n_layers=1,
             optimizer=Optimizers.NELDER_MEAD,
@@ -69,13 +69,13 @@ def test_correct_number_of_programs_created(mocker, node_partitioning_qaoa):
 def test_results_aggregated_correctly(node_partitioning_qaoa):
     node_partitioning_qaoa.create_programs()
 
-    mock_program_1_nodes = node_partitioning_qaoa.programs[0].graph.number_of_nodes()
+    mock_program_1_nodes = node_partitioning_qaoa.programs[0].problem.number_of_nodes()
     node_partitioning_qaoa.programs[0].losses = [{0: -1.0}]
     node_partitioning_qaoa.programs[0].probs = {
         "0_0": {"0" * mock_program_1_nodes: 0.9, "1" * mock_program_1_nodes: 0.1}
     }
 
-    mock_program_2_nodes = node_partitioning_qaoa.programs[1].graph.number_of_nodes()
+    mock_program_2_nodes = node_partitioning_qaoa.programs[1].problem.number_of_nodes()
     node_partitioning_qaoa.programs[1].losses = [{0: -2.0, 1: -3.0}]
     node_partitioning_qaoa.programs[1].probs = {
         "0_0": {"0" * mock_program_2_nodes: 0.9, "1" * mock_program_2_nodes: 0.1},

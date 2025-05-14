@@ -737,20 +737,58 @@ termcolor = "*"
 
 [[package]]
 name = "dill"
-version = "0.3.9"
+version = "0.4.0"
 description = "serialize all of Python"
 optional = false
 python-versions = ">=3.8"
 groups = ["main"]
-markers = "python_version < \"4\""
 files = [
-    {file = "dill-0.3.9-py3-none-any.whl", hash = "sha256:468dff3b89520b474c0397703366b7b95eebe6303f108adf9b19da1f702be87a"},
-    {file = "dill-0.3.9.tar.gz", hash = "sha256:81aa267dddf68cbfe8029c42ca9ec6a4ab3b22371d1c450abc54422577b4512c"},
+    {file = "dill-0.4.0-py3-none-any.whl", hash = "sha256:44f54bf6412c2c8464c14e8243eb163690a9800dbe2c367330883b19c7561049"},
+    {file = "dill-0.4.0.tar.gz", hash = "sha256:0633f1d2df477324f53a895b02c901fb961bdbf65a17122586ea7019292cbcf0"},
 ]
 
 [package.extras]
 graph = ["objgraph (>=1.7.2)"]
 profile = ["gprof2dot (>=2022.7.29)"]
+
+[[package]]
+name = "dimod"
+version = "0.12.20"
+description = "A shared API for binary quadratic model samplers."
+optional = false
+python-versions = ">=3.9"
+groups = ["tutorials"]
+files = [
+    {file = "dimod-0.12.20-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:f239f3609c8f9f202207ab77cb280ba2a068dc3c348702bbe90dea21a31602e2"},
+    {file = "dimod-0.12.20-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:25e01236463c74b457203cf28ba904bec080af7a38aa5f7f46c874ceebf0dffc"},
+    {file = "dimod-0.12.20-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:24bc7cb7ba7c9ebb3dd701189e1b3309fba34c85c2502890fe54fce5629f0a9f"},
+    {file = "dimod-0.12.20-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:38ade49083192c3ab0304b741fc5700b614edffb60db757b822f10fc0c3f647a"},
+    {file = "dimod-0.12.20-cp310-cp310-win_amd64.whl", hash = "sha256:bde75e93597c147dae395bb07b0faab25044c43f0531ee23505ba2b486fdb20c"},
+    {file = "dimod-0.12.20-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:6412906032575b2bc5246930df3e43ddaa9e01fb17d89001bde26c34de4a9d7a"},
+    {file = "dimod-0.12.20-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:02442f496e8a3dec856773389f928b4377805a04c7ffbd08036099e1d533b7b1"},
+    {file = "dimod-0.12.20-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:c4df18e62666d5b0deb30a4bd13e6ba712833d978f0f56c46c1311392ffcba5b"},
+    {file = "dimod-0.12.20-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:527569d96ac2b67ea342e1899ef55afbe100ff8766979a6be260e395888937ea"},
+    {file = "dimod-0.12.20-cp311-cp311-win_amd64.whl", hash = "sha256:737ebb1ab9a8c00e97fc17eeb9344ae83b8301d5c51a8a5dbca5299ed2a8be8e"},
+    {file = "dimod-0.12.20-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:b3ceb9750dbb14a2acfdc7e00a6065f40759a41acc888fabf0ec8c6078ef98b5"},
+    {file = "dimod-0.12.20-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:480f847837b4cde5aaecdda97be99a46c6c5393a1441f413432d70fd8bcc1ce7"},
+    {file = "dimod-0.12.20-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:3c425fd3b2b50c3b38708e2c316c5113a3aab1cd11a7a3b4571cae292e72aa2a"},
+    {file = "dimod-0.12.20-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:e7f0a1a0d4de9a73cb874e8a9dc81f14fcb5b6575e0dba062c27d3ba386f2be0"},
+    {file = "dimod-0.12.20-cp312-cp312-win_amd64.whl", hash = "sha256:96906bf43bc9954f76999a67c51bc8010fc27ea009eadb2429fe2b927d848d0e"},
+    {file = "dimod-0.12.20-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:74097eee588c1fee357c851f06677141224352eb6c33b9a18ec05a1c1e6b36cf"},
+    {file = "dimod-0.12.20-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:90636ecddb9154a4b74cea9410b92ef74d998bd66ba9af9a925d774629857b7b"},
+    {file = "dimod-0.12.20-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:743789ec0792277d7c8a87e1098816d8a1d88da303f02643f3e8729a024822b1"},
+    {file = "dimod-0.12.20-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:3542b9bd0781d0256e55d100dcf9c9e2aa750b1f76d9fc6d21993784635d0b77"},
+    {file = "dimod-0.12.20-cp313-cp313-win_amd64.whl", hash = "sha256:65da7ba1b4a7989342004cb348f5d3b2e6dab25436e3864e8260a03cad43e278"},
+    {file = "dimod-0.12.20-cp39-cp39-macosx_10_9_x86_64.whl", hash = "sha256:1089a6a165dbbdba5c7ccec7c3eea4639064de580152f9ee63750d45acfd4941"},
+    {file = "dimod-0.12.20-cp39-cp39-macosx_11_0_arm64.whl", hash = "sha256:f81236d5f65ec1fa854348c054b6593023330f734102a9ab89c35958f05f96ea"},
+    {file = "dimod-0.12.20-cp39-cp39-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:1d572830ea1bac9101f07a067047ca35a57323a6b6daf3902cd2e6b3ed2ee3c1"},
+    {file = "dimod-0.12.20-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:a243613756e9be7f640b76484c06c46e37a8ab62bdb3a217329e367c6730eeb6"},
+    {file = "dimod-0.12.20-cp39-cp39-win_amd64.whl", hash = "sha256:fd96c88124791670aec430cfa9af4b89877a92075520e6d168417aeec78be0d1"},
+    {file = "dimod-0.12.20.tar.gz", hash = "sha256:da2811c5a6447056c011780ba7593177da575e1d35c2bf9990d7db4890962e5e"},
+]
+
+[package.dependencies]
+numpy = ">=1.17.3"
 
 [[package]]
 name = "distlib"
@@ -763,6 +801,21 @@ files = [
     {file = "distlib-0.3.9-py2.py3-none-any.whl", hash = "sha256:47f8c22fd27c27e25a65601af709b38e4f0a45ea4fc2e710f65755fa8caaaf87"},
     {file = "distlib-0.3.9.tar.gz", hash = "sha256:a60f20dea646b8a33f3e7772f74dc0b2d0772d2837ee1342a00645c81edf9403"},
 ]
+
+[[package]]
+name = "docplex"
+version = "2.29.241"
+description = "The IBM Decision Optimization CPLEX Modeling for Python"
+optional = false
+python-versions = "*"
+groups = ["main"]
+markers = "python_version < \"4\""
+files = [
+    {file = "docplex-2.29.241.tar.gz", hash = "sha256:ad5250396be0cea02b732710795bb9e345d9923bbb0bf66520f66eb8f1e988ad"},
+]
+
+[package.dependencies]
+six = "*"
 
 [[package]]
 name = "docutils"
@@ -1645,7 +1698,7 @@ version = "2.0.2"
 description = "Fundamental package for array computing in Python"
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
+groups = ["main", "tutorials"]
 files = [
     {file = "numpy-2.0.2-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:51129a29dbe56f9ca83438b706e2e69a39892b5eda6cedcb6b0c9fdc9b0d3ece"},
     {file = "numpy-2.0.2-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:f15975dfec0cf2239224d80e32c3170b1d168335eaedee69da84fbe9f1f9cd04"},
@@ -2188,6 +2241,76 @@ files = [
 diagrams = ["jinja2", "railroad-diagrams"]
 
 [[package]]
+name = "pyqt6"
+version = "6.9.0"
+description = "Python bindings for the Qt cross platform application toolkit"
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "PyQt6-6.9.0-cp39-abi3-macosx_10_14_universal2.whl", hash = "sha256:5344240747e81bde1a4e0e98d4e6e2d96ad56a985d8f36b69cd529c1ca9ff760"},
+    {file = "PyQt6-6.9.0-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:e344868228c71fc89a0edeb325497df4ff731a89cfa5fe57a9a4e9baecc9512b"},
+    {file = "PyQt6-6.9.0-cp39-abi3-manylinux_2_39_aarch64.whl", hash = "sha256:1cbc5a282454cf19691be09eadbde019783f1ae0523e269b211b0173b67373f6"},
+    {file = "PyQt6-6.9.0-cp39-abi3-win_amd64.whl", hash = "sha256:d36482000f0cd7ce84a35863766f88a5e671233d5f1024656b600cd8915b3752"},
+    {file = "PyQt6-6.9.0-cp39-abi3-win_arm64.whl", hash = "sha256:0c8b7251608e05b479cfe731f95857e853067459f7cbbcfe90f89de1bcf04280"},
+    {file = "pyqt6-6.9.0.tar.gz", hash = "sha256:6a8ff8e3cd18311bb7d937f7d741e787040ae7ff47ce751c28a94c5cddc1b4e6"},
+]
+
+[package.dependencies]
+PyQt6-Qt6 = ">=6.9.0,<6.10.0"
+PyQt6-sip = ">=13.8,<14"
+
+[[package]]
+name = "pyqt6-qt6"
+version = "6.9.0"
+description = "The subset of a Qt installation needed by PyQt6."
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "PyQt6_Qt6-6.9.0-py3-none-macosx_10_14_x86_64.whl", hash = "sha256:b1c4e4a78f0f22fbf88556e3d07c99e5ce93032feae5c1e575958d914612e0f9"},
+    {file = "PyQt6_Qt6-6.9.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:6d3875119dec6bf5f799facea362aa0ad39bb23aa9654112faa92477abccb5ff"},
+    {file = "PyQt6_Qt6-6.9.0-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:9c0e603c934e4f130c110190fbf2c482ff1221a58317266570678bc02db6b152"},
+    {file = "PyQt6_Qt6-6.9.0-py3-none-manylinux_2_39_aarch64.whl", hash = "sha256:cf840e8ae20a0704e0343810cf0e485552db28bf09ea976e58ec0e9b7bb27fcd"},
+    {file = "PyQt6_Qt6-6.9.0-py3-none-win_amd64.whl", hash = "sha256:c825a6f5a9875ef04ef6681eda16aa3a9e9ad71847aa78dfafcf388c8007aa0a"},
+    {file = "PyQt6_Qt6-6.9.0-py3-none-win_arm64.whl", hash = "sha256:1188f118d1c570d27fba39707e3d8a48525f979816e73de0da55b9e6fa9ad0a1"},
+]
+
+[[package]]
+name = "pyqt6-sip"
+version = "13.10.0"
+description = "The sip module support for PyQt6"
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "PyQt6_sip-13.10.0-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:e7b1258963717cfae1d30e262bb784db808072a8a674d98f57c2076caaa50499"},
+    {file = "PyQt6_sip-13.10.0-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:d27a3fed2a461f179d3cde6a74530fbad629ccaa66ed739b9544fda1932887af"},
+    {file = "PyQt6_sip-13.10.0-cp310-cp310-manylinux_2_5_x86_64.manylinux1_x86_64.whl", hash = "sha256:0422781c77b85eefd7a26f104c5998ede178a16b0fd35212664250215b6e5e4c"},
+    {file = "PyQt6_sip-13.10.0-cp310-cp310-win_amd64.whl", hash = "sha256:f64183dde2af36515dab515f4301a5a8d9b3658b231769fa48fe6287dc52f375"},
+    {file = "PyQt6_sip-13.10.0-cp311-cp311-macosx_10_9_universal2.whl", hash = "sha256:6e78fb8036b18f6258a1af0956c5a3cec1dd3d8dd5196ecd89a31b529bf40e82"},
+    {file = "PyQt6_sip-13.10.0-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:e19d5887fa3003a635419644dfed3158cb15eb566fc27b1ed56913a5767a71dc"},
+    {file = "PyQt6_sip-13.10.0-cp311-cp311-manylinux_2_5_x86_64.manylinux1_x86_64.whl", hash = "sha256:079bb946edc3960f08d92b3a8eebff55d3abb51bc2a0583b6683dfd9f77a616a"},
+    {file = "PyQt6_sip-13.10.0-cp311-cp311-win_amd64.whl", hash = "sha256:90974f5dbba1f5d1d2ca9b1cfdfd5258e5e3cfacead03f0df674d54c69973ea7"},
+    {file = "PyQt6_sip-13.10.0-cp311-cp311-win_arm64.whl", hash = "sha256:bbefd5539eeda4dec37e8b6dfc362ba240ec31279060336bcceaff572807dac8"},
+    {file = "PyQt6_sip-13.10.0-cp312-cp312-macosx_10_9_universal2.whl", hash = "sha256:48791db2914fc39c3218519a02d2a5fd3fcd354a1be3141a57bf2880701486f2"},
+    {file = "PyQt6_sip-13.10.0-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:466d6b4791973c9fcbdc2e0087ed194b9ea802a8c3948867a849498f0841c70c"},
+    {file = "PyQt6_sip-13.10.0-cp312-cp312-manylinux_2_5_x86_64.manylinux1_x86_64.whl", hash = "sha256:ae15358941f127cd3d1ab09c1ebd45c4dabb0b2e91587b9eebde0279d0039c54"},
+    {file = "PyQt6_sip-13.10.0-cp312-cp312-win_amd64.whl", hash = "sha256:ad573184fa8b00041944e5a17d150ab0d08db2d2189e39c9373574ebab3f2e58"},
+    {file = "PyQt6_sip-13.10.0-cp312-cp312-win_arm64.whl", hash = "sha256:2d579d810d0047d40bde9c6aef281d6ed218db93c9496ebc9e55b9e6f27a229d"},
+    {file = "PyQt6_sip-13.10.0-cp313-cp313-macosx_10_13_universal2.whl", hash = "sha256:7b6e250c2e7c14702a623f2cc1479d7fb8db2b6eee9697cac10d06fe79c281bb"},
+    {file = "PyQt6_sip-13.10.0-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:0fcb30756568f8cd59290f9ef2ae5ee3e72ff9cdd61a6f80c9e3d3b95ae676be"},
+    {file = "PyQt6_sip-13.10.0-cp313-cp313-manylinux_2_5_x86_64.manylinux1_x86_64.whl", hash = "sha256:757ac52c92b2ef0b56ecc7cd763b55a62d3c14271d7ea8d03315af85a70090ff"},
+    {file = "PyQt6_sip-13.10.0-cp313-cp313-win_amd64.whl", hash = "sha256:571900c44a3e38738d696234d94fe2043972b9de0633505451c99e2922cb6a34"},
+    {file = "PyQt6_sip-13.10.0-cp313-cp313-win_arm64.whl", hash = "sha256:39cba2cc71cf80a99b4dc8147b43508d4716e128f9fb99f5eb5860a37f082282"},
+    {file = "PyQt6_sip-13.10.0-cp39-cp39-macosx_10_9_universal2.whl", hash = "sha256:5f026a1278f9c2a745542d4a05350f2392d4cf339275fb8efccb47b0f213d120"},
+    {file = "PyQt6_sip-13.10.0-cp39-cp39-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:548c70bc40d993be0eb011e1bbc41ba7c95f6af375613b58217f39ad8d703345"},
+    {file = "PyQt6_sip-13.10.0-cp39-cp39-manylinux_2_5_x86_64.manylinux1_x86_64.whl", hash = "sha256:21417ffd2c489afef114cb09683bbc0fb24d78df848a21fc0d09e70ecbb0a4a4"},
+    {file = "PyQt6_sip-13.10.0-cp39-cp39-win_amd64.whl", hash = "sha256:6e1b1f7a29290afc83bcd9970e0cffa2d0da87d81796b6eab7b6f583e4f49652"},
+    {file = "pyqt6_sip-13.10.0.tar.gz", hash = "sha256:d6daa95a0bd315d9ec523b549e0ce97455f61ded65d5eafecd83ed2aa4ae5350"},
+]
+
+[[package]]
 name = "pyspnego"
 version = "0.11.2"
 description = "Windows Negotiate Authentication Client and Server"
@@ -2602,6 +2725,34 @@ common = ["black (>=24.1,<25.0)", "coverage (>=6.3)", "ddt (>=1.2.0,!=1.4.0,!=1.
 dev = ["qiskit-ibm-runtime[common]", "qiskit-ibm-runtime[documentation]", "qiskit-ibm-runtime[visualization]"]
 documentation = ["Sphinx (>=6)", "jupyter-sphinx", "nbsphinx", "packaging", "sphinx-autodoc-typehints (<=1.19.2)", "sphinx-automodapi", "sphinxcontrib-katex (==0.9.9)"]
 visualization = ["plotly (>=5.23.0)"]
+
+[[package]]
+name = "qiskit-optimization"
+version = "0.6.1"
+description = "Qiskit Optimization: A library for optimization applications using quantum computing"
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+markers = "python_version < \"4\""
+files = [
+    {file = "qiskit-optimization-0.6.1.tar.gz", hash = "sha256:0ad8c2bc83fe80657c788b5f282ce4055d0ec005c4876789e5069499ee3c00c0"},
+    {file = "qiskit_optimization-0.6.1-py3-none-any.whl", hash = "sha256:3f09f31289dfef66bbbb03b782a94d88a4ba5681c728b4b8e96884de5fc83879"},
+]
+
+[package.dependencies]
+docplex = ">=2.21.207,<2.24.231 || >2.24.231"
+networkx = ">=2.6.3"
+numpy = ">=1.17"
+qiskit = ">=0.44"
+qiskit-algorithms = ">=0.2.0"
+scipy = ">=1.9.0"
+setuptools = ">=40.1.0"
+
+[package.extras]
+cplex = ["cplex ; python_version < \"3.12\" and platform_machine != \"arm64\""]
+cvx = ["cvxpy"]
+gurobi = ["gurobipy"]
+matplotlib = ["matplotlib"]
 
 [[package]]
 name = "referencing"
@@ -3570,4 +3721,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11"
-content-hash = "b4fd71320ca2084de3abb5b4e3a035602d171d0c1e4c75f92a860e12629eacc2"
+content-hash = "47de4da739ed5b0c26660845a532aee0e7a25d537210e11ca2ace78172bd4302"
