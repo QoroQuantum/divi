@@ -266,7 +266,6 @@ class QuantumProgram(ABC):
                 curr_measurement_group = measurement_groups[ham_op_index]
                 curr_marginal_results = []
                 for observable in curr_measurement_group:
-                    marginal_counts(shots_dict, observable.wires.tolist())
                     exp_value = sampled_expectation_value(
                         marginal_counts(shots_dict, observable.wires.tolist()),
                         "Z" * len(observable.wires),
