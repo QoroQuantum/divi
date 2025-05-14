@@ -1,5 +1,6 @@
 from divi.services import QoroService
-from tests.benchmarking import Benchmarking
+
+from circuit_generator import CircuitGenerator
 
 # This one is live
 # from divi.services import QoroService
@@ -11,7 +12,7 @@ q_service = QoroService("3ce4a6bdaa01a6ada69a5809a0dad69306adf995")
 
 if __name__ == "__main__":
 
-    qasm_str = Benchmarking(num_qubits=9).hea_ansatz(depth=1, entanglement='linear')
+    qasm_str = CircuitGenerator(num_qubits=12).ghz_state()
     print(qasm_str)
 
     jobs = q_service.send_circuit_cut_job(qasm_str)
