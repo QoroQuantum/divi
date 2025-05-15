@@ -54,7 +54,7 @@ class CircuitGenerator:
         self.qc.measure_all()
 
         # parameter values s.t. -> clifford gates
-        angles = [
+        clifford_angles = [
             0,
             -np.pi / 2,
             np.pi / 2,
@@ -66,7 +66,10 @@ class CircuitGenerator:
             2 * np.pi,
         ]
 
-        parameter_values = random.choices(angles, k=2 * self.num_qubits * (1 + depth))
+        parameter_values = random.choices(
+            clifford_angles, k=2 * self.num_qubits * (1 + depth)
+        )
+
         # parameter_values = [0] * (2 * self.num_qubits * (1 + depth))
         bound_circuit = self.qc.assign_parameters(parameter_values)
         self.qc = bound_circuit.decompose()
