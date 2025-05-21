@@ -12,6 +12,8 @@ from qiskit_aer import AerSimulator
 from qiskit_ibm_runtime.fake_provider import FakeCairoV2, FakeWashingtonV2
 from qiskit_ibm_runtime.fake_provider.fake_backend import FakeBackendV2
 
+from divi.interfaces import CircuitRunner
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
@@ -25,7 +27,7 @@ FAKE_BACKENDS = {
 }
 
 
-class ParallelSimulator:
+class ParallelSimulator(CircuitRunner):
     def __init__(self, n_processes: int = 2, n_qpus: int = 5):
         self.n_processes = n_processes
         self.engine = "qiskit"
@@ -46,7 +48,7 @@ class ParallelSimulator:
 
         return {"label": circuit_label, "results": dict(counts)}
 
-    def simulate(self, circuits, shots=1024, simulation_seed=None):
+    def submit_circuits(self, circuits, shots: int = 1024, simulation_seed=None):
         logger.debug(
             f"Simulating {len(circuits)} circuits with {self.n_processes} processes"
         )

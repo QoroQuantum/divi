@@ -177,13 +177,13 @@ class QuantumProgram(ABC):
         self._total_circuit_count += len(job_circuits)
 
         if self.qoro_service is not None:
-            self.job_id = self.qoro_service.send_circuits(
+            self.job_id = self.qoro_service.submit_circuits(
                 job_circuits, shots=self.shots
             )
             return self.job_id, "job_id"
         else:
             circuit_simulator = ParallelSimulator()
-            circuit_results = circuit_simulator.simulate(
+            circuit_results = circuit_simulator.submit_circuits(
                 job_circuits, shots=self.shots, simulation_seed=self._seed
             )
             return circuit_results, "circuit_results"

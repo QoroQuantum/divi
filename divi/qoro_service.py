@@ -8,6 +8,8 @@ from http import HTTPStatus
 import requests
 from requests.adapters import HTTPAdapter, Retry
 
+from divi.interfaces import CircuitRunner
+
 API_URL = "https://app.qoroquantum.net/api"
 MAX_PAYLOAD_SIZE_MB = 0.95
 
@@ -46,7 +48,7 @@ class MaxRetriesReachedError(Exception):
         super().__init__(self.message)
 
 
-class QoroService:
+class QoroService(CircuitRunner):
 
     def __init__(self, auth_token) -> None:
         self.auth_token = "Bearer " + auth_token
@@ -64,7 +66,7 @@ class QoroService:
 
         return response
 
-    def send_circuits(
+    def submit_circuits(
         self, circuits, shots=1000, tag="default", job_type=JobTypes.SIMULATE
     ):
         """
