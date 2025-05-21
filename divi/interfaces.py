@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from typing import Optional
 
 
 class CircuitRunner(ABC):
@@ -18,5 +17,5 @@ class CircuitRunner(ABC):
         return self._shots
 
     @abstractmethod
-    def submit_circuits(self, circuits, shots: int, **kwargs):
+    def submit_circuits(self, circuits: dict[str, str], **kwargs):
         pass

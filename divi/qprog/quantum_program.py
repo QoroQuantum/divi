@@ -15,20 +15,6 @@ from divi.qprog.optimizers import Optimizers
 
 # Set up your logger
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-
-# Create console handler and set level to debug
-ch = logging.StreamHandler()
-ch.setLevel(logging.DEBUG)
-
-formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-ch.setFormatter(formatter)
-
-# Add the handler to the logger
-logger.addHandler(ch)
-
-# Suppress debug logs from external libraries
-logging.getLogger().setLevel(logging.WARNING)
 
 
 class QuantumProgram(ABC):
@@ -285,7 +271,7 @@ class QuantumProgram(ABC):
             data_file (str): The file to store the data in
         """
 
-        logger.debug(
+        logger.info(
             f"Finished iteration {self.current_iteration}"
             if self.current_iteration > 0
             else "Finished Setup"
@@ -300,7 +286,7 @@ class QuantumProgram(ABC):
 
                 self.losses.append(curr_losses)
 
-                logger.debug(f"Finished iteration {self.current_iteration}")
+                logger.info(f"Finished iteration {self.current_iteration}")
 
             self.final_params[:] = np.atleast_2d(self._curr_params)
 
@@ -338,7 +324,7 @@ class QuantumProgram(ABC):
                 self.final_params[:] = np.atleast_2d(intermediate_result.x)
 
                 self.current_iteration += 1
-                logger.debug(f"Finished iteration {self.current_iteration}")
+                logger.info(f"Finished iteration {self.current_iteration}")
 
             self._initialize_params()
 

@@ -1,7 +1,9 @@
+from divi.parallel_simulator import ParallelSimulator
 from divi.qprog import VQE, VQEAnsatze
 from divi.qprog.optimizers import Optimizers
 
 if __name__ == "__main__":
+
     vqe_input = dict(
         symbols=["H", "H"],
         bond_length=0.5,
@@ -10,9 +12,8 @@ if __name__ == "__main__":
         ansatz=VQEAnsatze.HARTREE_FOCK,
         optimizer=Optimizers.NELDER_MEAD,
         max_iterations=1,
-        qoro_service=None,
-        shots=5000,
-        seed=1997,
+        seed=2000,
+        backend=ParallelSimulator(simulation_seed=1997),
     )
 
     vqe_problem_no_grouping = VQE(
@@ -62,9 +63,9 @@ if __name__ == "__main__":
     print(f"Final Loss (no grouping): {no_grouping_loss}")
     print(f"Final Loss (wires grouping): {wire_grouping_loss}")
     print(f"Final Loss (qwc grouping): {qwc_grouping_loss}")
-    print(
-        f"All losses equal? {'Yes' if no_grouping_loss == wire_grouping_loss == qwc_grouping_loss else 'No'}"
-    )
+    all_equal = no_grouping_loss == wire_grouping_loss == qwc_grouping_loss
+    print(f"All losses equal? {'Yes' if all_equal else 'No'}")
+    assert all_equal
 
     print("-" * 20)
 

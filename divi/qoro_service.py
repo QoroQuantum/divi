@@ -68,24 +68,28 @@ class QoroService(CircuitRunner):
 
         return response
 
-    def submit_circuits(self, circuits, tag="default", job_type=JobTypes.SIMULATE):
+    def submit_circuits(
+        self,
+        circuits: dict[str, str],
+        tag: str = "default",
+        job_type: JobTypes = JobTypes.SIMULATE,
+    ):
         """
         Send circuits to the Qoro API for execution
 
         Args:
             circuits: list of circuits to be sent as QASM strings
-            shots (optional): number of shots to be executed for each circuit, default 1000
-            tag (optional): tag to be used for the job, defaut "default"
+            tag (optional): tag to be used for the job, defaults to "default"
         Returns:
             job_id: The job id of the job created
         """
 
-        def _compress_data(value):
+        def _compress_data(value) -> bytes:
             return base64.b64encode(gzip.compress(value.encode("utf-8"))).decode(
                 "utf-8"
             )
 
-        def _split_circuits(circuits):
+        def _split_circuits(circuits: dict[str, str]) -> list[dict[str, str]]:
             """
             Split circuits into smaller chunks if the payload size exceeds the maximum allowed size.
 

@@ -15,17 +15,6 @@ from qiskit_ibm_runtime.fake_provider.fake_backend import FakeBackendV2
 from divi.interfaces import CircuitRunner
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-
-# Create console handler and set level to debug
-ch = logging.StreamHandler()
-ch.setLevel(logging.DEBUG)
-
-formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-ch.setFormatter(formatter)
-
-# Add the handler to the logger
-logger.addHandler(ch)
 
 FAKE_BACKENDS = {
     27: ["FakeGeneva", "FakePeekskill", "FakeAuckland", "FakeCairoV2"],
@@ -53,7 +42,9 @@ class ParallelSimulator(CircuitRunner):
         self.simulation_seed = simulation_seed
 
     @staticmethod
-    def simulate_circuit(circuit_data, shots, simulation_seed):
+    def simulate_circuit(
+        circuit_data: tuple[str, str], shots: int, simulation_seed: int
+    ):
         circuit_label, circuit = circuit_data
 
         qiskit_circuit = QuantumCircuit.from_qasm_str(circuit)
@@ -67,7 +58,7 @@ class ParallelSimulator(CircuitRunner):
 
         return {"label": circuit_label, "results": dict(counts)}
 
-    def submit_circuits(self, circuits):
+    def submit_circuits(self, circuits: dict[str, str]):
         logger.debug(
             f"Simulating {len(circuits)} circuits with {self.n_processes} processes"
         )
