@@ -1,7 +1,7 @@
 import pytest
 import requests
 
-from divi.services.qoro_service import JobStatus, MaxRetriesReachedError, QoroService
+from divi.qoro_service import JobStatus, MaxRetriesReachedError, QoroService
 
 
 @pytest.fixture
@@ -69,9 +69,7 @@ def test_send_circuits_single_chunk_mock(mocker, qoro_service_mock):
 
 
 def test_send_circuits_multiple_chunks_mock(mocker, qoro_service_mock):
-    mocker.patch(
-        "divi.services.qoro_service.MAX_PAYLOAD_SIZE_MB", new=60.0 / 1024 / 1024
-    )
+    mocker.patch("divi.qoro_service.MAX_PAYLOAD_SIZE_MB", new=60.0 / 1024 / 1024)
 
     mock_response_1 = mocker.Mock(
         status_code=201, json=lambda: {"job_id": "mock_job_id_1"}

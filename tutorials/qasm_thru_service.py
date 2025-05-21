@@ -1,4 +1,4 @@
-from divi.services.qoro_service import QoroService
+from divi import QoroService
 
 if __name__ == "__main__":
     # Test if QoroService is initialized correctly

@@ -150,7 +150,11 @@ class QAOA(QuantumProgram):
             self.graph_problem = None
 
             if isinstance(problem, QuadraticProgram):
-                if any(var.vartype != VarType.BINARY for var in problem.variables):
+                if (
+                    any(var.vartype != VarType.BINARY for var in problem.variables)
+                    or problem.linear_constraints
+                    or problem.quadratic_constraints
+                ):
                     warn(
                         "Quadratic Program contains non-binary variables. Converting to QUBO."
                     )

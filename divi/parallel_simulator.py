@@ -15,6 +15,15 @@ from qiskit_ibm_runtime.fake_provider.fake_backend import FakeBackendV2
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
+FAKE_BACKENDS = {
+    27: ["FakeGeneva", "FakePeekskill", "FakeAuckland", "FakeCairoV2"],
+    20: ["FakeAlmadenV2", "FakeJohannesburgV2", "FakeSingaporeV2", "FakeBoeblingenV2"],
+    5: ["FakeManilaV2", "FakeBelemV2", "FakeLimaV2", "FakeQuitoV2"],
+    7: ["FakeOslo", "FakePerth", "FakeLagosV2", "FakeNairobiV2"],
+    16: ["FakeGuadalupeV2"],
+    15: ["FakeMelbourneV2"],
+}
+
 
 class ParallelSimulator:
     def __init__(self, n_processes: int = 2, n_qpus: int = 5):
@@ -53,7 +62,7 @@ class ParallelSimulator:
         circuit: str,
         backend: Optional[FakeBackendV2] = None,
         **transpilation_kwargs,
-    ):
+    ) -> float:
         """
         Estimate the execution time of a quantum circuit on a given backend, accounting for parallel gate execution.
 
@@ -104,7 +113,7 @@ class ParallelSimulator:
         circuits: Optional[list[str]] = None,
         precomputed_duration: Optional[list[float]] = None,
         **transpilation_kwargs,
-    ):
+    ) -> float:
         """
         Estimate the execution time of a quantum circuit on a given backend, accounting for parallel gate execution.
 

@@ -7,11 +7,11 @@ import numpy as np
 from qiskit.result import marginal_counts, sampled_expectation_value
 from scipy.optimize import OptimizeResult, minimize
 
+from divi import QoroService
 from divi.circuits import Circuit, MetaCircuit
 from divi.parallel_simulator import ParallelSimulator
+from divi.qoro_service import JobStatus
 from divi.qprog.optimizers import Optimizers
-from divi.services import QoroService
-from divi.services.qoro_service import JobStatus
 
 # Set up your logger
 logger = logging.getLogger(__name__)
