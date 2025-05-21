@@ -11,6 +11,7 @@ import rustworkx as rx
 import scipy.sparse.linalg as spla
 from sklearn.cluster import SpectralClustering
 
+from divi.interfaces import CircuitRunner
 from divi.qprog import QAOA, ProgramBatch
 from divi.qprog._qaoa import _SUPPORTED_INITIAL_STATES_LITERAL, GraphProblem
 
@@ -203,13 +204,13 @@ class GraphPartitioningQAOA(ProgramBatch):
         graph: nx.Graph | rx.PyGraph,
         graph_problem: GraphProblem,
         n_layers: int,
+        backend: CircuitRunner,
         n_qubits: int = None,
         n_clusters: int = None,
         initial_state: _SUPPORTED_INITIAL_STATES_LITERAL = "Recommended",
         aggregate_fn: AggregateFn = linear_aggregation,
         optimizer=Optimizers.MONTE_CARLO,
         max_iterations=10,
-        shots=5000,
         **kwargs,
     ):
         super().__init__()
@@ -232,7 +233,7 @@ class GraphPartitioningQAOA(ProgramBatch):
             graph_problem=graph_problem,
             optimizer=optimizer,
             max_iterations=max_iterations,
-            shots=shots,
+            backend=backend,
             n_layers=n_layers,
             **kwargs,
         )

@@ -12,6 +12,7 @@ from qprog_contracts import (
     verify_metacircuit_dict,
 )
 
+from divi.interfaces import CircuitRunner
 from divi.qprog import QAOA, GraphProblem
 from divi.qprog.optimizers import Optimizers
 
@@ -20,15 +21,17 @@ pytestmark = pytest.mark.algo
 
 class TestGeneralQAOA:
     @pytest.mark.parametrize("optimizer", list(Optimizers))
-    def test_qaoa_generate_circuits_called_with_correct_phases(self, mocker, optimizer):
+    def test_qaoa_generate_circuits_called_with_correct_phases(
+        self, mocker, optimizer, default_test_simulator
+    ):
         qaoa_problem = QAOA(
             problem=nx.bull_graph(),
             graph_problem=GraphProblem.MAX_CLIQUE,
             n_layers=1,
             optimizer=optimizer,
             max_iterations=1,
+            backend=default_test_simulator,
             is_constrained=True,
-            qoro_service=None,
         )
 
         mock_generate_circuits = mocker.patch.object(qaoa_problem, "_generate_circuits")
@@ -64,7 +67,9 @@ class TestGeneralQAOA:
         assert all(val == False for val in spy_values)
 
     @pytest.mark.parametrize("optimizer", list(Optimizers))
-    def test_graph_correct_circuits_count_and_energies(self, optimizer):
+    def test_graph_correct_circuits_count_and_energies(
+        self, optimizer, default_test_simulator
+    ):
         qaoa_problem = QAOA(
             problem=nx.bull_graph(),
             graph_problem=GraphProblem.MAX_CLIQUE,
@@ -72,14 +77,14 @@ class TestGeneralQAOA:
             optimizer=optimizer,
             max_iterations=1,
             is_constrained=True,
-            qoro_service=None,
+            backend=default_test_simulator,
         )
 
         verify_correct_circuit_count(qaoa_problem)
 
 
 class TestGraphInput:
-    def test_graph_basic_initialization(self):
+    def test_graph_basic_initialization(self, default_test_simulator):
         G = nx.bull_graph()
 
         qaoa_problem = QAOA(
@@ -88,13 +93,12 @@ class TestGraphInput:
             n_layers=2,
             optimizer=Optimizers.NELDER_MEAD,
             max_iterations=10,
-            shots=6000,
+            backend=default_test_simulator,
             is_constrained=True,
-            qoro_service=None,
         )
 
-        assert qaoa_problem.shots == 6000
-        assert qaoa_problem.qoro_service is None
+        assert isinstance(qaoa_problem.backend, CircuitRunner)
+        assert qaoa_problem.backend.shots == 5000
         assert qaoa_problem.optimizer == Optimizers.NELDER_MEAD
         assert qaoa_problem.max_iterations == 10
         assert qaoa_problem.graph_problem == GraphProblem.MAX_CLIQUE
@@ -108,7 +112,7 @@ class TestGraphInput:
             QAOA(
                 problem=nx.bull_graph(),
                 graph_problem="travelling_salesman",
-                qoro_service=None,
+                backend=None,
             )
 
     def test_graph_unsuppported_initial_state(self):
@@ -117,7 +121,7 @@ class TestGraphInput:
                 problem=nx.bull_graph(),
                 graph_problem=GraphProblem.MAX_CLIQUE,
                 initial_state="Bell",
-                qoro_service=None,
+                backend=None,
             )
 
     def test_graph_initial_state_recommended(self):
@@ -126,7 +130,7 @@ class TestGraphInput:
             graph_problem=GraphProblem.MAX_CLIQUE,
             initial_state="Recommended",
             is_constrained=True,
-            qoro_service=None,
+            backend=None,
         )
 
         assert qaoa_problem.initial_state == "Zeros"
@@ -136,7 +140,7 @@ class TestGraphInput:
             problem=nx.bull_graph(),
             graph_problem=GraphProblem.MAX_CLIQUE,
             initial_state="Superposition",
-            qoro_service=None,
+            backend=None,
         )
 
         assert qaoa_problem.initial_state == "Superposition"
@@ -152,7 +156,9 @@ class TestGraphInput:
 
     @flaky(max_runs=3, min_passes=1)
     @pytest.mark.parametrize("optimizer", list(Optimizers))
-    def test_graph_compute_final_solution(self, mocker, optimizer):
+    def test_graph_compute_final_solution(
+        self, mocker, optimizer, default_test_simulator
+    ):
         G = nx.bull_graph()
 
         if optimizer == Optimizers.MONTE_CARLO:
@@ -171,7 +177,7 @@ class TestGraphInput:
             optimizer=optimizer,
             max_iterations=8 if optimizer != Optimizers.MONTE_CARLO else 2,
             is_constrained=True,
-            qoro_service=None,
+            backend=default_test_simulator,
         )
 
         qaoa_problem.run()
@@ -202,7 +208,7 @@ class TestGraphInput:
             optimizer=Optimizers.NELDER_MEAD,
             max_iterations=2,
             is_constrained=True,
-            qoro_service=None,
+            backend=None,
         )
 
         qaoa_problem._solution_nodes = [0, 1, 2]
@@ -252,18 +258,17 @@ class TestQUBOInput:
     @pytest.mark.parametrize(
         "input_qubo", [qubo_matrix_list, qubo_matrix_np, qubo_matrix_sp]
     )
-    def test_qubo_basic_initialization(self, input_qubo):
+    def test_qubo_basic_initialization(self, input_qubo, default_test_simulator):
         qaoa_problem = QAOA(
             problem=input_qubo,
             n_layers=2,
             optimizer=Optimizers.NELDER_MEAD,
             max_iterations=10,
-            shots=6000,
-            qoro_service=None,
+            backend=default_test_simulator,
         )
 
-        assert qaoa_problem.shots == 6000
-        assert qaoa_problem.qoro_service is None
+        assert isinstance(qaoa_problem.backend, CircuitRunner)
+        assert qaoa_problem.backend.shots == 5000
         assert qaoa_problem.optimizer == Optimizers.NELDER_MEAD
         assert qaoa_problem.max_iterations == 10
         assert qaoa_problem.graph_problem == None
@@ -298,7 +303,7 @@ class TestQUBOInput:
                 n_layers=2,
                 optimizer=Optimizers.NELDER_MEAD,
                 max_iterations=10,
-                qoro_service=None,
+                backend=None,
             )
 
     def test_non_square_qubo_fails(self):
@@ -311,7 +316,7 @@ class TestQUBOInput:
                 n_layers=2,
                 optimizer=Optimizers.NELDER_MEAD,
                 max_iterations=10,
-                qoro_service=None,
+                backend=None,
             )
 
     def test_non_symmetrical_qubo_raises_warning(self):
@@ -327,7 +332,7 @@ class TestQUBOInput:
                 n_layers=2,
                 optimizer=Optimizers.NELDER_MEAD,
                 max_iterations=10,
-                qoro_service=None,
+                backend=None,
             )
 
         # Ensure the problem matrix was untouched
@@ -346,7 +351,7 @@ class TestQUBOInput:
                 n_layers=2,
                 optimizer=Optimizers.NELDER_MEAD,
                 max_iterations=10,
-                qoro_service=None,
+                backend=None,
             )
 
     def test_qubo_fails_when_drawing_solution(self):
@@ -355,7 +360,7 @@ class TestQUBOInput:
             n_layers=2,
             optimizer=Optimizers.NELDER_MEAD,
             max_iterations=10,
-            qoro_service=None,
+            backend=None,
         )
 
         with pytest.raises(
@@ -365,13 +370,13 @@ class TestQUBOInput:
             qaoa_problem.draw_solution()
 
     @flaky(max_runs=3, min_passes=1)
-    def test_qubo_returns_correct_solution(self):
+    def test_qubo_returns_correct_solution(self, default_test_simulator):
         qaoa_problem = QAOA(
             problem=qubo_matrix_np,
             n_layers=1,
             optimizer=Optimizers.NELDER_MEAD,
             max_iterations=10,
-            qoro_service=None,
+            backend=default_test_simulator,
         )
 
         qaoa_problem.run()
@@ -389,18 +394,19 @@ class TestQUBOInput:
 
         return qp
 
-    def test_quadratic_program_initialization(self, quadratic_program):
+    def test_quadratic_program_initialization(
+        self, quadratic_program, default_test_simulator
+    ):
         qaoa_problem = QAOA(
             problem=quadratic_program,
             n_layers=2,
             optimizer=Optimizers.NELDER_MEAD,
             max_iterations=10,
-            shots=6000,
-            qoro_service=None,
+            backend=default_test_simulator,
         )
 
-        assert qaoa_problem.shots == 6000
-        assert qaoa_problem.qoro_service is None
+        assert isinstance(qaoa_problem.backend, CircuitRunner)
+        assert qaoa_problem.backend.shots == 5000
         assert qaoa_problem.optimizer == Optimizers.NELDER_MEAD
         assert qaoa_problem.max_iterations == 10
         assert qaoa_problem.graph_problem == None
@@ -430,8 +436,7 @@ class TestQUBOInput:
                 n_layers=2,
                 optimizer=Optimizers.NELDER_MEAD,
                 max_iterations=10,
-                shots=10000,
-                qoro_service=None,
+                backend=None,
             )
 
         assert hasattr(qaoa_problem, "_qp_converter")
@@ -448,7 +453,9 @@ class TestQUBOInput:
 
     @flaky(max_runs=3, min_passes=1)
     @pytest.mark.filterwarnings("ignore::UserWarning")
-    def test_quadratic_program_minimize_correct(self, quadratic_program):
+    def test_quadratic_program_minimize_correct(
+        self, quadratic_program, default_test_simulator
+    ):
         quadratic_program.integer_var(lowerbound=0, upperbound=3, name="w")
         quadratic_program.minimize(linear={"x": -1, "y": -2, "z": 3, "w": -1})
 
@@ -457,8 +464,7 @@ class TestQUBOInput:
             n_layers=2,
             optimizer=Optimizers.NELDER_MEAD,
             max_iterations=20,
-            shots=10000,
-            qoro_service=None,
+            backend=default_test_simulator,
         )
 
         qaoa_problem.run()
@@ -470,7 +476,9 @@ class TestQUBOInput:
 
     @flaky(max_runs=3, min_passes=1)
     @pytest.mark.filterwarnings("ignore::UserWarning")
-    def test_quadratic_program_maximize_correct(self, quadratic_program):
+    def test_quadratic_program_maximize_correct(
+        self, quadratic_program, default_test_simulator
+    ):
         quadratic_program.integer_var(lowerbound=0, upperbound=3, name="w")
         quadratic_program.maximize(linear={"x": -1, "y": -2, "z": 3, "w": -1})
 
@@ -479,8 +487,7 @@ class TestQUBOInput:
             n_layers=1,
             optimizer=Optimizers.NELDER_MEAD,
             max_iterations=20,
-            shots=6000,
-            qoro_service=None,
+            backend=default_test_simulator,
         )
 
         qaoa_problem.run()

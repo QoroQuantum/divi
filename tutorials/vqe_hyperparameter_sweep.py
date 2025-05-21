@@ -2,6 +2,7 @@ import time
 
 import numpy as np
 
+from divi.parallel_simulator import ParallelSimulator
 from divi.qprog import VQEAnsatze, VQEHyperparameterSweep
 from divi.qprog.optimizers import Optimizers
 
@@ -13,8 +14,7 @@ if __name__ == "__main__":
         coordinate_structure=[(0, 0, 0), (0, 0, 1)],
         max_iterations=3,
         optimizer=Optimizers.MONTE_CARLO,
-        shots=2000,
-        qoro_service=None,
+        backend=ParallelSimulator(shots=2000),
         grouping_strategy="wires",
     )
 

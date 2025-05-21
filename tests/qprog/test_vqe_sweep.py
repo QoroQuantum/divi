@@ -7,14 +7,13 @@ from divi.qprog import Optimizers, VQEAnsatze, VQEHyperparameterSweep
 
 
 @pytest.fixture
-def vqe_sweep():
+def vqe_sweep(default_test_simulator):
     bond_lengths = [0.5, 1.0, 1.5]
     ansatze = [VQEAnsatze.UCCSD, VQEAnsatze.RY]
     symbols = ["H", "H"]
     coordinate_structure = [[0, 0, 0], [0, 0, 1]]
     optimizer = Optimizers.MONTE_CARLO
     max_iterations = 10
-    shots = 5000
 
     return VQEHyperparameterSweep(
         bond_lengths=bond_lengths,
@@ -23,7 +22,7 @@ def vqe_sweep():
         coordinate_structure=coordinate_structure,
         optimizer=optimizer,
         max_iterations=max_iterations,
-        shots=shots,
+        backend=default_test_simulator,
     )
 
 
@@ -49,7 +48,7 @@ def test_correct_number_of_programs_created(mocker, vqe_sweep):
     for program in vqe_sweep.programs.values():
         assert program.optimizer == Optimizers.MONTE_CARLO
         assert program.max_iterations == 10
-        assert program.shots == 5000
+        assert program.backend.shots == 5000
         assert program.coordinate_structure == [[0, 0, 0], [0, 0, 1]]
         assert program.symbols == ["H", "H"]
 

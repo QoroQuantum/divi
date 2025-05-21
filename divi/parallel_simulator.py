@@ -17,6 +17,16 @@ from divi.interfaces import CircuitRunner
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
+# Create console handler and set level to debug
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+
+formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+ch.setFormatter(formatter)
+
+# Add the handler to the logger
+logger.addHandler(ch)
+
 FAKE_BACKENDS = {
     27: ["FakeGeneva", "FakePeekskill", "FakeAuckland", "FakeCairoV2"],
     20: ["FakeAlmadenV2", "FakeJohannesburgV2", "FakeSingaporeV2", "FakeBoeblingenV2"],
@@ -28,10 +38,19 @@ FAKE_BACKENDS = {
 
 
 class ParallelSimulator(CircuitRunner):
-    def __init__(self, n_processes: int = 2, n_qpus: int = 5):
+    def __init__(
+        self,
+        n_processes: int = 2,
+        n_qpus: int = 5,
+        shots: int = 5000,
+        simulation_seed: Optional[int] = None,
+    ):
+        super().__init__(shots=shots)
+
         self.n_processes = n_processes
         self.engine = "qiskit"
         self.n_qpus = n_qpus
+        self.simulation_seed = simulation_seed
 
     @staticmethod
     def simulate_circuit(circuit_data, shots, simulation_seed):
@@ -48,14 +67,17 @@ class ParallelSimulator(CircuitRunner):
 
         return {"label": circuit_label, "results": dict(counts)}
 
-    def submit_circuits(self, circuits, shots: int = 1024, simulation_seed=None):
+    def submit_circuits(self, circuits):
         logger.debug(
             f"Simulating {len(circuits)} circuits with {self.n_processes} processes"
         )
         with Pool(processes=self.n_processes) as pool:
             results = pool.starmap(
                 self.simulate_circuit,
-                [(circuit, shots, simulation_seed) for circuit in circuits.items()],
+                [
+                    (circuit, self.shots, self.simulation_seed)
+                    for circuit in circuits.items()
+                ],
             )
         return results
 

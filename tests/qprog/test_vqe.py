@@ -12,18 +12,16 @@ from divi.qprog import VQE, Optimizers, VQEAnsatze
 pytestmark = pytest.mark.algo
 
 
-def test_vqe_basic_initialization():
+def test_vqe_basic_initialization(default_test_simulator):
     vqe_problem = VQE(
         symbols=["H", "H"],
         bond_length=0.5,
         coordinate_structure=[(1, 0, 0), (0, -1, 0)],
         n_layers=2,
-        shots=2000,
-        qoro_service=None,
+        backend=default_test_simulator,
     )
 
-    assert vqe_problem.shots == 2000
-    assert vqe_problem.qoro_service is None
+    assert vqe_problem.backend.shots == 5000
 
     assert vqe_problem.symbols == ["H", "H"]
     assert vqe_problem.bond_length == 0.5
@@ -51,7 +49,7 @@ def test_meta_circuit_qasm(ansatz, n_layers):
         coordinate_structure=[(1, 0, 0), (0, -1, 0)],
         n_layers=n_layers,
         ansatz=ansatz,
-        qoro_service=None,
+        backend=None,
     )
 
     meta_circuit_obj = vqe_problem._meta_circuits["cost_circuit"]
@@ -92,7 +90,7 @@ def test_vqe_fail_with_hw_efficient_ansatz():
 
 
 @pytest.mark.parametrize("optimizer", list(Optimizers))
-def test_vqe_correct_circuits_count_and_energies(optimizer):
+def test_vqe_correct_circuits_count_and_energies(optimizer, default_test_simulator):
     vqe_problem = VQE(
         symbols=["H", "H"],
         bond_length=0.5,
@@ -101,7 +99,7 @@ def test_vqe_correct_circuits_count_and_energies(optimizer):
         ansatz=VQEAnsatze.HARTREE_FOCK,
         optimizer=optimizer,
         max_iterations=1,
-        qoro_service=None,
+        backend=default_test_simulator,
     )
 
     verify_correct_circuit_count(vqe_problem)

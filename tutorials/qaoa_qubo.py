@@ -2,6 +2,7 @@ from functools import partial
 
 import numpy as np
 
+from divi.parallel_simulator import ParallelSimulator
 from divi.qprog import QAOA
 from divi.qprog.optimizers import Optimizers
 
@@ -29,8 +30,7 @@ if __name__ == "__main__":
         n_layers=2,
         optimizer=Optimizers.NELDER_MEAD,
         max_iterations=10,
-        shots=10000,
-        qoro_service=None,
+        backend=ParallelSimulator(shots=10000),
     )
 
     qaoa_problem.run()

@@ -5,6 +5,7 @@ from typing import Literal
 
 import matplotlib.pyplot as plt
 
+from divi.interfaces import CircuitRunner
 from divi.qprog import VQE, ProgramBatch, VQEAnsatze
 
 from .optimizers import Optimizers
@@ -17,13 +18,13 @@ class VQEHyperparameterSweep(ProgramBatch):
 
     def __init__(
         self,
-        bond_lengths,
-        ansatze,
-        symbols,
-        coordinate_structure,
-        optimizer=Optimizers.MONTE_CARLO,
-        max_iterations=10,
-        shots=5000,
+        bond_lengths: list[float],
+        ansatze: list[VQEAnsatze],
+        symbols: list[str],
+        coordinate_structure: list[tuple[float, float, float]],
+        backend: CircuitRunner,
+        optimizer: Optimizers = Optimizers.MONTE_CARLO,
+        max_iterations: int = 10,
         **kwargs,
     ):
         """Initiates the class.
@@ -48,7 +49,7 @@ class VQEHyperparameterSweep(ProgramBatch):
             coordinate_structure=coordinate_structure,
             optimizer=optimizer,
             max_iterations=max_iterations,
-            shots=shots,
+            backend=backend,
             **kwargs,
         )
 

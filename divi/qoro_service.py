@@ -50,7 +50,9 @@ class MaxRetriesReachedError(Exception):
 
 class QoroService(CircuitRunner):
 
-    def __init__(self, auth_token) -> None:
+    def __init__(self, auth_token: str, shots: int = 1000):
+        super().__init__(shots=shots)
+
         self.auth_token = "Bearer " + auth_token
 
     def test_connection(self):
@@ -66,9 +68,7 @@ class QoroService(CircuitRunner):
 
         return response
 
-    def submit_circuits(
-        self, circuits, shots=1000, tag="default", job_type=JobTypes.SIMULATE
-    ):
+    def submit_circuits(self, circuits, tag="default", job_type=JobTypes.SIMULATE):
         """
         Send circuits to the Qoro API for execution
 
@@ -133,7 +133,7 @@ class QoroService(CircuitRunner):
                 },
                 json={
                     "circuits": chunk,
-                    "shots": shots,
+                    "shots": self.shots,
                     "tag": tag,
                     "job_type": job_type.value,
                 },

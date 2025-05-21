@@ -2,6 +2,7 @@ import random
 
 import networkx as nx
 
+from divi.parallel_simulator import ParallelSimulator
 from divi.qprog import GraphPartitioningQAOA, GraphProblem
 from divi.qprog.optimizers import Optimizers
 
@@ -53,8 +54,8 @@ if __name__ == "__main__":
     )
 
     # from divi.services import QoroService
-    # q_service = QoroService("4497dcabd079bedbeeec9d16b3dcccb1344461b9")
-    q_service = None
+    # backend = QoroService("4497dcabd079bedbeeec9d16b3dcccb1344461b9")
+    backend = ParallelSimulator()
 
     qaoa_batch = GraphPartitioningQAOA(
         graph_problem=GraphProblem.MAXCUT,
@@ -63,7 +64,7 @@ if __name__ == "__main__":
         n_clusters=2,
         optimizer=Optimizers.NELDER_MEAD,
         max_iterations=20,
-        qoro_service=q_service,
+        backend=backend,
     )
 
     qaoa_batch.create_programs()

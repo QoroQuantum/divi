@@ -46,7 +46,6 @@ class MLAE(QuantumProgram):
         grovers: list[int],
         qubits_to_measure: list[int],
         probability: float,
-        shots: int = 5000,
         **kwargs,
     ):
         """
@@ -64,7 +63,6 @@ class MLAE(QuantumProgram):
         self.grovers = grovers
         self.qubits_to_measure = qubits_to_measure
         self.probability = probability
-        self.shots = shots
         self.likelihood_functions = []
 
     def _create_meta_circuits_dict(self):

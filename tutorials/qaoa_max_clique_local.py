@@ -1,5 +1,6 @@
 import networkx as nx
 
+from divi.parallel_simulator import ParallelSimulator
 from divi.qprog import QAOA, GraphProblem
 from divi.qprog.optimizers import Optimizers
 
@@ -13,7 +14,7 @@ if __name__ == "__main__":
         optimizer=Optimizers.NELDER_MEAD,
         max_iterations=10,
         is_constrained=True,
-        qoro_service=None,
+        backend=ParallelSimulator(),
     )
 
     qaoa_problem.run()

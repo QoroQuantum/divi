@@ -127,8 +127,8 @@ class QAOA(QuantumProgram):
         graph_problem: Optional[GraphProblem] = None,
         n_layers: int = 1,
         initial_state: _SUPPORTED_INITIAL_STATES_LITERAL = "Recommended",
-        optimizer=Optimizers.MONTE_CARLO,
-        max_iterations=10,
+        optimizer: Optimizers = Optimizers.MONTE_CARLO,
+        max_iterations: int = 10,
         **kwargs,
     ):
         """
@@ -325,7 +325,7 @@ class QAOA(QuantumProgram):
         if self._is_compute_probabilies:
             return {
                 outer_k: {
-                    inner_k: inner_v / self.shots
+                    inner_k: inner_v / self.backend.shots
                     for inner_k, inner_v in outer_v.items()
                 }
                 for outer_k, outer_v in results.items()

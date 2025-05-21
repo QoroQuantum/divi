@@ -17,7 +17,7 @@ class SampleProgram(QuantumProgram):
         self.n_layers = 1
         self.n_params = 4
 
-        super().__init__(**kwargs)
+        super().__init__(backend=None, **kwargs)
 
         self._meta_circuits = self._create_meta_circuits_dict()
 

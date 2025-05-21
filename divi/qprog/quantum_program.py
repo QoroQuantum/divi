@@ -9,7 +9,7 @@ from scipy.optimize import OptimizeResult, minimize
 
 from divi import QoroService
 from divi.circuits import Circuit, MetaCircuit
-from divi.parallel_simulator import ParallelSimulator
+from divi.interfaces import CircuitRunner
 from divi.qoro_service import JobStatus
 from divi.qprog.optimizers import Optimizers
 
@@ -34,8 +34,7 @@ logging.getLogger().setLevel(logging.WARNING)
 class QuantumProgram(ABC):
     def __init__(
         self,
-        shots: int = 5000,
-        qoro_service: Optional[QoroService] = None,
+        backend: CircuitRunner,
         seed: Optional[int] = None,
         **kwargs,
     ):
@@ -56,8 +55,7 @@ class QuantumProgram(ABC):
             qoro_service (QoroService): An instance of QoroService to handle.
                 Defaults to None, which corresponds to local simulation.
             seed (int): A seed for numpy's random number generator, which will
-                be used for the parameter initialization and the local simulator's
-                sampling function.
+                be used for the parameter initialization.
                 Defaults to None.
 
             **kwargs: Additional keyword arguments that influence behaviour.
@@ -69,8 +67,6 @@ class QuantumProgram(ABC):
                 - final_params (Optional[list]): A list to initialize the `final_params` attribute. Defaults to an empty list.
 
         """
-        if shots <= 0:
-            raise ValueError(f"Shots must be a positive integer. Got {shots}.")
 
         # Shared Variables
         self.losses = []
@@ -94,8 +90,7 @@ class QuantumProgram(ABC):
         # step for grad calculation routine
         self._grad_mode = False
 
-        self.shots = shots
-        self.qoro_service = qoro_service
+        self.backend = backend
         self.job_id = None
 
         # Needed for Pennylane's transforms
@@ -176,17 +171,12 @@ class QuantumProgram(ABC):
 
         self._total_circuit_count += len(job_circuits)
 
-        if self.qoro_service is not None:
-            self.job_id = self.qoro_service.submit_circuits(
-                job_circuits, shots=self.shots
-            )
-            return self.job_id, "job_id"
-        else:
-            circuit_simulator = ParallelSimulator()
-            circuit_results = circuit_simulator.submit_circuits(
-                job_circuits, shots=self.shots, simulation_seed=self._seed
-            )
-            return circuit_results, "circuit_results"
+        backend_output = self.backend.submit_circuits(job_circuits)
+
+        if isinstance(self.backend, QoroService):
+            self.job_id = backend_output
+
+        return backend_output
 
     def _dispatch_circuits_and_process_results(self, store_data=False, data_file=None):
         """
@@ -198,7 +188,7 @@ class QuantumProgram(ABC):
             data_file (str): The file to store the data in
         """
 
-        results, backend_return_type = self._prepare_and_send_circuits()
+        results = self._prepare_and_send_circuits()
 
         def add_run_time(response):
             if isinstance(response, dict):
@@ -206,21 +196,19 @@ class QuantumProgram(ABC):
             elif isinstance(response, list):
                 self._total_run_time += sum(float(r["run_time"]) for r in response)
 
-        if backend_return_type == "job_id":
-            job_id = results
-            if job_id is not None and self.qoro_service is not None:
-                status = self.qoro_service.poll_job_status(
-                    self.job_id,
-                    loop_until_complete=True,
-                    on_complete=add_run_time,
+        if isinstance(self.backend, QoroService):
+            status = self.backend.poll_job_status(
+                self.job_id,
+                loop_until_complete=True,
+                on_complete=add_run_time,
+            )
+
+            if status != JobStatus.COMPLETED:
+                raise Exception(
+                    "Job has not completed yet, cannot post-process results"
                 )
 
-                if status != JobStatus.COMPLETED:
-                    raise Exception(
-                        "Job has not completed yet, cannot post-process results"
-                    )
-
-                results = self.qoro_service.get_job_results(self.job_id)
+            results = self.backend.get_job_results(self.job_id)
 
         results = {r["label"]: r["results"] for r in results}
 
@@ -297,7 +285,11 @@ class QuantumProgram(ABC):
             data_file (str): The file to store the data in
         """
 
-        logger.debug(f"Finished iteration {self.current_iteration}")
+        logger.debug(
+            f"Finished iteration {self.current_iteration}"
+            if self.current_iteration > 0
+            else "Finished Setup"
+        )
 
         if self.optimizer == Optimizers.MONTE_CARLO:
             while self.current_iteration < self.max_iterations:
