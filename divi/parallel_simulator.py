@@ -17,12 +17,12 @@ from divi.interfaces import CircuitRunner
 logger = logging.getLogger(__name__)
 
 FAKE_BACKENDS = {
-    27: ["FakeGeneva", "FakePeekskill", "FakeAuckland", "FakeCairoV2"],
-    20: ["FakeAlmadenV2", "FakeJohannesburgV2", "FakeSingaporeV2", "FakeBoeblingenV2"],
     5: ["FakeManilaV2", "FakeBelemV2", "FakeLimaV2", "FakeQuitoV2"],
     7: ["FakeOslo", "FakePerth", "FakeLagosV2", "FakeNairobiV2"],
-    16: ["FakeGuadalupeV2"],
     15: ["FakeMelbourneV2"],
+    16: ["FakeGuadalupeV2"],
+    20: ["FakeAlmadenV2", "FakeJohannesburgV2", "FakeSingaporeV2", "FakeBoeblingenV2"],
+    27: ["FakeGeneva", "FakePeekskill", "FakeAuckland", "FakeCairoV2"],
 }
 
 
@@ -30,15 +30,19 @@ class ParallelSimulator(CircuitRunner):
     def __init__(
         self,
         n_processes: int = 2,
-        n_qpus: int = 5,
         shots: int = 5000,
         simulation_seed: Optional[int] = None,
     ):
+        """
+        Args:
+            n_processes (int, optional): Number of parallel processes to use for simulation. Defaults to 2.
+            shots (int, optional): Number of shots to perform. Defaults to 5000.
+            simulation_seed (Optional[int], optional): Seed for the random number generator to ensure reproducibility. Defaults to None.
+        """
         super().__init__(shots=shots)
 
         self.n_processes = n_processes
         self.engine = "qiskit"
-        self.n_qpus = n_qpus
         self.simulation_seed = simulation_seed
 
     @staticmethod
@@ -127,6 +131,7 @@ class ParallelSimulator(CircuitRunner):
         self,
         circuits: Optional[list[str]] = None,
         precomputed_duration: Optional[list[float]] = None,
+        n_qpus: int = 5,
         **transpilation_kwargs,
     ) -> float:
         """
@@ -135,6 +140,8 @@ class ParallelSimulator(CircuitRunner):
         Parameters:
             circuits (list[str]): The quantum circuits to estimate execution time for, as QASM strings.
             precomputed_durations (list[float]): A list of precomputed durations to use.
+            n_qpus (int): Number of QPU nodes in the pre-supposed cluster we are estimating runtime against.
+
         Returns:
             float: Estimated execution time in seconds.
         """
@@ -153,12 +160,12 @@ class ParallelSimulator(CircuitRunner):
             estimated_run_times_sorted = sorted(precomputed_duration, reverse=True)
 
         # Just return the longest run time if there are enough QPUs
-        if self.n_qpus >= len(estimated_run_times_sorted):
+        if n_qpus >= len(estimated_run_times_sorted):
             return estimated_run_times_sorted[0]
 
         # Initialize processor queue with (total_run_time, processor_id)
         # Using a min heap to always get the processor that will be free first
-        processors = [(0, i) for i in range(self.n_qpus)]
+        processors = [(0, i) for i in range(n_qpus)]
         heapq.heapify(processors)
 
         # Assign each task to the processor that will be free first

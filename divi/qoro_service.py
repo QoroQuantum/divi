@@ -2,8 +2,10 @@ import base64
 import gzip
 import json
 import time
+from collections.abc import Callable
 from enum import Enum
 from http import HTTPStatus
+from typing import Optional
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
@@ -50,10 +52,18 @@ class MaxRetriesReachedError(Exception):
 
 class QoroService(CircuitRunner):
 
-    def __init__(self, auth_token: str, shots: int = 1000):
+    def __init__(
+        self,
+        auth_token: str,
+        polling_interval: float = 3.0,
+        max_retries: int = 5000,
+        shots: int = 1000,
+    ):
         super().__init__(shots=shots)
 
         self.auth_token = "Bearer " + auth_token
+        self.polling_interval = polling_interval
+        self.max_retries = max_retries
 
     def test_connection(self):
         """Test the connection to the Qoro API"""
@@ -217,22 +227,20 @@ class QoroService(CircuitRunner):
 
     def poll_job_status(
         self,
-        job_ids,
-        loop_until_complete=False,
-        on_complete=None,
-        timeout=3,
-        max_retries=5000,
-        verbose=True,
+        job_ids: str | list[str],
+        loop_until_complete: bool = False,
+        on_complete: Optional[Callable] = None,
+        verbose: bool = True,
     ):
         """
         Get the status of a job and optionally execute function *on_complete* on the results
         if the status is COMPLETE.
 
         Args:
-            job_id: The job id of the jobs to check
+            job_ids: The job id of the jobs to check
             loop_until_complete (optional): A flag to loop until the job is completed
             on_complete (optional): A function to be called when the job is completed
-            timeout (optional): The time to wait between retries
+            polling_interval (optional): The time to wait between retries
             max_retries (optional): The maximum number of retries
             verbose (optional): A flag to print the when retrying
         Returns:
@@ -275,17 +283,17 @@ class QoroService(CircuitRunner):
                     completed = True
                     break
 
-                if retries >= max_retries:
+                if retries >= self.max_retries:
                     break
 
                 retries += 1
 
-                time.sleep(timeout)
+                time.sleep(self.polling_interval)
 
                 if verbose:
                     print(
-                        f"Polling job {job_ids}: {retries} times / {max_retries} retries",
-                        f"Run time: {retries*timeout} seconds",
+                        f"Polling job {job_ids}: {retries} times / {self.max_retries} retries",
+                        f"Run time: {retries*self.polling_interval} seconds",
                     )
 
             if completed and on_complete:

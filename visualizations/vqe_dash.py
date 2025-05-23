@@ -164,8 +164,8 @@ def run_vqe(n_clicks):
         qpu_range = tuple(range(1, 10))
 
         run_times = [
-            ParallelSimulator(n_processes=2, n_qpus=i).estimate_run_time_batch(
-                precomputed_duration=durations
+            ParallelSimulator(n_processes=2).estimate_run_time_batch(
+                precomputed_duration=durations, n_qpus=i
             )
             for i in qpu_range
         ]
