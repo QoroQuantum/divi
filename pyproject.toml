@@ -4,7 +4,7 @@ version = "0.1.0"
 description = ""
 authors = []
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<4.0"
 dependencies = [
     "pennylane (>=0.40.0,<0.41.0)",
     "numpy (<2.1)",
@@ -13,11 +13,11 @@ dependencies = [
     "scikit-learn (>=1.6.1,<2.0.0)",
     "matplotlib (>=3.10.1,<4.0.0)",
     "requests (>=2.32.3,<3.0.0)",
-    "qiskit (==1.2) ; python_version >= \"3.11\" and python_version < \"4\"",
-    "qiskit-algorithms (>=0.3.1,<0.4.0) ; python_version >= \"3.11\" and python_version < \"4\"",
-    "qiskit-aer (>=0.17.0,<0.18.0) ; python_version >= \"3.11\" and python_version < \"4\"",
-    "qiskit-ibm-runtime (<=0.36) ; python_version >= \"3.11\" and python_version < \"4\"",
-    "qiskit-optimization (>=0.6.1,<0.7.0) ; python_version >= \"3.11\" and python_version < \"4\"",
+    "qiskit (==1.2)",
+    "qiskit-algorithms (>=0.3.1,<0.4.0)",
+    "qiskit-aer (>=0.17.0,<0.18.0)",
+    "qiskit-ibm-runtime (<=0.36)",
+    "qiskit-optimization (>=0.6.1,<0.7.0)",
     "dill (>=0.4.0,<0.5.0)",
     "pyqt6 (>=6.9.0,<7.0.0)",
 ]

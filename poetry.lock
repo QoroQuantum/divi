@@ -19,7 +19,6 @@ description = "Reusable constraint types to use with typing.Annotated"
 optional = false
 python-versions = ">=3.8"
 groups = ["main"]
-markers = "python_version < \"4\""
 files = [
     {file = "annotated_types-0.7.0-py3-none-any.whl", hash = "sha256:1f02e8b43a8fbbc3f3e0d4f0f4bfc8131bcb4eebe8849b8e5c773f3a1c582a53"},
     {file = "annotated_types-0.7.0.tar.gz", hash = "sha256:aff07c09a53a08bc8cfccb9c85b05f1aa9a2a6f23728d790723543408344ce89"},
@@ -321,7 +320,7 @@ files = [
     {file = "cffi-1.17.1-cp39-cp39-win_amd64.whl", hash = "sha256:d016c76bdd850f3c626af19b0542c9677ba156e4ee4fccfdd7848803533ef662"},
     {file = "cffi-1.17.1.tar.gz", hash = "sha256:1c39c6016c32bc48dd54561950ebd6836e1670f2ae46128f67cf49e789c52824"},
 ]
-markers = {main = "python_version < \"4\" and platform_python_implementation != \"PyPy\"", docs = "implementation_name == \"pypy\""}
+markers = {main = "platform_python_implementation != \"PyPy\"", docs = "implementation_name == \"pypy\""}
 
 [package.dependencies]
 pycparser = "*"
@@ -549,7 +548,6 @@ description = "cryptography is a package which provides cryptographic recipes an
 optional = false
 python-versions = "!=3.9.0,!=3.9.1,>=3.7"
 groups = ["main"]
-markers = "python_version < \"4\""
 files = [
     {file = "cryptography-44.0.2-cp37-abi3-macosx_10_9_universal2.whl", hash = "sha256:efcfe97d1b3c79e486554efddeb8f6f53a4cdd4cf6086642784fa31fc384e1d7"},
     {file = "cryptography-44.0.2-cp37-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:29ecec49f3ba3f3849362854b7253a9f59799e3763b0c9d0826259a88efa02f1"},
@@ -658,7 +656,6 @@ description = "Bootstrap themed components for use in Plotly Dash"
 optional = false
 python-versions = "<4,>=3.9"
 groups = ["ui"]
-markers = "python_version < \"4\""
 files = [
     {file = "dash_bootstrap_components-1.7.1-py3-none-any.whl", hash = "sha256:5e8eae7ee1d013f69e272c68c1015b53ab71802460152088f33fffa90d245199"},
     {file = "dash_bootstrap_components-1.7.1.tar.gz", hash = "sha256:30d48340d6dc89831d6c06e400cd4236f0d5363562c05b2a922f21545695a082"},
@@ -809,7 +806,6 @@ description = "The IBM Decision Optimization CPLEX Modeling for Python"
 optional = false
 python-versions = "*"
 groups = ["main"]
-markers = "python_version < \"4\""
 files = [
     {file = "docplex-2.29.241.tar.gz", hash = "sha256:ad5250396be0cea02b732710795bb9e345d9923bbb0bf66520f66eb8f1e988ad"},
 ]
@@ -989,7 +985,6 @@ description = "Core library used by SDKs for IBM Cloud Services"
 optional = false
 python-versions = ">=3.9"
 groups = ["main"]
-markers = "python_version < \"4\""
 files = [
     {file = "ibm_cloud_sdk_core-3.23.0-py3-none-any.whl", hash = "sha256:9cbdd27de2306abd0916f6905b1d8aaa73b1bae510a4dc2a49fa2a62d40a6de5"},
     {file = "ibm_cloud_sdk_core-3.23.0.tar.gz", hash = "sha256:393cb7c8e747d2706f495bc29ae54871979ab2f2e7cb907cd4d4d4f011a92d93"},
@@ -1012,7 +1007,6 @@ description = "Python client library for IBM Cloud Platform Services"
 optional = false
 python-versions = ">=3.9"
 groups = ["main"]
-markers = "python_version < \"4\""
 files = [
     {file = "ibm_platform_services-0.62.0-py3-none-any.whl", hash = "sha256:0275828d9a1c37ac4927c8729868ef7bec4979381bf4a15c6e86f57963839eea"},
     {file = "ibm_platform_services-0.62.0.tar.gz", hash = "sha256:48180fdb60afbffed62479d359bec4c3c2ff310fe1cd2432852e9c131fe8426e"},
@@ -1492,7 +1486,6 @@ description = "Python library for arbitrary-precision floating-point arithmetic"
 optional = false
 python-versions = "*"
 groups = ["main"]
-markers = "python_version < \"4\""
 files = [
     {file = "mpmath-1.3.0-py3-none-any.whl", hash = "sha256:a0b2b9fe80bbcd81a6647ff13108738cfb482d481d826cc0e02f5b35e5c88d2c"},
     {file = "mpmath-1.3.0.tar.gz", hash = "sha256:7a28eb2a9774d00c7bc92411c19a89209d5da7c4c9a9e227be8330a23a25b91f"},
@@ -1790,7 +1783,6 @@ description = "Python Build Reasonableness"
 optional = false
 python-versions = ">=2.6"
 groups = ["main"]
-markers = "python_version < \"4\""
 files = [
     {file = "pbr-6.1.1-py2.py3-none-any.whl", hash = "sha256:38d4daea5d9fa63b3f626131b9d34947fd0c8be9b05a29276870580050a25a76"},
     {file = "pbr-6.1.1.tar.gz", hash = "sha256:93ea72ce6989eb2eed99d0f75721474f69ad88128afdef5ac377eb797c4bf76b"},
@@ -2032,7 +2024,6 @@ description = "Cross-platform lib for process and system monitoring in Python.  
 optional = false
 python-versions = ">=3.6"
 groups = ["main"]
-markers = "python_version < \"4\""
 files = [
     {file = "psutil-7.0.0-cp36-abi3-macosx_10_9_x86_64.whl", hash = "sha256:101d71dc322e3cffd7cea0650b09b3d08b8e7c4109dd6809fe452dfd00e58b25"},
     {file = "psutil-7.0.0-cp36-abi3-macosx_11_0_arm64.whl", hash = "sha256:39db632f6bb862eeccf56660871433e111b6ea58f2caea825571951d4b6aa3da"},
@@ -2061,7 +2052,7 @@ files = [
     {file = "pycparser-2.22-py3-none-any.whl", hash = "sha256:c3702b6d3dd8c7abc1afa565d7e63d53a1d0bd86cdc24edd75470f4de499cfcc"},
     {file = "pycparser-2.22.tar.gz", hash = "sha256:491c8be9c040f5390f5bf44a5b07752bd07f56edf992381b05c701439eec10f6"},
 ]
-markers = {main = "python_version < \"4\" and platform_python_implementation != \"PyPy\"", docs = "implementation_name == \"pypy\""}
+markers = {main = "platform_python_implementation != \"PyPy\"", docs = "implementation_name == \"pypy\""}
 
 [[package]]
 name = "pydantic"
@@ -2070,7 +2061,6 @@ description = "Data validation using Python type hints"
 optional = false
 python-versions = ">=3.8"
 groups = ["main"]
-markers = "python_version < \"4\""
 files = [
     {file = "pydantic-2.9.2-py3-none-any.whl", hash = "sha256:f048cec7b26778210e28a0459867920654d48e5e62db0958433636cde4254f12"},
     {file = "pydantic-2.9.2.tar.gz", hash = "sha256:d155cef71265d1e9807ed1c32b4c8deec042a44a50a4188b25ac67ecd81a9c0f"},
@@ -2095,7 +2085,6 @@ description = "Core functionality for Pydantic validation and serialization"
 optional = false
 python-versions = ">=3.8"
 groups = ["main"]
-markers = "python_version < \"4\""
 files = [
     {file = "pydantic_core-2.23.4-cp310-cp310-macosx_10_12_x86_64.whl", hash = "sha256:b10bd51f823d891193d4717448fab065733958bdb6a6b351967bd349d48d5c9b"},
     {file = "pydantic_core-2.23.4-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:4fc714bdbfb534f94034efaa6eadd74e5b93c8fa6315565a222f7b6f42ca1166"},
@@ -2213,7 +2202,6 @@ description = "JSON Web Token implementation in Python"
 optional = false
 python-versions = ">=3.9"
 groups = ["main"]
-markers = "python_version < \"4\""
 files = [
     {file = "PyJWT-2.10.1-py3-none-any.whl", hash = "sha256:dcdd193e30abefd5debf142f9adfcdd2b58004e644f25406ffaebd50bd98dacb"},
     {file = "pyjwt-2.10.1.tar.gz", hash = "sha256:3cc5772eb20009233caf06e9d8a0577824723b44e6648ee0a2aedb6cf9381953"},
@@ -2317,7 +2305,6 @@ description = "Windows Negotiate Authentication Client and Server"
 optional = false
 python-versions = ">=3.8"
 groups = ["main"]
-markers = "python_version < \"4\""
 files = [
     {file = "pyspnego-0.11.2-py3-none-any.whl", hash = "sha256:74abc1fb51e59360eb5c5c9086e5962174f1072c7a50cf6da0bda9a4bcfdfbd4"},
     {file = "pyspnego-0.11.2.tar.gz", hash = "sha256:994388d308fb06e4498365ce78d222bf4f3570b6df4ec95738431f61510c971b"},
@@ -2588,7 +2575,6 @@ description = "An open-source SDK for working with quantum computers at the leve
 optional = false
 python-versions = ">=3.8"
 groups = ["main"]
-markers = "python_version < \"4\""
 files = [
     {file = "qiskit-1.2.0-cp38-abi3-macosx_10_9_universal2.whl", hash = "sha256:b215440035a984abbd58edbb47d52b1f1dc54ea170d214173fd93ad41ce5e78d"},
     {file = "qiskit-1.2.0-cp38-abi3-macosx_10_9_x86_64.whl", hash = "sha256:61e22e1cc8f62b3a2194efd86ea488d85576c0886e237f907311c8dcdaaacc3c"},
@@ -2628,7 +2614,6 @@ description = "Aer - High performance simulators for Qiskit"
 optional = false
 python-versions = ">=3.7"
 groups = ["main"]
-markers = "python_version < \"4\""
 files = [
     {file = "qiskit_aer-0.17.0-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:869e13665fd8d3dde632d865e479fb230caae33d9d99fd03efbb6ffc31603728"},
     {file = "qiskit_aer-0.17.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:2be52044f9caf0e8cceb07229fd87bebf60b313a730e028a8c572abc0b719fc2"},
@@ -2685,7 +2670,6 @@ description = "Qiskit Algorithms: A library of quantum computing algorithms"
 optional = false
 python-versions = ">=3.8"
 groups = ["main"]
-markers = "python_version < \"4\""
 files = [
     {file = "qiskit_algorithms-0.3.1-py3-none-any.whl", hash = "sha256:d6c31d88a1ed65a9c6382c233ef10ecb9562e726f7b1b7823a0d178d63d29a0a"},
     {file = "qiskit_algorithms-0.3.1.tar.gz", hash = "sha256:cba9c573d47c0f9508745a5a2794298084ec4f8833781b426fa9b2cea0fca794"},
@@ -2703,7 +2687,6 @@ description = "IBM Quantum client for Qiskit Runtime."
 optional = false
 python-versions = ">=3.9"
 groups = ["main"]
-markers = "python_version < \"4\""
 files = [
     {file = "qiskit_ibm_runtime-0.35.0-py3-none-any.whl", hash = "sha256:a2b6dd7f6d24a632fb17b0fe8cfe30b56310679a8c01a79d641302431360eb6d"},
     {file = "qiskit_ibm_runtime-0.35.0.tar.gz", hash = "sha256:8b5919bfb96215d13ca5b103b8652c194e2e85b78dbe937dc2b6f675646de65f"},
@@ -2733,7 +2716,6 @@ description = "Qiskit Optimization: A library for optimization applications usin
 optional = false
 python-versions = ">=3.8"
 groups = ["main"]
-markers = "python_version < \"4\""
 files = [
     {file = "qiskit-optimization-0.6.1.tar.gz", hash = "sha256:0ad8c2bc83fe80657c788b5f282ce4055d0ec005c4876789e5069499ee3c00c0"},
     {file = "qiskit_optimization-0.6.1-py3-none-any.whl", hash = "sha256:3f09f31289dfef66bbbb03b782a94d88a4ba5681c728b4b8e96884de5fc83879"},
@@ -2800,7 +2782,6 @@ description = "This package allows for HTTP NTLM authentication using the reques
 optional = false
 python-versions = ">=3.8"
 groups = ["main"]
-markers = "python_version < \"4\""
 files = [
     {file = "requests_ntlm-1.3.0-py3-none-any.whl", hash = "sha256:4c7534a7d0e482bb0928531d621be4b2c74ace437e88c5a357ceb7452d25a510"},
     {file = "requests_ntlm-1.3.0.tar.gz", hash = "sha256:b29cc2462623dffdf9b88c43e180ccb735b4007228a542220e882c58ae56c668"},
@@ -3117,7 +3098,6 @@ files = [
     {file = "setuptools-77.0.1-py3-none-any.whl", hash = "sha256:81a234dff81a82bb52e522c8aef145d0dd4de1fd6de4d3b196d0f77dc2fded26"},
     {file = "setuptools-77.0.1.tar.gz", hash = "sha256:a1246a1b4178c66d7cf50c9fc6d530fac3f89bc284cf803c7fa878c41b1a03b2"},
 ]
-markers = {main = "python_version < \"4\""}
 
 [package.extras]
 check = ["pytest-checkdocs (>=2.4)", "pytest-ruff (>=0.2.1) ; sys_platform != \"cygwin\"", "ruff (>=0.8.0) ; sys_platform != \"cygwin\""]
@@ -3360,7 +3340,7 @@ description = "SSPI API bindings for Python"
 optional = false
 python-versions = ">=3.8"
 groups = ["main"]
-markers = "python_version < \"4\" and sys_platform == \"win32\""
+markers = "sys_platform == \"win32\""
 files = [
     {file = "sspilib-0.2.0-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:34f566ba8b332c91594e21a71200de2d4ce55ca5a205541d4128ed23e3c98777"},
     {file = "sspilib-0.2.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:5b11e4f030de5c5de0f29bcf41a6e87c9fd90cb3b0f64e446a6e1d1aef4d08f5"},
@@ -3407,7 +3387,6 @@ description = "Manage dynamic plugins for Python applications"
 optional = false
 python-versions = ">=3.9"
 groups = ["main"]
-markers = "python_version < \"4\""
 files = [
     {file = "stevedore-5.4.1-py3-none-any.whl", hash = "sha256:d10a31c7b86cba16c1f6e8d15416955fc797052351a56af15e608ad20811fcfe"},
     {file = "stevedore-5.4.1.tar.gz", hash = "sha256:3135b5ae50fe12816ef291baff420acb727fcd356106e3e9cbfa9e5985cd6f4b"},
@@ -3423,7 +3402,6 @@ description = "Python library providing wrappers to SymEngine"
 optional = false
 python-versions = "<4,>=3.8"
 groups = ["main"]
-markers = "python_version < \"4\""
 files = [
     {file = "symengine-0.14.0-cp310-cp310-macosx_10_13_x86_64.whl", hash = "sha256:d6fef6ec56c0350dfe07ed6a4580d9fbd1402111222c9863a698f3c8394e63d0"},
     {file = "symengine-0.14.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:87a65060502d8e1625a1f168b2bf6b76a070cb06a35d75565f38a489e7a7d2c8"},
@@ -3477,7 +3455,6 @@ description = "Computer algebra system (CAS) in Python"
 optional = false
 python-versions = ">=3.8"
 groups = ["main"]
-markers = "python_version < \"4\""
 files = [
     {file = "sympy-1.13.3-py3-none-any.whl", hash = "sha256:54612cf55a62755ee71824ce692986f23c88ffa77207b30c1368eda4a7060f73"},
     {file = "sympy-1.13.3.tar.gz", hash = "sha256:b27fd2c6530e0ab39e275fc9b683895367e51d5da91baa8d3d64db2565fec4d9"},
@@ -3654,7 +3631,6 @@ description = "WebSocket client for Python with low level API options"
 optional = false
 python-versions = ">=3.8"
 groups = ["main"]
-markers = "python_version < \"4\""
 files = [
     {file = "websocket_client-1.8.0-py3-none-any.whl", hash = "sha256:17b44cc997f5c498e809b22cdf2d9c7a9e71c02c8cc2b6c56e7c2d1239bfa526"},
     {file = "websocket_client-1.8.0.tar.gz", hash = "sha256:3239df9f44da632f96012472805d40a23281a991027ce11d2f45a6f24ac4c3da"},
@@ -3720,5 +3696,5 @@ type = ["pytest-mypy"]
 
 [metadata]
 lock-version = "2.1"
-python-versions = ">=3.11"
-content-hash = "47de4da739ed5b0c26660845a532aee0e7a25d537210e11ca2ace78172bd4302"
+python-versions = ">=3.11,<4.0"
+content-hash = "416476be1c589750aa6c07e3d41c2e42b254e01dc48b8202947f5b8ee2d5c96b"
