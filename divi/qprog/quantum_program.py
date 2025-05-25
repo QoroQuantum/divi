@@ -291,7 +291,7 @@ class QuantumProgram(ABC):
 
                 logger.info(f"Finished iteration {self.current_iteration}")
 
-            self.final_params[:] = np.atleast_1d(self._curr_params)
+            self.final_params[:] = np.atleast_2d(self._curr_params)
 
             return self._total_circuit_count, self._total_run_time
 
@@ -324,7 +324,7 @@ class QuantumProgram(ABC):
             def _iteration_counter(intermediate_result: OptimizeResult):
                 self.losses.append({0: intermediate_result.fun})
 
-                self.final_params[:] = np.atleast_1d(intermediate_result.x)
+                self.final_params[:] = np.atleast_2d(intermediate_result.x)
 
                 self.current_iteration += 1
                 logger.info(f"Finished iteration {self.current_iteration}")

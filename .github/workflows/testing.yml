@@ -56,6 +56,9 @@ jobs:
     - name: Freeze dependencies
       run: poetry run pip freeze
 
+    - name: Run tests
+      run: poetry run pytest
+
     - name: Make tutorial runner executable
       run: chmod +x ./.github/workflows/run_tutorials.sh
 
