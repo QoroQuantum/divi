@@ -13,7 +13,7 @@ def qoro_service(api_token):
 
 @pytest.fixture
 def qoro_service_mock():
-    qoro_service = QoroService("mock_token")
+    qoro_service = QoroService("mock_token", max_retries=2, polling_interval=0.01)
 
     return qoro_service
 
@@ -115,8 +115,6 @@ def test_poll_job_status_success_mock(mocker, qoro_service_mock):
     status = qoro_service_mock.poll_job_status(
         job_ids=job_id,
         loop_until_complete=True,
-        timeout=0.01,
-        max_retries=5,
         verbose=False,
     )
 
@@ -151,8 +149,6 @@ def test_poll_job_status_failure_mock(mocker, qoro_service_mock):
         qoro_service_mock.poll_job_status(
             job_ids=job_id,
             loop_until_complete=True,
-            timeout=0.01,
-            max_retries=2,
             verbose=False,
         )
 

@@ -200,9 +200,7 @@ class QAOA(QuantumProgram):
         self._is_compute_probabilies = False
 
         # Shared Variables
-        self.probs = {}
-        if (m_dict_probs := kwargs.pop("probs", None)) is not None:
-            self.probs = m_dict_probs
+        self.probs = kwargs.pop("probs", {})
 
         (
             self.cost_hamiltonian,

@@ -20,7 +20,7 @@ if __name__ == "__main__":
         **vqe_input,
         grouping_strategy=None,
     )
-    no_grouping_measurement_groups = vqe_problem_no_grouping._meta_circuits[
+    no_grouping_measurement_groups = vqe_problem_no_grouping.meta_circuits[
         "cost_circuit"
     ].measurement_groups
 
@@ -28,7 +28,7 @@ if __name__ == "__main__":
         **vqe_input,
         grouping_strategy="wires",
     )
-    wire_grouping_measurement_groups = vqe_problem_wire_grouping._meta_circuits[
+    wire_grouping_measurement_groups = vqe_problem_wire_grouping.meta_circuits[
         "cost_circuit"
     ].measurement_groups
 
@@ -36,7 +36,7 @@ if __name__ == "__main__":
         **vqe_input,
         grouping_strategy="qwc",
     )
-    qwc_grouping_measurement_groups = vqe_problem_qwc_grouping._meta_circuits[
+    qwc_grouping_measurement_groups = vqe_problem_qwc_grouping.meta_circuits[
         "cost_circuit"
     ].measurement_groups
 

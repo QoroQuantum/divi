@@ -12,8 +12,8 @@ if __name__ == "__main__":
         bond_lengths=list(np.linspace(0.1, 2.7, 5)),
         ansatze=[VQEAnsatze.HARTREE_FOCK],
         coordinate_structure=[(0, 0, 0), (0, 0, 1)],
-        max_iterations=3,
         optimizer=Optimizers.MONTE_CARLO,
+        max_iterations=3,
         backend=ParallelSimulator(shots=2000),
         grouping_strategy="wires",
     )

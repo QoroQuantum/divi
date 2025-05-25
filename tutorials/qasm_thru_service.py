@@ -11,5 +11,5 @@ if __name__ == "__main__":
     for i in range(10):
         circuits[f"circuit_{i}"] = circuit
 
-    job_id = service.send_circuits(circuits)
+    job_id = service.submit_circuits(circuits)
     print(job_id)
