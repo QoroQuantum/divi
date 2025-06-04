@@ -73,6 +73,9 @@ class MetaCircuit:
             main_circuit,
             measurement_groups=[qsc.measurements for qsc in qscripts],
             return_measurements_separately=True,
+            # TODO: optimize later
+            measure_all=True,
+            symbols=self.symbols,
         )
 
         # Need to store the measurement groups for computing

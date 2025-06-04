@@ -73,7 +73,7 @@ class TestMetaCircuit:
 
         # Make sure the measurement qasm is correct
         assert len(meta_circuit.measurements) == 1
-        meas_pattern = r"measure q\[(\d+)\]"
+        meas_pattern = r"measure q\[(\d+)\] -> c\[(\d+)\];"
         assert len(re.findall(meas_pattern, meta_circuit.measurements[0])) == 4
 
     def test_correct_initialization(self, mocker, sample_circuit, weights_syms):

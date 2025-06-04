@@ -4,7 +4,7 @@ version = "0.1.0"
 description = ""
 authors = []
 readme = "README.md"
-requires-python = ">=3.11,<4.0"
+requires-python = ">=3.11,<3.13"
 dependencies = [
     "pennylane (>=0.40.0,<0.41.0)",
     "numpy (<2.1)",
@@ -13,13 +13,14 @@ dependencies = [
     "scikit-learn (>=1.6.1,<2.0.0)",
     "matplotlib (>=3.10.1,<4.0.0)",
     "requests (>=2.32.3,<3.0.0)",
-    "qiskit (==1.2)",
+    "qiskit (>=1.4,<2.0)",
     "qiskit-algorithms (>=0.3.1,<0.4.0)",
     "qiskit-aer (>=0.17.0,<0.18.0)",
-    "qiskit-ibm-runtime (<=0.36)",
+    "qiskit-ibm-runtime (>=0.37)",
     "qiskit-optimization (>=0.6.1,<0.7.0)",
     "dill (>=0.4.0,<0.5.0)",
     "pyqt6 (>=6.9.0,<7.0.0)",
+    "mitiq[qiskit] (>=0.44.0,<0.45.0)",
 ]
 
 
@@ -38,7 +39,7 @@ pre-commit = "^4.1.0"
 
 [tool.poetry.group.ui.dependencies]
 dash = "^2.18.2"
-dash-bootstrap-components = {version = "^1.7.1", python = ">=3.11,<4"}
+dash-bootstrap-components = "^1.7.1"
 
 [tool.poetry.group.docs.dependencies]
 sphinx = ">=1.8,<8.2"

@@ -3,6 +3,7 @@ import numpy as np
 import plotly.graph_objects as go
 from dash import Dash, Input, Output, callback_context, dcc, html
 from dash.exceptions import PreventUpdate
+from qiskit_ibm_runtime.fake_provider import FakeQuitoV2
 
 from divi.parallel_simulator import ParallelSimulator
 from divi.qprog import Optimizers, VQEAnsatze, VQEHyperparameterSweep
@@ -15,25 +16,41 @@ app.layout = html.Div(
             html.H2("VQE Results"),
             html.Div(
                 [
-                    html.Button(
-                        "Start Noiseless VQE", id="noiseless-button", n_clicks=0
+                    html.Div(
+                        [
+                            html.Button(
+                                "Start Noiseless VQE", id="noiseless-button", n_clicks=0
+                            ),
+                            html.Button(
+                                "Start Noisy VQE", id="noisy-button", n_clicks=0
+                            ),
+                            html.Button(
+                                "Start Noisy+ZNE VQE", id="zne-button", n_clicks=0
+                            ),
+                        ],
+                        style={
+                            "display": "flex",
+                            "flexDirection": "row",
+                            "justifyContent": "center",
+                            "alignItems": "center",
+                            "gap": "16px",
+                        },
                     ),
-                    html.Button("Start Noisy VQE", id="noisy-button", n_clicks=0),
-                    html.Button("Start Noisy+ZNE VQE", id="zne-button", n_clicks=0),
+                    dcc.Loading(
+                        id="loading-1",
+                        type="default",
+                        children=html.Div(id="loading-output-1"),
+                    ),
                 ],
                 style={
                     "display": "flex",
-                    "flexDirection": "row",
+                    "flexDirection": "column",
                     "justifyContent": "center",
                     "alignItems": "center",
-                    "gap": "16px",  # Optional: adds space between buttons
+                    "gap": "16px",
                     "marginTop": "24px",
                 },
             ),
-            dcc.Loading(
-                id="loading-1", type="default", children=html.Div(id="loading-output-1")
-            ),
-            html.Div(id="state", children=None),
             html.Div(
                 [
                     dcc.Graph(id="energy-graph", figure={}),
@@ -63,39 +80,26 @@ app.layout = html.Div(
 
 BOND_LENGTHS = np.linspace(0.1, 2.7, 4)
 OPTIMIZER = Optimizers.NELDER_MEAD
-MAX_ITERATIONS = 3
+MAX_ITERATIONS = 5
 
 # backend = QoroService("71ec99c9c94cf37499a2b725244beac1f51b8ee4", shots=500)
-backend = ParallelSimulator(shots=500)
-noiseless_vqe_problem = VQEHyperparameterSweep(
+exact_backend = ParallelSimulator(shots=500)
+noisy_backend = ParallelSimulator(shots=500, qiskit_backend="auto")
+
+args = dict(
     symbols=["H", "H"],
     bond_lengths=BOND_LENGTHS,
     coordinate_structure=[(0, 0, -0.5), (0, 0, 0.5)],
     ansatze=[VQEAnsatze.HARTREE_FOCK],
     optimizer=OPTIMIZER,
     max_iterations=MAX_ITERATIONS,
-    backend=backend,
 )
 
-backend = ParallelSimulator(shots=500, qiskit_backend="auto")
-noisy_vqe_problem = VQEHyperparameterSweep(
-    symbols=["H", "H"],
-    bond_lengths=BOND_LENGTHS,
-    coordinate_structure=[(0, 0, -0.5), (0, 0, 0.5)],
-    ansatze=[VQEAnsatze.HARTREE_FOCK],
-    optimizer=OPTIMIZER,
-    max_iterations=MAX_ITERATIONS,
-    backend=backend,
-)
-
+noiseless_vqe_problem = VQEHyperparameterSweep(backend=exact_backend, **args)
+noisy_vqe_problem = VQEHyperparameterSweep(backend=noisy_backend, **args)
 zne_vqe_problem = VQEHyperparameterSweep(
-    symbols=["H", "H"],
-    bond_lengths=BOND_LENGTHS,
-    coordinate_structure=[(0, 0, -0.5), (0, 0, 0.5)],
-    ansatze=[VQEAnsatze.HARTREE_FOCK],
-    optimizer=OPTIMIZER,
-    max_iterations=MAX_ITERATIONS,
-    backend=backend,
+    backend=noisy_backend,
+    **args,
     #   zne=True,
 )
 
@@ -157,39 +161,40 @@ def run_vqe(noiseless_clicks, noisy_clicks, zne_clicks):
         yaxis_title="Energy",
         showlegend=True,
     )
+    print("Finished plotting Energy vs. Bond")
 
-    data = []
     ansatz = problem.ansatze[0]
-    bond_length = problem.bond_lengths[0]
-    for energy in problem.programs[(ansatz, bond_length)].losses:
-        data.append(energy[0])
-
-    energy_v_iteration_fig.add_trace(
-        go.Scatter(
-            x=list(range(1, len(data) + 1)),
-            y=data,
-            mode="lines+markers",
-            name="Hartree Fock",
-            line=dict(color="blue"),
+    for bond_length in problem.bond_lengths:
+        losses = problem.programs[(ansatz, bond_length)].losses
+        energy_v_iteration_fig.add_trace(
+            go.Scatter(
+                x=list(range(1, len(losses) + 1)),
+                y=list(map(lambda item: item[0], losses)),
+                mode="lines+markers",
+                name=f"{round(bond_length, 3)}",
+            )
         )
-    )
     energy_v_iteration_fig.update_layout(
         title="Energy vs Iterations",
         xaxis_title="Iteration",
         yaxis_title="Energy",
         showlegend=True,
+        legend_title_text="Bond Length (Å)",
     )
+    print("Finished plotting Energy vs. Iteration")
 
     qasm_circuits = []
     for program in problem.programs.values():
         qasm_circuits.extend(
             program.meta_circuits["cost_circuit"]
-            .initialize_circuit_from_params(program.final_params)
+            .initialize_circuit_from_params(program.final_params[0])
             .qasm_circuits
         )
 
     durations = [
-        ParallelSimulator.estimate_run_time_single_circuit(circuit)
+        ParallelSimulator.estimate_run_time_single_circuit(
+            circuit, qiskit_backend=FakeQuitoV2()
+        )
         for circuit in qasm_circuits
     ]
     qpu_range = tuple(range(1, 10))
@@ -217,6 +222,7 @@ def run_vqe(noiseless_clicks, noisy_clicks, zne_clicks):
         yaxis_title="Runtime per Iteration",
         showlegend=True,
     )
+    print("Finished plotting Runtime vs. QPUs")
 
     return (
         energy_v_bond_fig,
