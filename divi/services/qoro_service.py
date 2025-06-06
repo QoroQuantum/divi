@@ -69,10 +69,11 @@ class QoroService:
 
         return response
 
-    def send_circuit_cut_job(self, circuit):
+    def send_circuit_cut_job(self, circuit, shots=1000):
         return self.send_circuits(
             circuits={"cut": circuit},
             job_type=JobTypes.CIRCUIT_CUT,
+            shots=shots,
         )
 
     def send_circuits(
