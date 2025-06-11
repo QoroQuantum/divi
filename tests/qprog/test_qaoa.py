@@ -35,10 +35,16 @@ class TestGeneralQAOA:
         )
 
         mock_generate_circuits = mocker.patch.object(qaoa_problem, "_generate_circuits")
+
         mock_pl_postprocessing_fn = mocker.patch.object(
             qaoa_problem._meta_circuits["cost_circuit"], "postprocessing_fn"
         )
         mock_pl_postprocessing_fn.return_value = (np.array(0.0),)
+
+        mock_qem_postprocessing_fn = mocker.patch.object(
+            qaoa_problem._qem_protocol, "postprocess_results"
+        )
+        mock_qem_postprocessing_fn.return_value = ({},)
 
         spy_values = []
         mock_setattr = mocker.patch.object(

@@ -1,6 +1,7 @@
 import logging
 import pickle
 from abc import ABC, abstractmethod
+from functools import partial
 from typing import Optional
 
 import numpy as np
@@ -10,6 +11,7 @@ from scipy.optimize import OptimizeResult, minimize
 from divi import QoroService
 from divi.circuits import Circuit, MetaCircuit
 from divi.interfaces import CircuitRunner
+from divi.qem import _NoMitigation
 from divi.qoro_service import JobStatus
 from divi.qprog.optimizers import Optimizers
 
@@ -46,7 +48,9 @@ class QuantumProgram(ABC):
 
             **kwargs: Additional keyword arguments that influence behaviour.
                 - grouping_strategy (Optional[Any]): A strategy for grouping operations, used in Pennylane's transforms.
-                  Defaults to None.
+                    Defaults to None.
+                - qem_protocol (Optional[QEMProtocol]): the quantum error mitigation protocol to apply.
+                    Must be of type QEMProtocol. Defaults to None.
 
                 The following key values are reserved for internal use and should not be set by the user:
                 - losses (Optional[list]): A list to initialize the `losses` attribute. Defaults to an empty list.
@@ -76,30 +80,25 @@ class QuantumProgram(ABC):
 
         # Needed for Pennylane's transforms
         self._grouping_strategy = kwargs.pop("grouping_strategy", None)
+        self._qem_protocol = kwargs.pop("qem_protocol", None) or _NoMitigation()
+
+        self._meta_circuit_factory = partial(
+            MetaCircuit,
+            grouping_strategy=self._grouping_strategy,
+            qem_protocol=self._qem_protocol,
+        )
 
     @property
     def total_circuit_count(self):
         return self._total_circuit_count
 
-    @total_circuit_count.setter
-    def total_circuit_count(self, _):
-        raise RuntimeError("Can not set total circuit count value.")
-
     @property
     def total_run_time(self):
         return self._total_run_time
 
-    @total_run_time.setter
-    def total_run_time(self, _):
-        raise RuntimeError("Can not set total run time value.")
-
     @property
     def meta_circuits(self):
         return self._meta_circuits
-
-    @meta_circuits.setter
-    def meta_circuits(self, _):
-        raise RuntimeError("Can not set meta circuits value.")
 
     @abstractmethod
     def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
@@ -114,10 +113,12 @@ class QuantumProgram(ABC):
         pass
 
     def _initialize_params(self):
-        self._curr_params = [
-            self._rng.uniform(0, 2 * np.pi, self.n_layers * self.n_params)
-            for _ in range(self.optimizer.n_param_sets)
-        ]
+        self._curr_params = np.array(
+            [
+                self._rng.uniform(0, 2 * np.pi, self.n_layers * self.n_params)
+                for _ in range(self.optimizer.n_param_sets)
+            ]
+        )
 
     def _run_optimization_circuits(self, store_data, data_file):
         self.circuits[:] = []
@@ -230,24 +231,34 @@ class QuantumProgram(ABC):
         losses = {}
         measurement_groups = self._meta_circuits["cost_circuit"].measurement_groups
 
-        for p, _ in enumerate(self._curr_params):
-            losses[p] = 0
-            curr_result = {
-                key: value for key, value in results.items() if key.startswith(f"{p}")
-            }
+        for p in range(self._curr_params.shape[0]):
+            # Extract relevant entries from the execution results dict
+            param_results = {k: v for k, v in results.items() if k.startswith(f"{p}_")}
 
+            # Compute the marginal results for each observable
             marginal_results = []
-            for param_id, shots_dict in curr_result.items():
-                ham_op_index = int(param_id.split("_")[-1])
+            for group_idx, curr_measurement_group in enumerate(measurement_groups):
+                group_results = {
+                    k: v
+                    for k, v in param_results.items()
+                    if k.endswith(f"_{group_idx}")
+                }
 
-                curr_measurement_group = measurement_groups[ham_op_index]
                 curr_marginal_results = []
                 for observable in curr_measurement_group:
-                    exp_value = sampled_expectation_value(
-                        marginal_counts(shots_dict, observable.wires.tolist()),
-                        "Z" * len(observable.wires),
+                    intermediate_exp_values = [
+                        sampled_expectation_value(
+                            marginal_counts(shots_dict, observable.wires.tolist()),
+                            "Z" * len(observable.wires),
+                        )
+                        for shots_dict in group_results.values()
+                    ]
+
+                    mitigated_exp_value = self._qem_protocol.postprocess_results(
+                        intermediate_exp_values
                     )
-                    curr_marginal_results.append(exp_value)
+
+                    curr_marginal_results.append(mitigated_exp_value)
 
                 marginal_results.append(
                     curr_marginal_results
@@ -261,7 +272,7 @@ class QuantumProgram(ABC):
                 .item()
             )
 
-            losses[p] += pl_loss + self.loss_constant
+            losses[p] = pl_loss + self.loss_constant
 
         return losses
 

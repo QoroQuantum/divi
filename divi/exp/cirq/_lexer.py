@@ -104,10 +104,14 @@ class QasmLexer:
         return t
 
     def t_ID(self, t):
-        r"""[a-zA-Z][a-zA-Z\d_]*"""
+        r"""[^\W\d_][\w_]*"""
+        # This regex matches any Unicode letter (not digit/underscore) at the start,
+        # followed by any number of Unicode word characters or underscores.
         if t.value in QasmLexer.reserved:
             t.type = QasmLexer.reserved[t.value]
         return t
+
+    t_ID.__doc__ = r"[^\W\d_][\w_]*"
 
     def t_COMMENT(self, t):
         r"""//.*"""

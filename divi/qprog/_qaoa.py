@@ -230,12 +230,6 @@ class QAOA(QuantumProgram):
             else self._solution_bitstring
         )
 
-    @solution.setter
-    def solution(self, value):
-        raise RuntimeError(
-            "The solution property is read-only. Use compute_final_solution() to get the solution."
-        )
-
     def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
         """
         Generate the meta circuits for the QAOA problem.
@@ -279,14 +273,13 @@ class QAOA(QuantumProgram):
                 return qml.expval(hamiltonian)
 
         return {
-            "cost_circuit": MetaCircuit(
+            "cost_circuit": self._meta_circuit_factory(
                 qml.tape.make_qscript(_prepare_circuit)(
                     self.cost_hamiltonian, sym_params, final_measurement=False
                 ),
                 symbols=sym_params.flatten(),
-                grouping_strategy=self._grouping_strategy,
             ),
-            "meas_circuit": MetaCircuit(
+            "meas_circuit": self._meta_circuit_factory(
                 qml.tape.make_qscript(_prepare_circuit)(
                     self.cost_hamiltonian, sym_params, final_measurement=True
                 ),
@@ -359,8 +352,16 @@ class QAOA(QuantumProgram):
         # Insert the measurement circuit here
         self._run_final_measurement()
 
+        # Find the key matching the best_solution_idx with possible metadata in between
+        pattern = re.compile(rf"^{best_solution_idx}(?:_[^_]*)*_0$")
+        matching_keys = [k for k in self.probs if pattern.match(k)]
+
+        if len(matching_keys) > 1:
+            raise RuntimeError(f"More than one matching key found.")
+
+        best_solution_key = matching_keys[0]
         # Retrieve the probability distribution dictionary of the best solution
-        best_solution_probs = self.probs[f"{best_solution_idx}_0"]
+        best_solution_probs = self.probs[best_solution_key]
 
         # Retrieve the bitstring with the actual best solution
         # Reverse to account for the endianness difference

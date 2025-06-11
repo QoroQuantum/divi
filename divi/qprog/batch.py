@@ -34,17 +34,9 @@ class ProgramBatch(ABC):
     def total_circuit_count(self):
         return self._total_circuit_count
 
-    @total_circuit_count.setter
-    def total_circuit_count(self, _):
-        raise RuntimeError("Can not set total circuit count value.")
-
     @property
     def total_run_time(self):
         return self._total_run_time
-
-    @total_run_time.setter
-    def total_run_time(self, _):
-        raise RuntimeError("Can not set total run time value.")
 
     @abstractmethod
     def create_programs(self):

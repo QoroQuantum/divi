@@ -6,6 +6,7 @@ import pytest
 import sympy as sp
 
 from divi.circuits import Circuit, MetaCircuit
+from divi.qem import _NoMitigation
 
 
 class TestCircuit:
@@ -68,8 +69,13 @@ class TestMetaCircuit:
 
         # Make sure the compiled circuit is correct
         circ_pattern = r"w_(\d+)"
-        assert len(set(re.findall(circ_pattern, meta_circuit.compiled_circuit))) == 4
-        assert len(re.findall(circ_pattern, meta_circuit.compiled_circuit)) == 8
+        assert (
+            len(set(re.findall(circ_pattern, meta_circuit.compiled_circuits_bodies[0])))
+            == 4
+        )
+        assert (
+            len(re.findall(circ_pattern, meta_circuit.compiled_circuits_bodies[0])) == 8
+        )
 
         # Make sure the measurement qasm is correct
         assert len(meta_circuit.measurements) == 1
@@ -78,7 +84,9 @@ class TestMetaCircuit:
 
     def test_correct_initialization(self, mocker, sample_circuit, weights_syms):
 
-        meta_circuit = MetaCircuit(sample_circuit, weights_syms)
+        meta_circuit = MetaCircuit(
+            sample_circuit, weights_syms, qem_protocol=_NoMitigation()
+        )
 
         param_list = [0.123456789, 0.212345678, 0.312345678, 0.412345678]
         tag_prefix = "test"
@@ -97,7 +105,7 @@ class TestMetaCircuit:
         # Check the new Circuit object
         assert circuit.main_circuit == sample_circuit
         assert circuit.circuit_type == "pennylane"
-        assert circuit.tags == [f"{tag_prefix}_0"]
+        assert circuit.tags == [f"{tag_prefix}_NoMitigation:0_0"]
         assert len(circuit.qasm_circuits) == 1
 
         # Ensure no more symbols exist

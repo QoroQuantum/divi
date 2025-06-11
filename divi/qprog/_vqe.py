@@ -152,12 +152,11 @@ class VQE(QuantumProgram):
             return qml.expval(hamiltonian)
 
         return {
-            "cost_circuit": MetaCircuit(
+            "cost_circuit": self._meta_circuit_factory(
                 qml.tape.make_qscript(_prepare_circuit)(
                     self.ansatz, self.cost_hamiltonian, weights_syms
                 ),
                 symbols=weights_syms.flatten(),
-                grouping_strategy=self._grouping_strategy,
             )
         }
 

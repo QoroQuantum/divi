@@ -145,12 +145,16 @@ class TestProgramBatch:
 
     def test_total_circuit_count_setter(self, program_batch):
         with pytest.raises(
-            RuntimeError, match="Can not set total circuit count value."
+            AttributeError,
+            match="property 'total_circuit_count' of 'SampleProgramBatch'",
         ):
             program_batch.total_circuit_count = 100
 
     def test_total_run_time_setter(self, program_batch):
-        with pytest.raises(RuntimeError, match="Can not set total run time value."):
+        with pytest.raises(
+            AttributeError,
+            match="property 'total_run_time' of 'SampleProgramBatch'",
+        ):
             program_batch.total_run_time = 100
 
     def test_run_sets_executor_and_returns_expected_number_of_futures(

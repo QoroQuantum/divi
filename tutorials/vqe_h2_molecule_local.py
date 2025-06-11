@@ -1,14 +1,10 @@
-import logging
 import time
 
 from divi.parallel_simulator import ParallelSimulator
-from divi.qlogger import enable_logging
 from divi.qprog import VQE, VQEAnsatze
 from divi.qprog.optimizers import Optimizers
 
 if __name__ == "__main__":
-    enable_logging(logging.INFO)
-
     vqe_problem = VQE(
         symbols=["H", "H"],
         bond_length=0.5,
