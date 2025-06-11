@@ -1,3 +1,4 @@
+import re
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
@@ -321,7 +322,16 @@ class GraphPartitioningQAOA(ProgramBatch):
             last_iteration_losses = program.losses[-1]
             minimum_key = min(last_iteration_losses, key=last_iteration_losses.get)
 
-            minimum_probabilities = program.probs[f"{minimum_key}_0"]
+            # Find the key matching the best_solution_idx with possible metadata in between
+            pattern = re.compile(rf"^{minimum_key}(?:_[^_]*)*_0$")
+            matching_keys = [k for k in program.probs.keys() if pattern.match(k)]
+
+            if len(matching_keys) > 1:
+                raise RuntimeError(f"More than one matching key found.")
+
+            best_solution_key = matching_keys[0]
+
+            minimum_probabilities = program.probs[best_solution_key]
 
             # The bitstring corresponding to the solution, with flip for correct endianness
             max_prob_key = max(minimum_probabilities, key=minimum_probabilities.get)[

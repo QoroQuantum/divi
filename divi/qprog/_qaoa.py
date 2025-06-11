@@ -354,7 +354,7 @@ class QAOA(QuantumProgram):
 
         # Find the key matching the best_solution_idx with possible metadata in between
         pattern = re.compile(rf"^{best_solution_idx}(?:_[^_]*)*_0$")
-        matching_keys = [k for k in self.probs if pattern.match(k)]
+        matching_keys = [k for k in self.probs.keys() if pattern.match(k)]
 
         if len(matching_keys) > 1:
             raise RuntimeError(f"More than one matching key found.")
