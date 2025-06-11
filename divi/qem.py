@@ -3,6 +3,7 @@ from collections.abc import Callable, Sequence
 from functools import partial
 
 from cirq.circuits.circuit import Circuit
+from mitiq.zne import combine_results, construct_circuits
 from mitiq.zne.inference import Factory
 
 
@@ -84,9 +85,15 @@ class ZNE(QEMProtocol):
         return self._extrapolation_factory
 
     def modify_circuit(self, cirq_circuit: Circuit) -> Sequence[Circuit]:
-        # TODO
-        return
+        return construct_circuits(
+            cirq_circuit,
+            scale_factors=self._scale_factors,
+            scale_method=self._folding_fn,
+        )
 
     def postprocess_results(self, results: Sequence[float]) -> float:
-        # TODO
-        return
+        return combine_results(
+            scale_factors=self._scale_factors,
+            results=results,
+            extrapolation_method=self._extrapolation_factory.extrapolate,
+        )
