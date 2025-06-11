@@ -4,13 +4,14 @@ from itertools import product
 from typing import Optional
 from warnings import warn
 
+import cirq
 import numpy as np
 import pennylane as qml
 from pennylane.tape import QuantumScript
 from pennylane.wires import Wires
 from sympy import Symbol
 
-from divi.exp.cirq import cirq_circuit_from_qasm, cirq_circuit_to_qasm
+from divi.exp.cirq import cirq_circuit_from_qasm
 from divi.qem import QEMProtocol
 
 OPENQASM_GATES = {
@@ -163,7 +164,8 @@ def to_openqasm(
     main_qasm_strs = []
     if qem_protocol:
         for circ in qem_protocol.modify_circuit(cirq_circuit_from_qasm(main_qasm_str)):
-            qasm_str = cirq_circuit_to_qasm(circ)
+            # Convert back to QASM2.0 code, with the symbolic parameters
+            qasm_str = cirq.qasm(circ)
             # Remove redundant newlines
             qasm_str = re.sub(r"\n+", "\n", qasm_str)
             # Remove comments
