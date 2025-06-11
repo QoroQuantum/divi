@@ -8,17 +8,57 @@ from mitiq.zne.inference import Factory
 
 
 class QEMProtocol(ABC):
+    """
+    Abstract Base Class for Quantum Error Mitigation (QEM) protocols.
+
+    All concrete QEM protocols should inherit from this class and implement
+    the abstract methods and properties. This ensures a consistent interface
+    across different mitigation techniques.
+    """
+
     @property
     @abstractmethod
-    def name(self):
+    def name(self) -> str:
         pass
 
     @abstractmethod
     def modify_circuit(self, cirq_circuit: Circuit) -> Sequence[Circuit]:
+        """
+        Modifies a given Cirq circuit into one or more new circuits
+        required by the QEM protocol.
+
+        For example, a Zero Noise Extrapolation (ZNE) protocol might
+        produce multiple scaled versions of the input circuit. A simple
+        mitigation protocol might return the original circuit unchanged.
+
+        Args:
+            cirq_circuit (cirq.Circuit): The input quantum circuit to be modified.
+
+        Returns:
+            Sequence[cirq.Circuit]: A sequence (e.g., list or tuple) of
+                                    Cirq circuits to be executed.
+        """
         pass
 
     @abstractmethod
     def postprocess_results(self, results: Sequence[float]) -> float:
+        """
+        Applies post-processing (e.g., extrapolation, filtering) to the
+        results obtained from executing the modified circuits.
+
+        This method takes the raw output from quantum circuit executions
+        (typically a sequence of expectation values or probabilities) and
+        applies the core error mitigation logic to produce a single,
+        mitigated result.
+
+        Args:
+            results (Sequence[float]): A sequence of floating-point results,
+                                       corresponding to the executions of the
+                                       circuits returned by `modify_circuit`.
+
+        Returns:
+            float: The single, mitigated result after post-processing.
+        """
         pass
 
 
@@ -28,7 +68,7 @@ class _NoMitigation(QEMProtocol):
     """
 
     @property
-    def name(self):
+    def name(self) -> str:
         return "NoMitigation"
 
     def modify_circuit(self, cirq_circuit: Circuit) -> Sequence[Circuit]:
@@ -36,6 +76,21 @@ class _NoMitigation(QEMProtocol):
         return [cirq_circuit]
 
     def postprocess_results(self, results: Sequence[float]) -> float:
+        """
+        Returns the single result provided, ensuring only one result is given.
+
+        If multiple results are provided, it raises a RuntimeError, as this
+        protocol expects a single measurement outcome for its input circuit.
+
+        Args:
+            results (Sequence[float]): A sequence containing a single floating-point result.
+
+        Returns:
+            float: The single result from the sequence.
+
+        Raises:
+            RuntimeError: If more than one result is provided.
+        """
         if len(results) > 1:
             raise RuntimeError("NoMitigation class received multiple partial results.")
 
@@ -43,17 +98,50 @@ class _NoMitigation(QEMProtocol):
 
 
 class ZNE(QEMProtocol):
+    """
+    Implements the Zero Noise Extrapolation (ZNE) quantum error mitigation protocol.
+
+    This protocol uses `Mitiq`'s functionalities to construct noise-scaled
+    circuits and then extrapolate to the zero-noise limit based on the
+    obtained results.
+    """
+
     def __init__(
         self,
         scale_factors: Sequence[float],
         folding_fn: Callable,
         extrapolation_factory: Factory,
     ):
+        """
+        Initializes a ZNE protocol instance.
 
-        if not isinstance(scale_factors, Sequence) or not all(
-            isinstance(elem, float) for elem in scale_factors
+        Args:
+            scale_factors (Sequence[float]): A sequence of noise scale factors
+                                             to be applied to the circuits. These
+                                             factors typically range from 1.0 upwards.
+            folding_fn (Callable): A callable (e.g., a `functools.partial` object)
+                                   that defines how the circuit should be "folded"
+                                   to increase noise. This function must accept
+                                   a `cirq.Circuit` and a `float` (scale factor)
+                                   as its first two arguments.
+            extrapolation_factory (mitiq.zne.inference.Factory): An instance of
+                                                                `Mitiq`'s `Factory`
+                                                                class, which provides
+                                                                the extrapolation method.
+
+        Raises:
+            ValueError: If `scale_factors` is not a sequence of numbers,
+                        `folding_fn` is not callable, or `extrapolation_factory`
+                        is not an instance of `mitiq.zne.inference.Factory`.
+        """
+        if (
+            not isinstance(scale_factors, Sequence)
+            or not all(isinstance(elem, (int, float)) for elem in scale_factors)
+            or not all(elem >= 1.0 for elem in scale_factors)
         ):
-            raise ValueError("scale_factors is expected to be a sequence of floats.")
+            raise ValueError(
+                "scale_factors is expected to be a sequence of real numbers >=1."
+            )
 
         if not isinstance(folding_fn, partial):
             raise ValueError(
@@ -69,11 +157,11 @@ class ZNE(QEMProtocol):
         self._extrapolation_factory = extrapolation_factory
 
     @property
-    def name(self):
+    def name(self) -> str:
         return "zne"
 
     @property
-    def scale_factors(self):
+    def scale_factors(self) -> Sequence[float]:
         return self._scale_factors
 
     @property

@@ -1,7 +1,7 @@
 from functools import partial
 
 from mitiq.zne.inference import RichardsonFactory
-from mitiq.zne.scaling import fold_all
+from mitiq.zne.scaling import fold_gates_at_random
 
 from divi.parallel_simulator import ParallelSimulator
 from divi.qem import ZNE
@@ -20,7 +20,7 @@ if __name__ == "__main__":
         seed=1997,
     )
 
-    vqe_problem_exact = VQE(backend=ParallelSimulator(), **args)
+    vqe_problem_exact = VQE(backend=ParallelSimulator(n_processes=4), **args)
     vqe_problem_exact.run()
 
     print(
@@ -42,7 +42,7 @@ if __name__ == "__main__":
         backend=ParallelSimulator(qiskit_backend="auto"),
         qem_protocol=ZNE(
             scale_factors,
-            partial(fold_all),
+            partial(fold_gates_at_random),
             RichardsonFactory(scale_factors=scale_factors),
         ),
         **args,
