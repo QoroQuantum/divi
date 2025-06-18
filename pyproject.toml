@@ -1,10 +1,21 @@
 [tool.poetry]
 name = "divi"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 description = ""
 authors = ["Ahmed Darwish <ahmed@qoroquantum.de>", "Stephen DiAdamo <stephen@qoroquantum.de>"]
 readme = "README.md"
 
+
+[[tool.poetry.source]]
+name = "aws-repo"
+url = "https://qoro-quantum-982534369690.d.codeartifact.eu-west-1.amazonaws.com/pypi/divi/"
+priority = "supplemental"
+
+[tool.poetry_codeartifact_login]
+[[tool.poetry_codeartifact_login.source]]
+name = "aws-repo"
+domain = "qoro-quantum"
+domain_owner = "982534369690"
 
 [build-system]
 requires = ["poetry-core"]
@@ -50,6 +61,13 @@ flaky = "^3.8.1"
 
 [tool.poetry.group.tutorials.dependencies]
 dimod = "^0.12.20"
+
+
+[tool.poetry.group.docs.dependencies]
+sphinx = ">=1.8,<8.2"
+nbsphinx = "^0.9.7"
+sphinx-rtd-theme = "^3.0.2"
+sphinx-autodoc-typehints = "^3.0"
 
 [tool.isort]
 profile = "black"

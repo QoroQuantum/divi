@@ -48,7 +48,7 @@ jobs:
 
     - name: Install dependencies
       if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
-      run: poetry install --no-interaction --no-root --without dev,ui
+      run: poetry install --no-interaction --no-root --without dev,ui,docs
 
     - name: Install library
       run: poetry install --no-interaction --only-root
