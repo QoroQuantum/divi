@@ -340,6 +340,24 @@ class QAOA(QuantumProgram):
         self._is_compute_probabilies = False
 
     def compute_final_solution(self):
+        """
+        Computes and extracts the final solution from the QAOA optimization process.
+        This method performs the following steps:
+            1. Identifies the best solution index based on the lowest loss value from the last optimization step.
+            2. Executes the final measurement circuit to obtain the probability distributions of solutions.
+            3. Retrieves the bitstring representing the best solution, correcting for endianness.
+            4. Depending on the problem type:
+            - For QUBO problems, stores the solution as a NumPy array of bits.
+            - For graph problems, stores the solution as a list of node indices corresponding to '1's in the bitstring.
+            5. Returns the total circuit count and total runtime for the optimization process.
+        Returns:
+            tuple: A tuple containing:
+            - int: The total number of circuits executed.
+            - float: The total runtime of the optimization process.
+        Raises:
+            RuntimeError: If more than one/no matching key is found for the best solution index.
+        """
+
         # Convert losses dict to list to apply ordinal operations
         final_losses_list = list(self.losses[-1].values())
 
@@ -356,6 +374,9 @@ class QAOA(QuantumProgram):
         pattern = re.compile(rf"^{best_solution_idx}(?:_[^_]*)*_0$")
         matching_keys = [k for k in self.probs.keys() if pattern.match(k)]
 
+        # Some minor sanity checks
+        if len(matching_keys) == 0:
+            raise RuntimeError("No matching key found.")
         if len(matching_keys) > 1:
             raise RuntimeError(f"More than one matching key found.")
 
