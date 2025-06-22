@@ -106,7 +106,7 @@ def to_openqasm(
         return_measurements_separately (bool): whether to not append the measurement instructions
             and their diagonalizations to the main circuit QASM code and return separately.
         symbols (list): Sympy symbols present in the circuit. Needed for some QEM routines.
-        folding_fn (Callable): a `functools.partial` object wrapping a partially-initialized mitiq circuit folding routine.
+        qem_protocol (QEMProtocol): An optional QEMProtocol object for error mitigation, which may modify the circuit.
 
     Returns:
         list[str] or tuple[str, list[str]]: OpenQASM serialization of the circuit
@@ -114,7 +114,7 @@ def to_openqasm(
 
     if qem_protocol and symbols is None:
         raise ValueError(
-            "When passing a folding function, the Sympy symbols in the circuit should be provided for the openqasm 3 conversion."
+            "When passing a QEMProtocol instance, the Sympy symbols in the circuit should be provided for the openqasm 3 conversion."
         )
 
     wires = main_qscript.wires
