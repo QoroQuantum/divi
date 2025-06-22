@@ -210,6 +210,7 @@ def to_openqasm(
         warn(
             "No measurement groups provided. Returning the QASM of the circuit operations only."
         )
-        return qasm_circuits.extend(np.atleast_1d(main_qasm_strs).tolist())
+        qasm_circuits.extend(np.atleast_1d(main_qasm_strs).tolist())
+        return qasm_circuits
 
     return qasm_circuits or (np.atleast_1d(main_qasm_strs).tolist(), measurement_qasms)
