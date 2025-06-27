@@ -6,7 +6,7 @@ from typing import Literal
 import matplotlib.pyplot as plt
 
 from divi.interfaces import CircuitRunner
-from divi.qprog import VQE, ProgramBatch, VQEAnsatze
+from divi.qprog import VQE, ProgramBatch, VQEAnsatz
 
 from .optimizers import Optimizers
 
@@ -19,7 +19,7 @@ class VQEHyperparameterSweep(ProgramBatch):
     def __init__(
         self,
         bond_lengths: list[float],
-        ansatze: list[VQEAnsatze],
+        ansatze: list[VQEAnsatz],
         symbols: list[str],
         coordinate_structure: list[tuple[float, float, float]],
         backend: CircuitRunner,
@@ -104,7 +104,7 @@ class VQEHyperparameterSweep(ProgramBatch):
         data = []
         colors = ["blue", "g", "r", "c", "m", "y", "k"]
 
-        ansatz_list = list(VQEAnsatze)
+        ansatz_list = list(VQEAnsatz)
 
         if graph_type == "scatter":
             for ansatz, bond_length in self.programs.keys():

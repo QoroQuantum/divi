@@ -1,5 +1,5 @@
 from divi.parallel_simulator import ParallelSimulator
-from divi.qprog import VQE, VQEAnsatze
+from divi.qprog import VQE, VQEAnsatz
 from divi.qprog.optimizers import Optimizers
 
 if __name__ == "__main__":
@@ -9,7 +9,7 @@ if __name__ == "__main__":
         bond_length=0.5,
         coordinate_structure=[(0, 0, 0), (0, 0, 1)],
         n_layers=1,
-        ansatz=VQEAnsatze.HARTREE_FOCK,
+        ansatz=VQEAnsatz.HARTREE_FOCK,
         optimizer=Optimizers.NELDER_MEAD,
         max_iterations=1,
         seed=2000,

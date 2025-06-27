@@ -7,7 +7,7 @@ from qprog_contracts import (
     verify_metacircuit_dict,
 )
 
-from divi.qprog import VQE, Optimizers, VQEAnsatze
+from divi.qprog import VQE, Optimizers, VQEAnsatz
 
 pytestmark = pytest.mark.algo
 
@@ -37,10 +37,10 @@ def test_vqe_basic_initialization(default_test_simulator):
     verify_metacircuit_dict(vqe_problem, ["cost_circuit"])
 
 
-@pytest.mark.parametrize("ansatz", list(VQEAnsatze))
+@pytest.mark.parametrize("ansatz", list(VQEAnsatz))
 @pytest.mark.parametrize("n_layers", [1, 2])
 def test_meta_circuit_qasm(ansatz, n_layers):
-    if ansatz == VQEAnsatze.HW_EFFICIENT:
+    if ansatz == VQEAnsatz.HW_EFFICIENT:
         pytest.skip("Skipping HW_EFFICIENT ansatz")
 
     vqe_problem = VQE(
@@ -85,7 +85,7 @@ def test_vqe_fail_with_hw_efficient_ansatz():
             symbols=["H", "H"],
             bond_length=0.5,
             coordinate_structure=[(1, 0, 0), (0, -1, 0)],
-            ansatz=VQEAnsatze.HW_EFFICIENT,
+            ansatz=VQEAnsatz.HW_EFFICIENT,
         )
 
 
@@ -96,7 +96,7 @@ def test_vqe_correct_circuits_count_and_energies(optimizer, default_test_simulat
         bond_length=0.5,
         coordinate_structure=[(1, 0, 0), (0, -1, 0)],
         n_layers=1,
-        ansatz=VQEAnsatze.HARTREE_FOCK,
+        ansatz=VQEAnsatz.HARTREE_FOCK,
         optimizer=optimizer,
         max_iterations=1,
         backend=default_test_simulator,

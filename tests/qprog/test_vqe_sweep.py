@@ -3,13 +3,13 @@ from itertools import product
 import pytest
 from qprog_contracts import verify_basic_program_batch_behaviour
 
-from divi.qprog import Optimizers, VQEAnsatze, VQEHyperparameterSweep
+from divi.qprog import Optimizers, VQEAnsatz, VQEHyperparameterSweep
 
 
 @pytest.fixture
 def vqe_sweep(default_test_simulator):
     bond_lengths = [0.5, 1.0, 1.5]
-    ansatze = [VQEAnsatze.UCCSD, VQEAnsatze.RY]
+    ansatze = [VQEAnsatz.UCCSD, VQEAnsatz.RY]
     symbols = ["H", "H"]
     coordinate_structure = [[0, 0, 0], [0, 0, 1]]
     optimizer = Optimizers.MONTE_CARLO
@@ -62,13 +62,13 @@ def test_results_aggregated_correctly(mocker, vqe_sweep):
     mock_program_2.losses = [{0: -0.9}, {0: -0.7}]
 
     vqe_sweep.programs = {
-        (VQEAnsatze.UCCSD, 0.5): mock_program_1,
-        (VQEAnsatze.RY, 1.0): mock_program_2,
+        (VQEAnsatz.UCCSD, 0.5): mock_program_1,
+        (VQEAnsatz.RY, 1.0): mock_program_2,
     }
 
     smallest_key, smallest_value = vqe_sweep.aggregate_results()
 
-    assert smallest_key == (VQEAnsatze.UCCSD, 0.5)
+    assert smallest_key == (VQEAnsatz.UCCSD, 0.5)
     assert smallest_value == -0.8
 
 

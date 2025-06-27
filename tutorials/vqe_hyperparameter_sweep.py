@@ -3,14 +3,14 @@ import time
 import numpy as np
 
 from divi.parallel_simulator import ParallelSimulator
-from divi.qprog import VQEAnsatze, VQEHyperparameterSweep
+from divi.qprog import VQEAnsatz, VQEHyperparameterSweep
 from divi.qprog.optimizers import Optimizers
 
 if __name__ == "__main__":
     vqe_problem = VQEHyperparameterSweep(
         symbols=["H", "H"],
         bond_lengths=list(np.linspace(0.1, 2.7, 5)),
-        ansatze=[VQEAnsatze.HARTREE_FOCK],
+        ansatze=[VQEAnsatz.HARTREE_FOCK],
         coordinate_structure=[(0, 0, 0), (0, 0, 1)],
         optimizer=Optimizers.MONTE_CARLO,
         max_iterations=3,

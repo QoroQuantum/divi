@@ -6,7 +6,7 @@ from dash.exceptions import PreventUpdate
 from qiskit_ibm_runtime.fake_provider import FakeQuitoV2
 
 from divi.parallel_simulator import ParallelSimulator
-from divi.qprog import Optimizers, VQEAnsatze, VQEHyperparameterSweep
+from divi.qprog import Optimizers, VQEAnsatz, VQEHyperparameterSweep
 
 app = Dash(external_stylesheets=[dbc.themes.BOOTSTRAP])
 
@@ -90,7 +90,7 @@ args = dict(
     symbols=["H", "H"],
     bond_lengths=BOND_LENGTHS,
     coordinate_structure=[(0, 0, -0.5), (0, 0, 0.5)],
-    ansatze=[VQEAnsatze.HARTREE_FOCK],
+    ansatze=[VQEAnsatz.HARTREE_FOCK],
     optimizer=OPTIMIZER,
     max_iterations=MAX_ITERATIONS,
 )
