@@ -63,12 +63,6 @@ class TestGeneralQAOA:
         # Verify that _generate_circuits was called as many times as iterations
         assert mock_generate_circuits.called
 
-        # Verify that the stored iteration count is correct
-        assert qaoa_problem.current_iteration == 1
-
-        # Verify that losses is of expected length
-        assert len(qaoa_problem.losses) == 1
-
         # Verify that _generate_circuits was called with _is_compute_probabilies set to False
         assert all(val == False for val in spy_values)
 

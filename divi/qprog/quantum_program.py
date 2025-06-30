@@ -71,10 +71,6 @@ class QuantumProgram(ABC):
         self._seed = seed
         self._rng = np.random.default_rng(self._seed)
 
-        # Need to add one more iteration for Nelder-Mead's simplex initialization step
-        if hasattr(self, "max_iterations") and self.optimizer == Optimizers.NELDER_MEAD:
-            self.max_iterations += 1
-
         # Lets child classes adapt their optimization
         # step for grad calculation routine
         self._grad_mode = False
@@ -346,14 +342,20 @@ class QuantumProgram(ABC):
                 logger.info(f"Finished iteration #{self.current_iteration}")
 
             self._initialize_params()
-
             self._minimize_res = minimize(
                 fun=cost_fn,
                 x0=self._curr_params[0],
                 method=self.optimizer.value,
                 jac=grad_fn if self.optimizer == Optimizers.L_BFGS_B else None,
                 callback=_iteration_counter,
-                options={"maxiter": self.max_iterations},
+                options={
+                    "maxiter": (
+                        # Need to add one more iteration for Nelder-Mead's simplex initialization step
+                        self.max_iterations + 1
+                        if self.optimizer == Optimizers.NELDER_MEAD
+                        else self.max_iterations
+                    )
+                },
             )
 
             return self._total_circuit_count, self._total_run_time
