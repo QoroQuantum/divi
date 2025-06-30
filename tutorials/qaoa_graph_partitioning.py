@@ -53,8 +53,6 @@ if __name__ == "__main__":
         graph, seed=1
     )
 
-    # from divi.services import QoroService
-    # backend = QoroService("4497dcabd079bedbeeec9d16b3dcccb1344461b9")
     backend = ParallelSimulator()
 
     qaoa_batch = GraphPartitioningQAOA(

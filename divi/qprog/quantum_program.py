@@ -76,7 +76,7 @@ class QuantumProgram(ABC):
         self._grad_mode = False
 
         self.backend = backend
-        self.job_id = None
+        self.job_id = kwargs.get("job_id", None)
 
         # Needed for Pennylane's transforms
         self._grouping_strategy = kwargs.pop("grouping_strategy", None)
@@ -277,7 +277,7 @@ class QuantumProgram(ABC):
 
         return losses
 
-    def run(self, store_data=False, data_file=None):
+    def run(self, progress_queue=None, store_data=False, data_file=None):
         """
         Run the QAOA problem. The outputs are stored in the QAOA object. Optionally, the data can be stored in a file.
 
@@ -286,30 +286,69 @@ class QuantumProgram(ABC):
             data_file (str): The file to store the data in
         """
 
-        logger.info(
-            f"Finished iteration {self.current_iteration}"
-            if self.current_iteration > 0
-            else "Finished Setup"
-        )
+        if progress_queue is not None:
+            progress_queue.put(
+                {
+                    "job_id": self.job_id,
+                    "message": "Finished Setup",
+                    "progress": 0,
+                }
+            )
+        else:
+            logger.info("Finished Setup")
 
         if self.optimizer == Optimizers.MONTE_CARLO:
             while self.current_iteration < self.max_iterations:
 
                 self._update_mc_params()
 
+                if progress_queue is not None:
+                    progress_queue.put(
+                        {
+                            "job_id": self.job_id,
+                            "message": f"Running Iteration #{self.current_iteration} circuits",
+                            "progress": 0,
+                        }
+                    )
+                else:
+                    logger.info(
+                        f"Running Iteration #{self.current_iteration} circuits\r"
+                    )
+
                 curr_losses = self._run_optimization_circuits(store_data, data_file)
+
+                if progress_queue is not None:
+                    progress_queue.put(
+                        {
+                            "job_id": self.job_id,
+                            "progress": 1,
+                        }
+                    )
+                else:
+                    logger.info(f"Finished Iteration #{self.current_iteration}\r\n")
 
                 self.losses.append(curr_losses)
 
-                logger.info(f"Finished iteration {self.current_iteration}")
-
             self.final_params[:] = np.atleast_2d(self._curr_params)
-
-            return self._total_circuit_count, self._total_run_time
 
         elif self.optimizer in (Optimizers.NELDER_MEAD, Optimizers.L_BFGS_B):
 
             def cost_fn(params):
+                task_name = "💸 Computing Cost 💸"
+
+                if progress_queue is not None:
+                    progress_queue.put(
+                        {
+                            "job_id": self.job_id,
+                            "message": task_name,
+                            "progress": 0,
+                        }
+                    )
+                else:
+                    logger.info(
+                        f"Running Iteration #{self.current_iteration + 1} circuits: {task_name}\r"
+                    )
+
                 self._curr_params = np.atleast_2d(params)
 
                 losses = self._run_optimization_circuits(store_data, data_file)
@@ -318,6 +357,21 @@ class QuantumProgram(ABC):
 
             def grad_fn(params):
                 self._grad_mode = True
+
+                task_name = "📈 Computing Gradients 📈"
+
+                if progress_queue is not None:
+                    progress_queue.put(
+                        {
+                            "job_id": self.job_id,
+                            "message": task_name,
+                            "progress": 0,
+                        }
+                    )
+                else:
+                    logger.info(
+                        f"Running Iteration #{self.current_iteration + 1} circuits: {task_name}\r"
+                    )
 
                 shift_mask = self.optimizer.compute_parameter_shift_mask(len(params))
 
@@ -339,7 +393,16 @@ class QuantumProgram(ABC):
                 self.final_params[:] = np.atleast_2d(intermediate_result.x)
 
                 self.current_iteration += 1
-                logger.info(f"Finished iteration #{self.current_iteration}")
+
+                if progress_queue is not None:
+                    progress_queue.put(
+                        {
+                            "job_id": self.job_id,
+                            "progress": 1,
+                        }
+                    )
+                else:
+                    logger.info(f"Finished Iteration #{self.current_iteration}\r\n")
 
             self._initialize_params()
             self._minimize_res = minimize(
@@ -358,7 +421,18 @@ class QuantumProgram(ABC):
                 },
             )
 
-            return self._total_circuit_count, self._total_run_time
+        if progress_queue:
+            progress_queue.put(
+                {
+                    "job_id": self.job_id,
+                    "progress": 0,
+                    "final_status": "Success",
+                }
+            )
+        else:
+            logger.info(f"Finished Optimization!")
+
+        return self._total_circuit_count, self._total_run_time
 
     def save_iteration(self, data_file):
         """

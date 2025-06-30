@@ -1,6 +1,32 @@
 import traceback
 from abc import ABC, abstractmethod
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from multiprocessing import Event, Manager
+from threading import Thread
+
+from rich.live import Live
+from rich.progress import Progress
+
+from divi._pbar import make_progress_bar
+from divi.interfaces import CircuitRunner
+from divi.parallel_simulator import ParallelSimulator
+from divi.qlogger import disable_logging
+
+
+def queue_listener(queue, progress_bar: Progress, pb_task_map, done_event):
+    while not done_event.is_set():
+        try:
+            msg = queue.get(timeout=0.1)
+        except:
+            continue
+
+        progress_bar.update(
+            pb_task_map[msg["job_id"]],
+            advance=msg["progress"],
+            polling_attempt=msg.get("polling_attempt", 0),
+            message=msg.get("message", ""),
+            final_status=msg.get("final_status", ""),
+        )
 
 
 class ProgramBatch(ABC):
@@ -21,14 +47,23 @@ class ProgramBatch(ABC):
             handle such cases accordingly.
     """
 
-    def __init__(self):
+    def __init__(self, backend: CircuitRunner):
         super().__init__()
 
+        self.backend = backend
+        self._is_simulation = isinstance(backend, ParallelSimulator)
         self._executor = None
         self.programs = {}
 
         self._total_circuit_count = 0
         self._total_run_time = 0.0
+
+        self._progress_bar = make_progress_bar(
+            max_retries=None if self._is_simulation else self.backend.max_retries
+        )
+
+        # Disable logging since we already have the bars to track progress
+        disable_logging()
 
     @property
     def total_circuit_count(self):
@@ -40,11 +75,14 @@ class ProgramBatch(ABC):
 
     @abstractmethod
     def create_programs(self):
-        raise NotImplementedError
+        self._manager = Manager()
+        self._queue = self._manager.Queue()
+        self._done_event = Event()
 
     def reset(self):
         self.programs.clear()
         self._executor = None
+        self._queue = None
 
     def run(self):
         if self._executor is not None:
@@ -54,9 +92,16 @@ class ProgramBatch(ABC):
             raise RuntimeError("No programs to run.")
 
         self._executor = ProcessPoolExecutor()
+        self._listener_thread = Thread(
+            target=queue_listener,
+            args=(self._queue, self._progress_bar, self._pb_task_map, self._done_event),
+            daemon=True,
+        )
+        self._listener_thread.start()
 
         self.futures = [
-            self._executor.submit(program.run) for program in self.programs.values()
+            self._executor.submit(program.run, self._queue)
+            for program in self.programs.values()
         ]
 
     def check_all_done(self):
@@ -83,10 +128,35 @@ class ProgramBatch(ABC):
         finally:
             self._executor.shutdown(wait=True, cancel_futures=False)
             self._executor = None
+            self._done_event.set()
+            self._listener_thread.join()
 
+        self._live.stop()
         self._total_circuit_count += sum(future.result()[0] for future in self.futures)
         self._total_run_time += sum(future.result()[1] for future in self.futures)
         self.futures = []
+
+    def _populate_progress_bars(self):
+        if not hasattr(self, "max_iterations"):
+            raise RuntimeError(
+                "Can not generate progress bars for tasks without `max_iteration` attribute."
+            )
+
+        self._live = Live(self._progress_bar, refresh_per_second=20)
+        self._live.start()
+        self._pb_task_map = {}
+        for program in self.programs:
+            pb_id = self._progress_bar.add_task(
+                "",
+                job_name=f"Job {program}",
+                total=self.max_iterations,
+                completed=0,
+                poll_attempt=0,
+                message="",
+                final_status="",
+                mode=("simulation" if self._is_simulation else "network"),
+            )
+            self._pb_task_map[program] = pb_id
 
     @abstractmethod
     def aggregate_results(self):

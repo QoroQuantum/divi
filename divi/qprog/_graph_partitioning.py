@@ -214,12 +214,13 @@ class GraphPartitioningQAOA(ProgramBatch):
         max_iterations=10,
         **kwargs,
     ):
-        super().__init__()
+        super().__init__(backend=backend)
 
         self.main_graph = graph
 
         self.n_qubits = n_qubits
         self.n_clusters = n_clusters
+        self.max_iterations = max_iterations
 
         if not (bool(self.n_qubits) ^ bool(self.n_clusters)):
             raise ValueError("One of `n_qubits` and `n_clusters` must be provided.")
@@ -233,8 +234,8 @@ class GraphPartitioningQAOA(ProgramBatch):
             initial_state=initial_state,
             graph_problem=graph_problem,
             optimizer=optimizer,
-            max_iterations=max_iterations,
-            backend=backend,
+            max_iterations=self.max_iterations,
+            backend=self.backend,
             n_layers=n_layers,
             **kwargs,
         )
@@ -246,7 +247,7 @@ class GraphPartitioningQAOA(ProgramBatch):
                 "Clear the program dictionary before creating new ones by using batch.reset()."
             )
 
-        self.manager = Manager()
+        super().create_programs()
 
         if self.is_edge_problem:
             subgraphs = _edge_partition_graph(self.main_graph, n_qubits=self.n_qubits)
@@ -272,13 +273,14 @@ class GraphPartitioningQAOA(ProgramBatch):
                 _subgraph = nx.relabel_nodes(subgraph, index_map)
 
                 self.programs[i] = self._constructor(
+                    job_id=i,
                     problem=_subgraph,
-                    losses=self.manager.list(),
-                    probs=self.manager.dict(),
-                    final_params=self.manager.list(),
+                    losses=self._manager.list(),
+                    probs=self._manager.dict(),
+                    final_params=self._manager.list(),
                 )
 
-        return
+        self._populate_progress_bars()
 
     def compute_final_solutions(self):
         if self._executor is not None:
