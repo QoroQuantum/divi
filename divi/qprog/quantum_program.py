@@ -71,6 +71,10 @@ class QuantumProgram(ABC):
         self._seed = seed
         self._rng = np.random.default_rng(self._seed)
 
+        # Need to add one more iteration for Nelder-Mead's simplex initialization step
+        if hasattr(self, "max_iterations") and self.optimizer == Optimizers.NELDER_MEAD:
+            self.max_iterations += 1
+
         # Lets child classes adapt their optimization
         # step for grad calculation routine
         self._grad_mode = False
@@ -80,6 +84,7 @@ class QuantumProgram(ABC):
 
         # Needed for Pennylane's transforms
         self._grouping_strategy = kwargs.pop("grouping_strategy", None)
+
         self._qem_protocol = kwargs.pop("qem_protocol", None) or _NoMitigation()
 
         self._meta_circuit_factory = partial(
@@ -338,7 +343,7 @@ class QuantumProgram(ABC):
                 self.final_params[:] = np.atleast_2d(intermediate_result.x)
 
                 self.current_iteration += 1
-                logger.info(f"Finished iteration {self.current_iteration}")
+                logger.info(f"Finished iteration #{self.current_iteration}")
 
             self._initialize_params()
 
@@ -350,12 +355,6 @@ class QuantumProgram(ABC):
                 callback=_iteration_counter,
                 options={"maxiter": self.max_iterations},
             )
-
-            if self.max_iterations == 1 and self.current_iteration == 0:
-                # Need to handle this edge case for single
-                # iteration optimization since Scipy doesn't
-                # call the callback function for initial guesses
-                _iteration_counter(self._minimize_res)
 
             return self._total_circuit_count, self._total_run_time
 
