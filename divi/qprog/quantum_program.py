@@ -165,7 +165,7 @@ class QuantumProgram(ABC):
         backend_output = self.backend.submit_circuits(job_circuits)
 
         if isinstance(self.backend, QoroService):
-            self.job_id = backend_output
+            self._curr_service_job_id = backend_output
 
         return backend_output
 
@@ -189,7 +189,7 @@ class QuantumProgram(ABC):
 
         if isinstance(self.backend, QoroService):
             status = self.backend.poll_job_status(
-                self.job_id,
+                self._curr_service_job_id,
                 loop_until_complete=True,
                 on_complete=add_run_time,
             )
@@ -199,7 +199,7 @@ class QuantumProgram(ABC):
                     "Job has not completed yet, cannot post-process results"
                 )
 
-            results = self.backend.get_job_results(self.job_id)
+            results = self.backend.get_job_results(self._curr_service_job_id)
 
         results = {r["label"]: r["results"] for r in results}
 
