@@ -109,10 +109,6 @@ class QuantumProgram(ABC):
     def _generate_circuits(self, **kwargs):
         pass
 
-    @abstractmethod
-    def run(self, store_data=False, data_file=None):
-        pass
-
     def _initialize_params(self):
         self._curr_params = np.array(
             [
@@ -282,6 +278,7 @@ class QuantumProgram(ABC):
         Run the QAOA problem. The outputs are stored in the QAOA object. Optionally, the data can be stored in a file.
 
         Args:
+            progress_queue(Manager.Queue): multi-processing queue for the progress bars
             store_data (bool): Whether to store the data for the iteration
             data_file (str): The file to store the data in
         """

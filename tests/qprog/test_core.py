@@ -6,6 +6,7 @@ import pytest
 import sympy as sp
 
 from divi.circuits import MetaCircuit
+from divi.parallel_simulator import ParallelSimulator
 from divi.qprog import ProgramBatch, QuantumProgram
 
 
@@ -51,6 +52,8 @@ class SampleProgram(QuantumProgram):
 
 class SampleProgramBatch(ProgramBatch):
     def create_programs(self):
+        super().create_programs()
+
         self.programs = {
             "prog1": SampleProgram(10, 5.5),
             "prog2": SampleProgram(5, 10),
@@ -62,7 +65,7 @@ class SampleProgramBatch(ProgramBatch):
 
 @pytest.fixture
 def program_batch():
-    return SampleProgramBatch()
+    return SampleProgramBatch(backend=ParallelSimulator())
 
 
 class TestProgram:
@@ -205,7 +208,7 @@ class TestProgramBatch:
         assert mock_executor.submit.call_count == len(program_batch.programs)
 
         for program in program_batch.programs.values():
-            mock_executor.submit.assert_any_call(program.run)
+            mock_executor.submit.assert_any_call(program.run, program_batch._queue)
 
     def test_check_all_done_true_when_all_futures_ready(self, program_batch):
         future_1 = Future()

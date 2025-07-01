@@ -77,7 +77,9 @@ class ProgramBatch(ABC):
     def create_programs(self):
         self._manager = Manager()
         self._queue = self._manager.Queue()
-        self._done_event = Event()
+
+        if hasattr(self, "max_iterations"):
+            self._done_event = Event()
 
     def reset(self):
         self.programs.clear()
@@ -92,12 +94,20 @@ class ProgramBatch(ABC):
             raise RuntimeError("No programs to run.")
 
         self._executor = ProcessPoolExecutor()
-        self._listener_thread = Thread(
-            target=queue_listener,
-            args=(self._queue, self._progress_bar, self._pb_task_map, self._done_event),
-            daemon=True,
-        )
-        self._listener_thread.start()
+
+        # Only generate progress bars for iteration-based programs
+        if hasattr(self, "max_iterations"):
+            self._listener_thread = Thread(
+                target=queue_listener,
+                args=(
+                    self._queue,
+                    self._progress_bar,
+                    self._pb_task_map,
+                    self._done_event,
+                ),
+                daemon=True,
+            )
+            self._listener_thread.start()
 
         self.futures = [
             self._executor.submit(program.run, self._queue)
@@ -128,10 +138,13 @@ class ProgramBatch(ABC):
         finally:
             self._executor.shutdown(wait=True, cancel_futures=False)
             self._executor = None
-            self._done_event.set()
-            self._listener_thread.join()
 
-        self._live.stop()
+            if hasattr(self, "max_iterations"):
+                self._done_event.set()
+                self._listener_thread.join()
+
+        if hasattr(self, "max_iterations"):
+            self._live.stop()
         self._total_circuit_count += sum(future.result()[0] for future in self.futures)
         self._total_run_time += sum(future.result()[1] for future in self.futures)
         self.futures = []
