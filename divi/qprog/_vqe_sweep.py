@@ -70,6 +70,7 @@ class VQEHyperparameterSweep(ProgramBatch):
                 ansatz=ansatz,
                 losses=self._manager.list(),
                 final_params=self._manager.list(),
+                progress_queue=self._queue,
             )
 
         self._populate_progress_bars()

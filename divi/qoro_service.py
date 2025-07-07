@@ -1,6 +1,7 @@
 import base64
 import gzip
 import json
+import logging
 import time
 from collections.abc import Callable
 from enum import Enum
@@ -25,6 +26,8 @@ retries = Retry(
 
 session.mount("http://", HTTPAdapter(max_retries=retries))
 session.mount("https://", HTTPAdapter(max_retries=retries))
+
+logger = logging.getLogger(__name__)
 
 
 class JobStatus(Enum):
@@ -231,6 +234,7 @@ class QoroService(CircuitRunner):
         loop_until_complete: bool = False,
         on_complete: Optional[Callable] = None,
         verbose: bool = True,
+        pbar_update_fn: Optional[Callable] = None,
     ):
         """
         Get the status of a job and optionally execute function *on_complete* on the results
@@ -238,11 +242,12 @@ class QoroService(CircuitRunner):
 
         Args:
             job_ids: The job id of the jobs to check
-            loop_until_complete (optional): A flag to loop until the job is completed
+            loop_until_complete (bool): A flag to loop until the job is completed
             on_complete (optional): A function to be called when the job is completed
             polling_interval (optional): The time to wait between retries
             max_retries (optional): The maximum number of retries
             verbose (optional): A flag to print the when retrying
+            pbar_update_fn (optional): A function for updating progress bars while polling.
         Returns:
             status: The status of the job
         """
@@ -291,10 +296,12 @@ class QoroService(CircuitRunner):
                 time.sleep(self.polling_interval)
 
                 if verbose:
-                    print(
-                        f"Polling job {job_ids}: {retries} times / {self.max_retries} retries",
-                        f"Run time: {retries*self.polling_interval} seconds",
-                    )
+                    if pbar_update_fn:
+                        pbar_update_fn(retries)
+                    else:
+                        logger.info(
+                            f"\cPolling {retries} / {self.max_retries} retries\r"
+                        )
 
             if completed and on_complete:
                 on_complete(responses)

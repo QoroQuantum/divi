@@ -2,6 +2,7 @@ import logging
 import pickle
 from abc import ABC, abstractmethod
 from functools import partial
+from queue import Queue
 from typing import Optional
 
 import numpy as np
@@ -15,7 +16,6 @@ from divi.qem import _NoMitigation
 from divi.qoro_service import JobStatus
 from divi.qprog.optimizers import Optimizers
 
-# Set up your logger
 logger = logging.getLogger(__name__)
 
 
@@ -24,6 +24,7 @@ class QuantumProgram(ABC):
         self,
         backend: CircuitRunner,
         seed: Optional[int] = None,
+        progress_queue: Optional[Queue] = None,
         **kwargs,
     ):
         """
@@ -38,13 +39,12 @@ class QuantumProgram(ABC):
         the `_initialize_params` method should be overridden to set the parameters.
 
         Args:
-            shots (int): The number of shots for quantum circuit execution.
-                Must be a positive integer. Defaults to 5000.
-            qoro_service (QoroService): An instance of QoroService to handle.
-                Defaults to None, which corresponds to local simulation.
+            backend (CircuitRunner): An instance of a CircuitRunner object, which
+                can either be ParallelSimulator or QoroService.
             seed (int): A seed for numpy's random number generator, which will
                 be used for the parameter initialization.
                 Defaults to None.
+            progress_queue (Queue): a queue for progress bar updates.
 
             **kwargs: Additional keyword arguments that influence behaviour.
                 - grouping_strategy (Optional[Any]): A strategy for grouping operations, used in Pennylane's transforms.
@@ -77,6 +77,8 @@ class QuantumProgram(ABC):
 
         self.backend = backend
         self.job_id = kwargs.get("job_id", None)
+
+        self._progress_queue = progress_queue
 
         # Needed for Pennylane's transforms
         self._grouping_strategy = kwargs.pop("grouping_strategy", None)
@@ -188,6 +190,19 @@ class QuantumProgram(ABC):
                 self._curr_service_job_id,
                 loop_until_complete=True,
                 on_complete=add_run_time,
+                **(
+                    {
+                        "pbar_update_fn": lambda n_polls: self._progress_queue.put(
+                            {
+                                "job_id": self.job_id,
+                                "progress": 0,
+                                "poll_attempt": n_polls,
+                            }
+                        )
+                    }
+                    if self._progress_queue is not None
+                    else {}
+                ),
             )
 
             if status != JobStatus.COMPLETED:
@@ -273,18 +288,17 @@ class QuantumProgram(ABC):
 
         return losses
 
-    def run(self, progress_queue=None, store_data=False, data_file=None):
+    def run(self, store_data=False, data_file=None):
         """
         Run the QAOA problem. The outputs are stored in the QAOA object. Optionally, the data can be stored in a file.
 
         Args:
-            progress_queue(Manager.Queue): multi-processing queue for the progress bars
             store_data (bool): Whether to store the data for the iteration
             data_file (str): The file to store the data in
         """
 
-        if progress_queue is not None:
-            progress_queue.put(
+        if self._progress_queue is not None:
+            self._progress_queue.put(
                 {
                     "job_id": self.job_id,
                     "message": "Finished Setup",
@@ -299,11 +313,11 @@ class QuantumProgram(ABC):
 
                 self._update_mc_params()
 
-                if progress_queue is not None:
-                    progress_queue.put(
+                if self._progress_queue is not None:
+                    self._progress_queue.put(
                         {
                             "job_id": self.job_id,
-                            "message": f"Running Iteration #{self.current_iteration} circuits",
+                            "message": f"⛰️ Sampling from Loss Lansdscape ⛰️",
                             "progress": 0,
                         }
                     )
@@ -314,8 +328,8 @@ class QuantumProgram(ABC):
 
                 curr_losses = self._run_optimization_circuits(store_data, data_file)
 
-                if progress_queue is not None:
-                    progress_queue.put(
+                if self._progress_queue is not None:
+                    self._progress_queue.put(
                         {
                             "job_id": self.job_id,
                             "progress": 1,
@@ -333,8 +347,8 @@ class QuantumProgram(ABC):
             def cost_fn(params):
                 task_name = "💸 Computing Cost 💸"
 
-                if progress_queue is not None:
-                    progress_queue.put(
+                if self._progress_queue is not None:
+                    self._progress_queue.put(
                         {
                             "job_id": self.job_id,
                             "message": task_name,
@@ -357,8 +371,8 @@ class QuantumProgram(ABC):
 
                 task_name = "📈 Computing Gradients 📈"
 
-                if progress_queue is not None:
-                    progress_queue.put(
+                if self._progress_queue is not None:
+                    self._progress_queue.put(
                         {
                             "job_id": self.job_id,
                             "message": task_name,
@@ -391,8 +405,8 @@ class QuantumProgram(ABC):
 
                 self.current_iteration += 1
 
-                if progress_queue is not None:
-                    progress_queue.put(
+                if self._progress_queue is not None:
+                    self._progress_queue.put(
                         {
                             "job_id": self.job_id,
                             "progress": 1,
@@ -418,8 +432,8 @@ class QuantumProgram(ABC):
                 },
             )
 
-        if progress_queue:
-            progress_queue.put(
+        if self._progress_queue:
+            self._progress_queue.put(
                 {
                     "job_id": self.job_id,
                     "progress": 0,

@@ -53,8 +53,6 @@ if __name__ == "__main__":
         graph, seed=1
     )
 
-    backend = ParallelSimulator()
-
     qaoa_batch = GraphPartitioningQAOA(
         graph_problem=GraphProblem.MAXCUT,
         graph=graph,
@@ -62,7 +60,7 @@ if __name__ == "__main__":
         n_clusters=2,
         optimizer=Optimizers.NELDER_MEAD,
         max_iterations=20,
-        backend=backend,
+        backend=ParallelSimulator(),
     )
 
     qaoa_batch.create_programs()

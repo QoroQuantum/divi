@@ -278,6 +278,7 @@ class GraphPartitioningQAOA(ProgramBatch):
                     losses=self._manager.list(),
                     probs=self._manager.dict(),
                     final_params=self._manager.list(),
+                    progress_queue=self._queue,
                 )
 
         self._populate_progress_bars()

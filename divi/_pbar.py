@@ -30,7 +30,7 @@ class PhaseStatusColumn(ProgressColumn):
         super().__init__(table_column)
 
         self._max_retries = max_retries
-        self._curr_message = ""
+        self._last_message = ""
 
     def render(self, task):
         final_status = task.fields.get("final_status")
@@ -40,19 +40,17 @@ class PhaseStatusColumn(ProgressColumn):
         elif final_status == "Failed":
             return Text("• Failed! ❌", style="bold red")
 
-        phase = task.fields.get("message")
-        if phase != "":
-            self._curr_message = phase
-
-        mode = task.fields.get("mode")
-        if mode == "simulation":
-            return Text(f"[{self._curr_message}]")
+        message = task.fields.get("message")
+        if message != "":
+            self._last_message = message
 
         poll_attempt = task.fields.get("poll_attempt")
         if poll_attempt > 0:
-            return Text(f"[{phase}] Polling {poll_attempt}/{self._max_retries}")
+            return Text(
+                f"[{self._last_message}] Polling {poll_attempt}/{self._max_retries}"
+            )
 
-        return Text(f"[{phase}]")
+        return Text(f"[{self._last_message}]")
 
 
 def make_progress_bar(max_retries: Optional[int] = None):

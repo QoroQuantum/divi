@@ -23,7 +23,7 @@ def queue_listener(queue, progress_bar: Progress, pb_task_map, done_event):
         progress_bar.update(
             pb_task_map[msg["job_id"]],
             advance=msg["progress"],
-            polling_attempt=msg.get("polling_attempt", 0),
+            poll_attempt=msg.get("poll_attempt", 0),
             message=msg.get("message", ""),
             final_status=msg.get("final_status", ""),
         )
@@ -110,8 +110,7 @@ class ProgramBatch(ABC):
             self._listener_thread.start()
 
         self.futures = [
-            self._executor.submit(program.run, self._queue)
-            for program in self.programs.values()
+            self._executor.submit(program.run) for program in self.programs.values()
         ]
 
     def check_all_done(self):
