@@ -208,7 +208,7 @@ class TestProgramBatch:
         assert mock_executor.submit.call_count == len(program_batch.programs)
 
         for program in program_batch.programs.values():
-            mock_executor.submit.assert_any_call(program.run, program_batch._queue)
+            mock_executor.submit.assert_any_call(program.run)
 
     def test_check_all_done_true_when_all_futures_ready(self, program_batch):
         future_1 = Future()
