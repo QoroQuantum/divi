@@ -1,3 +1,4 @@
+import re
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
@@ -11,6 +12,7 @@ import rustworkx as rx
 import scipy.sparse.linalg as spla
 from sklearn.cluster import SpectralClustering
 
+from divi.interfaces import CircuitRunner
 from divi.qprog import QAOA, ProgramBatch
 from divi.qprog._qaoa import _SUPPORTED_INITIAL_STATES_LITERAL, GraphProblem
 
@@ -203,21 +205,22 @@ class GraphPartitioningQAOA(ProgramBatch):
         graph: nx.Graph | rx.PyGraph,
         graph_problem: GraphProblem,
         n_layers: int,
+        backend: CircuitRunner,
         n_qubits: int = None,
         n_clusters: int = None,
         initial_state: _SUPPORTED_INITIAL_STATES_LITERAL = "Recommended",
         aggregate_fn: AggregateFn = linear_aggregation,
         optimizer=Optimizers.MONTE_CARLO,
         max_iterations=10,
-        shots=5000,
         **kwargs,
     ):
-        super().__init__()
+        super().__init__(backend=backend)
 
         self.main_graph = graph
 
         self.n_qubits = n_qubits
         self.n_clusters = n_clusters
+        self.max_iterations = max_iterations
 
         if not (bool(self.n_qubits) ^ bool(self.n_clusters)):
             raise ValueError("One of `n_qubits` and `n_clusters` must be provided.")
@@ -231,8 +234,8 @@ class GraphPartitioningQAOA(ProgramBatch):
             initial_state=initial_state,
             graph_problem=graph_problem,
             optimizer=optimizer,
-            max_iterations=max_iterations,
-            shots=shots,
+            max_iterations=self.max_iterations,
+            backend=self.backend,
             n_layers=n_layers,
             **kwargs,
         )
@@ -244,7 +247,7 @@ class GraphPartitioningQAOA(ProgramBatch):
                 "Clear the program dictionary before creating new ones by using batch.reset()."
             )
 
-        self.manager = Manager()
+        super().create_programs()
 
         if self.is_edge_problem:
             subgraphs = _edge_partition_graph(self.main_graph, n_qubits=self.n_qubits)
@@ -270,13 +273,15 @@ class GraphPartitioningQAOA(ProgramBatch):
                 _subgraph = nx.relabel_nodes(subgraph, index_map)
 
                 self.programs[i] = self._constructor(
+                    job_id=i,
                     problem=_subgraph,
-                    losses=self.manager.list(),
-                    probs=self.manager.dict(),
-                    final_params=self.manager.list(),
+                    losses=self._manager.list(),
+                    probs=self._manager.dict(),
+                    final_params=self._manager.list(),
+                    progress_queue=self._queue,
                 )
 
-        return
+        self._populate_progress_bars()
 
     def compute_final_solutions(self):
         if self._executor is not None:
@@ -320,7 +325,16 @@ class GraphPartitioningQAOA(ProgramBatch):
             last_iteration_losses = program.losses[-1]
             minimum_key = min(last_iteration_losses, key=last_iteration_losses.get)
 
-            minimum_probabilities = program.probs[f"{minimum_key}_0"]
+            # Find the key matching the best_solution_idx with possible metadata in between
+            pattern = re.compile(rf"^{minimum_key}(?:_[^_]*)*_0$")
+            matching_keys = [k for k in program.probs.keys() if pattern.match(k)]
+
+            if len(matching_keys) > 1:
+                raise RuntimeError(f"More than one matching key found.")
+
+            best_solution_key = matching_keys[0]
+
+            minimum_probabilities = program.probs[best_solution_key]
 
             # The bitstring corresponding to the solution, with flip for correct endianness
             max_prob_key = max(minimum_probabilities, key=minimum_probabilities.get)[

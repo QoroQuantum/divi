@@ -2,6 +2,7 @@ import networkx as nx
 import pytest
 from qprog_contracts import verify_basic_program_batch_behaviour
 
+from divi.parallel_simulator import ParallelSimulator
 from divi.qprog import GraphPartitioningQAOA, GraphProblem, Optimizers
 
 problem_args = {
@@ -11,7 +12,7 @@ problem_args = {
     "n_clusters": 2,
     "optimizer": Optimizers.NELDER_MEAD,
     "max_iterations": 10,
-    "shots": 5000,
+    "backend": ParallelSimulator(shots=5000),
 }
 
 
@@ -48,7 +49,7 @@ def test_fail_if_no_qubits_or_clusters_provided():
             n_layers=1,
             optimizer=Optimizers.NELDER_MEAD,
             max_iterations=10,
-            shots=5000,
+            backend=ParallelSimulator(),
         )
 
 
@@ -63,7 +64,11 @@ def test_correct_number_of_programs_created(mocker, node_partitioning_qaoa):
     for program in node_partitioning_qaoa.programs.values():
         assert program.optimizer == Optimizers.NELDER_MEAD
         assert program.max_iterations == 10
-        assert program.shots == 5000
+        assert isinstance(program.backend, ParallelSimulator)
+        assert program.backend.shots == 5000
+
+    # Need to clean up at the end of the test
+    node_partitioning_qaoa._live.stop()
 
 
 def test_results_aggregated_correctly(node_partitioning_qaoa):
@@ -87,3 +92,6 @@ def test_results_aggregated_correctly(node_partitioning_qaoa):
     assert solution.count(0) == mock_program_1_nodes
     assert solution.count(1) == mock_program_2_nodes
     assert len(solution) == node_partitioning_qaoa.main_graph.number_of_nodes()
+
+    # Need to clean up at the end of the test
+    node_partitioning_qaoa._live.stop()

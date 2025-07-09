@@ -1,11 +1,11 @@
 from functools import partial
 from itertools import product
-from multiprocessing import Manager
 from typing import Literal
 
 import matplotlib.pyplot as plt
 
-from divi.qprog import VQE, ProgramBatch, VQEAnsatze
+from divi.interfaces import CircuitRunner
+from divi.qprog import VQE, ProgramBatch, VQEAnsatz
 
 from .optimizers import Optimizers
 
@@ -17,13 +17,13 @@ class VQEHyperparameterSweep(ProgramBatch):
 
     def __init__(
         self,
-        bond_lengths,
-        ansatze,
-        symbols,
-        coordinate_structure,
-        optimizer=Optimizers.MONTE_CARLO,
-        max_iterations=10,
-        shots=5000,
+        bond_lengths: list[float],
+        ansatze: list[VQEAnsatz],
+        symbols: list[str],
+        coordinate_structure: list[tuple[float, float, float]],
+        backend: CircuitRunner,
+        optimizer: Optimizers = Optimizers.MONTE_CARLO,
+        max_iterations: int = 10,
         **kwargs,
     ):
         """Initiates the class.
@@ -37,18 +37,19 @@ class VQEHyperparameterSweep(ProgramBatch):
             max_iterations (int): Maximum number of iteration optimizers.
             shots (int): Number of shots for each circuit execution.
         """
-        super().__init__()
+        super().__init__(backend=backend)
 
         self.ansatze = ansatze
-        self.bond_lengths = bond_lengths
+        self.bond_lengths = [round(bnd, 9) for bnd in bond_lengths]
+        self.max_iterations = max_iterations
 
         self._constructor = partial(
             VQE,
             symbols=symbols,
             coordinate_structure=coordinate_structure,
             optimizer=optimizer,
-            max_iterations=max_iterations,
-            shots=shots,
+            max_iterations=self.max_iterations,
+            backend=self.backend,
             **kwargs,
         )
 
@@ -58,16 +59,21 @@ class VQEHyperparameterSweep(ProgramBatch):
                 "Some programs already exist. "
                 "Clear the program dictionary before creating new ones by using batch.reset()."
             )
-        self.manager = Manager()
+
+        super().create_programs()
 
         for ansatz, bond_length in product(self.ansatze, self.bond_lengths):
-            self.programs[(ansatz, bond_length)] = self._constructor(
+            _job_id = (ansatz, bond_length)
+            self.programs[_job_id] = self._constructor(
+                job_id=_job_id,
                 bond_length=bond_length,
                 ansatz=ansatz,
-                losses=self.manager.list(),
-                final_params=self.manager.list(),
+                losses=self._manager.list(),
+                final_params=self._manager.list(),
+                progress_queue=self._queue,
             )
-        return
+
+        self._populate_progress_bars()
 
     def aggregate_results(self):
         if len(self.programs) == 0:
@@ -103,7 +109,7 @@ class VQEHyperparameterSweep(ProgramBatch):
         data = []
         colors = ["blue", "g", "r", "c", "m", "y", "k"]
 
-        ansatz_list = list(VQEAnsatze)
+        ansatz_list = list(VQEAnsatz)
 
         if graph_type == "scatter":
             for ansatz, bond_length in self.programs.keys():

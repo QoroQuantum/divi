@@ -9,7 +9,7 @@ from divi.qprog import QuantumProgram
 from divi.qprog.optimizers import Optimizers
 
 
-class VQEAnsatze(Enum):
+class VQEAnsatz(Enum):
     UCCSD = "UCCSD"
     RY = "RY"
     RYRZ = "RYRZ"
@@ -21,20 +21,20 @@ class VQEAnsatze(Enum):
         return self.name, self.value
 
     def n_params(self, n_qubits, **kwargs):
-        if self in (VQEAnsatze.UCCSD, VQEAnsatze.HARTREE_FOCK):
+        if self in (VQEAnsatz.UCCSD, VQEAnsatz.HARTREE_FOCK):
             singles, doubles = qml.qchem.excitations(
                 kwargs.pop("n_electrons"), n_qubits
             )
             s_wires, d_wires = qml.qchem.excitations_to_wires(singles, doubles)
 
             return len(s_wires) + len(d_wires)
-        elif self == VQEAnsatze.RY:
+        elif self == VQEAnsatz.RY:
             return n_qubits
-        elif self == VQEAnsatze.RYRZ:
+        elif self == VQEAnsatz.RYRZ:
             return 2 * n_qubits
-        elif self == VQEAnsatze.HW_EFFICIENT:
+        elif self == VQEAnsatz.HW_EFFICIENT:
             raise NotImplementedError
-        elif self == VQEAnsatze.QAOA:
+        elif self == VQEAnsatz.QAOA:
             return qml.QAOAEmbedding.shape(n_layers=1, n_wires=n_qubits)[1]
 
 
@@ -45,8 +45,8 @@ class VQE(QuantumProgram):
         bond_length: float,
         coordinate_structure: list[tuple[float, float, float]],
         n_layers: int = 1,
+        ansatz=VQEAnsatz.HARTREE_FOCK,
         optimizer=Optimizers.MONTE_CARLO,
-        ansatz=VQEAnsatze.HARTREE_FOCK,
         max_iterations=10,
         **kwargs,
     ) -> None:
@@ -60,7 +60,6 @@ class VQE(QuantumProgram):
             ansatz (VQEAnsatz): The ansatz to use for the VQE problem
             optimizer (Optimizers): The optimizer to use.
             max_iterations (int): Maximum number of iteration optimizers.
-            shots (int): Number of shots for each circuit execution.
         """
 
         # Local Variables
@@ -152,16 +151,15 @@ class VQE(QuantumProgram):
             return qml.expval(hamiltonian)
 
         return {
-            "cost_circuit": MetaCircuit(
+            "cost_circuit": self._meta_circuit_factory(
                 qml.tape.make_qscript(_prepare_circuit)(
                     self.ansatz, self.cost_hamiltonian, weights_syms
                 ),
                 symbols=weights_syms.flatten(),
-                grouping_strategy=self._grouping_strategy,
             )
         }
 
-    def _set_ansatz(self, ansatz: VQEAnsatze, params):
+    def _set_ansatz(self, ansatz: VQEAnsatz, params):
         """
         Set the ansatz for the VQE problem.
         Args:
@@ -237,7 +235,7 @@ class VQE(QuantumProgram):
             for op in qml.QueuingManager.active_context().queue[1:]:
                 op._hyperparameters["hf_state"] = 0
 
-        if ansatz in VQEAnsatze:
+        if ansatz in VQEAnsatz:
             locals()[f"_add_{ansatz.name.lower()}_ansatz"](params)
         else:
             raise ValueError(f"Invalid Ansatz Value. Got {ansatz}.")

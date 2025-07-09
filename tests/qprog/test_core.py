@@ -6,6 +6,7 @@ import pytest
 import sympy as sp
 
 from divi.circuits import MetaCircuit
+from divi.parallel_simulator import ParallelSimulator
 from divi.qprog import ProgramBatch, QuantumProgram
 
 
@@ -17,7 +18,7 @@ class SampleProgram(QuantumProgram):
         self.n_layers = 1
         self.n_params = 4
 
-        super().__init__(**kwargs)
+        super().__init__(backend=None, **kwargs)
 
         self._meta_circuits = self._create_meta_circuits_dict()
 
@@ -51,6 +52,8 @@ class SampleProgram(QuantumProgram):
 
 class SampleProgramBatch(ProgramBatch):
     def create_programs(self):
+        super().create_programs()
+
         self.programs = {
             "prog1": SampleProgram(10, 5.5),
             "prog2": SampleProgram(5, 10),
@@ -62,7 +65,7 @@ class SampleProgramBatch(ProgramBatch):
 
 @pytest.fixture
 def program_batch():
-    return SampleProgramBatch()
+    return SampleProgramBatch(backend=ParallelSimulator())
 
 
 class TestProgram:
@@ -145,12 +148,16 @@ class TestProgramBatch:
 
     def test_total_circuit_count_setter(self, program_batch):
         with pytest.raises(
-            RuntimeError, match="Can not set total circuit count value."
+            AttributeError,
+            match="property 'total_circuit_count' of 'SampleProgramBatch'",
         ):
             program_batch.total_circuit_count = 100
 
     def test_total_run_time_setter(self, program_batch):
-        with pytest.raises(RuntimeError, match="Can not set total run time value."):
+        with pytest.raises(
+            AttributeError,
+            match="property 'total_run_time' of 'SampleProgramBatch'",
+        ):
             program_batch.total_run_time = 100
 
     def test_run_sets_executor_and_returns_expected_number_of_futures(

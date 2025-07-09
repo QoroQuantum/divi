@@ -1,42 +1,30 @@
 import logging
 import pickle
 from abc import ABC, abstractmethod
+from functools import partial
+from queue import Queue
 from typing import Optional
 
 import numpy as np
 from qiskit.result import marginal_counts, sampled_expectation_value
 from scipy.optimize import OptimizeResult, minimize
 
+from divi import QoroService
 from divi.circuits import Circuit, MetaCircuit
-from divi.parallel_simulator import ParallelSimulator
+from divi.interfaces import CircuitRunner
+from divi.qem import _NoMitigation
+from divi.qoro_service import JobStatus
 from divi.qprog.optimizers import Optimizers
-from divi.services import QoroService
-from divi.services.qoro_service import JobStatus
 
-# Set up your logger
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-
-# Create console handler and set level to debug
-ch = logging.StreamHandler()
-ch.setLevel(logging.DEBUG)
-
-formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-ch.setFormatter(formatter)
-
-# Add the handler to the logger
-logger.addHandler(ch)
-
-# Suppress debug logs from external libraries
-logging.getLogger().setLevel(logging.WARNING)
 
 
 class QuantumProgram(ABC):
     def __init__(
         self,
-        shots: int = 5000,
-        qoro_service: Optional[QoroService] = None,
+        backend: CircuitRunner,
         seed: Optional[int] = None,
+        progress_queue: Optional[Queue] = None,
         **kwargs,
     ):
         """
@@ -51,35 +39,28 @@ class QuantumProgram(ABC):
         the `_initialize_params` method should be overridden to set the parameters.
 
         Args:
-            shots (int): The number of shots for quantum circuit execution.
-                Must be a positive integer. Defaults to 5000.
-            qoro_service (QoroService): An instance of QoroService to handle.
-                Defaults to None, which corresponds to local simulation.
+            backend (CircuitRunner): An instance of a CircuitRunner object, which
+                can either be ParallelSimulator or QoroService.
             seed (int): A seed for numpy's random number generator, which will
-                be used for the parameter initialization and the local simulator's
-                sampling function.
+                be used for the parameter initialization.
                 Defaults to None.
+            progress_queue (Queue): a queue for progress bar updates.
 
             **kwargs: Additional keyword arguments that influence behaviour.
                 - grouping_strategy (Optional[Any]): A strategy for grouping operations, used in Pennylane's transforms.
-                  Defaults to None.
+                    Defaults to None.
+                - qem_protocol (Optional[QEMProtocol]): the quantum error mitigation protocol to apply.
+                    Must be of type QEMProtocol. Defaults to None.
 
                 The following key values are reserved for internal use and should not be set by the user:
                 - losses (Optional[list]): A list to initialize the `losses` attribute. Defaults to an empty list.
                 - final_params (Optional[list]): A list to initialize the `final_params` attribute. Defaults to an empty list.
 
         """
-        if shots <= 0:
-            raise ValueError(f"Shots must be a positive integer. Got {shots}.")
 
         # Shared Variables
-        self.losses = []
-        if (m_list_losses := kwargs.pop("losses", None)) is not None:
-            self.losses = m_list_losses
-
-        self.final_params = []
-        if (m_list_final_params := kwargs.pop("final_params", None)) is not None:
-            self.final_params = m_list_final_params
+        self.losses = kwargs.pop("losses", [])
+        self.final_params = kwargs.pop("final_params", [])
 
         self.circuits: list[Circuit] = []
 
@@ -94,28 +75,33 @@ class QuantumProgram(ABC):
         # step for grad calculation routine
         self._grad_mode = False
 
-        self.shots = shots
-        self.qoro_service = qoro_service
-        self.job_id = None
+        self.backend = backend
+        self.job_id = kwargs.get("job_id", None)
+
+        self._progress_queue = progress_queue
 
         # Needed for Pennylane's transforms
         self._grouping_strategy = kwargs.pop("grouping_strategy", None)
+
+        self._qem_protocol = kwargs.pop("qem_protocol", None) or _NoMitigation()
+
+        self._meta_circuit_factory = partial(
+            MetaCircuit,
+            grouping_strategy=self._grouping_strategy,
+            qem_protocol=self._qem_protocol,
+        )
 
     @property
     def total_circuit_count(self):
         return self._total_circuit_count
 
-    @total_circuit_count.setter
-    def total_circuit_count(self, _):
-        raise RuntimeError("Can not set total circuit count value.")
-
     @property
     def total_run_time(self):
         return self._total_run_time
 
-    @total_run_time.setter
-    def total_run_time(self, _):
-        raise RuntimeError("Can not set total run time value.")
+    @property
+    def meta_circuits(self):
+        return self._meta_circuits
 
     @abstractmethod
     def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
@@ -125,15 +111,13 @@ class QuantumProgram(ABC):
     def _generate_circuits(self, **kwargs):
         pass
 
-    @abstractmethod
-    def run(self, store_data=False, data_file=None):
-        pass
-
     def _initialize_params(self):
-        self._curr_params = [
-            self._rng.uniform(0, 2 * np.pi, self.n_layers * self.n_params)
-            for _ in range(self.optimizer.n_param_sets)
-        ]
+        self._curr_params = np.array(
+            [
+                self._rng.uniform(0, 2 * np.pi, self.n_layers * self.n_params)
+                for _ in range(self.optimizer.n_param_sets)
+            ]
+        )
 
     def _run_optimization_circuits(self, store_data, data_file):
         self.circuits[:] = []
@@ -176,17 +160,12 @@ class QuantumProgram(ABC):
 
         self._total_circuit_count += len(job_circuits)
 
-        if self.qoro_service is not None:
-            self.job_id = self.qoro_service.send_circuits(
-                job_circuits, shots=self.shots
-            )
-            return self.job_id, "job_id"
-        else:
-            circuit_simulator = ParallelSimulator()
-            circuit_results = circuit_simulator.simulate(
-                job_circuits, shots=self.shots, simulation_seed=self._seed
-            )
-            return circuit_results, "circuit_results"
+        backend_output = self.backend.submit_circuits(job_circuits)
+
+        if isinstance(self.backend, QoroService):
+            self._curr_service_job_id = backend_output
+
+        return backend_output
 
     def _dispatch_circuits_and_process_results(self, store_data=False, data_file=None):
         """
@@ -198,7 +177,7 @@ class QuantumProgram(ABC):
             data_file (str): The file to store the data in
         """
 
-        results, backend_return_type = self._prepare_and_send_circuits()
+        results = self._prepare_and_send_circuits()
 
         def add_run_time(response):
             if isinstance(response, dict):
@@ -206,21 +185,32 @@ class QuantumProgram(ABC):
             elif isinstance(response, list):
                 self._total_run_time += sum(float(r["run_time"]) for r in response)
 
-        if backend_return_type == "job_id":
-            job_id = results
-            if job_id is not None and self.qoro_service is not None:
-                status = self.qoro_service.poll_job_status(
-                    self.job_id,
-                    loop_until_complete=True,
-                    on_complete=add_run_time,
+        if isinstance(self.backend, QoroService):
+            status = self.backend.poll_job_status(
+                self._curr_service_job_id,
+                loop_until_complete=True,
+                on_complete=add_run_time,
+                **(
+                    {
+                        "pbar_update_fn": lambda n_polls: self._progress_queue.put(
+                            {
+                                "job_id": self.job_id,
+                                "progress": 0,
+                                "poll_attempt": n_polls,
+                            }
+                        )
+                    }
+                    if self._progress_queue is not None
+                    else {}
+                ),
+            )
+
+            if status != JobStatus.COMPLETED:
+                raise Exception(
+                    "Job has not completed yet, cannot post-process results"
                 )
 
-                if status != JobStatus.COMPLETED:
-                    raise Exception(
-                        "Job has not completed yet, cannot post-process results"
-                    )
-
-                results = self.qoro_service.get_job_results(self.job_id)
+            results = self.backend.get_job_results(self._curr_service_job_id)
 
         results = {r["label"]: r["results"] for r in results}
 
@@ -253,24 +243,34 @@ class QuantumProgram(ABC):
         losses = {}
         measurement_groups = self._meta_circuits["cost_circuit"].measurement_groups
 
-        for p, _ in enumerate(self._curr_params):
-            losses[p] = 0
-            curr_result = {
-                key: value for key, value in results.items() if key.startswith(f"{p}")
-            }
+        for p in range(self._curr_params.shape[0]):
+            # Extract relevant entries from the execution results dict
+            param_results = {k: v for k, v in results.items() if k.startswith(f"{p}_")}
 
+            # Compute the marginal results for each observable
             marginal_results = []
-            for param_id, shots_dict in curr_result.items():
-                ham_op_index = int(param_id.split("_")[-1])
+            for group_idx, curr_measurement_group in enumerate(measurement_groups):
+                group_results = {
+                    k: v
+                    for k, v in param_results.items()
+                    if k.endswith(f"_{group_idx}")
+                }
 
-                curr_measurement_group = measurement_groups[ham_op_index]
                 curr_marginal_results = []
                 for observable in curr_measurement_group:
-                    exp_value = sampled_expectation_value(
-                        marginal_counts(shots_dict, observable.wires.tolist()),
-                        "Z" * len(observable.wires),
+                    intermediate_exp_values = [
+                        sampled_expectation_value(
+                            marginal_counts(shots_dict, observable.wires.tolist()),
+                            "Z" * len(observable.wires),
+                        )
+                        for shots_dict in group_results.values()
+                    ]
+
+                    mitigated_exp_value = self._qem_protocol.postprocess_results(
+                        intermediate_exp_values
                     )
-                    curr_marginal_results.append(exp_value)
+
+                    curr_marginal_results.append(mitigated_exp_value)
 
                 marginal_results.append(
                     curr_marginal_results
@@ -284,7 +284,7 @@ class QuantumProgram(ABC):
                 .item()
             )
 
-            losses[p] += pl_loss + self.loss_constant
+            losses[p] = pl_loss + self.loss_constant
 
         return losses
 
@@ -297,26 +297,69 @@ class QuantumProgram(ABC):
             data_file (str): The file to store the data in
         """
 
-        logger.debug(f"Finished iteration {self.current_iteration}")
+        if self._progress_queue is not None:
+            self._progress_queue.put(
+                {
+                    "job_id": self.job_id,
+                    "message": "Finished Setup",
+                    "progress": 0,
+                }
+            )
+        else:
+            logger.info("Finished Setup")
 
         if self.optimizer == Optimizers.MONTE_CARLO:
             while self.current_iteration < self.max_iterations:
 
                 self._update_mc_params()
 
+                if self._progress_queue is not None:
+                    self._progress_queue.put(
+                        {
+                            "job_id": self.job_id,
+                            "message": f"⛰️ Sampling from Loss Lansdscape ⛰️",
+                            "progress": 0,
+                        }
+                    )
+                else:
+                    logger.info(
+                        f"Running Iteration #{self.current_iteration} circuits\r"
+                    )
+
                 curr_losses = self._run_optimization_circuits(store_data, data_file)
+
+                if self._progress_queue is not None:
+                    self._progress_queue.put(
+                        {
+                            "job_id": self.job_id,
+                            "progress": 1,
+                        }
+                    )
+                else:
+                    logger.info(f"Finished Iteration #{self.current_iteration}\r\n")
 
                 self.losses.append(curr_losses)
 
-                logger.debug(f"Finished iteration {self.current_iteration}")
-
             self.final_params[:] = np.atleast_2d(self._curr_params)
-
-            return self._total_circuit_count, self._total_run_time
 
         elif self.optimizer in (Optimizers.NELDER_MEAD, Optimizers.L_BFGS_B):
 
             def cost_fn(params):
+                task_name = "💸 Computing Cost 💸"
+
+                if self._progress_queue is not None:
+                    self._progress_queue.put(
+                        {
+                            "job_id": self.job_id,
+                            "message": task_name,
+                            "progress": 0,
+                        }
+                    )
+                else:
+                    logger.info(
+                        f"Running Iteration #{self.current_iteration + 1} circuits: {task_name}\r"
+                    )
+
                 self._curr_params = np.atleast_2d(params)
 
                 losses = self._run_optimization_circuits(store_data, data_file)
@@ -325,6 +368,21 @@ class QuantumProgram(ABC):
 
             def grad_fn(params):
                 self._grad_mode = True
+
+                task_name = "📈 Computing Gradients 📈"
+
+                if self._progress_queue is not None:
+                    self._progress_queue.put(
+                        {
+                            "job_id": self.job_id,
+                            "message": task_name,
+                            "progress": 0,
+                        }
+                    )
+                else:
+                    logger.info(
+                        f"Running Iteration #{self.current_iteration + 1} circuits: {task_name}\r"
+                    )
 
                 shift_mask = self.optimizer.compute_parameter_shift_mask(len(params))
 
@@ -346,26 +404,46 @@ class QuantumProgram(ABC):
                 self.final_params[:] = np.atleast_2d(intermediate_result.x)
 
                 self.current_iteration += 1
-                logger.debug(f"Finished iteration {self.current_iteration}")
+
+                if self._progress_queue is not None:
+                    self._progress_queue.put(
+                        {
+                            "job_id": self.job_id,
+                            "progress": 1,
+                        }
+                    )
+                else:
+                    logger.info(f"Finished Iteration #{self.current_iteration}\r\n")
 
             self._initialize_params()
-
             self._minimize_res = minimize(
                 fun=cost_fn,
                 x0=self._curr_params[0],
                 method=self.optimizer.value,
                 jac=grad_fn if self.optimizer == Optimizers.L_BFGS_B else None,
                 callback=_iteration_counter,
-                options={"maxiter": self.max_iterations},
+                options={
+                    "maxiter": (
+                        # Need to add one more iteration for Nelder-Mead's simplex initialization step
+                        self.max_iterations + 1
+                        if self.optimizer == Optimizers.NELDER_MEAD
+                        else self.max_iterations
+                    )
+                },
             )
 
-            if self.max_iterations == 1 and self.current_iteration == 0:
-                # Need to handle this edge case for single
-                # iteration optimization since Scipy doesn't
-                # call the callback function for initial guesses
-                _iteration_counter(self._minimize_res)
+        if self._progress_queue:
+            self._progress_queue.put(
+                {
+                    "job_id": self.job_id,
+                    "progress": 0,
+                    "final_status": "Success",
+                }
+            )
+        else:
+            logger.info(f"Finished Optimization!")
 
-            return self._total_circuit_count, self._total_run_time
+        return self._total_circuit_count, self._total_run_time
 
     def save_iteration(self, data_file):
         """

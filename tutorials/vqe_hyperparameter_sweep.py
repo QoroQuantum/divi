@@ -2,19 +2,19 @@ import time
 
 import numpy as np
 
-from divi.qprog import VQEAnsatze, VQEHyperparameterSweep
+from divi.parallel_simulator import ParallelSimulator
+from divi.qprog import VQEAnsatz, VQEHyperparameterSweep
 from divi.qprog.optimizers import Optimizers
 
 if __name__ == "__main__":
     vqe_problem = VQEHyperparameterSweep(
         symbols=["H", "H"],
-        bond_lengths=list(np.linspace(0.1, 2.7, 5)),
-        ansatze=[VQEAnsatze.HARTREE_FOCK],
         coordinate_structure=[(0, 0, 0), (0, 0, 1)],
-        max_iterations=3,
+        bond_lengths=list(np.linspace(0.1, 2.7, 5)),
+        ansatze=[VQEAnsatz.HARTREE_FOCK],
         optimizer=Optimizers.MONTE_CARLO,
-        shots=2000,
-        qoro_service=None,
+        max_iterations=3,
+        backend=ParallelSimulator(shots=2000),
         grouping_strategy="wires",
     )
 

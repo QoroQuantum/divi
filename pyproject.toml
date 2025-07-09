@@ -1,59 +1,74 @@
-[project]
+[tool.poetry]
 name = "divi"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 description = ""
-authors = []
+authors = ["Ahmed Darwish <ahmed@qoroquantum.de>", "Stephen DiAdamo <stephen@qoroquantum.de>"]
 readme = "README.md"
-requires-python = ">=3.11"
-dependencies = [
-    "pennylane (>=0.40.0,<0.41.0)",
-    "numpy (<2.1)",
-    "networkx (>=3.4.2,<4.0.0)",
-    "scipy (>=1.15.2,<2.0.0)",
-    "scikit-learn (>=1.6.1,<2.0.0)",
-    "matplotlib (>=3.10.1,<4.0.0)",
-    "requests (>=2.32.3,<3.0.0)",
-    "qiskit (==1.2) ; python_version >= \"3.11\" and python_version < \"4\"",
-    "qiskit-algorithms (>=0.3.1,<0.4.0) ; python_version >= \"3.11\" and python_version < \"4\"",
-    "qiskit-aer (>=0.17.0,<0.18.0) ; python_version >= \"3.11\" and python_version < \"4\"",
-    "qiskit-ibm-runtime (<=0.36) ; python_version >= \"3.11\" and python_version < \"4\"",
-    "qiskit-optimization (>=0.6.1,<0.7.0) ; python_version >= \"3.11\" and python_version < \"4\"",
-    "dill (>=0.4.0,<0.5.0)",
-    "pyqt6 (>=6.9.0,<7.0.0)",
-]
 
+
+[[tool.poetry.source]]
+name = "aws-repo"
+url = "https://qoro-quantum-982534369690.d.codeartifact.eu-west-1.amazonaws.com/pypi/divi/"
+priority = "supplemental"
+
+[tool.poetry_codeartifact_login]
+[[tool.poetry_codeartifact_login.source]]
+name = "aws-repo"
+domain = "qoro-quantum"
+domain_owner = "982534369690"
 
 [build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
+requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
-[tool.poetry]
-package-mode = false
-packages = [{ include = "divi" }]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.13"
+pennylane = ">=0.40,<0.41"
+networkx = "^3.5"
+scipy = "<=1.15.2"
+matplotlib = "^3.10.3"
+requests = "^2.32.4"
+qiskit = "<2.0"
+qiskit-algorithms = "^0.3.1"
+qiskit-aer = "^0.17.1"
+qiskit-ibm-runtime = ">=0.37,<0.38"
+qiskit-optimization = "^0.6.1"
+dill = "^0.4.0"
+sympy = "^1.14.0"
+pyqt6 = "^6.9.1"
+mitiq = {extras = ["qiskit"], version = "^0.45.1"}
+cirq-core = "<1.5.0"
+scikit-learn = "^1.7.0"
+rich = "^14.0.0"
+
 
 [tool.poetry.group.dev.dependencies]
 black = "^25.1.0"
 isort = "^6.0.1"
-pre-commit = "^4.1.0"
+pre-commit = "^4.2.0"
+
 
 [tool.poetry.group.ui.dependencies]
-dash = "^2.18.2"
-dash-bootstrap-components = {version = "^1.7.1", python = ">=3.11,<4"}
+dash = "^3.0.4"
+dash-bootstrap-components = "^2.0.3"
+
+
+[tool.poetry.group.testing.dependencies]
+pytest = "^8.4.0"
+pytest-mock = "^3.14.1"
+flaky = "^3.8.1"
+
+
+[tool.poetry.group.tutorials.dependencies]
+dimod = "^0.12.20"
+
 
 [tool.poetry.group.docs.dependencies]
 sphinx = ">=1.8,<8.2"
 nbsphinx = "^0.9.7"
 sphinx-rtd-theme = "^3.0.2"
-sphinx-autodoc-typehints = "^3.0.0"
-
-[tool.poetry.group.testing.dependencies]
-pytest = {version = "^8.3.5", python = ">=3.8"}
-pytest-mock = {version = "^3.14.0", python = ">=3.8"}
-flaky = {version = "^3.8.1", python = ">=3.5"}
-
-
-[tool.poetry.group.tutorials.dependencies]
-dimod = "^0.12.20"
+sphinx-autodoc-typehints = "^3.0"
 
 [tool.isort]
 profile = "black"

@@ -1,12 +1,17 @@
 import base64
 import gzip
 import json
+import logging
 import time
+from collections.abc import Callable
 from enum import Enum
 from http import HTTPStatus
+from typing import Optional
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
+
+from divi.interfaces import CircuitRunner
 
 API_URL = "https://app.qoroquantum.net/api"
 MAX_PAYLOAD_SIZE_MB = 0.95
@@ -21,6 +26,8 @@ retries = Retry(
 
 session.mount("http://", HTTPAdapter(max_retries=retries))
 session.mount("https://", HTTPAdapter(max_retries=retries))
+
+logger = logging.getLogger(__name__)
 
 
 class JobStatus(Enum):
@@ -46,10 +53,20 @@ class MaxRetriesReachedError(Exception):
         super().__init__(self.message)
 
 
-class QoroService:
+class QoroService(CircuitRunner):
 
-    def __init__(self, auth_token) -> None:
+    def __init__(
+        self,
+        auth_token: str,
+        polling_interval: float = 3.0,
+        max_retries: int = 5000,
+        shots: int = 1000,
+    ):
+        super().__init__(shots=shots)
+
         self.auth_token = "Bearer " + auth_token
+        self.polling_interval = polling_interval
+        self.max_retries = max_retries
 
     def test_connection(self):
         """Test the connection to the Qoro API"""
@@ -64,26 +81,28 @@ class QoroService:
 
         return response
 
-    def send_circuits(
-        self, circuits, shots=1000, tag="default", job_type=JobTypes.SIMULATE
+    def submit_circuits(
+        self,
+        circuits: dict[str, str],
+        tag: str = "default",
+        job_type: JobTypes = JobTypes.SIMULATE,
     ):
         """
         Send circuits to the Qoro API for execution
 
         Args:
             circuits: list of circuits to be sent as QASM strings
-            shots (optional): number of shots to be executed for each circuit, default 1000
-            tag (optional): tag to be used for the job, defaut "default"
+            tag (optional): tag to be used for the job, defaults to "default"
         Returns:
             job_id: The job id of the job created
         """
 
-        def _compress_data(value):
+        def _compress_data(value) -> bytes:
             return base64.b64encode(gzip.compress(value.encode("utf-8"))).decode(
                 "utf-8"
             )
 
-        def _split_circuits(circuits):
+        def _split_circuits(circuits: dict[str, str]) -> list[dict[str, str]]:
             """
             Split circuits into smaller chunks if the payload size exceeds the maximum allowed size.
 
@@ -131,7 +150,7 @@ class QoroService:
                 },
                 json={
                     "circuits": chunk,
-                    "shots": shots,
+                    "shots": self.shots,
                     "tag": tag,
                     "job_type": job_type.value,
                 },
@@ -211,24 +230,24 @@ class QoroService:
 
     def poll_job_status(
         self,
-        job_ids,
-        loop_until_complete=False,
-        on_complete=None,
-        timeout=3,
-        max_retries=5000,
-        verbose=True,
+        job_ids: str | list[str],
+        loop_until_complete: bool = False,
+        on_complete: Optional[Callable] = None,
+        verbose: bool = True,
+        pbar_update_fn: Optional[Callable] = None,
     ):
         """
         Get the status of a job and optionally execute function *on_complete* on the results
         if the status is COMPLETE.
 
         Args:
-            job_id: The job id of the jobs to check
-            loop_until_complete (optional): A flag to loop until the job is completed
+            job_ids: The job id of the jobs to check
+            loop_until_complete (bool): A flag to loop until the job is completed
             on_complete (optional): A function to be called when the job is completed
-            timeout (optional): The time to wait between retries
+            polling_interval (optional): The time to wait between retries
             max_retries (optional): The maximum number of retries
             verbose (optional): A flag to print the when retrying
+            pbar_update_fn (optional): A function for updating progress bars while polling.
         Returns:
             status: The status of the job
         """
@@ -269,18 +288,20 @@ class QoroService:
                     completed = True
                     break
 
-                if retries >= max_retries:
+                if retries >= self.max_retries:
                     break
 
                 retries += 1
 
-                time.sleep(timeout)
+                time.sleep(self.polling_interval)
 
                 if verbose:
-                    print(
-                        f"Polling job {job_ids}: {retries} times / {max_retries} retries",
-                        f"Run time: {retries*timeout} seconds",
-                    )
+                    if pbar_update_fn:
+                        pbar_update_fn(retries)
+                    else:
+                        logger.info(
+                            f"\cPolling {retries} / {self.max_retries} retries\r"
+                        )
 
             if completed and on_complete:
                 on_complete(responses)

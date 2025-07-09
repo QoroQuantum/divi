@@ -1,5 +1,12 @@
 import pytest
 
+from divi.parallel_simulator import ParallelSimulator
+
+
+@pytest.fixture
+def default_test_simulator():
+    return ParallelSimulator(shots=5000)
+
 
 def pytest_addoption(parser):
     parser.addoption(

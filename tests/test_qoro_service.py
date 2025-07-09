@@ -1,7 +1,7 @@
 import pytest
 import requests
 
-from divi.services.qoro_service import JobStatus, MaxRetriesReachedError, QoroService
+from divi.qoro_service import JobStatus, MaxRetriesReachedError, QoroService
 
 
 @pytest.fixture
@@ -13,7 +13,7 @@ def qoro_service(api_token):
 
 @pytest.fixture
 def qoro_service_mock():
-    qoro_service = QoroService("mock_token")
+    qoro_service = QoroService("mock_token", max_retries=2, polling_interval=0.01)
 
     return qoro_service
 
@@ -45,33 +45,31 @@ def test_service_connection_test_mock(mocker, qoro_service_mock):
     assert response.status_code == 200
 
 
-def test_fail_send_circuits(circuits):
+def test_fail_submit_circuits(circuits):
     # Test if QoroService fails to connect send circuits
     api_token = "invalid_token"
 
     service = QoroService(api_token)
 
     with pytest.raises(requests.exceptions.HTTPError):
-        service.send_circuits(circuits)
+        service.submit_circuits(circuits)
 
 
-def test_send_circuits_single_chunk_mock(mocker, qoro_service_mock):
+def test_submit_circuits_single_chunk_mock(mocker, qoro_service_mock):
     mock_response = mocker.Mock()
     mock_response.status_code = 201
     mock_response.json.return_value = {"job_id": "mock_job_id"}
 
     mock_post = mocker.patch("requests.Session.post", return_value=mock_response)
 
-    job_id = qoro_service_mock.send_circuits({"circuit_1": "mock_qasm"})
+    job_id = qoro_service_mock.submit_circuits({"circuit_1": "mock_qasm"})
     assert job_id == "mock_job_id"
 
     assert mock_post.call_count == 1
 
 
-def test_send_circuits_multiple_chunks_mock(mocker, qoro_service_mock):
-    mocker.patch(
-        "divi.services.qoro_service.MAX_PAYLOAD_SIZE_MB", new=60.0 / 1024 / 1024
-    )
+def test_submit_circuits_multiple_chunks_mock(mocker, qoro_service_mock):
+    mocker.patch("divi.qoro_service.MAX_PAYLOAD_SIZE_MB", new=60.0 / 1024 / 1024)
 
     mock_response_1 = mocker.Mock(
         status_code=201, json=lambda: {"job_id": "mock_job_id_1"}
@@ -85,7 +83,7 @@ def test_send_circuits_multiple_chunks_mock(mocker, qoro_service_mock):
         "requests.Session.post", side_effect=[mock_response_1, mock_response_2]
     )
 
-    job_ids = qoro_service_mock.send_circuits(
+    job_ids = qoro_service_mock.submit_circuits(
         {"circuit_1": "mock_qasm", "circuit_2": "mock_qasm"}
     )
 
@@ -117,8 +115,6 @@ def test_poll_job_status_success_mock(mocker, qoro_service_mock):
     status = qoro_service_mock.poll_job_status(
         job_ids=job_id,
         loop_until_complete=True,
-        timeout=0.01,
-        max_retries=5,
         verbose=False,
     )
 
@@ -153,8 +149,6 @@ def test_poll_job_status_failure_mock(mocker, qoro_service_mock):
         qoro_service_mock.poll_job_status(
             job_ids=job_id,
             loop_until_complete=True,
-            timeout=0.01,
-            max_retries=2,
             verbose=False,
         )
 
@@ -171,10 +165,10 @@ def test_service_connection_test(qoro_service):
 
 
 @pytest.mark.requires_api_token
-def test_send_circuits(qoro_service, circuits):
+def test_submit_circuits(qoro_service, circuits):
     # Test if QoroService can send circuits
 
-    job_id = qoro_service.send_circuits(circuits)
+    job_id = qoro_service.submit_circuits(circuits)
     assert job_id is not None, "Job ID should not be None"
 
     res = qoro_service.delete_job(job_id)
@@ -184,7 +178,7 @@ def test_send_circuits(qoro_service, circuits):
 @pytest.mark.requires_api_token
 def test_get_job_status(qoro_service, circuits):
     # Test if QoroService can get the status of a job
-    job_id = qoro_service.send_circuits(circuits)
+    job_id = qoro_service.submit_circuits(circuits)
     status = qoro_service.job_status(job_id)
 
     assert status is not None, "Status should not be None"
@@ -200,7 +194,7 @@ def test_get_job_status(qoro_service, circuits):
 def test_retry_get_job_status(qoro_service, circuits):
     # Test getting the job status with retries
 
-    job_id = qoro_service.send_circuits(circuits)
+    job_id = qoro_service.submit_circuits(circuits)
 
     with pytest.raises(MaxRetriesReachedError):
         qoro_service.job_status(

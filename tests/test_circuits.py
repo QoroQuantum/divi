@@ -1,11 +1,15 @@
 import re
+from functools import partial
 
 import numpy as np
 import pennylane as qml
 import pytest
 import sympy as sp
+from mitiq.zne.inference import ExpFactory
+from mitiq.zne.scaling import fold_global
 
 from divi.circuits import Circuit, MetaCircuit
+from divi.qem import ZNE, _NoMitigation
 
 
 class TestCircuit:
@@ -50,7 +54,6 @@ class TestMetaCircuit:
     def sample_circuit(self, weights_syms):
         def circ(weights):
             qml.AngleEmbedding(weights, wires=range(4), rotation="Y")
-
             qml.AngleEmbedding(weights, wires=range(4), rotation="X")
 
             return qml.probs()
@@ -68,17 +71,26 @@ class TestMetaCircuit:
 
         # Make sure the compiled circuit is correct
         circ_pattern = r"w_(\d+)"
-        assert len(set(re.findall(circ_pattern, meta_circuit.compiled_circuit))) == 4
-        assert len(re.findall(circ_pattern, meta_circuit.compiled_circuit)) == 8
+        assert (
+            len(set(re.findall(circ_pattern, meta_circuit.compiled_circuits_bodies[0])))
+            == 4
+        )
+        assert (
+            len(re.findall(circ_pattern, meta_circuit.compiled_circuits_bodies[0])) == 8
+        )
 
         # Make sure the measurement qasm is correct
         assert len(meta_circuit.measurements) == 1
-        meas_pattern = r"measure q\[(\d+)\]"
+        meas_pattern = r"measure q\[(\d+)\] -> c\[(\d+)\];"
         assert len(re.findall(meas_pattern, meta_circuit.measurements[0])) == 4
 
-    def test_correct_initialization(self, mocker, sample_circuit, weights_syms):
+    def test_correct_initialization_no_mitigation(
+        self, mocker, sample_circuit, weights_syms
+    ):
 
-        meta_circuit = MetaCircuit(sample_circuit, weights_syms)
+        meta_circuit = MetaCircuit(
+            sample_circuit, weights_syms, qem_protocol=_NoMitigation()
+        )
 
         param_list = [0.123456789, 0.212345678, 0.312345678, 0.412345678]
         tag_prefix = "test"
@@ -97,7 +109,7 @@ class TestMetaCircuit:
         # Check the new Circuit object
         assert circuit.main_circuit == sample_circuit
         assert circuit.circuit_type == "pennylane"
-        assert circuit.tags == [f"{tag_prefix}_0"]
+        assert circuit.tags == [f"{tag_prefix}_NoMitigation:0_0"]
         assert len(circuit.qasm_circuits) == 1
 
         # Ensure no more symbols exist
@@ -110,3 +122,68 @@ class TestMetaCircuit:
 
         for actual, expected in zip(actual_params, param_list * 2):
             assert round(expected, precision) == float(actual)
+
+    scale_factors = [1, 3, 5]
+
+    @pytest.mark.parametrize(
+        "qem_protocol,expected_tags,expected_n_circuits",
+        [
+            (_NoMitigation(), ["test_NoMitigation:0_0"], 1),
+            (
+                ZNE(
+                    folding_fn=partial(fold_global),
+                    scale_factors=scale_factors,
+                    extrapolation_factory=ExpFactory(scale_factors=scale_factors),
+                ),
+                [f"test_zne:{i}_0" for i in range(len(scale_factors))],
+                3,
+            ),
+        ],
+    )
+    def test_correct_initialization(
+        self,
+        mocker,
+        sample_circuit,
+        weights_syms,
+        qem_protocol,
+        expected_tags,
+        expected_n_circuits,
+    ):
+        meta_circuit = MetaCircuit(
+            sample_circuit, weights_syms, qem_protocol=qem_protocol
+        )
+
+        param_list = [0.123456789, 0.212345678, 0.312345678, 0.412345678]
+        tag_prefix = "test"
+        precision = 8
+
+        method_mock = mocker.patch.object(Circuit, "convert_to_qasm")
+
+        circuit = meta_circuit.initialize_circuit_from_params(
+            param_list, tag_prefix=tag_prefix, precision=precision
+        )
+
+        # Ensure converter wasn't called since
+        # we are already providing the qasm
+        method_mock.assert_not_called()
+
+        # Check the new Circuit object
+        assert circuit.main_circuit == sample_circuit
+        assert circuit.circuit_type == "pennylane"
+        assert circuit.tags == expected_tags
+        assert len(circuit.qasm_circuits) == expected_n_circuits
+
+        # Ensure no more symbols exist
+        symbols_pattern = r"w_(\d+)"
+        assert all(
+            len(re.findall(symbols_pattern, curr_qasm)) == 0
+            for curr_qasm in circuit.qasm_circuits
+        )
+
+        # Ensure the symbols are correctly replaced
+        params_pattern = r"r[yx]\(([-+]?\d*\.?\d+)\)"
+        for curr_qasm in circuit.qasm_circuits:
+            actual_params = re.findall(params_pattern, curr_qasm)
+
+            for actual, expected in zip(actual_params, param_list * 2):
+                assert round(expected, precision) == float(actual)

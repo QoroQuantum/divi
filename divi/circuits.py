@@ -1,4 +1,6 @@
+import re
 from copy import deepcopy
+from itertools import product
 from typing import Literal, Optional
 
 import dill
@@ -6,7 +8,8 @@ import pennylane as qml
 from pennylane.transforms.core.transform_program import TransformProgram
 from qiskit.qasm2 import dumps
 
-from divi.utils import to_openqasm
+from divi.qasm import to_openqasm
+from divi.qem import QEMProtocol
 
 TRANSFORM_PROGRAM = TransformProgram()
 TRANSFORM_PROGRAM.add_transform(qml.transforms.split_to_single_terms)
@@ -60,19 +63,25 @@ class MetaCircuit:
         main_circuit,
         symbols,
         grouping_strategy: Optional[Literal["wires", "default", "qwc"]] = None,
+        qem_protocol: Optional[QEMProtocol] = None,
     ):
         self.main_circuit = main_circuit
         self.symbols = symbols
+        self.qem_protocol = qem_protocol
 
         transform_program = deepcopy(TRANSFORM_PROGRAM)
         transform_program[1].kwargs["grouping_strategy"] = grouping_strategy
 
         qscripts, self.postprocessing_fn = transform_program((main_circuit,))
 
-        self.compiled_circuit, self.measurements = to_openqasm(
+        self.compiled_circuits_bodies, self.measurements = to_openqasm(
             main_circuit,
             measurement_groups=[qsc.measurements for qsc in qscripts],
             return_measurements_separately=True,
+            # TODO: optimize later
+            measure_all=True,
+            symbols=self.symbols,
+            qem_protocol=qem_protocol,
         )
 
         # Need to store the measurement groups for computing
@@ -94,18 +103,32 @@ class MetaCircuit:
     def initialize_circuit_from_params(
         self, param_list, tag_prefix: str = "", precision: int = 8
     ) -> Circuit:
-        final_qasm_str = self.compiled_circuit
-        for param, symbol in zip(param_list, self.symbols):
-            final_qasm_str = final_qasm_str.replace(
-                str(symbol), f"{param:.{precision}f}"
+        mapping = dict(
+            zip(
+                map(lambda x: re.escape(str(x)), self.symbols),
+                map(lambda x: f"{x:.{precision}f}", param_list),
+            )
+        )
+        pattern = re.compile("|".join(k for k in mapping.keys()))
+
+        final_qasm_strs = []
+        for circuit_body in self.compiled_circuits_bodies:
+            final_qasm_strs.append(
+                pattern.sub(lambda match: mapping[match.group(0)], circuit_body)
             )
 
-        processed_tag_prefix = f"{tag_prefix}_" if len(tag_prefix) > 0 else ""
         tags = []
         qasm_circuits = []
-        for i, meas_str in enumerate(self.measurements):
-            qasm_circuits.append(final_qasm_str + meas_str)
-            tags.append(f"{processed_tag_prefix}{i}")
+        for (i, body_str), (j, meas_str) in product(
+            enumerate(final_qasm_strs), enumerate(self.measurements)
+        ):
+            qasm_circuits.append(body_str + meas_str)
+
+            nonempty_subtags = filter(
+                None,
+                [tag_prefix, f"{self.qem_protocol.name}:{i}", str(j)],
+            )
+            tags.append("_".join(nonempty_subtags))
 
         # Note: The main circuit's parameters are still in symbol form.
         # Not sure if it is necessary for any useful application to parameterize them.

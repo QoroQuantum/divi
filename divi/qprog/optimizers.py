@@ -50,7 +50,7 @@ class Optimizers(Enum):
 
             new_params.extend(new_param_set)
 
-        return new_params
+        return np.array(new_params)
 
     def compute_parameter_shift_mask(self, n_params):
         if self != Optimizers.L_BFGS_B:

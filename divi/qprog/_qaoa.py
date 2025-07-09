@@ -127,8 +127,8 @@ class QAOA(QuantumProgram):
         graph_problem: Optional[GraphProblem] = None,
         n_layers: int = 1,
         initial_state: _SUPPORTED_INITIAL_STATES_LITERAL = "Recommended",
-        optimizer=Optimizers.MONTE_CARLO,
-        max_iterations=10,
+        optimizer: Optimizers = Optimizers.MONTE_CARLO,
+        max_iterations: int = 10,
         **kwargs,
     ):
         """
@@ -150,7 +150,11 @@ class QAOA(QuantumProgram):
             self.graph_problem = None
 
             if isinstance(problem, QuadraticProgram):
-                if any(var.vartype != VarType.BINARY for var in problem.variables):
+                if (
+                    any(var.vartype != VarType.BINARY for var in problem.variables)
+                    or problem.linear_constraints
+                    or problem.quadratic_constraints
+                ):
                     warn(
                         "Quadratic Program contains non-binary variables. Converting to QUBO."
                     )
@@ -196,9 +200,7 @@ class QAOA(QuantumProgram):
         self._is_compute_probabilies = False
 
         # Shared Variables
-        self.probs = {}
-        if (m_dict_probs := kwargs.pop("probs", None)) is not None:
-            self.probs = m_dict_probs
+        self.probs = kwargs.pop("probs", {})
 
         (
             self.cost_hamiltonian,
@@ -226,12 +228,6 @@ class QAOA(QuantumProgram):
             self._solution_nodes
             if self.graph_problem is not None
             else self._solution_bitstring
-        )
-
-    @solution.setter
-    def solution(self, value):
-        raise RuntimeError(
-            "The solution property is read-only. Use compute_final_solution() to get the solution."
         )
 
     def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
@@ -277,14 +273,13 @@ class QAOA(QuantumProgram):
                 return qml.expval(hamiltonian)
 
         return {
-            "cost_circuit": MetaCircuit(
+            "cost_circuit": self._meta_circuit_factory(
                 qml.tape.make_qscript(_prepare_circuit)(
                     self.cost_hamiltonian, sym_params, final_measurement=False
                 ),
                 symbols=sym_params.flatten(),
-                grouping_strategy=self._grouping_strategy,
             ),
-            "meas_circuit": MetaCircuit(
+            "meas_circuit": self._meta_circuit_factory(
                 qml.tape.make_qscript(_prepare_circuit)(
                     self.cost_hamiltonian, sym_params, final_measurement=True
                 ),
@@ -321,7 +316,7 @@ class QAOA(QuantumProgram):
         if self._is_compute_probabilies:
             return {
                 outer_k: {
-                    inner_k: inner_v / self.shots
+                    inner_k: inner_v / self.backend.shots
                     for inner_k, inner_v in outer_v.items()
                 }
                 for outer_k, outer_v in results.items()
@@ -345,6 +340,24 @@ class QAOA(QuantumProgram):
         self._is_compute_probabilies = False
 
     def compute_final_solution(self):
+        """
+        Computes and extracts the final solution from the QAOA optimization process.
+        This method performs the following steps:
+            1. Identifies the best solution index based on the lowest loss value from the last optimization step.
+            2. Executes the final measurement circuit to obtain the probability distributions of solutions.
+            3. Retrieves the bitstring representing the best solution, correcting for endianness.
+            4. Depending on the problem type:
+            - For QUBO problems, stores the solution as a NumPy array of bits.
+            - For graph problems, stores the solution as a list of node indices corresponding to '1's in the bitstring.
+            5. Returns the total circuit count and total runtime for the optimization process.
+        Returns:
+            tuple: A tuple containing:
+            - int: The total number of circuits executed.
+            - float: The total runtime of the optimization process.
+        Raises:
+            RuntimeError: If more than one/no matching key is found for the best solution index.
+        """
+
         # Convert losses dict to list to apply ordinal operations
         final_losses_list = list(self.losses[-1].values())
 
@@ -357,8 +370,19 @@ class QAOA(QuantumProgram):
         # Insert the measurement circuit here
         self._run_final_measurement()
 
+        # Find the key matching the best_solution_idx with possible metadata in between
+        pattern = re.compile(rf"^{best_solution_idx}(?:_[^_]*)*_0$")
+        matching_keys = [k for k in self.probs.keys() if pattern.match(k)]
+
+        # Some minor sanity checks
+        if len(matching_keys) == 0:
+            raise RuntimeError("No matching key found.")
+        if len(matching_keys) > 1:
+            raise RuntimeError(f"More than one matching key found.")
+
+        best_solution_key = matching_keys[0]
         # Retrieve the probability distribution dictionary of the best solution
-        best_solution_probs = self.probs[f"{best_solution_idx}_0"]
+        best_solution_probs = self.probs[best_solution_key]
 
         # Retrieve the bitstring with the actual best solution
         # Reverse to account for the endianness difference

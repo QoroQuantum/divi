@@ -1,25 +1,26 @@
-from divi.qprog import VQE, VQEAnsatze
+from divi.parallel_simulator import ParallelSimulator
+from divi.qprog import VQE, VQEAnsatz
 from divi.qprog.optimizers import Optimizers
 
 if __name__ == "__main__":
+
     vqe_input = dict(
         symbols=["H", "H"],
         bond_length=0.5,
         coordinate_structure=[(0, 0, 0), (0, 0, 1)],
         n_layers=1,
-        ansatz=VQEAnsatze.HARTREE_FOCK,
+        ansatz=VQEAnsatz.HARTREE_FOCK,
         optimizer=Optimizers.NELDER_MEAD,
         max_iterations=1,
-        qoro_service=None,
-        shots=5000,
-        seed=1997,
+        seed=2000,
+        backend=ParallelSimulator(simulation_seed=1997),
     )
 
     vqe_problem_no_grouping = VQE(
         **vqe_input,
         grouping_strategy=None,
     )
-    no_grouping_measurement_groups = vqe_problem_no_grouping._meta_circuits[
+    no_grouping_measurement_groups = vqe_problem_no_grouping.meta_circuits[
         "cost_circuit"
     ].measurement_groups
 
@@ -27,7 +28,7 @@ if __name__ == "__main__":
         **vqe_input,
         grouping_strategy="wires",
     )
-    wire_grouping_measurement_groups = vqe_problem_wire_grouping._meta_circuits[
+    wire_grouping_measurement_groups = vqe_problem_wire_grouping.meta_circuits[
         "cost_circuit"
     ].measurement_groups
 
@@ -35,7 +36,7 @@ if __name__ == "__main__":
         **vqe_input,
         grouping_strategy="qwc",
     )
-    qwc_grouping_measurement_groups = vqe_problem_qwc_grouping._meta_circuits[
+    qwc_grouping_measurement_groups = vqe_problem_qwc_grouping.meta_circuits[
         "cost_circuit"
     ].measurement_groups
 
@@ -62,9 +63,9 @@ if __name__ == "__main__":
     print(f"Final Loss (no grouping): {no_grouping_loss}")
     print(f"Final Loss (wires grouping): {wire_grouping_loss}")
     print(f"Final Loss (qwc grouping): {qwc_grouping_loss}")
-    print(
-        f"All losses equal? {'Yes' if no_grouping_loss == wire_grouping_loss == qwc_grouping_loss else 'No'}"
-    )
+    all_equal = no_grouping_loss == wire_grouping_loss == qwc_grouping_loss
+    print(f"All losses equal? {'Yes' if all_equal else 'No'}")
+    assert all_equal
 
     print("-" * 20)
 
