@@ -42,6 +42,7 @@ class JobTypes(Enum):
     EXECUTE = "EXECUTE"
     SIMULATE = "SIMULATE"
     ESTIMATE = "ESTIMATE"
+    CIRCUIT_CUT = "CIRCUIT_CUT"
 
 
 class MaxRetriesReachedError(Exception):
@@ -91,11 +92,16 @@ class QoroService(CircuitRunner):
         Send circuits to the Qoro API for execution
 
         Args:
-            circuits: list of circuits to be sent as QASM strings
+            circuits (dict): dict of ids to qasm circuits to be sent
             tag (optional): tag to be used for the job, defaults to "default"
+            job_type (JobType): nature of job. Defaults to JobType.SIMULATE
+
         Returns:
             job_id: The job id of the job created
         """
+
+        if job_type == JobTypes.CIRCUIT_CUT and len(circuits) > 1:
+            raise ValueError("Only one circuit allowed for circuit-cutting jobs.")
 
         def _compress_data(value) -> bytes:
             return base64.b64encode(gzip.compress(value.encode("utf-8"))).decode(
