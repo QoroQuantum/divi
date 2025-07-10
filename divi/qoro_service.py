@@ -87,6 +87,7 @@ class QoroService(CircuitRunner):
         circuits: dict[str, str],
         tag: str = "default",
         job_type: JobTypes = JobTypes.SIMULATE,
+        use_packing: bool = False,
     ):
         """
         Send circuits to the Qoro API for execution
@@ -159,6 +160,7 @@ class QoroService(CircuitRunner):
                     "shots": self.shots,
                     "tag": tag,
                     "job_type": job_type.value,
+                    "use_packing": use_packing,
                 },
                 timeout=100,
             )
