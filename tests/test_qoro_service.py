@@ -206,3 +206,31 @@ def test_retry_get_job_status(qoro_service, circuits):
 
     res = qoro_service.delete_job(job_id)
     assert res.status_code == 204, "Deletion should be successful"
+
+
+def test_submit_circuits_use_packing_mock(mocker, qoro_service_mock):
+    mock_response = mocker.Mock()
+    mock_response.status_code = 201
+    mock_response.json.return_value = {"job_id": "mock_job_id_packed"}
+
+    mock_post = mocker.patch("requests.Session.post", return_value=mock_response)
+
+    job_id = qoro_service_mock.submit_circuits(
+        {"circuit_1": "mock_qasm"},
+        use_packing=True,
+    )
+    assert job_id == "mock_job_id_packed"
+    assert mock_post.call_count == 1
+
+    mock_response = mocker.Mock()
+    mock_response.status_code = 201
+    mock_response.json.return_value = {"job_id": "mock_job_id_packed"}
+
+    mock_post = mocker.patch("requests.Session.post", return_value=mock_response)
+
+    job_id = qoro_service_mock.submit_circuits(
+        {"circuit_1": "mock_qasm"},
+        use_packing=False,
+    )
+    assert job_id == "mock_job_id_packed"
+    assert mock_post.call_count == 1
