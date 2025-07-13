@@ -62,7 +62,7 @@ class QoroService(CircuitRunner):
         polling_interval: float = 3.0,
         max_retries: int = 5000,
         shots: int = 1000,
-        use_packing: bool = False, 
+        use_packing: bool = False,
     ):
         super().__init__(shots=shots)
 
@@ -89,7 +89,7 @@ class QoroService(CircuitRunner):
         circuits: dict[str, str],
         tag: str = "default",
         job_type: JobTypes = JobTypes.SIMULATE,
-        use_packing = None,
+        use_packing: Optional[bool] = None,
     ):
         """
         Send circuits to the Qoro API for execution
@@ -162,7 +162,9 @@ class QoroService(CircuitRunner):
                     "shots": self.shots,
                     "tag": tag,
                     "job_type": job_type.value,
-                    "use_packing": use_packing if use_packing is not None else self.use_packing,
+                    "use_packing": (
+                        use_packing if use_packing is not None else self.use_packing
+                    ),
                 },
                 timeout=100,
             )
