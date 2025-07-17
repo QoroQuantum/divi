@@ -210,7 +210,7 @@ def partition_graph(graph, max_nodes, partitioning_method):
 
     Args:
         graph (nx.Graph): The input graph to be partitioned.
-        max_qubits (int): The maximum number of qubits allowed per subgraph.
+        max_nodes (int): The maximum number of nodes allowed per subgraph.
         partitioning_method (str): The method used for partitioning.
 
     Returns:
