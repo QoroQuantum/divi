@@ -201,6 +201,11 @@ def perform_partitioning(
     elif partitioning_method == "metis":
         adj_matrix = [list(graph.neighbors(node)) for node in graph.nodes()]
         _, partition = part_graph(n_clusters, adj_matrix)
+    else:
+        raise ValueError(
+            f"Unsupported partitioning method '{partitioning_method}'. "
+            "Supported methods are 'spectral' and 'metis'."
+        )
     return partition
 
 
