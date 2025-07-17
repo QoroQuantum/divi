@@ -188,10 +188,10 @@ def perform_partitioning(
     Args:
         graph (nx.Graph): The input graph to be partitioned.
         n_clusters (int): The number of clusters to partition the graph into.
-        method (str): The method used for partitioning, either 'spectral' or 'metis'.
+        partitioning_method (str): The method used for partitioning, either 'spectral' or 'metis'.
 
     Returns:
-        list[nx.Graph]: A list of subgraphs resulting from the partitioning process.
+        list: A list of labels for subgraph allocation.
     """
 
     adj_matrix = nx.to_numpy_array(graph)
@@ -204,13 +204,14 @@ def perform_partitioning(
     return partition
 
 
-def partition_graph(graph, max_nodes, method):
+def partition_graph(graph, max_nodes, partitioning_method):
     """
     Partitions a graph into subgraphs based on the number of qubits available.
 
     Args:
         graph (nx.Graph): The input graph to be partitioned.
         max_qubits (int): The maximum number of qubits allowed per subgraph.
+        partitioning_method (str): The method used for partitioning.
 
     Returns:
         list[nx.Graph]: A list of subgraphs resulting from the partitioning process.
@@ -226,7 +227,7 @@ def partition_graph(graph, max_nodes, method):
             # Partition nodes using spectral clustering
             n_clusters = int(np.ceil(current.number_of_nodes() / max_nodes))
             partition = perform_partitioning(
-                current, n_clusters=n_clusters, partitioning_method=method
+                current, n_clusters=n_clusters, partitioning_method=partitioning_method
             )
             for i in range(n_clusters):
                 part = current.subgraph(
