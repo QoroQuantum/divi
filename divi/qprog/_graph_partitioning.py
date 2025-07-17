@@ -194,12 +194,12 @@ def perform_partitioning(
         list: A list of labels for subgraph allocation.
     """
 
-    adj_matrix = nx.to_numpy_array(graph)
-
     if partitioning_method == "spectral":
+        adj_matrix = nx.to_numpy_array(graph)
         sc = SpectralClustering(n_clusters=n_clusters, affinity="precomputed")
         partition = sc.fit_predict(adj_matrix)
     elif partitioning_method == "metis":
+        adj_matrix = [list(graph.neighbors(node)) for node in graph.nodes()]
         _, partition = part_graph(n_clusters, adj_matrix)
     return partition
 
