@@ -10,6 +10,7 @@ import networkx as nx
 import numpy as np
 import rustworkx as rx
 import scipy.sparse.linalg as spla
+from pymetis import part_graph
 from sklearn.cluster import SpectralClustering
 
 from divi.interfaces import CircuitRunner
@@ -130,6 +131,8 @@ def _node_partition_graph(
     graph: nx.Graph,
     n_clusters: Optional[int] = None,
     avg_partition_size: Optional[float] = None,
+    partitioning_method: str = "spectral",
+    max_nodes: Optional[int] = None,
 ) -> list[nx.Graph]:
     subgraphs = []
     total_edges = 0
@@ -148,25 +151,90 @@ def _node_partition_graph(
     if not n_clusters:
         n_clusters = int(graph.number_of_nodes() / avg_partition_size)
 
-    adj_matrix = nx.to_numpy_array(graph)
-
-    sc = SpectralClustering(n_clusters=n_clusters, affinity="precomputed")
-    partition = sc.fit_predict(adj_matrix)
+    partition = perform_partitioning(
+        graph, n_clusters=n_clusters, partitioning_method=partitioning_method
+    )
 
     for i in range(n_clusters):
         subgraph = graph.subgraph(
             [node for node, cluster in enumerate(partition) if cluster == i]
         )
 
-        if subgraph.number_of_edges() > 0:
-            total_edges += subgraph.number_of_edges()
-            subgraphs.append(subgraph)
+        cur_subgraphs = [subgraph]
+
+        if max_nodes and subgraph.number_of_nodes() > max_nodes:
+            cur_subgraphs = partition_graph(
+                subgraph, max_nodes=max_nodes, method=partitioning_method
+            )
+
+        for subgraph in cur_subgraphs:
+            if subgraph.number_of_edges() > 0:
+                total_edges += subgraph.number_of_edges()
+                subgraphs.append(subgraph)
 
     if total_edges != graph.number_of_edges():
         warn(
             f"Sum of edges count of partitions ({total_edges}) is different from the original graph {graph.number_of_edges()}"
         )
     return subgraphs
+
+
+def perform_partitioning(
+    graph: nx.Graph, n_clusters: int, partitioning_method: str = "spectral"
+):
+    """
+    Partitions a graph into subgraphs based on the number of clusters or average partition size.
+
+    Args:
+        graph (nx.Graph): The input graph to be partitioned.
+        n_clusters (int): The number of clusters to partition the graph into.
+        method (str): The method used for partitioning, either 'spectral' or 'metis'.
+
+    Returns:
+        list[nx.Graph]: A list of subgraphs resulting from the partitioning process.
+    """
+
+    adj_matrix = nx.to_numpy_array(graph)
+
+    if partitioning_method == "spectral":
+        sc = SpectralClustering(n_clusters=n_clusters, affinity="precomputed")
+        partition = sc.fit_predict(adj_matrix)
+    elif partitioning_method == "metis":
+        _, partition = part_graph(n_clusters, adj_matrix)
+    return partition
+
+
+def partition_graph(graph, max_nodes, method):
+    """
+    Partitions a graph into subgraphs based on the number of qubits available.
+
+    Args:
+        graph (nx.Graph): The input graph to be partitioned.
+        max_qubits (int): The maximum number of qubits allowed per subgraph.
+
+    Returns:
+        list[nx.Graph]: A list of subgraphs resulting from the partitioning process.
+    """
+    subgraphs = [graph]
+    result = []
+
+    while subgraphs:
+        current = subgraphs.pop()
+        if current.number_of_nodes() <= max_nodes:
+            result.append(current)
+        else:
+            # Partition nodes using spectral clustering
+            n_clusters = int(np.ceil(current.number_of_nodes() / max_nodes))
+            partition = perform_partitioning(
+                current, n_clusters=n_clusters, partitioning_method=method
+            )
+            for i in range(n_clusters):
+                part = graph.subgraph(
+                    [node for node, cluster in enumerate(partition) if cluster == i]
+                )
+                subgraphs.append(part)
+
+    return result
 
 
 def linear_aggregation(curr_solution, solution_bitstring, graph, reverse_index_maps):
@@ -212,6 +280,7 @@ class GraphPartitioningQAOA(ProgramBatch):
         aggregate_fn: AggregateFn = linear_aggregation,
         optimizer=Optimizers.MONTE_CARLO,
         max_iterations=10,
+        partitioning_algorithm: str = "spectral",
         **kwargs,
     ):
         super().__init__(backend=backend)
@@ -239,6 +308,7 @@ class GraphPartitioningQAOA(ProgramBatch):
             n_layers=n_layers,
             **kwargs,
         )
+        self.partitioning_algorithm = partitioning_algorithm
 
     def create_programs(self):
         if len(self.programs) > 0:
@@ -257,11 +327,16 @@ class GraphPartitioningQAOA(ProgramBatch):
                 # Provide a smaller number than the available number of qubits
                 # in case a bigger partition was provided (?)
                 subgraphs = _node_partition_graph(
-                    self.main_graph, avg_partition_size=self.n_qubits - 2
+                    self.main_graph,
+                    avg_partition_size=self.n_qubits - 2,
+                    partitioning_method=self.partitioning_algorithm,
+                    max_nodes=self.n_qubits,
                 )
             else:
                 subgraphs = _node_partition_graph(
-                    self.main_graph, n_clusters=self.n_clusters
+                    self.main_graph,
+                    n_clusters=self.n_clusters,
+                    partitioning_method=self.partitioning_algorithm,
                 )
 
             self.solution = [0] * self.main_graph.number_of_nodes()
