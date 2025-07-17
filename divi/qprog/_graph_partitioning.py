@@ -229,7 +229,7 @@ def partition_graph(graph, max_nodes, method):
                 current, n_clusters=n_clusters, partitioning_method=method
             )
             for i in range(n_clusters):
-                part = graph.subgraph(
+                part = current.subgraph(
                     [node for node, cluster in enumerate(partition) if cluster == i]
                 )
                 subgraphs.append(part)
