@@ -164,7 +164,7 @@ def _node_partition_graph(
 
         if max_nodes and subgraph.number_of_nodes() > max_nodes:
             cur_subgraphs = partition_graph(
-                subgraph, max_nodes=max_nodes, method=partitioning_method
+                subgraph, max_nodes=max_nodes, partitioning_method=partitioning_method
             )
 
         for subgraph in cur_subgraphs:
