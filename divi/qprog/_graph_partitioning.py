@@ -151,32 +151,29 @@ def _node_partition_graph(
     if not n_clusters:
         n_clusters = int(graph.number_of_nodes() / avg_partition_size)
 
-    partition = perform_partitioning(
-        graph, n_clusters=n_clusters, partitioning_method=partitioning_method
-    )
-
-    for i in range(n_clusters):
-        subgraph = graph.subgraph(
-            [node for node, cluster in enumerate(partition) if cluster == i]
+    if max_nodes:
+        subgraphs = partition_graph_with_max_nodes(
+            graph,
+            max_nodes=max_nodes,
+            partitioning_method=partitioning_method,
+            init_clusters=n_clusters,
+        )
+    else:
+        subgraphs = perform_partitioning(
+            graph, n_clusters=n_clusters, partitioning_method=partitioning_method
         )
 
-        cur_subgraphs = [subgraph]
-
-        if max_nodes and subgraph.number_of_nodes() > max_nodes:
-            cur_subgraphs = partition_graph(
-                subgraph, max_nodes=max_nodes, partitioning_method=partitioning_method
-            )
-
-        for subgraph in cur_subgraphs:
-            if subgraph.number_of_edges() > 0:
-                total_edges += subgraph.number_of_edges()
-                subgraphs.append(subgraph)
+    final_subgraphs = []
+    for subgraph in subgraphs:
+        if subgraph.number_of_edges() != 0:
+            total_edges += subgraph.number_of_edges()
+            final_subgraphs.append(subgraph)
 
     if total_edges != graph.number_of_edges():
         warn(
             f"Sum of edges count of partitions ({total_edges}) is different from the original graph {graph.number_of_edges()}"
         )
-    return subgraphs
+    return final_subgraphs
 
 
 def perform_partitioning(
@@ -193,7 +190,7 @@ def perform_partitioning(
     Returns:
         list: A list of labels for subgraph allocation.
     """
-
+    subgraphs = []
     if partitioning_method == "spectral":
         adj_matrix = nx.to_numpy_array(graph)
         sc = SpectralClustering(n_clusters=n_clusters, affinity="precomputed")
@@ -203,13 +200,22 @@ def perform_partitioning(
         _, partition = part_graph(n_clusters, adj_matrix)
     else:
         raise ValueError(
-            f"Unsupported partitioning method '{partitioning_method}'. "
-            "Supported methods are 'spectral' and 'metis'."
+            f"Unsupported partitioning method: {partitioning_method}. "
+            "Use 'spectral' or 'metis'."
         )
-    return partition
+
+    for i in range(n_clusters):
+        subgraph = graph.subgraph(
+            [node for node, cluster in enumerate(partition) if cluster == i]
+        )
+        subgraphs.append(subgraph)
+
+    return subgraphs
 
 
-def partition_graph(graph, max_nodes, partitioning_method):
+def partition_graph_with_max_nodes(
+    graph, max_nodes, partitioning_method, init_clusters
+):
     """
     Partitions a graph into subgraphs based on the number of qubits available.
 
@@ -223,22 +229,28 @@ def partition_graph(graph, max_nodes, partitioning_method):
     """
     subgraphs = [graph]
     result = []
-
+    iterated = False
     while subgraphs:
         current = subgraphs.pop()
         if current.number_of_nodes() <= max_nodes:
             result.append(current)
         else:
             # Partition nodes using spectral clustering
-            n_clusters = int(np.ceil(current.number_of_nodes() / max_nodes))
-            partition = perform_partitioning(
-                current, n_clusters=n_clusters, partitioning_method=partitioning_method
+            if not iterated and init_clusters:
+                n_clusters = init_clusters
+            else:
+                n_clusters = 2
+
+            parted_subgraphs = perform_partitioning(
+                current,
+                n_clusters=n_clusters,
+                partitioning_method=(
+                    "spectral" if iterated else partitioning_method
+                ),  # TODO: Metis method work after the first cut (not sure why)
             )
-            for i in range(n_clusters):
-                part = current.subgraph(
-                    [node for node, cluster in enumerate(partition) if cluster == i]
-                )
-                subgraphs.append(part)
+
+            iterated = True
+            subgraphs.extend(parted_subgraphs)
 
     return result
 
