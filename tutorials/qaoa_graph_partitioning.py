@@ -1,4 +1,5 @@
 import random
+import warnings
 
 import networkx as nx
 
@@ -7,35 +8,50 @@ from divi.qprog import GraphPartitioningQAOA, GraphProblem
 from divi.qprog.optimizers import Optimizers
 
 
-def generate_random_graph(n_nodes: int, n_edges: int) -> nx.DiGraph:
+def generate_random_graph(n_nodes: int, n_edges: int) -> nx.Graph:
     """
-    Generate a random directed graph with the specified number of nodes and edges.
+    Generate a random undirected graph with the specified number of nodes and edges.
+    Ensures connectivity if possible. Extra edges are added randomly without duplicates.
 
     Args:
-        n_nodes (int): The number of nodes in the graph.
-        n_edges (int): The number of edges in the graph.
+        n_nodes (int): Number of nodes.
+        n_edges (int): Desired number of edges.
+
+    Returns:
+        nx.Graph: The resulting graph.
     """
-    graph = nx.Graph()
+    max_edges = n_nodes * (n_nodes - 1) // 2
+    if n_edges > max_edges:
+        warnings.warn(
+            f"Requested {n_edges} edges, but max for {n_nodes} nodes is {max_edges}. Capping to max."
+        )
+        n_edges = max_edges
 
-    nodes = range(n_nodes)
-    graph.add_nodes_from(nodes)
+    # Start with a spanning tree (ensures connected)
+    graph = nx.random_labeled_tree(n_nodes)
+    current_edges = set(graph.edges())
 
-    for _ in range(n_edges):
-        u, v = random.sample(nodes, 2)
+    # Add random edges until desired count is reached
+    while len(current_edges) < n_edges:
+        u, v = random.sample(range(n_nodes), 2)
+        edge = tuple(sorted((u, v)))
+        if edge not in current_edges:
+            graph.add_edge(*edge, weight=round(random.uniform(0.1, 1.0), 1))
+            current_edges.add(edge)
 
-        # Avoid self-loops and duplicate edges
-        while u == v or graph.has_edge(u, v):
-            v = random.choice(nodes)
-        weight = round(random.uniform(0.1, 1.0), 1)  # Round to 1 decimal place
-        graph.add_edge(u, v, weight=weight)
+    # Assign weights to initial tree edges (if not already)
+    for u, v in graph.edges():
+        if "weight" not in graph[u][v]:
+            graph[u][v]["weight"] = round(random.uniform(0.1, 1.0), 1)
 
     return graph
 
 
 def analyze_results(quantum_solution, classical_cut_size):
     cut_edges = 0
+
     for u, v in graph.edges():
-        if quantum_solution[u] != quantum_solution[v]:
+        if (u in quantum_solution) != (v in quantum_solution):
             cut_edges += 1
 
     print(
@@ -48,10 +64,6 @@ if __name__ == "__main__":
     N_EDGES = 20
 
     graph = generate_random_graph(N_NODES, N_EDGES)
-
-    classical_cut_size, classical_partition = nx.approximation.one_exchange(
-        graph, seed=1
-    )
 
     qaoa_batch = GraphPartitioningQAOA(
         graph_problem=GraphProblem.MAXCUT,
@@ -68,5 +80,8 @@ if __name__ == "__main__":
     qaoa_batch.compute_final_solutions()
     quantum_solution = qaoa_batch.aggregate_results()
 
+    classical_cut_size, classical_partition = nx.approximation.one_exchange(
+        graph, seed=1
+    )
     print(f"Total circuits: {qaoa_batch.total_circuit_count}")
     analyze_results(quantum_solution, classical_cut_size)

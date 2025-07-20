@@ -71,6 +71,10 @@ nbsphinx = "^0.9.7"
 sphinx-rtd-theme = "^3.0.2"
 sphinx-autodoc-typehints = "^3.0"
 
+
+[tool.poetry.group.jupyter.dependencies]
+ipywidgets = "^8.1.7"
+
 [tool.isort]
 profile = "black"
 

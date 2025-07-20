@@ -2,18 +2,27 @@ import traceback
 from abc import ABC, abstractmethod
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from multiprocessing import Event, Manager
+from multiprocessing.synchronize import Event as EventClass
+from queue import Queue
 from threading import Thread
 
-from rich.live import Live
-from rich.progress import Progress
+from rich.console import Console
+from rich.progress import Progress, TaskID
 
 from divi._pbar import make_progress_bar
 from divi.interfaces import CircuitRunner
 from divi.parallel_simulator import ParallelSimulator
 from divi.qlogger import disable_logging
+from divi.qprog.quantum_program import QuantumProgram
 
 
-def queue_listener(queue, progress_bar: Progress, pb_task_map, done_event):
+def queue_listener(
+    queue: Queue,
+    progress_bar: Progress,
+    pb_task_map: dict[QuantumProgram, TaskID],
+    done_event: EventClass,
+    is_jupyter: bool,
+):
     while not done_event.is_set():
         try:
             msg = queue.get(timeout=0.1)
@@ -26,6 +35,7 @@ def queue_listener(queue, progress_bar: Progress, pb_task_map, done_event):
             poll_attempt=msg.get("poll_attempt", 0),
             message=msg.get("message", ""),
             final_status=msg.get("final_status", ""),
+            refresh=is_jupyter,
         )
 
 
@@ -51,15 +61,17 @@ class ProgramBatch(ABC):
         super().__init__()
 
         self.backend = backend
-        self._is_simulation = isinstance(backend, ParallelSimulator)
         self._executor = None
         self.programs = {}
 
         self._total_circuit_count = 0
         self._total_run_time = 0.0
 
+        self._is_local = isinstance(backend, ParallelSimulator)
+        self._is_jupyter = Console().is_jupyter
         self._progress_bar = make_progress_bar(
-            max_retries=None if self._is_simulation else self.backend.max_retries
+            max_retries=None if self._is_local else self.backend.max_retries,
+            is_jupyter=self._is_jupyter,
         )
 
         # Disable logging since we already have the bars to track progress
@@ -93,6 +105,8 @@ class ProgramBatch(ABC):
         if len(self.programs) == 0:
             raise RuntimeError("No programs to run.")
 
+        self._populate_progress_bars()
+
         self._executor = ProcessPoolExecutor()
 
         # Only generate progress bars for iteration-based programs
@@ -104,6 +118,7 @@ class ProgramBatch(ABC):
                     self._progress_bar,
                     self._pb_task_map,
                     self._done_event,
+                    self._is_jupyter,
                 ),
                 daemon=True,
             )
@@ -129,11 +144,6 @@ class ProgramBatch(ABC):
                 except Exception as e:
                     exceptions.append(e)
 
-            if exceptions:
-                for i, exc in enumerate(exceptions, 1):
-                    print(f"Task {i} failed with exception:")
-                    traceback.print_exception(type(exc), exc, exc.__traceback__)
-                raise RuntimeError("One or more tasks failed. Check logs for details.")
         finally:
             self._executor.shutdown(wait=True, cancel_futures=False)
             self._executor = None
@@ -142,8 +152,15 @@ class ProgramBatch(ABC):
                 self._done_event.set()
                 self._listener_thread.join()
 
+        if exceptions:
+            for i, exc in enumerate(exceptions, 1):
+                print(f"Task {i} failed with exception:")
+                traceback.print_exception(type(exc), exc, exc.__traceback__)
+            raise RuntimeError("One or more tasks failed. Check logs for details.")
+
         if hasattr(self, "max_iterations"):
-            self._live.stop()
+            self._progress_bar.stop()
+
         self._total_circuit_count += sum(future.result()[0] for future in self.futures)
         self._total_run_time += sum(future.result()[1] for future in self.futures)
         self.futures = []
@@ -154,8 +171,7 @@ class ProgramBatch(ABC):
                 "Can not generate progress bars for tasks without `max_iteration` attribute."
             )
 
-        self._live = Live(self._progress_bar, refresh_per_second=20)
-        self._live.start()
+        self._progress_bar.start()
         self._pb_task_map = {}
         for program in self.programs:
             pb_id = self._progress_bar.add_task(
@@ -166,7 +182,7 @@ class ProgramBatch(ABC):
                 poll_attempt=0,
                 message="",
                 final_status="",
-                mode=("simulation" if self._is_simulation else "network"),
+                mode=("simulation" if self._is_local else "network"),
             )
             self._pb_task_map[program] = pb_id
 

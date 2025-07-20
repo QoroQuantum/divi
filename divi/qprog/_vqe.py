@@ -44,6 +44,7 @@ class VQE(QuantumProgram):
         symbols,
         bond_length: float,
         coordinate_structure: list[tuple[float, float, float]],
+        charge: float = 0,
         n_layers: int = 1,
         ansatz=VQEAnsatz.HARTREE_FOCK,
         optimizer=Optimizers.MONTE_CARLO,
@@ -56,7 +57,8 @@ class VQE(QuantumProgram):
         Args:
             symbols (list): The symbols of the atoms in the molecule
             bond_length (float): The bond length to consider
-            coordinate_structure (list): The coordinate structure of the molecule
+            coordinate_structure (list): The coordinate structure of the molecule, represented in unit lengths
+            charge (float): the charge of the molecule. Defaults to 0.
             ansatz (VQEAnsatz): The ansatz to use for the VQE problem
             optimizer (Optimizers): The optimizer to use.
             max_iterations (int): Maximum number of iteration optimizers.
@@ -65,13 +67,13 @@ class VQE(QuantumProgram):
         # Local Variables
         self.symbols = symbols
         self.coordinate_structure = coordinate_structure
-
+        self.bond_length = bond_length
+        self.charge = charge
         if len(self.coordinate_structure) != len(self.symbols):
             raise ValueError(
                 "The number of symbols must match the number of coordinates"
             )
 
-        self.bond_length = bond_length
         self.n_layers = n_layers
         self.results = {}
         self.ansatz = ansatz
@@ -103,7 +105,7 @@ class VQE(QuantumProgram):
         ]
 
         coordinates = np.array(coordinates)
-        molecule = qml.qchem.Molecule(self.symbols, coordinates)
+        molecule = qml.qchem.Molecule(self.symbols, coordinates, charge=self.charge)
         hamiltonian, qubits = qml.qchem.molecular_hamiltonian(molecule)
 
         self.n_qubits = qubits

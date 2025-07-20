@@ -1,10 +1,9 @@
 import re
+import string
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
-from multiprocessing import Manager
-from typing import Optional
-from warnings import warn
+from typing import Literal, Optional
 
 import networkx as nx
 import numpy as np
@@ -15,7 +14,11 @@ from sklearn.cluster import SpectralClustering
 
 from divi.interfaces import CircuitRunner
 from divi.qprog import QAOA, ProgramBatch
-from divi.qprog._qaoa import _SUPPORTED_INITIAL_STATES_LITERAL, GraphProblem
+from divi.qprog._qaoa import (
+    _SUPPORTED_INITIAL_STATES_LITERAL,
+    GraphProblem,
+    draw_graph_partitions,
+)
 
 from .optimizers import Optimizers
 
@@ -127,57 +130,10 @@ def _edge_partition_graph(graph: nx.DiGraph, n_qubits: int = 8) -> list[nx.DiGra
     return subgraphs
 
 
-def _node_partition_graph(
+def _perform_partitioning(
     graph: nx.Graph,
-    n_clusters: Optional[int] = None,
-    avg_partition_size: Optional[float] = None,
-    partitioning_method: str = "spectral",
-    max_nodes: Optional[int] = None,
-) -> list[nx.Graph]:
-    subgraphs = []
-    total_edges = 0
-
-    if not (bool(n_clusters) ^ bool(avg_partition_size)):
-        raise RuntimeError(
-            "Only one of 'n_clusters' and 'avg_partition_size' must be provided."
-        )
-
-    if n_clusters and n_clusters < 1:
-        raise ValueError("'n_clusters' must be a positive integer.")
-
-    if avg_partition_size and avg_partition_size < 1:
-        raise ValueError("'avg_partition_size' must be a positive number.")
-
-    if not n_clusters:
-        n_clusters = int(graph.number_of_nodes() / avg_partition_size)
-
-    if max_nodes:
-        subgraphs = partition_graph_with_max_nodes(
-            graph,
-            max_nodes=max_nodes,
-            partitioning_method=partitioning_method,
-            init_clusters=n_clusters,
-        )
-    else:
-        subgraphs = perform_partitioning(
-            graph, n_clusters=n_clusters, partitioning_method=partitioning_method
-        )
-
-    final_subgraphs = []
-    for subgraph in subgraphs:
-        if subgraph.number_of_edges() != 0:
-            total_edges += subgraph.number_of_edges()
-            final_subgraphs.append(subgraph)
-
-    if total_edges != graph.number_of_edges():
-        warn(
-            f"Sum of edges count of partitions ({total_edges}) is different from the original graph {graph.number_of_edges()}"
-        )
-    return final_subgraphs
-
-
-def perform_partitioning(
-    graph: nx.Graph, n_clusters: int, partitioning_method: str = "spectral"
+    n_clusters: int,
+    partitioning_method: Literal["spectral", "metis"],
 ):
     """
     Partitions a graph into subgraphs based on the number of clusters or average partition size.
@@ -191,6 +147,7 @@ def perform_partitioning(
         list: A list of labels for subgraph allocation.
     """
     subgraphs = []
+
     if partitioning_method == "spectral":
         adj_matrix = nx.to_numpy_array(graph)
         sc = SpectralClustering(n_clusters=n_clusters, affinity="precomputed")
@@ -213,8 +170,11 @@ def perform_partitioning(
     return subgraphs
 
 
-def partition_graph_with_max_nodes(
-    graph, max_nodes, partitioning_method, init_clusters
+def _partition_graph_with_max_nodes(
+    graph: nx.Graph,
+    max_nodes: int,
+    partitioning_method: Literal["spectral", "metis"],
+    n_init_clusters: int,
 ):
     """
     Partitions a graph into subgraphs based on the number of qubits available.
@@ -230,18 +190,19 @@ def partition_graph_with_max_nodes(
     subgraphs = [graph]
     result = []
     iterated = False
+
     while subgraphs:
         current = subgraphs.pop()
         if current.number_of_nodes() <= max_nodes:
             result.append(current)
         else:
             # Partition nodes using spectral clustering
-            if not iterated and init_clusters:
-                n_clusters = init_clusters
+            if not iterated and n_init_clusters:
+                n_clusters = n_init_clusters
             else:
                 n_clusters = 2
 
-            parted_subgraphs = perform_partitioning(
+            parted_subgraphs = _perform_partitioning(
                 current,
                 n_clusters=n_clusters,
                 partitioning_method=(
@@ -253,6 +214,50 @@ def partition_graph_with_max_nodes(
             subgraphs.extend(parted_subgraphs)
 
     return result
+
+
+def _node_partition_graph(
+    graph: nx.Graph,
+    partitioning_method: Literal["spectral", "metis"],
+    n_clusters: Optional[int] = None,
+    avg_partition_size: Optional[float] = None,
+    n_max_nodes_per_cluster: Optional[int] = None,
+) -> list[nx.Graph]:
+
+    subgraphs = []
+
+    if not (bool(n_clusters) ^ bool(avg_partition_size)):
+        raise RuntimeError(
+            "Only one of 'n_clusters' and 'avg_partition_size' must be provided."
+        )
+
+    if n_clusters and n_clusters < 1:
+        raise ValueError("'n_clusters' must be a positive integer.")
+
+    if avg_partition_size and avg_partition_size < 1:
+        raise ValueError("'avg_partition_size' must be a positive number.")
+
+    if not n_clusters:
+        n_clusters = int(graph.number_of_nodes() / avg_partition_size)
+
+    if n_max_nodes_per_cluster:
+        subgraphs = _partition_graph_with_max_nodes(
+            graph,
+            max_nodes=n_max_nodes_per_cluster,
+            partitioning_method=partitioning_method,
+            n_init_clusters=n_clusters,
+        )
+    else:
+        subgraphs = _perform_partitioning(
+            graph, n_clusters=n_clusters, partitioning_method=partitioning_method
+        )
+
+    final_subgraphs = []
+    for subgraph in subgraphs:
+        if subgraph.number_of_edges() != 0:
+            final_subgraphs.append(subgraph)
+
+    return final_subgraphs
 
 
 def linear_aggregation(curr_solution, solution_bitstring, graph, reverse_index_maps):
@@ -298,7 +303,7 @@ class GraphPartitioningQAOA(ProgramBatch):
         aggregate_fn: AggregateFn = linear_aggregation,
         optimizer=Optimizers.MONTE_CARLO,
         max_iterations=10,
-        partitioning_algorithm: str = "spectral",
+        partitioning_algorithm: Literal["spectral", "metis"] = "spectral",
         **kwargs,
     ):
         super().__init__(backend=backend)
@@ -315,6 +320,8 @@ class GraphPartitioningQAOA(ProgramBatch):
         self.is_edge_problem = graph_problem == GraphProblem.EDGE_PARTITIONING
 
         self.aggregate_fn = aggregate_fn
+
+        self._solution_nodes = None
 
         self._constructor = partial(
             QAOA,
@@ -357,7 +364,7 @@ class GraphPartitioningQAOA(ProgramBatch):
                     partitioning_method=self.partitioning_algorithm,
                 )
 
-            self.solution = [0] * self.main_graph.number_of_nodes()
+            self._bitstring_solution = [0] * self.main_graph.number_of_nodes()
             self.reverse_index_maps = {}
 
             for i, subgraph in enumerate(subgraphs):
@@ -365,16 +372,16 @@ class GraphPartitioningQAOA(ProgramBatch):
                 self.reverse_index_maps[i] = {v: k for k, v in index_map.items()}
                 _subgraph = nx.relabel_nodes(subgraph, index_map)
 
-                self.programs[i] = self._constructor(
-                    job_id=i,
+                prog_id = (string.ascii_uppercase[i], subgraph.number_of_nodes())
+
+                self.programs[prog_id] = self._constructor(
+                    job_id=prog_id,
                     problem=_subgraph,
                     losses=self._manager.list(),
                     probs=self._manager.dict(),
                     final_params=self._manager.list(),
                     progress_queue=self._queue,
                 )
-
-        self._populate_progress_bars()
 
     def compute_final_solutions(self):
         if self._executor is not None:
@@ -434,8 +441,19 @@ class GraphPartitioningQAOA(ProgramBatch):
                 ::-1
             ]
 
-            self.solution = self.aggregate_fn(
-                self.solution, max_prob_key, program.problem, reverse_index_maps
+            self._bitstring_solution = self.aggregate_fn(
+                self._bitstring_solution,
+                max_prob_key,
+                program.problem,
+                reverse_index_maps,
             )
 
+        self.solution = list(np.where(self._bitstring_solution)[0])
+
         return self.solution
+
+    def draw_solution(self):
+        if self._solution_nodes is None:
+            self.aggregate_results()
+
+        draw_graph_partitions(self.main_graph, self.solution)

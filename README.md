@@ -21,5 +21,5 @@ Divi is designed to allow researchers, students, and enterprises to deploy quant
 
 ## 📚 Documentation
 
-Full documentation is available at: https://docs.qoroquantum.net/docs/divi
+Full documentation is available at: https://docs.qoroquantum.net/divi
 
