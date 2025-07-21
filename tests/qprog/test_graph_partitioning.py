@@ -74,19 +74,21 @@ def test_correct_number_of_programs_created(mocker, node_partitioning_qaoa):
 def test_results_aggregated_correctly(node_partitioning_qaoa):
     node_partitioning_qaoa.create_programs()
 
+    prog_1_key, prog_2_key = tuple(node_partitioning_qaoa.programs.keys())
+
     mock_program_1_nodes = node_partitioning_qaoa.programs[
-        ("A", 10)
+        prog_1_key
     ].problem.number_of_nodes()
-    node_partitioning_qaoa.programs[("A", 10)].losses = [{0: -1.0}]
-    node_partitioning_qaoa.programs[("A", 10)].probs = {
+    node_partitioning_qaoa.programs[prog_1_key].losses = [{0: -1.0}]
+    node_partitioning_qaoa.programs[prog_1_key].probs = {
         "0_0": {"0" * mock_program_1_nodes: 0.9, "1" * mock_program_1_nodes: 0.1}
     }
 
     mock_program_2_nodes = node_partitioning_qaoa.programs[
-        ("B", 5)
+        prog_2_key
     ].problem.number_of_nodes()
-    node_partitioning_qaoa.programs[("B", 5)].losses = [{0: -2.0, 1: -3.0}]
-    node_partitioning_qaoa.programs[("B", 5)].probs = {
+    node_partitioning_qaoa.programs[prog_2_key].losses = [{0: -2.0, 1: -3.0}]
+    node_partitioning_qaoa.programs[prog_2_key].probs = {
         "0_0": {"0" * mock_program_2_nodes: 0.9, "1" * mock_program_2_nodes: 0.1},
         "1_0": {"0" * mock_program_2_nodes: 0.2, "1" * mock_program_2_nodes: 0.8},
     }
