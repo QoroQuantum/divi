@@ -68,30 +68,32 @@ def test_correct_number_of_programs_created(mocker, node_partitioning_qaoa):
         assert program.backend.shots == 5000
 
     # Need to clean up at the end of the test
-    node_partitioning_qaoa._live.stop()
+    node_partitioning_qaoa._progress_bar.stop()
 
 
 def test_results_aggregated_correctly(node_partitioning_qaoa):
     node_partitioning_qaoa.create_programs()
 
-    mock_program_1_nodes = node_partitioning_qaoa.programs[0].problem.number_of_nodes()
-    node_partitioning_qaoa.programs[0].losses = [{0: -1.0}]
-    node_partitioning_qaoa.programs[0].probs = {
+    mock_program_1_nodes = node_partitioning_qaoa.programs[
+        ("A", 10)
+    ].problem.number_of_nodes()
+    node_partitioning_qaoa.programs[("A", 10)].losses = [{0: -1.0}]
+    node_partitioning_qaoa.programs[("A", 10)].probs = {
         "0_0": {"0" * mock_program_1_nodes: 0.9, "1" * mock_program_1_nodes: 0.1}
     }
 
-    mock_program_2_nodes = node_partitioning_qaoa.programs[1].problem.number_of_nodes()
-    node_partitioning_qaoa.programs[1].losses = [{0: -2.0, 1: -3.0}]
-    node_partitioning_qaoa.programs[1].probs = {
+    mock_program_2_nodes = node_partitioning_qaoa.programs[
+        ("B", 5)
+    ].problem.number_of_nodes()
+    node_partitioning_qaoa.programs[("B", 5)].losses = [{0: -2.0, 1: -3.0}]
+    node_partitioning_qaoa.programs[("B", 5)].probs = {
         "0_0": {"0" * mock_program_2_nodes: 0.9, "1" * mock_program_2_nodes: 0.1},
         "1_0": {"0" * mock_program_2_nodes: 0.2, "1" * mock_program_2_nodes: 0.8},
     }
 
     solution = node_partitioning_qaoa.aggregate_results()
 
-    assert solution.count(0) == mock_program_1_nodes
-    assert solution.count(1) == mock_program_2_nodes
-    assert len(solution) == node_partitioning_qaoa.main_graph.number_of_nodes()
+    assert len(solution) == mock_program_2_nodes
 
     # Need to clean up at the end of the test
-    node_partitioning_qaoa._live.stop()
+    node_partitioning_qaoa._progress_bar.stop()

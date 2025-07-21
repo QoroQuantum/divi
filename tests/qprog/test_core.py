@@ -51,6 +51,10 @@ class SampleProgram(QuantumProgram):
 
 
 class SampleProgramBatch(ProgramBatch):
+    def __init__(self, backend):
+        super().__init__(backend)
+        self.max_iterations = 5
+
     def create_programs(self):
         super().create_programs()
 
@@ -66,6 +70,12 @@ class SampleProgramBatch(ProgramBatch):
 @pytest.fixture
 def program_batch():
     return SampleProgramBatch(backend=ParallelSimulator())
+
+
+@pytest.fixture(autouse=True)
+def stop_live_display(program_batch):
+    yield
+    program_batch._progress_bar.stop()
 
 
 class TestProgram:
@@ -241,6 +251,8 @@ class TestProgramBatch:
 
     def test_wait_for_all_exception(self, mocker, program_batch):
         # Create an instance of your class and simulate an executor.
+        program_batch._done_event = mocker.MagicMock()
+        program_batch._listener_thread = mocker.MagicMock()
         program_batch._executor = mocker.MagicMock()
         program_batch._executor.shutdown = mocker.MagicMock()
 
