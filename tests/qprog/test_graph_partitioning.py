@@ -41,7 +41,8 @@ def test_correct_initialization(node_partitioning_qaoa):
 
 def test_fail_if_no_qubits_or_clusters_provided():
     with pytest.raises(
-        ValueError, match="One of `n_qubits` and `n_clusters` must be provided."
+        ValueError,
+        match="One of `n_max_nodes_per_cluster` and `n_clusters` must be provided.",
     ):
         GraphPartitioningQAOA(
             graph_problem=GraphProblem.MAXCUT,
