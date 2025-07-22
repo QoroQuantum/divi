@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+#
+# SPDX-License-Identifier: Apache-2.0
+
 from typing import Any
 
 from cirq import ops

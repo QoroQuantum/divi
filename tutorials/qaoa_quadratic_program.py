@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+#
+# SPDX-License-Identifier: Apache-2.0
+
 from qiskit_algorithms import NumPyMinimumEigensolver
 from qiskit_optimization import QuadraticProgram
 from qiskit_optimization.algorithms import MinimumEigenOptimizer

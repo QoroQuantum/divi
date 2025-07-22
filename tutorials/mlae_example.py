@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+#
+# SPDX-License-Identifier: Apache-2.0
+
 from divi.parallel_simulator import ParallelSimulator
 from divi.qprog import MLAE
 

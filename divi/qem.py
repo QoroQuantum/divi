@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+#
+# SPDX-License-Identifier: Apache-2.0
+
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from functools import partial
