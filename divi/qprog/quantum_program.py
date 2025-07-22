@@ -9,12 +9,12 @@ import numpy as np
 from qiskit.result import marginal_counts, sampled_expectation_value
 from scipy.optimize import OptimizeResult, minimize
 
-from divi import QoroService
 from divi.circuits import Circuit, MetaCircuit
 from divi.interfaces import CircuitRunner
 from divi.qem import _NoMitigation
-from divi.qoro_service import JobStatus
+from divi.qoro_service import JobStatus, QoroService
 from divi.qprog.optimizers import Optimizers
+from divi.slurm_service import SlurmService
 
 logger = logging.getLogger(__name__)
 
@@ -162,7 +162,9 @@ class QuantumProgram(ABC):
 
         backend_output = self.backend.submit_circuits(job_circuits)
 
-        if isinstance(self.backend, QoroService):
+        if isinstance(self.backend, QoroService) or isinstance(
+            self.backend, SlurmService
+        ):
             self._curr_service_job_id = backend_output
 
         return backend_output
@@ -209,6 +211,14 @@ class QuantumProgram(ABC):
                 raise Exception(
                     "Job has not completed yet, cannot post-process results"
                 )
+
+            results = self.backend.get_job_results(self._curr_service_job_id)
+
+        elif isinstance(self.backend, SlurmService):
+            self.backend.wait_for_completion(
+                labels=[circuit.label for circuit in self.circuits],
+                job_id=self._curr_service_job_id,
+            )
 
             results = self.backend.get_job_results(self._curr_service_job_id)
 
