@@ -4,7 +4,7 @@ import warnings
 import networkx as nx
 
 from divi.parallel_simulator import ParallelSimulator
-from divi.qprog import GraphPartitioningQAOA, GraphProblem
+from divi.qprog import GraphPartitioningQAOA, GraphProblem, PartitioningConfig
 from divi.qprog.optimizers import Optimizers
 
 
@@ -60,8 +60,8 @@ def analyze_results(quantum_solution, classical_cut_size):
 
 
 if __name__ == "__main__":
-    N_NODES = 15
-    N_EDGES = 20
+    N_NODES = 100
+    N_EDGES = 110
 
     graph = generate_random_graph(N_NODES, N_EDGES)
 
@@ -69,7 +69,10 @@ if __name__ == "__main__":
         graph_problem=GraphProblem.MAXCUT,
         graph=graph,
         n_layers=1,
-        n_clusters=2,
+        partitioning_config=PartitioningConfig(
+            max_n_nodes_per_cluster=20,
+            partitioning_algorithm="spectral",
+        ),
         optimizer=Optimizers.NELDER_MEAD,
         max_iterations=20,
         backend=ParallelSimulator(),
