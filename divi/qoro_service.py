@@ -186,7 +186,7 @@ class QoroService(CircuitRunner):
                     "job_type": job_type.value,
                     "qpu_system_name": (
                         self.qpu_system_name
-                        if self.qpu_system_name
+                        if self.qpu_system_name is not None
                         else qpu_system_name
                     ),
                 },
