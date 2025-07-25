@@ -207,7 +207,7 @@ class QoroService(CircuitRunner):
         Get the list of available QPU systems from the Qoro API.
 
         Returns:
-            List of QPU system names.
+            List of QPUSystem objects.
         """
         response = session.get(
             API_URL + "/qpusystem/",
