@@ -1,6 +1,7 @@
 import json
 import shutil
 import subprocess
+import textwrap
 import time
 import uuid
 from pathlib import Path
@@ -29,27 +30,33 @@ class SlurmService(CircuitRunner):
         for i, circuit in enumerate(circuits):
             circuit_label, circuit_qasm = circuit
             circuit_file = job_dir / f"circuit_{circuit_label}.qasm"
-            circuit_file.write_text(circuit_qasm)
+            circuit_file.write_text(circuit_qasm, encoding="utf-8")
             circuit_map[i] = circuit_label
 
         # Save the mapping so results can be loaded later
         with open(job_dir / "circuit_map.json", "w") as f:
             json.dump(circuit_map, f)
 
-            # Write SLURM script
+        # Write SLURM script
         run_sh = job_dir / "run.sh"
 
-        script = f"""
-        #!/bin/bash
-        #SBATCH --job-name=divi_batch
-        #SBATCH --output={job_dir}/slurm_output.log
-        #SBATCH --ntasks=1
-        #SBATCH --time=00:10:00
-        #SBATCH --mem=16G
-        #
-        {self.simulator_exec} --input-dir {job_dir} --shots {self.shots} --n-processes {self.n_processes}
-        """
-        # """
+        if not shutil.which(self.simulator_exec):
+            raise ValueError(
+                f"Simulator executable '{self.simulator_exec}' not found in PATH."
+            )
+
+        script = textwrap.dedent(
+            f"""\
+                #!/bin/bash
+                #SBATCH --job-name=divi_batch
+                #SBATCH --output={job_dir}/slurm_output.log
+                #SBATCH --ntasks=1
+                #SBATCH --time=00:20:00
+                #SBATCH --mem=16G
+
+                {self.simulator_exec} --input-dir {job_dir} --shots {self.shots} --n-processes {self.n_processes}
+            """
+        )
 
         run_sh.write_text(script.strip())
         run_sh.chmod(0o755)
