@@ -18,7 +18,7 @@ class SlurmService(CircuitRunner):
     ):
         super().__init__(shots)
         current_dir = Path(__file__).parent
-        self.base_dir = base_dir or str(current_dir / "tmp/divi_jobs")
+        self.base_dir = base_dir or current_dir / "tmp/divi_jobs"
         self.simulator_exec = (
             simulator_exec or f"python {current_dir / 'slurm_simulate.py'}"
         )
