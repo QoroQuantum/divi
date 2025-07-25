@@ -6,12 +6,13 @@ import time
 from collections.abc import Callable
 from enum import Enum
 from http import HTTPStatus
-from typing import Optional
+from typing import List, Optional
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
 
 from divi.interfaces import CircuitRunner
+from divi.qpu_system import QPUSystem, parse_qpu_systems
 
 API_URL = "https://app.qoroquantum.net/api"
 MAX_PAYLOAD_SIZE_MB = 0.95
@@ -87,6 +88,7 @@ class QoroService(CircuitRunner):
         circuits: dict[str, str],
         tag: str = "default",
         job_type: JobTypes = JobTypes.SIMULATE,
+        qpu_system_name: Optional[str] = None,
     ):
         """
         Send circuits to the Qoro API for execution
@@ -159,6 +161,7 @@ class QoroService(CircuitRunner):
                     "shots": self.shots,
                     "tag": tag,
                     "job_type": job_type.value,
+                    "qpu_system_name": qpu_system_name,
                 },
                 timeout=100,
             )
@@ -171,6 +174,27 @@ class QoroService(CircuitRunner):
                 )
 
         return job_ids if len(job_ids) > 1 else job_ids[0]
+
+    def qpu_systems(self) -> List[QPUSystem]:
+        """
+        Get the list of available QPU systems from the Qoro API.
+
+        Returns:
+            List of QPU system names.
+        """
+        response = session.get(
+            API_URL + "/qpu_systems/",
+            headers={"Authorization": self.auth_token},
+            timeout=10,
+        )
+
+        if response.status_code == HTTPStatus.OK:
+            return parse_qpu_systems(response.json())
+
+        else:
+            raise requests.exceptions.HTTPError(
+                f"{response.status_code}: {response.reason}"
+            )
 
     def delete_job(self, job_ids):
         """
