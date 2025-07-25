@@ -82,7 +82,7 @@ class QoroService(CircuitRunner):
         Set the QPU system for the service.
 
         Args:
-            system (str | QPUSystem): The QPU system to set or the name as a string.
+            system_name (str | QPUSystem): The QPU system to set or the name as a string.
         """
         if isinstance(system_name, str):
             self._qpu_system_name = system_name
