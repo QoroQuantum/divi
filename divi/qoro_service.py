@@ -85,11 +85,11 @@ class QoroService(CircuitRunner):
             system (str | QPUSystem): The QPU system to set or the name as a string.
         """
         if isinstance(system_name, str):
-            self.qpu_system_name = system_name
+            self._qpu_system_name = system_name
         elif isinstance(system_name, QPUSystem):
-            self.qpu_system_name = system_name.name
+            self._qpu_system_name = system_name.name
         elif system_name is None:
-            self.qpu_system_name = None
+            self._qpu_system_name = None
         else:
             raise TypeError("Expected a QPUSystem instance or str.")
 
