@@ -13,12 +13,15 @@ class SlurmService(CircuitRunner):
     def __init__(
         self,
         shots: int = 1024,
-        base_dir: str = "/tmp/divi_jobs",
-        simulator_exec: str = f"python {Path(__file__).parent / 'slurm_simulate.py'}",
+        base_dir: str = None,
+        simulator_exec: str = None,
     ):
         super().__init__(shots)
-        self.base_dir = Path(base_dir)
-        self.simulator_exec = simulator_exec
+        current_dir = Path(__file__).parent
+        self.base_dir = base_dir or str(current_dir / "tmp/divi_jobs")
+        self.simulator_exec = (
+            simulator_exec or f"python {current_dir / 'slurm_simulate.py'}"
+        )
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.n_processes = 2
 
