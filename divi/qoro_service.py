@@ -183,7 +183,7 @@ class QoroService(CircuitRunner):
             List of QPU system names.
         """
         response = session.get(
-            API_URL + "/qpu_systems/",
+            API_URL + "/qpusystem/",
             headers={"Authorization": self.auth_token},
             timeout=10,
         )
