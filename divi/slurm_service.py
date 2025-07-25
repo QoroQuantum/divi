@@ -14,7 +14,7 @@ class SlurmService(CircuitRunner):
         self,
         shots: int = 1024,
         base_dir: str = "/tmp/divi_jobs",
-        simulator_exec: str = "python slurm_simulate.py",
+        simulator_exec: str = f"python {Path(__file__).parent / 'slurm_simulate.py'}",
     ):
         super().__init__(shots)
         self.base_dir = Path(base_dir)
@@ -22,16 +22,16 @@ class SlurmService(CircuitRunner):
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.n_processes = 2
 
-    def _write_batch_job(self, job_id: str, circuits: list[tuple[str, str]]) -> Path:
+    def _write_batch_job(self, job_id: str, circuits: dict[str, str]) -> Path:
         job_dir = self.base_dir / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
 
         circuit_map = {}
-        for i, circuit in enumerate(circuits):
-            circuit_label, circuit_qasm = circuit
-            circuit_file = job_dir / f"circuit_{circuit_label}.qasm"
+        for i, (circuit_label, circuit_qasm) in enumerate(circuits.items()):
+            colon_removed_label = circuit_label.replace(":", "_")
+            circuit_file = job_dir / f"circuit_{colon_removed_label}.qasm"
             circuit_file.write_text(circuit_qasm, encoding="utf-8")
-            circuit_map[i] = circuit_label
+            circuit_map[colon_removed_label] = (circuit_label, i)
 
         # Save the mapping so results can be loaded later
         with open(job_dir / "circuit_map.json", "w") as f:
@@ -40,21 +40,23 @@ class SlurmService(CircuitRunner):
         # Write SLURM script
         run_sh = job_dir / "run.sh"
 
-        if not shutil.which(self.simulator_exec):
-            raise ValueError(
-                f"Simulator executable '{self.simulator_exec}' not found in PATH."
-            )
+        # if not shutil.which(self.simulator_exec):
+        #     raise ValueError(
+        #         f"Simulator executable '{self.simulator_exec}' not found in PATH."
+        #     )
 
         script = textwrap.dedent(
             f"""\
-                #!/bin/bash
-                #SBATCH --job-name=divi_batch
-                #SBATCH --output={job_dir}/slurm_output.log
-                #SBATCH --ntasks=1
-                #SBATCH --time=00:20:00
-                #SBATCH --mem=16G
+            #!/bin/bash
+            #SBATCH --job-name=divi_batch
+            #SBATCH --output={job_dir}/slurm_output.log
+            #SBATCH --ntasks=1
+            #SBATCH --time=00:20:00
+            #SBATCH --mem=16G
+            #SBATCH --cpus-per-task={self.n_processes}
 
-                {self.simulator_exec} --input-dir {job_dir} --shots {self.shots} --n-processes {self.n_processes}
+            {self.simulator_exec} --input-dir {job_dir} --shots {self.shots} --n-processes {self.n_processes}
+
             """
         )
 
@@ -75,7 +77,6 @@ class SlurmService(CircuitRunner):
     def wait_for_completion(
         self,
         job_id: str,
-        labels: list[str],
         timeout: int = 3600,
         poll_interval: int = 10,
     ):
@@ -84,17 +85,10 @@ class SlurmService(CircuitRunner):
         """
         start_time = time.time()
         done_flag = self.base_dir / job_id / "done.flag"
-        job_dir = self.base_dir / job_id
+
         while time.time() - start_time < timeout:
             if done_flag.exists():
-                # Confirm all expected result files are present and readable
-                missing = [
-                    i
-                    for i in range(len(labels))
-                    if not (job_dir / f"result_{labels[i]}.json").exists()
-                ]
-                if not missing:
-                    return True
+                return True
             time.sleep(poll_interval)
 
         raise TimeoutError(f"Job {job_id} did not complete within {timeout} seconds.")
@@ -105,9 +99,15 @@ class SlurmService(CircuitRunner):
             raise ValueError(f"Job {job_id} does not exist.")
 
         results = []
+
+        circuit_map_file = job_dir / "circuit_map.json"
+        if not circuit_map_file.exists():
+            raise ValueError(f"Circuit map file not found for job {job_id}.")
+        circuit_map = json.loads(circuit_map_file.read_text())
+
         for result_file in job_dir.glob("result_*.json"):
             label = result_file.stem.split("_", 1)[1]
-            result = {"label": label}
+            result = {"label": circuit_map[label][0]}
             with open(result_file) as f:
                 data = json.load(f)
             result["results"] = data.get("counts", data)

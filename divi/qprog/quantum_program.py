@@ -216,7 +216,6 @@ class QuantumProgram(ABC):
 
         elif isinstance(self.backend, SlurmService):
             self.backend.wait_for_completion(
-                labels=[circuit.label for circuit in self.circuits],
                 job_id=self._curr_service_job_id,
             )
 
