@@ -63,12 +63,35 @@ class QoroService(CircuitRunner):
         polling_interval: float = 3.0,
         max_retries: int = 5000,
         shots: int = 1000,
+        qpu_system_name: Optional[str | QPUSystem] = None,
     ):
         super().__init__(shots=shots)
 
         self.auth_token = "Bearer " + auth_token
         self.polling_interval = polling_interval
         self.max_retries = max_retries
+        self._qpu_system_name = qpu_system_name
+
+    @property
+    def qpu_system_name(self) -> Optional[str | QPUSystem]:
+        return self._qpu_system_name
+
+    @qpu_system_name.setter
+    def qpu_system_name(self, system_name: str | QPUSystem):
+        """
+        Set the QPU system for the service.
+
+        Args:
+            system (str | QPUSystem): The QPU system to set or the name as a string.
+        """
+        if isinstance(system_name, str):
+            self.qpu_system_name = system_name
+        elif isinstance(system_name, QPUSystem):
+            self.qpu_system_name = system_name.name
+        elif system_name is None:
+            self.qpu_system_name = None
+        else:
+            raise TypeError("Expected a QPUSystem instance or str.")
 
     def test_connection(self):
         """Test the connection to the Qoro API"""
@@ -161,7 +184,11 @@ class QoroService(CircuitRunner):
                     "shots": self.shots,
                     "tag": tag,
                     "job_type": job_type.value,
-                    "qpu_system_name": qpu_system_name,
+                    "qpu_system_name": (
+                        self.qpu_system_name
+                        if self.qpu_system_name
+                        else qpu_system_name
+                    ),
                 },
                 timeout=100,
             )
