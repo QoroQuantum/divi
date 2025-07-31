@@ -231,11 +231,8 @@ def _split_graph(
         return _apply_split_with_relabel(
             graph,
             algorithm,
-            partitioning_config.minimum_n_clusters
-            # If minimum clusters isn't a constraint, then default to a rough sectioning
-            or ceil(
-                graph.number_of_nodes() / partitioning_config.max_n_nodes_per_cluster
-            ),
+            # If minimum clusters isn't a constraint, then default to bisection
+            partitioning_config.minimum_n_clusters or 2,
         )
     elif partitioning_config.partitioning_algorithm == "kernighan_lin":
         part_1, part_2 = nx.algorithms.community.kernighan_lin_bisection(graph)
@@ -247,7 +244,22 @@ def _bisect_with_predicate(
     predicate: Callable[[nx.Graph | None, Sequence[nx.Graph] | None], bool],
     partitioning_config: PartitioningConfig,
 ) -> Sequence[nx.Graph]:
+    """
+    Recursively bisects a list of graph partitions based on a user-defined predicate.
 
+    This helper function repeatedly applies a partitioning strategy to a sequence of graph
+    subgraphs. At each iteration, it evaluates a predicate to determine whether a subgraph
+    should be further split. The process continues until no subgraphs satisfy the predicate,
+    at which point the resulting collection of subgraphs is returned.
+
+    The predicate is expected to accept two arguments:
+        - The current subgraph under consideration.
+        - A list of other subgraphs in the current iteration (both previously processed
+        and yet to be processed), serving as the context for the decision.
+
+    Returns the final list of subgraphs as a heapified sequence, ordered by descending
+    node count.
+    """
     subgraphs = initial_partitions
     heapq.heapify(subgraphs)
 
@@ -418,7 +430,8 @@ class GraphPartitioningQAOA(ProgramBatch):
 
         if self.is_edge_problem:
             subgraphs = _edge_partition_graph(
-                self.main_graph, n_max_nodes_per_cluster=self.partitioning_config.max_n_nodes_per_cluster
+                self.main_graph,
+                n_max_nodes_per_cluster=self.partitioning_config.max_n_nodes_per_cluster,
             )
             cleaned_subgraphs = list(filter(lambda x: x.size() > 0, subgraphs))
         else:

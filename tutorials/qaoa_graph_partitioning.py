@@ -60,8 +60,8 @@ def analyze_results(quantum_solution, classical_cut_size):
 
 
 if __name__ == "__main__":
-    N_NODES = 100
-    N_EDGES = 110
+    N_NODES = 30
+    N_EDGES = 40
 
     graph = generate_random_graph(N_NODES, N_EDGES)
 
@@ -70,8 +70,8 @@ if __name__ == "__main__":
         graph=graph,
         n_layers=1,
         partitioning_config=PartitioningConfig(
-            max_n_nodes_per_cluster=20,
-            partitioning_algorithm="spectral",
+            max_n_nodes_per_cluster=10,
+            partitioning_algorithm="metis",
         ),
         optimizer=Optimizers.NELDER_MEAD,
         max_iterations=20,
