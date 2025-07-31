@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+#
+# SPDX-License-Identifier: Apache-2.0
+
 import heapq
 import re
 import string
@@ -5,7 +9,6 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from functools import partial
-from math import ceil
 from typing import Literal, Optional
 from warnings import warn
 

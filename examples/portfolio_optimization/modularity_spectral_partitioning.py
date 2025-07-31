@@ -1,8 +1,10 @@
-###############################################################################
-# // SPDX-License-Identifier: Apache-2.0
-# // Copyright 2024: Amazon Web Services, Inc. - Contributions from JPMC
+# # SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# #
+# # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
-###############################################################################
+# SPDX-License-Identifier: Apache-2.0
+
 import numpy as np
 
 

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+#
+# SPDX-License-Identifier: Apache-2.0
+
 import logging
 import pickle
 from abc import ABC, abstractmethod
