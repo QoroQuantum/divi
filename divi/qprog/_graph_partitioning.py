@@ -369,7 +369,7 @@ class GraphPartitioningQAOA(ProgramBatch):
             graph_problem (GraphProblem): The type of graph partitioning problem (e.g., EDGE_PARTITIONING).
             n_layers (int): Number of layers for the QAOA circuit.
             backend (CircuitRunner): Backend used to run quantum/classical circuits.
-            partitioning_config (PartioningConfig): the coniguration of the partitioning as to the algorithm and
+            partitioning_config (PartitioningConfig): the configuration of the partitioning as to the algorithm and
             expected output.
             initial_state ("Zeros", "Ones", "Superposition", "Recommended", optional): Initial state for the QAOA algorithm. Defaults to "Recommended".
             aggregate_fn (optional): Aggregation function to combine results. Defaults to `linear_aggregation`.
