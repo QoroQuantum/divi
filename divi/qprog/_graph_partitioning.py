@@ -314,7 +314,7 @@ def _node_partition_graph(
         )
 
     # Clean up on aisle 3
-    return tuple(sg[-1] for sg in subgraphs)
+    return tuple(graph for (_, _, graph) in subgraphs)
 
 
 def linear_aggregation(curr_solution, solution_bitstring, graph, reverse_index_maps):
