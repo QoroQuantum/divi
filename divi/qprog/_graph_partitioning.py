@@ -418,7 +418,7 @@ class GraphPartitioningQAOA(ProgramBatch):
 
         if self.is_edge_problem:
             subgraphs = _edge_partition_graph(
-                self.main_graph, n_max_nodes_per_cluster=self.n_max_nodes_per_cluster
+                self.main_graph, n_max_nodes_per_cluster=self.partitioning_config.max_n_nodes_per_cluster
             )
             cleaned_subgraphs = list(filter(lambda x: x.size() > 0, subgraphs))
         else:
