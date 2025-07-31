@@ -1,6 +1,33 @@
+# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+#
+# SPDX-License-Identifier: Apache-2.0
+
 import logging
 import shutil
 import sys
+
+
+def _is_jupyter():
+    """
+    Checks if the code is running inside a Jupyter Notebook or IPython environment.
+    """
+    try:
+        from IPython import get_ipython
+
+        # Check if get_ipython() returns a shell instance (not None)
+        # and if the shell class is 'ZMQInteractiveShell' for Jupyter notebooks/qtconsole
+        # or 'TerminalInteractiveShell' for IPython console.
+        shell = get_ipython().__class__.__name__
+        if shell == "ZMQInteractiveShell":
+            return True  # Jupyter notebook or qtconsole
+        elif shell == "TerminalInteractiveShell":
+            return False  # IPython terminal
+        else:
+            return False  # Other IPython environment (less common for typical Jupyter detection)
+    except NameError:
+        return False  # Not running in IPython
+    except ImportError:
+        return False  # IPython is not installed
 
 
 class OverwriteStreamHandler(logging.StreamHandler):
@@ -12,6 +39,8 @@ class OverwriteStreamHandler(logging.StreamHandler):
 
         # Worst case: 2 complex emojis (8 chars each) + buffer = 21 extra chars
         self._emoji_buffer = 21
+
+        self._is_jupyter = _is_jupyter()
 
     def emit(self, record):
         msg = self.format(record)
@@ -40,10 +69,13 @@ class OverwriteStreamHandler(logging.StreamHandler):
 
         # Clear previous line if needed
         if len(self._last_message) > 0:
-            clear_length = min(
-                len(self._last_message) + self._emoji_buffer,
-                shutil.get_terminal_size().columns,
-            )
+            if self._is_jupyter:
+                clear_length = len(self._last_message) + self._emoji_buffer + 50
+            else:
+                clear_length = min(
+                    len(self._last_message) + self._emoji_buffer,
+                    shutil.get_terminal_size().columns,
+                )
             self.stream.write("\r" + " " * clear_length + "\r")
 
         # Write message with appropriate ending

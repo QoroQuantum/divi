@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+#
+# SPDX-License-Identifier: Apache-2.0
+
 import re
 from enum import Enum
 from functools import reduce
@@ -23,6 +27,28 @@ from divi.utils import convert_qubo_matrix_to_pennylane_ising
 
 GraphProblemTypes = nx.Graph | rx.PyGraph
 QUBOProblemTypes = list | np.ndarray | sps.spmatrix | QuadraticProgram
+
+
+def draw_graph_partitions(main_graph, partition_nodes):
+    # Create a dictionary for node colors
+    node_colors = [
+        "red" if node in partition_nodes else "lightblue" for node in main_graph.nodes()
+    ]
+
+    plt.figure(figsize=(10, 8))
+
+    pos = nx.spring_layout(main_graph)
+
+    nx.draw_networkx_nodes(main_graph, pos, node_color=node_colors, node_size=500)
+    nx.draw_networkx_edges(main_graph, pos)
+    nx.draw_networkx_labels(main_graph, pos, font_size=10, font_weight="bold")
+
+    # Remove axes
+    plt.axis("off")
+
+    # Show the plot
+    plt.tight_layout()
+    plt.show()
 
 
 class GraphProblem(Enum):
@@ -411,23 +437,4 @@ class QAOA(QuantumProgram):
         if not self._solution_nodes:
             self.compute_final_solution()
 
-        # Create a dictionary for node colors
-        node_colors = [
-            "red" if node in self._solution_nodes else "lightblue"
-            for node in self.problem.nodes()
-        ]
-
-        plt.figure(figsize=(10, 8))
-
-        pos = nx.spring_layout(self.problem)
-
-        nx.draw_networkx_nodes(self.problem, pos, node_color=node_colors, node_size=500)
-        nx.draw_networkx_edges(self.problem, pos)
-        nx.draw_networkx_labels(self.problem, pos, font_size=10, font_weight="bold")
-
-        # Remove axes
-        plt.axis("off")
-
-        # Show the plot
-        plt.tight_layout()
-        plt.show()
+        draw_graph_partitions(self.problem, self._solution_nodes)

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+#
+# SPDX-License-Identifier: Apache-2.0
+
 from typing import Optional
 
 from rich.progress import (
@@ -53,11 +57,17 @@ class PhaseStatusColumn(ProgressColumn):
         return Text(f"[{self._last_message}]")
 
 
-def make_progress_bar(max_retries: Optional[int] = None):
+def make_progress_bar(
+    max_retries: Optional[int] = None, is_jupyter: bool = False
+) -> Progress:
     return Progress(
         TextColumn("[bold blue]{task.fields[job_name]}"),
         BarColumn(),
         MofNCompleteColumn(),
         ConditionalSpinnerColumn(),
         PhaseStatusColumn(max_retries=max_retries),
+        # For jupyter notebooks, refresh manually instead
+        auto_refresh=not is_jupyter,
+        # Give a dummy positive value if is_jupyter
+        refresh_per_second=10 if not is_jupyter else 999,
     )

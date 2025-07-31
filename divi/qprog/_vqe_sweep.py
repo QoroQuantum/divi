@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+#
+# SPDX-License-Identifier: Apache-2.0
+
 from functools import partial
 from itertools import product
 from typing import Literal
@@ -21,7 +25,7 @@ class VQEHyperparameterSweep(ProgramBatch):
         ansatze: list[VQEAnsatz],
         symbols: list[str],
         coordinate_structure: list[tuple[float, float, float]],
-        backend: CircuitRunner,
+        charge: float = 0,
         optimizer: Optimizers = Optimizers.MONTE_CARLO,
         max_iterations: int = 10,
         **kwargs,
@@ -35,9 +39,8 @@ class VQEHyperparameterSweep(ProgramBatch):
             coordinate_structure (list): The coordinate structure of the molecule.
             optimizer (Optimizers): The optimizer to use.
             max_iterations (int): Maximum number of iteration optimizers.
-            shots (int): Number of shots for each circuit execution.
         """
-        super().__init__(backend=backend)
+        super().__init__(backend=kwargs.pop("backend"))
 
         self.ansatze = ansatze
         self.bond_lengths = [round(bnd, 9) for bnd in bond_lengths]
@@ -47,6 +50,7 @@ class VQEHyperparameterSweep(ProgramBatch):
             VQE,
             symbols=symbols,
             coordinate_structure=coordinate_structure,
+            charge=charge,
             optimizer=optimizer,
             max_iterations=self.max_iterations,
             backend=self.backend,
@@ -72,8 +76,6 @@ class VQEHyperparameterSweep(ProgramBatch):
                 final_params=self._manager.list(),
                 progress_queue=self._queue,
             )
-
-        self._populate_progress_bars()
 
     def aggregate_results(self):
         if len(self.programs) == 0:
