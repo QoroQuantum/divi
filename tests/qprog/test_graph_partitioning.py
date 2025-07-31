@@ -310,8 +310,8 @@ class TestPartitioningConfig:
         mock_bisect = mocker.patch(
             "divi.qprog._graph_partitioning._bisect_with_predicate",
             return_value=[
-                (0, nx.Graph([(0, 1), (1, 2)])),
-                (0, nx.Graph([(3, 4), (4, 5)])),
+                (0, 0, nx.Graph([(0, 1), (1, 2)])),
+                (0, 1, nx.Graph([(3, 4), (4, 5)])),
             ],
         )
 
