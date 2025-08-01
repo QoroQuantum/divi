@@ -172,7 +172,7 @@ class ProgramBatch(ABC):
     def _populate_progress_bars(self):
         if not hasattr(self, "max_iterations"):
             raise RuntimeError(
-                "Can not generate progress bars for tasks without `max_iteration` attribute."
+                "Can not generate progress bars for tasks without `max_iterations` attribute."
             )
 
         self._progress_bar.start()
