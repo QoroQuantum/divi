@@ -2,17 +2,21 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import heapq
 import re
 import string
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 from functools import partial
-from typing import Optional
+from typing import Literal, Optional
+from warnings import warn
 
 import networkx as nx
 import numpy as np
 import rustworkx as rx
 import scipy.sparse.linalg as spla
+from pymetis import part_graph
 from sklearn.cluster import SpectralClustering
 
 from divi.interfaces import CircuitRunner
@@ -28,6 +32,36 @@ from .optimizers import Optimizers
 AggregateFn = Callable[
     [list[int], str, nx.Graph | rx.PyGraph, dict[int, int]], list[int]
 ]
+
+# TODO: Make this dynamic through an interaction with usher
+# once a proper endpoint is exposed
+_MAXIMUM_AVAILABLE_QUBITS = 30
+
+
+@dataclass(frozen=True, eq=True)
+class PartitioningConfig:
+    max_n_nodes_per_cluster: Optional[int] = None
+    minimum_n_clusters: Optional[int] = None
+    partitioning_algorithm: Literal["spectral", "metis", "kernighan_lin"] = "spectral"
+
+    def __post_init__(self):
+        if self.max_n_nodes_per_cluster is None and self.minimum_n_clusters is None:
+            raise ValueError("At least one constraint must be specified.")
+
+        if self.minimum_n_clusters is not None and self.minimum_n_clusters < 1:
+            raise ValueError("'minimum_n_clusters' must be a positive integer.")
+
+        if (
+            self.max_n_nodes_per_cluster is not None
+            and self.max_n_nodes_per_cluster < 1
+        ):
+            raise ValueError("'max_n_nodes_per_cluster' must be a positive number.")
+
+        if self.partitioning_algorithm not in ("spectral", "metis", "kernighan_lin"):
+            raise ValueError(
+                f"Unsupported partitioning algorithm: {self.partitioning_algorithm}. "
+                "Use 'spectral' or 'metis'."
+            )
 
 
 def _divide_edges(
@@ -99,7 +133,9 @@ def _fielder_laplacian_predicate(
     return (src in partition) == (dest in partition)
 
 
-def _edge_partition_graph(graph: nx.DiGraph, n_qubits: int = 8) -> list[nx.DiGraph]:
+def _edge_partition_graph(
+    graph: nx.DiGraph, n_max_nodes_per_cluster: int
+) -> list[nx.DiGraph]:
     """
     Partitions a directed graph into smaller subgraphs using recursive bipartite spectral partitioning.
 
@@ -109,7 +145,7 @@ def _edge_partition_graph(graph: nx.DiGraph, n_qubits: int = 8) -> list[nx.DiGra
 
     Args:
         graph (nx.DiGraph): The input directed graph to be partitioned.
-        n_qubits (int, optional): The number of qubits per subgraph.
+        n_max_nodes_per_cluster (int, optional): The maximum number of nodes per subgraph.
                                                 Defaults to 8.
 
     Returns:
@@ -117,9 +153,13 @@ def _edge_partition_graph(graph: nx.DiGraph, n_qubits: int = 8) -> list[nx.DiGra
     """
     subgraphs = [graph]
 
-    while any(g.number_of_edges() > n_qubits for g in subgraphs):
-        large_subgraphs = [g for g in subgraphs if g.number_of_edges() > n_qubits]
-        subgraphs = [g for g in subgraphs if g.number_of_edges() <= n_qubits]
+    while any(g.number_of_edges() > n_max_nodes_per_cluster for g in subgraphs):
+        large_subgraphs = [
+            g for g in subgraphs if g.number_of_edges() > n_max_nodes_per_cluster
+        ]
+        subgraphs = [
+            g for g in subgraphs if g.number_of_edges() <= n_max_nodes_per_cluster
+        ]
 
         if not large_subgraphs:
             break
@@ -133,43 +173,163 @@ def _edge_partition_graph(graph: nx.DiGraph, n_qubits: int = 8) -> list[nx.DiGra
     return subgraphs
 
 
-def _node_partition_graph(
-    graph: nx.Graph,
-    n_clusters: Optional[int] = None,
-    avg_partition_size: Optional[float] = None,
-) -> list[nx.Graph]:
-    if not (bool(n_clusters) ^ bool(avg_partition_size)):
-        raise RuntimeError(
-            "Only one of 'n_clusters' and 'avg_partition_size' must be provided."
+def _apply_split_with_relabel(
+    graph: nx.Graph, algorithm: Literal["spectral", "metis"], n_clusters: int
+) -> tuple[nx.Graph, nx.Graph]:
+    """
+    Relabels nodes of a graph to (0, ..., N-1) for algorithms that
+    require this input/has output of this format and requires mapping
+    back to original labels.
+    """
+    int_graph = nx.convert_node_labels_to_integers(graph, label_attribute="orig_label")
+
+    if algorithm == "spectral":
+        adj_matrix = nx.to_scipy_sparse_array(graph, format="csr")
+
+        adj_matrix.indptr = adj_matrix.indptr.astype(np.int32)
+        adj_matrix.indices = adj_matrix.indices.astype(np.int32)
+
+        sc = SpectralClustering(
+            n_clusters=n_clusters,
+            affinity="precomputed",
+            n_init=100,
+            assign_labels="discretize",
         )
+        parts = sc.fit_predict(adj_matrix)
+    elif algorithm == "metis":
+        adj_list = list(nx.to_dict_of_lists(int_graph).values())
+        _, parts = part_graph(n_clusters, adjacency=adj_list)
+    else:
+        raise RuntimeError("Relabeling only needed for `spectral` and `metis`.")
 
-    if n_clusters and n_clusters < 1:
-        raise ValueError("'n_clusters' must be a positive integer.")
+    clusters = [[] for _ in range(n_clusters)]
+    for idx, part in enumerate(parts):
+        orig_label = int_graph.nodes[idx]["orig_label"]
+        clusters[part].append(orig_label)
 
-    if avg_partition_size and avg_partition_size < 1:
-        raise ValueError("'avg_partition_size' must be a positive number.")
+    return tuple(graph.subgraph(clstr) for clstr in clusters)
 
-    if not n_clusters:
-        n_clusters = int(graph.number_of_nodes() / avg_partition_size)
 
-    subgraphs = []
-    adj_matrix = nx.to_numpy_array(graph)
+def _split_graph(
+    graph: nx.Graph, partitioning_config: PartitioningConfig
+) -> Sequence[nx.Graph]:
+    """
+    Splits a graph.
 
-    sc = SpectralClustering(n_clusters=n_clusters, affinity="precomputed")
-    partition = sc.fit_predict(adj_matrix)
+    If the requested partitioning algorithm is either "spectral" or "metis",
+    then the requested `min_n_clusters` will be returned.
+    For "kernighan_lin", a bisection will be returned
 
-    if (n_generated := np.amax(partition)) != n_clusters - 1:
-        raise RuntimeError(
-            f"Number of generated partitions ({n_generated + 1}) not equal to the requested one ({n_clusters})."
+    Args:
+        graph (nx.Graph): The input graph to be partitioned.
+        partitioning_config (PartitioningConfig): The configuration to follow.
+
+    Returns:
+        subgraphs: a sequence of the generated partitions.
+    """
+    if (algorithm := partitioning_config.partitioning_algorithm) in (
+        "spectral",
+        "metis",
+    ):
+        return _apply_split_with_relabel(
+            graph,
+            algorithm,
+            # If minimum clusters isn't a constraint, then default to bisection
+            partitioning_config.minimum_n_clusters or 2,
         )
+    elif partitioning_config.partitioning_algorithm == "kernighan_lin":
+        part_1, part_2 = nx.algorithms.community.kernighan_lin_bisection(graph)
+        return graph.subgraph(part_1), graph.subgraph(part_2)
 
-    for i in range(n_clusters):
-        subgraph = graph.subgraph(np.where(partition == i)[0])
 
-        if subgraph.number_of_edges() > 0:
-            subgraphs.append(subgraph)
+def _bisect_with_predicate(
+    initial_partitions: Sequence[nx.Graph],
+    predicate: Callable[[nx.Graph | None, Sequence[nx.Graph] | None], bool],
+    partitioning_config: PartitioningConfig,
+) -> Sequence[nx.Graph]:
+    """
+    Recursively bisects a list of graph partitions based on a user-defined predicate.
+
+    This helper function repeatedly applies a partitioning strategy to a sequence of graph
+    subgraphs. At each iteration, it evaluates a predicate to determine whether a subgraph
+    should be further split. The process continues until no subgraphs satisfy the predicate,
+    at which point the resulting collection of subgraphs is returned.
+
+    The predicate is expected to accept two arguments:
+        - The current subgraph under consideration.
+        - A list of other subgraphs in the current iteration (both previously processed
+        and yet to be processed), serving as the context for the decision.
+
+    Returns the final list of subgraphs as a heapified sequence, ordered by descending
+    node count.
+    """
+    subgraphs = initial_partitions
+    heapq.heapify(subgraphs)
+
+    while True:
+        new_subgraphs = []
+        changed = False
+
+        while subgraphs:
+            (_, _, subgraph) = heapq.heappop(subgraphs)
+
+            if predicate(subgraph, new_subgraphs + subgraphs):
+                new_subgraphs.extend(_split_graph(subgraph, partitioning_config))
+                changed = True
+            else:
+                new_subgraphs.append(subgraph)
+
+        subgraphs = [
+            (-sg.number_of_nodes(), i, sg) for (i, sg) in enumerate(new_subgraphs)
+        ]
+        heapq.heapify(subgraphs)
+
+        if not changed:
+            break
 
     return subgraphs
+
+
+def _node_partition_graph(
+    graph: nx.Graph, partitioning_config: PartitioningConfig
+) -> list[nx.Graph]:
+
+    subgraphs = [(-graph.number_of_nodes(), 0, graph)]
+
+    # First generate the minimum number of clusters, requested by user
+    # Initialize the graph as the initial subgraph
+    # Add generic ID to break ties in heap
+    if partitioning_config.minimum_n_clusters:
+        if partitioning_config.minimum_n_clusters > graph.number_of_nodes():
+            raise ValueError(
+                "Number of requested clusters larger than the size of the graph."
+            )
+
+        subgraphs = _bisect_with_predicate(
+            [(-graph.number_of_nodes(), 0, graph)],
+            lambda _, subgraphs: len(subgraphs)
+            < partitioning_config.minimum_n_clusters - 1,
+            partitioning_config,
+        )
+
+    # Split oversized clusters
+    if partitioning_config.max_n_nodes_per_cluster:
+        subgraphs = _bisect_with_predicate(
+            subgraphs,
+            lambda subgraph, _: (
+                subgraph.number_of_nodes() > partitioning_config.max_n_nodes_per_cluster
+            ),
+            partitioning_config,
+        )
+
+    if any(-sg[0] > _MAXIMUM_AVAILABLE_QUBITS for sg in subgraphs):
+        warn(
+            "At least one cluster has more nodes than what can be executed on "
+            f"the available backends: {_MAXIMUM_AVAILABLE_QUBITS} qubits."
+        )
+
+    # Clean up on aisle 3
+    return tuple(graph for (_, _, graph) in subgraphs)
 
 
 def linear_aggregation(curr_solution, solution_bitstring, graph, reverse_index_maps):
@@ -209,26 +369,43 @@ class GraphPartitioningQAOA(ProgramBatch):
         graph_problem: GraphProblem,
         n_layers: int,
         backend: CircuitRunner,
-        n_qubits: int = None,
-        n_clusters: int = None,
+        partitioning_config: PartitioningConfig,
         initial_state: _SUPPORTED_INITIAL_STATES_LITERAL = "Recommended",
         aggregate_fn: AggregateFn = linear_aggregation,
         optimizer=Optimizers.MONTE_CARLO,
         max_iterations=10,
         **kwargs,
     ):
+        """
+        Initializes the graph partitioning class.
+
+        Args:
+            graph (nx.Graph | rx.PyGraph): The input graph to be partitioned.
+            graph_problem (GraphProblem): The type of graph partitioning problem (e.g., EDGE_PARTITIONING).
+            n_layers (int): Number of layers for the QAOA circuit.
+            backend (CircuitRunner): Backend used to run quantum/classical circuits.
+            partitioning_config (PartitioningConfig): the configuration of the partitioning as to the algorithm and
+            expected output.
+            initial_state ("Zeros", "Ones", "Superposition", "Recommended", optional): Initial state for the QAOA algorithm. Defaults to "Recommended".
+            aggregate_fn (optional): Aggregation function to combine results. Defaults to `linear_aggregation`.
+            optimizer (optional): Optimizer to use for QAOA. Defaults to `Optimizers.MONTE_CARLO`.
+            max_iterations (int, optional): Maximum number of optimization iterations. Defaults to 10.
+            **kwargs: Additional keyword arguments passed to the QAOA constructor.
+
+        """
         super().__init__(backend=backend)
 
         self.main_graph = graph
-
-        self.n_qubits = n_qubits
-        self.n_clusters = n_clusters
-        self.max_iterations = max_iterations
-
-        if not (bool(self.n_qubits) ^ bool(self.n_clusters)):
-            raise ValueError("One of `n_qubits` and `n_clusters` must be provided.")
-
         self.is_edge_problem = graph_problem == GraphProblem.EDGE_PARTITIONING
+
+        check_fn = (
+            nx.is_connected if not self.is_edge_problem else nx.is_weakly_connected
+        )
+        if not check_fn(self.main_graph):
+            raise ValueError("Provided graph is not fully connected.")
+
+        self.partitioning_config = partitioning_config
+        self.max_iterations = max_iterations
 
         self.aggregate_fn = aggregate_fn
 
@@ -255,19 +432,16 @@ class GraphPartitioningQAOA(ProgramBatch):
         super().create_programs()
 
         if self.is_edge_problem:
-            subgraphs = _edge_partition_graph(self.main_graph, n_qubits=self.n_qubits)
+            subgraphs = _edge_partition_graph(
+                self.main_graph,
+                n_max_nodes_per_cluster=self.partitioning_config.max_n_nodes_per_cluster,
+            )
             cleaned_subgraphs = list(filter(lambda x: x.size() > 0, subgraphs))
         else:
-            if not self.n_clusters:
-                # Provide a smaller number than the available number of qubits
-                # in case a bigger partition was provided (?)
-                subgraphs = _node_partition_graph(
-                    self.main_graph, avg_partition_size=self.n_qubits - 2
-                )
-            else:
-                subgraphs = _node_partition_graph(
-                    self.main_graph, n_clusters=self.n_clusters
-                )
+            subgraphs = _node_partition_graph(
+                self.main_graph,
+                partitioning_config=self.partitioning_config,
+            )
 
             self._bitstring_solution = [0] * self.main_graph.number_of_nodes()
             self.reverse_index_maps = {}
