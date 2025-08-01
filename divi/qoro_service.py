@@ -42,7 +42,7 @@ class JobStatus(Enum):
     CANCELLED = "CANCELLED"
 
 
-class JobTypes(Enum):
+class JobType(Enum):
     EXECUTE = "EXECUTE"
     SIMULATE = "SIMULATE"
     ESTIMATE = "ESTIMATE"
@@ -90,21 +90,32 @@ class QoroService(CircuitRunner):
         self,
         circuits: dict[str, str],
         tag: str = "default",
-        job_type: JobTypes = JobTypes.SIMULATE,
+        job_type: JobType = JobType.SIMULATE,
+        use_packing: bool = False,
     ):
         """
-        Send circuits to the Qoro API for execution
+        Submit quantum circuits to the Qoro API for execution.
 
         Args:
-            circuits (dict): dict of ids to qasm circuits to be sent
-            tag (optional): tag to be used for the job, defaults to "default"
-            job_type (JobType): nature of job. Defaults to JobType.SIMULATE
+            circuits (dict[str, str]):
+                Dictionary mapping unique circuit IDs to QASM circuit strings.
+            tag (str, optional):
+                Tag to associate with the job for identification. Defaults to "default".
+            job_type (JobType, optional):
+                Type of job to execute (e.g., SIMULATE, EXECUTE, ESTIMATE, CIRCUIT_CUT). Defaults to JobType.SIMULATE.
+            use_packing (bool):
+                Whether to use circuit packing optimization. Defaults to False.
+
+        Raises:
+            ValueError: If more than one circuit is submitted for a CIRCUIT_CUT job.
 
         Returns:
-            job_id: The job id of the job created
+            str or list[str]:
+                The job ID(s) of the created job(s). Returns a single job ID if only one job is created,
+                otherwise returns a list of job IDs if the circuits are split into multiple jobs due to payload size.
         """
 
-        if job_type == JobTypes.CIRCUIT_CUT and len(circuits) > 1:
+        if job_type == JobType.CIRCUIT_CUT and len(circuits) > 1:
             raise ValueError("Only one circuit allowed for circuit-cutting jobs.")
 
         def _compress_data(value) -> bytes:
@@ -163,6 +174,7 @@ class QoroService(CircuitRunner):
                     "shots": self.shots,
                     "tag": tag,
                     "job_type": job_type.value,
+                    "use_packing": use_packing,
                 },
                 timeout=100,
             )
@@ -310,7 +322,7 @@ class QoroService(CircuitRunner):
                         pbar_update_fn(retries)
                     else:
                         logger.info(
-                            f"\cPolling {retries} / {self.max_retries} retries\r"
+                            rf"\cPolling {retries} / {self.max_retries} retries\r"
                         )
 
             if completed and on_complete:
