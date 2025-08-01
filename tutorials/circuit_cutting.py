@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from divi import QoroService
-from divi.qoro_service import JobTypes
+from divi.qoro_service import JobType
 
 if __name__ == "__main__":
 
@@ -23,7 +23,7 @@ if __name__ == "__main__":
     q_service = QoroService("41049da587f31f66b92dd769a591ac03164e4421")
 
     jobs = q_service.submit_circuits(
-        {"sample_cut_circuit": qasm_str}, job_type=JobTypes.CIRCUIT_CUT
+        {"sample_cut_circuit": qasm_str}, job_type=JobType.CIRCUIT_CUT
     )
     q_service.poll_job_status(jobs, loop_until_complete=True)
 

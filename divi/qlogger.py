@@ -45,21 +45,21 @@ class OverwriteStreamHandler(logging.StreamHandler):
     def emit(self, record):
         msg = self.format(record)
 
-        if record.message.startswith("\c"):
-            sep = "\c"
+        if record.message.startswith(r"\c"):
+            sep = r"\c"
             msg = f"{msg.split(sep)[0]}{self._last_record} [{record.message[2:-1]}]\r"
 
         if msg.endswith("\r\n"):
             overwrite_and_newline = True
             clean_msg = msg[:-2]
 
-            if not record.message.startswith("\c"):
+            if not record.message.startswith(r"\c"):
                 self._last_record = record.message[:-1]
         elif msg.endswith("\r"):
             overwrite_and_newline = False
             clean_msg = msg[:-1]
 
-            if not record.message.startswith("\c"):
+            if not record.message.startswith(r"\c"):
                 self._last_record = record.message[:-1]
         else:
             # Normal message - no overwriting
