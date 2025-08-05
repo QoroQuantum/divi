@@ -12,6 +12,8 @@ from functools import partial
 from typing import Literal, Optional
 from warnings import warn
 
+import matplotlib.cm as cm
+import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import rustworkx as rx
@@ -24,7 +26,7 @@ from divi.qprog import QAOA, ProgramBatch
 from divi.qprog._qaoa import (
     _SUPPORTED_INITIAL_STATES_LITERAL,
     GraphProblem,
-    draw_graph_partitions,
+    draw_graph_solution_nodes,
 )
 
 from .optimizers import Optimizer
@@ -531,8 +533,87 @@ class GraphPartitioningQAOA(ProgramBatch):
 
         return self.solution
 
+    def draw_partitions(
+        self,
+        pos: dict | None = None,
+        figsize: tuple[int, int] | None = (10, 8),
+        node_size: int | None = 300,
+    ):
+        """
+        Draw a NetworkX graph with nodes colored by partition.
+
+        Parameters:
+        -----------
+        pos : dict, optional
+            Node positions. If None, uses spring layout
+        figsize : tuple, optional
+            Figure size (width, height)
+        node_size : int, optional
+            Size of nodes
+        """
+
+        if len(self.programs) == 0:
+            raise RuntimeError(
+                "There are no partitions to draw. Did you run create_programs()?"
+            )
+
+        # Convert partitions to node-to-partition mapping
+        node_to_partition = {}
+        for partition_id, mapping in self.reverse_index_maps.items():
+            for node in mapping.values():
+                node_to_partition[node] = string.ascii_uppercase[partition_id]
+
+        # Get unique partition IDs and create color map
+        unique_partitions = sorted(list(set(node_to_partition.values())))
+        n_partitions = len(unique_partitions)
+        colors = cm.Set3(np.linspace(0, 1, n_partitions))
+        partition_colors = {pid: colors[i] for i, pid in enumerate(unique_partitions)}
+
+        # Create node color list
+        node_colors = [
+            partition_colors[node_to_partition.get(node, 0)]
+            for node in self.main_graph.nodes()
+        ]
+
+        # Set positions
+        if pos is None:
+            pos = nx.spring_layout(self.main_graph, seed=42)
+
+        # Draw the graph
+        plt.figure(figsize=figsize)
+        nx.draw(
+            self.main_graph,
+            pos,
+            node_color=node_colors,
+            node_size=node_size,
+            with_labels=True,
+            font_size=8,
+            font_weight="bold",
+            edge_color="gray",
+            alpha=0.8,
+        )
+
+        # Add legend
+        legend_elements = [
+            plt.Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                markerfacecolor=partition_colors[pid],
+                markersize=10,
+                label=f"Partition {pid}",
+            )
+            for pid in unique_partitions
+        ]
+        plt.legend(handles=legend_elements, loc="best")
+
+        plt.title("Graph Partitions Visualization")
+        plt.axis("off")
+        plt.show()
+
     def draw_solution(self):
         if self._solution_nodes is None:
             self.aggregate_results()
 
-        draw_graph_partitions(self.main_graph, self.solution)
+        draw_graph_solution_nodes(self.main_graph, self.solution)

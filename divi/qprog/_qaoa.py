@@ -29,7 +29,7 @@ GraphProblemTypes = nx.Graph | rx.PyGraph
 QUBOProblemTypes = list | np.ndarray | sps.spmatrix | QuadraticProgram
 
 
-def draw_graph_partitions(main_graph, partition_nodes):
+def draw_graph_solution_nodes(main_graph, partition_nodes):
     # Create a dictionary for node colors
     node_colors = [
         "red" if node in partition_nodes else "lightblue" for node in main_graph.nodes()
@@ -437,4 +437,4 @@ class QAOA(QuantumProgram):
         if not self._solution_nodes:
             self.compute_final_solution()
 
-        draw_graph_partitions(self.problem, self._solution_nodes)
+        draw_graph_solution_nodes(self.problem, self._solution_nodes)

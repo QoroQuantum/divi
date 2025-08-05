@@ -22,7 +22,7 @@ if __name__ == "__main__":
     qaoa_problem = QAOA(
         qp,
         n_layers=2,
-        optimizer=Optimizer.NELDER_MEAD,
+        optimizer=Optimizer.COBYLA,
         max_iterations=10,
         backend=ParallelSimulator(shots=10000),
     )
