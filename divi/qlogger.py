@@ -47,7 +47,7 @@ class OverwriteStreamHandler(logging.StreamHandler):
 
         if record.message.startswith(r"\c"):
             sep = r"\c"
-            msg = f"{msg.split(sep)[0]}{self._last_record} [{record.message[2:-1]}]\r"
+            msg = f"{msg.split(sep)[0]}{self._last_record} [{record.message[2:-2]}]\r"
 
         if msg.endswith("\r\n"):
             overwrite_and_newline = True

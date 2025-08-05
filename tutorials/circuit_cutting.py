@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from dotenv import dotenv_values
+
 from divi import QoroService
 from divi.qoro_service import JobType
 
@@ -20,7 +22,7 @@ if __name__ == "__main__":
                     measure q4[2] -> c0[2];
                     measure q4[8] -> c0[8];"""
 
-    q_service = QoroService("41049da587f31f66b92dd769a591ac03164e4421")
+    q_service = QoroService(dotenv_values()["QORO_API_KEY"])
 
     jobs = q_service.submit_circuits(
         {"sample_cut_circuit": qasm_str}, job_type=JobType.CIRCUIT_CUT

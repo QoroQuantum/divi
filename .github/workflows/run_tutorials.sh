@@ -6,6 +6,7 @@ export PYTHONPATH=$(pwd):$PYTHONPATH
 
 expected_failures=(
   tutorials/qasm_thru_service.py
+  tutorials/circuit_cutting.py
 )
 
 is_expected_to_fail() {

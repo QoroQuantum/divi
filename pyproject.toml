@@ -43,6 +43,7 @@ rich = "^14.0.0"
 pymetis = "^2025.1.1"
 mitiq = "^0.46"
 ply = "^3.11"
+python-dotenv = "^1.1.1"
 
 
 [tool.poetry.group.dev.dependencies]
