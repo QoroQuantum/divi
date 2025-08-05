@@ -10,7 +10,6 @@ import pytest
 import sympy as sp
 
 from divi.circuits import MetaCircuit
-from divi.parallel_simulator import ParallelSimulator
 from divi.qprog import ProgramBatch, QuantumProgram
 
 
@@ -72,14 +71,23 @@ class SampleProgramBatch(ProgramBatch):
 
 
 @pytest.fixture
-def program_batch():
-    return SampleProgramBatch(backend=ParallelSimulator())
+def program_batch(default_test_simulator):
+    batch = SampleProgramBatch(backend=default_test_simulator)
+    yield batch
+    try:
+        batch.reset()
+    except Exception:
+        pass  # Don't break test teardown due to a race condition
 
 
 @pytest.fixture(autouse=True)
 def stop_live_display(program_batch):
     yield
-    program_batch._progress_bar.stop()
+    if (
+        hasattr(program_batch, "_progress_bar")
+        and program_batch._progress_bar is not None
+    ):
+        program_batch._progress_bar.stop()
 
 
 class TestProgram:
@@ -257,6 +265,7 @@ class TestProgramBatch:
         # Create an instance of your class and simulate an executor.
         program_batch._done_event = mocker.MagicMock()
         program_batch._listener_thread = mocker.MagicMock()
+        program_batch._progress_bar = mocker.MagicMock()
         program_batch._executor = mocker.MagicMock()
         program_batch._executor.shutdown = mocker.MagicMock()
 

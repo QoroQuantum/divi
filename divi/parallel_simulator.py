@@ -125,6 +125,9 @@ class ParallelSimulator(CircuitRunner):
 
         return {"label": circuit_label, "results": dict(counts)}
 
+    def set_seed(self, seed: int):
+        self.simulation_seed = seed
+
     def submit_circuits(self, circuits: dict[str, str]):
         logger.debug(
             f"Simulating {len(circuits)} circuits with {self.n_processes} processes"

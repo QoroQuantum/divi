@@ -27,7 +27,7 @@ from divi.qprog._qaoa import (
     draw_graph_partitions,
 )
 
-from .optimizers import Optimizers
+from .optimizers import Optimizer
 
 AggregateFn = Callable[
     [list[int], str, nx.Graph | rx.PyGraph, dict[int, int]], list[int]
@@ -372,7 +372,7 @@ class GraphPartitioningQAOA(ProgramBatch):
         partitioning_config: PartitioningConfig,
         initial_state: _SUPPORTED_INITIAL_STATES_LITERAL = "Recommended",
         aggregate_fn: AggregateFn = linear_aggregation,
-        optimizer=Optimizers.MONTE_CARLO,
+        optimizer=Optimizer.MONTE_CARLO,
         max_iterations=10,
         **kwargs,
     ):

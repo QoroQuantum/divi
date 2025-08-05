@@ -8,10 +8,9 @@ from typing import Literal
 
 import matplotlib.pyplot as plt
 
-from divi.interfaces import CircuitRunner
 from divi.qprog import VQE, ProgramBatch, VQEAnsatz
 
-from .optimizers import Optimizers
+from .optimizers import Optimizer
 
 
 class VQEHyperparameterSweep(ProgramBatch):
@@ -26,7 +25,7 @@ class VQEHyperparameterSweep(ProgramBatch):
         symbols: list[str],
         coordinate_structure: list[tuple[float, float, float]],
         charge: float = 0,
-        optimizer: Optimizers = Optimizers.MONTE_CARLO,
+        optimizer: Optimizer = Optimizer.MONTE_CARLO,
         max_iterations: int = 10,
         **kwargs,
     ):

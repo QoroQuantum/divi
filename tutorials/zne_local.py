@@ -10,7 +10,7 @@ from mitiq.zne.scaling import fold_gates_at_random
 from divi.parallel_simulator import ParallelSimulator
 from divi.qem import ZNE
 from divi.qprog import VQE, VQEAnsatz
-from divi.qprog.optimizers import Optimizers
+from divi.qprog.optimizers import Optimizer
 
 if __name__ == "__main__":
     args = dict(
@@ -19,7 +19,7 @@ if __name__ == "__main__":
         coordinate_structure=[(0, 0, 0), (0, 0, 1)],
         n_layers=1,
         ansatz=VQEAnsatz.HARTREE_FOCK,
-        optimizer=Optimizers.NELDER_MEAD,
+        optimizer=Optimizer.NELDER_MEAD,
         max_iterations=5,
         seed=1997,
     )

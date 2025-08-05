@@ -12,7 +12,7 @@ from divi.parallel_simulator import ParallelSimulator
 from divi.qprog import (
     GraphPartitioningQAOA,
     GraphProblem,
-    Optimizers,
+    Optimizer,
     PartitioningConfig,
 )
 from divi.qprog._graph_partitioning import (
@@ -29,7 +29,7 @@ problem_args = {
     "partitioning_config": PartitioningConfig(
         minimum_n_clusters=2, partitioning_algorithm="spectral"
     ),
-    "optimizer": Optimizers.NELDER_MEAD,
+    "optimizer": Optimizer.NELDER_MEAD,
     "max_iterations": 10,
     "backend": ParallelSimulator(shots=5000),
 }
@@ -407,13 +407,10 @@ def test_correct_number_of_programs_created(mocker, node_partitioning_qaoa):
 
     # Assert common values propagated to all programs
     for program in node_partitioning_qaoa.programs.values():
-        assert program.optimizer == Optimizers.NELDER_MEAD
+        assert program.optimizer == Optimizer.NELDER_MEAD
         assert program.max_iterations == 10
         assert isinstance(program.backend, ParallelSimulator)
         assert program.backend.shots == 5000
-
-    # Need to clean up at the end of the test
-    node_partitioning_qaoa._progress_bar.stop()
 
 
 def test_results_aggregated_correctly(node_partitioning_qaoa):
@@ -441,6 +438,3 @@ def test_results_aggregated_correctly(node_partitioning_qaoa):
     solution = node_partitioning_qaoa.aggregate_results()
 
     assert len(solution) == mock_program_2_nodes
-
-    # Need to clean up at the end of the test
-    node_partitioning_qaoa._progress_bar.stop()

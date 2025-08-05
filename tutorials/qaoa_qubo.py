@@ -8,7 +8,7 @@ import numpy as np
 
 from divi.parallel_simulator import ParallelSimulator
 from divi.qprog import QAOA
-from divi.qprog.optimizers import Optimizers
+from divi.qprog.optimizers import Optimizer
 
 try:
     import dimod
@@ -32,7 +32,7 @@ if __name__ == "__main__":
     qaoa_problem = QAOA(
         problem=qubo_array,
         n_layers=2,
-        optimizer=Optimizers.NELDER_MEAD,
+        optimizer=Optimizer.COBYLA,
         max_iterations=10,
         backend=ParallelSimulator(shots=10000),
     )

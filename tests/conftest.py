@@ -2,9 +2,36 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import random
+import re
+
 import pytest
 
+from divi.interfaces import CircuitRunner
 from divi.parallel_simulator import ParallelSimulator
+
+
+class DummySimulator(CircuitRunner):
+    def submit_circuits(self, circuits):
+        res = []
+        for label, qasm in circuits.items():
+            n_qubits = int(re.search(r"qreg q\[(\d+)\]", qasm).group(1))
+            res.append(
+                {
+                    "label": label,
+                    "results": {
+                        "0" * n_qubits: 50 * random.randint(1, 5),
+                        "1" * n_qubits: 50 * random.randint(1, 5),
+                    },
+                }
+            )
+
+        return res
+
+
+@pytest.fixture
+def dummy_simulator():
+    return DummySimulator(shots=1)
 
 
 @pytest.fixture

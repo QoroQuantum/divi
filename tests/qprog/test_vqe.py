@@ -11,7 +11,7 @@ from qprog_contracts import (
     verify_metacircuit_dict,
 )
 
-from divi.qprog import VQE, Optimizers, VQEAnsatz
+from divi.qprog import VQE, Optimizer, VQEAnsatz
 
 pytestmark = pytest.mark.algo
 
@@ -67,7 +67,7 @@ def test_meta_circuit_qasm(ansatz, n_layers):
     assert len(set(matches)) // n_layers == vqe_problem.n_params
 
 
-@pytest.mark.parametrize("optimizer", list(Optimizers))
+@pytest.mark.parametrize("optimizer", list(Optimizer))
 def test_vqe_symbol_coordinates_mismatch(optimizer):
     with pytest.raises(
         ValueError,
@@ -93,8 +93,8 @@ def test_vqe_fail_with_hw_efficient_ansatz():
         )
 
 
-@pytest.mark.parametrize("optimizer", list(Optimizers))
-def test_vqe_correct_circuits_count_and_energies(optimizer, default_test_simulator):
+@pytest.mark.parametrize("optimizer", list(Optimizer))
+def test_vqe_correct_circuits_count_and_energies(optimizer, dummy_simulator):
     vqe_problem = VQE(
         symbols=["H", "H"],
         bond_length=0.5,
@@ -103,7 +103,9 @@ def test_vqe_correct_circuits_count_and_energies(optimizer, default_test_simulat
         ansatz=VQEAnsatz.HARTREE_FOCK,
         optimizer=optimizer,
         max_iterations=1,
-        backend=default_test_simulator,
+        backend=dummy_simulator,
     )
+
+    vqe_problem.run()
 
     verify_correct_circuit_count(vqe_problem)

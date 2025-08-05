@@ -22,7 +22,7 @@ from qiskit_optimization.problems import VarType
 
 from divi.circuits import MetaCircuit
 from divi.qprog import QuantumProgram
-from divi.qprog.optimizers import Optimizers
+from divi.qprog.optimizers import Optimizer
 from divi.utils import convert_qubo_matrix_to_pennylane_ising
 
 GraphProblemTypes = nx.Graph | rx.PyGraph
@@ -153,7 +153,7 @@ class QAOA(QuantumProgram):
         graph_problem: Optional[GraphProblem] = None,
         n_layers: int = 1,
         initial_state: _SUPPORTED_INITIAL_STATES_LITERAL = "Recommended",
-        optimizer: Optimizers = Optimizers.MONTE_CARLO,
+        optimizer: Optimizer = Optimizer.MONTE_CARLO,
         max_iterations: int = 10,
         **kwargs,
     ):

@@ -10,7 +10,7 @@ import sympy as sp
 
 from divi.circuits import MetaCircuit
 from divi.qprog import QuantumProgram
-from divi.qprog.optimizers import Optimizers
+from divi.qprog.optimizers import Optimizer
 
 
 class VQEAnsatz(Enum):
@@ -51,7 +51,7 @@ class VQE(QuantumProgram):
         charge: float = 0,
         n_layers: int = 1,
         ansatz=VQEAnsatz.HARTREE_FOCK,
-        optimizer=Optimizers.MONTE_CARLO,
+        optimizer=Optimizer.MONTE_CARLO,
         max_iterations=10,
         **kwargs,
     ) -> None:
