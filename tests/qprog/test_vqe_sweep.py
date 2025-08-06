@@ -7,7 +7,7 @@ from itertools import product
 import pytest
 from qprog_contracts import verify_basic_program_batch_behaviour
 
-from divi.qprog import Optimizers, VQEAnsatz, VQEHyperparameterSweep
+from divi.qprog import Optimizer, VQEAnsatz, VQEHyperparameterSweep
 
 
 @pytest.fixture
@@ -16,7 +16,7 @@ def vqe_sweep(default_test_simulator):
     ansatze = [VQEAnsatz.UCCSD, VQEAnsatz.RY]
     symbols = ["H", "H"]
     coordinate_structure = [[0, 0, 0], [0, 0, 1]]
-    optimizer = Optimizers.MONTE_CARLO
+    optimizer = Optimizer.MONTE_CARLO
     max_iterations = 10
 
     return VQEHyperparameterSweep(
@@ -50,7 +50,7 @@ def test_correct_number_of_programs_created(mocker, vqe_sweep):
 
     # Assert common values propagated to all programs
     for program in vqe_sweep.programs.values():
-        assert program.optimizer == Optimizers.MONTE_CARLO
+        assert program.optimizer == Optimizer.MONTE_CARLO
         assert program.max_iterations == 10
         assert program.backend.shots == 5000
         assert program.coordinate_structure == [[0, 0, 0], [0, 0, 1]]

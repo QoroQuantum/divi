@@ -2,11 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from dotenv import dotenv_values
+
 from divi import QoroService
 
 if __name__ == "__main__":
-    api_token = "6a539a765fe0b20f409b3c0bbd5d46875598f230"
-    service = QoroService(api_token)
+    service = QoroService(dotenv_values()["QORO_API_KEY"])
 
     # Test if QoroService is initialized correctly
     service.test_connection()

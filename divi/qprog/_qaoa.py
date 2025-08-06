@@ -22,14 +22,14 @@ from qiskit_optimization.problems import VarType
 
 from divi.circuits import MetaCircuit
 from divi.qprog import QuantumProgram
-from divi.qprog.optimizers import Optimizers
+from divi.qprog.optimizers import Optimizer
 from divi.utils import convert_qubo_matrix_to_pennylane_ising
 
 GraphProblemTypes = nx.Graph | rx.PyGraph
 QUBOProblemTypes = list | np.ndarray | sps.spmatrix | QuadraticProgram
 
 
-def draw_graph_partitions(main_graph, partition_nodes):
+def draw_graph_solution_nodes(main_graph, partition_nodes):
     # Create a dictionary for node colors
     node_colors = [
         "red" if node in partition_nodes else "lightblue" for node in main_graph.nodes()
@@ -153,7 +153,7 @@ class QAOA(QuantumProgram):
         graph_problem: Optional[GraphProblem] = None,
         n_layers: int = 1,
         initial_state: _SUPPORTED_INITIAL_STATES_LITERAL = "Recommended",
-        optimizer: Optimizers = Optimizers.MONTE_CARLO,
+        optimizer: Optimizer = Optimizer.MONTE_CARLO,
         max_iterations: int = 10,
         **kwargs,
     ):
@@ -223,7 +223,7 @@ class QAOA(QuantumProgram):
         self.current_iteration = 0
         self._solution_nodes = None
         self.n_params = 2
-        self._is_compute_probabilies = False
+        self._is_compute_probabilites = False
 
         # Shared Variables
         self.probs = kwargs.pop("probs", {})
@@ -321,7 +321,7 @@ class QAOA(QuantumProgram):
         """
 
         circuit_type = (
-            "cost_circuit" if not self._is_compute_probabilies else "meas_circuit"
+            "cost_circuit" if not self._is_compute_probabilites else "meas_circuit"
         )
 
         for p, params_group in enumerate(self._curr_params):
@@ -339,7 +339,7 @@ class QAOA(QuantumProgram):
             (dict) The losses for each parameter set grouping.
         """
 
-        if self._is_compute_probabilies:
+        if self._is_compute_probabilites:
             return {
                 outer_k: {
                     inner_k: inner_v / self.backend.shots
@@ -353,7 +353,7 @@ class QAOA(QuantumProgram):
         return losses
 
     def _run_final_measurement(self):
-        self._is_compute_probabilies = True
+        self._is_compute_probabilites = True
 
         self._curr_params = np.array(self.final_params)
 
@@ -363,7 +363,7 @@ class QAOA(QuantumProgram):
 
         self.probs.update(self._dispatch_circuits_and_process_results())
 
-        self._is_compute_probabilies = False
+        self._is_compute_probabilites = False
 
     def compute_final_solution(self):
         """
@@ -437,4 +437,4 @@ class QAOA(QuantumProgram):
         if not self._solution_nodes:
             self.compute_final_solution()
 
-        draw_graph_partitions(self.problem, self._solution_nodes)
+        draw_graph_solution_nodes(self.problem, self._solution_nodes)

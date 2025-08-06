@@ -6,7 +6,7 @@ import networkx as nx
 
 from divi.parallel_simulator import ParallelSimulator
 from divi.qprog import QAOA, GraphProblem
-from divi.qprog.optimizers import Optimizers
+from divi.qprog.optimizers import Optimizer
 
 if __name__ == "__main__":
     G = nx.bull_graph()
@@ -15,7 +15,7 @@ if __name__ == "__main__":
         problem=G,
         graph_problem=GraphProblem.MAX_CLIQUE,
         n_layers=2,
-        optimizer=Optimizers.NELDER_MEAD,
+        optimizer=Optimizer.NELDER_MEAD,
         max_iterations=10,
         is_constrained=True,
         backend=ParallelSimulator(),

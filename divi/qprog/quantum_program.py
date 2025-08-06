@@ -15,10 +15,11 @@ from scipy.optimize import OptimizeResult, minimize
 
 from divi import QoroService
 from divi.circuits import Circuit, MetaCircuit
+from divi.exp.scipy._cobyla import _minimize_cobyla as cobyla_fn
 from divi.interfaces import CircuitRunner
 from divi.qem import _NoMitigation
 from divi.qoro_service import JobStatus
-from divi.qprog.optimizers import Optimizers
+from divi.qprog.optimizers import Optimizer
 
 logger = logging.getLogger(__name__)
 
@@ -312,7 +313,7 @@ class QuantumProgram(ABC):
         else:
             logger.info("Finished Setup")
 
-        if self.optimizer == Optimizers.MONTE_CARLO:
+        if self.optimizer == Optimizer.MONTE_CARLO:
             while self.current_iteration < self.max_iterations:
 
                 self._update_mc_params()
@@ -346,7 +347,11 @@ class QuantumProgram(ABC):
 
             self.final_params[:] = np.atleast_2d(self._curr_params)
 
-        elif self.optimizer in (Optimizers.NELDER_MEAD, Optimizers.L_BFGS_B):
+        elif self.optimizer in (
+            Optimizer.NELDER_MEAD,
+            Optimizer.L_BFGS_B,
+            Optimizer.COBYLA,
+        ):
 
             def cost_fn(params):
                 task_name = "💸 Computing Cost 💸"
@@ -419,21 +424,36 @@ class QuantumProgram(ABC):
                 else:
                     logger.info(f"Finished Iteration #{self.current_iteration}\r\n")
 
+                if (
+                    self.optimizer == Optimizer.COBYLA
+                    and intermediate_result.nit + 1 == self.max_iterations
+                ):
+                    raise StopIteration
+
+            if self.max_iterations is None or self.optimizer == Optimizer.COBYLA:
+                # COBYLA perceive maxiter as maxfev so we need
+                # to use the callback fn for counting instead.
+                maxiter = None
+            else:
+                # Need to add one more iteration for Nelder-Mead's simplex initialization step
+                maxiter = (
+                    self.max_iterations + 1
+                    if self.optimizer == Optimizer.NELDER_MEAD
+                    else self.max_iterations
+                )
+
             self._initialize_params()
             self._minimize_res = minimize(
                 fun=cost_fn,
                 x0=self._curr_params[0],
-                method=self.optimizer.value,
-                jac=grad_fn if self.optimizer == Optimizers.L_BFGS_B else None,
+                method=(
+                    cobyla_fn
+                    if self.optimizer == Optimizer.COBYLA
+                    else self.optimizer.value
+                ),
+                jac=grad_fn if self.optimizer == Optimizer.L_BFGS_B else None,
                 callback=_iteration_counter,
-                options={
-                    "maxiter": (
-                        # Need to add one more iteration for Nelder-Mead's simplex initialization step
-                        self.max_iterations + 1
-                        if self.optimizer == Optimizers.NELDER_MEAD
-                        else self.max_iterations
-                    )
-                },
+                options={"maxiter": maxiter},
             )
 
         if self._progress_queue:

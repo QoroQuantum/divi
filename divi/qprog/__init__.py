@@ -10,4 +10,4 @@ from ._vqe import VQE, VQEAnsatz
 from ._mlae import MLAE
 from ._graph_partitioning import GraphPartitioningQAOA, PartitioningConfig
 from ._vqe_sweep import VQEHyperparameterSweep
-from .optimizers import Optimizers
+from .optimizers import Optimizer

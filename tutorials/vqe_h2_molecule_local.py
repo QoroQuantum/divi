@@ -6,7 +6,7 @@ import time
 
 from divi.parallel_simulator import ParallelSimulator
 from divi.qprog import VQE, VQEAnsatz
-from divi.qprog.optimizers import Optimizers
+from divi.qprog.optimizers import Optimizer
 
 if __name__ == "__main__":
     vqe_problem = VQE(
@@ -15,7 +15,7 @@ if __name__ == "__main__":
         bond_length=0.5,
         ansatz=VQEAnsatz.HARTREE_FOCK,
         n_layers=1,
-        optimizer=Optimizers.L_BFGS_B,
+        optimizer=Optimizer.L_BFGS_B,
         max_iterations=3,
         backend=ParallelSimulator(),
     )

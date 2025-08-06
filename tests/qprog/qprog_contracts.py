@@ -4,7 +4,7 @@
 
 import pytest
 
-from divi.qprog import Optimizers, ProgramBatch, QuantumProgram
+from divi.qprog import Optimizer, ProgramBatch, QuantumProgram
 
 
 def verify_metacircuit_dict(obj, expected_keys):
@@ -22,21 +22,19 @@ def verify_metacircuit_dict(obj, expected_keys):
 
 
 def verify_correct_circuit_count(obj: QuantumProgram):
-    obj.run()
-
     assert obj.current_iteration == 1
 
     assert len(obj.losses) == 1
 
-    if obj.optimizer == Optimizers.MONTE_CARLO:
+    if obj.optimizer == Optimizer.MONTE_CARLO:
         assert obj.total_circuit_count == obj.optimizer.n_param_sets * len(
             obj.cost_hamiltonian
         )
-    elif obj.optimizer == Optimizers.NELDER_MEAD:
+    elif obj.optimizer in (Optimizer.NELDER_MEAD, Optimizer.COBYLA):
         assert obj.total_circuit_count == obj._minimize_res.nfev * len(
             obj.cost_hamiltonian
         )
-    elif obj.optimizer == Optimizers.L_BFGS_B:
+    elif obj.optimizer == Optimizer.L_BFGS_B:
         evaluation_circuits_count = obj._minimize_res.nfev * len(obj.cost_hamiltonian)
 
         gradient_circuits_count = (
