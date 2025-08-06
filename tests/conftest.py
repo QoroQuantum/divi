@@ -15,7 +15,11 @@ class DummySimulator(CircuitRunner):
     def submit_circuits(self, circuits):
         res = []
         for label, qasm in circuits.items():
-            n_qubits = int(re.search(r"qreg q\[(\d+)\]", qasm).group(1))
+            match = re.search(r"qreg q\[(\d+)\]", qasm)
+            if not match:
+                raise RuntimeError("QASM missing qreg for some reason")
+            n_qubits = int(match.group(1))
+
             res.append(
                 {
                     "label": label,

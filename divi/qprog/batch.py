@@ -9,6 +9,7 @@ from multiprocessing import Event, Manager
 from multiprocessing.synchronize import Event as EventClass
 from queue import Empty, Queue
 from threading import Lock, Thread
+from warnings import warn
 
 from rich.console import Console
 from rich.progress import Progress, TaskID
@@ -116,7 +117,12 @@ class ProgramBatch(ABC):
 
         if getattr(self, "_listener_thread", None) is not None:
             self._listener_thread.join(timeout=1)
-            self._listener_thread = None
+            if self._listener_thread.is_alive():
+                warn(
+                    "Listener thread did not terminate within timeout and may still be running."
+                )
+            else:
+                self._listener_thread = None
             self._queue.close()
             self._queue.join_thread()
             self._queue = None

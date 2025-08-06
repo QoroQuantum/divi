@@ -15,6 +15,7 @@ from scipy.optimize import OptimizeResult, minimize
 
 from divi import QoroService
 from divi.circuits import Circuit, MetaCircuit
+from divi.exp.scipy._cobyla import _minimize_cobyla as cobyla_fn
 from divi.interfaces import CircuitRunner
 from divi.qem import _NoMitigation
 from divi.qoro_service import JobStatus
@@ -351,8 +352,6 @@ class QuantumProgram(ABC):
             Optimizer.L_BFGS_B,
             Optimizer.COBYLA,
         ):
-            if self.optimizer == Optimizer.COBYLA:
-                from divi.exp.scipy._cobyla import _minimize_cobyla as cobyla_fn
 
             def cost_fn(params):
                 task_name = "💸 Computing Cost 💸"
