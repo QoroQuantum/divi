@@ -1,10 +1,10 @@
 [tool.poetry]
-name = "divi"
-version = "0.1.0-beta.1"
+name = "qoro-divi"
+version = "0.2.1b1"
 description = ""
 authors = ["Ahmed Darwish <ahmed@qoroquantum.de>", "Stephen DiAdamo <stephen@qoroquantum.de>"]
 readme = "README.md"
-
+packages = [{ include = "divi" }]
 
 [[tool.poetry.source]]
 name = "aws-repo"
@@ -36,7 +36,6 @@ qiskit-ibm-runtime = ">=0.37,<0.38"
 qiskit-optimization = "^0.6.1"
 dill = "^0.4.0"
 sympy = "^1.14.0"
-pyqt6 = "^6.9.1"
 cirq-core = "<1.5.0"
 scikit-learn = "^1.7.0"
 rich = "^14.0.0"

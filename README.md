@@ -17,7 +17,11 @@ Divi is designed to allow researchers, students, and enterprises to deploy quant
 
 ## 📦 Installation
 
-[TODO]
+Divi can be easily installed from Pypi
+
+```bash
+pip install divi
+```
 
 ## 📚 Documentation
 
