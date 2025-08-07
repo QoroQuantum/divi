@@ -20,7 +20,7 @@ Divi is designed to allow researchers, students, and enterprises to deploy quant
 Divi can be easily installed from Pypi
 
 ```bash
-pip install divi
+pip install qoro-divi
 ```
 
 ## 📚 Documentation
