@@ -248,11 +248,11 @@ class TestProgramBatch:
         future_2.set_result(None)
         assert program_batch.check_all_done()
 
-    def test_wait_for_all_does_not_hold_if_all_ready(self, program_batch):
+    def test_join_does_not_hold_if_all_ready(self, program_batch):
         program_batch.create_programs()
         program_batch.run()
 
-        program_batch.wait_for_all()
+        program_batch.join()
 
         assert program_batch.total_circuit_count == 15
         assert program_batch.total_run_time == 15.5
@@ -261,7 +261,7 @@ class TestProgramBatch:
         assert program_batch._executor is None
         assert len(program_batch.futures) == 0
 
-    def test_wait_for_all_exception(self, mocker, program_batch):
+    def test_join_exception(self, mocker, program_batch):
         # Create an instance of your class and simulate an executor.
         program_batch._done_event = mocker.MagicMock()
         program_batch._listener_thread = mocker.MagicMock()
@@ -279,9 +279,9 @@ class TestProgramBatch:
 
         mocker.patch("divi.qprog.batch.as_completed", return_value=[failing_future])
 
-        # The wait_for_all method should detect the exception from the as_completed loop,
+        # The join method should detect the exception from the as_completed loop,
         # perform the shutdown and then raise a RuntimeError.
         with pytest.raises(
             RuntimeError, match="One or more tasks failed. Check logs for details."
         ):
-            program_batch.wait_for_all()
+            program_batch.join()

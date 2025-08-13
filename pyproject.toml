@@ -43,6 +43,7 @@ pymetis = "^2025.1.1"
 mitiq = "^0.46"
 ply = "^3.11"
 python-dotenv = "^1.1.1"
+dwave-hybrid = "^0.6.14"
 
 
 [tool.poetry.group.dev.dependencies]
@@ -61,10 +62,6 @@ pytest = "^8.4.0"
 pytest-mock = "^3.14.1"
 flaky = "^3.8.1"
 pytest-xdist = "^3.8.0"
-
-
-[tool.poetry.group.tutorials.dependencies]
-dimod = "^0.12.20"
 
 
 [tool.poetry.group.docs.dependencies]

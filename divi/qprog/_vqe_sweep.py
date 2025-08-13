@@ -57,12 +57,6 @@ class VQEHyperparameterSweep(ProgramBatch):
         )
 
     def create_programs(self):
-        if len(self.programs) > 0:
-            raise RuntimeError(
-                "Some programs already exist. "
-                "Clear the program dictionary before creating new ones by using batch.reset()."
-            )
-
         super().create_programs()
 
         for ansatz, bond_length in product(self.ansatze, self.bond_lengths):
@@ -77,16 +71,7 @@ class VQEHyperparameterSweep(ProgramBatch):
             )
 
     def aggregate_results(self):
-        if len(self.programs) == 0:
-            raise RuntimeError("No programs to aggregate. Run create_programs() first.")
-
-        if self._executor is not None:
-            self.wait_for_all()
-
-        if any(len(program.losses) == 0 for program in self.programs.values()):
-            raise RuntimeError(
-                "Some/All programs have empty losses. Did you call run()?"
-            )
+        super().aggregate_results()
 
         all_energies = {key: prog.losses[-1] for key, prog in self.programs.items()}
 
@@ -105,7 +90,7 @@ class VQEHyperparameterSweep(ProgramBatch):
             )
 
         if self._executor is not None:
-            self.wait_for_all()
+            self.join()
 
         data = []
         colors = ["blue", "g", "r", "c", "m", "y", "k"]

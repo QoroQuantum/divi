@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import atexit
 import traceback
 from abc import ABC, abstractmethod
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -51,6 +52,10 @@ def queue_listener(
         )
 
 
+def _default_task_function(program: QuantumProgram):
+    return program.run()
+
+
 class ProgramBatch(ABC):
     """This abstract class provides the basic scaffolding for higher-order
     computations that require more than one quantum program to achieve its goal.
@@ -74,6 +79,7 @@ class ProgramBatch(ABC):
 
         self.backend = backend
         self._executor = None
+        self._task_fn = _default_task_function
         self.programs = {}
 
         self._total_circuit_count = 0
@@ -95,6 +101,12 @@ class ProgramBatch(ABC):
 
     @abstractmethod
     def create_programs(self):
+        if len(self.programs) > 0:
+            raise RuntimeError(
+                "Some programs already exist. "
+                "Clear the program dictionary before creating new ones by using batch.reset()."
+            )
+
         self._manager = Manager()
         self._queue = self._manager.Queue()
 
@@ -118,27 +130,36 @@ class ProgramBatch(ABC):
         if getattr(self, "_listener_thread", None) is not None:
             self._listener_thread.join(timeout=1)
             if self._listener_thread.is_alive():
-                warn(
-                    "Listener thread did not terminate within timeout and may still be running."
-                )
-            else:
-                self._listener_thread = None
-            self._queue.close()
-            self._queue.join_thread()
+                warn("Listener thread did not terminate within timeout.")
+            self._listener_thread = None
+
+        # Shut down the manager process, which handles the queue cleanup.
+        if hasattr(self, "_manager") and self._manager is not None:
+            self._manager.shutdown()
+            self._manager = None
             self._queue = None
 
         # Stop the progress bar if it's still active
         if getattr(self, "_progress_bar", None) is not None:
             try:
                 self._progress_bar.stop()
-                self._progress_bar = None
             except Exception:
                 pass  # Already stopped or not running
-
+            self._progress_bar = None
             self._pb_task_map.clear()
 
+    def _atexit_cleanup_hook(self):
+        # This hook is only registered for non-blocking runs.
+        if self._executor is not None:
+            warn(
+                "A non-blocking ProgramBatch run was not explicitly closed with "
+                "'join()'. The batch was cleaned up automatically on exit.",
+                UserWarning,
+            )
+            self.reset()
+
     def add_program_to_executor(self, program):
-        self.futures.append(self._executor.submit(program.run))
+        self.futures.append(self._executor.submit(self._task_fn, program))
 
         if self._progress_bar is not None:
             with self._pb_lock:
@@ -153,7 +174,7 @@ class ProgramBatch(ABC):
                     mode=("simulation" if self._is_local else "network"),
                 )
 
-    def run(self):
+    def run(self, blocking: bool = False):
         if self._executor is not None:
             raise RuntimeError("A batch is already being run.")
 
@@ -193,10 +214,19 @@ class ProgramBatch(ABC):
         for program in self.programs.values():
             self.add_program_to_executor(program)
 
+        if not blocking:
+            # Arm safety net
+            atexit.register(self._atexit_cleanup_hook)
+
+        if blocking:
+            self.join()
+
+        return self
+
     def check_all_done(self):
         return all(future.done() for future in self.futures)
 
-    def wait_for_all(self):
+    def join(self):
         if self._executor is None:
             return
 
@@ -228,8 +258,25 @@ class ProgramBatch(ABC):
 
         self._total_circuit_count += sum(future.result()[0] for future in self.futures)
         self._total_run_time += sum(future.result()[1] for future in self.futures)
-        self.futures = []
+        self.futures.clear()
+
+        # After successful cleanup, try to unregister the hook.
+        # This will only succeed if it was a non-blocking run.
+        try:
+            atexit.unregister(self._atexit_cleanup_hook)
+        except TypeError:
+            # This is expected for blocking runs where the hook was never registered.
+            pass
 
     @abstractmethod
     def aggregate_results(self):
-        raise NotImplementedError
+        if len(self.programs) == 0:
+            raise RuntimeError("No programs to aggregate. Run create_programs() first.")
+
+        if self._executor is not None:
+            self.join()
+
+        if any(len(program.losses) == 0 for program in self.programs.values()):
+            raise RuntimeError(
+                "Some/All programs have empty losses. Did you call run()?"
+            )
