@@ -45,6 +45,6 @@ repos:
         exclude: ^(divi/exp/|docs/)
         args:
           - --license-filepath
-          - .license-header
+          - LICENSES/.license-header
           - --use-current-year
           - --no-extra-eol
