@@ -180,7 +180,7 @@ def _transform_bonds(
     zmatrix: list[_ZMatrixEntry],
     bonds_to_transform: list[tuple[int, int]],
     value: float,
-    transform_type: Literal["multiply", "delta"] = "multiply",
+    transform_type: Literal["scale", "delta"] = "scale",
 ) -> list[_ZMatrixEntry]:
     """
     Transform specified bonds in a Z-matrix.
@@ -189,7 +189,7 @@ def _transform_bonds(
         zmatrix: List of _ZMatrixEntry.
         bonds_to_transform: List of (atom1, atom2) tuples specifying bonds.
         value: Multiplier or additive value.
-        transform_type: "multiply" or "add".
+        transform_type: "scale" or "add".
 
     Returns:
         New Z-matrix with transformed bond lengths.
@@ -205,9 +205,7 @@ def _transform_bonds(
         ):
             old_length = entry.bond_length
             new_length = (
-                old_length * value
-                if transform_type == "multiply"
-                else old_length + value
+                old_length * value if transform_type == "scale" else old_length + value
             )
             if new_length == 0.0:
                 raise RuntimeError(
@@ -339,6 +337,8 @@ class MoleculeTransformer:
         if self.bonds_to_transform is None:
             object.__setattr__(self, "bonds_to_transform", self.atom_connectivity)
         else:
+            if len(self.bonds_to_transform) == 0:
+                raise ValueError("`bonds_to_transform` cannot be empty.")
             if not set(self.bonds_to_transform).issubset(self.atom_connectivity):
                 raise ValueError(
                     "`bonds_to_transform` is not a subset of `atom_connectivity`"
@@ -362,10 +362,8 @@ class MoleculeTransformer:
         z_matrix = _cartesian_to_zmatrix(original_coords, self.atom_connectivity)
 
         for value in self.bond_modifiers:
-            if value == 0 and mode == "delta":
+            if value == 0 and mode == "delta" or value == 1 and mode == "scale":
                 transformed_coords = original_coords.copy()
-            elif value == 1 and mode == "scale":
-                continue
             else:
                 transformed_z_matrix = _transform_bonds(
                     z_matrix, self.bonds_to_transform, value, mode
@@ -418,7 +416,6 @@ class VQEHyperparameterSweep(ProgramBatch):
         super().__init__(backend=kwargs.pop("backend"))
 
         self.molecule_transformer = molecule_transformer
-        self.molecule_variants = self.molecule_transformer.generate()
 
         self.ansatze = ansatze
         self.max_iterations = max_iterations
@@ -433,6 +430,8 @@ class VQEHyperparameterSweep(ProgramBatch):
 
     def create_programs(self):
         super().create_programs()
+
+        self.molecule_variants = self.molecule_transformer.generate()
 
         for ansatz, (modifier, molecule) in product(
             self.ansatze, self.molecule_variants.items()
