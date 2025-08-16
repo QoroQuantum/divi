@@ -557,7 +557,6 @@ class GraphPartitioningQAOA(ProgramBatch):
             self._bitstring_solution = self.aggregate_fn(
                 self._bitstring_solution,
                 program.solution,
-                program.problem,
                 self.reverse_index_maps[prog_id],
             )
 
@@ -591,9 +590,9 @@ class GraphPartitioningQAOA(ProgramBatch):
 
         # Convert partitions to node-to-partition mapping
         node_to_partition = {}
-        for partition_id, mapping in self.reverse_index_maps.items():
+        for (partition_id, _), mapping in self.reverse_index_maps.items():
             for node in mapping.values():
-                node_to_partition[node] = string.ascii_uppercase[partition_id]
+                node_to_partition[node] = partition_id
 
         # Get unique partition IDs and create color map
         unique_partitions = sorted(list(set(node_to_partition.values())))

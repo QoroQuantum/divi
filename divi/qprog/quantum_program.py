@@ -264,7 +264,8 @@ class QuantumProgram(ABC):
                 for observable in curr_measurement_group:
                     intermediate_exp_values = [
                         ExpectationMP(observable).process_counts(
-                            shots_dict, tuple(reversed(range(self.n_qubits)))
+                            shots_dict,
+                            tuple(reversed(range(len(next(iter(shots_dict.keys())))))),
                         )
                         for shots_dict in group_results.values()
                     ]
