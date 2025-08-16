@@ -9,7 +9,7 @@ from functools import partial
 from queue import Queue
 
 import numpy as np
-from qiskit.result import marginal_counts, sampled_expectation_value
+from pennylane.measurements import ExpectationMP
 from scipy.optimize import OptimizeResult, minimize
 
 from divi import QoroService
@@ -263,9 +263,8 @@ class QuantumProgram(ABC):
                 curr_marginal_results = []
                 for observable in curr_measurement_group:
                     intermediate_exp_values = [
-                        sampled_expectation_value(
-                            marginal_counts(shots_dict, observable.wires.tolist()),
-                            "Z" * len(observable.wires),
+                        ExpectationMP(observable).process_counts(
+                            shots_dict, tuple(reversed(range(self.n_qubits)))
                         )
                         for shots_dict in group_results.values()
                     ]
