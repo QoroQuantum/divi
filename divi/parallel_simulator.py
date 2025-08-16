@@ -7,7 +7,7 @@ import heapq
 import logging
 from functools import partial
 from multiprocessing import Pool
-from typing import Literal, Optional
+from typing import Literal
 from warnings import warn
 
 import qiskit_ibm_runtime.fake_provider as fk_prov
@@ -63,9 +63,9 @@ class ParallelSimulator(CircuitRunner):
         self,
         n_processes: int = 2,
         shots: int = 5000,
-        simulation_seed: Optional[int] = None,
+        simulation_seed: int | None = None,
         qiskit_backend: Backend | Literal["auto"] | None = None,
-        noise_model: Optional[NoiseModel] = None,
+        noise_model: NoiseModel | None = None,
     ):
         """
         A multi-process wrapper around Qiskit's AerSimulator.
@@ -73,7 +73,7 @@ class ParallelSimulator(CircuitRunner):
         Args:
             n_processes (int, optional): Number of parallel processes to use for simulation. Defaults to 2.
             shots (int, optional): Number of shots to perform. Defaults to 5000.
-            simulation_seed (Optional[int], optional): Seed for the random number generator to ensure reproducibility. Defaults to None.
+            simulation_seed (int, optional): Seed for the random number generator to ensure reproducibility. Defaults to None.
             backend (Backend or "auto, optional): A Qiskit backend to initiate the simulator from. If "auto" is passed,
              the best-fit most recent fake backend will be chosen for the given circuit. Defaults to None, resulting in noiseless simulation.
             noise_model (NoiseModel, optional): Qiskit noise model to use in simulation. Defaults to None.
@@ -96,9 +96,9 @@ class ParallelSimulator(CircuitRunner):
     def simulate_circuit(
         circuit_data: tuple[str, str],
         shots: int,
-        simulation_seed: Optional[int] = None,
-        qiskit_backend: Optional[Backend] = None,
-        noise_model: Optional[NoiseModel] = None,
+        simulation_seed: int | None = None,
+        qiskit_backend: Backend | None = None,
+        noise_model: NoiseModel | None = None,
     ):
         circuit_label, circuit = circuit_data
 
@@ -207,8 +207,8 @@ class ParallelSimulator(CircuitRunner):
 
     @staticmethod
     def estimate_run_time_batch(
-        circuits: Optional[list[str]] = None,
-        precomputed_duration: Optional[list[float]] = None,
+        circuits: list[str] | None = None,
+        precomputed_duration: list[float] | None = None,
         n_qpus: int = 5,
         **transpilation_kwargs,
     ) -> float:

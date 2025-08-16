@@ -10,7 +10,6 @@ import time
 from collections.abc import Callable
 from enum import Enum
 from http import HTTPStatus
-from typing import Optional
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
@@ -66,7 +65,7 @@ class QoroService(CircuitRunner):
         polling_interval: float = 3.0,
         max_retries: int = 5000,
         shots: int = 1000,
-        use_circuit_packing: Optional[bool] = False,
+        use_circuit_packing: bool = False,
     ):
         super().__init__(shots=shots)
 
@@ -260,9 +259,9 @@ class QoroService(CircuitRunner):
         self,
         job_ids: str | list[str],
         loop_until_complete: bool = False,
-        on_complete: Optional[Callable] = None,
+        on_complete: Callable | None = None,
         verbose: bool = True,
-        pbar_update_fn: Optional[Callable] = None,
+        pbar_update_fn: Callable | None = None,
     ):
         """
         Get the status of a job and optionally execute function *on_complete* on the results

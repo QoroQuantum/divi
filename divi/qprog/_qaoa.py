@@ -6,7 +6,7 @@ import logging
 import re
 from enum import Enum
 from functools import reduce
-from typing import Literal, Optional, get_args
+from typing import Literal, get_args
 from warnings import warn
 
 import matplotlib.pyplot as plt
@@ -107,7 +107,7 @@ def _convert_quadratic_program_to_pennylane_ising(qp: QuadraticProgram):
 
 def _resolve_circuit_layers(
     initial_state, problem, graph_problem, **kwargs
-) -> tuple[qml.operation.Operator, qml.operation.Operator, Optional[dict], str]:
+) -> tuple[qml.operation.Operator, qml.operation.Operator, dict | None, str]:
     """
     Generates the cost and mixer hamiltonians for a given problem, in addition to
     optional metadata returned by Pennylane if applicable
@@ -153,7 +153,7 @@ class QAOA(QuantumProgram):
     def __init__(
         self,
         problem: GraphProblemTypes | QUBOProblemTypes,
-        graph_problem: Optional[GraphProblem] = None,
+        graph_problem: GraphProblem | None = None,
         n_layers: int = 1,
         initial_state: _SUPPORTED_INITIAL_STATES_LITERAL = "Recommended",
         optimizer: Optimizer = Optimizer.MONTE_CARLO,

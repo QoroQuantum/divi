@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from enum import Enum
+from warnings import warn
 
-import numpy as np
 import pennylane as qml
 import sympy as sp
 
@@ -45,10 +45,9 @@ class VQEAnsatz(Enum):
 class VQE(QuantumProgram):
     def __init__(
         self,
-        symbols,
-        bond_length: float,
-        coordinate_structure: list[tuple[float, float, float]],
-        charge: float = 0,
+        hamiltonian: qml.operation.Operator | None = None,
+        molecule: qml.qchem.Molecule | None = None,
+        n_electrons: int | None = None,
         n_layers: int = 1,
         ansatz=VQEAnsatz.HARTREE_FOCK,
         optimizer=Optimizer.MONTE_CARLO,
@@ -59,25 +58,16 @@ class VQE(QuantumProgram):
         Initialize the VQE problem.
 
         Args:
-            symbols (list): The symbols of the atoms in the molecule
-            bond_length (float): The bond length to consider
-            coordinate_structure (list): The coordinate structure of the molecule, represented in unit lengths
-            charge (float): the charge of the molecule. Defaults to 0.
+            hamiltonain (pennylane.operation.Operator, optional): A Hamiltonian representing the problem.
+            molecule (pennylane.qchem.Molecule, optional): The molecule representing the problem.
+            n_electrons (int, optional): Number of electrons associated with the Hamiltonian.
+                Only needs to be provided when a Hamiltonian is given.
             ansatz (VQEAnsatz): The ansatz to use for the VQE problem
             optimizer (Optimizers): The optimizer to use.
             max_iterations (int): Maximum number of iteration optimizers.
         """
 
         # Local Variables
-        self.symbols = symbols
-        self.coordinate_structure = coordinate_structure
-        self.bond_length = bond_length
-        self.charge = charge
-        if len(self.coordinate_structure) != len(self.symbols):
-            raise ValueError(
-                "The number of symbols must match the number of coordinates"
-            )
-
         self.n_layers = n_layers
         self.results = {}
         self.ansatz = ansatz
@@ -85,39 +75,58 @@ class VQE(QuantumProgram):
         self.max_iterations = max_iterations
         self.current_iteration = 0
 
-        self.cost_hamiltonian = self._generate_hamiltonian_operations()
+        self._process_problem_input(
+            hamiltonian=hamiltonian, molecule=molecule, n_electrons=n_electrons
+        )
 
         super().__init__(**kwargs)
 
         self._meta_circuits = self._create_meta_circuits_dict()
 
-    def _generate_hamiltonian_operations(self) -> qml.operation.Operator:
-        """
-        Generate the Hamiltonian operators for the given bond length.
-
-        Returns:
-            The Hamiltonian corresponding to the VQE problem.
-        """
-
-        coordinates = [
-            (
-                coord_0 * self.bond_length,
-                coord_1 * self.bond_length,
-                coord_2 * self.bond_length,
+    def _process_problem_input(self, hamiltonian, molecule, n_electrons):
+        if hamiltonian is None and molecule is None:
+            raise ValueError(
+                "Either one of `molecule` and `hamiltonian` must be provided."
             )
-            for (coord_0, coord_1, coord_2) in self.coordinate_structure
-        ]
 
-        coordinates = np.array(coordinates)
-        molecule = qml.qchem.Molecule(self.symbols, coordinates, charge=self.charge)
-        hamiltonian, qubits = qml.qchem.molecular_hamiltonian(molecule)
+        if hamiltonian is not None:
+            if not isinstance(n_electrons, int) or n_electrons < 0:
+                raise ValueError(
+                    f"`n_electrons` is expected to be a non-negative integer. Got {n_electrons}."
+                )
 
-        self.n_qubits = qubits
-        self.n_electrons = molecule.n_electrons
+            self.n_electrons = n_electrons
+            self.n_qubits = len(hamiltonian.wires)
+
+        if molecule is not None:
+            self.molecule = molecule
+            hamiltonian, self.n_qubits = qml.qchem.molecular_hamiltonian(molecule)
+            self.n_electrons = molecule.n_electrons
+
+            if (n_electrons is not None) and self.n_electrons != n_electrons:
+                warn(
+                    "`n_electrons` is provided but not consistent with the molecule's. "
+                    f"Got {n_electrons}, but molecule has {self.n_electrons}. "
+                    "The molecular value will be used.",
+                    UserWarning,
+                )
 
         self.n_params = self.ansatz.n_params(
             self.n_qubits, n_electrons=self.n_electrons
         )
+
+        self.cost_hamiltonian = self._clean_hamiltonian(hamiltonian)
+
+    def _clean_hamiltonian(
+        self, hamiltonian: qml.operation.Operator
+    ) -> qml.operation.Operator:
+        """
+        Extracts the scalar from the Hamiltonian, and stores it in
+        the `loss_constant` variable.
+
+        Returns:
+            The Hamiltonian without the scalar component.
+        """
 
         constant_terms_idx = list(
             filter(

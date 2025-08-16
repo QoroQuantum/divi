@@ -8,7 +8,7 @@ from collections.abc import Callable, Sequence, Set
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from functools import partial
-from typing import Literal, Optional
+from typing import Literal
 from warnings import warn
 
 import matplotlib.cm as cm
@@ -43,8 +43,8 @@ _MAXIMUM_AVAILABLE_QUBITS = 30
 
 @dataclass(frozen=True, eq=True)
 class PartitioningConfig:
-    max_n_nodes_per_cluster: Optional[int] = None
-    minimum_n_clusters: Optional[int] = None
+    max_n_nodes_per_cluster: int | None = None
+    minimum_n_clusters: int | None = None
     partitioning_algorithm: Literal["spectral", "metis", "kernighan_lin"] = "spectral"
 
     def __post_init__(self):

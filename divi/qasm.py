@@ -5,7 +5,6 @@
 import re
 from functools import partial
 from itertools import product
-from typing import Optional
 from warnings import warn
 
 import cirq
@@ -81,10 +80,10 @@ def to_openqasm(
     main_qscript,
     measurement_groups: list[list[qml.measurements.ExpectationMP]],
     measure_all: bool = True,
-    precision: Optional[int] = None,
+    precision: int | None = None,
     return_measurements_separately: bool = False,
     symbols: list[Symbol] = None,
-    qem_protocol: Optional[QEMProtocol] = None,
+    qem_protocol: QEMProtocol | None = None,
 ) -> list[str] | tuple[str, list[str]]:
     """
     Serialize the circuit as an OpenQASM 2.0 program.

@@ -4,7 +4,7 @@
 
 import string
 from functools import partial
-from typing import Optional, TypeVar
+from typing import TypeVar
 
 import dimod
 import hybrid
@@ -65,7 +65,7 @@ class QUBOPartitioningQAOA(ProgramBatch):
         decomposer: hybrid.traits.ProblemDecomposer,
         n_layers: int,
         backend: CircuitRunner,
-        composer: Optional[hybrid.traits.SubsamplesComposer] = hybrid.SplatComposer(),
+        composer: hybrid.traits.SubsamplesComposer = hybrid.SplatComposer(),
         optimizer=Optimizer.MONTE_CARLO,
         max_iterations=10,
         **kwargs,
@@ -79,9 +79,12 @@ class QUBOPartitioningQAOA(ProgramBatch):
             decomposer (hybrid.traits.ProblemDecomposer): The decomposer used to partition the QUBO problem into subproblems.
             n_layers (int): Number of QAOA layers to use for each subproblem.
             backend (CircuitRunner): Backend responsible for running quantum circuits.
-            composer (Optional[hybrid.traits.SubsamplesComposer], optional): Composer to aggregate subsamples from subproblems. Defaults to hybrid.SplatComposer().
-            optimizer (Optimizer, optional): Optimizer to use for QAOA. Defaults to Optimizer.MONTE_CARLO.
-            max_iterations (int, optional): Maximum number of optimization iterations. Defaults to 10.
+            composer (hybrid.traits.SubsamplesComposer, optional): Composer to aggregate subsamples from subproblems.
+                Defaults to hybrid.SplatComposer().
+            optimizer (Optimizer, optional): Optimizer to use for QAOA.
+                Defaults to Optimizer.MONTE_CARLO.
+            max_iterations (int, optional): Maximum number of optimization iterations.
+                Defaults to 10.
             **kwargs: Additional keyword arguments passed to the QAOA constructor.
 
         """
