@@ -6,6 +6,9 @@ Divi is designed to allow researchers, students, and enterprises to deploy quant
 
 ---
 
+> [!IMPORTANT]
+> Divi is under active development and in early stages. Users should expect frequent changes that are likely to be incompatable with previous published versions. 
+
 ## 🚀 Features
 
 - 🧠 **Smart Job Parallelization**: Automatically parallelizes your quantum programs based on task structure.
