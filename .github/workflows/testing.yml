@@ -1,6 +1,6 @@
 name: Unit Tests and Tutorial Scripts
 
-on: [push]
+on: [push, pull_request]
 
 jobs:
   setup:
