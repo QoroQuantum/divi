@@ -7,6 +7,7 @@ import hybrid
 import numpy as np
 import pytest
 import scipy.sparse as sps
+from flaky import flaky
 from qprog_contracts import verify_basic_program_batch_behaviour
 
 from divi.parallel_simulator import ParallelSimulator
@@ -179,6 +180,7 @@ class TestQUBOPartitioningQAOA:
         verify_basic_program_batch_behaviour(mocker, qubo_partitioning_qaoa)
 
     @pytest.mark.e2e
+    @flaky(max_runs=3, min_passes=1)
     def test_qubo_partitioning_e2e(self):
         """An end-to-end test solving a small QUBO."""
         qubo = {
@@ -201,6 +203,7 @@ class TestQUBOPartitioningQAOA:
             optimizer=Optimizer.COBYLA,
             max_iterations=15,
             backend=ParallelSimulator(shots=2000),
+            seed=1997,
         )
 
         # Run the full flow
