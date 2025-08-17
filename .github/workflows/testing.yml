@@ -1,6 +1,6 @@
 name: Unit Tests and Tutorial Scripts
 
-on: [push]
+on: [push, pull_request]
 
 jobs:
   build:
@@ -60,9 +60,11 @@ jobs:
       run: poetry run pytest -n auto
 
     - name: Make tutorial runner executable
+      if: github.event_name == 'pull_request'
       run: chmod +x ./.github/workflows/run_tutorials.sh
 
     # Make sure all tutorials work as expected
     # These also act as pseudo-E2E tests
     - name: Run tutorial scripts
+      if: github.event_name == 'pull_request'
       run: ./.github/workflows/run_tutorials.sh
