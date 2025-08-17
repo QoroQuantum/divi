@@ -1,6 +1,6 @@
 name: Unit Tests and Tutorial Scripts
 
-on: [push, pull_request]
+on: [push]
 
 jobs:
   setup:
@@ -61,7 +61,6 @@ jobs:
   tutorials:
     runs-on: ubuntu-22.04
     needs: [setup, tests]
-    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
 
