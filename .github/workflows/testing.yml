@@ -10,13 +10,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        id: setup-python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'poetry'   # built-in caching for Poetry deps
+      # Need to install poetry before setting up
+      # Python to ensure the cache works correctly
+      - name: Install poetry
+        run: pipx install poetry
 
+      - uses: actions/setup-python@v5
+        id: setup-python
+        with:
+          python-version: "3.11"
+          cache: 'poetry'
+
+      # Now install the needed version of Poetry
       - name: Install Poetry
         uses: snok/install-poetry@v1
         with:
@@ -35,6 +40,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install poetry
+        run: pipx install poetry
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -48,14 +56,17 @@ jobs:
           virtualenvs-in-project: true
 
       - name: Run tests
-        run: poetry run pytest -n auto --maxfail=5 --disable-warnings -q
+        run: poetry run pytest -n auto
 
   tutorials:
     runs-on: ubuntu-22.04
     needs: [setup, tests]
-    if: github.event_name == 'pull_request'  # ← Only runs for PRs
+    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install poetry
+        run: pipx install poetry
 
       - name: Set up Python
         uses: actions/setup-python@v5
