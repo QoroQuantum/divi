@@ -532,7 +532,7 @@ class TestQUBOInput:
             problem=quadratic_program,
             n_layers=2,
             optimizer=Optimizer.COBYLA,
-            max_iterations=10,
+            max_iterations=15,
             backend=default_test_simulator,
             seed=1997,
         )
