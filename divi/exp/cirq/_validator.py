@@ -637,7 +637,7 @@ def validate_qasm_raise(src: str) -> None:
     Parser(toks).parse()
 
 
-def validate_qasm(src: str) -> bool:
+def is_valid_qasm(src: str) -> bool:
     try:
         validate_qasm_raise(src)
         return True

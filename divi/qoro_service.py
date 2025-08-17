@@ -14,6 +14,7 @@ from http import HTTPStatus
 import requests
 from requests.adapters import HTTPAdapter, Retry
 
+from divi.exp.cirq import is_valid_qasm
 from divi.interfaces import CircuitRunner
 
 API_URL = "https://app.qoroquantum.net/api"
@@ -118,6 +119,10 @@ class QoroService(CircuitRunner):
 
         if job_type == JobType.CIRCUIT_CUT and len(circuits) > 1:
             raise ValueError("Only one circuit allowed for circuit-cutting jobs.")
+
+        for key, circuit in circuits.items():
+            if not is_valid_qasm(circuit):
+                raise ValueError(f"Circuit {key} is not a valid QASM string.")
 
         def _compress_data(value) -> bytes:
             return base64.b64encode(gzip.compress(value.encode("utf-8"))).decode(

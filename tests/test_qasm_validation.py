@@ -4,7 +4,7 @@
 
 import pytest
 
-from divi.exp.cirq import validate_qasm
+from divi.exp.cirq import is_valid_qasm
 
 VALID_QASM = [
     # Simple circuit
@@ -125,10 +125,10 @@ INVALID_QASM = [
 @pytest.mark.parametrize("qasm", VALID_QASM)
 def test_validate_qasm_valid(qasm):
     """Test that valid QASM strings pass validation."""
-    assert validate_qasm(qasm)
+    assert is_valid_qasm(qasm)
 
 
 @pytest.mark.parametrize("qasm", INVALID_QASM)
 def test_validate_qasm_invalid(qasm):
     """Test that invalid QASM strings raise a SyntaxError."""
-    assert not validate_qasm(qasm)
+    assert not is_valid_qasm(qasm)
