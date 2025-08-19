@@ -7,7 +7,7 @@ Divi is designed to allow researchers, students, and enterprises to deploy quant
 ---
 
 > [!IMPORTANT]
-> Divi is under active development and in early stages. Users should expect frequent changes that are likely to be incompatable with previously published versions.
+> Divi is under active development and in early stages. Users should expect frequent changes that are likely to be incompatible with previously published versions.
 
 ## 🚀 Features
 

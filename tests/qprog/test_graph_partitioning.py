@@ -22,7 +22,7 @@ from divi.qprog._graph_partitioning import (
     _bisect_with_predicate,
     _node_partition_graph,
     _split_graph,
-    domninance_aggregation,
+    dominance_aggregation,
     linear_aggregation,
 )
 
@@ -419,7 +419,7 @@ class TestAggregationFunctions:
         # for this specific order is calculated as follows.
         expected = [1, 1, 0, 0, 1]
 
-        result = domninance_aggregation(main_solution, subproblem_solution, reverse_map)
+        result = dominance_aggregation(main_solution, subproblem_solution, reverse_map)
         assert result == expected
 
 

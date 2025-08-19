@@ -365,7 +365,7 @@ def linear_aggregation(
     return curr_solution
 
 
-def domninance_aggregation(
+def dominance_aggregation(
     curr_solution: Sequence[Literal[0] | Literal[1]],
     subproblem_solution: Set[int],
     subproblem_reverse_index_map: dict[int, int],

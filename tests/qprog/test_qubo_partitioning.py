@@ -12,7 +12,7 @@ from qprog_contracts import verify_basic_program_batch_behaviour
 
 from divi.parallel_simulator import ParallelSimulator
 from divi.qprog import QAOA, Optimizer
-from divi.qprog._qubo_partitoning import (
+from divi.qprog._qubo_partitioning import (
     QUBOPartitioningQAOA,
     _sanitize_problem_input,
 )

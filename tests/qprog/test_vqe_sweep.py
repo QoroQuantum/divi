@@ -372,46 +372,6 @@ class TestVQEHyperparameterSweep:
         expected_y_uccsd = [-9.0, -10.0, -11.0]
         # Expected data for RY (ansatz_idx=1)
         expected_x_ry = [0.9, 1.0, 1.1]
-        expected_y_ry = [-9.1, -10.1, -11.1]
-
-        # Construct expected calls
-        call_uccsd = mocker.call(
-            expected_x_uccsd, expected_y_uccsd, label=VQEAnsatz.UCCSD
-        )
-        call_ry = mocker.call(expected_x_ry, expected_y_ry, label=VQEAnsatz.RY)
-
-        mock_plot.assert_has_calls([call_uccsd, call_ry], any_order=True)
-
-    def test_visualize_results_line_plot_data(self, mocker, vqe_sweep):
-        """Test that the line plot visualization is called with the correct data."""
-        mocker.patch("divi.qprog.VQE")
-        mock_plot = mocker.patch("matplotlib.pyplot.plot")
-        mocker.patch("matplotlib.pyplot.show")
-        mocker.patch("matplotlib.pyplot.legend")
-        mocker.patch("matplotlib.pyplot.xlabel")
-        mocker.patch("matplotlib.pyplot.ylabel")
-
-        # Setup mock programs with predictable energy values
-        # Energy = -(modifier * 10 + ansatz_index)
-        mock_programs = {}
-        for ansatz_idx, ansatz in enumerate(vqe_sweep.ansatze):
-            for modifier in vqe_sweep.molecule_transformer.bond_modifiers:
-                mock_program = mocker.MagicMock()
-                mock_program.losses = [{0: -(modifier * 10 + ansatz_idx)}]
-                mock_programs[(ansatz, modifier)] = mock_program
-        vqe_sweep.programs = mock_programs
-
-        vqe_sweep.visualize_results(graph_type="line")
-
-        # Check that plot was called for each ansatz
-        assert mock_plot.call_count == len(vqe_sweep.ansatze)
-
-        # Expected data for UCCSD (ansatz_idx=0)
-        expected_x_uccsd = [0.9, 1.0, 1.1]
-        expected_y_uccsd = [-9.0, -10.0, -11.0]
-        # Expected data for RY (ansatz_idx=1)
-        expected_x_ry = [0.9, 1.0, 1.1]
-        # Corrected expected Y values based on the mock data generation formula
         expected_y_ry = [-10.0, -11.0, -12.0]
 
         # Construct expected calls

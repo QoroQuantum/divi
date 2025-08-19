@@ -75,7 +75,9 @@ def _cartesian_to_zmatrix(
 ) -> list[_ZMatrixEntry]:
     num_atoms = len(coords)
     if num_atoms == 0:
-        return []
+        raise ValueError(
+            "Cannot convert empty coordinate array to Z-matrix: molecule must have at least one atom."
+        )
 
     adj = [[] for _ in range(num_atoms)]
     for i, j in connectivity:
@@ -362,7 +364,7 @@ class MoleculeTransformer:
         z_matrix = _cartesian_to_zmatrix(original_coords, self.atom_connectivity)
 
         for value in self.bond_modifiers:
-            if value == 0 and mode == "delta" or value == 1 and mode == "scale":
+            if (value == 0 and mode == "delta") or (value == 1 and mode == "scale"):
                 transformed_coords = original_coords.copy()
             else:
                 transformed_z_matrix = _transform_bonds(
