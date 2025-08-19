@@ -6,6 +6,9 @@ Divi is designed to allow researchers, students, and enterprises to deploy quant
 
 ---
 
+> [!IMPORTANT]
+> Divi is under active development and in early stages. Users should expect frequent changes that are likely to be incompatible with previously published versions.
+
 ## 🚀 Features
 
 - 🧠 **Smart Job Parallelization**: Automatically parallelizes your quantum programs based on task structure.
@@ -17,9 +20,12 @@ Divi is designed to allow researchers, students, and enterprises to deploy quant
 
 ## 📦 Installation
 
-[TODO]
+Divi can be easily installed from Pypi
+
+```bash
+pip install qoro-divi
+```
 
 ## 📚 Documentation
 
-Full documentation is available at: https://docs.qoroquantum.net/divi
-
+Full documentation is available at: <https://docs.qoroquantum.net/divi>

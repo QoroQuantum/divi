@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+#
+# SPDX-License-Identifier: Apache-2.0
+
 import base64
 import gzip
 import json
@@ -6,11 +10,12 @@ import time
 from collections.abc import Callable
 from enum import Enum
 from http import HTTPStatus
-from typing import List, Optional
+from typing import Optional
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
 
+from divi.exp.cirq import is_valid_qasm
 from divi.interfaces import CircuitRunner
 from divi.qpu_system import QPUSystem, parse_qpu_systems
 
@@ -39,7 +44,7 @@ class JobStatus(Enum):
     CANCELLED = "CANCELLED"
 
 
-class JobTypes(Enum):
+class JobType(Enum):
     EXECUTE = "EXECUTE"
     SIMULATE = "SIMULATE"
     ESTIMATE = "ESTIMATE"
@@ -64,6 +69,7 @@ class QoroService(CircuitRunner):
         max_retries: int = 5000,
         shots: int = 1000,
         qpu_system_name: Optional[str | QPUSystem] = None,
+        use_circuit_packing: bool = False,
     ):
         super().__init__(shots=shots)
 
@@ -71,6 +77,7 @@ class QoroService(CircuitRunner):
         self.polling_interval = polling_interval
         self.max_retries = max_retries
         self._qpu_system_name = qpu_system_name
+        self.use_circuit_packing = use_circuit_packing
 
     @property
     def qpu_system_name(self) -> Optional[str | QPUSystem]:
@@ -110,23 +117,38 @@ class QoroService(CircuitRunner):
         self,
         circuits: dict[str, str],
         tag: str = "default",
-        job_type: JobTypes = JobTypes.SIMULATE,
+        job_type: JobType = JobType.SIMULATE,
         qpu_system_name: Optional[str] = None,
+        override_circuit_packing: bool | None = None,
     ):
         """
-        Send circuits to the Qoro API for execution
+        Submit quantum circuits to the Qoro API for execution.
 
         Args:
-            circuits (dict): dict of ids to qasm circuits to be sent
-            tag (optional): tag to be used for the job, defaults to "default"
-            job_type (JobType): nature of job. Defaults to JobType.SIMULATE
+            circuits (dict[str, str]):
+                Dictionary mapping unique circuit IDs to QASM circuit strings.
+            tag (str, optional):
+                Tag to associate with the job for identification. Defaults to "default".
+            job_type (JobType, optional):
+                Type of job to execute (e.g., SIMULATE, EXECUTE, ESTIMATE, CIRCUIT_CUT). Defaults to JobType.SIMULATE.
+            use_packing (bool):
+                Whether to use circuit packing optimization. Defaults to False.
+
+        Raises:
+            ValueError: If more than one circuit is submitted for a CIRCUIT_CUT job.
 
         Returns:
-            job_id: The job id of the job created
+            str or list[str]:
+                The job ID(s) of the created job(s). Returns a single job ID if only one job is created,
+                otherwise returns a list of job IDs if the circuits are split into multiple jobs due to payload size.
         """
 
-        if job_type == JobTypes.CIRCUIT_CUT and len(circuits) > 1:
+        if job_type == JobType.CIRCUIT_CUT and len(circuits) > 1:
             raise ValueError("Only one circuit allowed for circuit-cutting jobs.")
+
+        for key, circuit in circuits.items():
+            if not is_valid_qasm(circuit):
+                raise ValueError(f"Circuit {key} is not a valid QASM string.")
 
         def _compress_data(value) -> bytes:
             return base64.b64encode(gzip.compress(value.encode("utf-8"))).decode(
@@ -189,6 +211,11 @@ class QoroService(CircuitRunner):
                         if self.qpu_system_name is not None
                         else qpu_system_name
                     ),
+                    "use_packing": (
+                        override_circuit_packing
+                        if override_circuit_packing is not None
+                        else self.use_circuit_packing
+                    ),
                 },
                 timeout=100,
             )
@@ -202,7 +229,7 @@ class QoroService(CircuitRunner):
 
         return job_ids if len(job_ids) > 1 else job_ids[0]
 
-    def qpu_systems(self) -> List[QPUSystem]:
+    def qpu_systems(self) -> list[QPUSystem]:
         """
         Get the list of available QPU systems from the Qoro API.
 
@@ -289,9 +316,9 @@ class QoroService(CircuitRunner):
         self,
         job_ids: str | list[str],
         loop_until_complete: bool = False,
-        on_complete: Optional[Callable] = None,
+        on_complete: Callable | None = None,
         verbose: bool = True,
-        pbar_update_fn: Optional[Callable] = None,
+        pbar_update_fn: Callable | None = None,
     ):
         """
         Get the status of a job and optionally execute function *on_complete* on the results
@@ -357,7 +384,7 @@ class QoroService(CircuitRunner):
                         pbar_update_fn(retries)
                     else:
                         logger.info(
-                            f"\cPolling {retries} / {self.max_retries} retries\r"
+                            rf"\cPolling {retries} / {self.max_retries} retries\r"
                         )
 
             if completed and on_complete:

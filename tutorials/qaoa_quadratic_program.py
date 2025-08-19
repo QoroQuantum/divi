@@ -1,10 +1,14 @@
+# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+#
+# SPDX-License-Identifier: Apache-2.0
+
 from qiskit_algorithms import NumPyMinimumEigensolver
 from qiskit_optimization import QuadraticProgram
 from qiskit_optimization.algorithms import MinimumEigenOptimizer
 
 from divi.parallel_simulator import ParallelSimulator
 from divi.qprog import QAOA
-from divi.qprog.optimizers import Optimizers
+from divi.qprog.optimizers import Optimizer
 
 if __name__ == "__main__":
     qp = QuadraticProgram()
@@ -18,7 +22,7 @@ if __name__ == "__main__":
     qaoa_problem = QAOA(
         qp,
         n_layers=2,
-        optimizer=Optimizers.NELDER_MEAD,
+        optimizer=Optimizer.COBYLA,
         max_iterations=10,
         backend=ParallelSimulator(shots=10000),
     )

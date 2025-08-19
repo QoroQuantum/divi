@@ -1,20 +1,24 @@
+# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+#
+# SPDX-License-Identifier: Apache-2.0
+
 import logging
 import pickle
 from abc import ABC, abstractmethod
 from functools import partial
 from queue import Queue
-from typing import Optional
 
 import numpy as np
-from qiskit.result import marginal_counts, sampled_expectation_value
+from pennylane.measurements import ExpectationMP
 from scipy.optimize import OptimizeResult, minimize
 
 from divi import QoroService
 from divi.circuits import Circuit, MetaCircuit
+from divi.exp.scipy._cobyla import _minimize_cobyla as cobyla_fn
 from divi.interfaces import CircuitRunner
 from divi.qem import _NoMitigation
 from divi.qoro_service import JobStatus
-from divi.qprog.optimizers import Optimizers
+from divi.qprog.optimizers import Optimizer
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +27,8 @@ class QuantumProgram(ABC):
     def __init__(
         self,
         backend: CircuitRunner,
-        seed: Optional[int] = None,
-        progress_queue: Optional[Queue] = None,
+        seed: int | None = None,
+        progress_queue: Queue | None = None,
         **kwargs,
     ):
         """
@@ -47,14 +51,14 @@ class QuantumProgram(ABC):
             progress_queue (Queue): a queue for progress bar updates.
 
             **kwargs: Additional keyword arguments that influence behaviour.
-                - grouping_strategy (Optional[Any]): A strategy for grouping operations, used in Pennylane's transforms.
+                - grouping_strategy (Literal["default", "wires", "qwc"]): A strategy for grouping operations, used in Pennylane's transforms.
                     Defaults to None.
-                - qem_protocol (Optional[QEMProtocol]): the quantum error mitigation protocol to apply.
+                - qem_protocol (QEMProtocol, optional): the quantum error mitigation protocol to apply.
                     Must be of type QEMProtocol. Defaults to None.
 
                 The following key values are reserved for internal use and should not be set by the user:
-                - losses (Optional[list]): A list to initialize the `losses` attribute. Defaults to an empty list.
-                - final_params (Optional[list]): A list to initialize the `final_params` attribute. Defaults to an empty list.
+                - losses (list, optional): A list to initialize the `losses` attribute. Defaults to an empty list.
+                - final_params (list, optional): A list to initialize the `final_params` attribute. Defaults to an empty list.
 
         """
 
@@ -259,9 +263,9 @@ class QuantumProgram(ABC):
                 curr_marginal_results = []
                 for observable in curr_measurement_group:
                     intermediate_exp_values = [
-                        sampled_expectation_value(
-                            marginal_counts(shots_dict, observable.wires.tolist()),
-                            "Z" * len(observable.wires),
+                        ExpectationMP(observable).process_counts(
+                            shots_dict,
+                            tuple(reversed(range(len(next(iter(shots_dict.keys())))))),
                         )
                         for shots_dict in group_results.values()
                     ]
@@ -308,7 +312,7 @@ class QuantumProgram(ABC):
         else:
             logger.info("Finished Setup")
 
-        if self.optimizer == Optimizers.MONTE_CARLO:
+        if self.optimizer == Optimizer.MONTE_CARLO:
             while self.current_iteration < self.max_iterations:
 
                 self._update_mc_params()
@@ -342,7 +346,11 @@ class QuantumProgram(ABC):
 
             self.final_params[:] = np.atleast_2d(self._curr_params)
 
-        elif self.optimizer in (Optimizers.NELDER_MEAD, Optimizers.L_BFGS_B):
+        elif self.optimizer in (
+            Optimizer.NELDER_MEAD,
+            Optimizer.L_BFGS_B,
+            Optimizer.COBYLA,
+        ):
 
             def cost_fn(params):
                 task_name = "💸 Computing Cost 💸"
@@ -415,21 +423,36 @@ class QuantumProgram(ABC):
                 else:
                     logger.info(f"Finished Iteration #{self.current_iteration}\r\n")
 
+                if (
+                    self.optimizer == Optimizer.COBYLA
+                    and intermediate_result.nit + 1 == self.max_iterations
+                ):
+                    raise StopIteration
+
+            if self.max_iterations is None or self.optimizer == Optimizer.COBYLA:
+                # COBYLA perceive maxiter as maxfev so we need
+                # to use the callback fn for counting instead.
+                maxiter = None
+            else:
+                # Need to add one more iteration for Nelder-Mead's simplex initialization step
+                maxiter = (
+                    self.max_iterations + 1
+                    if self.optimizer == Optimizer.NELDER_MEAD
+                    else self.max_iterations
+                )
+
             self._initialize_params()
             self._minimize_res = minimize(
                 fun=cost_fn,
                 x0=self._curr_params[0],
-                method=self.optimizer.value,
-                jac=grad_fn if self.optimizer == Optimizers.L_BFGS_B else None,
+                method=(
+                    cobyla_fn
+                    if self.optimizer == Optimizer.COBYLA
+                    else self.optimizer.value
+                ),
+                jac=grad_fn if self.optimizer == Optimizer.L_BFGS_B else None,
                 callback=_iteration_counter,
-                options={
-                    "maxiter": (
-                        # Need to add one more iteration for Nelder-Mead's simplex initialization step
-                        self.max_iterations + 1
-                        if self.optimizer == Optimizers.NELDER_MEAD
-                        else self.max_iterations
-                    )
-                },
+                options={"maxiter": maxiter},
             )
 
         if self._progress_queue:

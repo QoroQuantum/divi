@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+#
+# SPDX-License-Identifier: Apache-2.0
+
 import logging
 import shutil
 import sys
@@ -41,21 +45,21 @@ class OverwriteStreamHandler(logging.StreamHandler):
     def emit(self, record):
         msg = self.format(record)
 
-        if record.message.startswith("\c"):
-            sep = "\c"
-            msg = f"{msg.split(sep)[0]}{self._last_record} [{record.message[2:-1]}]\r"
+        if record.message.startswith(r"\c"):
+            sep = r"\c"
+            msg = f"{msg.split(sep)[0]}{self._last_record} [{record.message[2:-2]}]\r"
 
         if msg.endswith("\r\n"):
             overwrite_and_newline = True
             clean_msg = msg[:-2]
 
             if not record.message.startswith("\c"):
-                self._last_record = record.message[:-1]
+                self._last_record = record.message[:-2]
         elif msg.endswith("\r"):
             overwrite_and_newline = False
             clean_msg = msg[:-1]
 
-            if not record.message.startswith("\c"):
+            if not record.message.startswith(r"\c"):
                 self._last_record = record.message[:-1]
         else:
             # Normal message - no overwriting
@@ -72,7 +76,9 @@ class OverwriteStreamHandler(logging.StreamHandler):
                     len(self._last_message) + self._emoji_buffer,
                     shutil.get_terminal_size().columns,
                 )
+
             self.stream.write("\r" + " " * clear_length + "\r")
+            self.stream.flush()
 
         # Write message with appropriate ending
         if overwrite_and_newline:

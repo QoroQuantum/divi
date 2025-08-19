@@ -1,11 +1,15 @@
+# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+#
+# SPDX-License-Identifier: Apache-2.0
+
 import random
 import warnings
 
 import networkx as nx
 
 from divi.parallel_simulator import ParallelSimulator
-from divi.qprog import GraphPartitioningQAOA, GraphProblem
-from divi.qprog.optimizers import Optimizers
+from divi.qprog import GraphPartitioningQAOA, GraphProblem, PartitioningConfig
+from divi.qprog.optimizers import Optimizer
 
 
 def generate_random_graph(n_nodes: int, n_edges: int) -> nx.Graph:
@@ -60,29 +64,30 @@ def analyze_results(quantum_solution, classical_cut_size):
 
 
 if __name__ == "__main__":
-    N_NODES = 15
-    N_EDGES = 20
+    N_NODES = 30
+    N_EDGES = 40
 
     graph = generate_random_graph(N_NODES, N_EDGES)
-
-    classical_cut_size, classical_partition = nx.approximation.one_exchange(
-        graph, seed=1
-    )
 
     qaoa_batch = GraphPartitioningQAOA(
         graph_problem=GraphProblem.MAXCUT,
         graph=graph,
         n_layers=1,
-        n_clusters=2,
-        optimizer=Optimizers.NELDER_MEAD,
+        partitioning_config=PartitioningConfig(
+            max_n_nodes_per_cluster=10,
+            partitioning_algorithm="metis",
+        ),
+        optimizer=Optimizer.NELDER_MEAD,
         max_iterations=20,
         backend=ParallelSimulator(),
     )
 
     qaoa_batch.create_programs()
-    qaoa_batch.run()
-    qaoa_batch.compute_final_solutions()
+    qaoa_batch.run(blocking=True)
     quantum_solution = qaoa_batch.aggregate_results()
 
+    classical_cut_size, classical_partition = nx.approximation.one_exchange(
+        graph, seed=1
+    )
     print(f"Total circuits: {qaoa_batch.total_circuit_count}")
     analyze_results(quantum_solution, classical_cut_size)

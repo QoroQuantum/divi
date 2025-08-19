@@ -1,17 +1,26 @@
+# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+#
+# SPDX-License-Identifier: Apache-2.0
+
 import time
+
+import numpy as np
+import pennylane as qml
 
 from divi.parallel_simulator import ParallelSimulator
 from divi.qprog import VQE, VQEAnsatz
-from divi.qprog.optimizers import Optimizers
+from divi.qprog.optimizers import Optimizer
 
 if __name__ == "__main__":
+    mol = qml.qchem.Molecule(
+        symbols=["H", "H"], coordinates=np.array([(0, 0, 0), (0, 0, 0.5)])
+    )
+
     vqe_problem = VQE(
-        symbols=["H", "H"],
-        coordinate_structure=[(0, 0, 0), (0, 0, 1)],
-        bond_length=0.5,
+        molecule=mol,
         ansatz=VQEAnsatz.HARTREE_FOCK,
         n_layers=1,
-        optimizer=Optimizers.L_BFGS_B,
+        optimizer=Optimizer.L_BFGS_B,
         max_iterations=3,
         backend=ParallelSimulator(),
     )

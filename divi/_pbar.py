@@ -1,4 +1,6 @@
-from typing import Optional
+# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+#
+# SPDX-License-Identifier: Apache-2.0
 
 from rich.progress import (
     BarColumn,
@@ -54,7 +56,7 @@ class PhaseStatusColumn(ProgressColumn):
 
 
 def make_progress_bar(
-    max_retries: Optional[int] = None, is_jupyter: bool = False
+    max_retries: int | None = None, is_jupyter: bool = False
 ) -> Progress:
     return Progress(
         TextColumn("[bold blue]{task.fields[job_name]}"),

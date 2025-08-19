@@ -1,10 +1,15 @@
+# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+#
+# SPDX-License-Identifier: Apache-2.0
+
 from enum import Enum
 
 import numpy as np
 
 
-class Optimizers(Enum):
+class Optimizer(Enum):
     NELDER_MEAD = "Nelder-Mead"
+    COBYLA = "COBYLA"
     MONTE_CARLO = "Monte Carlo"
     L_BFGS_B = "L-BFGS-B"
 
@@ -13,19 +18,19 @@ class Optimizers(Enum):
 
     @property
     def n_param_sets(self):
-        if self in (Optimizers.NELDER_MEAD, Optimizers.L_BFGS_B):
+        if self in (Optimizer.NELDER_MEAD, Optimizer.L_BFGS_B, Optimizer.COBYLA):
             return 1
-        elif self == Optimizers.MONTE_CARLO:
+        elif self == Optimizer.MONTE_CARLO:
             return 10
 
     @property
     def n_samples(self):
-        if self == Optimizers.MONTE_CARLO:
+        if self == Optimizer.MONTE_CARLO:
             return 10
         return 1
 
     def compute_new_parameters(self, params, iteration, **kwargs):
-        if self != Optimizers.MONTE_CARLO:
+        if self != Optimizer.MONTE_CARLO:
             raise NotImplementedError
 
         rng = kwargs.pop("rng", np.random.default_rng())
@@ -53,7 +58,7 @@ class Optimizers(Enum):
         return np.array(new_params)
 
     def compute_parameter_shift_mask(self, n_params):
-        if self != Optimizers.L_BFGS_B:
+        if self != Optimizer.L_BFGS_B:
             raise NotImplementedError
 
         mask_arr = np.arange(0, 2 * n_params, 2)

@@ -1,19 +1,15 @@
+# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+#
+# SPDX-License-Identifier: Apache-2.0
+
 from functools import partial
 
+import dimod
 import numpy as np
 
 from divi.parallel_simulator import ParallelSimulator
 from divi.qprog import QAOA
-from divi.qprog.optimizers import Optimizers
-
-try:
-    import dimod
-except ImportError:
-    raise ImportError(
-        "This tutorial requires the 'dimod' package. "
-        "Please install it with:\n"
-        "    pip install dimod"
-    )
+from divi.qprog.optimizers import Optimizer
 
 if __name__ == "__main__":
     bqm = dimod.generators.gnp_random_bqm(
@@ -28,7 +24,7 @@ if __name__ == "__main__":
     qaoa_problem = QAOA(
         problem=qubo_array,
         n_layers=2,
-        optimizer=Optimizers.NELDER_MEAD,
+        optimizer=Optimizer.COBYLA,
         max_iterations=10,
         backend=ParallelSimulator(shots=10000),
     )

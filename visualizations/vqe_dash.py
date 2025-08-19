@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+#
+# SPDX-License-Identifier: Apache-2.0
+
 import dash_bootstrap_components as dbc
 import numpy as np
 import plotly.graph_objects as go
@@ -6,7 +10,7 @@ from dash.exceptions import PreventUpdate
 from qiskit_ibm_runtime.fake_provider import FakeQuitoV2
 
 from divi.parallel_simulator import ParallelSimulator
-from divi.qprog import Optimizers, VQEAnsatz, VQEHyperparameterSweep
+from divi.qprog import Optimizer, VQEAnsatz, VQEHyperparameterSweep
 
 app = Dash(external_stylesheets=[dbc.themes.BOOTSTRAP])
 
@@ -79,7 +83,7 @@ app.layout = html.Div(
 )
 
 BOND_LENGTHS = np.linspace(0.1, 2.7, 4)
-OPTIMIZER = Optimizers.NELDER_MEAD
+OPTIMIZER = Optimizer.NELDER_MEAD
 MAX_ITERATIONS = 5
 
 # backend = QoroService("71ec99c9c94cf37499a2b725244beac1f51b8ee4", shots=500)
@@ -139,8 +143,7 @@ def run_vqe(noiseless_clicks, noisy_clicks, zne_clicks):
     run_time_fig = go.Figure()
 
     problem.create_programs()
-    problem.run()
-    problem.wait_for_all()
+    problem.run(blocking=True)
 
     for ansatz in problem.ansatze:
         ys = []

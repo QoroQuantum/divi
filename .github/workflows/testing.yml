@@ -3,66 +3,81 @@ name: Unit Tests and Tutorial Scripts
 on: [push]
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  setup:
+    runs-on: ubuntu-22.04   # Pin the runner to avoid sudden breakage
+    outputs:
+      python-version: ${{ steps.setup-python.outputs.python-version }}
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Set up Python 3.11
-      uses: actions/setup-python@v5
-      id: setup-python
-      with:
-        python-version: 3.11
+      # Need to install poetry before setting up
+      # Python to ensure the cache works correctly
+      - name: Install poetry
+        run: pipx install poetry
 
-    - name: Load cached Poetry installation
-      id: cached-poetry
-      uses: actions/cache@v4
-      with:
-          path: ~/.local  # the path depends on the OS
-          key: poetry-3  # increment to reset cache
+      - uses: actions/setup-python@v5
+        id: setup-python
+        with:
+          python-version: "3.11"
+          cache: 'poetry'
 
-    - name: Install Poetry
-      if: steps.cached-poetry.outputs.cache-hit != 'true'
-      uses: snok/install-poetry@v1
-      with:
-        version: 1.8.5
-        virtualenvs-create: true
-        virtualenvs-in-project: true
-        virtualenvs-path: .venv
-        installer-parallel: true
+      # Now install the needed version of Poetry
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: 1.8.5
+          virtualenvs-create: true
+          virtualenvs-in-project: true
 
-    - name: Configure poetry
-      if: steps.cached-poetry.outputs.cache-hit == 'true'
-      run: |
-        poetry config virtualenvs.in-project true
-        poetry config virtualenvs.in-project true
-        poetry config virtualenvs.path .venv
-        poetry config installer.parallel true
+      - name: Install dependencies
+        run: |
+          poetry install --no-interaction --no-root --without dev,ui,docs
+          poetry install --no-interaction --only-root
 
-    - name: Load cached venv
-      id: cached-poetry-dependencies
-      uses: actions/cache@v4
-      with:
-        path: .venv
-        key: venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/poetry.lock') }}
+  tests:
+    runs-on: ubuntu-22.04
+    needs: setup
+    steps:
+      - uses: actions/checkout@v4
 
-    - name: Install dependencies
-      if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
-      run: poetry install --no-interaction --no-root --without dev,ui,docs
+      - name: Install poetry
+        run: pipx install poetry
 
-    - name: Install library
-      run: poetry install --no-interaction --only-root
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ needs.setup.outputs.python-version }}
+          cache: 'poetry'
 
-    - name: Freeze dependencies
-      run: poetry run pip freeze
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: 1.8.5
+          virtualenvs-in-project: true
 
-    - name: Run tests
-      run: poetry run pytest
+      - name: Run tests
+        run: poetry run pytest -n auto
 
-    - name: Make tutorial runner executable
-      run: chmod +x ./.github/workflows/run_tutorials.sh
+  tutorials:
+    runs-on: ubuntu-22.04
+    needs: [setup, tests]
+    steps:
+      - uses: actions/checkout@v4
 
-    # Make sure all tutorials work as expected
-    # These also act as pseudo-E2E tests
-    - name: Run tutorial scripts
-      run: ./.github/workflows/run_tutorials.sh
+      - name: Install poetry
+        run: pipx install poetry
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ needs.setup.outputs.python-version }}
+          cache: 'poetry'
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: 1.8.5
+          virtualenvs-in-project: true
+
+      - name: Run tutorial scripts
+        run: ./.github/workflows/run_tutorials.sh
