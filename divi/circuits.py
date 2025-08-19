@@ -5,7 +5,7 @@
 import re
 from copy import deepcopy
 from itertools import product
-from typing import Literal, Optional
+from typing import Literal
 
 import dill
 import pennylane as qml
@@ -66,8 +66,8 @@ class MetaCircuit:
         self,
         main_circuit,
         symbols,
-        grouping_strategy: Optional[Literal["wires", "default", "qwc"]] = None,
-        qem_protocol: Optional[QEMProtocol] = None,
+        grouping_strategy: Literal["wires", "default", "qwc"] | None = None,
+        qem_protocol: QEMProtocol | None = None,
     ):
         self.main_circuit = main_circuit
         self.symbols = symbols

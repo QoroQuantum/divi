@@ -500,7 +500,7 @@ class TestQUBOInput:
         self, quadratic_program, default_test_simulator
     ):
         quadratic_program.integer_var(lowerbound=0, upperbound=3, name="w")
-        quadratic_program.minimize(linear={"x": -1, "y": -2, "z": 3, "w": -1})
+        quadratic_program.minimize(linear={"x": 1, "y": -2, "z": 3, "w": -1})
 
         qaoa_problem = QAOA(
             problem=quadratic_program,
@@ -514,7 +514,7 @@ class TestQUBOInput:
         qaoa_problem.compute_final_solution()
 
         np.testing.assert_equal(
-            qaoa_problem._qp_converter.interpret(qaoa_problem.solution), [1, 1, 0, 3]
+            qaoa_problem._qp_converter.interpret(qaoa_problem.solution), [0, 1, 0, 3]
         )
 
     @pytest.mark.e2e
@@ -524,7 +524,7 @@ class TestQUBOInput:
         self, quadratic_program, default_test_simulator
     ):
         quadratic_program.integer_var(lowerbound=0, upperbound=3, name="w")
-        quadratic_program.maximize(linear={"x": -1, "y": -2, "z": 3, "w": -1})
+        quadratic_program.maximize(linear={"x": 1, "y": -2, "z": 3, "w": -1})
 
         default_test_simulator.set_seed = 1997
 
@@ -532,7 +532,7 @@ class TestQUBOInput:
             problem=quadratic_program,
             n_layers=2,
             optimizer=Optimizer.COBYLA,
-            max_iterations=10,
+            max_iterations=15,
             backend=default_test_simulator,
             seed=1997,
         )
@@ -541,7 +541,7 @@ class TestQUBOInput:
         qaoa_problem.compute_final_solution()
 
         np.testing.assert_equal(
-            qaoa_problem._qp_converter.interpret(qaoa_problem.solution), [0, 0, 1, 0]
+            qaoa_problem._qp_converter.interpret(qaoa_problem.solution), [1, 0, 1, 0]
         )
 
         default_test_simulator.set_seed = None

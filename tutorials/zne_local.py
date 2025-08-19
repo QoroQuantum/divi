@@ -4,6 +4,8 @@
 
 from functools import partial
 
+import numpy as np
+import pennylane as qml
 from mitiq.zne.inference import RichardsonFactory
 from mitiq.zne.scaling import fold_gates_at_random
 
@@ -13,10 +15,12 @@ from divi.qprog import VQE, VQEAnsatz
 from divi.qprog.optimizers import Optimizer
 
 if __name__ == "__main__":
+    mol = qml.qchem.Molecule(
+        symbols=["H", "H"], coordinates=np.array([(0, 0, 0), (0, 0, 0.5)])
+    )
+
     args = dict(
-        symbols=["H", "H"],
-        bond_length=0.5,
-        coordinate_structure=[(0, 0, 0), (0, 0, 1)],
+        molecule=mol,
         n_layers=1,
         ansatz=VQEAnsatz.HARTREE_FOCK,
         optimizer=Optimizer.NELDER_MEAD,

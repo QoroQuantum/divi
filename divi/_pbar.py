@@ -2,8 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import Optional
-
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
@@ -58,7 +56,7 @@ class PhaseStatusColumn(ProgressColumn):
 
 
 def make_progress_bar(
-    max_retries: Optional[int] = None, is_jupyter: bool = False
+    max_retries: int | None = None, is_jupyter: bool = False
 ) -> Progress:
     return Progress(
         TextColumn("[bold blue]{task.fields[job_name]}"),

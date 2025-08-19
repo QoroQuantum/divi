@@ -83,8 +83,7 @@ if __name__ == "__main__":
     )
 
     qaoa_batch.create_programs()
-    qaoa_batch.run()
-    qaoa_batch.compute_final_solutions()
+    qaoa_batch.run(blocking=True)
     quantum_solution = qaoa_batch.aggregate_results()
 
     classical_cut_size, classical_partition = nx.approximation.one_exchange(

@@ -143,8 +143,7 @@ def run_vqe(noiseless_clicks, noisy_clicks, zne_clicks):
     run_time_fig = go.Figure()
 
     problem.create_programs()
-    problem.run()
-    problem.wait_for_all()
+    problem.run(blocking=True)
 
     for ansatz in problem.ansatze:
         ys = []

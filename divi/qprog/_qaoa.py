@@ -2,10 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 import re
 from enum import Enum
 from functools import reduce
-from typing import Literal, Optional, get_args
+from typing import Literal, get_args
 from warnings import warn
 
 import matplotlib.pyplot as plt
@@ -24,6 +25,8 @@ from divi.circuits import MetaCircuit
 from divi.qprog import QuantumProgram
 from divi.qprog.optimizers import Optimizer
 from divi.utils import convert_qubo_matrix_to_pennylane_ising
+
+logger = logging.getLogger(__name__)
 
 GraphProblemTypes = nx.Graph | rx.PyGraph
 QUBOProblemTypes = list | np.ndarray | sps.spmatrix | QuadraticProgram
@@ -104,7 +107,7 @@ def _convert_quadratic_program_to_pennylane_ising(qp: QuadraticProgram):
 
 def _resolve_circuit_layers(
     initial_state, problem, graph_problem, **kwargs
-) -> tuple[qml.operation.Operator, qml.operation.Operator, Optional[dict], str]:
+) -> tuple[qml.operation.Operator, qml.operation.Operator, dict | None, str]:
     """
     Generates the cost and mixer hamiltonians for a given problem, in addition to
     optional metadata returned by Pennylane if applicable
@@ -150,7 +153,7 @@ class QAOA(QuantumProgram):
     def __init__(
         self,
         problem: GraphProblemTypes | QUBOProblemTypes,
-        graph_problem: Optional[GraphProblem] = None,
+        graph_problem: GraphProblem | None = None,
         n_layers: int = 1,
         initial_state: _SUPPORTED_INITIAL_STATES_LITERAL = "Recommended",
         optimizer: Optimizer = Optimizer.MONTE_CARLO,
@@ -221,12 +224,13 @@ class QAOA(QuantumProgram):
         self.optimizer = optimizer
         self.max_iterations = max_iterations
         self.current_iteration = 0
-        self._solution_nodes = None
         self.n_params = 2
         self._is_compute_probabilites = False
 
         # Shared Variables
         self.probs = kwargs.pop("probs", {})
+        self._solution_nodes = kwargs.pop("solution_nodes", [])
+        self._solution_bitstring = kwargs.pop("solution_bitstring", [])
 
         (
             self.cost_hamiltonian,
@@ -376,13 +380,23 @@ class QAOA(QuantumProgram):
             - For QUBO problems, stores the solution as a NumPy array of bits.
             - For graph problems, stores the solution as a list of node indices corresponding to '1's in the bitstring.
             5. Returns the total circuit count and total runtime for the optimization process.
+
         Returns:
             tuple: A tuple containing:
             - int: The total number of circuits executed.
             - float: The total runtime of the optimization process.
-        Raises:
-            RuntimeError: If more than one/no matching key is found for the best solution index.
         """
+
+        if self._progress_queue:
+            self._progress_queue.put(
+                {
+                    "job_id": self.job_id,
+                    "message": "🏁 Computing Final Solution 🏁",
+                    "progress": 0,
+                }
+            )
+        else:
+            logger.info("🏁 Computing Final Solution 🏁")
 
         # Convert losses dict to list to apply ordinal operations
         final_losses_list = list(self.losses[-1].values())
@@ -417,14 +431,25 @@ class QAOA(QuantumProgram):
         ]
 
         if isinstance(self.problem, QUBOProblemTypes):
-            self._solution_bitstring = np.fromiter(
+            self._solution_bitstring[:] = np.fromiter(
                 best_solution_bitstring, dtype=np.int32
             )
 
         if isinstance(self.problem, GraphProblemTypes):
-            self._solution_nodes = [
+            self._solution_nodes[:] = [
                 m.start() for m in re.finditer("1", best_solution_bitstring)
             ]
+
+        if self._progress_queue:
+            self._progress_queue.put(
+                {
+                    "job_id": self.job_id,
+                    "progress": 0,
+                    "final_status": "Success",
+                }
+            )
+        else:
+            logger.info(f"Computed Solution!")
 
         return self._total_circuit_count, self._total_run_time
 

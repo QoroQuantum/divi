@@ -7,10 +7,9 @@ import pickle
 from abc import ABC, abstractmethod
 from functools import partial
 from queue import Queue
-from typing import Optional
 
 import numpy as np
-from qiskit.result import marginal_counts, sampled_expectation_value
+from pennylane.measurements import ExpectationMP
 from scipy.optimize import OptimizeResult, minimize
 
 from divi import QoroService
@@ -28,8 +27,8 @@ class QuantumProgram(ABC):
     def __init__(
         self,
         backend: CircuitRunner,
-        seed: Optional[int] = None,
-        progress_queue: Optional[Queue] = None,
+        seed: int | None = None,
+        progress_queue: Queue | None = None,
         **kwargs,
     ):
         """
@@ -52,14 +51,14 @@ class QuantumProgram(ABC):
             progress_queue (Queue): a queue for progress bar updates.
 
             **kwargs: Additional keyword arguments that influence behaviour.
-                - grouping_strategy (Optional[Any]): A strategy for grouping operations, used in Pennylane's transforms.
+                - grouping_strategy (Literal["default", "wires", "qwc"]): A strategy for grouping operations, used in Pennylane's transforms.
                     Defaults to None.
-                - qem_protocol (Optional[QEMProtocol]): the quantum error mitigation protocol to apply.
+                - qem_protocol (QEMProtocol, optional): the quantum error mitigation protocol to apply.
                     Must be of type QEMProtocol. Defaults to None.
 
                 The following key values are reserved for internal use and should not be set by the user:
-                - losses (Optional[list]): A list to initialize the `losses` attribute. Defaults to an empty list.
-                - final_params (Optional[list]): A list to initialize the `final_params` attribute. Defaults to an empty list.
+                - losses (list, optional): A list to initialize the `losses` attribute. Defaults to an empty list.
+                - final_params (list, optional): A list to initialize the `final_params` attribute. Defaults to an empty list.
 
         """
 
@@ -264,9 +263,9 @@ class QuantumProgram(ABC):
                 curr_marginal_results = []
                 for observable in curr_measurement_group:
                     intermediate_exp_values = [
-                        sampled_expectation_value(
-                            marginal_counts(shots_dict, observable.wires.tolist()),
-                            "Z" * len(observable.wires),
+                        ExpectationMP(observable).process_counts(
+                            shots_dict,
+                            tuple(reversed(range(len(next(iter(shots_dict.keys())))))),
                         )
                         for shots_dict in group_results.values()
                     ]

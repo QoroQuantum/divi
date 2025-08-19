@@ -3,13 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import heapq
-import re
 import string
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Sequence, Set
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from functools import partial
-from typing import Literal, Optional
+from typing import Literal
 from warnings import warn
 
 import matplotlib.cm as cm
@@ -26,8 +25,10 @@ from divi.qprog import QAOA, ProgramBatch
 from divi.qprog._qaoa import (
     _SUPPORTED_INITIAL_STATES_LITERAL,
     GraphProblem,
+    GraphProblemTypes,
     draw_graph_solution_nodes,
 )
+from divi.qprog.quantum_program import QuantumProgram
 
 from .optimizers import Optimizer
 
@@ -42,8 +43,8 @@ _MAXIMUM_AVAILABLE_QUBITS = 30
 
 @dataclass(frozen=True, eq=True)
 class PartitioningConfig:
-    max_n_nodes_per_cluster: Optional[int] = None
-    minimum_n_clusters: Optional[int] = None
+    max_n_nodes_per_cluster: int | None = None
+    minimum_n_clusters: int | None = None
     partitioning_algorithm: Literal["spectral", "metis", "kernighan_lin"] = "spectral"
 
     def __post_init__(self):
@@ -334,19 +335,43 @@ def _node_partition_graph(
     return tuple(graph for (_, _, graph) in subgraphs)
 
 
-def linear_aggregation(curr_solution, solution_bitstring, graph, reverse_index_maps):
-    for node in graph.nodes():
-        solution_index = reverse_index_maps[node]
-        curr_solution[solution_index] = int(solution_bitstring[node])
+def linear_aggregation(
+    curr_solution: Sequence[Literal[0] | Literal[1]],
+    subproblem_solution: Set[int],
+    subproblem_reverse_index_map: dict[int, int],
+):
+    """Linearly combines a subproblem's solution into the main solution vector.
+
+    This function iterates through each node of subproblem's solution. For each node,
+    it uses the reverse index map to find its original index in the main graph,
+    setting it to 1 in the current global solution, potentially overwriting any
+    previous states.
+
+    Args:
+        curr_solution (Sequence[Literal[0] | Literal[1]]): The main solution
+            vector being aggregated, represented as a sequence of 0s and 1s.
+        subproblem_solution (Set[int]): A set containing the original indices of
+            the nodes that form the solution for the subproblem.
+        subproblem_reverse_index_map (dict[int, int]): A mapping from the
+            subgraph's internal node labels back to their original indices in
+            the main solution vector.
+
+    Returns:
+        The updated main solution vector.
+    """
+    for node in subproblem_solution:
+        curr_solution[subproblem_reverse_index_map[node]] = 1
 
     return curr_solution
 
 
-def domninance_aggregation(
-    curr_solution, solution_bitstring, graph, reverse_index_maps
+def dominance_aggregation(
+    curr_solution: Sequence[Literal[0] | Literal[1]],
+    subproblem_solution: Set[int],
+    subproblem_reverse_index_map: dict[int, int],
 ):
-    for node in graph.nodes():
-        solution_index = reverse_index_maps[node]
+    for node in subproblem_solution:
+        original_index = subproblem_reverse_index_map[node]
 
         # Use existing assignment if dominant in previous solutions
         # (e.g., more 0s than 1s or vice versa)
@@ -354,20 +379,29 @@ def domninance_aggregation(
         count_1 = curr_solution.count(1)
 
         if (
-            (count_0 > count_1 and curr_solution[node] == 0)
-            or (count_1 > count_0 and curr_solution[node] == 1)
+            (count_0 > count_1 and curr_solution[original_index] == 0)
+            or (count_1 > count_0 and curr_solution[original_index] == 1)
             or (count_0 == count_1)
         ):
             # Assign based on QAOA if tie
-            curr_solution[solution_index] = int(solution_bitstring[node])
+            curr_solution[original_index] = 1
 
     return curr_solution
+
+
+def _run_and_compute_solution(program: QuantumProgram):
+
+    program.run()
+
+    final_sol_circuit_count, final_sol_run_time = program.compute_final_solution()
+
+    return final_sol_circuit_count, final_sol_run_time
 
 
 class GraphPartitioningQAOA(ProgramBatch):
     def __init__(
         self,
-        graph: nx.Graph | rx.PyGraph,
+        graph: GraphProblemTypes,
         graph_problem: GraphProblem,
         n_layers: int,
         backend: CircuitRunner,
@@ -409,9 +443,10 @@ class GraphPartitioningQAOA(ProgramBatch):
         self.partitioning_config = partitioning_config
         self.max_iterations = max_iterations
 
+        self.solution = None
         self.aggregate_fn = aggregate_fn
 
-        self._solution_nodes = None
+        self._task_fn = _run_and_compute_solution
 
         self._constructor = partial(
             QAOA,
@@ -425,11 +460,23 @@ class GraphPartitioningQAOA(ProgramBatch):
         )
 
     def create_programs(self):
-        if len(self.programs) > 0:
-            raise RuntimeError(
-                "Some programs already exist. "
-                "Clear the program dictionary before creating new ones by using batch.reset()."
-            )
+        """
+        Creates and initializes QAOA programs for each partitioned subgraph.
+
+        The main graph is partitioned into node-based subgraphs
+        according to the specified partitioning configuration. Each subgraph is relabeled with
+        integer node labels for QAOA compatibility, and a reverse index map is stored for later
+        result aggregation.
+
+        Each program is assigned a unique program ID, which is a tuple of:
+            - An uppercase letter (A, B, C, ...) corresponding to the partition index.
+            - The number of nodes in the subgraph.
+
+        Example program ID: ('A', 5) for the first partition with 5 nodes.
+
+        The created QAOA programs are stored in the `self.programs` dictionary, keyed by their program IDs.
+
+        """
 
         super().create_programs()
 
@@ -449,24 +496,25 @@ class GraphPartitioningQAOA(ProgramBatch):
             self.reverse_index_maps = {}
 
             for i, subgraph in enumerate(subgraphs):
-                index_map = {node: idx for idx, node in enumerate(subgraph.nodes())}
-                self.reverse_index_maps[i] = {v: k for k, v in index_map.items()}
-                _subgraph = nx.relabel_nodes(subgraph, index_map)
-
                 prog_id = (string.ascii_uppercase[i], subgraph.number_of_nodes())
 
+                index_map = {node: idx for idx, node in enumerate(subgraph.nodes())}
+                self.reverse_index_maps[prog_id] = {v: k for k, v in index_map.items()}
+
+                _subgraph = nx.relabel_nodes(subgraph, index_map)
                 self.programs[prog_id] = self._constructor(
                     job_id=prog_id,
                     problem=_subgraph,
                     losses=self._manager.list(),
                     probs=self._manager.dict(),
                     final_params=self._manager.list(),
+                    solution_nodes=self._manager.list(),
                     progress_queue=self._queue,
                 )
 
     def compute_final_solutions(self):
         if self._executor is not None:
-            self.wait_for_all()
+            self.join()
 
         if self._executor is not None:
             raise RuntimeError("A batch is already being run.")
@@ -482,51 +530,34 @@ class GraphPartitioningQAOA(ProgramBatch):
         ]
 
     def aggregate_results(self):
-        if len(self.programs) == 0:
-            raise RuntimeError("No programs to aggregate. Run create_programs() first.")
+        """
+        Aggregates the results from all QAOA subprograms to form a global solution.
 
-        if self._executor is not None:
-            self.wait_for_all()
+        This method collects the final bitstring solutions from each partitioned subgraph's QAOA program,
+        using the aggregation function specified at initialization (e.g., linear or dominance aggregation).
+        It reconstructs the global solution by mapping each subgraph's solution back to the original node indices
+        using the stored reverse index maps.
 
-        if any(len(program.losses) == 0 for program in self.programs.values()):
-            raise RuntimeError(
-                "Some/All programs have empty losses. Did you call run()?"
-            )
+        The final solution is stored in `self.solution` as a list of node indices assigned to the selected partition.
+
+        Raises:
+            RuntimeError: If no programs exist, if programs have not been run, or if results are incomplete.
+        Returns:
+            list[int]: The list of node indices in the final aggregated solution.
+        """
+        super().aggregate_results()
 
         if any(len(program.probs) == 0 for program in self.programs.values()):
             raise RuntimeError(
-                "Not all final probabilities computed yet. Please call `compute_final_solutions()` first."
+                "Not all final probabilities computed yet. Please call `run()` first."
             )
 
         # Extract the solutions from each program
-        for program, reverse_index_maps in zip(
-            self.programs.values(), self.reverse_index_maps.values()
-        ):
-            # Extract the final probabilities of the lowest energy
-            last_iteration_losses = program.losses[-1]
-            minimum_key = min(last_iteration_losses, key=last_iteration_losses.get)
-
-            # Find the key matching the best_solution_idx with possible metadata in between
-            pattern = re.compile(rf"^{minimum_key}(?:_[^_]*)*_0$")
-            matching_keys = [k for k in program.probs.keys() if pattern.match(k)]
-
-            if len(matching_keys) > 1:
-                raise RuntimeError(f"More than one matching key found.")
-
-            best_solution_key = matching_keys[0]
-
-            minimum_probabilities = program.probs[best_solution_key]
-
-            # The bitstring corresponding to the solution, with flip for correct endianness
-            max_prob_key = max(minimum_probabilities, key=minimum_probabilities.get)[
-                ::-1
-            ]
-
+        for prog_id, program in self.programs.items():
             self._bitstring_solution = self.aggregate_fn(
                 self._bitstring_solution,
-                max_prob_key,
-                program.problem,
-                reverse_index_maps,
+                program.solution,
+                self.reverse_index_maps[prog_id],
             )
 
         self.solution = list(np.where(self._bitstring_solution)[0])
@@ -559,9 +590,9 @@ class GraphPartitioningQAOA(ProgramBatch):
 
         # Convert partitions to node-to-partition mapping
         node_to_partition = {}
-        for partition_id, mapping in self.reverse_index_maps.items():
+        for (partition_id, _), mapping in self.reverse_index_maps.items():
             for node in mapping.values():
-                node_to_partition[node] = string.ascii_uppercase[partition_id]
+                node_to_partition[node] = partition_id
 
         # Get unique partition IDs and create color map
         unique_partitions = sorted(list(set(node_to_partition.values())))
@@ -613,7 +644,13 @@ class GraphPartitioningQAOA(ProgramBatch):
         plt.show()
 
     def draw_solution(self):
-        if self._solution_nodes is None:
+        """
+        Visualizes the main graph with nodes highlighted according to the final aggregated solution.
+
+        If the solution has not yet been computed, this method calls `aggregate_results()` to obtain it.
+        """
+
+        if self.solution is None:
             self.aggregate_results()
 
         draw_graph_solution_nodes(self.main_graph, self.solution)
