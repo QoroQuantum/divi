@@ -2,12 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from dotenv import dotenv_values
-
 from divi import QoroService
 
 if __name__ == "__main__":
-    service = QoroService(dotenv_values()["QORO_API_KEY"])
+    service = QoroService()
 
     # Test if QoroService is initialized correctly
     service.test_connection()
@@ -19,7 +17,7 @@ if __name__ == "__main__":
 
     job_id = service.submit_circuits(circuits)
 
-    print(job_id)
+    print(f"Job submitted with ID: {job_id}")
 
     service.poll_job_status(job_id, loop_until_complete=True)
 
