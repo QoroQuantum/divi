@@ -4,34 +4,33 @@
 
 import base64
 import gzip
-import json
 import logging
 import time
 from collections.abc import Callable
 from enum import Enum
 from http import HTTPStatus
-from typing import Optional
 
 import requests
+from dotenv import dotenv_values
 from requests.adapters import HTTPAdapter, Retry
 
 from divi.exp.cirq import is_valid_qasm
 from divi.interfaces import CircuitRunner
-from divi.qpu_system import QPUSystem, parse_qpu_systems
+from divi.qpu_system import QPU, QPUSystem
 
 API_URL = "https://app.qoroquantum.net/api"
 MAX_PAYLOAD_SIZE_MB = 0.95
 
 session = requests.Session()
-retries = Retry(
+retry_configuration = Retry(
     total=5,
     backoff_factor=0.1,
     status_forcelist=[502],
     allowed_methods=["GET", "POST", "DELETE"],
 )
 
-session.mount("http://", HTTPAdapter(max_retries=retries))
-session.mount("https://", HTTPAdapter(max_retries=retries))
+session.mount("http://", HTTPAdapter(max_retries=retry_configuration))
+session.mount("https://", HTTPAdapter(max_retries=retry_configuration))
 
 logger = logging.getLogger(__name__)
 
@@ -54,24 +53,41 @@ class JobType(Enum):
 class MaxRetriesReachedError(Exception):
     """Exception raised when the maximum number of retries is reached."""
 
-    def __init__(self, retries, message="Maximum retries reached"):
+    def __init__(self, retries):
         self.retries = retries
-        self.message = f"{message}: {retries} retries attempted"
+        self.message = f"Maximum retries reached: {retries} retries attempted"
         super().__init__(self.message)
+
+
+def _parse_qpu_systems(json_data: list) -> list[QPUSystem]:
+    return [
+        QPUSystem(
+            name=system_data["name"],
+            qpus=[QPU(**qpu) for qpu in system_data.get("qpus", [])],
+            access_level=system_data["access_level"],
+        )
+        for system_data in json_data
+    ]
 
 
 class QoroService(CircuitRunner):
 
     def __init__(
         self,
-        auth_token: str,
+        auth_token: str | None = None,
         polling_interval: float = 3.0,
         max_retries: int = 5000,
         shots: int = 1000,
-        qpu_system_name: Optional[str | QPUSystem] = None,
+        qpu_system_name: str | QPUSystem | None = None,
         use_circuit_packing: bool = False,
     ):
         super().__init__(shots=shots)
+
+        if auth_token is None:
+            try:
+                auth_token = dotenv_values()["QORO_API_KEY"]
+            except KeyError:
+                raise ValueError("Qoro API key not provided nor found in a .env file.")
 
         self.auth_token = "Bearer " + auth_token
         self.polling_interval = polling_interval
@@ -80,11 +96,11 @@ class QoroService(CircuitRunner):
         self.use_circuit_packing = use_circuit_packing
 
     @property
-    def qpu_system_name(self) -> Optional[str | QPUSystem]:
+    def qpu_system_name(self) -> str | QPUSystem | None:
         return self._qpu_system_name
 
     @qpu_system_name.setter
-    def qpu_system_name(self, system_name: str | QPUSystem):
+    def qpu_system_name(self, system_name: str | QPUSystem | None):
         """
         Set the QPU system for the service.
 
@@ -100,25 +116,92 @@ class QoroService(CircuitRunner):
         else:
             raise TypeError("Expected a QPUSystem instance or str.")
 
-    def test_connection(self):
-        """Test the connection to the Qoro API"""
-        response = session.get(
-            API_URL, headers={"Authorization": self.auth_token}, timeout=10
-        )
+    def _make_request(self, method: str, endpoint: str, **kwargs) -> requests.Response:
+        """A centralized helper for making API requests."""
+        url = f"{API_URL}/{endpoint}"
 
-        if response.status_code != HTTPStatus.OK:
+        headers = {"Authorization": self.auth_token}
+
+        if method.upper() in ["POST", "PUT", "PATCH"]:
+            headers["Content-Type"] = "application/json"
+
+        # Allow overriding default headers
+        if "headers" in kwargs:
+            headers.update(kwargs.pop("headers"))
+
+        response = session.request(method, url, headers=headers, **kwargs)
+
+        # Generic error handling for non-OK statuses
+        if response.status_code >= 400:
             raise requests.exceptions.HTTPError(
-                f"Connection failed with error: {response.status_code}: {response.reason}"
+                f"API Error: {response.status_code} {response.reason} for URL {response.url}"
             )
 
         return response
+
+    def test_connection(self):
+        """Test the connection to the Qoro API"""
+        return self._make_request("get", "", timeout=10)
+
+    def fetch_qpu_systems(self) -> list[QPUSystem]:
+        """
+        Get the list of available QPU systems from the Qoro API.
+
+        Returns:
+            List of QPUSystem objects.
+        """
+        response = self._make_request("get", "qpusystem/", timeout=10)
+        return _parse_qpu_systems(response.json())
+
+    @staticmethod
+    def _compress_data(value) -> bytes:
+        return base64.b64encode(gzip.compress(value.encode("utf-8"))).decode("utf-8")
+
+    def _split_circuits(self, circuits: dict[str, str]) -> list[dict[str, str]]:
+        """
+        Splits circuits into chunks by estimating payload size with a simplified,
+        consistent overhead calculation.
+        Assumes that BASE64 encoding produces ASCI characters, which are 1 byte each.
+        """
+        max_payload_bytes = MAX_PAYLOAD_SIZE_MB * 1024 * 1024
+        circuit_chunks = []
+        current_chunk = {}
+
+        # Start with size 2 for the opening and closing curly braces '{}'
+        current_chunk_size_bytes = 2
+
+        for key, value in circuits.items():
+            compressed_value = self._compress_data(value)
+
+            item_size_bytes = len(key) + len(compressed_value) + 6
+
+            # If adding this item would exceed the limit, finalize the current chunk.
+            # This check only runs if the chunk is not empty.
+            if current_chunk and (
+                current_chunk_size_bytes + item_size_bytes > max_payload_bytes
+            ):
+                circuit_chunks.append(current_chunk)
+
+                # Start a new chunk
+                current_chunk = {}
+                current_chunk_size_bytes = 2
+
+            # Add the new item to the current chunk and update its size
+            current_chunk[key] = compressed_value
+            current_chunk_size_bytes += item_size_bytes
+
+        # Add the last remaining chunk if it's not empty
+        if current_chunk:
+            circuit_chunks.append(current_chunk)
+
+        return circuit_chunks
 
     def submit_circuits(
         self,
         circuits: dict[str, str],
         tag: str = "default",
         job_type: JobType = JobType.SIMULATE,
-        qpu_system_name: Optional[str] = None,
+        qpu_system_name: str | None = None,
         override_circuit_packing: bool | None = None,
     ):
         """
@@ -150,105 +233,33 @@ class QoroService(CircuitRunner):
             if not is_valid_qasm(circuit):
                 raise ValueError(f"Circuit {key} is not a valid QASM string.")
 
-        def _compress_data(value) -> bytes:
-            return base64.b64encode(gzip.compress(value.encode("utf-8"))).decode(
-                "utf-8"
-            )
+        circuit_chunks = self._split_circuits(circuits)
 
-        def _split_circuits(circuits: dict[str, str]) -> list[dict[str, str]]:
-            """
-            Split circuits into smaller chunks if the payload size exceeds the maximum allowed size.
-
-            Args:
-                circuits: Dictionary of circuits to be sent
-
-            Returns:
-                List of circuit chunks
-            """
-
-            def _estimate_size(data):
-                payload_json = json.dumps(data)
-                return len(payload_json.encode("utf-8")) / 1024 / 1024
-
-            circuit_chunks = []
-            current_chunk = {}
-            current_size = 0
-
-            for key, value in circuits.items():
-                compressed_value = _compress_data(value)
-                estimated_size = _estimate_size({key: compressed_value})
-
-                if current_size + estimated_size > MAX_PAYLOAD_SIZE_MB:
-                    circuit_chunks.append(current_chunk)
-                    current_chunk = {key: compressed_value}
-                    current_size = estimated_size
-                else:
-                    current_chunk[key] = compressed_value
-                    current_size += estimated_size
-
-            if current_chunk:
-                circuit_chunks.append(current_chunk)
-
-            return circuit_chunks
-
-        circuit_chunks = _split_circuits(circuits)
+        payload = {
+            "shots": self.shots,
+            "tag": tag,
+            "job_type": job_type.value,
+            "qpu_system_name": qpu_system_name or self.qpu_system_name,
+            "use_packing": (
+                override_circuit_packing
+                if override_circuit_packing is not None
+                else self.use_circuit_packing
+            ),
+        }
 
         job_ids = []
         for chunk in circuit_chunks:
-            response = session.post(
-                API_URL + "/job/",
-                headers={
-                    "Authorization": self.auth_token,
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "circuits": chunk,
-                    "shots": self.shots,
-                    "tag": tag,
-                    "job_type": job_type.value,
-                    "qpu_system_name": (
-                        self.qpu_system_name
-                        if self.qpu_system_name is not None
-                        else qpu_system_name
-                    ),
-                    "use_packing": (
-                        override_circuit_packing
-                        if override_circuit_packing is not None
-                        else self.use_circuit_packing
-                    ),
-                },
+            payload["circuits"] = chunk
+
+            response = self._make_request(
+                "post",
+                "job/",
+                json=payload,
                 timeout=100,
             )
-
-            if response.status_code == HTTPStatus.CREATED:
-                job_ids.append(response.json()["job_id"])
-            else:
-                raise requests.exceptions.HTTPError(
-                    f"{response.status_code}: {response.reason}"
-                )
+            job_ids.append(response.json()["job_id"])
 
         return job_ids if len(job_ids) > 1 else job_ids[0]
-
-    def qpu_systems(self) -> list[QPUSystem]:
-        """
-        Get the list of available QPU systems from the Qoro API.
-
-        Returns:
-            List of QPUSystem objects.
-        """
-        response = session.get(
-            API_URL + "/qpusystem/",
-            headers={"Authorization": self.auth_token},
-            timeout=10,
-        )
-
-        if response.status_code == HTTPStatus.OK:
-            return parse_qpu_systems(response.json())
-
-        else:
-            raise requests.exceptions.HTTPError(
-                f"{response.status_code}: {response.reason}"
-            )
 
     def delete_job(self, job_ids):
         """
@@ -262,16 +273,14 @@ class QoroService(CircuitRunner):
         if not isinstance(job_ids, list):
             job_ids = [job_ids]
 
-        responses = []
-
-        for job_id in job_ids:
-            response = session.delete(
-                API_URL + f"/job/{job_id}",
-                headers={"Authorization": self.auth_token},
+        responses = [
+            self._make_request(
+                "delete",
+                f"job/{job_id}",
                 timeout=50,
             )
-
-            responses.append(response)
+            for job_id in job_ids
+        ]
 
         return responses if len(responses) > 1 else responses[0]
 
@@ -287,14 +296,14 @@ class QoroService(CircuitRunner):
         if not isinstance(job_ids, list):
             job_ids = [job_ids]
 
-        responses = []
-        for job_id in job_ids:
-            response = session.get(
-                API_URL + f"/job/{job_id}/results",
-                headers={"Authorization": self.auth_token},
+        responses = [
+            self._make_request(
+                "get",
+                f"job/{job_id}/results",
                 timeout=100,
             )
-            responses.append(response)
+            for job_id in job_ids
+        ]
 
         if all(response.status_code == HTTPStatus.OK for response in responses):
             responses = [response.json() for response in responses]
@@ -329,7 +338,6 @@ class QoroService(CircuitRunner):
             loop_until_complete (bool): A flag to loop until the job is completed
             on_complete (optional): A function to be called when the job is completed
             polling_interval (optional): The time to wait between retries
-            max_retries (optional): The maximum number of retries
             verbose (optional): A flag to print the when retrying
             pbar_update_fn (optional): A function for updating progress bars while polling.
         Returns:
@@ -338,62 +346,52 @@ class QoroService(CircuitRunner):
         if not isinstance(job_ids, list):
             job_ids = [job_ids]
 
-        def _poll_job_status(job_id):
-            response = session.get(
-                API_URL + f"/job/{job_id}/status/",
-                headers={
-                    "Authorization": self.auth_token,
-                    "Content-Type": "application/json",
-                },
-                timeout=200,
-            )
+        if not loop_until_complete:
+            statuses = [
+                self._make_request(
+                    "get",
+                    f"job/{job_id}/status/",
+                    timeout=200,
+                ).json()["status"]
+                for job_id in job_ids
+            ]
+            return statuses if len(statuses) > 1 else statuses[0]
 
-            if response.status_code == HTTPStatus.OK:
-                return response.json()["status"], response
-            else:
-                raise requests.exceptions.HTTPError(
-                    f"{response.status_code}: {response.reason}"
+        pending_job_ids = set(job_ids)
+        responses = []
+        for retry_count in range(1, self.max_retries + 1):
+            # Exit early if all jobs are done
+            if not pending_job_ids:
+                break
+
+            for job_id in list(pending_job_ids):
+                response = self._make_request(
+                    "get",
+                    f"job/{job_id}/status/",
+                    timeout=200,
                 )
 
-        if loop_until_complete:
-            retries = 0
-            completed = False
-            while True:
-                responses = []
-                statuses = []
-
-                for job_id in job_ids:
-                    job_status, response = _poll_job_status(job_id)
-                    statuses.append(job_status)
+                if response.json()["status"] == JobStatus.COMPLETED.value:
+                    pending_job_ids.remove(job_id)
                     responses.append(response)
 
-                if all(status == JobStatus.COMPLETED.value for status in statuses):
-                    responses = [response.json() for response in responses]
-                    completed = True
-                    break
+            # Exit before sleeping if no jobs are pending
+            if not pending_job_ids:
+                break
 
-                if retries >= self.max_retries:
-                    break
+            time.sleep(self.polling_interval)
 
-                retries += 1
+            if verbose:
+                if pbar_update_fn:
+                    pbar_update_fn(retry_count)
+                else:
+                    logger.info(
+                        rf"\cPolling {retry_count} / {self.max_retries} retries\r"
+                    )
 
-                time.sleep(self.polling_interval)
-
-                if verbose:
-                    if pbar_update_fn:
-                        pbar_update_fn(retries)
-                    else:
-                        logger.info(
-                            rf"\cPolling {retries} / {self.max_retries} retries\r"
-                        )
-
-            if completed and on_complete:
+        if not pending_job_ids:
+            if on_complete:
                 on_complete(responses)
-                return JobStatus.COMPLETED
-            elif completed:
-                return JobStatus.COMPLETED
-            else:
-                raise MaxRetriesReachedError(retries)
+            return JobStatus.COMPLETED
         else:
-            statuses = [_poll_job_status(job_id)[0] for job_id in job_ids]
-            return statuses if len(statuses) > 1 else statuses[0]
+            raise MaxRetriesReachedError(retry_count)
