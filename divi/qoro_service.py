@@ -34,6 +34,16 @@ session.mount("https://", HTTPAdapter(max_retries=retries))
 logger = logging.getLogger(__name__)
 
 
+def _raise_with_details(resp: requests.Response):
+    try:
+        data = resp.json()
+        body = json.dumps(data, ensure_ascii=False)
+    except ValueError:
+        body = resp.text
+    msg = f"{resp.status_code} {resp.reason}: {body}"
+    raise requests.HTTPError(msg)
+
+
 class JobStatus(Enum):
     PENDING = "PENDING"
     RUNNING = "RUNNING"
@@ -192,9 +202,7 @@ class QoroService(CircuitRunner):
             if response.status_code == HTTPStatus.CREATED:
                 job_ids.append(response.json()["job_id"])
             else:
-                raise requests.exceptions.HTTPError(
-                    f"{response.status_code}: {response.reason}"
-                )
+                _raise_with_details(response)
 
         return job_ids if len(job_ids) > 1 else job_ids[0]
 
