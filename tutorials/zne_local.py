@@ -36,7 +36,9 @@ if __name__ == "__main__":
     )
     print(f"Circuits Executed (Exact): {vqe_problem_exact.total_circuit_count}")
 
-    vqe_problem_noisy = VQE(backend=ParallelSimulator(qiskit_backend="auto"), **args)
+    vqe_problem_noisy = VQE(
+        backend=ParallelSimulator(n_processes=4, qiskit_backend="auto"), **args
+    )
     vqe_problem_noisy.run()
 
     print(
@@ -47,7 +49,7 @@ if __name__ == "__main__":
     scale_factors = [1.0, 3.0, 5.0]
 
     vqe_problem_zne = VQE(
-        backend=ParallelSimulator(qiskit_backend="auto"),
+        backend=ParallelSimulator(n_processes=4, qiskit_backend="auto"),
         qem_protocol=ZNE(
             scale_factors,
             partial(fold_gates_at_random),
