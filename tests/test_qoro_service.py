@@ -2,10 +2,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from http import HTTPStatus
+
 import pytest
 import requests
 
-from divi.qoro_service import JobStatus, JobType, MaxRetriesReachedError, QoroService
+from divi.qoro_service import (
+    JobStatus,
+    JobType,
+    MaxRetriesReachedError,
+    QoroService,
+    _raise_with_details,
+)
 
 # --- Test Fixtures ---
 
@@ -73,6 +81,7 @@ class TestQoroServiceMock:
     def test_submit_circuits_single_chunk_mock(self, mocker, qoro_service_mock):
         """Tests submitting a single chunk of circuits."""
         mock_response = mocker.MagicMock()
+        mock_response.status_code = HTTPStatus.CREATED
         mock_response.json.return_value = {"job_id": "mock_job_id"}
         mock_make_request = mocker.patch.object(
             qoro_service_mock, "_make_request", return_value=mock_response
@@ -90,7 +99,9 @@ class TestQoroServiceMock:
         mocker.patch("divi.qoro_service.is_valid_qasm", return_value=True)
 
         mock_response_1 = mocker.MagicMock(json=lambda: {"job_id": "mock_job_id_1"})
+        mock_response_1.status_code = HTTPStatus.CREATED
         mock_response_2 = mocker.MagicMock(json=lambda: {"job_id": "mock_job_id_2"})
+        mock_response_2.status_code = HTTPStatus.CREATED
 
         mock_make_request = mocker.patch.object(
             qoro_service_mock,
@@ -128,6 +139,7 @@ class TestQoroServiceMock:
         """Tests submitting circuits with a custom tag and job type."""
         mocker.patch("divi.qoro_service.is_valid_qasm", return_value=True)
         mock_response = mocker.MagicMock(json=lambda: {"job_id": "mock_job_id"})
+        mock_response.status_code = HTTPStatus.CREATED
         mock_make_request = mocker.patch.object(
             qoro_service_mock, "_make_request", return_value=mock_response
         )
@@ -164,6 +176,7 @@ class TestQoroServiceMock:
         qoro_service_mock.use_circuit_packing = original_flag
 
         mock_response = mocker.MagicMock(json=lambda: {"job_id": "mock_job_id_packed"})
+        mock_response.status_code = HTTPStatus.CREATED
         mock_make_request = mocker.patch.object(
             qoro_service_mock, "_make_request", return_value=mock_response
         )
@@ -185,6 +198,40 @@ class TestQoroServiceMock:
         assert job_id == "mock_job_id_packed"
         _, called_kwargs = mock_make_request.call_args
         assert called_kwargs.get("json", {}).get("use_packing") is False
+
+    def test_raise_with_details_json_body(self, mocker):
+        """
+        Tests that _raise_with_details formats the error message correctly
+        when the response body is valid JSON.
+        """
+        mock_response = mocker.MagicMock()
+        mock_response.status_code = 400
+        mock_response.reason = "Bad Request"
+        mock_response.json.return_value = {"error": "Invalid input", "code": 123}
+
+        # The expected message should contain the JSON string
+        expected_msg = '400 Bad Request: {"error": "Invalid input", "code": 123}'
+
+        with pytest.raises(requests.HTTPError, match=expected_msg):
+            _raise_with_details(mock_response)
+
+    def test_raise_with_details_text_body(self, mocker):
+        """
+        Tests that _raise_with_details falls back to using the raw text body
+        when the response body is not valid JSON.
+        """
+        mock_response = mocker.MagicMock()
+        mock_response.status_code = 500
+        mock_response.reason = "Internal Server Error"
+        mock_response.text = "A fatal server error occurred."
+        # Simulate a JSON decoding error
+        mock_response.json.side_effect = ValueError
+
+        # The expected message should contain the raw text
+        expected_msg = "500 Internal Server Error: A fatal server error occurred."
+
+        with pytest.raises(requests.HTTPError, match=expected_msg):
+            _raise_with_details(mock_response)
 
     # --- Tests for delete_job ---
 

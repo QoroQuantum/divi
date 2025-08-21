@@ -4,6 +4,7 @@
 
 import base64
 import gzip
+import json
 import logging
 import time
 from collections.abc import Callable
@@ -33,6 +34,16 @@ session.mount("http://", HTTPAdapter(max_retries=retry_configuration))
 session.mount("https://", HTTPAdapter(max_retries=retry_configuration))
 
 logger = logging.getLogger(__name__)
+
+
+def _raise_with_details(resp: requests.Response):
+    try:
+        data = resp.json()
+        body = json.dumps(data, ensure_ascii=False)
+    except ValueError:
+        body = resp.text
+    msg = f"{resp.status_code} {resp.reason}: {body}"
+    raise requests.HTTPError(msg)
 
 
 class JobStatus(Enum):
@@ -257,7 +268,11 @@ class QoroService(CircuitRunner):
                 json=payload,
                 timeout=100,
             )
-            job_ids.append(response.json()["job_id"])
+
+            if response.status_code == HTTPStatus.CREATED:
+                job_ids.append(response.json()["job_id"])
+            else:
+                _raise_with_details(response)
 
         return job_ids if len(job_ids) > 1 else job_ids[0]
 
