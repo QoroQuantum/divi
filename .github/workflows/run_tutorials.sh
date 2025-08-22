@@ -4,10 +4,8 @@ set -e
 
 export PYTHONPATH=$(pwd):$PYTHONPATH
 
-expected_failures=(
-  tutorials/qasm_thru_service.py
-  tutorials/circuit_cutting.py
-)
+# Convert array to string for easier export/import
+EXPECTED_FAILURES_STR="tutorials/qasm_thru_service.py|tutorials/circuit_cutting.py"
 
 sed -i \
     -e 's/shots=2000/shots=100/' \
@@ -44,14 +42,11 @@ run_test() {
   local file="$1"
   echo "🔹 Running $file"
 
-  # Inline expectation check
+  # Check if this file is expected to fail
   local expected=0
-  for exp in "${expected_failures[@]}"; do
-    if [[ "$file" == "$exp" ]]; then
-      expected=1
-      break
-    fi
-  done
+  if [[ "|${EXPECTED_FAILURES_STR}|" == *"|${file}|"* ]]; then
+    expected=1
+  fi
 
   if [[ $expected -eq 1 ]]; then
     echo "⚠️ Expecting failure for $file"
@@ -73,7 +68,7 @@ run_test() {
 
 export -f run_test
 export failures_file
-export expected_failures
+export EXPECTED_FAILURES_STR
 
 # Run tests in parallel: 2× cores, logs grouped per job
 ls tutorials/*.py | parallel -j $(( $(nproc) * 2 )) --joblog parallel.log run_test {}
