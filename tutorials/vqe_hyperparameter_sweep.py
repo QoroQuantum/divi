@@ -8,8 +8,7 @@ import numpy as np
 import pennylane as qml
 
 from divi.parallel_simulator import ParallelSimulator
-from divi.qprog import VQEAnsatz, VQEHyperparameterSweep
-from divi.qprog._vqe_sweep import MoleculeTransformer
+from divi.qprog import MoleculeTransformer, VQEAnsatz, VQEHyperparameterSweep
 from divi.qprog.optimizers import Optimizer
 
 if __name__ == "__main__":
@@ -23,7 +22,7 @@ if __name__ == "__main__":
 
     vqe_problem = VQEHyperparameterSweep(
         molecule_transformer=transformer,
-        ansatze=[VQEAnsatz.HARTREE_FOCK],
+        ansatze=[VQEAnsatz.HARTREE_FOCK, VQEAnsatz.UCCSD],
         optimizer=Optimizer.MONTE_CARLO,
         max_iterations=3,
         backend=ParallelSimulator(shots=2000),
