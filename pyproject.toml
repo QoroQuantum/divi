@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "qoro-divi"
-version = "0.2.2b1"
-description = ""
+version = "0.3.1b0"
+description = "A Python library to automate generating, parallelizing, and executing quantum programs."
 authors = ["Ahmed Darwish <ahmed@qoroquantum.de>", "Stephen DiAdamo <stephen@qoroquantum.de>"]
 readme = "README.md"
 packages = [{ include = "divi" }]
