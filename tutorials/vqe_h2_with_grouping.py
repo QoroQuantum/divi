@@ -21,7 +21,7 @@ if __name__ == "__main__":
         optimizer=Optimizer.NELDER_MEAD,
         max_iterations=1,
         seed=2000,
-        backend=ParallelSimulator(simulation_seed=1997),
+        backend=ParallelSimulator(simulation_seed=1997, shots=500),
     )
 
     vqe_problem_no_grouping = VQE(
