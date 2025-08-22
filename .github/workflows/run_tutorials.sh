@@ -38,45 +38,60 @@ sed -i \
     -e 's/ParallelSimulator()/ParallelSimulator(shots=500)/' \
     tutorials/qaoa_max_clique_local.py
 
-is_expected_to_fail() {
-  for expected in "${expected_failures[@]}"; do
-    if [[ "$1" == "$expected" ]]; then
-      return 0
-    fi
-  done
-  return 1
-}
+failures_file=$(mktemp)
 
-failed=()
-
-for file in tutorials/*.py; do
+run_test() {
+  local file="$1"
   echo "🔹 Running $file"
 
-  if is_expected_to_fail "$file"; then
+  # Inline expectation check
+  local expected=0
+  for exp in "${expected_failures[@]}"; do
+    if [[ "$file" == "$exp" ]]; then
+      expected=1
+      break
+    fi
+  done
+
+  if [[ $expected -eq 1 ]]; then
     echo "⚠️ Expecting failure for $file"
     if poetry run python "$file"; then
       echo "❌ $file was expected to fail but passed"
-      failed+=("$file (unexpected success)")
+      echo "$file (unexpected success)" >> "$failures_file"
     else
       echo "✅ $file failed as expected"
     fi
   else
     if ! poetry run python "$file"; then
       echo "❌ $file failed unexpectedly"
-      failed+=("$file (unexpected failure)")
+      echo "$file (unexpected failure)" >> "$failures_file"
     else
       echo "✅ $file passed"
     fi
   fi
-done
+}
+
+export -f run_test
+export failures_file
+export expected_failures
+
+# Run tests in parallel: 2× cores, logs grouped per job
+ls tutorials/*.py | parallel -j $(( $(nproc) * 2 )) --joblog parallel.log run_test {}
 
 echo ""
-if [ ${#failed[@]} -ne 0 ]; then
+if [[ -s "$failures_file" ]]; then
   echo "❌ Some scripts failed:"
-  for f in "${failed[@]}"; do
-    echo "   - $f"
-  done
-  exit 1
+  sed 's/^/   - /' "$failures_file"
+  rm -f "$failures_file"
+  status=1
 else
   echo "✅ All tutorials scripts behaved as expected."
+  rm -f "$failures_file"
+  status=0
 fi
+
+echo ""
+echo "📜 Parallel execution summary (from parallel.log):"
+cat parallel.log
+
+exit $status
