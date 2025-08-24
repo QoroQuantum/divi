@@ -10,7 +10,7 @@ from dash.exceptions import PreventUpdate
 from qiskit_ibm_runtime.fake_provider import FakeQuitoV2
 
 from divi.parallel_simulator import ParallelSimulator
-from divi.qprog import Optimizer, VQEAnsatz, VQEHyperparameterSweep
+from divi.qprog import ScipyMethod, ScipyOptimizer, VQEAnsatz, VQEHyperparameterSweep
 
 app = Dash(external_stylesheets=[dbc.themes.BOOTSTRAP])
 
@@ -83,7 +83,7 @@ app.layout = html.Div(
 )
 
 BOND_LENGTHS = np.linspace(0.1, 2.7, 4)
-OPTIMIZER = Optimizer.NELDER_MEAD
+OPTIMIZER = ScipyOptimizer(method=ScipyMethod.NELDER_MEAD)
 MAX_ITERATIONS = 5
 
 # backend = QoroService("71ec99c9c94cf37499a2b725244beac1f51b8ee4", shots=500)

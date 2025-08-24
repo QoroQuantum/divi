@@ -7,7 +7,7 @@ import pennylane as qml
 
 from divi.parallel_simulator import ParallelSimulator
 from divi.qprog import VQE, VQEAnsatz
-from divi.qprog.optimizers import Optimizer
+from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 
 if __name__ == "__main__":
     mol = qml.qchem.Molecule(
@@ -18,7 +18,7 @@ if __name__ == "__main__":
         molecule=mol,
         n_layers=1,
         ansatz=VQEAnsatz.HARTREE_FOCK,
-        optimizer=Optimizer.NELDER_MEAD,
+        optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
         max_iterations=1,
         seed=2000,
         backend=ParallelSimulator(simulation_seed=1997, shots=500),

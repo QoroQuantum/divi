@@ -9,7 +9,7 @@ import numpy as np
 
 from divi.parallel_simulator import ParallelSimulator
 from divi.qprog import QAOA
-from divi.qprog.optimizers import Optimizer
+from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 
 if __name__ == "__main__":
     bqm = dimod.generators.gnp_random_bqm(
@@ -24,7 +24,7 @@ if __name__ == "__main__":
     qaoa_problem = QAOA(
         problem=qubo_array,
         n_layers=2,
-        optimizer=Optimizer.COBYLA,
+        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
         max_iterations=10,
         backend=ParallelSimulator(shots=10000),
     )

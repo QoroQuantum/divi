@@ -4,7 +4,20 @@
 
 import pytest
 
-from divi.qprog import Optimizer, ProgramBatch, QuantumProgram
+from divi.qprog import (
+    MonteCarloOptimizer,
+    ProgramBatch,
+    QuantumProgram,
+    ScipyMethod,
+    ScipyOptimizer,
+)
+
+OPTIMIZERS_TO_TEST = (
+    MonteCarloOptimizer(n_param_sets=10, n_best_sets=3),
+    ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
+    ScipyOptimizer(method=ScipyMethod.COBYLA),
+    ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+)
 
 
 def verify_metacircuit_dict(obj, expected_keys):
@@ -26,25 +39,28 @@ def verify_correct_circuit_count(obj: QuantumProgram):
 
     assert len(obj.losses) == 1
 
-    if obj.optimizer == Optimizer.MONTE_CARLO:
+    if isinstance(obj.optimizer, MonteCarloOptimizer):
         assert obj.total_circuit_count == obj.optimizer.n_param_sets * len(
             obj.cost_hamiltonian
         )
-    elif obj.optimizer in (Optimizer.NELDER_MEAD, Optimizer.COBYLA):
-        assert obj.total_circuit_count == obj._minimize_res.nfev * len(
-            obj.cost_hamiltonian
-        )
-    elif obj.optimizer == Optimizer.L_BFGS_B:
-        evaluation_circuits_count = obj._minimize_res.nfev * len(obj.cost_hamiltonian)
+    elif isinstance(obj.optimizer, ScipyOptimizer):
+        if obj.optimizer.method in ((ScipyMethod.NELDER_MEAD, ScipyMethod.COBYLA)):
+            assert obj.total_circuit_count == obj._minimize_res.nfev * len(
+                obj.cost_hamiltonian
+            )
+        elif obj.optimizer.method == ScipyMethod.L_BFGS_B:
+            evaluation_circuits_count = obj._minimize_res.nfev * len(
+                obj.cost_hamiltonian
+            )
 
-        gradient_circuits_count = (
-            obj._minimize_res.njev * len(obj.cost_hamiltonian) * obj.n_params * 2
-        )
+            gradient_circuits_count = (
+                obj._minimize_res.njev * len(obj.cost_hamiltonian) * obj.n_params * 2
+            )
 
-        assert (
-            obj.total_circuit_count
-            == evaluation_circuits_count + gradient_circuits_count
-        )
+            assert (
+                obj.total_circuit_count
+                == evaluation_circuits_count + gradient_circuits_count
+            )
 
 
 def verify_basic_program_batch_behaviour(mocker, obj: ProgramBatch):

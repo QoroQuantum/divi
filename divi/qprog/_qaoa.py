@@ -23,7 +23,7 @@ from qiskit_optimization.problems import VarType
 
 from divi.circuits import MetaCircuit
 from divi.qprog import QuantumProgram
-from divi.qprog.optimizers import Optimizer
+from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
 from divi.utils import convert_qubo_matrix_to_pennylane_ising
 
 logger = logging.getLogger(__name__)
@@ -153,10 +153,11 @@ class QAOA(QuantumProgram):
     def __init__(
         self,
         problem: GraphProblemTypes | QUBOProblemTypes,
+        *,
         graph_problem: GraphProblem | None = None,
         n_layers: int = 1,
         initial_state: _SUPPORTED_INITIAL_STATES_LITERAL = "Recommended",
-        optimizer: Optimizer = Optimizer.MONTE_CARLO,
+        optimizer: Optimizer | None = None,
         max_iterations: int = 10,
         **kwargs,
     ):
@@ -221,11 +222,11 @@ class QAOA(QuantumProgram):
 
         # Local Variables
         self.n_layers = n_layers
-        self.optimizer = optimizer
         self.max_iterations = max_iterations
         self.current_iteration = 0
         self.n_params = 2
         self._is_compute_probabilites = False
+        self.optimizer = optimizer if optimizer is not None else MonteCarloOptimizer()
 
         # Shared Variables
         self.probs = kwargs.pop("probs", {})
@@ -245,7 +246,14 @@ class QAOA(QuantumProgram):
         )
         self.problem_metadata = problem_metadata[0] if problem_metadata else {}
 
-        self.loss_constant = self.problem_metadata.get("constant", 0.0)
+        if "constant" in self.problem_metadata:
+            self.loss_constant = self.problem_metadata.get("constant")
+            try:
+                self.loss_constant = self.loss_constant.item()
+            except AttributeError:
+                pass
+        else:
+            self.loss_constant = 0.0
 
         kwargs.pop("is_constrained", None)
         super().__init__(**kwargs)

@@ -10,17 +10,31 @@ from queue import Queue
 
 import numpy as np
 from pennylane.measurements import ExpectationMP
-from scipy.optimize import OptimizeResult, minimize
+from scipy.optimize import OptimizeResult
 
 from divi import QoroService
 from divi.circuits import Circuit, MetaCircuit
-from divi.exp.scipy._cobyla import _minimize_cobyla as cobyla_fn
 from divi.interfaces import CircuitRunner
 from divi.qem import _NoMitigation
 from divi.qoro_service import JobStatus
-from divi.qprog.optimizers import Optimizer
+from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 
 logger = logging.getLogger(__name__)
+
+
+def _compute_parameter_shift_mask(n_params):
+    mask_arr = np.arange(0, 2 * n_params, 2)
+    mask_arr[0] = 1
+
+    binary_matrix = ((mask_arr[:, np.newaxis] & (1 << np.arange(n_params))) > 0).astype(
+        np.float64
+    )
+
+    binary_matrix = binary_matrix.repeat(2, axis=0)
+    binary_matrix[1::2] *= -1
+    binary_matrix *= 0.5 * np.pi
+
+    return binary_matrix
 
 
 class QuantumProgram(ABC):
@@ -133,27 +147,6 @@ class QuantumProgram(ABC):
         )
 
         return losses
-
-    def _update_mc_params(self):
-        """
-        Updates the parameters based on previous MC iteration.
-        """
-
-        if self.current_iteration == 0:
-            self._initialize_params()
-
-            self.current_iteration += 1
-
-            return
-
-        self._curr_params = self.optimizer.compute_new_parameters(
-            self._curr_params,
-            self.current_iteration,
-            losses=self.losses[-1],
-            rng=self._rng,
-        )
-
-        self.current_iteration += 1
 
     def _prepare_and_send_circuits(self):
         job_circuits = {}
@@ -301,6 +294,93 @@ class QuantumProgram(ABC):
             data_file (str): The file to store the data in
         """
 
+        def cost_fn(params):
+            task_name = "💸 Computing Cost 💸"
+
+            if self._progress_queue is not None:
+                self._progress_queue.put(
+                    {
+                        "job_id": self.job_id,
+                        "message": task_name,
+                        "progress": 0,
+                    }
+                )
+            else:
+                logger.info(
+                    f"Running Iteration #{self.current_iteration + 1} circuits: {task_name}\r"
+                )
+
+            self._curr_params = np.atleast_2d(params)
+
+            losses = self._run_optimization_circuits(store_data, data_file)
+
+            losses = np.fromiter(losses.values(), dtype=np.float64)
+
+            try:
+                return losses.item()
+            except ValueError:
+                return losses
+
+        def grad_fn(params):
+            self._grad_mode = True
+
+            task_name = "📈 Computing Gradients 📈"
+
+            if self._progress_queue is not None:
+                self._progress_queue.put(
+                    {
+                        "job_id": self.job_id,
+                        "message": task_name,
+                        "progress": 0,
+                    }
+                )
+            else:
+                logger.info(
+                    f"Running Iteration #{self.current_iteration + 1} circuits: {task_name}\r"
+                )
+
+            shift_mask = _compute_parameter_shift_mask(len(params))
+
+            self._curr_params = shift_mask + params
+
+            exp_vals = self._run_optimization_circuits(store_data, data_file)
+
+            grads = np.zeros_like(params)
+            for i in range(len(params)):
+                grads[i] = 0.5 * (exp_vals[2 * i] - exp_vals[2 * i + 1])
+
+            self._grad_mode = False
+
+            return grads
+
+        def _iteration_counter(intermediate_result: OptimizeResult):
+            self.losses.append(
+                dict(
+                    zip(range(self.optimizer.n_param_sets), (intermediate_result.fun,))
+                )
+            )
+
+            self.final_params[:] = np.atleast_2d(intermediate_result.x)
+
+            self.current_iteration += 1
+
+            if self._progress_queue is not None:
+                self._progress_queue.put(
+                    {
+                        "job_id": self.job_id,
+                        "progress": 1,
+                    }
+                )
+            else:
+                logger.info(f"Finished Iteration #{self.current_iteration}\r\n")
+
+            if (
+                isinstance(self.optimizer, ScipyOptimizer)
+                and self.optimizer.method == ScipyMethod.COBYLA
+                and intermediate_result.nit + 1 == self.max_iterations
+            ):
+                raise StopIteration
+
         if self._progress_queue is not None:
             self._progress_queue.put(
                 {
@@ -312,148 +392,19 @@ class QuantumProgram(ABC):
         else:
             logger.info("Finished Setup")
 
-        if self.optimizer == Optimizer.MONTE_CARLO:
-            while self.current_iteration < self.max_iterations:
+        ##### NEW BEHAVIOR HERE #####
+        self._initialize_params()
+        self._minimize_res = self.optimizer.optimize(
+            cost_fn=cost_fn,
+            initial_params=self._curr_params,
+            callback_fn=_iteration_counter,
+            jac=grad_fn,
+            maxiter=self.max_iterations,
+            rng=self._rng,
+        )
+        self.final_params[:] = np.atleast_2d(self._minimize_res.x)
 
-                self._update_mc_params()
-
-                if self._progress_queue is not None:
-                    self._progress_queue.put(
-                        {
-                            "job_id": self.job_id,
-                            "message": f"⛰️ Sampling from Loss Lansdscape ⛰️",
-                            "progress": 0,
-                        }
-                    )
-                else:
-                    logger.info(
-                        f"Running Iteration #{self.current_iteration} circuits\r"
-                    )
-
-                curr_losses = self._run_optimization_circuits(store_data, data_file)
-
-                if self._progress_queue is not None:
-                    self._progress_queue.put(
-                        {
-                            "job_id": self.job_id,
-                            "progress": 1,
-                        }
-                    )
-                else:
-                    logger.info(f"Finished Iteration #{self.current_iteration}\r\n")
-
-                self.losses.append(curr_losses)
-
-            self.final_params[:] = np.atleast_2d(self._curr_params)
-
-        elif self.optimizer in (
-            Optimizer.NELDER_MEAD,
-            Optimizer.L_BFGS_B,
-            Optimizer.COBYLA,
-        ):
-
-            def cost_fn(params):
-                task_name = "💸 Computing Cost 💸"
-
-                if self._progress_queue is not None:
-                    self._progress_queue.put(
-                        {
-                            "job_id": self.job_id,
-                            "message": task_name,
-                            "progress": 0,
-                        }
-                    )
-                else:
-                    logger.info(
-                        f"Running Iteration #{self.current_iteration + 1} circuits: {task_name}\r"
-                    )
-
-                self._curr_params = np.atleast_2d(params)
-
-                losses = self._run_optimization_circuits(store_data, data_file)
-
-                return losses[0]
-
-            def grad_fn(params):
-                self._grad_mode = True
-
-                task_name = "📈 Computing Gradients 📈"
-
-                if self._progress_queue is not None:
-                    self._progress_queue.put(
-                        {
-                            "job_id": self.job_id,
-                            "message": task_name,
-                            "progress": 0,
-                        }
-                    )
-                else:
-                    logger.info(
-                        f"Running Iteration #{self.current_iteration + 1} circuits: {task_name}\r"
-                    )
-
-                shift_mask = self.optimizer.compute_parameter_shift_mask(len(params))
-
-                self._curr_params = shift_mask + params
-
-                exp_vals = self._run_optimization_circuits(store_data, data_file)
-
-                grads = np.zeros_like(params)
-                for i in range(len(params)):
-                    grads[i] = 0.5 * (exp_vals[2 * i] - exp_vals[2 * i + 1])
-
-                self._grad_mode = False
-
-                return grads
-
-            def _iteration_counter(intermediate_result: OptimizeResult):
-                self.losses.append({0: intermediate_result.fun})
-
-                self.final_params[:] = np.atleast_2d(intermediate_result.x)
-
-                self.current_iteration += 1
-
-                if self._progress_queue is not None:
-                    self._progress_queue.put(
-                        {
-                            "job_id": self.job_id,
-                            "progress": 1,
-                        }
-                    )
-                else:
-                    logger.info(f"Finished Iteration #{self.current_iteration}\r\n")
-
-                if (
-                    self.optimizer == Optimizer.COBYLA
-                    and intermediate_result.nit + 1 == self.max_iterations
-                ):
-                    raise StopIteration
-
-            if self.max_iterations is None or self.optimizer == Optimizer.COBYLA:
-                # COBYLA perceive maxiter as maxfev so we need
-                # to use the callback fn for counting instead.
-                maxiter = None
-            else:
-                # Need to add one more iteration for Nelder-Mead's simplex initialization step
-                maxiter = (
-                    self.max_iterations + 1
-                    if self.optimizer == Optimizer.NELDER_MEAD
-                    else self.max_iterations
-                )
-
-            self._initialize_params()
-            self._minimize_res = minimize(
-                fun=cost_fn,
-                x0=self._curr_params[0],
-                method=(
-                    cobyla_fn
-                    if self.optimizer == Optimizer.COBYLA
-                    else self.optimizer.value
-                ),
-                jac=grad_fn if self.optimizer == Optimizer.L_BFGS_B else None,
-                callback=_iteration_counter,
-                options={"maxiter": maxiter},
-            )
+        #############################
 
         if self._progress_queue:
             self._progress_queue.put(

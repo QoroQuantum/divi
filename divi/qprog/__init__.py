@@ -10,4 +10,4 @@ from ._vqe import VQE, VQEAnsatz
 from ._graph_partitioning import GraphPartitioningQAOA, PartitioningConfig
 from ._qubo_partitioning import QUBOPartitioningQAOA
 from ._vqe_sweep import VQEHyperparameterSweep, MoleculeTransformer
-from .optimizers import Optimizer
+from .optimizers import ScipyOptimizer, ScipyMethod, MonteCarloOptimizer

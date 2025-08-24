@@ -8,11 +8,12 @@ import numpy as np
 import pennylane as qml
 import pytest
 from qprog_contracts import (
+    OPTIMIZERS_TO_TEST,
     verify_correct_circuit_count,
     verify_metacircuit_dict,
 )
 
-from divi.qprog import VQE, Optimizer, VQEAnsatz
+from divi.qprog import VQE, VQEAnsatz
 
 pytestmark = pytest.mark.algo
 
@@ -185,7 +186,7 @@ def test_vqe_fail_with_hw_efficient_ansatz(h2_molecule):
         )
 
 
-@pytest.mark.parametrize("optimizer", list(Optimizer))
+@pytest.mark.parametrize("optimizer", OPTIMIZERS_TO_TEST)
 def test_vqe_correct_circuits_count_and_energies(
     optimizer, dummy_simulator, h2_molecule
 ):
