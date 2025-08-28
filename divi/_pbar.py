@@ -28,10 +28,9 @@ class ConditionalSpinnerColumn(ProgressColumn):
 
 
 class PhaseStatusColumn(ProgressColumn):
-    def __init__(self, max_retries: int, table_column=None):
+    def __init__(self, table_column=None):
         super().__init__(table_column)
 
-        self._max_retries = max_retries
         self._last_message = ""
 
     def render(self, task):
@@ -48,22 +47,25 @@ class PhaseStatusColumn(ProgressColumn):
 
         poll_attempt = task.fields.get("poll_attempt")
         if poll_attempt > 0:
-            return Text(
-                f"[{self._last_message}] Polling {poll_attempt}/{self._max_retries}"
-            )
+            max_retries = task.fields.get("max_retries")
+            service_job_id = task.fields.get("service_job_id").split("-")[0]
+            output_str = f"[{self._last_message}] [Polling Job {service_job_id}: {poll_attempt} / {max_retries} Retries]"
+
+            txt = Text(output_str)
+            txt.stylize("blue", output_str.index("Job") + 4, output_str.index(":"))
+
+            return txt
 
         return Text(f"[{self._last_message}]")
 
 
-def make_progress_bar(
-    max_retries: int | None = None, is_jupyter: bool = False
-) -> Progress:
+def make_progress_bar(is_jupyter: bool = False) -> Progress:
     return Progress(
         TextColumn("[bold blue]{task.fields[job_name]}"),
         BarColumn(),
         MofNCompleteColumn(),
         ConditionalSpinnerColumn(),
-        PhaseStatusColumn(max_retries=max_retries),
+        PhaseStatusColumn(),
         # For jupyter notebooks, refresh manually instead
         auto_refresh=not is_jupyter,
         # Give a dummy positive value if is_jupyter

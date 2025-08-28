@@ -395,16 +395,7 @@ class QAOA(QuantumProgram):
             - float: The total runtime of the optimization process.
         """
 
-        if self._progress_queue:
-            self._progress_queue.put(
-                {
-                    "job_id": self.job_id,
-                    "message": "🏁 Computing Final Solution 🏁",
-                    "progress": 0,
-                }
-            )
-        else:
-            logger.info("🏁 Computing Final Solution 🏁")
+        self.reporter.info(message="🏁 Computing Final Solution 🏁")
 
         # Convert losses dict to list to apply ordinal operations
         final_losses_list = list(self.losses[-1].values())
@@ -448,16 +439,7 @@ class QAOA(QuantumProgram):
                 m.start() for m in re.finditer("1", best_solution_bitstring)
             ]
 
-        if self._progress_queue:
-            self._progress_queue.put(
-                {
-                    "job_id": self.job_id,
-                    "progress": 0,
-                    "final_status": "Success",
-                }
-            )
-        else:
-            logger.info(f"Computed Solution!")
+        self.reporter.info(message="Computed Final Solution!")
 
         return self._total_circuit_count, self._total_run_time
 

@@ -388,7 +388,6 @@ def dominance_aggregation(
 
 
 def _run_and_compute_solution(program: QuantumProgram):
-
     program.run()
 
     final_sol_circuit_count, final_sol_run_time = program.compute_final_solution()

@@ -10,6 +10,7 @@ from multiprocessing import Event, Manager
 from multiprocessing.synchronize import Event as EventClass
 from queue import Empty, Queue
 from threading import Lock, Thread
+from typing import Any
 from warnings import warn
 
 from rich.console import Console
@@ -32,7 +33,7 @@ def queue_listener(
 ):
     while not done_event.is_set():
         try:
-            msg = queue.get(timeout=0.1)
+            msg: dict[str, Any] = queue.get(timeout=0.1)
         except Empty:
             continue
         except Exception as e:
@@ -46,6 +47,8 @@ def queue_listener(
             task_id,
             advance=msg["progress"],
             poll_attempt=msg.get("poll_attempt", 0),
+            max_retries=msg.get("max_retries"),
+            service_job_id=msg.get("service_job_id"),
             message=msg.get("message", ""),
             final_status=msg.get("final_status", ""),
             refresh=is_jupyter,
@@ -182,10 +185,7 @@ class ProgramBatch(ABC):
             raise RuntimeError("No programs to run.")
 
         self._progress_bar = (
-            make_progress_bar(
-                max_retries=None if self._is_local else self.backend.max_retries,
-                is_jupyter=self._is_jupyter,
-            )
+            make_progress_bar(is_jupyter=self._is_jupyter)
             if hasattr(self, "max_iterations")
             else None
         )

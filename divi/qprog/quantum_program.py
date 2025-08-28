@@ -18,6 +18,7 @@ from divi.interfaces import CircuitRunner
 from divi.qem import _NoMitigation
 from divi.qoro_service import JobStatus
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from divi.reporter import LoggingProgressReporter, QueueProgressReporter
 
 logger = logging.getLogger(__name__)
 
@@ -94,9 +95,13 @@ class QuantumProgram(ABC):
         self._grad_mode = False
 
         self.backend = backend
-        self.job_id = kwargs.get("job_id", None)
 
+        self.job_id = kwargs.get("job_id", None)
         self._progress_queue = progress_queue
+        if progress_queue and self.job_id:
+            self.reporter = QueueProgressReporter(self.job_id, progress_queue)
+        else:
+            self.reporter = LoggingProgressReporter()
 
         # Needed for Pennylane's transforms
         self._grouping_strategy = kwargs.pop("grouping_strategy", None)
@@ -180,26 +185,24 @@ class QuantumProgram(ABC):
             if isinstance(response, dict):
                 self._total_run_time += float(response["run_time"])
             elif isinstance(response, list):
-                self._total_run_time += sum(float(r["run_time"]) for r in response)
+                self._total_run_time += sum(
+                    float(r.json()["run_time"]) for r in response
+                )
 
         if isinstance(self.backend, QoroService):
+            update_function = lambda n_polls: self.reporter.info(
+                message="",
+                poll_attempt=n_polls,
+                max_retries=self.backend.max_retries,
+                service_job_id=self._curr_service_job_id,
+            )
+
             status = self.backend.poll_job_status(
                 self._curr_service_job_id,
                 loop_until_complete=True,
                 on_complete=add_run_time,
-                **(
-                    {
-                        "pbar_update_fn": lambda n_polls: self._progress_queue.put(
-                            {
-                                "job_id": self.job_id,
-                                "progress": 0,
-                                "poll_attempt": n_polls,
-                            }
-                        )
-                    }
-                    if self._progress_queue is not None
-                    else {}
-                ),
+                verbose=False,  # Disable the default logger in QoroService
+                poll_callback=update_function,  # Use the new, more generic name
             )
 
             if status != JobStatus.COMPLETED:
@@ -295,20 +298,9 @@ class QuantumProgram(ABC):
         """
 
         def cost_fn(params):
-            task_name = "💸 Computing Cost 💸"
-
-            if self._progress_queue is not None:
-                self._progress_queue.put(
-                    {
-                        "job_id": self.job_id,
-                        "message": task_name,
-                        "progress": 0,
-                    }
-                )
-            else:
-                logger.info(
-                    f"Running Iteration #{self.current_iteration + 1} circuits: {task_name}\r"
-                )
+            self.reporter.info(
+                message="💸 Computing Cost 💸", iteration=self.current_iteration
+            )
 
             self._curr_params = np.atleast_2d(params)
 
@@ -324,20 +316,9 @@ class QuantumProgram(ABC):
         def grad_fn(params):
             self._grad_mode = True
 
-            task_name = "📈 Computing Gradients 📈"
-
-            if self._progress_queue is not None:
-                self._progress_queue.put(
-                    {
-                        "job_id": self.job_id,
-                        "message": task_name,
-                        "progress": 0,
-                    }
-                )
-            else:
-                logger.info(
-                    f"Running Iteration #{self.current_iteration + 1} circuits: {task_name}\r"
-                )
+            self.reporter.info(
+                message="📈 Computing Gradients 📈", iteration=self.current_iteration
+            )
 
             shift_mask = _compute_parameter_shift_mask(len(params))
 
@@ -364,15 +345,7 @@ class QuantumProgram(ABC):
 
             self.current_iteration += 1
 
-            if self._progress_queue is not None:
-                self._progress_queue.put(
-                    {
-                        "job_id": self.job_id,
-                        "progress": 1,
-                    }
-                )
-            else:
-                logger.info(f"Finished Iteration #{self.current_iteration}\r\n")
+            self.reporter.update(iteration=self.current_iteration)
 
             if (
                 isinstance(self.optimizer, ScipyOptimizer)
@@ -381,18 +354,8 @@ class QuantumProgram(ABC):
             ):
                 raise StopIteration
 
-        if self._progress_queue is not None:
-            self._progress_queue.put(
-                {
-                    "job_id": self.job_id,
-                    "message": "Finished Setup",
-                    "progress": 0,
-                }
-            )
-        else:
-            logger.info("Finished Setup")
+        self.reporter.info(message="Finished Setup")
 
-        ##### NEW BEHAVIOR HERE #####
         self._initialize_params()
         self._minimize_res = self.optimizer.optimize(
             cost_fn=cost_fn,
@@ -404,18 +367,7 @@ class QuantumProgram(ABC):
         )
         self.final_params[:] = np.atleast_2d(self._minimize_res.x)
 
-        #############################
-
-        if self._progress_queue:
-            self._progress_queue.put(
-                {
-                    "job_id": self.job_id,
-                    "progress": 0,
-                    "final_status": "Success",
-                }
-            )
-        else:
-            logger.info(f"Finished Optimization!")
+        self.reporter.info(message="Finished Optimization!")
 
         return self._total_circuit_count, self._total_run_time
 

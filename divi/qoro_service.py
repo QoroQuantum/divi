@@ -342,7 +342,7 @@ class QoroService(CircuitRunner):
         loop_until_complete: bool = False,
         on_complete: Callable | None = None,
         verbose: bool = True,
-        pbar_update_fn: Callable | None = None,
+        poll_callback: Callable[[int], None] | None = None,
     ):
         """
         Get the status of a job and optionally execute function *on_complete* on the results
@@ -354,12 +354,23 @@ class QoroService(CircuitRunner):
             on_complete (optional): A function to be called when the job is completed
             polling_interval (optional): The time to wait between retries
             verbose (optional): A flag to print the when retrying
-            pbar_update_fn (optional): A function for updating progress bars while polling.
+            poll_callback (optional): A function for updating progress bars while polling.
         Returns:
             status: The status of the job
         """
         if not isinstance(job_ids, list):
             job_ids = [job_ids]
+
+        # Decide once at the start
+        if poll_callback:
+            update_fn = poll_callback
+        elif verbose:
+            update_fn = lambda retry_count: logger.info(
+                rf"Polling {retry_count} / {self.max_retries} Retries\r",
+                extra={"append": True},
+            )
+        else:
+            update_fn = lambda _: None
 
         if not loop_until_complete:
             statuses = [
@@ -396,13 +407,7 @@ class QoroService(CircuitRunner):
 
             time.sleep(self.polling_interval)
 
-            if verbose:
-                if pbar_update_fn:
-                    pbar_update_fn(retry_count)
-                else:
-                    logger.info(
-                        rf"\cPolling {retry_count} / {self.max_retries} retries\r"
-                    )
+            update_fn(retry_count)
 
         if not pending_job_ids:
             if on_complete:
