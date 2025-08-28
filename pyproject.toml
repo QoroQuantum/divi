@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "qoro-divi"
-version = "0.3.1b0"
+version = "0.3.2b0"
 description = "A Python library to automate generating, parallelizing, and executing quantum programs."
 authors = ["Ahmed Darwish <ahmed@qoroquantum.de>", "Stephen DiAdamo <stephen@qoroquantum.de>"]
 readme = "README.md"
@@ -24,7 +24,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.dependencies]
 python = ">=3.11,<3.13"
-pennylane = ">=0.40,<0.41"
+pennylane = "^0.42.3"
 networkx = "^3.5"
 scipy = "<=1.15.2"
 matplotlib = "^3.10.3"
