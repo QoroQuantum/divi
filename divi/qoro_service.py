@@ -406,7 +406,7 @@ class QoroService(CircuitRunner):
 
         if not pending_job_ids:
             if on_complete:
-                on_complete(responses)
+                on_complete([response.json() for response in responses])
             return JobStatus.COMPLETED
         else:
             raise MaxRetriesReachedError(retry_count)
