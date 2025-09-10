@@ -46,6 +46,7 @@ class QueueProgressReporter(ProgressReporter):
             payload["poll_attempt"] = kwargs["poll_attempt"]
             payload["max_retries"] = kwargs["max_retries"]
             payload["service_job_id"] = kwargs["service_job_id"]
+            payload["job_status"] = kwargs["job_status"]
         else:
             payload["message"] = message
 
@@ -67,7 +68,7 @@ class LoggingProgressReporter(ProgressReporter):
         # A special check for iteration updates to mimic old behavior
         if "poll_attempt" in kwargs:
             logger.info(
-                rf"Polling Job {self.CYAN}{kwargs['service_job_id'].split('-')[0]}{self.RESET}: {kwargs['poll_attempt']} / {kwargs['max_retries']} retries\r",
+                rf"Job {self.CYAN}{kwargs['service_job_id'].split('-')[0]}{self.RESET} is {kwargs['job_status']}. Polling attempt {kwargs['poll_attempt']} / {kwargs['max_retries']}\r",
                 extra={"append": True},
             )
             return

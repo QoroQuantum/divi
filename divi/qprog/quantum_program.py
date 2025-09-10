@@ -191,11 +191,12 @@ class QuantumProgram(ABC):
                 )
 
         if isinstance(self.backend, QoroService):
-            update_function = lambda n_polls: self.reporter.info(
+            update_function = lambda n_polls, status: self.reporter.info(
                 message="",
                 poll_attempt=n_polls,
                 max_retries=self.backend.max_retries,
                 service_job_id=self._curr_service_job_id,
+                job_status=status,
             )
 
             status = self.backend.poll_job_status(

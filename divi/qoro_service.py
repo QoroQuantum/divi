@@ -342,7 +342,7 @@ class QoroService(CircuitRunner):
         loop_until_complete: bool = False,
         on_complete: Callable | None = None,
         verbose: bool = True,
-        poll_callback: Callable[[int], None] | None = None,
+        poll_callback: Callable[[int, str], None] | None = None,
     ):
         """
         Get the status of a job and optionally execute function *on_complete* on the results
@@ -355,6 +355,7 @@ class QoroService(CircuitRunner):
             polling_interval (optional): The time to wait between retries
             verbose (optional): A flag to print the when retrying
             poll_callback (optional): A function for updating progress bars while polling.
+                Definition should be `poll_callback(retry_count: int, status: str) -> None`.
         Returns:
             status: The status of the job
         """
@@ -365,8 +366,11 @@ class QoroService(CircuitRunner):
         if poll_callback:
             update_fn = poll_callback
         elif verbose:
-            update_fn = lambda retry_count: logger.info(
-                rf"Polling {retry_count} / {self.max_retries} Retries\r",
+            CYAN = "\033[36m"
+            RESET = "\033[0m"
+
+            update_fn = lambda retry_count, status: logger.info(
+                rf"Job {CYAN}{job_ids[0].split('-')[0]}{RESET} is {status}. Polling attempt {retry_count} / {self.max_retries}\r",
                 extra={"append": True},
             )
         else:
@@ -397,7 +401,10 @@ class QoroService(CircuitRunner):
                     timeout=200,
                 )
 
-                if response.json()["status"] == JobStatus.COMPLETED.value:
+                if response.json()["status"] in (
+                    JobStatus.COMPLETED.value,
+                    JobStatus.FAILED.value,
+                ):
                     pending_job_ids.remove(job_id)
                     responses.append(response)
 
@@ -407,7 +414,7 @@ class QoroService(CircuitRunner):
 
             time.sleep(self.polling_interval)
 
-            update_fn(retry_count)
+            update_fn(retry_count, response.json()["status"])
 
         if not pending_job_ids:
             if on_complete:

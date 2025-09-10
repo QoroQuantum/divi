@@ -43,16 +43,25 @@ def queue_listener(
         with lock:
             task_id = pb_task_map[msg["job_id"]]
 
-        progress_bar.update(
-            task_id,
-            advance=msg["progress"],
-            poll_attempt=msg.get("poll_attempt", 0),
-            max_retries=msg.get("max_retries"),
-            service_job_id=msg.get("service_job_id"),
-            message=msg.get("message", ""),
-            final_status=msg.get("final_status", ""),
-            refresh=is_jupyter,
-        )
+        # Prepare update arguments, starting with progress.
+        update_args = {"advance": msg["progress"]}
+
+        if "poll_attempt" in msg:
+            update_args["poll_attempt"] = msg.get("poll_attempt", 0)
+        if "max_retries" in msg:
+            update_args["max_retries"] = msg.get("max_retries")
+        if "service_job_id" in msg:
+            update_args["service_job_id"] = msg.get("service_job_id")
+        if "job_status" in msg:
+            update_args["job_status"] = msg.get("job_status")
+        if msg.get("message"):
+            update_args["message"] = msg.get("message")
+        if "final_status" in msg:
+            update_args["final_status"] = msg.get("final_status", "")
+
+        update_args["refresh"] = is_jupyter
+
+        progress_bar.update(task_id, **update_args)
 
 
 def _default_task_function(program: QuantumProgram):
