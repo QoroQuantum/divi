@@ -12,12 +12,15 @@ from divi.qprog import (
     ScipyOptimizer,
 )
 
-OPTIMIZERS_TO_TEST = (
-    MonteCarloOptimizer(n_param_sets=10, n_best_sets=3),
-    ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
-    ScipyOptimizer(method=ScipyMethod.COBYLA),
-    ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
-)
+OPTIMIZERS_TO_TEST = {
+    "argvalues": [
+        MonteCarloOptimizer(n_param_sets=10, n_best_sets=3),
+        ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
+        ScipyOptimizer(method=ScipyMethod.COBYLA),
+        ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+    ],
+    "ids": ["MonteCarlo", "L_BFGS_B", "COBYLA", "NELDER_MEAD"],
+}
 
 
 def verify_metacircuit_dict(obj, expected_keys):

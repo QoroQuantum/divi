@@ -442,17 +442,26 @@ def test_queue_listener(mocker):
     assert not listener_thread.is_alive()
 
     # Check that the progress bar was updated correctly
+    common_kwargs = {
+        "refresh": False,
+        "max_retries": None,
+        "service_job_id": None,
+        "advance": 1,
+    }
     expected_calls = [
         mocker.call(
             1,
-            advance=1,
             poll_attempt=0,
             message="step 1",
             final_status="running",
-            refresh=False,
+            **common_kwargs,
         ),
         mocker.call(
-            2, advance=1, poll_attempt=3, message="", final_status="", refresh=False
+            2,
+            poll_attempt=3,
+            message="",
+            final_status="",
+            **common_kwargs,
         ),
     ]
     mock_progress_bar.update.assert_has_calls(expected_calls, any_order=True)

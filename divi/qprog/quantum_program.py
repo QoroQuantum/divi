@@ -6,6 +6,7 @@ import logging
 import pickle
 from abc import ABC, abstractmethod
 from functools import partial
+from itertools import groupby
 from queue import Queue
 
 import numpy as np
@@ -243,18 +244,29 @@ class QuantumProgram(ABC):
         losses = {}
         measurement_groups = self._meta_circuits["cost_circuit"].measurement_groups
 
-        for p in range(self._curr_params.shape[0]):
-            # Extract relevant entries from the execution results dict
-            param_results = {k: v for k, v in results.items() if k.startswith(f"{p}_")}
+        # Define key functions for both levels of grouping
+        get_param_id = lambda item: int(item[0].split("_")[0])
+        get_group_id = lambda item: int(item[0].split("_")[-1])
 
-            # Compute the marginal results for each observable
+        # --- OPTIMIZATION START ---
+        # Group the pre-sorted results by parameter ID.
+        # This is highly memory-efficient as it processes results as a stream.
+        for p, param_group_iterator in groupby(results.items(), key=get_param_id):
+
+            # This dictionary is now built from a lazy iterator, which is more efficient.
+            # It consumes the inner iterator to create a lookup of histograms for the current 'p'.
+            shots_by_group_idx = {
+                gid: [value for _, value in group]
+                for gid, group in groupby(param_group_iterator, key=get_group_id)
+            }
+
+            # --- The rest of the logic is the same, but operates on the efficiently grouped data ---
             marginal_results = []
             for group_idx, curr_measurement_group in enumerate(measurement_groups):
-                group_results = {
-                    k: v
-                    for k, v in param_results.items()
-                    if k.endswith(f"_{group_idx}")
-                }
+                group_shot_histograms = shots_by_group_idx.get(group_idx, [])
+
+                if not group_shot_histograms:
+                    continue
 
                 curr_marginal_results = []
                 for observable in curr_measurement_group:
@@ -263,7 +275,7 @@ class QuantumProgram(ABC):
                             shots_dict,
                             tuple(reversed(range(len(next(iter(shots_dict.keys())))))),
                         )
-                        for shots_dict in group_results.values()
+                        for shots_dict in group_shot_histograms
                     ]
 
                     mitigated_exp_value = self._qem_protocol.postprocess_results(
@@ -308,10 +320,14 @@ class QuantumProgram(ABC):
 
             losses = np.fromiter(losses.values(), dtype=np.float64)
 
-            try:
-                return losses.item()
-            except ValueError:
+            if params.ndim > 1:
                 return losses
+            else:
+                return losses.item()
+
+        self._grad_shift_mask = _compute_parameter_shift_mask(
+            self.n_layers * self.n_params
+        )
 
         def grad_fn(params):
             self._grad_mode = True
@@ -320,15 +336,14 @@ class QuantumProgram(ABC):
                 message="📈 Computing Gradients 📈", iteration=self.current_iteration
             )
 
-            shift_mask = _compute_parameter_shift_mask(len(params))
-
-            self._curr_params = shift_mask + params
+            self._curr_params = self._grad_shift_mask + params
 
             exp_vals = self._run_optimization_circuits(store_data, data_file)
+            exp_vals_arr = np.fromiter(exp_vals.values(), dtype=np.float64)
 
-            grads = np.zeros_like(params)
-            for i in range(len(params)):
-                grads[i] = 0.5 * (exp_vals[2 * i] - exp_vals[2 * i + 1])
+            pos_shifts = exp_vals_arr[::2]
+            neg_shifts = exp_vals_arr[1::2]
+            grads = 0.5 * (pos_shifts - neg_shifts)
 
             self._grad_mode = False
 

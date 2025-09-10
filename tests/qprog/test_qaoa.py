@@ -30,7 +30,7 @@ pytestmark = pytest.mark.algo
 
 
 class TestGeneralQAOA:
-    @pytest.mark.parametrize("optimizer", OPTIMIZERS_TO_TEST)
+    @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
     def test_qaoa_generate_circuits_called_with_correct_phases(
         self, mocker, optimizer, default_test_simulator
     ):
@@ -46,15 +46,11 @@ class TestGeneralQAOA:
 
         mock_generate_circuits = mocker.patch.object(qaoa_problem, "_generate_circuits")
 
-        mock_pl_postprocessing_fn = mocker.patch.object(
-            qaoa_problem._meta_circuits["cost_circuit"], "postprocessing_fn"
+        mock_dispatch = mocker.patch.object(
+            qaoa_problem, "_dispatch_circuits_and_process_results"
         )
-        mock_pl_postprocessing_fn.return_value = (np.array(0.0),)
-
-        mock_qem_postprocessing_fn = mocker.patch.object(
-            qaoa_problem._qem_protocol, "postprocess_results"
-        )
-        mock_qem_postprocessing_fn.return_value = ({},)
+        dummy_losses = {i: 0.5 for i in range(optimizer.n_param_sets)}
+        mock_dispatch.return_value = dummy_losses
 
         spy_values = []
         mock_setattr = mocker.patch.object(
@@ -76,7 +72,7 @@ class TestGeneralQAOA:
         # Verify that _generate_circuits was called with _is_compute_probabilies set to False
         assert all(val == False for val in spy_values)
 
-    @pytest.mark.parametrize("optimizer", OPTIMIZERS_TO_TEST)
+    @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
     def test_graph_correct_circuits_count_and_energies(
         self, optimizer, dummy_simulator
     ):
@@ -205,7 +201,7 @@ class TestGraphInput:
 
     @pytest.mark.e2e
     @flaky(max_runs=3, min_passes=1)
-    @pytest.mark.parametrize("optimizer", OPTIMIZERS_TO_TEST)
+    @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
     def test_graph_qaoa_e2e_solution(self, mocker, optimizer, default_test_simulator):
         G = nx.bull_graph()
 

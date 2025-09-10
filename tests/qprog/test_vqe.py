@@ -186,7 +186,7 @@ def test_vqe_fail_with_hw_efficient_ansatz(h2_molecule):
         )
 
 
-@pytest.mark.parametrize("optimizer", OPTIMIZERS_TO_TEST)
+@pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
 def test_vqe_correct_circuits_count_and_energies(
     optimizer, dummy_simulator, h2_molecule
 ):
