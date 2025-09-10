@@ -226,8 +226,7 @@ class ProgramBatch(ABC):
         if not blocking:
             # Arm safety net
             atexit.register(self._atexit_cleanup_hook)
-
-        if blocking:
+        else:
             self.join()
 
         return self

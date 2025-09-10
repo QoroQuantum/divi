@@ -256,7 +256,7 @@ class QAOA(QuantumProgram):
             self.loss_constant = 0.0
 
         kwargs.pop("is_constrained", None)
-        super().__init__(**kwargs)
+        super().__init__(has_final_computation=True, **kwargs)
 
         self._meta_circuits = self._create_meta_circuits_dict()
 

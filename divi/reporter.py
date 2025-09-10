@@ -29,26 +29,34 @@ class ProgressReporter(ABC):
 class QueueProgressReporter(ProgressReporter):
     """Reports progress by putting structured dictionaries onto a Queue."""
 
-    def __init__(self, job_id: str, progress_queue: Queue):
+    def __init__(
+        self, job_id: str, progress_queue: Queue, has_final_computation: bool = False
+    ):
         self._job_id = job_id
         self._queue = progress_queue
+        self.has_final_computation = has_final_computation
 
     def update(self, **kwargs):
         payload = {"job_id": self._job_id, "progress": 1}
         self._queue.put(payload)
 
     def info(self, message: str, **kwargs):
-        payload = {"job_id": self._job_id, "progress": 0}
+        payload = {"job_id": self._job_id, "progress": 0, "message": message}
 
-        if "Finished Optimization" in message or "Computed Final Solution" in message:
+        # Determine if this message indicates the job is truly finished.
+        is_final_step = "Computed Final Solution" in message or (
+            "Finished Optimization" in message and not self.has_final_computation
+        )
+
+        if is_final_step:
             payload["final_status"] = "Success"
         elif "poll_attempt" in kwargs:
+            # For polling, remove the message key so the last message persists.
+            del payload["message"]
             payload["poll_attempt"] = kwargs["poll_attempt"]
             payload["max_retries"] = kwargs["max_retries"]
             payload["service_job_id"] = kwargs["service_job_id"]
             payload["job_status"] = kwargs["job_status"]
-        else:
-            payload["message"] = message
 
         self._queue.put(payload)
 

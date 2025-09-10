@@ -45,6 +45,7 @@ class QuantumProgram(ABC):
         backend: CircuitRunner,
         seed: int | None = None,
         progress_queue: Queue | None = None,
+        has_final_computation: bool = False,
         **kwargs,
     ):
         """
@@ -65,6 +66,8 @@ class QuantumProgram(ABC):
                 be used for the parameter initialization.
                 Defaults to None.
             progress_queue (Queue): a queue for progress bar updates.
+            has_final_computation (bool): Whether the program includes a final
+                computation step after optimization. This affects progress reporting.
 
             **kwargs: Additional keyword arguments that influence behaviour.
                 - grouping_strategy (Literal["default", "wires", "qwc"]): A strategy for grouping operations, used in Pennylane's transforms.
@@ -100,7 +103,9 @@ class QuantumProgram(ABC):
         self.job_id = kwargs.get("job_id", None)
         self._progress_queue = progress_queue
         if progress_queue and self.job_id:
-            self.reporter = QueueProgressReporter(self.job_id, progress_queue)
+            self.reporter = QueueProgressReporter(
+                self.job_id, progress_queue, has_final_computation=has_final_computation
+            )
         else:
             self.reporter = LoggingProgressReporter()
 

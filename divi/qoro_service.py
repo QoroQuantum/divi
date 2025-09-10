@@ -374,7 +374,7 @@ class QoroService(CircuitRunner):
                 extra={"append": True},
             )
         else:
-            update_fn = lambda _: None
+            update_fn = lambda _, __: None
 
         if not loop_until_complete:
             statuses = [

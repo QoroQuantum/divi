@@ -22,7 +22,7 @@ if __name__ == "__main__":
     )
 
     qubo_partition = QUBOPartitioningQAOA(
-        qubo=bqm.to_numpy_matrix(),
+        qubo=bqm,
         decomposer=hybrid.EnergyImpactDecomposer(size=5),
         composer=hybrid.SplatComposer(),
         n_layers=2,
@@ -39,7 +39,7 @@ if __name__ == "__main__":
     quantum_solution, quantum_energy = qubo_partition.aggregate_results()
 
     best_classical_bitstring, best_classical_energy, _ = (
-        dimod.ExactSolver().sample(bqm).lowest().record[0]
+        dimod.SimulatedAnnealingSampler().sample(bqm).lowest().record[0]
     )
 
     print(f"Classical Solution: {best_classical_bitstring}")

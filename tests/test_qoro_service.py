@@ -459,8 +459,8 @@ class TestQoroServiceMock:
         pbar_mock.assert_has_calls(
             [
                 mocker.call.__bool__(),
-                mocker.call(1),
-                mocker.call(2),
+                mocker.call(1, "PENDING"),
+                mocker.call(2, "PENDING"),
             ]
         )
 
