@@ -43,6 +43,10 @@ def default_test_simulator():
     return ParallelSimulator(shots=5000)
 
 
+def is_assertion_error(err, *_) -> bool:
+    return isinstance(err, AssertionError)
+
+
 def pytest_addoption(parser):
     parser.addoption(
         "--api-token",

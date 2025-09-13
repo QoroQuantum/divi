@@ -16,6 +16,7 @@ from divi.qprog._qubo_partitioning import (
     QUBOPartitioningQAOA,
     _sanitize_problem_input,
 )
+from tests.conftest import is_assertion_error
 
 # --- Fixtures and Test Data ---
 
@@ -180,7 +181,7 @@ class TestQUBOPartitioningQAOA:
         verify_basic_program_batch_behaviour(mocker, qubo_partitioning_qaoa)
 
     @pytest.mark.e2e
-    @flaky(max_runs=3, min_passes=1)
+    @flaky(max_runs=3, min_passes=1, rerun_filter=is_assertion_error)
     def test_qubo_partitioning_e2e(self, default_test_simulator):
         """An end-to-end test solving a small QUBO."""
         qubo = {

@@ -25,6 +25,7 @@ from divi.qprog import (
     ScipyOptimizer,
 )
 from divi.qprog.optimizers import MonteCarloOptimizer
+from tests.conftest import is_assertion_error
 
 pytestmark = pytest.mark.algo
 
@@ -200,7 +201,7 @@ class TestGraphInput:
         assert qaoa_problem.solution == [0, 1, 4]
 
     @pytest.mark.e2e
-    @flaky(max_runs=3, min_passes=1)
+    @flaky(max_runs=3, min_passes=1, rerun_filter=is_assertion_error)
     @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
     def test_graph_qaoa_e2e_solution(self, mocker, optimizer, default_test_simulator):
         G = nx.bull_graph()
@@ -406,7 +407,7 @@ class TestQUBOInput:
             qaoa_problem.draw_solution()
 
     @pytest.mark.e2e
-    @flaky(max_runs=3, min_passes=1)
+    @flaky(max_runs=3, min_passes=1, rerun_filter=is_assertion_error)
     def test_qubo_returns_correct_solution(self, default_test_simulator):
         qaoa_problem = QAOA(
             problem=qubo_matrix_np,
@@ -490,7 +491,7 @@ class TestQUBOInput:
         )
 
     @pytest.mark.e2e
-    @flaky(max_runs=3, min_passes=1)
+    @flaky(max_runs=3, min_passes=1, rerun_filter=is_assertion_error)
     @pytest.mark.filterwarnings("ignore::UserWarning")
     def test_quadratic_program_minimize_correct(
         self, quadratic_program, default_test_simulator
@@ -514,7 +515,7 @@ class TestQUBOInput:
         )
 
     @pytest.mark.e2e
-    @flaky(max_runs=3, min_passes=1)
+    @flaky(max_runs=3, min_passes=1, rerun_filter=is_assertion_error)
     @pytest.mark.filterwarnings("ignore::UserWarning")
     def test_quadratic_program_maximize_correct(
         self, quadratic_program, default_test_simulator

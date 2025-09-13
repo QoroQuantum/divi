@@ -252,28 +252,23 @@ class QuantumProgram(ABC):
 
         # Define key functions for both levels of grouping
         get_param_id = lambda item: int(item[0].split("_")[0])
-        get_group_id = lambda item: int(item[0].split("_")[-1])
+        get_qem_id = lambda item: int(item[0].split("_")[1].split(":")[1])
 
-        # --- OPTIMIZATION START ---
         # Group the pre-sorted results by parameter ID.
-        # This is highly memory-efficient as it processes results as a stream.
         for p, param_group_iterator in groupby(results.items(), key=get_param_id):
+            param_group_iterator = list(param_group_iterator)
 
-            # This dictionary is now built from a lazy iterator, which is more efficient.
-            # It consumes the inner iterator to create a lookup of histograms for the current 'p'.
-            shots_by_group_idx = {
-                gid: [value for _, value in group]
-                for gid, group in groupby(param_group_iterator, key=get_group_id)
-            }
+            shots_by_qem_idx = zip(
+                *{
+                    gid: [value for _, value in group]
+                    for gid, group in groupby(param_group_iterator, key=get_qem_id)
+                }.values()
+            )
 
-            # --- The rest of the logic is the same, but operates on the efficiently grouped data ---
             marginal_results = []
-            for group_idx, curr_measurement_group in enumerate(measurement_groups):
-                group_shot_histograms = shots_by_group_idx.get(group_idx, [])
-
-                if not group_shot_histograms:
-                    continue
-
+            for shots_dicts, curr_measurement_group in zip(
+                shots_by_qem_idx, measurement_groups
+            ):
                 curr_marginal_results = []
                 for observable in curr_measurement_group:
                     intermediate_exp_values = [
@@ -281,7 +276,7 @@ class QuantumProgram(ABC):
                             shots_dict,
                             tuple(reversed(range(len(next(iter(shots_dict.keys())))))),
                         )
-                        for shots_dict in group_shot_histograms
+                        for shots_dict in shots_dicts
                     ]
 
                     mitigated_exp_value = self._qem_protocol.postprocess_results(
@@ -358,7 +353,10 @@ class QuantumProgram(ABC):
         def _iteration_counter(intermediate_result: OptimizeResult):
             self.losses.append(
                 dict(
-                    zip(range(self.optimizer.n_param_sets), (intermediate_result.fun,))
+                    zip(
+                        range(len(intermediate_result.x)),
+                        np.atleast_1d(intermediate_result.fun),
+                    )
                 )
             )
 

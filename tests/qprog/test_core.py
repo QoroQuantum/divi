@@ -4,6 +4,7 @@
 
 import time
 from concurrent.futures import Future, ProcessPoolExecutor
+from functools import partial
 from multiprocessing import Event, Manager
 from queue import Queue
 from threading import Lock, Thread
@@ -12,10 +13,13 @@ import numpy as np
 import pennylane as qml
 import pytest
 import sympy as sp
+from mitiq.zne.inference import LinearFactory
+from mitiq.zne.scaling import fold_global
 from qprog_contracts import verify_basic_program_batch_behaviour
 from rich.progress import Progress
 
 from divi.circuits import MetaCircuit
+from divi.qem import ZNE
 from divi.qprog.batch import ProgramBatch, QuantumProgram, queue_listener
 
 
@@ -38,7 +42,9 @@ class SampleProgram(QuantumProgram):
             qml.U3(*params[1], wires=1)
             qml.CNOT(wires=[0, 1])
 
-            return qml.expval(qml.PauliX(0) + qml.PauliZ(1) + qml.PauliX(0) @ qml.Z(1))
+            return qml.expval(
+                qml.PauliX(0) + qml.PauliZ(1) + qml.PauliX(0) @ qml.PauliZ(1)
+            )
 
         # Create symbolic parameters
         symbols = [sp.Symbol("beta"), sp.symarray("theta", 3)]
@@ -153,12 +159,55 @@ class TestProgram:
 
         program._initialize_params()
         fake_shot_histogram = {"00": 23, "01": 27, "10": 15, "11": 35}
-        fake_results = {f"0_{i}": fake_shot_histogram for i in range(expected_n_groups)}
+        fake_results = {
+            f"0_mock-qem:0_{i}": fake_shot_histogram for i in range(expected_n_groups)
+        }
         expvals_collector.append(program._post_process_results(fake_results)[0])
 
     def test_assert_all_groupings_return_same_expval(self, expvals_collector):
         assert len(expvals_collector) == 3
         assert all(value == expvals_collector[0] for value in expvals_collector[1:])
+
+    def test_post_process_with_zne(self):
+        """
+        Tests that _post_process_results correctly applies ZNE extrapolation.
+        """
+        # 1. Setup Program with ZNE Protocol
+        scale_factors = [1.0, 2.0, 3.0]
+        zne_protocol = ZNE(
+            folding_fn=partial(fold_global),
+            scale_factors=scale_factors,
+            # The traceback shows you used LinearFactory, so we'll stick with that.
+            extrapolation_factory=LinearFactory(scale_factors=scale_factors),
+        )
+        program = SampleProgram(10, 5.5, seed=1997, qem_protocol=zne_protocol)
+        program.loss_constant = 0.0
+
+        # 2. Create mock shot histograms.
+        # The shots below are crafted to produce expectation values of 0.9, 0.8, and 0.7
+        # for the scale factors 1.0, 2.0, and 3.0, respectively.
+        mock_shots_per_sf = [
+            {"00": 95, "11": 5},  # Produces expval of 0.9
+            {"00": 90, "11": 10},  # Produces expval of 0.8
+            {"00": 85, "11": 15},  # Produces expval of 0.7
+        ]
+
+        mock_results = {}
+        n_measurement_groups = 3
+        # Create the full results dictionary for ALL 3 measurement groups.
+        for qem_run_id, shots in enumerate(mock_shots_per_sf):
+            for meas_group_id in range(n_measurement_groups):
+                key = f"0_zne:{qem_run_id}_{meas_group_id}"
+                mock_results[key] = shots
+
+        # 3. Call the function and assert the outcome
+        final_losses = program._post_process_results(mock_results)
+
+        # With 3 measurement groups, the final loss is a sum of the 3 mitigated expectation values.
+        # Assuming each observable term behaves identically under noise for this test,
+        # the mitigated value for each is 1.0. The final loss (sum) should be 3.0.
+        # Note: The actual postprocessing_fn for a Sum observable will sum the results.
+        assert np.isclose(final_losses[0], 3.0)
 
 
 class TestProgramBatch:
