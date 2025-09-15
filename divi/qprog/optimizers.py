@@ -99,8 +99,17 @@ class MonteCarloOptimizer(Optimizer):
     def __init__(self, n_param_sets: int = 10, n_best_sets: int = 3):
         super().__init__()
 
+        if n_best_sets > n_param_sets:
+            raise ValueError("n_best_sets must be less than or equal to n_param_sets.")
+
         self._n_param_sets = n_param_sets
         self._n_best_sets = n_best_sets
+
+        # Calculate how many times each of the best sets should be repeated
+        samples_per_best = self.n_param_sets // self.n_best_sets
+        remainder = self.n_param_sets % self.n_best_sets
+        self._repeat_counts = np.full(self.n_best_sets, samples_per_best)
+        self._repeat_counts[:remainder] += 1
 
     @property
     def n_param_sets(self):
@@ -119,15 +128,14 @@ class MonteCarloOptimizer(Optimizer):
     ) -> np.ndarray:
         """
         Generates a new population of parameters based on the best-performing ones.
-
         """
+
         # 1. Select the best parameter sets from the current population
         best_params = params[best_indices]
 
         # 2. Prepare the means for sampling by repeating each best parameter set
-        # This creates the 'loc' argument for rng.normal
-        # Shape: (n_best_sets * n_param_sets, param_dims...)
-        new_means = np.repeat(best_params, self.n_param_sets, axis=0)
+        # according to its assigned count
+        new_means = np.repeat(best_params, self._repeat_counts, axis=0)
 
         # 3. Define the standard deviation (scale), which shrinks over iterations
         scale = 1.0 / (2.0 * (curr_iteration + 1.0))
@@ -142,7 +150,7 @@ class MonteCarloOptimizer(Optimizer):
         self,
         cost_fn: Callable[[np.ndarray], float],
         initial_params: np.ndarray,
-        callback_fn: Callable[[OptimizeResult], Any] | None = None,
+        callback_fn: Callable[[OptimizeResult], float | np.ndarray] | None = None,
         **kwargs,
     ) -> OptimizeResult:
         """

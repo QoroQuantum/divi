@@ -595,6 +595,31 @@ test = ["Pillow", "contourpy[test-no-images]", "matplotlib"]
 test-no-images = ["pytest", "pytest-cov", "pytest-rerunfailures", "pytest-xdist", "wurlitzer"]
 
 [[package]]
+name = "cplex"
+version = "22.1.2.0"
+description = "A Python interface to the CPLEX Callable Library, Community Edition."
+optional = false
+python-versions = ">=3.9"
+files = [
+    {file = "cplex-22.1.2.0-cp310-cp310-manylinux2014_aarch64.whl", hash = "sha256:05aa14e05a374eef925618b7b229fb6720932573247aae7f1766efb74385a534"},
+    {file = "cplex-22.1.2.0-cp310-cp310-manylinux2014_ppc64le.whl", hash = "sha256:e7097f6cc23180e97a63d5dfdcb37ab9833fffdc38fa7ee34e7ec6e5d34a8d0f"},
+    {file = "cplex-22.1.2.0-cp310-cp310-manylinux2014_x86_64.whl", hash = "sha256:c43e67eac01a89b71b2ede70257889bf74a0d2c221f0e31ffcdc101c5520f79c"},
+    {file = "cplex-22.1.2.0-cp310-cp310-win_amd64.whl", hash = "sha256:c58101462cc8aee00ef041c003e9776a4877dd1563fc5d6a737a953ce51f9f83"},
+    {file = "cplex-22.1.2.0-cp311-cp311-manylinux2014_aarch64.whl", hash = "sha256:f976ce0166bd0e68740e4b514d1395b4f16e8103ef50d9a8f157c1cc916db216"},
+    {file = "cplex-22.1.2.0-cp311-cp311-manylinux2014_ppc64le.whl", hash = "sha256:e875852bd46361b799950cc6854870a5e3d86f7238d4a8ba97648497521bb52b"},
+    {file = "cplex-22.1.2.0-cp311-cp311-manylinux2014_x86_64.whl", hash = "sha256:bee12d488df86da5142ccb986fdf537df9ccff8837f33e5f0bc504b0e9b5d3f7"},
+    {file = "cplex-22.1.2.0-cp311-cp311-win_amd64.whl", hash = "sha256:afbbad8aaede41255b703ab758452df9a899dbad48366bd0c9991fb219d57062"},
+    {file = "cplex-22.1.2.0-cp312-cp312-manylinux2014_aarch64.whl", hash = "sha256:feb5b9c6f437c3cacb0dc6b12fde6bdf6e266074cac9f535e641794363a26254"},
+    {file = "cplex-22.1.2.0-cp312-cp312-manylinux2014_ppc64le.whl", hash = "sha256:3e8fd6127121a28ac6499cda16c5a96fa45e5ba92c20f44abc18ee734aef819e"},
+    {file = "cplex-22.1.2.0-cp312-cp312-manylinux2014_x86_64.whl", hash = "sha256:0c28a0a3b1dde31d2640965feb5d7c513ade2ad4faabf58f7783c21093674b8b"},
+    {file = "cplex-22.1.2.0-cp312-cp312-win_amd64.whl", hash = "sha256:aa3c0ecec114a0e706def5674f94f04a44b6c5500168909381c034951677fcca"},
+    {file = "cplex-22.1.2.0-cp39-cp39-manylinux2014_aarch64.whl", hash = "sha256:9332932334e3a9682a2a239a08c0169fe50e3f8d08fec84b9b120c7191c90737"},
+    {file = "cplex-22.1.2.0-cp39-cp39-manylinux2014_ppc64le.whl", hash = "sha256:52ae74c59bac3d9a1319b7a6e4c0be94a9dc223fbcd028601dbf347ef8755ca4"},
+    {file = "cplex-22.1.2.0-cp39-cp39-manylinux2014_x86_64.whl", hash = "sha256:3c8dc025044718863493fa8912ef6de5a70e8440e9fb0b59748b0207064f1507"},
+    {file = "cplex-22.1.2.0-cp39-cp39-win_amd64.whl", hash = "sha256:bb43252083f7d8a8b67b18876b0387ea84304c8a200461b8a8426ef8a4b4bb78"},
+]
+
+[[package]]
 name = "cryptography"
 version = "45.0.6"
 description = "cryptography is a package which provides cryptographic recipes and primitives to Python developers."
@@ -3493,22 +3518,6 @@ qiskit = ">=1.1.0"
 scipy = ">=1.0"
 
 [[package]]
-name = "qiskit-algorithms"
-version = "0.3.1"
-description = "Qiskit Algorithms: A library of quantum computing algorithms"
-optional = false
-python-versions = ">=3.8"
-files = [
-    {file = "qiskit_algorithms-0.3.1-py3-none-any.whl", hash = "sha256:d6c31d88a1ed65a9c6382c233ef10ecb9562e726f7b1b7823a0d178d63d29a0a"},
-    {file = "qiskit_algorithms-0.3.1.tar.gz", hash = "sha256:cba9c573d47c0f9508745a5a2794298084ec4f8833781b426fa9b2cea0fca794"},
-]
-
-[package.dependencies]
-numpy = ">=1.17"
-qiskit = ">=0.44"
-scipy = ">=1.4"
-
-[[package]]
 name = "qiskit-ibm-runtime"
 version = "0.37.0"
 description = "IBM Quantum client for Qiskit Runtime."
@@ -3540,21 +3549,21 @@ visualization = ["plotly (>=5.23.0)"]
 
 [[package]]
 name = "qiskit-optimization"
-version = "0.6.1"
+version = "0.7.0"
 description = "Qiskit Optimization: A library for optimization applications using quantum computing"
 optional = false
-python-versions = ">=3.8"
+python-versions = ">=3.9"
 files = [
-    {file = "qiskit-optimization-0.6.1.tar.gz", hash = "sha256:0ad8c2bc83fe80657c788b5f282ce4055d0ec005c4876789e5069499ee3c00c0"},
-    {file = "qiskit_optimization-0.6.1-py3-none-any.whl", hash = "sha256:3f09f31289dfef66bbbb03b782a94d88a4ba5681c728b4b8e96884de5fc83879"},
+    {file = "qiskit_optimization-0.7.0-py3-none-any.whl", hash = "sha256:2082390c2b89cdf2083f6f790486797a0e188016e0dd31c8a32b27f6913864dc"},
+    {file = "qiskit_optimization-0.7.0.tar.gz", hash = "sha256:059e9329c647534965e68d8c52de1b02828635c525c210aa0730e486f9c5a686"},
 ]
 
 [package.dependencies]
+cplex = {version = "*", optional = true, markers = "python_version < \"3.13\" and (platform_system != \"Darwin\" or python_version < \"3.12\") and extra == \"cplex\""}
 docplex = ">=2.21.207,<2.24.231 || >2.24.231"
 networkx = ">=2.6.3"
 numpy = ">=1.17"
-qiskit = ">=0.44"
-qiskit-algorithms = ">=0.2.0"
+qiskit = ">=1.1,<3"
 scipy = ">=1.9.0"
 setuptools = ">=40.1.0"
 
@@ -4640,4 +4649,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.11,<3.13"
-content-hash = "5b7941abede58b1c03f4783f5b3ef29815001a9eadbb988a5ea7e86398fef6fc"
+content-hash = "bcc73975a9cff49dca07f84d3a725f3d5f4bc078f37dd5e55e2aca6828f1b9d7"

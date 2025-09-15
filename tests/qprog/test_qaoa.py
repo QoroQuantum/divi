@@ -211,9 +211,10 @@ class TestGraphInput:
             problem=G,
             n_layers=1,
             optimizer=optimizer,
-            max_iterations=8 if not isinstance(optimizer, MonteCarloOptimizer) else 2,
+            max_iterations=10,
             is_constrained=True,
             backend=default_test_simulator,
+            seed=1997,
         )
 
         qaoa_problem.run()
@@ -505,6 +506,7 @@ class TestQUBOInput:
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             max_iterations=10,
             backend=default_test_simulator,
+            seed=1997,
         )
 
         qaoa_problem.run()
