@@ -23,7 +23,11 @@ class Optimizer(ABC):
     @property
     @abstractmethod
     def n_param_sets(self):
-        """ """
+        """
+        Returns the number of parameter sets the optimizer can handle per optimization run.
+        Returns:
+            int: Number of parameter sets.
+        """
         raise NotImplementedError("This method should be implemented by subclasses.")
 
     @abstractmethod
@@ -92,7 +96,7 @@ class ScipyOptimizer(Optimizer):
 
 
 class MonteCarloOptimizer(Optimizer):
-    def __init__(self, n_param_sets: int = 10, n_best_sets: int = 10):
+    def __init__(self, n_param_sets: int = 10, n_best_sets: int = 3):
         super().__init__()
 
         self._n_param_sets = n_param_sets

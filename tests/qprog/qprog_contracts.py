@@ -47,7 +47,7 @@ def verify_correct_circuit_count(obj: QuantumProgram):
             obj.cost_hamiltonian
         )
     elif isinstance(obj.optimizer, ScipyOptimizer):
-        if obj.optimizer.method in ((ScipyMethod.NELDER_MEAD, ScipyMethod.COBYLA)):
+        if obj.optimizer.method in (ScipyMethod.NELDER_MEAD, ScipyMethod.COBYLA):
             assert obj.total_circuit_count == obj._minimize_res.nfev * len(
                 obj.cost_hamiltonian
             )

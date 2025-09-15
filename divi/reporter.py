@@ -76,7 +76,7 @@ class LoggingProgressReporter(ProgressReporter):
         # A special check for iteration updates to mimic old behavior
         if "poll_attempt" in kwargs:
             logger.info(
-                rf"Job {self.CYAN}{kwargs['service_job_id'].split('-')[0]}{self.RESET} is {kwargs['job_status']}. Polling attempt {kwargs['poll_attempt']} / {kwargs['max_retries']}\r",
+                f"Job {self.CYAN}{kwargs['service_job_id'].split('-')[0]}{self.RESET} is {kwargs['job_status']}. Polling attempt {kwargs['poll_attempt']} / {kwargs['max_retries']}\r",
                 extra={"append": True},
             )
             return

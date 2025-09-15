@@ -25,6 +25,19 @@ logger = logging.getLogger(__name__)
 
 
 def _compute_parameter_shift_mask(n_params):
+    """
+    Generate a binary matrix mask for the parameter shift rule.
+    This mask is used to determine the shifts to apply to each parameter
+    when computing gradients via the parameter shift rule in quantum algorithms.
+
+    Args:
+        n_params (int): The number of parameters in the quantum circuit.
+
+    Returns:
+        np.ndarray: A (2 * n_params, n_params) matrix where each row encodes
+            the shift to apply to each parameter for a single evaluation.
+            The values are multiples of 0.5 * pi, with alternating signs.
+    """
     mask_arr = np.arange(0, 2 * n_params, 2)
     mask_arr[0] = 1
 
