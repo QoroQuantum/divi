@@ -2,7 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from qiskit_algorithms import NumPyMinimumEigensolver
 from qiskit_optimization import QuadraticProgram
 from qiskit_optimization.algorithms import MinimumEigenOptimizer
 
@@ -30,13 +29,18 @@ if __name__ == "__main__":
     qaoa_problem.run()
     qaoa_problem.compute_final_solution()
 
-    exact_solver = exact = MinimumEigenOptimizer(NumPyMinimumEigensolver())
-    sol = exact_solver.solve(qp)
-
     print(f"Total circuits: {qaoa_problem.total_circuit_count}")
 
-    print(f"Classical Solution: {sol.raw_samples[0].x}")
-    print(f"Classical Energy: {sol.raw_samples[0].fval:.9f}")
+    try:
+        from qiskit_algorithms import NumPyMinimumEigensolver
+
+        exact_solver = exact = MinimumEigenOptimizer(NumPyMinimumEigensolver())
+        sol = exact_solver.solve(qp)
+        print(f"Classical Solution: {sol.raw_samples[0].x}")
+        print(f"Classical Energy: {sol.raw_samples[0].fval:.9f}")
+    except ImportError:
+        pass
+
     print(f"Quantum Solution: {qaoa_problem.solution}")
     print(
         f"Quantum Energy: {qaoa_problem.problem.objective.evaluate(qaoa_problem.solution).item():.9f}"
