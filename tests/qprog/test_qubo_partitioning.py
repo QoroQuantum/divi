@@ -181,7 +181,6 @@ class TestQUBOPartitioningQAOA:
         verify_basic_program_batch_behaviour(mocker, qubo_partitioning_qaoa)
 
     @pytest.mark.e2e
-    @flaky(max_runs=3, min_passes=1, rerun_filter=is_assertion_error)
     def test_qubo_partitioning_e2e(self, default_test_simulator):
         """An end-to-end test solving a small QUBO."""
         qubo = {
@@ -196,6 +195,8 @@ class TestQUBOPartitioningQAOA:
 
         # Decomposer to split into two problems of size 2
         decomposer = hybrid.EnergyImpactDecomposer(size=2)
+
+        default_test_simulator.set_seed(1997)
 
         batch = QUBOPartitioningQAOA(
             qubo=bqm,

@@ -211,10 +211,9 @@ class TestGraphInput:
             problem=G,
             n_layers=1,
             optimizer=optimizer,
-            max_iterations=10,
+            max_iterations=12,
             is_constrained=True,
             backend=default_test_simulator,
-            seed=1997,
         )
 
         qaoa_problem.run()
@@ -280,20 +279,19 @@ class TestGraphInput:
         plt.close()
 
 
-qubo_matrix_list = [
+QUBO_MATRIX_LIST = [
     [-1, 0, -4.5],
     [0, 1, 0],
     [-4.5, 0, -1],
 ]
-
-qubo_matrix_np = np.array(qubo_matrix_list)
-qubo_matrix_sp = sps.csc_matrix(qubo_matrix_np)
+QUBO_MATRIX_NP = np.array(QUBO_MATRIX_LIST)
+QUBO_MATRIX_SP = sps.csc_matrix(QUBO_MATRIX_NP)
 
 
 class TestQUBOInput:
 
     @pytest.mark.parametrize(
-        "input_qubo", [qubo_matrix_list, qubo_matrix_np, qubo_matrix_sp]
+        "input_qubo", [QUBO_MATRIX_LIST, QUBO_MATRIX_NP, QUBO_MATRIX_SP]
     )
     def test_qubo_basic_initialization(self, input_qubo, default_test_simulator):
         qaoa_problem = QAOA(
@@ -336,7 +334,7 @@ class TestQUBOInput:
             match="Ignoring the 'problem' argument as it is not applicable to QUBO.",
         ):
             QAOA(
-                problem=qubo_matrix_list,
+                problem=QUBO_MATRIX_LIST,
                 graph_problem="max_clique",
                 n_layers=2,
                 optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
@@ -394,7 +392,7 @@ class TestQUBOInput:
 
     def test_qubo_fails_when_drawing_solution(self):
         qaoa_problem = QAOA(
-            problem=qubo_matrix_list,
+            problem=QUBO_MATRIX_LIST,
             n_layers=2,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=10,
@@ -411,7 +409,7 @@ class TestQUBOInput:
     @flaky(max_runs=3, min_passes=1, rerun_filter=is_assertion_error)
     def test_qubo_returns_correct_solution(self, default_test_simulator):
         qaoa_problem = QAOA(
-            problem=qubo_matrix_np,
+            problem=QUBO_MATRIX_NP,
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             max_iterations=10,
@@ -504,7 +502,7 @@ class TestQUBOInput:
             problem=quadratic_program,
             n_layers=2,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
-            max_iterations=10,
+            max_iterations=15,
             backend=default_test_simulator,
             seed=1997,
         )
