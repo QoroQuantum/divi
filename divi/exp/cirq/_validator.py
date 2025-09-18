@@ -289,7 +289,12 @@ class Parser:
     # ---- gate definitions ----
     def gate_def(self):
         self.match("GATE")
-        gname = self.match("ID").value
+        gname_tok = self.match("ID")
+        gname = gname_tok.value
+        if gname in BUILTINS:
+            raise SyntaxError(
+                f"Cannot redefine built-in gate '{gname}' at {gname_tok.line}:{gname_tok.col}"
+            )
         if gname in self.user_gates:
             self._dupe(gname)
         params: tuple[str, ...] = ()
@@ -570,7 +575,6 @@ class Parser:
         if t.type == "PI":
             self.match("PI")
             return
-        # ---- NEW BLOCK TO HANDLE MATH FUNCTIONS ----
         if t.type in _MATH_FUNCS:
             self.match(t.type)  # Consume the function name (e.g., COS)
             self.match("LPAREN")
@@ -578,13 +582,11 @@ class Parser:
             # Note: QASM 2.0 math functions only take one argument
             self.match("RPAREN")
             return
-        # --------------------------------------------
         if t.type == "ID":
             # function call or plain ID
             id_tok = self.match("ID")
             ident = id_tok.value
             if self.accept("LPAREN"):
-                # This now correctly handles user-defined functions (if any)
                 if self.peek().type != "RPAREN":
                     self._expr(allow_id)
                     while self.accept("COMMA"):
