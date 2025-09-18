@@ -119,9 +119,7 @@ class TestQoroServiceMock:
     def test_submit_circuits_invalid_qasm_mock(self, mocker, qoro_service_mock):
         """Tests that submitting an invalid QASM string raises a ValueError."""
         mocker.patch("divi.qoro_service.is_valid_qasm", return_value=False)
-        with pytest.raises(
-            ValueError, match="Circuit circuit_1 is not a valid QASM string."
-        ):
+        with pytest.raises(ValueError, match="Circuit 'circuit_1' is not a valid QASM"):
             qoro_service_mock.submit_circuits({"circuit_1": "invalid_qasm"})
 
     def test_submit_circuits_circuit_cut_constraint_mock(self, qoro_service_mock):
