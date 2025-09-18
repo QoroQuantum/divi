@@ -138,9 +138,9 @@ class VQE(QuantumProgram):
             )
         )
 
-        self.loss_constant = sum(
-            map(lambda x: hamiltonian[x].scalar, constant_terms_idx)
-        ).item()
+        self.loss_constant = float(
+            sum(map(lambda x: hamiltonian[x].scalar, constant_terms_idx))
+        )
 
         for idx in constant_terms_idx:
             hamiltonian -= hamiltonian[idx]

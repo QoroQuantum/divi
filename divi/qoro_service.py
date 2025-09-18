@@ -15,7 +15,7 @@ import requests
 from dotenv import dotenv_values
 from requests.adapters import HTTPAdapter, Retry
 
-from divi.exp.cirq import is_valid_qasm
+from divi.exp.cirq import validate_qasm_raise
 from divi.interfaces import CircuitRunner
 from divi.qpu_system import QPU, QPUSystem
 
@@ -241,8 +241,9 @@ class QoroService(CircuitRunner):
             raise ValueError("Only one circuit allowed for circuit-cutting jobs.")
 
         for key, circuit in circuits.items():
-            if not is_valid_qasm(circuit):
-                raise ValueError(f"Circuit {key} is not a valid QASM string.")
+            validate_qasm_raise(circuit)
+            # if not is_valid_qasm(circuit):
+            #     raise ValueError(f"Circuit {key} is not a valid QASM string.")
 
         circuit_chunks = self._split_circuits(circuits)
 
