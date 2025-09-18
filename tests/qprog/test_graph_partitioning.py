@@ -14,8 +14,9 @@ from divi.parallel_simulator import ParallelSimulator
 from divi.qprog import (
     GraphPartitioningQAOA,
     GraphProblem,
-    Optimizer,
     PartitioningConfig,
+    ScipyMethod,
+    ScipyOptimizer,
 )
 from divi.qprog._graph_partitioning import (
     _apply_split_with_relabel,
@@ -33,7 +34,7 @@ problem_args = {
     "partitioning_config": PartitioningConfig(
         minimum_n_clusters=2, partitioning_algorithm="spectral"
     ),
-    "optimizer": Optimizer.NELDER_MEAD,
+    "optimizer": ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
     "max_iterations": 10,
     "backend": ParallelSimulator(shots=5000),
 }
@@ -470,7 +471,7 @@ class TestGraphPartitioningQAOA:
 
         # Assert common values propagated to all programs
         for program in node_partitioning_qaoa.programs.values():
-            assert program.optimizer == Optimizer.NELDER_MEAD
+            assert isinstance(program.optimizer, ScipyOptimizer)
             assert program.max_iterations == 10
             assert isinstance(program.backend, ParallelSimulator)
             assert program.backend.shots == 5000

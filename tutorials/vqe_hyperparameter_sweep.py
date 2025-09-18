@@ -8,9 +8,8 @@ import numpy as np
 import pennylane as qml
 
 from divi.parallel_simulator import ParallelSimulator
-from divi.qprog import VQEAnsatz, VQEHyperparameterSweep
-from divi.qprog._vqe_sweep import MoleculeTransformer
-from divi.qprog.optimizers import Optimizer
+from divi.qprog import MoleculeTransformer, VQEAnsatz, VQEHyperparameterSweep
+from divi.qprog.optimizers import MonteCarloOptimizer
 
 if __name__ == "__main__":
     mol = qml.qchem.Molecule(
@@ -21,10 +20,12 @@ if __name__ == "__main__":
         base_molecule=mol, bond_modifiers=[-0.4, -0.25, 0, 0.25, 0.4]
     )
 
+    optim = MonteCarloOptimizer(n_param_sets=10, n_best_sets=3)
+
     vqe_problem = VQEHyperparameterSweep(
         molecule_transformer=transformer,
-        ansatze=[VQEAnsatz.HARTREE_FOCK],
-        optimizer=Optimizer.MONTE_CARLO,
+        ansatze=[VQEAnsatz.HARTREE_FOCK, VQEAnsatz.UCCSD],
+        optimizer=optim,
         max_iterations=3,
         backend=ParallelSimulator(shots=2000),
         grouping_strategy="wires",

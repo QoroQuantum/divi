@@ -11,11 +11,12 @@ from flaky import flaky
 from qprog_contracts import verify_basic_program_batch_behaviour
 
 from divi.parallel_simulator import ParallelSimulator
-from divi.qprog import QAOA, Optimizer
+from divi.qprog import QAOA, ScipyMethod, ScipyOptimizer
 from divi.qprog._qubo_partitioning import (
     QUBOPartitioningQAOA,
     _sanitize_problem_input,
 )
+from tests.conftest import is_assertion_error
 
 # --- Fixtures and Test Data ---
 
@@ -42,7 +43,7 @@ def qubo_partitioning_qaoa(sample_qubo_matrix):
         qubo=sample_qubo_matrix,
         decomposer=decomposer,
         n_layers=1,
-        optimizer=Optimizer.NELDER_MEAD,
+        optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
         max_iterations=10,
         backend=ParallelSimulator(shots=1000),
     )
@@ -180,11 +181,10 @@ class TestQUBOPartitioningQAOA:
         verify_basic_program_batch_behaviour(mocker, qubo_partitioning_qaoa)
 
     @pytest.mark.e2e
-    @flaky(max_runs=3, min_passes=1)
-    def test_qubo_partitioning_e2e(self):
+    def test_qubo_partitioning_e2e(self, default_test_simulator):
         """An end-to-end test solving a small QUBO."""
         qubo = {
-            (0, 0): 1,
+            (0, 0): -0.5,
             (1, 1): 1,
             (0, 1): -2,  # Partition 1: min at x0=1, x1=1
             (2, 2): 1,
@@ -196,13 +196,15 @@ class TestQUBOPartitioningQAOA:
         # Decomposer to split into two problems of size 2
         decomposer = hybrid.EnergyImpactDecomposer(size=2)
 
+        default_test_simulator.set_seed(1997)
+
         batch = QUBOPartitioningQAOA(
             qubo=bqm,
             decomposer=decomposer,
             n_layers=2,
-            optimizer=Optimizer.COBYLA,
+            optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             max_iterations=15,
-            backend=ParallelSimulator(shots=2000),
+            backend=default_test_simulator,
             seed=1997,
         )
 
@@ -213,6 +215,7 @@ class TestQUBOPartitioningQAOA:
 
         # The known optimal solution for this QUBO is [1, 1, 0, 0]
         expected_solution = np.array([1, 1, 0, 0])
+        np.testing.assert_array_equal(solution, expected_solution)
 
-        assert np.array_equal(solution, expected_solution)
         assert isinstance(energy, float)
+        assert energy == pytest.approx(-1.5)

@@ -452,16 +452,15 @@ class TestQoroServiceMock:
 
         pbar_mock = mocker.MagicMock()
         qoro_service_mock.poll_job_status(
-            "job_1", loop_until_complete=True, pbar_update_fn=pbar_mock, verbose=True
+            "job_1", loop_until_complete=True, poll_callback=pbar_mock, verbose=True
         )
 
         assert pbar_mock.call_count == 2
         pbar_mock.assert_has_calls(
             [
                 mocker.call.__bool__(),
-                mocker.call(1),
-                mocker.call.__bool__(),
-                mocker.call(2),
+                mocker.call(1, "PENDING"),
+                mocker.call(2, "PENDING"),
             ]
         )
 

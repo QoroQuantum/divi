@@ -10,7 +10,7 @@ import sympy as sp
 
 from divi.circuits import MetaCircuit
 from divi.qprog import QuantumProgram
-from divi.qprog.optimizers import Optimizer
+from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
 
 
 class VQEAnsatz(Enum):
@@ -50,7 +50,7 @@ class VQE(QuantumProgram):
         n_electrons: int | None = None,
         n_layers: int = 1,
         ansatz=VQEAnsatz.HARTREE_FOCK,
-        optimizer=Optimizer.MONTE_CARLO,
+        optimizer: Optimizer | None = None,
         max_iterations=10,
         **kwargs,
     ) -> None:
@@ -71,9 +71,10 @@ class VQE(QuantumProgram):
         self.n_layers = n_layers
         self.results = {}
         self.ansatz = ansatz
-        self.optimizer = optimizer
         self.max_iterations = max_iterations
         self.current_iteration = 0
+
+        self.optimizer = optimizer if optimizer is not None else MonteCarloOptimizer()
 
         self._process_problem_input(
             hamiltonian=hamiltonian, molecule=molecule, n_electrons=n_electrons
@@ -139,7 +140,7 @@ class VQE(QuantumProgram):
 
         self.loss_constant = sum(
             map(lambda x: hamiltonian[x].scalar, constant_terms_idx)
-        )
+        ).item()
 
         for idx in constant_terms_idx:
             hamiltonian -= hamiltonian[idx]

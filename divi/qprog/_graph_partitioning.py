@@ -21,16 +21,14 @@ from pymetis import part_graph
 from sklearn.cluster import SpectralClustering
 
 from divi.interfaces import CircuitRunner
-from divi.qprog import QAOA, ProgramBatch
+from divi.qprog import QAOA, ProgramBatch, QuantumProgram
 from divi.qprog._qaoa import (
     _SUPPORTED_INITIAL_STATES_LITERAL,
     GraphProblem,
     GraphProblemTypes,
     draw_graph_solution_nodes,
 )
-from divi.qprog.quantum_program import QuantumProgram
-
-from .optimizers import Optimizer
+from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
 
 AggregateFn = Callable[
     [list[int], str, nx.Graph | rx.PyGraph, dict[int, int]], list[int]
@@ -390,7 +388,6 @@ def dominance_aggregation(
 
 
 def _run_and_compute_solution(program: QuantumProgram):
-
     program.run()
 
     final_sol_circuit_count, final_sol_run_time = program.compute_final_solution()
@@ -408,7 +405,7 @@ class GraphPartitioningQAOA(ProgramBatch):
         partitioning_config: PartitioningConfig,
         initial_state: _SUPPORTED_INITIAL_STATES_LITERAL = "Recommended",
         aggregate_fn: AggregateFn = linear_aggregation,
-        optimizer=Optimizer.MONTE_CARLO,
+        optimizer: Optimizer | None = None,
         max_iterations=10,
         **kwargs,
     ):
@@ -452,7 +449,7 @@ class GraphPartitioningQAOA(ProgramBatch):
             QAOA,
             initial_state=initial_state,
             graph_problem=graph_problem,
-            optimizer=optimizer,
+            optimizer=optimizer if optimizer is not None else MonteCarloOptimizer(),
             max_iterations=self.max_iterations,
             backend=self.backend,
             n_layers=n_layers,

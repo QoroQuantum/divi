@@ -342,7 +342,7 @@ class QoroService(CircuitRunner):
         loop_until_complete: bool = False,
         on_complete: Callable | None = None,
         verbose: bool = True,
-        pbar_update_fn: Callable | None = None,
+        poll_callback: Callable[[int, str], None] | None = None,
     ):
         """
         Get the status of a job and optionally execute function *on_complete* on the results
@@ -354,12 +354,27 @@ class QoroService(CircuitRunner):
             on_complete (optional): A function to be called when the job is completed
             polling_interval (optional): The time to wait between retries
             verbose (optional): A flag to print the when retrying
-            pbar_update_fn (optional): A function for updating progress bars while polling.
+            poll_callback (optional): A function for updating progress bars while polling.
+                Definition should be `poll_callback(retry_count: int, status: str) -> None`.
         Returns:
             status: The status of the job
         """
         if not isinstance(job_ids, list):
             job_ids = [job_ids]
+
+        # Decide once at the start
+        if poll_callback:
+            update_fn = poll_callback
+        elif verbose:
+            CYAN = "\033[36m"
+            RESET = "\033[0m"
+
+            update_fn = lambda retry_count, status: logger.info(
+                rf"Job {CYAN}{job_ids[0].split('-')[0]}{RESET} is {status}. Polling attempt {retry_count} / {self.max_retries}\r",
+                extra={"append": True},
+            )
+        else:
+            update_fn = lambda _, __: None
 
         if not loop_until_complete:
             statuses = [
@@ -386,7 +401,10 @@ class QoroService(CircuitRunner):
                     timeout=200,
                 )
 
-                if response.json()["status"] == JobStatus.COMPLETED.value:
+                if response.json()["status"] in (
+                    JobStatus.COMPLETED.value,
+                    JobStatus.FAILED.value,
+                ):
                     pending_job_ids.remove(job_id)
                     responses.append(response)
 
@@ -396,13 +414,7 @@ class QoroService(CircuitRunner):
 
             time.sleep(self.polling_interval)
 
-            if verbose:
-                if pbar_update_fn:
-                    pbar_update_fn(retry_count)
-                else:
-                    logger.info(
-                        rf"\cPolling {retry_count} / {self.max_retries} retries\r"
-                    )
+            update_fn(retry_count, response.json()["status"])
 
         if not pending_job_ids:
             if on_complete:

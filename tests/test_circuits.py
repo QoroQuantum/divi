@@ -5,6 +5,7 @@
 import re
 from functools import partial
 
+import dill
 import numpy as np
 import pennylane as qml
 import pytest
@@ -191,3 +192,34 @@ class TestMetaCircuit:
 
             for actual, expected in zip(actual_params, param_list * 2):
                 assert round(expected, precision) == float(actual)
+
+    def test_metacircuit_with_qem_is_serializable(self, sample_circuit, weights_syms):
+        """
+        Ensures MetaCircuit with a QEM protocol can be pickled and unpickled correctly.
+        """
+        scale_factors = [1, 3, 5]
+        qem_protocol = ZNE(
+            folding_fn=partial(fold_global),
+            scale_factors=scale_factors,
+            extrapolation_factory=ExpFactory(scale_factors=scale_factors),
+        )
+
+        meta_circuit_original = MetaCircuit(
+            sample_circuit, weights_syms, qem_protocol=qem_protocol
+        )
+
+        # Serialize and deserialize the object
+        pickled_mc = dill.dumps(meta_circuit_original)
+        meta_circuit_unpickled = dill.loads(pickled_mc)
+
+        # Assert that key attributes are preserved
+        assert meta_circuit_unpickled.qem_protocol.name == "zne"
+        assert len(meta_circuit_unpickled.compiled_circuits_bodies) == len(
+            scale_factors
+        )
+        np.testing.assert_equal(meta_circuit_unpickled.symbols, weights_syms)
+
+        # Crucially, test that the unpickled function works
+        mock_results = [[0.5], [0.4], [0.3]]  # Mock results for 3 measurement groups
+        # The specific value doesn't matter, just that it doesn't raise an error
+        assert isinstance(meta_circuit_unpickled.postprocessing_fn(mock_results), tuple)

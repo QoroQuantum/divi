@@ -12,7 +12,7 @@ from mitiq.zne.scaling import fold_gates_at_random
 from divi.parallel_simulator import ParallelSimulator
 from divi.qem import ZNE
 from divi.qprog import VQE, VQEAnsatz
-from divi.qprog.optimizers import Optimizer
+from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 
 if __name__ == "__main__":
     mol = qml.qchem.Molecule(
@@ -23,7 +23,7 @@ if __name__ == "__main__":
         molecule=mol,
         n_layers=1,
         ansatz=VQEAnsatz.HARTREE_FOCK,
-        optimizer=Optimizer.NELDER_MEAD,
+        optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
         max_iterations=5,
         seed=1997,
     )

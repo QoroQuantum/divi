@@ -6,21 +6,50 @@ import logging
 import pickle
 from abc import ABC, abstractmethod
 from functools import partial
+from itertools import groupby
 from queue import Queue
 
 import numpy as np
 from pennylane.measurements import ExpectationMP
-from scipy.optimize import OptimizeResult, minimize
+from scipy.optimize import OptimizeResult
 
 from divi import QoroService
 from divi.circuits import Circuit, MetaCircuit
-from divi.exp.scipy._cobyla import _minimize_cobyla as cobyla_fn
 from divi.interfaces import CircuitRunner
 from divi.qem import _NoMitigation
 from divi.qoro_service import JobStatus
-from divi.qprog.optimizers import Optimizer
+from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from divi.reporter import LoggingProgressReporter, QueueProgressReporter
 
 logger = logging.getLogger(__name__)
+
+
+def _compute_parameter_shift_mask(n_params):
+    """
+    Generate a binary matrix mask for the parameter shift rule.
+    This mask is used to determine the shifts to apply to each parameter
+    when computing gradients via the parameter shift rule in quantum algorithms.
+
+    Args:
+        n_params (int): The number of parameters in the quantum circuit.
+
+    Returns:
+        np.ndarray: A (2 * n_params, n_params) matrix where each row encodes
+            the shift to apply to each parameter for a single evaluation.
+            The values are multiples of 0.5 * pi, with alternating signs.
+    """
+    mask_arr = np.arange(0, 2 * n_params, 2)
+    mask_arr[0] = 1
+
+    binary_matrix = ((mask_arr[:, np.newaxis] & (1 << np.arange(n_params))) > 0).astype(
+        np.float64
+    )
+
+    binary_matrix = binary_matrix.repeat(2, axis=0)
+    binary_matrix[1::2] *= -1
+    binary_matrix *= 0.5 * np.pi
+
+    return binary_matrix
 
 
 class QuantumProgram(ABC):
@@ -29,6 +58,7 @@ class QuantumProgram(ABC):
         backend: CircuitRunner,
         seed: int | None = None,
         progress_queue: Queue | None = None,
+        has_final_computation: bool = False,
         **kwargs,
     ):
         """
@@ -49,6 +79,8 @@ class QuantumProgram(ABC):
                 be used for the parameter initialization.
                 Defaults to None.
             progress_queue (Queue): a queue for progress bar updates.
+            has_final_computation (bool): Whether the program includes a final
+                computation step after optimization. This affects progress reporting.
 
             **kwargs: Additional keyword arguments that influence behaviour.
                 - grouping_strategy (Literal["default", "wires", "qwc"]): A strategy for grouping operations, used in Pennylane's transforms.
@@ -80,9 +112,15 @@ class QuantumProgram(ABC):
         self._grad_mode = False
 
         self.backend = backend
-        self.job_id = kwargs.get("job_id", None)
 
+        self.job_id = kwargs.get("job_id", None)
         self._progress_queue = progress_queue
+        if progress_queue and self.job_id:
+            self.reporter = QueueProgressReporter(
+                self.job_id, progress_queue, has_final_computation=has_final_computation
+            )
+        else:
+            self.reporter = LoggingProgressReporter()
 
         # Needed for Pennylane's transforms
         self._grouping_strategy = kwargs.pop("grouping_strategy", None)
@@ -134,27 +172,6 @@ class QuantumProgram(ABC):
 
         return losses
 
-    def _update_mc_params(self):
-        """
-        Updates the parameters based on previous MC iteration.
-        """
-
-        if self.current_iteration == 0:
-            self._initialize_params()
-
-            self.current_iteration += 1
-
-            return
-
-        self._curr_params = self.optimizer.compute_new_parameters(
-            self._curr_params,
-            self.current_iteration,
-            losses=self.losses[-1],
-            rng=self._rng,
-        )
-
-        self.current_iteration += 1
-
     def _prepare_and_send_circuits(self):
         job_circuits = {}
 
@@ -187,26 +204,25 @@ class QuantumProgram(ABC):
             if isinstance(response, dict):
                 self._total_run_time += float(response["run_time"])
             elif isinstance(response, list):
-                self._total_run_time += sum(float(r["run_time"]) for r in response)
+                self._total_run_time += sum(
+                    float(r.json()["run_time"]) for r in response
+                )
 
         if isinstance(self.backend, QoroService):
+            update_function = lambda n_polls, status: self.reporter.info(
+                message="",
+                poll_attempt=n_polls,
+                max_retries=self.backend.max_retries,
+                service_job_id=self._curr_service_job_id,
+                job_status=status,
+            )
+
             status = self.backend.poll_job_status(
                 self._curr_service_job_id,
                 loop_until_complete=True,
                 on_complete=add_run_time,
-                **(
-                    {
-                        "pbar_update_fn": lambda n_polls: self._progress_queue.put(
-                            {
-                                "job_id": self.job_id,
-                                "progress": 0,
-                                "poll_attempt": n_polls,
-                            }
-                        )
-                    }
-                    if self._progress_queue is not None
-                    else {}
-                ),
+                verbose=False,  # Disable the default logger in QoroService
+                poll_callback=update_function,  # Use the new, more generic name
             )
 
             if status != JobStatus.COMPLETED:
@@ -247,19 +263,25 @@ class QuantumProgram(ABC):
         losses = {}
         measurement_groups = self._meta_circuits["cost_circuit"].measurement_groups
 
-        for p in range(self._curr_params.shape[0]):
-            # Extract relevant entries from the execution results dict
-            param_results = {k: v for k, v in results.items() if k.startswith(f"{p}_")}
+        # Define key functions for both levels of grouping
+        get_param_id = lambda item: int(item[0].split("_")[0])
+        get_qem_id = lambda item: int(item[0].split("_")[1].split(":")[1])
 
-            # Compute the marginal results for each observable
+        # Group the pre-sorted results by parameter ID.
+        for p, param_group_iterator in groupby(results.items(), key=get_param_id):
+            param_group_iterator = list(param_group_iterator)
+
+            shots_by_qem_idx = zip(
+                *{
+                    gid: [value for _, value in group]
+                    for gid, group in groupby(param_group_iterator, key=get_qem_id)
+                }.values()
+            )
+
             marginal_results = []
-            for group_idx, curr_measurement_group in enumerate(measurement_groups):
-                group_results = {
-                    k: v
-                    for k, v in param_results.items()
-                    if k.endswith(f"_{group_idx}")
-                }
-
+            for shots_dicts, curr_measurement_group in zip(
+                shots_by_qem_idx, measurement_groups
+            ):
                 curr_marginal_results = []
                 for observable in curr_measurement_group:
                     intermediate_exp_values = [
@@ -267,7 +289,7 @@ class QuantumProgram(ABC):
                             shots_dict,
                             tuple(reversed(range(len(next(iter(shots_dict.keys())))))),
                         )
-                        for shots_dict in group_results.values()
+                        for shots_dict in shots_dicts
                     ]
 
                     mitigated_exp_value = self._qem_protocol.postprocess_results(
@@ -301,170 +323,83 @@ class QuantumProgram(ABC):
             data_file (str): The file to store the data in
         """
 
-        if self._progress_queue is not None:
-            self._progress_queue.put(
-                {
-                    "job_id": self.job_id,
-                    "message": "Finished Setup",
-                    "progress": 0,
-                }
+        def cost_fn(params):
+            self.reporter.info(
+                message="💸 Computing Cost 💸", iteration=self.current_iteration
             )
-        else:
-            logger.info("Finished Setup")
 
-        if self.optimizer == Optimizer.MONTE_CARLO:
-            while self.current_iteration < self.max_iterations:
+            self._curr_params = np.atleast_2d(params)
 
-                self._update_mc_params()
+            losses = self._run_optimization_circuits(store_data, data_file)
 
-                if self._progress_queue is not None:
-                    self._progress_queue.put(
-                        {
-                            "job_id": self.job_id,
-                            "message": f"⛰️ Sampling from Loss Lansdscape ⛰️",
-                            "progress": 0,
-                        }
-                    )
-                else:
-                    logger.info(
-                        f"Running Iteration #{self.current_iteration} circuits\r"
-                    )
+            losses = np.fromiter(losses.values(), dtype=np.float64)
 
-                curr_losses = self._run_optimization_circuits(store_data, data_file)
-
-                if self._progress_queue is not None:
-                    self._progress_queue.put(
-                        {
-                            "job_id": self.job_id,
-                            "progress": 1,
-                        }
-                    )
-                else:
-                    logger.info(f"Finished Iteration #{self.current_iteration}\r\n")
-
-                self.losses.append(curr_losses)
-
-            self.final_params[:] = np.atleast_2d(self._curr_params)
-
-        elif self.optimizer in (
-            Optimizer.NELDER_MEAD,
-            Optimizer.L_BFGS_B,
-            Optimizer.COBYLA,
-        ):
-
-            def cost_fn(params):
-                task_name = "💸 Computing Cost 💸"
-
-                if self._progress_queue is not None:
-                    self._progress_queue.put(
-                        {
-                            "job_id": self.job_id,
-                            "message": task_name,
-                            "progress": 0,
-                        }
-                    )
-                else:
-                    logger.info(
-                        f"Running Iteration #{self.current_iteration + 1} circuits: {task_name}\r"
-                    )
-
-                self._curr_params = np.atleast_2d(params)
-
-                losses = self._run_optimization_circuits(store_data, data_file)
-
-                return losses[0]
-
-            def grad_fn(params):
-                self._grad_mode = True
-
-                task_name = "📈 Computing Gradients 📈"
-
-                if self._progress_queue is not None:
-                    self._progress_queue.put(
-                        {
-                            "job_id": self.job_id,
-                            "message": task_name,
-                            "progress": 0,
-                        }
-                    )
-                else:
-                    logger.info(
-                        f"Running Iteration #{self.current_iteration + 1} circuits: {task_name}\r"
-                    )
-
-                shift_mask = self.optimizer.compute_parameter_shift_mask(len(params))
-
-                self._curr_params = shift_mask + params
-
-                exp_vals = self._run_optimization_circuits(store_data, data_file)
-
-                grads = np.zeros_like(params)
-                for i in range(len(params)):
-                    grads[i] = 0.5 * (exp_vals[2 * i] - exp_vals[2 * i + 1])
-
-                self._grad_mode = False
-
-                return grads
-
-            def _iteration_counter(intermediate_result: OptimizeResult):
-                self.losses.append({0: intermediate_result.fun})
-
-                self.final_params[:] = np.atleast_2d(intermediate_result.x)
-
-                self.current_iteration += 1
-
-                if self._progress_queue is not None:
-                    self._progress_queue.put(
-                        {
-                            "job_id": self.job_id,
-                            "progress": 1,
-                        }
-                    )
-                else:
-                    logger.info(f"Finished Iteration #{self.current_iteration}\r\n")
-
-                if (
-                    self.optimizer == Optimizer.COBYLA
-                    and intermediate_result.nit + 1 == self.max_iterations
-                ):
-                    raise StopIteration
-
-            if self.max_iterations is None or self.optimizer == Optimizer.COBYLA:
-                # COBYLA perceive maxiter as maxfev so we need
-                # to use the callback fn for counting instead.
-                maxiter = None
+            if params.ndim > 1:
+                return losses
             else:
-                # Need to add one more iteration for Nelder-Mead's simplex initialization step
-                maxiter = (
-                    self.max_iterations + 1
-                    if self.optimizer == Optimizer.NELDER_MEAD
-                    else self.max_iterations
+                return losses.item()
+
+        self._grad_shift_mask = _compute_parameter_shift_mask(
+            self.n_layers * self.n_params
+        )
+
+        def grad_fn(params):
+            self._grad_mode = True
+
+            self.reporter.info(
+                message="📈 Computing Gradients 📈", iteration=self.current_iteration
+            )
+
+            self._curr_params = self._grad_shift_mask + params
+
+            exp_vals = self._run_optimization_circuits(store_data, data_file)
+            exp_vals_arr = np.fromiter(exp_vals.values(), dtype=np.float64)
+
+            pos_shifts = exp_vals_arr[::2]
+            neg_shifts = exp_vals_arr[1::2]
+            grads = 0.5 * (pos_shifts - neg_shifts)
+
+            self._grad_mode = False
+
+            return grads
+
+        def _iteration_counter(intermediate_result: OptimizeResult):
+            self.losses.append(
+                dict(
+                    zip(
+                        range(len(intermediate_result.x)),
+                        np.atleast_1d(intermediate_result.fun),
+                    )
                 )
-
-            self._initialize_params()
-            self._minimize_res = minimize(
-                fun=cost_fn,
-                x0=self._curr_params[0],
-                method=(
-                    cobyla_fn
-                    if self.optimizer == Optimizer.COBYLA
-                    else self.optimizer.value
-                ),
-                jac=grad_fn if self.optimizer == Optimizer.L_BFGS_B else None,
-                callback=_iteration_counter,
-                options={"maxiter": maxiter},
             )
 
-        if self._progress_queue:
-            self._progress_queue.put(
-                {
-                    "job_id": self.job_id,
-                    "progress": 0,
-                    "final_status": "Success",
-                }
-            )
-        else:
-            logger.info(f"Finished Optimization!")
+            self.final_params[:] = np.atleast_2d(intermediate_result.x)
+
+            self.current_iteration += 1
+
+            self.reporter.update(iteration=self.current_iteration)
+
+            if (
+                isinstance(self.optimizer, ScipyOptimizer)
+                and self.optimizer.method == ScipyMethod.COBYLA
+                and intermediate_result.nit + 1 == self.max_iterations
+            ):
+                raise StopIteration
+
+        self.reporter.info(message="Finished Setup")
+
+        self._initialize_params()
+        self._minimize_res = self.optimizer.optimize(
+            cost_fn=cost_fn,
+            initial_params=self._curr_params,
+            callback_fn=_iteration_counter,
+            jac=grad_fn,
+            maxiter=self.max_iterations,
+            rng=self._rng,
+        )
+        self.final_params[:] = np.atleast_2d(self._minimize_res.x)
+
+        self.reporter.info(message="Finished Optimization!")
 
         return self._total_circuit_count, self._total_run_time
 

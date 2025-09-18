@@ -558,7 +558,7 @@ class Parser:
             self._expr_power(allow_id)
 
     def _expr_unary(self, allow_id: bool):
-        if self.peek().type in ("PLUS", "MINUS"):
+        while self.peek().type in ("PLUS", "MINUS"):
             self.match(self.peek().type)
         self._expr_atom(allow_id)
 

@@ -11,7 +11,8 @@ from qprog_contracts import verify_basic_program_batch_behaviour
 from scipy.spatial.distance import pdist, squareform
 
 import divi
-from divi.qprog import MoleculeTransformer, Optimizer, VQEAnsatz, VQEHyperparameterSweep
+from divi.qprog import MoleculeTransformer, VQEAnsatz, VQEHyperparameterSweep
+from divi.qprog.optimizers import MonteCarloOptimizer
 
 
 @pytest.fixture
@@ -280,7 +281,7 @@ def vqe_sweep(default_test_simulator, h2_molecule):
     """Fixture to create a VQEHyperparameterSweep instance with the new interface."""
     bond_modifiers = [0.9, 1.0, 1.1]
     ansatze = [VQEAnsatz.UCCSD, VQEAnsatz.RY]
-    optimizer = Optimizer.MONTE_CARLO
+    optimizer = MonteCarloOptimizer(n_param_sets=10, n_best_sets=3)
     max_iterations = 10
 
     transformer = MoleculeTransformer(
@@ -319,7 +320,7 @@ class TestVQEHyperparameterSweep:
         )
 
         for program in vqe_sweep.programs.values():
-            assert program.optimizer == Optimizer.MONTE_CARLO
+            assert isinstance(program.optimizer, MonteCarloOptimizer)
             assert program.max_iterations == 10
             assert program.backend.shots == 5000
             assert program.molecule.symbols == ["H", "H"]

@@ -15,7 +15,7 @@ from dimod import BinaryQuadraticModel
 from divi.interfaces import CircuitRunner
 from divi.qprog._qaoa import QAOA, QUBOProblemTypes
 from divi.qprog.batch import ProgramBatch
-from divi.qprog.optimizers import Optimizer
+from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
 from divi.qprog.quantum_program import QuantumProgram
 
 
@@ -50,7 +50,6 @@ def _sanitize_problem_input(qubo: T) -> tuple[T, BinaryQuadraticModel]:
 
 
 def _run_and_compute_solution(program: QuantumProgram):
-
     program.run()
 
     final_sol_circuit_count, final_sol_run_time = program.compute_final_solution()
@@ -66,8 +65,8 @@ class QUBOPartitioningQAOA(ProgramBatch):
         n_layers: int,
         backend: CircuitRunner,
         composer: hybrid.traits.SubsamplesComposer = hybrid.SplatComposer(),
-        optimizer=Optimizer.MONTE_CARLO,
-        max_iterations=10,
+        optimizer: Optimizer | None = None,
+        max_iterations: int = 10,
         **kwargs,
     ):
         """
@@ -101,7 +100,7 @@ class QUBOPartitioningQAOA(ProgramBatch):
 
         self._constructor = partial(
             QAOA,
-            optimizer=optimizer,
+            optimizer=optimizer if optimizer is not None else MonteCarloOptimizer(),
             max_iterations=self.max_iterations,
             backend=self.backend,
             n_layers=n_layers,

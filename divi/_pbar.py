@@ -28,11 +28,8 @@ class ConditionalSpinnerColumn(ProgressColumn):
 
 
 class PhaseStatusColumn(ProgressColumn):
-    def __init__(self, max_retries: int, table_column=None):
+    def __init__(self, table_column=None):
         super().__init__(table_column)
-
-        self._max_retries = max_retries
-        self._last_message = ""
 
     def render(self, task):
         final_status = task.fields.get("final_status")
@@ -43,27 +40,29 @@ class PhaseStatusColumn(ProgressColumn):
             return Text("• Failed! ❌", style="bold red")
 
         message = task.fields.get("message")
-        if message != "":
-            self._last_message = message
 
         poll_attempt = task.fields.get("poll_attempt")
+        polling_str = ""
+        service_job_id = ""
         if poll_attempt > 0:
-            return Text(
-                f"[{self._last_message}] Polling {poll_attempt}/{self._max_retries}"
-            )
+            max_retries = task.fields.get("max_retries")
+            service_job_id = task.fields.get("service_job_id").split("-")[0]
+            job_status = task.fields.get("job_status")
+            polling_str = f" [Job {service_job_id} is {job_status}. Polling attempt {poll_attempt} / {max_retries}]"
 
-        return Text(f"[{self._last_message}]")
+        final_text = Text(f"[{message}]{polling_str}")
+        final_text.highlight_words([service_job_id], "blue")
+
+        return final_text
 
 
-def make_progress_bar(
-    max_retries: int | None = None, is_jupyter: bool = False
-) -> Progress:
+def make_progress_bar(is_jupyter: bool = False) -> Progress:
     return Progress(
         TextColumn("[bold blue]{task.fields[job_name]}"),
         BarColumn(),
         MofNCompleteColumn(),
         ConditionalSpinnerColumn(),
-        PhaseStatusColumn(max_retries=max_retries),
+        PhaseStatusColumn(),
         # For jupyter notebooks, refresh manually instead
         auto_refresh=not is_jupyter,
         # Give a dummy positive value if is_jupyter

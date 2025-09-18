@@ -9,7 +9,7 @@ import networkx as nx
 
 from divi.parallel_simulator import ParallelSimulator
 from divi.qprog import GraphPartitioningQAOA, GraphProblem, PartitioningConfig
-from divi.qprog.optimizers import Optimizer
+from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 
 
 def generate_random_graph(n_nodes: int, n_edges: int) -> nx.Graph:
@@ -77,7 +77,7 @@ if __name__ == "__main__":
             max_n_nodes_per_cluster=10,
             partitioning_algorithm="metis",
         ),
-        optimizer=Optimizer.NELDER_MEAD,
+        optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
         max_iterations=20,
         backend=ParallelSimulator(),
     )
