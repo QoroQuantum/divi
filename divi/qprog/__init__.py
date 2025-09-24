@@ -5,7 +5,18 @@
 # isort: skip_file
 from .quantum_program import QuantumProgram
 from .batch import ProgramBatch
-from .algorithms import QAOA, GraphProblem, VQE, VQEAnsatz
+from .algorithms import (
+    QAOA,
+    GraphProblem,
+    VQE,
+    Ansatz,
+    UCCSDAnsatz,
+    QAOAAnsatz,
+    HardwareEfficientAnsatz,
+    HartreeFockAnsatz,
+    RYAnsatz,
+    RYRZAnsatz,
+)
 from .workflows import (
     GraphPartitioningQAOA,
     PartitioningConfig,

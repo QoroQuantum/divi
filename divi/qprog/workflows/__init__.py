@@ -7,4 +7,4 @@ from ._graph_partitioning import (
     PartitioningConfig,
 )
 from ._qubo_partitioning import QUBOPartitioningQAOA
-from ._vqe_sweep import MoleculeTransformer, VQEAnsatz, VQEHyperparameterSweep
+from ._vqe_sweep import MoleculeTransformer, VQEHyperparameterSweep

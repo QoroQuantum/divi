@@ -2,7 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from enum import Enum
 from warnings import warn
 
 import pennylane as qml
@@ -10,36 +9,8 @@ import sympy as sp
 
 from divi.circuits import MetaCircuit
 from divi.qprog import QuantumProgram
+from divi.qprog.algorithms._ansatze import Ansatz
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
-
-
-class VQEAnsatz(Enum):
-    UCCSD = "UCCSD"
-    RY = "RY"
-    RYRZ = "RYRZ"
-    HW_EFFICIENT = "HW_EFFICIENT"
-    QAOA = "QAOA"
-    HARTREE_FOCK = "HF"
-
-    def describe(self):
-        return self.name, self.value
-
-    def n_params(self, n_qubits, **kwargs):
-        if self in (VQEAnsatz.UCCSD, VQEAnsatz.HARTREE_FOCK):
-            singles, doubles = qml.qchem.excitations(
-                kwargs.pop("n_electrons"), n_qubits
-            )
-            s_wires, d_wires = qml.qchem.excitations_to_wires(singles, doubles)
-
-            return len(s_wires) + len(d_wires)
-        elif self == VQEAnsatz.RY:
-            return n_qubits
-        elif self == VQEAnsatz.RYRZ:
-            return 2 * n_qubits
-        elif self == VQEAnsatz.HW_EFFICIENT:
-            raise NotImplementedError
-        elif self == VQEAnsatz.QAOA:
-            return qml.QAOAEmbedding.shape(n_layers=1, n_wires=n_qubits)[1]
 
 
 class VQE(QuantumProgram):
@@ -49,7 +20,7 @@ class VQE(QuantumProgram):
         molecule: qml.qchem.Molecule | None = None,
         n_electrons: int | None = None,
         n_layers: int = 1,
-        ansatz=VQEAnsatz.HARTREE_FOCK,
+        ansatz: Ansatz = None,
         optimizer: Optimizer | None = None,
         max_iterations=10,
         **kwargs,
@@ -66,6 +37,9 @@ class VQE(QuantumProgram):
             optimizer (Optimizers): The optimizer to use.
             max_iterations (int): Maximum number of iteration optimizers.
         """
+
+        if not ansatz:
+            raise ValueError("An ansatz must be provided.")
 
         # Local Variables
         self.n_layers = n_layers
@@ -150,7 +124,7 @@ class VQE(QuantumProgram):
     def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
         weights_syms = sp.symarray("w", (self.n_layers, self.n_params))
 
-        def _prepare_circuit(ansatz, hamiltonian, params):
+        def _prepare_circuit(hamiltonian, params):
             """
             Prepare the circuit for the VQE problem.
             Args:
@@ -158,7 +132,12 @@ class VQE(QuantumProgram):
                 hamiltonian (qml.Hamiltonian): The Hamiltonian to use
                 params (list): The parameters to use for the ansatz
             """
-            self._set_ansatz(ansatz, params)
+            self.ansatz.build(
+                params,
+                n_qubits=self.n_qubits,
+                n_layers=self.n_layers,
+                n_electrons=self.n_electrons,
+            )
 
             # Even though in principle we want to sample from a state,
             # we are applying an `expval` operation here to make it compatible
@@ -169,92 +148,11 @@ class VQE(QuantumProgram):
         return {
             "cost_circuit": self._meta_circuit_factory(
                 qml.tape.make_qscript(_prepare_circuit)(
-                    self.ansatz, self.cost_hamiltonian, weights_syms
+                    self.cost_hamiltonian, weights_syms
                 ),
                 symbols=weights_syms.flatten(),
             )
         }
-
-    def _set_ansatz(self, ansatz: VQEAnsatz, params):
-        """
-        Set the ansatz for the VQE problem.
-        Args:
-            ansatz (Ansatze): The ansatz to use
-            params (list): The parameters to use for the ansatz
-            n_layers (int): The number of layers to use for the ansatz
-        """
-
-        def _add_hw_efficient_ansatz(params):
-            raise NotImplementedError
-
-        def _add_qaoa_ansatz(params):
-            # This infers layers automatically from the parameters shape
-            qml.QAOAEmbedding(
-                features=[],
-                weights=params.reshape(self.n_layers, -1),
-                wires=range(self.n_qubits),
-            )
-
-        def _add_ry_ansatz(params):
-            qml.layer(
-                qml.AngleEmbedding,
-                self.n_layers,
-                params.reshape(self.n_layers, -1),
-                wires=range(self.n_qubits),
-                rotation="Y",
-            )
-
-        def _add_ryrz_ansatz(params):
-            def _ryrz(params, wires):
-                ry_rots, rz_rots = params.reshape(2, -1)
-                qml.AngleEmbedding(ry_rots, wires=wires, rotation="Y")
-                qml.AngleEmbedding(rz_rots, wires=wires, rotation="Z")
-
-            qml.layer(
-                _ryrz,
-                self.n_layers,
-                params.reshape(self.n_layers, -1),
-                wires=range(self.n_qubits),
-            )
-
-        def _add_uccsd_ansatz(params):
-            hf_state = qml.qchem.hf_state(self.n_electrons, self.n_qubits)
-
-            singles, doubles = qml.qchem.excitations(self.n_electrons, self.n_qubits)
-            s_wires, d_wires = qml.qchem.excitations_to_wires(singles, doubles)
-
-            qml.UCCSD(
-                params.reshape(self.n_layers, -1),
-                wires=range(self.n_qubits),
-                s_wires=s_wires,
-                d_wires=d_wires,
-                init_state=hf_state,
-                n_repeats=self.n_layers,
-            )
-
-        def _add_hartree_fock_ansatz(params):
-            singles, doubles = qml.qchem.excitations(self.n_electrons, self.n_qubits)
-            hf_state = qml.qchem.hf_state(self.n_electrons, self.n_qubits)
-
-            qml.layer(
-                qml.AllSinglesDoubles,
-                self.n_layers,
-                params.reshape(self.n_layers, -1),
-                wires=range(self.n_qubits),
-                hf_state=hf_state,
-                singles=singles,
-                doubles=doubles,
-            )
-
-            # Reset the BasisState operations after the first layer
-            # for behaviour similar to UCCSD ansatz
-            for op in qml.QueuingManager.active_context().queue[1:]:
-                op._hyperparameters["hf_state"] = 0
-
-        if ansatz in VQEAnsatz:
-            locals()[f"_add_{ansatz.name.lower()}_ansatz"](params)
-        else:
-            raise ValueError(f"Invalid Ansatz Value. Got {ansatz}.")
 
     def _generate_circuits(self):
         """
