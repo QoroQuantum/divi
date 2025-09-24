@@ -2,6 +2,4 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from .reporting import enable_logging
-
-enable_logging()
+from ._core import Circuit, MetaCircuit

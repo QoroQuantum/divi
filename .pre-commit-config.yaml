@@ -42,7 +42,7 @@ repos:
         files: \.md$
       - id: insert-license
         files: \.py$
-        exclude: ^(divi/exp/|docs/)
+        exclude: ^(divi/extern/|docs/)
         args:
           - --license-filepath
           - LICENSES/.license-header

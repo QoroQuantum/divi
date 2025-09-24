@@ -14,7 +14,7 @@ from mitiq.zne.inference import ExpFactory
 from mitiq.zne.scaling import fold_global
 
 from divi.circuits import Circuit, MetaCircuit
-from divi.qem import ZNE, _NoMitigation
+from divi.circuits.qem import ZNE, _NoMitigation
 
 
 class TestCircuit:

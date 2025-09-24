@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from divi import QoroService
+from divi.backends import QoroService
 
 if __name__ == "__main__":
     service = QoroService()

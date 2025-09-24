@@ -19,7 +19,7 @@ from qprog_contracts import verify_basic_program_batch_behaviour
 from rich.progress import Progress
 
 from divi.circuits import MetaCircuit
-from divi.qem import ZNE
+from divi.circuits.qem import ZNE
 from divi.qprog.batch import ProgramBatch, QuantumProgram, queue_listener
 
 

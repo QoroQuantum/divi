@@ -5,7 +5,7 @@
 from qiskit_optimization import QuadraticProgram
 from qiskit_optimization.algorithms import MinimumEigenOptimizer
 
-from divi.parallel_simulator import ParallelSimulator
+from divi.backends import ParallelSimulator
 from divi.qprog import QAOA
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 

@@ -18,7 +18,7 @@ from qiskit.providers import Backend
 from qiskit_aer import AerSimulator
 from qiskit_aer.noise import NoiseModel
 
-from divi.interfaces import CircuitRunner
+from divi.backends import CircuitRunner
 
 logger = logging.getLogger(__name__)
 

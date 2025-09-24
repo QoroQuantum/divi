@@ -5,9 +5,12 @@
 # isort: skip_file
 from .quantum_program import QuantumProgram
 from .batch import ProgramBatch
-from ._qaoa import QAOA, GraphProblem
-from ._vqe import VQE, VQEAnsatz
-from ._graph_partitioning import GraphPartitioningQAOA, PartitioningConfig
-from ._qubo_partitioning import QUBOPartitioningQAOA
-from ._vqe_sweep import VQEHyperparameterSweep, MoleculeTransformer
+from .algorithms import QAOA, GraphProblem, VQE, VQEAnsatz
+from .workflows import (
+    GraphPartitioningQAOA,
+    PartitioningConfig,
+    QUBOPartitioningQAOA,
+    VQEHyperparameterSweep,
+    MoleculeTransformer,
+)
 from .optimizers import ScipyOptimizer, ScipyMethod, MonteCarloOptimizer

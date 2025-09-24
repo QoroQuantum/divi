@@ -9,8 +9,8 @@ import pennylane as qml
 from mitiq.zne.inference import RichardsonFactory
 from mitiq.zne.scaling import fold_gates_at_random
 
-from divi.parallel_simulator import ParallelSimulator
-from divi.qem import ZNE
+from divi.backends import ParallelSimulator
+from divi.circuits.qem import ZNE
 from divi.qprog import VQE, VQEAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 

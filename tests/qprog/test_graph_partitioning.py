@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from qprog_contracts import verify_basic_program_batch_behaviour
 
-from divi.parallel_simulator import ParallelSimulator
+from divi.backends import ParallelSimulator
 from divi.qprog import (
     GraphPartitioningQAOA,
     GraphProblem,
@@ -18,7 +18,8 @@ from divi.qprog import (
     ScipyMethod,
     ScipyOptimizer,
 )
-from divi.qprog._graph_partitioning import (
+from divi.qprog.workflows import _graph_partitioning
+from divi.qprog.workflows._graph_partitioning import (
     _apply_split_with_relabel,
     _bisect_with_predicate,
     _node_partition_graph,
@@ -132,11 +133,11 @@ class TestPartitioningConfig:
     def test_apply_split_with_relabel_spectral(self, mocker):
         G = nx.cycle_graph(6)  # nice, symmetric, and simple
 
-        # Fake prediction: 0,0,0,1,1,1
         mock_spectral_cls = mocker.patch(
-            "divi.qprog._graph_partitioning.SpectralClustering"
+            f"{_graph_partitioning.__name__}.SpectralClustering"
         )
         instance = mock_spectral_cls.return_value
+        # Fake prediction: 0,0,0,1,1,1
         instance.fit_predict.return_value = [0, 0, 0, 1, 1, 1]
 
         clusters = _apply_split_with_relabel(G, algorithm="spectral", n_clusters=2)
@@ -147,7 +148,7 @@ class TestPartitioningConfig:
     def test_apply_split_with_relabel_metis(self, mocker):
         G = nx.path_graph(6)
 
-        mock_part_graph = mocker.patch("divi.qprog._graph_partitioning.part_graph")
+        mock_part_graph = mocker.patch(f"{_graph_partitioning.__name__}.part_graph")
         mock_part_graph.return_value = (None, [0, 0, 0, 1, 1, 1])
 
         clusters = _apply_split_with_relabel(G, algorithm="metis", n_clusters=2)
@@ -169,7 +170,7 @@ class TestPartitioningConfig:
         )
 
         mock_split = mocker.patch(
-            "divi.qprog._graph_partitioning._apply_split_with_relabel"
+            f"{_apply_split_with_relabel.__module__}.{_apply_split_with_relabel.__name__}"
         )
         mock_split.return_value = (
             G.subgraph([0, 1, 2]),
@@ -252,7 +253,7 @@ class TestPartitioningConfig:
             return (sg1, sg2)
 
         mocker.patch(
-            "divi.qprog._graph_partitioning._split_graph", side_effect=fake_split
+            f"{_split_graph.__module__}.{_split_graph.__name__}", side_effect=fake_split
         )
 
         result = _bisect_with_predicate(initial, predicate, partitioning_config=None)
@@ -277,7 +278,7 @@ class TestPartitioningConfig:
             return (sg1, sg2)
 
         mocker.patch(
-            "divi.qprog._graph_partitioning._split_graph", side_effect=fake_split
+            f"{_split_graph.__module__}.{_split_graph.__name__}", side_effect=fake_split
         )
 
         result = _bisect_with_predicate(initial, predicate, partitioning_config=None)
@@ -297,7 +298,7 @@ class TestPartitioningConfig:
 
     def test_partition_warns_for_oversized_clusters(self, mocker):
         # Mock the maximum available qubits to a smaller number for the test
-        mocker.patch("divi.qprog._graph_partitioning._MAXIMUM_AVAILABLE_QUBITS", 20)
+        mocker.patch.object(_graph_partitioning, "_MAXIMUM_AVAILABLE_QUBITS", 20)
 
         graph = nx.complete_graph(40)
         config = PartitioningConfig(minimum_n_clusters=1)  # No splitting
@@ -313,7 +314,7 @@ class TestPartitioningConfig:
     def test_min_clusters_enforced(self, mocker):
         graph = nx.cycle_graph(6)
         mock_bisect = mocker.patch(
-            "divi.qprog._graph_partitioning._bisect_with_predicate",
+            f"{_bisect_with_predicate.__module__}.{_bisect_with_predicate.__name__}",
             return_value=[
                 (0, 0, nx.Graph([(0, 1), (1, 2)])),
                 (0, 1, nx.Graph([(3, 4), (4, 5)])),
@@ -526,7 +527,7 @@ class TestGraphPartitioningQAOA:
         partition1 = graph.subgraph([0, 1])
         partition2 = graph.subgraph([2, 3])
         mocker.patch(
-            "divi.qprog._graph_partitioning._node_partition_graph",
+            f"{_node_partition_graph.__module__}.{_node_partition_graph.__name__}",
             return_value=[partition1, partition2],
         )
 

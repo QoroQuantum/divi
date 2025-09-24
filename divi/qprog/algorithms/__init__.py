@@ -2,6 +2,5 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from .reporting import enable_logging
-
-enable_logging()
+from ._qaoa import QAOA, GraphProblem, GraphProblemTypes, QUBOProblemTypes
+from ._vqe import VQE, VQEAnsatz

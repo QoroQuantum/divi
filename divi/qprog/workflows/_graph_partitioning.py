@@ -20,9 +20,9 @@ import scipy.sparse.linalg as spla
 from pymetis import part_graph
 from sklearn.cluster import SpectralClustering
 
-from divi.interfaces import CircuitRunner
+from divi.backends import CircuitRunner
 from divi.qprog import QAOA, ProgramBatch, QuantumProgram
-from divi.qprog._qaoa import (
+from divi.qprog.algorithms._qaoa import (
     _SUPPORTED_INITIAL_STATES_LITERAL,
     GraphProblem,
     GraphProblemTypes,

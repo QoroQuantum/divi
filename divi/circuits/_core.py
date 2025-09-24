@@ -12,8 +12,8 @@ import pennylane as qml
 from pennylane.transforms.core.transform_program import TransformProgram
 from qiskit.qasm2 import dumps
 
-from divi.qasm import to_openqasm
-from divi.qem import QEMProtocol
+from divi.circuits.qasm import to_openqasm
+from divi.circuits.qem import QEMProtocol
 
 TRANSFORM_PROGRAM = TransformProgram()
 TRANSFORM_PROGRAM.add_transform(qml.transforms.split_to_single_terms)

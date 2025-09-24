@@ -13,13 +13,11 @@ import numpy as np
 from pennylane.measurements import ExpectationMP
 from scipy.optimize import OptimizeResult
 
-from divi import QoroService
+from divi.backends import CircuitRunner, JobStatus, QoroService
 from divi.circuits import Circuit, MetaCircuit
-from divi.interfaces import CircuitRunner
-from divi.qem import _NoMitigation
-from divi.qoro_service import JobStatus
+from divi.circuits.qem import _NoMitigation
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-from divi.reporter import LoggingProgressReporter, QueueProgressReporter
+from divi.reporting import LoggingProgressReporter, QueueProgressReporter
 
 logger = logging.getLogger(__name__)
 

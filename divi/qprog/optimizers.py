@@ -5,12 +5,11 @@
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from enum import Enum
-from typing import Any
 
 import numpy as np
 from scipy.optimize import OptimizeResult, minimize
 
-from divi.exp.scipy._cobyla import _minimize_cobyla as cobyla_fn
+from divi.extern.scipy._cobyla import _minimize_cobyla as cobyla_fn
 
 
 class ScipyMethod(Enum):

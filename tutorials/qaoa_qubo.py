@@ -7,7 +7,7 @@ from functools import partial
 import dimod
 import numpy as np
 
-from divi.parallel_simulator import ParallelSimulator
+from divi.backends import ParallelSimulator
 from divi.qprog import QAOA
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 

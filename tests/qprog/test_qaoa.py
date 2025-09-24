@@ -17,14 +17,14 @@ from qprog_contracts import (
     verify_metacircuit_dict,
 )
 
-from divi.interfaces import CircuitRunner
+from divi.backends import CircuitRunner
 from divi.qprog import (
     QAOA,
     GraphProblem,
     ScipyMethod,
     ScipyOptimizer,
 )
-from divi.qprog.optimizers import MonteCarloOptimizer
+from divi.qprog.algorithms import _qaoa
 from tests.conftest import is_assertion_error
 
 pytestmark = pytest.mark.algo
@@ -249,21 +249,22 @@ class TestGraphInput:
 
         qaoa_problem._solution_nodes = [0, 1, 2]
 
-        # Mock networkx draw functions to capture their arguments
-        mock_draw_nodes = mocker.patch("divi.qprog._qaoa.nx.draw_networkx_nodes")
-        mock_draw_edges = mocker.patch("divi.qprog._qaoa.nx.draw_networkx_edges")
-        mock_draw_labels = mocker.patch("divi.qprog._qaoa.nx.draw_networkx_labels")
+        # 1. Mock the entire 'nx' alias within the _qaoa module in one line
+        mock_nx = mocker.patch.object(_qaoa, "nx")
+
+        # 2. Mock the pyplot 'show' function
         mocker.patch("matplotlib.pyplot.show")
 
+        # 3. Call the function you want to test
         qaoa_problem.draw_solution()
 
-        # Verify that all drawing functions were called
-        mock_draw_nodes.assert_called_once()
-        mock_draw_edges.assert_called_once()
-        mock_draw_labels.assert_called_once()
+        # 4. Verify that the methods on your single mock were called
+        mock_nx.draw_networkx_nodes.assert_called_once()
+        mock_nx.draw_networkx_edges.assert_called_once()
+        mock_nx.draw_networkx_labels.assert_called_once()
 
         # Get the node_color argument that was passed to draw_networkx_nodes
-        node_colors = mock_draw_nodes.call_args[1]["node_color"]
+        node_colors = mock_nx.draw_networkx_nodes.call_args[1]["node_color"]
 
         # Verify that solution nodes are red and non-solution nodes are lightblue
         expected_colors = [
@@ -273,7 +274,7 @@ class TestGraphInput:
         assert node_colors == expected_colors
 
         # Verify node size
-        assert mock_draw_nodes.call_args[1]["node_size"] == 500
+        assert mock_nx.draw_networkx_nodes.call_args[1]["node_size"] == 500
 
         # Clean up the plot
         plt.close()

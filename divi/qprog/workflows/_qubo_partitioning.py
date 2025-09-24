@@ -12,8 +12,8 @@ import numpy as np
 import scipy.sparse as sps
 from dimod import BinaryQuadraticModel
 
-from divi.interfaces import CircuitRunner
-from divi.qprog._qaoa import QAOA, QUBOProblemTypes
+from divi.backends import CircuitRunner
+from divi.qprog.algorithms import QAOA, QUBOProblemTypes
 from divi.qprog.batch import ProgramBatch
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
 from divi.qprog.quantum_program import QuantumProgram

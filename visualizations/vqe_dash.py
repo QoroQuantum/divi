@@ -9,7 +9,7 @@ from dash import Dash, Input, Output, callback_context, dcc, html
 from dash.exceptions import PreventUpdate
 from qiskit_ibm_runtime.fake_provider import FakeQuitoV2
 
-from divi.parallel_simulator import ParallelSimulator
+from divi.backends import ParallelSimulator
 from divi.qprog import ScipyMethod, ScipyOptimizer, VQEAnsatz, VQEHyperparameterSweep
 
 app = Dash(external_stylesheets=[dbc.themes.BOOTSTRAP])

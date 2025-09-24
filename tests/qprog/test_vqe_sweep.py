@@ -10,9 +10,13 @@ import pytest
 from qprog_contracts import verify_basic_program_batch_behaviour
 from scipy.spatial.distance import pdist, squareform
 
-import divi
-from divi.qprog import MoleculeTransformer, VQEAnsatz, VQEHyperparameterSweep
 from divi.qprog.optimizers import MonteCarloOptimizer
+from divi.qprog.workflows import (
+    MoleculeTransformer,
+    VQEAnsatz,
+    VQEHyperparameterSweep,
+    _vqe_sweep,
+)
 
 
 @pytest.fixture
@@ -208,7 +212,7 @@ class TestMoleculeTransformerGeneration:
     def test_generate_handles_identity_transforms(self, mocker, water_molecule):
         """Test that a delta modifier of 0.0 and a scale modifier of 1
         results in the original coordinates."""
-        spy = mocker.spy(divi.qprog._vqe_sweep, "_transform_bonds")
+        spy = mocker.spy(_vqe_sweep, "_transform_bonds")
 
         mt = MoleculeTransformer(
             base_molecule=water_molecule, bond_modifiers=[0.0, 0.1]

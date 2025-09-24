@@ -7,7 +7,7 @@ import time
 import numpy as np
 import pennylane as qml
 
-from divi.parallel_simulator import ParallelSimulator
+from divi.backends import ParallelSimulator
 from divi.qprog import MoleculeTransformer, VQEAnsatz, VQEHyperparameterSweep
 from divi.qprog.optimizers import MonteCarloOptimizer
 

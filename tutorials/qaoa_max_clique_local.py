@@ -4,7 +4,7 @@
 
 import networkx as nx
 
-from divi.parallel_simulator import ParallelSimulator
+from divi.backends import ParallelSimulator
 from divi.qprog import QAOA, GraphProblem
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 
