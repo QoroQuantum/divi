@@ -86,10 +86,6 @@ class VQE(QuantumProgram):
                     UserWarning,
                 )
 
-        self.n_params = self.ansatz.n_params(
-            self.n_qubits, n_electrons=self.n_electrons
-        )
-
         self.cost_hamiltonian = self._clean_hamiltonian(hamiltonian)
 
     def _clean_hamiltonian(
@@ -122,7 +118,15 @@ class VQE(QuantumProgram):
         return hamiltonian.simplify()
 
     def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
-        weights_syms = sp.symarray("w", (self.n_layers, self.n_params))
+        weights_syms = sp.symarray(
+            "w",
+            (
+                self.n_layers,
+                self.ansatz.n_params_per_layer(
+                    self.n_qubits, n_electrons=self.n_electrons
+                ),
+            ),
+        )
 
         def _prepare_circuit(hamiltonian, params):
             """

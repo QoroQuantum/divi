@@ -14,8 +14,7 @@ from .algorithms import (
     QAOAAnsatz,
     HardwareEfficientAnsatz,
     HartreeFockAnsatz,
-    RYAnsatz,
-    RYRZAnsatz,
+    GenericLayerAnsatz,
 )
 from .workflows import (
     GraphPartitioningQAOA,

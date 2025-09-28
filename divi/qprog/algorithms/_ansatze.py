@@ -3,6 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from abc import ABC, abstractmethod
+from itertools import tee
+from typing import Literal, Sequence
+from warnings import warn
 
 import pennylane as qml
 
@@ -17,12 +20,12 @@ class Ansatz(ABC):
 
     @staticmethod
     @abstractmethod
-    def n_params(n_qubits: int, **kwargs) -> int:
+    def n_params_per_layer(n_qubits: int, **kwargs) -> int:
         """Returns the number of parameters required by the ansatz for one layer."""
         raise NotImplementedError
 
     @abstractmethod
-    def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> None:
+    def build(self, params, n_qubits: int, n_layers: int, **kwargs):
         """
         Builds the ansatz circuit.
 
@@ -38,46 +41,105 @@ class Ansatz(ABC):
 # --- Template Ansaetze ---
 
 
-class RYAnsatz(Ansatz):
-    @staticmethod
-    def n_params(n_qubits: int, **kwargs) -> int:
-        return n_qubits
+class GenericLayerAnsatz(Ansatz):
+    """
+    A flexible ansatz alternating single-qubit gates with optional entanglers.
+    """
 
-    def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> None:
-        qml.layer(
-            qml.AngleEmbedding,
-            n_layers,
-            params.reshape(n_layers, -1),
-            wires=range(n_qubits),
-            rotation="Y",
-        )
+    def __init__(
+        self,
+        gate_sequence: list[qml.operation.Operator],
+        entangler: qml.operation.Operator | None = None,
+        entangling_layout: (
+            Literal["linear", "ring", "all-to-all"] | Sequence[tuple[int, int]] | None
+        ) = None,
+    ):
+        """
+        Args:
+            gate_sequence (list[Callable]): List of one-qubit gate classes (e.g., qml.RY, qml.Rot).
+            entangler (Callable): Two-qubit entangling gate class (e.g., qml.CNOT, qml.CZ).
+                                  If None, no entanglement is applied.
+            entangling_layout (str): Layout for entangling layer ("linear", "all_to_all", etc.).
+        """
+        if not all(
+            issubclass(g, qml.operation.Operator) and g.num_wires == 1
+            for g in gate_sequence
+        ):
+            raise ValueError(
+                "All elements in gate_sequence must be PennyLane one-qubit gate classes."
+            )
+        self.gate_sequence = gate_sequence
 
+        if entangler not in (None, qml.CNOT, qml.CZ):
+            raise ValueError("Only qml.CNOT and qml.CZ are supported as entanglers.")
+        self.entangler = entangler
 
-class RYRZAnsatz(Ansatz):
-    @staticmethod
-    def n_params(n_qubits: int, **kwargs) -> int:
-        return 2 * n_qubits
+        self.entangling_layout = entangling_layout
+        if entangler is None and self.entangling_layout is not None:
+            warn("`entangling_layout` provided but `entangler` is None.")
+        match self.entangling_layout:
+            case None | "linear":
+                self.entangling_layout = "linear"
 
-    def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> None:
-        def _ryrz_layer(layer_params, wires):
-            ry_rots, rz_rots = layer_params.reshape(2, -1)
-            qml.AngleEmbedding(ry_rots, wires=wires, rotation="Y")
-            qml.AngleEmbedding(rz_rots, wires=wires, rotation="Z")
+                self._layout_fn = lambda n_qubit: zip(range(n_qubit), range(1, n_qubit))
+            case "circular":
+                self._layout_fn = lambda n_qubit: zip(
+                    range(n_qubit), [(i + 1) % n_qubit for i in range(n_qubit)]
+                )
+            case "all_to_all":
+                self._layout_fn = lambda n_qubit: (
+                    (i, j) for i in range(n_qubit) for j in range(i + 1, n_qubit)
+                )
+            case _:
+                if not all(
+                    isinstance(ent, tuple)
+                    and len(ent) == 2
+                    and isinstance(ent[0], int)
+                    and isinstance(ent[1], int)
+                    for ent in entangling_layout
+                ):
+                    raise ValueError(
+                        "entangling_layout must be 'linear', 'circular', "
+                        "'all_to_all', or a Sequence of tuples of integers."
+                    )
 
-        qml.layer(
-            _ryrz_layer,
-            n_layers,
-            params.reshape(n_layers, -1),
-            wires=range(n_qubits),
-        )
+                self._layout_fn = lambda _: entangling_layout
+
+    def n_params_per_layer(self, n_qubits: int, **kwargs) -> int:
+        """Total parameters = sum of gate.num_params per qubit per layer."""
+        per_qubit = sum(getattr(g, "num_params", 1) for g in self.gate_sequence)
+        return per_qubit * n_qubits
+
+    def build(self, params, n_qubits: int, n_layers: int, **kwargs):
+        # calculate how many params each gate needs per qubit
+        gate_param_counts = [getattr(g, "num_params", 1) for g in self.gate_sequence]
+        per_qubit = sum(gate_param_counts)
+
+        # reshape into [layers, qubits, per_qubit]
+        params = params.reshape(n_layers, n_qubits, per_qubit)
+        layout_gen = iter(tee(self._layout_fn(n_qubits), n_layers))
+
+        def _layer(layer_params, wires):
+            for w, qubit_params in zip(wires, layer_params):
+                idx = 0
+                for gate, n_p in zip(self.gate_sequence, gate_param_counts):
+                    theta = qubit_params[idx : idx + n_p]
+                    gate(*theta, wires=w)
+                    idx += n_p
+
+            if self.entangler is not None:
+                for wire_a, wire_b in next(layout_gen):
+                    self.entangler(wires=[wire_a, wire_b])
+
+        qml.layer(_layer, n_layers, params, wires=range(n_qubits))
 
 
 class QAOAAnsatz(Ansatz):
     @staticmethod
-    def n_params(n_qubits: int, **kwargs) -> int:
+    def n_params_per_layer(n_qubits: int, **kwargs) -> int:
         return qml.QAOAEmbedding.shape(n_layers=1, n_wires=n_qubits)[1]
 
-    def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> None:
+    def build(self, params, n_qubits: int, n_layers: int, **kwargs):
         qml.QAOAEmbedding(
             features=[],
             weights=params.reshape(n_layers, -1),
@@ -87,7 +149,7 @@ class QAOAAnsatz(Ansatz):
 
 class HardwareEfficientAnsatz(Ansatz):
     @staticmethod
-    def n_params(n_qubits: int, **kwargs) -> int:
+    def n_params_per_layer(n_qubits: int, **kwargs) -> int:
         raise NotImplementedError("HardwareEfficientAnsatz is not yet implemented.")
 
     def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> None:
@@ -99,14 +161,12 @@ class HardwareEfficientAnsatz(Ansatz):
 
 class UCCSDAnsatz(Ansatz):
     @staticmethod
-    def n_params(n_qubits: int, n_electrons: int, **kwargs) -> int:
+    def n_params_per_layer(n_qubits: int, n_electrons: int, **kwargs) -> int:
         singles, doubles = qml.qchem.excitations(n_electrons, n_qubits)
         s_wires, d_wires = qml.qchem.excitations_to_wires(singles, doubles)
         return len(s_wires) + len(d_wires)
 
-    def build(
-        self, params, n_qubits: int, n_layers: int, n_electrons: int, **kwargs
-    ) -> None:
+    def build(self, params, n_qubits: int, n_layers: int, n_electrons: int, **kwargs):
         singles, doubles = qml.qchem.excitations(n_electrons, n_qubits)
         s_wires, d_wires = qml.qchem.excitations_to_wires(singles, doubles)
         hf_state = qml.qchem.hf_state(n_electrons, n_qubits)
@@ -123,7 +183,7 @@ class UCCSDAnsatz(Ansatz):
 
 class HartreeFockAnsatz(Ansatz):
     @staticmethod
-    def n_params(n_qubits: int, n_electrons: int, **kwargs) -> int:
+    def n_params_per_layer(n_qubits: int, n_electrons: int, **kwargs) -> int:
         singles, doubles = qml.qchem.excitations(n_electrons, n_qubits)
         return len(singles) + len(doubles)
 

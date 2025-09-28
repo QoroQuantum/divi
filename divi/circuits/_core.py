@@ -10,7 +10,6 @@ from typing import Literal
 import dill
 import pennylane as qml
 from pennylane.transforms.core.transform_program import TransformProgram
-from qiskit.qasm2 import dumps
 
 from divi.circuits.qasm import to_openqasm
 from divi.circuits.qem import QEMProtocol
@@ -36,29 +35,17 @@ class Circuit:
         self.qasm_circuits = qasm_circuits
 
         if self.qasm_circuits is None:
-            self.convert_to_qasm()
-
-        self.circuit_id = Circuit._id_counter
-        Circuit._id_counter += 1
-
-    def __str__(self):
-        return f"Circuit: {self.circuit_id}"
-
-    def convert_to_qasm(self):
-        if self.circuit_type == "pennylane":
             self.qasm_circuits = to_openqasm(
                 self.main_circuit,
                 measurement_groups=[self.main_circuit.measurements],
                 return_measurements_separately=False,
             )
 
-        elif self.circuit_type == "qiskit":
-            self.qasm_circuits = [dumps(self.main_circuit)]
+        self.circuit_id = Circuit._id_counter
+        Circuit._id_counter += 1
 
-        else:
-            raise ValueError(
-                f"Invalid circuit type. Circuit type {self.circuit_type} not currently supported."
-            )
+    def __str__(self):
+        return f"Circuit: {self.circuit_id}"
 
 
 class MetaCircuit:

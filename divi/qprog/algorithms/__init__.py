@@ -4,11 +4,10 @@
 
 from ._ansatze import (
     Ansatz,
+    GenericLayerAnsatz,
     HardwareEfficientAnsatz,
     HartreeFockAnsatz,
     QAOAAnsatz,
-    RYAnsatz,
-    RYRZAnsatz,
     UCCSDAnsatz,
 )
 from ._qaoa import QAOA, GraphProblem, GraphProblemTypes, QUBOProblemTypes
