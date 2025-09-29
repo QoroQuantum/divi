@@ -8,7 +8,6 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pytest
-from qprog_contracts import verify_basic_program_batch_behaviour
 
 from divi.backends import ParallelSimulator
 from divi.qprog import (
@@ -27,6 +26,7 @@ from divi.qprog.workflows._graph_partitioning import (
     dominance_aggregation,
     linear_aggregation,
 )
+from tests.qprog.qprog_contracts import verify_basic_program_batch_behaviour
 
 problem_args = {
     "graph": nx.erdos_renyi_graph(15, 0.2, seed=1997),

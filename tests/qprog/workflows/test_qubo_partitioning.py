@@ -7,7 +7,6 @@ import hybrid
 import numpy as np
 import pytest
 import scipy.sparse as sps
-from qprog_contracts import verify_basic_program_batch_behaviour
 
 from divi.backends import ParallelSimulator
 from divi.qprog import QAOA, ScipyMethod, ScipyOptimizer
@@ -15,6 +14,7 @@ from divi.qprog.workflows._qubo_partitioning import (
     QUBOPartitioningQAOA,
     _sanitize_problem_input,
 )
+from tests.qprog.qprog_contracts import verify_basic_program_batch_behaviour
 
 # --- Fixtures and Test Data ---
 

@@ -11,11 +11,6 @@ import scipy.sparse as sps
 from flaky import flaky
 from qiskit_optimization import QuadraticProgram
 from qiskit_optimization.converters import QuadraticProgramToQubo
-from qprog_contracts import (
-    OPTIMIZERS_TO_TEST,
-    verify_correct_circuit_count,
-    verify_metacircuit_dict,
-)
 
 from divi.backends import CircuitRunner
 from divi.qprog import (
@@ -26,6 +21,11 @@ from divi.qprog import (
 )
 from divi.qprog.algorithms import _qaoa
 from tests.conftest import is_assertion_error
+from tests.qprog.qprog_contracts import (
+    OPTIMIZERS_TO_TEST,
+    verify_correct_circuit_count,
+    verify_metacircuit_dict,
+)
 
 pytestmark = pytest.mark.algo
 
@@ -286,14 +286,23 @@ QUBO_MATRIX_LIST = [
     [-4.5, 0, -1],
 ]
 QUBO_MATRIX_NP = np.array(QUBO_MATRIX_LIST)
-QUBO_MATRIX_SP = sps.csc_matrix(QUBO_MATRIX_NP)
+
+QUBO_FORMATS_TO_TEST = {
+    "argvalues": [
+        QUBO_MATRIX_LIST,
+        QUBO_MATRIX_NP,
+        sps.csc_matrix(QUBO_MATRIX_NP),
+        sps.csr_matrix(QUBO_MATRIX_NP),
+        sps.coo_matrix(QUBO_MATRIX_NP),
+        sps.lil_matrix(QUBO_MATRIX_NP),
+    ],
+    "ids": ["List", "Numpy", "CSC", "CSR", "COO", "LIL"],
+}
 
 
 class TestQUBOInput:
 
-    @pytest.mark.parametrize(
-        "input_qubo", [QUBO_MATRIX_LIST, QUBO_MATRIX_NP, QUBO_MATRIX_SP]
-    )
+    @pytest.mark.parametrize("input_qubo", **QUBO_FORMATS_TO_TEST)
     def test_qubo_basic_initialization(self, input_qubo, default_test_simulator):
         qaoa_problem = QAOA(
             problem=input_qubo,

@@ -35,9 +35,10 @@ def convert_qubo_matrix_to_pennylane_ising(
 ) -> tuple[qml.operation.Operator, float]:
     """Convert QUBO matrix to Ising Hamiltonian in Pennylane.
 
-    The conversion follows the mapping:
-    - QUBO variables x_i ∈ {0,1} map to Ising variables s_i ∈ {-1,1} via s_i = 2x_i - 1
-    - This transforms a QUBO problem into an equivalent Ising problem
+    The conversion follows the mapping from QUBO variables x_i ∈ {0,1} to
+    Ising variables σ_i ∈ {-1,1} via the transformation x_i = (1 - σ_i)/2. This
+    transforms a QUBO minimization problem into an equivalent Ising minimization
+    problem.
 
     Args:
         qubo_matrix: The QUBO matrix Q where the objective is to minimize x^T Q x
@@ -65,8 +66,13 @@ def convert_qubo_matrix_to_pennylane_ising(
             else {}
         ),
     )
-    rows, cols = triu_matrix.nonzero()
-    values = triu_matrix[rows, cols].A1 if is_sparse else triu_matrix[rows, cols]
+
+    if is_sparse:
+        coo_mat = triu_matrix.tocoo()
+        rows, cols, values = coo_mat.row, coo_mat.col, coo_mat.data
+    else:
+        rows, cols = triu_matrix.nonzero()
+        values = triu_matrix[rows, cols]
 
     n = qubo_matrix.shape[0]
     linear_terms = np.zeros(n)

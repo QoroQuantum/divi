@@ -39,11 +39,10 @@ class TestCircuit:
         assert circ_1.main_circuit == qscript
         assert circ_1.tags == ["test_circ"]
         assert circ_1.circuit_id == 0
-        assert circ_1.circuit_type == "pennylane"
         assert len(circ_1.qasm_circuits) == 1
 
         # Ensure converter was called
-        method_mock = mocker.patch.object(Circuit, "convert_to_qasm")
+        method_mock = mocker.patch("divi.circuits._core.to_openqasm")
 
         Circuit(qscript, tags=["test_circ"])
 
@@ -101,7 +100,7 @@ class TestMetaCircuit:
         tag_prefix = "test"
         precision = 8
 
-        method_mock = mocker.patch.object(Circuit, "convert_to_qasm")
+        method_mock = mocker.patch("divi.circuits.qasm.to_openqasm")
 
         circuit = meta_circuit.initialize_circuit_from_params(
             param_list, tag_prefix=tag_prefix, precision=precision
@@ -113,7 +112,6 @@ class TestMetaCircuit:
 
         # Check the new Circuit object
         assert circuit.main_circuit == sample_circuit
-        assert circuit.circuit_type == "pennylane"
         assert circuit.tags == [f"{tag_prefix}_NoMitigation:0_0"]
         assert len(circuit.qasm_circuits) == 1
 
@@ -162,7 +160,7 @@ class TestMetaCircuit:
         tag_prefix = "test"
         precision = 8
 
-        method_mock = mocker.patch.object(Circuit, "convert_to_qasm")
+        method_mock = mocker.patch("divi.circuits.qasm.to_openqasm")
 
         circuit = meta_circuit.initialize_circuit_from_params(
             param_list, tag_prefix=tag_prefix, precision=precision
@@ -174,7 +172,6 @@ class TestMetaCircuit:
 
         # Check the new Circuit object
         assert circuit.main_circuit == sample_circuit
-        assert circuit.circuit_type == "pennylane"
         assert circuit.tags == expected_tags
         assert len(circuit.qasm_circuits) == expected_n_circuits
 

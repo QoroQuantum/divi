@@ -58,6 +58,13 @@ class VQE(QuantumProgram):
 
         self._meta_circuits = self._create_meta_circuits_dict()
 
+    @property
+    def n_params(self):
+        return (
+            self.ansatz.n_params_per_layer(self.n_qubits, n_electrons=self.n_electrons)
+            * self.n_layers
+        )
+
     def _process_problem_input(self, hamiltonian, molecule, n_electrons):
         if hamiltonian is None and molecule is None:
             raise ValueError(

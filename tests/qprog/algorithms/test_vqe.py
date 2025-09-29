@@ -7,20 +7,19 @@ import re
 import numpy as np
 import pennylane as qml
 import pytest
-from qprog_contracts import (
-    OPTIMIZERS_TO_TEST,
-    verify_correct_circuit_count,
-    verify_metacircuit_dict,
-)
 
 from divi.qprog import VQE
 from divi.qprog.algorithms import (
+    GenericLayerAnsatz,
     HardwareEfficientAnsatz,
     HartreeFockAnsatz,
     QAOAAnsatz,
-    RYAnsatz,
-    RYRZAnsatz,
     UCCSDAnsatz,
+)
+from tests.qprog.qprog_contracts import (
+    OPTIMIZERS_TO_TEST,
+    verify_correct_circuit_count,
+    verify_metacircuit_dict,
 )
 
 pytestmark = pytest.mark.algo
@@ -45,8 +44,7 @@ def h2_hamiltonian(h2_molecule):
 ANSAETZE_TO_TEST = [
     HartreeFockAnsatz(),
     UCCSDAnsatz(),
-    RYAnsatz(),
-    RYRZAnsatz(),
+    GenericLayerAnsatz([qml.RY, qml.RZ]),
     QAOAAnsatz(),
 ]
 
@@ -131,17 +129,13 @@ def test_meta_circuit_qasm(ansatz_obj, n_layers, h2_molecule):
     pattern = r"w_(\d+)_(\d+)"
     matches = re.findall(pattern, meta_circuit_qasm)
 
-    assert len(set(matches)) == n_layers * vqe_problem.n_params
-    assert len(set(matches)) // n_layers == vqe_problem.n_params
+    assert len(set(matches)) == vqe_problem.n_params
 
 
 def test_vqe_fail_with_hw_efficient_ansatz(h2_molecule):
     """Test that HW_EFFICIENT ansatz raises NotImplementedError."""
     with pytest.raises(NotImplementedError):
-        VQE(
-            molecule=h2_molecule,
-            ansatz=HardwareEfficientAnsatz(),
-        )
+        VQE(molecule=h2_molecule, ansatz=HardwareEfficientAnsatz(), backend=None)
 
 
 @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)

@@ -7,16 +7,16 @@ from itertools import product
 import numpy as np
 import pennylane as qml
 import pytest
-from qprog_contracts import verify_basic_program_batch_behaviour
 from scipy.spatial.distance import pdist, squareform
 
-from divi.qprog.algorithms import RYAnsatz, UCCSDAnsatz
+from divi.qprog.algorithms import GenericLayerAnsatz, UCCSDAnsatz
 from divi.qprog.optimizers import MonteCarloOptimizer
 from divi.qprog.workflows import (
     MoleculeTransformer,
     VQEHyperparameterSweep,
     _vqe_sweep,
 )
+from tests.qprog.qprog_contracts import verify_basic_program_batch_behaviour
 
 
 @pytest.fixture
@@ -284,7 +284,7 @@ class TestMoleculeTransformerGeneration:
 def vqe_sweep(default_test_simulator, h2_molecule):
     """Fixture to create a VQEHyperparameterSweep instance with the new interface."""
     bond_modifiers = [0.9, 1.0, 1.1]
-    ansatze = [UCCSDAnsatz(), RYAnsatz()]
+    ansatze = [UCCSDAnsatz(), GenericLayerAnsatz([qml.RY])]
     optimizer = MonteCarloOptimizer(n_param_sets=10, n_best_sets=3)
     max_iterations = 10
 
@@ -340,7 +340,7 @@ class TestVQEHyperparameterSweep:
 
         vqe_sweep.programs = {
             (UCCSDAnsatz, 0.9): mock_program_1,
-            (RYAnsatz, 1.0): mock_program_2,
+            (GenericLayerAnsatz([qml.RY]), 1.0): mock_program_2,
         }
 
         smallest_key, smallest_value = vqe_sweep.aggregate_results()
@@ -377,7 +377,10 @@ class TestVQEHyperparameterSweep:
             [0.9, 1.0, 1.1], [-9.0, -10.0, -11.0], label="UCCSDAnsatz", color="blue"
         )
         call_ry = mocker.call(
-            [0.9, 1.0, 1.1], [-10.0, -11.0, -12.0], label="RYAnsatz", color="g"
+            [0.9, 1.0, 1.1],
+            [-10.0, -11.0, -12.0],
+            label="GenericLayerAnsatz",
+            color="g",
         )
 
         mock_plot.assert_has_calls([call_uccsd, call_ry], any_order=True)

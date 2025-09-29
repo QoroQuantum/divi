@@ -15,12 +15,12 @@ import pytest
 import sympy as sp
 from mitiq.zne.inference import LinearFactory
 from mitiq.zne.scaling import fold_global
-from qprog_contracts import verify_basic_program_batch_behaviour
 from rich.progress import Progress
 
 from divi.circuits import MetaCircuit
 from divi.circuits.qem import ZNE
 from divi.qprog.batch import ProgramBatch, QuantumProgram, queue_listener
+from tests.qprog.qprog_contracts import verify_basic_program_batch_behaviour
 
 
 class SampleProgram(QuantumProgram):
@@ -29,7 +29,7 @@ class SampleProgram(QuantumProgram):
         self.run_time = run_time
 
         self.n_layers = 1
-        self.n_params = 4
+        self._n_params = 4
 
         super().__init__(backend=None, **kwargs)
 

@@ -29,7 +29,6 @@ class Circuit:
         qasm_circuits: list[str] = None,
     ):
         self.main_circuit = main_circuit
-        self.circuit_type = main_circuit.__module__.split(".")[0]
         self.tags = tags
 
         self.qasm_circuits = qasm_circuits

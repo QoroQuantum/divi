@@ -143,6 +143,10 @@ class QuantumProgram(ABC):
     def meta_circuits(self):
         return self._meta_circuits
 
+    @property
+    def n_params(self):
+        return self._n_params
+
     @abstractmethod
     def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
         pass
