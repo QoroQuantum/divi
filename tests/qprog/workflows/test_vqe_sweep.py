@@ -338,14 +338,17 @@ class TestVQEHyperparameterSweep:
         mock_program_2 = mocker.MagicMock()
         mock_program_2.losses = [{0: -1.1}]
 
+        uccsd_instance = UCCSDAnsatz()
+        generic_ry_instance = GenericLayerAnsatz([qml.RY])
+
         vqe_sweep.programs = {
-            (UCCSDAnsatz, 0.9): mock_program_1,
-            (GenericLayerAnsatz([qml.RY]), 1.0): mock_program_2,
+            (uccsd_instance, 0.9): mock_program_1,
+            (generic_ry_instance, 1.0): mock_program_2,
         }
 
         smallest_key, smallest_value = vqe_sweep.aggregate_results()
 
-        assert smallest_key == (UCCSDAnsatz, 0.9)
+        assert smallest_key == (uccsd_instance, 0.9)
         assert smallest_value == -1.2
 
     def test_visualize_results_line_plot_data(self, mocker, vqe_sweep):
