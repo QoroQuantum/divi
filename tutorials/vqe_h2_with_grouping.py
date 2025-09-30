@@ -17,7 +17,7 @@ if __name__ == "__main__":
     vqe_input = dict(
         molecule=mol,
         n_layers=1,
-        ansatz=HartreeFockAnsatz,
+        ansatz=HartreeFockAnsatz(),
         optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
         max_iterations=1,
         seed=2000,
