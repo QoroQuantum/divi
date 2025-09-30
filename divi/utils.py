@@ -57,9 +57,11 @@ def convert_qubo_matrix_to_pennylane_ising(
     is_sparse = sps.issparse(qubo_matrix)
     backend = sps if is_sparse else np
 
+    symmetrized_qubo = (qubo_matrix + qubo_matrix.T) / 2
+
     # Gather non-zero indices in the upper triangle of the matrix
     triu_matrix = backend.triu(
-        qubo_matrix,
+        symmetrized_qubo,
         **(
             {"format": qubo_matrix.format if qubo_matrix.format != "coo" else "csc"}
             if is_sparse

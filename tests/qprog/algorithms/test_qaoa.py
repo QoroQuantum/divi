@@ -211,14 +211,14 @@ class TestGraphInput:
 
         G = nx.bull_graph()
 
-        default_test_simulator.set_seed = 1997
+        default_test_simulator.set_seed(1997)
 
         qaoa_problem = QAOA(
             graph_problem=GraphProblem.MAX_CLIQUE,
             problem=G,
             n_layers=1,
             optimizer=optimizer,
-            max_iterations=12,
+            max_iterations=10,
             is_constrained=True,
             backend=default_test_simulator,
             seed=1997,
@@ -289,9 +289,9 @@ class TestGraphInput:
 
 
 QUBO_MATRIX_LIST = [
-    [-1, 0, -4.5],
-    [0, 1, 0],
-    [-4.5, 0, -1],
+    [-3.0, 4.0, 0.0],
+    [0.0, 2.0, 0.0],
+    [0.0, 0.0, -3.0],
 ]
 QUBO_MATRIX_NP = np.array(QUBO_MATRIX_LIST)
 
@@ -425,13 +425,13 @@ class TestQUBOInput:
 
     @pytest.mark.e2e
     def test_qubo_returns_correct_solution(self, default_test_simulator):
-        default_test_simulator.set_seed = 1997
+        default_test_simulator.set_seed(1997)
 
         qaoa_problem = QAOA(
             problem=QUBO_MATRIX_NP,
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
-            max_iterations=10,
+            max_iterations=12,
             backend=default_test_simulator,
             seed=1997,
         )
@@ -517,7 +517,7 @@ class TestQUBOInput:
         quadratic_program.integer_var(lowerbound=0, upperbound=3, name="w")
         quadratic_program.minimize(linear={"x": 1, "y": -2, "z": 3, "w": -1})
 
-        default_test_simulator.set_seed = 1997
+        default_test_simulator.set_seed(1997)
 
         qaoa_problem = QAOA(
             problem=quadratic_program,
@@ -543,7 +543,7 @@ class TestQUBOInput:
         quadratic_program.integer_var(lowerbound=0, upperbound=3, name="w")
         quadratic_program.maximize(linear={"x": 1, "y": -2, "z": 3, "w": -1})
 
-        default_test_simulator.set_seed = 1997
+        default_test_simulator.set_seed(1997)
 
         qaoa_problem = QAOA(
             problem=quadratic_program,
