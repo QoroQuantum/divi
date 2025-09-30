@@ -284,13 +284,18 @@ class QuantumProgram(ABC):
             for shots_dicts, curr_measurement_group in zip(
                 shots_by_qem_idx, measurement_groups
             ):
+                if hasattr(self, "cost_hamiltonian"):
+                    wire_order = tuple(reversed(self.cost_hamiltonian.wires))
+                else:
+                    wire_order = tuple(
+                        reversed(range(len(next(iter(shots_dicts[0].keys())))))
+                    )
+
                 curr_marginal_results = []
                 for observable in curr_measurement_group:
+
                     intermediate_exp_values = [
-                        ExpectationMP(observable).process_counts(
-                            shots_dict,
-                            tuple(reversed(range(len(next(iter(shots_dict.keys())))))),
-                        )
+                        ExpectationMP(observable).process_counts(shots_dict, wire_order)
                         for shots_dict in shots_dicts
                     ]
 
