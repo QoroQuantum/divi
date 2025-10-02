@@ -6,7 +6,7 @@ import logging
 
 import pytest
 
-from divi import qlogger
+from divi.reporting import disable_logging, enable_logging
 
 LIBRARY_ROOT_LOGGER_NAME = "divi"
 
@@ -26,7 +26,7 @@ def test_enable_logging_default_level(caplog):
     Test that enable_logging sets the correct level and adds a handler,
     and logs messages at INFO level.
     """
-    qlogger.enable_logging()
+    enable_logging()
     root_logger = logging.getLogger(LIBRARY_ROOT_LOGGER_NAME)
 
     assert root_logger.level == logging.INFO
@@ -48,7 +48,7 @@ def test_enable_logging_custom_level(caplog):
     """
     Test that enable_logging sets a custom log level correctly.
     """
-    qlogger.enable_logging(level=logging.DEBUG)
+    enable_logging(level=logging.DEBUG)
     root_logger = logging.getLogger(LIBRARY_ROOT_LOGGER_NAME)
 
     assert root_logger.level == logging.DEBUG
@@ -67,14 +67,14 @@ def test_disable_logging(caplog):
     """
 
     # First, enable logging to ensure there's something to disable
-    qlogger.enable_logging(level=logging.DEBUG)
+    enable_logging(level=logging.DEBUG)
     root_logger = logging.getLogger(LIBRARY_ROOT_LOGGER_NAME)
 
     # Should have handlers before disabling
     assert len(root_logger.handlers) > 0
     assert root_logger.level == logging.DEBUG
 
-    qlogger.disable_logging()
+    disable_logging()
 
     assert len(root_logger.handlers) == 0
     assert root_logger.level == (logging.CRITICAL + 1)
@@ -106,10 +106,10 @@ def test_enable_logging_idempotency(caplog):
     """
     Test that calling enable_logging multiple times doesn't add multiple handlers.
     """
-    qlogger.enable_logging()
+    enable_logging()
 
     # Call again with a different level
-    qlogger.enable_logging(level=logging.WARNING)
+    enable_logging(level=logging.WARNING)
     root_logger = logging.getLogger(LIBRARY_ROOT_LOGGER_NAME)
 
     assert len(root_logger.handlers) == 1

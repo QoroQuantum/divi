@@ -8,7 +8,7 @@ import dimod
 import hybrid
 import numpy as np
 
-from divi.parallel_simulator import ParallelSimulator
+from divi.backends import ParallelSimulator
 from divi.qprog import QUBOPartitioningQAOA
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 

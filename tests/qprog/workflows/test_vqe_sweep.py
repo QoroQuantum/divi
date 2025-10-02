@@ -7,12 +7,16 @@ from itertools import product
 import numpy as np
 import pennylane as qml
 import pytest
-from qprog_contracts import verify_basic_program_batch_behaviour
 from scipy.spatial.distance import pdist, squareform
 
-import divi
-from divi.qprog import MoleculeTransformer, VQEAnsatz, VQEHyperparameterSweep
+from divi.qprog.algorithms import GenericLayerAnsatz, UCCSDAnsatz
 from divi.qprog.optimizers import MonteCarloOptimizer
+from divi.qprog.workflows import (
+    MoleculeTransformer,
+    VQEHyperparameterSweep,
+    _vqe_sweep,
+)
+from tests.qprog.qprog_contracts import verify_basic_program_batch_behaviour
 
 
 @pytest.fixture
@@ -208,7 +212,7 @@ class TestMoleculeTransformerGeneration:
     def test_generate_handles_identity_transforms(self, mocker, water_molecule):
         """Test that a delta modifier of 0.0 and a scale modifier of 1
         results in the original coordinates."""
-        spy = mocker.spy(divi.qprog._vqe_sweep, "_transform_bonds")
+        spy = mocker.spy(_vqe_sweep, "_transform_bonds")
 
         mt = MoleculeTransformer(
             base_molecule=water_molecule, bond_modifiers=[0.0, 0.1]
@@ -280,7 +284,7 @@ class TestMoleculeTransformerGeneration:
 def vqe_sweep(default_test_simulator, h2_molecule):
     """Fixture to create a VQEHyperparameterSweep instance with the new interface."""
     bond_modifiers = [0.9, 1.0, 1.1]
-    ansatze = [VQEAnsatz.UCCSD, VQEAnsatz.RY]
+    ansatze = [UCCSDAnsatz(), GenericLayerAnsatz([qml.RY])]
     optimizer = MonteCarloOptimizer(n_param_sets=10, n_best_sets=3)
     max_iterations = 10
 
@@ -334,14 +338,17 @@ class TestVQEHyperparameterSweep:
         mock_program_2 = mocker.MagicMock()
         mock_program_2.losses = [{0: -1.1}]
 
+        uccsd_instance = UCCSDAnsatz()
+        generic_ry_instance = GenericLayerAnsatz([qml.RY])
+
         vqe_sweep.programs = {
-            (VQEAnsatz.UCCSD, 0.9): mock_program_1,
-            (VQEAnsatz.RY, 1.0): mock_program_2,
+            (uccsd_instance, 0.9): mock_program_1,
+            (generic_ry_instance, 1.0): mock_program_2,
         }
 
         smallest_key, smallest_value = vqe_sweep.aggregate_results()
 
-        assert smallest_key == (VQEAnsatz.UCCSD, 0.9)
+        assert smallest_key == (uccsd_instance, 0.9)
         assert smallest_value == -1.2
 
     def test_visualize_results_line_plot_data(self, mocker, vqe_sweep):
@@ -368,18 +375,16 @@ class TestVQEHyperparameterSweep:
         # Check that plot was called for each ansatz
         assert mock_plot.call_count == len(vqe_sweep.ansatze)
 
-        # Expected data for UCCSD (ansatz_idx=0)
-        expected_x_uccsd = [0.9, 1.0, 1.1]
-        expected_y_uccsd = [-9.0, -10.0, -11.0]
-        # Expected data for RY (ansatz_idx=1)
-        expected_x_ry = [0.9, 1.0, 1.1]
-        expected_y_ry = [-10.0, -11.0, -12.0]
-
         # Construct expected calls
         call_uccsd = mocker.call(
-            expected_x_uccsd, expected_y_uccsd, label=VQEAnsatz.UCCSD
+            [0.9, 1.0, 1.1], [-9.0, -10.0, -11.0], label="UCCSDAnsatz", color="blue"
         )
-        call_ry = mocker.call(expected_x_ry, expected_y_ry, label=VQEAnsatz.RY)
+        call_ry = mocker.call(
+            [0.9, 1.0, 1.1],
+            [-10.0, -11.0, -12.0],
+            label="GenericLayerAnsatz",
+            color="g",
+        )
 
         mock_plot.assert_has_calls([call_uccsd, call_ry], any_order=True)
 

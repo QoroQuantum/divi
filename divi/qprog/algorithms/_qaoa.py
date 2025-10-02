@@ -224,7 +224,7 @@ class QAOA(QuantumProgram):
         self.n_layers = n_layers
         self.max_iterations = max_iterations
         self.current_iteration = 0
-        self.n_params = 2
+        self._n_params = 2
         self._is_compute_probabilites = False
         self.optimizer = optimizer if optimizer is not None else MonteCarloOptimizer()
 

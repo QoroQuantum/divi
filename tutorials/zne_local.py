@@ -9,9 +9,9 @@ import pennylane as qml
 from mitiq.zne.inference import RichardsonFactory
 from mitiq.zne.scaling import fold_gates_at_random
 
-from divi.parallel_simulator import ParallelSimulator
-from divi.qem import ZNE
-from divi.qprog import VQE, VQEAnsatz
+from divi.backends import ParallelSimulator
+from divi.circuits.qem import ZNE
+from divi.qprog import VQE, HartreeFockAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 
 if __name__ == "__main__":
@@ -22,7 +22,7 @@ if __name__ == "__main__":
     args = dict(
         molecule=mol,
         n_layers=1,
-        ansatz=VQEAnsatz.HARTREE_FOCK,
+        ansatz=HartreeFockAnsatz(),
         optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
         max_iterations=5,
         seed=1997,

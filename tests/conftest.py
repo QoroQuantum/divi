@@ -7,8 +7,7 @@ import re
 
 import pytest
 
-from divi.interfaces import CircuitRunner
-from divi.parallel_simulator import ParallelSimulator
+from divi.backends import CircuitRunner, ParallelSimulator
 
 
 class DummySimulator(CircuitRunner):

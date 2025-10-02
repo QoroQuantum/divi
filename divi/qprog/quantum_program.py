@@ -13,13 +13,11 @@ import numpy as np
 from pennylane.measurements import ExpectationMP
 from scipy.optimize import OptimizeResult
 
-from divi import QoroService
+from divi.backends import CircuitRunner, JobStatus, QoroService
 from divi.circuits import Circuit, MetaCircuit
-from divi.interfaces import CircuitRunner
-from divi.qem import _NoMitigation
-from divi.qoro_service import JobStatus
+from divi.circuits.qem import _NoMitigation
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-from divi.reporter import LoggingProgressReporter, QueueProgressReporter
+from divi.reporting import LoggingProgressReporter, QueueProgressReporter
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +142,10 @@ class QuantumProgram(ABC):
     @property
     def meta_circuits(self):
         return self._meta_circuits
+
+    @property
+    def n_params(self):
+        return self._n_params
 
     @abstractmethod
     def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
@@ -282,13 +284,18 @@ class QuantumProgram(ABC):
             for shots_dicts, curr_measurement_group in zip(
                 shots_by_qem_idx, measurement_groups
             ):
+                if hasattr(self, "cost_hamiltonian"):
+                    wire_order = tuple(reversed(self.cost_hamiltonian.wires))
+                else:
+                    wire_order = tuple(
+                        reversed(range(len(next(iter(shots_dicts[0].keys())))))
+                    )
+
                 curr_marginal_results = []
                 for observable in curr_measurement_group:
+
                     intermediate_exp_values = [
-                        ExpectationMP(observable).process_counts(
-                            shots_dict,
-                            tuple(reversed(range(len(next(iter(shots_dict.keys())))))),
-                        )
+                        ExpectationMP(observable).process_counts(shots_dict, wire_order)
                         for shots_dict in shots_dicts
                     ]
 

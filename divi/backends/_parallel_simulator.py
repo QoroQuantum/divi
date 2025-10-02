@@ -18,7 +18,7 @@ from qiskit.providers import Backend
 from qiskit_aer import AerSimulator
 from qiskit_aer.noise import NoiseModel
 
-from divi.interfaces import CircuitRunner
+from divi.backends import CircuitRunner
 
 logger = logging.getLogger(__name__)
 
@@ -74,8 +74,9 @@ class ParallelSimulator(CircuitRunner):
             n_processes (int, optional): Number of parallel processes to use for simulation. Defaults to 2.
             shots (int, optional): Number of shots to perform. Defaults to 5000.
             simulation_seed (int, optional): Seed for the random number generator to ensure reproducibility. Defaults to None.
-            backend (Backend or "auto, optional): A Qiskit backend to initiate the simulator from. If "auto" is passed,
-             the best-fit most recent fake backend will be chosen for the given circuit. Defaults to None, resulting in noiseless simulation.
+            qiskit_backend (Backend | Literal["auto"] | None, optional): A Qiskit backend to initiate the simulator from.
+            If "auto" is passed, the best-fit most recent fake backend will be chosen for the given circuit.
+            Defaults to None, resulting in noiseless simulation.
             noise_model (NoiseModel, optional): Qiskit noise model to use in simulation. Defaults to None.
         """
         super().__init__(shots=shots)

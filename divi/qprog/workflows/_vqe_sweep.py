@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pennylane as qml
 
-from divi.qprog import VQE, ProgramBatch, VQEAnsatz
+from divi.qprog import VQE, Ansatz, ProgramBatch
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
 
 
@@ -392,7 +392,7 @@ class VQEHyperparameterSweep(ProgramBatch):
 
     def __init__(
         self,
-        ansatze: Sequence[VQEAnsatz],
+        ansatze: Sequence[Ansatz],
         molecule_transformer: MoleculeTransformer,
         optimizer: Optimizer | None = None,
         max_iterations: int = 10,
@@ -469,37 +469,49 @@ class VQEHyperparameterSweep(ProgramBatch):
         if self._executor is not None:
             self.join()
 
-        data = []
-        colors = ["blue", "g", "r", "c", "m", "y", "k"]
+        # Get the unique ansatz objects that were actually run
+        # Assumes `self.ansatze` is a list of the ansatz instances used.
+        unique_ansatze = self.ansatze
 
-        ansatz_list = list(VQEAnsatz)
+        # Create a stable color mapping for each unique ansatz object
+        colors = ["blue", "g", "r", "c", "m", "y", "k"]
+        color_map = {
+            ansatz: colors[i % len(colors)] for i, ansatz in enumerate(unique_ansatze)
+        }
 
         if graph_type == "scatter":
-            for ansatz, modifier in self.programs.keys():
+            # Plot each ansatz's results as a separate series for clarity
+            for ansatz in unique_ansatze:
+                modifiers = []
                 min_energies = []
+                for modifier in self.molecule_transformer.bond_modifiers:
+                    program_key = (ansatz, modifier)
+                    if program_key in self.programs:
+                        modifiers.append(modifier)
+                        curr_energies = self.programs[program_key].losses[-1]
+                        min_energies.append(min(curr_energies.values()))
 
-                curr_energies = self.programs[(ansatz, modifier)].losses[-1]
-                min_energies.append(
-                    (
-                        modifier,
-                        min(curr_energies.values()),
-                        colors[ansatz_list.index(ansatz)],
-                    )
+                # Use the new .name property for the label and the color_map
+                plt.scatter(
+                    modifiers,
+                    min_energies,
+                    color=color_map[ansatz],
+                    label=ansatz.name,
                 )
-                data.extend(min_energies)
-
-            x, y, z = zip(*data)
-            plt.scatter(x, y, color=z, label=ansatz)
 
         elif graph_type == "line":
-            for ansatz in self.ansatze:
+            for ansatz in unique_ansatze:
                 energies = []
                 for modifier in self.molecule_transformer.bond_modifiers:
                     energies.append(
                         min(self.programs[(ansatz, modifier)].losses[-1].values())
                     )
+
                 plt.plot(
-                    self.molecule_transformer.bond_modifiers, energies, label=ansatz
+                    self.molecule_transformer.bond_modifiers,
+                    energies,
+                    label=ansatz.name,
+                    color=color_map[ansatz],
                 )
 
         plt.xlabel(

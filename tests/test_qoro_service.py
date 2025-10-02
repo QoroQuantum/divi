@@ -7,12 +7,14 @@ from http import HTTPStatus
 import pytest
 import requests
 
-from divi.qoro_service import (
+from divi.backends import _qoro_service
+from divi.backends._qoro_service import (
     JobStatus,
     JobType,
     MaxRetriesReachedError,
     QoroService,
     _raise_with_details,
+    is_valid_qasm,
 )
 
 # --- Test Fixtures ---
@@ -86,7 +88,9 @@ class TestQoroServiceMock:
         mock_make_request = mocker.patch.object(
             qoro_service_mock, "_make_request", return_value=mock_response
         )
-        mocker.patch("divi.qoro_service.is_valid_qasm", return_value=True)
+        mocker.patch(
+            f"{is_valid_qasm.__module__}.{is_valid_qasm.__name__}", return_value=True
+        )
 
         job_id = qoro_service_mock.submit_circuits({"circuit_1": "mock_qasm"})
 
@@ -95,8 +99,13 @@ class TestQoroServiceMock:
 
     def test_submit_circuits_multiple_chunks_mock(self, mocker, qoro_service_mock):
         """Tests submitting multiple chunks of circuits."""
-        mocker.patch("divi.qoro_service.MAX_PAYLOAD_SIZE_MB", new=60.0 / 1024 / 1024)
-        mocker.patch("divi.qoro_service.is_valid_qasm", return_value=True)
+
+        mocker.patch(
+            f"{is_valid_qasm.__module__}.{is_valid_qasm.__name__}", return_value=True
+        )
+        mocker.patch.object(
+            _qoro_service, "MAX_PAYLOAD_SIZE_MB", new=60.0 / 1024 / 1024
+        )
 
         mock_response_1 = mocker.MagicMock(json=lambda: {"job_id": "mock_job_id_1"})
         mock_response_1.status_code = HTTPStatus.CREATED
@@ -118,7 +127,9 @@ class TestQoroServiceMock:
 
     def test_submit_circuits_invalid_qasm_mock(self, mocker, qoro_service_mock):
         """Tests that submitting an invalid QASM string raises a ValueError."""
-        mocker.patch("divi.qoro_service.is_valid_qasm", return_value=False)
+        mocker.patch(
+            f"{_qoro_service.__name__}.{is_valid_qasm.__name__}", return_value=False
+        )
         with pytest.raises(ValueError, match="Circuit 'circuit_1' is not a valid QASM"):
             qoro_service_mock.submit_circuits({"circuit_1": "invalid_qasm"})
 
@@ -135,7 +146,9 @@ class TestQoroServiceMock:
         self, mocker, qoro_service_mock
     ):
         """Tests submitting circuits with a custom tag and job type."""
-        mocker.patch("divi.qoro_service.is_valid_qasm", return_value=True)
+        mocker.patch(
+            f"{is_valid_qasm.__module__}.{is_valid_qasm.__name__}", return_value=True
+        )
         mock_response = mocker.MagicMock(json=lambda: {"job_id": "mock_job_id"})
         mock_response.status_code = HTTPStatus.CREATED
         mock_make_request = mocker.patch.object(
@@ -153,7 +166,9 @@ class TestQoroServiceMock:
 
     def test_submit_circuits_api_error_mock(self, mocker, qoro_service_mock):
         """Tests API error handling during circuit submission."""
-        mocker.patch("divi.qoro_service.is_valid_qasm", return_value=True)
+        mocker.patch(
+            f"{is_valid_qasm.__module__}.{is_valid_qasm.__name__}", return_value=True
+        )
         mocker.patch.object(
             qoro_service_mock,
             "_make_request",
@@ -170,7 +185,9 @@ class TestQoroServiceMock:
         self, mocker, qoro_service_mock, original_flag
     ):
         """Tests overriding the circuit packing setting."""
-        mocker.patch("divi.qoro_service.is_valid_qasm", return_value=True)
+        mocker.patch(
+            f"{is_valid_qasm.__module__}.{is_valid_qasm.__name__}", return_value=True
+        )
         qoro_service_mock.use_circuit_packing = original_flag
 
         mock_response = mocker.MagicMock(json=lambda: {"job_id": "mock_job_id_packed"})

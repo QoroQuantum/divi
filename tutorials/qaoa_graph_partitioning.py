@@ -7,7 +7,7 @@ import warnings
 
 import networkx as nx
 
-from divi.parallel_simulator import ParallelSimulator
+from divi.backends import ParallelSimulator
 from divi.qprog import GraphPartitioningQAOA, GraphProblem, PartitioningConfig
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 

@@ -15,9 +15,9 @@ import requests
 from dotenv import dotenv_values
 from requests.adapters import HTTPAdapter, Retry
 
-from divi.exp.cirq import is_valid_qasm
-from divi.interfaces import CircuitRunner
-from divi.qpu_system import QPU, QPUSystem
+from divi.backends import CircuitRunner
+from divi.backends._qpu_system import QPU, QPUSystem
+from divi.extern.cirq import is_valid_qasm
 
 API_URL = "https://app.qoroquantum.net/api"
 MAX_PAYLOAD_SIZE_MB = 0.95

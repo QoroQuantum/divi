@@ -7,8 +7,8 @@ import time
 import numpy as np
 import pennylane as qml
 
-from divi.parallel_simulator import ParallelSimulator
-from divi.qprog import VQE, VQEAnsatz
+from divi.backends import ParallelSimulator
+from divi.qprog import VQE, HartreeFockAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 
 if __name__ == "__main__":
@@ -20,7 +20,7 @@ if __name__ == "__main__":
 
     vqe_problem = VQE(
         molecule=mol,
-        ansatz=VQEAnsatz.HARTREE_FOCK,
+        ansatz=HartreeFockAnsatz(),
         n_layers=1,
         optimizer=optim,
         max_iterations=3,

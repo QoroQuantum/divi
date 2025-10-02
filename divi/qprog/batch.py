@@ -16,11 +16,9 @@ from warnings import warn
 from rich.console import Console
 from rich.progress import Progress, TaskID
 
-from divi._pbar import make_progress_bar
-from divi.interfaces import CircuitRunner
-from divi.parallel_simulator import ParallelSimulator
-from divi.qlogger import disable_logging
+from divi.backends import CircuitRunner, ParallelSimulator
 from divi.qprog.quantum_program import QuantumProgram
+from divi.reporting import disable_logging, make_progress_bar
 
 
 def queue_listener(

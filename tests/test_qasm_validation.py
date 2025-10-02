@@ -4,7 +4,7 @@
 
 import pytest
 
-from divi.exp.cirq import is_valid_qasm
+from divi.extern.cirq import is_valid_qasm
 
 VALID_QASM = {
     "argvalues": [

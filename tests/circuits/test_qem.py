@@ -8,7 +8,8 @@ import cirq
 import pytest
 from mitiq.zne.inference import Factory
 
-from divi.qem import ZNE, _NoMitigation
+from divi.circuits import qem
+from divi.circuits.qem import ZNE, _NoMitigation
 
 
 class TestNoMitigation:
@@ -184,7 +185,7 @@ class TestZNE:
         """Test that modify_circuit calls construct_circuits with correct parameters."""
         scale_factors = [[1.0, 2.0, 3.0], [1.0], [1, 2, 3]]
         # Mock the construct_circuits function
-        mock_construct = mocker.patch("divi.qem.construct_circuits")
+        mock_construct = mocker.patch(f"{qem.__name__}.construct_circuits")
         mock_construct.return_value = [sample_circuit, sample_circuit]
 
         for scale_factor in scale_factors:
@@ -210,7 +211,7 @@ class TestZNE:
     ):
         """Test that postprocess_results calls combine_results with correct parameters."""
         # Mock the combine_results function
-        mock_combine = mocker.patch("divi.qem.combine_results")  # Adjust import path
+        mock_combine = mocker.patch(f"{qem.__name__}.combine_results")
         mock_combine.return_value = 0.95
 
         zne = ZNE(

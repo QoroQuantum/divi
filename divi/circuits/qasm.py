@@ -14,8 +14,8 @@ from pennylane.tape import QuantumScript
 from pennylane.wires import Wires
 from sympy import Symbol
 
-from divi.exp.cirq import cirq_circuit_from_qasm
-from divi.qem import QEMProtocol
+from divi.circuits.qem import QEMProtocol
+from divi.extern.cirq import cirq_circuit_from_qasm
 
 OPENQASM_GATES = {
     "CNOT": "cx",
