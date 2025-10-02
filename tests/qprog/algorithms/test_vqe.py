@@ -130,6 +130,9 @@ def test_meta_circuit_qasm(ansatz_obj, n_layers, h2_molecule):
     matches = re.findall(pattern, meta_circuit_qasm)
 
     assert len(set(matches)) == vqe_problem.n_params
+    assert len(set(matches)) // n_layers == ansatz_obj.n_params_per_layer(
+        vqe_problem.n_qubits, n_electrons=vqe_problem.n_electrons
+    )
 
 
 def test_vqe_fail_with_hw_efficient_ansatz(h2_molecule):

@@ -9,7 +9,7 @@ import sympy as sp
 
 from divi.circuits import MetaCircuit
 from divi.qprog import QuantumProgram
-from divi.qprog.algorithms._ansatze import Ansatz
+from divi.qprog.algorithms._ansatze import Ansatz, HartreeFockAnsatz
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
 
 
@@ -20,7 +20,7 @@ class VQE(QuantumProgram):
         molecule: qml.qchem.Molecule | None = None,
         n_electrons: int | None = None,
         n_layers: int = 1,
-        ansatz: Ansatz = None,
+        ansatz: Ansatz | None = None,
         optimizer: Optimizer | None = None,
         max_iterations=10,
         **kwargs,
@@ -33,18 +33,15 @@ class VQE(QuantumProgram):
             molecule (pennylane.qchem.Molecule, optional): The molecule representing the problem.
             n_electrons (int, optional): Number of electrons associated with the Hamiltonian.
                 Only needs to be provided when a Hamiltonian is given.
-            ansatz (VQEAnsatz): The ansatz to use for the VQE problem
+            ansatz (Ansatz): The ansatz to use for the VQE problem
             optimizer (Optimizers): The optimizer to use.
             max_iterations (int): Maximum number of iteration optimizers.
         """
 
-        if not ansatz:
-            raise ValueError("An ansatz must be provided.")
-
         # Local Variables
+        self.ansatz = HartreeFockAnsatz() if ansatz is None else ansatz
         self.n_layers = n_layers
         self.results = {}
-        self.ansatz = ansatz
         self.max_iterations = max_iterations
         self.current_iteration = 0
 
@@ -72,13 +69,8 @@ class VQE(QuantumProgram):
             )
 
         if hamiltonian is not None:
-            if not isinstance(n_electrons, int) or n_electrons < 0:
-                raise ValueError(
-                    f"`n_electrons` is expected to be a non-negative integer. Got {n_electrons}."
-                )
-
-            self.n_electrons = n_electrons
             self.n_qubits = len(hamiltonian.wires)
+            self.n_electrons = n_electrons
 
         if molecule is not None:
             self.molecule = molecule

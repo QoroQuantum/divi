@@ -51,7 +51,9 @@ class GenericLayerAnsatz(Ansatz):
         gate_sequence: list[qml.operation.Operator],
         entangler: qml.operation.Operator | None = None,
         entangling_layout: (
-            Literal["linear", "ring", "all-to-all"] | Sequence[tuple[int, int]] | None
+            Literal["linear", "brick", "circular", "all-to-all"]
+            | Sequence[tuple[int, int]]
+            | None
         ) = None,
     ):
         """
@@ -81,14 +83,20 @@ class GenericLayerAnsatz(Ansatz):
             case None | "linear":
                 self.entangling_layout = "linear"
 
-                self._layout_fn = lambda n_qubit: zip(range(n_qubit), range(1, n_qubit))
+                self._layout_fn = lambda n_qubits: zip(
+                    range(n_qubits), range(1, n_qubits)
+                )
+            case "brick":
+                self._layout_fn = lambda n_qubits: [
+                    (i, i + 1) for r in range(2) for i in range(r, n_qubits - 1, 2)
+                ]
             case "circular":
-                self._layout_fn = lambda n_qubit: zip(
-                    range(n_qubit), [(i + 1) % n_qubit for i in range(n_qubit)]
+                self._layout_fn = lambda n_qubits: zip(
+                    range(n_qubits), [(i + 1) % n_qubits for i in range(n_qubits)]
                 )
             case "all_to_all":
-                self._layout_fn = lambda n_qubit: (
-                    (i, j) for i in range(n_qubit) for j in range(i + 1, n_qubit)
+                self._layout_fn = lambda n_qubits: (
+                    (i, j) for i in range(n_qubits) for j in range(i + 1, n_qubits)
                 )
             case _:
                 if not all(
