@@ -403,7 +403,7 @@ class VQEHyperparameterSweep(ProgramBatch):
 
         Parameters
         ----------
-        ansatze: Sequence[VQEAnsatz]
+        ansatze: Sequence[Ansatz]
             A sequence of ansatz circuits to test.
         molecule_transformer: MoleculeTransformer
             A `MoleculeTransformer` object defining the configuration for
