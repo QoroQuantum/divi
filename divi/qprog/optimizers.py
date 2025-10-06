@@ -2,20 +2,23 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from enum import Enum
 
 import numpy as np
+from pymoo.algorithms.soo.nonconvex.cmaes import CMAES
+from pymoo.algorithms.soo.nonconvex.de import DE
+from pymoo.core.evaluator import Evaluator
+from pymoo.core.individual import Individual
+from pymoo.core.population import Population
+from pymoo.core.problem import Problem
+from pymoo.problems.static import StaticProblem
+from pymoo.termination import get_termination
 from scipy.optimize import OptimizeResult, minimize
 
 from divi.extern.scipy._cobyla import _minimize_cobyla as cobyla_fn
-
-
-class ScipyMethod(Enum):
-    NELDER_MEAD = "Nelder-Mead"
-    COBYLA = "COBYLA"
-    L_BFGS_B = "L-BFGS-B"
 
 
 class Optimizer(ABC):
@@ -51,8 +54,89 @@ class Optimizer(ABC):
         raise NotImplementedError("This method should be implemented by subclasses.")
 
 
+class PymooMethod(Enum):
+    CMAES = "CMAES"
+    DE = "DE"
+
+
+class PymooOptimizer(Optimizer):
+    def __init__(self, method: PymooMethod, population_size: int = 50, **kwargs):
+        super().__init__()
+
+        self.optimizer_obj = globals()[method.value](
+            pop_size=population_size, parallelize=False, **kwargs
+        )
+
+    @property
+    def n_param_sets(self):
+        if isinstance(self.optimizer_obj, DE):
+            return self.optimizer_obj.pop_size
+        elif isinstance(self.optimizer_obj, CMAES):
+            return self.optimizer_obj.options["popsize"]
+
+    def optimize(
+        self,
+        cost_fn: Callable[[np.ndarray], float],
+        initial_params: np.ndarray,
+        callback_fn: Callable | None = None,
+        **kwargs,
+    ):
+
+        max_iterations = kwargs.pop("maxiter", 5)
+        rng = kwargs.pop("rng", np.random.default_rng())
+        seed = rng.bit_generator.seed_seq.spawn(1)[0].generate_state(1)[0]
+
+        n_var = initial_params.shape[-1]
+
+        xl = np.zeros(n_var)
+        xu = np.ones(n_var) * 2 * np.pi
+
+        problem = Problem(n_var=n_var, n_obj=1, xl=xl, xu=xu)
+
+        self.optimizer_obj.setup(
+            problem,
+            termination=get_termination("n_gen", max_iterations),
+            seed=int(seed),
+            verbose=False,
+        )
+        self.optimizer_obj.start_time = time.time()
+
+        pop = Population.create(
+            *[Individual(X=initial_params[i]) for i in range(self.n_param_sets)]
+        )
+
+        while self.optimizer_obj.has_next():
+            X = pop.get("X")
+
+            curr_losses = cost_fn(X)
+            static = StaticProblem(problem, F=curr_losses)
+            Evaluator().eval(static, pop)
+
+            self.optimizer_obj.tell(infills=pop)
+
+            pop = self.optimizer_obj.ask()
+
+            if callback_fn:
+                callback_fn(OptimizeResult(x=pop.get("X"), fun=curr_losses))
+
+        result = self.optimizer_obj.result()
+        return OptimizeResult(
+            x=result.X[0],
+            fun=result.F,
+            nit=self.optimizer_obj.n_gen - 1,
+        )
+
+
+class ScipyMethod(Enum):
+    NELDER_MEAD = "Nelder-Mead"
+    COBYLA = "COBYLA"
+    L_BFGS_B = "L-BFGS-B"
+
+
 class ScipyOptimizer(Optimizer):
     def __init__(self, method: ScipyMethod):
+        super().__init__()
+
         self.method = method
 
     @property

@@ -380,8 +380,6 @@ class QuantumProgram(ABC):
                 )
             )
 
-            self.final_params[:] = np.atleast_2d(intermediate_result.x)
-
             self.current_iteration += 1
 
             self.reporter.update(iteration=self.current_iteration)
