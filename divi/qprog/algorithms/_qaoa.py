@@ -397,37 +397,15 @@ class QAOA(QuantumProgram):
 
         self.reporter.info(message="🏁 Computing Final Solution 🏁")
 
-        # Convert losses dict to list to apply ordinal operations
-        final_losses_list = list(self.losses[-1].values())
-
-        # Get the index of the smallest loss in the last operation
-        best_solution_idx = min(
-            range(len(final_losses_list)),
-            key=lambda x: final_losses_list.__getitem__(x),
-        )
-
-        # Insert the measurement circuit here
         self._run_final_measurement()
 
-        # Find the key matching the best_solution_idx with possible metadata in between
-        pattern = re.compile(rf"^{best_solution_idx}(?:_[^_]*)*_0$")
-        matching_keys = [k for k in self.probs.keys() if pattern.match(k)]
-
-        # Some minor sanity checks
-        if len(matching_keys) == 0:
-            raise RuntimeError("No matching key found.")
-        if len(matching_keys) > 1:
-            raise RuntimeError(f"More than one matching key found.")
-
-        best_solution_key = matching_keys[0]
-        # Retrieve the probability distribution dictionary of the best solution
-        best_solution_probs = self.probs[best_solution_key]
+        final_measurement_probs = next(iter(self.probs.values()))
 
         # Retrieve the bitstring with the actual best solution
         # Reverse to account for the endianness difference
-        best_solution_bitstring = max(best_solution_probs, key=best_solution_probs.get)[
-            ::-1
-        ]
+        best_solution_bitstring = max(
+            final_measurement_probs, key=final_measurement_probs.get
+        )[::-1]
 
         if isinstance(self.problem, QUBOProblemTypes):
             self._solution_bitstring[:] = np.fromiter(

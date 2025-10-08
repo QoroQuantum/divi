@@ -63,16 +63,19 @@ class PymooOptimizer(Optimizer):
     def __init__(self, method: PymooMethod, population_size: int = 50, **kwargs):
         super().__init__()
 
-        self.optimizer_obj = globals()[method.value](
-            pop_size=population_size, parallelize=False, **kwargs
-        )
+        self.method = method
+        self.population_size = population_size
+        self.algorithm_kwargs = kwargs
 
     @property
     def n_param_sets(self):
-        if isinstance(self.optimizer_obj, DE):
-            return self.optimizer_obj.pop_size
-        elif isinstance(self.optimizer_obj, CMAES):
-            return self.optimizer_obj.options["popsize"]
+        # Determine population size from stored parameters
+        if self.method.value == "DE":
+            return self.population_size
+        elif self.method.value == "CMAES":
+            # CMAES uses 'popsize' in options dict
+            return self.algorithm_kwargs.get("popsize", self.population_size)
+        return self.population_size
 
     def optimize(
         self,
@@ -81,6 +84,12 @@ class PymooOptimizer(Optimizer):
         callback_fn: Callable | None = None,
         **kwargs,
     ):
+
+        # Create fresh algorithm instance for this optimization run
+        # since pymoo has no reset()-like functionality
+        optimizer_obj = globals()[self.method.value](
+            pop_size=self.population_size, parallelize=False, **self.algorithm_kwargs
+        )
 
         max_iterations = kwargs.pop("maxiter", 5)
         rng = kwargs.pop("rng", np.random.default_rng())
@@ -93,37 +102,38 @@ class PymooOptimizer(Optimizer):
 
         problem = Problem(n_var=n_var, n_obj=1, xl=xl, xu=xu)
 
-        self.optimizer_obj.setup(
+        optimizer_obj.setup(
             problem,
             termination=get_termination("n_gen", max_iterations),
             seed=int(seed),
             verbose=False,
         )
-        self.optimizer_obj.start_time = time.time()
+        optimizer_obj.start_time = time.time()
 
         pop = Population.create(
             *[Individual(X=initial_params[i]) for i in range(self.n_param_sets)]
         )
 
-        while self.optimizer_obj.has_next():
+        while optimizer_obj.has_next():
             X = pop.get("X")
 
             curr_losses = cost_fn(X)
             static = StaticProblem(problem, F=curr_losses)
             Evaluator().eval(static, pop)
 
-            self.optimizer_obj.tell(infills=pop)
+            optimizer_obj.tell(infills=pop)
 
-            pop = self.optimizer_obj.ask()
+            pop = optimizer_obj.ask()
 
             if callback_fn:
                 callback_fn(OptimizeResult(x=pop.get("X"), fun=curr_losses))
 
-        result = self.optimizer_obj.result()
+        result = optimizer_obj.result()
+
         return OptimizeResult(
-            x=result.X[0],
+            x=result.X,
             fun=result.F,
-            nit=self.optimizer_obj.n_gen - 1,
+            nit=optimizer_obj.n_gen - 1,
         )
 
 
@@ -252,9 +262,6 @@ class MonteCarloOptimizer(Optimizer):
 
         population = np.copy(initial_params)
 
-        final_params = None
-        final_losses = None
-
         for curr_iter in range(max_iterations):
             # Evaluate the entire population once
             losses = cost_fn(population)
@@ -264,21 +271,20 @@ class MonteCarloOptimizer(Optimizer):
                 : self.n_best_sets
             ]
 
-            # Store the current best results
-            final_params = population[best_indices]
-            final_losses = losses[best_indices]
-
             if callback_fn:
-                callback_fn(OptimizeResult(x=final_params, fun=final_losses))
+                callback_fn(
+                    OptimizeResult(x=population[best_indices], fun=losses[best_indices])
+                )
 
             # Generate the next generation of parameters
             population = self._compute_new_parameters(
                 population, curr_iter, best_indices, rng
             )
 
+        best_idx = np.argmin(losses)
         # Return the best results from the LAST EVALUATED population
         return OptimizeResult(
-            x=final_params,
-            fun=final_losses,
+            x=population[best_idx],
+            fun=losses[best_idx],
             nit=max_iterations,
         )

@@ -176,27 +176,15 @@ class TestGraphInput:
             backend=None,
         )
 
-        # Simulate a finished optimization
-        qaoa_problem.losses = [{0: -1.0, 1: -2.0, 2: -3.0}]
-
         # Simulate measurement results
-        qaoa_problem.probs = {
-            "0_NoMitigation:0_0": {
-                "10100": 1.0,
-            },
-            "1_NoMitigation:0_0": {
-                "10000": 0.069,
-                "10100": 0.1142,
-            },
-            "2_NoMitigation:0_0": {"10011": 0.1444, "10100": 0.0526},
-        }
+        qaoa_problem.probs = {"0_NoMitigation:0_0": {"10011": 0.1444, "10100": 0.0526}}
 
         # Patch _run_final_measurement to do nothing (since we set probs manually)
         mocker.patch.object(qaoa_problem, "_run_final_measurement")
 
         qaoa_problem.compute_final_solution()
 
-        # Should extract bitstring "10011" from 3rd probs dict -> "11001"
+        # Should extract bitstring "10011" -> "11001"
         assert qaoa_problem._solution_nodes == [0, 1, 4]
         assert qaoa_problem.solution == [0, 1, 4]
 
