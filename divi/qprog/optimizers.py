@@ -2,20 +2,23 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from enum import Enum
 
 import numpy as np
+from pymoo.algorithms.soo.nonconvex.cmaes import CMAES
+from pymoo.algorithms.soo.nonconvex.de import DE
+from pymoo.core.evaluator import Evaluator
+from pymoo.core.individual import Individual
+from pymoo.core.population import Population
+from pymoo.core.problem import Problem
+from pymoo.problems.static import StaticProblem
+from pymoo.termination import get_termination
 from scipy.optimize import OptimizeResult, minimize
 
 from divi.extern.scipy._cobyla import _minimize_cobyla as cobyla_fn
-
-
-class ScipyMethod(Enum):
-    NELDER_MEAD = "Nelder-Mead"
-    COBYLA = "COBYLA"
-    L_BFGS_B = "L-BFGS-B"
 
 
 class Optimizer(ABC):
@@ -51,8 +54,99 @@ class Optimizer(ABC):
         raise NotImplementedError("This method should be implemented by subclasses.")
 
 
+class PymooMethod(Enum):
+    CMAES = "CMAES"
+    DE = "DE"
+
+
+class PymooOptimizer(Optimizer):
+    def __init__(self, method: PymooMethod, population_size: int = 50, **kwargs):
+        super().__init__()
+
+        self.method = method
+        self.population_size = population_size
+        self.algorithm_kwargs = kwargs
+
+    @property
+    def n_param_sets(self):
+        # Determine population size from stored parameters
+        if self.method.value == "DE":
+            return self.population_size
+        elif self.method.value == "CMAES":
+            # CMAES uses 'popsize' in options dict
+            return self.algorithm_kwargs.get("popsize", self.population_size)
+        return self.population_size
+
+    def optimize(
+        self,
+        cost_fn: Callable[[np.ndarray], float],
+        initial_params: np.ndarray,
+        callback_fn: Callable | None = None,
+        **kwargs,
+    ):
+
+        # Create fresh algorithm instance for this optimization run
+        # since pymoo has no reset()-like functionality
+        optimizer_obj = globals()[self.method.value](
+            pop_size=self.population_size, parallelize=False, **self.algorithm_kwargs
+        )
+
+        max_iterations = kwargs.pop("maxiter", 5)
+        rng = kwargs.pop("rng", np.random.default_rng())
+        seed = rng.bit_generator.seed_seq.spawn(1)[0].generate_state(1)[0]
+
+        n_var = initial_params.shape[-1]
+
+        xl = np.zeros(n_var)
+        xu = np.ones(n_var) * 2 * np.pi
+
+        problem = Problem(n_var=n_var, n_obj=1, xl=xl, xu=xu)
+
+        optimizer_obj.setup(
+            problem,
+            termination=get_termination("n_gen", max_iterations),
+            seed=int(seed),
+            verbose=False,
+        )
+        optimizer_obj.start_time = time.time()
+
+        pop = Population.create(
+            *[Individual(X=initial_params[i]) for i in range(self.n_param_sets)]
+        )
+
+        while optimizer_obj.has_next():
+            X = pop.get("X")
+
+            curr_losses = cost_fn(X)
+            static = StaticProblem(problem, F=curr_losses)
+            Evaluator().eval(static, pop)
+
+            optimizer_obj.tell(infills=pop)
+
+            pop = optimizer_obj.ask()
+
+            if callback_fn:
+                callback_fn(OptimizeResult(x=pop.get("X"), fun=curr_losses))
+
+        result = optimizer_obj.result()
+
+        return OptimizeResult(
+            x=result.X,
+            fun=result.F,
+            nit=optimizer_obj.n_gen - 1,
+        )
+
+
+class ScipyMethod(Enum):
+    NELDER_MEAD = "Nelder-Mead"
+    COBYLA = "COBYLA"
+    L_BFGS_B = "L-BFGS-B"
+
+
 class ScipyOptimizer(Optimizer):
     def __init__(self, method: ScipyMethod):
+        super().__init__()
+
         self.method = method
 
     @property
@@ -168,9 +262,6 @@ class MonteCarloOptimizer(Optimizer):
 
         population = np.copy(initial_params)
 
-        final_params = None
-        final_losses = None
-
         for curr_iter in range(max_iterations):
             # Evaluate the entire population once
             losses = cost_fn(population)
@@ -180,21 +271,20 @@ class MonteCarloOptimizer(Optimizer):
                 : self.n_best_sets
             ]
 
-            # Store the current best results
-            final_params = population[best_indices]
-            final_losses = losses[best_indices]
-
             if callback_fn:
-                callback_fn(OptimizeResult(x=final_params, fun=final_losses))
+                callback_fn(
+                    OptimizeResult(x=population[best_indices], fun=losses[best_indices])
+                )
 
             # Generate the next generation of parameters
             population = self._compute_new_parameters(
                 population, curr_iter, best_indices, rng
             )
 
+        best_idx = np.argmin(losses)
         # Return the best results from the LAST EVALUATED population
         return OptimizeResult(
-            x=final_params,
-            fun=final_losses,
+            x=population[best_idx],
+            fun=losses[best_idx],
             nit=max_iterations,
         )

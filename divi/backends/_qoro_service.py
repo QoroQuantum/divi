@@ -36,6 +36,104 @@ session.mount("https://", HTTPAdapter(max_retries=retry_configuration))
 logger = logging.getLogger(__name__)
 
 
+def _decode_qh1_b64(encoded: dict) -> dict[str, int]:
+    """
+    Decode a {'encoding':'qh1','n_bits':N,'payload':base64} histogram
+    into a dict with bitstring keys -> int counts.
+
+    Returns {} if payload is empty.
+    """
+    if not encoded or not encoded.get("payload"):
+        return {}
+
+    if encoded.get("encoding") != "qh1":
+        raise ValueError(f"Unsupported encoding: {encoded.get('encoding')}")
+
+    blob = base64.b64decode(encoded["payload"])
+    hist_int = _decompress_histogram(blob)
+    return {str(k): v for k, v in hist_int.items()}
+
+
+def _uleb128_decode(data: bytes, pos: int = 0) -> tuple[int, int]:
+    x = 0
+    shift = 0
+    while True:
+        if pos >= len(data):
+            raise ValueError("truncated varint")
+        b = data[pos]
+        pos += 1
+        x |= (b & 0x7F) << shift
+        if (b & 0x80) == 0:
+            break
+        shift += 7
+    return x, pos
+
+
+def _int_to_bitstr(x: int, n_bits: int) -> str:
+    return format(x, f"0{n_bits}b")
+
+
+def _rle_bool_decode(data: bytes, pos=0) -> tuple[list[bool], int]:
+    num_runs, pos = _uleb128_decode(data, pos)
+    if num_runs == 0:
+        return [], pos
+    first_val = data[pos] != 0
+    pos += 1
+    total, val = [], first_val
+    for _ in range(num_runs):
+        ln, pos = _uleb128_decode(data, pos)
+        total.extend([val] * ln)
+        val = not val
+    return total, pos
+
+
+def _decompress_histogram(buf: bytes) -> dict[str, int]:
+    if not buf:
+        return {}
+    pos = 0
+    if buf[pos : pos + 3] != b"QH1":
+        raise ValueError("bad magic")
+    pos += 3
+    n_bits = buf[pos]
+    pos += 1
+    unique, pos = _uleb128_decode(buf, pos)
+    total_shots, pos = _uleb128_decode(buf, pos)
+
+    num_gaps, pos = _uleb128_decode(buf, pos)
+    gaps = []
+    for _ in range(num_gaps):
+        g, pos = _uleb128_decode(buf, pos)
+        gaps.append(g)
+
+    idxs, acc = [], 0
+    for i, g in enumerate(gaps):
+        acc = g if i == 0 else acc + g
+        idxs.append(acc)
+
+    rb_len, pos = _uleb128_decode(buf, pos)
+    is_one, _ = _rle_bool_decode(buf[pos : pos + rb_len], 0)
+    pos += rb_len
+
+    extras_len, pos = _uleb128_decode(buf, pos)
+    extras = []
+    for _ in range(extras_len):
+        e, pos = _uleb128_decode(buf, pos)
+        extras.append(e)
+
+    counts, it = [], iter(extras)
+    for flag in is_one:
+        counts.append(1 if flag else next(it) + 2)
+
+    hist = {_int_to_bitstr(i, n_bits): c for i, c in zip(idxs, counts)}
+
+    # optional integrity check
+    if sum(counts) != total_shots:
+        raise ValueError("corrupt stream: shot sum mismatch")
+    if len(counts) != unique:
+        raise ValueError("corrupt stream: unique mismatch")
+    return hist
+
+
 def _raise_with_details(resp: requests.Response):
     try:
         data = resp.json()
@@ -103,6 +201,8 @@ class QoroService(CircuitRunner):
         self.auth_token = "Bearer " + auth_token
         self.polling_interval = polling_interval
         self.max_retries = max_retries
+        if qpu_system_name is None:
+            qpu_system_name = "qoro_maestro"
         self._qpu_system_name = qpu_system_name
         self.use_circuit_packing = use_circuit_packing
 
@@ -314,15 +414,18 @@ class QoroService(CircuitRunner):
         responses = [
             self._make_request(
                 "get",
-                f"job/{job_id}/results",
+                f"job/{job_id}/resultsV2/?limit=100&offset=0",
                 timeout=100,
             )
             for job_id in job_ids
         ]
-
         if all(response.status_code == HTTPStatus.OK for response in responses):
             responses = [response.json() for response in responses]
-            return sum(responses, [])
+            for res in responses:
+                for result in res["results"]:
+                    result["results"] = _decode_qh1_b64(result["results"])
+
+            return sum((response["results"] for response in responses), [])
         elif any(
             response.status_code == HTTPStatus.BAD_REQUEST for response in responses
         ):

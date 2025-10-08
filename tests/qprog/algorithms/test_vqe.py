@@ -41,12 +41,15 @@ def h2_hamiltonian(h2_molecule):
 
 
 # Ansaetze are now stateless, so we instantiate them once
-ANSAETZE_TO_TEST = [
-    HartreeFockAnsatz(),
-    UCCSDAnsatz(),
-    GenericLayerAnsatz([qml.RY, qml.RZ]),
-    QAOAAnsatz(),
-]
+ANSAETZE_TO_TEST = {
+    "argvalues": [
+        HartreeFockAnsatz(),
+        UCCSDAnsatz(),
+        GenericLayerAnsatz([qml.RY, qml.RZ]),
+        QAOAAnsatz(),
+    ],
+    "ids": ["HartreeFock", "UCCSD", "Generic-RYRZ", "QAOA"],
+}
 
 
 def test_vqe_basic_initialization_with_molecule(default_test_simulator, h2_molecule):
@@ -112,7 +115,7 @@ def test_clean_hamiltonian_logic(h2_hamiltonian, dummy_simulator):
     assert not has_identity, "Identity operator should have been removed"
 
 
-@pytest.mark.parametrize("ansatz_obj", ANSAETZE_TO_TEST)
+@pytest.mark.parametrize("ansatz_obj", **ANSAETZE_TO_TEST)
 @pytest.mark.parametrize("n_layers", [1, 2])
 def test_meta_circuit_qasm(ansatz_obj, n_layers, h2_molecule):
     """Test the QASM representation of the meta circuits."""

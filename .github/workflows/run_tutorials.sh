@@ -10,7 +10,7 @@ EXPECTED_FAILURES_STR="tutorials/qasm_thru_service.py|tutorials/circuit_cutting.
 sed -i \
     -e 's/shots=2000/shots=100/' \
     -e 's/\[-0.4, -0.25, 0, 0.25, 0.4\]/\[-0.25, 0, 0.25\]/' \
-    -e 's/\[VQEAnsatz.HARTREE_FOCK, VQEAnsatz.UCCSD\]/\[VQEAnsatz.HARTREE_FOCK\]/' \
+    -e 's/\[HartreeFockAnsatz(), UCCSDAnsatz()\]/\[HartreeFockAnsatz()\]/' \
     -e 's/max_iterations=3/max_iterations=2/' \
     tutorials/vqe_hyperparameter_sweep.py
 sed -i 's/n_processes=4/n_processes=4,shots=500/g' tutorials/zne_local.py

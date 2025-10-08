@@ -15,11 +15,13 @@ import pytest
 import sympy as sp
 from mitiq.zne.inference import LinearFactory
 from mitiq.zne.scaling import fold_global
+from pennylane.measurements import ExpectationMP
 from rich.progress import Progress
 
 from divi.circuits import MetaCircuit
 from divi.circuits.qem import ZNE
 from divi.qprog.batch import ProgramBatch, QuantumProgram, queue_listener
+from divi.qprog.quantum_program import batched_expectation
 from tests.qprog.qprog_contracts import verify_basic_program_batch_behaviour
 
 
@@ -208,6 +210,145 @@ class TestProgram:
         # the mitigated value for each is 1.0. The final loss (sum) should be 3.0.
         # Note: The actual postprocessing_fn for a Sum observable will sum the results.
         assert np.isclose(final_losses[0], 3.0)
+
+
+def test_batched_expectation_matches_pennylane_baseline():
+    """
+    Validates that the optimized batched_expectation function produces results
+    identical to PennyLane's standard ExpectationMP processing.
+    """
+    # 1. SETUP: Create a mock histogram and observables
+    wire_order = (3, 2, 1, 0)  # 4 wires
+
+    # A shot histogram with a mix of states
+    shot_histogram = {
+        "0000": 100,
+        "0101": 200,
+        "1011": 300,
+        "1111": 400,
+    }
+
+    # A representative set of commuting observables
+    observables = [
+        qml.PauliZ(0),
+        qml.PauliZ(2),
+        qml.Identity(1),
+        qml.PauliZ(1) @ qml.PauliZ(3),
+    ]
+
+    # 2. CALCULATE BASELINE using PennyLane's ExpectationMP
+    baseline_expvals = []
+    for obs in observables:
+        # Use the original, trusted method as our ground truth
+        mp = ExpectationMP(obs)
+        expval = mp.process_counts(counts=shot_histogram, wire_order=wire_order)
+        baseline_expvals.append(expval)
+
+    # 3. CALCULATE with our optimized batched function
+    optimized_expvals_matrix = batched_expectation(
+        [shot_histogram], observables, wire_order
+    )
+    optimized_expvals = optimized_expvals_matrix[:, 0]
+
+    # 4. ASSERT that the results are numerically identical
+    assert isinstance(optimized_expvals, np.ndarray)
+    np.testing.assert_allclose(optimized_expvals, baseline_expvals)
+
+
+def test_batched_expectation_with_multiple_histograms():
+    """
+    Tests that batched_expectation correctly processes a list of different
+    shot histograms in a single call.
+    """
+    # Histogram 1: Pure |00> state
+    hist_1 = {"00": 100}
+    # Histogram 2: Pure |11> state
+    hist_2 = {"11": 50}
+    # Histogram 3: Mixed state
+    hist_3 = {"01": 25, "10": 75}
+
+    observables = [qml.PauliZ(0), qml.PauliZ(1), qml.PauliZ(0) @ qml.PauliZ(1)]
+    wire_order = (1, 0)  # Reversed wire order for bitstring mapping
+
+    # --- Expected Results ---
+    # For hist_1 (|00>): <Z0>=1, <Z1>=1, <Z0@Z1>=1
+    expected_1 = np.array([1.0, 1.0, 1.0])
+    # For hist_2 (|11>): <Z0>=-1, <Z1>=-1, <Z0@Z1>=1
+    expected_2 = np.array([-1.0, -1.0, 1.0])
+
+    # For hist_3 (0.25|01> + 0.75|10>) with wire_order=(1,0):
+    # <Z0> (qubit 0 = second bit): 0.25*(-1) + 0.75*(+1) = 0.5
+    # <Z1> (qubit 1 = first bit):  0.25*(+1) + 0.75*(-1) = -0.5
+    # <Z0@Z1>: 0.25*(-1) + 0.75*(-1) = -1.0
+    expected_3 = np.array([0.5, -0.5, -1.0])
+
+    # --- Calculation ---
+    result_matrix = batched_expectation(
+        [hist_1, hist_2, hist_3], observables, wire_order
+    )
+
+    # --- Assertions ---
+    assert result_matrix.shape == (3, 3)  # (n_observables, n_histograms)
+    np.testing.assert_allclose(result_matrix[:, 0], expected_1)
+    np.testing.assert_allclose(result_matrix[:, 1], expected_2)
+    np.testing.assert_allclose(result_matrix[:, 2], expected_3)
+
+
+def test_batched_expectation_raises_for_unsupported_observable():
+    """
+    Ensures that a NotImplementedError is raised when an observable outside
+    the supported set (Pauli, Identity) is provided.
+    """
+    # Dummy histogram and wire order are sufficient for this test
+    shots = {"0": 100}
+    wire_order = (0,)
+    # qml.Hadamard is not in the name_map and should fail
+    unsupported_observables = [qml.PauliZ(0), qml.Hadamard(0)]
+
+    with pytest.raises(KeyError):
+        batched_expectation(
+            shots_dicts=[shots],
+            observables=unsupported_observables,
+            wire_order=wire_order,
+        )
+
+
+@pytest.mark.parametrize(
+    "bitstring, expected_z0, expected_z1", [("00", 1.0, 1.0), ("11", -1.0, -1.0)]
+)
+def test_post_processing_with_deterministic_states(bitstring, expected_z0, expected_z1):
+    """
+    Tests the batched_expectation function with deterministic shot histograms.
+    """
+
+    shots = {bitstring: 100}
+    observables = [qml.PauliZ(0), qml.PauliZ(1)]
+    wire_order = (1, 0)  # Wires are typically reversed for bitstring mapping
+
+    # The function expects a list of shot dictionaries
+    exp_matrix = batched_expectation([shots], observables, wire_order)
+
+    # exp_matrix has shape (n_observables, n_histograms)
+    assert np.isclose(exp_matrix[0, 0], expected_z0)
+    assert np.isclose(exp_matrix[1, 0], expected_z1)
+
+
+def test_batched_expectation_with_identity():
+    """
+    Ensures Identity operators are handled correctly and always yield expval of 1.0.
+    """
+
+    shots = {"01": 50, "10": 50}  # A mixed state
+    # Create a complex observable including Identity
+    observables = [qml.PauliZ(0) @ qml.Identity(1), qml.Identity(0) @ qml.PauliZ(1)]
+    wire_order = (1, 0)
+
+    exp_matrix = batched_expectation([shots], observables, wire_order)
+
+    # For Z(0) @ I(1), state |01> gives 1*1=1, |10> gives -1*1=-1. Avg = 0.
+    assert np.isclose(exp_matrix[0, 0], 0.0)
+    # For I(0) @ Z(1), state |01> gives 1*-1=-1, |10> gives 1*1=1. Avg = 0.
+    assert np.isclose(exp_matrix[1, 0], 0.0)
 
 
 class TestProgramBatch:

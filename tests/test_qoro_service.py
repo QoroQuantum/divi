@@ -291,25 +291,45 @@ class TestQoroServiceMock:
 
     def test_get_job_results_success_mock(self, mocker, qoro_service_mock):
         """Tests successfully fetching job results."""
-        mock_response = mocker.MagicMock(
-            status_code=200, json=lambda: [{"result": "data"}]
+        mocker.patch(
+            "divi.backends._qoro_service._decode_qh1_b64",
+            return_value={"decoded": "data"},
         )
+        mock_json = {
+            "results": [
+                {"label": "circuit_0", "results": {"encoding": "qh1", "payload": "..."}}
+            ]
+        }
+        mock_response = mocker.MagicMock(status_code=200, json=lambda: mock_json)
         mocker.patch.object(
             qoro_service_mock, "_make_request", return_value=mock_response
         )
 
         results = qoro_service_mock.get_job_results("job_1")
 
-        assert results == [{"result": "data"}]
+        expected = [{"label": "circuit_0", "results": {"decoded": "data"}}]
+        assert results == expected
 
     def test_get_job_results_multiple_success_mock(self, mocker, qoro_service_mock):
         """Tests fetching results for multiple jobs."""
-        mock_response_1 = mocker.MagicMock(
-            status_code=200, json=lambda: [{"result": "data1"}]
+        mocker.patch(
+            "divi.backends._qoro_service._decode_qh1_b64",
+            side_effect=[{"decoded": "data1"}, {"decoded": "data2"}],
         )
-        mock_response_2 = mocker.MagicMock(
-            status_code=200, json=lambda: [{"result": "data2"}]
-        )
+
+        mock_json_1 = {
+            "results": [
+                {"label": "circuit_0", "results": {"encoding": "qh1", "payload": "..."}}
+            ]
+        }
+        mock_json_2 = {
+            "results": [
+                {"label": "circuit_1", "results": {"encoding": "qh1", "payload": "..."}}
+            ]
+        }
+
+        mock_response_1 = mocker.MagicMock(status_code=200, json=lambda: mock_json_1)
+        mock_response_2 = mocker.MagicMock(status_code=200, json=lambda: mock_json_2)
         mocker.patch.object(
             qoro_service_mock,
             "_make_request",
@@ -318,7 +338,45 @@ class TestQoroServiceMock:
 
         results = qoro_service_mock.get_job_results(["job_1", "job_2"])
 
-        assert results == [{"result": "data1"}, {"result": "data2"}]
+        expected = [
+            {"label": "circuit_0", "results": {"decoded": "data1"}},
+            {"label": "circuit_1", "results": {"decoded": "data2"}},
+        ]
+        assert results == expected
+
+    def test_get_job_results_empty_results_mock(self, mocker, qoro_service_mock):
+        """Tests fetching a job that completed with an empty results list."""
+        mock_json = {"results": []}
+        mock_response = mocker.MagicMock(status_code=200, json=lambda: mock_json)
+        mocker.patch.object(
+            qoro_service_mock, "_make_request", return_value=mock_response
+        )
+        # We also need to mock the decoder, though it won't be called.
+        mock_decode = mocker.patch("divi.backends._qoro_service._decode_qh1_b64")
+
+        results = qoro_service_mock.get_job_results("job_1")
+
+        assert results == []
+        mock_decode.assert_not_called()
+
+    def test_get_job_results_decoding_error_mock(self, mocker, qoro_service_mock):
+        """Tests that an error during decoding propagates."""
+        mocker.patch(
+            "divi.backends._qoro_service._decode_qh1_b64",
+            side_effect=ValueError("corrupt stream"),
+        )
+        mock_json = {
+            "results": [
+                {"label": "circuit_0", "results": {"encoding": "qh1", "payload": "..."}}
+            ]
+        }
+        mock_response = mocker.MagicMock(status_code=200, json=lambda: mock_json)
+        mocker.patch.object(
+            qoro_service_mock, "_make_request", return_value=mock_response
+        )
+
+        with pytest.raises(ValueError, match="corrupt stream"):
+            qoro_service_mock.get_job_results("job_1")
 
     def test_get_job_results_still_running_mock(self, mocker, qoro_service_mock):
         """Tests handling of a 'still running' job."""

@@ -11,6 +11,7 @@ from divi.qprog import (
     ScipyMethod,
     ScipyOptimizer,
 )
+from divi.qprog.optimizers import PymooMethod, PymooOptimizer
 
 OPTIMIZERS_TO_TEST = {
     "argvalues": [
@@ -18,8 +19,10 @@ OPTIMIZERS_TO_TEST = {
         ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
         ScipyOptimizer(method=ScipyMethod.COBYLA),
         ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+        PymooOptimizer(method=PymooMethod.CMAES, population_size=10),
+        PymooOptimizer(method=PymooMethod.DE, population_size=10),
     ],
-    "ids": ["MonteCarlo", "L_BFGS_B", "COBYLA", "NELDER_MEAD"],
+    "ids": ["MonteCarlo", "L_BFGS_B", "COBYLA", "NELDER_MEAD", "CMAES", "DE"],
 }
 
 
