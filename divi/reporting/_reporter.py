@@ -82,9 +82,7 @@ class LoggingProgressReporter(ProgressReporter):
             return
 
         if "iteration" in kwargs:
-            logger.info(
-                f"Running Iteration #{kwargs['iteration'] + 1} circuits: {message}\r"
-            )
+            logger.info(f"Iteration #{kwargs['iteration'] + 1}: {message}\r")
             return
 
         logger.info(message)

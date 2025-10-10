@@ -30,6 +30,18 @@ def _is_jupyter():
         return False  # IPython is not installed
 
 
+class CustomFormatter(logging.Formatter):
+    """
+    A custom log formatter that removes '._reporter' from the logger name.
+    """
+
+    def format(self, record):
+        # Modify the record's name attribute in place
+        if record.name.endswith("._reporter"):
+            record.name = record.name.removesuffix("._reporter")
+        return super().format(record)
+
+
 class OverwriteStreamHandler(logging.StreamHandler):
     def __init__(self, stream=None):
         super().__init__(stream)
@@ -102,7 +114,7 @@ class OverwriteStreamHandler(logging.StreamHandler):
 def enable_logging(level=logging.INFO):
     root_logger = logging.getLogger(__name__.split(".")[0])
 
-    formatter = logging.Formatter(
+    formatter = CustomFormatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )

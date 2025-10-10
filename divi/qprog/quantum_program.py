@@ -416,6 +416,8 @@ class QuantumProgram(ABC):
                 correspond to the parameter indices.
         """
 
+        self.reporter.info(message="Post-processing output")
+
         losses = {}
         measurement_groups = self._meta_circuits["cost_circuit"].measurement_groups
 

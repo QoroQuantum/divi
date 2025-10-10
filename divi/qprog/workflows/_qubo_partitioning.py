@@ -98,6 +98,8 @@ class QUBOPartitioningQAOA(ProgramBatch):
 
         self.max_iterations = max_iterations
 
+        self.trivial_program_ids = set()
+
         self._constructor = partial(
             QAOA,
             optimizer=optimizer if optimizer is not None else MonteCarloOptimizer(),
@@ -140,6 +142,12 @@ class QUBOPartitioningQAOA(ProgramBatch):
                 del partition["problem"]
 
             prog_id = (string.ascii_uppercase[i], len(partition.subproblem))
+            self.prog_id_to_bqm_subproblem_states[prog_id] = partition
+
+            if partition.subproblem.num_interactions == 0:
+                # Skip creating a full QAOA program for this trivial case.
+                self.trivial_program_ids.add(prog_id)
+                continue
 
             ldata, (irow, icol, qdata), _ = partition.subproblem.to_numpy_vectors(
                 partition.subproblem.variables
@@ -155,7 +163,7 @@ class QUBOPartitioningQAOA(ProgramBatch):
                 ),
                 shape=(len(ldata), len(ldata)),
             )
-            self.prog_id_to_bqm_subproblem_states[prog_id] = partition
+
             self.programs[prog_id] = self._constructor(
                 job_id=prog_id,
                 problem=coo_mat,
@@ -174,14 +182,21 @@ class QUBOPartitioningQAOA(ProgramBatch):
                 "Not all final probabilities computed yet. Please call `run()` first."
             )
 
-        for prog_id, subproblem in self.programs.items():
-            bqm_subproblem_state = self.prog_id_to_bqm_subproblem_states[prog_id]
+        for (
+            prog_id,
+            bqm_subproblem_state,
+        ) in self.prog_id_to_bqm_subproblem_states.items():
 
-            curr_final_solution = subproblem.solution
+            if prog_id in self.trivial_program_ids:
+                # Case 1: Trivial problem. Solve classically.
+                # The solution is any bitstring (e.g., all zeros) with energy 0.
+                var_to_val = {v: 0 for v in bqm_subproblem_state.subproblem.variables}
+            else:
+                subproblem = self.programs[prog_id]
+                var_to_val = dict(
+                    zip(bqm_subproblem_state.subproblem.variables, subproblem.solution)
+                )
 
-            var_to_val = dict(
-                zip(bqm_subproblem_state.subproblem.variables, curr_final_solution)
-            )
             sample_set = dimod.SampleSet.from_samples(
                 dimod.as_samples(var_to_val), "BINARY", 0
             )

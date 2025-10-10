@@ -36,9 +36,10 @@ def test_enable_logging_default_level(caplog):
     # Test logging output
     with caplog.at_level(logging.INFO, logger=LIBRARY_ROOT_LOGGER_NAME):
         root_logger.info("This is an info message.")
-        root_logger.debug(
-            "This is a debug message."
-        )  # Should not be captured at INFO level
+
+        # Should not be captured at INFO level
+        root_logger.debug("This is a debug message.")
+
         assert "This is an info message." in caplog.text
         assert "This is a debug message." not in caplog.text
         assert caplog.records[0].levelname == "INFO"

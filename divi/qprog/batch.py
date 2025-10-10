@@ -5,7 +5,7 @@
 import atexit
 import traceback
 from abc import ABC, abstractmethod
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from multiprocessing import Event, Manager
 from multiprocessing.synchronize import Event as EventClass
 from queue import Empty, Queue
@@ -197,7 +197,7 @@ class ProgramBatch(ABC):
             else None
         )
 
-        self._executor = ProcessPoolExecutor()
+        self._executor = ThreadPoolExecutor()
         self.futures = []
         self._pb_task_map = {}
         self._pb_lock = Lock()

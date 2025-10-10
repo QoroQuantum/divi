@@ -20,7 +20,7 @@ from divi.backends._qpu_system import QPU, QPUSystem
 from divi.extern.cirq import is_valid_qasm
 
 API_URL = "https://app.qoroquantum.net/api"
-MAX_PAYLOAD_SIZE_MB = 0.95
+_MAX_PAYLOAD_SIZE_MB = 0.95
 
 session = requests.Session()
 retry_configuration = Retry(
@@ -34,6 +34,8 @@ session.mount("http://", HTTPAdapter(max_retries=retry_configuration))
 session.mount("https://", HTTPAdapter(max_retries=retry_configuration))
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_QPU_SYSTEM = "qoro_maestro"
 
 
 def _decode_qh1_b64(encoded: dict) -> dict[str, int]:
@@ -202,7 +204,7 @@ class QoroService(CircuitRunner):
         self.polling_interval = polling_interval
         self.max_retries = max_retries
         if qpu_system_name is None:
-            qpu_system_name = "qoro_maestro"
+            qpu_system_name = _DEFAULT_QPU_SYSTEM
         self._qpu_system_name = qpu_system_name
         self.use_circuit_packing = use_circuit_packing
 
@@ -274,7 +276,7 @@ class QoroService(CircuitRunner):
         consistent overhead calculation.
         Assumes that BASE64 encoding produces ASCI characters, which are 1 byte each.
         """
-        max_payload_bytes = MAX_PAYLOAD_SIZE_MB * 1024 * 1024
+        max_payload_bytes = _MAX_PAYLOAD_SIZE_MB * 1024 * 1024
         circuit_chunks = []
         current_chunk = {}
 
@@ -314,9 +316,12 @@ class QoroService(CircuitRunner):
         job_type: JobType = JobType.SIMULATE,
         qpu_system_name: str | None = None,
         override_circuit_packing: bool | None = None,
-    ):
+    ) -> str:
         """
         Submit quantum circuits to the Qoro API for execution.
+
+        This method first initializes a job and then sends the circuits in
+        one or more chunks, associating them all with a single job ID.
 
         Args:
             circuits (dict[str, str]):
@@ -324,19 +329,21 @@ class QoroService(CircuitRunner):
             tag (str, optional):
                 Tag to associate with the job for identification. Defaults to "default".
             job_type (JobType, optional):
-                Type of job to execute (e.g., SIMULATE, EXECUTE, ESTIMATE, CIRCUIT_CUT). Defaults to JobType.SIMULATE.
-            use_packing (bool):
-                Whether to use circuit packing optimization. Defaults to False.
+                Type of job to execute (e.g., SIMULATE, EXECUTE, ESTIMATE, CIRCUIT_CUT).
+                Defaults to JobType.SIMULATE.
+            qpu_system_name (str | None, optional):
+                The name of the QPU system to use. Overrides the service's default.
+            override_circuit_packing (bool | None, optional):
+                Whether to use circuit packing optimization. Overrides the service's default.
 
         Raises:
-            ValueError: If more than one circuit is submitted for a CIRCUIT_CUT job.
+            ValueError: If more than one circuit is submitted for a CIRCUIT_CUT job,
+                        or if any circuit is not valid QASM.
+            requests.exceptions.HTTPError: If any API request fails.
 
         Returns:
-            str or list[str]:
-                The job ID(s) of the created job(s). Returns a single job ID if only one job is created,
-                otherwise returns a list of job IDs if the circuits are split into multiple jobs due to payload size.
+            str: The job ID for the created job.
         """
-
         if job_type == JobType.CIRCUIT_CUT and len(circuits) > 1:
             raise ValueError("Only one circuit allowed for circuit-cutting jobs.")
 
@@ -344,9 +351,8 @@ class QoroService(CircuitRunner):
             if not (err := is_valid_qasm(circuit)):
                 raise ValueError(f"Circuit '{key}' is not a valid QASM: {err}")
 
-        circuit_chunks = self._split_circuits(circuits)
-
-        payload = {
+        # 1. Initialize the job without circuits to get a job_id
+        init_payload = {
             "shots": self.shots,
             "tag": tag,
             "job_type": job_type.value,
@@ -358,114 +364,107 @@ class QoroService(CircuitRunner):
             ),
         }
 
-        job_ids = []
-        for chunk in circuit_chunks:
-            payload["circuits"] = chunk
+        init_response = self._make_request(
+            "post", "job/init/", json=init_payload, timeout=100
+        )
+        if init_response.status_code not in [HTTPStatus.OK, HTTPStatus.CREATED]:
+            _raise_with_details(init_response)
+        job_id = init_response.json()["job_id"]
 
-            response = self._make_request(
+        # 2. Split circuits and add them to the created job
+        circuit_chunks = self._split_circuits(circuits)
+        num_chunks = len(circuit_chunks)
+
+        for i, chunk in enumerate(circuit_chunks):
+            is_last_chunk = i == num_chunks - 1
+            add_circuits_payload = {
+                "circuits": chunk,
+                "shots": self.shots,
+                "mode": "append",
+                "finalized": "true" if is_last_chunk else "false",
+            }
+
+            add_circuits_response = self._make_request(
                 "post",
-                "job/",
-                json=payload,
+                f"job/{job_id}/add_circuits/",
+                json=add_circuits_payload,
                 timeout=100,
             )
+            if add_circuits_response.status_code != HTTPStatus.OK:
+                _raise_with_details(add_circuits_response)
 
-            if response.status_code == HTTPStatus.CREATED:
-                job_ids.append(response.json()["job_id"])
-            else:
-                _raise_with_details(response)
+        return job_id
 
-        return job_ids if len(job_ids) > 1 else job_ids[0]
-
-    def delete_job(self, job_ids):
+    def delete_job(self, job_id: str) -> requests.Response:
         """
         Delete a job from the Qoro Database.
 
         Args:
-            job_id: The ID of the jobs to be deleted
+            job_id: The ID of the job to be deleted.
         Returns:
-            response: The response from the API
+            requests.Response: The response from the API.
         """
-        if not isinstance(job_ids, list):
-            job_ids = [job_ids]
+        return self._make_request(
+            "delete",
+            f"job/{job_id}",
+            timeout=50,
+        )
 
-        responses = [
-            self._make_request(
-                "delete",
-                f"job/{job_id}",
-                timeout=50,
-            )
-            for job_id in job_ids
-        ]
-
-        return responses if len(responses) > 1 else responses[0]
-
-    def get_job_results(self, job_ids):
+    def get_job_results(self, job_id: str) -> list[dict]:
         """
         Get the results of a job from the Qoro Database.
 
         Args:
-            job_id: The ID of the job to get results from
+            job_id: The ID of the job to get results from.
         Returns:
-            results: The results of the job
+            list[dict]: The results of the job, with histograms decoded.
         """
-        if not isinstance(job_ids, list):
-            job_ids = [job_ids]
-
-        responses = [
-            self._make_request(
+        try:
+            response = self._make_request(
                 "get",
                 f"job/{job_id}/resultsV2/?limit=100&offset=0",
                 timeout=100,
             )
-            for job_id in job_ids
-        ]
-        if all(response.status_code == HTTPStatus.OK for response in responses):
-            responses = [response.json() for response in responses]
-            for res in responses:
-                for result in res["results"]:
-                    result["results"] = _decode_qh1_b64(result["results"])
+        except requests.exceptions.HTTPError as e:
+            # Provide a more specific error message for 400 Bad Request
+            if e.response.status_code == HTTPStatus.BAD_REQUEST:
+                raise requests.exceptions.HTTPError(
+                    "400 Bad Request: Job results not available, likely job is still running"
+                ) from e
+            # Re-raise any other HTTP error
+            raise e
 
-            return sum((response["results"] for response in responses), [])
-        elif any(
-            response.status_code == HTTPStatus.BAD_REQUEST for response in responses
-        ):
-            raise requests.exceptions.HTTPError(
-                "400 Bad Request: Job results not available, likely job is still running"
-            )
-        else:
-            for response in responses:
-                if response.status_code not in [HTTPStatus.OK, HTTPStatus.BAD_REQUEST]:
-                    raise requests.exceptions.HTTPError(
-                        f"{response.status_code}: {response.reason}"
-                    )
+        # If the request was successful, process the data
+        data = response.json()
+        for result in data["results"]:
+            result["results"] = _decode_qh1_b64(result["results"])
+        return data["results"]
 
     def poll_job_status(
         self,
-        job_ids: str | list[str],
+        job_id: str,
         loop_until_complete: bool = False,
-        on_complete: Callable | None = None,
+        on_complete: Callable[[requests.Response], None] | None = None,
         verbose: bool = True,
         poll_callback: Callable[[int, str], None] | None = None,
-    ):
+    ) -> str | JobStatus:
         """
-        Get the status of a job and optionally execute function *on_complete* on the results
-        if the status is COMPLETE.
+        Get the status of a job and optionally execute a function on completion.
 
         Args:
-            job_ids: The job id of the jobs to check
-            loop_until_complete (bool): A flag to loop until the job is completed
-            on_complete (optional): A function to be called when the job is completed
-            polling_interval (optional): The time to wait between retries
-            verbose (optional): A flag to print the when retrying
-            poll_callback (optional): A function for updating progress bars while polling.
-                Definition should be `poll_callback(retry_count: int, status: str) -> None`.
-        Returns:
-            status: The status of the job
-        """
-        if not isinstance(job_ids, list):
-            job_ids = [job_ids]
+            job_id: The ID of the job to check.
+            loop_until_complete (bool): If True, polls until the job is complete or failed.
+            on_complete (Callable, optional): A function to call with the final response
+                object when the job finishes.
+            verbose (bool, optional): If True, prints polling status to the logger.
+            poll_callback (Callable, optional): A function for updating progress bars.
+                Takes `(retry_count, status)`.
 
-        # Decide once at the start
+        Returns:
+            str | JobStatus: The current job status as a string if not looping,
+            or a JobStatus enum member (COMPLETED or FAILED) if looping.
+        """
+        # Decide once at the start which update function to use
         if poll_callback:
             update_fn = poll_callback
         elif verbose:
@@ -473,55 +472,31 @@ class QoroService(CircuitRunner):
             RESET = "\033[0m"
 
             update_fn = lambda retry_count, status: logger.info(
-                rf"Job {CYAN}{job_ids[0].split('-')[0]}{RESET} is {status}. Polling attempt {retry_count} / {self.max_retries}\r",
+                rf"Job {CYAN}{job_id.split('-')[0]}{RESET} is {status}. Polling attempt {retry_count} / {self.max_retries}\r",
                 extra={"append": True},
             )
         else:
             update_fn = lambda _, __: None
 
         if not loop_until_complete:
-            statuses = [
-                self._make_request(
-                    "get",
-                    f"job/{job_id}/status/",
-                    timeout=200,
-                ).json()["status"]
-                for job_id in job_ids
-            ]
-            return statuses if len(statuses) > 1 else statuses[0]
+            response = self._make_request("get", f"job/{job_id}/status/", timeout=200)
+            return response.json()["status"]
 
-        pending_job_ids = set(job_ids)
-        responses = []
         for retry_count in range(1, self.max_retries + 1):
-            # Exit early if all jobs are done
-            if not pending_job_ids:
-                break
+            response = self._make_request("get", f"job/{job_id}/status/", timeout=200)
+            status = response.json()["status"]
 
-            for job_id in list(pending_job_ids):
-                response = self._make_request(
-                    "get",
-                    f"job/{job_id}/status/",
-                    timeout=200,
-                )
+            if status == JobStatus.COMPLETED.value:
+                if on_complete:
+                    on_complete(response)
+                return JobStatus.COMPLETED
 
-                if response.json()["status"] in (
-                    JobStatus.COMPLETED.value,
-                    JobStatus.FAILED.value,
-                ):
-                    pending_job_ids.remove(job_id)
-                    responses.append(response)
+            if status == JobStatus.FAILED.value:
+                if on_complete:
+                    on_complete(response)
+                return JobStatus.FAILED
 
-            # Exit before sleeping if no jobs are pending
-            if not pending_job_ids:
-                break
-
+            update_fn(retry_count, status)
             time.sleep(self.polling_interval)
 
-            update_fn(retry_count, response.json()["status"])
-
-        if not pending_job_ids:
-            if on_complete:
-                on_complete(responses)
-            return JobStatus.COMPLETED
-        else:
-            raise MaxRetriesReachedError(retry_count)
+        raise MaxRetriesReachedError(self.max_retries)

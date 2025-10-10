@@ -9,6 +9,7 @@ from rich.progress import (
     ProgressColumn,
     SpinnerColumn,
     TextColumn,
+    TimeElapsedColumn,
 )
 from rich.text import Text
 
@@ -61,6 +62,7 @@ def make_progress_bar(is_jupyter: bool = False) -> Progress:
         TextColumn("[bold blue]{task.fields[job_name]}"),
         BarColumn(),
         MofNCompleteColumn(),
+        TimeElapsedColumn(),
         ConditionalSpinnerColumn(),
         PhaseStatusColumn(),
         # For jupyter notebooks, refresh manually instead

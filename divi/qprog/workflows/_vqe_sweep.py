@@ -437,7 +437,7 @@ class VQEHyperparameterSweep(ProgramBatch):
         for ansatz, (modifier, molecule) in product(
             self.ansatze, self.molecule_variants.items()
         ):
-            _job_id = (ansatz, modifier)
+            _job_id = (ansatz.name, modifier)
             self.programs[_job_id] = self._constructor(
                 job_id=_job_id,
                 molecule=molecule,
@@ -485,7 +485,7 @@ class VQEHyperparameterSweep(ProgramBatch):
                 modifiers = []
                 min_energies = []
                 for modifier in self.molecule_transformer.bond_modifiers:
-                    program_key = (ansatz, modifier)
+                    program_key = (ansatz.name, modifier)
                     if program_key in self.programs:
                         modifiers.append(modifier)
                         curr_energies = self.programs[program_key].losses[-1]
@@ -504,7 +504,7 @@ class VQEHyperparameterSweep(ProgramBatch):
                 energies = []
                 for modifier in self.molecule_transformer.bond_modifiers:
                     energies.append(
-                        min(self.programs[(ansatz, modifier)].losses[-1].values())
+                        min(self.programs[(ansatz.name, modifier)].losses[-1].values())
                     )
 
                 plt.plot(
