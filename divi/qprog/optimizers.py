@@ -55,12 +55,31 @@ class Optimizer(ABC):
 
 
 class PymooMethod(Enum):
+    """Supported optimization methods from the pymoo library."""
+
     CMAES = "CMAES"
     DE = "DE"
 
 
 class PymooOptimizer(Optimizer):
+    """
+    Optimizer wrapper for pymoo optimization algorithms.
+
+    Supports population-based optimization methods from the pymoo library,
+    including CMAES (Covariance Matrix Adaptation Evolution Strategy) and
+    DE (Differential Evolution).
+    """
+
     def __init__(self, method: PymooMethod, population_size: int = 50, **kwargs):
+        """
+        Initialize a pymoo-based optimizer.
+
+        Args:
+            method (PymooMethod): The optimization algorithm to use (CMAES or DE).
+            population_size (int, optional): Size of the population for the algorithm.
+                Defaults to 50.
+            **kwargs: Additional algorithm-specific parameters passed to pymoo.
+        """
         super().__init__()
 
         self.method = method
@@ -69,6 +88,12 @@ class PymooOptimizer(Optimizer):
 
     @property
     def n_param_sets(self):
+        """
+        Get the number of parameter sets (population size) used by this optimizer.
+
+        Returns:
+            int: Population size for the optimization algorithm.
+        """
         # Determine population size from stored parameters
         if self.method.value == "DE":
             return self.population_size
@@ -84,6 +109,23 @@ class PymooOptimizer(Optimizer):
         callback_fn: Callable | None = None,
         **kwargs,
     ):
+        """
+        Run the pymoo optimization algorithm.
+
+        Args:
+            cost_fn (Callable): Function to minimize. Should accept a 2D array of
+                parameter sets and return an array of cost values.
+            initial_params (np.ndarray): Initial parameter values as a 2D array
+                of shape (n_param_sets, n_params).
+            callback_fn (Callable, optional): Function called after each iteration
+                with an OptimizeResult object. Defaults to None.
+            **kwargs: Additional keyword arguments:
+                - maxiter (int): Maximum number of iterations
+                - rng (np.random.Generator): Random number generator
+
+        Returns:
+            OptimizeResult: Optimization result with final parameters and cost value.
+        """
 
         # Create fresh algorithm instance for this optimization run
         # since pymoo has no reset()-like functionality
@@ -138,19 +180,40 @@ class PymooOptimizer(Optimizer):
 
 
 class ScipyMethod(Enum):
+    """Supported optimization methods from scipy.optimize."""
+
     NELDER_MEAD = "Nelder-Mead"
     COBYLA = "COBYLA"
     L_BFGS_B = "L-BFGS-B"
 
 
 class ScipyOptimizer(Optimizer):
+    """
+    Optimizer wrapper for scipy.optimize methods.
+
+    Supports gradient-free and gradient-based optimization algorithms from scipy,
+    including Nelder-Mead simplex, COBYLA, and L-BFGS-B.
+    """
+
     def __init__(self, method: ScipyMethod):
+        """
+        Initialize a scipy-based optimizer.
+
+        Args:
+            method (ScipyMethod): The optimization algorithm to use.
+        """
         super().__init__()
 
         self.method = method
 
     @property
     def n_param_sets(self):
+        """
+        Get the number of parameter sets used by this optimizer.
+
+        Returns:
+            int: Always returns 1, as scipy optimizers use single-point optimization.
+        """
         return 1
 
     def optimize(
@@ -160,6 +223,23 @@ class ScipyOptimizer(Optimizer):
         callback_fn: Callable | None = None,
         **kwargs,
     ):
+        """
+        Run the scipy optimization algorithm.
+
+        Args:
+            cost_fn (Callable): Function to minimize. Should accept a 1D array of
+                parameters and return a scalar cost value.
+            initial_params (np.ndarray): Initial parameter values as a 1D or 2D array.
+                If 2D with shape (1, n_params), it will be squeezed to 1D.
+            callback_fn (Callable, optional): Function called after each iteration.
+                Defaults to None.
+            **kwargs: Additional keyword arguments:
+                - maxiter (int): Maximum number of iterations
+                - jac (Callable): Gradient function (only used for L-BFGS-B)
+
+        Returns:
+            OptimizeResult: Optimization result with final parameters and cost value.
+        """
         max_iterations = kwargs.pop("maxiter", None)
 
         if max_iterations is None or self.method == ScipyMethod.COBYLA:
@@ -189,7 +269,27 @@ class ScipyOptimizer(Optimizer):
 
 
 class MonteCarloOptimizer(Optimizer):
+    """
+    Monte Carlo-based parameter search optimizer.
+
+    This optimizer samples parameter space randomly, selects the best-performing
+    samples, and uses them as centers for the next generation of samples with
+    decreasing variance. This implements a simple but effective evolutionary strategy.
+    """
+
     def __init__(self, n_param_sets: int = 10, n_best_sets: int = 3):
+        """
+        Initialize a Monte Carlo optimizer.
+
+        Args:
+            n_param_sets (int, optional): Total number of parameter sets to evaluate
+                per iteration. Defaults to 10.
+            n_best_sets (int, optional): Number of top-performing parameter sets to
+                use as seeds for the next generation. Defaults to 3.
+
+        Raises:
+            ValueError: If n_best_sets is greater than n_param_sets.
+        """
         super().__init__()
 
         if n_best_sets > n_param_sets:
@@ -206,10 +306,22 @@ class MonteCarloOptimizer(Optimizer):
 
     @property
     def n_param_sets(self):
+        """
+        Get the number of parameter sets evaluated per iteration.
+
+        Returns:
+            int: Total number of parameter sets.
+        """
         return self._n_param_sets
 
     @property
     def n_best_sets(self):
+        """
+        Get the number of best parameter sets used for seeding the next generation.
+
+        Returns:
+            int: Number of best-performing sets kept.
+        """
         return self._n_best_sets
 
     def _compute_new_parameters(

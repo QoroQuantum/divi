@@ -226,11 +226,28 @@ class QoroService(CircuitRunner):
             self._qpu_system_name = system_name.name
         elif system_name is None:
             self._qpu_system_name = None
-        else:
-            raise TypeError("Expected a QPUSystem instance or str.")
+
+        raise TypeError("Expected a QPUSystem instance or str.")
 
     def _make_request(self, method: str, endpoint: str, **kwargs) -> requests.Response:
-        """A centralized helper for making API requests."""
+        """
+        Make an authenticated HTTP request to the Qoro API.
+
+        This internal method centralizes all API communication, handling authentication
+        headers and error responses consistently.
+
+        Args:
+            method (str): HTTP method to use (e.g., 'get', 'post', 'delete').
+            endpoint (str): API endpoint path (without base URL).
+            **kwargs: Additional arguments to pass to requests.request(), such as
+                'json', 'timeout', 'params', etc.
+
+        Returns:
+            requests.Response: The HTTP response object from the API.
+
+        Raises:
+            requests.exceptions.HTTPError: If the response status code is 400 or above.
+        """
         url = f"{API_URL}/{endpoint}"
 
         headers = {"Authorization": self.auth_token}
@@ -253,7 +270,19 @@ class QoroService(CircuitRunner):
         return response
 
     def test_connection(self):
-        """Test the connection to the Qoro API"""
+        """
+        Test the connection to the Qoro API.
+
+        Sends a simple GET request to verify that the API is reachable and
+        the authentication token is valid.
+
+        Returns:
+            requests.Response: The response from the API ping endpoint.
+
+        Raises:
+            requests.exceptions.HTTPError: If the connection fails or authentication
+                is invalid.
+        """
         return self._make_request("get", "", timeout=10)
 
     def fetch_qpu_systems(self) -> list[QPUSystem]:

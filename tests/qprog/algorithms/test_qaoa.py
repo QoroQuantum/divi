@@ -20,7 +20,6 @@ from divi.qprog import (
     ScipyOptimizer,
 )
 from divi.qprog.algorithms import _qaoa
-from tests.conftest import is_assertion_error
 from tests.qprog.qprog_contracts import (
     OPTIMIZERS_TO_TEST,
     verify_correct_circuit_count,
@@ -32,9 +31,12 @@ pytestmark = pytest.mark.algo
 
 class TestGeneralQAOA:
     @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
-    def test_qaoa_generate_circuits_called_with_correct_phases(
+    def test_qaoa_optimization_runs_in_loss_mode(
         self, mocker, optimizer, default_test_simulator
     ):
+        """
+        Verifies that _is_compute_probabilites is False during the optimization loop.
+        """
         qaoa_problem = QAOA(
             problem=nx.bull_graph(),
             graph_problem=GraphProblem.MAX_CLIQUE,
@@ -45,33 +47,80 @@ class TestGeneralQAOA:
             is_constrained=True,
         )
 
-        mock_generate_circuits = mocker.patch.object(qaoa_problem, "_generate_circuits")
-
+        # Isolate the optimization phase by mocking the final step
+        mocker.patch.object(qaoa_problem, "_perform_final_computation")
+        mocker.patch.object(qaoa_problem, "_generate_circuits")
         mock_dispatch = mocker.patch.object(
             qaoa_problem, "_dispatch_circuits_and_process_results"
         )
-        dummy_losses = {i: 0.5 for i in range(optimizer.n_param_sets)}
-        mock_dispatch.return_value = dummy_losses
+        mock_dispatch.return_value = {i: 0.5 for i in range(optimizer.n_param_sets)}
 
-        spy_values = []
-        mock_setattr = mocker.patch.object(
-            qaoa_problem, "__setattr__", wraps=qaoa_problem.__setattr__
+        spy_flag_values = []
+
+        def generate_circuits_spy(*args, **kwargs):
+            # When _generate_circuits is called, record the flag's state
+            spy_flag_values.append(qaoa_problem._is_compute_probabilites)
+
+        # Replace the original method with our spy
+        mocker.patch.object(
+            qaoa_problem, "_generate_circuits", side_effect=generate_circuits_spy
         )
-
-        def side_effect(name, value):
-            if name == "_is_compute_probabilies":
-                spy_values.append(value)
-            return mock_setattr.original(qaoa_problem, name, value)
-
-        mock_setattr.side_effect = side_effect
-
         qaoa_problem.run()
 
-        # Verify that _generate_circuits was called as many times as iterations
-        assert mock_generate_circuits.called
+        # Assert that the flag was never set to True during optimization
+        assert spy_flag_values  # Ensure the spy caught something
+        assert all(val is False for val in spy_flag_values)
 
-        # Verify that _generate_circuits was called with _is_compute_probabilies set to False
-        assert all(val == False for val in spy_values)
+    @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
+    def test_qaoa_final_computation_runs_in_probability_mode(
+        self, mocker, optimizer, default_test_simulator
+    ):
+        """
+        Verifies that _is_compute_probabilites is set to True during the final
+        circuit generation and is reset to False afterward.
+        """
+        qaoa_problem = QAOA(
+            problem=nx.bull_graph(),
+            graph_problem=GraphProblem.MAX_CLIQUE,
+            n_layers=1,
+            optimizer=optimizer,
+            max_iterations=1,
+            backend=default_test_simulator,
+            is_constrained=True,
+        )
+        # Set preconditions for the method under test
+        qaoa_problem._final_params = np.array([[0.1, 0.2]])
+        mocker.patch.object(
+            qaoa_problem,
+            "_dispatch_circuits_and_process_results",
+            return_value={0: {"00110": 0.4, "11001": 0.6}},
+        )
+
+        # This list will store the state of the flag when the spied method is called
+        flag_state_at_call_time = []
+        # Keep a reference to the original method
+        original_generate_circuits = qaoa_problem._generate_circuits
+
+        def generate_circuits_spy():
+            """Spy that records the flag's state and then calls the original method."""
+            flag_state_at_call_time.append(qaoa_problem._is_compute_probabilites)
+            original_generate_circuits()
+
+        mocker.patch.object(
+            qaoa_problem, "_generate_circuits", side_effect=generate_circuits_spy
+        )
+
+        # 1. Verify the initial state
+        assert qaoa_problem._is_compute_probabilites is False
+
+        # 2. Run the function that changes the state
+        qaoa_problem._perform_final_computation()
+
+        # 3. Verify the flag was True when the critical function was called
+        assert flag_state_at_call_time == [True]
+
+        # 4. Verify the state was reset correctly after the function completed
+        assert qaoa_problem._is_compute_probabilites is False
 
     @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
     def test_graph_correct_circuits_count_and_energies(
@@ -164,7 +213,7 @@ class TestGraphInput:
             == nx.bull_graph().number_of_nodes()
         )
 
-    def test_compute_final_solution_extracts_correct_solution(self, mocker):
+    def test_perform_final_computation_extracts_correct_solution(self, mocker):
         G = nx.bull_graph()
         qaoa_problem = QAOA(
             graph_problem=GraphProblem.MAX_CLIQUE,
@@ -182,7 +231,7 @@ class TestGraphInput:
         # Patch _run_final_measurement to do nothing (since we set probs manually)
         mocker.patch.object(qaoa_problem, "_run_final_measurement")
 
-        qaoa_problem.compute_final_solution()
+        qaoa_problem._perform_final_computation()
 
         # Should extract bitstring "10011" -> "11001"
         assert qaoa_problem._solution_nodes == [0, 1, 4]
@@ -214,10 +263,6 @@ class TestGraphInput:
 
         qaoa_problem.run()
 
-        spy = mocker.spy(qaoa_problem, "_generate_circuits")
-
-        qaoa_problem.compute_final_solution()
-
         assert all(
             len(bitstring) == G.number_of_nodes()
             for probs_dict in qaoa_problem.probs.values()
@@ -227,8 +272,6 @@ class TestGraphInput:
         assert set(
             qaoa_problem._solution_nodes
         ) == nx.algorithms.approximation.max_clique(G)
-
-        assert spy.call_count == 1
 
     def test_draw_solution_returns_graph_with_expected_properties(self, mocker):
         G = nx.bull_graph()
@@ -425,7 +468,6 @@ class TestQUBOInput:
         )
 
         qaoa_problem.run()
-        qaoa_problem.compute_final_solution()
 
         np.testing.assert_equal(qaoa_problem.solution, [1, 0, 1])
 
@@ -517,7 +559,6 @@ class TestQUBOInput:
         )
 
         qaoa_problem.run()
-        qaoa_problem.compute_final_solution()
 
         np.testing.assert_equal(
             qaoa_problem._qp_converter.interpret(qaoa_problem.solution), [0, 1, 0, 3]
@@ -543,7 +584,6 @@ class TestQUBOInput:
         )
 
         qaoa_problem.run()
-        qaoa_problem.compute_final_solution()
 
         np.testing.assert_equal(
             qaoa_problem._qp_converter.interpret(qaoa_problem.solution), [1, 0, 1, 0]

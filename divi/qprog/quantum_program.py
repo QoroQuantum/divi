@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 from functools import lru_cache, partial
 from itertools import groupby
 from queue import Queue
+from threading import Event
 
 import numpy as np
 import pennylane as qml
@@ -16,6 +17,7 @@ from scipy.optimize import OptimizeResult
 from divi.backends import CircuitRunner, JobStatus, QoroService
 from divi.circuits import Circuit, MetaCircuit
 from divi.circuits.qem import _NoMitigation
+from divi.qprog.exceptions import _CancelledError
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.reporting import LoggingProgressReporter, QueueProgressReporter
 
@@ -210,7 +212,6 @@ class QuantumProgram(ABC):
         backend: CircuitRunner,
         seed: int | None = None,
         progress_queue: Queue | None = None,
-        has_final_computation: bool = False,
         **kwargs,
     ):
         """
@@ -231,26 +232,18 @@ class QuantumProgram(ABC):
                 be used for the parameter initialization.
                 Defaults to None.
             progress_queue (Queue): a queue for progress bar updates.
-            has_final_computation (bool): Whether the program includes a final
-                computation step after optimization. This affects progress reporting.
 
             **kwargs: Additional keyword arguments that influence behaviour.
                 - grouping_strategy (Literal["default", "wires", "qwc"]): A strategy for grouping operations, used in Pennylane's transforms.
                     Defaults to None.
                 - qem_protocol (QEMProtocol, optional): the quantum error mitigation protocol to apply.
                     Must be of type QEMProtocol. Defaults to None.
-
-                The following key values are reserved for internal use and should not be set by the user:
-                - losses (list, optional): A list to initialize the `losses` attribute. Defaults to an empty list.
-                - final_params (list, optional): A list to initialize the `final_params` attribute. Defaults to an empty list.
-
         """
 
-        # Shared Variables
-        self.losses = kwargs.pop("losses", [])
-        self.final_params = kwargs.pop("final_params", [])
+        self._losses = []
+        self._final_params = []
 
-        self.circuits: list[Circuit] = []
+        self._circuits: list[Circuit] = []
 
         self._total_circuit_count = 0
         self._total_run_time = 0.0
@@ -268,9 +261,7 @@ class QuantumProgram(ABC):
         self.job_id = kwargs.get("job_id", None)
         self._progress_queue = progress_queue
         if progress_queue and self.job_id:
-            self.reporter = QueueProgressReporter(
-                self.job_id, progress_queue, has_final_computation=has_final_computation
-            )
+            self.reporter = QueueProgressReporter(self.job_id, progress_queue)
         else:
             self.reporter = LoggingProgressReporter()
 
@@ -278,6 +269,8 @@ class QuantumProgram(ABC):
         self._grouping_strategy = kwargs.pop("grouping_strategy", None)
 
         self._qem_protocol = kwargs.pop("qem_protocol", None) or _NoMitigation()
+
+        self._cancellation_event = None
 
         self._meta_circuit_factory = partial(
             MetaCircuit,
@@ -287,19 +280,79 @@ class QuantumProgram(ABC):
 
     @property
     def total_circuit_count(self):
+        """
+        Get the total number of circuits executed so far.
+
+        Returns:
+            int: Cumulative count of circuits submitted for execution.
+        """
         return self._total_circuit_count
 
     @property
     def total_run_time(self):
+        """
+        Get the total runtime across all circuit executions.
+
+        Returns:
+            float: Cumulative execution time in seconds.
+        """
         return self._total_run_time
 
     @property
     def meta_circuits(self):
+        """
+        Get the meta-circuit templates used by this program.
+
+        Returns:
+            dict[str, MetaCircuit]: Dictionary mapping circuit names to their
+                MetaCircuit templates.
+        """
         return self._meta_circuits
 
     @property
     def n_params(self):
+        """
+        Get the total number of parameters in the quantum circuit.
+
+        Returns:
+            int: Total number of trainable parameters (n_layers * n_params_per_layer).
+        """
         return self._n_params
+
+    @property
+    def circuits(self) -> list[Circuit]:
+        """
+        Get a copy of the generated circuits list.
+
+        Returns:
+            list[Circuit]: Copy of the circuits list. Modifications to this list
+                will not affect the internal state.
+        """
+        return self._circuits.copy()
+
+    @property
+    def losses(self) -> list[dict]:
+        """
+        Get a copy of the optimization loss history.
+
+        Each entry is a dictionary mapping parameter indices to loss values.
+
+        Returns:
+            list[dict]: Copy of the loss history. Modifications to this list
+                will not affect the internal state.
+        """
+        return self._losses.copy()
+
+    @property
+    def final_params(self) -> list:
+        """
+        Get a copy of the final optimized parameters.
+
+        Returns:
+            list: Copy of the final parameters. Modifications to this list
+                will not affect the internal state.
+        """
+        return self._final_params.copy()
 
     @abstractmethod
     def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
@@ -309,7 +362,25 @@ class QuantumProgram(ABC):
     def _generate_circuits(self, **kwargs):
         pass
 
+    def _set_cancellation_event(self, event: Event):
+        """
+        Set a cancellation event for graceful program termination.
+
+        This internal method is called by a batch runner to provide a mechanism
+        for stopping the optimization loop cleanly when requested.
+
+        Args:
+            event (Event): Threading Event object that signals cancellation when set.
+        """
+        self._cancellation_event = event
+
     def _initialize_params(self):
+        """
+        Initialize the circuit parameters randomly.
+
+        Creates initial parameter sets with values uniformly distributed between
+        0 and 2π. The number of parameter sets depends on the optimizer being used.
+        """
         self._curr_params = np.array(
             [
                 self._rng.uniform(0, 2 * np.pi, self.n_layers * self.n_params)
@@ -318,7 +389,7 @@ class QuantumProgram(ABC):
         )
 
     def _run_optimization_circuits(self, store_data, data_file):
-        self.circuits[:] = []
+        self._circuits[:] = []
 
         self._generate_circuits()
 
@@ -331,7 +402,7 @@ class QuantumProgram(ABC):
     def _prepare_and_send_circuits(self):
         job_circuits = {}
 
-        for circuit in self.circuits:
+        for circuit in self._circuits:
             for tag, qasm_circuit in zip(circuit.tags, circuit.qasm_circuits):
                 job_circuits[tag] = qasm_circuit
 
@@ -415,8 +486,8 @@ class QuantumProgram(ABC):
             (dict) The energies for each parameter set grouping, where the dict keys
                 correspond to the parameter indices.
         """
-
-        self.reporter.info(message="Post-processing output")
+        if not (self._cancellation_event and self._cancellation_event.is_set()):
+            self.reporter.info(message="Post-processing output")
 
         losses = {}
         measurement_groups = self._meta_circuits["cost_circuit"].measurement_groups
@@ -476,6 +547,20 @@ class QuantumProgram(ABC):
 
         return losses
 
+    def _perform_final_computation(self):
+        """
+        Perform final computations after optimization completes.
+
+        This is an optional hook method that subclasses can override to perform
+        any post-optimization processing, such as extracting solutions, running
+        final measurements, or computing additional metrics.
+
+        Note:
+            The default implementation does nothing. Subclasses should override
+            this method if they need post-optimization processing.
+        """
+        pass
+
     def run(self, store_data=False, data_file=None):
         """
         Run the QAOA problem. The outputs are stored in the QAOA object. Optionally, the data can be stored in a file.
@@ -526,7 +611,8 @@ class QuantumProgram(ABC):
             return grads
 
         def _iteration_counter(intermediate_result: OptimizeResult):
-            self.losses.append(
+
+            self._losses.append(
                 dict(
                     zip(
                         range(len(intermediate_result.x)),
@@ -539,6 +625,9 @@ class QuantumProgram(ABC):
 
             self.reporter.update(iteration=self.current_iteration)
 
+            if self._cancellation_event and self._cancellation_event.is_set():
+                raise _CancelledError("Cancellation requested by batch.")
+
             if (
                 isinstance(self.optimizer, ScipyOptimizer)
                 and self.optimizer.method == ScipyMethod.COBYLA
@@ -549,26 +638,42 @@ class QuantumProgram(ABC):
         self.reporter.info(message="Finished Setup")
 
         self._initialize_params()
-        self._minimize_res = self.optimizer.optimize(
-            cost_fn=cost_fn,
-            initial_params=self._curr_params,
-            callback_fn=_iteration_counter,
-            jac=grad_fn,
-            maxiter=self.max_iterations,
-            rng=self._rng,
-        )
-        self.final_params[:] = np.atleast_2d(self._minimize_res.x)
 
-        self.reporter.info(message="Finished Optimization!")
+        try:
+            self._minimize_res = self.optimizer.optimize(
+                cost_fn=cost_fn,
+                initial_params=self._curr_params,
+                callback_fn=_iteration_counter,
+                jac=grad_fn,
+                maxiter=self.max_iterations,
+                rng=self._rng,
+            )
+        except _CancelledError:
+            # The optimizer was stopped by our callback. This is not a real
+            # error, just a signal to exit this task cleanly.
+            return self._total_circuit_count, self._total_run_time
+
+        self._final_params[:] = np.atleast_2d(self._minimize_res.x)
+
+        self._perform_final_computation()
+
+        self.reporter.info(message="Finished successfully!")
 
         return self._total_circuit_count, self._total_run_time
 
     def save_iteration(self, data_file):
         """
-        Save the current iteration of the program to a file.
+        Save the current state of the quantum program to a file.
+
+        Serializes the entire QuantumProgram instance including parameters,
+        losses, and circuit history using pickle.
 
         Args:
-            data_file (str): The file to save the iteration to.
+            data_file (str): Path to the file where the program state will be saved.
+
+        Note:
+            The file is written in binary mode and can be restored using
+            `import_iteration()`.
         """
 
         with open(data_file, "wb") as f:
@@ -577,10 +682,16 @@ class QuantumProgram(ABC):
     @staticmethod
     def import_iteration(data_file):
         """
-        Import an iteration of the program from a file.
+        Load a previously saved quantum program state from a file.
+
+        Deserializes a QuantumProgram instance that was saved using `save_iteration()`.
 
         Args:
-            data_file (str): The file to import the iteration from.
+            data_file (str): Path to the file containing the saved program state.
+
+        Returns:
+            QuantumProgram: The restored QuantumProgram instance with all its state,
+                including parameters, losses, and circuit history.
         """
 
         with open(data_file, "rb") as f:

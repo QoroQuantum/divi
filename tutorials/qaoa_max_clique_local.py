@@ -22,7 +22,6 @@ if __name__ == "__main__":
     )
 
     qaoa_problem.run()
-    qaoa_problem.compute_final_solution()
 
     losses = qaoa_problem.losses[-1]
     print(f"Minimum Energy Achieved: {min(losses.values()):.4f}")

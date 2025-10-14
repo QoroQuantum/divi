@@ -29,13 +29,20 @@ class VQE(QuantumProgram):
         Initialize the VQE problem.
 
         Args:
-            hamiltonain (pennylane.operation.Operator, optional): A Hamiltonian representing the problem.
-            molecule (pennylane.qchem.Molecule, optional): The molecule representing the problem.
-            n_electrons (int, optional): Number of electrons associated with the Hamiltonian.
-                Only needs to be provided when a Hamiltonian is given.
-            ansatz (Ansatz): The ansatz to use for the VQE problem
-            optimizer (Optimizers): The optimizer to use.
-            max_iterations (int): Maximum number of iteration optimizers.
+            hamiltonian (pennylane.operation.Operator, optional): A Hamiltonian
+                representing the problem.
+            molecule (pennylane.qchem.Molecule, optional): The molecule representing
+                the problem.
+            n_electrons (int, optional): Number of electrons associated with the
+                Hamiltonian. Only needs to be provided when a Hamiltonian is given.
+            n_layers (int, optional): Number of ansatz layers. Defaults to 1.
+            ansatz (Ansatz, optional): The ansatz to use for the VQE problem.
+                Defaults to HartreeFockAnsatz.
+            optimizer (Optimizer, optional): The optimizer to use. Defaults to
+                MonteCarloOptimizer.
+            max_iterations (int, optional): Maximum number of optimization iterations.
+                Defaults to 10.
+            **kwargs: Additional keyword arguments passed to the parent QuantumProgram.
         """
 
         # Local Variables
@@ -57,12 +64,33 @@ class VQE(QuantumProgram):
 
     @property
     def n_params(self):
+        """
+        Get the total number of parameters for the VQE ansatz.
+
+        Returns:
+            int: Total number of parameters (n_params_per_layer * n_layers).
+        """
         return (
             self.ansatz.n_params_per_layer(self.n_qubits, n_electrons=self.n_electrons)
             * self.n_layers
         )
 
     def _process_problem_input(self, hamiltonian, molecule, n_electrons):
+        """
+        Process and validate the VQE problem input.
+
+        Handles both Hamiltonian-based and molecule-based problem specifications,
+        extracting the necessary information (n_qubits, n_electrons, hamiltonian).
+
+        Args:
+            hamiltonian: PennyLane Hamiltonian operator or None.
+            molecule: PennyLane Molecule object or None.
+            n_electrons: Number of electrons or None.
+
+        Raises:
+            ValueError: If neither hamiltonian nor molecule is provided.
+            UserWarning: If n_electrons conflicts with the molecule's electron count.
+        """
         if hamiltonian is None and molecule is None:
             raise ValueError(
                 "Either one of `molecule` and `hamiltonian` must be provided."
@@ -175,9 +203,24 @@ class VQE(QuantumProgram):
                 "cost_circuit"
             ].initialize_circuit_from_params(params_group, tag_prefix=f"{p}")
 
-            self.circuits.append(circuit)
+            self._circuits.append(circuit)
 
     def _run_optimization_circuits(self, store_data, data_file):
+        """
+        Execute the circuits for the current optimization iteration.
+
+        Validates that the Hamiltonian is properly set before running circuits.
+
+        Args:
+            store_data (bool): Whether to save iteration data.
+            data_file (str): Path to file for saving data.
+
+        Returns:
+            dict: Loss values for each parameter set.
+
+        Raises:
+            RuntimeError: If the cost Hamiltonian is not set or empty.
+        """
         if self.cost_hamiltonian is None or len(self.cost_hamiltonian) == 0:
             raise RuntimeError(
                 "Hamiltonian operators must be generated before running the VQE"

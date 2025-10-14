@@ -387,14 +387,6 @@ def dominance_aggregation(
     return curr_solution
 
 
-def _run_and_compute_solution(program: QuantumProgram):
-    program.run()
-
-    final_sol_circuit_count, final_sol_run_time = program.compute_final_solution()
-
-    return final_sol_circuit_count, final_sol_run_time
-
-
 class GraphPartitioningQAOA(ProgramBatch):
     def __init__(
         self,
@@ -442,8 +434,6 @@ class GraphPartitioningQAOA(ProgramBatch):
 
         self.solution = None
         self.aggregate_fn = aggregate_fn
-
-        self._task_fn = _run_and_compute_solution
 
         self._constructor = partial(
             QAOA,
@@ -499,32 +489,11 @@ class GraphPartitioningQAOA(ProgramBatch):
                 self.reverse_index_maps[prog_id] = {v: k for k, v in index_map.items()}
 
                 _subgraph = nx.relabel_nodes(subgraph, index_map)
-                self.programs[prog_id] = self._constructor(
+                self._programs[prog_id] = self._constructor(
                     job_id=prog_id,
                     problem=_subgraph,
-                    losses=self._manager.list(),
-                    probs=self._manager.dict(),
-                    final_params=self._manager.list(),
-                    solution_nodes=self._manager.list(),
                     progress_queue=self._queue,
                 )
-
-    def compute_final_solutions(self):
-        if self._executor is not None:
-            self.join()
-
-        if self._executor is not None:
-            raise RuntimeError("A batch is already being run.")
-
-        if len(self.programs) == 0:
-            raise RuntimeError("No programs to run.")
-
-        self._executor = ProcessPoolExecutor()
-
-        self.futures = [
-            self._executor.submit(program.compute_final_solution)
-            for program in self.programs.values()
-        ]
 
     def aggregate_results(self):
         """

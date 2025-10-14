@@ -49,14 +49,6 @@ def _sanitize_problem_input(qubo: T) -> tuple[T, BinaryQuadraticModel]:
     raise ValueError(f"Got an unsupported QUBO input format: {type(qubo)}")
 
 
-def _run_and_compute_solution(program: QuantumProgram):
-    program.run()
-
-    final_sol_circuit_count, final_sol_run_time = program.compute_final_solution()
-
-    return final_sol_circuit_count, final_sol_run_time
-
-
 class QUBOPartitioningQAOA(ProgramBatch):
     def __init__(
         self,
@@ -93,8 +85,6 @@ class QUBOPartitioningQAOA(ProgramBatch):
 
         self._partitioning = hybrid.Unwind(decomposer)
         self._aggregating = hybrid.Reduce(hybrid.Lambda(_merge_substates)) | composer
-
-        self._task_fn = _run_and_compute_solution
 
         self.max_iterations = max_iterations
 
@@ -164,17 +154,29 @@ class QUBOPartitioningQAOA(ProgramBatch):
                 shape=(len(ldata), len(ldata)),
             )
 
-            self.programs[prog_id] = self._constructor(
+            self._programs[prog_id] = self._constructor(
                 job_id=prog_id,
                 problem=coo_mat,
-                losses=self._manager.list(),
-                probs=self._manager.dict(),
-                final_params=self._manager.list(),
-                solution_bitstring=self._manager.list(),
                 progress_queue=self._queue,
             )
 
     def aggregate_results(self):
+        """
+        Aggregate results from all QUBO subproblems into a global solution.
+
+        Collects solutions from each partitioned subproblem (both QAOA-optimized and
+        trivial ones) and uses the hybrid framework composer to combine them into
+        a final solution for the original QUBO problem.
+
+        Returns:
+            tuple: A tuple containing:
+                - solution (np.ndarray): Binary solution vector for the QUBO problem.
+                - solution_energy (float): Energy/cost of the solution.
+
+        Raises:
+            RuntimeError: If programs haven't been run or if final probabilities
+                haven't been computed.
+        """
         super().aggregate_results()
 
         if any(len(program.probs) == 0 for program in self.programs.values()):
@@ -192,7 +194,7 @@ class QUBOPartitioningQAOA(ProgramBatch):
                 # The solution is any bitstring (e.g., all zeros) with energy 0.
                 var_to_val = {v: 0 for v in bqm_subproblem_state.subproblem.variables}
             else:
-                subproblem = self.programs[prog_id]
+                subproblem = self._programs[prog_id]
                 var_to_val = dict(
                     zip(bqm_subproblem_state.subproblem.variables, subproblem.solution)
                 )

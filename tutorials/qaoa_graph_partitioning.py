@@ -64,8 +64,8 @@ def analyze_results(quantum_solution, classical_cut_size):
 
 
 if __name__ == "__main__":
-    N_NODES = 30
-    N_EDGES = 40
+    N_NODES = 10
+    N_EDGES = 12
 
     graph = generate_random_graph(N_NODES, N_EDGES)
 
@@ -74,11 +74,11 @@ if __name__ == "__main__":
         graph=graph,
         n_layers=1,
         partitioning_config=PartitioningConfig(
-            max_n_nodes_per_cluster=10,
+            max_n_nodes_per_cluster=12,
             partitioning_algorithm="metis",
         ),
         optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
-        max_iterations=20,
+        max_iterations=2,
         backend=ParallelSimulator(),
     )
 

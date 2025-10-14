@@ -430,6 +430,15 @@ class VQEHyperparameterSweep(ProgramBatch):
         )
 
     def create_programs(self):
+        """
+        Create VQE programs for all combinations of ansatze and molecule variants.
+
+        Generates molecule variants using the configured MoleculeTransformer, then
+        creates a VQE program for each (ansatz, molecule_variant) pair.
+
+        Note:
+            Program IDs are tuples of (ansatz_name, bond_modifier_value).
+        """
         super().create_programs()
 
         self.molecule_variants = self.molecule_transformer.generate()
@@ -438,16 +447,28 @@ class VQEHyperparameterSweep(ProgramBatch):
             self.ansatze, self.molecule_variants.items()
         ):
             _job_id = (ansatz.name, modifier)
-            self.programs[_job_id] = self._constructor(
+            self._programs[_job_id] = self._constructor(
                 job_id=_job_id,
                 molecule=molecule,
                 ansatz=ansatz,
-                losses=self._manager.list(),
-                final_params=self._manager.list(),
                 progress_queue=self._queue,
             )
 
     def aggregate_results(self):
+        """
+        Find the best ansatz and bond configuration from all VQE runs.
+
+        Compares the final energies across all ansatz/molecule combinations
+        and returns the configuration that achieved the lowest ground state energy.
+
+        Returns:
+            tuple: A tuple containing:
+                - best_config (tuple): (ansatz_name, bond_modifier) of the best result.
+                - best_energy (float): The lowest energy achieved.
+
+        Raises:
+            RuntimeError: If programs haven't been run or have empty losses.
+        """
         super().aggregate_results()
 
         all_energies = {key: prog.losses[-1] for key, prog in self.programs.items()}
@@ -486,9 +507,9 @@ class VQEHyperparameterSweep(ProgramBatch):
                 min_energies = []
                 for modifier in self.molecule_transformer.bond_modifiers:
                     program_key = (ansatz.name, modifier)
-                    if program_key in self.programs:
+                    if program_key in self._programs:
                         modifiers.append(modifier)
-                        curr_energies = self.programs[program_key].losses[-1]
+                        curr_energies = self._programs[program_key].losses[-1]
                         min_energies.append(min(curr_energies.values()))
 
                 # Use the new .name property for the label and the color_map
@@ -504,7 +525,7 @@ class VQEHyperparameterSweep(ProgramBatch):
                 energies = []
                 for modifier in self.molecule_transformer.bond_modifiers:
                     energies.append(
-                        min(self.programs[(ansatz.name, modifier)].losses[-1].values())
+                        min(self._programs[(ansatz.name, modifier)].losses[-1].values())
                     )
 
                 plt.plot(

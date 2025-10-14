@@ -6,7 +6,7 @@ import bisect
 import heapq
 import logging
 from functools import partial
-from multiprocessing import Pool
+from multiprocessing.pool import ThreadPool
 from typing import Literal
 from warnings import warn
 
@@ -101,6 +101,27 @@ class ParallelSimulator(CircuitRunner):
         qiskit_backend: Backend | None = None,
         noise_model: NoiseModel | None = None,
     ):
+        """
+        Simulate a single quantum circuit using Qiskit Aer.
+
+        This static method takes a circuit in QASM format and simulates it using
+        Qiskit's AerSimulator, optionally with noise modeling.
+
+        Args:
+            circuit_data (tuple[str, str]): Tuple of (circuit_label, qasm_string).
+            shots (int): Number of measurement shots to perform.
+            simulation_seed (int, optional): Seed for the simulator's random number
+                generator. Defaults to None.
+            qiskit_backend (Backend, optional): Qiskit backend to use for noise
+                modeling. If "auto", selects appropriate fake backend. Defaults to None.
+            noise_model (NoiseModel, optional): Custom noise model for simulation.
+                Ignored if qiskit_backend is provided. Defaults to None.
+
+        Returns:
+            dict: Dictionary with keys:
+                - 'label' (str): The circuit label
+                - 'results' (dict): Measurement counts as {bitstring: count}
+        """
         circuit_label, circuit = circuit_data
 
         qiskit_circuit = QuantumCircuit.from_qasm_str(circuit)
@@ -127,14 +148,35 @@ class ParallelSimulator(CircuitRunner):
         return {"label": circuit_label, "results": dict(counts)}
 
     def set_seed(self, seed: int):
+        """
+        Set the random seed for circuit simulation.
+
+        Args:
+            seed (int): Seed value for the random number generator used in simulation.
+        """
         self.simulation_seed = seed
 
     def submit_circuits(self, circuits: dict[str, str]):
+        """
+        Submit multiple circuits for parallel simulation.
+
+        Distributes circuit simulation across multiple processes using a thread pool,
+        with each circuit simulated using the configured shots and noise model.
+
+        Args:
+            circuits (dict[str, str]): Dictionary mapping circuit labels to OpenQASM
+                string representations.
+
+        Returns:
+            list[dict]: List of result dictionaries, each containing:
+                - 'label' (str): Circuit identifier
+                - 'results' (dict): Measurement counts as {bitstring: count}
+        """
         logger.debug(
             f"Simulating {len(circuits)} circuits with {self.n_processes} processes"
         )
 
-        with Pool(processes=self.n_processes) as pool:
+        with ThreadPool(processes=self.n_processes) as pool:
             results = pool.starmap(
                 self.simulate_circuit,
                 [

@@ -3,10 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import time
-from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from functools import partial
-from multiprocessing import Event, Manager
+from multiprocessing import Event
 from queue import Queue
+from threading import Event as ThreadingEvent
 from threading import Lock, Thread
 
 import numpy as np
@@ -20,7 +21,7 @@ from rich.progress import Progress
 
 from divi.circuits import MetaCircuit
 from divi.circuits.qem import ZNE
-from divi.qprog.batch import ProgramBatch, QuantumProgram, queue_listener
+from divi.qprog.batch import ProgramBatch, QuantumProgram, _queue_listener
 from divi.qprog.quantum_program import batched_expectation
 from tests.qprog.qprog_contracts import verify_basic_program_batch_behaviour
 
@@ -367,16 +368,15 @@ class TestProgramBatch:
         assert len(program_batch.programs) == 2
         assert "prog1" in program_batch.programs
         assert "prog2" in program_batch.programs
-        assert isinstance(program_batch._manager, type(Manager()))
         assert hasattr(program_batch._queue, "get")  # Check if it's queue-like
-        assert isinstance(program_batch._done_event, type(Event()))
+        assert isinstance(program_batch._done_event, ThreadingEvent)
 
     def test_reset_cleans_up_all_resources(self, program_batch, mocker):
         """Tests that reset() correctly shuts down and cleans up all resources."""
         # First, create programs to initialize the manager, queue, etc.
         program_batch.create_programs()
         # Now, simulate a running state by creating an executor and futures
-        program_batch._executor = mocker.MagicMock(spec=ProcessPoolExecutor)
+        program_batch._executor = mocker.MagicMock(spec=ThreadPoolExecutor)
         program_batch._listener_thread = mocker.MagicMock(spec=Thread)
         program_batch._progress_bar = mocker.MagicMock()
         program_batch.futures = [mocker.MagicMock()]
@@ -387,7 +387,6 @@ class TestProgramBatch:
 
         # Spy on the original objects before they are cleared by reset()
         mock_executor = program_batch._executor
-        manager_shutdown_spy = mocker.spy(program_batch._manager, "shutdown")
         done_event_set_spy = mocker.spy(program_batch._done_event, "set")
         mock_listener_thread = program_batch._listener_thread
         mock_progress_bar = program_batch._progress_bar
@@ -399,13 +398,11 @@ class TestProgramBatch:
         mock_executor.shutdown.assert_called_once_with(wait=False)
         done_event_set_spy.assert_called_once()
         mock_listener_thread.join.assert_called_once()
-        manager_shutdown_spy.assert_called_once()
         mock_progress_bar.stop.assert_called_once()
 
         # Assert that state attributes are cleared
         assert program_batch._executor is None
         assert program_batch.futures is None
-        assert program_batch._manager is None
 
     def test_total_circuit_count_setter(self, program_batch):
         with pytest.raises(
@@ -436,8 +433,8 @@ class TestProgramBatch:
     def test_run_fails_if_already_running(self, mocker, program_batch):
         program_batch.create_programs()
 
-        # Mock ProcessPoolExecutor to simulate a long-running batch
-        mock_executor = mocker.patch("divi.qprog.batch.ProcessPoolExecutor")
+        # Mock ThreadPoolExecutor to simulate a long-running batch
+        mock_executor = mocker.patch("divi.qprog.batch.ThreadPoolExecutor")
         mock_instance = mock_executor.return_value
 
         # Create futures that simulate a long-running process
@@ -455,7 +452,7 @@ class TestProgramBatch:
     def test_run_submits_correct_tasks(self, program_batch, mocker):
         """Tests that run() submits the correct function and arguments to the executor."""
         program_batch.create_programs()
-        mock_executor_class = mocker.patch("divi.qprog.batch.ProcessPoolExecutor")
+        mock_executor_class = mocker.patch("divi.qprog.batch.ThreadPoolExecutor")
         mock_executor = mock_executor_class.return_value
 
         # The executor's submit method returns Future objects. When we mock the executor,
@@ -570,12 +567,11 @@ class TestProgramBatch:
         # Mock executor shutdown to confirm it's called during cleanup
         mock_shutdown = mocker.spy(program_batch._executor, "shutdown")
 
-        with pytest.raises(RuntimeError, match="One or more tasks failed"):
+        with pytest.raises(RuntimeError, match="Batch execution failed"):
             program_batch.join()
 
-        # Verify that cleanup still happened
-        mock_shutdown.assert_called_once_with(wait=True, cancel_futures=False)
-        assert program_batch._executor is None  # Should be cleared after join
+        mock_shutdown.assert_called_once_with(wait=False)
+        assert program_batch._executor is None
 
     def test_aggregate_results_calls_join_and_aggregates(self, program_batch):
         """Tests that aggregate_results works correctly after a successful run."""
@@ -587,7 +583,7 @@ class TestProgramBatch:
         # To pass the check in `aggregate_results`, we manually populate the list
         # here, simulating a successful run where state was propagated.
         for p in program_batch.programs.values():
-            p.losses.append(0.1)
+            p._losses.append(0.1)
 
         # Now, aggregate_results should pass its internal checks and work.
         # It should not call join() again as the executor is already shut down.
@@ -618,7 +614,7 @@ def test_queue_listener(mocker):
 
     # Run the listener in a separate thread
     listener_thread = Thread(
-        target=queue_listener,
+        target=_queue_listener,
         args=(mock_queue, mock_progress_bar, pb_task_map, mock_done_event, False, lock),
     )
     listener_thread.start()

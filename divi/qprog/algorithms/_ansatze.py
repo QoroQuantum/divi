@@ -143,11 +143,37 @@ class GenericLayerAnsatz(Ansatz):
 
 
 class QAOAAnsatz(Ansatz):
+    """
+    QAOA-style ansatz using PennyLane's QAOAEmbedding.
+
+    Implements a parameterized ansatz based on the Quantum Approximate Optimization
+    Algorithm structure, alternating between problem and mixer Hamiltonians.
+    """
+
     @staticmethod
     def n_params_per_layer(n_qubits: int, **kwargs) -> int:
+        """
+        Calculate the number of parameters per layer for QAOA ansatz.
+
+        Args:
+            n_qubits (int): Number of qubits in the circuit.
+            **kwargs: Additional unused arguments.
+
+        Returns:
+            int: Number of parameters needed per layer.
+        """
         return qml.QAOAEmbedding.shape(n_layers=1, n_wires=n_qubits)[1]
 
     def build(self, params, n_qubits: int, n_layers: int, **kwargs):
+        """
+        Build the QAOA ansatz circuit.
+
+        Args:
+            params: Parameter array to use for the ansatz.
+            n_qubits (int): Number of qubits.
+            n_layers (int): Number of QAOA layers.
+            **kwargs: Additional unused arguments.
+        """
         qml.QAOAEmbedding(
             features=[],
             weights=params.reshape(n_layers, -1),
@@ -156,11 +182,23 @@ class QAOAAnsatz(Ansatz):
 
 
 class HardwareEfficientAnsatz(Ansatz):
+    """
+    Hardware-efficient ansatz (not yet implemented).
+
+    This ansatz is designed to be easily implementable on near-term quantum hardware,
+    typically using native gate sets and connectivity patterns.
+
+    Note:
+        This class is a placeholder for future implementation.
+    """
+
     @staticmethod
     def n_params_per_layer(n_qubits: int, **kwargs) -> int:
+        """Not yet implemented."""
         raise NotImplementedError("HardwareEfficientAnsatz is not yet implemented.")
 
     def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> None:
+        """Not yet implemented."""
         raise NotImplementedError("HardwareEfficientAnsatz is not yet implemented.")
 
 
@@ -168,13 +206,42 @@ class HardwareEfficientAnsatz(Ansatz):
 
 
 class UCCSDAnsatz(Ansatz):
+    """
+    Unitary Coupled Cluster Singles and Doubles (UCCSD) ansatz.
+
+    This ansatz is specifically designed for quantum chemistry calculations,
+    implementing the UCCSD approximation which includes all single and double
+    electron excitations from a reference state.
+    """
+
     @staticmethod
     def n_params_per_layer(n_qubits: int, n_electrons: int, **kwargs) -> int:
+        """
+        Calculate the number of parameters per layer for UCCSD ansatz.
+
+        Args:
+            n_qubits (int): Number of qubits in the circuit.
+            n_electrons (int): Number of electrons in the system.
+            **kwargs: Additional unused arguments.
+
+        Returns:
+            int: Number of parameters (number of single + double excitations).
+        """
         singles, doubles = qml.qchem.excitations(n_electrons, n_qubits)
         s_wires, d_wires = qml.qchem.excitations_to_wires(singles, doubles)
         return len(s_wires) + len(d_wires)
 
     def build(self, params, n_qubits: int, n_layers: int, n_electrons: int, **kwargs):
+        """
+        Build the UCCSD ansatz circuit.
+
+        Args:
+            params: Parameter array for excitation amplitudes.
+            n_qubits (int): Number of qubits.
+            n_layers (int): Number of UCCSD layers (repeats).
+            n_electrons (int): Number of electrons in the system.
+            **kwargs: Additional unused arguments.
+        """
         singles, doubles = qml.qchem.excitations(n_electrons, n_qubits)
         s_wires, d_wires = qml.qchem.excitations_to_wires(singles, doubles)
         hf_state = qml.qchem.hf_state(n_electrons, n_qubits)
@@ -190,12 +257,41 @@ class UCCSDAnsatz(Ansatz):
 
 
 class HartreeFockAnsatz(Ansatz):
+    """
+    Hartree-Fock-based ansatz for quantum chemistry.
+
+    This ansatz prepares the Hartree-Fock reference state and applies
+    parameterized single and double excitation gates. It's a simplified
+    alternative to UCCSD, often used as a starting point for VQE calculations.
+    """
+
     @staticmethod
     def n_params_per_layer(n_qubits: int, n_electrons: int, **kwargs) -> int:
+        """
+        Calculate the number of parameters per layer for Hartree-Fock ansatz.
+
+        Args:
+            n_qubits (int): Number of qubits in the circuit.
+            n_electrons (int): Number of electrons in the system.
+            **kwargs: Additional unused arguments.
+
+        Returns:
+            int: Number of parameters (number of single + double excitations).
+        """
         singles, doubles = qml.qchem.excitations(n_electrons, n_qubits)
         return len(singles) + len(doubles)
 
     def build(self, params, n_qubits: int, n_layers: int, n_electrons: int, **kwargs):
+        """
+        Build the Hartree-Fock ansatz circuit.
+
+        Args:
+            params: Parameter array for excitation amplitudes.
+            n_qubits (int): Number of qubits.
+            n_layers (int): Number of ansatz layers.
+            n_electrons (int): Number of electrons in the system.
+            **kwargs: Additional unused arguments.
+        """
         singles, doubles = qml.qchem.excitations(n_electrons, n_qubits)
         hf_state = qml.qchem.hf_state(n_electrons, n_qubits)
 

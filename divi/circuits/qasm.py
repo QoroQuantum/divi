@@ -46,6 +46,25 @@ OPENQASM_GATES = {
 
 
 def _ops_to_qasm(operations, precision, wires):
+    """
+    Convert PennyLane operations to OpenQASM instruction strings.
+
+    Translates a sequence of PennyLane quantum operations into their OpenQASM
+    2.0 equivalent representations. Each operation is mapped to its corresponding
+    QASM gate with appropriate parameters and wire labels.
+
+    Args:
+        operations: Sequence of PennyLane operation objects to convert.
+        precision (int | None): Number of decimal places for parameter values.
+            If None, uses default Python string formatting.
+        wires: Wire labels used in the circuit for indexing.
+
+    Returns:
+        str: OpenQASM instruction string with each operation on a new line.
+
+    Raises:
+        ValueError: If an operation is not supported by the QASM serializer.
+    """
     # create the QASM code representing the operations
     qasm_str = ""
 
