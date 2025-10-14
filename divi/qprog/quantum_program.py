@@ -487,7 +487,9 @@ class QuantumProgram(ABC):
                 correspond to the parameter indices.
         """
         if not (self._cancellation_event and self._cancellation_event.is_set()):
-            self.reporter.info(message="Post-processing output")
+            self.reporter.info(
+                message="Post-processing output", iteration=self.current_iteration
+            )
 
         losses = {}
         measurement_groups = self._meta_circuits["cost_circuit"].measurement_groups

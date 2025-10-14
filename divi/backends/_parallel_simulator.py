@@ -6,7 +6,7 @@ import bisect
 import heapq
 import logging
 from functools import partial
-from multiprocessing.pool import ThreadPool
+from multiprocessing import Pool
 from typing import Literal
 from warnings import warn
 
@@ -68,10 +68,12 @@ class ParallelSimulator(CircuitRunner):
         noise_model: NoiseModel | None = None,
     ):
         """
-        A multi-process wrapper around Qiskit's AerSimulator.
+        A parallel wrapper around Qiskit's AerSimulator using Qiskit's built-in parallelism.
 
         Args:
-            n_processes (int, optional): Number of parallel processes to use for simulation. Defaults to 2.
+            n_processes (int, optional): Number of parallel processes to use for transpilation and
+                simulation. Defaults to 2. This sets both the transpile num_processes and
+                AerSimulator's max_parallel_experiments.
             shots (int, optional): Number of shots to perform. Defaults to 5000.
             simulation_seed (int, optional): Seed for the random number generator to ensure reproducibility. Defaults to None.
             qiskit_backend (Backend | Literal["auto"] | None, optional): A Qiskit backend to initiate the simulator from.
@@ -93,60 +95,6 @@ class ParallelSimulator(CircuitRunner):
         self.qiskit_backend = qiskit_backend
         self.noise_model = noise_model
 
-    @staticmethod
-    def simulate_circuit(
-        circuit_data: tuple[str, str],
-        shots: int,
-        simulation_seed: int | None = None,
-        qiskit_backend: Backend | None = None,
-        noise_model: NoiseModel | None = None,
-    ):
-        """
-        Simulate a single quantum circuit using Qiskit Aer.
-
-        This static method takes a circuit in QASM format and simulates it using
-        Qiskit's AerSimulator, optionally with noise modeling.
-
-        Args:
-            circuit_data (tuple[str, str]): Tuple of (circuit_label, qasm_string).
-            shots (int): Number of measurement shots to perform.
-            simulation_seed (int, optional): Seed for the simulator's random number
-                generator. Defaults to None.
-            qiskit_backend (Backend, optional): Qiskit backend to use for noise
-                modeling. If "auto", selects appropriate fake backend. Defaults to None.
-            noise_model (NoiseModel, optional): Custom noise model for simulation.
-                Ignored if qiskit_backend is provided. Defaults to None.
-
-        Returns:
-            dict: Dictionary with keys:
-                - 'label' (str): The circuit label
-                - 'results' (dict): Measurement counts as {bitstring: count}
-        """
-        circuit_label, circuit = circuit_data
-
-        qiskit_circuit = QuantumCircuit.from_qasm_str(circuit)
-
-        resolved_backend = (
-            _find_best_fake_backend(qiskit_circuit)[-1]()
-            if qiskit_backend == "auto"
-            else qiskit_backend
-        )
-
-        aer_simulator = (
-            AerSimulator.from_backend(resolved_backend)
-            if qiskit_backend
-            else AerSimulator(noise_model=noise_model)
-        )
-        transpiled_circuit = transpile(qiskit_circuit, aer_simulator)
-
-        aer_simulator.set_option("seed_simulator", simulation_seed)
-        job = aer_simulator.run(transpiled_circuit, shots=shots)
-
-        result = job.result()
-        counts = result.get_counts(0)
-
-        return {"label": circuit_label, "results": dict(counts)}
-
     def set_seed(self, seed: int):
         """
         Set the random seed for circuit simulation.
@@ -158,10 +106,10 @@ class ParallelSimulator(CircuitRunner):
 
     def submit_circuits(self, circuits: dict[str, str]):
         """
-        Submit multiple circuits for parallel simulation.
+        Submit multiple circuits for parallel simulation using Qiskit's built-in parallelism.
 
-        Distributes circuit simulation across multiple processes using a thread pool,
-        with each circuit simulated using the configured shots and noise model.
+        Uses Qiskit's native batch transpilation and execution, which handles parallelism
+        internally.
 
         Args:
             circuits (dict[str, str]): Dictionary mapping circuit labels to OpenQASM
@@ -176,20 +124,48 @@ class ParallelSimulator(CircuitRunner):
             f"Simulating {len(circuits)} circuits with {self.n_processes} processes"
         )
 
-        with ThreadPool(processes=self.n_processes) as pool:
-            results = pool.starmap(
-                self.simulate_circuit,
-                [
-                    (
-                        circuit,
-                        self.shots,
-                        self.simulation_seed,
-                        self.qiskit_backend,
-                        self.noise_model,
-                    )
-                    for circuit in circuits.items()
-                ],
-            )
+        # Convert QASM strings to QuantumCircuit objects
+        circuit_labels = list(circuits.keys())
+        qiskit_circuits = [
+            QuantumCircuit.from_qasm_str(qasm) for qasm in circuits.values()
+        ]
+
+        # Determine backend for transpilation
+        if self.qiskit_backend == "auto":
+            # For "auto", find the maximum number of qubits across all circuits to determine backend
+            max_qubits_circ = max(qiskit_circuits, key=lambda x: x.num_qubits)
+            resolved_backend = _find_best_fake_backend(max_qubits_circ)[-1]()
+        elif self.qiskit_backend is not None:
+            resolved_backend = self.qiskit_backend
+        else:
+            resolved_backend = None
+
+        # Create simulator
+        if resolved_backend is not None:
+            aer_simulator = AerSimulator.from_backend(resolved_backend)
+        else:
+            aer_simulator = AerSimulator(noise_model=self.noise_model)
+
+        # Set simulator options for parallelism
+        aer_simulator.set_option("seed_simulator", self.simulation_seed)
+        # Set max_parallel_experiments to enable parallel circuit execution
+        aer_simulator.set_options(max_parallel_experiments=self.n_processes)
+
+        # Batch transpile all circuits (Qiskit handles parallelism internally)
+        transpiled_circuits = transpile(
+            qiskit_circuits, aer_simulator, num_processes=self.n_processes
+        )
+
+        # Run all circuits in a single batch (Aer handles parallelism internally)
+        job = aer_simulator.run(transpiled_circuits, shots=self.shots)
+        batch_result = job.result()
+
+        # Extract results and match with labels
+        results = []
+        for i, label in enumerate(circuit_labels):
+            counts = batch_result.get_counts(i)
+            results.append({"label": label, "results": dict(counts)})
+
         return results
 
     @staticmethod
@@ -229,15 +205,18 @@ class ParallelSimulator(CircuitRunner):
 
             op_name = node.name
 
+            # Determine qubit indices for the operation
             if node.num_clbits == 1:
                 idx = (node.cargs[0]._index,)
-
-            if op_name != "measure" and node.num_qubits > 0:
+            elif op_name != "measure" and node.num_qubits > 0:
                 idx = tuple(qarg._index for qarg in node.qargs)
+            else:
+                # Skip operations without qubits or measurements without classical bits
+                continue
 
             try:
                 total_run_time_s += (
-                    qiskit_backend.instruction_durations.duration_by_name_qubits[
+                    resolved_backend.instruction_durations.duration_by_name_qubits[
                         (op_name, idx)
                     ][0]
                 )
@@ -251,7 +230,7 @@ class ParallelSimulator(CircuitRunner):
     @staticmethod
     def estimate_run_time_batch(
         circuits: list[str] | None = None,
-        precomputed_duration: list[float] | None = None,
+        precomputed_durations: list[float] | None = None,
         n_qpus: int = 5,
         **transpilation_kwargs,
     ) -> float:
@@ -268,7 +247,7 @@ class ParallelSimulator(CircuitRunner):
         """
 
         # Compute the run time estimates for each given circuit, in descending order
-        if precomputed_duration is None:
+        if precomputed_durations is None:
             with Pool() as p:
                 estimated_run_times = p.map(
                     partial(
@@ -280,7 +259,7 @@ class ParallelSimulator(CircuitRunner):
                 )
             estimated_run_times_sorted = sorted(estimated_run_times, reverse=True)
         else:
-            estimated_run_times_sorted = sorted(precomputed_duration, reverse=True)
+            estimated_run_times_sorted = sorted(precomputed_durations, reverse=True)
 
         # Just return the longest run time if there are enough QPUs
         if n_qpus >= len(estimated_run_times_sorted):

@@ -33,6 +33,7 @@ class SampleProgram(QuantumProgram):
 
         self.n_layers = 1
         self._n_params = 4
+        self.current_iteration = 0
 
         super().__init__(backend=None, **kwargs)
 
