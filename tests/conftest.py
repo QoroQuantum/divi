@@ -2,10 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import os
 import random
 import re
 
 import pytest
+from dotenv import load_dotenv
 
 from divi.backends import CircuitRunner, ParallelSimulator
 
@@ -48,32 +50,42 @@ def is_assertion_error(err, *_) -> bool:
 
 def pytest_addoption(parser):
     parser.addoption(
-        "--api-token",
+        "--api-key",
         action="store",
         default=None,
-        help="API token for authentication",
+        help="API key for authentication (can also be set via QORO_API_KEY environment variable)",
+    )
+    parser.addoption(
+        "--run-api-tests",
+        action="store_true",
+        default=False,
+        help="Run tests that require an API key.",
     )
 
 
-@pytest.fixture(autouse=True)
-def skip_if_no_api_token(request):
-    if request.node.get_closest_marker("requires_api_token"):
-        token = request.config.getoption("--api-token")
-        if not token:
-            pytest.skip("Skipping test: API token is not provided.")
-
-
 @pytest.fixture(scope="module")
-def api_token(request):
-    api_token = request.config.getoption("--api-token")
+def api_key(request):
+    if not request.config.getoption("--run-api-tests"):
+        pytest.skip("Skipping API tests. Use --run-api-tests to run them.")
+
+    # Load .env file if it exists
+    load_dotenv()
+
+    # Check command line option first, then environment variable
+    key = request.config.getoption("--api-key")
+    if not key:
+        key = os.getenv("QORO_API_KEY")
+
+    # Skip if no key is found
+    if not key:
+        pytest.skip(
+            "Skipping API tests: API key not provided. Set QORO_API_KEY or use --api-key option."
+        )
 
     # Setup code
-    if api_token:
-        print(f"\nSetup: Initializing resources with API token: {api_token}")
-    else:
-        print("\nSetup: No API token provided. Some tests will be skipped.")
+    print(f"\nSetup: Initializing resources with API key: {key[:8]}...")
 
-    yield api_token
+    yield key
 
     # Teardown code
-    print(f"\nTeardown: Cleaning up resources initialized with API token: {api_token}")
+    print(f"\nTeardown: Cleaning up resources initialized with API key: {key[:8]}...")

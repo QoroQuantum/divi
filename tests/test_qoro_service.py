@@ -16,14 +16,15 @@ from divi.backends._qoro_service import (
     _raise_with_details,
     is_valid_qasm,
 )
+from divi.backends._qpu_system import QPUSystem
 
 # --- Test Fixtures ---
 
 
 @pytest.fixture
-def qoro_service(api_token):
+def qoro_service(api_key):
     """Provides a QoroService instance with a real API token for integration tests."""
-    return QoroService(api_token)
+    return QoroService(api_key)
 
 
 @pytest.fixture
@@ -515,12 +516,11 @@ class TestQoroServiceMock:
         )
 
 
-# --- Integration Tests (require API token) ---
+# --- Integration Tests (require API key) ---
 
 
-@pytest.mark.requires_api_token
-class TestQoroServiceWithApiToken:
-    """Integration tests for the QoroService, requiring a valid API token."""
+class TestQoroServiceWithApiKey:
+    """Integration tests for the QoroService, requiring a valid API key."""
 
     def test_service_connection_test(self, qoro_service):
         """Tests the connection to the live service."""
@@ -559,5 +559,34 @@ class TestQoroServiceWithApiToken:
         with pytest.raises(MaxRetriesReachedError):
             qoro_service_temp.poll_job_status(job_id, loop_until_complete=True)
 
+        res = qoro_service.delete_job(job_id)
+        assert res.status_code == 204, "Deletion should be successful"
+
+    def test_fetch_qpu_systems(self, qoro_service):
+        """Tests fetching the list of QPU systems."""
+        systems = qoro_service.fetch_qpu_systems()
+        assert isinstance(systems, list)
+        if systems:
+            assert isinstance(systems[0], QPUSystem)
+
+    def test_get_job_results(self, qoro_service, circuits):
+        """Tests submitting a job, polling until complete, and fetching results."""
+        # Use only one circuit for a quicker test
+        single_circuit = {"circuit_1": circuits["circuit_0"]}
+        job_id = qoro_service.submit_circuits(single_circuit)
+
+        # Poll for completion
+        status = qoro_service.poll_job_status(job_id, loop_until_complete=True)
+        assert status == JobStatus.COMPLETED
+
+        # Fetch results
+        results = qoro_service.get_job_results(job_id)
+        assert isinstance(results, list)
+        assert len(results) == 1
+        assert "label" in results[0]
+        assert "results" in results[0]
+        assert isinstance(results[0]["results"], dict)
+
+        # Cleanup
         res = qoro_service.delete_job(job_id)
         assert res.status_code == 204, "Deletion should be successful"

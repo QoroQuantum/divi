@@ -55,8 +55,14 @@ jobs:
           version: 1.8.5
           virtualenvs-in-project: true
 
-      - name: Run tests
-        run: poetry run pytest -n auto
+      - name: Run unit tests
+        run: poetry run pytest -n auto -m "not requires_api_key"
+
+      - name: Run API tests
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: poetry run pytest --run-api-tests -m "requires_api_key"
+        env:
+          QORO_API_KEY: ${{ secrets.QORO_API_KEY }}
 
   tutorials:
     runs-on: ubuntu-22.04

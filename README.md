@@ -30,3 +30,17 @@ pip install qoro-divi
 
 - Full documentation is available at: <https://docs.qoroquantum.net/divi>
 - Tutorials can be found in the `tutorials` folder.
+
+## 🧪 Testing
+
+To run the test suite:
+
+```bash
+# Run all tests
+pytest
+
+# Run only API tests (requires API token)
+pytest --run-api-tests
+```
+
+**Note:** Some tests require a Qoro API token to test the cloud REST API. Set the `QORO_API_KEY` environment variable or use the `--api-token` option. For local development, you can create a `.env`.
