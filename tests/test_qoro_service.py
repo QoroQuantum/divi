@@ -519,6 +519,7 @@ class TestQoroServiceMock:
 # --- Integration Tests (require API key) ---
 
 
+@pytest.mark.requires_api_key
 class TestQoroServiceWithApiKey:
     """Integration tests for the QoroService, requiring a valid API key."""
 
