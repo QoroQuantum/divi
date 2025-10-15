@@ -90,7 +90,7 @@ def _get_eigvals_from_key(key: tuple[str, ...]) -> np.ndarray:
     return final_eigvals
 
 
-def batched_expectation(shots_dicts, observables, wire_order):
+def _batched_expectation(shots_dicts, observables, wire_order):
     """Efficiently calculates expectation values for multiple observables across multiple shot histograms.
 
     This function is optimized to compute expectation values in a fully vectorized
@@ -247,7 +247,7 @@ class QuantumProgram(ABC):
 
         self._total_circuit_count = 0
         self._total_run_time = 0.0
-        self._curr_params = []
+        self._curr_params = None
 
         self._seed = seed
         self._rng = np.random.default_rng(self._seed)
@@ -354,6 +354,39 @@ class QuantumProgram(ABC):
         """
         return self._final_params.copy()
 
+    @property
+    def initial_params(self) -> np.ndarray:
+        """
+        Get the current initial parameters.
+
+        Returns:
+            np.ndarray: Current initial parameters. If not yet initialized,
+                they will be generated automatically.
+        """
+        if self._curr_params is None:
+            self._initialize_params()
+        return self._curr_params.copy()
+
+    @initial_params.setter
+    def initial_params(self, value: np.ndarray | None):
+        """
+        Set initial parameters.
+
+        Args:
+            value (np.ndarray | None): Initial parameters with shape
+                (n_param_sets, n_layers * n_params), or None to reset
+                to uninitialized state.
+
+        Raises:
+            ValueError: If parameters have incorrect shape.
+        """
+        if value is not None:
+            self._validate_initial_params(value)
+            self._curr_params = value.copy()
+        else:
+            # Reset to uninitialized state
+            self._curr_params = None
+
     @abstractmethod
     def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
         pass
@@ -374,18 +407,44 @@ class QuantumProgram(ABC):
         """
         self._cancellation_event = event
 
+    def get_expected_param_shape(self) -> tuple[int, int]:
+        """
+        Get the expected shape for initial parameters.
+
+        Returns:
+            tuple[int, int]: Shape (n_param_sets, n_layers * n_params) that
+                initial parameters should have for this quantum program.
+        """
+        return (self.optimizer.n_param_sets, self.n_layers * self.n_params)
+
+    def _validate_initial_params(self, params: np.ndarray):
+        """
+        Validate user-provided initial parameters.
+
+        Args:
+            params (np.ndarray): Parameters to validate.
+
+        Raises:
+            ValueError: If parameters have incorrect shape.
+        """
+        expected_shape = self.get_expected_param_shape()
+
+        if params.shape != expected_shape:
+            raise ValueError(
+                f"Initial parameters must have shape {expected_shape}, "
+                f"got {params.shape}"
+            )
+
     def _initialize_params(self):
         """
         Initialize the circuit parameters randomly.
 
-        Creates initial parameter sets with values uniformly distributed between
+        Generates random parameters with values uniformly distributed between
         0 and 2π. The number of parameter sets depends on the optimizer being used.
         """
-        self._curr_params = np.array(
-            [
-                self._rng.uniform(0, 2 * np.pi, self.n_layers * self.n_params)
-                for _ in range(self.optimizer.n_param_sets)
-            ]
+        total_params = self.n_layers * self.n_params
+        self._curr_params = self._rng.uniform(
+            0, 2 * np.pi, (self.optimizer.n_param_sets, total_params)
         )
 
     def _run_optimization_circuits(self, store_data, data_file):
@@ -520,7 +579,7 @@ class QuantumProgram(ABC):
                         reversed(range(len(next(iter(shots_dicts[0].keys())))))
                     )
 
-                expectation_matrix = batched_expectation(
+                expectation_matrix = _batched_expectation(
                     shots_dicts, curr_measurement_group, wire_order
                 )
 

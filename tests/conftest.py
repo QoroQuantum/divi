@@ -39,7 +39,7 @@ def dummy_simulator():
 
 @pytest.fixture
 def default_test_simulator():
-    return ParallelSimulator(shots=5000)
+    return ParallelSimulator(shots=5000, _deterministic_execution=True)
 
 
 def is_assertion_error(err, *_) -> bool:

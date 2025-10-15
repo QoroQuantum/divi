@@ -66,6 +66,7 @@ class ParallelSimulator(CircuitRunner):
         simulation_seed: int | None = None,
         qiskit_backend: Backend | Literal["auto"] | None = None,
         noise_model: NoiseModel | None = None,
+        _deterministic_execution: bool = False,
     ):
         """
         A parallel wrapper around Qiskit's AerSimulator using Qiskit's built-in parallelism.
@@ -94,6 +95,7 @@ class ParallelSimulator(CircuitRunner):
         self.simulation_seed = simulation_seed
         self.qiskit_backend = qiskit_backend
         self.noise_model = noise_model
+        self._deterministic_execution = _deterministic_execution
 
     def set_seed(self, seed: int):
         """
@@ -103,6 +105,45 @@ class ParallelSimulator(CircuitRunner):
             seed (int): Seed value for the random number generator used in simulation.
         """
         self.simulation_seed = seed
+
+    def _execute_circuits_deterministically(
+        self, circuit_labels: list[str], transpiled_circuits: list, resolved_backend
+    ) -> list[dict]:
+        """
+        Execute circuits individually for debugging purposes.
+
+        This method ensures deterministic results by running each circuit with its own
+        simulator instance and the same seed. Used internally for debugging non-deterministic
+        behavior in batch execution.
+
+        Args:
+            circuit_labels: List of circuit labels
+            transpiled_circuits: List of transpiled QuantumCircuit objects
+            resolved_backend: Resolved backend for simulator creation
+
+        Returns:
+            List of result dictionaries
+        """
+        results = []
+        for i, (label, transpiled_circuit) in enumerate(
+            zip(circuit_labels, transpiled_circuits)
+        ):
+            # Create a new simulator instance for each circuit with the same seed
+            if resolved_backend is not None:
+                circuit_simulator = AerSimulator.from_backend(resolved_backend)
+            else:
+                circuit_simulator = AerSimulator(noise_model=self.noise_model)
+
+            if self.simulation_seed is not None:
+                circuit_simulator.set_option("seed_simulator", self.simulation_seed)
+
+            # Run the single circuit
+            job = circuit_simulator.run(transpiled_circuit, shots=self.shots)
+            circuit_result = job.result()
+            counts = circuit_result.get_counts(0)
+            results.append({"label": label, "results": dict(counts)})
+
+        return results
 
     def submit_circuits(self, circuits: dict[str, str]):
         """
@@ -147,8 +188,8 @@ class ParallelSimulator(CircuitRunner):
             aer_simulator = AerSimulator(noise_model=self.noise_model)
 
         # Set simulator options for parallelism
-        aer_simulator.set_option("seed_simulator", self.simulation_seed)
-        # Set max_parallel_experiments to enable parallel circuit execution
+        # Note: We don't set seed_simulator here because we need different seeds for each circuit
+        # to ensure deterministic results when running multiple circuits in parallel
         aer_simulator.set_options(max_parallel_experiments=self.n_processes)
 
         # Batch transpile all circuits (Qiskit handles parallelism internally)
@@ -156,9 +197,29 @@ class ParallelSimulator(CircuitRunner):
             qiskit_circuits, aer_simulator, num_processes=self.n_processes
         )
 
-        # Run all circuits in a single batch (Aer handles parallelism internally)
+        # Use deterministic execution for debugging if enabled
+        if self._deterministic_execution:
+            return self._execute_circuits_deterministically(
+                circuit_labels, transpiled_circuits, resolved_backend
+            )
+
+        # Batch execution with metadata checking for non-deterministic behavior
         job = aer_simulator.run(transpiled_circuits, shots=self.shots)
         batch_result = job.result()
+
+        # Check metadata to detect non-deterministic behavior
+        metadata = batch_result.metadata
+        parallel_experiments = metadata.get("parallel_experiments", 1)
+        omp_nested = metadata.get("omp_nested", False)
+
+        # If parallel execution is detected and we have a seed, warn about potential non-determinism
+        if parallel_experiments > 1 and self.simulation_seed is not None:
+            logger.warning(
+                f"Parallel execution detected (parallel_experiments={parallel_experiments}, "
+                f"omp_nested={omp_nested}). Results may not be deterministic across different "
+                "grouping strategies. Consider enabling deterministic mode for "
+                "deterministic results."
+            )
 
         # Extract results and match with labels
         results = []

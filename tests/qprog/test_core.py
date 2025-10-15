@@ -22,7 +22,7 @@ from rich.progress import Progress
 from divi.circuits import MetaCircuit
 from divi.circuits.qem import ZNE
 from divi.qprog.batch import ProgramBatch, QuantumProgram, _queue_listener
-from divi.qprog.quantum_program import batched_expectation
+from divi.qprog.quantum_program import _batched_expectation
 from tests.qprog.qprog_contracts import verify_basic_program_batch_behaviour
 
 
@@ -247,7 +247,7 @@ def test_batched_expectation_matches_pennylane_baseline():
         baseline_expvals.append(expval)
 
     # 3. CALCULATE with our optimized batched function
-    optimized_expvals_matrix = batched_expectation(
+    optimized_expvals_matrix = _batched_expectation(
         [shot_histogram], observables, wire_order
     )
     optimized_expvals = optimized_expvals_matrix[:, 0]
@@ -285,7 +285,7 @@ def test_batched_expectation_with_multiple_histograms():
     expected_3 = np.array([0.5, -0.5, -1.0])
 
     # --- Calculation ---
-    result_matrix = batched_expectation(
+    result_matrix = _batched_expectation(
         [hist_1, hist_2, hist_3], observables, wire_order
     )
 
@@ -308,7 +308,7 @@ def test_batched_expectation_raises_for_unsupported_observable():
     unsupported_observables = [qml.PauliZ(0), qml.Hadamard(0)]
 
     with pytest.raises(KeyError):
-        batched_expectation(
+        _batched_expectation(
             shots_dicts=[shots],
             observables=unsupported_observables,
             wire_order=wire_order,
@@ -328,7 +328,7 @@ def test_post_processing_with_deterministic_states(bitstring, expected_z0, expec
     wire_order = (1, 0)  # Wires are typically reversed for bitstring mapping
 
     # The function expects a list of shot dictionaries
-    exp_matrix = batched_expectation([shots], observables, wire_order)
+    exp_matrix = _batched_expectation([shots], observables, wire_order)
 
     # exp_matrix has shape (n_observables, n_histograms)
     assert np.isclose(exp_matrix[0, 0], expected_z0)
@@ -345,7 +345,7 @@ def test_batched_expectation_with_identity():
     observables = [qml.PauliZ(0) @ qml.Identity(1), qml.Identity(0) @ qml.PauliZ(1)]
     wire_order = (1, 0)
 
-    exp_matrix = batched_expectation([shots], observables, wire_order)
+    exp_matrix = _batched_expectation([shots], observables, wire_order)
 
     # For Z(0) @ I(1), state |01> gives 1*1=1, |10> gives -1*1=-1. Avg = 0.
     assert np.isclose(exp_matrix[0, 0], 0.0)
@@ -649,3 +649,212 @@ def test_queue_listener(mocker):
 
     mock_progress_bar.update.assert_has_calls(expected_calls, any_order=True)
     assert mock_queue.empty()
+
+
+class TestInitialParameters:
+    """Test suite for initial parameters functionality."""
+
+    def _create_program_with_mock_optimizer(self, **kwargs):
+        """Helper method to create SampleProgram with mocked optimizer."""
+        from unittest.mock import MagicMock
+
+        program = SampleProgram(circ_count=1, run_time=0.1, **kwargs)
+        program.optimizer = MagicMock()
+        program.optimizer.n_param_sets = 1
+        return program
+
+    def test_initial_params_returns_numpy_array_not_none(self):
+        """Test that initial_params property always returns actual parameters."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+
+        # Should return actual parameters, never None
+        params = program.initial_params
+        assert isinstance(params, np.ndarray)
+        assert params is not None
+        assert params.shape == program.get_expected_param_shape()
+
+    def test_initial_params_triggers_lazy_initialization_on_first_access(self):
+        """Test that accessing initial_params triggers parameter generation."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+
+        # Initially _curr_params should be None
+        assert program._curr_params is None
+
+        # First access should trigger initialization
+        params = program.initial_params
+        assert program._curr_params is not None
+        assert isinstance(params, np.ndarray)
+
+    def test_initial_params_setter_stores_custom_parameters(self):
+        """Test that setting initial_params stores user-provided parameters."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+        expected_shape = program.get_expected_param_shape()
+        custom_params = np.random.uniform(0, 2 * np.pi, expected_shape)
+
+        # Set custom parameters
+        program.initial_params = custom_params
+
+        # Verify they are stored correctly
+        assert np.array_equal(program.initial_params, custom_params)
+        assert np.array_equal(program._curr_params, custom_params)
+
+    def test_initial_params_setter_validates_parameter_shape(self):
+        """Test that setter validates parameter shape matches expected shape."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+        wrong_shape_params = np.array([[0.1, 0.2]])  # Wrong shape
+
+        # Should raise ValueError for wrong shape
+        with pytest.raises(ValueError, match="Initial parameters must have shape"):
+            program.initial_params = wrong_shape_params
+
+    def test_get_expected_param_shape_returns_correct_tuple(self):
+        """Test that get_expected_param_shape returns (n_param_sets, n_layers * n_params)."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+
+        expected_shape = program.get_expected_param_shape()
+        assert isinstance(expected_shape, tuple)
+        assert len(expected_shape) == 2
+        assert expected_shape[0] == program.optimizer.n_param_sets
+        assert expected_shape[1] == program.n_layers * program.n_params
+
+    def test_parameter_validation_raises_error_for_wrong_shape(self):
+        """Test that validation raises ValueError for incorrect parameter shapes."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+
+        # Test various wrong shapes
+        wrong_shapes = [
+            (2, 3),  # Wrong dimensions
+            (1, 2),  # Wrong second dimension
+            (3, 4),  # Wrong first dimension
+        ]
+
+        for wrong_shape in wrong_shapes:
+            wrong_params = np.random.uniform(0, 2 * np.pi, wrong_shape)
+            with pytest.raises(ValueError, match="Initial parameters must have shape"):
+                program.initial_params = wrong_params
+
+    def test_parameter_validation_accepts_correct_shape(self):
+        """Test that validation passes for correctly shaped parameters."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+        expected_shape = program.get_expected_param_shape()
+        correct_params = np.random.uniform(0, 2 * np.pi, expected_shape)
+
+        # Should not raise any error
+        program.initial_params = correct_params
+        assert np.array_equal(program.initial_params, correct_params)
+
+    def test_curr_params_starts_as_none_before_initialization(self):
+        """Test that _curr_params starts as None before any initialization."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+
+        # Should start as None
+        assert program._curr_params is None
+
+    def test_curr_params_updated_after_lazy_initialization(self):
+        """Test that _curr_params is updated after lazy initialization."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+
+        # Initially None
+        assert program._curr_params is None
+
+        # Access initial_params to trigger lazy initialization
+        params = program.initial_params
+
+        # Should now be updated
+        assert program._curr_params is not None
+        assert isinstance(program._curr_params, np.ndarray)
+
+    def test_curr_params_updated_after_custom_parameter_setting(self):
+        """Test that _curr_params is updated after setting custom parameters."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+        expected_shape = program.get_expected_param_shape()
+        custom_params = np.random.uniform(0, 2 * np.pi, expected_shape)
+
+        # Set custom parameters
+        program.initial_params = custom_params
+
+        # Should be updated to custom parameters
+        assert np.array_equal(program._curr_params, custom_params)
+
+    def test_initial_params_reset_to_none_clears_curr_params(self):
+        """Test that setting initial_params=None resets _curr_params to None."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+
+        # First initialize parameters
+        params = program.initial_params
+        assert program._curr_params is not None
+
+        # Reset to None
+        program.initial_params = None
+
+        # Should be None again
+        assert program._curr_params is None
+
+    def test_initial_params_returns_copy_not_reference(self):
+        """Test that initial_params property returns a copy, not a reference."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+
+        # Get parameters
+        params1 = program.initial_params
+        params2 = program.initial_params
+
+        # Should be different objects (copies)
+        assert not np.shares_memory(params1, params2)
+        assert not np.shares_memory(params1, program._curr_params)
+
+        # But should have same values
+        assert np.array_equal(params1, params2)
+        assert np.array_equal(params1, program._curr_params)
+
+    def test_initial_params_seed_consistency(self):
+        """Test that same seed produces same parameters."""
+        seed = 12345
+
+        # Create two programs with same seed
+        program1 = self._create_program_with_mock_optimizer(seed=seed)
+        program2 = self._create_program_with_mock_optimizer(seed=seed)
+
+        # Get parameters from both
+        params1 = program1.initial_params
+        params2 = program2.initial_params
+
+        # Should be identical
+        assert np.array_equal(params1, params2)
+
+    def test_initial_params_different_seeds_produce_different_parameters(self):
+        """Test that different seeds produce different parameters."""
+        # Create programs with different seeds
+        program1 = self._create_program_with_mock_optimizer(seed=12345)
+        program2 = self._create_program_with_mock_optimizer(seed=54321)
+
+        # Get parameters from both
+        params1 = program1.initial_params
+        params2 = program2.initial_params
+
+        # Should be different (very unlikely to be identical)
+        assert not np.array_equal(params1, params2)
+
+    def test_initial_params_parameter_range(self):
+        """Test that generated parameters are in expected range [0, 2π]."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+
+        params = program.initial_params
+
+        # All parameters should be in range [0, 2π]
+        assert np.all(params >= 0)
+        assert np.all(params <= 2 * np.pi)
+
+    def test_initial_params_custom_parameters_preserved_exactly(self):
+        """Test that custom parameters are preserved exactly without modification."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+        expected_shape = program.get_expected_param_shape()
+
+        # Create custom parameters with specific values
+        custom_params = np.array([[0.1, 0.2, 0.3, 0.4]])
+
+        program.initial_params = custom_params
+
+        # Should be preserved exactly
+        retrieved_params = program.initial_params
+        assert np.array_equal(retrieved_params, custom_params)
+        assert np.allclose(retrieved_params, custom_params, rtol=1e-15)
