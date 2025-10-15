@@ -49,7 +49,6 @@ if __name__ == "__main__":
     )
 
     qaoa_problem.run()
-    qaoa_problem.compute_final_solution()
 
     print(f"Total circuits: {qaoa_problem.total_circuit_count}")
 

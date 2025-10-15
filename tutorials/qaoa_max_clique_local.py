@@ -6,7 +6,7 @@ import networkx as nx
 
 from divi.backends import ParallelSimulator
 from divi.qprog import QAOA, GraphProblem
-from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from divi.qprog.optimizers import PymooMethod, PymooOptimizer
 
 if __name__ == "__main__":
     G = nx.bull_graph()
@@ -15,14 +15,13 @@ if __name__ == "__main__":
         problem=G,
         graph_problem=GraphProblem.MAX_CLIQUE,
         n_layers=2,
-        optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
-        max_iterations=10,
+        optimizer=PymooOptimizer(method=PymooMethod.CMAES, population_size=10),
+        max_iterations=5,
         is_constrained=True,
         backend=ParallelSimulator(),
     )
 
     qaoa_problem.run()
-    qaoa_problem.compute_final_solution()
 
     losses = qaoa_problem.losses[-1]
     print(f"Minimum Energy Achieved: {min(losses.values()):.4f}")

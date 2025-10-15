@@ -33,6 +33,16 @@ QUBOProblemTypes = list | np.ndarray | sps.spmatrix | QuadraticProgram
 
 
 def draw_graph_solution_nodes(main_graph, partition_nodes):
+    """
+    Visualize a graph with solution nodes highlighted.
+
+    Draws the graph with nodes colored to distinguish solution nodes (red) from
+    other nodes (light blue).
+
+    Args:
+        main_graph: NetworkX graph to visualize.
+        partition_nodes: Collection of node indices that are part of the solution.
+    """
     # Create a dictionary for node colors
     node_colors = [
         "red" if node in partition_nodes else "lightblue" for node in main_graph.nodes()
@@ -228,10 +238,9 @@ class QAOA(QuantumProgram):
         self._is_compute_probabilites = False
         self.optimizer = optimizer if optimizer is not None else MonteCarloOptimizer()
 
-        # Shared Variables
-        self.probs = kwargs.pop("probs", {})
-        self._solution_nodes = kwargs.pop("solution_nodes", [])
-        self._solution_bitstring = kwargs.pop("solution_bitstring", [])
+        self._probs = {}
+        self._solution_nodes = []
+        self._solution_bitstring = []
 
         (
             self.cost_hamiltonian,
@@ -256,17 +265,40 @@ class QAOA(QuantumProgram):
             self.loss_constant = 0.0
 
         kwargs.pop("is_constrained", None)
-        super().__init__(has_final_computation=True, **kwargs)
+        super().__init__(**kwargs)
 
         self._meta_circuits = self._create_meta_circuits_dict()
 
     @property
     def solution(self):
+        """
+        Get the solution found by QAOA optimization.
+
+        Returns:
+            list: For graph problems, returns a list of selected node indices.
+                For QUBO problems, returns a list/array of binary values.
+        """
         return (
             self._solution_nodes
             if self.graph_problem is not None
             else self._solution_bitstring
         )
+
+    @property
+    def probs(self) -> dict:
+        """
+        Get a copy of the probability distributions from final measurements.
+
+        Returns:
+            dict: Copy of the probability distributions dictionary. Keys are
+                circuit tags, values are probability distributions.
+        """
+        return self._probs.copy()
+
+    @probs.setter
+    def probs(self, value: dict):
+        """Set the probability distributions."""
+        self._probs = value
 
     def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
         """
@@ -341,7 +373,7 @@ class QAOA(QuantumProgram):
                 params_group, tag_prefix=f"{p}"
             )
 
-            self.circuits.append(circuit)
+            self._circuits.append(circuit)
 
     def _post_process_results(self, results):
         """
@@ -365,19 +397,26 @@ class QAOA(QuantumProgram):
         return losses
 
     def _run_final_measurement(self):
+        """
+        Execute final measurement circuits to obtain probability distributions.
+
+        Runs the optimized circuit with final parameters to get the full probability
+        distribution over all measurement outcomes, which is used to extract the
+        solution bitstring.
+        """
         self._is_compute_probabilites = True
 
-        self._curr_params = np.array(self.final_params)
+        self._curr_params = np.array(self._final_params)
 
-        self.circuits[:] = []
+        self._circuits[:] = []
 
         self._generate_circuits()
 
-        self.probs.update(self._dispatch_circuits_and_process_results())
+        self._probs.update(self._dispatch_circuits_and_process_results())
 
         self._is_compute_probabilites = False
 
-    def compute_final_solution(self):
+    def _perform_final_computation(self):
         """
         Computes and extracts the final solution from the QAOA optimization process.
         This method performs the following steps:
@@ -397,37 +436,14 @@ class QAOA(QuantumProgram):
 
         self.reporter.info(message="🏁 Computing Final Solution 🏁")
 
-        # Convert losses dict to list to apply ordinal operations
-        final_losses_list = list(self.losses[-1].values())
-
-        # Get the index of the smallest loss in the last operation
-        best_solution_idx = min(
-            range(len(final_losses_list)),
-            key=lambda x: final_losses_list.__getitem__(x),
-        )
-
-        # Insert the measurement circuit here
         self._run_final_measurement()
 
-        # Find the key matching the best_solution_idx with possible metadata in between
-        pattern = re.compile(rf"^{best_solution_idx}(?:_[^_]*)*_0$")
-        matching_keys = [k for k in self.probs.keys() if pattern.match(k)]
+        final_measurement_probs = next(iter(self._probs.values()))
 
-        # Some minor sanity checks
-        if len(matching_keys) == 0:
-            raise RuntimeError("No matching key found.")
-        if len(matching_keys) > 1:
-            raise RuntimeError(f"More than one matching key found.")
-
-        best_solution_key = matching_keys[0]
-        # Retrieve the probability distribution dictionary of the best solution
-        best_solution_probs = self.probs[best_solution_key]
-
-        # Retrieve the bitstring with the actual best solution
         # Reverse to account for the endianness difference
-        best_solution_bitstring = max(best_solution_probs, key=best_solution_probs.get)[
-            ::-1
-        ]
+        best_solution_bitstring = max(
+            final_measurement_probs, key=final_measurement_probs.get
+        )[::-1]
 
         if isinstance(self.problem, QUBOProblemTypes):
             self._solution_bitstring[:] = np.fromiter(
@@ -439,17 +455,29 @@ class QAOA(QuantumProgram):
                 m.start() for m in re.finditer("1", best_solution_bitstring)
             ]
 
-        self.reporter.info(message="Computed Final Solution!")
-
         return self._total_circuit_count, self._total_run_time
 
     def draw_solution(self):
+        """
+        Visualize the solution found by QAOA for graph problems.
+
+        Draws the graph with solution nodes highlighted in red and other nodes
+        in light blue. If the solution hasn't been computed yet, it will be
+        calculated first.
+
+        Raises:
+            RuntimeError: If called on a QUBO problem instead of a graph problem.
+
+        Note:
+            This method only works for graph problems. For QUBO problems, access
+            the solution directly via the `solution` property.
+        """
         if self.graph_problem is None:
             raise RuntimeError(
                 "The problem is not a graph problem. Cannot draw solution."
             )
 
         if not self._solution_nodes:
-            self.compute_final_solution()
+            self._perform_final_computation()
 
         draw_graph_solution_nodes(self.problem, self._solution_nodes)

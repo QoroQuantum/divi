@@ -3,10 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import time
-from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from functools import partial
-from multiprocessing import Event, Manager
+from multiprocessing import Event
 from queue import Queue
+from threading import Event as ThreadingEvent
 from threading import Lock, Thread
 
 import numpy as np
@@ -15,11 +16,13 @@ import pytest
 import sympy as sp
 from mitiq.zne.inference import LinearFactory
 from mitiq.zne.scaling import fold_global
+from pennylane.measurements import ExpectationMP
 from rich.progress import Progress
 
 from divi.circuits import MetaCircuit
 from divi.circuits.qem import ZNE
-from divi.qprog.batch import ProgramBatch, QuantumProgram, queue_listener
+from divi.qprog.batch import ProgramBatch, QuantumProgram, _queue_listener
+from divi.qprog.quantum_program import _batched_expectation
 from tests.qprog.qprog_contracts import verify_basic_program_batch_behaviour
 
 
@@ -30,6 +33,7 @@ class SampleProgram(QuantumProgram):
 
         self.n_layers = 1
         self._n_params = 4
+        self.current_iteration = 0
 
         super().__init__(backend=None, **kwargs)
 
@@ -210,6 +214,145 @@ class TestProgram:
         assert np.isclose(final_losses[0], 3.0)
 
 
+def test_batched_expectation_matches_pennylane_baseline():
+    """
+    Validates that the optimized batched_expectation function produces results
+    identical to PennyLane's standard ExpectationMP processing.
+    """
+    # 1. SETUP: Create a mock histogram and observables
+    wire_order = (3, 2, 1, 0)  # 4 wires
+
+    # A shot histogram with a mix of states
+    shot_histogram = {
+        "0000": 100,
+        "0101": 200,
+        "1011": 300,
+        "1111": 400,
+    }
+
+    # A representative set of commuting observables
+    observables = [
+        qml.PauliZ(0),
+        qml.PauliZ(2),
+        qml.Identity(1),
+        qml.PauliZ(1) @ qml.PauliZ(3),
+    ]
+
+    # 2. CALCULATE BASELINE using PennyLane's ExpectationMP
+    baseline_expvals = []
+    for obs in observables:
+        # Use the original, trusted method as our ground truth
+        mp = ExpectationMP(obs)
+        expval = mp.process_counts(counts=shot_histogram, wire_order=wire_order)
+        baseline_expvals.append(expval)
+
+    # 3. CALCULATE with our optimized batched function
+    optimized_expvals_matrix = _batched_expectation(
+        [shot_histogram], observables, wire_order
+    )
+    optimized_expvals = optimized_expvals_matrix[:, 0]
+
+    # 4. ASSERT that the results are numerically identical
+    assert isinstance(optimized_expvals, np.ndarray)
+    np.testing.assert_allclose(optimized_expvals, baseline_expvals)
+
+
+def test_batched_expectation_with_multiple_histograms():
+    """
+    Tests that batched_expectation correctly processes a list of different
+    shot histograms in a single call.
+    """
+    # Histogram 1: Pure |00> state
+    hist_1 = {"00": 100}
+    # Histogram 2: Pure |11> state
+    hist_2 = {"11": 50}
+    # Histogram 3: Mixed state
+    hist_3 = {"01": 25, "10": 75}
+
+    observables = [qml.PauliZ(0), qml.PauliZ(1), qml.PauliZ(0) @ qml.PauliZ(1)]
+    wire_order = (1, 0)  # Reversed wire order for bitstring mapping
+
+    # --- Expected Results ---
+    # For hist_1 (|00>): <Z0>=1, <Z1>=1, <Z0@Z1>=1
+    expected_1 = np.array([1.0, 1.0, 1.0])
+    # For hist_2 (|11>): <Z0>=-1, <Z1>=-1, <Z0@Z1>=1
+    expected_2 = np.array([-1.0, -1.0, 1.0])
+
+    # For hist_3 (0.25|01> + 0.75|10>) with wire_order=(1,0):
+    # <Z0> (qubit 0 = second bit): 0.25*(-1) + 0.75*(+1) = 0.5
+    # <Z1> (qubit 1 = first bit):  0.25*(+1) + 0.75*(-1) = -0.5
+    # <Z0@Z1>: 0.25*(-1) + 0.75*(-1) = -1.0
+    expected_3 = np.array([0.5, -0.5, -1.0])
+
+    # --- Calculation ---
+    result_matrix = _batched_expectation(
+        [hist_1, hist_2, hist_3], observables, wire_order
+    )
+
+    # --- Assertions ---
+    assert result_matrix.shape == (3, 3)  # (n_observables, n_histograms)
+    np.testing.assert_allclose(result_matrix[:, 0], expected_1)
+    np.testing.assert_allclose(result_matrix[:, 1], expected_2)
+    np.testing.assert_allclose(result_matrix[:, 2], expected_3)
+
+
+def test_batched_expectation_raises_for_unsupported_observable():
+    """
+    Ensures that a NotImplementedError is raised when an observable outside
+    the supported set (Pauli, Identity) is provided.
+    """
+    # Dummy histogram and wire order are sufficient for this test
+    shots = {"0": 100}
+    wire_order = (0,)
+    # qml.Hadamard is not in the name_map and should fail
+    unsupported_observables = [qml.PauliZ(0), qml.Hadamard(0)]
+
+    with pytest.raises(KeyError):
+        _batched_expectation(
+            shots_dicts=[shots],
+            observables=unsupported_observables,
+            wire_order=wire_order,
+        )
+
+
+@pytest.mark.parametrize(
+    "bitstring, expected_z0, expected_z1", [("00", 1.0, 1.0), ("11", -1.0, -1.0)]
+)
+def test_post_processing_with_deterministic_states(bitstring, expected_z0, expected_z1):
+    """
+    Tests the batched_expectation function with deterministic shot histograms.
+    """
+
+    shots = {bitstring: 100}
+    observables = [qml.PauliZ(0), qml.PauliZ(1)]
+    wire_order = (1, 0)  # Wires are typically reversed for bitstring mapping
+
+    # The function expects a list of shot dictionaries
+    exp_matrix = _batched_expectation([shots], observables, wire_order)
+
+    # exp_matrix has shape (n_observables, n_histograms)
+    assert np.isclose(exp_matrix[0, 0], expected_z0)
+    assert np.isclose(exp_matrix[1, 0], expected_z1)
+
+
+def test_batched_expectation_with_identity():
+    """
+    Ensures Identity operators are handled correctly and always yield expval of 1.0.
+    """
+
+    shots = {"01": 50, "10": 50}  # A mixed state
+    # Create a complex observable including Identity
+    observables = [qml.PauliZ(0) @ qml.Identity(1), qml.Identity(0) @ qml.PauliZ(1)]
+    wire_order = (1, 0)
+
+    exp_matrix = _batched_expectation([shots], observables, wire_order)
+
+    # For Z(0) @ I(1), state |01> gives 1*1=1, |10> gives -1*1=-1. Avg = 0.
+    assert np.isclose(exp_matrix[0, 0], 0.0)
+    # For I(0) @ Z(1), state |01> gives 1*-1=-1, |10> gives 1*1=1. Avg = 0.
+    assert np.isclose(exp_matrix[1, 0], 0.0)
+
+
 class TestProgramBatch:
     def test_correct_initialization(self, program_batch):
         assert program_batch._executor is None
@@ -226,16 +369,15 @@ class TestProgramBatch:
         assert len(program_batch.programs) == 2
         assert "prog1" in program_batch.programs
         assert "prog2" in program_batch.programs
-        assert isinstance(program_batch._manager, type(Manager()))
         assert hasattr(program_batch._queue, "get")  # Check if it's queue-like
-        assert isinstance(program_batch._done_event, type(Event()))
+        assert isinstance(program_batch._done_event, ThreadingEvent)
 
     def test_reset_cleans_up_all_resources(self, program_batch, mocker):
         """Tests that reset() correctly shuts down and cleans up all resources."""
         # First, create programs to initialize the manager, queue, etc.
         program_batch.create_programs()
         # Now, simulate a running state by creating an executor and futures
-        program_batch._executor = mocker.MagicMock(spec=ProcessPoolExecutor)
+        program_batch._executor = mocker.MagicMock(spec=ThreadPoolExecutor)
         program_batch._listener_thread = mocker.MagicMock(spec=Thread)
         program_batch._progress_bar = mocker.MagicMock()
         program_batch.futures = [mocker.MagicMock()]
@@ -246,7 +388,6 @@ class TestProgramBatch:
 
         # Spy on the original objects before they are cleared by reset()
         mock_executor = program_batch._executor
-        manager_shutdown_spy = mocker.spy(program_batch._manager, "shutdown")
         done_event_set_spy = mocker.spy(program_batch._done_event, "set")
         mock_listener_thread = program_batch._listener_thread
         mock_progress_bar = program_batch._progress_bar
@@ -258,13 +399,11 @@ class TestProgramBatch:
         mock_executor.shutdown.assert_called_once_with(wait=False)
         done_event_set_spy.assert_called_once()
         mock_listener_thread.join.assert_called_once()
-        manager_shutdown_spy.assert_called_once()
         mock_progress_bar.stop.assert_called_once()
 
         # Assert that state attributes are cleared
         assert program_batch._executor is None
         assert program_batch.futures is None
-        assert program_batch._manager is None
 
     def test_total_circuit_count_setter(self, program_batch):
         with pytest.raises(
@@ -295,8 +434,8 @@ class TestProgramBatch:
     def test_run_fails_if_already_running(self, mocker, program_batch):
         program_batch.create_programs()
 
-        # Mock ProcessPoolExecutor to simulate a long-running batch
-        mock_executor = mocker.patch("divi.qprog.batch.ProcessPoolExecutor")
+        # Mock ThreadPoolExecutor to simulate a long-running batch
+        mock_executor = mocker.patch("divi.qprog.batch.ThreadPoolExecutor")
         mock_instance = mock_executor.return_value
 
         # Create futures that simulate a long-running process
@@ -314,7 +453,7 @@ class TestProgramBatch:
     def test_run_submits_correct_tasks(self, program_batch, mocker):
         """Tests that run() submits the correct function and arguments to the executor."""
         program_batch.create_programs()
-        mock_executor_class = mocker.patch("divi.qprog.batch.ProcessPoolExecutor")
+        mock_executor_class = mocker.patch("divi.qprog.batch.ThreadPoolExecutor")
         mock_executor = mock_executor_class.return_value
 
         # The executor's submit method returns Future objects. When we mock the executor,
@@ -429,12 +568,11 @@ class TestProgramBatch:
         # Mock executor shutdown to confirm it's called during cleanup
         mock_shutdown = mocker.spy(program_batch._executor, "shutdown")
 
-        with pytest.raises(RuntimeError, match="One or more tasks failed"):
+        with pytest.raises(RuntimeError, match="Batch execution failed"):
             program_batch.join()
 
-        # Verify that cleanup still happened
-        mock_shutdown.assert_called_once_with(wait=True, cancel_futures=False)
-        assert program_batch._executor is None  # Should be cleared after join
+        mock_shutdown.assert_called_once_with(wait=False)
+        assert program_batch._executor is None
 
     def test_aggregate_results_calls_join_and_aggregates(self, program_batch):
         """Tests that aggregate_results works correctly after a successful run."""
@@ -446,7 +584,7 @@ class TestProgramBatch:
         # To pass the check in `aggregate_results`, we manually populate the list
         # here, simulating a successful run where state was propagated.
         for p in program_batch.programs.values():
-            p.losses.append(0.1)
+            p._losses.append(0.1)
 
         # Now, aggregate_results should pass its internal checks and work.
         # It should not call join() again as the executor is already shut down.
@@ -477,7 +615,7 @@ def test_queue_listener(mocker):
 
     # Run the listener in a separate thread
     listener_thread = Thread(
-        target=queue_listener,
+        target=_queue_listener,
         args=(mock_queue, mock_progress_bar, pb_task_map, mock_done_event, False, lock),
     )
     listener_thread.start()
@@ -511,3 +649,212 @@ def test_queue_listener(mocker):
 
     mock_progress_bar.update.assert_has_calls(expected_calls, any_order=True)
     assert mock_queue.empty()
+
+
+class TestInitialParameters:
+    """Test suite for initial parameters functionality."""
+
+    def _create_program_with_mock_optimizer(self, **kwargs):
+        """Helper method to create SampleProgram with mocked optimizer."""
+        from unittest.mock import MagicMock
+
+        program = SampleProgram(circ_count=1, run_time=0.1, **kwargs)
+        program.optimizer = MagicMock()
+        program.optimizer.n_param_sets = 1
+        return program
+
+    def test_initial_params_returns_numpy_array_not_none(self):
+        """Test that initial_params property always returns actual parameters."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+
+        # Should return actual parameters, never None
+        params = program.initial_params
+        assert isinstance(params, np.ndarray)
+        assert params is not None
+        assert params.shape == program.get_expected_param_shape()
+
+    def test_initial_params_triggers_lazy_initialization_on_first_access(self):
+        """Test that accessing initial_params triggers parameter generation."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+
+        # Initially _curr_params should be None
+        assert program._curr_params is None
+
+        # First access should trigger initialization
+        params = program.initial_params
+        assert program._curr_params is not None
+        assert isinstance(params, np.ndarray)
+
+    def test_initial_params_setter_stores_custom_parameters(self):
+        """Test that setting initial_params stores user-provided parameters."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+        expected_shape = program.get_expected_param_shape()
+        custom_params = np.random.uniform(0, 2 * np.pi, expected_shape)
+
+        # Set custom parameters
+        program.initial_params = custom_params
+
+        # Verify they are stored correctly
+        assert np.array_equal(program.initial_params, custom_params)
+        assert np.array_equal(program._curr_params, custom_params)
+
+    def test_initial_params_setter_validates_parameter_shape(self):
+        """Test that setter validates parameter shape matches expected shape."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+        wrong_shape_params = np.array([[0.1, 0.2]])  # Wrong shape
+
+        # Should raise ValueError for wrong shape
+        with pytest.raises(ValueError, match="Initial parameters must have shape"):
+            program.initial_params = wrong_shape_params
+
+    def test_get_expected_param_shape_returns_correct_tuple(self):
+        """Test that get_expected_param_shape returns (n_param_sets, n_layers * n_params)."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+
+        expected_shape = program.get_expected_param_shape()
+        assert isinstance(expected_shape, tuple)
+        assert len(expected_shape) == 2
+        assert expected_shape[0] == program.optimizer.n_param_sets
+        assert expected_shape[1] == program.n_layers * program.n_params
+
+    def test_parameter_validation_raises_error_for_wrong_shape(self):
+        """Test that validation raises ValueError for incorrect parameter shapes."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+
+        # Test various wrong shapes
+        wrong_shapes = [
+            (2, 3),  # Wrong dimensions
+            (1, 2),  # Wrong second dimension
+            (3, 4),  # Wrong first dimension
+        ]
+
+        for wrong_shape in wrong_shapes:
+            wrong_params = np.random.uniform(0, 2 * np.pi, wrong_shape)
+            with pytest.raises(ValueError, match="Initial parameters must have shape"):
+                program.initial_params = wrong_params
+
+    def test_parameter_validation_accepts_correct_shape(self):
+        """Test that validation passes for correctly shaped parameters."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+        expected_shape = program.get_expected_param_shape()
+        correct_params = np.random.uniform(0, 2 * np.pi, expected_shape)
+
+        # Should not raise any error
+        program.initial_params = correct_params
+        assert np.array_equal(program.initial_params, correct_params)
+
+    def test_curr_params_starts_as_none_before_initialization(self):
+        """Test that _curr_params starts as None before any initialization."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+
+        # Should start as None
+        assert program._curr_params is None
+
+    def test_curr_params_updated_after_lazy_initialization(self):
+        """Test that _curr_params is updated after lazy initialization."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+
+        # Initially None
+        assert program._curr_params is None
+
+        # Access initial_params to trigger lazy initialization
+        params = program.initial_params
+
+        # Should now be updated
+        assert program._curr_params is not None
+        assert isinstance(program._curr_params, np.ndarray)
+
+    def test_curr_params_updated_after_custom_parameter_setting(self):
+        """Test that _curr_params is updated after setting custom parameters."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+        expected_shape = program.get_expected_param_shape()
+        custom_params = np.random.uniform(0, 2 * np.pi, expected_shape)
+
+        # Set custom parameters
+        program.initial_params = custom_params
+
+        # Should be updated to custom parameters
+        assert np.array_equal(program._curr_params, custom_params)
+
+    def test_initial_params_reset_to_none_clears_curr_params(self):
+        """Test that setting initial_params=None resets _curr_params to None."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+
+        # First initialize parameters
+        params = program.initial_params
+        assert program._curr_params is not None
+
+        # Reset to None
+        program.initial_params = None
+
+        # Should be None again
+        assert program._curr_params is None
+
+    def test_initial_params_returns_copy_not_reference(self):
+        """Test that initial_params property returns a copy, not a reference."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+
+        # Get parameters
+        params1 = program.initial_params
+        params2 = program.initial_params
+
+        # Should be different objects (copies)
+        assert not np.shares_memory(params1, params2)
+        assert not np.shares_memory(params1, program._curr_params)
+
+        # But should have same values
+        assert np.array_equal(params1, params2)
+        assert np.array_equal(params1, program._curr_params)
+
+    def test_initial_params_seed_consistency(self):
+        """Test that same seed produces same parameters."""
+        seed = 12345
+
+        # Create two programs with same seed
+        program1 = self._create_program_with_mock_optimizer(seed=seed)
+        program2 = self._create_program_with_mock_optimizer(seed=seed)
+
+        # Get parameters from both
+        params1 = program1.initial_params
+        params2 = program2.initial_params
+
+        # Should be identical
+        assert np.array_equal(params1, params2)
+
+    def test_initial_params_different_seeds_produce_different_parameters(self):
+        """Test that different seeds produce different parameters."""
+        # Create programs with different seeds
+        program1 = self._create_program_with_mock_optimizer(seed=12345)
+        program2 = self._create_program_with_mock_optimizer(seed=54321)
+
+        # Get parameters from both
+        params1 = program1.initial_params
+        params2 = program2.initial_params
+
+        # Should be different (very unlikely to be identical)
+        assert not np.array_equal(params1, params2)
+
+    def test_initial_params_parameter_range(self):
+        """Test that generated parameters are in expected range [0, 2π]."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+
+        params = program.initial_params
+
+        # All parameters should be in range [0, 2π]
+        assert np.all(params >= 0)
+        assert np.all(params <= 2 * np.pi)
+
+    def test_initial_params_custom_parameters_preserved_exactly(self):
+        """Test that custom parameters are preserved exactly without modification."""
+        program = self._create_program_with_mock_optimizer(seed=42)
+        expected_shape = program.get_expected_param_shape()
+
+        # Create custom parameters with specific values
+        custom_params = np.array([[0.1, 0.2, 0.3, 0.4]])
+
+        program.initial_params = custom_params
+
+        # Should be preserved exactly
+        retrieved_params = program.initial_params
+        assert np.array_equal(retrieved_params, custom_params)
+        assert np.allclose(retrieved_params, custom_params, rtol=1e-15)

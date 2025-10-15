@@ -13,8 +13,20 @@ import scipy.sparse as sps
 def _is_sanitized(
     qubo_matrix: np.ndarray | sps.spmatrix,
 ) -> np.ndarray | sps.spmatrix:
-    # Sanitize the QUBO matrix to ensure it is either symmetric or upper triangular.
+    """
+    Check if a QUBO matrix is either symmetric or upper triangular.
 
+    This function validates that the input QUBO matrix is in a proper format
+    for conversion to an Ising Hamiltonian. The matrix should be either
+    symmetric (equal to its transpose) or upper triangular.
+
+    Args:
+        qubo_matrix (np.ndarray | sps.spmatrix): The QUBO matrix to validate.
+            Can be a dense NumPy array or a sparse SciPy matrix.
+
+    Returns:
+        bool: True if the matrix is symmetric or upper triangular, False otherwise.
+    """
     is_sparse = sps.issparse(qubo_matrix)
 
     return (
@@ -33,18 +45,37 @@ def _is_sanitized(
 def convert_qubo_matrix_to_pennylane_ising(
     qubo_matrix: np.ndarray | sps.spmatrix,
 ) -> tuple[qml.operation.Operator, float]:
-    """Convert QUBO matrix to Ising Hamiltonian in Pennylane.
+    """
+    Convert a QUBO matrix to an Ising Hamiltonian in PennyLane format.
 
     The conversion follows the mapping from QUBO variables x_i ∈ {0,1} to
     Ising variables σ_i ∈ {-1,1} via the transformation x_i = (1 - σ_i)/2. This
     transforms a QUBO minimization problem into an equivalent Ising minimization
     problem.
 
+    The function handles both dense NumPy arrays and sparse SciPy matrices efficiently.
+    If the input matrix is neither symmetric nor upper triangular, it will be
+    symmetrized automatically with a warning.
+
     Args:
-        qubo_matrix: The QUBO matrix Q where the objective is to minimize x^T Q x
+        qubo_matrix (np.ndarray | sps.spmatrix): The QUBO matrix Q where the
+            objective is to minimize x^T Q x. Can be a dense NumPy array or a
+            sparse SciPy matrix (any format). Should be square and either
+            symmetric or upper triangular.
 
     Returns:
-        A tuple of (Ising Hamiltonian as a PennyLane operator, constant term)
+        tuple[qml.operation.Operator, float]: A tuple containing:
+            - Ising Hamiltonian as a PennyLane operator (sum of Pauli Z terms)
+            - Constant offset term to be added to energy calculations
+
+    Raises:
+        UserWarning: If the QUBO matrix is neither symmetric nor upper triangular.
+
+    Example:
+        >>> import numpy as np
+        >>> qubo = np.array([[1, 2], [0, 3]])
+        >>> hamiltonian, offset = convert_qubo_matrix_to_pennylane_ising(qubo)
+        >>> print(f"Offset: {offset}")
     """
 
     if not _is_sanitized(qubo_matrix):

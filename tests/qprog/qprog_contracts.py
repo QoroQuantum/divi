@@ -5,12 +5,14 @@
 import pytest
 
 from divi.qprog import (
+    QAOA,
     MonteCarloOptimizer,
     ProgramBatch,
     QuantumProgram,
     ScipyMethod,
     ScipyOptimizer,
 )
+from divi.qprog.optimizers import PymooMethod, PymooOptimizer
 
 OPTIMIZERS_TO_TEST = {
     "argvalues": [
@@ -18,8 +20,10 @@ OPTIMIZERS_TO_TEST = {
         ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
         ScipyOptimizer(method=ScipyMethod.COBYLA),
         ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+        PymooOptimizer(method=PymooMethod.CMAES, population_size=10),
+        PymooOptimizer(method=PymooMethod.DE, population_size=10),
     ],
-    "ids": ["MonteCarlo", "L_BFGS_B", "COBYLA", "NELDER_MEAD"],
+    "ids": ["MonteCarlo", "L_BFGS_B", "COBYLA", "NELDER_MEAD", "CMAES", "DE"],
 }
 
 
@@ -39,16 +43,19 @@ def verify_metacircuit_dict(obj, expected_keys):
 
 def verify_correct_circuit_count(obj: QuantumProgram):
     assert obj.current_iteration == 1
-
     assert len(obj.losses) == 1
 
+    extra_computation_offset = 1 if isinstance(obj, QAOA) else 0
+
+    adjusted_total_circuit_count = obj.total_circuit_count - extra_computation_offset
+
     if isinstance(obj.optimizer, MonteCarloOptimizer):
-        assert obj.total_circuit_count == obj.optimizer.n_param_sets * len(
+        assert adjusted_total_circuit_count == obj.optimizer.n_param_sets * len(
             obj.cost_hamiltonian
         )
     elif isinstance(obj.optimizer, ScipyOptimizer):
         if obj.optimizer.method in (ScipyMethod.NELDER_MEAD, ScipyMethod.COBYLA):
-            assert obj.total_circuit_count == obj._minimize_res.nfev * len(
+            assert adjusted_total_circuit_count == obj._minimize_res.nfev * len(
                 obj.cost_hamiltonian
             )
         elif obj.optimizer.method == ScipyMethod.L_BFGS_B:
@@ -61,7 +68,7 @@ def verify_correct_circuit_count(obj: QuantumProgram):
             )
 
             assert (
-                obj.total_circuit_count
+                adjusted_total_circuit_count
                 == evaluation_circuits_count + gradient_circuits_count
             )
 

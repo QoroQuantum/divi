@@ -49,14 +49,6 @@ def _sanitize_problem_input(qubo: T) -> tuple[T, BinaryQuadraticModel]:
     raise ValueError(f"Got an unsupported QUBO input format: {type(qubo)}")
 
 
-def _run_and_compute_solution(program: QuantumProgram):
-    program.run()
-
-    final_sol_circuit_count, final_sol_run_time = program.compute_final_solution()
-
-    return final_sol_circuit_count, final_sol_run_time
-
-
 class QUBOPartitioningQAOA(ProgramBatch):
     def __init__(
         self,
@@ -94,9 +86,9 @@ class QUBOPartitioningQAOA(ProgramBatch):
         self._partitioning = hybrid.Unwind(decomposer)
         self._aggregating = hybrid.Reduce(hybrid.Lambda(_merge_substates)) | composer
 
-        self._task_fn = _run_and_compute_solution
-
         self.max_iterations = max_iterations
+
+        self.trivial_program_ids = set()
 
         self._constructor = partial(
             QAOA,
@@ -140,6 +132,12 @@ class QUBOPartitioningQAOA(ProgramBatch):
                 del partition["problem"]
 
             prog_id = (string.ascii_uppercase[i], len(partition.subproblem))
+            self.prog_id_to_bqm_subproblem_states[prog_id] = partition
+
+            if partition.subproblem.num_interactions == 0:
+                # Skip creating a full QAOA program for this trivial case.
+                self.trivial_program_ids.add(prog_id)
+                continue
 
             ldata, (irow, icol, qdata), _ = partition.subproblem.to_numpy_vectors(
                 partition.subproblem.variables
@@ -155,18 +153,30 @@ class QUBOPartitioningQAOA(ProgramBatch):
                 ),
                 shape=(len(ldata), len(ldata)),
             )
-            self.prog_id_to_bqm_subproblem_states[prog_id] = partition
-            self.programs[prog_id] = self._constructor(
+
+            self._programs[prog_id] = self._constructor(
                 job_id=prog_id,
                 problem=coo_mat,
-                losses=self._manager.list(),
-                probs=self._manager.dict(),
-                final_params=self._manager.list(),
-                solution_bitstring=self._manager.list(),
                 progress_queue=self._queue,
             )
 
     def aggregate_results(self):
+        """
+        Aggregate results from all QUBO subproblems into a global solution.
+
+        Collects solutions from each partitioned subproblem (both QAOA-optimized and
+        trivial ones) and uses the hybrid framework composer to combine them into
+        a final solution for the original QUBO problem.
+
+        Returns:
+            tuple: A tuple containing:
+                - solution (np.ndarray): Binary solution vector for the QUBO problem.
+                - solution_energy (float): Energy/cost of the solution.
+
+        Raises:
+            RuntimeError: If programs haven't been run or if final probabilities
+                haven't been computed.
+        """
         super().aggregate_results()
 
         if any(len(program.probs) == 0 for program in self.programs.values()):
@@ -174,14 +184,21 @@ class QUBOPartitioningQAOA(ProgramBatch):
                 "Not all final probabilities computed yet. Please call `run()` first."
             )
 
-        for prog_id, subproblem in self.programs.items():
-            bqm_subproblem_state = self.prog_id_to_bqm_subproblem_states[prog_id]
+        for (
+            prog_id,
+            bqm_subproblem_state,
+        ) in self.prog_id_to_bqm_subproblem_states.items():
 
-            curr_final_solution = subproblem.solution
+            if prog_id in self.trivial_program_ids:
+                # Case 1: Trivial problem. Solve classically.
+                # The solution is any bitstring (e.g., all zeros) with energy 0.
+                var_to_val = {v: 0 for v in bqm_subproblem_state.subproblem.variables}
+            else:
+                subproblem = self._programs[prog_id]
+                var_to_val = dict(
+                    zip(bqm_subproblem_state.subproblem.variables, subproblem.solution)
+                )
 
-            var_to_val = dict(
-                zip(bqm_subproblem_state.subproblem.variables, curr_final_solution)
-            )
             sample_set = dimod.SampleSet.from_samples(
                 dimod.as_samples(var_to_val), "BINARY", 0
             )

@@ -43,6 +43,7 @@ mitiq = "^0.46"
 ply = "^3.11"
 python-dotenv = "^1.1.1"
 dwave-hybrid = "^0.6.14"
+pymoo = "^0.6.1.5"
 
 
 [tool.poetry.group.dev.dependencies]

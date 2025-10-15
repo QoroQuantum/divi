@@ -14,6 +14,11 @@ if __name__ == "__main__":
         symbols=["H", "H"], coordinates=np.array([(0, 0, 0), (0, 0, 0.5)])
     )
 
+    # Create backend with deterministic execution enabled for debugging
+    backend = ParallelSimulator(
+        simulation_seed=1997, shots=500, _deterministic_execution=True
+    )
+
     vqe_input = dict(
         molecule=mol,
         n_layers=1,
@@ -21,7 +26,7 @@ if __name__ == "__main__":
         optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
         max_iterations=1,
         seed=2000,
-        backend=ParallelSimulator(simulation_seed=1997, shots=500),
+        backend=backend,
     )
 
     vqe_problem_no_grouping = VQE(

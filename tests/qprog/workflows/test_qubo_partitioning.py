@@ -126,13 +126,13 @@ class TestQUBOPartitioningQAOA:
 
         # Manually add a mock program that hasn't been "run" (empty probs)
         mock_program = mocker.MagicMock(spec=QAOA)
-        mock_program.probs = {}
+        mock_program._probs = {}
         # Add a non-empty losses list to pass the superclass check
-        mock_program.losses = [{"dummy_loss": 0.0}]
+        mock_program._losses = [{"dummy_loss": 0.0}]
         qubo_partitioning_qaoa.programs = {("A", 2): mock_program}
 
         # This test now correctly targets the error from the QUBOPartitioningQAOA class
-        with pytest.raises(RuntimeError, match="Not all final probabilities computed"):
+        with pytest.raises(RuntimeError, match="Some/All programs have empty losses."):
             qubo_partitioning_qaoa.aggregate_results()
 
     def test_results_aggregated_correctly(self, mocker, qubo_partitioning_qaoa):
@@ -148,10 +148,10 @@ class TestQUBOPartitioningQAOA:
         prog_b._solution_bitstring = np.array([1, 1])
 
         # Mark programs as "run" by populating both probs AND losses
-        prog_a.probs = {"dummy": 1}
-        prog_b.probs = {"dummy": 1}
-        prog_a.losses = [{"dummy_loss": 0.0}]
-        prog_b.losses = [{"dummy_loss": 0.0}]
+        prog_a._probs = {"dummy": 1}
+        prog_b._probs = {"dummy": 1}
+        prog_a._losses = [{"dummy_loss": 0.0}]
+        prog_b._losses = [{"dummy_loss": 0.0}]
 
         # Mock the final aggregation step to return a predictable result
         final_samples = dimod.SampleSet.from_samples(

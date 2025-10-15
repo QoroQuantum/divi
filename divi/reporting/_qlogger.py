@@ -30,6 +30,18 @@ def _is_jupyter():
         return False  # IPython is not installed
 
 
+class CustomFormatter(logging.Formatter):
+    """
+    A custom log formatter that removes '._reporter' from the logger name.
+    """
+
+    def format(self, record):
+        # Modify the record's name attribute in place
+        if record.name.endswith("._reporter"):
+            record.name = record.name.removesuffix("._reporter")
+        return super().format(record)
+
+
 class OverwriteStreamHandler(logging.StreamHandler):
     def __init__(self, stream=None):
         super().__init__(stream)
@@ -100,9 +112,24 @@ class OverwriteStreamHandler(logging.StreamHandler):
 
 
 def enable_logging(level=logging.INFO):
+    """
+    Enable logging for the divi package with custom formatting.
+
+    Sets up a custom logger with an OverwriteStreamHandler that supports
+    message overwriting (for progress updates) and removes the '._reporter'
+    suffix from logger names.
+
+    Args:
+        level (int, optional): Logging level to set (e.g., logging.INFO,
+            logging.DEBUG). Defaults to logging.INFO.
+
+    Note:
+        This function clears any existing handlers and sets up a new handler
+        with custom formatting.
+    """
     root_logger = logging.getLogger(__name__.split(".")[0])
 
-    formatter = logging.Formatter(
+    formatter = CustomFormatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
@@ -116,6 +143,13 @@ def enable_logging(level=logging.INFO):
 
 
 def disable_logging():
+    """
+    Disable all logging for the divi package.
+
+    Removes all handlers and sets the logging level to above CRITICAL,
+    effectively suppressing all log messages. This is useful when using
+    progress bars that provide visual feedback.
+    """
     root_logger = logging.getLogger(__name__.split(".")[0])
     root_logger.handlers.clear()
     root_logger.setLevel(logging.CRITICAL + 1)

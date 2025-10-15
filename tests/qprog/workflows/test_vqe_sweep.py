@@ -319,7 +319,7 @@ class TestVQEHyperparameterSweep:
         assert len(vqe_sweep.programs) == len(bond_modifiers) * len(vqe_sweep.ansatze)
 
         assert all(
-            (ansatz, modifier) in vqe_sweep.programs
+            (ansatz.name, modifier) in vqe_sweep.programs
             for ansatz, modifier in product(vqe_sweep.ansatze, bond_modifiers)
         )
 
@@ -367,7 +367,7 @@ class TestVQEHyperparameterSweep:
             for modifier in vqe_sweep.molecule_transformer.bond_modifiers:
                 mock_program = mocker.MagicMock()
                 mock_program.losses = [{0: -(modifier * 10 + ansatz_idx)}]
-                mock_programs[(ansatz, modifier)] = mock_program
+                mock_programs[(ansatz.name, modifier)] = mock_program
         vqe_sweep.programs = mock_programs
 
         vqe_sweep.visualize_results(graph_type="line")

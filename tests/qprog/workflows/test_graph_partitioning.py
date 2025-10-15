@@ -435,11 +435,11 @@ class TestGraphPartitioningQAOA:
         verify_basic_program_batch_behaviour(mocker, node_partitioning_qaoa)
 
         mock_program = mocker.MagicMock()
-        mock_program.losses = [{0: -1.0}]
+        mock_program._losses = [{0: -1.0}]
 
-        node_partitioning_qaoa.programs = {"dummy": mock_program}
+        node_partitioning_qaoa._programs = {"dummy": mock_program}
 
-        with pytest.raises(RuntimeError, match="Not all final probabilities"):
+        with pytest.raises(RuntimeError, match="Some/All programs have empty losses."):
             node_partitioning_qaoa.aggregate_results()
 
     def test_raises_on_disconnected_graph(self):
@@ -502,8 +502,8 @@ class TestGraphPartitioningQAOA:
 
         # Ensure all programs appear to have been run by populating the 'probs' dict
         for program in node_partitioning_qaoa.programs.values():
-            program.probs = {"dummy_key": {}}
-            program.losses = [{"dummy_loss": 0.0}]
+            program._probs = {"dummy_key": {}}
+            program._losses = [{"dummy_loss": 0.0}]
 
         # The expected global solution should contain only the original nodes from the second program
         expected_nodes = set(
