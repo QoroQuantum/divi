@@ -207,6 +207,13 @@ def _compute_parameter_shift_mask(n_params):
 
 
 class QuantumProgram(ABC):
+    """Abstract base class for quantum programs.
+
+    This class provides the foundation for implementing quantum algorithms
+    in Divi. It handles circuit execution, parameter optimization, and
+    result management.
+    """
+
     def __init__(
         self,
         backend: CircuitRunner,
@@ -214,8 +221,7 @@ class QuantumProgram(ABC):
         progress_queue: Queue | None = None,
         **kwargs,
     ):
-        """
-        Initializes the QuantumProgram class.
+        """Initialize the QuantumProgram class.
 
         If a child class represents a hybrid quantum-classical algorithm,
         the instance variables `n_layers` and `n_params` must be set, where:
@@ -228,16 +234,13 @@ class QuantumProgram(ABC):
         Args:
             backend (CircuitRunner): An instance of a CircuitRunner object, which
                 can either be ParallelSimulator or QoroService.
-            seed (int): A seed for numpy's random number generator, which will
-                be used for the parameter initialization.
-                Defaults to None.
-            progress_queue (Queue): a queue for progress bar updates.
+            seed (int, optional): A seed for numpy's random number generator, which will
+                be used for the parameter initialization. Defaults to None.
+            progress_queue (Queue, optional): A queue for progress bar updates. Defaults to None.
 
-            **kwargs: Additional keyword arguments that influence behaviour.
-                - grouping_strategy (Literal["default", "wires", "qwc"]): A strategy for grouping operations, used in Pennylane's transforms.
-                    Defaults to None.
-                - qem_protocol (QEMProtocol, optional): the quantum error mitigation protocol to apply.
-                    Must be of type QEMProtocol. Defaults to None.
+        Keyword Args:
+            grouping_strategy (Literal["default", "wires", "qwc"], optional): A strategy for grouping operations, used in Pennylane's transforms. Defaults to None.
+            qem_protocol (QEMProtocol, optional): The quantum error mitigation protocol to apply. Must be of type QEMProtocol. Defaults to None.
         """
 
         self._losses = []

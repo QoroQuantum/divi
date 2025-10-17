@@ -69,6 +69,7 @@ sphinx = ">=1.8,<8.2"
 nbsphinx = "^0.9.7"
 sphinx-rtd-theme = "^3.0.2"
 sphinx-autodoc-typehints = "^3.0"
+sphinx-autobuild = "^2025.8.25"
 
 
 [tool.poetry.group.jupyter.dependencies]

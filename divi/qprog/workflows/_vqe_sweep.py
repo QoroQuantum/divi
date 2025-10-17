@@ -270,27 +270,28 @@ def _kabsch_align(P_in: np.ndarray, Q_in: np.ndarray, reference_atoms_idx=slice(
 @dataclass(frozen=True, eq=True)
 class MoleculeTransformer:
     """
-    base_molecule: qml.qchem.Molecule
-        The reference molecule used as a template for generating variants.
-    bond_modifiers: Sequence[float]
-        A list of values used to adjust bond lengths. The class will generate
-        **one new molecule for each modifier** in this list. The modification
-        mode is detected automatically:
+    A class for transforming molecular structures by modifying bond lengths.
+
+    This class generates variants of a base molecule by adjusting bond lengths
+    according to specified modifiers. The modification mode is detected automatically.
+
+    Attributes:
+        base_molecule (qml.qchem.Molecule): The reference molecule used as a template for generating variants.
+        bond_modifiers (Sequence[float]): A list of values used to adjust bond lengths. The class will generate
+            **one new molecule for each modifier** in this list. The modification
+            mode is detected automatically:
             - **Scale mode**: If all values are positive, they are used as scaling
             factors (e.g., 1.1 for a 10% increase).
             - **Delta mode**: If any value is zero or negative, all values are
             treated as additive changes to the bond length, in Ångstroms.
-    atom_connectivity: Sequence[tuple[int, int]] | None
-        A sequence of atom index pairs specifying the bonds in the molecule.
-        If not provided, a chain structure will be assumed
-        e.g.: `[(0, 1), (1, 2), (2, 3), ...]`.
-    bonds_to_transform: Sequence[tuple[int, int]] | None
-        A subset of `atom_connectivity` that specifies the bonds to modify.
-        If None, all bonds will be transformed.
-    alignment_atoms: Sequence[int] | None
-        Indices of atoms onto which to align the orientation of the resulting
-        variants of the molecule. Only useful for visualization and debuggin.
-        If None, no alignment is carried out.
+        atom_connectivity (Sequence[tuple[int, int]] | None): A sequence of atom index pairs specifying the bonds in the molecule.
+            If not provided, a chain structure will be assumed
+            e.g.: `[(0, 1), (1, 2), (2, 3), ...]`.
+        bonds_to_transform (Sequence[tuple[int, int]] | None): A subset of `atom_connectivity` that specifies the bonds to modify.
+            If None, all bonds will be transformed.
+        alignment_atoms (Sequence[int] | None): Indices of atoms onto which to align the orientation of the resulting
+            variants of the molecule. Only useful for visualization and debugging.
+            If None, no alignment is carried out.
     """
 
     base_molecule: qml.qchem.Molecule
