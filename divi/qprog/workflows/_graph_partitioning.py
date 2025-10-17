@@ -5,7 +5,6 @@
 import heapq
 import string
 from collections.abc import Callable, Sequence, Set
-from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from functools import partial
 from typing import Literal
@@ -21,7 +20,7 @@ from pymetis import part_graph
 from sklearn.cluster import SpectralClustering
 
 from divi.backends import CircuitRunner
-from divi.qprog import QAOA, ProgramBatch, QuantumProgram
+from divi.qprog import QAOA, ProgramBatch
 from divi.qprog.algorithms._qaoa import (
     _SUPPORTED_INITIAL_STATES_LITERAL,
     GraphProblem,
@@ -41,6 +40,43 @@ _MAXIMUM_AVAILABLE_QUBITS = 30
 
 @dataclass(frozen=True, eq=True)
 class PartitioningConfig:
+    """Configuration for graph partitioning algorithms.
+
+    This class defines the parameters and constraints for partitioning large graphs
+    into smaller subgraphs for quantum algorithm execution. It supports multiple
+    partitioning algorithms and allows specification of size constraints.
+
+    Attributes:
+        max_n_nodes_per_cluster: Maximum number of nodes allowed in each cluster.
+            If None, no upper limit is enforced. Must be a positive integer.
+        minimum_n_clusters: Minimum number of clusters to create. If None, no
+            lower limit is enforced. Must be a positive integer.
+        partitioning_algorithm: Algorithm to use for partitioning. Options are:
+            - "spectral": Spectral partitioning using Fiedler vector (default)
+            - "metis": METIS graph partitioning library
+            - "kernighan_lin": Kernighan-Lin algorithm
+
+    Note:
+        At least one of `max_n_nodes_per_cluster` or `minimum_n_clusters` must be
+        specified. Both constraints cannot be None.
+
+    Examples:
+        >>> # Partition into clusters of at most 10 nodes
+        >>> config = PartitioningConfig(max_n_nodes_per_cluster=10)
+
+        >>> # Create at least 5 clusters using METIS
+        >>> config = PartitioningConfig(
+        ...     minimum_n_clusters=5,
+        ...     partitioning_algorithm="metis"
+        ... )
+
+        >>> # Both constraints: clusters of max 8 nodes, min 3 clusters
+        >>> config = PartitioningConfig(
+        ...     max_n_nodes_per_cluster=8,
+        ...     minimum_n_clusters=3
+        ... )
+    """
+
     max_n_nodes_per_cluster: int | None = None
     minimum_n_clusters: int | None = None
     partitioning_algorithm: Literal["spectral", "metis", "kernighan_lin"] = "spectral"

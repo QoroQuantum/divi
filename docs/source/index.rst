@@ -1,19 +1,70 @@
-.. Divi documentation master file, created by
-   sphinx-quickstart on Tue Mar 11 10:58:36 2025.
-   You can adapt this file completely to your liking, but it should at least
-   contain the root `toctree` directive.
-
-Divi documentation
+Divi Documentation
 ==================
 
-Add your content using ``reStructuredText`` syntax. See the
-`reStructuredText <https://www.sphinx-doc.org/en/master/usage/restructuredtext/index.html>`_
-documentation for details.
+Welcome to the Divi documentation! Divi is a Python library to automate generating, parallelizing, and executing quantum programs.
 
+Installation
+============
+
+Divi can be installed using Poetry (recommended) or pip.
+
+If you have Poetry installed:
+
+.. code-block:: bash
+
+   poetry add qoro-divi
+
+Or if you want to install from source:
+
+.. code-block:: bash
+
+   git clone https://github.com/qoro-quantum/divi.git
+   cd divi
+   poetry install
+
+Alternatively, you can install using pip:
+
+.. code-block:: bash
+
+   pip install qoro-divi
 
 .. toctree::
-   :maxdepth: 2
-   :caption: Contents:
+   :maxdepth: 1
 
-   divi
-   examples/examples
+   quickstart
+
+.. toctree::
+   :maxdepth: 1
+   :caption: User Guide
+
+   user_guide/core_concepts
+   user_guide/vqe
+   user_guide/qaoa
+   user_guide/backends
+   user_guide/program_batches
+   user_guide/error_mitigation
+   user_guide/optimizers
+
+.. toctree::
+   :maxdepth: 1
+   :caption: API Reference
+
+   api_reference/qprog
+   api_reference/program_batches
+   api_reference/backends
+   api_reference/utils
+   api_reference/circuits
+   api_reference/reporting
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Development
+
+   development/contributing
+   development/building_docs
+   development/testing
+
+Indices and tables
+==================
+
+* :ref:`genindex`
