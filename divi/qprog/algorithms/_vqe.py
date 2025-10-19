@@ -8,12 +8,36 @@ import pennylane as qml
 import sympy as sp
 
 from divi.circuits import MetaCircuit
-from divi.qprog import QuantumProgram
 from divi.qprog.algorithms._ansatze import Ansatz, HartreeFockAnsatz
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
+from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 
 
-class VQE(QuantumProgram):
+class VQE(VariationalQuantumAlgorithm):
+    """Variational Quantum Eigensolver (VQE) implementation.
+
+    VQE is a hybrid quantum-classical algorithm used to find the ground state
+    energy of a given Hamiltonian. It works by preparing a parameterized quantum
+    state (ansatz) and optimizing the parameters to minimize the expectation
+    value of the Hamiltonian.
+
+    The algorithm can work with either:
+    - A molecular Hamiltonian (for quantum chemistry problems)
+    - A custom Hamiltonian operator
+
+    Attributes:
+        ansatz (Ansatz): The parameterized quantum circuit ansatz.
+        n_layers (int): Number of ansatz layers.
+        n_qubits (int): Number of qubits in the system.
+        n_electrons (int): Number of electrons (for molecular systems).
+        cost_hamiltonian (qml.operation.Operator): The Hamiltonian to minimize.
+        loss_constant (float): Constant term extracted from the Hamiltonian.
+        molecule (qml.qchem.Molecule): The molecule object (if applicable).
+        optimizer (Optimizer): Classical optimizer for parameter updates.
+        max_iterations (int): Maximum number of optimization iterations.
+        current_iteration (int): Current optimization iteration.
+    """
+
     def __init__(
         self,
         hamiltonian: qml.operation.Operator | None = None,
@@ -25,24 +49,19 @@ class VQE(QuantumProgram):
         max_iterations=10,
         **kwargs,
     ) -> None:
-        """
-        Initialize the VQE problem.
+        """Initialize the VQE problem.
 
         Args:
-            hamiltonian (pennylane.operation.Operator, optional): A Hamiltonian
-                representing the problem.
-            molecule (pennylane.qchem.Molecule, optional): The molecule representing
-                the problem.
-            n_electrons (int, optional): Number of electrons associated with the
-                Hamiltonian. Only needs to be provided when a Hamiltonian is given.
-            n_layers (int, optional): Number of ansatz layers. Defaults to 1.
-            ansatz (Ansatz, optional): The ansatz to use for the VQE problem.
+            hamiltonian (qml.operation.Operator | None): A Hamiltonian representing the problem. Defaults to None.
+            molecule (qml.qchem.Molecule | None): The molecule representing the problem. Defaults to None.
+            n_electrons (int | None): Number of electrons associated with the Hamiltonian.
+                Only needed when a Hamiltonian is given. Defaults to None.
+            n_layers (int): Number of ansatz layers. Defaults to 1.
+            ansatz (Ansatz | None): The ansatz to use for the VQE problem.
                 Defaults to HartreeFockAnsatz.
-            optimizer (Optimizer, optional): The optimizer to use. Defaults to
-                MonteCarloOptimizer.
-            max_iterations (int, optional): Maximum number of optimization iterations.
-                Defaults to 10.
-            **kwargs: Additional keyword arguments passed to the parent QuantumProgram.
+            optimizer (Optimizer | None): The optimizer to use. Defaults to MonteCarloOptimizer.
+            max_iterations (int): Maximum number of optimization iterations. Defaults to 10.
+            **kwargs: Additional keyword arguments passed to the parent class.
         """
 
         # Local Variables
@@ -64,8 +83,7 @@ class VQE(QuantumProgram):
 
     @property
     def n_params(self):
-        """
-        Get the total number of parameters for the VQE ansatz.
+        """Get the total number of parameters for the VQE ansatz.
 
         Returns:
             int: Total number of parameters (n_params_per_layer * n_layers).
@@ -76,8 +94,7 @@ class VQE(QuantumProgram):
         )
 
     def _process_problem_input(self, hamiltonian, molecule, n_electrons):
-        """
-        Process and validate the VQE problem input.
+        """Process and validate the VQE problem input.
 
         Handles both Hamiltonian-based and molecule-based problem specifications,
         extracting the necessary information (n_qubits, n_electrons, hamiltonian).
@@ -118,12 +135,13 @@ class VQE(QuantumProgram):
     def _clean_hamiltonian(
         self, hamiltonian: qml.operation.Operator
     ) -> qml.operation.Operator:
-        """
-        Extracts the scalar from the Hamiltonian, and stores it in
-        the `loss_constant` variable.
+        """Extract the scalar from the Hamiltonian and store it in loss_constant.
+
+        Args:
+            hamiltonian: The Hamiltonian operator to clean.
 
         Returns:
-            The Hamiltonian without the scalar component.
+            qml.operation.Operator: The Hamiltonian without the scalar component.
         """
 
         constant_terms_idx = list(
@@ -145,6 +163,11 @@ class VQE(QuantumProgram):
         return hamiltonian.simplify()
 
     def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
+        """Create the meta-circuit dictionary for VQE.
+
+        Returns:
+            dict[str, MetaCircuit]: Dictionary containing the cost circuit template.
+        """
         weights_syms = sp.symarray(
             "w",
             (
@@ -156,12 +179,11 @@ class VQE(QuantumProgram):
         )
 
         def _prepare_circuit(hamiltonian, params):
-            """
-            Prepare the circuit for the VQE problem.
+            """Prepare the circuit for the VQE problem.
+
             Args:
-                ansatz (Ansatze): The ansatz to use
-                hamiltonian (qml.Hamiltonian): The Hamiltonian to use
-                params (list): The parameters to use for the ansatz
+                hamiltonian: The Hamiltonian to measure.
+                params: The parameters for the ansatz.
             """
             self.ansatz.build(
                 params,
@@ -186,16 +208,10 @@ class VQE(QuantumProgram):
         }
 
     def _generate_circuits(self):
-        """
-        Generate the circuits for the VQE problem.
+        """Generate the circuits for the VQE problem.
 
-        In this method, we generate bulk circuits based on the selected parameters.
-        We generate circuits for each bond length and each ansatz and optimization choice.
-
-        The structure of the circuits is as follows:
-        - For each bond length:
-            - For each ansatz:
-                - Generate the circuit
+        Generates circuits for each parameter set in the current parameters.
+        Each circuit is tagged with its parameter index for result processing.
         """
 
         for p, params_group in enumerate(self._curr_params):
@@ -206,14 +222,13 @@ class VQE(QuantumProgram):
             self._circuits.append(circuit)
 
     def _run_optimization_circuits(self, store_data, data_file):
-        """
-        Execute the circuits for the current optimization iteration.
+        """Execute the circuits for the current optimization iteration.
 
         Validates that the Hamiltonian is properly set before running circuits.
 
         Args:
-            store_data (bool): Whether to save iteration data.
-            data_file (str): Path to file for saving data.
+            store_data: Whether to save iteration data.
+            data_file: Path to file for saving data.
 
         Returns:
             dict: Loss values for each parameter set.

@@ -43,28 +43,35 @@ def verify_metacircuit_dict(obj, expected_keys):
 
 def verify_correct_circuit_count(obj: QuantumProgram):
     assert obj.current_iteration == 1
-    assert len(obj.losses) == 1
+    assert len(obj.losses_history) == 1
 
+    # QAOA generates 1 extra circuit for solution measurement with best parameters
     extra_computation_offset = 1 if isinstance(obj, QAOA) else 0
 
     adjusted_total_circuit_count = obj.total_circuit_count - extra_computation_offset
 
     if isinstance(obj.optimizer, MonteCarloOptimizer):
-        assert adjusted_total_circuit_count == obj.optimizer.n_param_sets * len(
-            obj.cost_hamiltonian
+        # Calculate expected circuits per parameter set based on measurement groups
+        circuits_per_param_set = len(
+            obj._meta_circuits["cost_circuit"].measurement_groups
+        )
+        assert (
+            adjusted_total_circuit_count
+            == obj.optimizer.n_param_sets * circuits_per_param_set
         )
     elif isinstance(obj.optimizer, ScipyOptimizer):
+        circuits_per_param_set = len(
+            obj._meta_circuits["cost_circuit"].measurement_groups
+        )
         if obj.optimizer.method in (ScipyMethod.NELDER_MEAD, ScipyMethod.COBYLA):
-            assert adjusted_total_circuit_count == obj._minimize_res.nfev * len(
-                obj.cost_hamiltonian
+            assert (
+                adjusted_total_circuit_count
+                == obj._minimize_res.nfev * circuits_per_param_set
             )
         elif obj.optimizer.method == ScipyMethod.L_BFGS_B:
-            evaluation_circuits_count = obj._minimize_res.nfev * len(
-                obj.cost_hamiltonian
-            )
-
+            evaluation_circuits_count = obj._minimize_res.nfev * circuits_per_param_set
             gradient_circuits_count = (
-                obj._minimize_res.njev * len(obj.cost_hamiltonian) * obj.n_params * 2
+                obj._minimize_res.njev * circuits_per_param_set * obj.n_params * 2
             )
 
             assert (

@@ -8,7 +8,6 @@ import numpy as np
 import pennylane as qml
 import pytest
 import scipy.sparse as sps
-from flaky import flaky
 from qiskit_optimization import QuadraticProgram
 from qiskit_optimization.converters import QuadraticProgramToQubo
 
@@ -90,6 +89,7 @@ class TestGeneralQAOA:
         )
         # Set preconditions for the method under test
         qaoa_problem._final_params = np.array([[0.1, 0.2]])
+        qaoa_problem._best_params = np.array([[0.1, 0.2]])
         mocker.patch.object(
             qaoa_problem,
             "_dispatch_circuits_and_process_results",
@@ -117,6 +117,7 @@ class TestGeneralQAOA:
         qaoa_problem._perform_final_computation()
 
         # 3. Verify the flag was True when the critical function was called
+        # _generate_circuits is called once for best_params only
         assert flag_state_at_call_time == [True]
 
         # 4. Verify the state was reset correctly after the function completed
@@ -226,10 +227,15 @@ class TestGraphInput:
         )
 
         # Simulate measurement results
-        qaoa_problem.probs = {"0_NoMitigation:0_0": {"10011": 0.1444, "10100": 0.0526}}
+        qaoa_problem._final_probs = {
+            "0_NoMitigation:0_0": {"10011": 0.1444, "10100": 0.0526}
+        }
+        qaoa_problem._best_probs = {
+            "0_NoMitigation:0_0": {"10011": 0.1444, "10100": 0.0526}
+        }
 
-        # Patch _run_final_measurement to do nothing (since we set probs manually)
-        mocker.patch.object(qaoa_problem, "_run_final_measurement")
+        # Patch _run_solution_measurement to do nothing (since we set probs manually)
+        mocker.patch.object(qaoa_problem, "_run_solution_measurement")
 
         qaoa_problem._perform_final_computation()
 
@@ -239,7 +245,7 @@ class TestGraphInput:
 
     @pytest.mark.e2e
     @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
-    def test_graph_qaoa_e2e_solution(self, mocker, optimizer, default_test_simulator):
+    def test_graph_qaoa_e2e_solution(self, optimizer, default_test_simulator):
         if (
             isinstance(optimizer, ScipyOptimizer)
             and optimizer.method == ScipyMethod.L_BFGS_B
@@ -265,7 +271,7 @@ class TestGraphInput:
 
         assert all(
             len(bitstring) == G.number_of_nodes()
-            for probs_dict in qaoa_problem.probs.values()
+            for probs_dict in qaoa_problem.final_probs.values()
             for bitstring in probs_dict.keys()
         )
 

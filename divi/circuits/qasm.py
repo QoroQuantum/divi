@@ -215,9 +215,7 @@ def to_openqasm(
             for wire in range(len(wires)):
                 measure_qasm_str += f"measure q[{wire}] -> c[{wire}];\n"
         else:
-            measured_wires = Wires.all_wires(
-                [m.wires for m in main_qscript.measurements]
-            )
+            measured_wires = Wires.all_wires([m.wires for m in meas_group])
 
             for w in measured_wires:
                 wire_indx = main_qscript.wires.index(w)

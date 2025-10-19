@@ -22,8 +22,8 @@ from qiskit_optimization.converters import QuadraticProgramToQubo
 from qiskit_optimization.problems import VarType
 
 from divi.circuits import MetaCircuit
-from divi.qprog import QuantumProgram
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
+from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from divi.utils import convert_qubo_matrix_to_pennylane_ising
 
 logger = logging.getLogger(__name__)
@@ -32,15 +32,14 @@ GraphProblemTypes = nx.Graph | rx.PyGraph
 QUBOProblemTypes = list | np.ndarray | sps.spmatrix | QuadraticProgram
 
 
-def draw_graph_solution_nodes(main_graph, partition_nodes):
-    """
-    Visualize a graph with solution nodes highlighted.
+def draw_graph_solution_nodes(main_graph: nx.Graph, partition_nodes):
+    """Visualize a graph with solution nodes highlighted.
 
     Draws the graph with nodes colored to distinguish solution nodes (red) from
     other nodes (light blue).
 
     Args:
-        main_graph: NetworkX graph to visualize.
+        main_graph (nx.Graph): NetworkX graph to visualize.
         partition_nodes: Collection of node indices that are part of the solution.
     """
     # Create a dictionary for node colors
@@ -65,6 +64,14 @@ def draw_graph_solution_nodes(main_graph, partition_nodes):
 
 
 class GraphProblem(Enum):
+    """Enumeration of supported graph problems for QAOA.
+
+    Each problem type defines:
+    - pl_string: The corresponding PennyLane function name
+    - constrained_initial_state: Recommended initial state for constrained problems
+    - unconstrained_initial_state: Recommended initial state for unconstrained problems
+    """
+
     MAX_CLIQUE = ("max_clique", "Zeros", "Superposition")
     MAX_INDEPENDENT_SET = ("max_independent_set", "Zeros", "Superposition")
     MAX_WEIGHT_CYCLE = ("max_weight_cycle", "Superposition", "Superposition")
@@ -80,6 +87,13 @@ class GraphProblem(Enum):
         constrained_initial_state: str,
         unconstrained_initial_state: str,
     ):
+        """Initialize the GraphProblem enum value.
+
+        Args:
+            pl_string (str): The corresponding PennyLane function name.
+            constrained_initial_state (str): Recommended initial state for constrained problems.
+            unconstrained_initial_state (str): Recommended initial state for unconstrained problems.
+        """
         self.pl_string = pl_string
 
         # Recommended initial state as per Pennylane's documentation.
@@ -94,6 +108,17 @@ _SUPPORTED_INITIAL_STATES_LITERAL = Literal[
 
 
 def _convert_quadratic_program_to_pennylane_ising(qp: QuadraticProgram):
+    """Convert a Qiskit QuadraticProgram to a PennyLane Ising Hamiltonian.
+
+    Args:
+        qp (QuadraticProgram): Qiskit QuadraticProgram to convert.
+
+    Returns:
+        tuple[qml.Hamiltonian, float, int]: (pennylane_ising, constant, n_qubits) where:
+            - pennylane_ising: The Ising Hamiltonian in PennyLane format
+            - constant: The constant term
+            - n_qubits: Number of qubits required
+    """
     qiskit_sparse_op, constant = qp.to_ising()
 
     pauli_list = qiskit_sparse_op.paulis
@@ -118,9 +143,16 @@ def _convert_quadratic_program_to_pennylane_ising(qp: QuadraticProgram):
 def _resolve_circuit_layers(
     initial_state, problem, graph_problem, **kwargs
 ) -> tuple[qml.operation.Operator, qml.operation.Operator, dict | None, str]:
-    """
-    Generates the cost and mixer hamiltonians for a given problem, in addition to
-    optional metadata returned by Pennylane if applicable
+    """Generate the cost and mixer Hamiltonians for a given problem.
+
+    Args:
+        initial_state (str): The initial state specification.
+        problem (GraphProblemTypes | QUBOProblemTypes): The problem to solve (graph or QUBO).
+        graph_problem (GraphProblem | None): The graph problem type (if applicable).
+        **kwargs: Additional keyword arguments.
+
+    Returns:
+        tuple[qml.operation.Operator, qml.operation.Operator, dict | None, str]: (cost_hamiltonian, mixer_hamiltonian, metadata, resolved_initial_state)
     """
 
     if isinstance(problem, GraphProblemTypes):
@@ -159,7 +191,36 @@ def _resolve_circuit_layers(
         )
 
 
-class QAOA(QuantumProgram):
+class QAOA(VariationalQuantumAlgorithm):
+    """Quantum Approximate Optimization Algorithm (QAOA) implementation.
+
+    QAOA is a hybrid quantum-classical algorithm designed to solve combinatorial
+    optimization problems. It alternates between applying a cost Hamiltonian
+    (encoding the problem) and a mixer Hamiltonian (enabling exploration).
+
+    The algorithm can solve:
+    - Graph problems (MaxCut, Max Clique, etc.)
+    - QUBO (Quadratic Unconstrained Binary Optimization) problems
+    - Quadratic programs (converted to QUBO)
+
+    Attributes:
+        problem (GraphProblemTypes | QUBOProblemTypes): The problem instance to solve.
+        graph_problem (GraphProblem | None): The graph problem type (if applicable).
+        n_layers (int): Number of QAOA layers.
+        n_qubits (int): Number of qubits required.
+        cost_hamiltonian (qml.Hamiltonian): The cost Hamiltonian encoding the problem.
+        mixer_hamiltonian (qml.Hamiltonian): The mixer Hamiltonian for exploration.
+        initial_state (str): The initial quantum state.
+        problem_metadata (dict | None): Additional metadata from problem setup.
+        loss_constant (float): Constant term from the problem.
+        optimizer (Optimizer): Classical optimizer for parameter updates.
+        max_iterations (int): Maximum number of optimization iterations.
+        current_iteration (int): Current optimization iteration.
+        _n_params (int): Number of parameters per layer (always 2 for QAOA).
+        _solution_nodes (list[int] | None): Solution nodes for graph problems.
+        _solution_bitstring (np.ndarray | None): Solution bitstring for QUBO problems.
+    """
+
     def __init__(
         self,
         problem: GraphProblemTypes | QUBOProblemTypes,
@@ -171,16 +232,18 @@ class QAOA(QuantumProgram):
         max_iterations: int = 10,
         **kwargs,
     ):
-        """
-        Initialize the QAOA problem.
+        """Initialize the QAOA problem.
 
         Args:
-            problem: The problem to solve, can either be a graph or a QUBO.
+            problem (GraphProblemTypes | QUBOProblemTypes): The problem to solve, can either be a graph or a QUBO.
                 For graph inputs, the graph problem to solve must be provided
                 through the `graph_problem` variable.
-            graph_problem (str): The graph problem to solve.
-            n_layers (int): number of QAOA layers
-            initial_state (str): The initial state of the circuit
+            graph_problem (GraphProblem | None): The graph problem to solve. Defaults to None.
+            n_layers (int): Number of QAOA layers. Defaults to 1.
+            initial_state (_SUPPORTED_INITIAL_STATES_LITERAL): The initial state of the circuit. Defaults to "Recommended".
+            optimizer (Optimizer | None): The optimizer to use. Defaults to MonteCarloOptimizer.
+            max_iterations (int): Maximum number of optimization iterations. Defaults to 10.
+            **kwargs: Additional keyword arguments passed to the parent class.
         """
 
         if isinstance(problem, QUBOProblemTypes):
@@ -238,7 +301,6 @@ class QAOA(QuantumProgram):
         self._is_compute_probabilites = False
         self.optimizer = optimizer if optimizer is not None else MonteCarloOptimizer()
 
-        self._probs = {}
         self._solution_nodes = []
         self._solution_bitstring = []
 
@@ -271,11 +333,10 @@ class QAOA(QuantumProgram):
 
     @property
     def solution(self):
-        """
-        Get the solution found by QAOA optimization.
+        """Get the solution found by QAOA optimization.
 
         Returns:
-            list: For graph problems, returns a list of selected node indices.
+            list[int] | np.ndarray: For graph problems, returns a list of selected node indices.
                 For QUBO problems, returns a list/array of binary values.
         """
         return (
@@ -284,28 +345,15 @@ class QAOA(QuantumProgram):
             else self._solution_bitstring
         )
 
-    @property
-    def probs(self) -> dict:
-        """
-        Get a copy of the probability distributions from final measurements.
+    def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
+        """Generate the meta circuits for the QAOA problem.
+
+        Creates both cost and measurement circuits for the QAOA algorithm.
+        The cost circuit is used during optimization, while the measurement
+        circuit is used for final solution extraction.
 
         Returns:
-            dict: Copy of the probability distributions dictionary. Keys are
-                circuit tags, values are probability distributions.
-        """
-        return self._probs.copy()
-
-    @probs.setter
-    def probs(self, value: dict):
-        """Set the probability distributions."""
-        self._probs = value
-
-    def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
-        """
-        Generate the meta circuits for the QAOA problem.
-
-        In this method, we generate the scaffolding for the circuits that will be
-        executed during optimization.
+            dict[str, MetaCircuit]: Dictionary containing cost_circuit and meas_circuit.
         """
 
         betas = sp.symarray("β", self.n_layers)
@@ -319,10 +367,12 @@ class QAOA(QuantumProgram):
             pqaoa.mixer_layer(beta, self.mixer_hamiltonian)
 
         def _prepare_circuit(hamiltonian, params, final_measurement):
-            """
-            Prepare the circuit for the QAOA problem.
+            """Prepare the circuit for the QAOA problem.
+
             Args:
-                hamiltonian (qml.Hamiltonian): The Hamiltonian term to measure
+                hamiltonian (qml.Hamiltonian): The Hamiltonian term to measure.
+                params (np.ndarray): The QAOA parameters (betas and gammas).
+                final_measurement (bool): Whether to perform final measurement.
             """
 
             # Note: could've been done as qml.[Insert Gate](wires=range(self.n_qubits))
@@ -354,14 +404,16 @@ class QAOA(QuantumProgram):
                     self.cost_hamiltonian, sym_params, final_measurement=True
                 ),
                 symbols=sym_params.flatten(),
+                grouping_strategy="wires",
             ),
         }
 
     def _generate_circuits(self):
-        """
-        Generate the circuits for the QAOA problem.
+        """Generate the circuits for the QAOA problem.
 
-        In this method, we generate bulk circuits based on the selected parameters.
+        Generates circuits for each parameter set in the current parameters.
+        The circuit type depends on whether we're computing probabilities
+        (for final solution extraction) or just expectation values (for optimization).
         """
 
         circuit_type = (
@@ -376,73 +428,67 @@ class QAOA(QuantumProgram):
             self._circuits.append(circuit)
 
     def _post_process_results(self, results):
-        """
-        Post-process the results of the QAOA problem.
+        """Post-process the results of the QAOA problem.
+
+        Args:
+            results (dict[str, dict[str, int]]): Raw results from circuit execution.
 
         Returns:
-            (dict) The losses for each parameter set grouping.
+            dict[str, dict[str, float]] | dict[int, float]: The losses for each parameter set grouping, or probability
+                distributions if computing probabilities.
         """
 
         if self._is_compute_probabilites:
-            return {
-                outer_k: {
-                    inner_k: inner_v / self.backend.shots
-                    for inner_k, inner_v in outer_v.items()
-                }
-                for outer_k, outer_v in results.items()
-            }
+            probs = self._convert_counts_to_probs(results)
+            self._final_probs.update(probs)
+            return probs
 
         losses = super()._post_process_results(results)
-
         return losses
 
-    def _run_final_measurement(self):
-        """
-        Execute final measurement circuits to obtain probability distributions.
+    def _run_solution_measurement(self):
+        """Execute measurement circuits to obtain probability distributions for solution extraction.
 
-        Runs the optimized circuit with final parameters to get the full probability
-        distribution over all measurement outcomes, which is used to extract the
-        solution bitstring.
+        Runs the optimized circuit with the best parameters (those that achieved the lowest loss)
+        to get the full probability distribution over all measurement outcomes, which is used to
+        extract the optimal solution bitstring.
         """
         self._is_compute_probabilites = True
 
-        self._curr_params = np.array(self._final_params)
-
+        # Compute probabilities for best parameters (the ones that achieved best loss)
+        self._curr_params = np.atleast_2d(self._best_params)
         self._circuits[:] = []
-
         self._generate_circuits()
-
-        self._probs.update(self._dispatch_circuits_and_process_results())
+        best_probs = self._dispatch_circuits_and_process_results()
+        self._best_probs.update(best_probs)
 
         self._is_compute_probabilites = False
 
     def _perform_final_computation(self):
-        """
-        Computes and extracts the final solution from the QAOA optimization process.
+        """Extract the optimal solution from the QAOA optimization process.
+
         This method performs the following steps:
-            1. Identifies the best solution index based on the lowest loss value from the last optimization step.
-            2. Executes the final measurement circuit to obtain the probability distributions of solutions.
-            3. Retrieves the bitstring representing the best solution, correcting for endianness.
-            4. Depending on the problem type:
-            - For QUBO problems, stores the solution as a NumPy array of bits.
-            - For graph problems, stores the solution as a list of node indices corresponding to '1's in the bitstring.
-            5. Returns the total circuit count and total runtime for the optimization process.
+        1. Executes measurement circuits with the best parameters (those that achieved the lowest loss).
+        2. Retrieves the bitstring representing the best solution, correcting for endianness.
+        3. Depending on the problem type:
+           - For QUBO problems, stores the solution as a NumPy array of bits.
+           - For graph problems, stores the solution as a list of node indices corresponding to '1's in the bitstring.
 
         Returns:
-            tuple: A tuple containing:
-            - int: The total number of circuits executed.
-            - float: The total runtime of the optimization process.
+            tuple[int, float]: A tuple containing:
+                - int: The total number of circuits executed.
+                - float: The total runtime of the optimization process.
         """
 
         self.reporter.info(message="🏁 Computing Final Solution 🏁")
 
-        self._run_final_measurement()
+        self._run_solution_measurement()
 
-        final_measurement_probs = next(iter(self._probs.values()))
+        best_measurement_probs = next(iter(self._best_probs.values()))
 
         # Reverse to account for the endianness difference
         best_solution_bitstring = max(
-            final_measurement_probs, key=final_measurement_probs.get
+            best_measurement_probs, key=best_measurement_probs.get
         )[::-1]
 
         if isinstance(self.problem, QUBOProblemTypes):
@@ -458,8 +504,7 @@ class QAOA(QuantumProgram):
         return self._total_circuit_count, self._total_run_time
 
     def draw_solution(self):
-        """
-        Visualize the solution found by QAOA for graph problems.
+        """Visualize the solution found by QAOA for graph problems.
 
         Draws the graph with solution nodes highlighted in red and other nodes
         in light blue. If the solution hasn't been computed yet, it will be

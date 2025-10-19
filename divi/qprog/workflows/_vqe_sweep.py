@@ -127,6 +127,13 @@ def _zmatrix_to_cartesian(z_matrix: list[_ZMatrixEntry]) -> np.ndarray:
     if n_atoms == 0:
         return coords
 
+    # Validate bond lengths are positive
+    for i, entry in enumerate(z_matrix[1:], start=1):
+        if entry.bond_length is not None and entry.bond_length <= 0:
+            raise ValueError(
+                f"Bond length for atom {i} must be positive, got {entry.bond_length}"
+            )
+
     # --- First atom at origin ---
     coords[0] = np.array([0.0, 0.0, 0.0])
 
@@ -251,12 +258,14 @@ def _kabsch_align(P_in: np.ndarray, Q_in: np.ndarray, reference_atoms_idx=slice(
     H = P_centered.T @ Q_centered
     U, _, Vt = np.linalg.svd(H)
 
-    # Reflection check
-    d = np.sign(np.linalg.det(Vt.T @ U.T))
-    D = np.diag([1] * (P.shape[1] - 1) + [d])
+    # Compute rotation matrix
+    R = Vt.T @ U.T
 
-    # Optimal rotation and translation
-    R = Vt.T @ D @ U.T
+    # Ensure proper rotation (det = +1) by handling reflections
+    if np.linalg.det(R) < 0:
+        # Flip the last column of Vt to ensure proper rotation
+        Vt[-1, :] *= -1
+        R = Vt.T @ U.T
     t = Qc - Pc @ R
 
     # Apply transformation
@@ -472,10 +481,10 @@ class VQEHyperparameterSweep(ProgramBatch):
         """
         super().aggregate_results()
 
-        all_energies = {key: prog.losses[-1] for key, prog in self.programs.items()}
+        all_energies = {key: prog.best_loss for key, prog in self.programs.items()}
 
-        smallest_key = min(all_energies, key=lambda k: min(all_energies[k].values()))
-        smallest_value = min(all_energies[smallest_key].values())
+        smallest_key = min(all_energies, key=lambda k: all_energies[k])
+        smallest_value = all_energies[smallest_key]
 
         return smallest_key, smallest_value
 
@@ -505,18 +514,17 @@ class VQEHyperparameterSweep(ProgramBatch):
             # Plot each ansatz's results as a separate series for clarity
             for ansatz in unique_ansatze:
                 modifiers = []
-                min_energies = []
+                energies = []
                 for modifier in self.molecule_transformer.bond_modifiers:
                     program_key = (ansatz.name, modifier)
                     if program_key in self._programs:
                         modifiers.append(modifier)
-                        curr_energies = self._programs[program_key].losses[-1]
-                        min_energies.append(min(curr_energies.values()))
+                        energies.append(self._programs[program_key].best_loss)
 
                 # Use the new .name property for the label and the color_map
                 plt.scatter(
                     modifiers,
-                    min_energies,
+                    energies,
                     color=color_map[ansatz],
                     label=ansatz.name,
                 )
@@ -525,9 +533,7 @@ class VQEHyperparameterSweep(ProgramBatch):
             for ansatz in unique_ansatze:
                 energies = []
                 for modifier in self.molecule_transformer.bond_modifiers:
-                    energies.append(
-                        min(self._programs[(ansatz.name, modifier)].losses[-1].values())
-                    )
+                    energies.append(self._programs[(ansatz.name, modifier)].best_loss)
 
                 plt.plot(
                     self.molecule_transformer.bond_modifiers,

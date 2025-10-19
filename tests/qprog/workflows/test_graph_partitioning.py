@@ -435,7 +435,7 @@ class TestGraphPartitioningQAOA:
         verify_basic_program_batch_behaviour(mocker, node_partitioning_qaoa)
 
         mock_program = mocker.MagicMock()
-        mock_program._losses = [{0: -1.0}]
+        mock_program._losses_history = [{0: -1.0}]
 
         node_partitioning_qaoa._programs = {"dummy": mock_program}
 
@@ -500,10 +500,10 @@ class TestGraphPartitioningQAOA:
         for key in prog_keys[2:]:
             node_partitioning_qaoa.programs[key]._solution_nodes = []
 
-        # Ensure all programs appear to have been run by populating the 'probs' dict
+        # Ensure all programs appear to have been run by populating the 'final_probs' dict
         for program in node_partitioning_qaoa.programs.values():
-            program._probs = {"dummy_key": {}}
-            program._losses = [{"dummy_loss": 0.0}]
+            program._final_probs = {"dummy_key": {"00": 0.5, "11": 0.5}}
+            program._losses_history = [{"dummy_loss": 0.0}]
 
         # The expected global solution should contain only the original nodes from the second program
         expected_nodes = set(
