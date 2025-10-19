@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
-import pickle
 from abc import abstractmethod
 from functools import lru_cache, partial
 from itertools import groupby
@@ -13,13 +12,14 @@ import numpy as np
 import pennylane as qml
 from scipy.optimize import OptimizeResult
 
-from divi.backends import CircuitRunner, JobStatus, QoroService
+from divi.backends import CircuitRunner
 from divi.circuits import Circuit, MetaCircuit
 from divi.circuits.qem import _NoMitigation
 from divi.qprog.exceptions import _CancelledError
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.quantum_program import QuantumProgram
 from divi.reporting import LoggingProgressReporter, QueueProgressReporter
+from divi.utils import reverse_dict_endianness
 
 logger = logging.getLogger(__name__)
 
@@ -270,23 +270,11 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         self._losses_history = []
 
-        self._final_params = []
-        self._final_probs = {}
-
-        self._best_params = []
-        self._best_probs = {}
+        self._best_params = None
+        self._final_params = None
         self._best_loss = float("inf")
+        self._best_probs = {}
 
-        self._current_iteration_probs = {}
-
-        # Cache for consistent ordering
-        self._final_probs_cache = None
-        self._best_probs_cache = None
-
-        self._circuits: list[Circuit] = []
-
-        self._total_circuit_count = 0
-        self._total_run_time = 0.0
         self._curr_params = None
 
         self._seed = seed
@@ -295,6 +283,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         # Lets child classes adapt their optimization
         # step for grad calculation routine
         self._grad_mode = False
+        self._is_compute_probabilites = False
 
         super().__init__(
             backend=backend, seed=seed, progress_queue=progress_queue, **kwargs
@@ -398,43 +387,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         """
         return self._best_params.copy()
 
-    def _convert_to_consistent_ordering(self, probs_dict):
-        """Convert bitstrings to consistent ordering for user-friendly interpretation."""
-        return {
-            tag: {bitstring[::-1]: prob for bitstring, prob in probs.items()}
-            for tag, probs in probs_dict.items()
-        }
-
-    @property
-    def final_probs(self) -> dict:
-        """Get a copy of the probability distributions from the final iteration.
-
-        Returns:
-            dict[str, dict[str, float]]: Copy of the final probability distributions with consistent bitstring ordering.
-                Keys are circuit tags, values are probability distributions.
-                Modifications to this dict will not affect the internal state.
-        """
-        if self._final_probs_cache is None:
-            self._final_probs_cache = self._convert_to_consistent_ordering(
-                self._final_probs
-            )
-        return self._final_probs_cache.copy()
-
-    @property
-    def best_probs(self) -> dict:
-        """Get a copy of the probability distributions from the best iteration.
-
-        Returns:
-            dict[str, dict[str, float]]: Copy of the best probability distributions with consistent bitstring ordering.
-                Keys are circuit tags, values are probability distributions.
-                Modifications to this dict will not affect the internal state.
-        """
-        if self._best_probs_cache is None:
-            self._best_probs_cache = self._convert_to_consistent_ordering(
-                self._best_probs
-            )
-        return self._best_probs_cache.copy()
-
     @property
     def best_loss(self) -> float:
         """Get the best loss achieved so far.
@@ -443,6 +395,15 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             float: The best loss achieved so far.
         """
         return self._best_loss
+
+    @property
+    def best_probs(self):
+        """Get a copy of the probability distribution for the best parameters.
+
+        Returns:
+            dict: A copy of the best probability distribution.
+        """
+        return self._best_probs.copy()
 
     def _convert_counts_to_probs(self, results):
         """Convert raw counts to probability distributions."""
@@ -453,6 +414,11 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             }
             for outer_k, outer_v in results.items()
         }
+
+    def _process_probability_results(self, results):
+        """Convert raw counts to probabilities and fix endianness."""
+        probs = self._convert_counts_to_probs(results)
+        return reverse_dict_endianness(probs)
 
     @property
     def initial_params(self) -> np.ndarray:
@@ -534,86 +500,14 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             0, 2 * np.pi, (self.optimizer.n_param_sets, total_params)
         )
 
-    def _run_optimization_circuits(self, store_data, data_file):
+    def _run_optimization_circuits(self, data_file, **kwargs):
         self._circuits[:] = []
 
-        self._generate_circuits()
+        self._generate_circuits(**kwargs)
 
-        losses = self._dispatch_circuits_and_process_results(
-            store_data=store_data, data_file=data_file
-        )
+        losses = self._dispatch_circuits_and_process_results(data_file=data_file)
 
         return losses
-
-    def _prepare_and_send_circuits(self):
-        job_circuits = {}
-
-        for circuit in self._circuits:
-            for tag, qasm_circuit in zip(circuit.tags, circuit.qasm_circuits):
-                job_circuits[tag] = qasm_circuit
-
-        self._total_circuit_count += len(job_circuits)
-
-        backend_output = self.backend.submit_circuits(job_circuits)
-
-        if isinstance(self.backend, QoroService):
-            self._curr_service_job_id = backend_output
-
-        return backend_output
-
-    def _dispatch_circuits_and_process_results(self, store_data=False, data_file=None):
-        """Run an iteration of the program.
-
-        The outputs are stored in the Program object.
-        Optionally, the data can be stored in a file.
-
-        Args:
-            store_data (bool): Whether to store the data for the iteration. Defaults to False.
-            data_file (str | None): The file to store the data in. Defaults to None.
-        """
-
-        results = self._prepare_and_send_circuits()
-
-        def add_run_time(response):
-            if isinstance(response, dict):
-                self._total_run_time += float(response["run_time"])
-            elif isinstance(response, list):
-                self._total_run_time += sum(
-                    float(r.json()["run_time"]) for r in response
-                )
-
-        if isinstance(self.backend, QoroService):
-            update_function = lambda n_polls, status: self.reporter.info(
-                message="",
-                poll_attempt=n_polls,
-                max_retries=self.backend.max_retries,
-                service_job_id=self._curr_service_job_id,
-                job_status=status,
-            )
-
-            status = self.backend.poll_job_status(
-                self._curr_service_job_id,
-                loop_until_complete=True,
-                on_complete=add_run_time,
-                verbose=False,  # Disable the default logger in QoroService
-                poll_callback=update_function,  # Use the new, more generic name
-            )
-
-            if status != JobStatus.COMPLETED:
-                raise Exception(
-                    "Job has not completed yet, cannot post-process results"
-                )
-
-            results = self.backend.get_job_results(self._curr_service_job_id)
-
-        results = {r["label"]: r["results"] for r in results}
-
-        result = self._post_process_results(results)
-
-        if store_data:
-            self.save_iteration(data_file)
-
-        return result
 
     def _post_process_results(
         self, results: dict[str, dict[str, int]]
@@ -637,12 +531,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             self.reporter.info(
                 message="Post-processing output", iteration=self.current_iteration
             )
-
-        # Store probabilities from raw counts for this iteration (skip during gradient mode)
-        if not self._grad_mode:
-            self._current_iteration_probs = self._convert_counts_to_probs(results)
-            # Only invalidate final_probs cache (best_probs cache is invalidated only when best_probs is updated)
-            self._final_probs_cache = None
 
         losses = {}
         measurement_groups = self._meta_circuits["cost_circuit"].measurement_groups
@@ -702,7 +590,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         return losses
 
-    def _perform_final_computation(self):
+    def _perform_final_computation(self, **kwargs):
         """
         Perform final computations after optimization completes.
 
@@ -710,21 +598,24 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         any post-optimization processing, such as extracting solutions, running
         final measurements, or computing additional metrics.
 
+        Args:
+            **kwargs: Additional keyword arguments for subclasses.
+
         Note:
             The default implementation does nothing. Subclasses should override
             this method if they need post-optimization processing.
         """
         pass
 
-    def run(self, store_data=False, data_file=None):
+    def run(self, data_file=None, **kwargs):
         """Run the variational quantum algorithm.
 
         The outputs are stored in the algorithm object.
         Optionally, the data can be stored in a file.
 
         Args:
-            store_data (bool): Whether to store the data for the iteration. Defaults to False.
-            data_file (str | None): The file to store the data in. Defaults to None.
+            data_file (str | None): The file to store the data in. If None, no data is stored. Defaults to None.
+            **kwargs: Additional keyword arguments for subclasses.
         """
 
         def cost_fn(params):
@@ -734,7 +625,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
             self._curr_params = np.atleast_2d(params)
 
-            losses = self._run_optimization_circuits(store_data, data_file)
+            losses = self._run_optimization_circuits(data_file, **kwargs)
 
             losses = np.fromiter(losses.values(), dtype=np.float64)
 
@@ -756,7 +647,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
             self._curr_params = self._grad_shift_mask + params
 
-            exp_vals = self._run_optimization_circuits(store_data, data_file)
+            exp_vals = self._run_optimization_circuits(data_file, **kwargs)
             exp_vals_arr = np.fromiter(exp_vals.values(), dtype=np.float64)
 
             pos_shifts = exp_vals_arr[::2]
@@ -786,14 +677,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 self._best_params = np.atleast_2d(intermediate_result.x)[
                     best_idx
                 ].copy()
-
-                self._best_probs = {
-                    k: v
-                    for k, v in self._current_iteration_probs.items()
-                    if k.startswith(f"{best_idx}_")
-                }
-                # Invalidate cache when best_probs is updated
-                self._best_probs_cache = None
 
             self.current_iteration += 1
 
@@ -829,44 +712,31 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         self._final_params = self._minimize_res.x
 
-        self._perform_final_computation()
+        self._perform_final_computation(**kwargs)
 
         self.reporter.info(message="Finished successfully!")
 
         return self.total_circuit_count, self.total_run_time
 
-    def save_iteration(self, data_file):
-        """
-        Save the current state of the quantum program to a file.
+    def _run_solution_measurement(self):
+        """Execute measurement circuits to obtain probability distributions for solution extraction."""
+        if self._best_params is None:
+            raise RuntimeError(
+                "Optimization has not been run, no best parameters available."
+            )
 
-        Serializes the entire QuantumProgram instance including parameters,
-        losses, and circuit history using pickle.
+        if "meas_circuit" not in self._meta_circuits:
+            raise NotImplementedError(
+                f"{type(self).__name__} does not implement a 'meas_circuit'."
+            )
 
-        Args:
-            data_file (str): Path to the file where the program state will be saved.
+        self._is_compute_probabilites = True
 
-        Note:
-            The file is written in binary mode and can be restored using
-            `import_iteration()`.
-        """
+        # Compute probabilities for best parameters (the ones that achieved best loss)
+        self._curr_params = np.atleast_2d(self._best_params)
+        self._circuits[:] = []
+        self._generate_circuits()
+        best_probs = self._dispatch_circuits_and_process_results()
+        self._best_probs.update(best_probs)
 
-        with open(data_file, "wb") as f:
-            pickle.dump(self, f)
-
-    @staticmethod
-    def import_iteration(data_file):
-        """
-        Load a previously saved quantum program state from a file.
-
-        Deserializes a QuantumProgram instance that was saved using `save_iteration()`.
-
-        Args:
-            data_file (str): Path to the file containing the saved program state.
-
-        Returns:
-            QuantumProgram: The restored QuantumProgram instance with all its state,
-                including parameters, losses, and circuit history.
-        """
-
-        with open(data_file, "rb") as f:
-            return pickle.load(f)
+        self._is_compute_probabilites = False

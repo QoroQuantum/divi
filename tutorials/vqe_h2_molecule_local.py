@@ -32,5 +32,6 @@ if __name__ == "__main__":
     vqe_problem.run()
 
     print(f"Minimum Energy Achieved: {vqe_problem.best_loss:.4f}")
+    print(f"Eigenstate: {vqe_problem.eigenstate}")
     print(f"Total circuits: {vqe_problem.total_circuit_count}")
     print(f"Time taken: {round(time.time() - t1, 5)} seconds")

@@ -58,8 +58,8 @@ class SampleProgram(VariationalQuantumAlgorithm):
     def _generate_circuits(self, params=None, **kwargs):
         pass
 
-    def run(self, store_data=False, data_file=None):
-        return super().run(store_data, data_file)
+    def run(self, data_file=None):
+        return super().run(data_file)
 
     def _perform_final_computation(self):
         pass
@@ -371,6 +371,6 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         optimizer_side_effects = [(final_params, final_loss)]
         self.setup_mock_optimizer(program, mocker, optimizer_side_effects)
 
-        program.run(store_data=True, data_file=str(data_file))
+        program.run(data_file=str(data_file))
 
         mock_save.assert_called_once_with(str(data_file))

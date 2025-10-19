@@ -298,7 +298,6 @@ class QAOA(VariationalQuantumAlgorithm):
         self.max_iterations = max_iterations
         self.current_iteration = 0
         self._n_params = 2
-        self._is_compute_probabilites = False
         self.optimizer = optimizer if optimizer is not None else MonteCarloOptimizer()
 
         self._solution_nodes = []
@@ -439,32 +438,12 @@ class QAOA(VariationalQuantumAlgorithm):
         """
 
         if self._is_compute_probabilites:
-            probs = self._convert_counts_to_probs(results)
-            self._final_probs.update(probs)
-            return probs
+            return self._process_probability_results(results)
 
         losses = super()._post_process_results(results)
         return losses
 
-    def _run_solution_measurement(self):
-        """Execute measurement circuits to obtain probability distributions for solution extraction.
-
-        Runs the optimized circuit with the best parameters (those that achieved the lowest loss)
-        to get the full probability distribution over all measurement outcomes, which is used to
-        extract the optimal solution bitstring.
-        """
-        self._is_compute_probabilites = True
-
-        # Compute probabilities for best parameters (the ones that achieved best loss)
-        self._curr_params = np.atleast_2d(self._best_params)
-        self._circuits[:] = []
-        self._generate_circuits()
-        best_probs = self._dispatch_circuits_and_process_results()
-        self._best_probs.update(best_probs)
-
-        self._is_compute_probabilites = False
-
-    def _perform_final_computation(self):
+    def _perform_final_computation(self, **kwargs):
         """Extract the optimal solution from the QAOA optimization process.
 
         This method performs the following steps:
@@ -486,10 +465,10 @@ class QAOA(VariationalQuantumAlgorithm):
 
         best_measurement_probs = next(iter(self._best_probs.values()))
 
-        # Reverse to account for the endianness difference
+        # Endianness is corrected in _post_process_results
         best_solution_bitstring = max(
             best_measurement_probs, key=best_measurement_probs.get
-        )[::-1]
+        )
 
         if isinstance(self.problem, QUBOProblemTypes):
             self._solution_bitstring[:] = np.fromiter(

@@ -227,11 +227,8 @@ class TestGraphInput:
         )
 
         # Simulate measurement results
-        qaoa_problem._final_probs = {
-            "0_NoMitigation:0_0": {"10011": 0.1444, "10100": 0.0526}
-        }
         qaoa_problem._best_probs = {
-            "0_NoMitigation:0_0": {"10011": 0.1444, "10100": 0.0526}
+            "0_NoMitigation:0_0": {"11001": 0.1444, "00101": 0.0526}
         }
 
         # Patch _run_solution_measurement to do nothing (since we set probs manually)
@@ -239,7 +236,7 @@ class TestGraphInput:
 
         qaoa_problem._perform_final_computation()
 
-        # Should extract bitstring "10011" -> "11001"
+        # Should extract bitstring "11001"
         assert qaoa_problem._solution_nodes == [0, 1, 4]
         assert qaoa_problem.solution == [0, 1, 4]
 
@@ -271,7 +268,7 @@ class TestGraphInput:
 
         assert all(
             len(bitstring) == G.number_of_nodes()
-            for probs_dict in qaoa_problem.final_probs.values()
+            for probs_dict in qaoa_problem.best_probs.values()
             for bitstring in probs_dict.keys()
         )
 

@@ -69,9 +69,9 @@ if __name__ == "__main__":
     vqe_problem_qwc_grouping.run()
     print("-" * 20)
 
-    no_grouping_loss = vqe_problem_no_grouping.losses[-1][0].item()
-    wire_grouping_loss = vqe_problem_wire_grouping.losses[-1][0].item()
-    qwc_grouping_loss = vqe_problem_qwc_grouping.losses[-1][0].item()
+    no_grouping_loss = vqe_problem_no_grouping.best_loss
+    wire_grouping_loss = vqe_problem_wire_grouping.best_loss
+    qwc_grouping_loss = vqe_problem_qwc_grouping.best_loss
 
     print(f"Final Loss (no grouping): {no_grouping_loss}")
     print(f"Final Loss (wires grouping): {wire_grouping_loss}")

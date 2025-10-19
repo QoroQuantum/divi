@@ -33,7 +33,6 @@ if __name__ == "__main__":
         optimizer=optim,
         max_iterations=3,
         backend=ParallelSimulator(shots=2000),
-        grouping_strategy="wires",
     )
 
     t1 = time.time()
@@ -45,4 +44,4 @@ if __name__ == "__main__":
     print(f"Time taken: {round(time.time() - t1, 5)} seconds")
     print(f"Total circuits: {vqe_problem.total_circuit_count}")
 
-    vqe_problem.visualize_results()
+    vqe_problem.visualize_results("line")

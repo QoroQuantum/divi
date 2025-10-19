@@ -2,20 +2,20 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import pickle
 from abc import ABC, abstractmethod
 from queue import Queue
 from threading import Event
 from typing import Any
 
-from divi.backends import CircuitRunner
+from divi.backends import CircuitRunner, JobStatus, QoroService
 
 
 class QuantumProgram(ABC):
     """Abstract base class for quantum programs.
 
-    This class defines the minimal interface that all quantum algorithms
-    must implement. It provides no concrete functionality, ensuring
-    maximum flexibility for different types of quantum algorithms.
+    This class defines the interface and provides common functionality for quantum algorithms.
+    It handles circuit execution, result processing, and data persistence.
 
     Subclasses must implement:
         - run(): Execute the quantum algorithm
@@ -26,6 +26,8 @@ class QuantumProgram(ABC):
         backend (CircuitRunner): The quantum circuit execution backend.
         _seed (int | None): Random seed for reproducible results.
         _progress_queue (Queue | None): Queue for progress reporting.
+        _circuits (list): List of circuits to be executed.
+        _curr_service_job_id: Current service job ID for QoroService backends.
     """
 
     def __init__(
@@ -48,10 +50,16 @@ class QuantumProgram(ABC):
         self._progress_queue = progress_queue
         self._total_circuit_count = 0
         self._total_run_time = 0.0
+        self._circuits = []
+        self._curr_service_job_id = None
 
     @abstractmethod
-    def run(self) -> tuple[int, float]:
+    def run(self, data_file: str | None = None, **kwargs) -> tuple[int, float]:
         """Execute the quantum algorithm.
+
+        Args:
+            data_file (str | None): The file to store the data in. If None, no data is stored. Defaults to None.
+            **kwargs: Additional keyword arguments for subclasses.
 
         Returns:
             tuple[int, float]: A tuple containing:
@@ -109,3 +117,116 @@ class QuantumProgram(ABC):
             float: Cumulative execution time in seconds.
         """
         return self._total_run_time
+
+    def _prepare_and_send_circuits(self):
+        """Prepare circuits for execution and submit them to the backend.
+
+        Returns:
+            Backend output from circuit submission.
+        """
+        job_circuits = {}
+
+        for circuit in self._circuits:
+            for tag, qasm_circuit in zip(circuit.tags, circuit.qasm_circuits):
+                job_circuits[tag] = qasm_circuit
+
+        self._total_circuit_count += len(job_circuits)
+
+        backend_output = self.backend.submit_circuits(job_circuits)
+
+        if isinstance(self.backend, QoroService):
+            self._curr_service_job_id = backend_output
+
+        return backend_output
+
+    def _dispatch_circuits_and_process_results(self, data_file: str | None = None):
+        """Run an iteration of the program.
+
+        The outputs are stored in the Program object.
+        Optionally, the data can be stored in a file.
+
+        Args:
+            data_file (str | None): The file to store the data in. If None, no data is stored. Defaults to None.
+
+        Returns:
+            Any: Processed results from _post_process_results.
+        """
+        results = self._prepare_and_send_circuits()
+
+        def add_run_time(response):
+            if isinstance(response, dict):
+                self._total_run_time += float(response["run_time"])
+            elif isinstance(response, list):
+                self._total_run_time += sum(
+                    float(r.json()["run_time"]) for r in response
+                )
+
+        if isinstance(self.backend, QoroService):
+            # Note: This requires a reporter attribute to be set by subclasses
+            # that need QoroService functionality
+            if hasattr(self, "reporter"):
+                update_function = lambda n_polls, status: self.reporter.info(
+                    message="",
+                    poll_attempt=n_polls,
+                    max_retries=self.backend.max_retries,
+                    service_job_id=self._curr_service_job_id,
+                    job_status=status,
+                )
+            else:
+                update_function = None
+
+            status = self.backend.poll_job_status(
+                self._curr_service_job_id,
+                loop_until_complete=True,
+                on_complete=add_run_time,
+                verbose=False,  # Disable the default logger in QoroService
+                poll_callback=update_function,  # Use the new, more generic name
+            )
+
+            if status != JobStatus.COMPLETED:
+                raise Exception(
+                    "Job has not completed yet, cannot post-process results"
+                )
+
+            results = self.backend.get_job_results(self._curr_service_job_id)
+
+        results = {r["label"]: r["results"] for r in results}
+
+        result = self._post_process_results(results)
+
+        if data_file is not None:
+            self.save_iteration(data_file)
+
+        return result
+
+    def save_iteration(self, data_file: str):
+        """Save the current state of the quantum program to a file.
+
+        Serializes the entire QuantumProgram instance including parameters,
+        losses, and circuit history using pickle.
+
+        Args:
+            data_file (str): Path to the file where the program state will be saved.
+
+        Note:
+            The file is written in binary mode and can be restored using
+            `import_iteration()`.
+        """
+        with open(data_file, "wb") as f:
+            pickle.dump(self, f)
+
+    @staticmethod
+    def import_iteration(data_file: str):
+        """Load a previously saved quantum program state from a file.
+
+        Deserializes a QuantumProgram instance that was saved using `save_iteration()`.
+
+        Args:
+            data_file (str): Path to the file containing the saved program state.
+
+        Returns:
+            QuantumProgram: The restored QuantumProgram instance with all its state,
+                including parameters, losses, and circuit history.
+        """
+        with open(data_file, "rb") as f:
+            return pickle.load(f)

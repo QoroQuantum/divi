@@ -115,6 +115,18 @@ def test_clean_hamiltonian_logic(h2_hamiltonian, dummy_simulator):
     assert not has_identity, "Identity operator should have been removed"
 
 
+def test_vqe_fail_with_constant_only_hamiltonian(dummy_simulator):
+    """Test VQE initialization fails with a constant-only Hamiltonian."""
+    hamiltonian = qml.Identity(0) * 5.0
+    with pytest.raises(ValueError, match="Hamiltonian contains only constant terms."):
+        VQE(
+            hamiltonian=hamiltonian,
+            n_electrons=2,
+            ansatz=HartreeFockAnsatz(),
+            backend=dummy_simulator,
+        )
+
+
 @pytest.mark.parametrize("ansatz_obj", **ANSAETZE_TO_TEST)
 @pytest.mark.parametrize("n_layers", [1, 2])
 def test_meta_circuit_qasm(ansatz_obj, n_layers, h2_molecule):

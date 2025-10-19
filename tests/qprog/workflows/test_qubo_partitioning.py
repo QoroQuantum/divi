@@ -169,7 +169,7 @@ class TestQUBOPartitioningQAOA:
 
         # Test 1: Empty losses error
         mock_program_empty_losses = mocker.MagicMock(spec=QAOA)
-        mock_program_empty_losses._final_probs = {}
+        mock_program_empty_losses.best_probs = {}
         mock_program_empty_losses._losses_history = []  # Empty losses
         qubo_partitioning_qaoa.programs = {("A", 2): mock_program_empty_losses}
 
@@ -178,7 +178,7 @@ class TestQUBOPartitioningQAOA:
 
         # Test 2: Empty final_probs error
         mock_program_empty_final_probs = mocker.MagicMock(spec=QAOA)
-        mock_program_empty_final_probs.final_probs = {}  # Empty final_probs
+        mock_program_empty_final_probs.best_probs = {}  # Empty final_probs
         mock_program_empty_final_probs.losses_history = [
             {"dummy_loss": 0.0}
         ]  # Non-empty losses

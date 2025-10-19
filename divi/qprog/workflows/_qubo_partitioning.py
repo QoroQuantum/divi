@@ -179,7 +179,7 @@ class QUBOPartitioningQAOA(ProgramBatch):
         """
         super().aggregate_results()
 
-        if any(len(program.final_probs) == 0 for program in self.programs.values()):
+        if any(len(program.best_probs) == 0 for program in self.programs.values()):
             raise RuntimeError(
                 "Not all final probabilities computed yet. Please call `run()` first."
             )

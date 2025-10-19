@@ -4,13 +4,14 @@
 
 import pytest
 
+from divi.circuits import MetaCircuit
 from divi.qprog import (
-    QAOA,
     MonteCarloOptimizer,
     ProgramBatch,
     QuantumProgram,
     ScipyMethod,
     ScipyOptimizer,
+    VariationalQuantumAlgorithm,
 )
 from divi.qprog.optimizers import PymooMethod, PymooOptimizer
 
@@ -27,9 +28,8 @@ OPTIMIZERS_TO_TEST = {
 }
 
 
-def verify_metacircuit_dict(obj, expected_keys):
-    from divi.circuits import MetaCircuit
-
+def verify_metacircuit_dict(obj: QuantumProgram, expected_keys: list[str]):
+    assert isinstance(obj.meta_circuits, dict)
     assert hasattr(obj, "_meta_circuits"), "Meta circuits attribute does not exist"
     assert isinstance(obj._meta_circuits, dict), "Meta circuits object not a dict"
     assert all(
@@ -45,8 +45,13 @@ def verify_correct_circuit_count(obj: QuantumProgram):
     assert obj.current_iteration == 1
     assert len(obj.losses_history) == 1
 
-    # QAOA generates 1 extra circuit for solution measurement with best parameters
-    extra_computation_offset = 1 if isinstance(obj, QAOA) else 0
+    extra_computation_offset = 0
+    if isinstance(obj, VariationalQuantumAlgorithm):
+        # VQA subclasses with a meas_circuit will run an extra computation
+        if "meas_circuit" in obj.meta_circuits:
+            extra_computation_offset = len(
+                obj.meta_circuits["meas_circuit"].measurement_groups
+            )
 
     adjusted_total_circuit_count = obj.total_circuit_count - extra_computation_offset
 

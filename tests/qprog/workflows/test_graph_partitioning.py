@@ -502,7 +502,7 @@ class TestGraphPartitioningQAOA:
 
         # Ensure all programs appear to have been run by populating the 'final_probs' dict
         for program in node_partitioning_qaoa.programs.values():
-            program._final_probs = {"dummy_key": {"00": 0.5, "11": 0.5}}
+            program._best_probs = {"dummy_key": {"00": 0.5, "11": 0.5}}
             program._losses_history = [{"dummy_loss": 0.0}]
 
         # The expected global solution should contain only the original nodes from the second program
