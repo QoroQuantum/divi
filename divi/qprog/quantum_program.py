@@ -50,7 +50,7 @@ class QuantumProgram(ABC):
         self._progress_queue = progress_queue
         self._total_circuit_count = 0
         self._total_run_time = 0.0
-        self._circuits = []
+        self._curr_circuits = []
         self._curr_service_job_id = None
 
     @abstractmethod
@@ -126,7 +126,7 @@ class QuantumProgram(ABC):
         """
         job_circuits = {}
 
-        for circuit in self._circuits:
+        for circuit in self._curr_circuits:
             for tag, qasm_circuit in zip(circuit.tags, circuit.qasm_circuits):
                 job_circuits[tag] = qasm_circuit
 

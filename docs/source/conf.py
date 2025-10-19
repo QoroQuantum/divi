@@ -8,11 +8,19 @@
 
 import os
 import sys
+import tomllib
 
-project = "Divi"
+# Load pyproject.toml to extract metadata
+with open("../../pyproject.toml", "rb") as f:
+    pyproject = tomllib.load(f)
+poetry_config = pyproject["tool"]["poetry"]
+project_name = poetry_config["name"]
+
+
+project = project_name.replace("qoro-", "").capitalize()
 copyright = "2025, Qoro Quantum Ltd."
 author = "Qoro Quantum Ltd."
-release = "0.3.5"
+release = poetry_config["version"]
 
 # Add the project root to the Python path so Sphinx can import the modules
 sys.path.insert(0, os.path.abspath("../../"))
@@ -109,7 +117,9 @@ html_theme_options = {
 }
 
 # Ensure the global toctree is used for navigation
-html_sidebars = {"**": ["globaltoc.html", "relations.html", "sourcelink.html"]}
+html_sidebars = {
+    "**": ["searchbox.html", "globaltoc.html", "relations.html", "sourcelink.html"]
+}
 
 # -- Additional configuration for better module discovery ---------------------
 
@@ -123,4 +133,4 @@ autosectionlabel_maxdepth = 2
 
 # Disable module index and search page generation
 html_use_modindex = False
-html_use_search = False
+html_use_search = True

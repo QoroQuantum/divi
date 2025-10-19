@@ -25,6 +25,12 @@ Core Classes
    :show-inheritance:
    :exclude-members: __init__
 
+.. autoclass:: divi.qprog.VariationalQuantumAlgorithm
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+
 Algorithms
 ----------
 
@@ -34,13 +40,13 @@ Divi provides implementations of popular quantum algorithms with a focus on scal
    :members:
    :undoc-members:
    :show-inheritance:
-   :exclude-members: __init__
+   :special-members: __init__
 
 .. autoclass:: divi.qprog.algorithms.QAOA
    :members:
    :undoc-members:
    :show-inheritance:
-   :exclude-members: __init__
+   :special-members: __init__
 
 Graph Problem Types
 ~~~~~~~~~~~~~~~~~~~

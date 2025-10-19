@@ -10,6 +10,7 @@ Program Batch Overview
 
 Program batches allow you to run multiple quantum programs simultaneously, automatically distributing work across available computational resources. This is essential for:
 
+- **Problem Decomposition** 🧩 - Breaking down large problems into smaller, solvable parts
 - **Parameter Sweeps** 🔄 - Testing multiple parameter combinations
 - **Molecular Studies** ⚗️ - Computing dissociation curves and reaction pathways
 - **Algorithm Comparison** ⚖️ - Comparing different ansätze and optimizers
@@ -109,8 +110,18 @@ The most common program batch scenario is running VQE across multiple molecular 
        alignment_atoms=[0]                   # Align to oxygen atom
    )
 
+Problem Decomposition Workflows
+-------------------------------
+
+For problems that are too large to fit on a single quantum device, Divi provides workflows that automatically decompose the problem into smaller subproblems, solve them in parallel, and then combine the results into a final solution. This approach allows you to tackle large-scale optimization challenges that would otherwise be intractable.
+
+Divi offers built-in support for two common decomposition scenarios:
+
+- **Graph Partitioning**: For large graph problems like MaxCut or Minimum Vertex Cover.
+- **QUBO Partitioning**: For large-scale QUBO (Quadratic Unconstrained Binary Optimization) problems.
+
 Graph Partitioning QAOA
------------------------
+^^^^^^^^^^^^^^^^^^^^^^^
 
 For large optimization problems that exceed quantum hardware limitations, Divi provides automatic graph partitioning:
 
@@ -181,7 +192,7 @@ Different partitioning algorithms for different graph structures:
    )
 
 QUBO Partitioning
------------------
+^^^^^^^^^^^^^^^^^
 
 For large QUBO problems, Divi integrates with D-Wave's hybrid solvers:
 
@@ -222,23 +233,26 @@ For large QUBO problems, Divi integrates with D-Wave's hybrid solvers:
 Custom Batch Workflows
 ----------------------
 
-You can create custom program batch workflows by inheriting from :class:`ProgramBatch`:
+You can create custom program batch workflows by inheriting from :class:`~divi.qprog.ProgramBatch`:
 
 **Custom Batch Implementation** 🛠️
 
 .. code-block:: python
 
    from divi.qprog import ProgramBatch, VQE
-   from divi.backends import ParallelSimulator
+   from divi.backends import CircuitRunner, ParallelSimulator
+   import pennylane as qml
+   import numpy as np
 
    class CustomParameterSweep(ProgramBatch):
-       def __init__(self, molecules, parameters, **kwargs):
-           super().__init__(ParallelSimulator(**kwargs))
+       def __init__(self, backend: CircuitRunner, molecules, parameters):
+           super().__init__(backend)
            self.molecules = molecules
            self.parameters = parameters
 
        def create_programs(self):
-           \"\"\"Generate VQE programs for all molecule-parameter combinations\"\"\"
+           """Generate VQE programs for all molecule-parameter combinations"""
+           super().create_programs()
            for i, (mol, params) in enumerate(zip(self.molecules, self.parameters)):
                vqe = VQE(
                    molecule=mol,
@@ -248,14 +262,15 @@ You can create custom program batch workflows by inheriting from :class:`Program
                self._programs[f"sweep_{i}"] = vqe
 
        def aggregate_results(self):
-           \"\"\"Collect and analyze results from all programs\"\"\"
+           """Collect and analyze results from all programs"""
+           super().aggregate_results()
            results = {}
            for program_id, program in self._programs.items():
-               if program.losses:  # Check if program completed
-                   final_loss = min(program.losses[-1].values())
+               if program.losses_history:  # Check if program completed
+                   final_loss = program.best_loss
                    results[program_id] = {
                        'energy': final_loss,
-                       'params': program.final_params[0],
+                       'params': program.best_params,
                        'circuits': program.total_circuit_count
                    }
            return results
@@ -270,10 +285,14 @@ You can create custom program batch workflows by inheriting from :class:`Program
    params3 = np.random.rand(12)
    parameters = [params1, params2, params3]
 
-   sweep = CustomParameterSweep(molecules, parameters, n_processes=8)
-   sweep.run()
+   # Use a local simulator
+   local_backend = ParallelSimulator(n_processes=8)
+   sweep = CustomParameterSweep(local_backend, molecules, parameters)
+   sweep.create_programs()
+   sweep.run(blocking=True)
 
    results = sweep.aggregate_results()
+   print(results)
 
 Parallel Execution Strategies
 -----------------------------
@@ -345,95 +364,11 @@ Combine local and cloud execution for optimal performance:
 Progress Monitoring and Control
 -------------------------------
 
-Monitor and control long-running batch executions:
+Divi provides automatic progress tracking for long-running batches. When you execute a batch that contains compatible programs (like VQE or QAOA), a progress bar will be displayed in your console, showing the status of each program in real-time.
 
-**Progress Tracking** 📊
+**Stopping a Batch** 🛑
 
-.. code-block:: python
-
-   from queue import Queue
-   import numpy as np
-   import pennylane as qml
-   from divi.qprog import VQEHyperparameterSweep, MoleculeTransformer
-   from divi.backends import ParallelSimulator
-
-   # Set up progress monitoring
-   progress_queue = Queue()
-   base_molecule = qml.qchem.Molecule(
-       symbols=["H", "H"],
-       coordinates=np.array([[0.0, 0.0, -0.6614], [0.0, 0.0, 0.6614]]),
-   )
-   transformer = MoleculeTransformer(
-       base_molecule=base_molecule,
-       bond_modifiers=[-0.4, -0.2, 0.0, 0.2, 0.4]
-   )
-   vqe_sweep = VQEHyperparameterSweep(
-       molecule_transformer=transformer,
-       progress_queue=progress_queue,  # Enable progress reporting
-       backend=ParallelSimulator()
-   )
-
-   # Monitor in separate thread
-   def monitor_progress():
-       while True:
-           try:
-               update = progress_queue.get(timeout=1)
-               print(f"Program {update['program_id']}: {update['message']}")
-               if 'final' in update:
-                   break
-           except:
-               break
-
-   import threading
-   monitor_thread = threading.Thread(target=monitor_progress)
-   monitor_thread.start()
-
-   # Run the sweep
-   vqe_sweep.run()
-
-**Cancellation and Control** 🛑
-
-.. code-block:: python
-
-   from threading import Event
-
-   # Create cancellation event
-   cancel_event = Event()
-
-   vqe_sweep = VQEHyperparameterSweep(
-       molecule_transformer=transformer,
-       cancellation_event=cancel_event,  # Enable cancellation
-       backend=ParallelSimulator()
-   )
-
-   # Run in background
-   import threading
-   def run_sweep():
-       vqe_sweep.run()
-
-   thread = threading.Thread(target=run_sweep)
-   thread.start()
-
-   # Cancel after 10 minutes
-   import time
-   time.sleep(600)
-   cancel_event.set()  # Gracefully stop all programs
-
-**Resource Management** 💾
-
-.. code-block:: python
-
-   from divi.utils import save_quantum_program, load_quantum_program
-
-   # Save batch state during execution
-   vqe_sweep.run()
-
-   # Save complete results for later analysis
-   save_quantum_program(vqe_sweep, "sweep_results.pkl")
-
-   # Later, restore and analyze
-   restored_sweep = load_quantum_program("sweep_results.pkl")
-   results = restored_sweep.aggregate_results()
+You can gracefully stop a running batch at any time by pressing ``Ctrl+C``. Divi will catch the signal, attempt to cancel any pending programs, and allow any currently running programs to finish their current iteration before shutting down.
 
 Performance Optimization
 ------------------------
@@ -482,61 +417,11 @@ Performance Optimization
        polling_interval=2.0         # Faster status checks
    )
 
-Best Practices
---------------
-
-**For Small-Scale Studies** 🔬
-
-1. **Start Local** - Use ``ParallelSimulator`` for initial development
-2. **Monitor Resources** - Track memory and CPU usage
-3. **Save Progress** - Backup results during long runs
-4. **Test Convergence** - Verify results with multiple random seeds
-
-**For Large-Scale Production** 🏭
-
-1. **Plan Capacity** - Estimate computational requirements upfront
-2. **Optimize Batching** - Find optimal batch sizes for your hardware
-3. **Implement Monitoring** - Set up comprehensive progress tracking
-4. **Handle Failures** - Implement retry logic and error recovery
-
-**For Research Workflows** 🔬
-
-1. **Version Control** - Track all parameters and configurations
-2. **Statistical Analysis** - Run multiple times for error bars
-3. **Parameter Studies** - Systematically explore parameter space
-4. **Result Validation** - Cross-validate with classical methods when possible
-
-Troubleshooting
----------------
-
-**Common Issues:**
-
-❌ **Memory Errors**
-   - Reduce ``n_processes`` in ParallelSimulator
-   - Process problems in smaller batches
-   - Use more memory-efficient backends
-
-❌ **Slow Execution**
-   - Increase ``n_processes`` (up to CPU core count)
-   - Use ``use_circuit_packing=True`` for cloud execution
-   - Reduce ``shots`` for faster iteration
-
-❌ **Job Timeouts**
-   - Increase ``max_retries`` for long-running jobs
-   - Split large problems into smaller chunks
-   - Use ``polling_interval`` to balance responsiveness vs overhead
-
-❌ **Inconsistent Results**
-   - Set ``simulation_seed`` for reproducible results
-   - Use ``n_param_sets > 1`` for statistical robustness
-   - Verify results with multiple optimizers
-
 Next Steps
 ----------
 
-- 🔬 **Research Examples**: Explore advanced workflows in the Tutorials section
-- ⚡ **Backend Optimization**: Learn about performance tuning in :doc:`backends`
-- 🛠️ **Custom Workflows**: Create your own batch processors using :doc:`../api_reference/qprog`
-- 📊 **Result Analysis**: Learn about visualization and analysis tools
+- ⚡ **Backend Optimization**: Learn about performance tuning in :doc:`backends`.
+- 🛠️ **Custom Workflows**: Create your own batch processors using :class:`~divi.qprog.ProgramBatch`.
+- 📊 **Result Analysis**: Learn about advanced result visualization, e.g., using :meth:`~divi.qprog.workflows.VQEHyperparameterSweep.visualize_results`.
 
 Batch processing is where Divi's true power shines - enabling quantum computations that would be impractical with traditional approaches!

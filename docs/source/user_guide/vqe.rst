@@ -40,8 +40,7 @@ Here's how to set up a basic VQE calculation for the H2 molecule:
    vqe_problem.run()
 
    # Get results
-   energies = vqe_problem.losses[-1]
-   print(f"Ground state energy: {min(energies.values()):.6f} Ha")
+   print(f"Ground state energy: {vqe_problem.best_loss:.6f} Ha")
    print(f"Total circuits executed: {vqe_problem.total_circuit_count}")
 
 Hamiltonian Input

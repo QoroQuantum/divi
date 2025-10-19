@@ -12,25 +12,6 @@ A `QAOA` constructor expects a problem to be provided. As we will show in the ex
 
 A user has the ability to choose the **initial state** of the quantum system before the optimization. By default (when the argument `initial_state = "Recommended"` is passed), a problem-specific initial state would be chosen. Other accepted values are `"Zero"`, `"Ones"`, and `"Superposition"`. In addition, a user can determine how many **layers** of the QAOA ansatz to apply.
 
-Key Parameters
-^^^^^^^^^^^^^^
-
-**problem**: The optimization problem - can be a NetworkX graph, QUBO matrix, or Qiskit QuadraticProgram.
-
-**graph_problem** (``GraphProblem``): For graph problems, specifies the optimization type (MAX_CLIQUE, MAXCUT, etc.).
-
-**n_layers** (``int``): Number of QAOA layers. More layers increase solution quality but also circuit depth.
-
-**optimizer** (``Optimizer``): Classical optimizer for parameter optimization. Defaults to ``MonteCarloOptimizer()``.
-
-**max_iterations** (``int``): Maximum optimization iterations. Defaults to 10.
-
-**initial_state** (``str``): Initial quantum state. Options: "Recommended", "Zero", "Ones", "Superposition".
-
-**is_constrained** (``bool``): Whether to use constrained Hamiltonian (for non-MaxCut problems).
-
-**initial_params** (``np.ndarray``): Starting parameters for optimization. Can improve convergence significantly.
-
 Real-World Examples
 ^^^^^^^^^^^^^^^^^^^
 
@@ -172,7 +153,7 @@ Numpy Array-based Input
    qaoa_problem.compute_final_solution()
 
    print(f"Solution: {qaoa_problem.solution}")
-   print(f"Energy: {qaoa_problem.energy}")
+   print(f"Energy: {qaoa_problem.best_loss}")
 
 Qiskit Quadratic Program Input
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -249,28 +230,6 @@ For large graphs that exceed quantum hardware limitations, use GraphPartitioning
 
    print(f"Total circuits executed: {qaoa_partition.total_circuit_count}")
 
-What's Happening?
-^^^^^^^^^^^^^^^^^
-
-.. list-table::
-   :header-rows: 1
-   :widths: 40 60
-
-   * - Step
-     - Description
-   * - ``partitioning_config=config``
-     - The graph is partitioned into clusters with max 8 nodes each using the METIS algorithm.
-   * - ``optimizer=MONTE_CARLO``
-     - A lightweight Monte Carlo optimizer is used to minimize circuit evaluation cost.
-   * - ``create_programs()``
-     - Initializes a batch of QAOA programs, each solving a cluster of the original graph.
-   * - ``run().join()``
-     - Executes all generated circuits — possibly in parallel across multiple quantum backends and waits until all programs join.
-   * - ``compute_final_solutions()``
-     - Optimized bitstrings are retrieved for each cluster.
-   * - ``aggregate_results()``
-     - The final MaxCut solution is formed by combining cluster-wise results.
-
 QUBO Partitioning QAOA
 ----------------------
 
@@ -305,6 +264,24 @@ For large QUBO problems, use QUBOPartitioningQAOA with D-Wave's hybrid library:
 
    print(f"Quantum solution: {quantum_solution}")
    print(f"Quantum energy: {quantum_energy:.6f}")
+
+What's Happening?
+^^^^^^^^^^^^^^^^^
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - Step
+     - Description
+   * - ``decomposer=...``
+     - The QUBO is partitioned into smaller subproblems using an energy impact decomposer.
+   * - ``create_programs()``
+     - Initializes a batch of QAOA programs, each solving a subproblem of the original QUBO.
+   * - ``run()``
+     - Executes all generated circuits—possibly in parallel across multiple quantum backends.
+   * - ``aggregate_results()``
+     - The final QUBO solution is formed by combining the results from each subproblem.
 
 Why Partition?
 --------------

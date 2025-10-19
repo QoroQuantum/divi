@@ -51,8 +51,7 @@ Let's solve a quantum chemistry problem - finding the ground state energy of a h
    vqe.run()
 
    # Check your results
-   final_energy = min(vqe.losses[-1].values())
-   print(f"🎉 Ground state energy: {final_energy:.6f} Hartree")
+   print(f"🎉 Ground state energy: {vqe.best_loss:.6f} Hartree")
    print(f"⚡ Circuits executed: {vqe.total_circuit_count}")
 
 That's it! You just ran a variational quantum algorithm. The energy should be close to -1.137 Hartree (H₂'s true ground state energy).

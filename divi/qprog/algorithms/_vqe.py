@@ -278,7 +278,7 @@ class VQE(VariationalQuantumAlgorithm):
                 params_group, tag_prefix=f"{p}"
             )
 
-            self._circuits.append(circuit)
+            self._curr_circuits.append(circuit)
 
     def _post_process_results(self, results):
         """Post-process the results of the VQE problem."""

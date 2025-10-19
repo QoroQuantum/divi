@@ -3,10 +3,29 @@ Core Concepts
 
 This guide explains the fundamental concepts and architecture that make Divi work. Understanding these concepts will help you use Divi more effectively and build custom quantum algorithms.
 
-The Quantum Program Lifecycle
+The QuantumProgram Base Class
 -----------------------------
 
-Every quantum program in Divi follows a consistent lifecycle:
+All quantum algorithms in Divi inherit from the abstract base class :class:`QuantumProgram`, which provides a streamlined interface for all quantum programs. Its primary role is to establish a common structure for executing circuits and managing backend communication.
+
+**Core Features:**
+
+- **Backend Integration** 🔗 - Unified interface for simulators and hardware
+- **Execution Lifecycle** 🔄 - Standardized methods for running programs
+- **Result Handling** 📊 - A common structure for processing backend results
+- **Error Handling** 🛡️ - Graceful handling of execution failures
+
+**Key Properties:**
+
+- ``total_circuit_count`` - Total circuits executed so far
+- ``total_run_time`` - Cumulative execution time in seconds
+
+The VariationalQuantumAlgorithm Class
+---------------------------------------
+
+For algorithms that rely on optimizing parameters, Divi provides the :class:`VariationalQuantumAlgorithm` class. This is the base class for algorithms like VQE and QAOA, and it extends `QuantumProgram` with advanced features for optimization and result tracking.
+
+Every variational quantum program in Divi follows a consistent lifecycle:
 
 1. **Initialization** 🎯 - Set up your problem and algorithm parameters
 2. **Circuit Generation** ⚡ - Create quantum circuits from your problem specification
@@ -36,28 +55,23 @@ Here's how a typical VQE program flows through this lifecycle:
    vqe.run()  # This handles steps 2-5 automatically!
 
    # 4. Execution & 5. Result Processing - All done!
-   print(f"Ground state energy: {min(vqe.losses[-1].values()):.6f}")
+   print(f"Ground state energy: {vqe.best_loss:.6f}")
 
-The QuantumProgram Base Class
------------------------------
 
-All quantum algorithms in Divi inherit from :class:`QuantumProgram`, which provides:
+**Key Features:**
 
-**Core Features:**
-
-- **Backend Integration** 🔗 - Unified interface for simulators and hardware
-- **Parameter Management** ⚙️ - Automatic initialization and validation
-- **Progress Tracking** 📈 - Real-time feedback during execution
-- **Result Storage** 💾 - Automatic loss tracking and parameter history
-- **Error Handling** 🛡️ - Graceful handling of execution failures
+- **Parameter Management** ⚙️ - Automatic initialization and validation of parameters
+- **Optimization Loop** 🔄 - Built-in integration with classical optimizers
+- **Loss Tracking** 📈 - Detailed history of loss values during optimization
+- **Best Result Storage** 💾 - Automatic tracking of the best parameters and loss value found
 
 **Key Properties:**
 
-- ``total_circuit_count`` - Total circuits executed so far
-- ``total_run_time`` - Cumulative execution time in seconds
-- ``losses`` - History of loss values during optimization
-- ``final_params`` - Best parameters found by optimization
-- ``circuits`` - List of all generated circuits
+- ``losses_history`` - History of loss values from each optimization iteration
+- ``initial_params`` - The starting parameters for the optimization. These allow you to set custom initial parameters for the optimization.
+- ``final_params`` - The last set of parameters from the optimization
+- ``best_params`` - The parameters that achieved the lowest loss
+- ``best_loss`` - The best loss value recorded during the run
 
 **Advanced Usage:**
 
@@ -68,12 +82,12 @@ All quantum algorithms in Divi inherit from :class:`QuantumProgram`, which provi
    print(f"Total runtime: {vqe.total_run_time:.2f}s")
 
    # Examine optimization history
-   for i, loss_dict in enumerate(vqe.losses):
-       best_loss = min(loss_dict.values())
-       print(f"Iteration {i}: {best_loss:.6f}")
+   for i, loss_dict in enumerate(vqe.losses_history):
+       best_loss_in_iter = min(loss_dict.values())
+       print(f"Iteration {i}: {best_loss_in_iter:.6f}")
 
-   # Get final optimized parameters
-   optimal_params = vqe.final_params[0]  # First (best) parameter set
+   # Get the best parameters found during optimization
+   best_params = vqe.best_params
 
 Circuit Architecture
 --------------------
@@ -182,6 +196,8 @@ Divi handles parameter optimization automatically, but you can also set custom i
 
    .. code-block:: python
 
+      import numpy as np
+
       # Set custom initial parameters
       custom_params = np.array([[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]])
       vqe.initial_params = custom_params
@@ -214,7 +230,7 @@ After execution, Divi provides rich result analysis capabilities:
       # Plot convergence
       import matplotlib.pyplot as plt
 
-      losses = [min(loss_dict.values()) for loss_dict in vqe.losses]
+      losses = [min(loss_dict.values()) for loss_dict in vqe.losses_history]
       plt.plot(losses)
       plt.xlabel('Iteration')
       plt.ylabel('Energy (Hartree)')

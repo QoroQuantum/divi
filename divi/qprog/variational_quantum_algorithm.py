@@ -346,16 +346,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         return self._n_params
 
     @property
-    def circuits(self) -> list[Circuit]:
-        """Get a copy of the generated circuits list.
-
-        Returns:
-            list[Circuit]: Copy of the circuits list. Modifications to this list
-                will not affect the internal state.
-        """
-        return self._circuits.copy()
-
-    @property
     def losses_history(self) -> list[dict]:
         """Get a copy of the optimization loss history.
 
@@ -501,7 +491,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         )
 
     def _run_optimization_circuits(self, data_file, **kwargs):
-        self._circuits[:] = []
+        self._curr_circuits[:] = []
 
         self._generate_circuits(**kwargs)
 
@@ -734,7 +724,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         # Compute probabilities for best parameters (the ones that achieved best loss)
         self._curr_params = np.atleast_2d(self._best_params)
-        self._circuits[:] = []
+        self._curr_circuits[:] = []
         self._generate_circuits()
         best_probs = self._dispatch_circuits_and_process_results()
         self._best_probs.update(best_probs)

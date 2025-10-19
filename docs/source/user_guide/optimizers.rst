@@ -137,8 +137,9 @@ Choosing the Right Optimizer
 Next Steps
 ----------
 
-- Try the runnable examples in the `tutorials/ <https://github.com/qoro-quantum/divi/tree/main/tutorials>`_ directory
-- Learn about :doc:`vqe` and :doc:`qaoa` for algorithm-specific guidance
+- 🔬 **Tutorials**: Try the runnable examples in the `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ directory.
+- ⚡ **Algorithm Guides**: Learn about :doc:`vqe` and :doc:`qaoa` for algorithm-specific guidance.
+- ⚡ **Batching and Sweeps**: See how to use optimizers in large-scale computations in the :doc:`program_batches` guide.
 
 References
 ----------

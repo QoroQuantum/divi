@@ -40,8 +40,7 @@ Basic Usage
    )
 
    vqe.run()
-   mitigated_energy = min(vqe.losses[-1].values())
-   print(f"Mitigated energy: {mitigated_energy:.6f}")
+   print(f"Mitigated energy: {vqe.best_loss:.6f}")
 
 When to Use Error Mitigation
 ----------------------------

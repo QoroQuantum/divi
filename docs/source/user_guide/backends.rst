@@ -1,113 +1,129 @@
 Backends Guide
 ==============
 
-Divi provides a flexible backend system that allows you to run quantum programs on different execution environments, from local simulators to cloud-based quantum hardware.
+Divi provides a flexible backend system that allows you to run quantum programs on different execution environments, from local simulators to cloud-based quantum hardware. This guide will walk you through the available backends and how to choose the right one for your needs.
 
 Backend Architecture
 --------------------
 
-All backends in Divi implement the :class:`CircuitRunner` interface, providing a consistent API regardless of the underlying execution environment. This allows you to switch between different backends without changing your quantum program code.
+All backends in Divi implement the :class:`CircuitRunner` interface, providing a consistent API regardless of the underlying execution environment. This powerful abstraction allows you to develop your quantum programs locally and then switch to a different backend—like cloud hardware—with a single line of code.
 
 Available Backends
 ------------------
 
-**ParallelSimulator**
-   High-performance local simulator with parallel execution capabilities.
+Divi comes with two primary backends out of the box:
 
-**QoroService**
-   Cloud-based quantum computing service for accessing performant simulators and real quantum hardware.
+* **ParallelSimulator**: A high-performance local simulator with parallel execution capabilities, perfect for development and testing.
+* **QoroService**: A cloud-based quantum computing service for accessing powerful simulators and real quantum hardware.
+
+Let's dive into each one.
 
 ParallelSimulator
 -----------------
 
-The ParallelSimulator is the recommended backend for development, testing, and research. It provides:
+The ``ParallelSimulator`` is your go-to backend for local development, testing, and research. It's designed for speed and flexibility, allowing you to iterate quickly without needing an internet connection.
 
-- **Fast Execution**: Optimized simulation with parallel processing
-- **Noise Modeling**: Realistic noise simulation using Qiskit backends
-- **Flexible Configuration**: Customizable shots, processes, and noise models
-- **Local Execution**: No internet connection required
+**Key Features:**
 
-Basic Usage:
+* **Fast Execution**: Optimized simulation with parallel processing to take full advantage of your local machine.
+* **Noise Modeling**: Simulate realistic noise conditions by integrating with Qiskit's fake backends.
+* **Flexible Configuration**: Easily customize the number of shots, parallel processes, and noise models.
+* **Local Execution**: Runs entirely on your machine, no cloud access required.
+
+Getting Started with ParallelSimulator
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Using the simulator is straightforward. You can create a default instance or configure it to your specific needs.
 
 .. code-block:: python
 
    from divi.backends import ParallelSimulator
 
-   # Basic simulator
+   # A basic simulator with default settings
    backend = ParallelSimulator()
 
-   # Configured simulator
+   # A configured simulator for better accuracy and speed
    backend = ParallelSimulator(
        shots=1000,
-       n_processes=4,
-       qiskit_backend="qasm_simulator"
+       n_processes=4
    )
 
-Configuration Options:
+Advanced Configuration
+^^^^^^^^^^^^^^^^^^^^^^
+
+You can tune the ``ParallelSimulator`` for different scenarios, like maximizing performance or simulating a noisy environment.
 
 .. code-block:: python
 
-   # High-performance configuration
+   # High-performance configuration for production-level simulations
    backend = ParallelSimulator(
-       shots=10000,           # Number of measurement shots
-       n_processes=8,        # Number of parallel processes
-       qiskit_backend="auto", # Auto-select best simulator
-       seed=42               # Random seed for reproducibility
+       shots=10000,           # Increase measurement shots for higher precision
+       n_processes=8,        # Use more parallel processes
+       qiskit_backend="auto", # Let Divi auto-select the best available simulator
+       seed=42               # Set a random seed for reproducible results
    )
 
-   # Noisy simulation
+   # Noisy simulation to mimic real hardware
    from qiskit_ibm_runtime.fake_provider import FakeManilaV2
    backend = ParallelSimulator(
        shots=5000,
-       qiskit_backend=FakeManilaV2(),  # Use fake backend with noise
+       qiskit_backend=FakeManilaV2(),  # Use a fake backend with a realistic noise model
        n_processes=2
    )
 
 QoroService
 -----------
 
-QoroService provides access to cloud-based quantum computing resources:
+When you're ready to move from simulation to real hardware, the ``QoroService`` provides access to cloud-based quantum computing resources.
 
-- **Real Hardware**: Access to actual quantum computers
-- **Scalable Execution**: Handle large job queues
-- **Circuit Cutting**: Automatic circuit decomposition for large problems
-- **Job Management**: Track and manage quantum jobs
+**Key Features:**
 
-Basic Usage:
+* **Real Hardware**: Run your algorithms on actual quantum computers.
+* **Scalable Execution**: The service is designed to handle large queues of jobs efficiently.
+* **Circuit Cutting**: Automatically decompose large circuits that wouldn't otherwise fit on a QPU.
+* **Job Management**: A robust system for tracking and managing your quantum jobs.
+
+Getting Started with QoroService
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+To use the service, you'll first need to initialize it and test your connection.
 
 .. code-block:: python
 
    from divi.backends import QoroService, JobType
 
-   # Initialize service
+   # Initialize the service (API keys are loaded from your environment)
    service = QoroService()
 
-   # Test connection
+   # Test your connection to the service
    service.test_connection()
 
-Submitting Circuits:
+Submitting and Monitoring Jobs
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The workflow for submitting circuits is straightforward: you send your circuits and then monitor the job until it's complete.
 
 .. code-block:: python
 
-   # Prepare circuits
+   # Prepare your circuits as a dictionary
    circuits = {
        "circuit_1": qasm_string_1,
        "circuit_2": qasm_string_2
    }
 
-   # Submit jobs
+   # Submit the job to the service
    job_ids = service.submit_circuits(
        circuits,
-       job_type=JobType.SIMULATE
+       job_type=JobType.SIMULATE  # Specify the job type
    )
 
-   # Monitor execution
+   # Monitor the execution until completion
    service.poll_job_status(job_ids, loop_until_complete=True)
 
-   # Retrieve results
+   # Retrieve your results
    results = service.get_job_results(job_ids)
 
-Job Types:
+The service supports different job types depending on your needs:
 
 .. code-block:: python
 
@@ -116,91 +132,60 @@ Job Types:
    # Standard simulation jobs
    job_ids = service.submit_circuits(circuits, job_type=JobType.SIMULATE)
 
-   # Execution jobs
+   # Execution jobs for running on real hardware
    job_ids = service.submit_circuits(circuits, job_type=JobType.EXECUTE)
 
-   # Estimation jobs
+   # Estimation jobs for quick cost analysis
    job_ids = service.submit_circuits(circuits, job_type=JobType.ESTIMATE)
 
 Backend Selection Guide
 -----------------------
 
-**For Development and Testing**
-   Use ParallelSimulator:
-   - Fast iteration cycles
-   - No external dependencies
-   - Easy debugging
-   - Cost-effective
+Choosing the right backend depends on what stage of development you're in.
 
-**For Production Runs**
-   Use QoroService:
-   - Real quantum hardware
-   - Scalable execution
-   - Professional support
-   - Advanced features
-
-**For Research**
-   Use both backends:
-   - ParallelSimulator for rapid prototyping
-   - QoroService for final validation
-   - Compare results across backends
-
-Performance Optimization
-------------------------
-
-**ParallelSimulator Optimization**
-
-.. code-block:: python
-
-   # Optimize for speed
-   backend = ParallelSimulator(
-       n_processes=min(8, os.cpu_count()),  # Use available cores
-       shots=1000,                          # Balance accuracy vs speed
-       qiskit_backend="qasm_simulator"      # Fastest simulator
-   )
-
-   # Optimize for accuracy
-   backend = ParallelSimulator(
-       shots=10000,                         # More shots for better statistics
-       n_processes=2,                       # Fewer processes for stability
-       qiskit_backend="statevector_simulator"  # Exact simulation
-   )
-
-**QoroService Optimization**
-
-.. code-block:: python
-
-   # Batch circuit submission
-   service = QoroService()
-
-   # Submit multiple circuits at once
-   large_circuit_batch = {f"circuit_{i}": circuit for i, circuit in enumerate(circuits)}
-   job_ids = service.submit_circuits(large_circuit_batch)
-
-   # For large circuit batches, consider submitting in smaller groups
-   if len(circuits) > 20:
-       # Split into smaller batches if needed
-       batch_size = 10
-       for i in range(0, len(circuits), batch_size):
-           batch = dict(list(circuits.items())[i:i+batch_size])
-           job_ids = service.submit_circuits(batch)
+* **For Development and Testing**, use ``ParallelSimulator``. It offers fast iteration cycles, easy debugging, and is completely free.
+* **For Production Runs**, use ``QoroService``. It provides access to real quantum hardware, scalable execution, and advanced features.
+* **For Research**, it's often best to use both. Start with ``ParallelSimulator`` for rapid prototyping and then use ``QoroService`` for final validation and to compare simulated results against real hardware.
 
 Backend Comparison
 ------------------
 
-+------------------+------------------+------------------+
-| Feature          | ParallelSimulator| QoroService      |
-+==================+==================+==================+
-| Execution Speed  | Very Fast        | Variable         |
-| Accuracy         | Perfect          | Hardware-limited |
-| Cost             | Free             | Pay-per-use      |
-| Scalability      | Limited          | High             |
-| Noise            | Configurable     | Real hardware    |
-| Availability     | Always           | Queue-dependent  |
-+------------------+------------------+------------------+
+The best choice of backend depends on your specific needs. Here's a summary of the key differences:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 37 38
+   :stub-columns: 1
+
+   * - Feature
+     - ParallelSimulator
+     - QoroService
+   * - **Use Case**
+     - Development & Prototyping
+     - Production & Real Hardware
+   * - **Speed**
+     - Fast (Local CPU)
+     - High-throughput (Cloud)
+   * - **Accuracy**
+     - Ideal (Noiseless)
+     - Real-world (Hardware noise)
+   * - **Cost**
+     - Free
+     - Pay-per-use
+   * - **Scalability**
+     - Limited by local hardware
+     - High (Cloud infrastructure)
+   * - **Noise**
+     - Simulated (Configurable)
+     - Physical (Real hardware)
+   * - **Availability**
+     - Always (Local)
+     - Queue-dependent
 
 Error Handling
 --------------
+
+When working with remote services, it's important to build robust error handling into your workflow.
 
 **Connection Issues**
 
@@ -211,7 +196,7 @@ Error Handling
        service.test_connection()
    except ConnectionError as e:
        print(f"Connection failed: {e}")
-       # Fall back to local simulator
+       # Fall back to the local simulator as a backup
        backend = ParallelSimulator()
 
 **Job Failures**
@@ -222,7 +207,7 @@ Error Handling
        results = service.get_job_results(job_ids)
    except JobFailedError as e:
        print(f"Job failed: {e}")
-       # Retry with smaller batches for large circuits
+       # A common solution is to retry with smaller batches
        if len(circuits) > 20:
            batch_size = 10
            for i in range(0, len(circuits), batch_size):
@@ -244,41 +229,27 @@ Error Handling
            break
        time.sleep(10)
    else:
-       print("Job timeout - consider splitting into smaller batches")
+       print("Job timed out. Consider splitting into smaller batches or increasing the timeout.")
 
 Best Practices
 --------------
 
-1. **Start Local**: Always test with ParallelSimulator first
-2. **Monitor Resources**: Track circuit counts and execution times
-3. **Use Appropriate Backends**: Choose based on problem requirements
-4. **Handle Errors**: Implement proper error handling and fallbacks
-5. **Optimize Configuration**: Tune backend parameters for your use case
+1.  **Start Local**: Always begin your development and testing with the ``ParallelSimulator``.
+2.  **Monitor Resources**: Keep an eye on your circuit counts and execution times to avoid unexpected costs.
+3.  **Choose the Right Backend**: Select your backend based on your specific problem requirements.
+4.  **Handle Errors Gracefully**: Implement proper error handling and fallbacks in your code.
+5.  **Optimize Your Configuration**: Tune your backend parameters to get the best performance for your use case.
 
 Common Issues and Solutions
 ---------------------------
 
-**Slow Simulation**
-   - Increase n_processes (up to CPU core count)
-   - Reduce shots for testing
-   - Use faster qiskit_backend
-
-**High Memory Usage**
-   - Reduce n_processes
-   - Process circuits in smaller batches
-   - Use less memory-intensive simulators
-
-**Job Queue Delays**
-   - Submit jobs during off-peak hours
-   - Consider local simulation for development
-
-**Connection Problems**
-   - Check internet connection
-   - Verify API credentials
-   - Implement retry logic with exponential backoff
+* **Slow Simulation**: Increase ``n_processes``, reduce ``shots`` for testing.
+* **High Memory Usage**: Reduce ``n_processes``, process circuits in smaller batches.
+* **Job Queue Delays**: Submit jobs during off-peak hours or use local simulation for development.
+* **Connection Problems**: Check your internet connection, verify your API credentials, and implement retry logic.
 
 Next Steps
 ----------
 
-- Try the runnable examples in the `tutorials/ <https://github.com/qoro-quantum/divi/tree/main/tutorials>`_ directory
-- Learn about :doc:`error_mitigation` for improving results
+* Try the runnable examples in the `tutorials/ <https://github.com/qoro-quantum/divi/tree/main/tutorials>`_ directory.
+* Learn about :doc:`error_mitigation` for improving your results on noisy hardware.

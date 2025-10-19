@@ -20,7 +20,6 @@ Core Architecture
    :members:
    :undoc-members:
    :show-inheritance:
-   :no-index:
    :special-members: __init__
 
 **Usage:**
@@ -99,8 +98,3 @@ Progress Monitoring
 -------------------
 
 Program batches include sophisticated progress monitoring capabilities with rich progress bars that show multiple program tracking, phase information, and error reporting.
-
-.. automodule:: divi.qprog.batch
-   :members:
-   :undoc-members:
-   :show-inheritance:
