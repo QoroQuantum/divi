@@ -4,7 +4,7 @@
 
 import heapq
 import string
-from collections.abc import Callable, Sequence, Set
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import partial
 from typing import Literal
@@ -371,7 +371,7 @@ def _node_partition_graph(
 
 def linear_aggregation(
     curr_solution: Sequence[Literal[0] | Literal[1]],
-    subproblem_solution: Set[int],
+    subproblem_solution: set[int],
     subproblem_reverse_index_map: dict[int, int],
 ):
     """Linearly combines a subproblem's solution into the main solution vector.
@@ -401,7 +401,7 @@ def linear_aggregation(
 
 def dominance_aggregation(
     curr_solution: Sequence[Literal[0] | Literal[1]],
-    subproblem_solution: Set[int],
+    subproblem_solution: set[int],
     subproblem_reverse_index_map: dict[int, int],
 ):
     for node in subproblem_solution:
