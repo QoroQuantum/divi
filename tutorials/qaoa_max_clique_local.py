@@ -22,9 +22,7 @@ if __name__ == "__main__":
     )
 
     qaoa_problem.run()
-
-    losses = qaoa_problem.losses[-1]
-    print(f"Minimum Energy Achieved: {min(losses.values()):.4f}")
+    print(f"Minimum Energy Achieved: {qaoa_problem.best_loss:.4f}")
 
     print(f"Total circuits: {qaoa_problem.total_circuit_count}")
 

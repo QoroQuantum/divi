@@ -4,13 +4,14 @@
 
 import pytest
 
+from divi.circuits import MetaCircuit
 from divi.qprog import (
-    QAOA,
     MonteCarloOptimizer,
     ProgramBatch,
     QuantumProgram,
     ScipyMethod,
     ScipyOptimizer,
+    VariationalQuantumAlgorithm,
 )
 from divi.qprog.optimizers import PymooMethod, PymooOptimizer
 
@@ -27,9 +28,8 @@ OPTIMIZERS_TO_TEST = {
 }
 
 
-def verify_metacircuit_dict(obj, expected_keys):
-    from divi.circuits import MetaCircuit
-
+def verify_metacircuit_dict(obj: QuantumProgram, expected_keys: list[str]):
+    assert isinstance(obj.meta_circuits, dict)
     assert hasattr(obj, "_meta_circuits"), "Meta circuits attribute does not exist"
     assert isinstance(obj._meta_circuits, dict), "Meta circuits object not a dict"
     assert all(
@@ -43,28 +43,40 @@ def verify_metacircuit_dict(obj, expected_keys):
 
 def verify_correct_circuit_count(obj: QuantumProgram):
     assert obj.current_iteration == 1
-    assert len(obj.losses) == 1
+    assert len(obj.losses_history) == 1
 
-    extra_computation_offset = 1 if isinstance(obj, QAOA) else 0
+    extra_computation_offset = 0
+    if isinstance(obj, VariationalQuantumAlgorithm):
+        # VQA subclasses with a meas_circuit will run an extra computation
+        if "meas_circuit" in obj.meta_circuits:
+            extra_computation_offset = len(
+                obj.meta_circuits["meas_circuit"].measurement_groups
+            )
 
     adjusted_total_circuit_count = obj.total_circuit_count - extra_computation_offset
 
     if isinstance(obj.optimizer, MonteCarloOptimizer):
-        assert adjusted_total_circuit_count == obj.optimizer.n_param_sets * len(
-            obj.cost_hamiltonian
+        # Calculate expected circuits per parameter set based on measurement groups
+        circuits_per_param_set = len(
+            obj._meta_circuits["cost_circuit"].measurement_groups
+        )
+        assert (
+            adjusted_total_circuit_count
+            == obj.optimizer.n_param_sets * circuits_per_param_set
         )
     elif isinstance(obj.optimizer, ScipyOptimizer):
+        circuits_per_param_set = len(
+            obj._meta_circuits["cost_circuit"].measurement_groups
+        )
         if obj.optimizer.method in (ScipyMethod.NELDER_MEAD, ScipyMethod.COBYLA):
-            assert adjusted_total_circuit_count == obj._minimize_res.nfev * len(
-                obj.cost_hamiltonian
+            assert (
+                adjusted_total_circuit_count
+                == obj._minimize_res.nfev * circuits_per_param_set
             )
         elif obj.optimizer.method == ScipyMethod.L_BFGS_B:
-            evaluation_circuits_count = obj._minimize_res.nfev * len(
-                obj.cost_hamiltonian
-            )
-
+            evaluation_circuits_count = obj._minimize_res.nfev * circuits_per_param_set
             gradient_circuits_count = (
-                obj._minimize_res.njev * len(obj.cost_hamiltonian) * obj.n_params * 2
+                obj._minimize_res.njev * circuits_per_param_set * obj.n_params * 2
             )
 
             assert (

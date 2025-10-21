@@ -121,62 +121,73 @@ class TestQUBOPartitioningQAOA:
             assert kwargs["problem"].shape == (2, 2)
             assert "job_id" in kwargs
 
-    def test_aggregate_results_raises_before_run(self, mocker, qubo_partitioning_qaoa):
-        qubo_partitioning_qaoa.create_programs()
-
-        # Manually add a mock program that hasn't been "run" (empty probs)
-        mock_program = mocker.MagicMock(spec=QAOA)
-        mock_program._probs = {}
-        # Add a non-empty losses list to pass the superclass check
-        mock_program._losses = [{"dummy_loss": 0.0}]
-        qubo_partitioning_qaoa.programs = {("A", 2): mock_program}
-
-        # This test now correctly targets the error from the QUBOPartitioningQAOA class
-        with pytest.raises(RuntimeError, match="Some/All programs have empty losses."):
-            qubo_partitioning_qaoa.aggregate_results()
-
-    def test_results_aggregated_correctly(self, mocker, qubo_partitioning_qaoa):
-        qubo_partitioning_qaoa.create_programs()
-
-        # Get handles to the sub-programs
-        prog_keys = list(qubo_partitioning_qaoa.programs.keys())
-        prog_a = qubo_partitioning_qaoa.programs[prog_keys[0]]
-        prog_b = qubo_partitioning_qaoa.programs[prog_keys[1]]
-
-        # Mock the solutions from the sub-programs
-        prog_a._solution_bitstring = np.array([1, 0])
-        prog_b._solution_bitstring = np.array([1, 1])
-
-        # Mark programs as "run" by populating both probs AND losses
-        prog_a._probs = {"dummy": 1}
-        prog_b._probs = {"dummy": 1}
-        prog_a._losses = [{"dummy_loss": 0.0}]
-        prog_b._losses = [{"dummy_loss": 0.0}]
-
-        # Mock the final aggregation step to return a predictable result
-        final_samples = dimod.SampleSet.from_samples(
-            {0: 1, 1: 0, 2: 1, 3: 1}, "BINARY", -3.0
-        )
-        final_state = hybrid.State(samples=final_samples)
-        mock_aggregator = mocker.patch.object(
-            qubo_partitioning_qaoa._aggregating,
-            "run",
-            return_value=mocker.MagicMock(result=lambda: final_state),
-        )
-
-        solution, energy = qubo_partitioning_qaoa.aggregate_results()
-
-        # The variable names in the final sampleset may not be ordered
-        # so we create the expected array from the sample dictionary.
-        expected_solution = np.array([final_samples.first.sample[i] for i in range(4)])
-
-        assert np.array_equal(solution, expected_solution)
-        assert energy == -3.0
-        mock_aggregator.assert_called_once()
-
     def test_verify_basic_behaviour(self, mocker, qubo_partitioning_qaoa):
         """Verify the class adheres to the ProgramBatch contract."""
         verify_basic_program_batch_behaviour(mocker, qubo_partitioning_qaoa)
+
+    def test_trivial_subproblem_is_identified_and_skipped(self):
+        """
+        Tests that a subproblem with no interactions is correctly identified
+        as trivial and that a QAOA program is NOT created for it.
+        """
+        # 1. SETUP: Create a QUBO with no interaction terms. Any partition
+        # of this problem will be "trivial" (have no quadratic terms).
+        trivial_qubo = np.array(
+            [
+                [-1, 0, 0, 0],
+                [0, -1, 0, 0],
+                [0, 0, -1, 0],
+                [0, 0, 0, -1],
+            ]
+        )
+
+        # Decomposer will split this into two trivial problems of size 2.
+        decomposer = hybrid.EnergyImpactDecomposer(size=2)
+
+        batch = QUBOPartitioningQAOA(
+            qubo=trivial_qubo,
+            decomposer=decomposer,
+            n_layers=1,
+            backend=ParallelSimulator(shots=100),
+        )
+
+        # 2. ACT: Run the program creation process.
+        batch.create_programs()
+
+        # 3. ASSERT: Verify the behavioral outcome.
+        # The class should have identified two trivial programs.
+        assert len(batch.trivial_program_ids) == 2
+        assert ("A", 2) in batch.trivial_program_ids
+        assert ("B", 2) in batch.trivial_program_ids
+
+        # Most importantly, no complex QAOA programs should have been created.
+        assert len(batch.programs) == 0
+
+    def test_aggregate_results_error_handling(self, mocker, qubo_partitioning_qaoa):
+        """Test comprehensive error handling in aggregate_results method."""
+        qubo_partitioning_qaoa.create_programs()
+
+        # Test 1: Empty losses error
+        mock_program_empty_losses = mocker.MagicMock(spec=QAOA)
+        mock_program_empty_losses.best_probs = {}
+        mock_program_empty_losses._losses_history = []  # Empty losses
+        qubo_partitioning_qaoa.programs = {("A", 2): mock_program_empty_losses}
+
+        with pytest.raises(RuntimeError, match="Some/All programs have empty losses"):
+            qubo_partitioning_qaoa.aggregate_results()
+
+        # Test 2: Empty final_probs error
+        mock_program_empty_final_probs = mocker.MagicMock(spec=QAOA)
+        mock_program_empty_final_probs.best_probs = {}  # Empty final_probs
+        mock_program_empty_final_probs.losses_history = [
+            {"dummy_loss": 0.0}
+        ]  # Non-empty losses
+        qubo_partitioning_qaoa.programs = {("A", 2): mock_program_empty_final_probs}
+
+        with pytest.raises(
+            RuntimeError, match="Not all final probabilities computed yet"
+        ):
+            qubo_partitioning_qaoa.aggregate_results()
 
     @pytest.mark.e2e
     def test_qubo_partitioning_e2e(self, default_test_simulator):

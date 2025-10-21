@@ -10,6 +10,16 @@ import pennylane as qml
 import scipy.sparse as sps
 
 
+def reverse_dict_endianness(
+    probs_dict: dict[str, dict[str, float]],
+) -> dict[str, dict[str, float]]:
+    """Reverse endianness of all bitstrings in a dictionary of probability distributions."""
+    return {
+        tag: {bitstring[::-1]: prob for bitstring, prob in probs.items()}
+        for tag, probs in probs_dict.items()
+    }
+
+
 def _is_sanitized(
     qubo_matrix: np.ndarray | sps.spmatrix,
 ) -> np.ndarray | sps.spmatrix:

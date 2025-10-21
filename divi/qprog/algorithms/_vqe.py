@@ -4,16 +4,41 @@
 
 from warnings import warn
 
+import numpy as np
 import pennylane as qml
 import sympy as sp
 
 from divi.circuits import MetaCircuit
-from divi.qprog import QuantumProgram
 from divi.qprog.algorithms._ansatze import Ansatz, HartreeFockAnsatz
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
+from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 
 
-class VQE(QuantumProgram):
+class VQE(VariationalQuantumAlgorithm):
+    """Variational Quantum Eigensolver (VQE) implementation.
+
+    VQE is a hybrid quantum-classical algorithm used to find the ground state
+    energy of a given Hamiltonian. It works by preparing a parameterized quantum
+    state (ansatz) and optimizing the parameters to minimize the expectation
+    value of the Hamiltonian.
+
+    The algorithm can work with either:
+    - A molecular Hamiltonian (for quantum chemistry problems)
+    - A custom Hamiltonian operator
+
+    Attributes:
+        ansatz (Ansatz): The parameterized quantum circuit ansatz.
+        n_layers (int): Number of ansatz layers.
+        n_qubits (int): Number of qubits in the system.
+        n_electrons (int): Number of electrons (for molecular systems).
+        cost_hamiltonian (qml.operation.Operator): The Hamiltonian to minimize.
+        loss_constant (float): Constant term extracted from the Hamiltonian.
+        molecule (qml.qchem.Molecule): The molecule object (if applicable).
+        optimizer (Optimizer): Classical optimizer for parameter updates.
+        max_iterations (int): Maximum number of optimization iterations.
+        current_iteration (int): Current optimization iteration.
+    """
+
     def __init__(
         self,
         hamiltonian: qml.operation.Operator | None = None,
@@ -25,24 +50,19 @@ class VQE(QuantumProgram):
         max_iterations=10,
         **kwargs,
     ) -> None:
-        """
-        Initialize the VQE problem.
+        """Initialize the VQE problem.
 
         Args:
-            hamiltonian (pennylane.operation.Operator, optional): A Hamiltonian
-                representing the problem.
-            molecule (pennylane.qchem.Molecule, optional): The molecule representing
-                the problem.
-            n_electrons (int, optional): Number of electrons associated with the
-                Hamiltonian. Only needs to be provided when a Hamiltonian is given.
-            n_layers (int, optional): Number of ansatz layers. Defaults to 1.
-            ansatz (Ansatz, optional): The ansatz to use for the VQE problem.
+            hamiltonian (qml.operation.Operator | None): A Hamiltonian representing the problem. Defaults to None.
+            molecule (qml.qchem.Molecule | None): The molecule representing the problem. Defaults to None.
+            n_electrons (int | None): Number of electrons associated with the Hamiltonian.
+                Only needed when a Hamiltonian is given. Defaults to None.
+            n_layers (int): Number of ansatz layers. Defaults to 1.
+            ansatz (Ansatz | None): The ansatz to use for the VQE problem.
                 Defaults to HartreeFockAnsatz.
-            optimizer (Optimizer, optional): The optimizer to use. Defaults to
-                MonteCarloOptimizer.
-            max_iterations (int, optional): Maximum number of optimization iterations.
-                Defaults to 10.
-            **kwargs: Additional keyword arguments passed to the parent QuantumProgram.
+            optimizer (Optimizer | None): The optimizer to use. Defaults to MonteCarloOptimizer.
+            max_iterations (int): Maximum number of optimization iterations. Defaults to 10.
+            **kwargs: Additional keyword arguments passed to the parent class.
         """
 
         # Local Variables
@@ -54,6 +74,8 @@ class VQE(QuantumProgram):
 
         self.optimizer = optimizer if optimizer is not None else MonteCarloOptimizer()
 
+        self._eigenstate = None
+
         self._process_problem_input(
             hamiltonian=hamiltonian, molecule=molecule, n_electrons=n_electrons
         )
@@ -64,8 +86,7 @@ class VQE(QuantumProgram):
 
     @property
     def n_params(self):
-        """
-        Get the total number of parameters for the VQE ansatz.
+        """Get the total number of parameters for the VQE ansatz.
 
         Returns:
             int: Total number of parameters (n_params_per_layer * n_layers).
@@ -75,9 +96,18 @@ class VQE(QuantumProgram):
             * self.n_layers
         )
 
-    def _process_problem_input(self, hamiltonian, molecule, n_electrons):
+    @property
+    def eigenstate(self) -> np.ndarray | None:
+        """Get the computed eigenstate as a NumPy array.
+
+        Returns:
+            np.ndarray | None: The array of bits of the lowest energy eigenstate,
+                or None if not computed.
         """
-        Process and validate the VQE problem input.
+        return self._eigenstate
+
+    def _process_problem_input(self, hamiltonian, molecule, n_electrons):
+        """Process and validate the VQE problem input.
 
         Handles both Hamiltonian-based and molecule-based problem specifications,
         extracting the necessary information (n_qubits, n_electrons, hamiltonian).
@@ -118,33 +148,71 @@ class VQE(QuantumProgram):
     def _clean_hamiltonian(
         self, hamiltonian: qml.operation.Operator
     ) -> qml.operation.Operator:
-        """
-        Extracts the scalar from the Hamiltonian, and stores it in
-        the `loss_constant` variable.
+        """Separate constant and non-constant terms in a Hamiltonian.
+
+        This function processes a PennyLane Hamiltonian to separate out any terms
+        that are constant (i.e., proportional to the identity operator). The sum
+        of these constant terms is stored in `self.loss_constant`, and a new
+        Hamiltonian containing only the non-constant terms is returned.
+
+        Args:
+            hamiltonian: The Hamiltonian operator to process.
 
         Returns:
-            The Hamiltonian without the scalar component.
+            qml.operation.Operator: The Hamiltonian without the constant (identity) component.
+
+        Raises:
+            ValueError: If the Hamiltonian is found to contain only constant terms.
         """
-
-        constant_terms_idx = list(
-            filter(
-                lambda x: all(
-                    isinstance(term, qml.I) for term in hamiltonian[x].terms()[1]
-                ),
-                range(len(hamiltonian)),
-            )
+        terms = (
+            hamiltonian.operands
+            if isinstance(hamiltonian, qml.ops.Sum)
+            else [hamiltonian]
         )
 
-        self.loss_constant = float(
-            sum(map(lambda x: hamiltonian[x].scalar, constant_terms_idx))
-        )
+        loss_constant = 0.0
+        non_constant_terms = []
 
-        for idx in constant_terms_idx:
-            hamiltonian -= hamiltonian[idx]
+        for term in terms:
+            coeff = 1.0
+            base_op = term
+            if isinstance(term, qml.ops.SProd):
+                coeff = term.scalar
+                base_op = term.base
 
-        return hamiltonian.simplify()
+            # Check for Identity term
+            is_constant = False
+            if isinstance(base_op, qml.Identity):
+                is_constant = True
+            elif isinstance(base_op, qml.ops.Prod) and all(
+                isinstance(op, qml.Identity) for op in base_op.operands
+            ):
+                is_constant = True
+
+            if is_constant:
+                loss_constant += coeff
+            else:
+                non_constant_terms.append(term)
+
+        self.loss_constant = float(loss_constant)
+
+        if not non_constant_terms:
+            raise ValueError("Hamiltonian contains only constant terms.")
+
+        # Reconstruct the Hamiltonian from non-constant terms
+        if len(non_constant_terms) > 1:
+            new_hamiltonian = qml.sum(*non_constant_terms)
+        else:
+            new_hamiltonian = non_constant_terms[0]
+
+        return new_hamiltonian.simplify()
 
     def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
+        """Create the meta-circuit dictionary for VQE.
+
+        Returns:
+            dict[str, MetaCircuit]: Dictionary containing the cost circuit template.
+        """
         weights_syms = sp.symarray(
             "w",
             (
@@ -155,13 +223,13 @@ class VQE(QuantumProgram):
             ),
         )
 
-        def _prepare_circuit(hamiltonian, params):
-            """
-            Prepare the circuit for the VQE problem.
+        def _prepare_circuit(hamiltonian, params, final_measurement=False):
+            """Prepare the circuit for the VQE problem.
+
             Args:
-                ansatz (Ansatze): The ansatz to use
-                hamiltonian (qml.Hamiltonian): The Hamiltonian to use
-                params (list): The parameters to use for the ansatz
+                hamiltonian: The Hamiltonian to measure.
+                params: The parameters for the ansatz.
+                final_measurement (bool): Whether to perform final measurement.
             """
             self.ansatz.build(
                 params,
@@ -169,6 +237,9 @@ class VQE(QuantumProgram):
                 n_layers=self.n_layers,
                 n_electrons=self.n_electrons,
             )
+
+            if final_measurement:
+                return qml.probs()
 
             # Even though in principle we want to sample from a state,
             # we are applying an `expval` operation here to make it compatible
@@ -179,51 +250,54 @@ class VQE(QuantumProgram):
         return {
             "cost_circuit": self._meta_circuit_factory(
                 qml.tape.make_qscript(_prepare_circuit)(
-                    self.cost_hamiltonian, weights_syms
+                    self.cost_hamiltonian, weights_syms, final_measurement=False
                 ),
                 symbols=weights_syms.flatten(),
-            )
+            ),
+            "meas_circuit": self._meta_circuit_factory(
+                qml.tape.make_qscript(_prepare_circuit)(
+                    self.cost_hamiltonian, weights_syms, final_measurement=True
+                ),
+                symbols=weights_syms.flatten(),
+                grouping_strategy="wires",
+            ),
         }
 
     def _generate_circuits(self):
-        """
-        Generate the circuits for the VQE problem.
+        """Generate the circuits for the VQE problem.
 
-        In this method, we generate bulk circuits based on the selected parameters.
-        We generate circuits for each bond length and each ansatz and optimization choice.
-
-        The structure of the circuits is as follows:
-        - For each bond length:
-            - For each ansatz:
-                - Generate the circuit
+        Generates circuits for each parameter set in the current parameters.
+        Each circuit is tagged with its parameter index for result processing.
         """
+        circuit_type = (
+            "cost_circuit" if not self._is_compute_probabilites else "meas_circuit"
+        )
 
         for p, params_group in enumerate(self._curr_params):
-            circuit = self._meta_circuits[
-                "cost_circuit"
-            ].initialize_circuit_from_params(params_group, tag_prefix=f"{p}")
-
-            self._circuits.append(circuit)
-
-    def _run_optimization_circuits(self, store_data, data_file):
-        """
-        Execute the circuits for the current optimization iteration.
-
-        Validates that the Hamiltonian is properly set before running circuits.
-
-        Args:
-            store_data (bool): Whether to save iteration data.
-            data_file (str): Path to file for saving data.
-
-        Returns:
-            dict: Loss values for each parameter set.
-
-        Raises:
-            RuntimeError: If the cost Hamiltonian is not set or empty.
-        """
-        if self.cost_hamiltonian is None or len(self.cost_hamiltonian) == 0:
-            raise RuntimeError(
-                "Hamiltonian operators must be generated before running the VQE"
+            circuit = self._meta_circuits[circuit_type].initialize_circuit_from_params(
+                params_group, tag_prefix=f"{p}"
             )
 
-        return super()._run_optimization_circuits(store_data, data_file)
+            self._curr_circuits.append(circuit)
+
+    def _post_process_results(self, results):
+        """Post-process the results of the VQE problem."""
+        if self._is_compute_probabilites:
+            return self._process_probability_results(results)
+
+        return super()._post_process_results(results)
+
+    def _perform_final_computation(self, **kwargs):
+        """Extract the eigenstate corresponding to the lowest energy found."""
+        self.reporter.info(message="🏁 Computing Final Eigenstate 🏁")
+
+        self._run_solution_measurement()
+
+        if self._best_probs:
+            best_measurement_probs = next(iter(self._best_probs.values()))
+            eigenstate_bitstring = max(
+                best_measurement_probs, key=best_measurement_probs.get
+            )
+            self._eigenstate = np.fromiter(eigenstate_bitstring, dtype=np.int32)
+
+        return self._total_circuit_count, self._total_run_time

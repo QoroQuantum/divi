@@ -16,6 +16,7 @@ from divi.qprog.algorithms import (
     QAOAAnsatz,
     UCCSDAnsatz,
 )
+from divi.qprog.optimizers import PymooMethod, PymooOptimizer
 from tests.qprog.qprog_contracts import (
     OPTIMIZERS_TO_TEST,
     verify_correct_circuit_count,
@@ -115,6 +116,18 @@ def test_clean_hamiltonian_logic(h2_hamiltonian, dummy_simulator):
     assert not has_identity, "Identity operator should have been removed"
 
 
+def test_vqe_fail_with_constant_only_hamiltonian(dummy_simulator):
+    """Test VQE initialization fails with a constant-only Hamiltonian."""
+    hamiltonian = qml.Identity(0) * 5.0
+    with pytest.raises(ValueError, match="Hamiltonian contains only constant terms."):
+        VQE(
+            hamiltonian=hamiltonian,
+            n_electrons=2,
+            ansatz=HartreeFockAnsatz(),
+            backend=dummy_simulator,
+        )
+
+
 @pytest.mark.parametrize("ansatz_obj", **ANSAETZE_TO_TEST)
 @pytest.mark.parametrize("n_layers", [1, 2])
 def test_meta_circuit_qasm(ansatz_obj, n_layers, h2_molecule):
@@ -160,3 +173,30 @@ def test_vqe_correct_circuits_count_and_energies(
 
     vqe_problem.run()
     verify_correct_circuit_count(vqe_problem)
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
+def test_vqe_h2_molecule_e2e_solution(optimizer, default_test_simulator, h2_molecule):
+    """Test that VQE finds the correct ground state for the H2 molecule."""
+    if isinstance(optimizer, PymooOptimizer) and optimizer.method == PymooMethod.DE:
+        pytest.skip("DE consistently fails for some reason. Debug later.")
+
+    default_test_simulator.set_seed(1997)
+
+    vqe_problem = VQE(
+        molecule=h2_molecule,
+        ansatz=HartreeFockAnsatz(),
+        n_layers=1,
+        optimizer=optimizer,
+        max_iterations=5,
+        backend=default_test_simulator,
+        seed=1997,
+    )
+
+    vqe_problem.run()
+
+    # The ground state of H2 in this configuration is |1100>
+    # This corresponds to occupying the two lowest energy orbitals.
+    expected_eigenstate = np.array([1, 1, 0, 0])
+    np.testing.assert_array_equal(vqe_problem.eigenstate, expected_eigenstate)

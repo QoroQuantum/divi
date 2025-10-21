@@ -468,7 +468,7 @@ class ProgramBatch(ABC):
         if self._executor is not None:
             self.join()
 
-        if any(len(program.losses) == 0 for program in self._programs.values()):
+        if any(len(program.losses_history) == 0 for program in self._programs.values()):
             raise RuntimeError(
                 "Some/All programs have empty losses. Did you call run()?"
             )

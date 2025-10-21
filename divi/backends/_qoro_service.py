@@ -226,8 +226,10 @@ class QoroService(CircuitRunner):
             self._qpu_system_name = system_name.name
         elif system_name is None:
             self._qpu_system_name = None
-
-        raise TypeError("Expected a QPUSystem instance or str.")
+        else:
+            raise TypeError(
+                "Expected a QPUSystem instance or str, got {type(system_name)}"
+            )
 
     def _make_request(self, method: str, endpoint: str, **kwargs) -> requests.Response:
         """

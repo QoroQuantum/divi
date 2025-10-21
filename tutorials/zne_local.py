@@ -31,9 +31,7 @@ if __name__ == "__main__":
     vqe_problem_exact = VQE(backend=ParallelSimulator(n_processes=4), **args)
     vqe_problem_exact.run()
 
-    print(
-        f"Minimum Energy Achieved (Exact): {min(vqe_problem_exact.losses[-1].values()):.4f}"
-    )
+    print(f"Lowest Energy Achieved (Exact): {vqe_problem_exact.best_loss:.4f}")
     print(f"Circuits Executed (Exact): {vqe_problem_exact.total_circuit_count}")
 
     vqe_problem_noisy = VQE(
@@ -41,9 +39,7 @@ if __name__ == "__main__":
     )
     vqe_problem_noisy.run()
 
-    print(
-        f"Minimum Energy Achieved (Noisy): {min(vqe_problem_noisy.losses[-1].values()):.4f}"
-    )
+    print(f"Lowest Energy Achieved (Noisy): {vqe_problem_noisy.best_loss:.4f}")
     print(f"Circuits Executed (Noisy): {vqe_problem_noisy.total_circuit_count}")
 
     scale_factors = [1.0, 3.0, 5.0]
@@ -59,7 +55,5 @@ if __name__ == "__main__":
     )
     vqe_problem_zne.run()
 
-    print(
-        f"Minimum Energy Achieved (Mitigated): {min(vqe_problem_zne.losses[-1].values()):.4f}"
-    )
+    print(f"Lowest Energy Achieved (Mitigated): {vqe_problem_zne.best_loss:.4f}")
     print(f"Circuits Executed (Mitigated): {vqe_problem_zne.total_circuit_count}")

@@ -1,0 +1,12 @@
+[run]
+source = divi
+omit =
+    divi/extern/*
+    */tests/*
+    */test_*
+    */__pycache__/*
+    */venv/*
+    */env/*
+
+[report]
+show_missing = True
