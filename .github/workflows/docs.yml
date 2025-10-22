@@ -25,8 +25,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "poetry"
-          cache-dependency-path: poetry.lock
 
       - name: Install Poetry
         uses: snok/install-poetry@v1
@@ -35,8 +33,18 @@ jobs:
           virtualenvs-create: true
           virtualenvs-in-project: true
 
+      - name: Cache Poetry dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pypoetry
+            .venv
+          key: poetry-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+          restore-keys: |
+            poetry-${{ runner.os }}-
+
       - name: Install doc dependencies (Poetry)
-        run: poetry install --only docs --no-root
+        run: poetry install --only docs
 
       - name: Build Sphinx HTML
         run: |

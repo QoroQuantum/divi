@@ -10,46 +10,39 @@ permissions:
   contents: read
 
 jobs:
-  install-deps:
-    runs-on: ubuntu-22.04
+  tests:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "poetry"
-          cache-dependency-path: poetry.lock
+
       - name: Install Poetry
         uses: snok/install-poetry@v1
         with:
           version: 1.8.5
           virtualenvs-create: true
           virtualenvs-in-project: true
+
+      - name: Cache Poetry dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pypoetry
+            .venv
+          key: poetry-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+          restore-keys: |
+            poetry-${{ runner.os }}-
+
       - name: Install dependencies
         run: poetry install --with tutorials --without dev,ui,docs
 
-  tests:
-    runs-on: ubuntu-22.04
-    needs: install-deps
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "poetry"
-          cache-dependency-path: poetry.lock
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
-        with:
-          version: 1.8.5
-          virtualenvs-create: true
-          virtualenvs-in-project: true
-      - name: Install dependencies
-        run: poetry install --with tutorials --without dev,ui,docs
       - name: Run unit tests
         run: poetry run pytest -n auto -m "not requires_api_key"
+
       - name: Run API tests
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: poetry run pytest --run-api-tests -m "requires_api_key"
@@ -57,23 +50,35 @@ jobs:
           QORO_API_KEY: ${{ secrets.QORO_API_KEY }}
 
   tutorials:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     needs: tests
     steps:
       - uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "poetry"
-          cache-dependency-path: poetry.lock
+
       - name: Install Poetry
         uses: snok/install-poetry@v1
         with:
           version: 1.8.5
           virtualenvs-create: true
           virtualenvs-in-project: true
+
+      - name: Cache Poetry dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pypoetry
+            .venv
+          key: poetry-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+          restore-keys: |
+            poetry-${{ runner.os }}-
+
       - name: Install dependencies
         run: poetry install --with tutorials --without dev,ui,docs
+
       - name: Run tutorial scripts
         run: ./.github/workflows/run_tutorials.sh
