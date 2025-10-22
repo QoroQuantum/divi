@@ -36,6 +36,7 @@ extensions = [
     "sphinx.ext.intersphinx",
     "sphinx.ext.autosummary",
     "sphinx.ext.autosectionlabel",
+    "sphinx.ext.coverage",  # Documentation coverage
     "sphinx_autodoc_typehints",
     "nbsphinx",
 ]
@@ -98,6 +99,9 @@ intersphinx_mapping = {
     "scipy": ("https://docs.scipy.org/doc/scipy/", None),
     "pennylane": ("https://docs.pennylane.ai/en/stable/", None),
     "qiskit": ("https://qiskit.org/documentation/", None),
+    "mitiq": ("https://mitiq.readthedocs.io/en/stable/", None),
+    "matplotlib": ("https://matplotlib.org/stable/", None),
+    "networkx": ("https://networkx.org/documentation/stable/", None),
 }
 
 # -- Options for HTML output -------------------------------------------------
@@ -140,3 +144,34 @@ autosectionlabel_maxdepth = 2
 # Disable module index and search page generation
 html_use_modindex = False
 html_use_search = True
+
+# -- Search configuration ------------------------------------------------------
+# https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
+
+html_search_language = "en"
+html_search_options = {
+    "dict": "/usr/share/dict/words",
+    "type": "default",
+}
+
+# -- Coverage extension configuration -------------------------------------------
+# https://www.sphinx-doc.org/en/master/usage/extensions/coverage.html
+
+coverage_show_missing_items = True
+coverage_ignore_modules = [
+    "divi.extern.*",  # External Cirq/SciPy code
+    "divi.__pycache__.*",  # Python cache
+    "divi.tests.*",  # Test modules
+    "divi.*.tests.*",  # Test modules in subpackages
+]
+coverage_ignore_functions = [
+    "test_*",  # Test functions
+    "_*",  # Private functions
+    "setup_*",  # Setup functions
+    "teardown_*",  # Teardown functions
+]
+coverage_ignore_classes = [
+    "Test.*",  # Test classes
+    ".*Test",  # Classes ending in Test
+    ".*TestCase",  # Test case classes
+]

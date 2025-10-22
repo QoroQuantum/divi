@@ -36,11 +36,22 @@ Algorithms
 
 Divi provides implementations of popular quantum algorithms with a focus on scalability and ease of use.
 
+.. automodule:: divi.qprog.algorithms
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+VQE Algorithm
+~~~~~~~~~~~~~
+
 .. autoclass:: divi.qprog.algorithms.VQE
    :members:
    :undoc-members:
    :show-inheritance:
    :special-members: __init__
+
+QAOA Algorithm
+~~~~~~~~~~~~~~
 
 .. autoclass:: divi.qprog.algorithms.QAOA
    :members:
@@ -84,6 +95,11 @@ VQE Ansatze
    :undoc-members:
    :show-inheritance:
 
+.. autoclass:: divi.qprog.algorithms.Ansatz
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Optimizers
 ----------
 
@@ -114,6 +130,60 @@ Monte Carlo Optimizer
    :no-index:
    :special-members: __init__
 
+Workflows
+---------
+
+Divi provides workflow classes for managing large-scale quantum computations, including hyperparameter sweeps and graph partitioning.
+
+.. automodule:: divi.qprog.workflows
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+VQE Hyperparameter Sweep
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: divi.qprog.workflows.VQEHyperparameterSweep
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+   :no-index:
+
+.. autoclass:: divi.qprog.workflows.MoleculeTransformer
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+   :no-index:
+
+Graph Partitioning QAOA
+~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: divi.qprog.workflows.GraphPartitioningQAOA
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+   :no-index:
+
+.. autoclass:: divi.qprog.workflows.PartitioningConfig
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+   :no-index:
+
+QUBO Partitioning QAOA
+~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: divi.qprog.workflows.QUBOPartitioningQAOA
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+   :no-index:
+
 Exceptions
 ----------
 
@@ -121,3 +191,4 @@ Exceptions
    :members:
    :undoc-members:
    :show-inheritance:
+   :private-members:

@@ -59,7 +59,13 @@ live:
 	@echo "Starting live documentation server..."
 	@echo "Documentation will be available at http://localhost:$(PORT)"
 	@echo "Press Ctrl+C to stop the server"
-	@sphinx-autobuild -b html "$(SOURCEDIR)" "$(BUILDDIR)/html" --port $(PORT) --host 0.0.0.0
+	@if [ -d "$(BUILDDIR)/html" ]; then \
+		echo "Using existing HTML build for faster startup..."; \
+		sphinx-autobuild -b html "$(SOURCEDIR)" "$(BUILDDIR)/html" --port $(PORT) --host 0.0.0.0 --open-browser --re-ignore ".*\.(pyc|pyo)$$"; \
+	else \
+		echo "No existing build found, building from scratch..."; \
+		sphinx-autobuild -b html "$(SOURCEDIR)" "$(BUILDDIR)/html" --port $(PORT) --host 0.0.0.0 --open-browser; \
+	fi
 
 # Watch for changes and rebuild
 watch:

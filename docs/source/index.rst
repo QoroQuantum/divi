@@ -52,9 +52,9 @@ Alternatively, you can install using pip:
    api_reference/qprog
    api_reference/program_batches
    api_reference/backends
-   api_reference/utils
    api_reference/circuits
    api_reference/reporting
+   api_reference/utils
 
 .. toctree::
    :maxdepth: 1

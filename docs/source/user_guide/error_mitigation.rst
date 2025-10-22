@@ -1,7 +1,7 @@
 Error Mitigation
 ================
 
-Divi provides built-in error mitigation to improve results from noisy quantum hardware. The main technique is Zero Noise Extrapolation (ZNE), which runs circuits at different noise levels and extrapolates to the zero-noise limit.
+Divi provides built-in error mitigation to improve results from noisy quantum hardware. The main technique is Zero Noise Extrapolation (ZNE), which runs circuits at different noise levels and extrapolates to the zero-noise limit using :class:`mitiq.zne.inference.RichardsonFactory` and :class:`mitiq.zne.scaling.fold_gates_at_random`.
 
 Basic Usage
 -----------
@@ -41,20 +41,6 @@ Basic Usage
 
    vqe.run()
    print(f"Mitigated energy: {vqe.best_loss:.6f}")
-
-When to Use Error Mitigation
-----------------------------
-
-**Use Error Mitigation For:**
-- Production calculations requiring high accuracy
-- Deep circuits (many gates)
-- Noisy quantum hardware
-- Large molecular systems
-
-**Skip Error Mitigation For:**
-- Development and testing
-- Shallow circuits
-- When computational cost is a concern
 
 Configuration Options
 ---------------------
@@ -141,4 +127,4 @@ Next Steps
 
 - 🛠️ **API Reference**: Learn about custom protocols in :doc:`../api_reference/circuits`
 - 📊 **Program Batches**: Apply mitigation to large computations in :doc:`program_batches`
-- 📈 **Advanced Usage**: Explore Mitiq documentation for more sophisticated techniques
+- 📈 **Advanced Usage**: Explore :class:`mitiq` documentation for more sophisticated techniques

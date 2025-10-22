@@ -93,8 +93,3 @@ QUBO Partitioning QAOA
    :undoc-members:
    :show-inheritance:
    :special-members: __init__
-
-Progress Monitoring
--------------------
-
-Program batches include sophisticated progress monitoring capabilities with rich progress bars that show multiple program tracking, phase information, and error reporting.

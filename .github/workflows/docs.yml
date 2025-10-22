@@ -1,4 +1,4 @@
-name: Build & Deploy Docs (Poetry) to Pages
+name: Build & Deploy Docs to Pages
 
 on:
   push:
