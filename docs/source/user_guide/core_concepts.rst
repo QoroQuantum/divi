@@ -237,18 +237,6 @@ After execution, Divi provides rich result analysis capabilities:
       plt.title('VQE Convergence')
       plt.show()
 
-**Circuit Analysis** 🔍
-   Examine which circuits were executed:
-
-   .. code-block:: python
-
-      circuits = vqe.circuits
-      print(f"Total circuits: {len(circuits)}")
-
-      for circuit in circuits[:3]:  # Show first 3
-          print(f"Circuit {circuit.circuit_id}: {circuit.tags}")
-          print(f"QASM length: {len(circuit.qasm_circuits[0])} characters")
-
 **Performance Metrics** ⚡
    Monitor execution efficiency:
 

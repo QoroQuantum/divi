@@ -215,21 +215,6 @@ Advanced Features
           backend=ParallelSimulator(qiskit_backend="auto"),
       )
 
-Troubleshooting
----------------
-
-**Common Issues:**
-
-❌ **"API key not found" for QoroService**
-   Set environment variable: ``export QORO_API_KEY="your-key-here"``. Or create a ``.env`` file in the root of your project and add the following:
-   ``QORO_API_KEY=your-key-here``
-
-❌ **Slow execution**
-   Increase ``n_processes`` in ``ParallelSimulator`` or use smaller circuits.
-
-❌ **Poor convergence**
-   Try different optimizers or initial parameters
-
 Next Steps & Getting Help
 -------------------------
 

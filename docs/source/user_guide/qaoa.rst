@@ -123,10 +123,10 @@ QUBO Problems
 
 Divi's QAOA solver can also handle Quadratic Unconstrained Binary Optimization (QUBO) problems. Divi currently supports two methods of formulating the QUBO problem:
 
-1. **Numpy Array Input**: Pass a `numpy` array or a `scipy.sparse` array directly
-2. **Qiskit Quadratic Program**: Use the `qiskit-optimization` library to create `QuadraticProgram` objects
+1. **NumPy Array Input**: Pass a :class:`numpy.ndarray` or a :class:`scipy.sparse` array directly
+2. **Qiskit Quadratic Program**: Use the `qiskit-optimization` library to create :class:`qiskit_optimization.QuadraticProgram` objects
 
-In contrast to graph-based QAOA instances, the solution format for QUBO-based QAOA instances is a binary `numpy` array representing the value for each variable in the original QUBO.
+In contrast to graph-based QAOA instances, the solution format for QUBO-based QAOA instances is a binary :class:`numpy.ndarray` representing the value for each variable in the original QUBO.
 
 Numpy Array-based Input
 ^^^^^^^^^^^^^^^^^^^^^^^
