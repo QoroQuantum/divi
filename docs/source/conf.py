@@ -116,6 +116,12 @@ html_theme_options = {
     "logo_only": False,
 }
 
+# GitHub Pages specific configuration
+html_baseurl = f"https://{project_name.replace('-', '')}.github.io/divi/"
+html_extra_path = []
+html_copy_source = False
+html_show_sourcelink = False
+
 # Ensure the global toctree is used for navigation
 html_sidebars = {
     "**": ["searchbox.html", "globaltoc.html", "relations.html", "sourcelink.html"]
