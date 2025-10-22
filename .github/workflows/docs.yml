@@ -12,13 +12,13 @@ permissions:
 
 concurrency:
   group: "pages"
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build-docs:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -36,15 +36,14 @@ jobs:
       - name: Cache Poetry dependencies
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cache/pypoetry
-            .venv
+          path: .venv
           key: poetry-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
           restore-keys: |
             poetry-${{ runner.os }}-
 
       - name: Install doc dependencies (Poetry)
-        run: poetry install --with docs
+        run: |
+          poetry install --with docs --no-root --no-interaction
 
       - name: Build Sphinx HTML
         run: |
@@ -53,12 +52,10 @@ jobs:
           LC_ALL: C.UTF-8
           LANG: C.UTF-8
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          name: github-pages
           path: docs/_build/html
-          retention-days: 1
 
   deploy-docs:
     if: github.ref == 'refs/heads/main'
@@ -69,20 +66,6 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: github-pages
-          path: .
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload artifact (built docs)
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: .
-
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
