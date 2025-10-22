@@ -38,7 +38,7 @@ jobs:
             poetry-${{ runner.os }}-
 
       - name: Install dependencies
-        run: poetry install --with tutorials --without dev,ui,docs
+        run: poetry install --with testing --without dev,ui,docs
 
       - name: Run unit tests
         run: poetry run pytest -n auto -m "not requires_api_key"
@@ -78,7 +78,7 @@ jobs:
             poetry-${{ runner.os }}-
 
       - name: Install dependencies
-        run: poetry install --with tutorials --without dev,ui,docs
+        run: poetry install --with testing --without dev,ui,docs
 
       - name: Run tutorial scripts
         run: ./.github/workflows/run_tutorials.sh

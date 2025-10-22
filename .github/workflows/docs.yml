@@ -44,11 +44,11 @@ jobs:
             poetry-${{ runner.os }}-
 
       - name: Install doc dependencies (Poetry)
-        run: poetry install --only docs
+        run: poetry install --with docs
 
       - name: Build Sphinx HTML
         run: |
-          poetry run sphinx-build -b html docs/source docs/_build/html
+          poetry run sphinx-build -W -b html docs/source docs/_build/html
         env:
           LC_ALL: C.UTF-8
           LANG: C.UTF-8
