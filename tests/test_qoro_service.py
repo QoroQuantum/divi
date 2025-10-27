@@ -263,6 +263,85 @@ class TestQoroServiceMock:
         with pytest.raises(TypeError):
             JobConfig(qpu_system_name=invalid_input)
 
+    def test_job_config_shots_validation(self):
+        """Tests that JobConfig validates shots values."""
+        # Valid shots
+        config = JobConfig(shots=100)
+        assert config.shots == 100
+
+        # Invalid: shots <= 0
+        with pytest.raises(ValueError, match="Shots must be a positive integer"):
+            JobConfig(shots=0)
+
+        with pytest.raises(ValueError, match="Shots must be a positive integer"):
+            JobConfig(shots=-1)
+
+    def test_job_config_use_circuit_packing_type_validation(self):
+        """Tests that JobConfig validates use_circuit_packing type."""
+        # Valid boolean
+        config = JobConfig(use_circuit_packing=True)
+        assert config.use_circuit_packing is True
+
+        # Invalid: not a bool
+        with pytest.raises(TypeError, match="Expected a bool"):
+            JobConfig(use_circuit_packing="true")
+
+        with pytest.raises(TypeError, match="Expected a bool"):
+            JobConfig(use_circuit_packing=1)
+
+    def test_job_config_override_basic(self):
+        """Tests that JobConfig.override() method works correctly."""
+        base = JobConfig(shots=1000, tag="base", use_circuit_packing=False)
+        override = JobConfig(shots=500, tag="override")
+
+        result = base.override(override)
+        assert result.shots == 500
+        assert result.tag == "override"
+        assert result.use_circuit_packing is False  # Not overridden
+
+    def test_job_config_override_none_values_ignored(self):
+        """Tests that None values in override config are ignored."""
+        base = JobConfig(shots=1000, tag="base", qpu_system_name="qoro_maestro")
+        override = JobConfig(shots=None, tag="override", qpu_system_name=None)
+
+        result = base.override(override)
+        assert result.shots == 1000  # Not overridden
+        assert result.tag == "override"  # Overridden
+        assert result.qpu_system_name == "qoro_maestro"  # Not overridden
+
+    def test_job_config_override_immutability(self):
+        """Tests that JobConfig.override() returns a new instance."""
+        base = JobConfig(shots=1000)
+        override = JobConfig(shots=500)
+
+        result = base.override(override)
+
+        # Original should be unchanged
+        assert base.shots == 1000
+        # Result should have new value
+        assert result.shots == 500
+        # Should be different objects
+        assert result is not base
+        assert result is not override
+
+    def test_job_config_override_all_fields(self):
+        """Tests overriding all fields."""
+        base = JobConfig(
+            shots=1000, tag="base", qpu_system_name="system1", use_circuit_packing=False
+        )
+        override = JobConfig(
+            shots=2000,
+            tag="override",
+            qpu_system_name="system2",
+            use_circuit_packing=True,
+        )
+
+        result = base.override(override)
+        assert result.shots == 2000
+        assert result.tag == "override"
+        assert result.qpu_system_name == "system2"
+        assert result.use_circuit_packing is True
+
     # --- Tests for core functionality ---
 
     def test_make_request_comprehensive(self, mocker):
@@ -713,6 +792,37 @@ class TestQoroServiceMock:
         )
         _, called_kwargs = mock_make_request4.call_args_list[0]
         assert called_kwargs.get("json", {}).get("use_packing") is True
+
+        # Test 5: Verify that override_config properly merges with service config
+        # and is used consistently in both init and add_circuits calls
+        mock_init_response5 = mocker.MagicMock(
+            status_code=HTTPStatus.CREATED, json=lambda: {"job_id": "mock_job_id"}
+        )
+        mock_add_response5 = mocker.MagicMock(status_code=HTTPStatus.OK)
+
+        # Create a service with default config
+        service_with_default = QoroService(
+            auth_token="test_token", max_retries=3, polling_interval=0.01
+        )
+
+        mock_make_request5 = mocker.patch.object(
+            service_with_default,
+            "_make_request",
+            side_effect=[mock_init_response5, mock_add_response5],
+        )
+
+        # Override shots in submit_circuits
+        service_with_default.submit_circuits(
+            {"circuit_1": "mock_qasm"}, override_config=JobConfig(shots=2000)
+        )
+
+        # Verify init payload uses overridden shots
+        _, init_kwargs = mock_make_request5.call_args_list[0]
+        assert init_kwargs.get("json", {}).get("shots") == 2000
+
+        # Verify add_circuits payload also uses overridden shots
+        _, add_kwargs = mock_make_request5.call_args_list[1]
+        assert add_kwargs.get("json", {}).get("shots") == 2000
 
     def test_submit_circuits_invalid_qasm_constraints_and_api_errors(
         self, mocker, qoro_service_mock

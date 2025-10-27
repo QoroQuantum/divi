@@ -433,7 +433,7 @@ class QoroService(CircuitRunner):
         # 1. Create final job configuration by layering configurations:
         #    service defaults -> user overrides
         job_config = (
-            job_config.override(override_config) if override_config else job_config
+            self.config.override(override_config) if override_config else self.config
         )
 
         # 2. Validate circuits
@@ -468,7 +468,7 @@ class QoroService(CircuitRunner):
             is_last_chunk = i == num_chunks - 1
             add_circuits_payload = {
                 "circuits": chunk,
-                "shots": self.config.shots,
+                "shots": job_config.shots,
                 "mode": "append",
                 "finalized": "true" if is_last_chunk else "false",
             }
