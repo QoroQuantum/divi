@@ -8,6 +8,7 @@ import json
 import logging
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, fields
 from enum import Enum
 from http import HTTPStatus
 
@@ -34,8 +35,6 @@ session.mount("http://", HTTPAdapter(max_retries=retry_configuration))
 session.mount("https://", HTTPAdapter(max_retries=retry_configuration))
 
 logger = logging.getLogger(__name__)
-
-_DEFAULT_QPU_SYSTEM = "qoro_maestro"
 
 
 def _decode_qh1_b64(encoded: dict) -> dict[str, int]:
@@ -157,8 +156,68 @@ class JobStatus(Enum):
 class JobType(Enum):
     EXECUTE = "EXECUTE"
     SIMULATE = "SIMULATE"
-    ESTIMATE = "ESTIMATE"
+    EXPECTATION = "EXPECTATION"
     CIRCUIT_CUT = "CIRCUIT_CUT"
+
+
+@dataclass(frozen=True)
+class JobConfig:
+    """Configuration for a Qoro Service job.
+
+    Attributes:
+        shots: Number of shots for the job.
+        qpu_system_name: Name of the QPU system to use.
+        use_circuit_packing: Whether to use circuit packing optimization.
+        tag: Tag to associate with the job for identification.
+        job_type: Type of job to execute.
+    """
+
+    shots: int | None = None
+    qpu_system_name: str | QPUSystem | None = None
+    use_circuit_packing: bool | None = None
+    tag: str = "default"
+
+    def override(self, other: "JobConfig") -> "JobConfig":
+        """Creates a new config by overriding attributes with non-None values.
+
+        This method ensures immutability by always returning a new `JobConfig` object
+        and leaving the original instance unmodified.
+
+        Args:
+            other: Another JobConfig instance to take values from. Only non-None
+                   attributes from this instance will be used for the override.
+
+        Returns:
+            A new JobConfig instance with the merged configurations.
+        """
+        current_attrs = {f.name: getattr(self, f.name) for f in fields(self)}
+
+        for f in fields(other):
+            other_value = getattr(other, f.name)
+            if other_value is not None:
+                current_attrs[f.name] = other_value
+
+        return JobConfig(**current_attrs)
+
+    def __post_init__(self):
+        """Sanitizes and validates the configuration."""
+        if self.shots is not None and self.shots <= 0:
+            raise ValueError(f"Shots must be a positive integer. Got {self.shots}.")
+
+        if self.qpu_system_name is not None:
+            if isinstance(self.qpu_system_name, QPUSystem):
+                # Use object.__setattr__ to modify the attribute on a frozen dataclass
+                object.__setattr__(self, "qpu_system_name", self.qpu_system_name.name)
+            elif not isinstance(self.qpu_system_name, str):
+                raise TypeError(
+                    "Expected a QPUSystem instance or str, got "
+                    f"{type(self.qpu_system_name)}"
+                )
+
+        if self.use_circuit_packing is not None and not isinstance(
+            self.use_circuit_packing, bool
+        ):
+            raise TypeError(f"Expected a bool, got {type(self.use_circuit_packing)}")
 
 
 class MaxRetriesReachedError(Exception):
@@ -181,18 +240,46 @@ def _parse_qpu_systems(json_data: list) -> list[QPUSystem]:
     ]
 
 
+_DEFAULT_QPU_SYSTEM = "qoro_maestro"
+
+_DEFAULT_JOB_CONFIG = JobConfig(
+    shots=1000, qpu_system_name=_DEFAULT_QPU_SYSTEM, use_circuit_packing=False
+)
+
+
 class QoroService(CircuitRunner):
+    """A client for interacting with the Qoro Quantum Service API.
+
+    This class provides methods to submit circuits, check job status,
+    and retrieve results from the Qoro platform.
+    """
 
     def __init__(
         self,
         auth_token: str | None = None,
+        config: JobConfig | None = None,
         polling_interval: float = 3.0,
         max_retries: int = 5000,
-        shots: int = 1000,
-        qpu_system_name: str | QPUSystem | None = None,
-        use_circuit_packing: bool = False,
     ):
-        super().__init__(shots=shots)
+        """Initializes the QoroService client.
+
+        Args:
+            auth_token (str | None, optional):
+                The authentication token for the Qoro API. If not provided,
+                it will be read from the QORO_API_KEY in a .env file.
+            config (JobConfig | None, optional):
+                A JobConfig object containing default job settings. If not
+                provided, a default configuration will be created.
+            polling_interval (float, optional):
+                The interval in seconds for polling job status. Defaults to 3.0.
+            max_retries (int, optional):
+                The maximum number of retries for polling. Defaults to 5000.
+        """
+        if config is None:
+            config = _DEFAULT_JOB_CONFIG
+        self.config = config
+
+        super().__init__(shots=self.config.shots)
 
         if auth_token is None:
             try:
@@ -203,33 +290,6 @@ class QoroService(CircuitRunner):
         self.auth_token = "Bearer " + auth_token
         self.polling_interval = polling_interval
         self.max_retries = max_retries
-        if qpu_system_name is None:
-            qpu_system_name = _DEFAULT_QPU_SYSTEM
-        self._qpu_system_name = qpu_system_name
-        self.use_circuit_packing = use_circuit_packing
-
-    @property
-    def qpu_system_name(self) -> str | QPUSystem | None:
-        return self._qpu_system_name
-
-    @qpu_system_name.setter
-    def qpu_system_name(self, system_name: str | QPUSystem | None):
-        """
-        Set the QPU system for the service.
-
-        Args:
-            system_name (str | QPUSystem): The QPU system to set or the name as a string.
-        """
-        if isinstance(system_name, str):
-            self._qpu_system_name = system_name
-        elif isinstance(system_name, QPUSystem):
-            self._qpu_system_name = system_name.name
-        elif system_name is None:
-            self._qpu_system_name = None
-        else:
-            raise TypeError(
-                "Expected a QPUSystem instance or str, got {type(system_name)}"
-            )
 
     def _make_request(self, method: str, endpoint: str, **kwargs) -> requests.Response:
         """
@@ -343,10 +403,8 @@ class QoroService(CircuitRunner):
     def submit_circuits(
         self,
         circuits: dict[str, str],
-        tag: str = "default",
         job_type: JobType = JobType.SIMULATE,
-        qpu_system_name: str | None = None,
-        override_circuit_packing: bool | None = None,
+        override_config: JobConfig | None = None,
     ) -> str:
         """
         Submit quantum circuits to the Qoro API for execution.
@@ -357,15 +415,12 @@ class QoroService(CircuitRunner):
         Args:
             circuits (dict[str, str]):
                 Dictionary mapping unique circuit IDs to QASM circuit strings.
-            tag (str, optional):
-                Tag to associate with the job for identification. Defaults to "default".
             job_type (JobType, optional):
-                Type of job to execute (e.g., SIMULATE, EXECUTE, ESTIMATE, CIRCUIT_CUT).
+                Type of job to execute (e.g., SIMULATE, EXECUTE, EXPECTATION, CIRCUIT_CUT).
                 Defaults to JobType.SIMULATE.
-            qpu_system_name (str | None, optional):
-                The name of the QPU system to use. Overrides the service's default.
-            override_circuit_packing (bool | None, optional):
-                Whether to use circuit packing optimization. Overrides the service's default.
+            override_config (JobConfig | None, optional):
+                Configuration object to override the service's default settings.
+                If not provided, default values are used.
 
         Raises:
             ValueError: If more than one circuit is submitted for a CIRCUIT_CUT job,
@@ -375,6 +430,13 @@ class QoroService(CircuitRunner):
         Returns:
             str: The job ID for the created job.
         """
+        # 1. Create final job configuration by layering configurations:
+        #    service defaults -> user overrides
+        job_config = (
+            job_config.override(override_config) if override_config else job_config
+        )
+
+        # 2. Validate circuits
         if job_type == JobType.CIRCUIT_CUT and len(circuits) > 1:
             raise ValueError("Only one circuit allowed for circuit-cutting jobs.")
 
@@ -382,17 +444,13 @@ class QoroService(CircuitRunner):
             if not (err := is_valid_qasm(circuit)):
                 raise ValueError(f"Circuit '{key}' is not a valid QASM: {err}")
 
-        # 1. Initialize the job without circuits to get a job_id
+        # 3. Initialize the job without circuits to get a job_id
         init_payload = {
-            "shots": self.shots,
-            "tag": tag,
+            "shots": job_config.shots,
+            "tag": job_config.tag,
             "job_type": job_type.value,
-            "qpu_system_name": qpu_system_name or self.qpu_system_name,
-            "use_packing": (
-                override_circuit_packing
-                if override_circuit_packing is not None
-                else self.use_circuit_packing
-            ),
+            "qpu_system_name": job_config.qpu_system_name,
+            "use_packing": job_config.use_circuit_packing,
         }
 
         init_response = self._make_request(
@@ -402,7 +460,7 @@ class QoroService(CircuitRunner):
             _raise_with_details(init_response)
         job_id = init_response.json()["job_id"]
 
-        # 2. Split circuits and add them to the created job
+        # 4. Split circuits and add them to the created job
         circuit_chunks = self._split_circuits(circuits)
         num_chunks = len(circuit_chunks)
 
@@ -410,7 +468,7 @@ class QoroService(CircuitRunner):
             is_last_chunk = i == num_chunks - 1
             add_circuits_payload = {
                 "circuits": chunk,
-                "shots": self.shots,
+                "shots": self.config.shots,
                 "mode": "append",
                 "finalized": "true" if is_last_chunk else "false",
             }

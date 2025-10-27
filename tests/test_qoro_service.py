@@ -9,6 +9,7 @@ import requests
 
 from divi.backends import _qoro_service
 from divi.backends._qoro_service import (
+    JobConfig,
     JobStatus,
     JobType,
     MaxRetriesReachedError,
@@ -30,13 +31,13 @@ from divi.backends._qpu_system import QPUSystem
 @pytest.fixture
 def qoro_service(api_key):
     """Provides a QoroService instance with a real API token for integration tests."""
-    return QoroService(api_key)
+    return QoroService(auth_token=api_key)
 
 
 @pytest.fixture
 def qoro_service_mock():
     """Provides a mocked QoroService instance for unit tests."""
-    return QoroService("mock_token", max_retries=3, polling_interval=0.01)
+    return QoroService(auth_token="mock_token", max_retries=3, polling_interval=0.01)
 
 
 @pytest.fixture
@@ -241,35 +242,33 @@ class TestQoroServiceMock:
         ],
         ids=["string_input", "QPUSystem_object_input", "None_input"],
     )
-    def test_qpu_system_name_setter_success(self, input_value, expected_stored_name):
+    def test_job_config_qpu_system_name_success(
+        self, input_value, expected_stored_name
+    ):
         """
-        Tests that the qpu_system_name setter correctly handles valid input types
-        (str, QPUSystem, None) and stores the appropriate name.
+        Tests that JobConfig correctly handles valid qpu_system_name types.
         """
-        service = QoroService("test_token")
-        # This assignment should succeed without raising an exception
-        service.qpu_system_name = input_value
-        assert service._qpu_system_name == expected_stored_name
+        config = JobConfig(qpu_system_name=input_value)
+        assert config.qpu_system_name == expected_stored_name
 
     @pytest.mark.parametrize(
         "invalid_input",
         [123, ["a", "list"], {"a": "dict"}],
         ids=["integer_input", "list_input", "dict_input"],
     )
-    def test_qpu_system_name_setter_failure(self, invalid_input):
+    def test_job_config_qpu_system_name_failure(self, invalid_input):
         """
-        Tests that the qpu_system_name setter raises a TypeError for invalid input types.
+        Tests that JobConfig raises a TypeError for invalid qpu_system_name types.
         """
-        service = QoroService("test_token")
         with pytest.raises(TypeError):
-            service.qpu_system_name = invalid_input
+            JobConfig(qpu_system_name=invalid_input)
 
     # --- Tests for core functionality ---
 
     def test_make_request_comprehensive(self, mocker):
         """Test _make_request functionality."""
 
-        service = QoroService("test_token")
+        service = QoroService(auth_token="test_token")
 
         # Test 1: Successful GET request
         mock_response = mocker.MagicMock()
@@ -322,7 +321,7 @@ class TestQoroServiceMock:
     def test_compress_data_and_split_circuits(self, mocker):
         """Test _compress_data and _split_circuits functionality."""
 
-        service = QoroService("test_token")
+        service = QoroService(auth_token="test_token")
 
         # Test _compress_data
         compressed = service._compress_data("test circuit")
@@ -356,7 +355,7 @@ class TestQoroServiceMock:
     def test_fetch_qpu_systems(self, mocker):
         """Test fetch_qpu_systems and _parse_qpu_systems."""
 
-        service = QoroService("test_token")
+        service = QoroService(auth_token="test_token")
 
         # Test _parse_qpu_systems
         mock_json_data = [
@@ -470,7 +469,7 @@ class TestQoroServiceMock:
         """Test get_job_results error handling."""
         from divi.backends._qoro_service import QoroService
 
-        service = QoroService("test_token")
+        service = QoroService(auth_token="test_token")
 
         # Test 400 Bad Request handling
         mock_response = mocker.MagicMock()
@@ -491,7 +490,7 @@ class TestQoroServiceMock:
         """Test submit_circuits init response error handling."""
         from divi.backends._qoro_service import QoroService
 
-        service = QoroService("test_token")
+        service = QoroService(auth_token="test_token")
 
         # Test init response error handling
         mock_response = mocker.MagicMock()
@@ -515,7 +514,7 @@ class TestQoroServiceMock:
         """Test submit_circuits add_circuits response error handling."""
         from divi.backends._qoro_service import QoroService
 
-        service = QoroService("test_token")
+        service = QoroService(auth_token="test_token")
 
         # Test add_circuits response error handling
         mock_init_response = mocker.MagicMock()
@@ -577,7 +576,7 @@ class TestQoroServiceMock:
 
     def test_fail_submit_circuits(self, circuits):
         """Tests that submitting circuits with an invalid token raises an HTTPError."""
-        service = QoroService("invalid_token")
+        service = QoroService(auth_token="invalid_token")
         with pytest.raises(requests.exceptions.HTTPError):
             service.submit_circuits(circuits)
 
@@ -686,7 +685,9 @@ class TestQoroServiceMock:
         )
 
         qoro_service_mock.submit_circuits(
-            {"c1": "qasm"}, tag="my_custom_tag", job_type=JobType.EXECUTE
+            {"c1": "qasm"},
+            job_type=JobType.EXECUTE,
+            override_config=JobConfig(tag="my_custom_tag"),
         )
 
         # The parameters should be in the first (init) call
@@ -696,8 +697,6 @@ class TestQoroServiceMock:
         assert payload.get("job_type") == JobType.EXECUTE.value
 
         # Test 4: Circuit packing override
-        qoro_service_mock.use_circuit_packing = False
-
         mock_init_response4 = mocker.MagicMock(
             status_code=HTTPStatus.CREATED, json=lambda: {"job_id": "mock_job_id"}
         )
@@ -709,7 +708,9 @@ class TestQoroServiceMock:
         )
 
         circuits = {"circuit_1": "mock_qasm"}
-        qoro_service_mock.submit_circuits(circuits, override_circuit_packing=True)
+        qoro_service_mock.submit_circuits(
+            circuits, override_config=JobConfig(use_circuit_packing=True)
+        )
         _, called_kwargs = mock_make_request4.call_args_list[0]
         assert called_kwargs.get("json", {}).get("use_packing") is True
 

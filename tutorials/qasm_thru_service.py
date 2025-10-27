@@ -2,9 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from divi.backends import QoroService
+from divi.backends import JobConfig, QoroService
 
 if __name__ == "__main__":
+    # Initialize the service. This will use a default configuration.
     service = QoroService()
 
     # Test if QoroService is initialized correctly
@@ -15,7 +16,10 @@ if __name__ == "__main__":
     for i in range(10):
         circuits[f"circuit_{i}"] = circuit
 
-    job_id = service.submit_circuits(circuits)
+    # We can override the default configuration for a specific job submission.
+    # Here, we increase the number of shots to 2000.
+    override = JobConfig(shots=2000)
+    job_id = service.submit_circuits(circuits, override_config=override)
 
     print(f"Job submitted with ID: {job_id}")
 
