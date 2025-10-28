@@ -18,7 +18,12 @@ from dotenv import dotenv_values
 from requests.adapters import HTTPAdapter, Retry
 
 from divi.backends import CircuitRunner
-from divi.backends._qpu_system import QPU, QPUSystem
+from divi.backends._qpu_system import (
+    QPUSystem,
+    get_qpu_system,
+    parse_qpu_systems,
+    update_qpu_systems_cache,
+)
 from divi.extern.cirq import is_valid_qasm
 
 API_URL = "https://app.qoroquantum.net/api"
@@ -167,14 +172,13 @@ class JobConfig:
 
     Attributes:
         shots: Number of shots for the job.
-        qpu_system_name: Name of the QPU system to use.
+        qpu_system: The QPU system to use, can be a string or a QPUSystem object.
         use_circuit_packing: Whether to use circuit packing optimization.
         tag: Tag to associate with the job for identification.
-        job_type: Type of job to execute.
     """
 
     shots: int | None = None
-    qpu_system_name: str | QPUSystem | None = None
+    qpu_system: QPUSystem | str | None = None
     use_circuit_packing: bool | None = None
     tag: str = "default"
 
@@ -205,15 +209,13 @@ class JobConfig:
         if self.shots is not None and self.shots <= 0:
             raise ValueError(f"Shots must be a positive integer. Got {self.shots}.")
 
-        if self.qpu_system_name is not None:
-            if isinstance(self.qpu_system_name, QPUSystem):
-                # Use object.__setattr__ to modify the attribute on a frozen dataclass
-                object.__setattr__(self, "qpu_system_name", self.qpu_system_name.name)
-            elif not isinstance(self.qpu_system_name, str):
-                raise TypeError(
-                    "Expected a QPUSystem instance or str, got "
-                    f"{type(self.qpu_system_name)}"
-                )
+        if isinstance(self.qpu_system, str):
+            # Use object.__setattr__ to modify the attribute on a frozen dataclass
+            object.__setattr__(self, "qpu_system", get_qpu_system(self.qpu_system))
+        elif self.qpu_system is not None and not isinstance(self.qpu_system, QPUSystem):
+            raise TypeError(
+                f"Expected a QPUSystem instance or str, got {type(self.qpu_system)}"
+            )
 
         if self.use_circuit_packing is not None and not isinstance(
             self.use_circuit_packing, bool
@@ -230,21 +232,10 @@ class MaxRetriesReachedError(Exception):
         super().__init__(self.message)
 
 
-def _parse_qpu_systems(json_data: list) -> list[QPUSystem]:
-    return [
-        QPUSystem(
-            name=system_data["name"],
-            qpus=[QPU(**qpu) for qpu in system_data.get("qpus", [])],
-            access_level=system_data["access_level"],
-        )
-        for system_data in json_data
-    ]
-
-
-_DEFAULT_QPU_SYSTEM = "qoro_maestro"
+_DEFAULT_QPU_SYSTEM = QPUSystem(name="qoro_maestro", supports_expval=True)
 
 _DEFAULT_JOB_CONFIG = JobConfig(
-    shots=1000, qpu_system_name=_DEFAULT_QPU_SYSTEM, use_circuit_packing=False
+    shots=1000, qpu_system=_DEFAULT_QPU_SYSTEM, use_circuit_packing=False
 )
 
 
@@ -356,7 +347,9 @@ class QoroService(CircuitRunner):
             List of QPUSystem objects.
         """
         response = self._make_request("get", "qpusystem/", timeout=10)
-        return _parse_qpu_systems(response.json())
+        systems = parse_qpu_systems(response.json())
+        update_qpu_systems_cache(systems)
+        return systems
 
     @staticmethod
     def _compress_data(value) -> bytes:
@@ -477,7 +470,9 @@ class QoroService(CircuitRunner):
         init_payload = {
             "tag": job_config.tag,
             "job_type": job_type.value,
-            "qpu_system_name": job_config.qpu_system_name,
+            "qpu_system_name": (
+                job_config.qpu_system.name if job_config.qpu_system else None
+            ),
             "use_packing": job_config.use_circuit_packing,
         }
 

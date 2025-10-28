@@ -17,13 +17,18 @@ from divi.backends._qoro_service import (
     _decode_qh1_b64,
     _decompress_histogram,
     _int_to_bitstr,
-    _parse_qpu_systems,
     _raise_with_details,
     _rle_bool_decode,
     _uleb128_decode,
     is_valid_qasm,
 )
-from divi.backends._qpu_system import QPUSystem
+from divi.backends._qpu_system import (
+    QPUSystem,
+    get_available_qpu_systems,
+    get_qpu_system,
+    parse_qpu_systems,
+    update_qpu_systems_cache,
+)
 
 # --- Test Fixtures ---
 
@@ -234,37 +239,41 @@ class TestQoroServiceMock:
         assert service.auth_token == "Bearer env_api_key"
 
     @pytest.mark.parametrize(
-        "input_value, expected_stored_name",
+        "input_value, expected_stored_value",
         [
-            ("my_qpu_system", "my_qpu_system"),
+            ("my_qpu_system", QPUSystem(name="my_qpu_system")),
             (
-                QPUSystem(name="qpu_from_object", qpus=[], access_level="basic"),
-                "qpu_from_object",
+                QPUSystem(name="qpu_from_object"),
+                QPUSystem(name="qpu_from_object"),
             ),
             (None, None),
         ],
         ids=["string_input", "QPUSystem_object_input", "None_input"],
     )
-    def test_job_config_qpu_system_name_success(
-        self, input_value, expected_stored_name
+    def test_job_config_qpu_system_success(
+        self, input_value, expected_stored_value, mocker
     ):
         """
-        Tests that JobConfig correctly handles valid qpu_system_name types.
+        Tests that JobConfig correctly handles valid qpu_system types.
         """
-        config = JobConfig(qpu_system_name=input_value)
-        assert config.qpu_system_name == expected_stored_name
+        mocker.patch(
+            "divi.backends._qoro_service.get_qpu_system",
+            return_value=QPUSystem(name="my_qpu_system"),
+        )
+        config = JobConfig(qpu_system=input_value)
+        assert config.qpu_system == expected_stored_value
 
     @pytest.mark.parametrize(
         "invalid_input",
         [123, ["a", "list"], {"a": "dict"}],
         ids=["integer_input", "list_input", "dict_input"],
     )
-    def test_job_config_qpu_system_name_failure(self, invalid_input):
+    def test_job_config_qpu_system_failure(self, invalid_input):
         """
-        Tests that JobConfig raises a TypeError for invalid qpu_system_name types.
+        Tests that JobConfig raises a TypeError for invalid qpu_system types.
         """
         with pytest.raises(TypeError):
-            JobConfig(qpu_system_name=invalid_input)
+            JobConfig(qpu_system=invalid_input)
 
     def test_job_config_shots_validation(self):
         """Tests that JobConfig validates shots values."""
@@ -304,13 +313,15 @@ class TestQoroServiceMock:
 
     def test_job_config_override_none_values_ignored(self):
         """Tests that None values in override config are ignored."""
-        base = JobConfig(shots=1000, tag="base", qpu_system_name="qoro_maestro")
-        override = JobConfig(shots=None, tag="override", qpu_system_name=None)
+        base = JobConfig(
+            shots=1000, tag="base", qpu_system=QPUSystem(name="qoro_maestro")
+        )
+        override = JobConfig(shots=None, tag="override", qpu_system=None)
 
         result = base.override(override)
         assert result.shots == 1000  # Not overridden
         assert result.tag == "override"  # Overridden
-        assert result.qpu_system_name == "qoro_maestro"  # Not overridden
+        assert result.qpu_system == QPUSystem(name="qoro_maestro")  # Not overridden
 
     def test_job_config_override_immutability(self):
         """Tests that JobConfig.override() returns a new instance."""
@@ -327,22 +338,29 @@ class TestQoroServiceMock:
         assert result is not base
         assert result is not override
 
-    def test_job_config_override_all_fields(self):
+    def test_job_config_override_all_fields(self, mocker):
         """Tests overriding all fields."""
         base = JobConfig(
-            shots=1000, tag="base", qpu_system_name="system1", use_circuit_packing=False
+            shots=1000,
+            tag="base",
+            qpu_system=QPUSystem(name="system1"),
+            use_circuit_packing=False,
         )
+
+        # Populate the cache before creating the JobConfig that uses a string
+        update_qpu_systems_cache([QPUSystem(name="system2")])
+
         override = JobConfig(
             shots=2000,
             tag="override",
-            qpu_system_name="system2",
+            qpu_system="system2",
             use_circuit_packing=True,
         )
 
         result = base.override(override)
         assert result.shots == 2000
         assert result.tag == "override"
-        assert result.qpu_system_name == "system2"
+        assert result.qpu_system == QPUSystem(name="system2")
         assert result.use_circuit_packing is True
 
     # --- Tests for core functionality ---
@@ -435,11 +453,11 @@ class TestQoroServiceMock:
         assert len(chunks) > 1  # Should be split into multiple chunks
 
     def test_fetch_qpu_systems(self, mocker):
-        """Test fetch_qpu_systems and _parse_qpu_systems."""
+        """Test fetch_qpu_systems and parse_qpu_systems."""
 
         service = QoroService(auth_token="test_token")
 
-        # Test _parse_qpu_systems
+        # Test parse_qpu_systems
         mock_json_data = [
             {
                 "name": "test_qpu",
@@ -461,7 +479,7 @@ class TestQoroServiceMock:
             }
         ]
 
-        qpu_systems = _parse_qpu_systems(mock_json_data)
+        qpu_systems = parse_qpu_systems(mock_json_data)
         assert len(qpu_systems) == 1
         assert qpu_systems[0].name == "test_qpu"
         assert len(qpu_systems[0].qpus) == 2
@@ -469,12 +487,54 @@ class TestQoroServiceMock:
         # Test fetch_qpu_systems
         mock_response = mocker.MagicMock()
         mock_response.json.return_value = mock_json_data
-
         mocker.patch.object(service, "_make_request", return_value=mock_response)
+        mock_update_cache = mocker.patch.object(
+            _qoro_service, "update_qpu_systems_cache"
+        )
 
         result = service.fetch_qpu_systems()
         assert len(result) == 1
         assert result[0].name == "test_qpu"
+        mock_update_cache.assert_called_once_with(result)
+
+    def test_update_qpu_systems_cache(self):
+        """Test that the cache is correctly updated, including special handling."""
+        systems = [
+            QPUSystem(name="system1"),
+            QPUSystem(name="qoro_maestro", supports_expval=False),
+        ]
+        update_qpu_systems_cache(systems)
+
+        cached_systems = get_available_qpu_systems()
+        assert len(cached_systems) == 2
+
+        # Verify that `supports_expval` was correctly updated for `qoro_maestro`
+        maestro = get_qpu_system("qoro_maestro")
+        assert maestro.supports_expval is True
+
+        # Verify that other systems were not affected
+        system1 = get_qpu_system("system1")
+        assert system1.supports_expval is False
+
+    def test_get_qpu_system(self):
+        """Test get_qpu_system functionality with caching."""
+        # Test 1: Cache is empty
+        update_qpu_systems_cache([])
+        with pytest.raises(ValueError, match="QPU systems cache is empty"):
+            get_qpu_system("system1")
+
+        # Test 2: Cache is populated, system found
+        mock_systems = [
+            QPUSystem(name="system1"),
+            QPUSystem(name="system2"),
+        ]
+        update_qpu_systems_cache(mock_systems)
+        system = get_qpu_system("system1")
+        assert system.name == "system1"
+
+        # Test 3: Cache is populated, system not found
+        with pytest.raises(ValueError, match="QPUSystem with name 'system3' not found"):
+            get_qpu_system("system3")
 
     def test_poll_job_status_comprehensive(self, mocker):
         """Test poll_job_status functionality."""
