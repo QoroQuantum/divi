@@ -16,11 +16,20 @@ from scipy.optimize import OptimizeResult
 from divi.circuits import MetaCircuit
 from divi.circuits.qem import ZNE
 from divi.qprog.exceptions import _CancelledError
-from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.variational_quantum_algorithm import (
     VariationalQuantumAlgorithm,
     _batched_expectation,
 )
+
+
+@pytest.fixture
+def mock_backend(mocker):
+    """Create a mock backend with required properties."""
+    backend = mocker.MagicMock()
+    backend.shots = 1000
+    backend.is_async = False
+    backend.supports_expval = False
+    return backend
 
 
 class SampleProgram(VariationalQuantumAlgorithm):
@@ -33,7 +42,7 @@ class SampleProgram(VariationalQuantumAlgorithm):
         self.current_iteration = 0
         self.max_iterations = 0  # Default value to prevent AttributeError
 
-        super().__init__(backend=None, **kwargs)
+        super().__init__(backend=kwargs.pop("backend", None), **kwargs)
 
         self._meta_circuits = self._create_meta_circuits_dict()
         self.loss_constant = 0.0
@@ -348,9 +357,9 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         assert circ_count == program._total_circuit_count
         assert run_time == program._total_run_time
 
-    def test_run_with_data_storage(self, mocker, tmp_path):
+    def test_run_with_data_storage(self, mocker, mock_backend, tmp_path):
         """Test that run calls save_iteration when requested."""
-        program = self._create_program_with_mock_optimizer(mocker)
+        program = self._create_program_with_mock_optimizer(mocker, backend=mock_backend)
         program.max_iterations = 1
         data_file = tmp_path / "test_data.pkl"
         mock_save = mocker.patch.object(program, "save_iteration")

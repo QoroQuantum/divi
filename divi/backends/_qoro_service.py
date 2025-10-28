@@ -283,6 +283,20 @@ class QoroService(CircuitRunner):
         self.polling_interval = polling_interval
         self.max_retries = max_retries
 
+    @property
+    def supports_expval(self) -> bool:
+        """
+        Whether the backend supports expectation value measurements.
+        """
+        return self.config.qpu_system.supports_expval
+
+    @property
+    def is_async(self) -> bool:
+        """
+        Whether the backend executes circuits asynchronously.
+        """
+        return True
+
     def _make_request(self, method: str, endpoint: str, **kwargs) -> requests.Response:
         """
         Make an authenticated HTTP request to the Qoro API.
@@ -398,7 +412,7 @@ class QoroService(CircuitRunner):
         self,
         circuits: dict[str, str],
         ham_ops: str | None = None,
-        job_type: JobType = JobType.SIMULATE,
+        job_type: JobType | None = None,
         override_config: JobConfig | None = None,
     ) -> str:
         """
@@ -416,7 +430,7 @@ class QoroService(CircuitRunner):
                 If None, no Hamiltonian operators will be measured.
             job_type (JobType, optional):
                 Type of job to execute (e.g., SIMULATE, EXECUTE, EXPECTATION, CIRCUIT_CUT).
-                Defaults to JobType.SIMULATE.
+                If not provided, the job type will be determined from the service configuration.
             override_config (JobConfig | None, optional):
                 Configuration object to override the service's default settings.
                 If not provided, default values are used.
@@ -437,11 +451,14 @@ class QoroService(CircuitRunner):
 
         # Validate observables
         if ham_ops is not None:
-            if job_type != JobType.EXPECTATION:
-                warn(
-                    "Hamiltonian operators are only supported for expectation value jobs. Ignoring.",
-                    UserWarning,
+            if job_type is not None and job_type != JobType.EXPECTATION:
+                raise ValueError(
+                    "Hamiltonian operators are only supported for EXPECTATION job type."
                 )
+
+            if job_type is None:
+                job_type = JobType.EXPECTATION
+
             terms = ham_ops.split(";")
             if len(terms) == 0:
                 raise ValueError(
@@ -456,6 +473,9 @@ class QoroService(CircuitRunner):
                 raise ValueError(
                     "Hamiltonian operators must contain only I, X, Y, Z characters."
                 )
+
+        if job_type is None:
+            job_type = JobType.SIMULATE
 
         # Validate circuits
         if job_type == JobType.CIRCUIT_CUT and len(circuits) > 1:

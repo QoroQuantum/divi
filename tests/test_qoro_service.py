@@ -883,10 +883,10 @@ class TestQoroServiceMock:
                 {"c1": "qasm"}, ham_ops=ham_ops, job_type=JobType.EXPECTATION
             )
 
-    def test_submit_circuits_ham_ops_with_non_expectation_warning(
+    def test_submit_circuits_ham_ops_with_non_expectation_error(
         self, mocker, qoro_service_mock
     ):
-        """Test that ham_ops with non-EXPECTATION job_type issues a warning."""
+        """Test that ham_ops with non-EXPECTATION job_type issues an error."""
         mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=2)
         mock_init_response = mocker.MagicMock(
             status_code=HTTPStatus.CREATED, json=lambda: {"job_id": "mock_job_id"}
@@ -898,13 +898,42 @@ class TestQoroServiceMock:
             side_effect=[mock_init_response, mock_add_response],
         )
 
-        # Should warn when ham_ops is used with SIMULATE job
-        with pytest.warns(
-            UserWarning, match="Hamiltonian operators are only supported"
+        # Should error when ham_ops is used with SIMULATE job
+        with pytest.raises(
+            ValueError,
+            match="Hamiltonian operators are only supported for EXPECTATION job type.",
         ):
             qoro_service_mock.submit_circuits(
                 {"c1": "qasm"}, ham_ops="XII", job_type=JobType.SIMULATE
             )
+
+    def test_submit_circuits_ham_ops_auto_infers_expectation_job_type(
+        self, mocker, qoro_service_mock
+    ):
+        """Test that job_type is automatically set to EXPECTATION when ham_ops is provided without job_type."""
+        mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=2)
+        mock_init_response = mocker.MagicMock(
+            status_code=HTTPStatus.CREATED, json=lambda: {"job_id": "mock_job_id"}
+        )
+        mock_add_response = mocker.MagicMock(status_code=HTTPStatus.OK)
+        mock_make_request = mocker.patch.object(
+            qoro_service_mock,
+            "_make_request",
+            side_effect=[mock_init_response, mock_add_response],
+        )
+
+        # Submit with ham_ops but without specifying job_type (should auto-infer EXPECTATION)
+        circuits = {"circuit_1": "mock_qasm"}
+        ham_ops = "XII;ZII"
+        qoro_service_mock.submit_circuits(circuits, ham_ops=ham_ops, job_type=None)
+
+        # Verify init payload has job_type set to EXPECTATION
+        _, init_kwargs = mock_make_request.call_args_list[0]
+        assert init_kwargs.get("json", {}).get("job_type") == JobType.EXPECTATION.value
+
+        # Verify add_circuits payload includes observables
+        _, add_kwargs = mock_make_request.call_args_list[1]
+        assert add_kwargs.get("json", {}).get("observables") == ham_ops
 
     def test_submit_circuits_invalid_qasm_constraints_and_api_errors(
         self, mocker, qoro_service_mock
