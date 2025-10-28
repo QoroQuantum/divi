@@ -11,6 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, fields
 from enum import Enum
 from http import HTTPStatus
+from warnings import warn
 
 import requests
 from dotenv import dotenv_values
@@ -42,10 +43,10 @@ def _decode_qh1_b64(encoded: dict) -> dict[str, int]:
     Decode a {'encoding':'qh1','n_bits':N,'payload':base64} histogram
     into a dict with bitstring keys -> int counts.
 
-    Returns {} if payload is empty.
+    Returns the encoded dictionary as is if payload is empty/does not exist.
     """
     if not encoded or not encoded.get("payload"):
-        return {}
+        return encoded
 
     if encoded.get("encoding") != "qh1":
         raise ValueError(f"Unsupported encoding: {encoded.get('encoding')}")
@@ -403,6 +404,7 @@ class QoroService(CircuitRunner):
     def submit_circuits(
         self,
         circuits: dict[str, str],
+        ham_ops: str | None = None,
         job_type: JobType = JobType.SIMULATE,
         override_config: JobConfig | None = None,
     ) -> str:
@@ -415,6 +417,10 @@ class QoroService(CircuitRunner):
         Args:
             circuits (dict[str, str]):
                 Dictionary mapping unique circuit IDs to QASM circuit strings.
+            ham_ops (str | None, optional):
+                String representing the Hamiltonian operators to measure, semicolon-separated.
+                Each terms is a combination of Pauli operators, e.g. "XYZ;XXZ;ZIZ".
+                If None, no Hamiltonian operators will be measured.
             job_type (JobType, optional):
                 Type of job to execute (e.g., SIMULATE, EXECUTE, EXPECTATION, CIRCUIT_CUT).
                 Defaults to JobType.SIMULATE.
@@ -430,23 +436,45 @@ class QoroService(CircuitRunner):
         Returns:
             str: The job ID for the created job.
         """
-        # 1. Create final job configuration by layering configurations:
+        # Create final job configuration by layering configurations:
         #    service defaults -> user overrides
         job_config = (
             self.config.override(override_config) if override_config else self.config
         )
 
-        # 2. Validate circuits
+        # Validate observables
+        if ham_ops is not None:
+            if job_type != JobType.EXPECTATION:
+                warn(
+                    "Hamiltonian operators are only supported for expectation value jobs. Ignoring.",
+                    UserWarning,
+                )
+            terms = ham_ops.split(";")
+            if len(terms) == 0:
+                raise ValueError(
+                    "Hamiltonian operators must be non-empty semicolon-separated strings."
+                )
+            ham_ops_length = len(terms[0])
+            if not all(len(term) == ham_ops_length for term in terms):
+                raise ValueError("All Hamiltonian operators must have the same length.")
+            # Validate that each term only contains I, X, Y, Z
+            valid_paulis = {"I", "X", "Y", "Z"}
+            if not all(all(c in valid_paulis for c in term) for term in terms):
+                raise ValueError(
+                    "Hamiltonian operators must contain only I, X, Y, Z characters."
+                )
+
+        # Validate circuits
         if job_type == JobType.CIRCUIT_CUT and len(circuits) > 1:
             raise ValueError("Only one circuit allowed for circuit-cutting jobs.")
 
         for key, circuit in circuits.items():
-            if not (err := is_valid_qasm(circuit)):
-                raise ValueError(f"Circuit '{key}' is not a valid QASM: {err}")
+            result = is_valid_qasm(circuit)
+            if isinstance(result, str):
+                raise ValueError(f"Circuit '{key}' is not a valid QASM: {result}")
 
-        # 3. Initialize the job without circuits to get a job_id
+        # Initialize the job without circuits to get a job_id
         init_payload = {
-            "shots": job_config.shots,
             "tag": job_config.tag,
             "job_type": job_type.value,
             "qpu_system_name": job_config.qpu_system_name,
@@ -460,7 +488,7 @@ class QoroService(CircuitRunner):
             _raise_with_details(init_response)
         job_id = init_response.json()["job_id"]
 
-        # 4. Split circuits and add them to the created job
+        # Split circuits and add them to the created job
         circuit_chunks = self._split_circuits(circuits)
         num_chunks = len(circuit_chunks)
 
@@ -468,10 +496,15 @@ class QoroService(CircuitRunner):
             is_last_chunk = i == num_chunks - 1
             add_circuits_payload = {
                 "circuits": chunk,
-                "shots": job_config.shots,
                 "mode": "append",
                 "finalized": "true" if is_last_chunk else "false",
             }
+
+            # Include shots/ham_ops in add_circuits payload
+            if ham_ops is not None:
+                add_circuits_payload["observables"] = ham_ops
+            else:
+                add_circuits_payload["shots"] = job_config.shots
 
             add_circuits_response = self._make_request(
                 "post",
@@ -525,6 +558,7 @@ class QoroService(CircuitRunner):
 
         # If the request was successful, process the data
         data = response.json()
+
         for result in data["results"]:
             result["results"] = _decode_qh1_b64(result["results"])
         return data["results"]
