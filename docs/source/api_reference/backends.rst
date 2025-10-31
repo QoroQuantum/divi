@@ -32,6 +32,13 @@ Core Backend Classes
 Job Management
 --------------
 
+.. autoclass:: divi.backends.JobConfig
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+   :no-index:
+
 .. autoclass:: divi.backends.JobStatus
    :members:
    :undoc-members:

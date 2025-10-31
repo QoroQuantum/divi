@@ -104,4 +104,4 @@ Pull Request Process
 - Keep PRs focused on a single feature/fix
 - Ensure all CI checks pass
 
-For more details, see our `Contributing Guidelines <https://github.com/qoro-quantum/divi/blob/main/CONTRIBUTING.md>`_.
+For more details, see our `Contributing Guidelines <https://github.com/QoroQuantum/divi/blob/main/CONTRIBUTING.md>`_.

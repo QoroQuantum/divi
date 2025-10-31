@@ -277,42 +277,70 @@ class MonteCarloOptimizer(Optimizer):
     decreasing variance. This implements a simple but effective evolutionary strategy.
     """
 
-    def __init__(self, n_param_sets: int = 10, n_best_sets: int = 3):
+    def __init__(
+        self,
+        population_size: int = 10,
+        n_best_sets: int = 3,
+        keep_best_params: bool = False,
+    ):
         """
         Initialize a Monte Carlo optimizer.
 
         Args:
-            n_param_sets (int, optional): Total number of parameter sets to evaluate
-                per iteration. Defaults to 10.
+            population_size (int, optional): Size of the population for the algorithm.
+                Defaults to 10.
             n_best_sets (int, optional): Number of top-performing parameter sets to
                 use as seeds for the next generation. Defaults to 3.
+            keep_best_params (bool, optional): If True, includes the best parameter sets
+                directly in the new population. If False, generates all new parameters
+                by sampling around the best ones. Defaults to False.
 
         Raises:
-            ValueError: If n_best_sets is greater than n_param_sets.
+            ValueError: If n_best_sets is greater than population_size.
+            ValueError: If keep_best_params is True and n_best_sets equals population_size.
         """
         super().__init__()
 
-        if n_best_sets > n_param_sets:
-            raise ValueError("n_best_sets must be less than or equal to n_param_sets.")
+        if n_best_sets > population_size:
+            raise ValueError(
+                "n_best_sets must be less than or equal to population_size."
+            )
 
-        self._n_param_sets = n_param_sets
+        if keep_best_params and n_best_sets == population_size:
+            raise ValueError(
+                "If keep_best_params is True, n_best_sets must be less than population_size."
+            )
+
+        self._population_size = population_size
         self._n_best_sets = n_best_sets
+        self._keep_best_params = keep_best_params
 
         # Calculate how many times each of the best sets should be repeated
-        samples_per_best = self.n_param_sets // self.n_best_sets
-        remainder = self.n_param_sets % self.n_best_sets
+        # when generating new samples (without keeping best params)
+        samples_per_best = self._population_size // self.n_best_sets
+        remainder = self._population_size % self.n_best_sets
         self._repeat_counts = np.full(self.n_best_sets, samples_per_best)
         self._repeat_counts[:remainder] += 1
 
     @property
-    def n_param_sets(self):
+    def population_size(self):
         """
-        Get the number of parameter sets evaluated per iteration.
+        Get the size of the population.
 
         Returns:
-            int: Total number of parameter sets.
+            int: Size of the population.
         """
-        return self._n_param_sets
+        return self._population_size
+
+    @property
+    def n_param_sets(self):
+        """
+        Get the number of parameter sets (population size) used by this optimizer.
+
+        Returns:
+            int: Size of the population.
+        """
+        return self._population_size
 
     @property
     def n_best_sets(self):
@@ -323,6 +351,16 @@ class MonteCarloOptimizer(Optimizer):
             int: Number of best-performing sets kept.
         """
         return self._n_best_sets
+
+    @property
+    def keep_best_params(self):
+        """
+        Get whether the best parameters are kept in the new population.
+
+        Returns:
+            bool: True if best parameters are included in new population, False otherwise.
+        """
+        return self._keep_best_params
 
     def _compute_new_parameters(
         self,
@@ -338,18 +376,35 @@ class MonteCarloOptimizer(Optimizer):
         # 1. Select the best parameter sets from the current population
         best_params = params[best_indices]
 
-        # 2. Prepare the means for sampling by repeating each best parameter set
-        # according to its assigned count
-        new_means = np.repeat(best_params, self._repeat_counts, axis=0)
+        # 2. Determine how many new samples to generate
+        if self._keep_best_params:
+            n_new_samples = self._population_size - self._n_best_sets
+            # Calculate repeat counts for new samples only
+            samples_per_best = n_new_samples // self._n_best_sets
+            remainder = n_new_samples % self._n_best_sets
+            repeat_counts = np.full(self._n_best_sets, samples_per_best)
+            repeat_counts[:remainder] += 1
+        else:
+            n_new_samples = self._population_size
+            repeat_counts = self._repeat_counts
 
-        # 3. Define the standard deviation (scale), which shrinks over iterations
+        # 3. Prepare the means for sampling by repeating each best parameter set
+        new_means = np.repeat(best_params, repeat_counts, axis=0)
+
+        # 4. Define the standard deviation (scale), which shrinks over iterations
         scale = 1.0 / (2.0 * (curr_iteration + 1.0))
 
-        # 4. Generate all new parameters in a single vectorized call
+        # 5. Generate new parameters by sampling around the best ones
         new_params = rng.normal(loc=new_means, scale=scale)
 
-        # Apply periodic boundary conditions
-        return new_params % (2 * np.pi)
+        # 6. Apply periodic boundary conditions
+        new_params = new_params % (2 * np.pi)
+
+        # 7. Conditionally combine with best params if keeping them
+        if self._keep_best_params:
+            return np.vstack([best_params, new_params])
+        else:
+            return new_params
 
     def optimize(
         self,

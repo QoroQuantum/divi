@@ -39,6 +39,7 @@ extensions = [
     "sphinx.ext.coverage",  # Documentation coverage
     "sphinx_autodoc_typehints",
     "nbsphinx",
+    "sphinxcontrib.spelling",  # Spelling checker
 ]
 
 templates_path = ["_templates"]
@@ -98,7 +99,7 @@ intersphinx_mapping = {
     "numpy": ("https://numpy.org/doc/stable/", None),
     "scipy": ("https://docs.scipy.org/doc/scipy/", None),
     "pennylane": ("https://docs.pennylane.ai/en/stable/", None),
-    "qiskit": ("https://qiskit.org/documentation/", None),
+    "qiskit": ("https://quantum.cloud.ibm.com/docs/api/qiskit/", None),
     "mitiq": ("https://mitiq.readthedocs.io/en/stable/", None),
     "matplotlib": ("https://matplotlib.org/stable/", None),
     "networkx": ("https://networkx.org/documentation/stable/", None),
@@ -141,8 +142,7 @@ pygments_style = "sphinx"
 autosectionlabel_prefix_document = True
 autosectionlabel_maxdepth = 2
 
-# Disable module index and search page generation
-html_use_modindex = False
+# Enable search functionality
 html_use_search = True
 
 # -- Search configuration ------------------------------------------------------
@@ -174,4 +174,37 @@ coverage_ignore_classes = [
     "Test.*",  # Test classes
     ".*Test",  # Classes ending in Test
     ".*TestCase",  # Test case classes
+]
+
+# -- Linkcheck configuration ---------------------------------------------------
+# https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-the-linkcheck-builder
+
+linkcheck_ignore = [
+    r"http://localhost:\d+/",
+]
+
+# Timeout settings to prevent linkcheck from hanging
+linkcheck_timeout = 30  # Timeout in seconds for each link check
+linkcheck_retries = 2  # Number of retries for failed links
+linkcheck_workers = 5  # Number of concurrent worker threads
+linkcheck_rate_limit_timeout = 60  # Maximum wait time (seconds) when rate-limited
+
+# -- Spelling configuration --------------------------------------------------
+# https://sphinxcontrib-spelling.readthedocs.io/en/latest/customize.html
+
+spelling_word_list_filename = "spelling_wordlist.txt"
+spelling_show_suggestions = True
+spelling_suggestions_path = "spelling_suggestions.txt"
+spelling_ignore_acronyms = True
+spelling_ignore_pypi_package_names = True
+spelling_ignore_python_builtins = True
+spelling_ignore_importable_modules = True
+
+# Add filters to ignore common patterns in documentation
+spelling_filters = [
+    "enchant.tokenize.URLFilter",
+    "enchant.tokenize.EmailFilter",
+    "enchant.tokenize.WikiWordFilter",
+    "enchant.tokenize.MentionFilter",
+    "enchant.tokenize.HashtagFilter",
 ]

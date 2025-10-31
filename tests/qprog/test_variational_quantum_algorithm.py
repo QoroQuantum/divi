@@ -16,14 +16,23 @@ from scipy.optimize import OptimizeResult
 from divi.circuits import MetaCircuit
 from divi.circuits.qem import ZNE
 from divi.qprog.exceptions import _CancelledError
-from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.variational_quantum_algorithm import (
     VariationalQuantumAlgorithm,
     _batched_expectation,
 )
 
 
-class SampleProgram(VariationalQuantumAlgorithm):
+@pytest.fixture
+def mock_backend(mocker):
+    """Create a mock backend with required properties."""
+    backend = mocker.MagicMock()
+    backend.shots = 1000
+    backend.is_async = False
+    backend.supports_expval = False
+    return backend
+
+
+class SampleVQAProgram(VariationalQuantumAlgorithm):
     def __init__(self, circ_count, run_time, **kwargs):
         self.circ_count = circ_count
         self.run_time = run_time
@@ -33,19 +42,25 @@ class SampleProgram(VariationalQuantumAlgorithm):
         self.current_iteration = 0
         self.max_iterations = 0  # Default value to prevent AttributeError
 
-        super().__init__(backend=None, **kwargs)
+        super().__init__(backend=kwargs.pop("backend", None), **kwargs)
 
+        self._cost_hamiltonian = (
+            qml.PauliX(0) + qml.PauliZ(1) + qml.PauliX(0) @ qml.PauliZ(1)
+        )
         self._meta_circuits = self._create_meta_circuits_dict()
         self.loss_constant = 0.0
+
+    @property
+    def cost_hamiltonian(self) -> qml.operation.Operator:
+        """The cost Hamiltonian for the VQA problem."""
+        return self._cost_hamiltonian
 
     def _create_meta_circuits_dict(self):
         def simple_circuit(params):
             qml.RX(params[0], wires=0)
             qml.U3(*params[1], wires=1)
             qml.CNOT(wires=[0, 1])
-            return qml.expval(
-                qml.PauliX(0) + qml.PauliZ(1) + qml.PauliX(0) @ qml.PauliZ(1)
-            )
+            return qml.expval(self.cost_hamiltonian)
 
         symbols = [sp.Symbol("beta"), sp.symarray("theta", 3)]
         meta_circuit = MetaCircuit(
@@ -70,7 +85,7 @@ class TestProgram:
 
     def test_correct_random_behavior(self, mocker):
         """Test that random number generation works correctly with seeds."""
-        program = SampleProgram(10, 5.5, seed=1997)
+        program = SampleVQAProgram(10, 5.5, seed=1997)
 
         program.optimizer = mocker.MagicMock()
         program.optimizer.n_param_sets = 1
@@ -97,12 +112,13 @@ class TestProgram:
         expvals_collector = []
 
         for strategy, expected_n_groups, expected_n_diag in strategies:
-            program = SampleProgram(10, 5.5, seed=1997, grouping_strategy=strategy)
+            program = SampleVQAProgram(10, 5.5, seed=1997, grouping_strategy=strategy)
             program.loss_constant = 0.5
             program.optimizer = mocker.MagicMock()
             program.optimizer.n_param_sets = 1
             program.backend = mocker.MagicMock()
             program.backend.shots = 100
+            program.backend.supports_expval = False
 
             meta_circuit = program._meta_circuits["cost_circuit"]
             assert len(meta_circuit.measurement_groups) == expected_n_groups
@@ -130,10 +146,11 @@ class TestProgram:
             scale_factors=scale_factors,
             extrapolation_factory=LinearFactory(scale_factors=scale_factors),
         )
-        program = SampleProgram(10, 5.5, seed=1997, qem_protocol=zne_protocol)
+        program = SampleVQAProgram(10, 5.5, seed=1997, qem_protocol=zne_protocol)
         program.loss_constant = 0.0
         program.backend = mocker.MagicMock()
         program.backend.shots = 100
+        program.backend.supports_expval = False
 
         mock_shots_per_sf = [
             {"00": 95, "11": 5},
@@ -228,7 +245,7 @@ class BaseVariationalQuantumAlgorithmTest:
 
     def _create_program_with_mock_optimizer(self, mocker, **kwargs):
         """Helper method to create SampleProgram with mocked optimizer."""
-        program = SampleProgram(circ_count=1, run_time=0.1, **kwargs)
+        program = SampleVQAProgram(circ_count=1, run_time=0.1, **kwargs)
         program.optimizer = mocker.MagicMock()
         program.optimizer.n_param_sets = 1
         return program
@@ -348,9 +365,9 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         assert circ_count == program._total_circuit_count
         assert run_time == program._total_run_time
 
-    def test_run_with_data_storage(self, mocker, tmp_path):
+    def test_run_with_data_storage(self, mocker, mock_backend, tmp_path):
         """Test that run calls save_iteration when requested."""
-        program = self._create_program_with_mock_optimizer(mocker)
+        program = self._create_program_with_mock_optimizer(mocker, backend=mock_backend)
         program.max_iterations = 1
         data_file = tmp_path / "test_data.pkl"
         mock_save = mocker.patch.object(program, "save_iteration")

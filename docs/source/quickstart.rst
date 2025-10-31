@@ -189,7 +189,7 @@ Advanced Features
       # Commuting measurements are grouped for fewer circuit executions
       vqe.run()
 
-   **Note:** Observable grouping is a PennyLane feature. For detailed information about available strategies (`"qwc"`, `"wires"`, `"default"`), see the `PennyLane grouping documentation <https://pennylane.ai/qml/glossary/grouping.html>`_.
+   **Note:** Observable grouping is a PennyLane feature. For detailed information about available strategies (`"qwc"`, `"wires"`, `"default"`), see the `PennyLane grouping documentation <https://docs.pennylane.ai/en/stable/code/api/pennylane.transforms.split_non_commuting.html>`_.
 
 **Error Mitigation** 🛡️
    Improve result accuracy with built-in techniques:
@@ -220,7 +220,7 @@ Next Steps & Getting Help
 
 **Continue Learning:**
 
-* 🎯 **Try More Examples**: Explore the `tutorials/ <https://github.com/qoro-quantum/divi/tree/main/tutorials>`_ directory
+* 🎯 **Try More Examples**: Explore the `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ directory
 * ⚡ **Scale Up**: Learn about :doc:`user_guide/program_batches` for parallel execution
 * 🛠️ **Customize**: Create your own algorithms using the :doc:`api_reference/qprog`
 * 📊 **Monitor Progress**: Explore :doc:`api_reference/reporting` for advanced progress tracking

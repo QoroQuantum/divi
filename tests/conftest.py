@@ -13,6 +13,14 @@ from divi.backends import CircuitRunner, ParallelSimulator
 
 
 class DummySimulator(CircuitRunner):
+    @property
+    def is_async(self):
+        return False
+
+    @property
+    def supports_expval(self):
+        return False
+
     def submit_circuits(self, circuits):
         res = []
         for label, qasm in circuits.items():

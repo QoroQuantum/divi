@@ -158,10 +158,12 @@ INVALID_QASM = {
 @pytest.mark.parametrize("qasm", **VALID_QASM)
 def test_validate_qasm_valid(qasm):
     """Test that valid QASM strings pass validation."""
-    assert is_valid_qasm(qasm)
+    result = is_valid_qasm(qasm)
+    assert isinstance(result, int)
+    assert result > 0
 
 
 @pytest.mark.parametrize("qasm", **INVALID_QASM)
 def test_validate_qasm_invalid(qasm):
-    """Test that invalid QASM strings raise a SyntaxError."""
+    """Test that invalid QASM strings returns an error string."""
     assert isinstance(is_valid_qasm(qasm), str)

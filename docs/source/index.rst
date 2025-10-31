@@ -18,7 +18,7 @@ Or if you want to install from source:
 
 .. code-block:: bash
 
-   git clone https://github.com/qoro-quantum/divi.git
+   git clone https://github.com/QoroQuantum/divi.git
    cd divi
    poetry install
 

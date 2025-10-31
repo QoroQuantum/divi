@@ -11,7 +11,7 @@ import pennylane as qml
 
 
 class Ansatz(ABC):
-    """Abstract base class for all VQE ansaetze."""
+    """Abstract base class for all VQE ansätze."""
 
     @property
     def name(self) -> str:
@@ -33,7 +33,7 @@ class Ansatz(ABC):
             params (array): The parameters (weights) for the ansatz.
             n_qubits (int): The number of qubits.
             n_layers (int): The number of layers.
-            **kwargs: Additional arguments like n_electrons for chemistry ansaetze.
+            **kwargs: Additional arguments like n_electrons for chemistry ansätze.
         """
         raise NotImplementedError
 
