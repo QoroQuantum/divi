@@ -298,7 +298,7 @@ def vqe_sweep(default_test_simulator, h2_molecule):
     """Fixture to create a VQEHyperparameterSweep instance with the new interface."""
     bond_modifiers = [0.9, 1.0, 1.1]
     ansatze = [UCCSDAnsatz(), GenericLayerAnsatz([qml.RY])]
-    optimizer = MonteCarloOptimizer(n_param_sets=10, n_best_sets=3)
+    optimizer = MonteCarloOptimizer(population_size=10, n_best_sets=3)
     max_iterations = 10
 
     transformer = MoleculeTransformer(

@@ -196,7 +196,15 @@ def test_vqe_h2_molecule_e2e_solution(optimizer, default_test_simulator, h2_mole
 
     vqe_problem.run()
 
+    assert len(vqe_problem.losses_history) == 5
+
+    assert isinstance(vqe_problem.best_loss, float)
+    assert isinstance(vqe_problem.best_params, np.ndarray)
+    assert vqe_problem.best_params.shape == (vqe_problem.n_params,)
+
     # The ground state of H2 in this configuration is |1100>
     # This corresponds to occupying the two lowest energy orbitals.
+    expected_best_loss = -1.1398024781381293
+    assert vqe_problem.best_loss == pytest.approx(expected_best_loss, abs=0.5)
     expected_eigenstate = np.array([1, 1, 0, 0])
     np.testing.assert_array_equal(vqe_problem.eigenstate, expected_eigenstate)
