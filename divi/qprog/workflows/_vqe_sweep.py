@@ -441,7 +441,7 @@ class VQEHyperparameterSweep(ProgramBatch):
 
     def create_programs(self):
         """
-        Create VQE programs for all combinations of ansatze and molecule variants.
+        Create VQE programs for all combinations of ansätze and molecule variants.
 
         Generates molecule variants using the configured MoleculeTransformer, then
         creates a VQE program for each (ansatz, molecule_variant) pair.

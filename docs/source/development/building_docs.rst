@@ -22,7 +22,7 @@ To build the HTML documentation:
 .. code-block:: bash
 
    cd docs
-   make html
+   make build
 
 The built documentation will be available in ``docs/build/html/``.
 
@@ -33,11 +33,11 @@ For active documentation development, use the live reload server:
 .. code-block:: bash
 
    cd docs
-   make live
+   make dev
 
 This will:
 - Automatically rebuild when files change
-- Serve documentation at http://localhost:8000
+- Serve documentation at ``http://localhost:8000``
 - Provide live reloading for faster iteration
 
 **Serving Built Documentation**
@@ -100,7 +100,9 @@ The documentation Makefile provides several useful commands:
    cd docs
    make help          # Show all available commands
    make clean         # Remove all build files
-   make watch         # Watch for changes and rebuild automatically
-   make check         # Run all quality checks (linkcheck, doctest, coverage)
+   make test          # Run all quality checks (spelling, linkcheck, coverage)
+   make spelling      # Check for spelling errors
    make linkcheck     # Check for broken links
+   make coverage      # Run a documentation coverage check
+   make open          # Open the built documentation in your browser
    make install       # Install documentation dependencies

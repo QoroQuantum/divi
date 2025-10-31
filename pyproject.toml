@@ -71,6 +71,7 @@ nbsphinx = "^0.9.7"
 sphinx-rtd-theme = "^3.0.2"
 sphinx-autodoc-typehints = "^3.0"
 sphinx-autobuild = "^2025.8.25"
+sphinxcontrib-spelling = "^8.0.1"
 
 
 [tool.poetry.group.jupyter.dependencies]

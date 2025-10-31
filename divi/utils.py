@@ -10,6 +10,21 @@ import pennylane as qml
 import scipy.sparse as sps
 
 
+def hamiltonian_to_pauli_string(hamiltonian, n_qubits):
+    """Convert Hamiltonian to semicolon-separated Pauli strings."""
+    terms = []
+    for term in hamiltonian.operands:
+        op = term.base if isinstance(term, qml.ops.SProd) else term
+        s = ["I"] * n_qubits
+        ops = op.operands if isinstance(op, qml.ops.Prod) else [op]
+        for p in ops:
+            letter = p.name[5:]  # Remove 'Pauli' prefix
+            s[p.wires[0]] = letter
+        terms.append("".join(s))
+
+    return ";".join(terms)
+
+
 def reverse_dict_endianness(
     probs_dict: dict[str, dict[str, float]],
 ) -> dict[str, dict[str, float]]:

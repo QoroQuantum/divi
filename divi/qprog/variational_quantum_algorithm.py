@@ -5,7 +5,7 @@
 import logging
 from abc import abstractmethod
 from functools import lru_cache, partial
-from itertools import groupby
+from itertools import chain, groupby
 from queue import Queue
 
 import numpy as np
@@ -13,13 +13,13 @@ import pennylane as qml
 from scipy.optimize import OptimizeResult
 
 from divi.backends import CircuitRunner
-from divi.circuits import Circuit, MetaCircuit
+from divi.circuits import MetaCircuit
 from divi.circuits.qem import _NoMitigation
 from divi.qprog.exceptions import _CancelledError
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.quantum_program import QuantumProgram
 from divi.reporting import LoggingProgressReporter, QueueProgressReporter
-from divi.utils import reverse_dict_endianness
+from divi.utils import hamiltonian_to_pauli_string, reverse_dict_endianness
 
 logger = logging.getLogger(__name__)
 
@@ -304,9 +304,20 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         self._meta_circuit_factory = partial(
             MetaCircuit,
-            grouping_strategy=self._grouping_strategy,
+            # No grouping strategy for expectation value measurements
+            grouping_strategy=(
+                "_backend_expval"
+                if self.backend and self.backend.supports_expval
+                else self._grouping_strategy
+            ),
             qem_protocol=self._qem_protocol,
         )
+
+    @property
+    @abstractmethod
+    def cost_hamiltonian(self) -> qml.operation.Operator:
+        """The cost Hamiltonian for the variational problem."""
+        pass
 
     @property
     def total_circuit_count(self) -> int:
@@ -495,12 +506,19 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         self._generate_circuits(**kwargs)
 
-        losses = self._dispatch_circuits_and_process_results(data_file=data_file)
+        if self.backend.supports_expval:
+            kwargs["ham_ops"] = hamiltonian_to_pauli_string(
+                self.cost_hamiltonian, self.n_qubits
+            )
+
+        losses = self._dispatch_circuits_and_process_results(
+            data_file=data_file, **kwargs
+        )
 
         return losses
 
     def _post_process_results(
-        self, results: dict[str, dict[str, int]]
+        self, results: dict[str, dict[str, int]], **kwargs
     ) -> dict[int, float]:
         """
         Post-process the results of the quantum problem.
@@ -508,10 +526,10 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         Args:
             results (dict[str, dict[str, int]]): The shot histograms of the quantum execution step.
                 The keys should be strings of format {param_id}_*_{measurement_group_id}.
-                i.e. An underscore-separated bunch of metadata, starting always with
+                i.e. an underscore-separated bunch of metadata, starting always with
                 the index of some parameter and ending with the index of some measurement group.
-                Any extra piece of metadata that might be relevant to the specific application can
-                be kept in the middle.
+                Any extra piece of metadata that might be relevant to the specific
+                application can be kept in the middle.
 
         Returns:
             dict[int, float]: The energies for each parameter set grouping, where the dict keys
@@ -524,6 +542,9 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         losses = {}
         measurement_groups = self._meta_circuits["cost_circuit"].measurement_groups
+
+        if self.backend.supports_expval:
+            measurement_groups = tuple(chain.from_iterable(measurement_groups))
 
         # Define key functions for both levels of grouping
         get_param_id = lambda item: int(item[0].split("_")[0])
@@ -544,21 +565,23 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             for shots_dicts, curr_measurement_group in zip(
                 shots_by_qem_idx, measurement_groups
             ):
-                if hasattr(self, "cost_hamiltonian"):
-                    wire_order = tuple(reversed(self.cost_hamiltonian.wires))
+                if self.backend.supports_expval:
+                    expectation_matrix = np.array(
+                        [
+                            [d[key] for key in kwargs["ham_ops"].split(";")]
+                            for d in shots_dicts
+                        ]
+                    ).T
                 else:
-                    wire_order = tuple(
-                        reversed(range(len(next(iter(shots_dicts[0].keys())))))
-                    )
+                    wire_order = tuple(reversed(self.cost_hamiltonian.wires))
 
-                expectation_matrix = _batched_expectation(
-                    shots_dicts, curr_measurement_group, wire_order
-                )
+                    expectation_matrix = _batched_expectation(
+                        shots_dicts, curr_measurement_group, wire_order
+                    )
 
                 # expectation_matrix[i, j] = expectation value for observable i, histogram j
                 curr_marginal_results = []
-                for obs_idx in range(len(curr_measurement_group)):
-                    intermediate_exp_values = expectation_matrix[obs_idx, :]
+                for intermediate_exp_values in expectation_matrix:
                     mitigated_exp_value = self._qem_protocol.postprocess_results(
                         intermediate_exp_values
                     )
@@ -569,6 +592,9 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                     if len(curr_marginal_results) > 1
                     else curr_marginal_results[0]
                 )
+
+            if self.backend.supports_expval:
+                marginal_results = marginal_results[0]
 
             pl_loss = (
                 self._meta_circuits["cost_circuit"]

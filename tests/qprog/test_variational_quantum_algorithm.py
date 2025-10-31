@@ -32,7 +32,7 @@ def mock_backend(mocker):
     return backend
 
 
-class SampleProgram(VariationalQuantumAlgorithm):
+class SampleVQAProgram(VariationalQuantumAlgorithm):
     def __init__(self, circ_count, run_time, **kwargs):
         self.circ_count = circ_count
         self.run_time = run_time
@@ -44,17 +44,23 @@ class SampleProgram(VariationalQuantumAlgorithm):
 
         super().__init__(backend=kwargs.pop("backend", None), **kwargs)
 
+        self._cost_hamiltonian = (
+            qml.PauliX(0) + qml.PauliZ(1) + qml.PauliX(0) @ qml.PauliZ(1)
+        )
         self._meta_circuits = self._create_meta_circuits_dict()
         self.loss_constant = 0.0
+
+    @property
+    def cost_hamiltonian(self) -> qml.operation.Operator:
+        """The cost Hamiltonian for the VQA problem."""
+        return self._cost_hamiltonian
 
     def _create_meta_circuits_dict(self):
         def simple_circuit(params):
             qml.RX(params[0], wires=0)
             qml.U3(*params[1], wires=1)
             qml.CNOT(wires=[0, 1])
-            return qml.expval(
-                qml.PauliX(0) + qml.PauliZ(1) + qml.PauliX(0) @ qml.PauliZ(1)
-            )
+            return qml.expval(self.cost_hamiltonian)
 
         symbols = [sp.Symbol("beta"), sp.symarray("theta", 3)]
         meta_circuit = MetaCircuit(
@@ -79,7 +85,7 @@ class TestProgram:
 
     def test_correct_random_behavior(self, mocker):
         """Test that random number generation works correctly with seeds."""
-        program = SampleProgram(10, 5.5, seed=1997)
+        program = SampleVQAProgram(10, 5.5, seed=1997)
 
         program.optimizer = mocker.MagicMock()
         program.optimizer.n_param_sets = 1
@@ -106,12 +112,13 @@ class TestProgram:
         expvals_collector = []
 
         for strategy, expected_n_groups, expected_n_diag in strategies:
-            program = SampleProgram(10, 5.5, seed=1997, grouping_strategy=strategy)
+            program = SampleVQAProgram(10, 5.5, seed=1997, grouping_strategy=strategy)
             program.loss_constant = 0.5
             program.optimizer = mocker.MagicMock()
             program.optimizer.n_param_sets = 1
             program.backend = mocker.MagicMock()
             program.backend.shots = 100
+            program.backend.supports_expval = False
 
             meta_circuit = program._meta_circuits["cost_circuit"]
             assert len(meta_circuit.measurement_groups) == expected_n_groups
@@ -139,10 +146,11 @@ class TestProgram:
             scale_factors=scale_factors,
             extrapolation_factory=LinearFactory(scale_factors=scale_factors),
         )
-        program = SampleProgram(10, 5.5, seed=1997, qem_protocol=zne_protocol)
+        program = SampleVQAProgram(10, 5.5, seed=1997, qem_protocol=zne_protocol)
         program.loss_constant = 0.0
         program.backend = mocker.MagicMock()
         program.backend.shots = 100
+        program.backend.supports_expval = False
 
         mock_shots_per_sf = [
             {"00": 95, "11": 5},
@@ -237,7 +245,7 @@ class BaseVariationalQuantumAlgorithmTest:
 
     def _create_program_with_mock_optimizer(self, mocker, **kwargs):
         """Helper method to create SampleProgram with mocked optimizer."""
-        program = SampleProgram(circ_count=1, run_time=0.1, **kwargs)
+        program = SampleVQAProgram(circ_count=1, run_time=0.1, **kwargs)
         program.optimizer = mocker.MagicMock()
         program.optimizer.n_param_sets = 1
         return program

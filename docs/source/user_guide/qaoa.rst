@@ -295,6 +295,6 @@ Quantum hardware is limited in the number of qubits and circuit depth. For large
 Next Steps
 ----------
 
-- Try the runnable examples in the `tutorials/ <https://github.com/qoro-quantum/divi/tree/main/tutorials>`_ directory
+- Try the runnable examples in the `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ directory
 - Learn about :doc:`optimizers` for optimization strategies
 - Explore :doc:`backends` for execution options

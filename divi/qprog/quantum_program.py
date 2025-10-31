@@ -78,7 +78,7 @@ class QuantumProgram(ABC):
         pass
 
     @abstractmethod
-    def _post_process_results(self, results: dict) -> Any:
+    def _post_process_results(self, results: dict, **kwargs) -> Any:
         """Process execution results.
 
         Args:
@@ -118,7 +118,7 @@ class QuantumProgram(ABC):
         """
         return self._total_run_time
 
-    def _prepare_and_send_circuits(self):
+    def _prepare_and_send_circuits(self, **kwargs):
         """Prepare circuits for execution and submit them to the backend.
 
         Returns:
@@ -132,7 +132,7 @@ class QuantumProgram(ABC):
 
         self._total_circuit_count += len(job_circuits)
 
-        backend_output = self.backend.submit_circuits(job_circuits)
+        backend_output = self.backend.submit_circuits(job_circuits, **kwargs)
 
         if self.backend.is_async:
             self._curr_service_job_id = backend_output
@@ -186,10 +186,11 @@ class QuantumProgram(ABC):
 
         if status != JobStatus.COMPLETED:
             raise Exception("Job has not completed yet, cannot post-process results")
-
         return self.backend.get_job_results(job_id)
 
-    def _dispatch_circuits_and_process_results(self, data_file: str | None = None):
+    def _dispatch_circuits_and_process_results(
+        self, data_file: str | None = None, **kwargs
+    ):
         """Run an iteration of the program.
 
         The outputs are stored in the Program object.
@@ -197,18 +198,19 @@ class QuantumProgram(ABC):
 
         Args:
             data_file (str | None): The file to store the data in. If None, no data is stored. Defaults to None.
+            **kwargs: Additional keyword arguments for circuit submission and result processing.
 
         Returns:
             Any: Processed results from _post_process_results.
         """
-        results = self._prepare_and_send_circuits()
+        results = self._prepare_and_send_circuits(**kwargs)
 
         if self.backend.is_async:
             results = self._wait_for_qoro_job_completion(self._curr_service_job_id)
 
         results = {r["label"]: r["results"] for r in results}
 
-        result = self._post_process_results(results)
+        result = self._post_process_results(results, **kwargs)
 
         if data_file is not None:
             self.save_iteration(data_file)

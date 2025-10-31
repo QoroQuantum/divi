@@ -8,10 +8,9 @@ import json
 import logging
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from enum import Enum
 from http import HTTPStatus
-from warnings import warn
 
 import requests
 from dotenv import dotenv_values
@@ -175,12 +174,14 @@ class JobConfig:
         qpu_system: The QPU system to use, can be a string or a QPUSystem object.
         use_circuit_packing: Whether to use circuit packing optimization.
         tag: Tag to associate with the job for identification.
+        force_sampling: Whether to force sampling instead of expectation value measurements.
     """
 
     shots: int | None = None
     qpu_system: QPUSystem | str | None = None
     use_circuit_packing: bool | None = None
     tag: str = "default"
+    force_sampling: bool = False
 
     def override(self, other: "JobConfig") -> "JobConfig":
         """Creates a new config by overriding attributes with non-None values.
@@ -210,8 +211,9 @@ class JobConfig:
             raise ValueError(f"Shots must be a positive integer. Got {self.shots}.")
 
         if isinstance(self.qpu_system, str):
-            # Use object.__setattr__ to modify the attribute on a frozen dataclass
-            object.__setattr__(self, "qpu_system", get_qpu_system(self.qpu_system))
+            # Defer resolution - will be resolved in QoroService.__init__() after fetch_qpu_systems()
+            # This allows JobConfig to be created before QoroService exists
+            pass
         elif self.qpu_system is not None and not isinstance(self.qpu_system, QPUSystem):
             raise TypeError(
                 f"Expected a QPUSystem instance or str, got {type(self.qpu_system)}"
@@ -267,12 +269,8 @@ class QoroService(CircuitRunner):
             max_retries (int, optional):
                 The maximum number of retries for polling. Defaults to 5000.
         """
-        if config is None:
-            config = _DEFAULT_JOB_CONFIG
-        self.config = config
 
-        super().__init__(shots=self.config.shots)
-
+        # Set up auth_token first (needed for API calls like fetch_qpu_systems)
         if auth_token is None:
             try:
                 auth_token = dotenv_values()["QORO_API_KEY"]
@@ -283,12 +281,24 @@ class QoroService(CircuitRunner):
         self.polling_interval = polling_interval
         self.max_retries = max_retries
 
+        # Fetch QPU systems (needs auth_token to be set)
+        self.fetch_qpu_systems()
+
+        # Set up config
+        if config is None:
+            config = _DEFAULT_JOB_CONFIG
+
+        # Resolve string qpu_system names now (cache is populated, validation happens here)
+        self.config = self._resolve_qpu_system_in_config(config)
+
+        super().__init__(shots=self.config.shots)
+
     @property
     def supports_expval(self) -> bool:
         """
         Whether the backend supports expectation value measurements.
         """
-        return self.config.qpu_system.supports_expval
+        return self.config.qpu_system.supports_expval and not self.config.force_sampling
 
     @property
     def is_async(self) -> bool:
@@ -296,6 +306,13 @@ class QoroService(CircuitRunner):
         Whether the backend executes circuits asynchronously.
         """
         return True
+
+    def _resolve_qpu_system_in_config(self, config: JobConfig) -> JobConfig:
+        """Resolves the qpu_system if it is a string and returns a new JobConfig."""
+        if isinstance(config.qpu_system, str):
+            resolved_qpu = get_qpu_system(config.qpu_system)
+            return replace(config, qpu_system=resolved_qpu)
+        return config
 
     def _make_request(self, method: str, endpoint: str, **kwargs) -> requests.Response:
         """
@@ -329,11 +346,9 @@ class QoroService(CircuitRunner):
 
         response = session.request(method, url, headers=headers, **kwargs)
 
-        # Generic error handling for non-OK statuses
+        # Raise with comprehensive error details if request failed
         if response.status_code >= 400:
-            raise requests.exceptions.HTTPError(
-                f"API Error: {response.status_code} {response.reason} for URL {response.url}"
-            )
+            _raise_with_details(response)
 
         return response
 
@@ -445,9 +460,11 @@ class QoroService(CircuitRunner):
         """
         # Create final job configuration by layering configurations:
         #    service defaults -> user overrides
-        job_config = (
-            self.config.override(override_config) if override_config else self.config
-        )
+        if override_config:
+            config = self.config.override(override_config)
+            job_config = self._resolve_qpu_system_in_config(config)
+        else:
+            job_config = self.config
 
         # Validate observables
         if ham_ops is not None:
