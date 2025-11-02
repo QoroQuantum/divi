@@ -25,7 +25,7 @@ if __name__ == "__main__":
         base_molecule=mol, bond_modifiers=[-0.4, -0.25, 0, 0.25, 0.4]
     )
 
-    optim = MonteCarloOptimizer(n_param_sets=10, n_best_sets=3)
+    optim = MonteCarloOptimizer(population_size=10, n_best_sets=3)
 
     vqe_problem = VQEHyperparameterSweep(
         molecule_transformer=transformer,
