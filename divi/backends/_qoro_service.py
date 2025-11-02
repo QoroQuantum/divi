@@ -48,8 +48,7 @@ def _decode_qh1_b64(encoded: dict) -> dict[str, int]:
     into a dict with bitstring keys -> int counts.
 
     If `encoded` is None, returns None.
-    If `encoded` is an empty dict, returns the empty dict.
-    If payload is missing or empty, returns the dictionary unchanged.
+    If `encoded` is an empty dict or has a missing/empty payload, returns `encoded` unchanged.
     Otherwise, decodes the payload and returns a dict mapping bitstrings to counts.
     """
     if not encoded or not encoded.get("payload"):
