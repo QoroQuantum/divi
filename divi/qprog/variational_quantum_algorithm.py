@@ -680,19 +680,17 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 dict(
                     zip(
                         range(len(intermediate_result.x)),
-                        np.atleast_1d(intermediate_result.fun),
+                        intermediate_result.fun,
                     )
                 )
             )
 
-            current_loss = np.min(np.atleast_1d(intermediate_result.fun))
+            current_loss = np.min(intermediate_result.fun)
             if current_loss < self._best_loss:
                 self._best_loss = current_loss
-                best_idx = np.argmin(np.atleast_1d(intermediate_result.fun))
+                best_idx = np.argmin(intermediate_result.fun)
 
-                self._best_params = np.atleast_2d(intermediate_result.x)[
-                    best_idx
-                ].copy()
+                self._best_params = intermediate_result.x[best_idx].copy()
 
             self.current_iteration += 1
 
@@ -701,6 +699,11 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             if self._cancellation_event and self._cancellation_event.is_set():
                 raise _CancelledError("Cancellation requested by batch.")
 
+            # The scipy implementation of COBYLA interprets the `maxiter` option
+            # as the maximum number of function evaluations, not iterations.
+            # To provide a consistent user experience, we disable `scipy`'s
+            # `maxiter` and manually stop the optimization from the callback
+            # when the desired number of iterations is reached.
             if (
                 isinstance(self.optimizer, ScipyOptimizer)
                 and self.optimizer.method == ScipyMethod.COBYLA

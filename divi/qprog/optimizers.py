@@ -6,6 +6,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from enum import Enum
+from typing import Any
 
 import numpy as np
 from pymoo.algorithms.soo.nonconvex.cmaes import CMAES
@@ -37,7 +38,7 @@ class Optimizer(ABC):
         self,
         cost_fn: Callable[[np.ndarray], float],
         initial_params: np.ndarray,
-        callback_fn: Callable | None = None,
+        callback_fn: Callable[[OptimizeResult], Any] | None = None,
         **kwargs,
     ) -> OptimizeResult:
         """
@@ -157,9 +158,9 @@ class PymooOptimizer(Optimizer):
         )
 
         while optimizer_obj.has_next():
-            X = pop.get("X")
+            evaluated_X = pop.get("X")
 
-            curr_losses = cost_fn(X)
+            curr_losses = cost_fn(evaluated_X)
             static = StaticProblem(problem, F=curr_losses)
             Evaluator().eval(static, pop)
 
@@ -168,7 +169,7 @@ class PymooOptimizer(Optimizer):
             pop = optimizer_obj.ask()
 
             if callback_fn:
-                callback_fn(OptimizeResult(x=pop.get("X"), fun=curr_losses))
+                callback_fn(OptimizeResult(x=evaluated_X, fun=curr_losses))
 
         result = optimizer_obj.result()
 
@@ -220,7 +221,7 @@ class ScipyOptimizer(Optimizer):
         self,
         cost_fn: Callable[[np.ndarray], float],
         initial_params: np.ndarray,
-        callback_fn: Callable | None = None,
+        callback_fn: Callable[[OptimizeResult], Any] | None = None,
         **kwargs,
     ):
         """
@@ -231,8 +232,8 @@ class ScipyOptimizer(Optimizer):
                 parameters and return a scalar cost value.
             initial_params (np.ndarray): Initial parameter values as a 1D or 2D array.
                 If 2D with shape (1, n_params), it will be squeezed to 1D.
-            callback_fn (Callable, optional): Function called after each iteration.
-                Defaults to None.
+            callback_fn (Callable, optional): Function called after each iteration
+                with an `OptimizeResult` object. Defaults to None.
             **kwargs: Additional keyword arguments:
                 - maxiter (int): Maximum number of iterations
                 - jac (Callable): Gradient function (only used for L-BFGS-B)
@@ -241,6 +242,24 @@ class ScipyOptimizer(Optimizer):
             OptimizeResult: Optimization result with final parameters and cost value.
         """
         max_iterations = kwargs.pop("maxiter", None)
+
+        # If a callback is provided, we wrap the cost function and callback
+        # to ensure the data passed to the callback has a consistent shape.
+        if callback_fn:
+
+            def callback_wrapper(intermediate_result: OptimizeResult):
+                # Create a dictionary from the intermediate result to preserve all of its keys.
+                result_dict = dict(intermediate_result)
+
+                # Overwrite 'x' and 'fun' to ensure they have consistent dimensions.
+                result_dict["x"] = np.atleast_2d(intermediate_result.x)
+                result_dict["fun"] = np.atleast_1d(intermediate_result.fun)
+
+                # Create a new OptimizeResult and pass it to the user's callback.
+                return callback_fn(OptimizeResult(**result_dict))
+
+        else:
+            callback_wrapper = None
 
         if max_iterations is None or self.method == ScipyMethod.COBYLA:
             # COBYLA perceive maxiter as maxfev so we need
@@ -263,7 +282,7 @@ class ScipyOptimizer(Optimizer):
             jac=(
                 kwargs.pop("jac", None) if self.method == ScipyMethod.L_BFGS_B else None
             ),
-            callback=callback_fn,
+            callback=callback_wrapper,
             options={"maxiter": maxiter},
         )
 
@@ -410,7 +429,7 @@ class MonteCarloOptimizer(Optimizer):
         self,
         cost_fn: Callable[[np.ndarray], float],
         initial_params: np.ndarray,
-        callback_fn: Callable[[OptimizeResult], float | np.ndarray] | None = None,
+        callback_fn: Callable[[OptimizeResult], Any] | None = None,
         **kwargs,
     ) -> OptimizeResult:
         """
@@ -428,30 +447,32 @@ class MonteCarloOptimizer(Optimizer):
         max_iterations = kwargs.pop("maxiter", 5)
 
         population = np.copy(initial_params)
+        evaluated_population = population
 
         for curr_iter in range(max_iterations):
             # Evaluate the entire population once
             losses = cost_fn(population)
+            evaluated_population = population
 
-            # Find the indices of the best-performing parameter sets (only once)
+            if callback_fn:
+                callback_fn(OptimizeResult(x=evaluated_population, fun=losses))
+
+            # Find the indices of the best-performing parameter sets
             best_indices = np.argpartition(losses, self.n_best_sets - 1)[
                 : self.n_best_sets
             ]
 
-            if callback_fn:
-                callback_fn(
-                    OptimizeResult(x=population[best_indices], fun=losses[best_indices])
-                )
-
             # Generate the next generation of parameters
             population = self._compute_new_parameters(
-                population, curr_iter, best_indices, rng
+                evaluated_population, curr_iter, best_indices, rng
             )
 
+        # Note: 'losses' here are from the last successfully evaluated population
         best_idx = np.argmin(losses)
+
         # Return the best results from the LAST EVALUATED population
         return OptimizeResult(
-            x=population[best_idx],
+            x=evaluated_population[best_idx],
             fun=losses[best_idx],
             nit=max_iterations,
         )
