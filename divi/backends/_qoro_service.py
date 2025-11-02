@@ -47,7 +47,10 @@ def _decode_qh1_b64(encoded: dict) -> dict[str, int]:
     Decode a {'encoding':'qh1','n_bits':N,'payload':base64} histogram
     into a dict with bitstring keys -> int counts.
 
-    Returns the encoded dictionary as is if payload is empty/does not exist.
+    If `encoded` is None, returns None.
+    If `encoded` is an empty dict, returns the empty dict.
+    If payload is missing or empty, returns the dictionary unchanged.
+    Otherwise, decodes the payload and returns a dict mapping bitstrings to counts.
     """
     if not encoded or not encoded.get("payload"):
         return encoded
@@ -441,7 +444,7 @@ class QoroService(CircuitRunner):
                 Dictionary mapping unique circuit IDs to QASM circuit strings.
             ham_ops (str | None, optional):
                 String representing the Hamiltonian operators to measure, semicolon-separated.
-                Each terms is a combination of Pauli operators, e.g. "XYZ;XXZ;ZIZ".
+                Each term is a combination of Pauli operators, e.g. "XYZ;XXZ;ZIZ".
                 If None, no Hamiltonian operators will be measured.
             job_type (JobType, optional):
                 Type of job to execute (e.g., SIMULATE, EXECUTE, EXPECTATION, CIRCUIT_CUT).

@@ -102,7 +102,7 @@ class TestQoroServiceUtilities:
 
     def test_decode_qh1_b64_empty_or_no_payload(self):
         """Tests that _decode_qh1_b64 handles empty inputs correctly."""
-        assert _decode_qh1_b64(None) == None
+        assert _decode_qh1_b64(None) is None
         assert _decode_qh1_b64({}) == {}
         assert _decode_qh1_b64({"encoding": "qh1", "payload": ""}) == {
             "encoding": "qh1",
@@ -511,9 +511,7 @@ class TestQoroServiceMock:
         # so we cannot mock it. Instead, we mock the underlying `_make_request`.
         mock_response = mocker.MagicMock()
         mock_response.json.return_value = mock_json_data
-        mock_make_request = mocker.patch.object(
-            QoroService, "_make_request", return_value=mock_response
-        )
+        mocker.patch.object(QoroService, "_make_request", return_value=mock_response)
 
         service = QoroService(auth_token="test_token")
 

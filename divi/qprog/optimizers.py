@@ -396,6 +396,7 @@ class MonteCarloOptimizer(Optimizer):
         best_params = params[best_indices]
 
         # 2. Determine how many new samples to generate
+        repeat_counts = self._repeat_counts
         if self._keep_best_params:
             n_new_samples = self._population_size - self._n_best_sets
             # Calculate repeat counts for new samples only
@@ -403,9 +404,6 @@ class MonteCarloOptimizer(Optimizer):
             remainder = n_new_samples % self._n_best_sets
             repeat_counts = np.full(self._n_best_sets, samples_per_best)
             repeat_counts[:remainder] += 1
-        else:
-            n_new_samples = self._population_size
-            repeat_counts = self._repeat_counts
 
         # 3. Prepare the means for sampling by repeating each best parameter set
         new_means = np.repeat(best_params, repeat_counts, axis=0)

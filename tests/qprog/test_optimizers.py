@@ -44,6 +44,7 @@ def sphere_cost_fn_single(params: np.ndarray) -> float:
         ScipyOptimizer(method=ScipyMethod.COBYLA),
         ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
         MonteCarloOptimizer(population_size=10, n_best_sets=3),
+        MonteCarloOptimizer(population_size=10, n_best_sets=3, keep_best_params=True),
         PymooOptimizer(method=PymooMethod.CMAES, population_size=10),
         PymooOptimizer(method=PymooMethod.DE, population_size=10),
     ],
@@ -52,6 +53,7 @@ def sphere_cost_fn_single(params: np.ndarray) -> float:
         "scipy-cobyla",
         "scipy-l-bfgs-b",
         "monte-carlo",
+        "monte-carlo-keep-best",
         "pymoo-cmaes",
         "pymoo-de",
     ],
@@ -130,3 +132,116 @@ class TestOptimizerContract:
                 assert np.isfinite(res.fun).all()
             else:
                 assert np.allclose(res.fun, recalculated_fun)
+
+
+class TestMonteCarloOptimizer:
+    """Specific tests for MonteCarloOptimizer features."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.n_params = 4
+        self.rng = np.random.default_rng(42)
+        self.population_size = 10
+        self.n_best_sets = 3
+
+    def _create_optimizer(self, keep_best_params: bool) -> MonteCarloOptimizer:
+        """Helper to create a MonteCarloOptimizer with standard test parameters."""
+        return MonteCarloOptimizer(
+            population_size=self.population_size,
+            n_best_sets=self.n_best_sets,
+            keep_best_params=keep_best_params,
+        )
+
+    def _create_initial_params(self) -> np.ndarray:
+        """Helper to create initial parameters with correct shape."""
+        return self.rng.random((self.population_size, self.n_params)) * 2 * np.pi
+
+    def _get_best_params(self, population: np.ndarray, n_best: int) -> np.ndarray:
+        """Extract the best n_best parameter sets from a population."""
+        losses = sphere_cost_fn_population(population)
+        best_indices = np.argpartition(losses, n_best - 1)[:n_best]
+        return population[best_indices]
+
+    def _run_optimization_with_callback(
+        self,
+        optimizer: MonteCarloOptimizer,
+        initial_params: np.ndarray,
+        maxiter: int = 3,
+    ) -> list[np.ndarray]:
+        """Run optimization and collect all populations via callback."""
+        all_populations = []
+
+        def callback(intermediate_result: OptimizeResult):
+            all_populations.append(intermediate_result.x.copy())
+
+        optimizer.optimize(
+            sphere_cost_fn_population,
+            initial_params,
+            callback_fn=callback,
+            maxiter=maxiter,
+            rng=self.rng,
+        )
+        return all_populations
+
+    def test_keep_best_params_validation_and_property(self):
+        """Test validation errors and property access."""
+        # Test validation error
+        with pytest.raises(
+            ValueError,
+            match="If keep_best_params is True, n_best_sets must be less than population_size.",
+        ):
+            MonteCarloOptimizer(
+                population_size=10, n_best_sets=10, keep_best_params=True
+            )
+
+        # Test no error when keep_best_params=False
+        optimizer_no_error = MonteCarloOptimizer(
+            population_size=10, n_best_sets=10, keep_best_params=False
+        )
+        assert optimizer_no_error.keep_best_params is False
+
+        # Test property returns correct values
+        optimizer_false = self._create_optimizer(keep_best_params=False)
+        optimizer_true = self._create_optimizer(keep_best_params=True)
+        assert optimizer_false.keep_best_params is False
+        assert optimizer_true.keep_best_params is True
+
+    @pytest.mark.parametrize("keep_best_params", [True, False])
+    def test_keep_best_params_behavior(self, keep_best_params: bool):
+        """Test that keep_best_params correctly controls whether best parameters are kept."""
+        optimizer = self._create_optimizer(keep_best_params=keep_best_params)
+        initial_params = self._create_initial_params()
+
+        all_populations = self._run_optimization_with_callback(
+            optimizer, initial_params, maxiter=3
+        )
+
+        assert len(all_populations) >= 2
+
+        # Get best params from initial population
+        best_params_first = self._get_best_params(
+            all_populations[0], optimizer.n_best_sets
+        )
+
+        # Check second population
+        second_population = all_populations[1]
+        assert second_population.shape == (optimizer.population_size, self.n_params)
+        first_n_best_in_second = second_population[: optimizer.n_best_sets]
+
+        # Check if each of the best parameters from the previous generation is present
+        # in the best parameters of the new generation.
+        is_present = [
+            np.any(np.all(np.isclose(first_n_best_in_second, p), axis=1))
+            for p in best_params_first
+        ]
+
+        if keep_best_params:
+            # If we keep the best params, all of them should be present.
+            assert all(
+                is_present
+            ), "Not all best parameters were kept when keep_best_params=True"
+        else:
+            # If we don't, none of them should be present as exact copies.
+            assert not any(
+                is_present
+            ), "A best parameter was kept as an exact copy when keep_best_params=False"
