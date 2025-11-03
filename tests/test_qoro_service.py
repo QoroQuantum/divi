@@ -398,6 +398,14 @@ class TestQoroServiceMock:
         assert result.qpu_system == "system2"
         assert result.use_circuit_packing is True
 
+    def test_qoro_service_init_fails_with_none_qpu_system(self, qoro_service_factory):
+        """Tests that QoroService initialization fails if the final config has no qpu_system."""
+        with pytest.raises(
+            ValueError, match="JobConfig must have a qpu_system. It cannot be None."
+        ):
+            # The factory mocks fetch_qpu_systems, so we can initialize
+            qoro_service_factory(config=JobConfig(qpu_system=None))
+
     # --- Tests for core functionality ---
 
     def test_make_request_comprehensive(self, mocker, qoro_service_factory):
@@ -413,7 +421,7 @@ class TestQoroServiceMock:
             "requests.Session.request", return_value=mock_response
         )
 
-        response = service._make_request("get", "test")
+        service._make_request("get", "test")
 
         mock_request.assert_called_once()
         call_args = mock_request.call_args

@@ -353,11 +353,10 @@ class MonteCarloOptimizer(Optimizer):
 
     @property
     def n_param_sets(self):
-        """
-        Get the number of parameter sets (population size) used by this optimizer.
+        """Number of parameter sets (population size), per the Optimizer interface.
 
         Returns:
-            int: Size of the population.
+            int: The population size.
         """
         return self._population_size
 

@@ -167,6 +167,84 @@ class TestProgram:
         final_losses = program._post_process_results(mock_results)
         assert np.isclose(final_losses[0], 3.0)
 
+    def test_post_process_with_expectation_values_happy_path(self, mocker):
+        """Test _post_process_results when backend supports expectation values with multiple parameter sets."""
+        # When supports_expval=True, grouping_strategy is set to "_backend_expval"
+        # This means all observables are measured together, so there's typically one measurement group
+        # Create program with a 2-qubit Hamiltonian: X(0) + Z(1) + X(0)@Z(1)
+        mock_backend = mocker.MagicMock()
+        mock_backend.shots = 100
+        mock_backend.supports_expval = True
+        program = SampleVQAProgram(
+            10,
+            5.5,
+            seed=1997,
+            grouping_strategy=None,
+            backend=mock_backend,
+        )
+        program.loss_constant = 0.5
+        program.optimizer = mocker.MagicMock()
+        program.optimizer.n_param_sets = 2  # Test with 2 parameter sets
+
+        # For the Hamiltonian X(0) + Z(1) + X(0)@Z(1), hamiltonian_to_pauli_string
+        # produces "XI;IZ;XZ" for a 2-qubit system (verified via direct call)
+        ham_ops = "XI;IZ;XZ"
+
+        # When supports_expval=True with _backend_expval grouping, measurement_groups is flattened
+        # After flattening, there will be as many elements as observables (3 in this case)
+        # But the results dict only needs ONE entry per parameter set since all observables
+        # are measured together in a single call
+        # Format: "param_id_NoMitigation:qem_id_measurement_group_id"
+        # Note: measurement_group_id should be 0 since _backend_expval puts all in one group
+        fake_results = {
+            "0_NoMitigation:0_0": {"XI": 0.5, "IZ": -0.3, "XZ": 0.2},
+            "1_NoMitigation:0_0": {"XI": 0.7, "IZ": -0.1, "XZ": -0.2},
+        }
+
+        losses = program._post_process_results(fake_results, ham_ops=ham_ops)
+
+        assert isinstance(losses, dict)
+        assert len(losses) == 2
+        assert 0 in losses
+        assert 1 in losses
+
+        # Verify exact loss computation
+        # postprocessing_fn sums the expectation values (Hamiltonian coefficients are all 1.0)
+        # For param 0: sum of expvals = 0.5 + (-0.3) + 0.2 = 0.4, plus loss_constant = 0.9
+        expected_loss_0 = 0.5 + (-0.3) + 0.2 + program.loss_constant
+        assert np.isclose(losses[0], expected_loss_0)
+
+        # For param 1: sum of expvals = 0.7 + (-0.1) + (-0.2) = 0.4, plus loss_constant = 0.9
+        expected_loss_1 = 0.7 + (-0.1) + (-0.2) + program.loss_constant
+        assert np.isclose(losses[1], expected_loss_1)
+
+    def test_post_process_with_expectation_values_missing_ham_ops(self, mocker):
+        """Test _post_process_results raises error when ham_ops is missing but supports_expval is True."""
+        mock_backend = mocker.MagicMock()
+        mock_backend.shots = 100
+        mock_backend.supports_expval = True
+
+        program = SampleVQAProgram(
+            10,
+            5.5,
+            seed=1997,
+            grouping_strategy="_backend_expval",
+            backend=mock_backend,
+        )
+        program.loss_constant = 0.0
+
+        # Create minimal results structure
+        fake_results = {
+            "0_NoMitigation:0_0": {"XI": 0.5, "IZ": -0.3},
+        }
+
+        # Call without ham_ops - should raise ValueError
+        with pytest.raises(
+            ValueError,
+            match="ham_ops is required in kwargs when backend supports expectation values",
+        ):
+            program._post_process_results(fake_results)
+
 
 class TestBatchedExpectation:
     """Test suite for batched expectation value calculations."""

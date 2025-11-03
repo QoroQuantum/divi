@@ -566,11 +566,14 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 shots_by_qem_idx, measurement_groups
             ):
                 if self.backend.supports_expval:
+                    ham_ops = kwargs.get("ham_ops")
+                    if ham_ops is None:
+                        raise ValueError(
+                            "ham_ops is required in kwargs when backend supports expectation values. "
+                            "This should be set automatically in _run_optimization_circuits."
+                        )
                     expectation_matrix = np.array(
-                        [
-                            [d[key] for key in kwargs["ham_ops"].split(";")]
-                            for d in shots_dicts
-                        ]
+                        [[d[key] for key in ham_ops.split(";")] for d in shots_dicts]
                     ).T
                 else:
                     wire_order = tuple(reversed(self.cost_hamiltonian.wires))

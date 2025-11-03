@@ -148,5 +148,5 @@ install:
 		echo "make: '$$TARGET' is not a valid target. Did you mean '$$BEST_MATCH'?"; \
 		exit 1; \
 	else \
-		@$(SPHINXBUILD) -M $$TARGET "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O); \
+		$(SPHINXBUILD) -M $$TARGET "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O); \
 	fi

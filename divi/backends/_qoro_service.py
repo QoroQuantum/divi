@@ -290,8 +290,8 @@ class QoroService(CircuitRunner):
         if config is None:
             config = _DEFAULT_JOB_CONFIG
 
-        # Resolve string qpu_system names now (cache is populated, validation happens here)
-        self.config = self._resolve_qpu_system_in_config(config)
+        # Resolve string qpu_system names and validate that one is present.
+        self.config = self._resolve_and_validate_qpu_system(config)
 
         super().__init__(shots=self.config.shots)
 
@@ -309,11 +309,18 @@ class QoroService(CircuitRunner):
         """
         return True
 
-    def _resolve_qpu_system_in_config(self, config: JobConfig) -> JobConfig:
-        """Resolves the qpu_system if it is a string and returns a new JobConfig."""
+    def _resolve_and_validate_qpu_system(self, config: JobConfig) -> JobConfig:
+        """Ensures the config has a valid QPUSystem object, resolving from string if needed."""
+        if config.qpu_system is None:
+            raise ValueError(
+                "JobConfig must have a qpu_system. It cannot be None. "
+                "Please provide a QPUSystem object or a valid system name string."
+            )
+
         if isinstance(config.qpu_system, str):
             resolved_qpu = get_qpu_system(config.qpu_system)
             return replace(config, qpu_system=resolved_qpu)
+
         return config
 
     def _make_request(self, method: str, endpoint: str, **kwargs) -> requests.Response:
@@ -464,19 +471,20 @@ class QoroService(CircuitRunner):
         #    service defaults -> user overrides
         if override_config:
             config = self.config.override(override_config)
-            job_config = self._resolve_qpu_system_in_config(config)
+            job_config = self._resolve_and_validate_qpu_system(config)
         else:
             job_config = self.config
 
+        # Auto-infer job type if ham_ops are provided
+        if ham_ops is not None and job_type is None:
+            job_type = JobType.EXPECTATION
+
         # Validate observables
         if ham_ops is not None:
-            if job_type is not None and job_type != JobType.EXPECTATION:
+            if job_type != JobType.EXPECTATION:
                 raise ValueError(
                     "Hamiltonian operators are only supported for EXPECTATION job type."
                 )
-
-            if job_type is None:
-                job_type = JobType.EXPECTATION
 
             terms = ham_ops.split(";")
             if len(terms) == 0:
