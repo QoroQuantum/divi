@@ -13,7 +13,7 @@ import pennylane as qml
 from scipy.optimize import OptimizeResult
 
 from divi.backends import CircuitRunner
-from divi.circuits import MetaCircuit
+from divi.circuits import Circuit, MetaCircuit
 from divi.circuits.qem import _NoMitigation
 from divi.qprog.exceptions import _CancelledError
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
@@ -458,7 +458,19 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         pass
 
     @abstractmethod
-    def _generate_circuits(self, **kwargs):
+    def _generate_circuits(self, **kwargs) -> list[Circuit]:
+        """Generate quantum circuits for execution.
+
+        This method should generate and return a list of Circuit objects based on
+        the current algorithm state and parameters. The circuits will be executed
+        by the backend.
+
+        Args:
+            **kwargs: Additional keyword arguments for circuit generation.
+
+        Returns:
+            list[Circuit]: List of Circuit objects to be executed.
+        """
         pass
 
     def get_expected_param_shape(self) -> tuple[int, int]:
@@ -502,9 +514,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         )
 
     def _run_optimization_circuits(self, data_file, **kwargs):
-        self._curr_circuits[:] = []
-
-        self._generate_circuits(**kwargs)
+        self._curr_circuits = self._generate_circuits(**kwargs)
 
         if self.backend.supports_expval:
             kwargs["ham_ops"] = hamiltonian_to_pauli_string(
@@ -758,8 +768,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         # Compute probabilities for best parameters (the ones that achieved best loss)
         self._curr_params = np.atleast_2d(self._best_params)
-        self._curr_circuits[:] = []
-        self._generate_circuits()
+        self._curr_circuits = self._generate_circuits()
         best_probs = self._dispatch_circuits_and_process_results()
         self._best_probs.update(best_probs)
 

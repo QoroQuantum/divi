@@ -120,7 +120,7 @@ class GenericLayerAnsatz(Ansatz):
         per_qubit = sum(getattr(g, "num_params", 1) for g in self.gate_sequence)
         return per_qubit * n_qubits
 
-    def build(self, params, n_qubits: int, n_layers: int, **kwargs):
+    def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> None:
         # calculate how many params each gate needs per qubit
         gate_param_counts = [getattr(g, "num_params", 1) for g in self.gate_sequence]
         per_qubit = sum(gate_param_counts)
@@ -166,7 +166,7 @@ class QAOAAnsatz(Ansatz):
         """
         return qml.QAOAEmbedding.shape(n_layers=1, n_wires=n_qubits)[1]
 
-    def build(self, params, n_qubits: int, n_layers: int, **kwargs):
+    def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> None:
         """
         Build the QAOA ansatz circuit.
 
@@ -233,7 +233,9 @@ class UCCSDAnsatz(Ansatz):
         s_wires, d_wires = qml.qchem.excitations_to_wires(singles, doubles)
         return len(s_wires) + len(d_wires)
 
-    def build(self, params, n_qubits: int, n_layers: int, n_electrons: int, **kwargs):
+    def build(
+        self, params, n_qubits: int, n_layers: int, n_electrons: int, **kwargs
+    ) -> None:
         """
         Build the UCCSD ansatz circuit.
 
@@ -283,7 +285,9 @@ class HartreeFockAnsatz(Ansatz):
         singles, doubles = qml.qchem.excitations(n_electrons, n_qubits)
         return len(singles) + len(doubles)
 
-    def build(self, params, n_qubits: int, n_layers: int, n_electrons: int, **kwargs):
+    def build(
+        self, params, n_qubits: int, n_layers: int, n_electrons: int, **kwargs
+    ) -> None:
         """
         Build the Hartree-Fock ansatz circuit.
 

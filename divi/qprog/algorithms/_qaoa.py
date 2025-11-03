@@ -21,7 +21,7 @@ from qiskit_optimization import QuadraticProgram
 from qiskit_optimization.converters import QuadraticProgramToQubo
 from qiskit_optimization.problems import VarType
 
-from divi.circuits import MetaCircuit
+from divi.circuits import Circuit, MetaCircuit
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from divi.utils import convert_qubo_matrix_to_pennylane_ising
@@ -417,24 +417,26 @@ class QAOA(VariationalQuantumAlgorithm):
             ),
         }
 
-    def _generate_circuits(self):
+    def _generate_circuits(self) -> list[Circuit]:
         """Generate the circuits for the QAOA problem.
 
         Generates circuits for each parameter set in the current parameters.
         The circuit type depends on whether we're computing probabilities
         (for final solution extraction) or just expectation values (for optimization).
-        """
 
+        Returns:
+            list[Circuit]: List of Circuit objects for execution.
+        """
         circuit_type = (
             "cost_circuit" if not self._is_compute_probabilites else "meas_circuit"
         )
 
-        for p, params_group in enumerate(self._curr_params):
-            circuit = self._meta_circuits[circuit_type].initialize_circuit_from_params(
+        return [
+            self._meta_circuits[circuit_type].initialize_circuit_from_params(
                 params_group, tag_prefix=f"{p}"
             )
-
-            self._curr_circuits.append(circuit)
+            for p, params_group in enumerate(self._curr_params)
+        ]
 
     def _post_process_results(self, results, **kwargs):
         """Post-process the results of the QAOA problem.

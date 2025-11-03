@@ -41,13 +41,21 @@ class Optimizer(ABC):
         callback_fn: Callable[[OptimizeResult], Any] | None = None,
         **kwargs,
     ) -> OptimizeResult:
-        """
-        Optimize the given cost function starting from initial parameters.
+        """Optimize the given cost function starting from initial parameters.
 
         Parameters:
             cost_fn: The cost function to minimize.
             initial_params: Initial parameters for the optimization.
-            **kwargs: Additional keyword arguments for the optimizer.
+            **kwargs: Additional keyword arguments for the optimizer:
+                - maxiter (int, optional): Maximum number of iterations.
+                  Defaults vary by optimizer (e.g., 5 for population-based optimizers,
+                  None for some scipy methods).
+                - rng (np.random.Generator, optional): Random number generator for
+                  stochastic optimizers (PymooOptimizer, MonteCarloOptimizer).
+                  Defaults to a new generator if not provided.
+                - jac (Callable, optional): Gradient/Jacobian function for
+                  gradient-based optimizers (only used by ScipyOptimizer with
+                  L_BFGS_B method). Defaults to None.
 
         Returns:
             Optimized parameters.
@@ -429,14 +437,16 @@ class MonteCarloOptimizer(Optimizer):
         callback_fn: Callable[[OptimizeResult], Any] | None = None,
         **kwargs,
     ) -> OptimizeResult:
-        """
-        Perform Monte Carlo optimization on the cost function.
+        """Perform Monte Carlo optimization on the cost function.
 
         Parameters:
             cost_fn: The cost function to minimize.
             initial_params: Initial parameters for the optimization.
             callback_fn: Optional callback function to monitor progress.
-            **kwargs: Additional keyword arguments for the optimizer.
+            **kwargs: Additional keyword arguments:
+                - maxiter (int, optional): Maximum number of iterations. Defaults to 5.
+                - rng (np.random.Generator, optional): Random number generator for
+                  parameter sampling. Defaults to a new generator if not provided.
         Returns:
             Optimized parameters.
         """

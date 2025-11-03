@@ -71,7 +71,8 @@ class SampleVQAProgram(VariationalQuantumAlgorithm):
         return {"cost_circuit": meta_circuit}
 
     def _generate_circuits(self, params=None, **kwargs):
-        pass
+        """Generate circuits - dummy implementation for testing."""
+        return []
 
     def run(self, data_file=None):
         return super().run(data_file)

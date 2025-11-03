@@ -104,7 +104,7 @@ class TestGeneralQAOA:
         def generate_circuits_spy():
             """Spy that records the flag's state and then calls the original method."""
             flag_state_at_call_time.append(qaoa_problem._is_compute_probabilites)
-            original_generate_circuits()
+            return original_generate_circuits()
 
         mocker.patch.object(
             qaoa_problem, "_generate_circuits", side_effect=generate_circuits_spy
