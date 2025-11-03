@@ -520,7 +520,7 @@ class QoroService(CircuitRunner):
             "qpu_system_name": (
                 job_config.qpu_system.name if job_config.qpu_system else None
             ),
-            "use_packing": job_config.use_circuit_packing,
+            "use_packing": job_config.use_circuit_packing or False,
         }
 
         init_response = self._make_request(
