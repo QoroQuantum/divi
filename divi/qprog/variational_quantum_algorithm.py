@@ -716,7 +716,9 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         self.reporter.info(message="Finished Setup")
 
-        self._initialize_params()
+        # Only initialize if user hasn't already set initial_params
+        if self._curr_params is None:
+            self._initialize_params()
 
         try:
             self._minimize_res = self.optimizer.optimize(

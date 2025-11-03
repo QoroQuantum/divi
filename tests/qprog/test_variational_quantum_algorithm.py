@@ -83,12 +83,30 @@ class SampleVQAProgram(VariationalQuantumAlgorithm):
 class TestProgram:
     """Test suite for VariationalQuantumAlgorithm core functionality."""
 
+    def _create_sample_program(self, mocker, **kwargs):
+        """Helper to create a SampleVQAProgram with common defaults."""
+        program = SampleVQAProgram(10, 5.5, seed=1997, **kwargs)
+        if "optimizer" not in kwargs:
+            program.optimizer = self._create_mock_optimizer(mocker)
+        return program
+
+    def _create_mock_backend(self, mocker, shots=100, supports_expval=False):
+        """Helper to create a mock backend with standard properties."""
+        backend = mocker.MagicMock()
+        backend.shots = shots
+        backend.is_async = False
+        backend.supports_expval = supports_expval
+        return backend
+
+    def _create_mock_optimizer(self, mocker, n_param_sets=1):
+        """Helper to create a mock optimizer."""
+        optimizer = mocker.MagicMock()
+        optimizer.n_param_sets = n_param_sets
+        return optimizer
+
     def test_correct_random_behavior(self, mocker):
         """Test that random number generation works correctly with seeds."""
-        program = SampleVQAProgram(10, 5.5, seed=1997)
-
-        program.optimizer = mocker.MagicMock()
-        program.optimizer.n_param_sets = 1
+        program = self._create_sample_program(mocker)
 
         assert (
             program._rng.bit_generator.state
@@ -112,13 +130,9 @@ class TestProgram:
         expvals_collector = []
 
         for strategy, expected_n_groups, expected_n_diag in strategies:
-            program = SampleVQAProgram(10, 5.5, seed=1997, grouping_strategy=strategy)
+            program = self._create_sample_program(mocker, grouping_strategy=strategy)
             program.loss_constant = 0.5
-            program.optimizer = mocker.MagicMock()
-            program.optimizer.n_param_sets = 1
-            program.backend = mocker.MagicMock()
-            program.backend.shots = 100
-            program.backend.supports_expval = False
+            program.backend = self._create_mock_backend(mocker)
 
             meta_circuit = program._meta_circuits["cost_circuit"]
             assert len(meta_circuit.measurement_groups) == expected_n_groups
@@ -146,11 +160,9 @@ class TestProgram:
             scale_factors=scale_factors,
             extrapolation_factory=LinearFactory(scale_factors=scale_factors),
         )
-        program = SampleVQAProgram(10, 5.5, seed=1997, qem_protocol=zne_protocol)
+        program = self._create_sample_program(mocker, qem_protocol=zne_protocol)
         program.loss_constant = 0.0
-        program.backend = mocker.MagicMock()
-        program.backend.shots = 100
-        program.backend.supports_expval = False
+        program.backend = self._create_mock_backend(mocker)
 
         mock_shots_per_sf = [
             {"00": 95, "11": 5},
@@ -169,33 +181,14 @@ class TestProgram:
 
     def test_post_process_with_expectation_values_happy_path(self, mocker):
         """Test _post_process_results when backend supports expectation values with multiple parameter sets."""
-        # When supports_expval=True, grouping_strategy is set to "_backend_expval"
-        # This means all observables are measured together, so there's typically one measurement group
-        # Create program with a 2-qubit Hamiltonian: X(0) + Z(1) + X(0)@Z(1)
-        mock_backend = mocker.MagicMock()
-        mock_backend.shots = 100
-        mock_backend.supports_expval = True
-        program = SampleVQAProgram(
-            10,
-            5.5,
-            seed=1997,
-            grouping_strategy=None,
-            backend=mock_backend,
+        mock_backend = self._create_mock_backend(mocker, supports_expval=True)
+        program = self._create_sample_program(
+            mocker, grouping_strategy=None, backend=mock_backend
         )
         program.loss_constant = 0.5
-        program.optimizer = mocker.MagicMock()
-        program.optimizer.n_param_sets = 2  # Test with 2 parameter sets
+        program.optimizer = self._create_mock_optimizer(mocker, n_param_sets=2)
 
-        # For the Hamiltonian X(0) + Z(1) + X(0)@Z(1), hamiltonian_to_pauli_string
-        # produces "XI;IZ;XZ" for a 2-qubit system (verified via direct call)
         ham_ops = "XI;IZ;XZ"
-
-        # When supports_expval=True with _backend_expval grouping, measurement_groups is flattened
-        # After flattening, there will be as many elements as observables (3 in this case)
-        # But the results dict only needs ONE entry per parameter set since all observables
-        # are measured together in a single call
-        # Format: "param_id_NoMitigation:qem_id_measurement_group_id"
-        # Note: measurement_group_id should be 0 since _backend_expval puts all in one group
         fake_results = {
             "0_NoMitigation:0_0": {"XI": 0.5, "IZ": -0.3, "XZ": 0.2},
             "1_NoMitigation:0_0": {"XI": 0.7, "IZ": -0.1, "XZ": -0.2},
@@ -203,42 +196,24 @@ class TestProgram:
 
         losses = program._post_process_results(fake_results, ham_ops=ham_ops)
 
-        assert isinstance(losses, dict)
         assert len(losses) == 2
         assert 0 in losses
         assert 1 in losses
 
-        # Verify exact loss computation
-        # postprocessing_fn sums the expectation values (Hamiltonian coefficients are all 1.0)
-        # For param 0: sum of expvals = 0.5 + (-0.3) + 0.2 = 0.4, plus loss_constant = 0.9
         expected_loss_0 = 0.5 + (-0.3) + 0.2 + program.loss_constant
-        assert np.isclose(losses[0], expected_loss_0)
-
-        # For param 1: sum of expvals = 0.7 + (-0.1) + (-0.2) = 0.4, plus loss_constant = 0.9
         expected_loss_1 = 0.7 + (-0.1) + (-0.2) + program.loss_constant
+        assert np.isclose(losses[0], expected_loss_0)
         assert np.isclose(losses[1], expected_loss_1)
 
     def test_post_process_with_expectation_values_missing_ham_ops(self, mocker):
         """Test _post_process_results raises error when ham_ops is missing but supports_expval is True."""
-        mock_backend = mocker.MagicMock()
-        mock_backend.shots = 100
-        mock_backend.supports_expval = True
-
-        program = SampleVQAProgram(
-            10,
-            5.5,
-            seed=1997,
-            grouping_strategy="_backend_expval",
-            backend=mock_backend,
+        mock_backend = self._create_mock_backend(mocker, supports_expval=True)
+        program = self._create_sample_program(
+            mocker, grouping_strategy="_backend_expval", backend=mock_backend
         )
         program.loss_constant = 0.0
 
-        # Create minimal results structure
-        fake_results = {
-            "0_NoMitigation:0_0": {"XI": 0.5, "IZ": -0.3},
-        }
-
-        # Call without ham_ops - should raise ValueError
+        fake_results = {"0_NoMitigation:0_0": {"XI": 0.5, "IZ": -0.3}}
         with pytest.raises(
             ValueError,
             match="ham_ops is required in kwargs when backend supports expectation values",
@@ -332,12 +307,26 @@ class BaseVariationalQuantumAlgorithmTest:
 class TestInitialParameters(BaseVariationalQuantumAlgorithmTest):
     """Test suite for initial parameters functionality."""
 
+    def _setup_mock_optimizer_single_run(self, mocker, program, final_params):
+        """Helper to set up a mock optimizer for a single optimization run."""
+        mock_optimizer = mocker.MagicMock()
+        mock_optimizer.n_param_sets = program.optimizer.n_param_sets
+
+        def mock_optimize_logic(cost_fn, initial_params, callback_fn, **kwargs):
+            loss = cost_fn(final_params)
+            result = OptimizeResult(x=final_params, fun=np.array([loss]))
+            callback_fn(result)
+            return result
+
+        mock_optimizer.optimize.side_effect = mock_optimize_logic
+        program.optimizer = mock_optimizer
+        return mock_optimizer
+
     def test_initial_params_returns_numpy_array_not_none(self, mocker):
         """Test that initial_params property always returns actual parameters."""
         program = self._create_program_with_mock_optimizer(mocker, seed=42)
         params = program.initial_params
         assert isinstance(params, np.ndarray)
-        assert params is not None
         assert params.shape == program.get_expected_param_shape()
 
     def test_initial_params_triggers_lazy_initialization_on_first_access(self, mocker):
@@ -372,6 +361,56 @@ class TestInitialParameters(BaseVariationalQuantumAlgorithmTest):
         assert not np.shares_memory(params1, params2)
         assert not np.shares_memory(params1, program._curr_params)
         assert np.array_equal(params1, params2)
+
+    def test_run_preserves_user_set_initial_params(self, mocker):
+        """Test that run() does not overwrite user-set initial_params."""
+        program = self._create_program_with_mock_optimizer(mocker, seed=42)
+        program.max_iterations = 1
+
+        custom_params = np.array([[1.0, 2.0, 3.0, 4.0]])
+        program.initial_params = custom_params
+
+        mock_init = mocker.patch.object(program, "_initialize_params")
+        mocker.patch.object(
+            program, "_run_optimization_circuits", return_value={0: -0.5}
+        )
+
+        final_params = np.array([[0.5, 1.0, 1.5, 2.0]])
+        mock_optimizer = self._setup_mock_optimizer_single_run(
+            mocker, program, final_params
+        )
+
+        program.run()
+
+        mock_init.assert_not_called()
+        assert mock_optimizer.optimize.called
+        call_args = mock_optimizer.optimize.call_args
+        np.testing.assert_array_equal(call_args.kwargs["initial_params"], custom_params)
+
+    def test_run_initializes_params_when_not_set_by_user(self, mocker):
+        """Test that run() initializes parameters when user hasn't set them."""
+        program = self._create_program_with_mock_optimizer(mocker, seed=42)
+        program.max_iterations = 1
+
+        assert program._curr_params is None
+
+        mocker.patch.object(
+            program, "_run_optimization_circuits", return_value={0: -0.5}
+        )
+        mock_init = mocker.spy(program, "_initialize_params")
+
+        final_params = np.array([[0.5, 1.0, 1.5, 2.0]])
+        self._setup_mock_optimizer_single_run(mocker, program, final_params)
+
+        program.run()
+
+        mock_init.assert_called_once()
+        assert program._curr_params is not None
+        expected_shape = (
+            program.optimizer.n_param_sets,
+            program.n_layers * program.n_params,
+        )
+        assert program._curr_params.shape == expected_shape
 
 
 class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
@@ -409,12 +448,9 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         params2 = np.array([[0.5, 0.6, 0.7, 0.8]])
         params3 = np.array([[0.9, 1.0, 1.1, 1.2]])
 
-        optimizer_side_effects = [
-            (params1, -0.8),
-            (params2, -0.5),
-            (params3, -0.9),
-        ]
-        self.setup_mock_optimizer(program, mocker, optimizer_side_effects)
+        self.setup_mock_optimizer(
+            program, mocker, [(params1, -0.8), (params2, -0.5), (params3, -0.9)]
+        )
 
         program.run()
 
@@ -434,9 +470,9 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         mock_event = mocker.MagicMock()
         mock_event.is_set.return_value = True
         program._cancellation_event = mock_event
-
-        mock_optimizer = program.optimizer = mocker.MagicMock()
-        mock_optimizer.optimize.side_effect = _CancelledError("Cancellation requested")
+        program.optimizer.optimize.side_effect = _CancelledError(
+            "Cancellation requested"
+        )
 
         circ_count, run_time = program.run()
 
@@ -448,24 +484,22 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         program = self._create_program_with_mock_optimizer(mocker, backend=mock_backend)
         program.max_iterations = 1
         data_file = tmp_path / "test_data.pkl"
-        mock_save = mocker.patch.object(program, "save_iteration")
 
-        # 1. Mock the function that does the external communication.
-        #    It needs to return a list of dicts with 'label' and 'results' keys.
-        mock_prepare = mocker.patch.object(program, "_prepare_and_send_circuits")
-        mock_prepare.return_value = [{"label": "0_mock:0_0", "results": {"00": 1}}]
+        mocker.patch.object(program, "save_iteration")
+        mocker.patch.object(
+            program,
+            "_prepare_and_send_circuits",
+            return_value=[{"label": "0_mock:0_0", "results": {"00": 1}}],
+        )
 
-        # 2. Mock the function that does complex processing.
-        #    This ensures the optimizer gets a valid loss value back.
         final_loss = -0.5
         mocker.patch.object(
             program, "_post_process_results", return_value={0: final_loss}
         )
 
         final_params = np.array([[0.1, 0.2, 0.3, 0.4]])
-        optimizer_side_effects = [(final_params, final_loss)]
-        self.setup_mock_optimizer(program, mocker, optimizer_side_effects)
+        self.setup_mock_optimizer(program, mocker, [(final_params, final_loss)])
 
         program.run(data_file=str(data_file))
 
-        mock_save.assert_called_once_with(str(data_file))
+        program.save_iteration.assert_called_once_with(str(data_file))

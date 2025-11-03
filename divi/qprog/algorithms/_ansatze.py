@@ -25,15 +25,17 @@ class Ansatz(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def build(self, params, n_qubits: int, n_layers: int, **kwargs):
+    def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> None:
         """
-        Builds the ansatz circuit.
+        Builds the ansatz circuit by adding operations to the active PennyLane
+        quantum function context.
 
-        Args:
-            params (array): The parameters (weights) for the ansatz.
-            n_qubits (int): The number of qubits.
-            n_layers (int): The number of layers.
-            **kwargs: Additional arguments like n_electrons for chemistry ansätze.
+        Note: This method is called within a PennyLane quantum function context
+        (qml.qnode or qml.tape.make_qscript). Operations are added via side effects
+        to the active quantum tape/script.
+
+        Returns:
+            None: Operations are added to the active PennyLane context
         """
         raise NotImplementedError
 

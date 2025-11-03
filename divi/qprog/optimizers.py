@@ -208,7 +208,7 @@ class ScipyOptimizer(Optimizer):
         self.method = method
 
     @property
-    def n_param_sets(self):
+    def n_param_sets(self) -> int:
         """
         Get the number of parameter sets used by this optimizer.
 
@@ -223,7 +223,7 @@ class ScipyOptimizer(Optimizer):
         initial_params: np.ndarray,
         callback_fn: Callable[[OptimizeResult], Any] | None = None,
         **kwargs,
-    ):
+    ) -> OptimizeResult:
         """
         Run the scipy optimization algorithm.
 
@@ -342,7 +342,7 @@ class MonteCarloOptimizer(Optimizer):
         self._repeat_counts[:remainder] += 1
 
     @property
-    def population_size(self):
+    def population_size(self) -> int:
         """
         Get the size of the population.
 
@@ -352,7 +352,7 @@ class MonteCarloOptimizer(Optimizer):
         return self._population_size
 
     @property
-    def n_param_sets(self):
+    def n_param_sets(self) -> int:
         """Number of parameter sets (population size), per the Optimizer interface.
 
         Returns:
@@ -361,7 +361,7 @@ class MonteCarloOptimizer(Optimizer):
         return self._population_size
 
     @property
-    def n_best_sets(self):
+    def n_best_sets(self) -> int:
         """
         Get the number of best parameter sets used for seeding the next generation.
 
@@ -371,7 +371,7 @@ class MonteCarloOptimizer(Optimizer):
         return self._n_best_sets
 
     @property
-    def keep_best_params(self):
+    def keep_best_params(self) -> bool:
         """
         Get whether the best parameters are kept in the new population.
 

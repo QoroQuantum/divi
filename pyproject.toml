@@ -76,6 +76,7 @@ sphinxcontrib-spelling = "^8.0.1"
 
 [tool.poetry.group.jupyter.dependencies]
 ipywidgets = "^8.1.7"
+ipykernel = "^7.1.0"
 
 [tool.isort]
 profile = "black"
