@@ -233,9 +233,7 @@ class UCCSDAnsatz(Ansatz):
         s_wires, d_wires = qml.qchem.excitations_to_wires(singles, doubles)
         return len(s_wires) + len(d_wires)
 
-    def build(
-        self, params, n_qubits: int, n_layers: int, n_electrons: int, **kwargs
-    ) -> None:
+    def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> None:
         """
         Build the UCCSD ansatz circuit.
 
@@ -243,9 +241,10 @@ class UCCSDAnsatz(Ansatz):
             params: Parameter array for excitation amplitudes.
             n_qubits (int): Number of qubits.
             n_layers (int): Number of UCCSD layers (repeats).
-            n_electrons (int): Number of electrons in the system.
-            **kwargs: Additional unused arguments.
+            **kwargs: Additional arguments:
+                n_electrons (int): Number of electrons in the system (required).
         """
+        n_electrons = kwargs.pop("n_electrons")
         singles, doubles = qml.qchem.excitations(n_electrons, n_qubits)
         s_wires, d_wires = qml.qchem.excitations_to_wires(singles, doubles)
         hf_state = qml.qchem.hf_state(n_electrons, n_qubits)
@@ -285,9 +284,7 @@ class HartreeFockAnsatz(Ansatz):
         singles, doubles = qml.qchem.excitations(n_electrons, n_qubits)
         return len(singles) + len(doubles)
 
-    def build(
-        self, params, n_qubits: int, n_layers: int, n_electrons: int, **kwargs
-    ) -> None:
+    def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> None:
         """
         Build the Hartree-Fock ansatz circuit.
 
@@ -295,9 +292,10 @@ class HartreeFockAnsatz(Ansatz):
             params: Parameter array for excitation amplitudes.
             n_qubits (int): Number of qubits.
             n_layers (int): Number of ansatz layers.
-            n_electrons (int): Number of electrons in the system.
-            **kwargs: Additional unused arguments.
+            **kwargs: Additional arguments:
+                n_electrons (int): Number of electrons in the system (required).
         """
+        n_electrons = kwargs.pop("n_electrons")
         singles, doubles = qml.qchem.excitations(n_electrons, n_qubits)
         hf_state = qml.qchem.hf_state(n_electrons, n_qubits)
 

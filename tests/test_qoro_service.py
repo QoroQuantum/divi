@@ -398,6 +398,148 @@ class TestQoroServiceMock:
         assert result.qpu_system == "system2"
         assert result.use_circuit_packing is True
 
+    def test_job_config_override_with_qpu_system_object(self, mocker):
+        """Tests overriding with a QPUSystem object (not just string)."""
+        base = JobConfig(
+            shots=1000,
+            tag="base",
+            qpu_system=QPUSystem(name="system1", supports_expval=True),
+        )
+
+        override_qpu = QPUSystem(name="system2", supports_expval=False)
+        # Explicitly preserve tag to test QPUSystem override only
+        override = JobConfig(qpu_system=override_qpu, tag="base")
+
+        result = base.override(override)
+        assert result.shots == 1000  # Not overridden
+        assert result.tag == "base"  # Explicitly preserved
+        assert result.qpu_system == override_qpu  # Overridden with QPUSystem object
+        assert result.qpu_system.name == "system2"
+
+    def test_job_config_override_with_empty_config(self):
+        """Tests overriding with a config containing only None values preserves base."""
+        base = JobConfig(
+            shots=1000,
+            tag="base",
+            qpu_system=QPUSystem(name="qoro_maestro"),
+            use_circuit_packing=True,
+        )
+
+        # Create override with explicit None values (not using defaults)
+        empty_override = JobConfig(
+            shots=None,
+            tag=None,  # Explicitly None to test None preservation
+            qpu_system=None,
+            use_circuit_packing=None,
+        )
+
+        result = base.override(empty_override)
+
+        # All None values should be preserved from base (per spec: None values don't override)
+        assert result.shots == 1000
+        assert result.tag == "base"
+        assert result.qpu_system == QPUSystem(name="qoro_maestro")
+        assert result.use_circuit_packing is True
+
+    def test_job_config_override_boolean_false(self):
+        """Tests that explicit False values override correctly (not treated as None)."""
+        base = JobConfig(
+            shots=1000,
+            use_circuit_packing=True,  # Base has True
+        )
+
+        override = JobConfig(use_circuit_packing=False)  # Explicit False override
+
+        result = base.override(override)
+        assert result.shots == 1000  # Not overridden
+        assert result.use_circuit_packing is False  # Explicitly overridden to False
+
+    def test_job_config_override_chained(self):
+        """Tests chained overrides (override of an override) preserves non-None values."""
+        base = JobConfig(
+            shots=1000,
+            tag="base",
+            use_circuit_packing=False,
+        )
+
+        override1 = JobConfig(shots=500, tag="override1")
+        # override2 only overrides shots and use_circuit_packing, tag is None
+        override2 = JobConfig(shots=250, tag=None, use_circuit_packing=True)
+
+        # Chain the overrides
+        result = base.override(override1).override(override2)
+
+        assert result.shots == 250  # From override2
+        assert (
+            result.tag == "override1"
+        )  # Preserved from override1 (override2 has None)
+        assert result.use_circuit_packing is True  # From override2
+
+    def test_job_config_override_preserves_base_when_override_has_none(self):
+        """Tests that base values are preserved when override explicitly sets None."""
+        # Base with custom tag
+        base = JobConfig(tag="custom_tag", shots=1000, use_circuit_packing=True)
+
+        # Override with explicit None for tag (should preserve base tag per spec)
+        override = JobConfig(shots=500, tag=None, use_circuit_packing=None)
+
+        result = base.override(override)
+        assert result.shots == 500  # Overridden (non-None value)
+        assert result.tag == "custom_tag"  # Preserved (override has None)
+        assert result.use_circuit_packing is True  # Preserved (override has None)
+
+        # Test that non-None values do override
+        override_with_values = JobConfig(
+            shots=300, tag="new_tag", use_circuit_packing=False
+        )
+        result_overridden = base.override(override_with_values)
+        assert result_overridden.shots == 300  # Overridden
+        assert result_overridden.tag == "new_tag"  # Overridden
+        assert result_overridden.use_circuit_packing is False  # Overridden
+
+    def test_job_config_override_validation_after_override(self):
+        """Tests that overridden config still validates correctly."""
+        base = JobConfig(shots=1000)
+
+        # Override with invalid shots (should raise validation error)
+        with pytest.raises(ValueError, match="Shots must be a positive integer"):
+            base.override(JobConfig(shots=-1))
+
+        # Override with invalid shots (zero)
+        with pytest.raises(ValueError, match="Shots must be a positive integer"):
+            base.override(JobConfig(shots=0))
+
+        # Valid override should work
+        result = base.override(JobConfig(shots=500))
+        assert result.shots == 500
+
+    def test_submit_circuits_with_override_config_qpu_system_object(
+        self, mocker, qoro_service_factory
+    ):
+        """Test submitting circuits with an override_config that has a QPUSystem object."""
+        qoro_service_mock = qoro_service_factory()
+        mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=2)
+
+        # Mock responses for the API calls in submit_circuits
+        mock_init_response = mocker.MagicMock(
+            status_code=HTTPStatus.CREATED, json=lambda: {"job_id": "mock_job_id"}
+        )
+        mock_add_response = mocker.MagicMock(status_code=HTTPStatus.OK)
+        mock_make_request = mocker.patch.object(
+            qoro_service_mock,
+            "_make_request",
+            side_effect=[mock_init_response, mock_add_response],
+        )
+
+        # Override with QPUSystem object directly
+        override_qpu = QPUSystem(name="override_qpu_system")
+        override_conf = JobConfig(qpu_system=override_qpu)
+        qoro_service_mock.submit_circuits({"c1": "qasm"}, override_config=override_conf)
+
+        # Assert the correct qpu_system_name was sent in the init payload
+        init_payload = mock_make_request.call_args_list[0].kwargs["json"]
+        assert init_payload["qpu_system_name"] == "override_qpu_system"
+
     def test_qoro_service_init_fails_with_none_qpu_system(self, qoro_service_factory):
         """Tests that QoroService initialization fails if the final config has no qpu_system."""
         with pytest.raises(

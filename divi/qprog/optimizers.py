@@ -47,6 +47,7 @@ class Optimizer(ABC):
             cost_fn: The cost function to minimize.
             initial_params: Initial parameters for the optimization.
             **kwargs: Additional keyword arguments for the optimizer:
+
                 - maxiter (int, optional): Maximum number of iterations.
                   Defaults vary by optimizer (e.g., 5 for population-based optimizers,
                   None for some scipy methods).
@@ -342,13 +343,6 @@ class MonteCarloOptimizer(Optimizer):
         self._n_best_sets = n_best_sets
         self._keep_best_params = keep_best_params
 
-        # Calculate how many times each of the best sets should be repeated
-        # when generating new samples (without keeping best params)
-        samples_per_best = self._population_size // self.n_best_sets
-        remainder = self._population_size % self.n_best_sets
-        self._repeat_counts = np.full(self.n_best_sets, samples_per_best)
-        self._repeat_counts[:remainder] += 1
-
     @property
     def population_size(self) -> int:
         """
@@ -402,15 +396,19 @@ class MonteCarloOptimizer(Optimizer):
         # 1. Select the best parameter sets from the current population
         best_params = params[best_indices]
 
-        # 2. Determine how many new samples to generate
-        repeat_counts = self._repeat_counts
+        # 2. Determine how many new samples to generate and calculate repeat counts
         if self._keep_best_params:
             n_new_samples = self._population_size - self._n_best_sets
             # Calculate repeat counts for new samples only
             samples_per_best = n_new_samples // self._n_best_sets
             remainder = n_new_samples % self._n_best_sets
-            repeat_counts = np.full(self._n_best_sets, samples_per_best)
-            repeat_counts[:remainder] += 1
+        else:
+            # Calculate repeat counts for the entire population
+            samples_per_best = self._population_size // self._n_best_sets
+            remainder = self._population_size % self._n_best_sets
+
+        repeat_counts = np.full(self._n_best_sets, samples_per_best)
+        repeat_counts[:remainder] += 1
 
         # 3. Prepare the means for sampling by repeating each best parameter set
         new_means = np.repeat(best_params, repeat_counts, axis=0)
@@ -444,9 +442,11 @@ class MonteCarloOptimizer(Optimizer):
             initial_params: Initial parameters for the optimization.
             callback_fn: Optional callback function to monitor progress.
             **kwargs: Additional keyword arguments:
+
                 - maxiter (int, optional): Maximum number of iterations. Defaults to 5.
                 - rng (np.random.Generator, optional): Random number generator for
                   parameter sampling. Defaults to a new generator if not provided.
+
         Returns:
             Optimized parameters.
         """

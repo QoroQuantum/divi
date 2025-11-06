@@ -230,9 +230,12 @@ class JobConfig:
 class MaxRetriesReachedError(Exception):
     """Exception raised when the maximum number of retries is reached."""
 
-    def __init__(self, retries):
+    def __init__(self, job_id, retries):
+        self.job_id = job_id
         self.retries = retries
-        self.message = f"Maximum retries reached: {retries} retries attempted"
+        self.message = (
+            f"Maximum retries reached: {retries} retries attempted for job {job_id}"
+        )
         super().__init__(self.message)
 
 
@@ -475,16 +478,18 @@ class QoroService(CircuitRunner):
         else:
             job_config = self.config
 
-        # Auto-infer job type if ham_ops are provided
-        if ham_ops is not None and job_type is None:
-            job_type = JobType.EXPECTATION
-
-        # Validate observables
+        # Handle Hamiltonian operators: validate compatibility and auto-infer job type
         if ham_ops is not None:
-            if job_type != JobType.EXPECTATION:
+            # Validate that if job_type is explicitly set, it must be EXPECTATION
+            if job_type is not None and job_type != JobType.EXPECTATION:
                 raise ValueError(
                     "Hamiltonian operators are only supported for EXPECTATION job type."
                 )
+            # Auto-infer job type if not explicitly set
+            if job_type is None:
+                job_type = JobType.EXPECTATION
+
+            # Validate observables format
 
             terms = ham_ops.split(";")
             if len(terms) == 0:
@@ -664,4 +669,4 @@ class QoroService(CircuitRunner):
             update_fn(retry_count, status)
             time.sleep(self.polling_interval)
 
-        raise MaxRetriesReachedError(self.max_retries)
+        raise MaxRetriesReachedError(job_id, self.max_retries)

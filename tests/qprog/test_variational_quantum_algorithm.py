@@ -217,7 +217,7 @@ class TestProgram:
         fake_results = {"0_NoMitigation:0_0": {"XI": 0.5, "IZ": -0.3}}
         with pytest.raises(
             ValueError,
-            match="ham_ops is required in kwargs when backend supports expectation values",
+            match="Hamiltonian operators.*required when using a backend.*supports expectation values",
         ):
             program._post_process_results(fake_results)
 
