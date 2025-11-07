@@ -10,17 +10,57 @@ import pennylane as qml
 import scipy.sparse as sps
 
 
-def hamiltonian_to_pauli_string(hamiltonian, n_qubits):
-    """Convert Hamiltonian to semicolon-separated Pauli strings."""
+def hamiltonian_to_pauli_string(hamiltonian: qml.Hamiltonian, n_qubits: int) -> str:
+    """
+    Convert a QNode Hamiltonian to a semicolon-separated string of Pauli operators.
+
+    Each term in the Hamiltonian is represented as a string of Pauli letters ('I', 'X', 'Y', 'Z'),
+    one per qubit. Multiple terms are separated by semicolons.
+
+    Args:
+        hamiltonian (qml.Hamiltonian): The Pennylane Hamiltonian object to convert.
+        n_qubits (int): Number of qubits to represent in the string.
+
+    Returns:
+        str: The Hamiltonian as a semicolon-separated string of Pauli operators.
+
+    Raises:
+        ValueError: If an unknown Pauli operator is encountered or wire index is out of range.
+    """
+    pauli_letters = {"PauliX": "X", "PauliY": "Y", "PauliZ": "Z"}
+    identity_row = np.full(n_qubits, "I", dtype="<U1")
+
     terms = []
     for term in hamiltonian.operands:
         op = term.base if isinstance(term, qml.ops.SProd) else term
-        s = ["I"] * n_qubits
         ops = op.operands if isinstance(op, qml.ops.Prod) else [op]
+
+        paulis = identity_row.copy()
         for p in ops:
-            letter = p.name[5:]  # Remove 'Pauli' prefix
-            s[p.wires[0]] = letter
-        terms.append("".join(s))
+            # Better fallback logic with validation
+            if p.name in pauli_letters:
+                pauli = pauli_letters[p.name]
+            elif p.name.startswith("Pauli") and len(p.name) > 5:
+                pauli = p.name[5:]  # Only if safe to slice
+            else:
+                raise ValueError(
+                    f"Unknown Pauli operator: {p.name}. "
+                    "Expected 'PauliX', 'PauliY', 'PauliZ', or a name starting with 'Pauli'."
+                )
+
+            # Bounds checking for wire indices
+            if not p.wires:
+                raise ValueError(f"Pauli operator {p.name} has no wires")
+
+            wire = int(p.wires[0])
+            if wire < 0 or wire >= n_qubits:
+                raise ValueError(
+                    f"Wire index {wire} out of range for {n_qubits} qubits. "
+                    f"Valid range: [0, {n_qubits - 1}]"
+                )
+
+            paulis[wire] = pauli
+        terms.append("".join(paulis))
 
     return ";".join(terms)
 

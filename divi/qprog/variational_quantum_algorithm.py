@@ -589,8 +589,12 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                             "Hamiltonian operators (ham_ops) are required when using a backend "
                             "that supports expectation values, but were not provided."
                         )
+
                     expectation_matrix = np.array(
-                        [[d[key] for key in ham_ops.split(";")] for d in shots_dicts]
+                        [
+                            [shot_dict[op_name] for op_name in ham_ops.split(";")]
+                            for shot_dict in shots_dicts
+                        ]
                     ).T
                 else:
                     wire_order = tuple(reversed(self.cost_hamiltonian.wires))
