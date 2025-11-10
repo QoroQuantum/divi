@@ -286,28 +286,29 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         self._grad_mode = False
         self._is_compute_probabilites = False
 
-        super().__init__(
-            backend=backend, seed=seed, progress_queue=progress_queue, **kwargs
-        )
-
         self.job_id = kwargs.get("job_id", None)
         if progress_queue and self.job_id:
             self.reporter = QueueProgressReporter(self.job_id, progress_queue)
         else:
             self.reporter = LoggingProgressReporter()
 
-        if self.backend and self.backend.supports_expval:
-            grouping_strategy = kwargs.get("grouping_strategy")
+        if backend and backend.supports_expval:
+            grouping_strategy = kwargs.pop("grouping_strategy", None)
             if grouping_strategy is not None and grouping_strategy != "_backend_expval":
                 warn(
                     "Backend supports direct expectation value calculation, but a grouping_strategy was provided. "
-                    "The grouping strategy will be ignored."
+                    "The grouping strategy will be ignored.",
+                    UserWarning,
                 )
             self._grouping_strategy = "_backend_expval"
         else:
             self._grouping_strategy = kwargs.pop("grouping_strategy", "qwc")
 
         self._qem_protocol = kwargs.pop("qem_protocol", None) or _NoMitigation()
+
+        super().__init__(
+            backend=backend, seed=seed, progress_queue=progress_queue, **kwargs
+        )
 
         self._cancellation_event = None
 

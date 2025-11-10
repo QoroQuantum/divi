@@ -204,13 +204,11 @@ def to_openqasm(
 
     # Create a copy of the program for every measurement that we have
     for meas_group in measurement_groups:
-        # If the group contains raw observables, wrap them in expval for the QuantumScript
-        if meas_group and not isinstance(
-            meas_group[0], qml.measurements.MeasurementProcess
-        ):
-            wrapped_group = [qml.expval(obs) for obs in meas_group]
-        else:
-            wrapped_group = meas_group
+        # Ensure all items in measurement group are MeasurementProcess instances
+        wrapped_group = [
+            m if isinstance(m, qml.measurements.MeasurementProcess) else qml.expval(m)
+            for m in meas_group
+        ]
 
         curr_diag_qasm_str = (
             _to_qasm(diag_ops)

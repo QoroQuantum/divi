@@ -52,11 +52,21 @@ def _create_final_postprocessing_fn(coefficients, partition_indices, num_total_o
         for idx_within_group, original_flat_idx in enumerate(indices_in_group):
             reverse_map[original_flat_idx] = (group_idx, idx_within_group)
 
+    missing_indices = [i for i, v in enumerate(reverse_map) if v is None]
+    if missing_indices:
+        raise RuntimeError(
+            f"partition_indices does not cover all observable indices. Missing indices: {missing_indices}"
+        )
+
     def final_postprocessing_fn(grouped_results):
         """
         Takes grouped results, flattens them to the original order,
         multiplies by coefficients, and sums to get the final energy.
         """
+        if len(grouped_results) != len(partition_indices):
+            raise RuntimeError(
+                f"Expected {len(partition_indices)} grouped results, but got {len(grouped_results)}."
+            )
         flat_results = np.zeros(num_total_obs, dtype=np.float64)
         for original_flat_idx in range(num_total_obs):
             group_idx, idx_within_group = reverse_map[original_flat_idx]
@@ -178,6 +188,31 @@ class MetaCircuit:
         self.qem_protocol = qem_protocol
         self.grouping_strategy = grouping_strategy
 
+        # Validate that the circuit has exactly one valid observable measurement.
+        if len(self.main_circuit.measurements) != 1:
+            raise ValueError(
+                f"MetaCircuit requires a circuit with exactly one measurement, "
+                f"but {len(self.main_circuit.measurements)} were found."
+            )
+
+        measurement = self.main_circuit.measurements[0]
+        # If the measurement is not an expectation value, we assume it is for sampling
+        # and does not require special post-processing.
+        if not hasattr(measurement, "obs") or measurement.obs is None:
+            self.postprocessing_fn = lambda x: x
+            self.measurement_groups = [[]]
+            (
+                self.compiled_circuits_bodies,
+                self.measurements,
+            ) = to_openqasm(
+                main_circuit,
+                measurement_groups=self.measurement_groups,
+                return_measurements_separately=True,
+                symbols=self.symbols,
+                qem_protocol=qem_protocol,
+            )
+            return
+
         # Step 1: Use split_to_single_terms to get a flat list of measurement
         # processes. We no longer need its post-processing function.
         measurements_only_tape = qml.tape.QuantumScript(
@@ -211,8 +246,11 @@ class MetaCircuit:
             partition_indices = [[i] for i in range(len(single_term_mps))]
         elif grouping_strategy == "_backend_expval":
             self.measurement_groups = [[]]
-            # All observables go in one group for postprocessing
-            # (backend computes expectation values directly, so no measurement groups needed)
+            # For backends that compute expectation values directly, no explicit
+            # measurement basis rotations (diagonalizing gates) are needed in the QASM.
+            # The `to_openqasm` function interprets an empty measurement group `[]`
+            # as a signal to skip adding these gates.
+            # All observables are still tracked in a single group for post-processing.
             partition_indices = [list(range(len(single_term_mps)))]
         else:
             raise ValueError(f"Unknown grouping strategy: {grouping_strategy}")

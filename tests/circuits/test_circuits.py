@@ -64,6 +64,39 @@ class TestMetaCircuit:
 
         return qml.tape.make_qscript(circ)(weights_syms)
 
+    @pytest.fixture
+    def expval_circuit(self, weights_syms):
+        def circ(weights):
+            qml.AngleEmbedding(weights, wires=range(4), rotation="Y")
+            return qml.expval(qml.PauliZ(0))
+
+        return qml.tape.make_qscript(circ)(weights_syms)
+
+    @pytest.fixture
+    def no_measurement_circuit(self, weights_syms):
+        def circ(weights):
+            qml.AngleEmbedding(weights, wires=range(4), rotation="Y")
+
+        return qml.tape.make_qscript(circ)(weights_syms)
+
+    def test_metacircuit_valid_measurement(self, expval_circuit, weights_syms):
+        """Tests that MetaCircuit initializes correctly with a valid expval measurement."""
+        # This should execute without raising an exception
+        try:
+            MetaCircuit(expval_circuit, weights_syms)
+        except ValueError:
+            pytest.fail("MetaCircuit initialization failed with a valid measurement.")
+
+    def test_metacircuit_raises_on_no_measurements(
+        self, no_measurement_circuit, weights_syms
+    ):
+        """Tests that MetaCircuit raises ValueError for a circuit with no measurements."""
+        with pytest.raises(
+            ValueError,
+            match="MetaCircuit requires a circuit with exactly one measurement, but 0 were found.",
+        ):
+            MetaCircuit(no_measurement_circuit, weights_syms)
+
     def test_correct_symbolization(self, sample_circuit, weights_syms):
 
         meta_circuit = MetaCircuit(sample_circuit, weights_syms)
@@ -190,7 +223,7 @@ class TestMetaCircuit:
             for actual, expected in zip(actual_params, param_list * 2):
                 assert round(expected, precision) == float(actual)
 
-    def test_metacircuit_with_qem_is_serializable(self, sample_circuit, weights_syms):
+    def test_metacircuit_with_qem_is_serializable(self, expval_circuit, weights_syms):
         """
         Ensures MetaCircuit with a QEM protocol can be pickled and unpickled correctly.
         """
@@ -202,7 +235,7 @@ class TestMetaCircuit:
         )
 
         meta_circuit_original = MetaCircuit(
-            sample_circuit, weights_syms, qem_protocol=qem_protocol
+            expval_circuit, weights_syms, qem_protocol=qem_protocol
         )
 
         # Serialize and deserialize the object
@@ -217,8 +250,8 @@ class TestMetaCircuit:
         np.testing.assert_equal(meta_circuit_unpickled.symbols, weights_syms)
 
         # Crucially, test that the unpickled function works
-        # When a group has one measurement, the result is a scalar, not a list.
-        mock_results = [0.5, 0.4, 0.3]  # Mock results for 3 measurement groups
+        # The expval_circuit has one measurement group.
+        mock_results = [0.5]  # Mock result for the single measurement group
         # The specific value doesn't matter, just that it doesn't raise an error
         assert isinstance(
             meta_circuit_unpickled.postprocessing_fn(mock_results), np.floating
