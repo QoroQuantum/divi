@@ -139,6 +139,39 @@ class ProgramBatch(ABC):
 
     @abstractmethod
     def create_programs(self):
+        """Generate and populate the programs dictionary for batch execution.
+
+        This method must be implemented by subclasses to create the quantum programs
+        that will be executed as part of the batch. The method operates via side effects:
+        it populates `self._programs` (or `self.programs`) with a dictionary mapping
+        program identifiers to `QuantumProgram` instances.
+
+        Implementation Notes:
+            - Subclasses should call `super().create_programs()` first to initialize
+              internal state (queue, events, etc.) and validate that no programs
+              already exist.
+            - After calling super(), subclasses should populate `self.programs` or
+              `self._programs` with their program instances.
+            - Program identifiers can be any hashable type (e.g., strings, tuples).
+              Common patterns include strings like "prog1", "prog2" or tuples like
+              ('A', 5) for partitioned problems.
+
+        Side Effects:
+            - Populates `self._programs` with program instances.
+            - Initializes `self._queue` for progress reporting.
+            - Initializes `self._done_event` if `max_iterations` attribute exists.
+
+        Raises:
+            RuntimeError: If programs already exist (should call `reset()` first).
+
+        Example:
+            >>> def create_programs(self):
+            ...     super().create_programs()
+            ...     self.programs = {
+            ...         "prog1": QAOA(...),
+            ...         "prog2": QAOA(...),
+            ...     }
+        """
         if len(self._programs) > 0:
             raise RuntimeError(
                 "Some programs already exist. "

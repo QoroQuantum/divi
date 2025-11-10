@@ -35,7 +35,7 @@ class SimpleTestProgram(QuantumProgram):
 
     def _generate_circuits(self, **kwargs):
         """Dummy implementation for the abstract method."""
-        pass
+        return []
 
     def _post_process_results(self, results: dict):
         """Dummy implementation for the abstract method."""

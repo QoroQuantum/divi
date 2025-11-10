@@ -11,7 +11,7 @@ import pennylane as qml
 
 
 class Ansatz(ABC):
-    """Abstract base class for all VQE ansaetze."""
+    """Abstract base class for all VQE ansätze."""
 
     @property
     def name(self) -> str:
@@ -25,15 +25,17 @@ class Ansatz(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def build(self, params, n_qubits: int, n_layers: int, **kwargs):
+    def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> None:
         """
-        Builds the ansatz circuit.
+        Builds the ansatz circuit by adding operations to the active PennyLane
+        quantum function context.
 
-        Args:
-            params (array): The parameters (weights) for the ansatz.
-            n_qubits (int): The number of qubits.
-            n_layers (int): The number of layers.
-            **kwargs: Additional arguments like n_electrons for chemistry ansaetze.
+        Note: This method is called within a PennyLane quantum function context
+        (qml.qnode or qml.tape.make_qscript). Operations are added via side effects
+        to the active quantum tape/script.
+
+        Returns:
+            None: Operations are added to the active PennyLane context
         """
         raise NotImplementedError
 
@@ -118,7 +120,7 @@ class GenericLayerAnsatz(Ansatz):
         per_qubit = sum(getattr(g, "num_params", 1) for g in self.gate_sequence)
         return per_qubit * n_qubits
 
-    def build(self, params, n_qubits: int, n_layers: int, **kwargs):
+    def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> None:
         # calculate how many params each gate needs per qubit
         gate_param_counts = [getattr(g, "num_params", 1) for g in self.gate_sequence]
         per_qubit = sum(gate_param_counts)
@@ -164,7 +166,7 @@ class QAOAAnsatz(Ansatz):
         """
         return qml.QAOAEmbedding.shape(n_layers=1, n_wires=n_qubits)[1]
 
-    def build(self, params, n_qubits: int, n_layers: int, **kwargs):
+    def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> None:
         """
         Build the QAOA ansatz circuit.
 
@@ -231,7 +233,7 @@ class UCCSDAnsatz(Ansatz):
         s_wires, d_wires = qml.qchem.excitations_to_wires(singles, doubles)
         return len(s_wires) + len(d_wires)
 
-    def build(self, params, n_qubits: int, n_layers: int, n_electrons: int, **kwargs):
+    def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> None:
         """
         Build the UCCSD ansatz circuit.
 
@@ -239,9 +241,10 @@ class UCCSDAnsatz(Ansatz):
             params: Parameter array for excitation amplitudes.
             n_qubits (int): Number of qubits.
             n_layers (int): Number of UCCSD layers (repeats).
-            n_electrons (int): Number of electrons in the system.
-            **kwargs: Additional unused arguments.
+            **kwargs: Additional arguments:
+                n_electrons (int): Number of electrons in the system (required).
         """
+        n_electrons = kwargs.pop("n_electrons")
         singles, doubles = qml.qchem.excitations(n_electrons, n_qubits)
         s_wires, d_wires = qml.qchem.excitations_to_wires(singles, doubles)
         hf_state = qml.qchem.hf_state(n_electrons, n_qubits)
@@ -281,7 +284,7 @@ class HartreeFockAnsatz(Ansatz):
         singles, doubles = qml.qchem.excitations(n_electrons, n_qubits)
         return len(singles) + len(doubles)
 
-    def build(self, params, n_qubits: int, n_layers: int, n_electrons: int, **kwargs):
+    def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> None:
         """
         Build the Hartree-Fock ansatz circuit.
 
@@ -289,9 +292,10 @@ class HartreeFockAnsatz(Ansatz):
             params: Parameter array for excitation amplitudes.
             n_qubits (int): Number of qubits.
             n_layers (int): Number of ansatz layers.
-            n_electrons (int): Number of electrons in the system.
-            **kwargs: Additional unused arguments.
+            **kwargs: Additional arguments:
+                n_electrons (int): Number of electrons in the system (required).
         """
+        n_electrons = kwargs.pop("n_electrons")
         singles, doubles = qml.qchem.excitations(n_electrons, n_qubits)
         hf_state = qml.qchem.hf_state(n_electrons, n_qubits)
 

@@ -12,50 +12,63 @@ PORT          ?= 8000
 # Put it first so that "make" without argument is like "make help".
 help:
 	@echo "Available targets:"
-	@echo "  html       - Build HTML documentation"
-	@echo "  clean      - Remove all build files"
-	@echo "  live       - Build HTML and serve locally (auto-reload on changes)"
-	@echo "  serve      - Serve built HTML documentation locally"
-	@echo "  linkcheck  - Check for broken links"
-	@echo "  doctest    - Run doctests in documentation"
-	@echo "  coverage   - Run coverage check"
-	@echo "  spelling   - Run spell checker"
-	@echo "  check      - Run all checks (linkcheck, doctest, coverage)"
-	@echo "  watch      - Watch for changes and rebuild automatically"
-	@echo "  install    - Install documentation dependencies"
+	@echo ""
+	@echo "  Development:"
+	@echo "    dev        - Start a live-reloading development server"
+	@echo "    serve      - Build and serve the documentation for preview"
+	@echo "    build      - Build the HTML documentation"
+	@echo "    clean      - Remove all build files"
+	@echo ""
+	@echo "  Quality Checks:"
+	@echo "    test       - Run all quality checks (linkcheck, spelling, coverage)"
+	@echo "    linkcheck  - Check for broken links"
+	@echo "    spelling   - Check for spelling errors"
+	@echo "    coverage   - Run a documentation coverage check"
+	@echo ""
+	@echo "  Deployment & Other:"
+	@echo "    install    - Install documentation dependencies"
+	@echo "    open       - Open the built documentation in your browser"
 	@echo ""
 	@echo "Variables:"
 	@echo "  PORT       - Port for serving documentation (default: 8000)"
 	@echo "  SPHINXOPTS - Additional Sphinx options"
 	@echo ""
 	@echo "Examples:"
-	@echo "  make html PORT=8080    - Build HTML and serve on port 8080"
-	@echo "  make live              - Build and serve with auto-reload"
-	@echo "  make check             - Run all quality checks"
+	@echo "  make dev PORT=8080       - Start the dev server on port 8080"
+	@echo "  make test                - Run all quality checks"
 
-.PHONY: help Makefile
+.PHONY: help Makefile build clean serve dev open linkcheck coverage spelling test install
 
-# Build targets
-html:
+KNOWN_TARGETS := help dev serve build clean test linkcheck spelling coverage install open
+
+# ==============================================================================
+# Development
+# ==============================================================================
+
+build:
 	@echo "Building HTML documentation..."
-	@$(SPHINXBUILD) -b html "$(SOURCEDIR)" "$(BUILDDIR)/html" $(SPHINXOPTS) $(O)
+	@$(SPHINXBUILD) -b html "$(SOURCEDIR)" "$(BUILDDIR)/html" $(SPHINXOPTS) $(O) || exit 1
+	@if [ ! -d "$(BUILDDIR)/html" ]; then \
+		echo "Error: Build failed - directory $(BUILDDIR)/html was not created."; \
+		exit 1; \
+	fi
 	@echo "HTML documentation built in $(BUILDDIR)/html/"
 
-
-# Clean target
 clean:
 	@echo "Cleaning build directory..."
 	@rm -rf "$(BUILDDIR)"
 	@echo "Build directory cleaned."
 
-# Serve documentation locally
-serve: html
+serve: build
 	@echo "Serving documentation at http://localhost:$(PORT)"
 	@echo "Press Ctrl+C to stop the server"
+	@if [ ! -d "$(BUILDDIR)/html" ]; then \
+		echo "Error: Build directory $(BUILDDIR)/html does not exist. Run 'make build' first."; \
+		exit 1; \
+	fi
 	@cd "$(BUILDDIR)/html" && python -m http.server $(PORT)
 
-# Live reload (requires sphinx-autobuild)
-live:
+dev:
 	@echo "Starting live documentation server..."
 	@echo "Documentation will be available at http://localhost:$(PORT)"
 	@echo "Press Ctrl+C to stop the server"
@@ -64,30 +77,23 @@ live:
 		sphinx-autobuild -b html "$(SOURCEDIR)" "$(BUILDDIR)/html" --port $(PORT) --host 0.0.0.0 --open-browser --re-ignore ".*\.(pyc|pyo)$$"; \
 	else \
 		echo "No existing build found, building from scratch..."; \
-		sphinx-autobuild -b html "$(SOURCEDIR)" "$(BUILDDIR)/html" --port $(PORT) --host 0.0.0.0 --open-browser; \
+		sphinx-autobuild -b html "$(SOURCEDIR)" "$(BUILDDIR)/html" --port $(PORT) --host 0.0.0.0 --open-browser --re-ignore ".*\.(pyc|pyo)$$"; \
 	fi
 
-# Watch for changes and rebuild
-watch:
-	@echo "Watching for changes in $(SOURCEDIR)..."
-	@echo "Press Ctrl+C to stop watching"
-	@while true; do \
-		inotifywait -r -e modify,create,delete "$(SOURCEDIR)"; \
-		echo "Changes detected, rebuilding..."; \
-		$(MAKE) html; \
-		echo "Rebuild complete. Watching for more changes..."; \
-	done
+open:
+	@echo "Opening documentation in browser..."
+	@xdg-open "$(BUILDDIR)/html/index.html" 2>/dev/null || \
+	 open "$(BUILDDIR)/html/index.html" 2>/dev/null || \
+	 echo "Please open $(BUILDDIR)/html/index.html in your browser"
 
-# Quality checks
+# ==============================================================================
+# Quality Checks
+# ==============================================================================
+
 linkcheck:
 	@echo "Checking for broken links..."
-	@$(SPHINXBUILD) -b linkcheck "$(SOURCEDIR)" "$(BUILDDIR)/linkcheck" $(SPHINXOPTS) $(O)
+	@$(SPHINXBUILD) -E -b linkcheck "$(SOURCEDIR)" "$(BUILDDIR)/linkcheck" $(SPHINXOPTS) $(O)
 	@echo "Link check complete. See $(BUILDDIR)/linkcheck/output.txt for results."
-
-doctest:
-	@echo "Running doctests..."
-	@$(SPHINXBUILD) -b doctest "$(SOURCEDIR)" "$(BUILDDIR)/doctest" $(SPHINXOPTS) $(O)
-	@echo "Doctests complete. See $(BUILDDIR)/doctest/output.txt for results."
 
 coverage:
 	@echo "Running coverage check..."
@@ -99,27 +105,48 @@ spelling:
 	@$(SPHINXBUILD) -b spelling "$(SOURCEDIR)" "$(BUILDDIR)/spelling" $(SPHINXOPTS) $(O)
 	@echo "Spell check complete. See $(BUILDDIR)/spelling/output.txt for results."
 
-# Run all checks
-check: linkcheck doctest coverage
-	@echo "All checks completed!"
+test: spelling linkcheck coverage
+	@echo "All quality checks completed!"
 
-# Install dependencies
+# ==============================================================================
+# Other
+# ==============================================================================
+
 install:
 	@echo "Installing documentation dependencies..."
 	@poetry install --with docs
 	@echo "Dependencies installed!"
 
-# Development helpers
-open:
-	@echo "Opening documentation in browser..."
-	@xdg-open "$(BUILDDIR)/html/index.html" 2>/dev/null || \
-	 open "$(BUILDDIR)/html/index.html" 2>/dev/null || \
-	 echo "Please open $(BUILDDIR)/html/index.html in your browser"
-
-# Quick development cycle
-dev: clean html serve
-
-# Catch-all target: route all unknown targets to Sphinx using the new
-# "make mode" option.  $(O) is meant as a shortcut for $(SPHINXOPTS).
-%: Makefile
-	@$(SPHINXBUILD) -M $@ "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O)
+# Catch-all for other Sphinx commands
+.DEFAULT:
+	@TARGET='$@'; \
+	KNOWN_TARGETS='$(KNOWN_TARGETS)'; \
+	BEST_MATCH=''; \
+	MIN_DIST=999; \
+	for t in $$KNOWN_TARGETS; do \
+		DIST=$$(echo "$$TARGET $$t" | awk ' \
+			function min(x, y) { return x < y ? x : y } \
+			function levenshtein(s1, s2, l1, l2, d, i, j, c) { \
+				l1 = length(s1); l2 = length(s2); \
+				for (i = 0; i <= l1; i++) d[i, 0] = i; \
+				for (j = 0; j <= l2; j++) d[0, j] = j; \
+				for (i = 1; i <= l1; i++) { \
+					for (j = 1; j <= l2; j++) { \
+						c = (substr(s1, i, 1) == substr(s2, j, 1)) ? 0 : 1; \
+						d[i, j] = min(d[i-1, j] + 1, min(d[i, j-1] + 1, d[i-1, j-1] + c)); \
+					} \
+				} \
+				return d[l1, l2]; \
+			} \
+			{ print levenshtein($$1, $$2) }'); \
+		if [ $$DIST -lt $$MIN_DIST ]; then \
+			MIN_DIST=$$DIST; \
+			BEST_MATCH=$$t; \
+		fi \
+	done; \
+	if [ $$MIN_DIST -le 3 ] && [ "$$BEST_MATCH" != "$$TARGET" ]; then \
+		echo "make: '$$TARGET' is not a valid target. Did you mean '$$BEST_MATCH'?"; \
+		exit 1; \
+	else \
+		$(SPHINXBUILD) -M $$TARGET "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O); \
+	fi

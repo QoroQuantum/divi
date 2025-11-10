@@ -9,6 +9,7 @@ import requests
 
 from divi.backends import _qoro_service
 from divi.backends._qoro_service import (
+    JobConfig,
     JobStatus,
     JobType,
     MaxRetriesReachedError,
@@ -16,13 +17,18 @@ from divi.backends._qoro_service import (
     _decode_qh1_b64,
     _decompress_histogram,
     _int_to_bitstr,
-    _parse_qpu_systems,
     _raise_with_details,
     _rle_bool_decode,
     _uleb128_decode,
     is_valid_qasm,
 )
-from divi.backends._qpu_system import QPUSystem
+from divi.backends._qpu_system import (
+    QPUSystem,
+    get_available_qpu_systems,
+    get_qpu_system,
+    parse_qpu_systems,
+    update_qpu_systems_cache,
+)
 
 # --- Test Fixtures ---
 
@@ -30,13 +36,47 @@ from divi.backends._qpu_system import QPUSystem
 @pytest.fixture
 def qoro_service(api_key):
     """Provides a QoroService instance with a real API token for integration tests."""
-    return QoroService(api_key)
+    return QoroService(auth_token=api_key)
 
 
 @pytest.fixture
-def qoro_service_mock():
-    """Provides a mocked QoroService instance for unit tests."""
-    return QoroService("mock_token", max_retries=3, polling_interval=0.01)
+def qoro_service_factory(mocker):
+    """Provides a factory to create mocked QoroService instances."""
+    mocker.patch.object(QoroService, "fetch_qpu_systems", return_value=[])
+
+    def _factory(**kwargs):
+        # Default values similar to the old qoro_service_mock
+        config = {
+            "auth_token": "mock_token",
+            "max_retries": 3,
+            "polling_interval": 0.01,
+        }
+        config.update(kwargs)
+        return QoroService(**config)
+
+    return _factory
+
+
+@pytest.fixture
+def submit_circuits_mock(mocker, qoro_service_factory):
+    """Mocks the dependencies for submit_circuits and returns the make_request mock."""
+    mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=2)
+
+    mock_init_response = mocker.MagicMock()
+    mock_init_response.status_code = HTTPStatus.CREATED
+    mock_init_response.json.return_value = {"job_id": "mock_job_id"}
+
+    mock_add_response = mocker.MagicMock()
+    mock_add_response.status_code = HTTPStatus.OK
+
+    service_instance = qoro_service_factory()
+    mock_make_request = mocker.patch.object(
+        service_instance,
+        "_make_request",
+        side_effect=[mock_init_response, mock_add_response, mock_add_response],
+    )
+
+    return service_instance, mock_make_request
 
 
 @pytest.fixture
@@ -62,9 +102,12 @@ class TestQoroServiceUtilities:
 
     def test_decode_qh1_b64_empty_or_no_payload(self):
         """Tests that _decode_qh1_b64 handles empty inputs correctly."""
-        assert _decode_qh1_b64(None) == {}
+        assert _decode_qh1_b64(None) is None
         assert _decode_qh1_b64({}) == {}
-        assert _decode_qh1_b64({"encoding": "qh1", "payload": ""}) == {}
+        assert _decode_qh1_b64({"encoding": "qh1", "payload": ""}) == {
+            "encoding": "qh1",
+            "payload": "",
+        }
 
     def test_decode_qh1_b64_unsupported_encoding(self):
         """Tests that _decode_qh1_b64 raises an error for unsupported encodings."""
@@ -215,61 +258,301 @@ class TestQoroServiceMock:
         mock_dotenv = mocker.patch("divi.backends._qoro_service.dotenv_values")
         mock_dotenv.return_value = {}  # Empty env file
 
+        # This test is a special case and cannot use the factory, as it tests
+        # the exact logic that the factory is designed to hide (init failure).
+        mocker.patch.object(QoroService, "fetch_qpu_systems", return_value=[])
         with pytest.raises(
             ValueError, match="Qoro API key not provided nor found in a .env file"
         ):
             QoroService(auth_token=None)
 
-    def test_initialization_with_env_api_key(self, mocker):
+    def test_initialization_with_env_api_key(self, mocker, qoro_service_factory):
         """Test initialization with API key from .env file."""
         # Mock dotenv_values to return API key
         mock_dotenv = mocker.patch("divi.backends._qoro_service.dotenv_values")
         mock_dotenv.return_value = {"QORO_API_KEY": "env_api_key"}
 
-        service = QoroService(auth_token=None)
+        service = qoro_service_factory(auth_token=None)
         assert service.auth_token == "Bearer env_api_key"
 
     @pytest.mark.parametrize(
-        "input_value, expected_stored_name",
+        "input_value, expected_stored_value",
         [
-            ("my_qpu_system", "my_qpu_system"),
+            ("my_qpu_system", "my_qpu_system"),  # Strings remain strings in JobConfig
             (
-                QPUSystem(name="qpu_from_object", qpus=[], access_level="basic"),
-                "qpu_from_object",
+                QPUSystem(name="qpu_from_object"),
+                QPUSystem(name="qpu_from_object"),
             ),
             (None, None),
         ],
         ids=["string_input", "QPUSystem_object_input", "None_input"],
     )
-    def test_qpu_system_name_setter_success(self, input_value, expected_stored_name):
+    def test_job_config_qpu_system_success(
+        self, input_value, expected_stored_value, mocker
+    ):
         """
-        Tests that the qpu_system_name setter correctly handles valid input types
-        (str, QPUSystem, None) and stores the appropriate name.
+        Tests that JobConfig correctly handles valid qpu_system types.
+        Note: JobConfig stores strings as-is; resolution happens in QoroService.__init__.
         """
-        service = QoroService("test_token")
-        # This assignment should succeed without raising an exception
-        service.qpu_system_name = input_value
-        assert service._qpu_system_name == expected_stored_name
+        config = JobConfig(qpu_system=input_value)
+        assert config.qpu_system == expected_stored_value
 
     @pytest.mark.parametrize(
         "invalid_input",
         [123, ["a", "list"], {"a": "dict"}],
         ids=["integer_input", "list_input", "dict_input"],
     )
-    def test_qpu_system_name_setter_failure(self, invalid_input):
+    def test_job_config_qpu_system_failure(self, invalid_input):
         """
-        Tests that the qpu_system_name setter raises a TypeError for invalid input types.
+        Tests that JobConfig raises a TypeError for invalid qpu_system types.
         """
-        service = QoroService("test_token")
         with pytest.raises(TypeError):
-            service.qpu_system_name = invalid_input
+            JobConfig(qpu_system=invalid_input)
+
+    def test_job_config_shots_validation(self):
+        """Tests that JobConfig validates shots values."""
+        # Valid shots
+        config = JobConfig(shots=100)
+        assert config.shots == 100
+
+        # Invalid: shots <= 0
+        with pytest.raises(ValueError, match="Shots must be a positive integer"):
+            JobConfig(shots=0)
+
+        with pytest.raises(ValueError, match="Shots must be a positive integer"):
+            JobConfig(shots=-1)
+
+    def test_job_config_use_circuit_packing_type_validation(self):
+        """Tests that JobConfig validates use_circuit_packing type."""
+        # Valid boolean
+        config = JobConfig(use_circuit_packing=True)
+        assert config.use_circuit_packing is True
+
+        # Invalid: not a bool
+        with pytest.raises(TypeError, match="Expected a bool"):
+            JobConfig(use_circuit_packing="true")
+
+        with pytest.raises(TypeError, match="Expected a bool"):
+            JobConfig(use_circuit_packing=1)
+
+    def test_job_config_override_basic(self):
+        """Tests that JobConfig.override() method works correctly."""
+        base = JobConfig(shots=1000, tag="base", use_circuit_packing=False)
+        override = JobConfig(shots=500, tag="override")
+
+        result = base.override(override)
+        assert result.shots == 500
+        assert result.tag == "override"
+        assert result.use_circuit_packing is False  # Not overridden
+
+    def test_job_config_override_none_values_ignored(self):
+        """Tests that None values in override config are ignored."""
+        base = JobConfig(
+            shots=1000, tag="base", qpu_system=QPUSystem(name="qoro_maestro")
+        )
+        override = JobConfig(shots=None, tag="override", qpu_system=None)
+
+        result = base.override(override)
+        assert result.shots == 1000  # Not overridden
+        assert result.tag == "override"  # Overridden
+        assert result.qpu_system == QPUSystem(name="qoro_maestro")  # Not overridden
+
+    def test_job_config_override_immutability(self):
+        """Tests that JobConfig.override() returns a new instance."""
+        base = JobConfig(shots=1000)
+        override = JobConfig(shots=500)
+
+        result = base.override(override)
+
+        # Original should be unchanged
+        assert base.shots == 1000
+        # Result should have new value
+        assert result.shots == 500
+        # Should be different objects
+        assert result is not base
+        assert result is not override
+
+    def test_job_config_override_all_fields(self, mocker):
+        """Tests overriding all fields."""
+        base = JobConfig(
+            shots=1000,
+            tag="base",
+            qpu_system=QPUSystem(name="system1"),
+            use_circuit_packing=False,
+        )
+
+        # Populate the cache before creating the JobConfig that uses a string
+        update_qpu_systems_cache([QPUSystem(name="system2")])
+
+        override = JobConfig(
+            shots=2000,
+            tag="override",
+            qpu_system="system2",
+            use_circuit_packing=True,
+        )
+
+        result = base.override(override)
+        assert result.shots == 2000
+        assert result.tag == "override"
+        # JobConfig stores strings as-is; resolution happens in QoroService.__init__
+        assert result.qpu_system == "system2"
+        assert result.use_circuit_packing is True
+
+    def test_job_config_override_with_qpu_system_object(self, mocker):
+        """Tests overriding with a QPUSystem object (not just string)."""
+        base = JobConfig(
+            shots=1000,
+            tag="base",
+            qpu_system=QPUSystem(name="system1", supports_expval=True),
+        )
+
+        override_qpu = QPUSystem(name="system2", supports_expval=False)
+        # Explicitly preserve tag to test QPUSystem override only
+        override = JobConfig(qpu_system=override_qpu, tag="base")
+
+        result = base.override(override)
+        assert result.shots == 1000  # Not overridden
+        assert result.tag == "base"  # Explicitly preserved
+        assert result.qpu_system == override_qpu  # Overridden with QPUSystem object
+        assert result.qpu_system.name == "system2"
+
+    def test_job_config_override_with_empty_config(self):
+        """Tests overriding with a config containing only None values preserves base."""
+        base = JobConfig(
+            shots=1000,
+            tag="base",
+            qpu_system=QPUSystem(name="qoro_maestro"),
+            use_circuit_packing=True,
+        )
+
+        # Create override with explicit None values (not using defaults)
+        empty_override = JobConfig(
+            shots=None,
+            tag=None,  # Explicitly None to test None preservation
+            qpu_system=None,
+            use_circuit_packing=None,
+        )
+
+        result = base.override(empty_override)
+
+        # All None values should be preserved from base (per spec: None values don't override)
+        assert result.shots == 1000
+        assert result.tag == "base"
+        assert result.qpu_system == QPUSystem(name="qoro_maestro")
+        assert result.use_circuit_packing is True
+
+    def test_job_config_override_boolean_false(self):
+        """Tests that explicit False values override correctly (not treated as None)."""
+        base = JobConfig(
+            shots=1000,
+            use_circuit_packing=True,  # Base has True
+        )
+
+        override = JobConfig(use_circuit_packing=False)  # Explicit False override
+
+        result = base.override(override)
+        assert result.shots == 1000  # Not overridden
+        assert result.use_circuit_packing is False  # Explicitly overridden to False
+
+    def test_job_config_override_chained(self):
+        """Tests chained overrides (override of an override) preserves non-None values."""
+        base = JobConfig(
+            shots=1000,
+            tag="base",
+            use_circuit_packing=False,
+        )
+
+        override1 = JobConfig(shots=500, tag="override1")
+        # override2 only overrides shots and use_circuit_packing, tag is None
+        override2 = JobConfig(shots=250, tag=None, use_circuit_packing=True)
+
+        # Chain the overrides
+        result = base.override(override1).override(override2)
+
+        assert result.shots == 250  # From override2
+        assert (
+            result.tag == "override1"
+        )  # Preserved from override1 (override2 has None)
+        assert result.use_circuit_packing is True  # From override2
+
+    def test_job_config_override_preserves_base_when_override_has_none(self):
+        """Tests that base values are preserved when override explicitly sets None."""
+        # Base with custom tag
+        base = JobConfig(tag="custom_tag", shots=1000, use_circuit_packing=True)
+
+        # Override with explicit None for tag (should preserve base tag per spec)
+        override = JobConfig(shots=500, tag=None, use_circuit_packing=None)
+
+        result = base.override(override)
+        assert result.shots == 500  # Overridden (non-None value)
+        assert result.tag == "custom_tag"  # Preserved (override has None)
+        assert result.use_circuit_packing is True  # Preserved (override has None)
+
+        # Test that non-None values do override
+        override_with_values = JobConfig(
+            shots=300, tag="new_tag", use_circuit_packing=False
+        )
+        result_overridden = base.override(override_with_values)
+        assert result_overridden.shots == 300  # Overridden
+        assert result_overridden.tag == "new_tag"  # Overridden
+        assert result_overridden.use_circuit_packing is False  # Overridden
+
+    def test_job_config_override_validation_after_override(self):
+        """Tests that overridden config still validates correctly."""
+        base = JobConfig(shots=1000)
+
+        # Override with invalid shots (should raise validation error)
+        with pytest.raises(ValueError, match="Shots must be a positive integer"):
+            base.override(JobConfig(shots=-1))
+
+        # Override with invalid shots (zero)
+        with pytest.raises(ValueError, match="Shots must be a positive integer"):
+            base.override(JobConfig(shots=0))
+
+        # Valid override should work
+        result = base.override(JobConfig(shots=500))
+        assert result.shots == 500
+
+    def test_submit_circuits_with_override_config_qpu_system_object(
+        self, mocker, qoro_service_factory
+    ):
+        """Test submitting circuits with an override_config that has a QPUSystem object."""
+        qoro_service_mock = qoro_service_factory()
+        mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=2)
+
+        # Mock responses for the API calls in submit_circuits
+        mock_init_response = mocker.MagicMock(
+            status_code=HTTPStatus.CREATED, json=lambda: {"job_id": "mock_job_id"}
+        )
+        mock_add_response = mocker.MagicMock(status_code=HTTPStatus.OK)
+        mock_make_request = mocker.patch.object(
+            qoro_service_mock,
+            "_make_request",
+            side_effect=[mock_init_response, mock_add_response],
+        )
+
+        # Override with QPUSystem object directly
+        override_qpu = QPUSystem(name="override_qpu_system")
+        override_conf = JobConfig(qpu_system=override_qpu)
+        qoro_service_mock.submit_circuits({"c1": "qasm"}, override_config=override_conf)
+
+        # Assert the correct qpu_system_name was sent in the init payload
+        init_payload = mock_make_request.call_args_list[0].kwargs["json"]
+        assert init_payload["qpu_system_name"] == "override_qpu_system"
+
+    def test_qoro_service_init_fails_with_none_qpu_system(self, qoro_service_factory):
+        """Tests that QoroService initialization fails if the final config has no qpu_system."""
+        with pytest.raises(
+            ValueError, match="JobConfig must have a qpu_system. It cannot be None."
+        ):
+            # The factory mocks fetch_qpu_systems, so we can initialize
+            qoro_service_factory(config=JobConfig(qpu_system=None))
 
     # --- Tests for core functionality ---
 
-    def test_make_request_comprehensive(self, mocker):
+    def test_make_request_comprehensive(self, mocker, qoro_service_factory):
         """Test _make_request functionality."""
-
-        service = QoroService("test_token")
+        service = qoro_service_factory(auth_token="test_token")
 
         # Test 1: Successful GET request
         mock_response = mocker.MagicMock()
@@ -280,7 +563,7 @@ class TestQoroServiceMock:
             "requests.Session.request", return_value=mock_response
         )
 
-        response = service._make_request("get", "test")
+        service._make_request("get", "test")
 
         mock_request.assert_called_once()
         call_args = mock_request.call_args
@@ -311,18 +594,16 @@ class TestQoroServiceMock:
         mock_response_error.status_code = 400
         mock_response_error.reason = "Bad Request"
         mock_response_error.url = "https://app.qoroquantum.net/api/test"
+        mock_response_error.json.return_value = {"error": "Bad Request"}
 
         mock_request.return_value = mock_response_error
 
-        with pytest.raises(
-            requests.exceptions.HTTPError, match="API Error: 400 Bad Request"
-        ):
+        with pytest.raises(requests.exceptions.HTTPError, match="400 Bad Request"):
             service._make_request("get", "test")
 
-    def test_compress_data_and_split_circuits(self, mocker):
+    def test_compress_data_and_split_circuits(self, mocker, qoro_service_factory):
         """Test _compress_data and _split_circuits functionality."""
-
-        service = QoroService("test_token")
+        service = qoro_service_factory(auth_token="test_token")
 
         # Test _compress_data
         compressed = service._compress_data("test circuit")
@@ -354,11 +635,7 @@ class TestQoroServiceMock:
         assert len(chunks) > 1  # Should be split into multiple chunks
 
     def test_fetch_qpu_systems(self, mocker):
-        """Test fetch_qpu_systems and _parse_qpu_systems."""
-
-        service = QoroService("test_token")
-
-        # Test _parse_qpu_systems
+        """Test fetch_qpu_systems and parse_qpu_systems."""
         mock_json_data = [
             {
                 "name": "test_qpu",
@@ -380,25 +657,74 @@ class TestQoroServiceMock:
             }
         ]
 
-        qpu_systems = _parse_qpu_systems(mock_json_data)
+        # This test is a special case: it tests `fetch_qpu_systems` itself,
+        # so we cannot mock it. Instead, we mock the underlying `_make_request`.
+        mock_response = mocker.MagicMock()
+        mock_response.json.return_value = mock_json_data
+        mocker.patch.object(QoroService, "_make_request", return_value=mock_response)
+
+        service = QoroService(auth_token="test_token")
+
+        # Test parse_qpu_systems
+        qpu_systems = parse_qpu_systems(mock_json_data)
         assert len(qpu_systems) == 1
         assert qpu_systems[0].name == "test_qpu"
         assert len(qpu_systems[0].qpus) == 2
 
         # Test fetch_qpu_systems
-        mock_response = mocker.MagicMock()
-        mock_response.json.return_value = mock_json_data
-
-        mocker.patch.object(service, "_make_request", return_value=mock_response)
+        mock_update_cache = mocker.patch.object(
+            _qoro_service, "update_qpu_systems_cache"
+        )
 
         result = service.fetch_qpu_systems()
         assert len(result) == 1
         assert result[0].name == "test_qpu"
+        mock_update_cache.assert_called_once_with(result)
 
-    def test_poll_job_status_comprehensive(self, mocker):
+    def test_update_qpu_systems_cache(self):
+        """Test that the cache is correctly updated, including special handling."""
+        systems = [
+            QPUSystem(name="system1"),
+            QPUSystem(name="qoro_maestro", supports_expval=False),
+        ]
+        update_qpu_systems_cache(systems)
+
+        cached_systems = get_available_qpu_systems()
+        assert len(cached_systems) == 2
+
+        # Verify that `supports_expval` was correctly updated for `qoro_maestro`
+        maestro = get_qpu_system("qoro_maestro")
+        assert maestro.supports_expval is True
+
+        # Verify that other systems were not affected
+        system1 = get_qpu_system("system1")
+        assert system1.supports_expval is False
+
+    def test_get_qpu_system(self):
+        """Test get_qpu_system functionality with caching."""
+        # Test 1: Cache is empty
+        update_qpu_systems_cache([])
+        with pytest.raises(ValueError, match="QPU systems cache is empty"):
+            get_qpu_system("system1")
+
+        # Test 2: Cache is populated, system found
+        mock_systems = [
+            QPUSystem(name="system1"),
+            QPUSystem(name="system2"),
+        ]
+        update_qpu_systems_cache(mock_systems)
+        system = get_qpu_system("system1")
+        assert system.name == "system1"
+
+        # Test 3: Cache is populated, system not found
+        with pytest.raises(ValueError, match="QPUSystem with name 'system3' not found"):
+            get_qpu_system("system3")
+
+    def test_poll_job_status_comprehensive(self, mocker, qoro_service_factory):
         """Test poll_job_status functionality."""
-
-        service = QoroService("test_token", max_retries=3, polling_interval=0.01)
+        service = qoro_service_factory(
+            auth_token="test_token", max_retries=3, polling_interval=0.01
+        )
 
         # Test 1: Single status check
         mock_response = mocker.MagicMock()
@@ -466,11 +792,11 @@ class TestQoroServiceMock:
         assert status == JobStatus.COMPLETED
         poll_callback.assert_called()
 
-    def test_get_job_results_error_handling(self, mocker):
+    def test_get_job_results_error_handling(self, mocker, qoro_service_factory):
         """Test get_job_results error handling."""
         from divi.backends._qoro_service import QoroService
 
-        service = QoroService("test_token")
+        service = qoro_service_factory(auth_token="test_token")
 
         # Test 400 Bad Request handling
         mock_response = mocker.MagicMock()
@@ -486,62 +812,6 @@ class TestQoroServiceMock:
             match="Job results not available, likely job is still running",
         ):
             service.get_job_results("test_job")
-
-    def test_submit_circuits_init_error_handling(self, mocker):
-        """Test submit_circuits init response error handling."""
-        from divi.backends._qoro_service import QoroService
-
-        service = QoroService("test_token")
-
-        # Test init response error handling
-        mock_response = mocker.MagicMock()
-        mock_response.status_code = 500
-        mock_response.reason = "Internal Server Error"
-        mock_response.json.return_value = {"error": "Server error"}
-
-        mocker.patch("divi.backends._qoro_service.is_valid_qasm", return_value=True)
-        mocker.patch.object(service, "_make_request", return_value=mock_response)
-
-        with pytest.raises(
-            requests.exceptions.HTTPError, match="500 Internal Server Error"
-        ):
-            service.submit_circuits(
-                {
-                    "test": 'OPENQASM 2.0; include "qelib1.inc"; qreg q[1]; creg c[1]; h q[0]; measure q -> c;'
-                }
-            )
-
-    def test_submit_circuits_add_circuits_error_handling(self, mocker):
-        """Test submit_circuits add_circuits response error handling."""
-        from divi.backends._qoro_service import QoroService
-
-        service = QoroService("test_token")
-
-        # Test add_circuits response error handling
-        mock_init_response = mocker.MagicMock()
-        mock_init_response.status_code = 201
-        mock_init_response.json.return_value = {"job_id": "test_job"}
-
-        mock_add_response = mocker.MagicMock()
-        mock_add_response.status_code = 500
-        mock_add_response.reason = "Internal Server Error"
-        mock_add_response.json.return_value = {"error": "Add circuits failed"}
-
-        mocker.patch("divi.backends._qoro_service.is_valid_qasm", return_value=True)
-        mocker.patch.object(
-            service,
-            "_make_request",
-            side_effect=[mock_init_response, mock_add_response],
-        )
-
-        with pytest.raises(
-            requests.exceptions.HTTPError, match="500 Internal Server Error"
-        ):
-            service.submit_circuits(
-                {
-                    "test": 'OPENQASM 2.0; include "qelib1.inc"; qreg q[1]; creg c[1]; h q[0]; measure q -> c;'
-                }
-            )
 
     # --- Tests for error handling ---
 
@@ -575,14 +845,15 @@ class TestQoroServiceMock:
 
     # --- Tests for test_connection ---
 
-    def test_fail_submit_circuits(self, circuits):
+    def test_fail_submit_circuits(self, circuits, qoro_service_factory):
         """Tests that submitting circuits with an invalid token raises an HTTPError."""
-        service = QoroService("invalid_token")
+        service = qoro_service_factory(auth_token="invalid_token")
         with pytest.raises(requests.exceptions.HTTPError):
             service.submit_circuits(circuits)
 
-    def test_service_connection_test_mock(self, mocker, qoro_service_mock):
+    def test_service_connection_test_mock(self, mocker, qoro_service_factory):
         """Tests the connection test functionality with a mock."""
+        qoro_service_mock = qoro_service_factory()
         # Test for failure
         mock_response_fail = mocker.MagicMock()
         mock_response_fail.status_code = 401
@@ -608,28 +879,9 @@ class TestQoroServiceMock:
 
     # --- Tests for submit_circuits ---
 
-    def test_submit_circuits_single_chunk_multiple_chunks_and_options(
-        self, mocker, qoro_service_mock
-    ):
-        """Test submit_circuits with single chunk, multiple chunks, and options."""
-        mocker.patch(
-            f"{is_valid_qasm.__module__}.{is_valid_qasm.__name__}", return_value=True
-        )
-
-        # Test 1: Single chunk submission
-        mock_init_response = mocker.MagicMock()
-        mock_init_response.status_code = HTTPStatus.CREATED
-        mock_init_response.json.return_value = {"job_id": "mock_job_id"}
-
-        mock_add_response = mocker.MagicMock()
-        mock_add_response.status_code = HTTPStatus.OK
-
-        mock_make_request = mocker.patch.object(
-            qoro_service_mock,
-            "_make_request",
-            side_effect=[mock_init_response, mock_add_response],
-        )
-
+    def test_submit_circuits_single_chunk(self, mocker, submit_circuits_mock):
+        """Test submitting circuits in a single chunk."""
+        qoro_service_mock, mock_make_request = submit_circuits_mock
         job_id = qoro_service_mock.submit_circuits({"circuit_1": "mock_qasm"})
 
         assert job_id == "mock_job_id"
@@ -643,91 +895,227 @@ class TestQoroServiceMock:
         assert add_circuits_call.args == ("post", "job/mock_job_id/add_circuits/")
         assert add_circuits_call.kwargs["json"]["finalized"] == "true"
 
-        # Test 2: Multiple chunks submission
-        mocker.patch.object(
-            _qoro_service, "_MAX_PAYLOAD_SIZE_MB", new=60.0 / 1024 / 1024
+    def test_submit_circuits_multiple_chunks(
+        self, mocker, qoro_service_factory, submit_circuits_mock
+    ):
+        """Test submitting circuits that are split into multiple chunks."""
+        # This test needs a fresh instance to mock the payload size
+        qoro_service_mock = qoro_service_factory()
+        _, mock_make_request = submit_circuits_mock
+        mocker.patch.object(qoro_service_mock, "_make_request", new=mock_make_request)
+
+        mocker.patch(
+            f"{_qoro_service.__name__}._MAX_PAYLOAD_SIZE_MB", new=60.0 / 1024 / 1024
         )
 
-        mock_init_response2 = mocker.MagicMock(
-            status_code=HTTPStatus.CREATED, json=lambda: {"job_id": "single_job_id"}
-        )
-        mock_add_response2 = mocker.MagicMock(status_code=HTTPStatus.OK)
-
-        mock_make_request2 = mocker.patch.object(
-            qoro_service_mock,
-            "_make_request",
-            side_effect=[mock_init_response2, mock_add_response2, mock_add_response2],
-        )
-
-        job_id2 = qoro_service_mock.submit_circuits(
+        job_id = qoro_service_mock.submit_circuits(
             {"circuit_1": "mock_qasm", "circuit_2": "mock_qasm"}
         )
 
-        assert job_id2 == "single_job_id"
-        assert mock_make_request2.call_count == 3  # 1 for init, 2 for add_circuits
+        assert job_id == "mock_job_id"
+        assert mock_make_request.call_count == 3  # 1 for init, 2 for add_circuits
 
         # Check that the first add_circuits call is not finalized
-        first_add_payload = mock_make_request2.call_args_list[1].kwargs["json"]
+        first_add_payload = mock_make_request.call_args_list[1].kwargs["json"]
         assert first_add_payload["finalized"] == "false"
 
         # Check that the second (last) add_circuits call is finalized
-        second_add_payload = mock_make_request2.call_args_list[2].kwargs["json"]
+        second_add_payload = mock_make_request.call_args_list[2].kwargs["json"]
         assert second_add_payload["finalized"] == "true"
 
-        # Test 3: Custom tag and job type
-        mock_init_response3 = mocker.MagicMock(
-            status_code=HTTPStatus.CREATED, json=lambda: {"job_id": "mock_job_id"}
-        )
-        mock_add_response3 = mocker.MagicMock(status_code=HTTPStatus.OK)
-        mock_make_request3 = mocker.patch.object(
-            qoro_service_mock,
-            "_make_request",
-            side_effect=[mock_init_response3, mock_add_response3],
-        )
-
+    def test_submit_circuits_with_custom_options(self, submit_circuits_mock):
+        """Test submitting circuits with custom tag and job type."""
+        qoro_service_mock, mock_make_request = submit_circuits_mock
         qoro_service_mock.submit_circuits(
-            {"c1": "qasm"}, tag="my_custom_tag", job_type=JobType.EXECUTE
+            {"c1": "qasm"},
+            job_type=JobType.EXECUTE,
+            override_config=JobConfig(tag="my_custom_tag"),
         )
 
         # The parameters should be in the first (init) call
-        _, called_kwargs = mock_make_request3.call_args_list[0]
+        _, called_kwargs = mock_make_request.call_args_list[0]
         payload = called_kwargs.get("json", {})
         assert payload.get("tag") == "my_custom_tag"
         assert payload.get("job_type") == JobType.EXECUTE.value
 
-        # Test 4: Circuit packing override
-        qoro_service_mock.use_circuit_packing = False
-
-        mock_init_response4 = mocker.MagicMock(
-            status_code=HTTPStatus.CREATED, json=lambda: {"job_id": "mock_job_id"}
-        )
-        mock_add_response4 = mocker.MagicMock(status_code=HTTPStatus.OK)
-        mock_make_request4 = mocker.patch.object(
-            qoro_service_mock,
-            "_make_request",
-            side_effect=[mock_init_response4, mock_add_response4],
-        )
-
+    def test_submit_circuits_with_packing_override(self, submit_circuits_mock):
+        """Test submitting circuits with circuit packing override."""
+        qoro_service_mock, mock_make_request = submit_circuits_mock
         circuits = {"circuit_1": "mock_qasm"}
-        qoro_service_mock.submit_circuits(circuits, override_circuit_packing=True)
-        _, called_kwargs = mock_make_request4.call_args_list[0]
+        qoro_service_mock.submit_circuits(
+            circuits, override_config=JobConfig(use_circuit_packing=True)
+        )
+        _, called_kwargs = mock_make_request.call_args_list[0]
         assert called_kwargs.get("json", {}).get("use_packing") is True
 
+    def test_submit_circuits_with_config_override(self, mocker, qoro_service_factory):
+        """Verify that override_config merges with service config and is used consistently."""
+        # Create a service with default config
+        service_with_default = qoro_service_factory(
+            auth_token="test_token", max_retries=3, polling_interval=0.01
+        )
+
+        mock_init_response = mocker.MagicMock(
+            status_code=HTTPStatus.CREATED, json=lambda: {"job_id": "mock_job_id"}
+        )
+        mock_add_response = mocker.MagicMock(status_code=HTTPStatus.OK)
+
+        mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=2)
+        mock_make_request = mocker.patch.object(
+            service_with_default,
+            "_make_request",
+            side_effect=[mock_init_response, mock_add_response],
+        )
+
+        # Override shots in submit_circuits
+        service_with_default.submit_circuits(
+            {"circuit_1": "mock_qasm"}, override_config=JobConfig(shots=2000)
+        )
+
+        # Verify init payload is minimal (no shots/ham_ops)
+        _, init_kwargs = mock_make_request.call_args_list[0]
+        assert "shots" not in init_kwargs.get("json", {})
+        assert "observables" not in init_kwargs.get("json", {})
+
+        # Verify add_circuits payload includes shots
+        _, add_kwargs = mock_make_request.call_args_list[1]
+        assert add_kwargs.get("json", {}).get("shots") == 2000
+
+    def test_submit_circuits_with_override_config_string_qpu(
+        self, mocker, qoro_service_factory
+    ):
+        """Test submitting circuits with an override_config that has a string qpu_system."""
+        qoro_service_mock = qoro_service_factory()
+        mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=2)
+
+        # Mock responses for the API calls in submit_circuits
+        mock_init_response = mocker.MagicMock(
+            status_code=HTTPStatus.CREATED, json=lambda: {"job_id": "mock_job_id"}
+        )
+        mock_add_response = mocker.MagicMock(status_code=HTTPStatus.OK)
+        mock_make_request = mocker.patch.object(
+            qoro_service_mock,
+            "_make_request",
+            side_effect=[mock_init_response, mock_add_response],
+        )
+
+        # Mock get_qpu_system
+        mock_qpu_system = QPUSystem(name="resolved_qpu")
+        mock_get_qpu = mocker.patch(
+            "divi.backends._qoro_service.get_qpu_system", return_value=mock_qpu_system
+        )
+
+        override_conf = JobConfig(qpu_system="string_qpu_name")
+        qoro_service_mock.submit_circuits({"c1": "qasm"}, override_config=override_conf)
+
+        # Assert that resolution happened
+        mock_get_qpu.assert_called_once_with("string_qpu_name")
+
+        # Assert the correct qpu_system_name was sent in the init payload
+        init_payload = mock_make_request.call_args_list[0].kwargs["json"]
+        assert init_payload["qpu_system_name"] == "resolved_qpu"
+
+    def test_submit_circuits_with_expectation_value(self, submit_circuits_mock):
+        """Test submitting circuits with expectation value job type and ham_ops."""
+        qoro_service_mock, mock_make_request = submit_circuits_mock
+        # Submit with expectation value
+        circuits = {"circuit_1": "mock_qasm"}
+        ham_ops = "XII;ZII"
+        qoro_service_mock.submit_circuits(
+            circuits, ham_ops=ham_ops, job_type=JobType.EXPECTATION
+        )
+
+        # Verify init payload is minimal (no shots/observables)
+        _, init_kwargs = mock_make_request.call_args_list[0]
+        assert "shots" not in init_kwargs.get("json", {})
+        assert "observables" not in init_kwargs.get("json", {})
+
+        # Verify add_circuits payload includes observables
+        _, add_kwargs = mock_make_request.call_args_list[1]
+        assert add_kwargs.get("json", {}).get("observables") == ham_ops
+        assert "shots" not in add_kwargs.get("json", {})
+
+    @pytest.mark.parametrize(
+        "ham_ops, error_msg",
+        [
+            ("XX;YYY", "All Hamiltonian operators must have the same length"),
+            (
+                "XYZ;ABC",
+                "Hamiltonian operators must contain only I, X, Y, Z characters",
+            ),
+        ],
+    )
+    def test_submit_circuits_ham_ops_validation_errors(
+        self, mocker, qoro_service_factory, ham_ops, error_msg
+    ):
+        """Test ham_ops validation for various invalid inputs."""
+        qoro_service_mock = qoro_service_factory()
+        mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=2)
+        with pytest.raises(ValueError, match=error_msg):
+            qoro_service_mock.submit_circuits(
+                {"c1": "qasm"}, ham_ops=ham_ops, job_type=JobType.EXPECTATION
+            )
+
+    def test_submit_circuits_ham_ops_with_non_expectation_error(
+        self, mocker, qoro_service_factory
+    ):
+        """Test that ham_ops with non-EXPECTATION job_type issues an error."""
+        qoro_service_mock = qoro_service_factory()
+        mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=2)
+        mock_init_response = mocker.MagicMock(
+            status_code=HTTPStatus.CREATED, json=lambda: {"job_id": "mock_job_id"}
+        )
+        mock_add_response = mocker.MagicMock(status_code=HTTPStatus.OK)
+        mocker.patch.object(
+            qoro_service_mock,
+            "_make_request",
+            side_effect=[mock_init_response, mock_add_response],
+        )
+
+        # Should error when ham_ops is used with SIMULATE job
+        with pytest.raises(
+            ValueError,
+            match="Hamiltonian operators are only supported for EXPECTATION job type.",
+        ):
+            qoro_service_mock.submit_circuits(
+                {"c1": "qasm"}, ham_ops="XII", job_type=JobType.SIMULATE
+            )
+
+    def test_submit_circuits_ham_ops_auto_infers_expectation_job_type(
+        self, submit_circuits_mock
+    ):
+        """Test that job_type is automatically set to EXPECTATION when ham_ops is provided without job_type."""
+        qoro_service_mock, mock_make_request = submit_circuits_mock
+        # Submit with ham_ops but without specifying job_type (should auto-infer EXPECTATION)
+        circuits = {"circuit_1": "mock_qasm"}
+        ham_ops = "XII;ZII"
+        qoro_service_mock.submit_circuits(circuits, ham_ops=ham_ops, job_type=None)
+
+        # Verify init payload has job_type set to EXPECTATION
+        _, init_kwargs = mock_make_request.call_args_list[0]
+        assert init_kwargs.get("json", {}).get("job_type") == JobType.EXPECTATION.value
+
+        # Verify add_circuits payload includes observables
+        _, add_kwargs = mock_make_request.call_args_list[1]
+        assert add_kwargs.get("json", {}).get("observables") == ham_ops
+
     def test_submit_circuits_invalid_qasm_constraints_and_api_errors(
-        self, mocker, qoro_service_mock
+        self, mocker, qoro_service_factory
     ):
         """Test submit_circuits with invalid QASM, constraints, and API errors."""
+        qoro_service_mock = qoro_service_factory()
 
         # Test 1: Invalid QASM
         mocker.patch(
-            f"{_qoro_service.__name__}.{is_valid_qasm.__name__}", return_value=False
+            f"{_qoro_service.__name__}.{is_valid_qasm.__name__}",
+            return_value="Invalid QASM syntax",
         )
         with pytest.raises(ValueError, match="Circuit 'circuit_1' is not a valid QASM"):
             qoro_service_mock.submit_circuits({"circuit_1": "invalid_qasm"})
 
         # Test 2: Circuit cut constraint
         mocker.patch(
-            f"{_qoro_service.__name__}.{is_valid_qasm.__name__}", return_value=True
+            f"{_qoro_service.__name__}.{is_valid_qasm.__name__}", return_value=2
         )
         with pytest.raises(
             ValueError, match="Only one circuit allowed for circuit-cutting jobs."
@@ -738,7 +1126,7 @@ class TestQoroServiceMock:
 
         # Test 3: API error during init
         mocker.patch(
-            f"{is_valid_qasm.__module__}.{is_valid_qasm.__name__}", return_value=True
+            f"{is_valid_qasm.__module__}.{is_valid_qasm.__name__}", return_value=2
         )
         mocker.patch.object(
             qoro_service_mock,
@@ -753,7 +1141,7 @@ class TestQoroServiceMock:
 
         # Test 4: API error during add_circuits
         mocker.patch(
-            f"{is_valid_qasm.__module__}.{is_valid_qasm.__name__}", return_value=True
+            f"{is_valid_qasm.__module__}.{is_valid_qasm.__name__}", return_value=2
         )
         mock_init_response = mocker.MagicMock(
             status_code=HTTPStatus.CREATED, json=lambda: {"job_id": "mock_job_id"}
@@ -797,8 +1185,11 @@ class TestQoroServiceMock:
 
     # --- Tests for job management ---
 
-    def test_delete_job_and_get_results_with_decoding(self, mocker, qoro_service_mock):
+    def test_delete_job_and_get_results_with_decoding(
+        self, mocker, qoro_service_factory
+    ):
         """Test delete job and get results with decoding."""
+        qoro_service_mock = qoro_service_factory()
 
         # Test 1: Delete job success
         mock_response = mocker.MagicMock(status_code=204)
@@ -878,8 +1269,9 @@ class TestQoroServiceMock:
         with pytest.raises(ValueError, match="corrupt stream"):
             qoro_service_mock.get_job_results("job_1")
 
-    def test_get_job_results_still_running_mock(self, mocker, qoro_service_mock):
+    def test_get_job_results_still_running_mock(self, mocker, qoro_service_factory):
         """Tests handling of a 'still running' job."""
+        qoro_service_mock = qoro_service_factory()
         # Create a mock response object to attach to the error
         mock_response = mocker.MagicMock()
         mock_response.status_code = 400
@@ -896,8 +1288,9 @@ class TestQoroServiceMock:
         with pytest.raises(requests.exceptions.HTTPError, match="400 Bad Request"):
             qoro_service_mock.get_job_results("job_1")
 
-    def test_get_job_results_api_error_mock(self, mocker, qoro_service_mock):
+    def test_get_job_results_api_error_mock(self, mocker, qoro_service_factory):
         """Tests API error handling when fetching job results."""
+        qoro_service_mock = qoro_service_factory()
         # Create a mock response with a different error code (e.g., 404)
         mock_response = mocker.MagicMock()
         mock_response.status_code = 404
@@ -917,8 +1310,9 @@ class TestQoroServiceMock:
 
     # --- Tests for poll_job_status ---
 
-    def test_poll_job_status_success_mock(self, mocker, qoro_service_mock):
+    def test_poll_job_status_success_mock(self, mocker, qoro_service_factory):
         """Tests successful polling of job status until completion."""
+        qoro_service_mock = qoro_service_factory()
         mock_response_pending = mocker.MagicMock(
             json=lambda: {"status": JobStatus.PENDING.value}
         )
@@ -938,8 +1332,9 @@ class TestQoroServiceMock:
         assert mock_make_request.call_count == 2
         assert status == JobStatus.COMPLETED
 
-    def test_poll_job_status_failure_mock(self, mocker, qoro_service_mock):
+    def test_poll_job_status_failure_mock(self, mocker, qoro_service_factory):
         """Tests polling that results in a FAILED status."""
+        qoro_service_mock = qoro_service_factory()
         mock_response_pending = mocker.MagicMock(
             json=lambda: {"status": JobStatus.PENDING.value}
         )
@@ -956,8 +1351,9 @@ class TestQoroServiceMock:
 
         assert mock_make_request.call_count == 3
 
-    def test_poll_job_status_no_loop_mock(self, mocker, qoro_service_mock):
+    def test_poll_job_status_no_loop_mock(self, mocker, qoro_service_factory):
         """Tests polling without looping."""
+        qoro_service_mock = qoro_service_factory()
         mock_response_running = mocker.MagicMock(
             json=lambda: {"status": JobStatus.RUNNING.value}
         )
@@ -970,8 +1366,11 @@ class TestQoroServiceMock:
         mock_make_request.assert_called_once()
         assert status == JobStatus.RUNNING.value
 
-    def test_poll_job_status_on_complete_callback_mock(self, mocker, qoro_service_mock):
+    def test_poll_job_status_on_complete_callback_mock(
+        self, mocker, qoro_service_factory
+    ):
         """Tests the on_complete callback functionality."""
+        qoro_service_mock = qoro_service_factory()
         mock_response_completed = mocker.MagicMock(
             json=lambda: {"status": JobStatus.COMPLETED.value, "data": "results"}
         )
@@ -987,8 +1386,9 @@ class TestQoroServiceMock:
         assert status == JobStatus.COMPLETED
         callback_mock.assert_called_once_with(mock_response_completed)
 
-    def test_poll_job_status_pbar_update_fn_mock(self, mocker, qoro_service_mock):
+    def test_poll_job_status_pbar_update_fn_mock(self, mocker, qoro_service_factory):
         """Tests the progress bar update function."""
+        qoro_service_mock = qoro_service_factory()
         mock_response_pending = mocker.MagicMock(
             json=lambda: {"status": JobStatus.PENDING.value}
         )
@@ -1091,6 +1491,38 @@ class TestQoroServiceWithApiKey:
         assert "label" in results[0]
         assert "results" in results[0]
         assert isinstance(results[0]["results"], dict)
+
+        # Cleanup
+        res = qoro_service.delete_job(job_id)
+        assert res.status_code == 204, "Deletion should be successful"
+
+    def test_get_job_results_expectation_value(self, qoro_service, circuits):
+        """Tests submitting an expectation value job and fetching results."""
+        # Use only one circuit for a quicker test
+        single_circuit = {"circuit_1": circuits["circuit_0"]}
+        ham_ops = "ZIII;IZII;IIZI;IIIZ"
+        job_id = qoro_service.submit_circuits(
+            single_circuit, ham_ops=ham_ops, job_type=JobType.EXPECTATION
+        )
+
+        # Poll for completion
+        status = qoro_service.poll_job_status(job_id, loop_until_complete=True)
+        assert status == JobStatus.COMPLETED
+
+        # Fetch results
+        results = qoro_service.get_job_results(job_id)
+        assert isinstance(results, list)
+        assert len(results) == 1
+        assert "label" in results[0]
+        assert "results" in results[0]
+
+        # For expectation value jobs, results should be a dict of {str: float}
+        exp_values = results[0]["results"]
+        assert isinstance(exp_values, dict)
+        ham_terms = ham_ops.split(";")
+        assert len(exp_values) == len(ham_terms)
+        assert set(exp_values.keys()) == set(ham_terms)
+        assert all(isinstance(val, float) for val in exp_values.values())
 
         # Cleanup
         res = qoro_service.delete_job(job_id)

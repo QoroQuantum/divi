@@ -8,6 +8,7 @@ import json
 import logging
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, fields, replace
 from enum import Enum
 from http import HTTPStatus
 
@@ -16,7 +17,12 @@ from dotenv import dotenv_values
 from requests.adapters import HTTPAdapter, Retry
 
 from divi.backends import CircuitRunner
-from divi.backends._qpu_system import QPU, QPUSystem
+from divi.backends._qpu_system import (
+    QPUSystem,
+    get_qpu_system,
+    parse_qpu_systems,
+    update_qpu_systems_cache,
+)
 from divi.extern.cirq import is_valid_qasm
 
 API_URL = "https://app.qoroquantum.net/api"
@@ -35,18 +41,18 @@ session.mount("https://", HTTPAdapter(max_retries=retry_configuration))
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_QPU_SYSTEM = "qoro_maestro"
-
 
 def _decode_qh1_b64(encoded: dict) -> dict[str, int]:
     """
     Decode a {'encoding':'qh1','n_bits':N,'payload':base64} histogram
     into a dict with bitstring keys -> int counts.
 
-    Returns {} if payload is empty.
+    If `encoded` is None, returns None.
+    If `encoded` is an empty dict or has a missing/empty payload, returns `encoded` unchanged.
+    Otherwise, decodes the payload and returns a dict mapping bitstrings to counts.
     """
     if not encoded or not encoded.get("payload"):
-        return {}
+        return encoded
 
     if encoded.get("encoding") != "qh1":
         raise ValueError(f"Unsupported encoding: {encoded.get('encoding')}")
@@ -157,43 +163,119 @@ class JobStatus(Enum):
 class JobType(Enum):
     EXECUTE = "EXECUTE"
     SIMULATE = "SIMULATE"
-    ESTIMATE = "ESTIMATE"
+    EXPECTATION = "EXPECTATION"
     CIRCUIT_CUT = "CIRCUIT_CUT"
+
+
+@dataclass(frozen=True)
+class JobConfig:
+    """Configuration for a Qoro Service job.
+
+    Attributes:
+        shots: Number of shots for the job.
+        qpu_system: The QPU system to use, can be a string or a QPUSystem object.
+        use_circuit_packing: Whether to use circuit packing optimization.
+        tag: Tag to associate with the job for identification.
+        force_sampling: Whether to force sampling instead of expectation value measurements.
+    """
+
+    shots: int | None = None
+    qpu_system: QPUSystem | str | None = None
+    use_circuit_packing: bool | None = None
+    tag: str = "default"
+    force_sampling: bool = False
+
+    def override(self, other: "JobConfig") -> "JobConfig":
+        """Creates a new config by overriding attributes with non-None values.
+
+        This method ensures immutability by always returning a new `JobConfig` object
+        and leaving the original instance unmodified.
+
+        Args:
+            other: Another JobConfig instance to take values from. Only non-None
+                   attributes from this instance will be used for the override.
+
+        Returns:
+            A new JobConfig instance with the merged configurations.
+        """
+        current_attrs = {f.name: getattr(self, f.name) for f in fields(self)}
+
+        for f in fields(other):
+            other_value = getattr(other, f.name)
+            if other_value is not None:
+                current_attrs[f.name] = other_value
+
+        return JobConfig(**current_attrs)
+
+    def __post_init__(self):
+        """Sanitizes and validates the configuration."""
+        if self.shots is not None and self.shots <= 0:
+            raise ValueError(f"Shots must be a positive integer. Got {self.shots}.")
+
+        if isinstance(self.qpu_system, str):
+            # Defer resolution - will be resolved in QoroService.__init__() after fetch_qpu_systems()
+            # This allows JobConfig to be created before QoroService exists
+            pass
+        elif self.qpu_system is not None and not isinstance(self.qpu_system, QPUSystem):
+            raise TypeError(
+                f"Expected a QPUSystem instance or str, got {type(self.qpu_system)}"
+            )
+
+        if self.use_circuit_packing is not None and not isinstance(
+            self.use_circuit_packing, bool
+        ):
+            raise TypeError(f"Expected a bool, got {type(self.use_circuit_packing)}")
 
 
 class MaxRetriesReachedError(Exception):
     """Exception raised when the maximum number of retries is reached."""
 
-    def __init__(self, retries):
+    def __init__(self, job_id, retries):
+        self.job_id = job_id
         self.retries = retries
-        self.message = f"Maximum retries reached: {retries} retries attempted"
+        self.message = (
+            f"Maximum retries reached: {retries} retries attempted for job {job_id}"
+        )
         super().__init__(self.message)
 
 
-def _parse_qpu_systems(json_data: list) -> list[QPUSystem]:
-    return [
-        QPUSystem(
-            name=system_data["name"],
-            qpus=[QPU(**qpu) for qpu in system_data.get("qpus", [])],
-            access_level=system_data["access_level"],
-        )
-        for system_data in json_data
-    ]
+_DEFAULT_QPU_SYSTEM = QPUSystem(name="qoro_maestro", supports_expval=True)
+
+_DEFAULT_JOB_CONFIG = JobConfig(
+    shots=1000, qpu_system=_DEFAULT_QPU_SYSTEM, use_circuit_packing=False
+)
 
 
 class QoroService(CircuitRunner):
+    """A client for interacting with the Qoro Quantum Service API.
+
+    This class provides methods to submit circuits, check job status,
+    and retrieve results from the Qoro platform.
+    """
 
     def __init__(
         self,
         auth_token: str | None = None,
+        config: JobConfig | None = None,
         polling_interval: float = 3.0,
         max_retries: int = 5000,
-        shots: int = 1000,
-        qpu_system_name: str | QPUSystem | None = None,
-        use_circuit_packing: bool = False,
     ):
-        super().__init__(shots=shots)
+        """Initializes the QoroService client.
 
+        Args:
+            auth_token (str | None, optional):
+                The authentication token for the Qoro API. If not provided,
+                it will be read from the QORO_API_KEY in a .env file.
+            config (JobConfig | None, optional):
+                A JobConfig object containing default job settings. If not
+                provided, a default configuration will be created.
+            polling_interval (float, optional):
+                The interval in seconds for polling job status. Defaults to 3.0.
+            max_retries (int, optional):
+                The maximum number of retries for polling. Defaults to 5000.
+        """
+
+        # Set up auth_token first (needed for API calls like fetch_qpu_systems)
         if auth_token is None:
             try:
                 auth_token = dotenv_values()["QORO_API_KEY"]
@@ -203,33 +285,46 @@ class QoroService(CircuitRunner):
         self.auth_token = "Bearer " + auth_token
         self.polling_interval = polling_interval
         self.max_retries = max_retries
-        if qpu_system_name is None:
-            qpu_system_name = _DEFAULT_QPU_SYSTEM
-        self._qpu_system_name = qpu_system_name
-        self.use_circuit_packing = use_circuit_packing
+
+        # Fetch QPU systems (needs auth_token to be set)
+        self.fetch_qpu_systems()
+
+        # Set up config
+        if config is None:
+            config = _DEFAULT_JOB_CONFIG
+
+        # Resolve string qpu_system names and validate that one is present.
+        self.config = self._resolve_and_validate_qpu_system(config)
+
+        super().__init__(shots=self.config.shots)
 
     @property
-    def qpu_system_name(self) -> str | QPUSystem | None:
-        return self._qpu_system_name
-
-    @qpu_system_name.setter
-    def qpu_system_name(self, system_name: str | QPUSystem | None):
+    def supports_expval(self) -> bool:
         """
-        Set the QPU system for the service.
-
-        Args:
-            system_name (str | QPUSystem): The QPU system to set or the name as a string.
+        Whether the backend supports expectation value measurements.
         """
-        if isinstance(system_name, str):
-            self._qpu_system_name = system_name
-        elif isinstance(system_name, QPUSystem):
-            self._qpu_system_name = system_name.name
-        elif system_name is None:
-            self._qpu_system_name = None
-        else:
-            raise TypeError(
-                "Expected a QPUSystem instance or str, got {type(system_name)}"
+        return self.config.qpu_system.supports_expval and not self.config.force_sampling
+
+    @property
+    def is_async(self) -> bool:
+        """
+        Whether the backend executes circuits asynchronously.
+        """
+        return True
+
+    def _resolve_and_validate_qpu_system(self, config: JobConfig) -> JobConfig:
+        """Ensures the config has a valid QPUSystem object, resolving from string if needed."""
+        if config.qpu_system is None:
+            raise ValueError(
+                "JobConfig must have a qpu_system. It cannot be None. "
+                "Please provide a QPUSystem object or a valid system name string."
             )
+
+        if isinstance(config.qpu_system, str):
+            resolved_qpu = get_qpu_system(config.qpu_system)
+            return replace(config, qpu_system=resolved_qpu)
+
+        return config
 
     def _make_request(self, method: str, endpoint: str, **kwargs) -> requests.Response:
         """
@@ -263,11 +358,9 @@ class QoroService(CircuitRunner):
 
         response = session.request(method, url, headers=headers, **kwargs)
 
-        # Generic error handling for non-OK statuses
+        # Raise with comprehensive error details if request failed
         if response.status_code >= 400:
-            raise requests.exceptions.HTTPError(
-                f"API Error: {response.status_code} {response.reason} for URL {response.url}"
-            )
+            _raise_with_details(response)
 
         return response
 
@@ -295,7 +388,9 @@ class QoroService(CircuitRunner):
             List of QPUSystem objects.
         """
         response = self._make_request("get", "qpusystem/", timeout=10)
-        return _parse_qpu_systems(response.json())
+        systems = parse_qpu_systems(response.json())
+        update_qpu_systems_cache(systems)
+        return systems
 
     @staticmethod
     def _compress_data(value) -> bytes:
@@ -343,10 +438,9 @@ class QoroService(CircuitRunner):
     def submit_circuits(
         self,
         circuits: dict[str, str],
-        tag: str = "default",
-        job_type: JobType = JobType.SIMULATE,
-        qpu_system_name: str | None = None,
-        override_circuit_packing: bool | None = None,
+        ham_ops: str | None = None,
+        job_type: JobType | None = None,
+        override_config: JobConfig | None = None,
     ) -> str:
         """
         Submit quantum circuits to the Qoro API for execution.
@@ -357,15 +451,16 @@ class QoroService(CircuitRunner):
         Args:
             circuits (dict[str, str]):
                 Dictionary mapping unique circuit IDs to QASM circuit strings.
-            tag (str, optional):
-                Tag to associate with the job for identification. Defaults to "default".
+            ham_ops (str | None, optional):
+                String representing the Hamiltonian operators to measure, semicolon-separated.
+                Each term is a combination of Pauli operators, e.g. "XYZ;XXZ;ZIZ".
+                If None, no Hamiltonian operators will be measured.
             job_type (JobType, optional):
-                Type of job to execute (e.g., SIMULATE, EXECUTE, ESTIMATE, CIRCUIT_CUT).
-                Defaults to JobType.SIMULATE.
-            qpu_system_name (str | None, optional):
-                The name of the QPU system to use. Overrides the service's default.
-            override_circuit_packing (bool | None, optional):
-                Whether to use circuit packing optimization. Overrides the service's default.
+                Type of job to execute (e.g., SIMULATE, EXECUTE, EXPECTATION, CIRCUIT_CUT).
+                If not provided, the job type will be determined from the service configuration.
+            override_config (JobConfig | None, optional):
+                Configuration object to override the service's default settings.
+                If not provided, default values are used.
 
         Raises:
             ValueError: If more than one circuit is submitted for a CIRCUIT_CUT job,
@@ -375,24 +470,62 @@ class QoroService(CircuitRunner):
         Returns:
             str: The job ID for the created job.
         """
+        # Create final job configuration by layering configurations:
+        #    service defaults -> user overrides
+        if override_config:
+            config = self.config.override(override_config)
+            job_config = self._resolve_and_validate_qpu_system(config)
+        else:
+            job_config = self.config
+
+        # Handle Hamiltonian operators: validate compatibility and auto-infer job type
+        if ham_ops is not None:
+            # Validate that if job_type is explicitly set, it must be EXPECTATION
+            if job_type is not None and job_type != JobType.EXPECTATION:
+                raise ValueError(
+                    "Hamiltonian operators are only supported for EXPECTATION job type."
+                )
+            # Auto-infer job type if not explicitly set
+            if job_type is None:
+                job_type = JobType.EXPECTATION
+
+            # Validate observables format
+
+            terms = ham_ops.split(";")
+            if len(terms) == 0:
+                raise ValueError(
+                    "Hamiltonian operators must be non-empty semicolon-separated strings."
+                )
+            ham_ops_length = len(terms[0])
+            if not all(len(term) == ham_ops_length for term in terms):
+                raise ValueError("All Hamiltonian operators must have the same length.")
+            # Validate that each term only contains I, X, Y, Z
+            valid_paulis = {"I", "X", "Y", "Z"}
+            if not all(all(c in valid_paulis for c in term) for term in terms):
+                raise ValueError(
+                    "Hamiltonian operators must contain only I, X, Y, Z characters."
+                )
+
+        if job_type is None:
+            job_type = JobType.SIMULATE
+
+        # Validate circuits
         if job_type == JobType.CIRCUIT_CUT and len(circuits) > 1:
             raise ValueError("Only one circuit allowed for circuit-cutting jobs.")
 
         for key, circuit in circuits.items():
-            if not (err := is_valid_qasm(circuit)):
-                raise ValueError(f"Circuit '{key}' is not a valid QASM: {err}")
+            result = is_valid_qasm(circuit)
+            if isinstance(result, str):
+                raise ValueError(f"Circuit '{key}' is not a valid QASM: {result}")
 
-        # 1. Initialize the job without circuits to get a job_id
+        # Initialize the job without circuits to get a job_id
         init_payload = {
-            "shots": self.shots,
-            "tag": tag,
+            "tag": job_config.tag,
             "job_type": job_type.value,
-            "qpu_system_name": qpu_system_name or self.qpu_system_name,
-            "use_packing": (
-                override_circuit_packing
-                if override_circuit_packing is not None
-                else self.use_circuit_packing
+            "qpu_system_name": (
+                job_config.qpu_system.name if job_config.qpu_system else None
             ),
+            "use_packing": job_config.use_circuit_packing or False,
         }
 
         init_response = self._make_request(
@@ -402,7 +535,7 @@ class QoroService(CircuitRunner):
             _raise_with_details(init_response)
         job_id = init_response.json()["job_id"]
 
-        # 2. Split circuits and add them to the created job
+        # Split circuits and add them to the created job
         circuit_chunks = self._split_circuits(circuits)
         num_chunks = len(circuit_chunks)
 
@@ -410,10 +543,15 @@ class QoroService(CircuitRunner):
             is_last_chunk = i == num_chunks - 1
             add_circuits_payload = {
                 "circuits": chunk,
-                "shots": self.shots,
                 "mode": "append",
                 "finalized": "true" if is_last_chunk else "false",
             }
+
+            # Include shots/ham_ops in add_circuits payload
+            if ham_ops is not None:
+                add_circuits_payload["observables"] = ham_ops
+            else:
+                add_circuits_payload["shots"] = job_config.shots
 
             add_circuits_response = self._make_request(
                 "post",
@@ -467,6 +605,7 @@ class QoroService(CircuitRunner):
 
         # If the request was successful, process the data
         data = response.json()
+
         for result in data["results"]:
             result["results"] = _decode_qh1_b64(result["results"])
         return data["results"]
@@ -530,4 +669,4 @@ class QoroService(CircuitRunner):
             update_fn(retry_count, status)
             time.sleep(self.polling_interval)
 
-        raise MaxRetriesReachedError(self.max_retries)
+        raise MaxRetriesReachedError(job_id, self.max_retries)

@@ -26,6 +26,27 @@ class CircuitRunner(ABC):
         """
         return self._shots
 
+    @property
+    @abstractmethod
+    def supports_expval(self) -> bool:
+        """
+        Whether the backend supports expectation value measurements.
+        """
+        return False
+
+    @property
+    @abstractmethod
+    def is_async(self) -> bool:
+        """
+        Whether the backend executes circuits asynchronously.
+
+        Returns:
+            bool: True if the backend returns a job ID and requires polling
+                  for results (e.g., QoroService). False if the backend
+                  returns results immediately (e.g., ParallelSimulator).
+        """
+        return False
+
     @abstractmethod
     def submit_circuits(self, circuits: dict[str, str], **kwargs):
         """

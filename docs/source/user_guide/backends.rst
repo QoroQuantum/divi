@@ -123,6 +123,34 @@ The workflow for submitting circuits is straightforward: you send your circuits 
    # Retrieve your results
    results = service.get_job_results(job_ids)
 
+Configuring Jobs with JobConfig
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``QoroService`` uses a ``JobConfig`` object to manage settings for job submissions. You can configure it in two ways:
+
+1.  **Default Configuration**: Set a default ``JobConfig`` when you initialize the service. This configuration will apply to all jobs unless you override it.
+2.  **Override Configuration**: For a specific job, you can provide an ``override_config`` to the ``submit_circuits`` method.
+
+.. code-block:: python
+
+   from divi.backends import QoroService, JobConfig
+
+   # 1. Set a custom default configuration for the service
+   default_config = JobConfig(
+       shots=500,
+       qpu_system="qoro_maestro",
+       use_circuit_packing=True,
+       tag="default_run"
+   )
+   service = QoroService(config=default_config)
+
+   # 2. Override the default configuration for a single job
+   override = JobConfig(shots=2000, tag="high_shot_run")
+   job_id = service.submit_circuits(circuits, override_config=override)
+
+   # This job will run with 2000 shots and the tag 'high_shot_run',
+   # but will still use 'qoro_maestro' and circuit packing from the default config.
+
 The service supports different job types depending on your needs:
 
 .. code-block:: python
@@ -202,5 +230,5 @@ Common Issues and Solutions
 Next Steps
 ----------
 
-* Try the runnable examples in the `tutorials/ <https://github.com/qoro-quantum/divi/tree/main/tutorials>`_ directory.
+* Try the runnable examples in the `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ directory.
 * Learn about :doc:`error_mitigation` for improving your results on noisy hardware.

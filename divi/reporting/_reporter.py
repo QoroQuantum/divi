@@ -13,16 +13,13 @@ class ProgressReporter(ABC):
     """An abstract base class for reporting progress of a quantum program."""
 
     @abstractmethod
-    def update(self, **kwargs):
+    def update(self, **kwargs) -> None:
         """Provides a progress update."""
         pass
 
     @abstractmethod
-    def info(self, message: str, **kwargs):
-        """
-        Provides a simple informational message.
-        No changes to progress or state.
-        """
+    def info(self, message: str, **kwargs) -> None:
+        """Provides a simple informational message."""
         pass
 
 

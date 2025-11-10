@@ -99,7 +99,9 @@ class MetaCircuit:
         self,
         main_circuit,
         symbols,
-        grouping_strategy: Literal["wires", "default", "qwc"] | None = None,
+        grouping_strategy: (
+            Literal["wires", "default", "qwc", "_backend_expval"] | None
+        ) = None,
         qem_protocol: QEMProtocol | None = None,
     ):
         """
@@ -110,22 +112,31 @@ class MetaCircuit:
             symbols: Array of sympy Symbol objects representing circuit parameters.
             grouping_strategy (str, optional): Strategy for grouping commuting
                 observables. Options are "wires", "default", or "qwc" (qubit-wise
-                commuting). Defaults to None.
+                commuting). If the backend supports expectation value measurements,
+                "_backend_expval" to place all observables in the same measurement group.
+                Defaults to None.
             qem_protocol (QEMProtocol, optional): Quantum error mitigation protocol
                 to apply to the circuits. Defaults to None.
         """
         self.main_circuit = main_circuit
         self.symbols = symbols
         self.qem_protocol = qem_protocol
+        self.grouping_strategy = grouping_strategy
 
         transform_program = deepcopy(TRANSFORM_PROGRAM)
-        transform_program[1].kwargs["grouping_strategy"] = grouping_strategy
-
+        transform_program[1].kwargs["grouping_strategy"] = (
+            None if grouping_strategy == "_backend_expval" else grouping_strategy
+        )
         qscripts, self.postprocessing_fn = transform_program((main_circuit,))
+
+        if grouping_strategy == "_backend_expval":
+            wrapped_measurements_groups = [[]]
+        else:
+            wrapped_measurements_groups = [qsc.measurements for qsc in qscripts]
 
         self.compiled_circuits_bodies, self.measurements = to_openqasm(
             main_circuit,
-            measurement_groups=[qsc.measurements for qsc in qscripts],
+            measurement_groups=wrapped_measurements_groups,
             return_measurements_separately=True,
             # TODO: optimize later
             measure_all=True,

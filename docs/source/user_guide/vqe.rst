@@ -107,12 +107,12 @@ Setting good **initial parameters** can significantly improve VQE convergence an
    )
    vqe_problem.run()
 
-Available Ansatze
+Available Ansätze
 -----------------
 
-Divi provides several built-in ansatze for VQE calculations. For detailed documentation of each ansatz class, see the `Ansatze section <../api_reference/qprog.html#ansatze>`_ in the API reference.
+Divi provides several built-in ansätze for VQE calculations. For detailed documentation of each ansatz class, see the :ref:`user_guide/vqe:Available Ansätze` section in the API reference.
 
-Custom Ansatze
+Custom Ansätze
 ^^^^^^^^^^^^^^
 
 One can easily implement their own Ansatz that would be immediately compatible with Divi's execution routine by inheriting the abstract `Ansatz` class and implementing two main methods:
@@ -120,7 +120,7 @@ One can easily implement their own Ansatz that would be immediately compatible w
 .. code-block:: python
 
    class Ansatz(ABC):
-       """Abstract base class for all VQE ansaetze."""
+       """Abstract base class for all VQE ansätze."""
 
        @property
        def name(self) -> str:
@@ -142,7 +142,7 @@ One can easily implement their own Ansatz that would be immediately compatible w
                params (array): The parameters (weights) for the ansatz.
                n_qubits (int): The number of qubits.
                n_layers (int): The number of layers.
-               **kwargs: Additional arguments like n_electrons for chemistry ansaetze.
+               **kwargs: Additional arguments like n_electrons for chemistry ansätze.
            """
            raise NotImplementedError
 
@@ -238,12 +238,12 @@ Why Parallelize VQE?
 --------------------
 
 - VQE is an iterative algorithm requiring multiple circuit evaluations per step.
-- Sweeping over bond lengths and ansatze creates hundreds of circuits.
+- Sweeping over bond lengths and ansätze creates hundreds of circuits.
 - Parallelizing execution reduces total compute time and helps saturate available QPU/GPU/CPU resources.
 
 Next Steps
 ----------
 
-- Try the runnable examples in the `tutorials/ <https://github.com/qoro-quantum/divi/tree/main/tutorials>`_ directory
+- Try the runnable examples in the `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ directory
 - Learn about :doc:`optimizers` for optimization strategies
 - Explore :doc:`error_mitigation` for improving results

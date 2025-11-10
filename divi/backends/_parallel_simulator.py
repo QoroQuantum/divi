@@ -106,6 +106,20 @@ class ParallelSimulator(CircuitRunner):
         """
         self.simulation_seed = seed
 
+    @property
+    def supports_expval(self) -> bool:
+        """
+        Whether the backend supports expectation value measurements.
+        """
+        return False
+
+    @property
+    def is_async(self) -> bool:
+        """
+        Whether the backend executes circuits asynchronously.
+        """
+        return False
+
     def _execute_circuits_deterministically(
         self, circuit_labels: list[str], transpiled_circuits: list, resolved_backend
     ) -> list[dict]:

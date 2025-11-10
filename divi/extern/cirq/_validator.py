@@ -639,9 +639,18 @@ def validate_qasm_raise(src: str) -> None:
     Parser(toks).parse()
 
 
-def is_valid_qasm(src: str) -> bool | str:
+def validate_qasm_count_qubits(src: str) -> int:
+    """Validate QASM and return the total number of qubits."""
+    toks = _lex(src)
+    parser = Parser(toks)
+    parser.parse()
+    # Sum all qubit register sizes to get total qubit count
+    return sum(parser.qregs.values())
+
+
+def is_valid_qasm(src: str) -> int | str:
+    """Validate QASM and return the number of qubits if valid, or error message if invalid."""
     try:
-        validate_qasm_raise(src)
-        return True
+        return validate_qasm_count_qubits(src)
     except SyntaxError as e:
         return str(e)

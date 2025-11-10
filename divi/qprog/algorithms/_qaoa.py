@@ -21,7 +21,7 @@ from qiskit_optimization import QuadraticProgram
 from qiskit_optimization.converters import QuadraticProgramToQubo
 from qiskit_optimization.problems import VarType
 
-from divi.circuits import MetaCircuit
+from divi.circuits import Circuit, MetaCircuit
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from divi.utils import convert_qubo_matrix_to_pennylane_ising
@@ -304,8 +304,8 @@ class QAOA(VariationalQuantumAlgorithm):
         self._solution_bitstring = []
 
         (
-            self.cost_hamiltonian,
-            self.mixer_hamiltonian,
+            self._cost_hamiltonian,
+            self._mixer_hamiltonian,
             *problem_metadata,
             self.initial_state,
         ) = _resolve_circuit_layers(
@@ -329,6 +329,16 @@ class QAOA(VariationalQuantumAlgorithm):
         super().__init__(**kwargs)
 
         self._meta_circuits = self._create_meta_circuits_dict()
+
+    @property
+    def cost_hamiltonian(self) -> qml.operation.Operator:
+        """The cost Hamiltonian for the QAOA problem."""
+        return self._cost_hamiltonian
+
+    @property
+    def mixer_hamiltonian(self) -> qml.operation.Operator:
+        """The mixer Hamiltonian for the QAOA problem."""
+        return self._mixer_hamiltonian
 
     @property
     def solution(self):
@@ -362,8 +372,8 @@ class QAOA(VariationalQuantumAlgorithm):
 
         def _qaoa_layer(params):
             gamma, beta = params
-            pqaoa.cost_layer(gamma, self.cost_hamiltonian)
-            pqaoa.mixer_layer(beta, self.mixer_hamiltonian)
+            pqaoa.cost_layer(gamma, self._cost_hamiltonian)
+            pqaoa.mixer_layer(beta, self._mixer_hamiltonian)
 
         def _prepare_circuit(hamiltonian, params, final_measurement):
             """Prepare the circuit for the QAOA problem.
@@ -394,43 +404,48 @@ class QAOA(VariationalQuantumAlgorithm):
         return {
             "cost_circuit": self._meta_circuit_factory(
                 qml.tape.make_qscript(_prepare_circuit)(
-                    self.cost_hamiltonian, sym_params, final_measurement=False
+                    self._cost_hamiltonian, sym_params, final_measurement=False
                 ),
                 symbols=sym_params.flatten(),
             ),
             "meas_circuit": self._meta_circuit_factory(
                 qml.tape.make_qscript(_prepare_circuit)(
-                    self.cost_hamiltonian, sym_params, final_measurement=True
+                    self._cost_hamiltonian, sym_params, final_measurement=True
                 ),
                 symbols=sym_params.flatten(),
                 grouping_strategy="wires",
             ),
         }
 
-    def _generate_circuits(self):
+    def _generate_circuits(self) -> list[Circuit]:
         """Generate the circuits for the QAOA problem.
 
         Generates circuits for each parameter set in the current parameters.
         The circuit type depends on whether we're computing probabilities
         (for final solution extraction) or just expectation values (for optimization).
-        """
 
+        Returns:
+            list[Circuit]: List of Circuit objects for execution.
+        """
         circuit_type = (
             "cost_circuit" if not self._is_compute_probabilites else "meas_circuit"
         )
 
-        for p, params_group in enumerate(self._curr_params):
-            circuit = self._meta_circuits[circuit_type].initialize_circuit_from_params(
+        return [
+            self._meta_circuits[circuit_type].initialize_circuit_from_params(
                 params_group, tag_prefix=f"{p}"
             )
+            for p, params_group in enumerate(self._curr_params)
+        ]
 
-            self._curr_circuits.append(circuit)
-
-    def _post_process_results(self, results):
+    def _post_process_results(self, results, **kwargs):
         """Post-process the results of the QAOA problem.
 
         Args:
             results (dict[str, dict[str, int]]): Raw results from circuit execution.
+            **kwargs: Additional keyword arguments.
+                ham_ops (str): The Hamiltonian operators to measure, semicolon-separated.
+                    Only needed when the backend supports expval.
 
         Returns:
             dict[str, dict[str, float]] | dict[int, float]: The losses for each parameter set grouping, or probability
@@ -440,7 +455,7 @@ class QAOA(VariationalQuantumAlgorithm):
         if self._is_compute_probabilites:
             return self._process_probability_results(results)
 
-        losses = super()._post_process_results(results)
+        losses = super()._post_process_results(results, **kwargs)
         return losses
 
     def _perform_final_computation(self, **kwargs):
@@ -459,7 +474,7 @@ class QAOA(VariationalQuantumAlgorithm):
                 - float: The total runtime of the optimization process.
         """
 
-        self.reporter.info(message="🏁 Computing Final Solution 🏁")
+        self.reporter.info(message="🏁 Computing Final Solution 🏁\r")
 
         self._run_solution_measurement()
 
@@ -479,6 +494,8 @@ class QAOA(VariationalQuantumAlgorithm):
             self._solution_nodes[:] = [
                 m.start() for m in re.finditer("1", best_solution_bitstring)
             ]
+
+        self.reporter.info(message="🏁 Computed Final Solution! 🏁\r\n")
 
         return self._total_circuit_count, self._total_run_time
 

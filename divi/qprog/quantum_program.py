@@ -8,7 +8,8 @@ from queue import Queue
 from threading import Event
 from typing import Any
 
-from divi.backends import CircuitRunner, JobStatus, QoroService
+from divi.backends import CircuitRunner, JobStatus
+from divi.circuits import Circuit
 
 
 class QuantumProgram(ABC):
@@ -69,16 +70,22 @@ class QuantumProgram(ABC):
         pass
 
     @abstractmethod
-    def _generate_circuits(self, **kwargs):
+    def _generate_circuits(self, **kwargs) -> list[Circuit]:
         """Generate quantum circuits for execution.
+
+        This method should generate and return a list of Circuit objects based on
+        the current algorithm state. The circuits will be executed by the backend.
 
         Args:
             **kwargs: Additional keyword arguments for circuit generation.
+
+        Returns:
+            list[Circuit]: List of Circuit objects to be executed.
         """
         pass
 
     @abstractmethod
-    def _post_process_results(self, results: dict) -> Any:
+    def _post_process_results(self, results: dict, **kwargs) -> Any:
         """Process execution results.
 
         Args:
@@ -118,7 +125,7 @@ class QuantumProgram(ABC):
         """
         return self._total_run_time
 
-    def _prepare_and_send_circuits(self):
+    def _prepare_and_send_circuits(self, **kwargs):
         """Prepare circuits for execution and submit them to the backend.
 
         Returns:
@@ -132,14 +139,65 @@ class QuantumProgram(ABC):
 
         self._total_circuit_count += len(job_circuits)
 
-        backend_output = self.backend.submit_circuits(job_circuits)
+        backend_output = self.backend.submit_circuits(job_circuits, **kwargs)
 
-        if isinstance(self.backend, QoroService):
+        if self.backend.is_async:
             self._curr_service_job_id = backend_output
 
         return backend_output
 
-    def _dispatch_circuits_and_process_results(self, data_file: str | None = None):
+    def _track_runtime(self, response):
+        """Extract and track runtime from a backend response.
+
+        Args:
+            response: Backend response containing runtime information.
+                Can be a dict or a list of responses.
+        """
+        if isinstance(response, dict):
+            self._total_run_time += float(response["run_time"])
+        elif isinstance(response, list):
+            self._total_run_time += sum(float(r.json()["run_time"]) for r in response)
+
+    def _wait_for_qoro_job_completion(self, job_id: str) -> list[dict]:
+        """Wait for a QoroService job to complete and return results.
+
+        Args:
+            job_id: The QoroService job identifier.
+
+        Returns:
+            list[dict]: The job results from the backend.
+
+        Raises:
+            Exception: If job fails or doesn't complete.
+        """
+        # Build the poll callback if reporter is available
+        if hasattr(self, "reporter"):
+            update_function = lambda n_polls, status: self.reporter.info(
+                message="",
+                poll_attempt=n_polls,
+                max_retries=self.backend.max_retries,
+                service_job_id=job_id,
+                job_status=status,
+            )
+        else:
+            update_function = None
+
+        # Poll until complete
+        status = self.backend.poll_job_status(
+            job_id,
+            loop_until_complete=True,
+            on_complete=self._track_runtime,
+            verbose=False,  # Disable the default logger in QoroService
+            poll_callback=update_function,
+        )
+
+        if status != JobStatus.COMPLETED:
+            raise Exception("Job has not completed yet, cannot post-process results")
+        return self.backend.get_job_results(job_id)
+
+    def _dispatch_circuits_and_process_results(
+        self, data_file: str | None = None, **kwargs
+    ):
         """Run an iteration of the program.
 
         The outputs are stored in the Program object.
@@ -147,52 +205,19 @@ class QuantumProgram(ABC):
 
         Args:
             data_file (str | None): The file to store the data in. If None, no data is stored. Defaults to None.
+            **kwargs: Additional keyword arguments for circuit submission and result processing.
 
         Returns:
             Any: Processed results from _post_process_results.
         """
-        results = self._prepare_and_send_circuits()
+        results = self._prepare_and_send_circuits(**kwargs)
 
-        def add_run_time(response):
-            if isinstance(response, dict):
-                self._total_run_time += float(response["run_time"])
-            elif isinstance(response, list):
-                self._total_run_time += sum(
-                    float(r.json()["run_time"]) for r in response
-                )
-
-        if isinstance(self.backend, QoroService):
-            # Note: This requires a reporter attribute to be set by subclasses
-            # that need QoroService functionality
-            if hasattr(self, "reporter"):
-                update_function = lambda n_polls, status: self.reporter.info(
-                    message="",
-                    poll_attempt=n_polls,
-                    max_retries=self.backend.max_retries,
-                    service_job_id=self._curr_service_job_id,
-                    job_status=status,
-                )
-            else:
-                update_function = None
-
-            status = self.backend.poll_job_status(
-                self._curr_service_job_id,
-                loop_until_complete=True,
-                on_complete=add_run_time,
-                verbose=False,  # Disable the default logger in QoroService
-                poll_callback=update_function,  # Use the new, more generic name
-            )
-
-            if status != JobStatus.COMPLETED:
-                raise Exception(
-                    "Job has not completed yet, cannot post-process results"
-                )
-
-            results = self.backend.get_job_results(self._curr_service_job_id)
+        if self.backend.is_async:
+            results = self._wait_for_qoro_job_completion(self._curr_service_job_id)
 
         results = {r["label"]: r["results"] for r in results}
 
-        result = self._post_process_results(results)
+        result = self._post_process_results(results, **kwargs)
 
         if data_file is not None:
             self.save_iteration(data_file)

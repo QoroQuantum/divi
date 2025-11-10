@@ -8,7 +8,7 @@ import numpy as np
 import pennylane as qml
 import sympy as sp
 
-from divi.circuits import MetaCircuit
+from divi.circuits import Circuit, MetaCircuit
 from divi.qprog.algorithms._ansatze import Ansatz, HartreeFockAnsatz
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
@@ -85,6 +85,11 @@ class VQE(VariationalQuantumAlgorithm):
         self._meta_circuits = self._create_meta_circuits_dict()
 
     @property
+    def cost_hamiltonian(self) -> qml.operation.Operator:
+        """The cost Hamiltonian for the VQE problem."""
+        return self._cost_hamiltonian
+
+    @property
     def n_params(self):
         """Get the total number of parameters for the VQE ansatz.
 
@@ -143,7 +148,7 @@ class VQE(VariationalQuantumAlgorithm):
                     UserWarning,
                 )
 
-        self.cost_hamiltonian = self._clean_hamiltonian(hamiltonian)
+        self._cost_hamiltonian = self._clean_hamiltonian(hamiltonian)
 
     def _clean_hamiltonian(
         self, hamiltonian: qml.operation.Operator
@@ -250,46 +255,56 @@ class VQE(VariationalQuantumAlgorithm):
         return {
             "cost_circuit": self._meta_circuit_factory(
                 qml.tape.make_qscript(_prepare_circuit)(
-                    self.cost_hamiltonian, weights_syms, final_measurement=False
+                    self._cost_hamiltonian, weights_syms, final_measurement=False
                 ),
                 symbols=weights_syms.flatten(),
             ),
             "meas_circuit": self._meta_circuit_factory(
                 qml.tape.make_qscript(_prepare_circuit)(
-                    self.cost_hamiltonian, weights_syms, final_measurement=True
+                    self._cost_hamiltonian, weights_syms, final_measurement=True
                 ),
                 symbols=weights_syms.flatten(),
                 grouping_strategy="wires",
             ),
         }
 
-    def _generate_circuits(self):
+    def _generate_circuits(self) -> list[Circuit]:
         """Generate the circuits for the VQE problem.
 
         Generates circuits for each parameter set in the current parameters.
         Each circuit is tagged with its parameter index for result processing.
+
+        Returns:
+            list[Circuit]: List of Circuit objects for execution.
         """
         circuit_type = (
             "cost_circuit" if not self._is_compute_probabilites else "meas_circuit"
         )
 
-        for p, params_group in enumerate(self._curr_params):
-            circuit = self._meta_circuits[circuit_type].initialize_circuit_from_params(
+        return [
+            self._meta_circuits[circuit_type].initialize_circuit_from_params(
                 params_group, tag_prefix=f"{p}"
             )
+            for p, params_group in enumerate(self._curr_params)
+        ]
 
-            self._curr_circuits.append(circuit)
+    def _post_process_results(self, results, **kwargs):
+        """Post-process the results of the VQE problem.
 
-    def _post_process_results(self, results):
-        """Post-process the results of the VQE problem."""
+        Args:
+            results (dict[str, dict[str, int]]): The shot histograms of the quantum execution step.
+            **kwargs: Additional keyword arguments.
+                ham_ops (str): The Hamiltonian operators to measure, semicolon-separated.
+                    Only needed when the backend supports expval.
+        """
         if self._is_compute_probabilites:
             return self._process_probability_results(results)
 
-        return super()._post_process_results(results)
+        return super()._post_process_results(results, **kwargs)
 
     def _perform_final_computation(self, **kwargs):
         """Extract the eigenstate corresponding to the lowest energy found."""
-        self.reporter.info(message="🏁 Computing Final Eigenstate 🏁")
+        self.reporter.info(message="🏁 Computing Final Eigenstate 🏁\r")
 
         self._run_solution_measurement()
 
@@ -299,5 +314,7 @@ class VQE(VariationalQuantumAlgorithm):
                 best_measurement_probs, key=best_measurement_probs.get
             )
             self._eigenstate = np.fromiter(eigenstate_bitstring, dtype=np.int32)
+
+        self.reporter.info(message="🏁 Computed Final Eigenstate! 🏁\r\n")
 
         return self._total_circuit_count, self._total_run_time

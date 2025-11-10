@@ -25,7 +25,8 @@ class ConcreteQuantumProgram(QuantumProgram):
 
     def _generate_circuits(self, **kwargs):
         """Concrete implementation of _generate_circuits method."""
-        return {"circuit1": "mock_circuit"}
+        # Return empty list as this is a minimal test implementation
+        return []
 
     def _post_process_results(self, results: dict):
         """Concrete implementation of _post_process_results method."""
@@ -78,7 +79,7 @@ class TestQuantumProgram:
         # Test missing run method
         class IncompleteProgram1(QuantumProgram):
             def _generate_circuits(self, **kwargs):
-                return {}
+                return []
 
             def _post_process_results(self, results):
                 return {}
@@ -103,7 +104,7 @@ class TestQuantumProgram:
                 return (0, 0.0)
 
             def _generate_circuits(self, **kwargs):
-                return {}
+                return []
 
         with pytest.raises(TypeError, match="Can't instantiate abstract class"):
             IncompleteProgram3(backend=mock_backend)
@@ -120,7 +121,8 @@ class TestQuantumProgram:
 
         # Test _generate_circuits method
         circuits = program._generate_circuits(test_param="value")
-        assert circuits == {"circuit1": "mock_circuit"}
+        assert isinstance(circuits, list)
+        assert circuits == []
 
         # Test _post_process_results method
         results = {"raw": "data"}
@@ -156,7 +158,7 @@ class TestQuantumProgram:
                 return (0, 0.0)
 
             def _generate_circuits(self, **kwargs):
-                return {}
+                return []
 
             def _post_process_results(self, results):
                 return {}
@@ -175,7 +177,7 @@ class TestQuantumProgram:
                 return (0, 0.0)
 
             def _generate_circuits(self, **kwargs):
-                return {}
+                return []
 
             def _post_process_results(self, results):
                 return {}

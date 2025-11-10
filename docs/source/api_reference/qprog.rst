@@ -49,6 +49,10 @@ VQE Algorithm
    :undoc-members:
    :show-inheritance:
    :special-members: __init__
+   :exclude-members: cost_hamiltonian
+
+.. autoattribute:: divi.qprog.algorithms.VQE.cost_hamiltonian
+   :no-index:
 
 QAOA Algorithm
 ~~~~~~~~~~~~~~
@@ -58,6 +62,13 @@ QAOA Algorithm
    :undoc-members:
    :show-inheritance:
    :special-members: __init__
+   :exclude-members: cost_hamiltonian, mixer_hamiltonian
+
+.. autoattribute:: divi.qprog.algorithms.QAOA.cost_hamiltonian
+   :no-index:
+
+.. autoattribute:: divi.qprog.algorithms.QAOA.mixer_hamiltonian
+   :no-index:
 
 Graph Problem Types
 ~~~~~~~~~~~~~~~~~~~
@@ -67,7 +78,7 @@ Graph Problem Types
    :undoc-members:
    :no-index:
 
-VQE Ansatze
+VQE Ansätze
 ~~~~~~~~~~~
 
 .. autoclass:: divi.qprog.algorithms.HartreeFockAnsatz

@@ -17,7 +17,7 @@ from divi.qprog.optimizers import PymooMethod, PymooOptimizer
 
 OPTIMIZERS_TO_TEST = {
     "argvalues": [
-        MonteCarloOptimizer(n_param_sets=10, n_best_sets=3),
+        MonteCarloOptimizer(population_size=10, n_best_sets=3),
         ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
         ScipyOptimizer(method=ScipyMethod.COBYLA),
         ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
