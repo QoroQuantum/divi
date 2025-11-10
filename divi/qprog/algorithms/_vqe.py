@@ -65,7 +65,8 @@ class VQE(VariationalQuantumAlgorithm):
             **kwargs: Additional keyword arguments passed to the parent class.
         """
 
-        # Local Variables
+        super().__init__(**kwargs)
+
         self.ansatz = HartreeFockAnsatz() if ansatz is None else ansatz
         self.n_layers = n_layers
         self.results = {}
@@ -79,8 +80,6 @@ class VQE(VariationalQuantumAlgorithm):
         self._process_problem_input(
             hamiltonian=hamiltonian, molecule=molecule, n_electrons=n_electrons
         )
-
-        super().__init__(**kwargs)
 
         self._meta_circuits = self._create_meta_circuits_dict()
 

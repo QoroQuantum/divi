@@ -3,11 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import re
-from copy import deepcopy
 from itertools import product
 from typing import Literal
 
 import dill
+import numpy as np
 import pennylane as qml
 from pennylane.transforms.core.transform_program import TransformProgram
 
@@ -16,7 +16,62 @@ from divi.circuits.qem import QEMProtocol
 
 TRANSFORM_PROGRAM = TransformProgram()
 TRANSFORM_PROGRAM.add_transform(qml.transforms.split_to_single_terms)
-TRANSFORM_PROGRAM.add_transform(qml.transforms.split_non_commuting)
+
+
+def _wire_grouping(measurements: list[qml.measurements.MeasurementProcess]):
+    """Manually implement wire-based grouping."""
+    mp_groups = []
+    wires_for_each_group = []
+    group_mapping = {}  # original_index -> (group_idx, pos_in_group)
+
+    for i, mp in enumerate(measurements):
+        added = False
+        for group_idx, wires in enumerate(wires_for_each_group):
+            if not qml.wires.Wires.shared_wires([wires, mp.wires]):
+                mp_groups[group_idx].append(mp)
+                wires_for_each_group[group_idx] += mp.wires
+                group_mapping[i] = (group_idx, len(mp_groups[group_idx]) - 1)
+                added = True
+                break
+        if not added:
+            mp_groups.append([mp])
+            wires_for_each_group.append(mp.wires)
+            group_mapping[i] = (len(mp_groups) - 1, 0)
+
+    partition_indices = [[] for _ in range(len(mp_groups))]
+    for original_idx, (group_idx, _) in group_mapping.items():
+        partition_indices[group_idx].append(original_idx)
+
+    return partition_indices, mp_groups
+
+
+def _create_final_postprocessing_fn(coefficients, partition_indices, num_total_obs):
+    """Create a wrapper fn that reconstructs the flat results list and computes the final energy."""
+    reverse_map = [None] * num_total_obs
+    for group_idx, indices_in_group in enumerate(partition_indices):
+        for idx_within_group, original_flat_idx in enumerate(indices_in_group):
+            reverse_map[original_flat_idx] = (group_idx, idx_within_group)
+
+    def final_postprocessing_fn(grouped_results):
+        """
+        Takes grouped results, flattens them to the original order,
+        multiplies by coefficients, and sums to get the final energy.
+        """
+        flat_results = np.zeros(num_total_obs, dtype=np.float64)
+        for original_flat_idx in range(num_total_obs):
+            group_idx, idx_within_group = reverse_map[original_flat_idx]
+
+            group_result = grouped_results[group_idx]
+            # When a group has one measurement, the result is a scalar.
+            if len(partition_indices[group_idx]) == 1:
+                flat_results[original_flat_idx] = group_result
+            else:
+                flat_results[original_flat_idx] = group_result[idx_within_group]
+
+        # Perform the final summation using the efficient dot product method.
+        return np.dot(coefficients, flat_results)
+
+    return final_postprocessing_fn
 
 
 class Circuit:
@@ -123,40 +178,59 @@ class MetaCircuit:
         self.qem_protocol = qem_protocol
         self.grouping_strategy = grouping_strategy
 
-        # --- VQE Optimization ---
-        # Create a lightweight tape with only measurements to avoid deep-copying
-        # the circuit's operations inside the split_non_commuting transform.
+        # Step 1: Use split_to_single_terms to get a flat list of measurement
+        # processes. We no longer need its post-processing function.
         measurements_only_tape = qml.tape.QuantumScript(
             measurements=self.main_circuit.measurements
         )
+        s_tapes, _ = TRANSFORM_PROGRAM((measurements_only_tape,))
+        single_term_mps = s_tapes[0].measurements
 
-        transform_program = deepcopy(TRANSFORM_PROGRAM)
-        transform_program[1].kwargs["grouping_strategy"] = (
-            None if grouping_strategy == "_backend_expval" else grouping_strategy
-        )
-        # Run the transform on the lightweight tape
-        qscripts, self.postprocessing_fn = transform_program((measurements_only_tape,))
-
-        if grouping_strategy == "_backend_expval":
-            wrapped_measurements_groups = [[]]
+        # Extract the coefficients, which we will now use in our own post-processing.
+        obs = self.main_circuit.measurements[0].obs
+        if isinstance(obs, (qml.Hamiltonian, qml.ops.Sum)):
+            coeffs, _ = obs.terms()
         else:
-            wrapped_measurements_groups = [qsc.measurements for qsc in qscripts]
+            # For single observables, the coefficient is implicitly 1.0
+            coeffs = [1.0]
+
+        # Step 2: Manually group the flat list of measurements based on the strategy.
+        if grouping_strategy in ("qwc", "default"):
+            obs_list = [m.obs for m in single_term_mps]
+            # This computes the grouping indices for the flat list of observables
+            partition_indices = qml.pauli.compute_partition_indices(obs_list)
+            self.measurement_groups = [
+                [single_term_mps[i].obs for i in group] for group in partition_indices
+            ]
+        elif grouping_strategy == "wires":
+            partition_indices, grouped_mps = _wire_grouping(single_term_mps)
+            self.measurement_groups = [[m.obs for m in group] for group in grouped_mps]
+        elif grouping_strategy is None:
+            # Each measurement is its own group
+            self.measurement_groups = [[m.obs] for m in single_term_mps]
+            partition_indices = [[i] for i in range(len(single_term_mps))]
+        elif grouping_strategy == "_backend_expval":
+            self.measurement_groups = [[]]
+            # All observables go in one group for postprocessing
+            # (backend computes expectation values directly, so no measurement groups needed)
+            partition_indices = [list(range(len(single_term_mps)))]
+        else:
+            raise ValueError(f"Unknown grouping strategy: {grouping_strategy}")
+
+        # Step 3: Create our own post-processing function that handles the final summation.
+        self.postprocessing_fn = _create_final_postprocessing_fn(
+            coeffs, partition_indices, len(single_term_mps)
+        )
 
         self.compiled_circuits_bodies, self.measurements = to_openqasm(
             main_circuit,
-            measurement_groups=wrapped_measurements_groups,
+            measurement_groups=self.measurement_groups,
             return_measurements_separately=True,
             # TODO: optimize later
             measure_all=True,
             symbols=self.symbols,
             qem_protocol=qem_protocol,
         )
-
-        # Need to store the measurement groups for computing
-        # expectation values later on, stripped of the `qml.expval` wrapper
-        self.measurement_groups = [
-            [meas.obs for meas in qsc.measurements] for qsc in qscripts
-        ]
 
     def __getstate__(self):
         """

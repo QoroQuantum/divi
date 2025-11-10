@@ -1,26 +1,18 @@
-[tool.poetry]
-name = "qoro-divi"
-version = "0.4.0"
-description = "A Python library to automate generating, parallelizing, and executing quantum programs."
-authors = ["Ahmed Darwish <ahmed@qoroquantum.de>", "Stephen DiAdamo <stephen@qoroquantum.de>"]
-readme = "README.md"
-packages = [{ include = "divi" }]
-
-[[tool.poetry.source]]
-name = "aws-repo"
-url = "https://qoro-quantum-982534369690.d.codeartifact.eu-west-1.amazonaws.com/pypi/divi/"
-priority = "supplemental"
-
-[tool.poetry_codeartifact_login]
-[[tool.poetry_codeartifact_login.source]]
-name = "aws-repo"
-domain = "qoro-quantum"
-domain_owner = "982534369690"
-
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
+
+[project]
+name = "qoro-divi"
+version = "0.4.0"
+description = "A Python library to automate generating, parallelizing, and executing quantum programs."
+authors = [{ name = "Ahmed Darwish", email = "ahmed@qoroquantum.de" }, { name = "Stephen DiAdamo", email = "stephen@qoroquantum.de" }]
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+
+[tool.poetry]
+packages = [{ include = "divi" }]
 
 [tool.poetry.dependencies]
 python = ">=3.11,<3.13"

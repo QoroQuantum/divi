@@ -217,6 +217,9 @@ class TestMetaCircuit:
         np.testing.assert_equal(meta_circuit_unpickled.symbols, weights_syms)
 
         # Crucially, test that the unpickled function works
-        mock_results = [[0.5], [0.4], [0.3]]  # Mock results for 3 measurement groups
+        # When a group has one measurement, the result is a scalar, not a list.
+        mock_results = [0.5, 0.4, 0.3]  # Mock results for 3 measurement groups
         # The specific value doesn't matter, just that it doesn't raise an error
-        assert isinstance(meta_circuit_unpickled.postprocessing_fn(mock_results), tuple)
+        assert isinstance(
+            meta_circuit_unpickled.postprocessing_fn(mock_results), np.floating
+        )

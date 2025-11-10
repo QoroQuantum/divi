@@ -5,8 +5,9 @@
 import logging
 from abc import abstractmethod
 from functools import lru_cache, partial
-from itertools import chain, groupby
+from itertools import groupby
 from queue import Queue
+from warnings import warn
 
 import numpy as np
 import pennylane as qml
@@ -295,8 +296,16 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         else:
             self.reporter = LoggingProgressReporter()
 
-        # Needed for Pennylane's transforms
-        self._grouping_strategy = kwargs.pop("grouping_strategy", "qwc")
+        if self.backend and self.backend.supports_expval:
+            grouping_strategy = kwargs.get("grouping_strategy")
+            if grouping_strategy is not None and grouping_strategy != "_backend_expval":
+                warn(
+                    "Backend supports direct expectation value calculation, but a grouping_strategy was provided. "
+                    "The grouping strategy will be ignored."
+                )
+            self._grouping_strategy = "_backend_expval"
+        else:
+            self._grouping_strategy = kwargs.pop("grouping_strategy", "qwc")
 
         self._qem_protocol = kwargs.pop("qem_protocol", None) or _NoMitigation()
 
@@ -305,11 +314,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         self._meta_circuit_factory = partial(
             MetaCircuit,
             # No grouping strategy for expectation value measurements
-            grouping_strategy=(
-                "_backend_expval"
-                if self.backend and self.backend.supports_expval
-                else self._grouping_strategy
-            ),
+            grouping_strategy=self._grouping_strategy,
             qem_protocol=self._qem_protocol,
         )
 
@@ -553,15 +558,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         losses = {}
         measurement_groups = self._meta_circuits["cost_circuit"].measurement_groups
 
-        # Flatten measurement groups for expectation value backends
-        if self.backend.supports_expval:
-            flattened_measurement_groups = tuple(
-                chain.from_iterable(measurement_groups)
-            )
-        else:
-            flattened_measurement_groups = measurement_groups
-
-        # Define key functions for both levels of grouping
+        # Define key functions for grouping
         get_param_id = lambda item: int(item[0].split("_")[0])
         get_qem_id = lambda item: int(item[0].split("_")[1].split(":")[1])
 
@@ -569,60 +566,54 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         for p, param_group_iterator in groupby(results.items(), key=get_param_id):
             param_group_iterator = list(param_group_iterator)
 
-            shots_by_qem_idx = zip(
-                *{
-                    gid: [value for _, value in group]
-                    for gid, group in groupby(param_group_iterator, key=get_qem_id)
-                }.values()
-            )
+            # Group by QEM ID to handle error mitigation
+            qem_groups = {
+                gid: [value for _, value in group]
+                for gid, group in groupby(param_group_iterator, key=get_qem_id)
+            }
 
-            marginal_results = []
-            for shots_dicts, curr_measurement_group in zip(
-                shots_by_qem_idx, flattened_measurement_groups
-            ):
-                if self.backend.supports_expval:
-                    ham_ops = kwargs.get("ham_ops")
-                    if ham_ops is None:
-                        # Internal consistency check: ham_ops should be set by _run_optimization_circuits
-                        # when backend supports expectation values
-                        raise ValueError(
-                            "Hamiltonian operators (ham_ops) are required when using a backend "
-                            "that supports expectation values, but were not provided."
-                        )
-
-                    expectation_matrix = np.array(
-                        [
-                            [shot_dict[op_name] for op_name in ham_ops.split(";")]
-                            for shot_dict in shots_dicts
-                        ]
-                    ).T
-                else:
-                    wire_order = tuple(reversed(self.cost_hamiltonian.wires))
-
-                    expectation_matrix = _batched_expectation(
-                        shots_dicts, curr_measurement_group, wire_order
-                    )
-
-                # expectation_matrix[i, j] = expectation value for observable i, histogram j
-                curr_marginal_results = []
-                for intermediate_exp_values in expectation_matrix:
-                    mitigated_exp_value = self._qem_protocol.postprocess_results(
-                        intermediate_exp_values
-                    )
-                    curr_marginal_results.append(mitigated_exp_value)
-
-                marginal_results.append(
-                    curr_marginal_results
-                    if len(curr_marginal_results) > 1
-                    else curr_marginal_results[0]
-                )
+            # Apply QEM protocol to expectation values (common for both backends)
+            apply_qem = lambda exp_matrix: [
+                self._qem_protocol.postprocess_results(exp_vals)
+                for exp_vals in exp_matrix
+            ]
 
             if self.backend.supports_expval:
-                marginal_results = marginal_results[0]
+                ham_ops = kwargs.get("ham_ops")
+                if ham_ops is None:
+                    raise ValueError(
+                        "Hamiltonian operators (ham_ops) are required when using a backend "
+                        "that supports expectation values, but were not provided."
+                    )
+                marginal_results = [
+                    apply_qem(
+                        np.array(
+                            [
+                                [shot_dict[op] for op in ham_ops.split(";")]
+                                for shot_dict in shots_dicts
+                            ]
+                        ).T
+                    )
+                    for shots_dicts in sorted(qem_groups.values())
+                ] or []
+            else:
+                shots_by_qem_idx = zip(*qem_groups.values())
+                marginal_results = []
+                for shots_dicts, curr_measurement_group in zip(
+                    shots_by_qem_idx, measurement_groups
+                ):
+                    wire_order = tuple(reversed(self.cost_hamiltonian.wires))
+                    exp_matrix = _batched_expectation(
+                        shots_dicts, curr_measurement_group, wire_order
+                    )
+                    mitigated = apply_qem(exp_matrix)
+                    marginal_results.append(
+                        mitigated if len(mitigated) > 1 else mitigated[0]
+                    )
 
             pl_loss = (
                 self._meta_circuits["cost_circuit"]
-                .postprocessing_fn(marginal_results)[0]
+                .postprocessing_fn(marginal_results)
                 .item()
             )
 

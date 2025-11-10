@@ -221,6 +221,21 @@ class TestProgram:
         ):
             program._post_process_results(fake_results)
 
+    def test_grouping_strategy_warning_with_expval_backend(self, mocker):
+        """Test that a warning is issued when grouping_strategy is provided but backend supports expval."""
+        mock_backend = self._create_mock_backend(mocker, supports_expval=True)
+
+        with pytest.warns(
+            UserWarning,
+            match="Backend supports direct expectation value calculation, but a grouping_strategy was provided",
+        ):
+            program = self._create_sample_program(
+                mocker, grouping_strategy="qwc", backend=mock_backend
+            )
+
+        # Verify that the grouping strategy was overridden to "_backend_expval"
+        assert program._grouping_strategy == "_backend_expval"
+
 
 class TestBatchedExpectation:
     """Test suite for batched expectation value calculations."""
