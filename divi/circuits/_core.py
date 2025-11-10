@@ -123,11 +123,19 @@ class MetaCircuit:
         self.qem_protocol = qem_protocol
         self.grouping_strategy = grouping_strategy
 
+        # --- VQE Optimization ---
+        # Create a lightweight tape with only measurements to avoid deep-copying
+        # the circuit's operations inside the split_non_commuting transform.
+        measurements_only_tape = qml.tape.QuantumScript(
+            measurements=self.main_circuit.measurements
+        )
+
         transform_program = deepcopy(TRANSFORM_PROGRAM)
         transform_program[1].kwargs["grouping_strategy"] = (
             None if grouping_strategy == "_backend_expval" else grouping_strategy
         )
-        qscripts, self.postprocessing_fn = transform_program((main_circuit,))
+        # Run the transform on the lightweight tape
+        qscripts, self.postprocessing_fn = transform_program((measurements_only_tape,))
 
         if grouping_strategy == "_backend_expval":
             wrapped_measurements_groups = [[]]

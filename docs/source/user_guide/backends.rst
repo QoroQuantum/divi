@@ -74,14 +74,16 @@ You can tune the ``ParallelSimulator`` for different scenarios, like maximizing 
 QoroService
 -----------
 
-When you're ready to move from simulation to real hardware, the ``QoroService`` provides access to cloud-based quantum computing resources.
+The ``QoroService`` provides access to cloud-based quantum computing resources, including advanced simulation services with greater bandwidth and a wider variety of simulation types (such as tensor networks), as well as real quantum hardware. While ``ParallelSimulator`` is ideal for local prototyping, ``QoroService`` offers production-grade simulation capabilities and hardware access. The service supports two execution modes: **sampling mode** for measurement histograms (available on both simulation and hardware) and **expectation mode** for expectation values (currently simulation-only).
 
 **Key Features:**
 
+* **Advanced Simulation**: Access production-grade simulation services with greater bandwidth and a variety of simulation types, including tensor networks, beyond what's available in local prototyping.
 * **Real Hardware**: Run your algorithms on actual quantum computers.
 * **Scalable Execution**: The service is designed to handle large queues of jobs efficiently.
-* **Circuit Cutting**: Automatically decompose large circuits that wouldn't otherwise fit on a QPU.
-* **Job Management**: A robust system for tracking and managing your quantum jobs.
+* **Circuit Packing**: Enable circuit packing optimization via ``JobConfig.use_circuit_packing`` to improve execution efficiency by combining multiple circuits into optimized batches.
+* **Job Configuration**: Use ``JobConfig`` to configure job settings including shots, QPU system selection, circuit packing, and tags. Set default configurations at service initialization or override them per job.
+* **Job Management**: Track job status (PENDING, RUNNING, COMPLETED, FAILED, CANCELLED), poll for completion with configurable intervals, retrieve results, and delete jobs.
 
 Getting Started with QoroService
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -98,10 +100,28 @@ To use the service, you'll first need to initialize it and test your connection.
    # Test your connection to the service
    service.test_connection()
 
+Execution Modes
+^^^^^^^^^^^^^^^
+
+The ``QoroService`` supports two distinct execution modes:
+
+1. **Sampling Mode** (circuit-only input): Submit circuits without Hamiltonian operators.
+   The service executes the circuits with a specified number of shots and returns
+   measurement histograms (bitstring counts). This mode works with both simulation
+   (``JobType.SIMULATE``) and real hardware (``JobType.EXECUTE``).
+
+2. **Expectation Mode** (circuit with Pauli terms): Submit circuits along with
+   Hamiltonian operators specified as semicolon-separated Pauli terms (e.g., ``"XYZ;XXZ;ZIZ"``).
+   The service automatically uses ``JobType.EXPECTATION`` and returns expectation values
+   for each Pauli term. **Note**: Expectation mode is currently only available on simulation
+   backends, not on real hardware.
+
 Submitting and Monitoring Jobs
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The workflow for submitting circuits is straightforward: you send your circuits and then monitor the job until it's complete.
+The workflow for submitting circuits depends on which execution mode you're using.
+
+**Sampling Mode Example:**
 
 .. code-block:: python
 
@@ -111,17 +131,54 @@ The workflow for submitting circuits is straightforward: you send your circuits 
        "circuit_2": qasm_string_2
    }
 
-   # Submit the job to the service
-   job_ids = service.submit_circuits(
+   # Submit the job in sampling mode (no ham_ops parameter)
+   job_id = service.submit_circuits(
        circuits,
-       job_type=JobType.SIMULATE  # Specify the job type
+       job_type=JobType.SIMULATE  # Can also use JobType.EXECUTE for real hardware
    )
 
    # Monitor the execution until completion
-   service.poll_job_status(job_ids, loop_until_complete=True)
+   service.poll_job_status(job_id, loop_until_complete=True)
 
-   # Retrieve your results
-   results = service.get_job_results(job_ids)
+   # Retrieve your results (returns histograms with bitstring counts)
+   results = service.get_job_results(job_id)
+   # Example output shape:
+   # [{'label': 'circuit_0', 'results': {'0011': 2000}},
+   #  {'label': 'circuit_1', 'results': {'0011': 2000}}, ...]
+
+**Expectation Mode Example:**
+
+.. code-block:: python
+
+   # Prepare your circuits and Pauli operators
+   circuits = {
+       "circuit_1": qasm_string_1
+   }
+
+   # Define Hamiltonian operators as semicolon-separated Pauli terms
+   # Each term must have the same length and contain only I, X, Y, Z
+   ham_ops = "XYZ;XXZ;ZIZ"
+
+   # Submit the job in expectation mode (ham_ops automatically sets JobType.EXPECTATION)
+   # Note: This mode is only available on simulation backends, not real hardware
+   # The QPU system in your JobConfig should be a simulation system (e.g., "qoro_maestro")
+   job_id = service.submit_circuits(
+       circuits,
+       ham_ops=ham_ops
+       # job_type is automatically set to JobType.EXPECTATION when ham_ops is provided
+   )
+
+   # Monitor the execution until completion
+   service.poll_job_status(job_id, loop_until_complete=True)
+
+   # Retrieve your results (returns expectation values for each Pauli term)
+   results = service.get_job_results(job_id)
+   # Example output shape:
+   # [{'label': 'circuit_0', 'results': {'IIII': 1.0, 'XXXX': 0.0, 'YYYY': 0.0, 'ZZZZ': 1.0}}]
+
+.. note::
+
+   **Bitstring Ordering**: ``QoroService`` returns bitstrings in **Little Endian** ordering (least significant bit first, rightmost bit is qubit 0), but Hamiltonian operators passed via the ``ham_ops`` parameter should follow **Big Endian** ordering (most significant bit first, leftmost bit is qubit 0). For example, a 4-qubit system with qubits labeled 0-3: the bitstring ``"0011"`` in results represents qubit 0=1, qubit 1=1, qubit 2=0, qubit 3=0 (reading right to left), while the Hamiltonian operator ``"ZIZI"`` applies Z to qubit 0, I to qubit 1, Z to qubit 2, and I to qubit 3 (reading left to right).
 
 Configuring Jobs with JobConfig
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -151,21 +208,6 @@ The ``QoroService`` uses a ``JobConfig`` object to manage settings for job submi
    # This job will run with 2000 shots and the tag 'high_shot_run',
    # but will still use 'qoro_maestro' and circuit packing from the default config.
 
-The service supports different job types depending on your needs:
-
-.. code-block:: python
-
-   from divi.backends import JobType
-
-   # Standard simulation jobs
-   job_ids = service.submit_circuits(circuits, job_type=JobType.SIMULATE)
-
-   # Execution jobs for running on real hardware
-   job_ids = service.submit_circuits(circuits, job_type=JobType.EXECUTE)
-
-   # Estimation jobs for quick cost analysis
-   job_ids = service.submit_circuits(circuits, job_type=JobType.ESTIMATE)
-
 Backend Selection Guide
 -----------------------
 
@@ -190,22 +232,19 @@ The best choice of backend depends on your specific needs. Here's a summary of t
      - QoroService
    * - **Use Case**
      - Development & Prototyping
-     - Production & Real Hardware
+     - Production (Simulation & Real Hardware)
    * - **Speed**
      - Fast (Local CPU)
      - High-throughput (Cloud)
    * - **Accuracy**
-     - Ideal (Noiseless)
-     - Real-world (Hardware noise)
+     - Ideal
+     - Ideal (simulation) / Real-world (hardware)
    * - **Cost**
      - Free
      - Pay-per-use
    * - **Scalability**
      - Limited by local hardware
      - High (Cloud infrastructure)
-   * - **Noise**
-     - Simulated (Configurable)
-     - Physical (Real hardware)
    * - **Availability**
      - Always (Local)
      - Queue-dependent

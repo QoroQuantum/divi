@@ -153,37 +153,58 @@ def _raise_with_details(resp: requests.Response):
 
 
 class JobStatus(Enum):
+    """Status of a job on the Qoro Service."""
+
     PENDING = "PENDING"
+    """Job is queued and waiting to be processed."""
+
     RUNNING = "RUNNING"
+    """Job is currently being executed."""
+
     COMPLETED = "COMPLETED"
+    """Job has finished successfully."""
+
     FAILED = "FAILED"
+    """Job execution encountered an error."""
+
     CANCELLED = "CANCELLED"
+    """Job was cancelled before completion."""
 
 
 class JobType(Enum):
+    """Type of job to execute on the Qoro Service."""
+
     EXECUTE = "EXECUTE"
+    """Execute circuits on real quantum hardware (sampling mode only)."""
+
     SIMULATE = "SIMULATE"
+    """Simulate circuits using cloud-based simulation services (sampling mode)."""
+
     EXPECTATION = "EXPECTATION"
+    """Compute expectation values for Hamiltonian operators (simulation only)."""
+
     CIRCUIT_CUT = "CIRCUIT_CUT"
+    """Automatically decompose large circuits that wouldn't fit on a QPU."""
 
 
 @dataclass(frozen=True)
 class JobConfig:
-    """Configuration for a Qoro Service job.
-
-    Attributes:
-        shots: Number of shots for the job.
-        qpu_system: The QPU system to use, can be a string or a QPUSystem object.
-        use_circuit_packing: Whether to use circuit packing optimization.
-        tag: Tag to associate with the job for identification.
-        force_sampling: Whether to force sampling instead of expectation value measurements.
-    """
+    """Configuration for a Qoro Service job."""
 
     shots: int | None = None
+    """Number of shots for the job."""
+
     qpu_system: QPUSystem | str | None = None
+    """The QPU system to use, can be a string or a QPUSystem object."""
+
     use_circuit_packing: bool | None = None
+    """Whether to use circuit packing optimization."""
+
     tag: str = "default"
+    """Tag to associate with the job for identification."""
+
     force_sampling: bool = False
+    """Whether to force sampling instead of expectation value measurements."""
 
     def override(self, other: "JobConfig") -> "JobConfig":
         """Creates a new config by overriding attributes with non-None values.

@@ -6,6 +6,7 @@
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
+import enum
 import os
 import sys
 import tomllib
@@ -208,3 +209,21 @@ spelling_filters = [
     "enchant.tokenize.MentionFilter",
     "enchant.tokenize.HashtagFilter",
 ]
+
+
+def autodoc_process_signature(
+    app, what, name, obj, options, signature, return_annotation
+):
+    """Hide enum constructor signature."""
+    if what == "class":
+        try:
+            if issubclass(obj, enum.Enum):
+                return "", None
+        except TypeError:
+            pass
+    return signature, return_annotation
+
+
+def setup(app):
+    """Register the autodoc hook."""
+    app.connect("autodoc-process-signature", autodoc_process_signature)
