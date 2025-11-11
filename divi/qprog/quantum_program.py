@@ -9,7 +9,7 @@ from threading import Event
 from typing import Any
 
 from divi.backends import CircuitRunner, JobStatus
-from divi.circuits import Circuit
+from divi.circuits import CircuitBundle
 
 
 class QuantumProgram(ABC):
@@ -70,17 +70,17 @@ class QuantumProgram(ABC):
         pass
 
     @abstractmethod
-    def _generate_circuits(self, **kwargs) -> list[Circuit]:
+    def _generate_circuits(self, **kwargs) -> list[CircuitBundle]:
         """Generate quantum circuits for execution.
 
-        This method should generate and return a list of Circuit objects based on
+        This method should generate and return a list of CircuitBundle objects based on
         the current algorithm state. The circuits will be executed by the backend.
 
         Args:
             **kwargs: Additional keyword arguments for circuit generation.
 
         Returns:
-            list[Circuit]: List of Circuit objects to be executed.
+            list[CircuitBundle]: List of CircuitBundle objects to be executed.
         """
         pass
 
@@ -133,9 +133,9 @@ class QuantumProgram(ABC):
         """
         job_circuits = {}
 
-        for circuit in self._curr_circuits:
-            for tag, qasm_circuit in zip(circuit.tags, circuit.qasm_circuits):
-                job_circuits[tag] = qasm_circuit
+        for bundle in self._curr_circuits:
+            for executable in bundle.executables:
+                job_circuits[executable.tag] = executable.qasm
 
         self._total_circuit_count += len(job_circuits)
 

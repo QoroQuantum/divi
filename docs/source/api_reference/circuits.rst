@@ -7,15 +7,21 @@ Core Circuit Classes
 --------------------
 
 .. warning::
-   **Developer-Facing Classes**: The core circuit classes (``Circuit`` and ``MetaCircuit``) are intended for advanced users and developers. Most users should interact with circuits through higher-level APIs in the ``divi.qprog`` module.
+   **Developer-Facing Classes**: The core circuit classes (``CircuitBundle`` and ``MetaCircuit``) are intended for advanced users and developers. Most users should interact with circuits through higher-level APIs in the ``divi.qprog`` module.
 
-.. autoclass:: divi.circuits.Circuit
+.. autoclass:: divi.circuits.CircuitBundle
    :members:
    :undoc-members:
    :show-inheritance:
    :special-members: __init__
 
 .. autoclass:: divi.circuits.MetaCircuit
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+
+.. autoclass:: divi.circuits.ExecutableQASMCircuit
    :members:
    :undoc-members:
    :show-inheritance:

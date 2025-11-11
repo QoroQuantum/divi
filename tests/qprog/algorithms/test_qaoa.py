@@ -209,7 +209,7 @@ class TestGraphInput:
                 isinstance(op, qml.Hadamard)
                 for op in qaoa_problem._meta_circuits[
                     "cost_circuit"
-                ].main_circuit.operations
+                ].source_circuit.operations
             )
             == nx.bull_graph().number_of_nodes()
         )
@@ -343,6 +343,7 @@ QUBO_FORMATS_TO_TEST = {
 
 
 class TestQUBOInput:
+    """Test suite for QUBO problem inputs in QAOA."""
 
     @pytest.mark.parametrize("input_qubo", **QUBO_FORMATS_TO_TEST)
     def test_qubo_basic_initialization(self, input_qubo, default_test_simulator):

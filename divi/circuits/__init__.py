@@ -2,4 +2,4 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from ._core import Circuit, MetaCircuit
+from ._core import CircuitBundle, ExecutableQASMCircuit, MetaCircuit

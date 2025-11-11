@@ -8,7 +8,7 @@ import numpy as np
 import pennylane as qml
 import sympy as sp
 
-from divi.circuits import Circuit, MetaCircuit
+from divi.circuits import CircuitBundle, MetaCircuit
 from divi.qprog.algorithms._ansatze import Ansatz, HartreeFockAnsatz
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
@@ -253,13 +253,13 @@ class VQE(VariationalQuantumAlgorithm):
 
         return {
             "cost_circuit": self._meta_circuit_factory(
-                qml.tape.make_qscript(_prepare_circuit)(
+                source_circuit=qml.tape.make_qscript(_prepare_circuit)(
                     self._cost_hamiltonian, weights_syms, final_measurement=False
                 ),
                 symbols=weights_syms.flatten(),
             ),
             "meas_circuit": self._meta_circuit_factory(
-                qml.tape.make_qscript(_prepare_circuit)(
+                source_circuit=qml.tape.make_qscript(_prepare_circuit)(
                     self._cost_hamiltonian, weights_syms, final_measurement=True
                 ),
                 symbols=weights_syms.flatten(),
@@ -267,14 +267,14 @@ class VQE(VariationalQuantumAlgorithm):
             ),
         }
 
-    def _generate_circuits(self) -> list[Circuit]:
+    def _generate_circuits(self) -> list[CircuitBundle]:
         """Generate the circuits for the VQE problem.
 
         Generates circuits for each parameter set in the current parameters.
         Each circuit is tagged with its parameter index for result processing.
 
         Returns:
-            list[Circuit]: List of Circuit objects for execution.
+            list[CircuitBundle]: List of CircuitBundle objects for execution.
         """
         circuit_type = (
             "cost_circuit" if not self._is_compute_probabilites else "meas_circuit"

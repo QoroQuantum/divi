@@ -13,40 +13,34 @@ import sympy as sp
 from mitiq.zne.inference import ExpFactory
 from mitiq.zne.scaling import fold_global
 
-from divi.circuits import Circuit, MetaCircuit
+from divi.circuits import CircuitBundle, ExecutableQASMCircuit, MetaCircuit
+from divi.circuits.qasm import to_openqasm
 from divi.circuits.qem import ZNE, _NoMitigation
 
 
-class TestCircuit:
-    def test_pennylane_circuit_initialization(self, mocker):
-
+class TestCircuitBundle:
+    def test_bundle_creation(self):
         def test_circuit():
             qml.RX(0.5, wires=0)
-            qml.RX(0.5, wires=1)
-            qml.RY(0.5, wires=2)
-            qml.RZ(0.25, wires=3)
-
-            return qml.expval(
-                qml.PauliZ(0) @ qml.PauliZ(1) @ qml.PauliX(2) @ qml.PauliY(3)
-            )
+            qml.CNOT(wires=[0, 1])
+            return qml.expval(qml.PauliZ(0))
 
         qscript = qml.tape.make_qscript(test_circuit)()
+        qasm_list = to_openqasm(
+            qscript,
+            measurement_groups=[qscript.measurements],
+            return_measurements_separately=False,
+        )
+        assert len(qasm_list) == 1
 
-        Circuit._id_counter = 0
-        circ_1 = Circuit(qscript, tags=["test_circ"])
+        tag = "test_bundle"
+        executables = (ExecutableQASMCircuit(tag=tag, qasm=qasm_list[0]),)
+        bundle = CircuitBundle(executables=executables)
 
         # Check basic attributes
-        assert circ_1.main_circuit == qscript
-        assert circ_1.tags == ["test_circ"]
-        assert circ_1.circuit_id == 0
-        assert len(circ_1.qasm_circuits) == 1
-
-        # Ensure converter was called
-        method_mock = mocker.patch("divi.circuits._core.to_openqasm")
-
-        Circuit(qscript, tags=["test_circ"])
-
-        method_mock.assert_called_once()
+        assert bundle.tags == [tag]
+        assert bundle.qasm_circuits == qasm_list
+        assert len(bundle.executables) == 1
 
 
 class TestMetaCircuit:
@@ -83,7 +77,7 @@ class TestMetaCircuit:
         """Tests that MetaCircuit initializes correctly with a valid expval measurement."""
         # This should execute without raising an exception
         try:
-            MetaCircuit(expval_circuit, weights_syms)
+            MetaCircuit(source_circuit=expval_circuit, symbols=weights_syms)
         except ValueError:
             pytest.fail("MetaCircuit initialization failed with a valid measurement.")
 
@@ -95,13 +89,13 @@ class TestMetaCircuit:
             ValueError,
             match="MetaCircuit requires a circuit with exactly one measurement, but 0 were found.",
         ):
-            MetaCircuit(no_measurement_circuit, weights_syms)
+            MetaCircuit(source_circuit=no_measurement_circuit, symbols=weights_syms)
 
     def test_correct_symbolization(self, sample_circuit, weights_syms):
 
-        meta_circuit = MetaCircuit(sample_circuit, weights_syms)
+        meta_circuit = MetaCircuit(source_circuit=sample_circuit, symbols=weights_syms)
 
-        assert meta_circuit.main_circuit == sample_circuit
+        assert meta_circuit.source_circuit == sample_circuit
 
         # Ensure we have all the symbols
         np.testing.assert_equal(meta_circuit.symbols, weights_syms)
@@ -109,24 +103,26 @@ class TestMetaCircuit:
         # Make sure the compiled circuit is correct
         circ_pattern = r"w_(\d+)"
         assert (
-            len(set(re.findall(circ_pattern, meta_circuit.compiled_circuits_bodies[0])))
+            len(set(re.findall(circ_pattern, meta_circuit._compiled_circuit_bodies[0])))
             == 4
         )
         assert (
-            len(re.findall(circ_pattern, meta_circuit.compiled_circuits_bodies[0])) == 8
+            len(re.findall(circ_pattern, meta_circuit._compiled_circuit_bodies[0])) == 8
         )
 
         # Make sure the measurement qasm is correct
-        assert len(meta_circuit.measurements) == 1
+        assert len(meta_circuit._measurements) == 1
         meas_pattern = r"measure q\[(\d+)\] -> c\[(\d+)\];"
-        assert len(re.findall(meas_pattern, meta_circuit.measurements[0])) == 4
+        assert len(re.findall(meas_pattern, meta_circuit._measurements[0])) == 4
 
     def test_correct_initialization_no_mitigation(
         self, mocker, sample_circuit, weights_syms
     ):
 
         meta_circuit = MetaCircuit(
-            sample_circuit, weights_syms, qem_protocol=_NoMitigation()
+            source_circuit=sample_circuit,
+            symbols=weights_syms,
+            qem_protocol=_NoMitigation(),
         )
 
         param_list = [0.123456789, 0.212345678, 0.312345678, 0.412345678]
@@ -144,7 +140,6 @@ class TestMetaCircuit:
         method_mock.assert_not_called()
 
         # Check the new Circuit object
-        assert circuit.main_circuit == sample_circuit
         assert circuit.tags == [f"{tag_prefix}_NoMitigation:0_0"]
         assert len(circuit.qasm_circuits) == 1
 
@@ -186,7 +181,9 @@ class TestMetaCircuit:
         expected_n_circuits,
     ):
         meta_circuit = MetaCircuit(
-            sample_circuit, weights_syms, qem_protocol=qem_protocol
+            source_circuit=sample_circuit,
+            symbols=weights_syms,
+            qem_protocol=qem_protocol,
         )
 
         param_list = [0.123456789, 0.212345678, 0.312345678, 0.412345678]
@@ -204,7 +201,6 @@ class TestMetaCircuit:
         method_mock.assert_not_called()
 
         # Check the new Circuit object
-        assert circuit.main_circuit == sample_circuit
         assert circuit.tags == expected_tags
         assert len(circuit.qasm_circuits) == expected_n_circuits
 
@@ -235,7 +231,9 @@ class TestMetaCircuit:
         )
 
         meta_circuit_original = MetaCircuit(
-            expval_circuit, weights_syms, qem_protocol=qem_protocol
+            source_circuit=expval_circuit,
+            symbols=weights_syms,
+            qem_protocol=qem_protocol,
         )
 
         # Serialize and deserialize the object
@@ -244,7 +242,7 @@ class TestMetaCircuit:
 
         # Assert that key attributes are preserved
         assert meta_circuit_unpickled.qem_protocol.name == "zne"
-        assert len(meta_circuit_unpickled.compiled_circuits_bodies) == len(
+        assert len(meta_circuit_unpickled._compiled_circuit_bodies) == len(
             scale_factors
         )
         np.testing.assert_equal(meta_circuit_unpickled.symbols, weights_syms)

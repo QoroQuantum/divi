@@ -21,7 +21,7 @@ from qiskit_optimization import QuadraticProgram
 from qiskit_optimization.converters import QuadraticProgramToQubo
 from qiskit_optimization.problems import VarType
 
-from divi.circuits import Circuit, MetaCircuit
+from divi.circuits import CircuitBundle, MetaCircuit
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from divi.utils import convert_qubo_matrix_to_pennylane_ising
@@ -403,13 +403,13 @@ class QAOA(VariationalQuantumAlgorithm):
 
         return {
             "cost_circuit": self._meta_circuit_factory(
-                qml.tape.make_qscript(_prepare_circuit)(
+                source_circuit=qml.tape.make_qscript(_prepare_circuit)(
                     self._cost_hamiltonian, sym_params, final_measurement=False
                 ),
                 symbols=sym_params.flatten(),
             ),
             "meas_circuit": self._meta_circuit_factory(
-                qml.tape.make_qscript(_prepare_circuit)(
+                source_circuit=qml.tape.make_qscript(_prepare_circuit)(
                     self._cost_hamiltonian, sym_params, final_measurement=True
                 ),
                 symbols=sym_params.flatten(),
@@ -417,7 +417,7 @@ class QAOA(VariationalQuantumAlgorithm):
             ),
         }
 
-    def _generate_circuits(self) -> list[Circuit]:
+    def _generate_circuits(self) -> list[CircuitBundle]:
         """Generate the circuits for the QAOA problem.
 
         Generates circuits for each parameter set in the current parameters.
@@ -425,7 +425,7 @@ class QAOA(VariationalQuantumAlgorithm):
         (for final solution extraction) or just expectation values (for optimization).
 
         Returns:
-            list[Circuit]: List of Circuit objects for execution.
+            list[CircuitBundle]: List of CircuitBundle objects for execution.
         """
         circuit_type = (
             "cost_circuit" if not self._is_compute_probabilites else "meas_circuit"

@@ -14,7 +14,7 @@ import pennylane as qml
 from scipy.optimize import OptimizeResult
 
 from divi.backends import CircuitRunner
-from divi.circuits import Circuit, MetaCircuit
+from divi.circuits import CircuitBundle, MetaCircuit
 from divi.circuits.qem import _NoMitigation
 from divi.qprog.exceptions import _CancelledError
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
@@ -464,7 +464,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         pass
 
     @abstractmethod
-    def _generate_circuits(self, **kwargs) -> list[Circuit]:
+    def _generate_circuits(self, **kwargs) -> list[CircuitBundle]:
         """Generate quantum circuits for execution.
 
         This method should generate and return a list of Circuit objects based on
@@ -475,7 +475,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             **kwargs: Additional keyword arguments for circuit generation.
 
         Returns:
-            list[Circuit]: List of Circuit objects to be executed.
+            list[CircuitBundle]: List of Circuit objects to be executed.
         """
         pass
 

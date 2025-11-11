@@ -10,32 +10,39 @@ description = "A Python library to automate generating, parallelizing, and execu
 authors = [{ name = "Ahmed Darwish", email = "ahmed@qoroquantum.de" }, { name = "Stephen DiAdamo", email = "stephen@qoroquantum.de" }]
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
+dynamic = ["dependencies"]  # Dependencies are managed by Poetry via [tool.poetry.dependencies]
 
 [tool.poetry]
 packages = [{ include = "divi" }]
 
 [tool.poetry.dependencies]
 python = ">=3.11,<3.13"
+# Quantum computing
 pennylane = "^0.42.3"
-networkx = "^3.5"
-scipy = "<=1.15.2"
-matplotlib = "^3.10.3"
-requests = "^2.32.4"
 qiskit = "<2.0"
 qiskit-aer = "^0.17.1"
 qiskit-ibm-runtime = ">=0.37,<0.38"
 qiskit-optimization = {extras = ["cplex"], version = "^0.7.0"}
-dill = "^0.4.0"
-sympy = "^1.14.0"
 cirq-core = "<1.5.0"
-scikit-learn = "^1.7.0"
-rich = "^14.0.0"
-pymetis = "^2025.1.1"
 mitiq = "^0.46"
-ply = "^3.11"
-python-dotenv = "^1.1.1"
-dwave-hybrid = "^0.6.14"
+# Scientific computing and numerical operations
+scipy = "<=1.15.2"
+sympy = "^1.14.0"
+scikit-learn = "^1.7.0"
+# Graph operations and partitioning
+networkx = "^3.5"
+pymetis = "^2025.1.1"
+# Optimization algorithms
 pymoo = "^0.6.1.5"
+dwave-hybrid = "^0.6.14"
+# Utilities
+requests = "^2.32.4"
+dill = "^0.4.0"
+python-dotenv = "^1.1.1"
+rich = "^14.0.0"
+matplotlib = "^3.10.3"
+ply = "^3.11"
+basis-set-exchange = "^0.11"
 
 
 [tool.poetry.group.dev.dependencies]

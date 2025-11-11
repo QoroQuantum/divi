@@ -64,13 +64,13 @@ class SampleVQAProgram(VariationalQuantumAlgorithm):
 
         symbols = [sp.Symbol("beta"), sp.symarray("theta", 3)]
         meta_circuit = MetaCircuit(
-            main_circuit=qml.tape.make_qscript(simple_circuit)(symbols),
+            source_circuit=qml.tape.make_qscript(simple_circuit)(symbols),
             symbols=symbols,
             grouping_strategy=self._grouping_strategy,
         )
         return {"cost_circuit": meta_circuit}
 
-    def _generate_circuits(self, params=None, **kwargs):
+    def _generate_circuits(self, **kwargs):
         """Generate circuits - dummy implementation for testing."""
         return []
 
@@ -138,7 +138,7 @@ class TestProgram:
             meta_circuit = program._meta_circuits["cost_circuit"]
             assert len(meta_circuit.measurement_groups) == expected_n_groups
             assert (
-                len(tuple(filter(lambda x: "h" in x, meta_circuit.measurements)))
+                len(tuple(filter(lambda x: "h" in x, meta_circuit._measurements)))
                 == expected_n_diag
             )
 
