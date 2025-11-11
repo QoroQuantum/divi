@@ -10,6 +10,67 @@ import pennylane as qml
 import scipy.sparse as sps
 
 
+def clean_hamiltonian(
+    hamiltonian: qml.operation.Operator,
+) -> tuple[qml.operation.Operator, float]:
+    """Separate constant and non-constant terms in a Hamiltonian.
+
+    This function processes a PennyLane Hamiltonian to separate out any terms
+    that are constant (i.e., proportional to the identity operator). The sum
+    of these constant terms is returned, along with a new Hamiltonian containing
+    only the non-constant terms.
+
+    Args:
+        hamiltonian: The Hamiltonian operator to process.
+
+    Returns:
+        tuple[qml.operation.Operator, float]: A tuple containing:
+            - The Hamiltonian without the constant (identity) component.
+            - The summed value of all constant terms.
+    """
+    if hamiltonian is None:
+        return qml.Hamiltonian([], []), 0.0
+
+    terms = (
+        hamiltonian.operands if isinstance(hamiltonian, qml.ops.Sum) else [hamiltonian]
+    )
+
+    loss_constant = 0.0
+    non_constant_terms = []
+
+    for term in terms:
+        coeff = 1.0
+        base_op = term
+        if isinstance(term, qml.ops.SProd):
+            coeff = term.scalar
+            base_op = term.base
+
+        # Check for Identity term
+        is_constant = False
+        if isinstance(base_op, qml.Identity):
+            is_constant = True
+        elif isinstance(base_op, qml.ops.Prod) and all(
+            isinstance(op, qml.Identity) for op in base_op.operands
+        ):
+            is_constant = True
+
+        if is_constant:
+            loss_constant += coeff
+        else:
+            non_constant_terms.append(term)
+
+    if not non_constant_terms:
+        return qml.Hamiltonian([], []), float(loss_constant)
+
+    # Reconstruct the Hamiltonian from non-constant terms
+    if len(non_constant_terms) > 1:
+        new_hamiltonian = qml.sum(*non_constant_terms)
+    else:
+        new_hamiltonian = non_constant_terms[0]
+
+    return new_hamiltonian.simplify(), float(loss_constant)
+
+
 def hamiltonian_to_pauli_string(hamiltonian: qml.Hamiltonian, n_qubits: int) -> str:
     """
     Convert a QNode Hamiltonian to a semicolon-separated string of Pauli operators.

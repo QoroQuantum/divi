@@ -12,6 +12,7 @@ from divi.circuits import CircuitBundle, MetaCircuit
 from divi.qprog.algorithms._ansatze import Ansatz, HartreeFockAnsatz
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
+from divi.utils import clean_hamiltonian
 
 
 class VQE(VariationalQuantumAlgorithm):
@@ -147,69 +148,9 @@ class VQE(VariationalQuantumAlgorithm):
                     UserWarning,
                 )
 
-        self._cost_hamiltonian = self._clean_hamiltonian(hamiltonian)
-
-    def _clean_hamiltonian(
-        self, hamiltonian: qml.operation.Operator
-    ) -> qml.operation.Operator:
-        """Separate constant and non-constant terms in a Hamiltonian.
-
-        This function processes a PennyLane Hamiltonian to separate out any terms
-        that are constant (i.e., proportional to the identity operator). The sum
-        of these constant terms is stored in `self.loss_constant`, and a new
-        Hamiltonian containing only the non-constant terms is returned.
-
-        Args:
-            hamiltonian: The Hamiltonian operator to process.
-
-        Returns:
-            qml.operation.Operator: The Hamiltonian without the constant (identity) component.
-
-        Raises:
-            ValueError: If the Hamiltonian is found to contain only constant terms.
-        """
-        terms = (
-            hamiltonian.operands
-            if isinstance(hamiltonian, qml.ops.Sum)
-            else [hamiltonian]
-        )
-
-        loss_constant = 0.0
-        non_constant_terms = []
-
-        for term in terms:
-            coeff = 1.0
-            base_op = term
-            if isinstance(term, qml.ops.SProd):
-                coeff = term.scalar
-                base_op = term.base
-
-            # Check for Identity term
-            is_constant = False
-            if isinstance(base_op, qml.Identity):
-                is_constant = True
-            elif isinstance(base_op, qml.ops.Prod) and all(
-                isinstance(op, qml.Identity) for op in base_op.operands
-            ):
-                is_constant = True
-
-            if is_constant:
-                loss_constant += coeff
-            else:
-                non_constant_terms.append(term)
-
-        self.loss_constant = float(loss_constant)
-
-        if not non_constant_terms:
+        self._cost_hamiltonian, self.loss_constant = clean_hamiltonian(hamiltonian)
+        if not self._cost_hamiltonian.operands:
             raise ValueError("Hamiltonian contains only constant terms.")
-
-        # Reconstruct the Hamiltonian from non-constant terms
-        if len(non_constant_terms) > 1:
-            new_hamiltonian = qml.sum(*non_constant_terms)
-        else:
-            new_hamiltonian = non_constant_terms[0]
-
-        return new_hamiltonian.simplify()
 
     def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
         """Create the meta-circuit dictionary for VQE.

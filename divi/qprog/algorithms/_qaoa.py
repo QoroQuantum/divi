@@ -24,7 +24,7 @@ from qiskit_optimization.problems import VarType
 from divi.circuits import CircuitBundle, MetaCircuit
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
-from divi.utils import convert_qubo_matrix_to_pennylane_ising
+from divi.utils import clean_hamiltonian, convert_qubo_matrix_to_pennylane_ising
 
 logger = logging.getLogger(__name__)
 
@@ -304,7 +304,7 @@ class QAOA(VariationalQuantumAlgorithm):
         self._solution_bitstring = []
 
         (
-            self._cost_hamiltonian,
+            cost_hamiltonian,
             self._mixer_hamiltonian,
             *problem_metadata,
             self.initial_state,
@@ -316,14 +316,18 @@ class QAOA(VariationalQuantumAlgorithm):
         )
         self.problem_metadata = problem_metadata[0] if problem_metadata else {}
 
+        pre_calculated_constant = 0.0
         if "constant" in self.problem_metadata:
-            self.loss_constant = self.problem_metadata.get("constant")
+            pre_calculated_constant = self.problem_metadata.get("constant")
             try:
-                self.loss_constant = self.loss_constant.item()
+                pre_calculated_constant = pre_calculated_constant.item()
             except AttributeError:
                 pass
-        else:
-            self.loss_constant = 0.0
+
+        self._cost_hamiltonian, constant_from_hamiltonian = clean_hamiltonian(
+            cost_hamiltonian
+        )
+        self.loss_constant = pre_calculated_constant + constant_from_hamiltonian
 
         kwargs.pop("is_constrained", None)
         super().__init__(**kwargs)
