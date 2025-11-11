@@ -140,7 +140,7 @@ def test_meta_circuit_qasm(ansatz_obj, n_layers, h2_molecule):
     )
 
     meta_circuit_obj = vqe_problem._meta_circuits["cost_circuit"]
-    meta_circuit_qasm = meta_circuit_obj.compiled_circuits_bodies[0]
+    meta_circuit_qasm = meta_circuit_obj._compiled_circuit_bodies[0]
 
     pattern = r"w_(\d+)_(\d+)"
     matches = re.findall(pattern, meta_circuit_qasm)
