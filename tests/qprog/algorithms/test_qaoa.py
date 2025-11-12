@@ -321,6 +321,172 @@ class TestGraphInput:
         # Clean up the plot
         plt.close()
 
+    def test_string_node_labels_bitstring_length(self, default_test_simulator):
+        """Test that graphs with string node labels produce correct bitstring lengths."""
+        # Create a graph with string node labels
+        G = nx.Graph()
+        G.add_nodes_from(["0", "1", "2", "3"])
+        G.add_edges_from([("0", "1"), ("1", "2"), ("2", "3")])
+
+        qaoa_problem = QAOA(
+            problem=G,
+            graph_problem=GraphProblem.MAXCUT,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=1,
+            backend=default_test_simulator,
+        )
+
+        # Mock the optimization to set best_params
+        qaoa_problem._best_params = np.array([[0.1, 0.2]])
+        qaoa_problem._best_loss = 0.5
+
+        # Run to get measurement results
+        qaoa_problem.run()
+
+        # Verify all bitstrings have the correct length (should match number of nodes)
+        assert all(
+            len(bitstring) == G.number_of_nodes()
+            for probs_dict in qaoa_problem.best_probs.values()
+            for bitstring in probs_dict.keys()
+        ), "Bitstring lengths should match the number of graph nodes"
+
+    def test_string_node_labels_solution_mapping(self, mocker):
+        """Test that solution correctly maps to string node labels."""
+        # Create a graph with string node labels
+        G = nx.Graph()
+        G.add_nodes_from(["a", "b", "c"])
+        G.add_edges_from([("a", "b"), ("b", "c")])
+
+        qaoa_problem = QAOA(
+            problem=G,
+            graph_problem=GraphProblem.MAXCUT,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=1,
+            is_constrained=True,
+            backend=None,
+        )
+
+        # Simulate measurement results with bitstring "101" (nodes 'a' and 'c' selected)
+        # The bitstring order corresponds to the Hamiltonian's wire order
+        qaoa_problem._best_probs = {"0_NoMitigation:0_0": {"101": 0.6, "010": 0.4}}
+
+        # Patch _run_solution_measurement to do nothing (since we set probs manually)
+        mocker.patch.object(qaoa_problem, "_run_solution_measurement")
+
+        qaoa_problem._perform_final_computation()
+
+        # Verify solution contains the correct node labels (not integer indices)
+        # The solution should be a list of the actual graph node labels
+        assert all(
+            isinstance(node, str) for node in qaoa_problem.solution
+        ), "Solution should contain string node labels, not integers"
+        assert len(qaoa_problem.solution) == 2, "Bitstring '101' should map to 2 nodes"
+        # Verify the solution nodes are valid graph nodes
+        assert all(
+            node in G.nodes() for node in qaoa_problem.solution
+        ), "All solution nodes should be valid graph nodes"
+
+    def test_string_node_labels_circuit_wires(self):
+        """Test that circuit_wires correctly uses Hamiltonian wire labels."""
+        # Create a graph with string node labels
+        G = nx.Graph()
+        G.add_nodes_from(["x", "y", "z"])
+        G.add_edges_from([("x", "y"), ("y", "z")])
+
+        qaoa_problem = QAOA(
+            problem=G,
+            graph_problem=GraphProblem.MAXCUT,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=1,
+            backend=None,
+        )
+
+        # Verify circuit_wires uses the Hamiltonian's wire labels (strings)
+        assert isinstance(qaoa_problem._circuit_wires, tuple)
+        assert len(qaoa_problem._circuit_wires) == G.number_of_nodes()
+        assert all(
+            wire in G.nodes() for wire in qaoa_problem._circuit_wires
+        ), "Circuit wires should match graph node labels"
+        assert all(
+            isinstance(wire, str) for wire in qaoa_problem._circuit_wires
+        ), "Circuit wires should be strings for string-labeled graphs"
+
+    def test_mixed_type_node_labels(self, mocker):
+        """Test that graphs with mixed type node labels work correctly."""
+        # Create a graph with mixed type node labels (integers and strings)
+        G = nx.Graph()
+        G.add_nodes_from([0, "1", 2, "3"])
+        G.add_edges_from([(0, "1"), ("1", 2), (2, "3")])
+
+        qaoa_problem = QAOA(
+            problem=G,
+            graph_problem=GraphProblem.MAXCUT,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=1,
+            backend=None,
+        )
+
+        # Verify circuit_wires contains both types
+        assert len(qaoa_problem._circuit_wires) == G.number_of_nodes()
+        assert all(
+            wire in G.nodes() for wire in qaoa_problem._circuit_wires
+        ), "Circuit wires should match graph node labels"
+
+        # Simulate measurement results
+        qaoa_problem._best_probs = {"0_NoMitigation:0_0": {"1010": 0.5, "0101": 0.5}}
+
+        # Patch _run_solution_measurement
+        mocker.patch.object(qaoa_problem, "_run_solution_measurement")
+
+        qaoa_problem._perform_final_computation()
+
+        # Verify solution contains the correct node labels (mixed types)
+        assert len(qaoa_problem.solution) == 2, "Bitstring '1010' should map to 2 nodes"
+        assert all(
+            node in G.nodes() for node in qaoa_problem.solution
+        ), "All solution nodes should be valid graph nodes"
+
+    @pytest.mark.e2e
+    def test_string_node_labels_e2e(self, default_test_simulator):
+        """End-to-end test with string node labels."""
+        # Create a simple graph with string labels
+        G = nx.Graph()
+        G.add_nodes_from(["node0", "node1", "node2"])
+        G.add_edges_from([("node0", "node1"), ("node1", "node2")])
+
+        default_test_simulator.set_seed(1997)
+
+        qaoa_problem = QAOA(
+            problem=G,
+            graph_problem=GraphProblem.MAXCUT,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+            max_iterations=5,
+            backend=default_test_simulator,
+            seed=1997,
+        )
+
+        qaoa_problem.run()
+
+        # Verify bitstring lengths are correct
+        assert all(
+            len(bitstring) == G.number_of_nodes()
+            for probs_dict in qaoa_problem.best_probs.values()
+            for bitstring in probs_dict.keys()
+        ), "All bitstrings should have length equal to number of nodes"
+
+        # Verify solution contains valid string node labels
+        assert all(
+            isinstance(node, str) for node in qaoa_problem.solution
+        ), "Solution should contain string node labels"
+        assert all(
+            node in G.nodes() for node in qaoa_problem.solution
+        ), "All solution nodes should be valid graph nodes"
+
 
 QUBO_MATRIX_LIST = [
     [-3.0, 4.0, 0.0],

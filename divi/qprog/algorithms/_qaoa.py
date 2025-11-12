@@ -329,6 +329,9 @@ class QAOA(VariationalQuantumAlgorithm):
         )
         self.loss_constant = pre_calculated_constant + constant_from_hamiltonian
 
+        # Extract wire labels from the cost Hamiltonian to ensure consistency
+        self._circuit_wires = tuple(self._cost_hamiltonian.wires)
+
         kwargs.pop("is_constrained", None)
         super().__init__(**kwargs)
 
@@ -388,15 +391,17 @@ class QAOA(VariationalQuantumAlgorithm):
                 final_measurement (bool): Whether to perform final measurement.
             """
 
-            # Note: could've been done as qml.[Insert Gate](wires=range(self.n_qubits))
+            # Use the wire labels from the cost Hamiltonian to ensure consistency
+            # This is important for graph problems where node labels might be strings
+            # Note: could've been done as qml.[Insert Gate](wires=self._circuit_wires)
             # but there seems to be a bug with program capture in Pennylane.
             # Maybe check when a new version comes out?
             if self.initial_state == "Ones":
-                for i in range(self.n_qubits):
-                    qml.PauliX(wires=i)
+                for wire in self._circuit_wires:
+                    qml.PauliX(wires=wire)
             elif self.initial_state == "Superposition":
-                for i in range(self.n_qubits):
-                    qml.Hadamard(wires=i)
+                for wire in self._circuit_wires:
+                    qml.Hadamard(wires=wire)
 
             qml.layer(_qaoa_layer, self.n_layers, params)
 
@@ -495,8 +500,12 @@ class QAOA(VariationalQuantumAlgorithm):
             )
 
         if isinstance(self.problem, GraphProblemTypes):
+            # Map bitstring positions to actual graph node labels
+            # Bitstring is already endianness-corrected, so positions map directly to circuit_wires
             self._solution_nodes[:] = [
-                m.start() for m in re.finditer("1", best_solution_bitstring)
+                self._circuit_wires[idx]
+                for idx, bit in enumerate(best_solution_bitstring)
+                if bit == "1" and idx < len(self._circuit_wires)
             ]
 
         self.reporter.info(message="🏁 Computed Final Solution! 🏁\r\n")
