@@ -13,8 +13,7 @@ import sympy as sp
 from mitiq.zne.inference import ExpFactory
 from mitiq.zne.scaling import fold_global
 
-from divi.circuits import CircuitBundle, ExecutableQASMCircuit, MetaCircuit
-from divi.circuits.qasm import to_openqasm
+from divi.circuits import CircuitBundle, ExecutableQASMCircuit, MetaCircuit, to_openqasm
 from divi.circuits.qem import ZNE, _NoMitigation
 
 
@@ -129,7 +128,7 @@ class TestMetaCircuit:
         tag_prefix = "test"
         precision = 8
 
-        method_mock = mocker.patch("divi.circuits.qasm.to_openqasm")
+        method_mock = mocker.patch("divi.circuits.to_openqasm")
 
         circuit = meta_circuit.initialize_circuit_from_params(
             param_list, tag_prefix=tag_prefix, precision=precision
@@ -190,7 +189,7 @@ class TestMetaCircuit:
         tag_prefix = "test"
         precision = 8
 
-        method_mock = mocker.patch("divi.circuits.qasm.to_openqasm")
+        method_mock = mocker.patch("divi.circuits.to_openqasm")
 
         circuit = meta_circuit.initialize_circuit_from_params(
             param_list, tag_prefix=tag_prefix, precision=precision

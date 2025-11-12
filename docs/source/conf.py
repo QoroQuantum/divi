@@ -160,7 +160,6 @@ html_search_options = {
 
 coverage_show_missing_items = True
 coverage_ignore_modules = [
-    "divi.extern.*",  # External Cirq/SciPy code
     "divi.__pycache__.*",  # Python cache
     "divi.tests.*",  # Test modules
     "divi.*.tests.*",  # Test modules in subpackages

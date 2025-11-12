@@ -15,7 +15,8 @@ from pennylane.wires import Wires
 from sympy import Symbol
 
 from divi.circuits.qem import QEMProtocol
-from divi.extern.cirq import cirq_circuit_from_qasm
+
+from ._cirq import ExtendedQasmParser as QasmParser
 
 OPENQASM_GATES = {
     "CNOT": "cx",
@@ -43,6 +44,19 @@ OPENQASM_GATES = {
     "CSWAP": "cswap",
     "PhaseShift": "u1",
 }
+
+
+def _cirq_circuit_from_qasm(qasm: str) -> cirq.Circuit:
+    """Parses an OpenQASM string to `cirq.Circuit`.
+
+    Args:
+        qasm: The OpenQASM string
+
+    Returns:
+        The parsed circuit
+    """
+
+    return QasmParser().parse(qasm).circuit
 
 
 def _ops_to_qasm(operations, precision, wires):
@@ -185,7 +199,7 @@ def to_openqasm(
 
     main_qasm_strs = []
     if qem_protocol:
-        for circ in qem_protocol.modify_circuit(cirq_circuit_from_qasm(main_qasm_str)):
+        for circ in qem_protocol.modify_circuit(_cirq_circuit_from_qasm(main_qasm_str)):
             # Convert back to QASM2.0 code, with the symbolic parameters
             qasm_str = cirq.qasm(circ)
             # Remove redundant newlines

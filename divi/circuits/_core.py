@@ -12,7 +12,7 @@ import numpy as np
 import pennylane as qml
 from pennylane.transforms.core.transform_program import TransformProgram
 
-from divi.circuits.qasm import to_openqasm
+from divi.circuits import to_openqasm
 from divi.circuits.qem import QEMProtocol
 
 TRANSFORM_PROGRAM = TransformProgram()

@@ -23,10 +23,11 @@ qiskit = "<2.0"
 qiskit-aer = "^0.17.1"
 qiskit-ibm-runtime = ">=0.37,<0.38"
 qiskit-optimization = {extras = ["cplex"], version = "^0.7.0"}
-cirq-core = "<1.5.0"
-mitiq = "^0.46"
+cirq-core = "^1.6"
+mitiq = "^0.48"
 # Scientific computing and numerical operations
-scipy = "<=1.15.2"
+numpy = "^1"
+scipy = "^1.16"
 sympy = "^1.14.0"
 scikit-learn = "^1.7.0"
 # Graph operations and partitioning
