@@ -2,6 +2,37 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+"""QASM validation parser.
+
+This module provides a lightweight, standalone QASM parser specifically designed
+for validation purposes. While the codebase also uses Cirq's QASM parser (see
+`divi.circuits._cirq._parser`) for actual circuit parsing and execution, this
+validation parser serves distinct purposes:
+
+1. **Performance**: This parser is optimized for fast validation without building
+   full circuit representations. It performs syntax and semantic checks (symbol
+   resolution, gate signatures, register bounds, etc.) without the overhead of
+   constructing Cirq circuit objects.
+
+2. **Dependency independence**: This parser has no external dependencies beyond
+   the standard library, making it suitable for validation checks in contexts
+   where Cirq may not be available or desired.
+
+3. **Focused error reporting**: The parser is designed to provide clear, precise
+   error messages for validation failures, including line and column numbers,
+   which is useful for user-facing validation (e.g., before submitting circuits
+   to a backend service).
+
+4. **Use cases**: This parser is used for:
+   - Pre-submission validation of QASM strings (e.g., in `QoroService.submit_circuits`)
+   - Quick validity checks without full parsing (`is_valid_qasm`)
+   - Counting qubits from QASM without parsing to circuits (`validate_qasm_count_qubits`)
+
+The Cirq parser (`_parser.py`) remains the primary parser for converting QASM
+to executable circuit representations, while this module handles validation-only
+workloads efficiently.
+"""
+
 import re
 from typing import NamedTuple
 
@@ -392,6 +423,11 @@ class Parser:
             raise SyntaxError(
                 f"Gate '{gname}' expects {arity} qubit args in body, got {len(qids)} at {name_tok.line}:{name_tok.col}"
             )
+        # Check for duplicate qubit arguments
+        if len(set(qids)) != len(qids):
+            raise SyntaxError(
+                f"Duplicate qubit arguments for gate '{gname}' at {name_tok.line}:{name_tok.col}"
+            )
         self.match("SEMI")
 
     def _gate_body_qid(self) -> str:
@@ -634,13 +670,14 @@ class Parser:
 
 
 # ---------- Public API ----------
-def validate_qasm_raise(src: str) -> None:
+def validate_qasm(src: str) -> None:
+    """Validate QASM syntax, raising SyntaxError on error."""
     toks = _lex(src)
     Parser(toks).parse()
 
 
 def validate_qasm_count_qubits(src: str) -> int:
-    """Validate QASM and return the total number of qubits."""
+    """Validate QASM and return the total number of qubits, raising SyntaxError on error."""
     toks = _lex(src)
     parser = Parser(toks)
     parser.parse()
@@ -648,9 +685,10 @@ def validate_qasm_count_qubits(src: str) -> int:
     return sum(parser.qregs.values())
 
 
-def is_valid_qasm(src: str) -> int | str:
-    """Validate QASM and return the number of qubits if valid, or error message if invalid."""
+def is_valid_qasm(src: str) -> bool:
+    """Check if QASM is valid, returning True/False without raising exceptions."""
     try:
-        return validate_qasm_count_qubits(src)
-    except SyntaxError as e:
-        return str(e)
+        validate_qasm(src)
+        return True
+    except SyntaxError:
+        return False

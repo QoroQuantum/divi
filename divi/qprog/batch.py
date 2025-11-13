@@ -153,7 +153,7 @@ class ProgramBatch(ABC):
             - After calling super(), subclasses should populate `self.programs` or
               `self._programs` with their program instances.
             - Program identifiers can be any hashable type (e.g., strings, tuples).
-              Common patterns include strings like "prog1", "prog2" or tuples like
+              Common patterns include strings like "program_1", "program_2" or tuples like
               ('A', 5) for partitioned problems.
 
         Side Effects:

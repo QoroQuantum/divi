@@ -9,6 +9,8 @@ backends
 bitstring
 bitstrings
 Broyden
+CANCELLED
+cancelled
 cancelling
 Cirq
 cirq
@@ -28,6 +30,7 @@ endianness
 entanglers
 env
 excitations
+executables
 expval
 fallbacks
 Fiedler
@@ -43,6 +46,8 @@ identificatory
 Ising
 iteratively
 jac
+jacobian
+Jacobian
 Jupyter
 Kalos
 Kernighan
@@ -82,9 +87,12 @@ qml
 qprog
 QAOA
 Qiskit
+qnode
+QNode
 Qoro
 qubit
 qubits
+qscript
 qwc
 reproducibility
 rng

@@ -4,10 +4,10 @@
 
 from queue import Queue
 from threading import Event
-from unittest.mock import Mock
 
 import pytest
 
+from divi.backends import JobStatus
 from divi.qprog.quantum_program import QuantumProgram
 
 
@@ -33,35 +33,37 @@ class ConcreteQuantumProgram(QuantumProgram):
         return {"processed": "results"}
 
 
-class TestQuantumProgram:
-    """Test suite for QuantumProgram abstract base class."""
+class TestQuantumProgramBase:
+    """Tests for QuantumProgram abstract base class contract and core functionality."""
 
-    def test_initialization_comprehensive(self):
-        """Test QuantumProgram initialization with various parameters."""
-        mock_backend = Mock()
+    def test_initialization_with_all_params(self, mocker):
+        """Test QuantumProgram initialization with all parameters."""
+        mock_backend = mocker.Mock()
         mock_queue = Queue()
 
-        # Test basic initialization
-        program1 = ConcreteQuantumProgram(
+        program = ConcreteQuantumProgram(
             backend=mock_backend, seed=42, progress_queue=mock_queue
         )
 
-        assert program1.backend == mock_backend
-        assert program1._seed == 42
-        assert program1._progress_queue == mock_queue
+        assert program.backend == mock_backend
+        assert program._seed == 42
+        assert program._progress_queue == mock_queue
 
-        # Test initialization with kwargs
-        program2 = ConcreteQuantumProgram(
+    def test_initialization_with_kwargs(self, mocker):
+        """Test QuantumProgram initialization with additional kwargs."""
+        mock_backend = mocker.Mock()
+
+        program = ConcreteQuantumProgram(
             backend=mock_backend, custom_param="test_value", another_param=123
         )
 
-        assert program2.backend == mock_backend
-        assert program2._seed is None
-        assert program2._progress_queue is None
+        assert program.backend == mock_backend
+        assert program._seed is None
+        assert program._progress_queue is None
 
-    def test_abstract_class_behavior(self):
+    def test_abstract_class_behavior(self, mocker):
         """Test abstract class instantiation behavior."""
-        mock_backend = Mock()
+        mock_backend = mocker.Mock()
 
         # Test that abstract class cannot be instantiated
         with pytest.raises(TypeError, match="Can't instantiate abstract class"):
@@ -72,9 +74,9 @@ class TestQuantumProgram:
         assert isinstance(program, QuantumProgram)
         assert program.backend == mock_backend
 
-    def test_abstract_methods_must_be_implemented(self):
+    def test_abstract_methods_must_be_implemented(self, mocker):
         """Test that all abstract methods must be implemented in subclasses."""
-        mock_backend = Mock()
+        mock_backend = mocker.Mock()
 
         # Test missing run method
         class IncompleteProgram1(QuantumProgram):
@@ -109,29 +111,9 @@ class TestQuantumProgram:
         with pytest.raises(TypeError, match="Can't instantiate abstract class"):
             IncompleteProgram3(backend=mock_backend)
 
-    def test_method_implementations(self):
-        """Test concrete method implementations."""
-        mock_backend = Mock()
-        program = ConcreteQuantumProgram(backend=mock_backend)
-
-        # Test run method
-        circuits_count, runtime = program.run()
-        assert circuits_count == 5
-        assert runtime == 1.5
-
-        # Test _generate_circuits method
-        circuits = program._generate_circuits(test_param="value")
-        assert isinstance(circuits, list)
-        assert circuits == []
-
-        # Test _post_process_results method
-        results = {"raw": "data"}
-        processed = program._post_process_results(results)
-        assert processed == {"processed": "results"}
-
-    def test_cancellation_event(self):
+    def test_cancellation_event(self, mocker):
         """Test _set_cancellation_event method."""
-        mock_backend = Mock()
+        mock_backend = mocker.Mock()
         program = ConcreteQuantumProgram(backend=mock_backend)
 
         event = Event()
@@ -140,20 +122,27 @@ class TestQuantumProgram:
         assert hasattr(program, "_cancellation_event")
         assert program._cancellation_event == event
 
-    def test_property_methods_comprehensive(self):
-        """Test property methods with various attribute states."""
-        mock_backend = Mock()
+    def test_total_circuit_count_property(self, mocker):
+        """Test total_circuit_count property."""
+        mock_backend = mocker.Mock()
+        program = ConcreteQuantumProgram(backend=mock_backend)
 
-        # Test with both attributes set
-        program1 = ConcreteQuantumProgram(backend=mock_backend)
-        program1._total_circuit_count = 15
-        program1._total_run_time = 3.7
+        program._total_circuit_count = 15
+        assert program.total_circuit_count == 15
 
-        assert program1.total_circuit_count == 15
-        assert program1.total_run_time == 3.7
+    def test_total_run_time_property(self, mocker):
+        """Test total_run_time property."""
+        mock_backend = mocker.Mock()
+        program = ConcreteQuantumProgram(backend=mock_backend)
 
-        # Test with one attribute missing
-        class PartialProgram(QuantumProgram):
+        program._total_run_time = 3.7
+        assert program.total_run_time == 3.7
+
+    def test_properties_default_to_zero(self, mocker):
+        """Test that properties default to zero when not set."""
+        mock_backend = mocker.Mock()
+
+        class DefaultProgram(QuantumProgram):
             def run(self):
                 return (0, 0.0)
 
@@ -163,25 +152,195 @@ class TestQuantumProgram:
             def _post_process_results(self, results):
                 return {}
 
-            def __init__(self, backend):
-                super().__init__(backend)
-                self._total_circuit_count = 8  # Only set circuit count
+        program = DefaultProgram(mock_backend)
+        assert program.total_circuit_count == 0
+        assert program.total_run_time == 0.0
 
-        program2 = PartialProgram(mock_backend)
-        assert program2.total_circuit_count == 8
-        assert program2.total_run_time == 0.0  # Default value
 
-        # Test with both attributes missing
-        class NoAttributesProgram(QuantumProgram):
-            def run(self):
-                return (0, 0.0)
+class TestQuantumProgramAsyncExecution:
+    """Tests for QuantumProgram asynchronous execution paths and callbacks."""
 
+    @pytest.fixture
+    def mock_async_backend(self, mocker):
+        """Fixture for a mock asynchronous backend."""
+        backend = mocker.Mock()
+        backend.is_async = True
+        backend.submit_circuits.return_value = "fake_job_id"
+
+        # Use a side effect to properly simulate the callback behavior
+        def poll_side_effect(*args, **kwargs):
+            # Simulate the callback being called once
+            if "poll_callback" in kwargs and kwargs["poll_callback"] is not None:
+                kwargs["poll_callback"](1, "RUNNING")
+            return JobStatus.COMPLETED
+
+        backend.poll_job_status.side_effect = poll_side_effect
+        backend.get_job_results.return_value = [
+            {"label": "circuit_1", "results": "final_results"}
+        ]
+        return backend
+
+    @pytest.fixture
+    def async_test_program_class(self, mocker):
+        """Fixture providing a reusable async test program class."""
+
+        def _create_program_class():
+            class AsyncTestProgram(ConcreteQuantumProgram):
+                def run(self, **kwargs):
+                    self._curr_circuits = self._generate_circuits()
+                    return self._dispatch_circuits_and_process_results(**kwargs)
+
+                def _generate_circuits(self, **kwargs):
+                    executable = mocker.Mock()
+                    executable.tag = "circuit_1"
+                    executable.qasm = "fake_qasm"
+                    bundle = mocker.Mock()
+                    bundle.executables = [executable]
+                    return [bundle]
+
+                def _post_process_results(self, results: dict, **kwargs):
+                    return results
+
+            return AsyncTestProgram
+
+        return _create_program_class
+
+    def test_async_workflow_with_reporter(
+        self, mock_async_backend, mocker, async_test_program_class
+    ):
+        """Tests that reporter callback is invoked during async workflow."""
+        AsyncTestProgram = async_test_program_class()
+        mock_queue = Queue()
+        program = AsyncTestProgram(
+            backend=mock_async_backend, progress_queue=mock_queue
+        )
+        program.reporter = mocker.Mock()
+
+        program.run()
+
+        program.reporter.info.assert_called()
+        call_kwargs = program.reporter.info.call_args.kwargs
+        assert call_kwargs.get("service_job_id") == "fake_job_id"
+        assert "poll_attempt" in call_kwargs
+
+    def test_async_workflow_sets_service_job_id(
+        self, mock_async_backend, async_test_program_class
+    ):
+        """Tests that _curr_service_job_id is set when using an async backend."""
+        AsyncTestProgram = async_test_program_class()
+        program = AsyncTestProgram(backend=mock_async_backend)
+
+        program.run()
+
+        assert program._curr_service_job_id == "fake_job_id"
+
+    def test_async_workflow_processes_results(
+        self, mock_async_backend, async_test_program_class
+    ):
+        """Tests that async workflow correctly processes and returns results."""
+        AsyncTestProgram = async_test_program_class()
+        program = AsyncTestProgram(backend=mock_async_backend)
+
+        result = program.run()
+
+        assert result == {"circuit_1": "final_results"}
+
+    def test_async_workflow_without_reporter(
+        self, mock_async_backend, async_test_program_class
+    ):
+        """Tests that the async workflow works correctly even without a reporter."""
+        AsyncTestProgram = async_test_program_class()
+        # No progress_queue means no reporter attribute
+        program = AsyncTestProgram(backend=mock_async_backend)
+
+        result = program.run()
+
+        mock_async_backend.submit_circuits.assert_called_once()
+        mock_async_backend.poll_job_status.assert_called_once()
+        assert result == {"circuit_1": "final_results"}
+
+    def test_async_workflow_tracks_runtime(
+        self, mock_async_backend, async_test_program_class
+    ):
+        """Tests that the async workflow correctly tracks runtime via the on_complete callback."""
+        AsyncTestProgram = async_test_program_class()
+
+        def poll_with_runtime(*args, **kwargs):
+            if "on_complete" in kwargs and kwargs["on_complete"] is not None:
+                kwargs["on_complete"]({"run_time": "2.5"})
+            if "poll_callback" in kwargs and kwargs["poll_callback"] is not None:
+                kwargs["poll_callback"](1, "RUNNING")
+            return JobStatus.COMPLETED
+
+        mock_async_backend.poll_job_status.side_effect = poll_with_runtime
+
+        program = AsyncTestProgram(backend=mock_async_backend)
+        program.run()
+
+        assert program.total_run_time == 2.5
+
+    def test_prepare_and_send_circuits_increments_count(self, mocker):
+        """
+        Tests that _prepare_and_send_circuits correctly increments _total_circuit_count.
+        """
+
+        class CircuitCountTestProgram(ConcreteQuantumProgram):
             def _generate_circuits(self, **kwargs):
-                return []
+                # Create multiple bundles with multiple executables
+                executable1 = mocker.Mock()
+                executable1.tag = "circuit_1"
+                executable1.qasm = "qasm_1"
 
-            def _post_process_results(self, results):
-                return {}
+                executable2 = mocker.Mock()
+                executable2.tag = "circuit_2"
+                executable2.qasm = "qasm_2"
 
-        program3 = NoAttributesProgram(mock_backend)
-        assert program3.total_circuit_count == 0  # Default value
-        assert program3.total_run_time == 0.0  # Default value
+                executable3 = mocker.Mock()
+                executable3.tag = "circuit_3"
+                executable3.qasm = "qasm_3"
+
+                bundle1 = mocker.Mock()
+                bundle1.executables = [executable1, executable2]
+
+                bundle2 = mocker.Mock()
+                bundle2.executables = [executable3]
+
+                return [bundle1, bundle2]
+
+        mock_backend = mocker.Mock()
+        mock_backend.is_async = False
+        mock_backend.submit_circuits.return_value = {
+            "circuit_1": {},
+            "circuit_2": {},
+            "circuit_3": {},
+        }
+
+        program = CircuitCountTestProgram(backend=mock_backend)
+        program._curr_circuits = program._generate_circuits()
+
+        # Initial count should be 0
+        assert program.total_circuit_count == 0
+
+        # Call _prepare_and_send_circuits
+        program._prepare_and_send_circuits()
+
+        # Should have incremented by 3 (one for each executable)
+        assert program.total_circuit_count == 3
+
+        # Call again to verify cumulative behavior
+        program._prepare_and_send_circuits()
+        assert program.total_circuit_count == 6
+
+    def test_async_job_failure_raises_exception(
+        self, mock_async_backend, async_test_program_class
+    ):
+        """Tests that an exception is raised if the async job fails."""
+        AsyncTestProgram = async_test_program_class()
+
+        mock_async_backend.poll_job_status.side_effect = None
+        mock_async_backend.poll_job_status.return_value = JobStatus.FAILED
+
+        program = AsyncTestProgram(backend=mock_async_backend)
+
+        with pytest.raises(Exception, match="Job has not completed yet"):
+            program.run()

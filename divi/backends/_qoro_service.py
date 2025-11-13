@@ -23,7 +23,7 @@ from divi.backends._qpu_system import (
     parse_qpu_systems,
     update_qpu_systems_cache,
 )
-from divi.circuits import is_valid_qasm
+from divi.circuits import is_valid_qasm, validate_qasm
 
 API_URL = "https://app.qoroquantum.net/api"
 _MAX_PAYLOAD_SIZE_MB = 0.95
@@ -535,9 +535,12 @@ class QoroService(CircuitRunner):
             raise ValueError("Only one circuit allowed for circuit-cutting jobs.")
 
         for key, circuit in circuits.items():
-            result = is_valid_qasm(circuit)
-            if isinstance(result, str):
-                raise ValueError(f"Circuit '{key}' is not a valid QASM: {result}")
+            if not is_valid_qasm(circuit):
+                # Get the actual error message for better error reporting
+                try:
+                    validate_qasm(circuit)
+                except SyntaxError as e:
+                    raise ValueError(f"Circuit '{key}' is not a valid QASM: {e}") from e
 
         # Initialize the job without circuits to get a job_id
         init_payload = {

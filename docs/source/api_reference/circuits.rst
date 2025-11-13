@@ -30,15 +30,22 @@ Core Circuit Classes
 QASM Integration
 ----------------
 
-.. automodule:: divi.circuits.qasm
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
 QASM Generation Function
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. autofunction:: divi.circuits.qasm.to_openqasm
+.. autofunction:: divi.circuits.to_openqasm
+   :no-index:
+
+QASM Validation Functions
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autofunction:: divi.circuits.validate_qasm
+   :no-index:
+
+.. autofunction:: divi.circuits.validate_qasm_count_qubits
+   :no-index:
+
+.. autofunction:: divi.circuits.is_valid_qasm
    :no-index:
 
 Error Mitigation Protocols

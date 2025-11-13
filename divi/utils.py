@@ -71,15 +71,17 @@ def clean_hamiltonian(
     return new_hamiltonian.simplify(), float(loss_constant)
 
 
-def hamiltonian_to_pauli_string(hamiltonian: qml.Hamiltonian, n_qubits: int) -> str:
+def hamiltonian_to_pauli_string(
+    hamiltonian: qml.operation.Operator, n_qubits: int
+) -> str:
     """
-    Convert a QNode Hamiltonian to a semicolon-separated string of Pauli operators.
+    Convert a PennyLane Operator to a semicolon-separated string of Pauli operators.
 
     Each term in the Hamiltonian is represented as a string of Pauli letters ('I', 'X', 'Y', 'Z'),
     one per qubit. Multiple terms are separated by semicolons.
 
     Args:
-        hamiltonian (qml.Hamiltonian): The Pennylane Hamiltonian object to convert.
+        hamiltonian (qml.operation.Operator): The PennyLane Operator (e.g., Hamiltonian, PauliZ) to convert.
         n_qubits (int): Number of qubits to represent in the string.
 
     Returns:
@@ -91,22 +93,29 @@ def hamiltonian_to_pauli_string(hamiltonian: qml.Hamiltonian, n_qubits: int) -> 
     pauli_letters = {"PauliX": "X", "PauliY": "Y", "PauliZ": "Z"}
     identity_row = np.full(n_qubits, "I", dtype="<U1")
 
+    # Handle both single operators and sums of operators (like Hamiltonians)
+    terms_to_process = (
+        hamiltonian.operands if isinstance(hamiltonian, qml.ops.Sum) else [hamiltonian]
+    )
+
     terms = []
-    for term in hamiltonian.operands:
-        op = term.base if isinstance(term, qml.ops.SProd) else term
+    for term in terms_to_process:
+        op = term
+        while isinstance(op, qml.ops.SProd):
+            op = op.base
         ops = op.operands if isinstance(op, qml.ops.Prod) else [op]
 
         paulis = identity_row.copy()
         for p in ops:
+            if isinstance(p, qml.Identity):
+                continue
             # Better fallback logic with validation
             if p.name in pauli_letters:
                 pauli = pauli_letters[p.name]
-            elif p.name.startswith("Pauli") and len(p.name) > 5:
-                pauli = p.name[5:]  # Only if safe to slice
             else:
                 raise ValueError(
                     f"Unknown Pauli operator: {p.name}. "
-                    "Expected 'PauliX', 'PauliY', 'PauliZ', or a name starting with 'Pauli'."
+                    "Expected 'PauliX', 'PauliY', or 'PauliZ'."
                 )
 
             # Bounds checking for wire indices

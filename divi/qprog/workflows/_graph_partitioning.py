@@ -653,6 +653,6 @@ class GraphPartitioningQAOA(ProgramBatch):
         """
 
         if self.solution is None:
-            self.aggregate_results()
+            self.solution = self.aggregate_results()
 
         draw_graph_solution_nodes(self.main_graph, self.solution)

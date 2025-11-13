@@ -516,6 +516,38 @@ class TestGraphPartitioningQAOA:
         # Verify that the aggregated solution matches the expected nodes
         assert set(solution) == expected_nodes
 
+    def test_aggregate_results_raises_if_not_run(self, node_partitioning_qaoa):
+        """
+        Tests that a RuntimeError is raised if aggregate_results is called before
+        the programs have been run.
+        """
+        node_partitioning_qaoa.create_programs()
+        # Do not run the programs
+        with pytest.raises(RuntimeError, match="Some/All programs have empty losses"):
+            node_partitioning_qaoa.aggregate_results()
+
+    def test_draw_partitions_raises_if_not_created(self, node_partitioning_qaoa):
+        """
+        Tests that a RuntimeError is raised if draw_partitions is called before
+        create_programs.
+        """
+        with pytest.raises(RuntimeError, match="There are no partitions to draw"):
+            node_partitioning_qaoa.draw_partitions()
+
+    def test_draw_solution_calls_aggregate(self, mocker, node_partitioning_qaoa):
+        """
+        Tests that draw_solution calls aggregate_results if no solution exists.
+        """
+        mocker.patch.object(plt, "show")
+        mock_aggregate = mocker.patch.object(
+            node_partitioning_qaoa, "aggregate_results", return_value=[]
+        )
+        # Ensure solution is None
+        node_partitioning_qaoa.solution = None
+
+        node_partitioning_qaoa.draw_solution()
+        mock_aggregate.assert_called_once()
+
     def test_draw_partitions_logic(self, mocker):
         # 1. Setup a predictable scenario
         graph = nx.path_graph(4)  # Nodes 0, 1, 2, 3
