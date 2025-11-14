@@ -34,7 +34,7 @@ class TestGeneralQAOA:
         self, mocker, optimizer, default_test_simulator
     ):
         """
-        Verifies that _is_compute_probabilites is False during the optimization loop.
+        Verifies that _is_compute_probabilities is False during the optimization loop.
         """
         qaoa_problem = QAOA(
             problem=nx.bull_graph(),
@@ -58,7 +58,7 @@ class TestGeneralQAOA:
 
         def generate_circuits_spy(*args, **kwargs):
             # When _generate_circuits is called, record the flag's state
-            spy_flag_values.append(qaoa_problem._is_compute_probabilites)
+            spy_flag_values.append(qaoa_problem._is_compute_probabilities)
 
         # Replace the original method with our spy
         mocker.patch.object(
@@ -75,7 +75,7 @@ class TestGeneralQAOA:
         self, mocker, optimizer, default_test_simulator
     ):
         """
-        Verifies that _is_compute_probabilites is set to True during the final
+        Verifies that _is_compute_probabilities is set to True during the final
         circuit generation and is reset to False afterward.
         """
         qaoa_problem = QAOA(
@@ -103,7 +103,7 @@ class TestGeneralQAOA:
 
         def generate_circuits_spy():
             """Spy that records the flag's state and then calls the original method."""
-            flag_state_at_call_time.append(qaoa_problem._is_compute_probabilites)
+            flag_state_at_call_time.append(qaoa_problem._is_compute_probabilities)
             return original_generate_circuits()
 
         mocker.patch.object(
@@ -111,7 +111,7 @@ class TestGeneralQAOA:
         )
 
         # 1. Verify the initial state
-        assert qaoa_problem._is_compute_probabilites is False
+        assert qaoa_problem._is_compute_probabilities is False
 
         # 2. Run the function that changes the state
         qaoa_problem._perform_final_computation()
@@ -121,7 +121,7 @@ class TestGeneralQAOA:
         assert flag_state_at_call_time == [True]
 
         # 4. Verify the state was reset correctly after the function completed
-        assert qaoa_problem._is_compute_probabilites is False
+        assert qaoa_problem._is_compute_probabilities is False
 
     @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
     def test_graph_correct_circuits_count_and_energies(

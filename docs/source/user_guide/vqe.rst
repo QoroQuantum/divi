@@ -76,36 +76,13 @@ In the case where the input is a Hamiltonian, the number of electrons present in
 Initial Parameters
 ^^^^^^^^^^^^^^^^^^
 
-Setting good **initial parameters** can significantly improve VQE convergence and prevent getting trapped in local minima. This is particularly important for:
+Setting good initial parameters can significantly improve VQE convergence and prevent getting trapped in local minima. This is particularly useful for:
 
 - **Molecular dissociation curves**: Use optimal parameters from previous bond lengths as starting points
 - **Parameter sweeps**: Initialize from known good parameter regions
 - **Restarting failed optimizations**: Use parameters from partial convergence
 
-.. code-block:: python
-
-   # Example: Using initial parameters for better convergence
-   import numpy as np
-   import pennylane as qml
-   from divi.qprog import VQE, HartreeFockAnsatz
-   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-   from divi.backends import ParallelSimulator
-
-   mol = qml.qchem.Molecule(
-       symbols=["H", "H"],
-       coordinates=np.array([(0, 0, 0), (0, 0, 0.5)])
-   )
-   initial_params = np.random.uniform(-0.1, 0.1, (1, 4))
-   vqe_problem = VQE(
-       molecule=mol,
-       ansatz=HartreeFockAnsatz(),
-       n_layers=2,
-       optimizer=ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
-       max_iterations=50,
-       backend=ParallelSimulator(),
-       initial_params=initial_params,
-   )
-   vqe_problem.run()
+You can set initial parameters via the constructor ``initial_params`` argument or using the ``curr_params`` property. For detailed information and examples, see the :doc:`core_concepts` guide on Parameter Management.
 
 Available Ansätze
 -----------------

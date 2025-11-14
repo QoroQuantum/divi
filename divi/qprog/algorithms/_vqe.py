@@ -47,7 +47,6 @@ class VQE(VariationalQuantumAlgorithm):
         n_electrons: int | None = None,
         n_layers: int = 1,
         ansatz: Ansatz | None = None,
-        optimizer: Optimizer | None = None,
         max_iterations=10,
         **kwargs,
     ) -> None:
@@ -61,12 +60,9 @@ class VQE(VariationalQuantumAlgorithm):
             n_layers (int): Number of ansatz layers. Defaults to 1.
             ansatz (Ansatz | None): The ansatz to use for the VQE problem.
                 Defaults to HartreeFockAnsatz.
-            optimizer (Optimizer | None): The optimizer to use. Defaults to MonteCarloOptimizer.
             max_iterations (int): Maximum number of optimization iterations. Defaults to 10.
             **kwargs: Additional keyword arguments passed to the parent class.
         """
-
-        super().__init__(**kwargs)
 
         self.ansatz = HartreeFockAnsatz() if ansatz is None else ansatz
         self.n_layers = n_layers
@@ -74,9 +70,9 @@ class VQE(VariationalQuantumAlgorithm):
         self.max_iterations = max_iterations
         self.current_iteration = 0
 
-        self.optimizer = optimizer if optimizer is not None else MonteCarloOptimizer()
-
         self._eigenstate = None
+
+        super().__init__(**kwargs)
 
         self._process_problem_input(
             hamiltonian=hamiltonian, molecule=molecule, n_electrons=n_electrons
@@ -218,7 +214,7 @@ class VQE(VariationalQuantumAlgorithm):
             list[CircuitBundle]: List of CircuitBundle objects for execution.
         """
         circuit_type = (
-            "cost_circuit" if not self._is_compute_probabilites else "meas_circuit"
+            "cost_circuit" if not self._is_compute_probabilities else "meas_circuit"
         )
 
         return [
@@ -237,7 +233,7 @@ class VQE(VariationalQuantumAlgorithm):
                 ham_ops (str): The Hamiltonian operators to measure, semicolon-separated.
                     Only needed when the backend supports expval.
         """
-        if self._is_compute_probabilites:
+        if self._is_compute_probabilities:
             return self._process_probability_results(results)
 
         return super()._post_process_results(results, **kwargs)

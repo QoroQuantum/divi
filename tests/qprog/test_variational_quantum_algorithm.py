@@ -16,6 +16,7 @@ from scipy.optimize import OptimizeResult
 from divi.circuits import MetaCircuit
 from divi.circuits.qem import ZNE
 from divi.qprog.exceptions import _CancelledError
+from divi.qprog.optimizers import MonteCarloOptimizer
 from divi.qprog.variational_quantum_algorithm import (
     VariationalQuantumAlgorithm,
     _batched_expectation,
@@ -74,8 +75,17 @@ class SampleVQAProgram(VariationalQuantumAlgorithm):
         """Generate circuits - dummy implementation for testing."""
         return []
 
-    def run(self, data_file=None):
-        return super().run(data_file)
+    def run(
+        self,
+        perform_final_computation: bool = True,
+        data_file: str | None = None,
+        **kwargs,
+    ) -> tuple[int, float]:
+        return super().run(
+            perform_final_computation=perform_final_computation,
+            data_file=data_file,
+            **kwargs,
+        )
 
     def _perform_final_computation(self):
         pass
@@ -86,10 +96,9 @@ class TestProgram:
 
     def _create_sample_program(self, mocker, **kwargs):
         """Helper to create a SampleVQAProgram with common defaults."""
-        program = SampleVQAProgram(10, 5.5, seed=1997, **kwargs)
         if "optimizer" not in kwargs:
-            program.optimizer = self._create_mock_optimizer(mocker)
-        return program
+            kwargs["optimizer"] = self._create_mock_optimizer(mocker)
+        return SampleVQAProgram(10, 5.5, seed=1997, **kwargs)
 
     def _create_mock_backend(self, mocker, shots=100, supports_expval=False):
         """Helper to create a mock backend with standard properties."""
@@ -183,11 +192,14 @@ class TestProgram:
     def test_post_process_with_expectation_values_happy_path(self, mocker):
         """Test _post_process_results when backend supports expectation values with multiple parameter sets."""
         mock_backend = self._create_mock_backend(mocker, supports_expval=True)
+        mock_optimizer = self._create_mock_optimizer(mocker, n_param_sets=2)
         program = self._create_sample_program(
-            mocker, grouping_strategy=None, backend=mock_backend
+            mocker,
+            grouping_strategy=None,
+            backend=mock_backend,
+            optimizer=mock_optimizer,
         )
         program.loss_constant = 0.5
-        program.optimizer = self._create_mock_optimizer(mocker, n_param_sets=2)
 
         ham_ops = "XI;IZ;XZ"
         fake_results = {
@@ -312,16 +324,21 @@ class TestBatchedExpectation:
 class BaseVariationalQuantumAlgorithmTest:
     """Base test class for VariationalQuantumAlgorithm functionality."""
 
+    def _create_mock_optimizer(self, mocker, n_param_sets=1):
+        """Helper to create a mock optimizer with specified n_param_sets."""
+        mock_optimizer = mocker.MagicMock()
+        mock_optimizer.n_param_sets = n_param_sets
+        return mock_optimizer
+
     def _create_program_with_mock_optimizer(self, mocker, **kwargs):
         """Helper method to create SampleProgram with mocked optimizer."""
-        program = SampleVQAProgram(circ_count=1, run_time=0.1, **kwargs)
-        program.optimizer = mocker.MagicMock()
-        program.optimizer.n_param_sets = 1
-        return program
+        if "optimizer" not in kwargs:
+            kwargs["optimizer"] = self._create_mock_optimizer(mocker, n_param_sets=1)
+        return SampleVQAProgram(circ_count=1, run_time=0.1, **kwargs)
 
 
-class TestInitialParameters(BaseVariationalQuantumAlgorithmTest):
-    """Test suite for initial parameters functionality."""
+class TestParametersBehavior(BaseVariationalQuantumAlgorithmTest):
+    """Test suite for parameters functionality."""
 
     def _setup_mock_optimizer_single_run(self, mocker, program, final_params):
         """Helper to set up a mock optimizer for a single optimization run."""
@@ -338,53 +355,53 @@ class TestInitialParameters(BaseVariationalQuantumAlgorithmTest):
         program.optimizer = mock_optimizer
         return mock_optimizer
 
-    def test_initial_params_returns_numpy_array_not_none(self, mocker):
-        """Test that initial_params property always returns actual parameters."""
+    def test_curr_params_returns_numpy_array_not_none(self, mocker):
+        """Test that curr_params property always returns actual parameters."""
         program = self._create_program_with_mock_optimizer(mocker, seed=42)
-        params = program.initial_params
-        assert isinstance(params, np.ndarray)
-        assert params.shape == program.get_expected_param_shape()
+        curr_params = program.curr_params
+        assert isinstance(curr_params, np.ndarray)
+        assert curr_params.shape == program.get_expected_param_shape()
 
-    def test_initial_params_triggers_lazy_initialization_on_first_access(self, mocker):
-        """Test that accessing initial_params triggers parameter generation."""
+    def test_curr_params_triggers_lazy_initialization_on_first_access(self, mocker):
+        """Test that accessing curr_params triggers parameter generation."""
         program = self._create_program_with_mock_optimizer(mocker, seed=42)
         assert program._curr_params is None
-        params = program.initial_params
+        curr_params = program.curr_params
         assert program._curr_params is not None
-        assert isinstance(params, np.ndarray)
+        assert isinstance(curr_params, np.ndarray)
 
-    def test_initial_params_setter_stores_custom_parameters(self, mocker):
-        """Test that setting initial_params stores user-provided parameters."""
+    def test_curr_params_setter_stores_custom_parameters(self, mocker):
+        """Test that setting curr_params stores user-provided parameters."""
         program = self._create_program_with_mock_optimizer(mocker, seed=42)
         expected_shape = program.get_expected_param_shape()
-        custom_params = np.random.uniform(0, 2 * np.pi, expected_shape)
-        program.initial_params = custom_params
-        assert np.array_equal(program.initial_params, custom_params)
-        assert np.array_equal(program._curr_params, custom_params)
+        custom_curr_params = np.random.uniform(0, 2 * np.pi, expected_shape)
+        program.curr_params = custom_curr_params
+        assert np.array_equal(program.curr_params, custom_curr_params)
+        assert np.array_equal(program._curr_params, custom_curr_params)
 
-    def test_initial_params_setter_validates_parameter_shape(self, mocker):
+    def test_curr_params_setter_validates_parameter_shape(self, mocker):
         """Test that setter validates parameter shape matches expected shape."""
         program = self._create_program_with_mock_optimizer(mocker, seed=42)
-        wrong_shape_params = np.array([[0.1, 0.2]])
+        wrong_shape_curr_params = np.array([[0.1, 0.2]])
         with pytest.raises(ValueError, match="Initial parameters must have shape"):
-            program.initial_params = wrong_shape_params
+            program.curr_params = wrong_shape_curr_params
 
-    def test_initial_params_returns_copy_not_reference(self, mocker):
-        """Test that initial_params property returns a copy, not a reference."""
+    def test_curr_params_returns_copy_not_reference(self, mocker):
+        """Test that curr_params property returns a copy, not a reference."""
         program = self._create_program_with_mock_optimizer(mocker, seed=42)
-        params1 = program.initial_params
-        params2 = program.initial_params
-        assert not np.shares_memory(params1, params2)
-        assert not np.shares_memory(params1, program._curr_params)
-        assert np.array_equal(params1, params2)
+        curr_params1 = program.curr_params
+        curr_params2 = program.curr_params
+        assert not np.shares_memory(curr_params1, curr_params2)
+        assert not np.shares_memory(curr_params1, program._curr_params)
+        assert np.array_equal(curr_params1, curr_params2)
 
-    def test_run_preserves_user_set_initial_params(self, mocker):
-        """Test that run() does not overwrite user-set initial_params."""
+    def test_run_preserves_user_set_curr_params(self, mocker):
+        """Test that run() does not overwrite user-set curr_params."""
         program = self._create_program_with_mock_optimizer(mocker, seed=42)
         program.max_iterations = 1
 
-        custom_params = np.array([[1.0, 2.0, 3.0, 4.0]])
-        program.initial_params = custom_params
+        custom_curr_params = np.array([[1.0, 2.0, 3.0, 4.0]])
+        program.curr_params = custom_curr_params
 
         mock_init = mocker.patch.object(program, "_initialize_params")
         mocker.patch.object(
@@ -401,9 +418,11 @@ class TestInitialParameters(BaseVariationalQuantumAlgorithmTest):
         mock_init.assert_not_called()
         assert mock_optimizer.optimize.called
         call_args = mock_optimizer.optimize.call_args
-        np.testing.assert_array_equal(call_args.kwargs["initial_params"], custom_params)
+        np.testing.assert_array_equal(
+            call_args.kwargs["initial_params"], custom_curr_params
+        )
 
-    def test_run_initializes_params_when_not_set_by_user(self, mocker):
+    def test_run_initializes_curr_params_when_not_set_by_user(self, mocker):
         """Test that run() initializes parameters when user hasn't set them."""
         program = self._create_program_with_mock_optimizer(mocker, seed=42)
         program.max_iterations = 1
@@ -428,6 +447,113 @@ class TestInitialParameters(BaseVariationalQuantumAlgorithmTest):
         )
         assert program._curr_params.shape == expected_shape
 
+    @pytest.mark.parametrize(
+        "n_param_sets,initial_params_shape",
+        [
+            (1, (1, 4)),  # Single parameter set
+            (2, (2, 4)),  # Multiple parameter sets
+        ],
+    )
+    def test_initial_params_constructor_parameter_sets_curr_params(
+        self, mocker, mock_backend, n_param_sets, initial_params_shape
+    ):
+        """Test that passing initial_params to constructor sets curr_params correctly."""
+        custom_params = np.random.uniform(0, 2 * np.pi, initial_params_shape)
+        mock_optimizer = self._create_mock_optimizer(mocker, n_param_sets=n_param_sets)
+        program = SampleVQAProgram(
+            circ_count=1,
+            run_time=0.1,
+            backend=mock_backend,
+            optimizer=mock_optimizer,
+            initial_params=custom_params,
+        )
+
+        # Verify curr_params was set correctly
+        np.testing.assert_array_equal(program.curr_params, custom_params)
+        assert program._curr_params is not None
+
+    def test_initial_params_constructor_parameter_validates_shape(
+        self, mocker, mock_backend
+    ):
+        """Test that initial_params constructor parameter validates parameter shape."""
+        invalid_params = np.array([[0.1, 0.2]])  # Wrong shape
+        mock_optimizer = self._create_mock_optimizer(mocker, n_param_sets=1)
+        # Validation happens in constructor, so ValueError should be raised
+        with pytest.raises(ValueError, match="Initial parameters must have shape"):
+            SampleVQAProgram(
+                circ_count=1,
+                run_time=0.1,
+                backend=mock_backend,
+                optimizer=mock_optimizer,
+                initial_params=invalid_params,
+            )
+
+    def test_initial_params_constructor_parameter_used_in_run(
+        self, mocker, mock_backend
+    ):
+        """Test that initial_params passed to constructor are used when running."""
+        custom_params = np.array([[0.1, 0.2, 0.3, 0.4]])
+        mock_optimizer = self._create_mock_optimizer(mocker, n_param_sets=1)
+        program = SampleVQAProgram(
+            circ_count=1,
+            run_time=0.1,
+            backend=mock_backend,
+            optimizer=mock_optimizer,
+            initial_params=custom_params,
+        )
+        program.max_iterations = 1
+
+        mocker.patch.object(
+            program, "_run_optimization_circuits", return_value={0: -0.5}
+        )
+
+        final_params = np.array([[0.5, 1.0, 1.5, 2.0]])
+        self._setup_mock_optimizer_single_run(mocker, program, final_params)
+
+        program.run()
+
+        # Verify that the optimizer was called with the initial_params from constructor
+        call_args = program.optimizer.optimize.call_args
+        np.testing.assert_array_equal(call_args.kwargs["initial_params"], custom_params)
+
+
+class TestOptimizerBehavior(BaseVariationalQuantumAlgorithmTest):
+    """Test suite for optimizer initialization behavior."""
+
+    def test_optimizer_defaults_to_monte_carlo(self, mocker, mock_backend):
+        """Test that optimizer defaults to MonteCarloOptimizer when not provided."""
+        program = SampleVQAProgram(circ_count=1, run_time=0.1, backend=mock_backend)
+        assert isinstance(program.optimizer, MonteCarloOptimizer)
+        assert program.optimizer.n_param_sets == 10  # Default population_size
+
+    def test_optimizer_can_be_passed_via_kwargs(self, mocker, mock_backend):
+        """Test that optimizer can be passed via kwargs."""
+        custom_optimizer = self._create_mock_optimizer(mocker, n_param_sets=5)
+        program = SampleVQAProgram(
+            circ_count=1,
+            run_time=0.1,
+            backend=mock_backend,
+            optimizer=custom_optimizer,
+        )
+        assert program.optimizer is custom_optimizer
+        assert program.optimizer.n_param_sets == 5
+
+    def test_optimizer_is_set_before_super_init(self, mocker, mock_backend):
+        """Test that optimizer is available during __init__ before super().__init__()."""
+        # This test verifies optimizer is set up early enough for initial_params validation
+        custom_params = np.array([[0.1, 0.2, 0.3, 0.4]])
+        mock_optimizer = self._create_mock_optimizer(mocker, n_param_sets=1)
+        program = SampleVQAProgram(
+            circ_count=1,
+            run_time=0.1,
+            backend=mock_backend,
+            optimizer=mock_optimizer,
+            initial_params=custom_params,
+        )
+        # If optimizer wasn't set early, initial_params validation would fail
+        assert program.optimizer is mock_optimizer
+        np.testing.assert_array_equal(program.curr_params, custom_params)
+
 
 class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
     """Test suite for the integration of the run method's components."""
@@ -435,6 +561,7 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
     def setup_mock_optimizer(self, program, mocker, side_effects):
         """Configures a mock optimizer that executes callbacks."""
         mock_optimizer = mocker.MagicMock()
+        mock_optimizer.n_param_sets = program.optimizer.n_param_sets
 
         def mock_optimize_logic(cost_fn, initial_params, callback_fn, **kwargs):
             last_result = None
@@ -460,20 +587,22 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         mock_run_circuits = mocker.patch.object(program, "_run_optimization_circuits")
         mock_run_circuits.side_effect = [{0: -0.8}, {0: -0.5}, {0: -0.9}]
 
-        params1 = np.array([[0.1, 0.2, 0.3, 0.4]])
-        params2 = np.array([[0.5, 0.6, 0.7, 0.8]])
-        params3 = np.array([[0.9, 1.0, 1.1, 1.2]])
+        curr_params1 = np.array([[0.1, 0.2, 0.3, 0.4]])
+        curr_params2 = np.array([[0.5, 0.6, 0.7, 0.8]])
+        curr_params3 = np.array([[0.9, 1.0, 1.1, 1.2]])
 
         self.setup_mock_optimizer(
-            program, mocker, [(params1, -0.8), (params2, -0.5), (params3, -0.9)]
+            program,
+            mocker,
+            [(curr_params1, -0.8), (curr_params2, -0.5), (curr_params3, -0.9)],
         )
 
         program.run()
 
         # Assertions
         assert program.best_loss == -0.9
-        np.testing.assert_allclose(program.best_params, params3.flatten())
-        np.testing.assert_allclose(program.final_params, params3)
+        np.testing.assert_allclose(program.best_params, curr_params3.flatten())
+        np.testing.assert_allclose(program.final_params, curr_params3)
         assert len(program.losses_history) == 3
         assert program.losses_history[0][0] == -0.8
         assert program.losses_history[2][0] == -0.9
@@ -519,3 +648,91 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         program.run(data_file=str(data_file))
 
         program.save_iteration.assert_called_once_with(str(data_file))
+
+    def _setup_program_for_final_computation_test(self, mocker):
+        """Helper to set up program with mocks for final computation tests."""
+        program = self._create_program_with_mock_optimizer(mocker)
+        program.max_iterations = 1
+
+        mocker.patch.object(
+            program, "_run_optimization_circuits", return_value={0: -0.5}
+        )
+        mock_final_computation = mocker.spy(program, "_perform_final_computation")
+
+        final_params = np.array([[0.1, 0.2, 0.3, 0.4]])
+        final_loss = -0.5
+        self.setup_mock_optimizer(program, mocker, [(final_params, final_loss)])
+
+        return program, mock_final_computation
+
+    @pytest.mark.parametrize(
+        "perform_final_computation,should_call",
+        [
+            (None, True),  # Default (None means use default)
+            (True, True),
+            (False, False),
+        ],
+    )
+    def test_run_perform_final_computation(
+        self, mocker, perform_final_computation, should_call
+    ):
+        """Test that _perform_final_computation is called/not called based on parameter."""
+        program, mock_final_computation = (
+            self._setup_program_for_final_computation_test(mocker)
+        )
+
+        if perform_final_computation is None:
+            program.run()
+        else:
+            program.run(perform_final_computation=perform_final_computation)
+
+        if should_call:
+            mock_final_computation.assert_called_once()
+        else:
+            mock_final_computation.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "losses_history,expected_min_losses",
+        [
+            (
+                [{0: -0.8}, {0: -0.5}, {0: -0.9}],
+                [-0.8, -0.5, -0.9],
+            ),  # Single parameter set per iteration
+            (
+                [
+                    {0: -0.8, 1: -0.6, 2: -0.9},  # min is -0.9
+                    {0: -0.5, 1: -0.3},  # min is -0.5
+                    {0: -0.9, 1: -0.7, 2: -0.4},  # min is -0.9
+                ],
+                [-0.9, -0.5, -0.9],
+            ),  # Multiple parameter sets per iteration
+            ([], []),  # Empty history
+        ],
+    )
+    def test_min_losses_per_iteration(
+        self, mocker, losses_history, expected_min_losses
+    ):
+        """Test min_losses_per_iteration returns correct minimum losses."""
+        program = self._create_program_with_mock_optimizer(mocker)
+        program._losses_history = losses_history
+
+        min_losses = program.min_losses_per_iteration
+
+        assert isinstance(min_losses, list)
+        assert len(min_losses) == len(expected_min_losses)
+        assert min_losses == expected_min_losses
+
+    def test_min_losses_per_iteration_returns_copy(self, mocker):
+        """Test that min_losses_per_iteration returns a new list each time."""
+        program = self._create_program_with_mock_optimizer(mocker)
+        program._losses_history = [
+            {0: -0.8},
+            {0: -0.5},
+        ]
+
+        min_losses1 = program.min_losses_per_iteration
+        min_losses2 = program.min_losses_per_iteration
+
+        # Should return new lists (not the same object)
+        assert min_losses1 == min_losses2
+        assert min_losses1 is not min_losses2
