@@ -48,8 +48,9 @@ def _extract_loss_constant(
         pre_calculated_constant = problem_metadata.get("constant")
         try:
             pre_calculated_constant = pre_calculated_constant.item()
-        except AttributeError:
-            pass
+        except (AttributeError, TypeError):
+            # If .item() doesn't exist or fails, ensure it's a float
+            pre_calculated_constant = float(pre_calculated_constant)
 
     return pre_calculated_constant + constant_from_hamiltonian
 
