@@ -207,7 +207,7 @@ class TestGraphInput:
         assert (
             sum(
                 isinstance(op, qml.Hadamard)
-                for op in qaoa_problem._meta_circuits[
+                for op in qaoa_problem.meta_circuits[
                     "cost_circuit"
                 ].source_circuit.operations
             )

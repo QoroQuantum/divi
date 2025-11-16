@@ -10,7 +10,6 @@ import sympy as sp
 
 from divi.circuits import CircuitBundle, MetaCircuit
 from divi.qprog.algorithms._ansatze import Ansatz, HartreeFockAnsatz
-from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from divi.utils import clean_hamiltonian
 
@@ -63,6 +62,7 @@ class VQE(VariationalQuantumAlgorithm):
             max_iterations (int): Maximum number of optimization iterations. Defaults to 10.
             **kwargs: Additional keyword arguments passed to the parent class.
         """
+        super().__init__(**kwargs)
 
         self.ansatz = HartreeFockAnsatz() if ansatz is None else ansatz
         self.n_layers = n_layers
@@ -72,13 +72,9 @@ class VQE(VariationalQuantumAlgorithm):
 
         self._eigenstate = None
 
-        super().__init__(**kwargs)
-
         self._process_problem_input(
             hamiltonian=hamiltonian, molecule=molecule, n_electrons=n_electrons
         )
-
-        self._meta_circuits = self._create_meta_circuits_dict()
 
     @property
     def cost_hamiltonian(self) -> qml.operation.Operator:
@@ -218,7 +214,7 @@ class VQE(VariationalQuantumAlgorithm):
         )
 
         return [
-            self._meta_circuits[circuit_type].initialize_circuit_from_params(
+            self.meta_circuits[circuit_type].initialize_circuit_from_params(
                 params_group, tag_prefix=f"{p}"
             )
             for p, params_group in enumerate(self._curr_params)

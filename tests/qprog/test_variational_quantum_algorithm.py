@@ -144,7 +144,7 @@ class TestProgram:
             program.loss_constant = 0.5
             program.backend = self._create_mock_backend(mocker)
 
-            meta_circuit = program._meta_circuits["cost_circuit"]
+            meta_circuit = program.meta_circuits["cost_circuit"]
             assert len(meta_circuit.measurement_groups) == expected_n_groups
             assert (
                 len(tuple(filter(lambda x: "h" in x, meta_circuit._measurements)))
@@ -379,12 +379,19 @@ class TestParametersBehavior(BaseVariationalQuantumAlgorithmTest):
         assert np.array_equal(program.curr_params, custom_curr_params)
         assert np.array_equal(program._curr_params, custom_curr_params)
 
-    def test_curr_params_setter_validates_parameter_shape(self, mocker):
-        """Test that setter validates parameter shape matches expected shape."""
-        program = self._create_program_with_mock_optimizer(mocker, seed=42)
-        wrong_shape_curr_params = np.array([[0.1, 0.2]])
+    def test_run_validates_parameter_shape(self, mocker):
+        """Test that run() validates parameter shape if curr_params is set manually."""
+        invalid_params = np.array([[0.1, 0.2]])  # Wrong shape
+        mock_optimizer = self._create_mock_optimizer(mocker, n_param_sets=1)
+        # Validation happens in constructor, so ValueError should be raised
         with pytest.raises(ValueError, match="Initial parameters must have shape"):
-            program.curr_params = wrong_shape_curr_params
+            SampleVQAProgram(
+                circ_count=1,
+                run_time=0.1,
+                backend=mock_backend,
+                optimizer=mock_optimizer,
+                initial_params=invalid_params,
+            ).run()
 
     def test_curr_params_returns_copy_not_reference(self, mocker):
         """Test that curr_params property returns a copy, not a reference."""
@@ -471,22 +478,6 @@ class TestParametersBehavior(BaseVariationalQuantumAlgorithmTest):
         # Verify curr_params was set correctly
         np.testing.assert_array_equal(program.curr_params, custom_params)
         assert program._curr_params is not None
-
-    def test_initial_params_constructor_parameter_validates_shape(
-        self, mocker, mock_backend
-    ):
-        """Test that initial_params constructor parameter validates parameter shape."""
-        invalid_params = np.array([[0.1, 0.2]])  # Wrong shape
-        mock_optimizer = self._create_mock_optimizer(mocker, n_param_sets=1)
-        # Validation happens in constructor, so ValueError should be raised
-        with pytest.raises(ValueError, match="Initial parameters must have shape"):
-            SampleVQAProgram(
-                circ_count=1,
-                run_time=0.1,
-                backend=mock_backend,
-                optimizer=mock_optimizer,
-                initial_params=invalid_params,
-            )
 
     def test_initial_params_constructor_parameter_used_in_run(
         self, mocker, mock_backend

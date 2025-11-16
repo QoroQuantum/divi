@@ -30,14 +30,14 @@ OPTIMIZERS_TO_TEST = {
 
 def verify_metacircuit_dict(obj: QuantumProgram, expected_keys: list[str]):
     assert isinstance(obj.meta_circuits, dict)
-    assert hasattr(obj, "_meta_circuits"), "Meta circuits attribute does not exist"
-    assert isinstance(obj._meta_circuits, dict), "Meta circuits object not a dict"
+    assert hasattr(obj, "meta_circuits"), "Meta circuits attribute does not exist"
+    assert isinstance(obj.meta_circuits, dict), "Meta circuits object not a dict"
     assert all(
-        isinstance(val, MetaCircuit) for val in obj._meta_circuits.values()
+        isinstance(val, MetaCircuit) for val in obj.meta_circuits.values()
     ), "All values on meta circuit must be of type MetaCircuit"
     assert all(
         key == expected
-        for key, expected in zip(obj._meta_circuits.keys(), expected_keys)
+        for key, expected in zip(obj.meta_circuits.keys(), expected_keys)
     )
 
 
@@ -58,7 +58,7 @@ def verify_correct_circuit_count(obj: QuantumProgram):
     if isinstance(obj.optimizer, MonteCarloOptimizer):
         # Calculate expected circuits per parameter set based on measurement groups
         circuits_per_param_set = len(
-            obj._meta_circuits["cost_circuit"].measurement_groups
+            obj.meta_circuits["cost_circuit"].measurement_groups
         )
         assert (
             adjusted_total_circuit_count
@@ -66,7 +66,7 @@ def verify_correct_circuit_count(obj: QuantumProgram):
         )
     elif isinstance(obj.optimizer, ScipyOptimizer):
         circuits_per_param_set = len(
-            obj._meta_circuits["cost_circuit"].measurement_groups
+            obj.meta_circuits["cost_circuit"].measurement_groups
         )
         if obj.optimizer.method in (ScipyMethod.NELDER_MEAD, ScipyMethod.COBYLA):
             assert (

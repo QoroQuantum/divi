@@ -281,7 +281,12 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             qem_protocol (QEMProtocol | None): Quantum error mitigation protocol to apply. Defaults to None.
         """
 
+        super().__init__(
+            backend=backend, seed=seed, progress_queue=progress_queue, **kwargs
+        )
+
         self._losses_history = []
+        self._meta_circuits = None
 
         self._best_params = None
         self._final_params = None
@@ -320,12 +325,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         self._qem_protocol = kwargs.pop("qem_protocol", None) or _NoMitigation()
 
-        if (initial_params := kwargs.pop("initial_params", None)) is not None:
-            self.curr_params = initial_params
-
-        super().__init__(
-            backend=backend, seed=seed, progress_queue=progress_queue, **kwargs
-        )
+        self._curr_params = kwargs.pop("initial_params", None)
 
         self._cancellation_event = None
 
@@ -495,6 +495,18 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         probs = self._convert_counts_to_probs(results)
         return reverse_dict_endianness(probs)
 
+    @property
+    def meta_circuits(self) -> dict[str, MetaCircuit]:
+        """Get the meta-circuit templates used by this program.
+
+        Returns:
+            dict[str, MetaCircuit]: Dictionary mapping circuit names to their
+                MetaCircuit templates.
+        """
+        if self._meta_circuits is None:
+            self._meta_circuits = self._create_meta_circuits_dict()
+        return self._meta_circuits
+
     @abstractmethod
     def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
         pass
@@ -595,7 +607,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             )
 
         losses = {}
-        measurement_groups = self._meta_circuits["cost_circuit"].measurement_groups
+        measurement_groups = self.meta_circuits["cost_circuit"].measurement_groups
 
         # Define key functions for grouping
         get_param_id = lambda item: int(item[0].split("_")[0])
@@ -651,7 +663,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                     )
 
             pl_loss = (
-                self._meta_circuits["cost_circuit"]
+                self.meta_circuits["cost_circuit"]
                 .postprocessing_fn(marginal_results)
                 .item()
             )
@@ -779,9 +791,10 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         self.reporter.info(message="Finished Setup")
 
-        # Only initialize if user hasn't already set curr_params
         if self._curr_params is None:
             self._initialize_params()
+        else:
+            self._validate_initial_params(self._curr_params)
 
         try:
             self._minimize_res = self.optimizer.optimize(
@@ -813,7 +826,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 "Optimization has not been run, no best parameters available."
             )
 
-        if "meas_circuit" not in self._meta_circuits:
+        if "meas_circuit" not in self.meta_circuits:
             raise NotImplementedError(
                 f"{type(self).__name__} does not implement a 'meas_circuit'."
             )

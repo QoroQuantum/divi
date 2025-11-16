@@ -21,7 +21,6 @@ from qiskit_optimization.converters import QuadraticProgramToQubo
 from qiskit_optimization.problems import VarType
 
 from divi.circuits import CircuitBundle, MetaCircuit
-from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from divi.utils import clean_hamiltonian, convert_qubo_matrix_to_pennylane_ising
 
@@ -266,6 +265,8 @@ class QAOA(VariationalQuantumAlgorithm):
             max_iterations (int): Maximum number of optimization iterations. Defaults to 10.
             **kwargs: Additional keyword arguments passed to the parent class, including `optimizer`.
         """
+        super().__init__(**kwargs)
+
         # Validate and process problem
         self.problem = self._validate_and_set_problem(problem, graph_problem)
 
@@ -308,11 +309,6 @@ class QAOA(VariationalQuantumAlgorithm):
 
         # Extract wire labels from the cost Hamiltonian to ensure consistency
         self._circuit_wires = tuple(self._cost_hamiltonian.wires)
-
-        kwargs.pop("is_constrained", None)
-        super().__init__(**kwargs)
-
-        self._meta_circuits = self._create_meta_circuits_dict()
 
     def _validate_and_set_problem(
         self,
@@ -510,7 +506,7 @@ class QAOA(VariationalQuantumAlgorithm):
         )
 
         return [
-            self._meta_circuits[circuit_type].initialize_circuit_from_params(
+            self.meta_circuits[circuit_type].initialize_circuit_from_params(
                 params_group, tag_prefix=f"{p}"
             )
             for p, params_group in enumerate(self._curr_params)

@@ -1,6 +1,6 @@
 repos:
 -   repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       - id: check-ast
       - id: check-json
@@ -18,13 +18,13 @@ repos:
       - id: trailing-whitespace
 
 -   repo: https://github.com/psf/black
-    rev: 25.1.0
+    rev: 25.11.0
     hooks:
       - id: black
         language_version: python3
 
 -   repo: https://github.com/pycqa/isort
-    rev: 6.0.1
+    rev: 7.0.0
     hooks:
       - id: isort
         args: ["--profile", "black"]
@@ -32,8 +32,8 @@ repos:
 -   repo: https://github.com/PyCQA/autoflake
     rev: v2.3.1
     hooks:
-    -   id: autoflake
-        args: [--remove-all-unused-imports, --ignore-init-module-imports, --remove-unused-variables, --ignore-pass-statements, --in-place]
+      - id: autoflake
+        args: ["--remove-all-unused-imports", "--ignore-init-module-imports", "--remove-unused-variables", "--ignore-pass-statements", "--in-place"]
 
 -   repo: https://github.com/Lucas-C/pre-commit-hooks
     rev: v1.5.5
@@ -42,13 +42,13 @@ repos:
       - id: remove-crlf  # Replace CRLF end-lines by LF ones before committing
       - id: forbid-tabs  # Forbid files containing tabs to be committed
       - id: remove-tabs  # Replace tabs by whitespaces before committing
-        args: [--whitespaces-count, '2']
+        args: ["--whitespaces-count", "2"]
       - id: chmod
-        args: ['644']
-        files: \.md$
+        args: ["644"]
+        files: '\.md$'
       - id: insert-license
-        files: \.py$
-        exclude: ^(docs/)
+        files: '\.py$'
+        exclude: '^(docs/)'
         args:
           - --license-filepath
           - LICENSES/.license-header
