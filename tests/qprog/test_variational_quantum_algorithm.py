@@ -48,7 +48,6 @@ class SampleVQAProgram(VariationalQuantumAlgorithm):
         self._cost_hamiltonian = (
             qml.PauliX(0) + qml.PauliZ(1) + qml.PauliX(0) @ qml.PauliZ(1)
         )
-        self._meta_circuits = self._create_meta_circuits_dict()
         self.loss_constant = 0.0
 
     @property
@@ -388,9 +387,9 @@ class TestParametersBehavior(BaseVariationalQuantumAlgorithmTest):
             SampleVQAProgram(
                 circ_count=1,
                 run_time=0.1,
-                backend=mock_backend,
                 optimizer=mock_optimizer,
                 initial_params=invalid_params,
+                backend=None,
             ).run()
 
     def test_curr_params_returns_copy_not_reference(self, mocker):
