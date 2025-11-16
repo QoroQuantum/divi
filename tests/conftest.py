@@ -6,6 +6,12 @@ import os
 import random
 import re
 
+import matplotlib
+
+# Configure matplotlib to use Agg backend for testing
+matplotlib.use("Agg")
+
+
 import pytest
 from dotenv import load_dotenv
 

@@ -19,8 +19,6 @@ from pymoo.problems.static import StaticProblem
 from pymoo.termination import get_termination
 from scipy.optimize import OptimizeResult, minimize
 
-from divi.extern.scipy._cobyla import _minimize_cobyla as cobyla_fn
-
 
 class Optimizer(ABC):
     @property
@@ -285,9 +283,7 @@ class ScipyOptimizer(Optimizer):
         return minimize(
             cost_fn,
             initial_params.squeeze(),
-            method=(
-                cobyla_fn if self.method == ScipyMethod.COBYLA else self.method.value
-            ),
+            method=self.method.value,
             jac=(
                 kwargs.pop("jac", None) if self.method == ScipyMethod.L_BFGS_B else None
             ),

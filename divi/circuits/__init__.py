@@ -2,4 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from ._core import Circuit, MetaCircuit
+# isort: skip_file
+from ._qasm_conversion import to_openqasm
+from ._qasm_validation import is_valid_qasm, validate_qasm, validate_qasm_count_qubits
+from ._core import CircuitBundle, ExecutableQASMCircuit, MetaCircuit

@@ -1,6 +1,6 @@
 name: Unit Tests and Tutorial Scripts
 
-on: [push]
+on: [push, workflow_dispatch]
 
 permissions:
   contents: read
@@ -8,18 +8,21 @@ permissions:
 jobs:
   tests:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install Poetry
         uses: snok/install-poetry@v1
         with:
-          version: 1.8.5
+          version: 2.2.1
           virtualenvs-create: true
           virtualenvs-in-project: true
 
@@ -29,9 +32,9 @@ jobs:
           path: |
             ~/.cache/pypoetry
             .venv
-          key: poetry-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+          key: poetry-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/poetry.lock') }}
           restore-keys: |
-            poetry-${{ runner.os }}-
+            poetry-${{ runner.os }}-${{ matrix.python-version }}-
 
       - name: Install dependencies
         run: poetry install --with testing --without dev,ui,docs
@@ -48,18 +51,21 @@ jobs:
   tutorials:
     runs-on: ubuntu-latest
     needs: tests
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install Poetry
         uses: snok/install-poetry@v1
         with:
-          version: 1.8.5
+          version: 2.2.1
           virtualenvs-create: true
           virtualenvs-in-project: true
 
@@ -69,9 +75,9 @@ jobs:
           path: |
             ~/.cache/pypoetry
             .venv
-          key: poetry-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+          key: poetry-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/poetry.lock') }}
           restore-keys: |
-            poetry-${{ runner.os }}-
+            poetry-${{ runner.os }}-${{ matrix.python-version }}-
 
       - name: Install dependencies
         run: poetry install --with testing --without dev,ui,docs

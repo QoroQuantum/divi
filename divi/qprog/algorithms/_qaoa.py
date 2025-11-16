@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
-import re
 from enum import Enum
 from functools import reduce
 from typing import Literal, get_args
@@ -21,15 +20,38 @@ from qiskit_optimization import QuadraticProgram
 from qiskit_optimization.converters import QuadraticProgramToQubo
 from qiskit_optimization.problems import VarType
 
-from divi.circuits import Circuit, MetaCircuit
-from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
+from divi.circuits import CircuitBundle, MetaCircuit
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
-from divi.utils import convert_qubo_matrix_to_pennylane_ising
+from divi.utils import clean_hamiltonian, convert_qubo_matrix_to_pennylane_ising
 
 logger = logging.getLogger(__name__)
 
 GraphProblemTypes = nx.Graph | rx.PyGraph
 QUBOProblemTypes = list | np.ndarray | sps.spmatrix | QuadraticProgram
+
+
+def _extract_loss_constant(
+    problem_metadata: dict, constant_from_hamiltonian: float
+) -> float:
+    """Extract and combine loss constants from problem metadata and hamiltonian.
+
+    Args:
+        problem_metadata: Metadata dictionary that may contain a "constant" key.
+        constant_from_hamiltonian: Constant extracted from the hamiltonian.
+
+    Returns:
+        Combined loss constant.
+    """
+    pre_calculated_constant = 0.0
+    if "constant" in problem_metadata:
+        pre_calculated_constant = problem_metadata.get("constant")
+        try:
+            pre_calculated_constant = pre_calculated_constant.item()
+        except (AttributeError, TypeError):
+            # If .item() doesn't exist or fails, ensure it's a float
+            pre_calculated_constant = float(pre_calculated_constant)
+
+    return pre_calculated_constant + constant_from_hamiltonian
 
 
 def draw_graph_solution_nodes(main_graph: nx.Graph, partition_nodes):
@@ -228,7 +250,6 @@ class QAOA(VariationalQuantumAlgorithm):
         graph_problem: GraphProblem | None = None,
         n_layers: int = 1,
         initial_state: _SUPPORTED_INITIAL_STATES_LITERAL = "Recommended",
-        optimizer: Optimizer | None = None,
         max_iterations: int = 10,
         **kwargs,
     ):
@@ -241,94 +262,145 @@ class QAOA(VariationalQuantumAlgorithm):
             graph_problem (GraphProblem | None): The graph problem to solve. Defaults to None.
             n_layers (int): Number of QAOA layers. Defaults to 1.
             initial_state (_SUPPORTED_INITIAL_STATES_LITERAL): The initial state of the circuit. Defaults to "Recommended".
-            optimizer (Optimizer | None): The optimizer to use. Defaults to MonteCarloOptimizer.
             max_iterations (int): Maximum number of optimization iterations. Defaults to 10.
-            **kwargs: Additional keyword arguments passed to the parent class.
+            **kwargs: Additional keyword arguments passed to the parent class, including `optimizer`.
         """
+        super().__init__(**kwargs)
 
-        if isinstance(problem, QUBOProblemTypes):
-            if graph_problem is not None:
-                warn("Ignoring the 'problem' argument as it is not applicable to QUBO.")
+        # Validate and process problem
+        self.problem = self._validate_and_set_problem(problem, graph_problem)
 
-            self.graph_problem = None
-
-            if isinstance(problem, QuadraticProgram):
-                if (
-                    any(var.vartype != VarType.BINARY for var in problem.variables)
-                    or problem.linear_constraints
-                    or problem.quadratic_constraints
-                ):
-                    warn(
-                        "Quadratic Program contains non-binary variables. Converting to QUBO."
-                    )
-                    self._qp_converter = QuadraticProgramToQubo()
-                    problem = self._qp_converter.convert(problem)
-
-                self.n_qubits = problem.get_num_vars()
-            else:
-                if isinstance(problem, list):
-                    problem = np.array(problem)
-
-                if problem.ndim != 2 or problem.shape[0] != problem.shape[1]:
-                    raise ValueError(
-                        "Invalid QUBO matrix."
-                        f" Got array of shape {problem.shape}."
-                        " Must be a square matrix."
-                    )
-
-                self.n_qubits = problem.shape[1]
-        else:
-            if not isinstance(graph_problem, GraphProblem):
-                raise ValueError(
-                    f"Unsupported Problem. Got '{graph_problem}'. Must be one of type divi.qprog.GraphProblem."
-                )
-
-            self.graph_problem = graph_problem
-            self.n_qubits = problem.number_of_nodes()
-
-        self.problem = problem
-
+        # Validate initial state
         if initial_state not in get_args(_SUPPORTED_INITIAL_STATES_LITERAL):
             raise ValueError(
                 f"Unsupported Initial State. Got {initial_state}. Must be one of: {get_args(_SUPPORTED_INITIAL_STATES_LITERAL)}"
             )
 
-        # Local Variables
+        # Initialize local state
         self.n_layers = n_layers
         self.max_iterations = max_iterations
         self.current_iteration = 0
         self._n_params = 2
-        self.optimizer = optimizer if optimizer is not None else MonteCarloOptimizer()
 
         self._solution_nodes = []
         self._solution_bitstring = []
 
+        # Resolve hamiltonians and problem metadata
         (
-            self._cost_hamiltonian,
+            cost_hamiltonian,
             self._mixer_hamiltonian,
             *problem_metadata,
             self.initial_state,
         ) = _resolve_circuit_layers(
             initial_state=initial_state,
-            problem=problem,
-            graph_problem=graph_problem,
+            problem=self.problem,
+            graph_problem=self.graph_problem,
             **kwargs,
         )
         self.problem_metadata = problem_metadata[0] if problem_metadata else {}
 
-        if "constant" in self.problem_metadata:
-            self.loss_constant = self.problem_metadata.get("constant")
-            try:
-                self.loss_constant = self.loss_constant.item()
-            except AttributeError:
-                pass
+        # Extract and combine constants
+        self._cost_hamiltonian, constant_from_hamiltonian = clean_hamiltonian(
+            cost_hamiltonian
+        )
+        self.loss_constant = _extract_loss_constant(
+            self.problem_metadata, constant_from_hamiltonian
+        )
+
+        # Extract wire labels from the cost Hamiltonian to ensure consistency
+        self._circuit_wires = tuple(self._cost_hamiltonian.wires)
+
+    def _validate_and_set_problem(
+        self,
+        problem: GraphProblemTypes | QUBOProblemTypes,
+        graph_problem: GraphProblem | None,
+    ) -> GraphProblemTypes | QUBOProblemTypes:
+        """Validate and process the problem input, setting n_qubits and graph_problem.
+
+        Args:
+            problem: The problem to solve (graph or QUBO).
+            graph_problem: The graph problem type (if applicable).
+
+        Returns:
+            The processed problem instance.
+
+        Raises:
+            ValueError: If problem type or graph_problem is invalid.
+        """
+        if isinstance(problem, QUBOProblemTypes):
+            if graph_problem is not None:
+                warn("Ignoring the 'problem' argument as it is not applicable to QUBO.")
+
+            self.graph_problem = None
+            return self._process_qubo_problem(problem)
         else:
-            self.loss_constant = 0.0
+            return self._process_graph_problem(problem, graph_problem)
 
-        kwargs.pop("is_constrained", None)
-        super().__init__(**kwargs)
+    def _process_qubo_problem(self, problem: QUBOProblemTypes) -> QUBOProblemTypes:
+        """Process QUBO problem, converting if necessary and setting n_qubits.
 
-        self._meta_circuits = self._create_meta_circuits_dict()
+        Args:
+            problem: QUBO problem (QuadraticProgram, list, array, or sparse matrix).
+
+        Returns:
+            Processed QUBO problem.
+
+        Raises:
+            ValueError: If QUBO matrix has invalid shape.
+        """
+        if isinstance(problem, QuadraticProgram):
+            if (
+                any(var.vartype != VarType.BINARY for var in problem.variables)
+                or problem.linear_constraints
+                or problem.quadratic_constraints
+            ):
+                warn(
+                    "Quadratic Program contains non-binary variables. Converting to QUBO."
+                )
+                self._qp_converter = QuadraticProgramToQubo()
+                problem = self._qp_converter.convert(problem)
+
+            self.n_qubits = problem.get_num_vars()
+        else:
+            if isinstance(problem, list):
+                problem = np.array(problem)
+
+            if problem.ndim != 2 or problem.shape[0] != problem.shape[1]:
+                raise ValueError(
+                    "Invalid QUBO matrix."
+                    f" Got array of shape {problem.shape}."
+                    " Must be a square matrix."
+                )
+
+            self.n_qubits = problem.shape[1]
+
+        return problem
+
+    def _process_graph_problem(
+        self,
+        problem: GraphProblemTypes,
+        graph_problem: GraphProblem | None,
+    ) -> GraphProblemTypes:
+        """Process graph problem, validating graph_problem and setting n_qubits.
+
+        Args:
+            problem: Graph problem (NetworkX or RustworkX graph).
+            graph_problem: The graph problem type.
+
+        Returns:
+            The graph problem instance.
+
+        Raises:
+            ValueError: If graph_problem is not a valid GraphProblem enum.
+        """
+        if not isinstance(graph_problem, GraphProblem):
+            raise ValueError(
+                f"Unsupported Problem. Got '{graph_problem}'. Must be one of type divi.qprog.GraphProblem."
+            )
+
+        self.graph_problem = graph_problem
+        self.n_qubits = problem.number_of_nodes()
+        return problem
 
     @property
     def cost_hamiltonian(self) -> qml.operation.Operator:
@@ -384,15 +456,17 @@ class QAOA(VariationalQuantumAlgorithm):
                 final_measurement (bool): Whether to perform final measurement.
             """
 
-            # Note: could've been done as qml.[Insert Gate](wires=range(self.n_qubits))
+            # Use the wire labels from the cost Hamiltonian to ensure consistency
+            # This is important for graph problems where node labels might be strings
+            # Note: could've been done as qml.[Insert Gate](wires=self._circuit_wires)
             # but there seems to be a bug with program capture in Pennylane.
             # Maybe check when a new version comes out?
             if self.initial_state == "Ones":
-                for i in range(self.n_qubits):
-                    qml.PauliX(wires=i)
+                for wire in self._circuit_wires:
+                    qml.PauliX(wires=wire)
             elif self.initial_state == "Superposition":
-                for i in range(self.n_qubits):
-                    qml.Hadamard(wires=i)
+                for wire in self._circuit_wires:
+                    qml.Hadamard(wires=wire)
 
             qml.layer(_qaoa_layer, self.n_layers, params)
 
@@ -403,13 +477,13 @@ class QAOA(VariationalQuantumAlgorithm):
 
         return {
             "cost_circuit": self._meta_circuit_factory(
-                qml.tape.make_qscript(_prepare_circuit)(
+                source_circuit=qml.tape.make_qscript(_prepare_circuit)(
                     self._cost_hamiltonian, sym_params, final_measurement=False
                 ),
                 symbols=sym_params.flatten(),
             ),
             "meas_circuit": self._meta_circuit_factory(
-                qml.tape.make_qscript(_prepare_circuit)(
+                source_circuit=qml.tape.make_qscript(_prepare_circuit)(
                     self._cost_hamiltonian, sym_params, final_measurement=True
                 ),
                 symbols=sym_params.flatten(),
@@ -417,7 +491,7 @@ class QAOA(VariationalQuantumAlgorithm):
             ),
         }
 
-    def _generate_circuits(self) -> list[Circuit]:
+    def _generate_circuits(self) -> list[CircuitBundle]:
         """Generate the circuits for the QAOA problem.
 
         Generates circuits for each parameter set in the current parameters.
@@ -425,14 +499,14 @@ class QAOA(VariationalQuantumAlgorithm):
         (for final solution extraction) or just expectation values (for optimization).
 
         Returns:
-            list[Circuit]: List of Circuit objects for execution.
+            list[CircuitBundle]: List of CircuitBundle objects for execution.
         """
         circuit_type = (
-            "cost_circuit" if not self._is_compute_probabilites else "meas_circuit"
+            "cost_circuit" if not self._is_compute_probabilities else "meas_circuit"
         )
 
         return [
-            self._meta_circuits[circuit_type].initialize_circuit_from_params(
+            self.meta_circuits[circuit_type].initialize_circuit_from_params(
                 params_group, tag_prefix=f"{p}"
             )
             for p, params_group in enumerate(self._curr_params)
@@ -452,7 +526,7 @@ class QAOA(VariationalQuantumAlgorithm):
                 distributions if computing probabilities.
         """
 
-        if self._is_compute_probabilites:
+        if self._is_compute_probabilities:
             return self._process_probability_results(results)
 
         losses = super()._post_process_results(results, **kwargs)
@@ -491,8 +565,12 @@ class QAOA(VariationalQuantumAlgorithm):
             )
 
         if isinstance(self.problem, GraphProblemTypes):
+            # Map bitstring positions to actual graph node labels
+            # Bitstring is already endianness-corrected, so positions map directly to circuit_wires
             self._solution_nodes[:] = [
-                m.start() for m in re.finditer("1", best_solution_bitstring)
+                self._circuit_wires[idx]
+                for idx, bit in enumerate(best_solution_bitstring)
+                if bit == "1" and idx < len(self._circuit_wires)
             ]
 
         self.reporter.info(message="🏁 Computed Final Solution! 🏁\r\n")

@@ -60,20 +60,21 @@ class OverwriteStreamHandler(logging.StreamHandler):
 
         if append:
             space = " " if self._last_record else ""
-            msg = f"{msg[:msg.index(record.message)]}{self._last_record}{space}[{record.message[:-2]}]\r"
+            message_without_cr = record.message.removesuffix("\r")
+            msg = f"{msg[:msg.index(record.message)]}{self._last_record}{space}[{message_without_cr}]\r"
 
         if msg.endswith("\r\n"):
             overwrite_and_newline = True
-            clean_msg = msg[:-2]
+            clean_msg = msg.removesuffix("\r\n")
 
             if not append:
-                self._last_record = record.message[:-2]
+                self._last_record = record.message.removesuffix("\r\n")
         elif msg.endswith("\r"):
             overwrite_and_newline = False
-            clean_msg = msg[:-1]
+            clean_msg = msg.removesuffix("\r")
 
             if not append:
-                self._last_record = record.message[:-1]
+                self._last_record = record.message.removesuffix("\r")
         else:
             # Normal message - no overwriting
             self.stream.write(msg + "\n")

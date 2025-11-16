@@ -10,15 +10,78 @@ import pennylane as qml
 import scipy.sparse as sps
 
 
-def hamiltonian_to_pauli_string(hamiltonian: qml.Hamiltonian, n_qubits: int) -> str:
+def clean_hamiltonian(
+    hamiltonian: qml.operation.Operator,
+) -> tuple[qml.operation.Operator, float]:
+    """Separate constant and non-constant terms in a Hamiltonian.
+
+    This function processes a PennyLane Hamiltonian to separate out any terms
+    that are constant (i.e., proportional to the identity operator). The sum
+    of these constant terms is returned, along with a new Hamiltonian containing
+    only the non-constant terms.
+
+    Args:
+        hamiltonian: The Hamiltonian operator to process.
+
+    Returns:
+        tuple[qml.operation.Operator, float]: A tuple containing:
+            - The Hamiltonian without the constant (identity) component.
+            - The summed value of all constant terms.
     """
-    Convert a QNode Hamiltonian to a semicolon-separated string of Pauli operators.
+    if hamiltonian is None:
+        return qml.Hamiltonian([], []), 0.0
+
+    terms = (
+        hamiltonian.operands if isinstance(hamiltonian, qml.ops.Sum) else [hamiltonian]
+    )
+
+    loss_constant = 0.0
+    non_constant_terms = []
+
+    for term in terms:
+        coeff = 1.0
+        base_op = term
+        if isinstance(term, qml.ops.SProd):
+            coeff = term.scalar
+            base_op = term.base
+
+        # Check for Identity term
+        is_constant = False
+        if isinstance(base_op, qml.Identity):
+            is_constant = True
+        elif isinstance(base_op, qml.ops.Prod) and all(
+            isinstance(op, qml.Identity) for op in base_op.operands
+        ):
+            is_constant = True
+
+        if is_constant:
+            loss_constant += coeff
+        else:
+            non_constant_terms.append(term)
+
+    if not non_constant_terms:
+        return qml.Hamiltonian([], []), float(loss_constant)
+
+    # Reconstruct the Hamiltonian from non-constant terms
+    if len(non_constant_terms) > 1:
+        new_hamiltonian = qml.sum(*non_constant_terms)
+    else:
+        new_hamiltonian = non_constant_terms[0]
+
+    return new_hamiltonian.simplify(), float(loss_constant)
+
+
+def hamiltonian_to_pauli_string(
+    hamiltonian: qml.operation.Operator, n_qubits: int
+) -> str:
+    """
+    Convert a PennyLane Operator to a semicolon-separated string of Pauli operators.
 
     Each term in the Hamiltonian is represented as a string of Pauli letters ('I', 'X', 'Y', 'Z'),
     one per qubit. Multiple terms are separated by semicolons.
 
     Args:
-        hamiltonian (qml.Hamiltonian): The Pennylane Hamiltonian object to convert.
+        hamiltonian (qml.operation.Operator): The PennyLane Operator (e.g., Hamiltonian, PauliZ) to convert.
         n_qubits (int): Number of qubits to represent in the string.
 
     Returns:
@@ -30,22 +93,29 @@ def hamiltonian_to_pauli_string(hamiltonian: qml.Hamiltonian, n_qubits: int) -> 
     pauli_letters = {"PauliX": "X", "PauliY": "Y", "PauliZ": "Z"}
     identity_row = np.full(n_qubits, "I", dtype="<U1")
 
+    # Handle both single operators and sums of operators (like Hamiltonians)
+    terms_to_process = (
+        hamiltonian.operands if isinstance(hamiltonian, qml.ops.Sum) else [hamiltonian]
+    )
+
     terms = []
-    for term in hamiltonian.operands:
-        op = term.base if isinstance(term, qml.ops.SProd) else term
+    for term in terms_to_process:
+        op = term
+        while isinstance(op, qml.ops.SProd):
+            op = op.base
         ops = op.operands if isinstance(op, qml.ops.Prod) else [op]
 
         paulis = identity_row.copy()
         for p in ops:
+            if isinstance(p, qml.Identity):
+                continue
             # Better fallback logic with validation
             if p.name in pauli_letters:
                 pauli = pauli_letters[p.name]
-            elif p.name.startswith("Pauli") and len(p.name) > 5:
-                pauli = p.name[5:]  # Only if safe to slice
             else:
                 raise ValueError(
                     f"Unknown Pauli operator: {p.name}. "
-                    "Expected 'PauliX', 'PauliY', 'PauliZ', or a name starting with 'Pauli'."
+                    "Expected 'PauliX', 'PauliY', or 'PauliZ'."
                 )
 
             # Bounds checking for wire indices

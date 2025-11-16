@@ -7,7 +7,7 @@ import pennylane as qml
 import pytest
 from sympy import Symbol
 
-from divi.circuits.qasm import _ops_to_qasm, to_openqasm
+from divi.circuits._qasm_conversion import _ops_to_qasm, to_openqasm
 from divi.circuits.qem import _NoMitigation
 
 

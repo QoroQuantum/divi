@@ -14,14 +14,14 @@ import tomllib
 # Load pyproject.toml to extract metadata
 with open("../../pyproject.toml", "rb") as f:
     pyproject = tomllib.load(f)
-poetry_config = pyproject["tool"]["poetry"]
-project_name = poetry_config["name"]
+project_config = pyproject["project"]
+project_name = project_config["name"]
 
 
 project = project_name.replace("qoro-", "").capitalize()
 copyright = "2025, Qoro Quantum Ltd."
 author = "Qoro Quantum Ltd."
-release = poetry_config["version"]
+release = project_config["version"]
 
 # Add the project root to the Python path so Sphinx can import the modules
 sys.path.insert(0, os.path.abspath("../../"))
@@ -160,7 +160,6 @@ html_search_options = {
 
 coverage_show_missing_items = True
 coverage_ignore_modules = [
-    "divi.extern.*",  # External Cirq/SciPy code
     "divi.__pycache__.*",  # Python cache
     "divi.tests.*",  # Test modules
     "divi.*.tests.*",  # Test modules in subpackages

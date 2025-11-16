@@ -105,7 +105,7 @@ spelling:
 	@$(SPHINXBUILD) -b spelling "$(SOURCEDIR)" "$(BUILDDIR)/spelling" $(SPHINXOPTS) $(O)
 	@echo "Spell check complete. See $(BUILDDIR)/spelling/output.txt for results."
 
-test: spelling linkcheck coverage
+test: spelling coverage linkcheck
 	@echo "All quality checks completed!"
 
 # ==============================================================================

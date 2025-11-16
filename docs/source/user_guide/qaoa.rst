@@ -12,6 +12,8 @@ A `QAOA` constructor expects a problem to be provided. As we will show in the ex
 
 A user has the ability to choose the **initial state** of the quantum system before the optimization. By default (when the argument `initial_state = "Recommended"` is passed), a problem-specific initial state would be chosen. Other accepted values are `"Zero"`, `"Ones"`, and `"Superposition"`. In addition, a user can determine how many **layers** of the QAOA ansatz to apply.
 
+**Initial Parameters**: You can set custom initial parameters for QAOA optimization using the ``initial_params`` constructor argument or the ``curr_params`` property. This is useful for warm-starting from known good parameter regions or continuing from previous runs. For detailed information and examples, see the :doc:`core_concepts` guide on Parameter Management.
+
 Real-World Examples
 ^^^^^^^^^^^^^^^^^^^
 

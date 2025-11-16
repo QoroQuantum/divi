@@ -7,9 +7,9 @@ Core Circuit Classes
 --------------------
 
 .. warning::
-   **Developer-Facing Classes**: The core circuit classes (``Circuit`` and ``MetaCircuit``) are intended for advanced users and developers. Most users should interact with circuits through higher-level APIs in the ``divi.qprog`` module.
+   **Developer-Facing Classes**: The core circuit classes (``CircuitBundle`` and ``MetaCircuit``) are intended for advanced users and developers. Most users should interact with circuits through higher-level APIs in the ``divi.qprog`` module.
 
-.. autoclass:: divi.circuits.Circuit
+.. autoclass:: divi.circuits.CircuitBundle
    :members:
    :undoc-members:
    :show-inheritance:
@@ -21,18 +21,31 @@ Core Circuit Classes
    :show-inheritance:
    :special-members: __init__
 
-QASM Integration
-----------------
-
-.. automodule:: divi.circuits.qasm
+.. autoclass:: divi.circuits.ExecutableQASMCircuit
    :members:
    :undoc-members:
    :show-inheritance:
+   :special-members: __init__
+
+QASM Integration
+----------------
 
 QASM Generation Function
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. autofunction:: divi.circuits.qasm.to_openqasm
+.. autofunction:: divi.circuits.to_openqasm
+   :no-index:
+
+QASM Validation Functions
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autofunction:: divi.circuits.validate_qasm
+   :no-index:
+
+.. autofunction:: divi.circuits.validate_qasm_count_qubits
+   :no-index:
+
+.. autofunction:: divi.circuits.is_valid_qasm
    :no-index:
 
 Error Mitigation Protocols

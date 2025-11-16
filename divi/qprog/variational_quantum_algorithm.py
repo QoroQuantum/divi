@@ -5,18 +5,24 @@
 import logging
 from abc import abstractmethod
 from functools import lru_cache, partial
-from itertools import chain, groupby
+from itertools import groupby
 from queue import Queue
+from warnings import warn
 
 import numpy as np
 import pennylane as qml
 from scipy.optimize import OptimizeResult
 
 from divi.backends import CircuitRunner
-from divi.circuits import Circuit, MetaCircuit
+from divi.circuits import CircuitBundle, MetaCircuit
 from divi.circuits.qem import _NoMitigation
 from divi.qprog.exceptions import _CancelledError
-from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from divi.qprog.optimizers import (
+    MonteCarloOptimizer,
+    Optimizer,
+    ScipyMethod,
+    ScipyOptimizer,
+)
 from divi.qprog.quantum_program import QuantumProgram
 from divi.reporting import LoggingProgressReporter, QueueProgressReporter
 from divi.utils import hamiltonian_to_pauli_string, reverse_dict_endianness
@@ -242,6 +248,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
     def __init__(
         self,
         backend: CircuitRunner,
+        optimizer: Optimizer | None = None,
         seed: int | None = None,
         progress_queue: Queue | None = None,
         **kwargs,
@@ -259,16 +266,27 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         Args:
             backend (CircuitRunner): Quantum circuit execution backend.
+            optimizer (Optimizer | None): The optimizer to use for parameter optimization.
+                Defaults to MonteCarloOptimizer().
             seed (int | None): Random seed for parameter initialization. Defaults to None.
             progress_queue (Queue | None): Queue for progress reporting. Defaults to None.
 
         Keyword Args:
+            initial_params (np.ndarray | None): Initial parameters with shape
+                (n_param_sets, n_layers * n_params). If provided, these will be set as
+                the current parameters via the `curr_params` setter (which includes validation).
+                Defaults to None.
             grouping_strategy (str): Strategy for grouping operations in Pennylane transforms.
                 Options: "default", "wires", "qwc". Defaults to "qwc".
             qem_protocol (QEMProtocol | None): Quantum error mitigation protocol to apply. Defaults to None.
         """
 
+        super().__init__(
+            backend=backend, seed=seed, progress_queue=progress_queue, **kwargs
+        )
+
         self._losses_history = []
+        self._meta_circuits = None
 
         self._best_params = None
         self._final_params = None
@@ -283,11 +301,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         # Lets child classes adapt their optimization
         # step for grad calculation routine
         self._grad_mode = False
-        self._is_compute_probabilites = False
-
-        super().__init__(
-            backend=backend, seed=seed, progress_queue=progress_queue, **kwargs
-        )
+        self._is_compute_probabilities = False
 
         self.job_id = kwargs.get("job_id", None)
         if progress_queue and self.job_id:
@@ -295,21 +309,30 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         else:
             self.reporter = LoggingProgressReporter()
 
-        # Needed for Pennylane's transforms
-        self._grouping_strategy = kwargs.pop("grouping_strategy", "qwc")
+        if backend and backend.supports_expval:
+            grouping_strategy = kwargs.pop("grouping_strategy", None)
+            if grouping_strategy is not None and grouping_strategy != "_backend_expval":
+                warn(
+                    "Backend supports direct expectation value calculation, but a grouping_strategy was provided. "
+                    "The grouping strategy will be ignored.",
+                    UserWarning,
+                )
+            self._grouping_strategy = "_backend_expval"
+        else:
+            self._grouping_strategy = kwargs.pop("grouping_strategy", "qwc")
+
+        self.optimizer = optimizer if optimizer is not None else MonteCarloOptimizer()
 
         self._qem_protocol = kwargs.pop("qem_protocol", None) or _NoMitigation()
+
+        self._curr_params = kwargs.pop("initial_params", None)
 
         self._cancellation_event = None
 
         self._meta_circuit_factory = partial(
             MetaCircuit,
             # No grouping strategy for expectation value measurements
-            grouping_strategy=(
-                "_backend_expval"
-                if self.backend and self.backend.supports_expval
-                else self._grouping_strategy
-            ),
+            grouping_strategy=self._grouping_strategy,
             qem_protocol=self._qem_protocol,
         )
 
@@ -338,7 +361,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         return self._total_run_time
 
     @property
-    def meta_circuits(self):
+    def meta_circuits(self) -> dict[str, MetaCircuit]:
         """Get the meta-circuit templates used by this program.
 
         Returns:
@@ -367,6 +390,18 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 will not affect the internal state.
         """
         return self._losses_history.copy()
+
+    @property
+    def min_losses_per_iteration(self) -> list[float]:
+        """Get the minimum loss value for each iteration.
+
+        Returns a list where each element is the minimum (best) loss value
+        across all parameter sets for that iteration.
+
+        Returns:
+            list[float]: List of minimum loss values, one per iteration.
+        """
+        return [min(loss_dict.values()) for loss_dict in self._losses_history]
 
     @property
     def final_params(self) -> np.ndarray:
@@ -406,40 +441,28 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         """
         return self._best_probs.copy()
 
-    def _convert_counts_to_probs(self, results):
-        """Convert raw counts to probability distributions."""
-        return {
-            outer_k: {
-                inner_k: inner_v / self.backend.shots
-                for inner_k, inner_v in outer_v.items()
-            }
-            for outer_k, outer_v in results.items()
-        }
-
-    def _process_probability_results(self, results):
-        """Convert raw counts to probabilities and fix endianness."""
-        probs = self._convert_counts_to_probs(results)
-        return reverse_dict_endianness(probs)
-
     @property
-    def initial_params(self) -> np.ndarray:
-        """Get the current initial parameters.
+    def curr_params(self) -> np.ndarray:
+        """Get the current parameters.
+
+        These are the parameters used for optimization. They can be accessed
+        and modified at any time, including during optimization.
 
         Returns:
-            np.ndarray: Current initial parameters. If not yet initialized,
+            np.ndarray: Current parameters. If not yet initialized,
                 they will be generated automatically.
         """
         if self._curr_params is None:
             self._initialize_params()
         return self._curr_params.copy()
 
-    @initial_params.setter
-    def initial_params(self, value: np.ndarray | None):
+    @curr_params.setter
+    def curr_params(self, value: np.ndarray | None):
         """
-        Set initial parameters.
+        Set the current parameters.
 
         Args:
-            value (np.ndarray | None): Initial parameters with shape
+            value (np.ndarray | None): Parameters with shape
                 (n_param_sets, n_layers * n_params), or None to reset
                 to uninitialized state.
 
@@ -453,12 +476,43 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             # Reset to uninitialized state
             self._curr_params = None
 
+    def _convert_counts_to_probs(
+        self, results: dict[str, dict[str, int]]
+    ) -> dict[str, dict[str, float]]:
+        """Convert raw counts to probability distributions."""
+        return {
+            outer_k: {
+                inner_k: inner_v / self.backend.shots
+                for inner_k, inner_v in outer_v.items()
+            }
+            for outer_k, outer_v in results.items()
+        }
+
+    def _process_probability_results(
+        self, results: dict[str, dict[str, int]]
+    ) -> dict[str, dict[str, float]]:
+        """Convert raw counts to probabilities and fix endianness."""
+        probs = self._convert_counts_to_probs(results)
+        return reverse_dict_endianness(probs)
+
+    @property
+    def meta_circuits(self) -> dict[str, MetaCircuit]:
+        """Get the meta-circuit templates used by this program.
+
+        Returns:
+            dict[str, MetaCircuit]: Dictionary mapping circuit names to their
+                MetaCircuit templates.
+        """
+        if self._meta_circuits is None:
+            self._meta_circuits = self._create_meta_circuits_dict()
+        return self._meta_circuits
+
     @abstractmethod
     def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
         pass
 
     @abstractmethod
-    def _generate_circuits(self, **kwargs) -> list[Circuit]:
+    def _generate_circuits(self, **kwargs) -> list[CircuitBundle]:
         """Generate quantum circuits for execution.
 
         This method should generate and return a list of Circuit objects based on
@@ -469,7 +523,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             **kwargs: Additional keyword arguments for circuit generation.
 
         Returns:
-            list[Circuit]: List of Circuit objects to be executed.
+            list[CircuitBundle]: List of Circuit objects to be executed.
         """
         pass
 
@@ -513,7 +567,9 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             0, 2 * np.pi, (self.optimizer.n_param_sets, total_params)
         )
 
-    def _run_optimization_circuits(self, data_file, **kwargs):
+    def _run_optimization_circuits(
+        self, data_file: str | None, **kwargs
+    ) -> dict[int, float]:
         self._curr_circuits = self._generate_circuits(**kwargs)
 
         if self.backend.supports_expval:
@@ -551,17 +607,9 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             )
 
         losses = {}
-        measurement_groups = self._meta_circuits["cost_circuit"].measurement_groups
+        measurement_groups = self.meta_circuits["cost_circuit"].measurement_groups
 
-        # Flatten measurement groups for expectation value backends
-        if self.backend.supports_expval:
-            flattened_measurement_groups = tuple(
-                chain.from_iterable(measurement_groups)
-            )
-        else:
-            flattened_measurement_groups = measurement_groups
-
-        # Define key functions for both levels of grouping
+        # Define key functions for grouping
         get_param_id = lambda item: int(item[0].split("_")[0])
         get_qem_id = lambda item: int(item[0].split("_")[1].split(":")[1])
 
@@ -569,60 +617,54 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         for p, param_group_iterator in groupby(results.items(), key=get_param_id):
             param_group_iterator = list(param_group_iterator)
 
-            shots_by_qem_idx = zip(
-                *{
-                    gid: [value for _, value in group]
-                    for gid, group in groupby(param_group_iterator, key=get_qem_id)
-                }.values()
-            )
+            # Group by QEM ID to handle error mitigation
+            qem_groups = {
+                gid: [value for _, value in group]
+                for gid, group in groupby(param_group_iterator, key=get_qem_id)
+            }
 
-            marginal_results = []
-            for shots_dicts, curr_measurement_group in zip(
-                shots_by_qem_idx, flattened_measurement_groups
-            ):
-                if self.backend.supports_expval:
-                    ham_ops = kwargs.get("ham_ops")
-                    if ham_ops is None:
-                        # Internal consistency check: ham_ops should be set by _run_optimization_circuits
-                        # when backend supports expectation values
-                        raise ValueError(
-                            "Hamiltonian operators (ham_ops) are required when using a backend "
-                            "that supports expectation values, but were not provided."
-                        )
-
-                    expectation_matrix = np.array(
-                        [
-                            [shot_dict[op_name] for op_name in ham_ops.split(";")]
-                            for shot_dict in shots_dicts
-                        ]
-                    ).T
-                else:
-                    wire_order = tuple(reversed(self.cost_hamiltonian.wires))
-
-                    expectation_matrix = _batched_expectation(
-                        shots_dicts, curr_measurement_group, wire_order
-                    )
-
-                # expectation_matrix[i, j] = expectation value for observable i, histogram j
-                curr_marginal_results = []
-                for intermediate_exp_values in expectation_matrix:
-                    mitigated_exp_value = self._qem_protocol.postprocess_results(
-                        intermediate_exp_values
-                    )
-                    curr_marginal_results.append(mitigated_exp_value)
-
-                marginal_results.append(
-                    curr_marginal_results
-                    if len(curr_marginal_results) > 1
-                    else curr_marginal_results[0]
-                )
+            # Apply QEM protocol to expectation values (common for both backends)
+            apply_qem = lambda exp_matrix: [
+                self._qem_protocol.postprocess_results(exp_vals)
+                for exp_vals in exp_matrix
+            ]
 
             if self.backend.supports_expval:
-                marginal_results = marginal_results[0]
+                ham_ops = kwargs.get("ham_ops")
+                if ham_ops is None:
+                    raise ValueError(
+                        "Hamiltonian operators (ham_ops) are required when using a backend "
+                        "that supports expectation values, but were not provided."
+                    )
+                marginal_results = [
+                    apply_qem(
+                        np.array(
+                            [
+                                [shot_dict[op] for op in ham_ops.split(";")]
+                                for shot_dict in shots_dicts
+                            ]
+                        ).T
+                    )
+                    for shots_dicts in sorted(qem_groups.values())
+                ] or []
+            else:
+                shots_by_qem_idx = zip(*qem_groups.values())
+                marginal_results = []
+                for shots_dicts, curr_measurement_group in zip(
+                    shots_by_qem_idx, measurement_groups
+                ):
+                    wire_order = tuple(reversed(self.cost_hamiltonian.wires))
+                    exp_matrix = _batched_expectation(
+                        shots_dicts, curr_measurement_group, wire_order
+                    )
+                    mitigated = apply_qem(exp_matrix)
+                    marginal_results.append(
+                        mitigated if len(mitigated) > 1 else mitigated[0]
+                    )
 
             pl_loss = (
-                self._meta_circuits["cost_circuit"]
-                .postprocessing_fn(marginal_results)[0]
+                self.meta_circuits["cost_circuit"]
+                .postprocessing_fn(marginal_results)
                 .item()
             )
 
@@ -630,7 +672,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         return losses
 
-    def _perform_final_computation(self, **kwargs):
+    def _perform_final_computation(self, **kwargs) -> None:
         """
         Perform final computations after optimization completes.
 
@@ -647,15 +689,27 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         """
         pass
 
-    def run(self, data_file=None, **kwargs):
+    def run(
+        self,
+        perform_final_computation: bool = True,
+        data_file: str | None = None,
+        **kwargs,
+    ) -> tuple[int, float]:
         """Run the variational quantum algorithm.
 
         The outputs are stored in the algorithm object.
         Optionally, the data can be stored in a file.
 
         Args:
+            perform_final_computation (bool): Whether to perform final computation after optimization completes.
+                Typically, this step involves sampling with the best found parameters to extract
+                solution probability distributions. Set this to False in warm-starting or pre-training
+                routines where the final sampling step is not needed. Defaults to True.
             data_file (str | None): The file to store the data in. If None, no data is stored. Defaults to None.
             **kwargs: Additional keyword arguments for subclasses.
+
+        Returns:
+            tuple[int, float]: A tuple containing (total_circuit_count, total_run_time).
         """
 
         def cost_fn(params):
@@ -737,9 +791,10 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         self.reporter.info(message="Finished Setup")
 
-        # Only initialize if user hasn't already set initial_params
         if self._curr_params is None:
             self._initialize_params()
+        else:
+            self._validate_initial_params(self._curr_params)
 
         try:
             self._minimize_res = self.optimizer.optimize(
@@ -757,25 +812,26 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         self._final_params = self._minimize_res.x
 
-        self._perform_final_computation(**kwargs)
+        if perform_final_computation:
+            self._perform_final_computation(**kwargs)
 
         self.reporter.info(message="Finished successfully!")
 
         return self.total_circuit_count, self.total_run_time
 
-    def _run_solution_measurement(self):
+    def _run_solution_measurement(self) -> None:
         """Execute measurement circuits to obtain probability distributions for solution extraction."""
         if self._best_params is None:
             raise RuntimeError(
                 "Optimization has not been run, no best parameters available."
             )
 
-        if "meas_circuit" not in self._meta_circuits:
+        if "meas_circuit" not in self.meta_circuits:
             raise NotImplementedError(
                 f"{type(self).__name__} does not implement a 'meas_circuit'."
             )
 
-        self._is_compute_probabilites = True
+        self._is_compute_probabilities = True
 
         # Compute probabilities for best parameters (the ones that achieved best loss)
         self._curr_params = np.atleast_2d(self._best_params)
@@ -783,4 +839,4 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         best_probs = self._dispatch_circuits_and_process_results()
         self._best_probs.update(best_probs)
 
-        self._is_compute_probabilites = False
+        self._is_compute_probabilities = False

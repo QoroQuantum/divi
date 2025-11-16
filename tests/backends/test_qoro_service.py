@@ -29,6 +29,7 @@ from divi.backends._qpu_system import (
     parse_qpu_systems,
     update_qpu_systems_cache,
 )
+from divi.circuits import validate_qasm
 
 # --- Test Fixtures ---
 
@@ -60,7 +61,7 @@ def qoro_service_factory(mocker):
 @pytest.fixture
 def submit_circuits_mock(mocker, qoro_service_factory):
     """Mocks the dependencies for submit_circuits and returns the make_request mock."""
-    mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=2)
+    mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=True)
 
     mock_init_response = mocker.MagicMock()
     mock_init_response.status_code = HTTPStatus.CREATED
@@ -518,7 +519,7 @@ class TestQoroServiceMock:
     ):
         """Test submitting circuits with an override_config that has a QPUSystem object."""
         qoro_service_mock = qoro_service_factory()
-        mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=2)
+        mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=True)
 
         # Mock responses for the API calls in submit_circuits
         mock_init_response = mocker.MagicMock(
@@ -960,7 +961,7 @@ class TestQoroServiceMock:
         )
         mock_add_response = mocker.MagicMock(status_code=HTTPStatus.OK)
 
-        mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=2)
+        mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=True)
         mock_make_request = mocker.patch.object(
             service_with_default,
             "_make_request",
@@ -986,7 +987,7 @@ class TestQoroServiceMock:
     ):
         """Test submitting circuits with an override_config that has a string qpu_system."""
         qoro_service_mock = qoro_service_factory()
-        mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=2)
+        mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=True)
 
         # Mock responses for the API calls in submit_circuits
         mock_init_response = mocker.MagicMock(
@@ -1050,7 +1051,7 @@ class TestQoroServiceMock:
     ):
         """Test ham_ops validation for various invalid inputs."""
         qoro_service_mock = qoro_service_factory()
-        mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=2)
+        mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=True)
         with pytest.raises(ValueError, match=error_msg):
             qoro_service_mock.submit_circuits(
                 {"c1": "qasm"}, ham_ops=ham_ops, job_type=JobType.EXPECTATION
@@ -1061,7 +1062,7 @@ class TestQoroServiceMock:
     ):
         """Test that ham_ops with non-EXPECTATION job_type issues an error."""
         qoro_service_mock = qoro_service_factory()
-        mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=2)
+        mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=True)
         mock_init_response = mocker.MagicMock(
             status_code=HTTPStatus.CREATED, json=lambda: {"job_id": "mock_job_id"}
         )
@@ -1108,14 +1109,18 @@ class TestQoroServiceMock:
         # Test 1: Invalid QASM
         mocker.patch(
             f"{_qoro_service.__name__}.{is_valid_qasm.__name__}",
-            return_value="Invalid QASM syntax",
+            return_value=False,
+        )
+        mocker.patch(
+            f"{validate_qasm.__module__}.{validate_qasm.__name__}",
+            side_effect=SyntaxError("Invalid QASM syntax"),
         )
         with pytest.raises(ValueError, match="Circuit 'circuit_1' is not a valid QASM"):
             qoro_service_mock.submit_circuits({"circuit_1": "invalid_qasm"})
 
         # Test 2: Circuit cut constraint
         mocker.patch(
-            f"{_qoro_service.__name__}.{is_valid_qasm.__name__}", return_value=2
+            f"{_qoro_service.__name__}.{is_valid_qasm.__name__}", return_value=True
         )
         with pytest.raises(
             ValueError, match="Only one circuit allowed for circuit-cutting jobs."
@@ -1126,7 +1131,7 @@ class TestQoroServiceMock:
 
         # Test 3: API error during init
         mocker.patch(
-            f"{is_valid_qasm.__module__}.{is_valid_qasm.__name__}", return_value=2
+            f"{is_valid_qasm.__module__}.{is_valid_qasm.__name__}", return_value=True
         )
         mocker.patch.object(
             qoro_service_mock,
@@ -1141,7 +1146,7 @@ class TestQoroServiceMock:
 
         # Test 4: API error during add_circuits
         mocker.patch(
-            f"{is_valid_qasm.__module__}.{is_valid_qasm.__name__}", return_value=2
+            f"{is_valid_qasm.__module__}.{is_valid_qasm.__name__}", return_value=True
         )
         mock_init_response = mocker.MagicMock(
             status_code=HTTPStatus.CREATED, json=lambda: {"job_id": "mock_job_id"}
