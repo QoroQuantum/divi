@@ -1,0 +1,61 @@
+name: Changelog Reminder
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  check-code-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      has_code_changes: ${{ steps.check.outputs.has_code_changes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for code changes
+        id: check
+        run: |
+          CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+          if echo "$CHANGED_FILES" | grep -qE '\.(py)$|^divi/|^tests/'; then
+            echo "has_code_changes=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_code_changes=false" >> $GITHUB_OUTPUT
+          fi
+
+  remind:
+    name: Changelog Reminder
+    needs: check-code-changes
+    if: needs.check-code-changes.outputs.has_code_changes == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Changelog Reminder
+        uses: peterjgrainger/action-changelog-reminder@v1.3.0
+        with:
+          changelog_regex: 'CHANGELOG\.md'
+          customPrMessage: |
+            ⚠️ **Changelog Check Failed**
+
+            It looks like this PR includes code changes but `CHANGELOG.md` hasn't been updated.
+
+            Please add an entry to `CHANGELOG.md` under the `[Unreleased]` section documenting your changes. For example:
+
+            \`\`\`markdown
+            ### ✨ Added
+
+            * Description of your change
+            \`\`\`
+
+            For significant user-facing changes, consider including a brief code example in your changelog entry to help users understand the new functionality.
+
+            See [CONTRIBUTING.md](https://github.com/${{ github.repository }}/blob/main/CONTRIBUTING.md) for more details.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
