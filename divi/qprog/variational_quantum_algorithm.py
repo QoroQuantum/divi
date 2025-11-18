@@ -304,7 +304,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         self._is_compute_probabilities = False
 
         self.job_id = kwargs.get("job_id", None)
-        if progress_queue and self.job_id:
+        if progress_queue and self.job_id is not None:
             self.reporter = QueueProgressReporter(self.job_id, progress_queue)
         else:
             self.reporter = LoggingProgressReporter()
@@ -503,6 +503,9 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             dict[str, MetaCircuit]: Dictionary mapping circuit names to their
                 MetaCircuit templates.
         """
+        # Lazy initialization: each instance has its own _meta_circuits.
+        # Note: When used with ProgramBatch, meta_circuits is initialized sequentially
+        # in the main thread before parallel execution to avoid thread-safety issues.
         if self._meta_circuits is None:
             self._meta_circuits = self._create_meta_circuits_dict()
         return self._meta_circuits

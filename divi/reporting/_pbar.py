@@ -44,39 +44,54 @@ class ConditionalSpinnerColumn(ProgressColumn):
 
 
 class PhaseStatusColumn(ProgressColumn):
+    _STATUS_MESSAGES = {
+        "Success": ("• Success! ✅", "bold green"),
+        "Failed": ("• Failed! ❌", "bold red"),
+        "Cancelled": ("• Cancelled ⏹️", "bold yellow"),
+        "Aborted": ("• Aborted ⚠️", "dim magenta"),
+    }
+
     def __init__(self, table_column=None):
         super().__init__(table_column)
+
+    def _build_polling_string(
+        self, split_job_id: str, job_status: str, poll_attempt: int, max_retries: int
+    ) -> str:
+        """Build the polling status string for service job tracking."""
+        if job_status == "COMPLETED":
+            return f" [Job {split_job_id} is complete.]"
+        elif poll_attempt > 0:
+            return f" [Job {split_job_id} is {job_status}. Polling attempt {poll_attempt} / {max_retries}]"
+
+        return ""
 
     def render(self, task):
         final_status = task.fields.get("final_status")
 
-        if final_status == "Success":
-            return Text("• Success! ✅", style="bold green")
-        elif final_status == "Failed":
-            return Text("• Failed! ❌", style="bold red")
-        elif final_status == "Cancelled":
-            return Text("• Cancelled ⏹️", style="bold yellow")
-        elif final_status == "Aborted":
-            return Text("• Aborted ⚠️", style="dim magenta")
+        # Early return for final statuses
+        if final_status in self._STATUS_MESSAGES:
+            message, style = self._STATUS_MESSAGES[final_status]
+            return Text(message, style=style)
 
+        # Build message with polling information
         message = task.fields.get("message")
-
-        poll_attempt = task.fields.get("poll_attempt", 0)
-        polling_str = ""
         service_job_id = task.fields.get("service_job_id")
+        job_status = task.fields.get("job_status")
+        poll_attempt = task.fields.get("poll_attempt", 0)
+        max_retries = task.fields.get("max_retries")
 
-        if service_job_id:
+        polling_str = ""
+        split_job_id = None
+        if service_job_id is not None:
             split_job_id = service_job_id.split("-")[0]
-            job_status = task.fields.get("job_status")
-
-            if job_status == "COMPLETED":
-                polling_str = f" [Job {split_job_id} is complete.]"
-            elif poll_attempt > 0:
-                max_retries = task.fields.get("max_retries")
-                polling_str = f" [Job {split_job_id} is {job_status}. Polling attempt {poll_attempt} / {max_retries}]"
+            polling_str = self._build_polling_string(
+                split_job_id, job_status, poll_attempt, max_retries
+            )
 
         final_text = Text(f"[{message}]{polling_str}")
-        if service_job_id:
+
+        # Highlight job ID if present
+        if split_job_id is not None:
             final_text.highlight_words([split_job_id], "blue")
 
         return final_text

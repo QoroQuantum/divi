@@ -16,6 +16,7 @@ from rich.progress import Progress, TaskID
 
 from divi.backends import CircuitRunner, ParallelSimulator
 from divi.qprog.quantum_program import QuantumProgram
+from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from divi.reporting import disable_logging, make_progress_bar
 
 
@@ -319,6 +320,13 @@ class ProgramBatch(ABC):
                 daemon=True,
             )
             self._listener_thread.start()
+
+        # Initialize meta_circuits for all programs sequentially before parallel execution.
+        # This ensures PennyLane's thread-unsafe queuing system is only accessed from
+        # the main thread. Once initialized, QuantumScript objects are immutable and thread-safe.
+        for program in self._programs.values():
+            if isinstance(program, VariationalQuantumAlgorithm):
+                _ = program.meta_circuits  # Trigger lazy initialization
 
         for program in self._programs.values():
             future = self._add_program_to_executor(program)
