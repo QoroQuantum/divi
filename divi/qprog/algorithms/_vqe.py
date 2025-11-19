@@ -160,41 +160,22 @@ class VQE(VariationalQuantumAlgorithm):
             ),
         )
 
-        def _prepare_circuit(hamiltonian, params, final_measurement=False):
-            """Prepare the circuit for the VQE problem.
-
-            Args:
-                hamiltonian: The Hamiltonian to measure.
-                params: The parameters for the ansatz.
-                final_measurement (bool): Whether to perform final measurement.
-            """
-            self.ansatz.build(
-                params,
-                n_qubits=self.n_qubits,
-                n_layers=self.n_layers,
-                n_electrons=self.n_electrons,
-            )
-
-            if final_measurement:
-                return qml.probs()
-
-            # Even though in principle we want to sample from a state,
-            # we are applying an `expval` operation here to make it compatible
-            # with the pennylane transforms down the line, which complain about
-            # the `sample` operation.
-            return qml.expval(hamiltonian)
+        ops = self.ansatz.build(
+            weights_syms,
+            n_qubits=self.n_qubits,
+            n_layers=self.n_layers,
+            n_electrons=self.n_electrons,
+        )
 
         return {
             "cost_circuit": self._meta_circuit_factory(
-                source_circuit=qml.tape.make_qscript(_prepare_circuit)(
-                    self._cost_hamiltonian, weights_syms, final_measurement=False
+                qml.tape.QuantumScript(
+                    ops=ops, measurements=[qml.expval(self._cost_hamiltonian)]
                 ),
                 symbols=weights_syms.flatten(),
             ),
             "meas_circuit": self._meta_circuit_factory(
-                source_circuit=qml.tape.make_qscript(_prepare_circuit)(
-                    self._cost_hamiltonian, weights_syms, final_measurement=True
-                ),
+                qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()]),
                 symbols=weights_syms.flatten(),
                 grouping_strategy="wires",
             ),

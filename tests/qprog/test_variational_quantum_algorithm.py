@@ -56,15 +56,17 @@ class SampleVQAProgram(VariationalQuantumAlgorithm):
         return self._cost_hamiltonian
 
     def _create_meta_circuits_dict(self):
-        def simple_circuit(params):
-            qml.RX(params[0], wires=0)
-            qml.U3(*params[1], wires=1)
-            qml.CNOT(wires=[0, 1])
-            return qml.expval(self.cost_hamiltonian)
-
         symbols = [sp.Symbol("beta"), sp.symarray("theta", 3)]
+        ops = [
+            qml.RX(symbols[0], wires=0),
+            qml.U3(*symbols[1], wires=1),
+            qml.CNOT(wires=[0, 1]),
+        ]
+        source_circuit = qml.tape.QuantumScript(
+            ops=ops, measurements=[qml.expval(self.cost_hamiltonian)]
+        )
         meta_circuit = MetaCircuit(
-            source_circuit=qml.tape.make_qscript(simple_circuit)(symbols),
+            source_circuit=source_circuit,
             symbols=symbols,
             grouping_strategy=self._grouping_strategy,
         )

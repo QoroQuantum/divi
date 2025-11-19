@@ -19,12 +19,13 @@ from divi.circuits.qem import ZNE, _NoMitigation
 
 class TestCircuitBundle:
     def test_bundle_creation(self):
-        def test_circuit():
-            qml.RX(0.5, wires=0)
-            qml.CNOT(wires=[0, 1])
-            return qml.expval(qml.PauliZ(0))
-
-        qscript = qml.tape.make_qscript(test_circuit)()
+        ops = [
+            qml.RX(0.5, wires=0),
+            qml.CNOT(wires=[0, 1]),
+        ]
+        qscript = qml.tape.QuantumScript(
+            ops=ops, measurements=[qml.expval(qml.PauliZ(0))]
+        )
         qasm_list = to_openqasm(
             qscript,
             measurement_groups=[qscript.measurements],
@@ -49,28 +50,25 @@ class TestMetaCircuit:
 
     @pytest.fixture
     def sample_circuit(self, weights_syms):
-        def circ(weights):
-            qml.AngleEmbedding(weights, wires=range(4), rotation="Y")
-            qml.AngleEmbedding(weights, wires=range(4), rotation="X")
-
-            return qml.probs()
-
-        return qml.tape.make_qscript(circ)(weights_syms)
+        ops = [
+            qml.AngleEmbedding(weights_syms, wires=range(4), rotation="Y"),
+            qml.AngleEmbedding(weights_syms, wires=range(4), rotation="X"),
+        ]
+        return qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()])
 
     @pytest.fixture
     def expval_circuit(self, weights_syms):
-        def circ(weights):
-            qml.AngleEmbedding(weights, wires=range(4), rotation="Y")
-            return qml.expval(qml.PauliZ(0))
-
-        return qml.tape.make_qscript(circ)(weights_syms)
+        ops = [
+            qml.AngleEmbedding(weights_syms, wires=range(4), rotation="Y"),
+        ]
+        return qml.tape.QuantumScript(ops=ops, measurements=[qml.expval(qml.PauliZ(0))])
 
     @pytest.fixture
     def no_measurement_circuit(self, weights_syms):
-        def circ(weights):
-            qml.AngleEmbedding(weights, wires=range(4), rotation="Y")
-
-        return qml.tape.make_qscript(circ)(weights_syms)
+        ops = [
+            qml.AngleEmbedding(weights_syms, wires=range(4), rotation="Y"),
+        ]
+        return qml.tape.QuantumScript(ops=ops, measurements=[])
 
     def test_metacircuit_valid_measurement(self, expval_circuit, weights_syms):
         """Tests that MetaCircuit initializes correctly with a valid expval measurement."""

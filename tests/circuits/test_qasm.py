@@ -14,6 +14,13 @@ from divi.circuits.qem import _NoMitigation
 class TestOpsToQasm:
     """Test the _ops_to_qasm function."""
 
+    def _create_circuit_and_extract(self, ops, measurements=None):
+        """Helper to create a QuantumScript and extract operations and wires."""
+        if measurements is None:
+            measurements = [qml.expval(qml.PauliZ(0))]
+        qscript = qml.tape.QuantumScript(ops=ops, measurements=measurements)
+        return qscript.operations, qscript.wires
+
     def test_unsupported_operation_raises_error(self):
         """Test that unsupported operations raise ValueError."""
         # Create a mock operation with an unsupported name
@@ -41,14 +48,11 @@ class TestOpsToQasm:
         """Test precision parameter formatting."""
 
         # Create a simple circuit with parameterized gates
-        def test_circuit():
-            qml.RX(0.123456789, wires=0)
-            qml.RY(0.987654321, wires=1)
-            return qml.expval(qml.PauliZ(0))
-
-        qscript = qml.tape.make_qscript(test_circuit)()
-        operations = qscript.operations
-        wires = qscript.wires
+        ops = [
+            qml.RX(0.123456789, wires=0),
+            qml.RY(0.987654321, wires=1),
+        ]
+        operations, wires = self._create_circuit_and_extract(ops)
 
         # Test with precision=3
         result = _ops_to_qasm(operations, precision=3, wires=wires)
@@ -65,13 +69,8 @@ class TestOpsToQasm:
     def test_no_precision_uses_default_formatting(self):
         """Test that None precision uses default string formatting."""
 
-        def test_circuit():
-            qml.RX(0.123456789, wires=0)
-            return qml.expval(qml.PauliZ(0))
-
-        qscript = qml.tape.make_qscript(test_circuit)()
-        operations = qscript.operations
-        wires = qscript.wires
+        ops = [qml.RX(0.123456789, wires=0)]
+        operations, wires = self._create_circuit_and_extract(ops)
 
         result = _ops_to_qasm(operations, precision=None, wires=wires)
 
@@ -82,33 +81,65 @@ class TestOpsToQasm:
 class TestToOpenqasm:
     """Test the to_openqasm function."""
 
-    def test_qem_protocol_without_symbols_raises_error(self):
+    @pytest.fixture
+    def simple_circuit(self):
+        """Fixture for a simple single-qubit circuit with RX(0.5) and expval(PauliZ(0))."""
+        ops = [qml.RX(0.5, wires=0)]
+        return qml.tape.QuantumScript(ops=ops, measurements=[qml.expval(qml.PauliZ(0))])
+
+    @pytest.fixture
+    def default_measurement_group(self):
+        """Fixture for the default measurement group with expval(PauliZ(0))."""
+        return [[qml.expval(qml.PauliZ(0))]]
+
+    @pytest.fixture
+    def qem_protocol(self):
+        """Fixture for a QEM protocol instance."""
+        return _NoMitigation()
+
+    def _assert_result_structure(self, result, expected_length=1):
+        """Helper to assert the structure of a result list with tuples."""
+        assert isinstance(result, list)
+        assert len(result) == expected_length
+        circuit, measurements = result[0]
+        assert isinstance(circuit, str)
+        assert isinstance(measurements, str)
+        return circuit, measurements
+
+    def _assert_qasm_headers(self, qasm_str, n_qubits=None):
+        """Helper to assert QASM headers are present."""
+        assert "OPENQASM 2.0;" in qasm_str
+        assert 'include "qelib1.inc";' in qasm_str
+        if n_qubits is not None:
+            assert f"qreg q[{n_qubits}];" in qasm_str
+            assert f"creg c[{n_qubits}];" in qasm_str
+
+    def _assert_measurement(self, measurements_str, wire, should_exist=True):
+        """Helper to assert measurement presence/absence for a wire."""
+        measurement = f"measure q[{wire}] -> c[{wire}];"
+        if should_exist:
+            assert measurement in measurements_str
+        else:
+            assert measurement not in measurements_str
+
+    def test_qem_protocol_without_symbols_raises_error(
+        self, simple_circuit, default_measurement_group, qem_protocol
+    ):
         """Test that QEM protocol without symbols raises ValueError."""
-
-        def test_circuit():
-            qml.RX(0.5, wires=0)
-            return qml.expval(qml.PauliZ(0))
-
-        qscript = qml.tape.make_qscript(test_circuit)()
-        measurement_groups = [[qml.expval(qml.PauliZ(0))]]
-
-        # Use a QEM protocol but don't provide symbols
-        qem_protocol = _NoMitigation()
 
         with pytest.raises(
             ValueError,
             match="When passing a QEMProtocol instance, the Sympy symbols in the circuit should be provided",
         ):
-            to_openqasm(qscript, measurement_groups, qem_protocol=qem_protocol)
+            to_openqasm(
+                simple_circuit, default_measurement_group, qem_protocol=qem_protocol
+            )
 
     def test_empty_circuit_returns_header_only(self):
         """Test empty circuit returns only QASM headers."""
 
         # Create a circuit with zero wires to trigger early return
-        def empty_circuit():
-            pass
-
-        qscript = qml.tape.make_qscript(empty_circuit)()
+        qscript = qml.tape.QuantumScript(ops=[], measurements=[])
         # Force num_wires to be 0 to trigger the early return
         qscript._wires = qml.wires.Wires([])
         measurement_groups = []
@@ -127,26 +158,22 @@ class TestToOpenqasm:
         """Test measure_all=False only measures wires from the current measurement group."""
 
         # The key insight: measure_all=False uses measurement groups, not original measurements
-        def test_circuit():
-            qml.RX(0.5, wires=0)
-            qml.RY(0.5, wires=1)
-            qml.RZ(0.5, wires=2)
-            # Original circuit measures wires 0 and 2
-            return qml.expval(qml.PauliZ(0)), qml.expval(qml.PauliX(2))
-
-        qscript = qml.tape.make_qscript(test_circuit)()
+        ops = [
+            qml.RX(0.5, wires=0),
+            qml.RY(0.5, wires=1),
+            qml.RZ(0.5, wires=2),
+        ]
+        # Original circuit measures wires 0 and 2
+        qscript = qml.tape.QuantumScript(
+            ops=ops, measurements=[qml.expval(qml.PauliZ(0)), qml.expval(qml.PauliX(2))]
+        )
         # Create measurement groups that only care about wire 1
         measurement_groups = [[qml.expval(qml.PauliY(1))]]  # Only wire 1
 
         result = to_openqasm(qscript, measurement_groups, measure_all=False)
 
         # Should have measurements for each group
-        assert len(result) == 1
-
-        # Each result should be a tuple of (circuit, measurements)
-        circuit, measurements = result[0]
-        assert isinstance(circuit, str)
-        assert isinstance(measurements, str)
+        circuit, measurements = self._assert_result_structure(result)
 
         # Circuit should contain the operations
         assert "rx(0.5) q[0];" in circuit
@@ -155,126 +182,102 @@ class TestToOpenqasm:
 
         # CORRECT BEHAVIOR: When measure_all=False, it should only measure wires from the current measurement group
         # So it should measure wire 1 (from the measurement group) and NOT wires 0 and 2
-        assert "measure q[1] -> c[1];" in measurements  # From measurement group
-        assert "measure q[0] -> c[0];" not in measurements  # Not in measurement group
-        assert "measure q[2] -> c[2];" not in measurements  # Not in measurement group
+        self._assert_measurement(
+            measurements, 1, should_exist=True
+        )  # From measurement group
+        self._assert_measurement(
+            measurements, 0, should_exist=False
+        )  # Not in measurement group
+        self._assert_measurement(
+            measurements, 2, should_exist=False
+        )  # Not in measurement group
 
     def test_measure_all_false_with_no_original_measurements(self):
         """Test measure_all=False when main_qscript has no measurements."""
 
         # Now that the implementation is fixed, it should measure wires from the measurement group
-        def test_circuit():
-            qml.RX(0.5, wires=0)
-            qml.RY(0.5, wires=1)
-            # No measurements in the original circuit
-            return (
-                qml.probs()
-            )  # This doesn't create measurements in main_qscript.measurements
-
-        qscript = qml.tape.make_qscript(test_circuit)()
+        ops = [
+            qml.RX(0.5, wires=0),
+            qml.RY(0.5, wires=1),
+        ]
+        # No measurements in the original circuit
+        qscript = qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()])
         measurement_groups = [[qml.expval(qml.PauliZ(0))]]
 
         result = to_openqasm(qscript, measurement_groups, measure_all=False)
 
         # Should have measurements for each group
-        assert len(result) == 1
-
-        circuit, measurements = result[0]
-        assert isinstance(circuit, str)
-        assert isinstance(measurements, str)
+        circuit, measurements = self._assert_result_structure(result)
 
         # Now it measures wires from the measurement group (wire 0)
         # even though main_qscript.measurements is empty
-        assert "measure q[0] -> c[0];" in measurements  # From measurement group
-        assert "measure q[1] -> c[1];" not in measurements  # Not in measurement group
+        self._assert_measurement(
+            measurements, 0, should_exist=True
+        )  # From measurement group
+        self._assert_measurement(
+            measurements, 1, should_exist=False
+        )  # Not in measurement group
 
-    def test_empty_measurement_groups_warning(self):
+    def test_empty_measurement_groups_warning(self, simple_circuit):
         """Test empty measurement groups triggers warning."""
 
-        def test_circuit():
-            qml.RX(0.5, wires=0)
-            return qml.expval(qml.PauliZ(0))
-
-        qscript = qml.tape.make_qscript(test_circuit)()
         measurement_groups = []  # Empty measurement groups
 
         with pytest.warns(
             UserWarning,
             match="No measurement groups provided. Returning the QASM of the circuit operations only.",
         ):
-            result = to_openqasm(qscript, measurement_groups)
+            result = to_openqasm(simple_circuit, measurement_groups)
 
         # Should return just the circuit operations without measurements
-        assert isinstance(result, list)
-        assert len(result) == 1
-        assert "OPENQASM 2.0;" in result[0]
-        assert 'include "qelib1.inc";' in result[0]
-        assert "qreg q[1];" in result[0]
-        assert "creg c[1];" in result[0]
+        assert isinstance(result, list) and len(result) == 1
+        self._assert_qasm_headers(result[0], n_qubits=1)
         assert "rx(0.5) q[0];" in result[0]
         # Should not have any measurements
         assert "measure" not in result[0]
 
-    def test_qem_protocol_with_symbols(self):
+    def test_qem_protocol_with_symbols(
+        self, simple_circuit, default_measurement_group, qem_protocol
+    ):
         """Test QEM protocol with symbols works correctly."""
 
-        def test_circuit():
-            qml.RX(0.5, wires=0)
-            return qml.expval(qml.PauliZ(0))
-
-        qscript = qml.tape.make_qscript(test_circuit)()
-        measurement_groups = [[qml.expval(qml.PauliZ(0))]]
         symbols = [Symbol("theta")]
-        qem_protocol = _NoMitigation()
 
         result = to_openqasm(
-            qscript, measurement_groups, symbols=symbols, qem_protocol=qem_protocol
+            simple_circuit,
+            default_measurement_group,
+            symbols=symbols,
+            qem_protocol=qem_protocol,
         )
 
         # Should work without error and return tuples
-        assert isinstance(result, list)
-        assert len(result) == 1
-
-        circuit, measurements = result[0]
-        assert isinstance(circuit, str)
-        assert isinstance(measurements, str)
+        circuit, measurements = self._assert_result_structure(result)
         # QEM protocol processing converts back to OpenQASM 2.0
         assert "OPENQASM 2.0;" in circuit
 
-    def test_qem_protocol_with_empty_symbols_list(self):
+    def test_qem_protocol_with_empty_symbols_list(
+        self, simple_circuit, default_measurement_group, qem_protocol
+    ):
         """Test QEM protocol with empty symbols list (potential edge case)."""
 
-        def test_circuit():
-            qml.RX(0.5, wires=0)
-            return qml.expval(qml.PauliZ(0))
-
-        qscript = qml.tape.make_qscript(test_circuit)()
-        measurement_groups = [[qml.expval(qml.PauliZ(0))]]
         symbols = []  # Empty symbols list
-        qem_protocol = _NoMitigation()
 
         # This should work without error even with empty symbols
         result = to_openqasm(
-            qscript, measurement_groups, symbols=symbols, qem_protocol=qem_protocol
+            simple_circuit,
+            default_measurement_group,
+            symbols=symbols,
+            qem_protocol=qem_protocol,
         )
 
         # Should work without error
-        assert isinstance(result, list)
-        assert len(result) == 1
+        self._assert_result_structure(result)
 
-        circuit, measurements = result[0]
-        assert isinstance(circuit, str)
-        assert isinstance(measurements, str)
-
-    def test_qem_protocol_cirq_conversion_bug(self):
+    def test_qem_protocol_cirq_conversion_bug(
+        self, simple_circuit, default_measurement_group
+    ):
         """Test QEM protocol cirq conversion with multiple circuits."""
 
-        def test_circuit():
-            qml.RX(0.5, wires=0)
-            return qml.expval(qml.PauliZ(0))
-
-        qscript = qml.tape.make_qscript(test_circuit)()
-        measurement_groups = [[qml.expval(qml.PauliZ(0))]]
         symbols = [Symbol("theta")]
 
         # Use a mock QEM protocol that returns multiple circuits
@@ -286,61 +289,50 @@ class TestToOpenqasm:
         qem_protocol = MockQEMProtocol()
 
         result = to_openqasm(
-            qscript, measurement_groups, symbols=symbols, qem_protocol=qem_protocol
+            simple_circuit,
+            default_measurement_group,
+            symbols=symbols,
+            qem_protocol=qem_protocol,
         )
 
         # Should return multiple circuits (one for each QEM circuit)
-        assert isinstance(result, list)
-        assert len(result) == 2  # Two circuits from QEM protocol
+        assert (
+            isinstance(result, list) and len(result) == 2
+        )  # Two circuits from QEM protocol
 
         # Each result should be a tuple
         for circuit, measurements in result:
             assert isinstance(circuit, str)
             assert isinstance(measurements, str)
             # QEM protocol processing converts back to OpenQASM 2.0
-            assert "OPENQASM 2.0;" in circuit
+            self._assert_qasm_headers(circuit)
 
-    def test_diagonalizing_gates_edge_case(self):
+    def test_diagonalizing_gates_edge_case(
+        self, simple_circuit, default_measurement_group
+    ):
         """Test edge case with diagonalizing gates."""
 
-        def test_circuit():
-            qml.RX(0.5, wires=0)
-            return qml.expval(qml.PauliZ(0))
-
-        qscript = qml.tape.make_qscript(test_circuit)()
-
         # Test with measurement group that has no diagonalizing gates
-        measurement_groups = [
-            [qml.expval(qml.PauliZ(0))]
-        ]  # PauliZ doesn't need diagonalizing
-
-        result = to_openqasm(qscript, measurement_groups)
+        # PauliZ doesn't need diagonalizing
+        result = to_openqasm(simple_circuit, default_measurement_group)
 
         # Should work without error
-        assert isinstance(result, list)
-        assert len(result) == 1
-
-        circuit, measurements = result[0]
-        assert isinstance(circuit, str)
-        assert isinstance(measurements, str)
+        circuit, measurements = self._assert_result_structure(result)
 
         # Should have measurements but no diagonalizing gates
-        assert "measure q[0] -> c[0];" in measurements
+        self._assert_measurement(measurements, 0, should_exist=True)
         # Should not have Hadamard gates (which would be diagonalizing gates)
         assert "h q[0];" not in measurements
 
-    def test_return_measurements_separately(self):
+    def test_return_measurements_separately(
+        self, simple_circuit, default_measurement_group
+    ):
         """Test return_measurements_separately=True returns tuple."""
 
-        def test_circuit():
-            qml.RX(0.5, wires=0)
-            return qml.expval(qml.PauliZ(0))
-
-        qscript = qml.tape.make_qscript(test_circuit)()
-        measurement_groups = [[qml.expval(qml.PauliZ(0))]]
-
         result = to_openqasm(
-            qscript, measurement_groups, return_measurements_separately=True
+            simple_circuit,
+            default_measurement_group,
+            return_measurements_separately=True,
         )
 
         # Should return tuple of (circuits, measurements)
@@ -356,65 +348,63 @@ class TestToOpenqasm:
         # Circuit should not contain measurements
         assert "measure" not in circuits[0]
         # Measurements should contain measurement instructions
-        assert "measure q[0] -> c[0];" in measurements[0]
+        self._assert_measurement(measurements[0], 0, should_exist=True)
 
     def test_multiple_measurement_groups(self):
         """Test multiple measurement groups are handled correctly."""
 
-        def test_circuit():
-            qml.RX(0.5, wires=0)
-            qml.RY(0.5, wires=1)
-            return qml.expval(qml.PauliZ(0)), qml.expval(qml.PauliX(1))
-
-        qscript = qml.tape.make_qscript(test_circuit)()
+        ops = [
+            qml.RX(0.5, wires=0),
+            qml.RY(0.5, wires=1),
+        ]
+        qscript = qml.tape.QuantumScript(
+            ops=ops, measurements=[qml.expval(qml.PauliZ(0)), qml.expval(qml.PauliX(1))]
+        )
         measurement_groups = [[qml.expval(qml.PauliZ(0))], [qml.expval(qml.PauliX(1))]]
 
         result = to_openqasm(qscript, measurement_groups)
 
         # Should return one circuit for each measurement group
-        assert isinstance(result, list)
-        assert len(result) == 2
+        assert isinstance(result, list) and len(result) == 2
 
         # Each result should be a tuple of (circuit, measurements)
         for i, (circuit, measurements) in enumerate(result):
             assert isinstance(circuit, str)
             assert isinstance(measurements, str)
-            assert "OPENQASM 2.0;" in circuit
-            assert 'include "qelib1.inc";' in circuit
-            assert "qreg q[2];" in circuit
-            assert "creg c[2];" in circuit
+            self._assert_qasm_headers(circuit, n_qubits=2)
             assert "rx(0.5) q[0];" in circuit
             assert "ry(0.5) q[1];" in circuit
-            assert "measure q[0] -> c[0];" in measurements
-            assert "measure q[1] -> c[1];" in measurements
+            self._assert_measurement(measurements, 0, should_exist=True)
+            self._assert_measurement(measurements, 1, should_exist=True)
 
-    def test_measure_all_true_measures_all_wires(self):
+    def test_measure_all_true_measures_all_wires(self, default_measurement_group):
         """Test that measure_all=True measures all circuit wires."""
 
-        def test_circuit():
-            qml.Hadamard(wires=0)
-            qml.CNOT(wires=[0, 1])
-            qml.RZ(0.1, wires=2)
-            # Circuit has 3 wires, but measurement group only specifies one.
-            return qml.expval(qml.PauliZ(0))
-
-        qscript = qml.tape.make_qscript(test_circuit)()
+        ops = [
+            qml.Hadamard(wires=0),
+            qml.CNOT(wires=[0, 1]),
+            qml.RZ(0.1, wires=2),
+        ]
+        # Circuit has 3 wires, but measurement group only specifies one.
+        qscript = qml.tape.QuantumScript(
+            ops=ops, measurements=[qml.expval(qml.PauliZ(0))]
+        )
         # Measurement group only involves wire 0
-        measurement_groups = [[qml.expval(qml.PauliZ(0))]]
 
         # Call with measure_all=True (the default)
-        result = to_openqasm(qscript, measurement_groups, measure_all=True)
+        result = to_openqasm(qscript, default_measurement_group, measure_all=True)
 
         # Result is a list of (circuit, measurement) products
-        assert len(result) == 1
-        _circuit_body, measurement_qasm = result[0]
+        _circuit_body, measurement_qasm = self._assert_result_structure(result)
 
         # Assert that all three wires are measured, despite the measurement group
-        assert "measure q[0] -> c[0];" in measurement_qasm
-        assert "measure q[1] -> c[1];" in measurement_qasm
-        assert "measure q[2] -> c[2];" in measurement_qasm
+        self._assert_measurement(measurement_qasm, 0, should_exist=True)
+        self._assert_measurement(measurement_qasm, 1, should_exist=True)
+        self._assert_measurement(measurement_qasm, 2, should_exist=True)
 
-    def test_qem_protocol_qasm_cleanup_works(self, monkeypatch):
+    def test_qem_protocol_qasm_cleanup_works(
+        self, monkeypatch, simple_circuit, default_measurement_group
+    ):
         """Test that QASM from cirq is correctly cleaned up."""
 
         # A "dirty" QASM string with features that should be cleaned.
@@ -440,17 +430,10 @@ rx(0.5) q[0];
                 # This doesn't need to be a real circuit, as cirq.qasm is mocked
                 return [None]
 
-        def test_circuit():
-            qml.RX(0.5, wires=0)
-            return qml.expval(qml.PauliZ(0))
-
-        qscript = qml.tape.make_qscript(test_circuit)()
-        measurement_groups = [[qml.expval(qml.PauliZ(0))]]
-
         # 3. Run the function with the mock protocol
         result = to_openqasm(
-            qscript,
-            measurement_groups,
+            simple_circuit,
+            default_measurement_group,
             qem_protocol=MockQEMProtocol(),
             symbols=[Symbol("theta")],  # Must be provided
             return_measurements_separately=True,
@@ -464,24 +447,24 @@ rx(0.5) q[0];
         assert "\n\n" not in cleaned_qasm  # Extra newlines should be removed
         assert "creg c[1];" in cleaned_qasm  # Classical register should be added
 
-    def test_circuit_with_sympy_parameter_is_handled(self):
+    def test_circuit_with_sympy_parameter_is_handled(self, default_measurement_group):
         """Tests that a circuit with a sympy Symbol is processed correctly."""
 
         theta = Symbol("theta")
 
-        def test_circuit():
-            qml.RX(theta, wires=0)
-            qml.RY(0.4, wires=1)
-            return qml.expval(qml.PauliZ(0))
-
-        qscript = qml.tape.make_qscript(test_circuit)()
-        measurement_groups = [[qml.expval(qml.PauliZ(0))]]
+        ops = [
+            qml.RX(theta, wires=0),
+            qml.RY(0.4, wires=1),
+        ]
+        qscript = qml.tape.QuantumScript(
+            ops=ops, measurements=[qml.expval(qml.PauliZ(0))]
+        )
 
         # The main goal is to ensure this runs without error.
         # The internal handling of sympy objects is critical for decomposition.
         try:
             result = to_openqasm(
-                qscript, measurement_groups, return_measurements_separately=True
+                qscript, default_measurement_group, return_measurements_separately=True
             )
             circuits, _ = result
             circuit_qasm = circuits[0]

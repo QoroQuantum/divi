@@ -442,50 +442,27 @@ class QAOA(VariationalQuantumAlgorithm):
 
         sym_params = np.vstack((betas, gammas)).transpose()
 
-        def _qaoa_layer(params):
-            gamma, beta = params
-            pqaoa.cost_layer(gamma, self._cost_hamiltonian)
-            pqaoa.mixer_layer(beta, self._mixer_hamiltonian)
-
-        def _prepare_circuit(hamiltonian, params, final_measurement):
-            """Prepare the circuit for the QAOA problem.
-
-            Args:
-                hamiltonian (qml.Hamiltonian): The Hamiltonian term to measure.
-                params (np.ndarray): The QAOA parameters (betas and gammas).
-                final_measurement (bool): Whether to perform final measurement.
-            """
-
-            # Use the wire labels from the cost Hamiltonian to ensure consistency
-            # This is important for graph problems where node labels might be strings
-            # Note: could've been done as qml.[Insert Gate](wires=self._circuit_wires)
-            # but there seems to be a bug with program capture in Pennylane.
-            # Maybe check when a new version comes out?
-            if self.initial_state == "Ones":
-                for wire in self._circuit_wires:
-                    qml.PauliX(wires=wire)
-            elif self.initial_state == "Superposition":
-                for wire in self._circuit_wires:
-                    qml.Hadamard(wires=wire)
-
-            qml.layer(_qaoa_layer, self.n_layers, params)
-
-            if final_measurement:
-                return qml.probs()
-            else:
-                return qml.expval(hamiltonian)
+        ops = []
+        if self.initial_state == "Ones":
+            for wire in self._circuit_wires:
+                ops.append(qml.PauliX(wires=wire))
+        elif self.initial_state == "Superposition":
+            for wire in self._circuit_wires:
+                ops.append(qml.Hadamard(wires=wire))
+        for layer_params in sym_params:
+            gamma, beta = layer_params
+            ops.append(pqaoa.cost_layer(gamma, self._cost_hamiltonian))
+            ops.append(pqaoa.mixer_layer(beta, self._mixer_hamiltonian))
 
         return {
             "cost_circuit": self._meta_circuit_factory(
-                source_circuit=qml.tape.make_qscript(_prepare_circuit)(
-                    self._cost_hamiltonian, sym_params, final_measurement=False
+                qml.tape.QuantumScript(
+                    ops=ops, measurements=[qml.expval(self._cost_hamiltonian)]
                 ),
                 symbols=sym_params.flatten(),
             ),
             "meas_circuit": self._meta_circuit_factory(
-                source_circuit=qml.tape.make_qscript(_prepare_circuit)(
-                    self._cost_hamiltonian, sym_params, final_measurement=True
-                ),
+                qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()]),
                 symbols=sym_params.flatten(),
                 grouping_strategy="wires",
             ),
