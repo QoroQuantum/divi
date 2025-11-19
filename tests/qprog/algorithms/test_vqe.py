@@ -198,6 +198,7 @@ def test_vqe_correct_circuits_count_and_energies(
     optimizer, dummy_simulator, h2_molecule
 ):
     """Test circuit counts and energy calculations after a VQE run."""
+    optimizer = optimizer()  # Create fresh instance
     vqe_problem = VQE(
         molecule=h2_molecule,
         ansatz=HartreeFockAnsatz(),
@@ -215,6 +216,7 @@ def test_vqe_correct_circuits_count_and_energies(
 @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
 def test_vqe_h2_molecule_e2e_solution(optimizer, default_test_simulator, h2_molecule):
     """Test that VQE finds the correct ground state for the H2 molecule."""
+    optimizer = optimizer()  # Create fresh instance
     if isinstance(optimizer, PymooOptimizer) and optimizer.method == PymooMethod.DE:
         pytest.skip("DE consistently fails for some reason. Debug later.")
 

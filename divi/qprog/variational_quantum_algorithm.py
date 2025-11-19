@@ -805,7 +805,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 initial_params=self._curr_params,
                 callback_fn=_iteration_counter,
                 jac=grad_fn,
-                maxiter=self.max_iterations,
+                max_iterations=self.max_iterations,
                 rng=self._rng,
             )
         except _CancelledError:

@@ -191,6 +191,9 @@ class QuantumProgram(ABC):
             poll_callback=update_function,
         )
 
+        if status == JobStatus.FAILED:
+            raise RuntimeError(f"Job {job_id} has failed")
+
         if status != JobStatus.COMPLETED:
             raise Exception("Job has not completed yet, cannot post-process results")
         return self.backend.get_job_results(job_id)

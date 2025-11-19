@@ -36,6 +36,7 @@ class TestGeneralQAOA:
         """
         Verifies that _is_compute_probabilities is False during the optimization loop.
         """
+        optimizer = optimizer()  # Create fresh instance
         qaoa_problem = QAOA(
             problem=nx.bull_graph(),
             graph_problem=GraphProblem.MAX_CLIQUE,
@@ -78,6 +79,7 @@ class TestGeneralQAOA:
         Verifies that _is_compute_probabilities is set to True during the final
         circuit generation and is reset to False afterward.
         """
+        optimizer = optimizer()  # Create fresh instance
         qaoa_problem = QAOA(
             problem=nx.bull_graph(),
             graph_problem=GraphProblem.MAX_CLIQUE,
@@ -127,6 +129,7 @@ class TestGeneralQAOA:
     def test_graph_correct_circuits_count_and_energies(
         self, optimizer, dummy_simulator
     ):
+        optimizer = optimizer()  # Create fresh instance
         qaoa_problem = QAOA(
             problem=nx.bull_graph(),
             graph_problem=GraphProblem.MAX_CLIQUE,
@@ -243,6 +246,7 @@ class TestGraphInput:
     @pytest.mark.e2e
     @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
     def test_graph_qaoa_e2e_solution(self, optimizer, default_test_simulator):
+        optimizer = optimizer()  # Create fresh instance
         if (
             isinstance(optimizer, ScipyOptimizer)
             and optimizer.method == ScipyMethod.L_BFGS_B

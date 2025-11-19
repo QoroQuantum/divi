@@ -342,5 +342,5 @@ class TestQuantumProgramAsyncExecution:
 
         program = AsyncTestProgram(backend=mock_async_backend)
 
-        with pytest.raises(Exception, match="Job has not completed yet"):
+        with pytest.raises(Exception, match="Job.*has failed"):
             program.run()
