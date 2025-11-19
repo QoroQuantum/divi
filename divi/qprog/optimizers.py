@@ -799,3 +799,37 @@ class MonteCarloOptimizer(Optimizer):
         self._curr_losses = None
         self._curr_iteration = None
         self._curr_rng_state = None
+
+
+def copy_optimizer(optimizer: Optimizer) -> Optimizer:
+    """Create a new optimizer instance with the same configuration as the given optimizer.
+
+    This function creates a fresh copy of an optimizer with identical configuration
+    parameters but with reset internal state. This is useful when multiple programs
+    need their own optimizer instances to avoid state contamination.
+
+    Args:
+        optimizer: The optimizer to copy.
+
+    Returns:
+        A new optimizer instance with the same configuration but fresh state.
+
+    Raises:
+        ValueError: If the optimizer type is not recognized.
+    """
+    if isinstance(optimizer, MonteCarloOptimizer):
+        return MonteCarloOptimizer(
+            population_size=optimizer.population_size,
+            n_best_sets=optimizer.n_best_sets,
+            keep_best_params=optimizer.keep_best_params,
+        )
+    elif isinstance(optimizer, PymooOptimizer):
+        return PymooOptimizer(
+            method=optimizer.method,
+            population_size=optimizer.population_size,
+            **optimizer.algorithm_kwargs,
+        )
+    elif isinstance(optimizer, ScipyOptimizer):
+        return ScipyOptimizer(method=optimizer.method)
+    else:
+        raise ValueError(f"Unknown optimizer type: {type(optimizer)}")

@@ -15,7 +15,7 @@ import numpy as np
 import pennylane as qml
 
 from divi.qprog import VQE, Ansatz, ProgramBatch
-from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
+from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer, copy_optimizer
 
 
 def _ctor_attrs(obj):
@@ -431,9 +431,13 @@ class VQEHyperparameterSweep(ProgramBatch):
         self.ansatze = ansatze
         self.max_iterations = max_iterations
 
+        # Store the optimizer template (will be copied for each program)
+        self._optimizer_template = (
+            optimizer if optimizer is not None else MonteCarloOptimizer()
+        )
+
         self._constructor = partial(
             VQE,
-            optimizer=optimizer if optimizer is not None else MonteCarloOptimizer(),
             max_iterations=self.max_iterations,
             backend=self.backend,
             **kwargs,
@@ -461,6 +465,7 @@ class VQEHyperparameterSweep(ProgramBatch):
                 job_id=_job_id,
                 molecule=molecule,
                 ansatz=ansatz,
+                optimizer=copy_optimizer(self._optimizer_template),
                 progress_queue=self._queue,
             )
 

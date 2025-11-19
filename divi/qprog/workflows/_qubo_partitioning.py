@@ -15,8 +15,7 @@ from dimod import BinaryQuadraticModel
 from divi.backends import CircuitRunner
 from divi.qprog.algorithms import QAOA, QUBOProblemTypes
 from divi.qprog.batch import ProgramBatch
-from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
-from divi.qprog.quantum_program import QuantumProgram
+from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer, copy_optimizer
 
 
 # Helper function to merge subsamples in-place
@@ -90,9 +89,13 @@ class QUBOPartitioningQAOA(ProgramBatch):
 
         self.trivial_program_ids = set()
 
+        # Store the optimizer template (will be copied for each program)
+        self._optimizer_template = (
+            optimizer if optimizer is not None else MonteCarloOptimizer()
+        )
+
         self._constructor = partial(
             QAOA,
-            optimizer=optimizer if optimizer is not None else MonteCarloOptimizer(),
             max_iterations=self.max_iterations,
             backend=self.backend,
             n_layers=n_layers,
@@ -157,6 +160,7 @@ class QUBOPartitioningQAOA(ProgramBatch):
             self._programs[prog_id] = self._constructor(
                 job_id=prog_id,
                 problem=coo_mat,
+                optimizer=copy_optimizer(self._optimizer_template),
                 progress_queue=self._queue,
             )
 
