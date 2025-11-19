@@ -221,11 +221,12 @@ class PymooOptimizer(Optimizer):
                 saved at the end of each iteration. If provided, state is automatically
                 saved after each iteration completes. Defaults to None.
             **kwargs: Additional keyword arguments:
+
                 - max_iterations (int): Total desired number of iterations.
                   When resuming from a checkpoint, this represents the total iterations
                   desired across all runs. The optimizer will automatically calculate
                   and run only the remaining iterations needed. Defaults to 5.
-                - rng (np.random.Generator): Random number generator
+                - rng (np.random.Generator): Random number generator.
 
         Returns:
             OptimizeResult: Optimization result with final parameters and cost value.
@@ -396,9 +397,10 @@ class ScipyOptimizer(Optimizer):
             callback_fn (Callable, optional): Function called after each iteration
                 with an `OptimizeResult` object. Defaults to None.
             **kwargs: Additional keyword arguments:
+
                 - max_iterations (int, optional): Total desired number of iterations.
                   Defaults to None (no limit for some methods).
-                - jac (Callable): Gradient function (only used for L-BFGS-B)
+                - jac (Callable): Gradient function (only used for L-BFGS-B).
 
         Returns:
             OptimizeResult: Optimization result with final parameters and cost value.
