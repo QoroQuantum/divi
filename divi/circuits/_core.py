@@ -9,6 +9,7 @@ from typing import Callable, Literal
 
 import dill
 import numpy as np
+import numpy.typing as npt
 import pennylane as qml
 from pennylane.transforms.core.transform_program import TransformProgram
 
@@ -150,7 +151,7 @@ class MetaCircuit:
 
     source_circuit: qml.tape.QuantumScript
     """The PennyLane quantum circuit with symbolic parameters."""
-    symbols: np.ndarray
+    symbols: npt.NDArray[np.object_]
     """Array of sympy symbols used as circuit parameters."""
     grouping_strategy: Literal["wires", "default", "qwc", "_backend_expval"] | None = (
         None

@@ -12,6 +12,7 @@ from typing import Any
 
 import dill
 import numpy as np
+import numpy.typing as npt
 from pymoo.algorithms.soo.nonconvex.cmaes import CMAES  # type: ignore
 from pymoo.algorithms.soo.nonconvex.de import DE  # type: ignore
 from pymoo.core.evaluator import Evaluator
@@ -37,8 +38,8 @@ class Optimizer(ABC):
     @abstractmethod
     def optimize(
         self,
-        cost_fn: Callable[[np.ndarray], float],
-        initial_params: np.ndarray,
+        cost_fn: Callable[[npt.NDArray[np.float64]], float],
+        initial_params: npt.NDArray[np.float64],
         callback_fn: Callable[[OptimizeResult], Any] | None = None,
         checkpoint_dir: str | None = None,
         **kwargs,
@@ -160,7 +161,10 @@ class PymooOptimizer(Optimizer):
         return self.population_size
 
     def _initialize_optimizer(
-        self, initial_params: np.ndarray, max_iterations: int, rng: np.random.Generator
+        self,
+        initial_params: npt.NDArray[np.float64],
+        max_iterations: int,
+        rng: np.random.Generator,
     ) -> tuple[Any, Problem, Population]:
         """Initialize a fresh pymoo optimizer instance.
 
@@ -201,8 +205,8 @@ class PymooOptimizer(Optimizer):
 
     def optimize(
         self,
-        cost_fn: Callable[[np.ndarray], float],
-        initial_params: np.ndarray,
+        cost_fn: Callable[[npt.NDArray[np.float64]], float],
+        initial_params: npt.NDArray[np.float64],
         callback_fn: Callable | None = None,
         checkpoint_dir: str | None = None,
         **kwargs,
@@ -213,7 +217,7 @@ class PymooOptimizer(Optimizer):
         Args:
             cost_fn (Callable): Function to minimize. Should accept a 2D array of
                 parameter sets and return an array of cost values.
-            initial_params (np.ndarray): Initial parameter values as a 2D array
+            initial_params (npt.NDArray[np.float64]): Initial parameter values as a 2D array
                 of shape (n_param_sets, n_params).
             callback_fn (Callable, optional): Function called after each iteration
                 with an OptimizeResult object. Defaults to None.
@@ -380,8 +384,8 @@ class ScipyOptimizer(Optimizer):
 
     def optimize(
         self,
-        cost_fn: Callable[[np.ndarray], float],
-        initial_params: np.ndarray,
+        cost_fn: Callable[[npt.NDArray[np.float64]], float],
+        initial_params: npt.NDArray[np.float64],
         callback_fn: Callable[[OptimizeResult], Any] | None = None,
         checkpoint_dir: str | None = None,
         **kwargs,
@@ -392,7 +396,7 @@ class ScipyOptimizer(Optimizer):
         Args:
             cost_fn (Callable): Function to minimize. Should accept a 1D array of
                 parameters and return a scalar cost value.
-            initial_params (np.ndarray): Initial parameter values as a 1D or 2D array.
+            initial_params (npt.NDArray[np.float64]): Initial parameter values as a 1D or 2D array.
                 If 2D with shape (1, n_params), it will be squeezed to 1D.
             callback_fn (Callable, optional): Function called after each iteration
                 with an `OptimizeResult` object. Defaults to None.
@@ -541,9 +545,9 @@ class MonteCarloOptimizer(Optimizer):
         self._keep_best_params = keep_best_params
 
         # Optimization state (updated during optimize(), used for checkpointing)
-        self._curr_population: np.ndarray | None = None
-        self._curr_evaluated_population: np.ndarray | None = None
-        self._curr_losses: np.ndarray | None = None
+        self._curr_population: npt.NDArray[np.float64] | None = None
+        self._curr_evaluated_population: npt.NDArray[np.float64] | None = None
+        self._curr_losses: npt.NDArray[np.float64] | None = None
         self._curr_iteration: int | None = None
         self._curr_rng_state: dict | None = None
 
@@ -588,11 +592,11 @@ class MonteCarloOptimizer(Optimizer):
 
     def _compute_new_parameters(
         self,
-        params: np.ndarray,
+        params: npt.NDArray[np.float64],
         curr_iteration: int,
-        best_indices: np.ndarray,
+        best_indices: npt.NDArray[np.intp],
         rng: np.random.Generator,
-    ) -> np.ndarray:
+    ) -> npt.NDArray[np.float64]:
         """
         Generates a new population of parameters based on the best-performing ones.
         """
@@ -634,8 +638,8 @@ class MonteCarloOptimizer(Optimizer):
 
     def optimize(
         self,
-        cost_fn: Callable[[np.ndarray], float],
-        initial_params: np.ndarray,
+        cost_fn: Callable[[npt.NDArray[np.float64]], float],
+        initial_params: npt.NDArray[np.float64],
         callback_fn: Callable[[OptimizeResult], Any] | None = None,
         checkpoint_dir: str | None = None,
         **kwargs,

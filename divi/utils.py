@@ -6,6 +6,7 @@ from functools import reduce
 from warnings import warn
 
 import numpy as np
+import numpy.typing as npt
 import pennylane as qml
 import scipy.sparse as sps
 
@@ -146,8 +147,8 @@ def reverse_dict_endianness(
 
 
 def _is_sanitized(
-    qubo_matrix: np.ndarray | sps.spmatrix,
-) -> np.ndarray | sps.spmatrix:
+    qubo_matrix: npt.NDArray[np.float64] | sps.spmatrix,
+) -> npt.NDArray[np.float64] | sps.spmatrix:
     """
     Check if a QUBO matrix is either symmetric or upper triangular.
 
@@ -156,7 +157,7 @@ def _is_sanitized(
     symmetric (equal to its transpose) or upper triangular.
 
     Args:
-        qubo_matrix (np.ndarray | sps.spmatrix): The QUBO matrix to validate.
+        qubo_matrix (npt.NDArray[np.float64] | sps.spmatrix): The QUBO matrix to validate.
             Can be a dense NumPy array or a sparse SciPy matrix.
 
     Returns:
@@ -178,7 +179,7 @@ def _is_sanitized(
 
 
 def convert_qubo_matrix_to_pennylane_ising(
-    qubo_matrix: np.ndarray | sps.spmatrix,
+    qubo_matrix: npt.NDArray[np.float64] | sps.spmatrix,
 ) -> tuple[qml.operation.Operator, float]:
     """
     Convert a QUBO matrix to an Ising Hamiltonian in PennyLane format.
@@ -193,7 +194,7 @@ def convert_qubo_matrix_to_pennylane_ising(
     symmetrized automatically with a warning.
 
     Args:
-        qubo_matrix (np.ndarray | sps.spmatrix): The QUBO matrix Q where the
+        qubo_matrix (npt.NDArray[np.float64] | sps.spmatrix): The QUBO matrix Q where the
             objective is to minimize x^T Q x. Can be a dense NumPy array or a
             sparse SciPy matrix (any format). Should be square and either
             symmetric or upper triangular.

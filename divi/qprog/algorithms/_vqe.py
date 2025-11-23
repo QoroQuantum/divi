@@ -5,6 +5,7 @@
 from warnings import warn
 
 import numpy as np
+import numpy.typing as npt
 import pennylane as qml
 import sympy as sp
 
@@ -94,11 +95,11 @@ class VQE(VariationalQuantumAlgorithm):
         )
 
     @property
-    def eigenstate(self) -> np.ndarray | None:
+    def eigenstate(self) -> npt.NDArray[np.int32] | None:
         """Get the computed eigenstate as a NumPy array.
 
         Returns:
-            np.ndarray | None: The array of bits of the lowest energy eigenstate,
+            npt.NDArray[np.int32] | None: The array of bits of the lowest energy eigenstate,
                 or None if not computed.
         """
         return self._eigenstate

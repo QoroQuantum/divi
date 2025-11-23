@@ -11,6 +11,7 @@ from warnings import warn
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
+import numpy.typing as npt
 import pennylane as qml
 import pennylane.qaoa as pqaoa
 import rustworkx as rx
@@ -27,7 +28,7 @@ from divi.utils import clean_hamiltonian, convert_qubo_matrix_to_pennylane_ising
 logger = logging.getLogger(__name__)
 
 GraphProblemTypes = nx.Graph | rx.PyGraph
-QUBOProblemTypes = list | np.ndarray | sps.spmatrix | QuadraticProgram
+QUBOProblemTypes = list | npt.NDArray[np.float64] | sps.spmatrix | QuadraticProgram
 
 
 def _extract_loss_constant(
@@ -240,7 +241,7 @@ class QAOA(VariationalQuantumAlgorithm):
         current_iteration (int): Current optimization iteration.
         _n_params (int): Number of parameters per layer (always 2 for QAOA).
         _solution_nodes (list[int] | None): Solution nodes for graph problems.
-        _solution_bitstring (np.ndarray | None): Solution bitstring for QUBO problems.
+        _solution_bitstring (npt.NDArray[np.int32] | None): Solution bitstring for QUBO problems.
     """
 
     def __init__(
@@ -417,7 +418,7 @@ class QAOA(VariationalQuantumAlgorithm):
         """Get the solution found by QAOA optimization.
 
         Returns:
-            list[int] | np.ndarray: For graph problems, returns a list of selected node indices.
+            list[int] | npt.NDArray[np.int32]: For graph problems, returns a list of selected node indices.
                 For QUBO problems, returns a list/array of binary values.
         """
         return (

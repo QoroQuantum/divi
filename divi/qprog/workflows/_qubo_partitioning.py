@@ -9,6 +9,7 @@ from typing import TypeVar
 import dimod
 import hybrid
 import numpy as np
+import numpy.typing as npt
 import scipy.sparse as sps
 from dimod import BinaryQuadraticModel
 
@@ -164,7 +165,7 @@ class QUBOPartitioningQAOA(ProgramBatch):
                 progress_queue=self._queue,
             )
 
-    def aggregate_results(self):
+    def aggregate_results(self) -> tuple[npt.NDArray[np.int32], float]:
         """
         Aggregate results from all QUBO subproblems into a global solution.
 
@@ -174,7 +175,7 @@ class QUBOPartitioningQAOA(ProgramBatch):
 
         Returns:
             tuple: A tuple containing:
-                - solution (np.ndarray): Binary solution vector for the QUBO problem.
+                - solution (npt.NDArray[np.int32]): Binary solution vector for the QUBO problem.
                 - solution_energy (float): Energy/cost of the solution.
 
         Raises:
