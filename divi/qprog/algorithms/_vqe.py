@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from typing import Any
 from warnings import warn
 
 import numpy as np
@@ -232,3 +233,31 @@ class VQE(VariationalQuantumAlgorithm):
         self.reporter.info(message="🏁 Computed Final Eigenstate! 🏁\r\n")
 
         return self._total_circuit_count, self._total_run_time
+
+    def _save_subclass_state(self) -> dict[str, Any]:
+        """Save VQE-specific runtime state."""
+        return {
+            "eigenstate": (
+                self._eigenstate.tolist() if self._eigenstate is not None else None
+            ),
+        }
+
+    def _load_subclass_state(self, state: dict[str, Any]) -> None:
+        """Load VQE-specific state.
+
+        Raises:
+            KeyError: If any required state key is missing (indicates checkpoint corruption).
+        """
+        required_keys = ["eigenstate"]
+        missing_keys = [key for key in required_keys if key not in state]
+        if missing_keys:
+            raise KeyError(
+                f"Corrupted checkpoint: missing required state keys: {missing_keys}"
+            )
+
+        # eigenstate can be None (if not computed yet), but the key must exist
+        eigenstate_list = state["eigenstate"]
+        if eigenstate_list is not None:
+            self._eigenstate = np.array(eigenstate_list, dtype=np.int32)
+        else:
+            self._eigenstate = None

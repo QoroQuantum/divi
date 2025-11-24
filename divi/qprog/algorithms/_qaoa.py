@@ -5,13 +5,12 @@
 import logging
 from enum import Enum
 from functools import reduce
-from typing import Literal, get_args
+from typing import Any, Literal, get_args
 from warnings import warn
 
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
-import numpy.typing as npt
 import pennylane as qml
 import pennylane.qaoa as pqaoa
 import rustworkx as rx
@@ -28,7 +27,7 @@ from divi.utils import clean_hamiltonian, convert_qubo_matrix_to_pennylane_ising
 logger = logging.getLogger(__name__)
 
 GraphProblemTypes = nx.Graph | rx.PyGraph
-QUBOProblemTypes = list | npt.NDArray[np.float64] | sps.spmatrix | QuadraticProgram
+QUBOProblemTypes = list | np.ndarray | sps.spmatrix | QuadraticProgram
 
 
 def _extract_loss_constant(
@@ -268,6 +267,8 @@ class QAOA(VariationalQuantumAlgorithm):
         """
         super().__init__(**kwargs)
 
+        self.graph_problem = graph_problem
+
         # Validate and process problem
         self.problem = self._validate_and_set_problem(problem, graph_problem)
 
@@ -310,6 +311,46 @@ class QAOA(VariationalQuantumAlgorithm):
 
         # Extract wire labels from the cost Hamiltonian to ensure consistency
         self._circuit_wires = tuple(self._cost_hamiltonian.wires)
+
+    def _save_subclass_state(self) -> dict[str, Any]:
+        """Save QAOA-specific runtime state."""
+        return {
+            "problem_metadata": self.problem_metadata,
+            "solution_nodes": self._solution_nodes,
+            "solution_bitstring": self._solution_bitstring,
+            "loss_constant": self.loss_constant,
+        }
+
+    def _load_subclass_state(self, state: dict[str, Any]) -> None:
+        """Load QAOA-specific state.
+
+        Raises:
+            KeyError: If any required state key is missing (indicates checkpoint corruption).
+        """
+        required_keys = [
+            "problem_metadata",
+            "solution_nodes",  # Key must exist, but value can be None if final computation hasn't run
+            "solution_bitstring",  # Key must exist, but value can be None if final computation hasn't run
+            "loss_constant",
+        ]
+        missing_keys = [key for key in required_keys if key not in state]
+        if missing_keys:
+            raise KeyError(
+                f"Corrupted checkpoint: missing required state keys: {missing_keys}"
+            )
+
+        self.problem_metadata = state["problem_metadata"]
+        # solution_nodes and solution_bitstring can be None if final computation hasn't run
+        # Convert None to empty list to match initialization behavior
+        self._solution_nodes = (
+            state["solution_nodes"] if state["solution_nodes"] is not None else []
+        )
+        self._solution_bitstring = (
+            state["solution_bitstring"]
+            if state["solution_bitstring"] is not None
+            else []
+        )
+        self.loss_constant = state["loss_constant"]
 
     def _validate_and_set_problem(
         self,

@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from functools import partial
+from typing import Any
 
 import numpy as np
 import pennylane as qml
@@ -15,6 +16,7 @@ from scipy.optimize import OptimizeResult
 
 from divi.circuits import MetaCircuit
 from divi.circuits.qem import ZNE
+from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.exceptions import _CancelledError
 from divi.qprog.optimizers import MonteCarloOptimizer
 from divi.qprog.variational_quantum_algorithm import (
@@ -79,14 +81,20 @@ class SampleVQAProgram(VariationalQuantumAlgorithm):
     def run(
         self,
         perform_final_computation: bool = True,
-        data_file: str | None = None,
         **kwargs,
     ) -> tuple[int, float]:
         return super().run(
             perform_final_computation=perform_final_computation,
-            data_file=data_file,
             **kwargs,
         )
+
+    def _save_subclass_state(self) -> dict[str, Any]:
+        """Save SampleVQAProgram-specific state."""
+        return {}
+
+    def _load_subclass_state(self, state: dict[str, Any]) -> None:
+        """Load SampleVQAProgram-specific state."""
+        pass
 
     def _perform_final_computation(self):
         pass
@@ -596,8 +604,8 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         np.testing.assert_allclose(program.best_params, curr_params3.flatten())
         np.testing.assert_allclose(program.final_params, curr_params3)
         assert len(program.losses_history) == 3
-        assert program.losses_history[0][0] == -0.8
-        assert program.losses_history[2][0] == -0.9
+        assert program.losses_history[0]["0"] == -0.8
+        assert program.losses_history[2]["0"] == -0.9
         assert mock_run_circuits.call_count == 3
 
     def test_run_method_cancellation_handling(self, mocker):
@@ -615,31 +623,6 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
 
         assert circ_count == program._total_circuit_count
         assert run_time == program._total_run_time
-
-    def test_run_with_data_storage(self, mocker, mock_backend, tmp_path):
-        """Test that run calls save_iteration when requested."""
-        program = self._create_program_with_mock_optimizer(mocker, backend=mock_backend)
-        program.max_iterations = 1
-        data_file = tmp_path / "test_data.pkl"
-
-        mocker.patch.object(program, "save_iteration")
-        mocker.patch.object(
-            program,
-            "_prepare_and_send_circuits",
-            return_value=[{"label": "0_mock:0_0", "results": {"00": 1}}],
-        )
-
-        final_loss = -0.5
-        mocker.patch.object(
-            program, "_post_process_results", return_value={0: final_loss}
-        )
-
-        final_params = np.array([[0.1, 0.2, 0.3, 0.4]])
-        self.setup_mock_optimizer(program, mocker, [(final_params, final_loss)])
-
-        program.run(data_file=str(data_file))
-
-        program.save_iteration.assert_called_once_with(str(data_file))
 
     def _setup_program_for_final_computation_test(self, mocker):
         """Helper to set up program with mocks for final computation tests."""
@@ -728,3 +711,226 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         # Should return new lists (not the same object)
         assert min_losses1 == min_losses2
         assert min_losses1 is not min_losses2
+
+
+class TestCheckpointing:
+    """Tests for VariationalQuantumAlgorithm checkpointing functionality."""
+
+    @pytest.fixture
+    def sample_program(self, mock_backend):
+        """Create a sample program for testing."""
+        program = SampleVQAProgram(circ_count=0, run_time=0.0, backend=mock_backend)
+        return program
+
+    def _setup_optimizer_state(self, program, iteration: int = 1):
+        """Helper to set optimizer state for testing.
+
+        Sets up internal state so that save_state() can be called without errors.
+        Note: This assumes MonteCarloOptimizer since SampleVQAProgram defaults to it.
+        """
+        program.optimizer._curr_population = np.zeros((10, 4))
+        program.optimizer._curr_evaluated_population = np.zeros((10, 4))
+        program.optimizer._curr_losses = np.zeros(10)
+        program.optimizer._curr_iteration = iteration
+        # Set RNG state to avoid None check failure
+        program.optimizer._curr_rng_state = np.random.default_rng().bit_generator.state
+
+    def _create_mock_optimize(
+        self, program, n_iterations: int = 1, result_x=None, result_fun=None
+    ):
+        """Helper to create a mock optimize function.
+
+        Args:
+            program: The program instance (for optimizer state setup)
+            n_iterations: Number of iterations to simulate
+            result_x: Optional custom x values for OptimizeResult
+            result_fun: Optional custom fun values for OptimizeResult
+        """
+
+        def mock_optimize(**kwargs):
+            self._setup_optimizer_state(program, iteration=n_iterations)
+            callback = kwargs.get("callback_fn")
+            if callback:
+                if n_iterations > 1:
+                    # Simulate multiple iterations
+                    for i in range(n_iterations):
+                        x = (
+                            result_x
+                            if result_x is not None
+                            else np.array([[0.1, 0.2, 0.3, 0.4]])
+                        )
+                        fun = (
+                            result_fun if result_fun is not None else np.array([0.123])
+                        )
+                        res = OptimizeResult(x=x, fun=fun, nit=i + 1)
+                        callback(res)
+                else:
+                    # Single iteration
+                    x = result_x if result_x is not None else np.zeros((1, 4))
+                    fun = result_fun if result_fun is not None else np.array([0.5])
+                    res = OptimizeResult(x=x, fun=fun, nit=1)
+                    callback(res)
+
+            # Return final result
+            final_x = result_x if result_x is not None else np.zeros(4)
+            final_fun = result_fun if result_fun is not None else 0.5
+            if isinstance(final_x, np.ndarray) and final_x.ndim == 2:
+                final_x = final_x[0]
+            return OptimizeResult(x=final_x, fun=final_fun)
+
+        return mock_optimize
+
+    def test_save_state_creates_files(self, sample_program, tmp_path, mocker):
+        """Test that save_state() creates the expected files."""
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(sample_program, n_iterations=1)
+        )
+        sample_program.run(max_iterations=1)
+
+        checkpoint_dir = tmp_path / "checkpoint"
+        sample_program.save_state(CheckpointConfig(checkpoint_dir=checkpoint_dir))
+
+        # Files should be in the per-iteration subdirectory
+        assert (
+            tmp_path / "checkpoint" / "checkpoint_001" / "program_state.json"
+        ).exists()
+        assert (
+            tmp_path / "checkpoint" / "checkpoint_001" / "optimizer_state.json"
+        ).exists()
+
+    def test_save_state_auto_generates_directory(
+        self, sample_program, tmp_path, mocker
+    ):
+        """Test that save_state() generates a directory name if none provided."""
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(sample_program, n_iterations=1)
+        )
+        sample_program.run(max_iterations=1)
+
+        # Change working directory to tmp_path so we don't pollute the repo
+        with pytest.MonkeyPatch.context() as m:
+            m.chdir(tmp_path)
+            path = sample_program.save_state(CheckpointConfig.create_auto())
+            assert "checkpoint_" in str(path)
+            # Path should point to the subdirectory
+            assert path.exists()
+            assert path.name.startswith("checkpoint_")
+
+    def test_save_load_round_trip(self, sample_program, tmp_path, mocker):
+        """Test saving and loading restores state."""
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(
+                sample_program,
+                n_iterations=5,
+                result_x=np.array([[0.1, 0.2, 0.3, 0.4]]),
+                result_fun=np.array([0.123]),
+            )
+        )
+        sample_program.run(max_iterations=5)
+
+        checkpoint_dir = tmp_path / "checkpoint"
+        sample_program.save_state(CheckpointConfig(checkpoint_dir=checkpoint_dir))
+
+        # Load state
+        # We need to provide required init args: circ_count, run_time
+        loaded_program = SampleVQAProgram.load_state(
+            checkpoint_dir, backend=sample_program.backend, circ_count=0, run_time=0.0
+        )
+
+        assert loaded_program.current_iteration == 5
+        assert loaded_program._best_loss == 0.123
+        # Note: _curr_params might be different after loading, so we check best_params instead
+        # which should be preserved
+        assert isinstance(loaded_program.optimizer, MonteCarloOptimizer)
+
+    def test_save_state_raises_error_before_optimization(
+        self, sample_program, tmp_path
+    ):
+        """Test that save_state() raises RuntimeError if optimization hasn't been run."""
+        checkpoint_dir = tmp_path / "checkpoint"
+
+        with pytest.raises(RuntimeError, match="optimization has not been run"):
+            sample_program.save_state(CheckpointConfig(checkpoint_dir=checkpoint_dir))
+
+    def test_automatic_checkpointing_in_run(self, sample_program, tmp_path, mocker):
+        """Test that run() triggers checkpointing."""
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(sample_program, n_iterations=1)
+        )
+        sample_program.save_state = mocker.Mock(wraps=sample_program.save_state)
+
+        checkpoint_dir = tmp_path / "auto_check"
+        sample_program.run(
+            checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir)
+        )
+
+        # Should have called save_state
+        sample_program.save_state.assert_called()
+        # Files should be in the per-iteration subdirectory
+        assert (
+            tmp_path / "auto_check" / "checkpoint_001" / "program_state.json"
+        ).exists()
+
+    def test_automatic_checkpointing_interval(self, sample_program, tmp_path, mocker):
+        """Test that checkpoint_interval is respected."""
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(sample_program, n_iterations=3)
+        )
+        sample_program.save_state = mocker.Mock(wraps=sample_program.save_state)
+
+        checkpoint_dir = tmp_path / "interval_check"
+        # Save every 2 iterations. Should save at iter 2.
+        sample_program.run(
+            checkpoint_config=CheckpointConfig(
+                checkpoint_dir=checkpoint_dir, checkpoint_interval=2
+            )
+        )
+
+        # In the simulated loop of 3 iterations (1, 2, 3):
+        # Iter 1: 1 % 2 != 0 -> No save
+        # Iter 2: 2 % 2 == 0 -> Save
+        # Iter 3: 3 % 2 != 0 -> No save
+        # So save_state should be called exactly once
+        assert sample_program.save_state.call_count == 1
+        # Should have created checkpoint_002 subdirectory
+        assert (
+            tmp_path / "interval_check" / "checkpoint_002" / "program_state.json"
+        ).exists()
+
+    def test_multiple_checkpoints_and_load_latest(
+        self, sample_program, tmp_path, mocker
+    ):
+        """Test that multiple checkpoints are created and load_state finds the latest."""
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(sample_program, n_iterations=5)
+        )
+
+        checkpoint_dir = tmp_path / "multi_check"
+        # Save every iteration
+        sample_program.run(
+            checkpoint_config=CheckpointConfig(
+                checkpoint_dir=checkpoint_dir, checkpoint_interval=1
+            )
+        )
+
+        # Should have created checkpoints for iterations 1-5
+        for i in range(1, 6):
+            assert (
+                tmp_path / "multi_check" / f"checkpoint_{i:03d}" / "program_state.json"
+            ).exists()
+
+        # Load state without specifying subdirectory - should load latest (checkpoint_005)
+        loaded_program = SampleVQAProgram.load_state(
+            checkpoint_dir, backend=sample_program.backend, circ_count=0, run_time=0.0
+        )
+        assert loaded_program.current_iteration == 5
+
+        # Load specific checkpoint
+        loaded_program_2 = SampleVQAProgram.load_state(
+            checkpoint_dir,
+            backend=sample_program.backend,
+            subdirectory="checkpoint_003",
+            circ_count=0,
+            run_time=0.0,
+        )
+        assert loaded_program_2.current_iteration == 3

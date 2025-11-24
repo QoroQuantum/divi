@@ -19,6 +19,8 @@ from divi.qprog import (
     ScipyOptimizer,
 )
 from divi.qprog.algorithms import _qaoa
+from divi.qprog.checkpointing import CheckpointConfig
+from tests.conftest import CHECKPOINTING_OPTIMIZERS
 from tests.qprog.qprog_contracts import (
     OPTIMIZERS_TO_TEST,
     verify_correct_circuit_count,
@@ -279,6 +281,198 @@ class TestGraphInput:
         assert set(
             qaoa_problem._solution_nodes
         ) == nx.algorithms.approximation.max_clique(G)
+
+    @pytest.mark.e2e
+    @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
+    def test_graph_qaoa_e2e_checkpointing_resume(
+        self, optimizer, default_test_simulator, tmp_path
+    ):
+        """Test QAOA e2e with checkpointing and resume functionality."""
+        optimizer = optimizer()  # Create fresh instance
+
+        # Skip ScipyOptimizer - it doesn't support checkpointing
+        if isinstance(optimizer, ScipyOptimizer):
+            pytest.skip("ScipyOptimizer does not support checkpointing.")
+
+        G = nx.bull_graph()
+        checkpoint_dir = tmp_path / "checkpoint_test"
+
+        default_test_simulator.set_seed(1997)
+
+        # Run first half with checkpointing
+        qaoa_problem1 = QAOA(
+            graph_problem=GraphProblem.MAX_CLIQUE,
+            problem=G,
+            n_layers=1,
+            optimizer=optimizer,
+            max_iterations=5,  # First half
+            is_constrained=True,
+            backend=default_test_simulator,
+            seed=1997,
+        )
+
+        qaoa_problem1.run(
+            checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir)
+        )
+
+        # Verify checkpoint was created
+        assert checkpoint_dir.exists()
+        checkpoint_path = checkpoint_dir / "checkpoint_005"
+        assert checkpoint_path.exists()
+        assert (checkpoint_path / "program_state.json").exists()
+
+        # Store state from first run for comparison
+        first_run_iteration = qaoa_problem1.current_iteration
+        first_run_losses_count = len(qaoa_problem1.losses_history)
+
+        # Load and resume - configuration must be provided by the caller
+        qaoa_problem2 = QAOA.load_state(
+            checkpoint_dir,
+            backend=default_test_simulator,
+            problem=G,
+            graph_problem=GraphProblem.MAX_CLIQUE,
+            n_layers=1,
+            is_constrained=True,
+        )
+
+        # Verify loaded state matches first run
+        assert qaoa_problem2.current_iteration == first_run_iteration
+        assert len(qaoa_problem2.losses_history) == first_run_losses_count
+
+        # Continue running to complete the full run
+        qaoa_problem2.max_iterations = 10  # Total should be 10
+        qaoa_problem2.run()
+
+        # Verify final results are correct
+        assert all(
+            len(bitstring) == G.number_of_nodes()
+            for probs_dict in qaoa_problem2.best_probs.values()
+            for bitstring in probs_dict.keys()
+        )
+
+        assert set(
+            qaoa_problem2._solution_nodes
+        ) == nx.algorithms.approximation.max_clique(G)
+
+        # Verify we completed the full run
+        assert qaoa_problem2.current_iteration == 10
+
+    @pytest.mark.e2e
+    @pytest.mark.parametrize("optimizer", **CHECKPOINTING_OPTIMIZERS)
+    def test_graph_qaoa_e2e_multiple_checkpoint_cycles(
+        self, optimizer, default_test_simulator, tmp_path
+    ):
+        """Test QAOA e2e with multiple checkpoint/resume cycles.
+
+        Tests checkpoint infrastructure (multiple save/load cycles) with all checkpointing-capable
+        optimizers to verify their nuanced checkpoint handling (CMAES generator reinit, DE pop handling).
+        """
+        optimizer = optimizer()  # Create fresh instance
+
+        G = nx.bull_graph()
+        checkpoint_dir = tmp_path / "checkpoint_test"
+        default_test_simulator.set_seed(1997)
+
+        # First run: iterations 1-3
+        qaoa_problem1 = QAOA(
+            graph_problem=GraphProblem.MAX_CLIQUE,
+            problem=G,
+            n_layers=1,
+            optimizer=optimizer,
+            max_iterations=3,
+            is_constrained=True,
+            backend=default_test_simulator,
+            seed=1997,
+        )
+        qaoa_problem1.run(
+            checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir)
+        )
+        assert qaoa_problem1.current_iteration == 3
+        assert (checkpoint_dir / "checkpoint_003").exists()
+
+        # Second run: resume and run iterations 4-6
+        qaoa_problem2 = QAOA.load_state(
+            checkpoint_dir,
+            backend=default_test_simulator,
+            problem=G,
+            graph_problem=GraphProblem.MAX_CLIQUE,
+            n_layers=1,
+            is_constrained=True,
+        )
+        assert qaoa_problem2.current_iteration == 3
+        qaoa_problem2.max_iterations = 6
+        qaoa_problem2.run(
+            checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir)
+        )
+        assert qaoa_problem2.current_iteration == 6
+        assert (checkpoint_dir / "checkpoint_006").exists()
+
+        # Third run: resume and run iterations 7-10
+        qaoa_problem3 = QAOA.load_state(
+            checkpoint_dir,
+            backend=default_test_simulator,
+            problem=G,
+            graph_problem=GraphProblem.MAX_CLIQUE,
+            n_layers=1,
+            is_constrained=True,
+        )
+        assert qaoa_problem3.current_iteration == 6
+        qaoa_problem3.max_iterations = 10
+        qaoa_problem3.run()
+        assert qaoa_problem3.current_iteration == 10
+
+        # Verify final solution is correct
+        assert set(
+            qaoa_problem3._solution_nodes
+        ) == nx.algorithms.approximation.max_clique(G)
+
+    @pytest.mark.e2e
+    @pytest.mark.parametrize("optimizer", **CHECKPOINTING_OPTIMIZERS)
+    def test_graph_qaoa_e2e_resume_with_less_iterations(
+        self, optimizer, default_test_simulator, tmp_path
+    ):
+        """Test QAOA e2e resuming with max_iterations less than already completed.
+
+        Tests edge case logic for resume behavior with all checkpointing-capable optimizers
+        to verify their nuanced checkpoint handling (CMAES generator reinit, DE pop handling).
+        """
+        optimizer = optimizer()  # Create fresh instance
+
+        G = nx.bull_graph()
+        checkpoint_dir = tmp_path / "checkpoint_test"
+        default_test_simulator.set_seed(1997)
+
+        # Run 5 iterations
+        qaoa_problem1 = QAOA(
+            graph_problem=GraphProblem.MAX_CLIQUE,
+            problem=G,
+            n_layers=1,
+            optimizer=optimizer,
+            max_iterations=5,
+            is_constrained=True,
+            backend=default_test_simulator,
+            seed=1997,
+        )
+        qaoa_problem1.run(
+            checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir)
+        )
+        assert qaoa_problem1.current_iteration == 5
+
+        # Resume with max_iterations=3 (less than completed)
+        qaoa_problem2 = QAOA.load_state(
+            checkpoint_dir,
+            backend=default_test_simulator,
+            problem=G,
+            graph_problem=GraphProblem.MAX_CLIQUE,
+            n_layers=1,
+            is_constrained=True,
+        )
+        qaoa_problem2.max_iterations = 3
+        qaoa_problem2.run()
+
+        # Should not run additional iterations since already completed
+        assert qaoa_problem2.current_iteration == 5
+        assert len(qaoa_problem2.losses_history) == 5
 
     def test_draw_solution_returns_graph_with_expected_properties(self, mocker):
         G = nx.bull_graph()
@@ -645,6 +839,66 @@ class TestQUBOInput:
 
         np.testing.assert_equal(qaoa_problem.solution, [1, 0, 1])
 
+    @pytest.mark.e2e
+    def test_qubo_e2e_checkpointing_resume(self, default_test_simulator, tmp_path):
+        """Test QAOA QUBO e2e with checkpointing and resume functionality.
+
+        Tests QUBO problem type handling with checkpointing, not optimizer-specific behavior.
+        Full optimizer coverage is tested with Graph problems. Uses MonteCarloOptimizer as representative.
+        """
+        from divi.qprog import MonteCarloOptimizer
+
+        optimizer = MonteCarloOptimizer(population_size=10, n_best_sets=3)
+
+        checkpoint_dir = tmp_path / "checkpoint_test"
+        default_test_simulator.set_seed(1997)
+
+        # Run first half with checkpointing
+        qaoa_problem1 = QAOA(
+            problem=QUBO_MATRIX_NP,
+            n_layers=1,
+            optimizer=optimizer,
+            max_iterations=6,  # First half
+            backend=default_test_simulator,
+            seed=1997,
+        )
+
+        qaoa_problem1.run(
+            checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir)
+        )
+
+        # Verify checkpoint was created
+        assert checkpoint_dir.exists()
+        checkpoint_path = checkpoint_dir / "checkpoint_006"
+        assert checkpoint_path.exists()
+        assert (checkpoint_path / "program_state.json").exists()
+
+        # Store state from first run for comparison
+        first_run_iteration = qaoa_problem1.current_iteration
+        first_run_losses_count = len(qaoa_problem1.losses_history)
+
+        # Load and resume - configuration must be provided by the caller
+        qaoa_problem2 = QAOA.load_state(
+            checkpoint_dir,
+            backend=default_test_simulator,
+            problem=QUBO_MATRIX_NP,
+            n_layers=1,
+        )
+
+        # Verify loaded state matches first run
+        assert qaoa_problem2.current_iteration == first_run_iteration
+        assert len(qaoa_problem2.losses_history) == first_run_losses_count
+
+        # Continue running to complete the full run
+        qaoa_problem2.max_iterations = 12  # Total should be 12
+        qaoa_problem2.run()
+
+        # Verify final results are correct
+        np.testing.assert_equal(qaoa_problem2.solution, [1, 0, 1])
+
+        # Verify we completed the full run
+        assert qaoa_problem2.current_iteration == 12
+
     @pytest.fixture
     def quadratic_program(self):
         qp = QuadraticProgram()
@@ -762,3 +1016,71 @@ class TestQUBOInput:
         np.testing.assert_equal(
             qaoa_problem._qp_converter.interpret(qaoa_problem.solution), [1, 0, 1, 0]
         )
+
+    @pytest.mark.e2e
+    @pytest.mark.filterwarnings("ignore::UserWarning")
+    def test_quadratic_program_e2e_checkpointing_resume(
+        self, quadratic_program, default_test_simulator, tmp_path
+    ):
+        """Test QAOA QuadraticProgram e2e with checkpointing and resume functionality.
+
+        Tests QuadraticProgram problem type handling with checkpointing, not optimizer-specific behavior.
+        Full optimizer coverage is tested with Graph problems. Uses MonteCarloOptimizer as representative.
+        """
+        from divi.qprog import MonteCarloOptimizer
+
+        optimizer = MonteCarloOptimizer(population_size=10, n_best_sets=3)
+
+        quadratic_program.integer_var(lowerbound=0, upperbound=3, name="w")
+        quadratic_program.minimize(linear={"x": 1, "y": -2, "z": 3, "w": -1})
+
+        checkpoint_dir = tmp_path / "checkpoint_test"
+        default_test_simulator.set_seed(1997)
+
+        # Run first half with checkpointing
+        qaoa_problem1 = QAOA(
+            problem=quadratic_program,
+            n_layers=2,
+            optimizer=optimizer,
+            max_iterations=7,  # First half
+            backend=default_test_simulator,
+            seed=1997,
+        )
+
+        qaoa_problem1.run(
+            checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir)
+        )
+
+        # Verify checkpoint was created
+        assert checkpoint_dir.exists()
+        checkpoint_path = checkpoint_dir / "checkpoint_007"
+        assert checkpoint_path.exists()
+        assert (checkpoint_path / "program_state.json").exists()
+
+        # Store state from first run for comparison
+        first_run_iteration = qaoa_problem1.current_iteration
+        first_run_losses_count = len(qaoa_problem1.losses_history)
+
+        # Load and resume - configuration must be provided by the caller
+        qaoa_problem2 = QAOA.load_state(
+            checkpoint_dir,
+            backend=default_test_simulator,
+            problem=quadratic_program,
+            n_layers=2,
+        )
+
+        # Verify loaded state matches first run
+        assert qaoa_problem2.current_iteration == first_run_iteration
+        assert len(qaoa_problem2.losses_history) == first_run_losses_count
+
+        # Continue running to complete the full run
+        qaoa_problem2.max_iterations = 15  # Total should be 15
+        qaoa_problem2.run()
+
+        # Verify final results are correct
+        np.testing.assert_equal(
+            qaoa_problem2._qp_converter.interpret(qaoa_problem2.solution), [0, 1, 0, 3]
+        )
+
+        # Verify we completed the full run
+        assert qaoa_problem2.current_iteration == 15

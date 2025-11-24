@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import base64
 import pickle
 import time
 from abc import ABC, abstractmethod
@@ -13,15 +14,50 @@ from typing import Any
 import dill
 import numpy as np
 import numpy.typing as npt
+from pydantic import BaseModel
 from pymoo.algorithms.soo.nonconvex.cmaes import CMAES  # type: ignore
 from pymoo.algorithms.soo.nonconvex.de import DE  # type: ignore
 from pymoo.core.evaluator import Evaluator
 from pymoo.core.individual import Individual
 from pymoo.core.population import Population
 from pymoo.core.problem import Problem
+from pymoo.core.termination import NoTermination
 from pymoo.problems.static import StaticProblem
-from pymoo.termination import get_termination
 from scipy.optimize import OptimizeResult, minimize
+
+from divi.qprog.checkpointing import (
+    OPTIMIZER_STATE_FILE,
+    _atomic_write,
+    _load_and_validate_pydantic_model,
+)
+
+
+class MonteCarloState(BaseModel):
+    """Pydantic model for Monte Carlo optimizer state."""
+
+    population_size: int
+    n_best_sets: int
+    keep_best_params: bool
+    curr_iteration: int
+    # Store arrays as lists for JSON serialization
+    # Population arrays are always 2D: (population_size, n_params)
+    population: list[list[float]]
+    evaluated_population: list[list[float]]
+    losses: list[float]
+    # RNG state is a dict/tuple complex structure, simplified storage as dict or bytes
+    # Stored as base64 encoded string for JSON compatibility
+    rng_state_b64: str
+
+
+class PymooState(BaseModel):
+    """Pydantic model for Pymoo optimizer state."""
+
+    method_value: str
+    population_size: int
+    algorithm_kwargs: dict[str, Any]
+    # We store the pickled algorithm object as base64 encoded string
+    algorithm_obj_b64: str
+    curr_pop_b64: str | None = None
 
 
 class Optimizer(ABC):
@@ -41,7 +77,6 @@ class Optimizer(ABC):
         cost_fn: Callable[[npt.NDArray[np.float64]], float],
         initial_params: npt.NDArray[np.float64],
         callback_fn: Callable[[OptimizeResult], Any] | None = None,
-        checkpoint_dir: str | None = None,
         **kwargs,
     ) -> OptimizeResult:
         """Optimize the given cost function starting from initial parameters.
@@ -50,9 +85,6 @@ class Optimizer(ABC):
             cost_fn: The cost function to minimize.
             initial_params: Initial parameters for the optimization.
             callback_fn: Function called after each iteration with an OptimizeResult object.
-            checkpoint_dir: Directory path where optimizer state will be saved at the end
-                of each iteration. If provided, state is automatically saved after each
-                iteration completes. Defaults to None.
             **kwargs: Additional keyword arguments for the optimizer:
 
                 - max_iterations (int, optional): Total desired number of iterations.
@@ -70,6 +102,18 @@ class Optimizer(ABC):
 
         Returns:
             Optimized parameters.
+        """
+        raise NotImplementedError("This method should be implemented by subclasses.")
+
+    @abstractmethod
+    def get_config(self) -> dict[str, Any]:
+        """Get optimizer configuration for checkpoint reconstruction.
+
+        Returns:
+            dict[str, Any]: Dictionary containing optimizer type and configuration parameters.
+
+        Raises:
+            NotImplementedError: If the optimizer does not support checkpointing.
         """
         raise NotImplementedError("This method should be implemented by subclasses.")
 
@@ -160,22 +204,34 @@ class PymooOptimizer(Optimizer):
             return self.algorithm_kwargs.get("popsize", self.population_size)
         return self.population_size
 
+    def get_config(self) -> dict[str, Any]:
+        """Get optimizer configuration for checkpoint reconstruction.
+
+        Returns:
+            dict[str, Any]: Dictionary containing optimizer type and configuration parameters.
+        """
+        return {
+            "type": "PymooOptimizer",
+            "method": self.method.value,
+            "population_size": self.population_size,
+            **self.algorithm_kwargs,
+        }
+
     def _initialize_optimizer(
         self,
         initial_params: npt.NDArray[np.float64],
-        max_iterations: int,
         rng: np.random.Generator,
     ) -> tuple[Any, Problem, Population]:
         """Initialize a fresh pymoo optimizer instance.
 
         Args:
             initial_params: Initial parameter values.
-            max_iterations: Maximum number of iterations.
             rng: Random number generator.
 
         Returns:
             Tuple of (optimizer_obj, problem, population).
         """
+
         optimizer_obj = globals()[self.method.value](
             pop_size=self.population_size,
             parallelize=False,
@@ -191,7 +247,7 @@ class PymooOptimizer(Optimizer):
 
         optimizer_obj.setup(
             problem,
-            termination=get_termination("n_gen", max_iterations),
+            termination=NoTermination(),
             seed=int(seed),
             verbose=False,
         )
@@ -206,9 +262,8 @@ class PymooOptimizer(Optimizer):
     def optimize(
         self,
         cost_fn: Callable[[npt.NDArray[np.float64]], float],
-        initial_params: npt.NDArray[np.float64],
+        initial_params: npt.NDArray[np.float64] | None = None,
         callback_fn: Callable | None = None,
-        checkpoint_dir: str | None = None,
         **kwargs,
     ):
         """
@@ -217,13 +272,10 @@ class PymooOptimizer(Optimizer):
         Args:
             cost_fn (Callable): Function to minimize. Should accept a 2D array of
                 parameter sets and return an array of cost values.
-            initial_params (npt.NDArray[np.float64]): Initial parameter values as a 2D array
-                of shape (n_param_sets, n_params).
+            initial_params (npt.NDArray[np.float64], optional): Initial parameter values as a 2D array
+                of shape (n_param_sets, n_params). Should be None when resuming from a checkpoint.
             callback_fn (Callable, optional): Function called after each iteration
                 with an OptimizeResult object. Defaults to None.
-            checkpoint_dir (str, optional): Directory path where optimizer state will be
-                saved at the end of each iteration. If provided, state is automatically
-                saved after each iteration completes. Defaults to None.
             **kwargs: Additional keyword arguments:
 
                 - max_iterations (int): Total desired number of iterations.
@@ -241,14 +293,18 @@ class PymooOptimizer(Optimizer):
         # Resume from checkpoint or initialize fresh
         if self._curr_algorithm_obj is not None:
             problem = self._curr_algorithm_obj.problem
-            self._curr_algorithm_obj.termination.n_max_gen = max_iterations
+            # n_gen is 1-indexed (includes initialization), so actual iterations = n_gen - 1
+            iterations_completed = self._curr_algorithm_obj.n_gen - 1
+            iterations_remaining = max_iterations - iterations_completed
+            iterations_to_run = max(0, iterations_remaining)
         else:
             rng = kwargs.pop("rng", np.random.default_rng())
             self._curr_algorithm_obj, problem, self._curr_pop = (
-                self._initialize_optimizer(initial_params, max_iterations, rng)
+                self._initialize_optimizer(initial_params, rng)
             )
+            iterations_to_run = max_iterations
 
-        while self._curr_algorithm_obj.has_next():
+        for _ in range(iterations_to_run):
             evaluated_X = self._curr_pop.get("X")
 
             curr_losses = cost_fn(evaluated_X)
@@ -259,53 +315,63 @@ class PymooOptimizer(Optimizer):
             # Ask for next population to evaluate
             self._curr_pop = self._curr_algorithm_obj.ask()
 
-            # Save checkpoint at end of iteration if checkpoint_dir is provided
-            if checkpoint_dir is not None:
-                self.save_state(checkpoint_dir)
-
             if callback_fn:
                 callback_fn(OptimizeResult(x=evaluated_X, fun=curr_losses))
 
         result = self._curr_algorithm_obj.result()
 
+        # nit should represent total iterations completed (n_gen is 1-indexed)
         return OptimizeResult(
             x=result.X,
             fun=result.F,
             nit=self._curr_algorithm_obj.n_gen - 1,
         )
 
-    def save_state(self, checkpoint_dir: str) -> None:
+    def save_state(self, checkpoint_dir: Path | str) -> None:
         """Save the optimizer's internal state to a checkpoint directory.
 
         Args:
-            checkpoint_dir (str): Directory path where the optimizer state will be saved.
+            checkpoint_dir (Path | str): Directory path where the optimizer state will be saved.
+
+        Raises:
+            RuntimeError: If optimization has not been run (no state to save).
         """
+        if self._curr_algorithm_obj is None:
+            raise RuntimeError(
+                "Cannot save checkpoint: optimization has not been run. "
+                "At least one iteration must complete before saving optimizer state."
+            )
+
         checkpoint_path = Path(checkpoint_dir)
         checkpoint_path.mkdir(parents=True, exist_ok=True)
 
-        state_file = checkpoint_path / "optimizer_state.pkl"
+        state_file = checkpoint_path / OPTIMIZER_STATE_FILE
 
-        # Save configuration, algorithm object, and current population
-        # The population is the next one to evaluate, avoiding need to call ask() when resuming
-        state_data = {
-            "method": self.method.value,
-            "population_size": self.population_size,
-            "algorithm_kwargs": self.algorithm_kwargs,
-            "algorithm_obj": self._curr_algorithm_obj,
-            "curr_pop": self._curr_pop,
-        }
+        # Serialize algorithm object and population using dill, then base64 encode
+        algorithm_obj_bytes = dill.dumps(self._curr_algorithm_obj)
+        algorithm_obj_b64 = base64.b64encode(algorithm_obj_bytes).decode("ascii")
 
-        with open(state_file, "wb") as f:
-            dill.dump(state_data, f)
+        curr_pop_bytes = dill.dumps(self._curr_pop)
+        curr_pop_b64 = base64.b64encode(curr_pop_bytes).decode("ascii")
+
+        state = PymooState(
+            method_value=self.method.value,
+            population_size=self.population_size,
+            algorithm_kwargs=self.algorithm_kwargs,
+            algorithm_obj_b64=algorithm_obj_b64,
+            curr_pop_b64=curr_pop_b64,
+        )
+
+        _atomic_write(state_file, state.model_dump_json(indent=2))
 
     @classmethod
-    def load_state(cls, checkpoint_dir: str) -> "PymooOptimizer":
+    def load_state(cls, checkpoint_dir: Path | str) -> "PymooOptimizer":
         """Load the optimizer's internal state from a checkpoint directory.
 
         Creates a new PymooOptimizer instance with the state restored from the checkpoint.
 
         Args:
-            checkpoint_dir (str): Directory path where the optimizer state is saved.
+            checkpoint_dir (Path | str): Directory path where the optimizer state is saved.
 
         Returns:
             PymooOptimizer: A new optimizer instance with restored state.
@@ -314,24 +380,71 @@ class PymooOptimizer(Optimizer):
             FileNotFoundError: If the checkpoint file does not exist.
         """
         checkpoint_path = Path(checkpoint_dir)
-        state_file = checkpoint_path / "optimizer_state.pkl"
+        state_file = checkpoint_path / OPTIMIZER_STATE_FILE
 
-        if not state_file.exists():
-            raise FileNotFoundError(f"Checkpoint file not found: {state_file}")
-
-        with open(state_file, "rb") as f:
-            state_data = dill.load(f)
+        state = _load_and_validate_pydantic_model(
+            state_file,
+            PymooState,
+            required_fields=["method_value", "algorithm_obj_b64", "curr_pop_b64"],
+            error_context="Pymoo optimizer",
+        )
 
         # Create new instance with saved configuration
         optimizer = cls(
-            method=PymooMethod(state_data["method"]),
-            population_size=state_data["population_size"],
-            **state_data["algorithm_kwargs"],
+            method=PymooMethod(state.method_value),
+            population_size=state.population_size,
+            **state.algorithm_kwargs,
         )
 
-        # Restore algorithm object and population
-        optimizer._curr_algorithm_obj = state_data["algorithm_obj"]
-        optimizer._curr_pop = state_data.get("curr_pop", None)
+        # Restore algorithm object and population from base64 strings
+        optimizer._curr_algorithm_obj = dill.loads(
+            base64.b64decode(state.algorithm_obj_b64)
+        )
+        if state.curr_pop_b64 is None:
+            raise ValueError(
+                "Checkpoint is missing population data. "
+                "This may indicate a corrupted checkpoint file."
+            )
+        optimizer._curr_pop = dill.loads(base64.b64decode(state.curr_pop_b64))
+
+        algo = optimizer._curr_algorithm_obj
+
+        # Set pop appropriately for each algorithm type
+        if optimizer.method == PymooMethod.CMAES:
+            # CMAES: Clear stale pop to avoid merging issues in _set_optimum()
+            algo.pop = None
+        elif optimizer.method == PymooMethod.DE:
+            # DE: Needs pop set to current population for _advance() to work
+            algo.pop = optimizer._curr_pop
+
+        # Reinitialize CMAES generator if needed (generators can't be pickled)
+        if optimizer.method == PymooMethod.CMAES and getattr(algo, "es", None) is None:
+            from inspect import signature
+
+            from pymoo.vendor.vendor_cmaes import my_fmin
+
+            # Extract kwargs by matching my_fmin's signature with algo attributes
+            sig = signature(my_fmin)
+            param_map = {
+                "parallel_objective": "parallelize",  # attribute name differs from param name
+            }
+            kwargs = {
+                param.name: getattr(algo, param_map.get(param.name, param.name))
+                for param in sig.parameters.values()
+                if param.name
+                not in (
+                    "x0",
+                    "sigma0",
+                    "objective_function",
+                    "args",
+                    "gradf",
+                    "callback",
+                )
+                and hasattr(algo, param_map.get(param.name, param.name))
+            }
+            algo.es = my_fmin(algo.norm.forward(algo.x0.X), algo.sigma, **kwargs)
+            algo.next_X = next(algo.es)
+            algo.send_array_to_yield = np.array(algo.next_X).ndim > 1
 
         return optimizer
 
@@ -387,7 +500,6 @@ class ScipyOptimizer(Optimizer):
         cost_fn: Callable[[npt.NDArray[np.float64]], float],
         initial_params: npt.NDArray[np.float64],
         callback_fn: Callable[[OptimizeResult], Any] | None = None,
-        checkpoint_dir: str | None = None,
         **kwargs,
     ) -> OptimizeResult:
         """
@@ -496,6 +608,17 @@ class ScipyOptimizer(Optimizer):
         """
         pass
 
+    def get_config(self) -> dict[str, Any]:
+        """Get optimizer configuration for checkpoint reconstruction.
+
+        Raises:
+            NotImplementedError: ScipyOptimizer does not support checkpointing.
+        """
+        raise NotImplementedError(
+            "ScipyOptimizer does not support checkpointing. Please use "
+            "MonteCarloOptimizer or PymooOptimizer for checkpointing support."
+        )
+
 
 class MonteCarloOptimizer(Optimizer):
     """
@@ -590,6 +713,19 @@ class MonteCarloOptimizer(Optimizer):
         """
         return self._keep_best_params
 
+    def get_config(self) -> dict[str, Any]:
+        """Get optimizer configuration for checkpoint reconstruction.
+
+        Returns:
+            dict[str, Any]: Dictionary containing optimizer type and configuration parameters.
+        """
+        return {
+            "type": "MonteCarloOptimizer",
+            "population_size": self._population_size,
+            "n_best_sets": self._n_best_sets,
+            "keep_best_params": self._keep_best_params,
+        }
+
     def _compute_new_parameters(
         self,
         params: npt.NDArray[np.float64],
@@ -641,7 +777,6 @@ class MonteCarloOptimizer(Optimizer):
         cost_fn: Callable[[npt.NDArray[np.float64]], float],
         initial_params: npt.NDArray[np.float64],
         callback_fn: Callable[[OptimizeResult], Any] | None = None,
-        checkpoint_dir: str | None = None,
         **kwargs,
     ) -> OptimizeResult:
         """Perform Monte Carlo optimization on the cost function.
@@ -650,9 +785,6 @@ class MonteCarloOptimizer(Optimizer):
             cost_fn: The cost function to minimize.
             initial_params: Initial parameters for the optimization.
             callback_fn: Optional callback function to monitor progress.
-            checkpoint_dir: Directory path where optimizer state will be saved at the end
-                of each iteration. If provided, state is automatically saved after each
-                iteration completes. Defaults to None.
             **kwargs: Additional keyword arguments:
 
                 - max_iterations (int, optional): Total desired number of iterations.
@@ -686,28 +818,24 @@ class MonteCarloOptimizer(Optimizer):
             self._curr_losses = cost_fn(self._curr_population)
             self._curr_evaluated_population = np.copy(self._curr_population)
 
-            if callback_fn:
-                callback_fn(
-                    OptimizeResult(
-                        x=self._curr_evaluated_population, fun=self._curr_losses
-                    )
-                )
-
             # Find the indices of the best-performing parameter sets
             best_indices = np.argpartition(self._curr_losses, self.n_best_sets - 1)[
                 : self.n_best_sets
             ]
 
-            # Generate the next generation of parameters
+            # Generate the next generation of parameters (uses RNG, so capture state after)
             self._curr_population = self._compute_new_parameters(
                 self._curr_evaluated_population, curr_iter, best_indices, rng
             )
             self._curr_iteration = curr_iter
             self._curr_rng_state = rng.bit_generator.state
 
-            # Save checkpoint at end of iteration if checkpoint_dir is provided
-            if checkpoint_dir is not None:
-                self.save_state(checkpoint_dir)
+            if callback_fn:
+                callback_fn(
+                    OptimizeResult(
+                        x=self._curr_evaluated_population, fun=self._curr_losses
+                    )
+                )
 
         # Note: 'losses' here are from the last successfully evaluated population
         # (either from the loop above, or from checkpoint state if loop didn't run)
@@ -724,42 +852,52 @@ class MonteCarloOptimizer(Optimizer):
             nit=total_iterations_completed,
         )
 
-    def save_state(self, checkpoint_dir: str) -> None:
+    def save_state(self, checkpoint_dir: Path | str) -> None:
         """Save the optimizer's internal state to a checkpoint directory.
 
         Args:
-            checkpoint_dir (str): Directory path where the optimizer state will be saved.
+            checkpoint_dir (Path | str): Directory path where the optimizer state will be saved.
+
+        Raises:
+            RuntimeError: If optimization has not been run (no state to save).
         """
+        if self._curr_population is None:
+            raise RuntimeError(
+                "Cannot save checkpoint: optimization has not been run. "
+                "At least one iteration must complete before saving optimizer state."
+            )
+
         checkpoint_path = Path(checkpoint_dir)
         checkpoint_path.mkdir(parents=True, exist_ok=True)
 
-        state_file = checkpoint_path / "optimizer_state.npz"
+        state_file = checkpoint_path / OPTIMIZER_STATE_FILE
 
-        # RNG state is a dict, need to convert to a format npz can handle
-        # We'll save it as a pickle within the npz
+        # RNG state is a dict/tuple structure, pickle it for bytes storage
+        # Then encode to base64 string for JSON serialization
         rng_state_bytes = pickle.dumps(self._curr_rng_state)
+        rng_state_b64 = base64.b64encode(rng_state_bytes).decode("ascii")
 
-        save_dict = {
-            "population_size": self._population_size,
-            "n_best_sets": self._n_best_sets,
-            "keep_best_params": self._keep_best_params,
-            "population": self._curr_population,
-            "evaluated_population": self._curr_evaluated_population,
-            "losses": self._curr_losses,
-            "curr_iter": self._curr_iteration,
-            "rng_state": np.frombuffer(rng_state_bytes, dtype=np.uint8),
-        }
+        state = MonteCarloState(
+            population_size=self._population_size,
+            n_best_sets=self._n_best_sets,
+            keep_best_params=self._keep_best_params,
+            curr_iteration=self._curr_iteration,
+            population=self._curr_population.tolist(),
+            evaluated_population=self._curr_evaluated_population.tolist(),
+            losses=self._curr_losses.tolist(),
+            rng_state_b64=rng_state_b64,
+        )
 
-        np.savez(state_file, **save_dict)
+        _atomic_write(state_file, state.model_dump_json(indent=2))
 
     @classmethod
-    def load_state(cls, checkpoint_dir: str) -> "MonteCarloOptimizer":
+    def load_state(cls, checkpoint_dir: Path | str) -> "MonteCarloOptimizer":
         """Load the optimizer's internal state from a checkpoint directory.
 
         Creates a new MonteCarloOptimizer instance with the state restored from the checkpoint.
 
         Args:
-            checkpoint_dir (str): Directory path where the optimizer state is saved.
+            checkpoint_dir (Path | str): Directory path where the optimizer state is saved.
 
         Returns:
             MonteCarloOptimizer: A new optimizer instance with restored state.
@@ -768,28 +906,36 @@ class MonteCarloOptimizer(Optimizer):
             FileNotFoundError: If the checkpoint file does not exist.
         """
         checkpoint_path = Path(checkpoint_dir)
-        state_file = checkpoint_path / "optimizer_state.npz"
+        state_file = checkpoint_path / OPTIMIZER_STATE_FILE
 
-        if not state_file.exists():
-            raise FileNotFoundError(f"Checkpoint file not found: {state_file}")
-
-        loaded = np.load(state_file, allow_pickle=True)
+        state = _load_and_validate_pydantic_model(
+            state_file,
+            MonteCarloState,
+            required_fields=["population_size", "curr_iteration", "rng_state_b64"],
+            error_context="Monte Carlo optimizer",
+        )
 
         # Create new instance with saved configuration
         optimizer = cls(
-            population_size=int(loaded["population_size"]),
-            n_best_sets=int(loaded["n_best_sets"]),
-            keep_best_params=bool(loaded["keep_best_params"]),
+            population_size=state.population_size,
+            n_best_sets=state.n_best_sets,
+            keep_best_params=state.keep_best_params,
         )
 
         # Restore state
-        optimizer._curr_population = loaded["population"]
-        optimizer._curr_evaluated_population = loaded["evaluated_population"]
-        optimizer._curr_losses = loaded["losses"]
-        optimizer._curr_iteration = int(loaded["curr_iter"])
+        optimizer._curr_population = (
+            np.array(state.population) if state.population else None
+        )
+        optimizer._curr_evaluated_population = (
+            np.array(state.evaluated_population) if state.evaluated_population else None
+        )
+        optimizer._curr_losses = np.array(state.losses) if state.losses else None
+        optimizer._curr_iteration = (
+            state.curr_iteration if state.curr_iteration != -1 else None
+        )
 
-        # Restore RNG state from pickle bytes
-        rng_state_bytes = loaded["rng_state"].tobytes()
+        # Restore RNG state from base64 string -> bytes -> pickle
+        rng_state_bytes = base64.b64decode(state.rng_state_b64)
         optimizer._curr_rng_state = pickle.loads(rng_state_bytes)
 
         return optimizer
