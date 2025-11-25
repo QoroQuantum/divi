@@ -11,13 +11,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### ✨ Added
 
+* Checkpointing support for variational quantum algorithms: added comprehensive checkpointing functionality with `CheckpointConfig` class (including `with_timestamped_dir()` method) using Pydantic for JSON validation, enabling state saving and resuming of optimization runs. Includes `save_state()` and `load_state()` methods on optimizer classes, comprehensive user guide (`docs/source/user_guide/checkpointing.rst`), and tutorial example (`tutorials/checkpointing.py`)
+
 ### 🔄 Changed
+
+* Refactored type hints to use `numpy.typing` for improved type safety: updated type annotations across the codebase to use numpy's typing module for better type checking and IDE support
+* Adapted `ProgramBatch` workflows to support stateful optimizers: updated workflow classes (`GraphPartitioningQAOA`, `QUBOPartitioningQAOA`, `VQEHyperparameterSweep`) to properly handle optimizer state persistence
+* Thread-safe QuantumScript creation: refactored circuit creation to avoid using `make_qscript` for improved thread safety in parallel execution scenarios
 
 ### ⚠️ Deprecated
 
 ### 🗑️ Removed
 
 ### 🐛 Fixed
+
+* Fixed overflow issue with batched expectation values: corrected numerical overflow problem in expectation value calculations when processing large batches
+* Fixed documentation issues: corrected various documentation hiccups and formatting problems
 
 ## [0.4.1] - 2025-11-16
 
