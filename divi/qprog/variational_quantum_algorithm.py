@@ -219,9 +219,19 @@ def _batched_expectation(
     bitstring_to_idx_map = {bs: i for i, bs in enumerate(unique_bitstrings)}
 
     # --- 2. Build REDUCED Eigenvalue Matrix: (n_observables, n_unique_states) ---
-    unique_states_int = np.array(
-        [int(bs, 2) for bs in unique_bitstrings], dtype=np.uint64
-    )
+    # For systems with <=64 qubits, use fast integer conversion and bitwise operations.
+    # For larger systems, use character array to avoid integer overflow.
+    if n_total_wires <= 64:
+        # Fast path: convert to uint64 and use vectorized bitwise operations
+        unique_states_int = np.array(
+            [int(bs, 2) for bs in unique_bitstrings], dtype=np.uint64
+        )
+        use_integer_representation = True
+    else:
+        # Safe path: convert to character array for large qubit counts
+        bitstring_chars = np.array([list(bs) for bs in unique_bitstrings], dtype="U1")
+        use_integer_representation = False
+
     reduced_eigvals_matrix = np.zeros((n_observables, n_unique_states))
     wire_map = {w: i for i, w in enumerate(wire_order)}
 
@@ -242,10 +252,14 @@ def _batched_expectation(
 
         # Vectorized mapping, but on the *reduced* set of states
         shifts = n_total_wires - 1 - obs_wire_indices
-        bits = ((unique_states_int[:, np.newaxis] >> shifts) & 1).astype(np.intp)
-        # powers = 2 ** np.arange(n_obs_wires - 1, -1, -1)
 
-        # obs_state_indices = (bits * powers).sum(axis=1).astype(np.intp)
+        if use_integer_representation:
+            # Fast path: vectorized bitwise operations on integers
+            bits = ((unique_states_int[:, np.newaxis] >> shifts) & 1).astype(np.intp)
+        else:
+            # Safe path: extract bits from character array (vectorized)
+            bits = bitstring_chars[:, shifts].astype(np.intp)
+
         obs_state_indices = np.dot(bits, powers)
 
         reduced_eigvals_matrix[obs_idx, :] = eigvals[obs_state_indices]

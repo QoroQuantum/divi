@@ -329,6 +329,160 @@ class TestBatchedExpectation:
                 wire_order=wire_order,
             )
 
+    @pytest.mark.parametrize(
+        "n_qubits",
+        [1, 10, 32, 64, 65, 100, 150, 200, 500, 1000],
+        ids=lambda n: f"{n}-qubits",
+    )
+    def test_qubit_counts_no_overflow(self, n_qubits):
+        """
+        Tests that _batched_expectation works correctly across a wide range of qubit counts
+        without integer overflow errors, including the critical boundary at 64.
+
+        This test would have caught the bug where 150-qubit circuits caused OverflowError
+        when converting bitstrings to uint64.
+        """
+        wire_order = tuple(range(n_qubits - 1, -1, -1))
+
+        # Create test bitstrings including edge cases that would overflow uint64
+        test_bitstrings = [
+            "0" * n_qubits,  # All 0s
+            "1" * n_qubits,  # All 1s - would overflow uint64 for >64 qubits
+            "1" + "0" * (n_qubits - 1),  # MSB=1, rest 0s
+            "0" * (n_qubits - 1) + "1",  # LSB=1, rest 0s
+        ]
+
+        shot_histogram = {bs: 100 for bs in test_bitstrings}
+
+        # Test observables on first, middle, and last qubits
+        # Ensure mid_qubit is within valid wire range [0, n_qubits-1]
+        mid_qubit = n_qubits // 2 if n_qubits > 1 else 0
+        observables = [
+            qml.PauliZ(0),
+            qml.PauliZ(n_qubits - 1),
+        ]
+        # Add Identity observable if we have a valid middle qubit
+        if n_qubits > 1:
+            observables.append(qml.Identity(mid_qubit))
+        # Add product observable for larger systems
+        if n_qubits >= 50:
+            observables.append(qml.PauliZ(mid_qubit // 2) @ qml.PauliZ(mid_qubit))
+
+        # Remove duplicates
+        observables = list(dict.fromkeys(observables))
+
+        # Should not raise OverflowError
+        result = _batched_expectation([shot_histogram], observables, wire_order)
+
+        # Verify results are valid
+        assert result.shape == (len(observables), 1)
+        assert not np.isnan(result).any(), "Results should not contain NaN"
+        assert not np.isinf(result).any(), "Results should not contain Inf"
+
+        # Verify expectation values are in valid range
+        for i, obs in enumerate(observables):
+            if isinstance(obs, qml.PauliZ) or (
+                hasattr(obs, "name") and obs.name == "Prod"
+            ):
+                assert -1.0 <= result[i, 0] <= 1.0
+
+    def test_boundary_qubit_count_both_paths_work(self):
+        """
+        Tests that both code paths (<=64 and >64 qubits) work correctly at the boundary.
+
+        This ensures the conditional logic correctly switches between integer and
+        character array representations.
+        """
+        # Test at exactly 64 qubits (uses integer path)
+        wire_order_64 = tuple(range(63, -1, -1))
+        shot_histogram_64 = {"1" * 64: 100, "0" * 64: 100}
+        observables_64 = [qml.PauliZ(0), qml.PauliZ(31), qml.PauliZ(63)]
+
+        result_64 = _batched_expectation(
+            [shot_histogram_64], observables_64, wire_order_64
+        )
+
+        # Test at 65 qubits (uses character array path)
+        wire_order_65 = tuple(range(64, -1, -1))
+        shot_histogram_65 = {"1" * 65: 100, "0" * 65: 100}
+        observables_65 = [qml.PauliZ(0), qml.PauliZ(32), qml.PauliZ(64)]
+
+        result_65 = _batched_expectation(
+            [shot_histogram_65], observables_65, wire_order_65
+        )
+
+        # Both should complete without errors and produce valid results
+        assert result_64.shape[0] == len(observables_64)
+        assert result_65.shape[0] == len(observables_65)
+        assert not np.isnan(result_64).any()
+        assert not np.isnan(result_65).any()
+
+    @pytest.mark.parametrize(
+        "n_qubits",
+        [4, 32, 64, 65, 100, 150, 500, 1000],
+        ids=lambda n: f"{n}qubits",
+    )
+    def test_matches_pennylane_baseline(self, n_qubits):
+        """
+        Validates that results match PennyLane's baseline implementation across
+        various qubit counts, ensuring correctness of both code paths.
+        """
+        wire_order = tuple(range(n_qubits - 1, -1, -1))
+        shot_histogram = {"0" * n_qubits: 50, "1" * n_qubits: 50}
+        observables = [qml.PauliZ(0)]
+
+        # Get baseline from PennyLane
+        baseline_expvals = []
+        for obs in observables:
+            mp = ExpectationMP(obs)
+            expval = mp.process_counts(counts=shot_histogram, wire_order=wire_order)
+            baseline_expvals.append(expval)
+
+        # Get result from our optimized function
+        optimized_expvals = _batched_expectation(
+            [shot_histogram], observables, wire_order
+        )[:, 0]
+
+        # Should match PennyLane's results
+        np.testing.assert_allclose(optimized_expvals, baseline_expvals, rtol=1e-10)
+
+    @pytest.mark.parametrize(
+        "n_qubits,observable_wires",
+        [
+            (100, [0, 50]),
+            (150, [0, 50, 100]),
+            (150, [0, 75, 125]),
+            (200, [0, 100, 199]),
+            (500, [0, 250, 499]),
+            (1000, [0, 500, 999]),
+        ],
+        ids=["100q_2w", "150q_3w", "150q_3w_alt", "200q_3w", "500q_3w", "1000q_3w"],
+    )
+    def test_product_observables_large_qubit_counts(self, n_qubits, observable_wires):
+        """
+        Tests that product observables (multi-qubit) work correctly for large qubit counts.
+        """
+        wire_order = tuple(range(n_qubits - 1, -1, -1))
+        shot_histogram = {
+            "0" * n_qubits: 100,
+            "1" * n_qubits: 100,
+            "1" + "0" * (n_qubits - 1): 100,
+        }
+
+        # Create product observable from wire indices
+        obs = qml.PauliZ(observable_wires[0])
+        for wire in observable_wires[1:]:
+            obs = obs @ qml.PauliZ(wire)
+        observables = [obs]
+
+        result = _batched_expectation([shot_histogram], observables, wire_order)
+
+        # Verify results
+        assert result.shape == (1, 1)
+        assert not np.isnan(result).any()
+        # Product observables should be in range [-1, 1]
+        assert np.abs(result[0, 0]) <= 1.0 + 1e-10
+
 
 class BaseVariationalQuantumAlgorithmTest:
     """Base test class for VariationalQuantumAlgorithm functionality."""
