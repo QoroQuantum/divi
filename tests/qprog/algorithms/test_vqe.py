@@ -8,7 +8,7 @@ import numpy as np
 import pennylane as qml
 import pytest
 
-from divi.qprog import VQE, ScipyOptimizer
+from divi.qprog import VQE
 from divi.qprog.algorithms import (
     GenericLayerAnsatz,
     HardwareEfficientAnsatz,
@@ -60,13 +60,13 @@ def test_vqe_basic_initialization_with_molecule(default_test_simulator, h2_molec
     vqe_problem = VQE(
         molecule=h2_molecule,
         ansatz=HartreeFockAnsatz(),
-        n_layers=2,  # n_layers is passed to VQE again
+        n_layers=1,  # n_layers is passed to VQE again
         backend=default_test_simulator,
     )
 
     assert vqe_problem.backend.shots == 5000
     assert vqe_problem.molecule == h2_molecule
-    assert vqe_problem.n_layers == 2  # Assert on VQE instance
+    assert vqe_problem.n_layers == 1  # Assert on VQE instance
     assert vqe_problem.n_electrons == 2
     assert vqe_problem.n_qubits == 4
 
@@ -82,12 +82,12 @@ def test_vqe_basic_initialization_with_hamiltonian(
         hamiltonian=h2_hamiltonian,
         n_electrons=2,
         ansatz=HartreeFockAnsatz(),
-        n_layers=2,
+        n_layers=1,
         backend=default_test_simulator,
     )
 
     assert vqe_problem.backend.shots == 5000
-    assert vqe_problem.n_layers == 2
+    assert vqe_problem.n_layers == 1
     assert vqe_problem.n_electrons == 2
     assert vqe_problem.n_qubits == 4
 
@@ -218,9 +218,6 @@ def test_vqe_correct_circuits_count_and_energies(
 @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
 def test_vqe_h2_molecule_e2e_solution(optimizer, default_test_simulator, h2_molecule):
     """Test that VQE finds the correct ground state for the H2 molecule."""
-    optimizer = optimizer()  # Create fresh instance
-    if isinstance(optimizer, PymooOptimizer) and optimizer.method == PymooMethod.DE:
-        pytest.skip("DE consistently fails for some reason. Debug later.")
 
     default_test_simulator.set_seed(1997)
 
@@ -228,7 +225,7 @@ def test_vqe_h2_molecule_e2e_solution(optimizer, default_test_simulator, h2_mole
         molecule=h2_molecule,
         ansatz=HartreeFockAnsatz(),
         n_layers=1,
-        optimizer=optimizer,
+        optimizer=optimizer(),
         max_iterations=5,
         backend=default_test_simulator,
         seed=1997,
@@ -251,15 +248,12 @@ def test_vqe_h2_molecule_e2e_solution(optimizer, default_test_simulator, h2_mole
 
 
 @pytest.mark.e2e
-@pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
+@pytest.mark.parametrize("optimizer", **CHECKPOINTING_OPTIMIZERS)
 def test_vqe_h2_molecule_e2e_checkpointing_resume(
     optimizer, default_test_simulator, h2_molecule, tmp_path
 ):
     """Test VQE e2e with checkpointing and resume functionality."""
     optimizer = optimizer()  # Create fresh instance
-
-    if isinstance(optimizer, ScipyOptimizer):
-        pytest.skip("ScipyOptimizer does not support checkpointing.")
 
     checkpoint_dir = tmp_path / "checkpoint_test"
     default_test_simulator.set_seed(1997)

@@ -5,6 +5,7 @@
 import cirq
 import pennylane as qml
 import pytest
+import sympy as sp
 from sympy import Symbol
 
 from divi.circuits._qasm_conversion import _ops_to_qasm, to_openqasm
@@ -271,6 +272,46 @@ class TestToOpenqasm:
         )
 
         # Should work without error
+        self._assert_result_structure(result)
+
+    def test_qem_protocol_with_sympy_array_symbols(
+        self, default_measurement_group, qem_protocol
+    ):
+        """Test QEM protocol with numpy array of sympy symbols (from sp.symarray).
+
+        This test verifies that when symbols contains numpy arrays (from sp.symarray),
+        they are properly flattened and declared individually in QASM 3.0 format.
+        Without this fix, the QASM parser would fail with QasmException due to
+        invalid array notation like "[theta_0 theta_1 theta_2]".
+        """
+        # Create a circuit with both individual symbols and arrays of symbols
+        beta = sp.Symbol("beta")
+        thetas = sp.symarray(
+            "theta", 3
+        )  # Returns numpy array: [theta_0, theta_1, theta_2]
+
+        ops = [
+            qml.RX(beta, wires=0),
+            qml.U3(*thetas, wires=1),  # Unpack array for U3 gate
+        ]
+        circuit = qml.tape.QuantumScript(
+            ops=ops, measurements=[qml.expval(qml.PauliZ(0))]
+        )
+
+        # Symbols list contains both individual symbol and array
+        symbols = [beta, thetas]
+
+        # This should work without error - array symbols should be flattened
+        result = to_openqasm(
+            circuit,
+            default_measurement_group,
+            symbols=symbols,
+            qem_protocol=qem_protocol,
+        )
+
+        # Should work without error - the fact that we get here without an exception
+        # means the fix worked (the QASM parser successfully parsed the flattened symbols)
+        # Before the fix, this would fail with QasmException due to array notation
         self._assert_result_structure(result)
 
     def test_qem_protocol_cirq_conversion_bug(

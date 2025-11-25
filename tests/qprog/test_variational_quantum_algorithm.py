@@ -14,7 +14,6 @@ from mitiq.zne.scaling import fold_global
 from pennylane.measurements import ExpectationMP
 from scipy.optimize import OptimizeResult
 
-from divi.circuits import MetaCircuit
 from divi.circuits.qem import ZNE
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.exceptions import _CancelledError
@@ -67,10 +66,9 @@ class SampleVQAProgram(VariationalQuantumAlgorithm):
         source_circuit = qml.tape.QuantumScript(
             ops=ops, measurements=[qml.expval(self.cost_hamiltonian)]
         )
-        meta_circuit = MetaCircuit(
+        meta_circuit = self._meta_circuit_factory(
             source_circuit=source_circuit,
             symbols=symbols,
-            grouping_strategy=self._grouping_strategy,
         )
         return {"cost_circuit": meta_circuit}
 
@@ -1088,3 +1086,51 @@ class TestCheckpointing:
             run_time=0.0,
         )
         assert loaded_program_2.current_iteration == 3
+
+
+class TestPrecisionFunctionality(BaseVariationalQuantumAlgorithmTest):
+    """Test suite for precision functionality in VariationalQuantumAlgorithm."""
+
+    def test_precision_defaults_to_8(self, mock_backend):
+        """Test that precision defaults to 8 when not provided."""
+        program = SampleVQAProgram(circ_count=1, run_time=0.1, backend=mock_backend)
+        assert program._precision == 8
+
+    def test_precision_can_be_passed_as_kwarg(self, mock_backend):
+        """Test that precision can be passed as a kwarg."""
+        program = SampleVQAProgram(
+            circ_count=1, run_time=0.1, backend=mock_backend, precision=12
+        )
+        assert program._precision == 12
+
+    def test_precision_used_in_qasm_conversion(self, mocker, mock_backend):
+        """Test that precision is used when creating QASM circuits."""
+        mock_to_openqasm = mocker.patch("divi.circuits._core.to_openqasm")
+        mock_to_openqasm.return_value = (["circuit_body"], ["measurement"])
+
+        program = SampleVQAProgram(
+            circ_count=1, run_time=0.1, backend=mock_backend, precision=5
+        )
+
+        # Access meta_circuits to trigger creation and QASM conversion
+        _ = program.meta_circuits
+
+        # Verify to_openqasm was called with precision=5
+        assert mock_to_openqasm.called
+        call_kwargs = mock_to_openqasm.call_args[1]
+        assert call_kwargs["precision"] == 5
+
+    def test_different_precision_values(self, mock_backend):
+        """Test that different precision values work correctly."""
+        for precision in [1, 4, 8, 12, 16]:
+            program = SampleVQAProgram(
+                circ_count=1,
+                run_time=0.1,
+                backend=mock_backend,
+                precision=precision,
+            )
+            assert program._precision == precision
+
+            # Verify it propagates to the factory
+            factory_keywords = program._meta_circuit_factory.keywords
+            assert factory_keywords["precision"] == precision

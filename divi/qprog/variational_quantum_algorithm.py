@@ -376,6 +376,15 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             grouping_strategy (str): Strategy for grouping operations in Pennylane transforms.
                 Options: "default", "wires", "qwc". Defaults to "qwc".
             qem_protocol (QEMProtocol | None): Quantum error mitigation protocol to apply. Defaults to None.
+            precision (int): Number of decimal places for parameter values in QASM conversion.
+                Defaults to 8.
+
+                Note: Higher precision values result in longer QASM strings, which increases
+                the amount of data sent to cloud backends. For most use cases, the default
+                precision of 8 decimal places provides sufficient accuracy while keeping
+                QASM sizes manageable. Consider reducing precision if you need to minimize
+                data transfer overhead, or increase it only if you require higher numerical
+                precision in your circuit parameters.
         """
 
         super().__init__(
@@ -426,11 +435,14 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         self._cancellation_event = None
 
+        self._precision = kwargs.pop("precision", 8)
+
         self._meta_circuit_factory = partial(
             MetaCircuit,
             # No grouping strategy for expectation value measurements
             grouping_strategy=self._grouping_strategy,
             qem_protocol=self._qem_protocol,
+            precision=self._precision,
         )
 
     @property

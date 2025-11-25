@@ -159,6 +159,8 @@ class MetaCircuit:
     """Strategy for grouping commuting observables."""
     qem_protocol: QEMProtocol | None = None
     """Quantum error mitigation protocol to apply."""
+    precision: int = 8
+    """Number of decimal places for parameter values in QASM conversion."""
 
     # --- Compiled artifacts ---
     _compiled_circuit_bodies: tuple[str, ...] = field(init=False)
@@ -200,6 +202,7 @@ class MetaCircuit:
                 return_measurements_separately=True,
                 symbols=self.symbols,
                 qem_protocol=self.qem_protocol,
+                precision=self.precision,
             )
             # Use object.__setattr__ because the class is frozen
             object.__setattr__(self, "postprocessing_fn", postprocessing_fn)
@@ -269,6 +272,7 @@ class MetaCircuit:
             measure_all=True,
             symbols=self.symbols,
             qem_protocol=self.qem_protocol,
+            precision=self.precision,
         )
         # Use object.__setattr__ because the class is frozen
         object.__setattr__(self, "postprocessing_fn", postprocessing_fn)
@@ -308,7 +312,7 @@ class MetaCircuit:
         self.__dict__.update(state)
 
     def initialize_circuit_from_params(
-        self, param_list, tag_prefix: str = "", precision: int = 8
+        self, param_list, tag_prefix: str = "", precision: int | None = None
     ) -> CircuitBundle:
         """
         Instantiate a concrete CircuitBundle by substituting symbolic parameters with values.
@@ -322,8 +326,9 @@ class MetaCircuit:
                 Must match the length and order of self.symbols.
             tag_prefix (str, optional): Prefix to prepend to circuit tags for
                 identification. Defaults to "".
-            precision (int, optional): Number of decimal places for parameter values
-                in the QASM output. Defaults to 8.
+            precision (int | None, optional): Number of decimal places for parameter values
+                in the QASM output. If None, uses the precision set on this MetaCircuit instance.
+                Defaults to None.
 
         Returns:
             CircuitBundle: A new CircuitBundle instance with parameters substituted and proper
@@ -333,6 +338,8 @@ class MetaCircuit:
             The main circuit's parameters are still in symbol form.
             Not sure if it is necessary for any useful application to parameterize them.
         """
+        if precision is None:
+            precision = self.precision
         mapping = dict(
             zip(
                 map(lambda x: re.escape(str(x)), self.symbols),

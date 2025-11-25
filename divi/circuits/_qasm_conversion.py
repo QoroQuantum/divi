@@ -12,7 +12,7 @@ import numpy as np
 import pennylane as qml
 from pennylane.tape import QuantumScript
 from pennylane.wires import Wires
-from sympy import Symbol
+from sympy import Expr, Symbol
 
 from divi.circuits.qem import QEMProtocol
 
@@ -97,9 +97,17 @@ def _ops_to_qasm(operations, precision, wires):
             # If the operation takes parameters, construct a string
             # with parameter values.
             if precision is not None:
-                params = (
-                    "(" + ",".join([f"{p:.{precision}}" for p in op.parameters]) + ")"
-                )
+                # Format parameters with precision, but use str() for sympy expressions
+                param_strs = []
+                for p in op.parameters:
+                    if isinstance(p, Expr):
+                        # Sympy expressions (Symbol, Mul, Add, etc.) should be kept as-is
+                        # (will be replaced later during parameter substitution)
+                        param_strs.append(str(p))
+                    else:
+                        # Numeric parameters can be formatted with precision
+                        param_strs.append(f"{p:.{precision}}")
+                params = "(" + ",".join(param_strs) + ")"
             else:
                 # use default precision
                 params = "(" + ",".join([str(p) for p in op.parameters]) + ")"
@@ -169,7 +177,18 @@ def to_openqasm(
         return main_qasm_str
 
     if qem_protocol:
+        # Flatten symbols list to handle both individual symbols and arrays of symbols
+        flat_symbols = []
         for symbol in symbols:
+            if isinstance(symbol, np.ndarray):
+                # If it's a numpy array of symbols, flatten it
+                flat_symbols.extend(symbol.flatten())
+            else:
+                # Individual symbol
+                flat_symbols.append(symbol)
+
+        # Declare each symbol individually in QASM 3.0
+        for symbol in flat_symbols:
             main_qasm_str += f"input angle[32] {str(symbol)};\n"
 
     # create the quantum and classical registers

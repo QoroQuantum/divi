@@ -17,12 +17,12 @@ from divi.qprog.optimizers import PymooMethod, PymooOptimizer
 
 OPTIMIZERS_TO_TEST = {
     "argvalues": [
-        lambda: MonteCarloOptimizer(population_size=10, n_best_sets=3),
+        lambda: MonteCarloOptimizer(population_size=5, n_best_sets=2),
         lambda: ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
         lambda: ScipyOptimizer(method=ScipyMethod.COBYLA),
         lambda: ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
-        lambda: PymooOptimizer(method=PymooMethod.CMAES, population_size=10),
-        lambda: PymooOptimizer(method=PymooMethod.DE, population_size=10),
+        lambda: PymooOptimizer(method=PymooMethod.CMAES, population_size=5),
+        lambda: PymooOptimizer(method=PymooMethod.DE, population_size=5),
     ],
     "ids": ["MonteCarlo", "L_BFGS_B", "COBYLA", "NELDER_MEAD", "CMAES", "DE"],
 }
