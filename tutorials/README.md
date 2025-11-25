@@ -28,6 +28,10 @@ python <example_name>.py
 - **`qaoa_qubo_partitioning.py`** - QUBO partitioning for scalability
 - **`qaoa_quadratic_program.py`** - QAOA for quadratic programming
 
+### Checkpointing
+
+- **`checkpointing.py`** - Save and resume optimization runs with checkpointing
+
 ### Backends and Services
 
 - **`qasm_thru_service.py`** - Using QoroService cloud backend
@@ -40,8 +44,6 @@ All examples require Divi to be installed:
 ```bash
 pip install qoro-divi
 ```
-
-Additional dependencies may be required for specific examples (e.g., `networkx` for graph problems).
 
 ## Documentation
 

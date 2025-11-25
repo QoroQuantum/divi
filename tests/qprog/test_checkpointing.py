@@ -154,13 +154,21 @@ class TestCheckpointConfig:
         assert config.checkpoint_dir == checkpoint_dir
         assert config.checkpoint_interval == 5
 
-    def test_checkpoint_config_create_auto(self):
+    def test_checkpoint_config_with_timestamped_dir(self):
         """Test auto-generation of checkpoint directory."""
-        config = CheckpointConfig.create_auto()
+        config = CheckpointConfig.with_timestamped_dir()
         assert config.checkpoint_dir is not None
         assert isinstance(config.checkpoint_dir, Path)
         assert config.checkpoint_dir.name.startswith("checkpoint_")
         assert len(config.checkpoint_dir.name) > len("checkpoint_")
+        assert config.checkpoint_interval is None  # Default is None
+
+        # Test with checkpoint interval
+        config_with_interval = CheckpointConfig.with_timestamped_dir(
+            checkpoint_interval=5
+        )
+        assert config_with_interval.checkpoint_dir is not None
+        assert config_with_interval.checkpoint_interval == 5
 
     def test_should_checkpoint_disabled(self):
         """Test should_checkpoint when checkpointing is disabled."""

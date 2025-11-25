@@ -680,7 +680,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         if checkpoint_config.checkpoint_dir is None:
             raise ValueError(
                 "checkpoint_config.checkpoint_dir must be a non-None Path. "
-                "Use CheckpointConfig.create_auto() for auto-generation."
+                "Use CheckpointConfig.with_timestamped_dir() for auto-generation."
             )
 
         # Create main checkpoint directory

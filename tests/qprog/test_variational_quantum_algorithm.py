@@ -810,7 +810,7 @@ class TestCheckpointing:
         # Change working directory to tmp_path so we don't pollute the repo
         with pytest.MonkeyPatch.context() as m:
             m.chdir(tmp_path)
-            path = sample_program.save_state(CheckpointConfig.create_auto())
+            path = sample_program.save_state(CheckpointConfig.with_timestamped_dir())
             assert "checkpoint_" in str(path)
             # Path should point to the subdirectory
             assert path.exists()

@@ -330,15 +330,23 @@ class CheckpointConfig:
     checkpoint_interval: int | None = None
 
     @classmethod
-    def create_auto(cls) -> "CheckpointConfig":
+    def with_timestamped_dir(
+        cls, checkpoint_interval: int | None = None
+    ) -> "CheckpointConfig":
         """Create CheckpointConfig with auto-generated directory name.
+
+        Args:
+            checkpoint_interval (int | None): Save checkpoint every N iterations.
+                If None, saves every iteration (default).
 
         Returns:
             CheckpointConfig: A new CheckpointConfig with auto-generated directory.
         """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         generated_dir = Path(f"checkpoint_{timestamp}")
-        return cls(checkpoint_dir=generated_dir)
+        return cls(
+            checkpoint_dir=generated_dir, checkpoint_interval=checkpoint_interval
+        )
 
     def _should_checkpoint(self, iteration: int) -> bool:
         """Determine if a checkpoint should be saved at the given iteration.
