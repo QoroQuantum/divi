@@ -16,7 +16,7 @@ from warnings import warn
 import numpy as np
 import numpy.typing as npt
 import pennylane as qml
-from pydantic import BaseModel, Field, field_serializer, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 from scipy.optimize import OptimizeResult
 
 from divi.backends import CircuitRunner
@@ -62,51 +62,83 @@ class OptimizerConfig(BaseModel):
 class ProgramState(BaseModel):
     """Pydantic model for VariationalQuantumAlgorithm state."""
 
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
     # Metadata
-    program_type: str
+    program_type: str = Field(validation_alias="_serialized_program_type")
     version: str = "1.0"
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
 
-    # Core Algorithm State
+    # Core Algorithm State (mapped to private attributes)
     current_iteration: int
     max_iterations: int
-    losses_history: list[dict[str, float]]
-    best_loss: float
-    best_probs: dict[str, float]
-    total_circuit_count: int
-    total_run_time: float
-    seed: int | None
-    grouping_strategy: str
+    losses_history: list[dict[str, float]] = Field(validation_alias="_losses_history")
+    best_loss: float = Field(validation_alias="_best_loss")
+    best_probs: dict[str, float] = Field(validation_alias="_best_probs")
+    total_circuit_count: int = Field(validation_alias="_total_circuit_count")
+    total_run_time: float = Field(validation_alias="_total_run_time")
+    seed: int | None = Field(validation_alias="_seed")
+    grouping_strategy: str = Field(validation_alias="_grouping_strategy")
 
-    # Arrays (will be serialized as lists)
-    # curr_params is always 2D (n_param_sets, n_params)
-    curr_params: list[list[float]] | None = None
-    # best_params is always 1D (n_params) - single best parameter set
-    best_params: list[float] | None = None
-    # final_params is always 1D (n_params) - single best LAST evaluated parameter set
-    final_params: list[float] | None = None
+    # Arrays
+    curr_params: list[list[float]] | None = Field(
+        default=None, validation_alias="_curr_params"
+    )
+    best_params: list[float] | None = Field(
+        default=None, validation_alias="_best_params"
+    )
+    final_params: list[float] | None = Field(
+        default=None, validation_alias="_final_params"
+    )
 
-    # RNG State (pickled bytes -> list of ints or base64 for JSON)
-    # We use list[int] for simple JSON serialization of bytes
-    rng_state_bytes: bytes | None = None
-
-    # Nested Models
-    optimizer_config: OptimizerConfig
-    subclass_state: SubclassState
+    # Complex State (mapped to new adapter properties)
+    rng_state_bytes: bytes | None = Field(
+        default=None, validation_alias="_serialized_rng_state"
+    )
+    optimizer_config: OptimizerConfig = Field(
+        validation_alias="_serialized_optimizer_config"
+    )
+    subclass_state: SubclassState = Field(validation_alias="_serialized_subclass_state")
 
     @field_serializer("rng_state_bytes")
     def serialize_bytes(self, v: bytes | None, _info):
-        if v is None:
-            return None
-        # Serialize bytes as hex string for readability/safety in JSON
-        return v.hex()
+        return v.hex() if v is not None else None
 
     @field_validator("rng_state_bytes", mode="before")
     @classmethod
     def validate_bytes(cls, v):
-        if isinstance(v, str):
-            return bytes.fromhex(v)
+        return bytes.fromhex(v) if isinstance(v, str) else v
+
+    @field_serializer("curr_params", "best_params", "final_params")
+    def serialize_arrays(self, v: npt.NDArray | list | None, _info):
+        if isinstance(v, np.ndarray):
+            return v.tolist()
         return v
+
+    def restore(self, program: "VariationalQuantumAlgorithm") -> None:
+        """Apply this state object back to a program instance."""
+        # 1. Bulk restore standard attributes
+        for name, field in self.model_fields.items():
+            target_attr = field.validation_alias or name
+
+            # Skip adapter properties (they are read-only / calculated)
+            if target_attr.startswith("_serialized_"):
+                continue
+
+            val = getattr(self, name)
+
+            # Handle numpy conversion
+            if "params" in target_attr and val is not None:
+                val = np.array(val)
+
+            if hasattr(program, target_attr):
+                setattr(program, target_attr, val)
+
+        # 2. Restore complex state
+        if self.rng_state_bytes:
+            program._rng.bit_generator.state = pickle.loads(self.rng_state_bytes)
+
+        program._load_subclass_state(self.subclass_state.data)
 
 
 def _get_structural_key(obs: qml.operation.Operation) -> tuple[str, ...]:
@@ -585,6 +617,24 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             # Reset to uninitialized state
             self._curr_params = None
 
+    # --- Serialization Adapters (For Pydantic) ---
+    @property
+    def _serialized_program_type(self) -> str:
+        return type(self).__name__
+
+    @property
+    def _serialized_rng_state(self) -> bytes:
+        return pickle.dumps(self._rng.bit_generator.state)
+
+    @property
+    def _serialized_optimizer_config(self) -> OptimizerConfig:
+        config_dict = self.optimizer.get_config()
+        return OptimizerConfig(type=config_dict.pop("type"), config=config_dict)
+
+    @property
+    def _serialized_subclass_state(self) -> SubclassState:
+        return SubclassState(data=self._save_subclass_state())
+
     def _convert_counts_to_probs(
         self, results: dict[str, dict[str, int]]
     ) -> dict[str, dict[str, float]]:
@@ -679,74 +729,25 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         )
 
     def save_state(self, checkpoint_config: CheckpointConfig) -> str:
-        """Save the program state to a checkpoint directory.
-
-        Creates a subdirectory named `checkpoint_{iteration:03d}` within the main
-        checkpoint directory to avoid overwriting previous checkpoints.
-
-        Args:
-            checkpoint_config (CheckpointConfig): Checkpoint configuration.
-                Must have a non-None checkpoint_dir.
-
-        Returns:
-            str: The path to the checkpoint subdirectory.
-
-        Raises:
-            NotImplementedError: If the optimizer does not support state saving.
-            RuntimeError: If optimization has not been run (no iterations completed).
-            ValueError: If checkpoint_config.checkpoint_dir is None.
-        """
-        # Validate that optimization has been run
+        """Save the program state to a checkpoint directory."""
         if self.current_iteration == 0 and len(self._losses_history) == 0:
-            raise RuntimeError(
-                "Cannot save checkpoint: optimization has not been run. "
-                "At least one iteration must complete before saving state."
-            )
+            raise RuntimeError("Cannot save checkpoint: optimization has not been run.")
 
         if checkpoint_config.checkpoint_dir is None:
             raise ValueError(
-                "checkpoint_config.checkpoint_dir must be a non-None Path. "
-                "Use CheckpointConfig.with_timestamped_dir() for auto-generation."
+                "checkpoint_config.checkpoint_dir must be a non-None Path."
             )
 
-        # Create main checkpoint directory
         main_dir = _ensure_checkpoint_dir(checkpoint_config.checkpoint_dir)
-
-        # Create per-iteration subdirectory
         checkpoint_path = _get_checkpoint_subdir_path(main_dir, self.current_iteration)
         checkpoint_path.mkdir(parents=True, exist_ok=True)
 
-        # 1. Save optimizer state (it creates its own file in the subdirectory)
+        # 1. Save optimizer
         self.optimizer.save_state(checkpoint_path)
 
-        # 2. Get optimizer configuration
-        optimizer_config = self._get_optimizer_config()
+        # 2. Save Program State (Pydantic pulls data via validation_aliases)
+        state = ProgramState.model_validate(self)
 
-        # 3. Create state object
-        state = ProgramState(
-            program_type=type(self).__name__,
-            current_iteration=self.current_iteration,
-            max_iterations=self.max_iterations,
-            losses_history=self._losses_history,
-            best_loss=self._best_loss,
-            best_probs=self._best_probs,
-            total_circuit_count=self._total_circuit_count,
-            total_run_time=self._total_run_time,
-            seed=self._seed,
-            grouping_strategy=self._grouping_strategy,
-            curr_params=self._curr_params.tolist(),
-            best_params=(
-                self._best_params.tolist() if self._best_params is not None else None
-            ),
-            final_params=(
-                self._final_params.tolist() if self._final_params is not None else None
-            ),
-            rng_state_bytes=pickle.dumps(self._rng.bit_generator.state),
-            optimizer_config=optimizer_config,
-            subclass_state=SubclassState(data=self._save_subclass_state()),
-        )
-
-        # 4. Write to JSON file atomically
         state_file = checkpoint_path / PROGRAM_STATE_FILE
         _atomic_write(state_file, state.model_dump_json(indent=2))
 
@@ -760,38 +761,15 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         subdirectory: str | None = None,
         **kwargs,
     ) -> "VariationalQuantumAlgorithm":
-        """Load program state from a checkpoint directory.
-
-        Args:
-            checkpoint_dir (Path | str): Path to the main checkpoint directory (experiment folder).
-            backend (CircuitRunner): Backend to use for the restored program.
-            subdirectory (str | None): Specific checkpoint subdirectory to load (e.g., "checkpoint_001").
-                If None, loads the latest checkpoint based on iteration number.
-            **kwargs: Additional constructor arguments. Must include all subclass-specific
-                configuration (e.g., molecule, problem definition) because checkpoints
-                only store runtime state.
-
-        Returns:
-            VariationalQuantumAlgorithm: A new instance with restored state.
-
-        Raises:
-            FileNotFoundError: If the checkpoint directory or files do not exist.
-        """
-        # Resolve checkpoint path (handles main dir validation and subdirectory resolution)
+        """Load program state from a checkpoint directory."""
         checkpoint_path = resolve_checkpoint_path(checkpoint_dir, subdirectory)
-
         state_file = checkpoint_path / PROGRAM_STATE_FILE
 
-        # 1. Load and validate state JSON
+        # 1. Load Pydantic Model
         state = _load_and_validate_pydantic_model(
             state_file,
             ProgramState,
-            required_fields=[
-                "program_type",
-                "current_iteration",
-                "optimizer_config",
-            ],
-            error_context="Program",
+            required_fields=["program_type", "current_iteration"],
         )
 
         # 2. Reconstruct Optimizer
@@ -801,38 +779,13 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         elif opt_config.type == "PymooOptimizer":
             optimizer = PymooOptimizer.load_state(checkpoint_path)
         else:
-            raise ValueError(
-                f"Unsupported optimizer type in checkpoint: {opt_config.type}"
-            )
+            raise ValueError(f"Unsupported optimizer type: {opt_config.type}")
 
-        # 3. Create Program Instance
+        # 3. Create Instance
         program = cls(backend=backend, optimizer=optimizer, seed=state.seed, **kwargs)
 
-        # 4. Restore Base State
-        program.current_iteration = state.current_iteration
-        program.max_iterations = (
-            state.max_iterations
-        )  # Restore total desired iterations
-        program._losses_history = state.losses_history
-        program._best_loss = state.best_loss
-        program._best_probs = state.best_probs
-        program._total_circuit_count = state.total_circuit_count
-        program._total_run_time = state.total_run_time
-        program._grouping_strategy = state.grouping_strategy
-
-        # Restore parameter arrays
-        # curr_params is always set at save time, but best_params and final_params may be None
-        program._curr_params = np.array(state.curr_params)
-        if state.best_params is not None:
-            program._best_params = np.array(state.best_params)
-        if state.final_params is not None:
-            program._final_params = np.array(state.final_params)
-
-        if state.rng_state_bytes is not None:
-            program._rng.bit_generator.state = pickle.loads(state.rng_state_bytes)
-
-        # 5. Restore Subclass State
-        program._load_subclass_state(state.subclass_state.data)
+        # 4. Restore State
+        state.restore(program)
 
         return program
 
@@ -1027,8 +980,17 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         # Extract max_iterations from kwargs if present (for compatibility with subclasses)
         max_iterations = kwargs.pop("max_iterations", self.max_iterations)
-        if hasattr(self, "max_iterations") and max_iterations != self.max_iterations:
+        if max_iterations != self.max_iterations:
             self.max_iterations = max_iterations
+
+        # Warn if max_iterations is less than current_iteration (regardless of how it was set)
+        if self.max_iterations < self.current_iteration:
+            warn(
+                f"max_iterations ({self.max_iterations}) is less than current_iteration "
+                f"({self.current_iteration}). The optimization will not run additional "
+                f"iterations since the maximum has already been reached.",
+                UserWarning,
+            )
 
         def cost_fn(params):
             self.reporter.info(

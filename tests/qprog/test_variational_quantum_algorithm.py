@@ -1087,6 +1087,39 @@ class TestCheckpointing:
         )
         assert loaded_program_2.current_iteration == 3
 
+    def test_resume_with_less_iterations(self, sample_program, tmp_path, mocker):
+        """Test resuming with max_iterations less than already completed is a no-op and warns."""
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(sample_program, n_iterations=3)
+        )
+        sample_program.run(
+            max_iterations=3,
+            checkpoint_config=CheckpointConfig(
+                checkpoint_dir=tmp_path / "checkpoint_test"
+            ),
+        )
+        assert sample_program.current_iteration == 3
+
+        # Resume with max_iterations=2 (less than completed)
+        loaded_program = SampleVQAProgram.load_state(
+            tmp_path / "checkpoint_test",
+            backend=sample_program.backend,
+            circ_count=0,
+            run_time=0.0,
+        )
+        loaded_program.max_iterations = 2
+
+        # Should warn and not run additional iterations since already completed
+        with pytest.warns(
+            UserWarning,
+            match="max_iterations \\(2\\) is less than current_iteration \\(3\\)",
+        ):
+            loaded_program.run()
+
+        # Should not run additional iterations since already completed
+        assert loaded_program.current_iteration == 3
+        assert len(loaded_program.losses_history) == 3
+
 
 class TestPrecisionFunctionality(BaseVariationalQuantumAlgorithmTest):
     """Test suite for precision functionality in VariationalQuantumAlgorithm."""
