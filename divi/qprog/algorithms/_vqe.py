@@ -11,9 +11,9 @@ import pennylane as qml
 import sympy as sp
 
 from divi.circuits import CircuitBundle, MetaCircuit
+from divi.qprog._hamiltonians import _clean_hamiltonian
 from divi.qprog.algorithms._ansatze import Ansatz, HartreeFockAnsatz
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
-from divi.utils import clean_hamiltonian
 
 
 class VQE(VariationalQuantumAlgorithm):
@@ -142,7 +142,7 @@ class VQE(VariationalQuantumAlgorithm):
                     UserWarning,
                 )
 
-        self._cost_hamiltonian, self.loss_constant = clean_hamiltonian(hamiltonian)
+        self._cost_hamiltonian, self.loss_constant = _clean_hamiltonian(hamiltonian)
         if not self._cost_hamiltonian.operands:
             raise ValueError("Hamiltonian contains only constant terms.")
 
@@ -202,20 +202,6 @@ class VQE(VariationalQuantumAlgorithm):
             )
             for p, params_group in enumerate(self._curr_params)
         ]
-
-    def _post_process_results(self, results, **kwargs):
-        """Post-process the results of the VQE problem.
-
-        Args:
-            results (dict[str, dict[str, int]]): The shot histograms of the quantum execution step.
-            **kwargs: Additional keyword arguments.
-                ham_ops (str): The Hamiltonian operators to measure, semicolon-separated.
-                    Only needed when the backend supports expval.
-        """
-        if self._is_compute_probabilities:
-            return self._process_probability_results(results)
-
-        return super()._post_process_results(results, **kwargs)
 
     def _perform_final_computation(self, **kwargs):
         """Extract the eigenstate corresponding to the lowest energy found."""

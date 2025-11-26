@@ -21,8 +21,11 @@ from qiskit_optimization.converters import QuadraticProgramToQubo
 from qiskit_optimization.problems import VarType
 
 from divi.circuits import CircuitBundle, MetaCircuit
+from divi.qprog._hamiltonians import (
+    _clean_hamiltonian,
+    convert_qubo_matrix_to_pennylane_ising,
+)
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
-from divi.utils import clean_hamiltonian, convert_qubo_matrix_to_pennylane_ising
 
 logger = logging.getLogger(__name__)
 
@@ -302,7 +305,7 @@ class QAOA(VariationalQuantumAlgorithm):
         self.problem_metadata = problem_metadata[0] if problem_metadata else {}
 
         # Extract and combine constants
-        self._cost_hamiltonian, constant_from_hamiltonian = clean_hamiltonian(
+        self._cost_hamiltonian, constant_from_hamiltonian = _clean_hamiltonian(
             cost_hamiltonian
         )
         self.loss_constant = _extract_loss_constant(
@@ -530,26 +533,6 @@ class QAOA(VariationalQuantumAlgorithm):
             )
             for p, params_group in enumerate(self._curr_params)
         ]
-
-    def _post_process_results(self, results, **kwargs):
-        """Post-process the results of the QAOA problem.
-
-        Args:
-            results (dict[str, dict[str, int]]): Raw results from circuit execution.
-            **kwargs: Additional keyword arguments.
-                ham_ops (str): The Hamiltonian operators to measure, semicolon-separated.
-                    Only needed when the backend supports expval.
-
-        Returns:
-            dict[str, dict[str, float]] | dict[int, float]: The losses for each parameter set grouping, or probability
-                distributions if computing probabilities.
-        """
-
-        if self._is_compute_probabilities:
-            return self._process_probability_results(results)
-
-        losses = super()._post_process_results(results, **kwargs)
-        return losses
 
     def _perform_final_computation(self, **kwargs):
         """Extract the optimal solution from the QAOA optimization process.

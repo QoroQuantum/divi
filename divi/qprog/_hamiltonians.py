@@ -11,7 +11,7 @@ import pennylane as qml
 import scipy.sparse as sps
 
 
-def clean_hamiltonian(
+def _clean_hamiltonian(
     hamiltonian: qml.operation.Operator,
 ) -> tuple[qml.operation.Operator, float]:
     """Separate constant and non-constant terms in a Hamiltonian.
@@ -72,7 +72,7 @@ def clean_hamiltonian(
     return new_hamiltonian.simplify(), float(loss_constant)
 
 
-def hamiltonian_to_pauli_string(
+def convert_hamiltonian_to_pauli_string(
     hamiltonian: qml.operation.Operator, n_qubits: int
 ) -> str:
     """
@@ -134,16 +134,6 @@ def hamiltonian_to_pauli_string(
         terms.append("".join(paulis))
 
     return ";".join(terms)
-
-
-def reverse_dict_endianness(
-    probs_dict: dict[str, dict[str, float]],
-) -> dict[str, dict[str, float]]:
-    """Reverse endianness of all bitstrings in a dictionary of probability distributions."""
-    return {
-        tag: {bitstring[::-1]: prob for bitstring, prob in probs.items()}
-        for tag, probs in probs_dict.items()
-    }
 
 
 def _is_sanitized(

@@ -95,7 +95,7 @@ def test_vqe_basic_initialization_with_hamiltonian(
     verify_metacircuit_dict(vqe_problem, ["cost_circuit"])
 
 
-def test_clean_hamiltonian_logic(h2_hamiltonian, dummy_simulator):
+def test_vqe_clean_hamiltonian_logic(h2_hamiltonian, dummy_simulator):
     """Test that the Hamiltonian is cleaned correctly, separating the constant."""
     constant_value = 5.0
     hamiltonian_with_constant = h2_hamiltonian + qml.Identity(0) * constant_value

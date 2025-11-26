@@ -7,11 +7,11 @@ import pennylane as qml
 import pytest
 import scipy.sparse as sps
 
-from divi.utils import (
+from divi.qprog._hamiltonians import (
+    _clean_hamiltonian,
     _is_sanitized,
-    clean_hamiltonian,
+    convert_hamiltonian_to_pauli_string,
     convert_qubo_matrix_to_pennylane_ising,
-    hamiltonian_to_pauli_string,
 )
 
 
@@ -150,7 +150,7 @@ class TestCleanHamiltonian:
         Tests that clean_hamiltonian returns empty Hamiltonian and 0.0 constant
         when given None.
         """
-        hamiltonian, constant = clean_hamiltonian(None)
+        hamiltonian, constant = _clean_hamiltonian(None)
         assert isinstance(hamiltonian, qml.Hamiltonian)
         assert len(hamiltonian.terms()[0]) == 0
         assert constant == 0.0
@@ -200,7 +200,7 @@ class TestCleanHamiltonian:
         """
         Tests the clean_hamiltonian function with various scenarios.
         """
-        new_hamiltonian, constant = clean_hamiltonian(hamiltonian)
+        new_hamiltonian, constant = _clean_hamiltonian(hamiltonian)
 
         assert np.isclose(constant, expected_constant)
 
@@ -305,7 +305,7 @@ class TestHamiltonianToPauliString:
     )
     def test_hamiltonian_conversions(self, hamiltonian, n_qubits, expected):
         """Test various Hamiltonian conversion scenarios."""
-        result = hamiltonian_to_pauli_string(hamiltonian, n_qubits=n_qubits)
+        result = convert_hamiltonian_to_pauli_string(hamiltonian, n_qubits=n_qubits)
         assert result == expected
 
     def test_unknown_pauli_operator_raises_error(self):
@@ -321,7 +321,7 @@ class TestHamiltonianToPauliString:
         hamiltonian = qml.Hamiltonian([1.0], [unknown_op])
 
         with pytest.raises(ValueError, match="Unknown Pauli operator"):
-            hamiltonian_to_pauli_string(hamiltonian, n_qubits=1)
+            convert_hamiltonian_to_pauli_string(hamiltonian, n_qubits=1)
 
     def test_pauli_with_no_wires_raises_error(self):
         """Test that Pauli operators with no wires raise ValueError."""
@@ -336,7 +336,7 @@ class TestHamiltonianToPauliString:
         hamiltonian = qml.Hamiltonian([1.0], [no_wire_op])
 
         with pytest.raises(ValueError, match="has no wires"):
-            hamiltonian_to_pauli_string(hamiltonian, n_qubits=1)
+            convert_hamiltonian_to_pauli_string(hamiltonian, n_qubits=1)
 
     @pytest.mark.parametrize(
         "wire, n_qubits",
@@ -350,4 +350,4 @@ class TestHamiltonianToPauliString:
         """Test that wire indices out of range raise ValueError."""
         hamiltonian = qml.Hamiltonian([1.0], [qml.PauliX(wire)])
         with pytest.raises(ValueError, match="Wire index.*out of range"):
-            hamiltonian_to_pauli_string(hamiltonian, n_qubits=n_qubits)
+            convert_hamiltonian_to_pauli_string(hamiltonian, n_qubits=n_qubits)
