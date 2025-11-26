@@ -186,7 +186,7 @@ class QuantumProgram(ABC):
             loop_until_complete=True,
             on_complete=self._track_runtime,
             verbose=False,  # Disable the default logger in QoroService
-            poll_callback=update_function,
+            progress_callback=update_function,
         )
 
         if status == JobStatus.FAILED:

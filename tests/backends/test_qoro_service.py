@@ -573,7 +573,7 @@ class TestQoroServiceMock:
         mocker.patch.object(service, "_make_request", return_value=mock_response)
 
         status = service.poll_job_status("test_job")
-        assert status == "RUNNING"
+        assert status == JobStatus.RUNNING
 
         # Test 2: Loop until completed
         mock_responses = [
@@ -624,13 +624,13 @@ class TestQoroServiceMock:
 
         mocker.patch.object(service, "_make_request", side_effect=mock_responses)
 
-        poll_callback = mocker.MagicMock()
+        progress_callback = mocker.MagicMock()
         status = service.poll_job_status(
-            "test_job", loop_until_complete=True, poll_callback=poll_callback
+            "test_job", loop_until_complete=True, progress_callback=progress_callback
         )
 
         assert status == JobStatus.COMPLETED
-        poll_callback.assert_called()
+        progress_callback.assert_called()
 
     def test_get_job_results_error_handling(self, mocker, qoro_service_factory):
         """Test get_job_results error handling."""
@@ -1207,7 +1207,7 @@ class TestQoroServiceMock:
         status = qoro_service_mock.poll_job_status("job_1", loop_until_complete=False)
 
         mock_make_request.assert_called_once()
-        assert status == JobStatus.RUNNING.value
+        assert status == JobStatus.RUNNING
 
     def test_poll_job_status_on_complete_callback_mock(
         self, mocker, qoro_service_factory
@@ -1250,7 +1250,7 @@ class TestQoroServiceMock:
 
         pbar_mock = mocker.MagicMock()
         qoro_service_mock.poll_job_status(
-            "job_1", loop_until_complete=True, poll_callback=pbar_mock, verbose=True
+            "job_1", loop_until_complete=True, progress_callback=pbar_mock, verbose=True
         )
 
         assert pbar_mock.call_count == 2

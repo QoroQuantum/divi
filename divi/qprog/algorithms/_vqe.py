@@ -205,7 +205,7 @@ class VQE(VariationalQuantumAlgorithm):
 
     def _perform_final_computation(self, **kwargs):
         """Extract the eigenstate corresponding to the lowest energy found."""
-        self.reporter.info(message="🏁 Computing Final Eigenstate 🏁\r")
+        self.reporter.info(message="🏁 Computing Final Eigenstate 🏁", overwrite=True)
 
         self._run_solution_measurement()
 
@@ -216,7 +216,7 @@ class VQE(VariationalQuantumAlgorithm):
             )
             self._eigenstate = np.fromiter(eigenstate_bitstring, dtype=np.int32)
 
-        self.reporter.info(message="🏁 Computed Final Eigenstate! 🏁\r\n")
+        self.reporter.info(message="🏁 Computed Final Eigenstate! 🏁")
 
         return self._total_circuit_count, self._total_run_time
 

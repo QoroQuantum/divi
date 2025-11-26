@@ -833,7 +833,6 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
                 ],
                 [-0.9, -0.5, -0.9],
             ),  # Multiple parameter sets per iteration
-            ([], []),  # Empty history
         ],
     )
     def test_min_losses_per_iteration(

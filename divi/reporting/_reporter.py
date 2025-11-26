@@ -6,6 +6,8 @@ import logging
 from abc import ABC, abstractmethod
 from queue import Queue
 
+from rich.console import Console
+
 logger = logging.getLogger(__name__)
 
 
@@ -19,7 +21,12 @@ class ProgressReporter(ABC):
 
     @abstractmethod
     def info(self, message: str, **kwargs) -> None:
-        """Provides a simple informational message."""
+        """Provides a simple informational message.
+
+        Args:
+            message: The message to display.
+            **kwargs: Additional keyword arguments for subclasses.
+        """
         pass
 
 
@@ -57,25 +64,70 @@ class QueueProgressReporter(ProgressReporter):
 class LoggingProgressReporter(ProgressReporter):
     """Reports progress by logging messages to the console."""
 
-    # Define ANSI color codes
-    CYAN = "\033[36m"
-    RESET = "\033[0m"
+    def __init__(self):
+        # Use the same console instance that RichHandler uses to avoid interference
+        self._console = Console(file=None)  # file=None uses stdout, same as RichHandler
+        self._status = None  # Track active status for overwriting messages
+        self._current_msg = None  # Track current main message
+        self._polling_msg = None  # Track current polling message
+
+    def _close_status(self):
+        """Close any active status."""
+        if self._status:
+            self._status.__exit__(None, None, None)
+            self._status = None
+        self._current_msg = None
+        self._polling_msg = None
+
+    def _build_status_msg(self) -> str:
+        """Build combined status message from current message and polling info."""
+        parts = []
+        if self._current_msg:
+            parts.append(self._current_msg)
+        if self._polling_msg:
+            parts.append(self._polling_msg)
+        return " - ".join(parts) if parts else ""
+
+    def _update_or_create_status(self):
+        """Update existing status or create a new one with combined message."""
+        status_msg = self._build_status_msg()
+        if not status_msg:
+            return
+        if self._status:
+            self._status.update(status_msg)
+        else:
+            self._status = self._console.status(status_msg, spinner="aesthetic")
+            self._status.__enter__()
 
     def update(self, **kwargs):
-        # You can decide how to format the update for logging
-        logger.info(f"Finished Iteration #{kwargs['iteration']}\r\n")
+        # Close any active status before logging
+        self._close_status()
+        logger.info(f"Finished Iteration #{kwargs['iteration']}")
 
-    def info(self, message: str, **kwargs):
-        # A special check for iteration updates to mimic old behavior
+    def info(self, message: str, overwrite: bool = False, **kwargs):
+        # A special check for iteration updates to use Rich's status for overwriting
         if "poll_attempt" in kwargs:
-            logger.info(
-                f"Job {self.CYAN}{kwargs['service_job_id'].split('-')[0]}{self.RESET} is {kwargs['job_status']}. Polling attempt {kwargs['poll_attempt']} / {kwargs['max_retries']}\r",
-                extra={"append": True},
+            self._polling_msg = (
+                f"Job [cyan]{kwargs['service_job_id'].split('-')[0]}[/cyan] is "
+                f"{kwargs['job_status']}. Polling attempt {kwargs['poll_attempt']} / "
+                f"{kwargs['max_retries']}"
             )
+            self._update_or_create_status()
             return
 
+        # Use Rich's status for iteration messages to enable overwriting
         if "iteration" in kwargs:
-            logger.info(f"Iteration #{kwargs['iteration'] + 1}: {message}\r")
+            self._current_msg = f"Iteration #{kwargs['iteration'] + 1}: {message}"
+            self._update_or_create_status()
             return
 
+        # Use Rich's status for messages that should overwrite
+        if overwrite:
+            # Set current message, keep polling state so it can be concatenated
+            self._current_msg = message
+            self._update_or_create_status()
+            return
+
+        # Close status for normal messages
+        self._close_status()
         logger.info(message)

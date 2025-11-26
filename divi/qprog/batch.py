@@ -4,6 +4,7 @@
 
 import atexit
 import traceback
+import warnings
 from abc import ABC, abstractmethod
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from queue import Empty, Queue
@@ -501,7 +502,14 @@ class ProgramBatch(ABC):
         if self._executor is not None:
             self.join()
 
-        if any(len(program.losses_history) == 0 for program in self._programs.values()):
-            raise RuntimeError(
-                "Some/All programs have empty losses. Did you call run()?"
+        # Suppress warnings when checking for empty losses_history for cleanliness sake
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", category=UserWarning, message=".*losses_history is empty.*"
             )
+            if any(
+                len(program.losses_history) == 0 for program in self._programs.values()
+            ):
+                raise RuntimeError(
+                    "Some/All programs have empty losses. Did you call run()?"
+                )

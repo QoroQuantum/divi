@@ -15,6 +15,7 @@ from http import HTTPStatus
 import requests
 from dotenv import dotenv_values
 from requests.adapters import HTTPAdapter, Retry
+from rich.console import Console
 
 from divi.backends import CircuitRunner
 from divi.backends._qpu_system import (
@@ -541,8 +542,8 @@ class QoroService(CircuitRunner):
         loop_until_complete: bool = False,
         on_complete: Callable[[requests.Response], None] | None = None,
         verbose: bool = True,
-        poll_callback: Callable[[int, str], None] | None = None,
-    ) -> str | JobStatus:
+        progress_callback: Callable[[int, str], None] | None = None,
+    ) -> JobStatus:
         """
         Get the status of a job and optionally execute a function on completion.
 
@@ -552,46 +553,61 @@ class QoroService(CircuitRunner):
             on_complete (Callable, optional): A function to call with the final response
                 object when the job finishes.
             verbose (bool, optional): If True, prints polling status to the logger.
-            poll_callback (Callable, optional): A function for updating progress bars.
+            progress_callback (Callable, optional): A function for updating progress bars.
                 Takes `(retry_count, status)`.
 
         Returns:
-            str | JobStatus: The current job status as a string if not looping,
-            or a JobStatus enum member (COMPLETED or FAILED) if looping.
+            JobStatus: The current job status.
         """
-        # Decide once at the start which update function to use
-        if poll_callback:
-            update_fn = poll_callback
-        elif verbose:
-            CYAN = "\033[36m"
-            RESET = "\033[0m"
 
-            update_fn = lambda retry_count, status: logger.info(
-                rf"Job {CYAN}{job_id.split('-')[0]}{RESET} is {status}. Polling attempt {retry_count} / {self.max_retries}\r",
-                extra={"append": True},
-            )
+        polling_status = None
+
+        # Decide once at the start which update function to use
+        if progress_callback:
+            update_fn = progress_callback
+        elif verbose:
+            # Use Rich's status for overwriting polling messages
+            polling_status = Console(file=None).status("", spinner="aesthetic")
+            polling_status.start()
+
+            def update_polling_status(retry_count, job_status):
+                status_msg = (
+                    f"Job [cyan]{job_id.split('-')[0]}[/cyan] is {job_status}. "
+                    f"Polling attempt {retry_count} / {self.max_retries}"
+                )
+                polling_status.update(status_msg)
+
+            update_fn = update_polling_status
         else:
             update_fn = lambda _, __: None
 
-        if not loop_until_complete:
-            response = self._make_request("get", f"job/{job_id}/status/", timeout=200)
-            return response.json()["status"]
+        try:
+            if not loop_until_complete:
+                response = self._make_request(
+                    "get", f"job/{job_id}/status/", timeout=200
+                )
+                return JobStatus(response.json()["status"])
 
-        for retry_count in range(1, self.max_retries + 1):
-            response = self._make_request("get", f"job/{job_id}/status/", timeout=200)
-            status = response.json()["status"]
+            for retry_count in range(1, self.max_retries + 1):
+                response = self._make_request(
+                    "get", f"job/{job_id}/status/", timeout=200
+                )
+                status = response.json()["status"]
 
-            if status == JobStatus.COMPLETED.value:
-                if on_complete:
-                    on_complete(response)
-                return JobStatus.COMPLETED
+                if status == JobStatus.COMPLETED.value:
+                    if on_complete:
+                        on_complete(response)
+                    return JobStatus.COMPLETED
 
-            if status == JobStatus.FAILED.value:
-                if on_complete:
-                    on_complete(response)
-                return JobStatus.FAILED
+                if status == JobStatus.FAILED.value:
+                    if on_complete:
+                        on_complete(response)
+                    return JobStatus.FAILED
 
-            update_fn(retry_count, status)
-            time.sleep(self.polling_interval)
+                update_fn(retry_count, status)
+                time.sleep(self.polling_interval)
 
-        raise MaxRetriesReachedError(job_id, self.max_retries)
+            raise MaxRetriesReachedError(job_id, self.max_retries)
+        finally:
+            if polling_status:
+                polling_status.stop()

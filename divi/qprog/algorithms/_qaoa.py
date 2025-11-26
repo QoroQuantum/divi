@@ -550,7 +550,7 @@ class QAOA(VariationalQuantumAlgorithm):
                 - float: The total runtime of the optimization process.
         """
 
-        self.reporter.info(message="🏁 Computing Final Solution 🏁\r")
+        self.reporter.info(message="🏁 Computing Final Solution 🏁", overwrite=True)
 
         self._run_solution_measurement()
 
@@ -575,7 +575,7 @@ class QAOA(VariationalQuantumAlgorithm):
                 if bit == "1" and idx < len(self._circuit_wires)
             ]
 
-        self.reporter.info(message="🏁 Computed Final Solution! 🏁\r\n")
+        self.reporter.info(message="🏁 Computed Final Solution! 🏁")
 
         return self._total_circuit_count, self._total_run_time
 
