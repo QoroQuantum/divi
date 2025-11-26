@@ -1167,3 +1167,87 @@ class TestPrecisionFunctionality(BaseVariationalQuantumAlgorithmTest):
             # Verify it propagates to the factory
             factory_keywords = program._meta_circuit_factory.keywords
             assert factory_keywords["precision"] == precision
+
+
+class TestPropertyWarnings(BaseVariationalQuantumAlgorithmTest):
+    """Test suite for property warnings when accessing uninitialized state."""
+
+    @pytest.mark.parametrize(
+        "property_name,expected_warning_msg",
+        [
+            ("losses_history", "losses_history is empty"),
+            ("min_losses_per_iteration", "min_losses_per_iteration is empty"),
+            ("best_loss", "best_loss has not been computed yet"),
+            ("best_probs", "best_probs is empty"),
+        ],
+    )
+    def test_property_warns_before_optimization(
+        self, mocker, property_name, expected_warning_msg
+    ):
+        """Test that properties warn when accessed before optimization runs."""
+        program = self._create_program_with_mock_optimizer(mocker)
+
+        with pytest.warns(UserWarning, match=expected_warning_msg):
+            _ = getattr(program, property_name)
+
+    @pytest.mark.parametrize(
+        "property_name,expected_warning_msg",
+        [
+            ("final_params", "final_params is not available"),
+            ("best_params", "best_params is not available"),
+        ],
+    )
+    def test_params_warn_before_optimization(
+        self, mocker, property_name, expected_warning_msg
+    ):
+        """Test that final_params and best_params warn when accessed before optimization."""
+        program = self._create_program_with_mock_optimizer(mocker)
+
+        with pytest.warns(UserWarning, match=expected_warning_msg):
+            # .copy() works on lists, so this won't raise - just warns
+            result = getattr(program, property_name)
+            assert isinstance(result, list)
+            assert len(result) == 0
+
+    def test_best_loss_raises_runtime_error_if_still_infinite_after_optimization(
+        self, mocker
+    ):
+        """Test that best_loss raises RuntimeError if still infinite after optimization."""
+        program = self._create_program_with_mock_optimizer(mocker)
+        program.max_iterations = 1
+
+        # Simulate optimization running but best_loss not being updated
+        program._losses_history = [{0: 1.0}]  # Optimization has run
+        program._best_loss = float("inf")  # But best_loss is still infinite
+
+        with pytest.raises(
+            RuntimeError,
+            match="best_loss is still infinite after optimization",
+        ):
+            _ = program.best_loss
+
+    def test_best_probs_warns_when_empty_after_optimization(self, mocker):
+        """Test that best_probs warns when empty even after optimization."""
+        program = self._create_program_with_mock_optimizer(mocker)
+        program.max_iterations = 1
+
+        mocker.patch.object(
+            program, "_run_optimization_circuits", return_value={0: -0.5}
+        )
+
+        final_params = np.array([[0.1, 0.2, 0.3, 0.4]])
+
+        def mock_optimize_logic(cost_fn, initial_params, callback_fn, **kwargs):
+            loss = cost_fn(final_params)
+            result = OptimizeResult(x=final_params, fun=np.array([loss]))
+            callback_fn(result)
+            return result
+
+        program.optimizer.optimize = mocker.Mock(side_effect=mock_optimize_logic)
+
+        # Run without final computation
+        program.run(perform_final_computation=False)
+
+        # best_probs should still warn because it's empty
+        with pytest.warns(UserWarning, match="best_probs is empty"):
+            _ = program.best_probs

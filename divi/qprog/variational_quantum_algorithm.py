@@ -256,30 +256,34 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             backend=backend, seed=seed, progress_queue=progress_queue, **kwargs
         )
 
+        # --- Optimization Results & History ---
         self._losses_history = []
-        self._meta_circuits = None
-
-        self._best_params = None
-        self._final_params = None
+        self._best_params = []
+        self._final_params = []
         self._best_loss = float("inf")
         self._best_probs = {}
+        self._curr_params = kwargs.pop("initial_params", None)
 
-        self._curr_params = None
-
+        # --- Random Number Generation ---
         self._seed = seed
         self._rng = np.random.default_rng(self._seed)
 
-        # Lets child classes adapt their optimization
-        # step for grad calculation routine
+        # --- Computation Mode Flags ---
+        # Lets child classes adapt their optimization step for grad calculation routine
         self._grad_mode = False
         self._is_compute_probabilities = False
 
+        # --- Progress Reporting ---
         self.job_id = kwargs.get("job_id", None)
         if progress_queue and self.job_id is not None:
             self.reporter = QueueProgressReporter(self.job_id, progress_queue)
         else:
             self.reporter = LoggingProgressReporter()
 
+        # --- Optimizer Configuration ---
+        self.optimizer = optimizer if optimizer is not None else MonteCarloOptimizer()
+
+        # --- Backend & Circuit Configuration ---
         if backend and backend.supports_expval:
             grouping_strategy = kwargs.pop("grouping_strategy", None)
             if grouping_strategy is not None and grouping_strategy != "_backend_expval":
@@ -292,16 +296,11 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         else:
             self._grouping_strategy = kwargs.pop("grouping_strategy", "qwc")
 
-        self.optimizer = optimizer if optimizer is not None else MonteCarloOptimizer()
-
         self._qem_protocol = kwargs.pop("qem_protocol", None) or _NoMitigation()
-
-        self._curr_params = kwargs.pop("initial_params", None)
-
-        self._cancellation_event = None
-
         self._precision = kwargs.pop("precision", 8)
 
+        # --- Circuit Factory & Templates ---
+        self._meta_circuits = None
         self._meta_circuit_factory = partial(
             MetaCircuit,
             # No grouping strategy for expectation value measurements
@@ -309,6 +308,9 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             qem_protocol=self._qem_protocol,
             precision=self._precision,
         )
+
+        # --- Control Flow ---
+        self._cancellation_event = None
 
     @property
     @abstractmethod
@@ -353,6 +355,14 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         """
         return self._n_params
 
+    def _has_run_optimization(self) -> bool:
+        """Check if optimization has been run at least once.
+
+        Returns:
+            bool: True if optimization has been run, False otherwise.
+        """
+        return len(self._losses_history) > 0
+
     @property
     def losses_history(self) -> list[dict]:
         """Get a copy of the optimization loss history.
@@ -363,6 +373,13 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             list[dict]: Copy of the loss history. Modifications to this list
                 will not affect the internal state.
         """
+        if not self._has_run_optimization():
+            warn(
+                "losses_history is empty. Optimization has not been run yet. "
+                "Call run() to execute the optimization.",
+                UserWarning,
+                stacklevel=2,
+            )
         return self._losses_history.copy()
 
     @property
@@ -375,6 +392,13 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         Returns:
             list[float]: List of minimum loss values, one per iteration.
         """
+        if not self._has_run_optimization():
+            warn(
+                "min_losses_per_iteration is empty. Optimization has not been run yet. "
+                "Call run() to execute the optimization.",
+                UserWarning,
+                stacklevel=2,
+            )
         return [min(loss_dict.values()) for loss_dict in self._losses_history]
 
     @property
@@ -385,6 +409,13 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             npt.NDArray[np.float64]: Copy of the final parameters. Modifications to this array
                 will not affect the internal state.
         """
+        if len(self._final_params) == 0 or not self._has_run_optimization():
+            warn(
+                "final_params is not available. Optimization has not been run yet. "
+                "Call run() to execute the optimization.",
+                UserWarning,
+                stacklevel=2,
+            )
         return self._final_params.copy()
 
     @property
@@ -395,6 +426,13 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             npt.NDArray[np.float64]: Copy of the best parameters. Modifications to this array
                 will not affect the internal state.
         """
+        if len(self._best_params) == 0 or not self._has_run_optimization():
+            warn(
+                "best_params is not available. Optimization has not been run yet. "
+                "Call run() to execute the optimization.",
+                UserWarning,
+                stacklevel=2,
+            )
         return self._best_params.copy()
 
     @property
@@ -404,6 +442,20 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         Returns:
             float: The best loss achieved so far.
         """
+        if not self._has_run_optimization():
+            warn(
+                "best_loss has not been computed yet. Optimization has not been run. "
+                "Call run() to execute the optimization.",
+                UserWarning,
+                stacklevel=2,
+            )
+        elif self._best_loss == float("inf"):
+            # Defensive check: if optimization ran but best_loss is still inf, something is wrong
+            raise RuntimeError(
+                "best_loss is still infinite after optimization. This indicates a problem "
+                "with the optimization process. The optimization callback may not have executed "
+                "correctly, or all computed losses were infinite."
+            )
         return self._best_loss
 
     @property
@@ -413,6 +465,13 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         Returns:
             dict: A copy of the best probability distribution.
         """
+        if not self._best_probs:
+            warn(
+                "best_probs is empty. Either optimization has not been run yet, "
+                "or final computation was not performed. Call run() to execute the optimization.",
+                UserWarning,
+                stacklevel=2,
+            )
         return self._best_probs.copy()
 
     @property
