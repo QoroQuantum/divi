@@ -61,6 +61,23 @@ class PymooState(BaseModel):
 
 
 class Optimizer(ABC):
+    """
+    Abstract base class for all optimizers.
+
+    .. warning::
+        **Thread Safety**: Optimizer instances are **not thread-safe**. They maintain
+        internal state (e.g., current population, iteration count, RNG state) that changes
+        during optimization.
+
+        Do **not** share a single `Optimizer` instance across multiple `QuantumProgram`
+        instances or threads running in parallel. Doing so will lead to race conditions,
+        corrupted state, and potential crashes.
+
+        If you need to use the same optimizer configuration for multiple programs,
+        create a separate instance for each program. You can use the helper function
+        :func:`copy_optimizer` to create a fresh copy with the same configuration.
+    """
+
     @property
     @abstractmethod
     def n_param_sets(self):
@@ -959,6 +976,10 @@ def copy_optimizer(optimizer: Optimizer) -> Optimizer:
     This function creates a fresh copy of an optimizer with identical configuration
     parameters but with reset internal state. This is useful when multiple programs
     need their own optimizer instances to avoid state contamination.
+
+    .. tip::
+        Use this function when preparing a batch of programs that will run in parallel.
+        Pass a fresh copy of the optimizer to each program instance to ensure thread safety.
 
     Args:
         optimizer: The optimizer to copy.

@@ -298,6 +298,15 @@ class ProgramBatch(ABC):
             else None
         )
 
+        # Validate that all program instances are unique to prevent thread-safety issues
+        program_instances = list(self._programs.values())
+        if len(set(program_instances)) != len(program_instances):
+            raise RuntimeError(
+                "Duplicate program instances detected in batch. "
+                "QuantumProgram instances are stateful and NOT thread-safe. "
+                "You must provide a unique instance for each program ID."
+            )
+
         self._executor = ThreadPoolExecutor()
         self._cancellation_event = Event()
         self.futures = []
