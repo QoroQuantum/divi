@@ -51,7 +51,7 @@ def _raise_with_details(resp: requests.Response):
     except ValueError:
         body = resp.text
     msg = f"{resp.status_code} {resp.reason}: {body}"
-    raise requests.HTTPError(msg)
+    raise requests.HTTPError(msg, response=resp)
 
 
 class JobStatus(Enum):
@@ -502,6 +502,25 @@ class QoroService(CircuitRunner):
         return self._make_request(
             "delete",
             f"job/{job_id}",
+            timeout=50,
+        )
+
+    def cancel_job(self, job_id: str) -> requests.Response:
+        """
+        Cancel a job on the Qoro Service.
+
+        Args:
+            job_id: The ID of the job to be cancelled.
+        Returns:
+            requests.Response: The response from the API. Use response.json() to get
+                the cancellation details (status, job_id, circuits_cancelled).
+        Raises:
+            requests.exceptions.HTTPError: If the cancellation fails (e.g., 403 Forbidden,
+                or 409 Conflict if job is not in a cancellable state).
+        """
+        return self._make_request(
+            "post",
+            f"job/{job_id}/cancel/",
             timeout=50,
         )
 

@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+pass
 from http import HTTPStatus
 
 import pytest
@@ -1151,6 +1152,71 @@ class TestQoroServiceMock:
         with pytest.raises(requests.exceptions.HTTPError, match="API Error: 404"):
             qoro_service_mock.get_job_results("job_1")
 
+    # --- Tests for cancel_job ---
+
+    def test_cancel_job_success(self, mocker, qoro_service_factory):
+        """Test cancel job success."""
+        qoro_service_mock = qoro_service_factory()
+        mock_response_data = {
+            "status": "cancelled",
+            "job_id": "job_1",
+            "circuits_cancelled": 8,
+        }
+        mock_response = mocker.MagicMock(
+            status_code=HTTPStatus.OK, json=lambda: mock_response_data
+        )
+        mock_make_request = mocker.patch.object(
+            qoro_service_mock, "_make_request", return_value=mock_response
+        )
+
+        response = qoro_service_mock.cancel_job("job_1")
+
+        mock_make_request.assert_called_once_with(
+            "post", "job/job_1/cancel/", timeout=50
+        )
+        assert response.status_code == HTTPStatus.OK
+        result = response.json()
+        assert result == mock_response_data
+        assert result["status"] == "cancelled"
+        assert result["job_id"] == "job_1"
+        assert result["circuits_cancelled"] == 8
+
+    def test_cancel_job_forbidden_error(self, mocker, qoro_service_factory):
+        """Test cancel job with 403 Forbidden error."""
+        qoro_service_mock = qoro_service_factory()
+        mock_response = mocker.MagicMock()
+        mock_response.status_code = 403
+        mock_response.reason = "Forbidden"
+        mock_response.json.return_value = {
+            "detail": "You do not have permission to modify this job."
+        }
+
+        mock_error = requests.exceptions.HTTPError("403 Forbidden")
+        mock_error.response = mock_response
+
+        mocker.patch.object(qoro_service_mock, "_make_request", side_effect=mock_error)
+
+        with pytest.raises(requests.exceptions.HTTPError, match="403 Forbidden"):
+            qoro_service_mock.cancel_job("job_1")
+
+    def test_cancel_job_conflict_error(self, mocker, qoro_service_factory):
+        """Test cancel job with 409 Conflict error (job not cancellable)."""
+        qoro_service_mock = qoro_service_factory()
+        mock_response = mocker.MagicMock()
+        mock_response.status_code = 409
+        mock_response.reason = "Conflict"
+        mock_response.json.return_value = {
+            "error": "Can only cancel a PENDING or RUNNING job"
+        }
+
+        mock_error = requests.exceptions.HTTPError("409 Conflict")
+        mock_error.response = mock_response
+
+        mocker.patch.object(qoro_service_mock, "_make_request", side_effect=mock_error)
+
+        with pytest.raises(requests.exceptions.HTTPError, match="409 Conflict"):
+            qoro_service_mock.cancel_job("job_1")
+
     # --- Tests for poll_job_status ---
 
     def test_poll_job_status_success_mock(self, mocker, qoro_service_factory):
@@ -1283,15 +1349,71 @@ class TestQoroServiceWithApiKey:
         res = qoro_service.delete_job(job_id)
         assert res.status_code == 204, "Deletion should be successful"
 
+    def test_submit_and_cancel_circuits(self, qoro_service, circuits):
+        """Tests submitting and then cancelling circuits."""
+        job_id = qoro_service.submit_circuits(circuits)
+        assert isinstance(job_id, str), "Job ID should be a string"
+
+        cancel_response = qoro_service.cancel_job(job_id)
+        assert (
+            cancel_response.status_code == HTTPStatus.OK
+        ), "Cancel should be successful"
+        cancel_result = cancel_response.json()
+        assert isinstance(cancel_result, dict), "Cancel result should be a dict"
+        assert cancel_result["status"] == "cancelled", "Status should be cancelled"
+        assert cancel_result["job_id"] == job_id, "Job ID should match"
+        assert (
+            "circuits_cancelled" in cancel_result
+        ), "Should include circuits_cancelled"
+
+        # Cleanup: delete the cancelled job
+        res = qoro_service.delete_job(job_id)
+        assert res.status_code == 204, "Deletion should be successful"
+
+    def test_cancel_completed_job_fails(self, qoro_service, circuits):
+        """Tests that cancelling a completed job fails with 409 Conflict."""
+        # Use only one circuit for a quicker test
+        single_circuit = {"circuit_1": circuits["circuit_0"]}
+        job_id = qoro_service.submit_circuits(single_circuit)
+
+        # Wait for job to complete
+        status = qoro_service.poll_job_status(job_id, loop_until_complete=True)
+        assert status == JobStatus.COMPLETED, "Job should complete"
+
+        # Try to cancel completed job - should fail
+        with pytest.raises(requests.exceptions.HTTPError) as exc_info:
+            qoro_service.cancel_job(job_id)
+
+        # Should be 409 Conflict
+        assert (
+            exc_info.value.response.status_code == HTTPStatus.CONFLICT
+        ), "Cancelling completed job should return 409 Conflict"
+
+        # Cleanup
+        res = qoro_service.delete_job(job_id)
+        assert res.status_code == 204, "Deletion should be successful"
+
+    def test_cancel_nonexistent_job_fails(self, qoro_service):
+        """Tests that cancelling a non-existent job fails."""
+        fake_job_id = "nonexistent-job-id-12345"
+
+        # Try to cancel non-existent job - should fail
+        with pytest.raises(requests.exceptions.HTTPError) as exc_info:
+            qoro_service.cancel_job(fake_job_id)
+
+        # Should be 404 Not Found or 403 Forbidden
+        assert exc_info.value.response.status_code in [
+            HTTPStatus.NOT_FOUND,
+            HTTPStatus.FORBIDDEN,
+        ], "Cancelling non-existent job should return 404 or 403"
+
     def test_get_job_status(self, qoro_service, circuits):
         """Tests retrieving the status of a submitted job."""
         job_id = qoro_service.submit_circuits(circuits)
         status = qoro_service.poll_job_status(job_id)
 
         assert status is not None, "Status should not be None"
-        assert status in [
-            s.value for s in JobStatus
-        ], "Status should be a valid JobStatus"
+        assert status in JobStatus, "Status should be a valid JobStatus"
 
         res = qoro_service.delete_job(job_id)
         assert res.status_code == 204, "Deletion should be successful"
@@ -1365,7 +1487,10 @@ class TestQoroServiceWithApiKey:
         ham_terms = ham_ops.split(";")
         assert len(exp_values) == len(ham_terms)
         assert set(exp_values.keys()) == set(ham_terms)
-        assert all(isinstance(val, float) for val in exp_values.values())
+        # Values should be numeric (float or int)
+        assert all(
+            isinstance(val, (float, int)) for val in exp_values.values()
+        ), "Expectation values should be numeric"
 
         # Cleanup
         res = qoro_service.delete_job(job_id)

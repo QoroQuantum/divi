@@ -13,12 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * Checkpointing support for variational quantum algorithms: added comprehensive checkpointing functionality with `CheckpointConfig` class (including `with_timestamped_dir()` method) using Pydantic for JSON validation, enabling state saving and resuming of optimization runs. Includes `save_state()` and `load_state()` methods on optimizer classes, comprehensive user guide (`docs/source/user_guide/checkpointing.rst`), and tutorial example (`tutorials/checkpointing.py`)
 * `precision` parameter to `VariationalQuantumAlgorithm`: added configurable precision for QASM parameter formatting (defaults to 8 decimal places). The precision parameter controls the number of decimal places used when converting circuit parameters to QASM strings, affecting the size of QASM circuits sent to cloud backends. Higher precision values result in longer QASM strings and increased data transfer overhead
+* Job cancellation support in `QoroService`: added `cancel_job()` method to cancel pending or running jobs on the Qoro Service API. The method returns a `requests.Response` object containing cancellation details (status, job_id, circuits_cancelled). Includes comprehensive test coverage for successful cancellation, permission errors (403), and conflict errors (409) when attempting to cancel non-cancellable jobs
 
 ### 🔄 Changed
 
 * Refactored type hints to use `numpy.typing` for improved type safety: updated type annotations across the codebase to use numpy's typing module for better type checking and IDE support
 * Adapted `ProgramBatch` workflows to support stateful optimizers: updated workflow classes (`GraphPartitioningQAOA`, `QUBOPartitioningQAOA`, `VQEHyperparameterSweep`) to properly handle optimizer state persistence
 * Thread-safe QuantumScript creation: refactored circuit creation to avoid using `make_qscript` for improved thread safety in parallel execution scenarios
+* Refactored logging infrastructure to use Rich library: replaced custom `OverwriteStreamHandler` with `RichHandler` from the Rich library for improved log formatting and colorization. `LoggingProgressReporter` now uses Rich's `Console.status()` for message overwriting with spinners, providing better visual feedback during job polling and iteration updates. Removed ANSI escape sequence handling in favor of Rich's markup system
 
 ### ⚠️ Deprecated
 
@@ -28,6 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * Fixed overflow issue with batched expectation values: corrected numerical overflow problem in expectation value calculations when processing large batches
 * Fixed documentation issues: corrected various documentation hiccups and formatting problems
+* Fixed `_raise_with_details()` to preserve response object: updated error handling to attach the HTTP response object to `HTTPError` exceptions, enabling proper error inspection in tests and error handling code
+
+## [0.4.2] - 2025-11-18
+
+### 🐛 Fixed
+
+* Fixed `ProgramBatch` bug where `QuantumScript` operations got intermangled due to thread-unsafe implementation.
 
 ## [0.4.1] - 2025-11-16
 
