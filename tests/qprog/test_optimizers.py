@@ -16,6 +16,7 @@ from divi.qprog.optimizers import (
     ScipyOptimizer,
     copy_optimizer,
 )
+from tests.conftest import CHECKPOINTING_OPTIMIZERS
 from tests.qprog.qprog_contracts import OPTIMIZERS_TO_TEST
 
 
@@ -549,19 +550,10 @@ class TestPopulationOptimizerCheckpointing:
         shape = (optimizer.n_param_sets, self.n_params)
         return self.rng.random(shape) * 2 * np.pi
 
-    @pytest.mark.parametrize(
-        "optimizer_factory",
-        [
-            lambda rng: MonteCarloOptimizer(
-                population_size=10, n_best_sets=3, keep_best_params=False
-            ),
-            lambda rng: PymooOptimizer(method=PymooMethod.CMAES, population_size=10),
-        ],
-        ids=["monte-carlo", "pymoo-cmaes"],
-    )
+    @pytest.mark.parametrize("optimizer_factory", **CHECKPOINTING_OPTIMIZERS)
     def test_checkpoint_dir_without_checkpointing(self, optimizer_factory):
         """Optimization should work normally when no checkpoint_dir is provided."""
-        optimizer = optimizer_factory(self.rng)
+        optimizer = optimizer_factory()
         initial_params = self._initial_params(optimizer)
 
         result = optimizer.optimize(
@@ -573,28 +565,16 @@ class TestPopulationOptimizerCheckpointing:
         assert np.isfinite(result.fun)
 
     @pytest.mark.parametrize(
-        "optimizer_factory,load_state_func",
-        [
-            (
-                lambda rng: MonteCarloOptimizer(
-                    population_size=10, n_best_sets=3, keep_best_params=False
-                ),
-                MonteCarloOptimizer.load_state,
-            ),
-            (
-                lambda rng: PymooOptimizer(
-                    method=PymooMethod.CMAES, population_size=10
-                ),
-                PymooOptimizer.load_state,
-            ),
-        ],
-        ids=["monte-carlo", "pymoo-cmaes"],
+        "optimizer_factory",
+        **CHECKPOINTING_OPTIMIZERS,
     )
     def test_resume_with_max_iterations_less_than_completed(
-        self, tmp_path, optimizer_factory, load_state_func
+        self, tmp_path, optimizer_factory
     ):
         """Resuming with fewer total iterations should exit immediately."""
-        optimizer = optimizer_factory(self.rng)
+        optimizer = optimizer_factory()
+        load_state_func = type(optimizer).load_state
+
         initial_params = self._initial_params(optimizer)
 
         optimizer.optimize(
@@ -614,28 +594,13 @@ class TestPopulationOptimizerCheckpointing:
         assert np.isfinite(result.fun)
 
     @pytest.mark.parametrize(
-        "optimizer_factory,load_state_func",
-        [
-            (
-                lambda rng: MonteCarloOptimizer(
-                    population_size=10, n_best_sets=3, keep_best_params=False
-                ),
-                MonteCarloOptimizer.load_state,
-            ),
-            (
-                lambda rng: PymooOptimizer(
-                    method=PymooMethod.CMAES, population_size=10
-                ),
-                PymooOptimizer.load_state,
-            ),
-        ],
-        ids=["monte-carlo", "pymoo-cmaes"],
+        "optimizer_factory",
+        **CHECKPOINTING_OPTIMIZERS,
     )
-    def test_resume_with_different_initial_params(
-        self, tmp_path, optimizer_factory, load_state_func
-    ):
+    def test_resume_with_different_initial_params(self, tmp_path, optimizer_factory):
         """Checkpoints should ignore newly provided initial parameters when resuming."""
-        optimizer = optimizer_factory(self.rng)
+        optimizer = optimizer_factory()
+        load_state_func = type(optimizer).load_state
         initial_params = self._initial_params(optimizer)
 
         optimizer.optimize(
