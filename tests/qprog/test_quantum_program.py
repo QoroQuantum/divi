@@ -170,8 +170,11 @@ class TestQuantumProgramAsyncExecution:
         # Use a side effect to properly simulate the callback behavior
         def poll_side_effect(*args, **kwargs):
             # Simulate the callback being called once
-            if "poll_callback" in kwargs and kwargs["poll_callback"] is not None:
-                kwargs["poll_callback"](1, "RUNNING")
+            if (
+                "progress_callback" in kwargs
+                and kwargs["progress_callback"] is not None
+            ):
+                kwargs["progress_callback"](1, "RUNNING")
             return JobStatus.COMPLETED
 
         backend.poll_job_status.side_effect = poll_side_effect
@@ -268,8 +271,11 @@ class TestQuantumProgramAsyncExecution:
         def poll_with_runtime(*args, **kwargs):
             if "on_complete" in kwargs and kwargs["on_complete"] is not None:
                 kwargs["on_complete"]({"run_time": "2.5"})
-            if "poll_callback" in kwargs and kwargs["poll_callback"] is not None:
-                kwargs["poll_callback"](1, "RUNNING")
+            if (
+                "progress_callback" in kwargs
+                and kwargs["progress_callback"] is not None
+            ):
+                kwargs["progress_callback"](1, "RUNNING")
             return JobStatus.COMPLETED
 
         mock_async_backend.poll_job_status.side_effect = poll_with_runtime
@@ -342,5 +348,5 @@ class TestQuantumProgramAsyncExecution:
 
         program = AsyncTestProgram(backend=mock_async_backend)
 
-        with pytest.raises(Exception, match="Job has not completed yet"):
+        with pytest.raises(Exception, match="Job.*has failed"):
             program.run()

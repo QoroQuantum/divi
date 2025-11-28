@@ -19,14 +19,14 @@ packages = [{ include = "divi" }]
 python = ">=3.11,<3.13"
 # Quantum computing
 pennylane = "^0.42.3"
-qiskit = "<2.0"
-qiskit-aer = "^0.17.1"
-qiskit-ibm-runtime = ">=0.37,<0.38"
+qiskit = "^2.2"
+qiskit-aer = "*"
+qiskit-ibm-runtime = ">0.42"
 qiskit-optimization = {extras = ["cplex"], version = "^0.7.0"}
-cirq-core = "^1.6"
 mitiq = "^0.48"
+cirq-core = "^1.6"
 # Scientific computing and numerical operations
-numpy = "^1"
+numpy = "*"
 scipy = "^1.16"
 sympy = "^1.14.0"
 scikit-learn = "^1.7.0"
@@ -34,7 +34,7 @@ scikit-learn = "^1.7.0"
 networkx = "^3.5"
 pymetis = "^2025.1.1"
 # Optimization algorithms
-pymoo = "^0.6.1.5"
+pymoo = "^0.6"
 dwave-hybrid = "^0.6.14"
 # Utilities
 requests = "^2.32.4"
@@ -44,11 +44,12 @@ rich = "^14.0.0"
 matplotlib = "^3.10.3"
 ply = "^3.11"
 basis-set-exchange = "^0.11"
+pydantic = ">=2.5.0,<2.10"
 
 
 [tool.poetry.group.dev.dependencies]
-black = "^25.1.0"
-isort = "^6.0.1"
+black = "*"
+isort = "*"
 pre-commit = "^4.2.0"
 
 

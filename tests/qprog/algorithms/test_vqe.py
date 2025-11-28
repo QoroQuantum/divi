@@ -16,7 +16,9 @@ from divi.qprog.algorithms import (
     QAOAAnsatz,
     UCCSDAnsatz,
 )
+from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.optimizers import PymooMethod, PymooOptimizer
+from tests.conftest import CHECKPOINTING_OPTIMIZERS
 from tests.qprog.qprog_contracts import (
     OPTIMIZERS_TO_TEST,
     verify_correct_circuit_count,
@@ -58,13 +60,13 @@ def test_vqe_basic_initialization_with_molecule(default_test_simulator, h2_molec
     vqe_problem = VQE(
         molecule=h2_molecule,
         ansatz=HartreeFockAnsatz(),
-        n_layers=2,  # n_layers is passed to VQE again
+        n_layers=1,  # n_layers is passed to VQE again
         backend=default_test_simulator,
     )
 
     assert vqe_problem.backend.shots == 5000
     assert vqe_problem.molecule == h2_molecule
-    assert vqe_problem.n_layers == 2  # Assert on VQE instance
+    assert vqe_problem.n_layers == 1  # Assert on VQE instance
     assert vqe_problem.n_electrons == 2
     assert vqe_problem.n_qubits == 4
 
@@ -80,12 +82,12 @@ def test_vqe_basic_initialization_with_hamiltonian(
         hamiltonian=h2_hamiltonian,
         n_electrons=2,
         ansatz=HartreeFockAnsatz(),
-        n_layers=2,
+        n_layers=1,
         backend=default_test_simulator,
     )
 
     assert vqe_problem.backend.shots == 5000
-    assert vqe_problem.n_layers == 2
+    assert vqe_problem.n_layers == 1
     assert vqe_problem.n_electrons == 2
     assert vqe_problem.n_qubits == 4
 
@@ -93,7 +95,7 @@ def test_vqe_basic_initialization_with_hamiltonian(
     verify_metacircuit_dict(vqe_problem, ["cost_circuit"])
 
 
-def test_clean_hamiltonian_logic(h2_hamiltonian, dummy_simulator):
+def test_vqe_clean_hamiltonian_logic(h2_hamiltonian, dummy_simulator):
     """Test that the Hamiltonian is cleaned correctly, separating the constant."""
     constant_value = 5.0
     hamiltonian_with_constant = h2_hamiltonian + qml.Identity(0) * constant_value
@@ -198,6 +200,7 @@ def test_vqe_correct_circuits_count_and_energies(
     optimizer, dummy_simulator, h2_molecule
 ):
     """Test circuit counts and energy calculations after a VQE run."""
+    optimizer = optimizer()  # Create fresh instance
     vqe_problem = VQE(
         molecule=h2_molecule,
         ansatz=HartreeFockAnsatz(),
@@ -215,8 +218,6 @@ def test_vqe_correct_circuits_count_and_energies(
 @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
 def test_vqe_h2_molecule_e2e_solution(optimizer, default_test_simulator, h2_molecule):
     """Test that VQE finds the correct ground state for the H2 molecule."""
-    if isinstance(optimizer, PymooOptimizer) and optimizer.method == PymooMethod.DE:
-        pytest.skip("DE consistently fails for some reason. Debug later.")
 
     default_test_simulator.set_seed(1997)
 
@@ -224,7 +225,7 @@ def test_vqe_h2_molecule_e2e_solution(optimizer, default_test_simulator, h2_mole
         molecule=h2_molecule,
         ansatz=HartreeFockAnsatz(),
         n_layers=1,
-        optimizer=optimizer,
+        optimizer=optimizer(),
         max_iterations=5,
         backend=default_test_simulator,
         seed=1997,
@@ -244,3 +245,86 @@ def test_vqe_h2_molecule_e2e_solution(optimizer, default_test_simulator, h2_mole
     assert vqe_problem.best_loss == pytest.approx(expected_best_loss, abs=0.5)
     expected_eigenstate = np.array([1, 1, 0, 0])
     np.testing.assert_array_equal(vqe_problem.eigenstate, expected_eigenstate)
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize("optimizer", **CHECKPOINTING_OPTIMIZERS)
+def test_vqe_h2_molecule_e2e_checkpointing_resume(
+    optimizer, default_test_simulator, h2_molecule, tmp_path
+):
+    """Test VQE e2e with checkpointing and multiple resume cycles.
+
+    Tests checkpoint infrastructure (multiple save/load cycles) with all checkpointing-capable
+    optimizers to verify their nuanced checkpoint handling (CMAES generator reinit, DE pop handling).
+    """
+    optimizer = optimizer()  # Create fresh instance
+
+    checkpoint_dir = tmp_path / "checkpoint_test"
+    default_test_simulator.set_seed(1997)
+
+    # First run: iterations 1-2
+    vqe_problem1 = VQE(
+        molecule=h2_molecule,
+        ansatz=HartreeFockAnsatz(),
+        n_layers=1,
+        optimizer=optimizer,
+        max_iterations=2,
+        backend=default_test_simulator,
+        seed=1997,
+    )
+    vqe_problem1.run(checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir))
+    assert vqe_problem1.current_iteration == 2
+
+    # Verify checkpoint was created
+    checkpoint_path = checkpoint_dir / "checkpoint_002"
+    assert checkpoint_path.exists()
+    assert (checkpoint_path / "program_state.json").exists()
+
+    # Store state from first run for comparison
+    first_run_iteration = vqe_problem1.current_iteration
+    first_run_losses_count = len(vqe_problem1.losses_history)
+    first_run_best_loss = vqe_problem1.best_loss
+
+    # Second run: resume and run iterations 3-4
+    vqe_problem2 = VQE.load_state(
+        checkpoint_dir,
+        backend=default_test_simulator,
+        molecule=h2_molecule,
+        ansatz=HartreeFockAnsatz(),
+        n_layers=1,
+    )
+
+    # Verify loaded state matches first run
+    assert vqe_problem2.current_iteration == first_run_iteration
+    assert len(vqe_problem2.losses_history) == first_run_losses_count
+    assert vqe_problem2.best_loss == pytest.approx(first_run_best_loss)
+
+    vqe_problem2.max_iterations = 4
+    vqe_problem2.run(checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir))
+    assert vqe_problem2.current_iteration == 4
+    assert (checkpoint_dir / "checkpoint_004").exists()
+
+    # Third run: resume and run iteration 5
+    vqe_problem3 = VQE.load_state(
+        checkpoint_dir,
+        backend=default_test_simulator,
+        molecule=h2_molecule,
+        ansatz=HartreeFockAnsatz(),
+        n_layers=1,
+    )
+    assert vqe_problem3.current_iteration == 4
+    vqe_problem3.max_iterations = 5
+    vqe_problem3.run()
+    assert vqe_problem3.current_iteration == 5
+
+    # Verify final results are correct
+    assert len(vqe_problem3.losses_history) == 5
+    assert isinstance(vqe_problem3.best_loss, float)
+    assert isinstance(vqe_problem3.best_params, np.ndarray)
+    assert vqe_problem3.best_params.shape == (vqe_problem3.n_params,)
+
+    # The ground state of H2 in this configuration is |1100>
+    expected_best_loss = -1.1398024781381293
+    assert vqe_problem3.best_loss == pytest.approx(expected_best_loss, abs=0.5)
+    expected_eigenstate = np.array([1, 1, 0, 0])
+    np.testing.assert_array_equal(vqe_problem3.eigenstate, expected_eigenstate)

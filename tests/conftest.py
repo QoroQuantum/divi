@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 import os
 import random
 import re
@@ -11,11 +12,35 @@ import matplotlib
 # Configure matplotlib to use Agg backend for testing
 matplotlib.use("Agg")
 
+# Suppress stevedore extension loading errors (Qiskit v2 compatibility issue)
+# These occur when IBM backend plugins fail to load due to ProviderV1 removal.
+# Must be set early, before any qiskit-ibm-runtime imports, to be effective in all test processes.
+_stevedore_logger = logging.getLogger("stevedore.extension")
+_stevedore_logger.setLevel(logging.CRITICAL)
 
 import pytest
 from dotenv import load_dotenv
 
 from divi.backends import CircuitRunner, ParallelSimulator
+from tests.qprog.qprog_contracts import OPTIMIZERS_TO_TEST
+
+# Optimizers that support checkpointing - derived from OPTIMIZERS_TO_TEST
+# Filters out ScipyOptimizer which doesn't support checkpointing
+CHECKPOINTING_OPTIMIZERS = {
+    "argvalues": [
+        factory
+        for factory, opt_id in zip(
+            OPTIMIZERS_TO_TEST["argvalues"], OPTIMIZERS_TO_TEST["ids"]
+        )
+        if opt_id
+        not in ["L_BFGS_B", "COBYLA", "NELDER_MEAD"]  # ScipyOptimizer variants
+    ],
+    "ids": [
+        opt_id
+        for opt_id in OPTIMIZERS_TO_TEST["ids"]
+        if opt_id not in ["L_BFGS_B", "COBYLA", "NELDER_MEAD"]
+    ],
+}
 
 
 class DummySimulator(CircuitRunner):

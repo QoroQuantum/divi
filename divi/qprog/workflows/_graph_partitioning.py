@@ -27,7 +27,7 @@ from divi.qprog.algorithms._qaoa import (
     GraphProblemTypes,
     draw_graph_solution_nodes,
 )
-from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
+from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer, copy_optimizer
 
 AggregateFn = Callable[
     [list[int], str, nx.Graph | rx.PyGraph, dict[int, int]], list[int]
@@ -471,11 +471,15 @@ class GraphPartitioningQAOA(ProgramBatch):
         self.solution = None
         self.aggregate_fn = aggregate_fn
 
+        # Store the optimizer template (will be copied for each program)
+        self._optimizer_template = (
+            optimizer if optimizer is not None else MonteCarloOptimizer()
+        )
+
         self._constructor = partial(
             QAOA,
             initial_state=initial_state,
             graph_problem=graph_problem,
-            optimizer=optimizer if optimizer is not None else MonteCarloOptimizer(),
             max_iterations=self.max_iterations,
             backend=self.backend,
             n_layers=n_layers,
@@ -528,6 +532,7 @@ class GraphPartitioningQAOA(ProgramBatch):
                 self._programs[prog_id] = self._constructor(
                     job_id=prog_id,
                     problem=_subgraph,
+                    optimizer=copy_optimizer(self._optimizer_template),
                     progress_queue=self._queue,
                 )
 

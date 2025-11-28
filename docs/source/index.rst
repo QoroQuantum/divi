@@ -44,6 +44,7 @@ Alternatively, you can install using pip:
    user_guide/program_batches
    user_guide/error_mitigation
    user_guide/optimizers
+   user_guide/checkpointing
 
 .. toctree::
    :maxdepth: 1

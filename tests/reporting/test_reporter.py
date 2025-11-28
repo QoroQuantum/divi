@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from queue import Queue
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -59,11 +58,11 @@ class TestQueueProgressReporter:
     """
 
     @pytest.fixture
-    def mock_queue(self):
+    def mock_queue(self, mocker):
         """
         Pytest fixture for a mock queue.
         """
-        return MagicMock(spec=Queue)
+        return mocker.MagicMock(spec=Queue)
 
     def test_update(self, mock_queue):
         """
@@ -130,32 +129,71 @@ class TestLoggingProgressReporter:
     Tests for the LoggingProgressReporter class.
     """
 
-    @patch("divi.reporting._reporter.logger")
-    def test_update(self, mock_logger):
+    def test_update(self, mocker):
         """
         Test the update method.
         """
+        mock_logger = mocker.patch("divi.reporting._reporter.logger")
         reporter = LoggingProgressReporter()
         reporter.update(iteration=5)
         mock_logger.info.assert_called_once()
         logged_message = mock_logger.info.call_args[0][0]
         assert "Finished Iteration #5" in logged_message
-        assert "\r\n" in logged_message
 
-    @patch("divi.reporting._reporter.logger")
-    def test_info_simple_message(self, mock_logger):
+    def test_info_simple_message(self, mocker):
         """
         Test the info method with a simple message.
         """
+        mock_logger = mocker.patch("divi.reporting._reporter.logger")
         reporter = LoggingProgressReporter()
         reporter.info("Hello World")
         mock_logger.info.assert_called_once_with("Hello World")
 
-    @patch("divi.reporting._reporter.logger")
-    def test_info_with_polling(self, mock_logger):
+    def test_info_with_overwrite(self, mocker):
+        """
+        Test the info method with overwrite=True (should use Rich's status).
+        """
+        mock_console_class = mocker.patch("divi.reporting._reporter.Console")
+        mock_console = mock_console_class.return_value
+        mock_status = mocker.MagicMock()
+        mock_console.status.return_value = mock_status
+
+        reporter = LoggingProgressReporter()
+        reporter.info("Computing something", overwrite=True)
+
+        # Verify Console.status was called with aesthetic spinner
+        mock_console.status.assert_called_once()
+        status_msg = mock_console.status.call_args[0][0]
+        assert "Computing something" in status_msg
+        # Check that spinner is set to "aesthetic"
+        assert mock_console.status.call_args.kwargs.get("spinner") == "aesthetic"
+        mock_status.__enter__.assert_called_once()
+
+        # Update with another overwriting message
+        reporter.info("Still computing", overwrite=True)
+        mock_status.update.assert_called_once()
+        update_msg = mock_status.update.call_args[0][0]
+        assert "Still computing" in update_msg
+        # Status should still be active (not closed)
+        mock_status.__exit__.assert_not_called()
+
+        # Normal message should close the status
+        mock_logger = mocker.patch("divi.reporting._reporter.logger")
+        reporter.info("Done!")
+        mock_status.__exit__.assert_called_once()
+        mock_logger.info.assert_called_once_with("Done!")
+        # Status should be None now
+        assert reporter._status is None
+
+    def test_info_with_polling(self, mocker):
         """
         Test the info method with polling information.
         """
+        mock_console_class = mocker.patch("divi.reporting._reporter.Console")
+        mock_console = mock_console_class.return_value
+        mock_status = mocker.MagicMock()
+        mock_console.status.return_value = mock_status
+
         reporter = LoggingProgressReporter()
         polling_kwargs = {
             "poll_attempt": 2,
@@ -164,26 +202,87 @@ class TestLoggingProgressReporter:
             "job_status": "PENDING",
         }
         reporter.info("Polling...", **polling_kwargs)
-        mock_logger.info.assert_called_once()
-        # Check for essential content without being brittle about exact formatting/color
-        call_args, call_kwargs = mock_logger.info.call_args
-        logged_message = call_args[0]
-        assert "service_abc" in logged_message
-        assert "PENDING" in logged_message
-        assert "Polling attempt 2 / 10" in logged_message
-        # Check for behaviorally important parts
-        assert logged_message.endswith("\r")
-        assert call_kwargs.get("extra") == {"append": True}
 
-    @patch("divi.reporting._reporter.logger")
-    def test_info_with_iteration(self, mock_logger):
+        # Verify Console.status was called with the correct message and aesthetic spinner
+        mock_console.status.assert_called_once()
+        status_msg = mock_console.status.call_args[0][0]
+        assert "service_abc" in status_msg
+        assert "PENDING" in status_msg
+        assert "Polling attempt 2 / 10" in status_msg
+        # Check that spinner is set to "aesthetic"
+        assert mock_console.status.call_args.kwargs.get("spinner") == "aesthetic"
+        # Verify status context manager was entered
+        mock_status.__enter__.assert_called_once()
+
+        # Test that subsequent calls update the status
+        reporter.info("Polling...", **{**polling_kwargs, "poll_attempt": 3})
+        mock_status.update.assert_called_once()
+        update_msg = mock_status.update.call_args[0][0]
+        assert "Polling attempt 3 / 10" in update_msg
+
+    def test_info_with_iteration(self, mocker):
         """
         Test the info method with iteration information.
         """
+        mock_console_class = mocker.patch("divi.reporting._reporter.Console")
+        mock_console = mock_console_class.return_value
+        mock_status = mocker.MagicMock()
+        mock_console.status.return_value = mock_status
+
         reporter = LoggingProgressReporter()
         reporter.info("Doing something", iteration=0)
-        mock_logger.info.assert_called_once()
-        logged_message = mock_logger.info.call_args[0][0]
-        assert "Iteration #1" in logged_message
-        assert "Doing something" in logged_message
-        assert logged_message.endswith("\r")
+
+        # Verify Console.status was called with the correct message and aesthetic spinner
+        mock_console.status.assert_called_once()
+        status_msg = mock_console.status.call_args[0][0]
+        assert "Iteration #1" in status_msg
+        assert "Doing something" in status_msg
+        # Check that spinner is set to "aesthetic"
+        assert mock_console.status.call_args.kwargs.get("spinner") == "aesthetic"
+        # Verify status context manager was entered
+        mock_status.__enter__.assert_called_once()
+
+        # Test that subsequent calls update the status
+        reporter.info("Doing something else", iteration=0)
+        mock_status.update.assert_called_once()
+        update_msg = mock_status.update.call_args[0][0]
+        assert "Iteration #1" in update_msg
+        assert "Doing something else" in update_msg
+
+    def test_info_iteration_and_polling_concatenation(self, mocker):
+        """
+        Test that iteration and polling messages are concatenated together.
+        """
+        mock_console_class = mocker.patch("divi.reporting._reporter.Console")
+        mock_console = mock_console_class.return_value
+        mock_status = mocker.MagicMock()
+        mock_console.status.return_value = mock_status
+
+        reporter = LoggingProgressReporter()
+
+        # First, set an iteration message
+        reporter.info("Optimizing parameters", iteration=0)
+        mock_console.status.assert_called_once()
+        initial_msg = mock_console.status.call_args[0][0]
+        assert "Iteration #1" in initial_msg
+        assert "Optimizing parameters" in initial_msg
+
+        # Then add polling info - should concatenate
+        polling_kwargs = {
+            "poll_attempt": 4,
+            "max_retries": 5000,
+            "service_job_id": "e4b1b59f-123",
+            "job_status": "PENDING",
+        }
+        reporter.info("", **polling_kwargs)
+
+        # Should have updated with concatenated message
+        assert mock_status.update.call_count >= 1
+        update_msg = mock_status.update.call_args[0][0]
+        assert "Iteration #1" in update_msg
+        assert "Optimizing parameters" in update_msg
+        assert "Job" in update_msg
+        assert "e4b1b59f" in update_msg
+        assert "PENDING" in update_msg
+        assert "Polling attempt 4 / 5000" in update_msg
+        assert " - " in update_msg  # Should be concatenated with separator

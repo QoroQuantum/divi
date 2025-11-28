@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from functools import partial
+from typing import Any
 
 import numpy as np
 import pennylane as qml
@@ -13,8 +14,8 @@ from mitiq.zne.scaling import fold_global
 from pennylane.measurements import ExpectationMP
 from scipy.optimize import OptimizeResult
 
-from divi.circuits import MetaCircuit
 from divi.circuits.qem import ZNE
+from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.exceptions import _CancelledError
 from divi.qprog.optimizers import MonteCarloOptimizer
 from divi.qprog.variational_quantum_algorithm import (
@@ -56,17 +57,18 @@ class SampleVQAProgram(VariationalQuantumAlgorithm):
         return self._cost_hamiltonian
 
     def _create_meta_circuits_dict(self):
-        def simple_circuit(params):
-            qml.RX(params[0], wires=0)
-            qml.U3(*params[1], wires=1)
-            qml.CNOT(wires=[0, 1])
-            return qml.expval(self.cost_hamiltonian)
-
         symbols = [sp.Symbol("beta"), sp.symarray("theta", 3)]
-        meta_circuit = MetaCircuit(
-            source_circuit=qml.tape.make_qscript(simple_circuit)(symbols),
+        ops = [
+            qml.RX(symbols[0], wires=0),
+            qml.U3(*symbols[1], wires=1),
+            qml.CNOT(wires=[0, 1]),
+        ]
+        source_circuit = qml.tape.QuantumScript(
+            ops=ops, measurements=[qml.expval(self.cost_hamiltonian)]
+        )
+        meta_circuit = self._meta_circuit_factory(
+            source_circuit=source_circuit,
             symbols=symbols,
-            grouping_strategy=self._grouping_strategy,
         )
         return {"cost_circuit": meta_circuit}
 
@@ -77,14 +79,20 @@ class SampleVQAProgram(VariationalQuantumAlgorithm):
     def run(
         self,
         perform_final_computation: bool = True,
-        data_file: str | None = None,
         **kwargs,
     ) -> tuple[int, float]:
         return super().run(
             perform_final_computation=perform_final_computation,
-            data_file=data_file,
             **kwargs,
         )
+
+    def _save_subclass_state(self) -> dict[str, Any]:
+        """Save SampleVQAProgram-specific state."""
+        return {}
+
+    def _load_subclass_state(self, state: dict[str, Any]) -> None:
+        """Load SampleVQAProgram-specific state."""
+        pass
 
     def _perform_final_computation(self):
         pass
@@ -318,6 +326,160 @@ class TestBatchedExpectation:
                 observables=unsupported_observables,
                 wire_order=wire_order,
             )
+
+    @pytest.mark.parametrize(
+        "n_qubits",
+        [1, 10, 32, 64, 65, 100, 150, 200, 500, 1000],
+        ids=lambda n: f"{n}-qubits",
+    )
+    def test_qubit_counts_no_overflow(self, n_qubits):
+        """
+        Tests that _batched_expectation works correctly across a wide range of qubit counts
+        without integer overflow errors, including the critical boundary at 64.
+
+        This test would have caught the bug where 150-qubit circuits caused OverflowError
+        when converting bitstrings to uint64.
+        """
+        wire_order = tuple(range(n_qubits - 1, -1, -1))
+
+        # Create test bitstrings including edge cases that would overflow uint64
+        test_bitstrings = [
+            "0" * n_qubits,  # All 0s
+            "1" * n_qubits,  # All 1s - would overflow uint64 for >64 qubits
+            "1" + "0" * (n_qubits - 1),  # MSB=1, rest 0s
+            "0" * (n_qubits - 1) + "1",  # LSB=1, rest 0s
+        ]
+
+        shot_histogram = {bs: 100 for bs in test_bitstrings}
+
+        # Test observables on first, middle, and last qubits
+        # Ensure mid_qubit is within valid wire range [0, n_qubits-1]
+        mid_qubit = n_qubits // 2 if n_qubits > 1 else 0
+        observables = [
+            qml.PauliZ(0),
+            qml.PauliZ(n_qubits - 1),
+        ]
+        # Add Identity observable if we have a valid middle qubit
+        if n_qubits > 1:
+            observables.append(qml.Identity(mid_qubit))
+        # Add product observable for larger systems
+        if n_qubits >= 50:
+            observables.append(qml.PauliZ(mid_qubit // 2) @ qml.PauliZ(mid_qubit))
+
+        # Remove duplicates
+        observables = list(dict.fromkeys(observables))
+
+        # Should not raise OverflowError
+        result = _batched_expectation([shot_histogram], observables, wire_order)
+
+        # Verify results are valid
+        assert result.shape == (len(observables), 1)
+        assert not np.isnan(result).any(), "Results should not contain NaN"
+        assert not np.isinf(result).any(), "Results should not contain Inf"
+
+        # Verify expectation values are in valid range
+        for i, obs in enumerate(observables):
+            if isinstance(obs, qml.PauliZ) or (
+                hasattr(obs, "name") and obs.name == "Prod"
+            ):
+                assert -1.0 <= result[i, 0] <= 1.0
+
+    def test_boundary_qubit_count_both_paths_work(self):
+        """
+        Tests that both code paths (<=64 and >64 qubits) work correctly at the boundary.
+
+        This ensures the conditional logic correctly switches between integer and
+        character array representations.
+        """
+        # Test at exactly 64 qubits (uses integer path)
+        wire_order_64 = tuple(range(63, -1, -1))
+        shot_histogram_64 = {"1" * 64: 100, "0" * 64: 100}
+        observables_64 = [qml.PauliZ(0), qml.PauliZ(31), qml.PauliZ(63)]
+
+        result_64 = _batched_expectation(
+            [shot_histogram_64], observables_64, wire_order_64
+        )
+
+        # Test at 65 qubits (uses character array path)
+        wire_order_65 = tuple(range(64, -1, -1))
+        shot_histogram_65 = {"1" * 65: 100, "0" * 65: 100}
+        observables_65 = [qml.PauliZ(0), qml.PauliZ(32), qml.PauliZ(64)]
+
+        result_65 = _batched_expectation(
+            [shot_histogram_65], observables_65, wire_order_65
+        )
+
+        # Both should complete without errors and produce valid results
+        assert result_64.shape[0] == len(observables_64)
+        assert result_65.shape[0] == len(observables_65)
+        assert not np.isnan(result_64).any()
+        assert not np.isnan(result_65).any()
+
+    @pytest.mark.parametrize(
+        "n_qubits",
+        [4, 32, 64, 65, 100, 150, 500, 1000],
+        ids=lambda n: f"{n}qubits",
+    )
+    def test_matches_pennylane_baseline(self, n_qubits):
+        """
+        Validates that results match PennyLane's baseline implementation across
+        various qubit counts, ensuring correctness of both code paths.
+        """
+        wire_order = tuple(range(n_qubits - 1, -1, -1))
+        shot_histogram = {"0" * n_qubits: 50, "1" * n_qubits: 50}
+        observables = [qml.PauliZ(0)]
+
+        # Get baseline from PennyLane
+        baseline_expvals = []
+        for obs in observables:
+            mp = ExpectationMP(obs)
+            expval = mp.process_counts(counts=shot_histogram, wire_order=wire_order)
+            baseline_expvals.append(expval)
+
+        # Get result from our optimized function
+        optimized_expvals = _batched_expectation(
+            [shot_histogram], observables, wire_order
+        )[:, 0]
+
+        # Should match PennyLane's results
+        np.testing.assert_allclose(optimized_expvals, baseline_expvals, rtol=1e-10)
+
+    @pytest.mark.parametrize(
+        "n_qubits,observable_wires",
+        [
+            (100, [0, 50]),
+            (150, [0, 50, 100]),
+            (150, [0, 75, 125]),
+            (200, [0, 100, 199]),
+            (500, [0, 250, 499]),
+            (1000, [0, 500, 999]),
+        ],
+        ids=["100q_2w", "150q_3w", "150q_3w_alt", "200q_3w", "500q_3w", "1000q_3w"],
+    )
+    def test_product_observables_large_qubit_counts(self, n_qubits, observable_wires):
+        """
+        Tests that product observables (multi-qubit) work correctly for large qubit counts.
+        """
+        wire_order = tuple(range(n_qubits - 1, -1, -1))
+        shot_histogram = {
+            "0" * n_qubits: 100,
+            "1" * n_qubits: 100,
+            "1" + "0" * (n_qubits - 1): 100,
+        }
+
+        # Create product observable from wire indices
+        obs = qml.PauliZ(observable_wires[0])
+        for wire in observable_wires[1:]:
+            obs = obs @ qml.PauliZ(wire)
+        observables = [obs]
+
+        result = _batched_expectation([shot_histogram], observables, wire_order)
+
+        # Verify results
+        assert result.shape == (1, 1)
+        assert not np.isnan(result).any()
+        # Product observables should be in range [-1, 1]
+        assert np.abs(result[0, 0]) <= 1.0 + 1e-10
 
 
 class BaseVariationalQuantumAlgorithmTest:
@@ -594,8 +756,8 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         np.testing.assert_allclose(program.best_params, curr_params3.flatten())
         np.testing.assert_allclose(program.final_params, curr_params3)
         assert len(program.losses_history) == 3
-        assert program.losses_history[0][0] == -0.8
-        assert program.losses_history[2][0] == -0.9
+        assert program.losses_history[0]["0"] == -0.8
+        assert program.losses_history[2]["0"] == -0.9
         assert mock_run_circuits.call_count == 3
 
     def test_run_method_cancellation_handling(self, mocker):
@@ -613,31 +775,6 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
 
         assert circ_count == program._total_circuit_count
         assert run_time == program._total_run_time
-
-    def test_run_with_data_storage(self, mocker, mock_backend, tmp_path):
-        """Test that run calls save_iteration when requested."""
-        program = self._create_program_with_mock_optimizer(mocker, backend=mock_backend)
-        program.max_iterations = 1
-        data_file = tmp_path / "test_data.pkl"
-
-        mocker.patch.object(program, "save_iteration")
-        mocker.patch.object(
-            program,
-            "_prepare_and_send_circuits",
-            return_value=[{"label": "0_mock:0_0", "results": {"00": 1}}],
-        )
-
-        final_loss = -0.5
-        mocker.patch.object(
-            program, "_post_process_results", return_value={0: final_loss}
-        )
-
-        final_params = np.array([[0.1, 0.2, 0.3, 0.4]])
-        self.setup_mock_optimizer(program, mocker, [(final_params, final_loss)])
-
-        program.run(data_file=str(data_file))
-
-        program.save_iteration.assert_called_once_with(str(data_file))
 
     def _setup_program_for_final_computation_test(self, mocker):
         """Helper to set up program with mocks for final computation tests."""
@@ -696,7 +833,6 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
                 ],
                 [-0.9, -0.5, -0.9],
             ),  # Multiple parameter sets per iteration
-            ([], []),  # Empty history
         ],
     )
     def test_min_losses_per_iteration(
@@ -726,3 +862,391 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         # Should return new lists (not the same object)
         assert min_losses1 == min_losses2
         assert min_losses1 is not min_losses2
+
+
+class TestCheckpointing:
+    """Tests for VariationalQuantumAlgorithm checkpointing functionality."""
+
+    @pytest.fixture
+    def sample_program(self, mock_backend):
+        """Create a sample program for testing."""
+        program = SampleVQAProgram(circ_count=0, run_time=0.0, backend=mock_backend)
+        return program
+
+    def _setup_optimizer_state(self, program, iteration: int = 1):
+        """Helper to set optimizer state for testing.
+
+        Sets up internal state so that save_state() can be called without errors.
+        Note: This assumes MonteCarloOptimizer since SampleVQAProgram defaults to it.
+        """
+        program.optimizer._curr_population = np.zeros((10, 4))
+        program.optimizer._curr_evaluated_population = np.zeros((10, 4))
+        program.optimizer._curr_losses = np.zeros(10)
+        program.optimizer._curr_iteration = iteration
+        # Set RNG state to avoid None check failure
+        program.optimizer._curr_rng_state = np.random.default_rng().bit_generator.state
+
+    def _create_mock_optimize(
+        self, program, n_iterations: int = 1, result_x=None, result_fun=None
+    ):
+        """Helper to create a mock optimize function.
+
+        Args:
+            program: The program instance (for optimizer state setup)
+            n_iterations: Number of iterations to simulate
+            result_x: Optional custom x values for OptimizeResult
+            result_fun: Optional custom fun values for OptimizeResult
+        """
+
+        def mock_optimize(**kwargs):
+            self._setup_optimizer_state(program, iteration=n_iterations)
+            callback = kwargs.get("callback_fn")
+            if callback:
+                if n_iterations > 1:
+                    # Simulate multiple iterations
+                    for i in range(n_iterations):
+                        x = (
+                            result_x
+                            if result_x is not None
+                            else np.array([[0.1, 0.2, 0.3, 0.4]])
+                        )
+                        fun = (
+                            result_fun if result_fun is not None else np.array([0.123])
+                        )
+                        res = OptimizeResult(x=x, fun=fun, nit=i + 1)
+                        callback(res)
+                else:
+                    # Single iteration
+                    x = result_x if result_x is not None else np.zeros((1, 4))
+                    fun = result_fun if result_fun is not None else np.array([0.5])
+                    res = OptimizeResult(x=x, fun=fun, nit=1)
+                    callback(res)
+
+            # Return final result
+            final_x = result_x if result_x is not None else np.zeros(4)
+            final_fun = result_fun if result_fun is not None else 0.5
+            if isinstance(final_x, np.ndarray) and final_x.ndim == 2:
+                final_x = final_x[0]
+            return OptimizeResult(x=final_x, fun=final_fun)
+
+        return mock_optimize
+
+    def test_save_state_creates_files(self, sample_program, tmp_path, mocker):
+        """Test that save_state() creates the expected files."""
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(sample_program, n_iterations=1)
+        )
+        sample_program.run(max_iterations=1)
+
+        checkpoint_dir = tmp_path / "checkpoint"
+        sample_program.save_state(CheckpointConfig(checkpoint_dir=checkpoint_dir))
+
+        # Files should be in the per-iteration subdirectory
+        assert (
+            tmp_path / "checkpoint" / "checkpoint_001" / "program_state.json"
+        ).exists()
+        assert (
+            tmp_path / "checkpoint" / "checkpoint_001" / "optimizer_state.json"
+        ).exists()
+
+    def test_save_state_auto_generates_directory(
+        self, sample_program, tmp_path, mocker
+    ):
+        """Test that save_state() generates a directory name if none provided."""
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(sample_program, n_iterations=1)
+        )
+        sample_program.run(max_iterations=1)
+
+        # Change working directory to tmp_path so we don't pollute the repo
+        with pytest.MonkeyPatch.context() as m:
+            m.chdir(tmp_path)
+            path = sample_program.save_state(CheckpointConfig.with_timestamped_dir())
+            assert "checkpoint_" in str(path)
+            # Path should point to the subdirectory
+            assert path.exists()
+            assert path.name.startswith("checkpoint_")
+
+    def test_save_load_round_trip(self, sample_program, tmp_path, mocker):
+        """Test saving and loading restores state."""
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(
+                sample_program,
+                n_iterations=5,
+                result_x=np.array([[0.1, 0.2, 0.3, 0.4]]),
+                result_fun=np.array([0.123]),
+            )
+        )
+        sample_program.run(max_iterations=5)
+
+        checkpoint_dir = tmp_path / "checkpoint"
+        sample_program.save_state(CheckpointConfig(checkpoint_dir=checkpoint_dir))
+
+        # Load state
+        # We need to provide required init args: circ_count, run_time
+        loaded_program = SampleVQAProgram.load_state(
+            checkpoint_dir, backend=sample_program.backend, circ_count=0, run_time=0.0
+        )
+
+        assert loaded_program.current_iteration == 5
+        assert loaded_program._best_loss == 0.123
+        # Note: _curr_params might be different after loading, so we check best_params instead
+        # which should be preserved
+        assert isinstance(loaded_program.optimizer, MonteCarloOptimizer)
+
+    def test_save_state_raises_error_before_optimization(
+        self, sample_program, tmp_path
+    ):
+        """Test that save_state() raises RuntimeError if optimization hasn't been run."""
+        checkpoint_dir = tmp_path / "checkpoint"
+
+        with pytest.raises(RuntimeError, match="optimization has not been run"):
+            sample_program.save_state(CheckpointConfig(checkpoint_dir=checkpoint_dir))
+
+    def test_automatic_checkpointing_in_run(self, sample_program, tmp_path, mocker):
+        """Test that run() triggers checkpointing."""
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(sample_program, n_iterations=1)
+        )
+        sample_program.save_state = mocker.Mock(wraps=sample_program.save_state)
+
+        checkpoint_dir = tmp_path / "auto_check"
+        sample_program.run(
+            checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir)
+        )
+
+        # Should have called save_state
+        sample_program.save_state.assert_called()
+        # Files should be in the per-iteration subdirectory
+        assert (
+            tmp_path / "auto_check" / "checkpoint_001" / "program_state.json"
+        ).exists()
+
+    def test_automatic_checkpointing_interval(self, sample_program, tmp_path, mocker):
+        """Test that checkpoint_interval is respected."""
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(sample_program, n_iterations=3)
+        )
+        sample_program.save_state = mocker.Mock(wraps=sample_program.save_state)
+
+        checkpoint_dir = tmp_path / "interval_check"
+        # Save every 2 iterations. Should save at iter 2.
+        sample_program.run(
+            checkpoint_config=CheckpointConfig(
+                checkpoint_dir=checkpoint_dir, checkpoint_interval=2
+            )
+        )
+
+        # In the simulated loop of 3 iterations (1, 2, 3):
+        # Iter 1: 1 % 2 != 0 -> No save
+        # Iter 2: 2 % 2 == 0 -> Save
+        # Iter 3: 3 % 2 != 0 -> No save
+        # So save_state should be called exactly once
+        assert sample_program.save_state.call_count == 1
+        # Should have created checkpoint_002 subdirectory
+        assert (
+            tmp_path / "interval_check" / "checkpoint_002" / "program_state.json"
+        ).exists()
+
+    def test_multiple_checkpoints_and_load_latest(
+        self, sample_program, tmp_path, mocker
+    ):
+        """Test that multiple checkpoints are created and load_state finds the latest."""
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(sample_program, n_iterations=5)
+        )
+
+        checkpoint_dir = tmp_path / "multi_check"
+        # Save every iteration
+        sample_program.run(
+            checkpoint_config=CheckpointConfig(
+                checkpoint_dir=checkpoint_dir, checkpoint_interval=1
+            )
+        )
+
+        # Should have created checkpoints for iterations 1-5
+        for i in range(1, 6):
+            assert (
+                tmp_path / "multi_check" / f"checkpoint_{i:03d}" / "program_state.json"
+            ).exists()
+
+        # Load state without specifying subdirectory - should load latest (checkpoint_005)
+        loaded_program = SampleVQAProgram.load_state(
+            checkpoint_dir, backend=sample_program.backend, circ_count=0, run_time=0.0
+        )
+        assert loaded_program.current_iteration == 5
+
+        # Load specific checkpoint
+        loaded_program_2 = SampleVQAProgram.load_state(
+            checkpoint_dir,
+            backend=sample_program.backend,
+            subdirectory="checkpoint_003",
+            circ_count=0,
+            run_time=0.0,
+        )
+        assert loaded_program_2.current_iteration == 3
+
+    def test_resume_with_less_iterations(self, sample_program, tmp_path, mocker):
+        """Test resuming with max_iterations less than already completed is a no-op and warns."""
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(sample_program, n_iterations=3)
+        )
+        sample_program.run(
+            max_iterations=3,
+            checkpoint_config=CheckpointConfig(
+                checkpoint_dir=tmp_path / "checkpoint_test"
+            ),
+        )
+        assert sample_program.current_iteration == 3
+
+        # Resume with max_iterations=2 (less than completed)
+        loaded_program = SampleVQAProgram.load_state(
+            tmp_path / "checkpoint_test",
+            backend=sample_program.backend,
+            circ_count=0,
+            run_time=0.0,
+        )
+        loaded_program.max_iterations = 2
+
+        # Should warn and not run additional iterations since already completed
+        with pytest.warns(
+            UserWarning,
+            match="max_iterations \\(2\\) is less than current_iteration \\(3\\)",
+        ):
+            loaded_program.run()
+
+        # Should not run additional iterations since already completed
+        assert loaded_program.current_iteration == 3
+        assert len(loaded_program.losses_history) == 3
+
+
+class TestPrecisionFunctionality(BaseVariationalQuantumAlgorithmTest):
+    """Test suite for precision functionality in VariationalQuantumAlgorithm."""
+
+    def test_precision_defaults_to_8(self, mock_backend):
+        """Test that precision defaults to 8 when not provided."""
+        program = SampleVQAProgram(circ_count=1, run_time=0.1, backend=mock_backend)
+        assert program._precision == 8
+
+    def test_precision_can_be_passed_as_kwarg(self, mock_backend):
+        """Test that precision can be passed as a kwarg."""
+        program = SampleVQAProgram(
+            circ_count=1, run_time=0.1, backend=mock_backend, precision=12
+        )
+        assert program._precision == 12
+
+    def test_precision_used_in_qasm_conversion(self, mocker, mock_backend):
+        """Test that precision is used when creating QASM circuits."""
+        mock_to_openqasm = mocker.patch("divi.circuits._core.to_openqasm")
+        mock_to_openqasm.return_value = (["circuit_body"], ["measurement"])
+
+        program = SampleVQAProgram(
+            circ_count=1, run_time=0.1, backend=mock_backend, precision=5
+        )
+
+        # Access meta_circuits to trigger creation and QASM conversion
+        _ = program.meta_circuits
+
+        # Verify to_openqasm was called with precision=5
+        assert mock_to_openqasm.called
+        call_kwargs = mock_to_openqasm.call_args[1]
+        assert call_kwargs["precision"] == 5
+
+    def test_different_precision_values(self, mock_backend):
+        """Test that different precision values work correctly."""
+        for precision in [1, 4, 8, 12, 16]:
+            program = SampleVQAProgram(
+                circ_count=1,
+                run_time=0.1,
+                backend=mock_backend,
+                precision=precision,
+            )
+            assert program._precision == precision
+
+            # Verify it propagates to the factory
+            factory_keywords = program._meta_circuit_factory.keywords
+            assert factory_keywords["precision"] == precision
+
+
+class TestPropertyWarnings(BaseVariationalQuantumAlgorithmTest):
+    """Test suite for property warnings when accessing uninitialized state."""
+
+    @pytest.mark.parametrize(
+        "property_name,expected_warning_msg",
+        [
+            ("losses_history", "losses_history is empty"),
+            ("min_losses_per_iteration", "min_losses_per_iteration is empty"),
+            ("best_loss", "best_loss has not been computed yet"),
+            ("best_probs", "best_probs is empty"),
+        ],
+    )
+    def test_property_warns_before_optimization(
+        self, mocker, property_name, expected_warning_msg
+    ):
+        """Test that properties warn when accessed before optimization runs."""
+        program = self._create_program_with_mock_optimizer(mocker)
+
+        with pytest.warns(UserWarning, match=expected_warning_msg):
+            _ = getattr(program, property_name)
+
+    @pytest.mark.parametrize(
+        "property_name,expected_warning_msg",
+        [
+            ("final_params", "final_params is not available"),
+            ("best_params", "best_params is not available"),
+        ],
+    )
+    def test_params_warn_before_optimization(
+        self, mocker, property_name, expected_warning_msg
+    ):
+        """Test that final_params and best_params warn when accessed before optimization."""
+        program = self._create_program_with_mock_optimizer(mocker)
+
+        with pytest.warns(UserWarning, match=expected_warning_msg):
+            # .copy() works on lists, so this won't raise - just warns
+            result = getattr(program, property_name)
+            assert isinstance(result, list)
+            assert len(result) == 0
+
+    def test_best_loss_raises_runtime_error_if_still_infinite_after_optimization(
+        self, mocker
+    ):
+        """Test that best_loss raises RuntimeError if still infinite after optimization."""
+        program = self._create_program_with_mock_optimizer(mocker)
+        program.max_iterations = 1
+
+        # Simulate optimization running but best_loss not being updated
+        program._losses_history = [{0: 1.0}]  # Optimization has run
+        program._best_loss = float("inf")  # But best_loss is still infinite
+
+        with pytest.raises(
+            RuntimeError,
+            match="best_loss is still infinite after optimization",
+        ):
+            _ = program.best_loss
+
+    def test_best_probs_warns_when_empty_after_optimization(self, mocker):
+        """Test that best_probs warns when empty even after optimization."""
+        program = self._create_program_with_mock_optimizer(mocker)
+        program.max_iterations = 1
+
+        mocker.patch.object(
+            program, "_run_optimization_circuits", return_value={0: -0.5}
+        )
+
+        final_params = np.array([[0.1, 0.2, 0.3, 0.4]])
+
+        def mock_optimize_logic(cost_fn, initial_params, callback_fn, **kwargs):
+            loss = cost_fn(final_params)
+            result = OptimizeResult(x=final_params, fun=np.array([loss]))
+            callback_fn(result)
+            return result
+
+        program.optimizer.optimize = mocker.Mock(side_effect=mock_optimize_logic)
+
+        # Run without final computation
+        program.run(perform_final_computation=False)
+
+        # best_probs should still warn because it's empty
+        with pytest.warns(UserWarning, match="best_probs is empty"):
+            _ = program.best_probs

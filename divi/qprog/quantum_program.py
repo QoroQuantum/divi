@@ -2,7 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import pickle
 from abc import ABC, abstractmethod
 from queue import Queue
 from threading import Event
@@ -55,11 +54,10 @@ class QuantumProgram(ABC):
         self._curr_service_job_id = None
 
     @abstractmethod
-    def run(self, data_file: str | None = None, **kwargs) -> tuple[int, float]:
+    def run(self, **kwargs) -> tuple[int, float]:
         """Execute the quantum algorithm.
 
         Args:
-            data_file (str | None): The file to store the data in. If None, no data is stored. Defaults to None.
             **kwargs: Additional keyword arguments for subclasses.
 
         Returns:
@@ -188,23 +186,22 @@ class QuantumProgram(ABC):
             loop_until_complete=True,
             on_complete=self._track_runtime,
             verbose=False,  # Disable the default logger in QoroService
-            poll_callback=update_function,
+            progress_callback=update_function,
         )
+
+        if status == JobStatus.FAILED:
+            raise RuntimeError(f"Job {job_id} has failed")
 
         if status != JobStatus.COMPLETED:
             raise Exception("Job has not completed yet, cannot post-process results")
         return self.backend.get_job_results(job_id)
 
-    def _dispatch_circuits_and_process_results(
-        self, data_file: str | None = None, **kwargs
-    ):
+    def _dispatch_circuits_and_process_results(self, **kwargs):
         """Run an iteration of the program.
 
         The outputs are stored in the Program object.
-        Optionally, the data can be stored in a file.
 
         Args:
-            data_file (str | None): The file to store the data in. If None, no data is stored. Defaults to None.
             **kwargs: Additional keyword arguments for circuit submission and result processing.
 
         Returns:
@@ -219,39 +216,4 @@ class QuantumProgram(ABC):
 
         result = self._post_process_results(results, **kwargs)
 
-        if data_file is not None:
-            self.save_iteration(data_file)
-
         return result
-
-    def save_iteration(self, data_file: str):
-        """Save the current state of the quantum program to a file.
-
-        Serializes the entire QuantumProgram instance including parameters,
-        losses, and circuit history using pickle.
-
-        Args:
-            data_file (str): Path to the file where the program state will be saved.
-
-        Note:
-            The file is written in binary mode and can be restored using
-            `import_iteration()`.
-        """
-        with open(data_file, "wb") as f:
-            pickle.dump(self, f)
-
-    @staticmethod
-    def import_iteration(data_file: str):
-        """Load a previously saved quantum program state from a file.
-
-        Deserializes a QuantumProgram instance that was saved using `save_iteration()`.
-
-        Args:
-            data_file (str): Path to the file containing the saved program state.
-
-        Returns:
-            QuantumProgram: The restored QuantumProgram instance with all its state,
-                including parameters, losses, and circuit history.
-        """
-        with open(data_file, "rb") as f:
-            return pickle.load(f)

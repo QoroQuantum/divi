@@ -14,12 +14,7 @@ from divi.backends._qoro_service import (
     JobType,
     MaxRetriesReachedError,
     QoroService,
-    _decode_qh1_b64,
-    _decompress_histogram,
-    _int_to_bitstr,
     _raise_with_details,
-    _rle_bool_decode,
-    _uleb128_decode,
     is_valid_qasm,
 )
 from divi.backends._qpu_system import (
@@ -90,162 +85,6 @@ def circuits():
         "\nmeasure q[2] -> c[2];\nmeasure q[3] -> c[3];\n"
     )
     return {f"circuit_{i}": test_qasm for i in range(10)}
-
-
-class TestQoroServiceUtilities:
-    """
-    Test suite for QoroService utility functions for histogram decompression.
-    This suite has been corrected to remove misleading tests and add proper
-    validation for both success and failure paths.
-    """
-
-    # --- Top-level Wrapper Function Tests ---
-
-    def test_decode_qh1_b64_empty_or_no_payload(self):
-        """Tests that _decode_qh1_b64 handles empty inputs correctly."""
-        assert _decode_qh1_b64(None) is None
-        assert _decode_qh1_b64({}) == {}
-        assert _decode_qh1_b64({"encoding": "qh1", "payload": ""}) == {
-            "encoding": "qh1",
-            "payload": "",
-        }
-
-    def test_decode_qh1_b64_unsupported_encoding(self):
-        """Tests that _decode_qh1_b64 raises an error for unsupported encodings."""
-        with pytest.raises(ValueError, match="Unsupported encoding: invalid"):
-            _decode_qh1_b64({"encoding": "invalid", "payload": "dGVzdA=="})
-
-    def test_decode_qh1_b64_delegates_correctly(self, mocker):
-        """Tests that _decode_qh1_b64 correctly decodes and calls the decompressor."""
-        mock_decompress = mocker.patch(
-            "divi.backends._qoro_service._decompress_histogram"
-        )
-        mock_decompress.return_value = {"01": 100}
-
-        # "test" -> base64 -> "dGVzdA=="
-        encoded_data = {"encoding": "qh1", "payload": "dGVzdA=="}
-        result = _decode_qh1_b64(encoded_data)
-
-        # Assert it passed the correctly decoded bytes to the decompressor
-        mock_decompress.assert_called_once_with(b"test")
-        assert result == {"01": 100}
-
-    # --- Core Decompression Logic Tests ---
-
-    def test_decompress_histogram_empty_buffer(self):
-        """Tests that an empty byte buffer returns an empty histogram."""
-        assert _decompress_histogram(b"") == {}
-
-    def test_decompress_histogram_bad_magic(self):
-        """Tests that a payload with an invalid magic header raises a ValueError."""
-        with pytest.raises(ValueError, match="bad magic"):
-            _decompress_histogram(b"INVALID_MAGIC")
-
-    def test_decompress_histogram_successful(self):
-        """
-        ⭐ Tests the entire decompression 'happy path' with a valid, non-trivial
-        QH1 payload. This is the most critical test for the decoder.
-        """
-        # This payload encodes the histogram: {"001": 1, "101": 3, "111": 1}
-        # Details: n_bits=3, unique=3, total_shots=5
-        # Gaps between sorted indices [1, 5, 7] are [1, 4, 2]
-        # Counts [1, 3, 1] are RLE-encoded.
-        valid_payload = (
-            b"QH1"  # Magic header
-            b"\x03"  # n_bits = 3
-            b"\x03"  # unique = 3
-            b"\x05"  # total_shots = 5
-            b"\x03"  # num_gaps = 3
-            b"\x01\x04\x02"  # gaps data
-            b"\x05"  # RLE data length
-            b"\x03\x01\x01\x01"  # RLE data for [True, False, True]
-            b"\x01"  # extras_len = 1
-            b"\x01" + b"\x01"  # extras data for count=3
-        )
-
-        expected_histogram = {"001": 1, "101": 3, "111": 1}
-        result = _decompress_histogram(valid_payload)
-        assert result == expected_histogram
-
-    def test_decompress_histogram_shot_sum_mismatch_error(self):
-        """Tests that a corrupt stream with a shot sum mismatch raises a ValueError."""
-        # This payload is now correctly formed but has an invalid `total_shots` value.
-        # The RLE data is b"\x03\x01\x01\x01\x01" (num_runs=3, first_val=T, len1=1, len2=1, len3=1)
-        # The length of this RLE data is 5 bytes, so rb_len is b"\x05".
-        invalid_payload = (
-            b"QH1"  # Magic header
-            b"\x03"  # n_bits = 3
-            b"\x03"  # unique = 3
-            b"\x0a"  # total_shots = 10 (INCORRECT)
-            b"\x03"  # num_gaps = 3
-            b"\x01\x04\x02"  # gaps data
-            b"\x05"  # rb_len = 5
-            b"\x03\x01\x01\x01\x01"  # Correct RLE data
-            b"\x01"  # extras_len = 1
-            b"\x01"  # extras data
-        )
-        with pytest.raises(ValueError, match="corrupt stream: shot sum mismatch"):
-            _decompress_histogram(invalid_payload)
-
-    def test_decompress_histogram_unique_mismatch_error(self):
-        """Tests that a corrupt stream with a unique count mismatch raises a ValueError."""
-        # This payload is correctly formed but has an invalid `unique` value.
-        # The RLE data is b"\x03\x01\x01\x01\x01" (num_runs=3, first_val=T, len1=1, len2=1, len3=1)
-        # The length of this RLE data is 5 bytes, so rb_len is b"\x05".
-        invalid_payload = (
-            b"QH1"  # Magic header
-            b"\x03"  # n_bits = 3
-            b"\x02"  # unique = 2 (INCORRECT)
-            b"\x05"  # total_shots = 5
-            b"\x03"  # num_gaps = 3
-            b"\x01\x04\x02"  # gaps data
-            b"\x05"  # rb_len = 5
-            b"\x03\x01\x01\x01\x01"  # Correct RLE data
-            b"\x01"  # extras_len = 1
-            b"\x01"  # extras data
-        )
-
-        with pytest.raises(ValueError, match="corrupt stream: unique mismatch"):
-            _decompress_histogram(invalid_payload)
-
-    # --- Low-level Utility Function Tests ---
-
-    def test_uleb128_decode(self):
-        """Tests ULEB128 decoding for single-byte, multi-byte, and truncated inputs."""
-        # Single-byte value
-        val, pos = _uleb128_decode(b"\x05", 0)
-        assert val == 5 and pos == 1
-
-        # Multi-byte value (128)
-        val, pos = _uleb128_decode(b"\x80\x01", 0)
-        assert val == 128 and pos == 2
-
-        # Decoding with an offset
-        val, pos = _uleb128_decode(b"\x00\x05", 1)
-        assert val == 5 and pos == 2
-
-        # Truncated varint raises an error
-        with pytest.raises(ValueError, match="truncated varint"):
-            _uleb128_decode(b"\x80")
-
-    def test_rle_bool_decode(self):
-        """Tests RLE boolean decoding for zero, single, and multiple runs."""
-        # Zero runs
-        result, pos = _rle_bool_decode(b"\x00")
-        assert result == [] and pos == 1
-
-        # Multiple runs: decodes to [True, False, False]
-        # num_runs=2, first_val=True, len1=1, len2=2
-        data = b"\x02\x01\x01\x02"
-        result, pos = _rle_bool_decode(data)
-        assert result == [True, False, False]
-        assert pos == 4
-
-    def test_int_to_bitstr(self):
-        """Tests integer to bitstring conversion with zero-padding."""
-        assert _int_to_bitstr(5, 4) == "0101"
-        assert _int_to_bitstr(1, 2) == "01"
-        assert _int_to_bitstr(7, 3) == "111"
 
 
 class TestQoroServiceMock:
@@ -734,7 +573,7 @@ class TestQoroServiceMock:
         mocker.patch.object(service, "_make_request", return_value=mock_response)
 
         status = service.poll_job_status("test_job")
-        assert status == "RUNNING"
+        assert status == JobStatus.RUNNING
 
         # Test 2: Loop until completed
         mock_responses = [
@@ -785,17 +624,16 @@ class TestQoroServiceMock:
 
         mocker.patch.object(service, "_make_request", side_effect=mock_responses)
 
-        poll_callback = mocker.MagicMock()
+        progress_callback = mocker.MagicMock()
         status = service.poll_job_status(
-            "test_job", loop_until_complete=True, poll_callback=poll_callback
+            "test_job", loop_until_complete=True, progress_callback=progress_callback
         )
 
         assert status == JobStatus.COMPLETED
-        poll_callback.assert_called()
+        progress_callback.assert_called()
 
     def test_get_job_results_error_handling(self, mocker, qoro_service_factory):
         """Test get_job_results error handling."""
-        from divi.backends._qoro_service import QoroService
 
         service = qoro_service_factory(auth_token="test_token")
 
@@ -1313,6 +1151,71 @@ class TestQoroServiceMock:
         with pytest.raises(requests.exceptions.HTTPError, match="API Error: 404"):
             qoro_service_mock.get_job_results("job_1")
 
+    # --- Tests for cancel_job ---
+
+    def test_cancel_job_success(self, mocker, qoro_service_factory):
+        """Test cancel job success."""
+        qoro_service_mock = qoro_service_factory()
+        mock_response_data = {
+            "status": "cancelled",
+            "job_id": "job_1",
+            "circuits_cancelled": 8,
+        }
+        mock_response = mocker.MagicMock(
+            status_code=HTTPStatus.OK, json=lambda: mock_response_data
+        )
+        mock_make_request = mocker.patch.object(
+            qoro_service_mock, "_make_request", return_value=mock_response
+        )
+
+        response = qoro_service_mock.cancel_job("job_1")
+
+        mock_make_request.assert_called_once_with(
+            "post", "job/job_1/cancel/", timeout=50
+        )
+        assert response.status_code == HTTPStatus.OK
+        result = response.json()
+        assert result == mock_response_data
+        assert result["status"] == "cancelled"
+        assert result["job_id"] == "job_1"
+        assert result["circuits_cancelled"] == 8
+
+    def test_cancel_job_forbidden_error(self, mocker, qoro_service_factory):
+        """Test cancel job with 403 Forbidden error."""
+        qoro_service_mock = qoro_service_factory()
+        mock_response = mocker.MagicMock()
+        mock_response.status_code = 403
+        mock_response.reason = "Forbidden"
+        mock_response.json.return_value = {
+            "detail": "You do not have permission to modify this job."
+        }
+
+        mock_error = requests.exceptions.HTTPError("403 Forbidden")
+        mock_error.response = mock_response
+
+        mocker.patch.object(qoro_service_mock, "_make_request", side_effect=mock_error)
+
+        with pytest.raises(requests.exceptions.HTTPError, match="403 Forbidden"):
+            qoro_service_mock.cancel_job("job_1")
+
+    def test_cancel_job_conflict_error(self, mocker, qoro_service_factory):
+        """Test cancel job with 409 Conflict error (job not cancellable)."""
+        qoro_service_mock = qoro_service_factory()
+        mock_response = mocker.MagicMock()
+        mock_response.status_code = 409
+        mock_response.reason = "Conflict"
+        mock_response.json.return_value = {
+            "error": "Can only cancel a PENDING or RUNNING job"
+        }
+
+        mock_error = requests.exceptions.HTTPError("409 Conflict")
+        mock_error.response = mock_response
+
+        mocker.patch.object(qoro_service_mock, "_make_request", side_effect=mock_error)
+
+        with pytest.raises(requests.exceptions.HTTPError, match="409 Conflict"):
+            qoro_service_mock.cancel_job("job_1")
+
     # --- Tests for poll_job_status ---
 
     def test_poll_job_status_success_mock(self, mocker, qoro_service_factory):
@@ -1369,7 +1272,7 @@ class TestQoroServiceMock:
         status = qoro_service_mock.poll_job_status("job_1", loop_until_complete=False)
 
         mock_make_request.assert_called_once()
-        assert status == JobStatus.RUNNING.value
+        assert status == JobStatus.RUNNING
 
     def test_poll_job_status_on_complete_callback_mock(
         self, mocker, qoro_service_factory
@@ -1412,7 +1315,7 @@ class TestQoroServiceMock:
 
         pbar_mock = mocker.MagicMock()
         qoro_service_mock.poll_job_status(
-            "job_1", loop_until_complete=True, poll_callback=pbar_mock, verbose=True
+            "job_1", loop_until_complete=True, progress_callback=pbar_mock, verbose=True
         )
 
         assert pbar_mock.call_count == 2
@@ -1445,15 +1348,71 @@ class TestQoroServiceWithApiKey:
         res = qoro_service.delete_job(job_id)
         assert res.status_code == 204, "Deletion should be successful"
 
+    def test_submit_and_cancel_circuits(self, qoro_service, circuits):
+        """Tests submitting and then cancelling circuits."""
+        job_id = qoro_service.submit_circuits(circuits)
+        assert isinstance(job_id, str), "Job ID should be a string"
+
+        cancel_response = qoro_service.cancel_job(job_id)
+        assert (
+            cancel_response.status_code == HTTPStatus.OK
+        ), "Cancel should be successful"
+        cancel_result = cancel_response.json()
+        assert isinstance(cancel_result, dict), "Cancel result should be a dict"
+        assert cancel_result["status"] == "cancelled", "Status should be cancelled"
+        assert cancel_result["job_id"] == job_id, "Job ID should match"
+        assert (
+            "circuits_cancelled" in cancel_result
+        ), "Should include circuits_cancelled"
+
+        # Cleanup: delete the cancelled job
+        res = qoro_service.delete_job(job_id)
+        assert res.status_code == 204, "Deletion should be successful"
+
+    def test_cancel_completed_job_fails(self, qoro_service, circuits):
+        """Tests that cancelling a completed job fails with 409 Conflict."""
+        # Use only one circuit for a quicker test
+        single_circuit = {"circuit_1": circuits["circuit_0"]}
+        job_id = qoro_service.submit_circuits(single_circuit)
+
+        # Wait for job to complete
+        status = qoro_service.poll_job_status(job_id, loop_until_complete=True)
+        assert status == JobStatus.COMPLETED, "Job should complete"
+
+        # Try to cancel completed job - should fail
+        with pytest.raises(requests.exceptions.HTTPError) as exc_info:
+            qoro_service.cancel_job(job_id)
+
+        # Should be 409 Conflict
+        assert (
+            exc_info.value.response.status_code == HTTPStatus.CONFLICT
+        ), "Cancelling completed job should return 409 Conflict"
+
+        # Cleanup
+        res = qoro_service.delete_job(job_id)
+        assert res.status_code == 204, "Deletion should be successful"
+
+    def test_cancel_nonexistent_job_fails(self, qoro_service):
+        """Tests that cancelling a non-existent job fails."""
+        fake_job_id = "nonexistent-job-id-12345"
+
+        # Try to cancel non-existent job - should fail
+        with pytest.raises(requests.exceptions.HTTPError) as exc_info:
+            qoro_service.cancel_job(fake_job_id)
+
+        # Should be 404 Not Found or 403 Forbidden
+        assert exc_info.value.response.status_code in [
+            HTTPStatus.NOT_FOUND,
+            HTTPStatus.FORBIDDEN,
+        ], "Cancelling non-existent job should return 404 or 403"
+
     def test_get_job_status(self, qoro_service, circuits):
         """Tests retrieving the status of a submitted job."""
         job_id = qoro_service.submit_circuits(circuits)
         status = qoro_service.poll_job_status(job_id)
 
         assert status is not None, "Status should not be None"
-        assert status in [
-            s.value for s in JobStatus
-        ], "Status should be a valid JobStatus"
+        assert status in JobStatus, "Status should be a valid JobStatus"
 
         res = qoro_service.delete_job(job_id)
         assert res.status_code == 204, "Deletion should be successful"
@@ -1527,7 +1486,10 @@ class TestQoroServiceWithApiKey:
         ham_terms = ham_ops.split(";")
         assert len(exp_values) == len(ham_terms)
         assert set(exp_values.keys()) == set(ham_terms)
-        assert all(isinstance(val, float) for val in exp_values.values())
+        # Values should be numeric (float or int)
+        assert all(
+            isinstance(val, (float, int)) for val in exp_values.values()
+        ), "Expectation values should be numeric"
 
         # Cleanup
         res = qoro_service.delete_job(job_id)

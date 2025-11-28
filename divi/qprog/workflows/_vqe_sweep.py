@@ -12,10 +12,11 @@ from typing import Literal, NamedTuple
 
 import matplotlib.pyplot as plt
 import numpy as np
+import numpy.typing as npt
 import pennylane as qml
 
 from divi.qprog import VQE, Ansatz, ProgramBatch
-from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
+from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer, copy_optimizer
 
 
 def _ctor_attrs(obj):
@@ -70,7 +71,7 @@ def _find_refs(adj, placed, parent, child):
 
 # --- Main functions ---
 def _cartesian_to_zmatrix(
-    coords: np.ndarray, connectivity: list[tuple[int, int]]
+    coords: npt.NDArray[np.float64], connectivity: list[tuple[int, int]]
 ) -> list[_ZMatrixEntry]:
     num_atoms = len(coords)
     if num_atoms == 0:
@@ -120,7 +121,7 @@ def _cartesian_to_zmatrix(
     return [zmatrix_entries[i] for i in range(num_atoms)]
 
 
-def _zmatrix_to_cartesian(z_matrix: list[_ZMatrixEntry]) -> np.ndarray:
+def _zmatrix_to_cartesian(z_matrix: list[_ZMatrixEntry]) -> npt.NDArray[np.float64]:
     n_atoms = len(z_matrix)
     coords = np.zeros((n_atoms, 3))
 
@@ -225,18 +226,22 @@ def _transform_bonds(
     return new_zmatrix
 
 
-def _kabsch_align(P_in: np.ndarray, Q_in: np.ndarray, reference_atoms_idx=slice(None)):
+def _kabsch_align(
+    P_in: npt.NDArray[np.float64],
+    Q_in: npt.NDArray[np.float64],
+    reference_atoms_idx=slice(None),
+) -> npt.NDArray[np.float64]:
     """
     Align point set P onto Q using the Kabsch algorithm.
 
     Parameters
     ----------
-    P : (N, D) ndarray. Source coordinates.
-    Q : (N, D) ndarray. Target coordinates.
+    P : (N, D) npt.NDArray[np.float64]. Source coordinates.
+    Q : (N, D) npt.NDArray[np.float64]. Target coordinates.
 
     Returns
     -------
-    P_aligned : (N, D) ndarray
+    P_aligned : (N, D) npt.NDArray[np.float64]
         P rotated and translated onto Q.
     """
 
@@ -431,9 +436,13 @@ class VQEHyperparameterSweep(ProgramBatch):
         self.ansatze = ansatze
         self.max_iterations = max_iterations
 
+        # Store the optimizer template (will be copied for each program)
+        self._optimizer_template = (
+            optimizer if optimizer is not None else MonteCarloOptimizer()
+        )
+
         self._constructor = partial(
             VQE,
-            optimizer=optimizer if optimizer is not None else MonteCarloOptimizer(),
             max_iterations=self.max_iterations,
             backend=self.backend,
             **kwargs,
@@ -461,6 +470,7 @@ class VQEHyperparameterSweep(ProgramBatch):
                 job_id=_job_id,
                 molecule=molecule,
                 ansatz=ansatz,
+                optimizer=copy_optimizer(self._optimizer_template),
                 progress_queue=self._queue,
             )
 

@@ -5,7 +5,7 @@
 import logging
 from enum import Enum
 from functools import reduce
-from typing import Literal, get_args
+from typing import Any, Literal, get_args
 from warnings import warn
 
 import matplotlib.pyplot as plt
@@ -21,8 +21,11 @@ from qiskit_optimization.converters import QuadraticProgramToQubo
 from qiskit_optimization.problems import VarType
 
 from divi.circuits import CircuitBundle, MetaCircuit
+from divi.qprog._hamiltonians import (
+    _clean_hamiltonian,
+    convert_qubo_matrix_to_pennylane_ising,
+)
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
-from divi.utils import clean_hamiltonian, convert_qubo_matrix_to_pennylane_ising
 
 logger = logging.getLogger(__name__)
 
@@ -240,7 +243,7 @@ class QAOA(VariationalQuantumAlgorithm):
         current_iteration (int): Current optimization iteration.
         _n_params (int): Number of parameters per layer (always 2 for QAOA).
         _solution_nodes (list[int] | None): Solution nodes for graph problems.
-        _solution_bitstring (np.ndarray | None): Solution bitstring for QUBO problems.
+        _solution_bitstring (npt.NDArray[np.int32] | None): Solution bitstring for QUBO problems.
     """
 
     def __init__(
@@ -266,6 +269,8 @@ class QAOA(VariationalQuantumAlgorithm):
             **kwargs: Additional keyword arguments passed to the parent class, including `optimizer`.
         """
         super().__init__(**kwargs)
+
+        self.graph_problem = graph_problem
 
         # Validate and process problem
         self.problem = self._validate_and_set_problem(problem, graph_problem)
@@ -300,7 +305,7 @@ class QAOA(VariationalQuantumAlgorithm):
         self.problem_metadata = problem_metadata[0] if problem_metadata else {}
 
         # Extract and combine constants
-        self._cost_hamiltonian, constant_from_hamiltonian = clean_hamiltonian(
+        self._cost_hamiltonian, constant_from_hamiltonian = _clean_hamiltonian(
             cost_hamiltonian
         )
         self.loss_constant = _extract_loss_constant(
@@ -309,6 +314,46 @@ class QAOA(VariationalQuantumAlgorithm):
 
         # Extract wire labels from the cost Hamiltonian to ensure consistency
         self._circuit_wires = tuple(self._cost_hamiltonian.wires)
+
+    def _save_subclass_state(self) -> dict[str, Any]:
+        """Save QAOA-specific runtime state."""
+        return {
+            "problem_metadata": self.problem_metadata,
+            "solution_nodes": self._solution_nodes,
+            "solution_bitstring": self._solution_bitstring,
+            "loss_constant": self.loss_constant,
+        }
+
+    def _load_subclass_state(self, state: dict[str, Any]) -> None:
+        """Load QAOA-specific state.
+
+        Raises:
+            KeyError: If any required state key is missing (indicates checkpoint corruption).
+        """
+        required_keys = [
+            "problem_metadata",
+            "solution_nodes",  # Key must exist, but value can be None if final computation hasn't run
+            "solution_bitstring",  # Key must exist, but value can be None if final computation hasn't run
+            "loss_constant",
+        ]
+        missing_keys = [key for key in required_keys if key not in state]
+        if missing_keys:
+            raise KeyError(
+                f"Corrupted checkpoint: missing required state keys: {missing_keys}"
+            )
+
+        self.problem_metadata = state["problem_metadata"]
+        # solution_nodes and solution_bitstring can be None if final computation hasn't run
+        # Convert None to empty list to match initialization behavior
+        self._solution_nodes = (
+            state["solution_nodes"] if state["solution_nodes"] is not None else []
+        )
+        self._solution_bitstring = (
+            state["solution_bitstring"]
+            if state["solution_bitstring"] is not None
+            else []
+        )
+        self.loss_constant = state["loss_constant"]
 
     def _validate_and_set_problem(
         self,
@@ -417,7 +462,7 @@ class QAOA(VariationalQuantumAlgorithm):
         """Get the solution found by QAOA optimization.
 
         Returns:
-            list[int] | np.ndarray: For graph problems, returns a list of selected node indices.
+            list[int] | npt.NDArray[np.int32]: For graph problems, returns a list of selected node indices.
                 For QUBO problems, returns a list/array of binary values.
         """
         return (
@@ -442,50 +487,27 @@ class QAOA(VariationalQuantumAlgorithm):
 
         sym_params = np.vstack((betas, gammas)).transpose()
 
-        def _qaoa_layer(params):
-            gamma, beta = params
-            pqaoa.cost_layer(gamma, self._cost_hamiltonian)
-            pqaoa.mixer_layer(beta, self._mixer_hamiltonian)
-
-        def _prepare_circuit(hamiltonian, params, final_measurement):
-            """Prepare the circuit for the QAOA problem.
-
-            Args:
-                hamiltonian (qml.Hamiltonian): The Hamiltonian term to measure.
-                params (np.ndarray): The QAOA parameters (betas and gammas).
-                final_measurement (bool): Whether to perform final measurement.
-            """
-
-            # Use the wire labels from the cost Hamiltonian to ensure consistency
-            # This is important for graph problems where node labels might be strings
-            # Note: could've been done as qml.[Insert Gate](wires=self._circuit_wires)
-            # but there seems to be a bug with program capture in Pennylane.
-            # Maybe check when a new version comes out?
-            if self.initial_state == "Ones":
-                for wire in self._circuit_wires:
-                    qml.PauliX(wires=wire)
-            elif self.initial_state == "Superposition":
-                for wire in self._circuit_wires:
-                    qml.Hadamard(wires=wire)
-
-            qml.layer(_qaoa_layer, self.n_layers, params)
-
-            if final_measurement:
-                return qml.probs()
-            else:
-                return qml.expval(hamiltonian)
+        ops = []
+        if self.initial_state == "Ones":
+            for wire in self._circuit_wires:
+                ops.append(qml.PauliX(wires=wire))
+        elif self.initial_state == "Superposition":
+            for wire in self._circuit_wires:
+                ops.append(qml.Hadamard(wires=wire))
+        for layer_params in sym_params:
+            gamma, beta = layer_params
+            ops.append(pqaoa.cost_layer(gamma, self._cost_hamiltonian))
+            ops.append(pqaoa.mixer_layer(beta, self._mixer_hamiltonian))
 
         return {
             "cost_circuit": self._meta_circuit_factory(
-                source_circuit=qml.tape.make_qscript(_prepare_circuit)(
-                    self._cost_hamiltonian, sym_params, final_measurement=False
+                qml.tape.QuantumScript(
+                    ops=ops, measurements=[qml.expval(self._cost_hamiltonian)]
                 ),
                 symbols=sym_params.flatten(),
             ),
             "meas_circuit": self._meta_circuit_factory(
-                source_circuit=qml.tape.make_qscript(_prepare_circuit)(
-                    self._cost_hamiltonian, sym_params, final_measurement=True
-                ),
+                qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()]),
                 symbols=sym_params.flatten(),
                 grouping_strategy="wires",
             ),
@@ -512,26 +534,6 @@ class QAOA(VariationalQuantumAlgorithm):
             for p, params_group in enumerate(self._curr_params)
         ]
 
-    def _post_process_results(self, results, **kwargs):
-        """Post-process the results of the QAOA problem.
-
-        Args:
-            results (dict[str, dict[str, int]]): Raw results from circuit execution.
-            **kwargs: Additional keyword arguments.
-                ham_ops (str): The Hamiltonian operators to measure, semicolon-separated.
-                    Only needed when the backend supports expval.
-
-        Returns:
-            dict[str, dict[str, float]] | dict[int, float]: The losses for each parameter set grouping, or probability
-                distributions if computing probabilities.
-        """
-
-        if self._is_compute_probabilities:
-            return self._process_probability_results(results)
-
-        losses = super()._post_process_results(results, **kwargs)
-        return losses
-
     def _perform_final_computation(self, **kwargs):
         """Extract the optimal solution from the QAOA optimization process.
 
@@ -548,7 +550,7 @@ class QAOA(VariationalQuantumAlgorithm):
                 - float: The total runtime of the optimization process.
         """
 
-        self.reporter.info(message="🏁 Computing Final Solution 🏁\r")
+        self.reporter.info(message="🏁 Computing Final Solution 🏁", overwrite=True)
 
         self._run_solution_measurement()
 
@@ -573,7 +575,7 @@ class QAOA(VariationalQuantumAlgorithm):
                 if bit == "1" and idx < len(self._circuit_wires)
             ]
 
-        self.reporter.info(message="🏁 Computed Final Solution! 🏁\r\n")
+        self.reporter.info(message="🏁 Computed Final Solution! 🏁")
 
         return self._total_circuit_count, self._total_run_time
 

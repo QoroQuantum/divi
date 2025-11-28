@@ -43,7 +43,7 @@ if __name__ == "__main__":
 
     # Example 4: Submit an expectation value calculation job.
     print("\n" + "=" * 60)
-    print("=== Example 4: Submit an expectation value calculation job ===")
+    print("=== Example 2: Submit an expectation value calculation job ===")
     print("=" * 60)
 
     ham_ops = "IIII;ZZZZ;XXXX;YYYY;ZIII;IZII;IIZI;IIIZ"

@@ -9,7 +9,7 @@ import pennylane as qml
 import pytest
 from scipy.spatial.distance import pdist, squareform
 
-from divi.qprog.algorithms import GenericLayerAnsatz, UCCSDAnsatz
+from divi.qprog.algorithms import GenericLayerAnsatz, HartreeFockAnsatz, UCCSDAnsatz
 from divi.qprog.optimizers import MonteCarloOptimizer
 from divi.qprog.workflows import (
     MoleculeTransformer,
@@ -297,8 +297,8 @@ class TestMoleculeTransformerGeneration:
 def vqe_sweep(default_test_simulator, h2_molecule):
     """Fixture to create a VQEHyperparameterSweep instance with the new interface."""
     bond_modifiers = [0.9, 1.0, 1.1]
-    ansatze = [UCCSDAnsatz(), GenericLayerAnsatz([qml.RY])]
-    optimizer = MonteCarloOptimizer(population_size=10, n_best_sets=3)
+    ansatze = [HartreeFockAnsatz(), GenericLayerAnsatz([qml.RY])]
+    optimizer = MonteCarloOptimizer(population_size=5, n_best_sets=2)
     max_iterations = 10
 
     transformer = MoleculeTransformer(
@@ -392,8 +392,11 @@ class TestVQEHyperparameterSweep:
         assert mock_plot.call_count == len(vqe_sweep.ansatze)
 
         # Construct expected calls
-        call_uccsd = mocker.call(
-            [0.9, 1.0, 1.1], [-9.0, -10.0, -11.0], label="UCCSDAnsatz", color="blue"
+        call_hartree_fock = mocker.call(
+            [0.9, 1.0, 1.1],
+            [-9.0, -10.0, -11.0],
+            label="HartreeFockAnsatz",
+            color="blue",
         )
         call_ry = mocker.call(
             [0.9, 1.0, 1.1],
@@ -402,7 +405,7 @@ class TestVQEHyperparameterSweep:
             color="g",
         )
 
-        mock_plot.assert_has_calls([call_uccsd, call_ry], any_order=True)
+        mock_plot.assert_has_calls([call_hartree_fock, call_ry], any_order=True)
 
     def test_visualize_results_with_invalid_graph_type(self, mocker, vqe_sweep):
         """Test that providing an invalid graph type raises a ValueError."""

@@ -19,12 +19,13 @@ from divi.circuits.qem import ZNE, _NoMitigation
 
 class TestCircuitBundle:
     def test_bundle_creation(self):
-        def test_circuit():
-            qml.RX(0.5, wires=0)
-            qml.CNOT(wires=[0, 1])
-            return qml.expval(qml.PauliZ(0))
-
-        qscript = qml.tape.make_qscript(test_circuit)()
+        ops = [
+            qml.RX(0.5, wires=0),
+            qml.CNOT(wires=[0, 1]),
+        ]
+        qscript = qml.tape.QuantumScript(
+            ops=ops, measurements=[qml.expval(qml.PauliZ(0))]
+        )
         qasm_list = to_openqasm(
             qscript,
             measurement_groups=[qscript.measurements],
@@ -49,28 +50,25 @@ class TestMetaCircuit:
 
     @pytest.fixture
     def sample_circuit(self, weights_syms):
-        def circ(weights):
-            qml.AngleEmbedding(weights, wires=range(4), rotation="Y")
-            qml.AngleEmbedding(weights, wires=range(4), rotation="X")
-
-            return qml.probs()
-
-        return qml.tape.make_qscript(circ)(weights_syms)
+        ops = [
+            qml.AngleEmbedding(weights_syms, wires=range(4), rotation="Y"),
+            qml.AngleEmbedding(weights_syms, wires=range(4), rotation="X"),
+        ]
+        return qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()])
 
     @pytest.fixture
     def expval_circuit(self, weights_syms):
-        def circ(weights):
-            qml.AngleEmbedding(weights, wires=range(4), rotation="Y")
-            return qml.expval(qml.PauliZ(0))
-
-        return qml.tape.make_qscript(circ)(weights_syms)
+        ops = [
+            qml.AngleEmbedding(weights_syms, wires=range(4), rotation="Y"),
+        ]
+        return qml.tape.QuantumScript(ops=ops, measurements=[qml.expval(qml.PauliZ(0))])
 
     @pytest.fixture
     def no_measurement_circuit(self, weights_syms):
-        def circ(weights):
-            qml.AngleEmbedding(weights, wires=range(4), rotation="Y")
-
-        return qml.tape.make_qscript(circ)(weights_syms)
+        ops = [
+            qml.AngleEmbedding(weights_syms, wires=range(4), rotation="Y"),
+        ]
+        return qml.tape.QuantumScript(ops=ops, measurements=[])
 
     def test_metacircuit_valid_measurement(self, expval_circuit, weights_syms):
         """Tests that MetaCircuit initializes correctly with a valid expval measurement."""
@@ -253,3 +251,83 @@ class TestMetaCircuit:
         assert isinstance(
             meta_circuit_unpickled.postprocessing_fn(mock_results), np.floating
         )
+
+    def test_metacircuit_precision_default(self, expval_circuit, weights_syms):
+        """Test that MetaCircuit defaults to precision=8 when not specified."""
+        meta_circuit = MetaCircuit(
+            source_circuit=expval_circuit,
+            symbols=weights_syms,
+        )
+        assert meta_circuit.precision == 8
+
+    def test_metacircuit_precision_custom(self, expval_circuit, weights_syms):
+        """Test that MetaCircuit accepts a custom precision value."""
+        meta_circuit = MetaCircuit(
+            source_circuit=expval_circuit,
+            symbols=weights_syms,
+            precision=12,
+        )
+        assert meta_circuit.precision == 12
+
+    def test_metacircuit_precision_used_in_qasm_conversion(
+        self, mocker, expval_circuit, weights_syms
+    ):
+        """Test that precision is passed to to_openqasm during MetaCircuit initialization."""
+        mock_to_openqasm = mocker.patch("divi.circuits._core.to_openqasm")
+        mock_to_openqasm.return_value = (["circuit_body"], ["measurement"])
+
+        MetaCircuit(
+            source_circuit=expval_circuit,
+            symbols=weights_syms,
+            precision=6,
+        )
+
+        # Verify to_openqasm was called with precision=6
+        assert mock_to_openqasm.called
+        call_kwargs = mock_to_openqasm.call_args[1]
+        assert call_kwargs["precision"] == 6
+
+    def test_initialize_circuit_from_params_uses_metacircuit_precision(
+        self, sample_circuit, weights_syms
+    ):
+        """Test that initialize_circuit_from_params uses MetaCircuit precision when not specified."""
+        meta_circuit = MetaCircuit(
+            source_circuit=sample_circuit,
+            symbols=weights_syms,
+            precision=4,
+        )
+
+        param_list = [0.123456789, 0.212345678, 0.312345678, 0.412345678]
+        circuit = meta_circuit.initialize_circuit_from_params(param_list)
+
+        # Check that parameters are formatted with precision=4
+        params_pattern = r"r[yx]\(([-+]?\d*\.?\d+)\)"
+        actual_params = re.findall(params_pattern, circuit.qasm_circuits[0])
+
+        for actual, expected in zip(actual_params, param_list * 2):
+            # Should be rounded to 4 decimal places
+            assert len(actual.split(".")[1]) == 4 if "." in actual else True
+            assert round(expected, 4) == float(actual)
+
+    def test_initialize_circuit_from_params_overrides_precision(
+        self, sample_circuit, weights_syms
+    ):
+        """Test that initialize_circuit_from_params can override MetaCircuit precision."""
+        meta_circuit = MetaCircuit(
+            source_circuit=sample_circuit,
+            symbols=weights_syms,
+            precision=4,  # MetaCircuit precision
+        )
+
+        param_list = [0.123456789, 0.212345678, 0.312345678, 0.412345678]
+        # Override with precision=6
+        circuit = meta_circuit.initialize_circuit_from_params(param_list, precision=6)
+
+        # Check that parameters are formatted with precision=6 (overridden value)
+        params_pattern = r"r[yx]\(([-+]?\d*\.?\d+)\)"
+        actual_params = re.findall(params_pattern, circuit.qasm_circuits[0])
+
+        for actual, expected in zip(actual_params, param_list * 2):
+            # Should be rounded to 6 decimal places
+            assert len(actual.split(".")[1]) == 6 if "." in actual else True
+            assert round(expected, 6) == float(actual)

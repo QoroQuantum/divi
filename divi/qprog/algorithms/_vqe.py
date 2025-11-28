@@ -2,16 +2,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from typing import Any
 from warnings import warn
 
 import numpy as np
+import numpy.typing as npt
 import pennylane as qml
 import sympy as sp
 
 from divi.circuits import CircuitBundle, MetaCircuit
+from divi.qprog._hamiltonians import _clean_hamiltonian
 from divi.qprog.algorithms._ansatze import Ansatz, HartreeFockAnsatz
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
-from divi.utils import clean_hamiltonian
 
 
 class VQE(VariationalQuantumAlgorithm):
@@ -94,11 +96,11 @@ class VQE(VariationalQuantumAlgorithm):
         )
 
     @property
-    def eigenstate(self) -> np.ndarray | None:
+    def eigenstate(self) -> npt.NDArray[np.int32] | None:
         """Get the computed eigenstate as a NumPy array.
 
         Returns:
-            np.ndarray | None: The array of bits of the lowest energy eigenstate,
+            npt.NDArray[np.int32] | None: The array of bits of the lowest energy eigenstate,
                 or None if not computed.
         """
         return self._eigenstate
@@ -140,7 +142,7 @@ class VQE(VariationalQuantumAlgorithm):
                     UserWarning,
                 )
 
-        self._cost_hamiltonian, self.loss_constant = clean_hamiltonian(hamiltonian)
+        self._cost_hamiltonian, self.loss_constant = _clean_hamiltonian(hamiltonian)
         if not self._cost_hamiltonian.operands:
             raise ValueError("Hamiltonian contains only constant terms.")
 
@@ -160,41 +162,22 @@ class VQE(VariationalQuantumAlgorithm):
             ),
         )
 
-        def _prepare_circuit(hamiltonian, params, final_measurement=False):
-            """Prepare the circuit for the VQE problem.
-
-            Args:
-                hamiltonian: The Hamiltonian to measure.
-                params: The parameters for the ansatz.
-                final_measurement (bool): Whether to perform final measurement.
-            """
-            self.ansatz.build(
-                params,
-                n_qubits=self.n_qubits,
-                n_layers=self.n_layers,
-                n_electrons=self.n_electrons,
-            )
-
-            if final_measurement:
-                return qml.probs()
-
-            # Even though in principle we want to sample from a state,
-            # we are applying an `expval` operation here to make it compatible
-            # with the pennylane transforms down the line, which complain about
-            # the `sample` operation.
-            return qml.expval(hamiltonian)
+        ops = self.ansatz.build(
+            weights_syms,
+            n_qubits=self.n_qubits,
+            n_layers=self.n_layers,
+            n_electrons=self.n_electrons,
+        )
 
         return {
             "cost_circuit": self._meta_circuit_factory(
-                source_circuit=qml.tape.make_qscript(_prepare_circuit)(
-                    self._cost_hamiltonian, weights_syms, final_measurement=False
+                qml.tape.QuantumScript(
+                    ops=ops, measurements=[qml.expval(self._cost_hamiltonian)]
                 ),
                 symbols=weights_syms.flatten(),
             ),
             "meas_circuit": self._meta_circuit_factory(
-                source_circuit=qml.tape.make_qscript(_prepare_circuit)(
-                    self._cost_hamiltonian, weights_syms, final_measurement=True
-                ),
+                qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()]),
                 symbols=weights_syms.flatten(),
                 grouping_strategy="wires",
             ),
@@ -220,23 +203,9 @@ class VQE(VariationalQuantumAlgorithm):
             for p, params_group in enumerate(self._curr_params)
         ]
 
-    def _post_process_results(self, results, **kwargs):
-        """Post-process the results of the VQE problem.
-
-        Args:
-            results (dict[str, dict[str, int]]): The shot histograms of the quantum execution step.
-            **kwargs: Additional keyword arguments.
-                ham_ops (str): The Hamiltonian operators to measure, semicolon-separated.
-                    Only needed when the backend supports expval.
-        """
-        if self._is_compute_probabilities:
-            return self._process_probability_results(results)
-
-        return super()._post_process_results(results, **kwargs)
-
     def _perform_final_computation(self, **kwargs):
         """Extract the eigenstate corresponding to the lowest energy found."""
-        self.reporter.info(message="🏁 Computing Final Eigenstate 🏁\r")
+        self.reporter.info(message="🏁 Computing Final Eigenstate 🏁", overwrite=True)
 
         self._run_solution_measurement()
 
@@ -247,6 +216,34 @@ class VQE(VariationalQuantumAlgorithm):
             )
             self._eigenstate = np.fromiter(eigenstate_bitstring, dtype=np.int32)
 
-        self.reporter.info(message="🏁 Computed Final Eigenstate! 🏁\r\n")
+        self.reporter.info(message="🏁 Computed Final Eigenstate! 🏁")
 
         return self._total_circuit_count, self._total_run_time
+
+    def _save_subclass_state(self) -> dict[str, Any]:
+        """Save VQE-specific runtime state."""
+        return {
+            "eigenstate": (
+                self._eigenstate.tolist() if self._eigenstate is not None else None
+            ),
+        }
+
+    def _load_subclass_state(self, state: dict[str, Any]) -> None:
+        """Load VQE-specific state.
+
+        Raises:
+            KeyError: If any required state key is missing (indicates checkpoint corruption).
+        """
+        required_keys = ["eigenstate"]
+        missing_keys = [key for key in required_keys if key not in state]
+        if missing_keys:
+            raise KeyError(
+                f"Corrupted checkpoint: missing required state keys: {missing_keys}"
+            )
+
+        # eigenstate can be None (if not computed yet), but the key must exist
+        eigenstate_list = state["eigenstate"]
+        if eigenstate_list is not None:
+            self._eigenstate = np.array(eigenstate_list, dtype=np.int32)
+        else:
+            self._eigenstate = None

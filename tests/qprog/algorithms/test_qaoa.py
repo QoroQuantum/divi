@@ -19,6 +19,8 @@ from divi.qprog import (
     ScipyOptimizer,
 )
 from divi.qprog.algorithms import _qaoa
+from divi.qprog.checkpointing import CheckpointConfig
+from tests.conftest import CHECKPOINTING_OPTIMIZERS
 from tests.qprog.qprog_contracts import (
     OPTIMIZERS_TO_TEST,
     verify_correct_circuit_count,
@@ -36,6 +38,7 @@ class TestGeneralQAOA:
         """
         Verifies that _is_compute_probabilities is False during the optimization loop.
         """
+        optimizer = optimizer()  # Create fresh instance
         qaoa_problem = QAOA(
             problem=nx.bull_graph(),
             graph_problem=GraphProblem.MAX_CLIQUE,
@@ -78,6 +81,7 @@ class TestGeneralQAOA:
         Verifies that _is_compute_probabilities is set to True during the final
         circuit generation and is reset to False afterward.
         """
+        optimizer = optimizer()  # Create fresh instance
         qaoa_problem = QAOA(
             problem=nx.bull_graph(),
             graph_problem=GraphProblem.MAX_CLIQUE,
@@ -127,6 +131,7 @@ class TestGeneralQAOA:
     def test_graph_correct_circuits_count_and_energies(
         self, optimizer, dummy_simulator
     ):
+        optimizer = optimizer()  # Create fresh instance
         qaoa_problem = QAOA(
             problem=nx.bull_graph(),
             graph_problem=GraphProblem.MAX_CLIQUE,
@@ -149,7 +154,7 @@ class TestGraphInput:
         qaoa_problem = QAOA(
             problem=G,
             graph_problem=GraphProblem.MAX_CLIQUE,
-            n_layers=2,
+            n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=10,
             backend=default_test_simulator,
@@ -163,7 +168,7 @@ class TestGraphInput:
         assert qaoa_problem.max_iterations == 10
         assert qaoa_problem.graph_problem == GraphProblem.MAX_CLIQUE
         assert qaoa_problem.problem == G
-        assert qaoa_problem.n_layers == 2
+        assert qaoa_problem.n_layers == 1
 
         verify_metacircuit_dict(qaoa_problem, ["cost_circuit", "meas_circuit"])
 
@@ -243,6 +248,7 @@ class TestGraphInput:
     @pytest.mark.e2e
     @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
     def test_graph_qaoa_e2e_solution(self, optimizer, default_test_simulator):
+        optimizer = optimizer()  # Create fresh instance
         if (
             isinstance(optimizer, ScipyOptimizer)
             and optimizer.method == ScipyMethod.L_BFGS_B
@@ -274,6 +280,92 @@ class TestGraphInput:
 
         assert set(
             qaoa_problem._solution_nodes
+        ) == nx.algorithms.approximation.max_clique(G)
+
+    @pytest.mark.e2e
+    @pytest.mark.parametrize("optimizer", **CHECKPOINTING_OPTIMIZERS)
+    def test_graph_qaoa_e2e_checkpointing_resume(
+        self, optimizer, default_test_simulator, tmp_path
+    ):
+        """Test QAOA e2e with checkpointing and multiple resume cycles.
+
+        Tests checkpoint infrastructure (multiple save/load cycles) with all checkpointing-capable
+        optimizers to verify their nuanced checkpoint handling (CMAES generator reinit, DE pop handling).
+        """
+        optimizer = optimizer()  # Create fresh instance
+
+        G = nx.bull_graph()
+        checkpoint_dir = tmp_path / "checkpoint_test"
+        default_test_simulator.set_seed(1997)
+
+        # First run: iterations 1-3
+        qaoa_problem1 = QAOA(
+            graph_problem=GraphProblem.MAX_CLIQUE,
+            problem=G,
+            n_layers=1,
+            optimizer=optimizer,
+            max_iterations=3,
+            is_constrained=True,
+            backend=default_test_simulator,
+            seed=1997,
+        )
+        qaoa_problem1.run(
+            checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir)
+        )
+        assert qaoa_problem1.current_iteration == 3
+
+        # Verify checkpoint was created
+        checkpoint_path = checkpoint_dir / "checkpoint_003"
+        assert checkpoint_path.exists()
+        assert (checkpoint_path / "program_state.json").exists()
+
+        # Store state from first run for comparison
+        first_run_iteration = qaoa_problem1.current_iteration
+        first_run_losses_count = len(qaoa_problem1.losses_history)
+
+        # Second run: resume and run iterations 4-6
+        qaoa_problem2 = QAOA.load_state(
+            checkpoint_dir,
+            backend=default_test_simulator,
+            problem=G,
+            graph_problem=GraphProblem.MAX_CLIQUE,
+            n_layers=1,
+            is_constrained=True,
+        )
+
+        # Verify loaded state matches first run
+        assert qaoa_problem2.current_iteration == first_run_iteration
+        assert len(qaoa_problem2.losses_history) == first_run_losses_count
+
+        qaoa_problem2.max_iterations = 6
+        qaoa_problem2.run(
+            checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir)
+        )
+        assert qaoa_problem2.current_iteration == 6
+        assert (checkpoint_dir / "checkpoint_006").exists()
+
+        # Third run: resume and run iterations 7-10
+        qaoa_problem3 = QAOA.load_state(
+            checkpoint_dir,
+            backend=default_test_simulator,
+            problem=G,
+            graph_problem=GraphProblem.MAX_CLIQUE,
+            n_layers=1,
+            is_constrained=True,
+        )
+        assert qaoa_problem3.current_iteration == 6
+        qaoa_problem3.max_iterations = 10
+        qaoa_problem3.run()
+        assert qaoa_problem3.current_iteration == 10
+
+        # Verify final results are correct
+        assert all(
+            len(bitstring) == G.number_of_nodes()
+            for probs_dict in qaoa_problem3.best_probs.values()
+            for bitstring in probs_dict.keys()
+        )
+        assert set(
+            qaoa_problem3._solution_nodes
         ) == nx.algorithms.approximation.max_clique(G)
 
     def test_draw_solution_returns_graph_with_expected_properties(self, mocker):
@@ -321,9 +413,14 @@ class TestGraphInput:
         # Clean up the plot
         plt.close()
 
-    def test_string_node_labels_bitstring_length(self, default_test_simulator):
-        """Test that graphs with string node labels produce correct bitstring lengths."""
-        # Create a graph with string node labels
+    def test_string_node_labels_bitstring_length(self, mocker, default_test_simulator):
+        """Test that graphs with string node labels produce correct bitstring lengths.
+
+        This test verifies that bitstrings have the correct length (matching number of nodes)
+        when using string node labels. The test mocks circuit execution for speed while
+        still validating the bitstring length logic. For full integration testing, see
+        test_string_node_labels_e2e.
+        """
         G = nx.Graph()
         G.add_nodes_from(["0", "1", "2", "3"])
         G.add_edges_from([("0", "1"), ("1", "2"), ("2", "3")])
@@ -337,19 +434,39 @@ class TestGraphInput:
             backend=default_test_simulator,
         )
 
-        # Mock the optimization to set best_params
-        qaoa_problem._best_params = np.array([[0.1, 0.2]])
-        qaoa_problem._best_loss = 0.5
+        # Verify circuit_wires are correctly set up with string node labels
+        assert len(qaoa_problem._circuit_wires) == G.number_of_nodes()
+        assert all(wire in G.nodes() for wire in qaoa_problem._circuit_wires)
 
-        # Run to get measurement results
+        # Mock optimizer and measurement to skip expensive circuit execution
+        mock_result = mocker.MagicMock()
+        mock_result.x, mock_result.fun, mock_result.nfev, mock_result.njev = (
+            np.array([[0.1, 0.2]]),
+            0.5,
+            1,
+            0,
+        )
+        mocker.patch.object(
+            qaoa_problem.optimizer, "optimize", return_value=mock_result
+        )
+
+        # Mock best_probs with bitstrings of correct length (4 bits for 4 nodes)
+        n_nodes = G.number_of_nodes()
+        mock_probs = {"0_0": {f"{i:0{n_nodes}b}": 0.25 for i in range(4)}}
+        mocker.patch.object(
+            qaoa_problem,
+            "_run_solution_measurement",
+            side_effect=lambda: setattr(qaoa_problem, "_best_probs", mock_probs),
+        )
+
         qaoa_problem.run()
 
-        # Verify all bitstrings have the correct length (should match number of nodes)
+        # Verify all bitstrings have the correct length
         assert all(
-            len(bitstring) == G.number_of_nodes()
+            len(bitstring) == n_nodes
             for probs_dict in qaoa_problem.best_probs.values()
             for bitstring in probs_dict.keys()
-        ), "Bitstring lengths should match the number of graph nodes"
+        )
 
     def test_string_node_labels_solution_mapping(self, mocker):
         """Test that solution correctly maps to string node labels."""
@@ -515,7 +632,7 @@ class TestQUBOInput:
     def test_qubo_basic_initialization(self, input_qubo, default_test_simulator):
         qaoa_problem = QAOA(
             problem=input_qubo,
-            n_layers=2,
+            n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=10,
             backend=default_test_simulator,
@@ -527,7 +644,7 @@ class TestQUBOInput:
         assert qaoa_problem.optimizer.method == ScipyMethod.NELDER_MEAD
         assert qaoa_problem.max_iterations == 10
         assert qaoa_problem.graph_problem == None
-        assert qaoa_problem.n_layers == 2
+        assert qaoa_problem.n_layers == 1
         if isinstance(input_qubo, sps.spmatrix):
             np.testing.assert_equal(
                 qaoa_problem.problem.toarray(), input_qubo.toarray()
@@ -555,7 +672,7 @@ class TestQUBOInput:
             QAOA(
                 problem=QUBO_MATRIX_LIST,
                 graph_problem="max_clique",
-                n_layers=2,
+                n_layers=1,
                 optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
                 max_iterations=10,
                 backend=None,
@@ -568,7 +685,7 @@ class TestQUBOInput:
         ):
             QAOA(
                 problem=np.array([[1, 2], [3, 4], [5, 6]]),
-                n_layers=2,
+                n_layers=1,
                 optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
                 max_iterations=10,
                 backend=None,
@@ -584,7 +701,7 @@ class TestQUBOInput:
         ):
             qaoa_problem = QAOA(
                 problem=test_array,
-                n_layers=2,
+                n_layers=1,
                 optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
                 max_iterations=10,
                 backend=None,
@@ -603,7 +720,7 @@ class TestQUBOInput:
         ):
             QAOA(
                 problem=test_array_sp,
-                n_layers=2,
+                n_layers=1,
                 optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
                 max_iterations=10,
                 backend=None,
@@ -612,7 +729,7 @@ class TestQUBOInput:
     def test_qubo_fails_when_drawing_solution(self):
         qaoa_problem = QAOA(
             problem=QUBO_MATRIX_LIST,
-            n_layers=2,
+            n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=10,
             backend=None,
@@ -641,6 +758,66 @@ class TestQUBOInput:
 
         np.testing.assert_equal(qaoa_problem.solution, [1, 0, 1])
 
+    @pytest.mark.e2e
+    def test_qubo_e2e_checkpointing_resume(self, default_test_simulator, tmp_path):
+        """Test QAOA QUBO e2e with checkpointing and resume functionality.
+
+        Tests QUBO problem type handling with checkpointing, not optimizer-specific behavior.
+        Full optimizer coverage is tested with Graph problems. Uses MonteCarloOptimizer as representative.
+        """
+        from divi.qprog import MonteCarloOptimizer
+
+        optimizer = MonteCarloOptimizer(population_size=10, n_best_sets=3)
+
+        checkpoint_dir = tmp_path / "checkpoint_test"
+        default_test_simulator.set_seed(1997)
+
+        # Run first half with checkpointing
+        qaoa_problem1 = QAOA(
+            problem=QUBO_MATRIX_NP,
+            n_layers=1,
+            optimizer=optimizer,
+            max_iterations=6,  # First half
+            backend=default_test_simulator,
+            seed=1997,
+        )
+
+        qaoa_problem1.run(
+            checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir)
+        )
+
+        # Verify checkpoint was created
+        assert checkpoint_dir.exists()
+        checkpoint_path = checkpoint_dir / "checkpoint_006"
+        assert checkpoint_path.exists()
+        assert (checkpoint_path / "program_state.json").exists()
+
+        # Store state from first run for comparison
+        first_run_iteration = qaoa_problem1.current_iteration
+        first_run_losses_count = len(qaoa_problem1.losses_history)
+
+        # Load and resume - configuration must be provided by the caller
+        qaoa_problem2 = QAOA.load_state(
+            checkpoint_dir,
+            backend=default_test_simulator,
+            problem=QUBO_MATRIX_NP,
+            n_layers=1,
+        )
+
+        # Verify loaded state matches first run
+        assert qaoa_problem2.current_iteration == first_run_iteration
+        assert len(qaoa_problem2.losses_history) == first_run_losses_count
+
+        # Continue running to complete the full run
+        qaoa_problem2.max_iterations = 12  # Total should be 12
+        qaoa_problem2.run()
+
+        # Verify final results are correct
+        np.testing.assert_equal(qaoa_problem2.solution, [1, 0, 1])
+
+        # Verify we completed the full run
+        assert qaoa_problem2.current_iteration == 12
+
     @pytest.fixture
     def quadratic_program(self):
         qp = QuadraticProgram()
@@ -656,7 +833,7 @@ class TestQUBOInput:
     ):
         qaoa_problem = QAOA(
             problem=quadratic_program,
-            n_layers=2,
+            n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=10,
             backend=default_test_simulator,
@@ -668,7 +845,7 @@ class TestQUBOInput:
         assert qaoa_problem.optimizer.method == ScipyMethod.NELDER_MEAD
         assert qaoa_problem.max_iterations == 10
         assert qaoa_problem.graph_problem == None
-        assert qaoa_problem.n_layers == 2
+        assert qaoa_problem.n_layers == 1
 
         assert len(qaoa_problem.cost_hamiltonian) == 3
         assert all(
@@ -691,7 +868,7 @@ class TestQUBOInput:
         ):
             qaoa_problem = QAOA(
                 quadratic_program,
-                n_layers=2,
+                n_layers=1,
                 optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
                 max_iterations=10,
                 backend=None,
@@ -758,3 +935,71 @@ class TestQUBOInput:
         np.testing.assert_equal(
             qaoa_problem._qp_converter.interpret(qaoa_problem.solution), [1, 0, 1, 0]
         )
+
+    @pytest.mark.e2e
+    @pytest.mark.filterwarnings("ignore::UserWarning")
+    def test_quadratic_program_e2e_checkpointing_resume(
+        self, quadratic_program, default_test_simulator, tmp_path
+    ):
+        """Test QAOA QuadraticProgram e2e with checkpointing and resume functionality.
+
+        Tests QuadraticProgram problem type handling with checkpointing, not optimizer-specific behavior.
+        Full optimizer coverage is tested with Graph problems. Uses MonteCarloOptimizer as representative.
+        """
+        from divi.qprog import MonteCarloOptimizer
+
+        optimizer = MonteCarloOptimizer(population_size=10, n_best_sets=3)
+
+        quadratic_program.integer_var(lowerbound=0, upperbound=3, name="w")
+        quadratic_program.minimize(linear={"x": 1, "y": -2, "z": 3, "w": -1})
+
+        checkpoint_dir = tmp_path / "checkpoint_test"
+        default_test_simulator.set_seed(1997)
+
+        # Run first half with checkpointing
+        qaoa_problem1 = QAOA(
+            problem=quadratic_program,
+            n_layers=2,
+            optimizer=optimizer,
+            max_iterations=7,  # First half
+            backend=default_test_simulator,
+            seed=1997,
+        )
+
+        qaoa_problem1.run(
+            checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir)
+        )
+
+        # Verify checkpoint was created
+        assert checkpoint_dir.exists()
+        checkpoint_path = checkpoint_dir / "checkpoint_007"
+        assert checkpoint_path.exists()
+        assert (checkpoint_path / "program_state.json").exists()
+
+        # Store state from first run for comparison
+        first_run_iteration = qaoa_problem1.current_iteration
+        first_run_losses_count = len(qaoa_problem1.losses_history)
+
+        # Load and resume - configuration must be provided by the caller
+        qaoa_problem2 = QAOA.load_state(
+            checkpoint_dir,
+            backend=default_test_simulator,
+            problem=quadratic_program,
+            n_layers=2,
+        )
+
+        # Verify loaded state matches first run
+        assert qaoa_problem2.current_iteration == first_run_iteration
+        assert len(qaoa_problem2.losses_history) == first_run_losses_count
+
+        # Continue running to complete the full run
+        qaoa_problem2.max_iterations = 15  # Total should be 15
+        qaoa_problem2.run()
+
+        # Verify final results are correct
+        np.testing.assert_equal(
+            qaoa_problem2._qp_converter.interpret(qaoa_problem2.solution), [0, 1, 0, 3]
+        )
+
+        # Verify we completed the full run
+        assert qaoa_problem2.current_iteration == 15

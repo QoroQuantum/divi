@@ -9,14 +9,14 @@ from typing import TypeVar
 import dimod
 import hybrid
 import numpy as np
+import numpy.typing as npt
 import scipy.sparse as sps
 from dimod import BinaryQuadraticModel
 
 from divi.backends import CircuitRunner
 from divi.qprog.algorithms import QAOA, QUBOProblemTypes
 from divi.qprog.batch import ProgramBatch
-from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
-from divi.qprog.quantum_program import QuantumProgram
+from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer, copy_optimizer
 
 
 # Helper function to merge subsamples in-place
@@ -90,9 +90,13 @@ class QUBOPartitioningQAOA(ProgramBatch):
 
         self.trivial_program_ids = set()
 
+        # Store the optimizer template (will be copied for each program)
+        self._optimizer_template = (
+            optimizer if optimizer is not None else MonteCarloOptimizer()
+        )
+
         self._constructor = partial(
             QAOA,
-            optimizer=optimizer if optimizer is not None else MonteCarloOptimizer(),
             max_iterations=self.max_iterations,
             backend=self.backend,
             n_layers=n_layers,
@@ -157,10 +161,11 @@ class QUBOPartitioningQAOA(ProgramBatch):
             self._programs[prog_id] = self._constructor(
                 job_id=prog_id,
                 problem=coo_mat,
+                optimizer=copy_optimizer(self._optimizer_template),
                 progress_queue=self._queue,
             )
 
-    def aggregate_results(self):
+    def aggregate_results(self) -> tuple[npt.NDArray[np.int32], float]:
         """
         Aggregate results from all QUBO subproblems into a global solution.
 
@@ -170,7 +175,7 @@ class QUBOPartitioningQAOA(ProgramBatch):
 
         Returns:
             tuple: A tuple containing:
-                - solution (np.ndarray): Binary solution vector for the QUBO problem.
+                - solution (npt.NDArray[np.int32]): Binary solution vector for the QUBO problem.
                 - solution_energy (float): Energy/cost of the solution.
 
         Raises:

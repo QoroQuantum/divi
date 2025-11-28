@@ -4,6 +4,7 @@
 
 import atexit
 import traceback
+import warnings
 from abc import ABC, abstractmethod
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from queue import Empty, Queue
@@ -16,7 +17,6 @@ from rich.progress import Progress, TaskID
 
 from divi.backends import CircuitRunner, ParallelSimulator
 from divi.qprog.quantum_program import QuantumProgram
-from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from divi.reporting import disable_logging, make_progress_bar
 
 
@@ -298,6 +298,15 @@ class ProgramBatch(ABC):
             else None
         )
 
+        # Validate that all program instances are unique to prevent thread-safety issues
+        program_instances = list(self._programs.values())
+        if len(set(program_instances)) != len(program_instances):
+            raise RuntimeError(
+                "Duplicate program instances detected in batch. "
+                "QuantumProgram instances are stateful and NOT thread-safe. "
+                "You must provide a unique instance for each program ID."
+            )
+
         self._executor = ThreadPoolExecutor()
         self._cancellation_event = Event()
         self.futures = []
@@ -320,13 +329,6 @@ class ProgramBatch(ABC):
                 daemon=True,
             )
             self._listener_thread.start()
-
-        # Initialize meta_circuits for all programs sequentially before parallel execution.
-        # This ensures PennyLane's thread-unsafe queuing system is only accessed from
-        # the main thread. Once initialized, QuantumScript objects are immutable and thread-safe.
-        for program in self._programs.values():
-            if isinstance(program, VariationalQuantumAlgorithm):
-                _ = program.meta_circuits  # Trigger lazy initialization
 
         for program in self._programs.values():
             future = self._add_program_to_executor(program)
@@ -509,7 +511,14 @@ class ProgramBatch(ABC):
         if self._executor is not None:
             self.join()
 
-        if any(len(program.losses_history) == 0 for program in self._programs.values()):
-            raise RuntimeError(
-                "Some/All programs have empty losses. Did you call run()?"
+        # Suppress warnings when checking for empty losses_history for cleanliness sake
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", category=UserWarning, message=".*losses_history is empty.*"
             )
+            if any(
+                len(program.losses_history) == 0 for program in self._programs.values()
+            ):
+                raise RuntimeError(
+                    "Some/All programs have empty losses. Did you call run()?"
+                )

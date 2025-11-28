@@ -7,8 +7,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from threading import RLock
 
 _AVAILABLE_QPU_SYSTEMS: dict[str, QPUSystem] = {}
+_CACHE_LOCK = RLock()
 
 
 @dataclass(frozen=True, repr=True)
@@ -59,11 +61,12 @@ def parse_qpu_systems(json_data: list) -> list[QPUSystem]:
 
 def update_qpu_systems_cache(systems: list[QPUSystem]):
     """Updates the cache of available QPU systems."""
-    _AVAILABLE_QPU_SYSTEMS.clear()
-    for system in systems:
-        if system.name == "qoro_maestro":
-            system = replace(system, supports_expval=True)
-        _AVAILABLE_QPU_SYSTEMS[system.name] = system
+    with _CACHE_LOCK:
+        _AVAILABLE_QPU_SYSTEMS.clear()
+        for system in systems:
+            if system.name == "qoro_maestro":
+                system = replace(system, supports_expval=True)
+            _AVAILABLE_QPU_SYSTEMS[system.name] = system
 
 
 def get_qpu_system(name: str) -> QPUSystem:
@@ -79,16 +82,20 @@ def get_qpu_system(name: str) -> QPUSystem:
     Raises:
         ValueError: If the cache is empty or the system is not found.
     """
-    if not _AVAILABLE_QPU_SYSTEMS:
-        raise ValueError(
-            "QPU systems cache is empty. Call `QoroService.fetch_qpu_systems()` to populate it."
-        )
-    try:
-        return _AVAILABLE_QPU_SYSTEMS[name]
-    except KeyError:
-        raise ValueError(f"QPUSystem with name '{name}' not found in cache.") from None
+    with _CACHE_LOCK:
+        if not _AVAILABLE_QPU_SYSTEMS:
+            raise ValueError(
+                "QPU systems cache is empty. Call `QoroService.fetch_qpu_systems()` to populate it."
+            )
+        try:
+            return _AVAILABLE_QPU_SYSTEMS[name]
+        except KeyError:
+            raise ValueError(
+                f"QPUSystem with name '{name}' not found in cache."
+            ) from None
 
 
 def get_available_qpu_systems() -> list[QPUSystem]:
     """Returns a list of all available QPU systems from the cache."""
-    return list(_AVAILABLE_QPU_SYSTEMS.values())
+    with _CACHE_LOCK:
+        return list(_AVAILABLE_QPU_SYSTEMS.values())

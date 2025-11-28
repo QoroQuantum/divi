@@ -195,6 +195,54 @@ QUBO Partitioning QAOA
    :special-members: __init__
    :no-index:
 
+Checkpointing
+-------------
+
+Divi provides comprehensive checkpointing support for saving and resuming optimization state.
+
+Checkpoint Configuration
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: divi.qprog.checkpointing.CheckpointConfig
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :no-index:
+
+Checkpoint Information
+~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: divi.qprog.checkpointing.CheckpointInfo
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :no-index:
+
+Checkpoint Utilities
+~~~~~~~~~~~~~~~~~~~~
+
+.. autofunction:: divi.qprog.checkpointing.resolve_checkpoint_path
+
+.. autofunction:: divi.qprog.checkpointing.get_checkpoint_info
+
+.. autofunction:: divi.qprog.checkpointing.list_checkpoints
+
+.. autofunction:: divi.qprog.checkpointing.get_latest_checkpoint
+
+.. autofunction:: divi.qprog.checkpointing.cleanup_old_checkpoints
+
+Checkpoint Exceptions
+~~~~~~~~~~~~~~~~~~~~~
+
+.. autoexception:: divi.qprog.checkpointing.CheckpointError
+   :show-inheritance:
+
+.. autoexception:: divi.qprog.checkpointing.CheckpointNotFoundError
+   :show-inheritance:
+
+.. autoexception:: divi.qprog.checkpointing.CheckpointCorruptedError
+   :show-inheritance:
+
 Exceptions
 ----------
 
