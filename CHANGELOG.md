@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Adapted `ProgramBatch` workflows to support stateful optimizers: updated workflow classes (`GraphPartitioningQAOA`, `QUBOPartitioningQAOA`, `VQEHyperparameterSweep`) to properly handle optimizer state persistence
 * Thread-safe QuantumScript creation: refactored circuit creation to avoid using `make_qscript` for improved thread safety in parallel execution scenarios
 * Refactored logging infrastructure to use Rich library: replaced custom `OverwriteStreamHandler` with `RichHandler` from the Rich library for improved log formatting and colorization. `LoggingProgressReporter` now uses Rich's `Console.status()` for message overwriting with spinners, providing better visual feedback during job polling and iteration updates. Removed ANSI escape sequence handling in favor of Rich's markup system
+* Upgraded to Qiskit v2.2: updated Qiskit dependency from `<2.0` to `^2.2` with corresponding updates to `qiskit-aer` (unconstrained) and `qiskit-ibm-runtime` (updated to `>0.42` for Qiskit v2 compatibility)
+* Refactored CMA-ES implementation: migrated `PymooOptimizer` CMA-ES method from pymoo's CMAES to the dedicated `cma` library for improved performance and better algorithm support. The optimizer now uses `cma.CMAEvolutionStrategy` for CMA-ES while maintaining pymoo's DE (Differential Evolution) implementation. This change improves checkpointing reliability and algorithm behavior
+* Updated dependency constraints: relaxed version constraints for `numpy`, `pymoo` (updated to `^0.6`), `black`, and `isort` to allow latest compatible versions
 
 ### ⚠️ Deprecated
 
@@ -31,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Fixed overflow issue with batched expectation values: corrected numerical overflow problem in expectation value calculations when processing large batches
 * Fixed documentation issues: corrected various documentation hiccups and formatting problems
 * Fixed `_raise_with_details()` to preserve response object: updated error handling to attach the HTTP response object to `HTTPError` exceptions, enabling proper error inspection in tests and error handling code
+* Fixed Qiskit v2 compatibility issues: added stevedore error suppression in `ParallelSimulator` and test configuration to handle harmless plugin loading failures caused by `ProviderV1` removal in Qiskit v2. The errors occur when IBM backend plugins attempt to load deprecated interfaces but don't affect functionality
 
 ## [0.4.2] - 2025-11-18
 

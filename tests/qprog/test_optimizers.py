@@ -645,12 +645,10 @@ class TestPymooOptimizer:
 
         # Verify state is set
         assert optimizer._curr_algorithm_obj is not None
-        assert optimizer._curr_pop is not None
 
         # Reset and verify state is cleared
         optimizer.reset()
         assert optimizer._curr_algorithm_obj is None
-        assert optimizer._curr_pop is None
 
     def test_save_state_creates_checkpoint_file(self, tmp_path):
         """Test that save_state() creates the expected checkpoint file."""
@@ -802,8 +800,13 @@ class TestPymooOptimizer:
             sphere_cost_fn_population, initial_params, max_iterations=2, rng=self.rng
         )
 
-        # Verify algorithm finished (n_gen is 1-indexed, so 2 iterations = n_gen 3)
-        assert optimizer._curr_algorithm_obj.n_gen == 3
+        # Verify algorithm finished
+        if optimizer.method == PymooMethod.CMAES:
+            # cma uses countiter
+            assert optimizer._curr_algorithm_obj.countiter == 2
+        else:
+            # n_gen is 1-indexed, so 2 iterations = n_gen 3
+            assert optimizer._curr_algorithm_obj.n_gen == 3
 
         checkpoint_dir = str(tmp_path / "checkpoint")
         optimizer.save_state(checkpoint_dir)
@@ -833,6 +836,120 @@ class TestPymooOptimizer:
 
         optimizer_de = PymooOptimizer(method=PymooMethod.DE, population_size=11)
         assert optimizer_de.n_param_sets == 11
+
+    def test_de_save_load_round_trip(self, tmp_path):
+        """Test that DE optimizer can save/load state successfully."""
+        optimizer = PymooOptimizer(method=PymooMethod.DE, population_size=10)
+        initial_params = self.rng.random((10, self.n_params)) * 2 * np.pi
+
+        # Run partial optimization
+        optimizer.optimize(
+            sphere_cost_fn_population, initial_params, max_iterations=2, rng=self.rng
+        )
+
+        checkpoint_dir = str(tmp_path / "checkpoint")
+        optimizer.save_state(checkpoint_dir)
+
+        # Load and continue optimization
+        loaded_optimizer = PymooOptimizer.load_state(checkpoint_dir)
+        result = loaded_optimizer.optimize(
+            sphere_cost_fn_population, max_iterations=5, rng=self.rng
+        )
+
+        # Verify optimization completed successfully
+        assert isinstance(result, OptimizeResult)
+        assert result.x.shape == (self.n_params,)
+        assert np.isfinite(result.fun)
+        assert result.nit == 5, "DE should complete up to the new iteration target"
+
+    def test_de_population_preserved_in_checkpoint(self, tmp_path):
+        """Test that DE's population is properly preserved during checkpointing."""
+        optimizer = PymooOptimizer(method=PymooMethod.DE, population_size=8)
+        initial_params = self.rng.random((8, self.n_params)) * 2 * np.pi
+
+        # Run some iterations
+        optimizer.optimize(
+            sphere_cost_fn_population, initial_params, max_iterations=3, rng=self.rng
+        )
+
+        # Verify internal state exists
+        assert optimizer._curr_algorithm_obj is not None
+        assert hasattr(optimizer._curr_algorithm_obj, "pop")
+        assert optimizer._curr_algorithm_obj.pop is not None
+
+        checkpoint_dir = str(tmp_path / "checkpoint")
+        optimizer.save_state(checkpoint_dir)
+
+        # Load and verify population is restored
+        loaded_optimizer = PymooOptimizer.load_state(checkpoint_dir)
+        assert loaded_optimizer._curr_algorithm_obj is not None
+        assert hasattr(loaded_optimizer._curr_algorithm_obj, "pop")
+        assert loaded_optimizer._curr_algorithm_obj.pop is not None
+
+    def test_cmaes_custom_kwargs_preserved_through_save_load(self, tmp_path):
+        """Test that custom CMAES kwargs survive save/load cycle."""
+        # Create optimizer with custom kwargs
+        optimizer = PymooOptimizer(
+            method=PymooMethod.CMAES, population_size=10, popsize=8, sigma0=0.3
+        )
+        initial_params = self.rng.random((8, self.n_params)) * 2 * np.pi
+
+        # Run optimization
+        optimizer.optimize(
+            sphere_cost_fn_population, initial_params, max_iterations=2, rng=self.rng
+        )
+
+        checkpoint_dir = str(tmp_path / "checkpoint")
+        optimizer.save_state(checkpoint_dir)
+
+        # Load and verify kwargs are preserved
+        loaded_optimizer = PymooOptimizer.load_state(checkpoint_dir)
+        assert loaded_optimizer.population_size == 10
+        assert loaded_optimizer.algorithm_kwargs.get("popsize") == 8
+        assert loaded_optimizer.algorithm_kwargs.get("sigma0") == 0.3
+
+        # Verify it can continue optimization
+        result = loaded_optimizer.optimize(
+            sphere_cost_fn_population, max_iterations=4, rng=self.rng
+        )
+        assert isinstance(result, OptimizeResult)
+        assert result.nit == 4
+
+    def test_optimize_with_zero_max_iterations(self):
+        """Test that optimize with max_iterations=0 returns immediately."""
+        optimizer = PymooOptimizer(method=PymooMethod.CMAES, population_size=5)
+        initial_params = self.rng.random((5, self.n_params)) * 2 * np.pi
+
+        # First run some iterations
+        optimizer.optimize(
+            sphere_cost_fn_population, initial_params, max_iterations=3, rng=self.rng
+        )
+
+        # Now try to resume with max_iterations=0
+        result = optimizer.optimize(
+            sphere_cost_fn_population, max_iterations=0, rng=self.rng
+        )
+
+        # Should return current state without running more iterations
+        assert isinstance(result, OptimizeResult)
+        assert result.nit == 3  # Should still be at iteration 3
+
+    def test_resume_with_max_iterations_equal_to_completed(self):
+        """Test resuming when max_iterations equals already completed iterations."""
+        optimizer = PymooOptimizer(method=PymooMethod.CMAES, population_size=5)
+        initial_params = self.rng.random((5, self.n_params)) * 2 * np.pi
+
+        # Run 5 iterations
+        result1 = optimizer.optimize(
+            sphere_cost_fn_population, initial_params, max_iterations=5, rng=self.rng
+        )
+        assert result1.nit == 5
+
+        # Resume with same max_iterations should not run additional iterations
+        result2 = optimizer.optimize(
+            sphere_cost_fn_population, max_iterations=5, rng=self.rng
+        )
+        assert result2.nit == 5  # Should still be 5, not 10
 
 
 class TestScipyOptimizer:

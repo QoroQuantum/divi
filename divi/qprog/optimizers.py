@@ -11,11 +11,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+import cma
 import dill
 import numpy as np
 import numpy.typing as npt
 from pydantic import BaseModel
-from pymoo.algorithms.soo.nonconvex.cmaes import CMAES  # type: ignore
 from pymoo.algorithms.soo.nonconvex.de import DE  # type: ignore
 from pymoo.core.evaluator import Evaluator
 from pymoo.core.individual import Individual
@@ -57,7 +57,6 @@ class PymooState(BaseModel):
     algorithm_kwargs: dict[str, Any]
     # We store the pickled algorithm object as base64 encoded string
     algorithm_obj_b64: str
-    curr_pop_b64: str | None = None
 
 
 class Optimizer(ABC):
@@ -178,11 +177,10 @@ class PymooMethod(Enum):
 
 class PymooOptimizer(Optimizer):
     """
-    Optimizer wrapper for pymoo optimization algorithms.
+    Optimizer wrapper for pymoo optimization algorithms and CMA-ES.
 
-    Supports population-based optimization methods from the pymoo library,
-    including CMAES (Covariance Matrix Adaptation Evolution Strategy) and
-    DE (Differential Evolution).
+    Supports population-based optimization methods from the pymoo library (DE)
+    and the cma library (CMAES).
     """
 
     def __init__(self, method: PymooMethod, population_size: int = 50, **kwargs):
@@ -193,7 +191,7 @@ class PymooOptimizer(Optimizer):
             method (PymooMethod): The optimization algorithm to use (CMAES or DE).
             population_size (int, optional): Size of the population for the algorithm.
                 Defaults to 50.
-            **kwargs: Additional algorithm-specific parameters passed to pymoo.
+            **kwargs: Additional algorithm-specific parameters passed to pymoo/cma.
         """
         super().__init__()
 
@@ -203,7 +201,6 @@ class PymooOptimizer(Optimizer):
 
         # Optimization state (updated during optimize(), used for checkpointing)
         self._curr_algorithm_obj: Any | None = None
-        self._curr_pop: Population | None = None
 
     @property
     def n_param_sets(self):
@@ -234,21 +231,40 @@ class PymooOptimizer(Optimizer):
             **self.algorithm_kwargs,
         }
 
-    def _initialize_optimizer(
+    def _initialize_cmaes(
         self,
         initial_params: npt.NDArray[np.float64],
         rng: np.random.Generator,
-    ) -> tuple[Any, Problem, Population]:
-        """Initialize a fresh pymoo optimizer instance.
+    ) -> Any:
+        """Initialize CMA-ES strategy."""
+        # Initialize CMA-ES using cma library
+        # cma expects a single initial solution (mean) and initial sigma
+        x0 = initial_params[0]  # Use first parameter set as mean
 
-        Args:
-            initial_params: Initial parameter values.
-            rng: Random number generator.
+        # Handle sigma/sigma0
+        sigma0 = self.algorithm_kwargs.get(
+            "sigma0", self.algorithm_kwargs.get("sigma", 0.1)
+        )
 
-        Returns:
-            Tuple of (optimizer_obj, problem, population).
-        """
+        # Filter kwargs for CMAEvolutionStrategy
+        cma_kwargs = {
+            k: v
+            for k, v in self.algorithm_kwargs.items()
+            if k not in ["sigma0", "sigma", "popsize"]
+        }
+        cma_kwargs["popsize"] = self.population_size
+        cma_kwargs["seed"] = rng.integers(0, 2**32)
 
+        es = cma.CMAEvolutionStrategy(x0, sigma0, cma_kwargs)
+        return es
+
+    def _initialize_pymoo(
+        self,
+        initial_params: npt.NDArray[np.float64],
+        rng: np.random.Generator,
+    ) -> Any:
+        """Initialize Pymoo strategy (DE)."""
+        # Initialize DE using pymoo
         optimizer_obj = globals()[self.method.value](
             pop_size=self.population_size,
             parallelize=False,
@@ -273,8 +289,90 @@ class PymooOptimizer(Optimizer):
         init_pop = Population.create(
             *[Individual(X=initial_params[i]) for i in range(self.n_param_sets)]
         )
+        optimizer_obj.pop = init_pop
 
-        return optimizer_obj, problem, init_pop
+        return optimizer_obj
+
+    def _initialize_optimizer(
+        self,
+        initial_params: npt.NDArray[np.float64],
+        rng: np.random.Generator,
+    ) -> Any:
+        """Initialize a fresh optimizer instance.
+
+        Args:
+            initial_params: Initial parameter values.
+            rng: Random number generator.
+
+        Returns:
+            Optimizer object (cma.CMAEvolutionStrategy or pymoo.DE).
+        """
+        if self.method == PymooMethod.CMAES:
+            return self._initialize_cmaes(initial_params, rng)
+        else:
+            return self._initialize_pymoo(initial_params, rng)
+
+    def _optimize_cmaes(
+        self,
+        cost_fn: Callable[[npt.NDArray[np.float64]], float],
+        iterations_to_run: int,
+        callback_fn: Callable | None,
+    ) -> OptimizeResult:
+        """Run CMA-ES optimization loop."""
+        es = self._curr_algorithm_obj
+        for _ in range(iterations_to_run):
+            # Ask
+            X = es.ask()
+            evaluated_X = np.array(X)
+
+            # Evaluate
+            curr_losses = cost_fn(evaluated_X)
+
+            # Tell
+            es.tell(X, curr_losses)
+
+            if callback_fn:
+                callback_fn(OptimizeResult(x=evaluated_X, fun=curr_losses))
+
+        # Return result
+        return OptimizeResult(
+            x=es.result.xbest,
+            fun=es.result.fbest,
+            nit=es.countiter,
+        )
+
+    def _optimize_pymoo(
+        self,
+        cost_fn: Callable[[npt.NDArray[np.float64]], float],
+        iterations_to_run: int,
+        callback_fn: Callable | None,
+    ) -> OptimizeResult:
+        """Run Pymoo (DE) optimization loop."""
+        problem = self._curr_algorithm_obj.problem
+
+        for _ in range(iterations_to_run):
+            pop = self._curr_algorithm_obj.pop
+            evaluated_X = pop.get("X")
+
+            curr_losses = cost_fn(evaluated_X)
+            Evaluator().eval(StaticProblem(problem, F=curr_losses), pop)
+
+            self._curr_algorithm_obj.tell(infills=pop)
+
+            # Ask for next population to evaluate
+            self._curr_algorithm_obj.pop = self._curr_algorithm_obj.ask()
+
+            if callback_fn:
+                callback_fn(OptimizeResult(x=evaluated_X, fun=curr_losses))
+
+        result = self._curr_algorithm_obj.result()
+
+        # nit should represent total iterations completed (n_gen is 1-indexed)
+        return OptimizeResult(
+            x=result.X,
+            fun=result.F,
+            nit=self._curr_algorithm_obj.n_gen - 1,
+        )
 
     def optimize(
         self,
@@ -284,7 +382,7 @@ class PymooOptimizer(Optimizer):
         **kwargs,
     ):
         """
-        Run the pymoo optimization algorithm.
+        Run the optimization algorithm.
 
         Args:
             cost_fn (Callable): Function to minimize. Should accept a 2D array of
@@ -304,45 +402,31 @@ class PymooOptimizer(Optimizer):
         Returns:
             OptimizeResult: Optimization result with final parameters and cost value.
         """
-
         max_iterations = kwargs.pop("max_iterations", 5)
 
         # Resume from checkpoint or initialize fresh
         if self._curr_algorithm_obj is not None:
-            problem = self._curr_algorithm_obj.problem
-            # n_gen is 1-indexed (includes initialization), so actual iterations = n_gen - 1
-            iterations_completed = self._curr_algorithm_obj.n_gen - 1
+            if self.method == PymooMethod.CMAES:
+                es = self._curr_algorithm_obj
+                # cma uses counteigen as generation counter roughly
+                # strictly speaking es.countiter is the iteration counter
+                iterations_completed = es.countiter
+            else:
+                # Pymoo DE
+                # n_gen is 1-indexed (includes initialization), so actual iterations = n_gen - 1
+                iterations_completed = self._curr_algorithm_obj.n_gen - 1
+
             iterations_remaining = max_iterations - iterations_completed
             iterations_to_run = max(0, iterations_remaining)
         else:
             rng = kwargs.pop("rng", np.random.default_rng())
-            self._curr_algorithm_obj, problem, self._curr_pop = (
-                self._initialize_optimizer(initial_params, rng)
-            )
+            self._curr_algorithm_obj = self._initialize_optimizer(initial_params, rng)
             iterations_to_run = max_iterations
 
-        for _ in range(iterations_to_run):
-            evaluated_X = self._curr_pop.get("X")
-
-            curr_losses = cost_fn(evaluated_X)
-            Evaluator().eval(StaticProblem(problem, F=curr_losses), self._curr_pop)
-
-            self._curr_algorithm_obj.tell(infills=self._curr_pop)
-
-            # Ask for next population to evaluate
-            self._curr_pop = self._curr_algorithm_obj.ask()
-
-            if callback_fn:
-                callback_fn(OptimizeResult(x=evaluated_X, fun=curr_losses))
-
-        result = self._curr_algorithm_obj.result()
-
-        # nit should represent total iterations completed (n_gen is 1-indexed)
-        return OptimizeResult(
-            x=result.X,
-            fun=result.F,
-            nit=self._curr_algorithm_obj.n_gen - 1,
-        )
+        if self.method == PymooMethod.CMAES:
+            return self._optimize_cmaes(cost_fn, iterations_to_run, callback_fn)
+        else:
+            return self._optimize_pymoo(cost_fn, iterations_to_run, callback_fn)
 
     def save_state(self, checkpoint_dir: Path | str) -> None:
         """Save the optimizer's internal state to a checkpoint directory.
@@ -364,19 +448,18 @@ class PymooOptimizer(Optimizer):
 
         state_file = checkpoint_path / OPTIMIZER_STATE_FILE
 
-        # Serialize algorithm object and population using dill, then base64 encode
+        # Serialize algorithm object using dill, then base64 encode
+        # For CMAES (cma lib), algorithm object is picklable.
+        # For DE (pymoo), algorithm object is picklable and includes pop and problem.
+
         algorithm_obj_bytes = dill.dumps(self._curr_algorithm_obj)
         algorithm_obj_b64 = base64.b64encode(algorithm_obj_bytes).decode("ascii")
-
-        curr_pop_bytes = dill.dumps(self._curr_pop)
-        curr_pop_b64 = base64.b64encode(curr_pop_bytes).decode("ascii")
 
         state = PymooState(
             method_value=self.method.value,
             population_size=self.population_size,
             algorithm_kwargs=self.algorithm_kwargs,
             algorithm_obj_b64=algorithm_obj_b64,
-            curr_pop_b64=curr_pop_b64,
         )
 
         _atomic_write(state_file, state.model_dump_json(indent=2))
@@ -402,7 +485,7 @@ class PymooOptimizer(Optimizer):
         state = _load_and_validate_pydantic_model(
             state_file,
             PymooState,
-            required_fields=["method_value", "algorithm_obj_b64", "curr_pop_b64"],
+            required_fields=["method_value", "algorithm_obj_b64"],
             error_context="Pymoo optimizer",
         )
 
@@ -413,66 +496,21 @@ class PymooOptimizer(Optimizer):
             **state.algorithm_kwargs,
         )
 
-        # Restore algorithm object and population from base64 strings
+        # Restore algorithm object from base64 string
+        # For DE, this includes the population and problem
         optimizer._curr_algorithm_obj = dill.loads(
             base64.b64decode(state.algorithm_obj_b64)
         )
-        if state.curr_pop_b64 is None:
-            raise ValueError(
-                "Checkpoint is missing population data. "
-                "This may indicate a corrupted checkpoint file."
-            )
-        optimizer._curr_pop = dill.loads(base64.b64decode(state.curr_pop_b64))
-
-        algo = optimizer._curr_algorithm_obj
-
-        # Set pop appropriately for each algorithm type
-        if optimizer.method == PymooMethod.CMAES:
-            # CMAES: Clear stale pop to avoid merging issues in _set_optimum()
-            algo.pop = None
-        elif optimizer.method == PymooMethod.DE:
-            # DE: Needs pop set to current population for _advance() to work
-            algo.pop = optimizer._curr_pop
-
-        # Reinitialize CMAES generator if needed (generators can't be pickled)
-        if optimizer.method == PymooMethod.CMAES and getattr(algo, "es", None) is None:
-            from inspect import signature
-
-            from pymoo.vendor.vendor_cmaes import my_fmin
-
-            # Extract kwargs by matching my_fmin's signature with algo attributes
-            sig = signature(my_fmin)
-            param_map = {
-                "parallel_objective": "parallelize",  # attribute name differs from param name
-            }
-            kwargs = {
-                param.name: getattr(algo, param_map.get(param.name, param.name))
-                for param in sig.parameters.values()
-                if param.name
-                not in (
-                    "x0",
-                    "sigma0",
-                    "objective_function",
-                    "args",
-                    "gradf",
-                    "callback",
-                )
-                and hasattr(algo, param_map.get(param.name, param.name))
-            }
-            algo.es = my_fmin(algo.norm.forward(algo.x0.X), algo.sigma, **kwargs)
-            algo.next_X = next(algo.es)
-            algo.send_array_to_yield = np.array(algo.next_X).ndim > 1
 
         return optimizer
 
     def reset(self) -> None:
         """Reset the optimizer's internal state.
 
-        Clears the current algorithm object and population, allowing the optimizer
+        Clears the current algorithm object, allowing the optimizer
         to be reused for fresh optimization runs.
         """
         self._curr_algorithm_obj = None
-        self._curr_pop = None
 
 
 class ScipyMethod(Enum):

@@ -22,6 +22,13 @@ from divi.backends import CircuitRunner
 
 logger = logging.getLogger(__name__)
 
+# Suppress stevedore extension loading errors (Qiskit v2 compatibility issue)
+# These occur when IBM backend plugins fail to load due to ProviderV1 removal.
+# The errors are harmless - they're just plugin loading failures that don't affect functionality.
+# Suppression must be at module level and before any Qiskit imports to be effective.
+_stevedore_logger = logging.getLogger("stevedore.extension")
+_stevedore_logger.setLevel(logging.CRITICAL)
+
 FAKE_BACKENDS = {
     5: [
         fk_prov.FakeManilaV2,
