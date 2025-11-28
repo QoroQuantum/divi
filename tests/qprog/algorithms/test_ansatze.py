@@ -50,7 +50,7 @@ class TestGenericLayerAnsatz:
     def test_initialization_invalid_gate_sequence_type_error(self):
         """Tests that a TypeError is raised for non-class items in the sequence."""
         bad_sequence = [qml.RX, "not-a-gate"]
-        with pytest.raises(TypeError, match="issubclass\(\) arg 1 must be a class"):
+        with pytest.raises(TypeError, match=r"issubclass\(\) arg 1 must be a class"):
             GenericLayerAnsatz(gate_sequence=bad_sequence)
 
     def test_initialization_invalid_gate_sequence_value_error(self):
