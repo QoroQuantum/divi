@@ -98,7 +98,7 @@ class VQEHyperparameterSweepExtension(VQEHyperparameterSweep):
 
         return best_key, best_energy
 
-class VQEPlotCircuitExtension(VQE):
+class VQEExtension(VQE):
     """Extension of the Variational Quantum Eigensolver (VQE) implementation with the added
     functionality of plotting the circuits.
 
