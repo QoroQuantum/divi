@@ -14,7 +14,7 @@ base_mol = qml.qchem.Molecule(
 )
 
 # Bond-length sweep (relative modifiers)
-bond_sweeps = np.linspace(-0.1, 0, 0.1)
+bond_sweeps = np.linspace(-0.2, 0.2, 5)  # from -0.2 to +0.2 angstroms
 
 # Create a MoleculeTransformer to generate molecule variants
 mol_transformer = MoleculeTransformer(
@@ -27,7 +27,7 @@ mol_transformer = MoleculeTransformer(
 ansatze = [HartreeFockAnsatz()]
 
 # Number of layers to sweep over
-num_layers_list = [1, 2]
+num_layers_list = [3]
 
 # Define optimizer
 optimizer = ScipyOptimizer(method=ScipyMethod.L_BFGS_B)
