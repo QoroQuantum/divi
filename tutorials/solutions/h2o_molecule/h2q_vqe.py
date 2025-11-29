@@ -1,78 +1,49 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
-#
-# SPDX-License-Identifier: Apache-2.0
-
-import time
-import itertools
 import numpy as np
 import pennylane as qml
-
 from divi.backends import ParallelSimulator
-from divi.qprog import VQE, HartreeFockAnsatz, UCCSDAnsatz
-from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from divi.qprog import HartreeFockAnsatz, UCCSDAnsatz
+from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
+from divi.qprog.sweep import MoleculeTransformer, VQEHyperparameterSweep
 
-# Sweep parameters for investigation
-# 1. We sweep between the different bond lengths
-# 2. We sweep over different Ansatz HartreeFockAnsatz, UCCSDAnsatz
-# 3. We sweep over number of layers
+# Define the base H2 molecule
+base_mol = qml.qchem.Molecule(
+    symbols=["H", "H"],
+    coordinates=np.array([(0, 0, 0), (0, 0, 0.735)]),
+)
 
-sweep_params = {
-    "bond_length": np.linspace(0.9, 1.5, 5),  # in bohr
-    "ansatz": [HartreeFockAnsatz, UCCSDAnsatz],
-    "n_layers": [1, 2, 3],
-}
+# Define bond length sweep (in bohr)
+bond_lengths = np.linspace(0.4, 1.2, 5)
 
-def run_vqe_sweep():
-    optim = ScipyOptimizer(method=ScipyMethod.L_BFGS_B)
-    results = []
+# Create a MoleculeTransformer to generate molecule variants
+mol_transformer = MoleculeTransformer(
+    base_molecule=base_mol,
+    bond_modifiers=bond_lengths,
+)
 
-    # Loop over all combinations of sweep parameters
-    for bond_length, AnsatzClass, n_layers in itertools.product(
-        sweep_params["bond_length"],
-        sweep_params["ansatz"],
-        sweep_params["n_layers"]
-    ):
-        mol = qml.qchem.Molecule(
-            symbols=["H", "H"],
-            coordinates=np.array([(0, 0, 0), (0, 0, bond_length)])
-        )
+# Choose ansatze to sweep
+ansatze = [HartreeFockAnsatz(), UCCSDAnsatz()]
 
-        ansatz = AnsatzClass()
+# Define optimizer
+optimizer = ScipyOptimizer(method=ScipyMethod.L_BFGS_B)
 
-        vqe_problem = VQE(
-            molecule=mol,
-            ansatz=ansatz,
-            n_layers=n_layers,
-            optimizer=optim,
-            max_iterations=3,
-            backend=ParallelSimulator()
-        )
+# Setup the hyperparameter sweep
+vqe_sweep = VQEHyperparameterSweep(
+    ansatze=ansatze,
+    molecule_transformer=mol_transformer,
+    optimizer=optimizer,
+    max_iterations=10,
+    backend=ParallelSimulator(),
+)
 
-        t_start = time.time()
-        vqe_problem.run()
-        t_end = time.time()
+# Create the programs (VQE runs for each ansatz & bond length)
+vqe_sweep.create_programs()
 
-        result = {
-            "bond_length": bond_length,
-            "ansatz": AnsatzClass.__name__,
-            "n_layers": n_layers,
-            "energy": vqe_problem.best_loss,
-            "eigenstate": vqe_problem.eigenstate,
-            "total_circuits": vqe_problem.total_circuit_count,
-            "time": round(t_end - t_start, 5)
-        }
-        results.append(result)
+# Execute the sweep (this runs all VQE programs)
+vqe_sweep.run()
 
-        print(
-            f"Bond: {bond_length:.3f} | Ansatz: {AnsatzClass.__name__} | "
-            f"Layers: {n_layers} | Energy: {vqe_problem.best_loss:.6f} | "
-            f"Time: {round(t_end - t_start, 5)} s | Circuits: {vqe_problem.total_circuit_count}"
-        )
+# Aggregate results to find the best energy and configuration
+best_config, best_energy = vqe_sweep.aggregate_results()
+print(f"Best configuration: {best_config}, Energy: {best_energy:.6f}")
 
-    # Find the configuration with the lowest energy
-    best_result = min(results, key=lambda x: x["energy"])
-    print("\nBest Configuration Found:")
-    print(best_result)
-
-if __name__ == "__main__":
-    run_vqe_sweep()
+# Visualize the results
+vqe_sweep.visualize_results(graph_type="line")  # or graph_type="scatter"
