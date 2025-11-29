@@ -5,26 +5,42 @@ from divi.qprog import GenericLayerAnsatz, HartreeFockAnsatz, UCCSDAnsatz, VQE
 from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
 from divi.qprog.workflows import VQEHyperparameterSweep, MoleculeTransformer
 
-# Different models: 
 
-# 1. First, we test the most simple ansatz with only one rotation
-simple = GenericLayerAnsatz(
-    gate_sequence=[qml.RY], 
-    entangler=qml.CNOT, 
-    entangling_layout="linear" 
-    )
-# 2. Secondly, we test the more complex ansatz with one y- and one z- rotation
-balanced = GenericLayerAnsatz(
-    gate_sequence=[qml.RY, qml.RZ], 
-    entangler=qml.CNOT, 
-    entangling_layout="linear"
-    )
-# 3. Thirdly, we test the more complex ansatz with one y- and one z- rotation and entangling: all-to-all
-expensive = GenericLayerAnsatz(
-    gate_sequence=[qml.RY, qml.RZ], 
-    entangler=qml.CNOT, 
-    entangling_layout="all_to_all"
-    )
+class SimpleAnsatz(GenericLayerAnsatz):
+    """Ansatz with a single RY rotation and linear entangling."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(
+            gate_sequence=[qml.RY],
+            entangler=qml.CNOT,
+            entangling_layout="linear",
+            *args,
+            **kwargs,
+        )
+
+
+class BalancedAnsatz(GenericLayerAnsatz):
+    """Ansatz with RY + RZ rotations and linear entangling."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(
+            gate_sequence=[qml.RY, qml.RZ],
+            entangler=qml.CNOT,
+            entangling_layout="linear",
+            *args,
+            **kwargs,
+        )
+
+
+class ExpensiveAnsatz(GenericLayerAnsatz):
+    """Ansatz with RY + RZ rotations and all-to-all entangling."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(
+            gate_sequence=[qml.RY, qml.RZ],
+            entangler=qml.CNOT,
+            entangling_layout="all_to_all",
+            *args,
+            **kwargs,
+        )
+
 # 3. Thirdly, we test the HF-ansatz
 hf = HartreeFockAnsatz()
 # 4. Lastly, we benchmark the results agains the accurate UCCSD - model
@@ -71,7 +87,7 @@ nh3_molecule2 = qml.qchem.Molecule(
     symbols=["N", "H", "H", "H"],
     coordinates=nh3_config2_coords
 )
-"""
+
 # Build Hamiltonians with active space parameters
 hamiltonian1, qubits = qml.qchem.molecular_hamiltonian(
     nh3_molecule1,
@@ -84,79 +100,45 @@ hamiltonian2, qubits = qml.qchem.molecular_hamiltonian(
     active_electrons=active_electrons,
     active_orbitals=active_orbitals,
 )
-"""
-bond_sweeps = np.array([0.0])
-# Create a MoleculeTransformer to generate molecule variants
-mol_transformer1 = MoleculeTransformer(
-    base_molecule=nh3_molecule1,
-    bond_modifiers=bond_sweeps,
-)
 
-mol_transformer2 = MoleculeTransformer(
-    base_molecule=nh3_molecule2,
-    bond_modifiers=bond_sweeps,
-)
-# Benchmark these ansätze on NH3
 
-ansatze = [hf, balanced, uccsd, simple, expensive]  # add more if you want
+balanced = BalancedAnsatz()
+simple = SimpleAnsatz()
+expensive = ExpensiveAnsatz()
+ansatze = [hf, balanced, uccsd, simple, expensive]
+ansatze = [balanced, simple]  # add more if you want
 
 optimizer = ScipyOptimizer(method=ScipyMethod.L_BFGS_B)
-
+n_layers = 1
 # Sweep object for geometry 1
-sweep1 = VQEHyperparameterSweep(
-    ansatze=ansatze,
-    molecule_transformer=mol_transformer1,
-    optimizer=optimizer,
-    max_iterations=30,
-    backend=ParallelSimulator(),
-)
-
-# Sweep object for geometry 2
-sweep2 = VQEHyperparameterSweep(
-    ansatze=ansatze,
-    molecule_transformer=mol_transformer2,
-    optimizer=optimizer,
-    max_iterations=30,
-    backend=ParallelSimulator(),
-)
+energies = np.zeros((len(ansatze), 2))
+circuit_counts = np.zeros((len(ansatze), 2))
+backend = ParallelSimulator(shots=5000)
+for i, ansatz in enumerate(ansatze):
+    vqe1 = VQE(hamiltonian1, 
+               n_layers=n_layers, 
+               ansatz=ansatz, 
+               max_iterations=50, 
+               backend=backend)
+    
+    vqe1.run()
+    energies[i, 0] = vqe1.best_loss
+    circuit_counts[i, 0] = vqe1.total_circuit_count
 
 
+"""
+    vqe2 = VQE(hamiltonian2, 
+            n_electrons=8, 
+            n_layers=n_layers, 
+            ansatz=ansatz, 
+            max_iterations=50, 
+            backend=backend)
+    
+    vqe2.run()
+    energies[i, 1] = vqe2.losses[-1]
+    circuit_counts[i, 1] = vqe2.total_circuit_count
+
+"""
 # Run sweeps for both geometries
-
-print("\nRunning NH3 configuration 1 sweep…")
-sweep1.create_programs()
-sweep1.run()
-results1 = sweep1.aggregate_results()
-
-print("\nRunning NH3 configuration 2 sweep…")
-sweep2.create_programs()
-sweep2.run()
-results2 = sweep2.aggregate_results()
-
-
-# Extract and print final results
-
-best_config_1, best_energy_1 = results1
-best_config_2, best_energy_2 = results2
-
-print("\n==============================")
-print(" NH3 RESULTS (12-Qubit Space) ")
-print("==============================")
-print(f"Config 1 best ansatz: {best_config_1}")
-print(f"Config 1 best energy: {best_energy_1:.8f} Ha")
-
-print(f"\nConfig 2 best ansatz: {best_config_2}")
-print(f"Config 2 best energy: {best_energy_2:.8f} Ha")
-
-print("\nEnergy difference (degeneracy check):")
-print(f"ΔE = {abs(best_energy_1 - best_energy_2):.8f} Ha")
-
-
-# Plot results
-
-# Note: These plots show all ansatz results for comparisons
-sweep1.visualize_results("bar")
-sweep2.visualize_results("bar")
-
-
-
+print(energies)
+print(circuit_counts)
