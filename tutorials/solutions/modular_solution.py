@@ -56,39 +56,14 @@ class MoleculeEnergyCalc:
 
 
 if __name__ == "__main__":
-    # Base H2 molecule:
-    base_mol = qml.qchem.Molecule(
-        symbols=["H", "H"],
-        coordinates=np.array([(0, 0, 0), (0, 0, 0.735)]),
-        unit="angstrom",
-    )
-
-    # Sweep parameters
-    bond_sweeps = (-0.1, 0.1, 5)
-    ansatze = [HartreeFockAnsatz()]  # You can add UCCSDAnsatz()
-    
-    # Initialize and run the calculation
-    h2_calc = MoleculeEnergyCalc(
-        molecules=[base_mol],
-        bond_sweeps=bond_sweeps,
-        ansatze=ansatze,
-        max_iterations=50,
-    )
-
-    h2_calc.run_sweeps()
-    h2_calc.summary()
-
-    # Two degenerate NH3 geometries
+    # coodinates:
+    h2_coords = np.array([(0, 0, 0), (0, 0, 0.735)])
     nh3_coords1 = np.array([(0, 0, 0), (1.01, 0, 0), (-0.5, 0.87, 0), (-0.5, -0.87, 0)])
     nh3_coords2 = np.array([(0, 0, 0), (-1.01, 0, 0), (0.5, -0.87, 0), (0.5, 0.87, 0)])
 
-    nh3_mol1 = qml.qchem.Molecule(symbols=["N", "H", "H", "H"], coordinates=nh3_coords1)
-    nh3_mol2 = qml.qchem.Molecule(symbols=["N", "H", "H", "H"], coordinates=nh3_coords2)
-
-    molecules = [nh3_mol1, nh3_mol2]
-
-    # Define ansätze
-    ansatze = [
+    # ansatze
+    ansatze_h2 = [HartreeFockAnsatz()]  # You can add UCCSDAnsatz()
+    ansatze_nh3 = [
         HartreeFockAnsatz(),
         GenericLayerAnsatz([qml.RY], entangler=qml.CNOT, entangling_layout="linear"),
         GenericLayerAnsatz([qml.RY, qml.RZ], entangler=qml.CNOT, entangling_layout="linear"),
@@ -96,7 +71,26 @@ if __name__ == "__main__":
         UCCSDAnsatz()
     ]
 
-    # Run calculation
-    nh3_calc = MoleculeEnergyCalc(molecules=molecules, bond_sweeps=np.array([0.0]), ansatze=ansatze, max_iterations=30)
+    # Initialize and run the calculation
+    base_mol_h2 = qml.qchem.Molecule(symbols=["H", "H"], coordinates=h2_coords, unit="angstrom",)
+    nh3_mol1 = qml.qchem.Molecule(symbols=["N", "H", "H", "H"], coordinates=nh3_coords1)
+    nh3_mol2 = qml.qchem.Molecule(symbols=["N", "H", "H", "H"], coordinates=nh3_coords2)
+
+    # Calculate Energy
+    h2_calc = MoleculeEnergyCalc(
+        molecules=[base_mol_h2],
+        bond_sweeps=(-0.1, 0.1, 5),
+        ansatze=ansatze_h2,
+        max_iterations=50,
+    )
+    nh3_calc = MoleculeEnergyCalc(
+        molecules=[nh3_mol1, nh3_mol2], 
+        bond_sweeps=np.array([0.0]), 
+        ansatze=ansatze_nh3, 
+        max_iterations=30)
+
+    h2_calc.run_sweeps()
     nh3_calc.run_sweeps()
+    
+    h2_calc.summary()
     nh3_calc.summary()
