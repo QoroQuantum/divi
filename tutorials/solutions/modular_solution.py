@@ -1,10 +1,14 @@
 import numpy as np
 import pennylane as qml
+from pennylane import qchem
 
 from divi.backends import ParallelSimulator
 from divi.qprog import HartreeFockAnsatz, GenericLayerAnsatz, UCCSDAnsatz, VQE
 from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
 from divi.qprog.workflows import VQEHyperparameterSweep, MoleculeTransformer
+
+from typing import Any
+
 
 
 class MoleculeEnergyCalc:
@@ -131,35 +135,58 @@ class MoleculeEnergyCalc:
             print(data)
 
 
-class SimpleAnsatz(GenericLayerAnsatz):
-    def __init__(self, *args, **kwargs):
-        super().__init__(
-            gate_sequence=[qml.RY],
-            entangler=qml.CNOT,
-            entangling_layout="linear",
-            *args,
-            **kwargs,
-        )
 
-class BalancedAnsatz(GenericLayerAnsatz):
-    def __init__(self, *args, **kwargs):
-        super().__init__(
+class HFLayerAnsatz(GenericLayerAnsatz):
+    """
+    GenericLayerAnsatz on top of a Hartree-Fock reference state.
+
+    Usage:
+        ansatz = HFLayerAnsatz(
             gate_sequence=[qml.RY, qml.RZ],
             entangler=qml.CNOT,
             entangling_layout="linear",
-            *args,
-            **kwargs,
         )
 
-class ExpensiveAnsatz(GenericLayerAnsatz):
-    def __init__(self, *args, **kwargs):
-        super().__init__(
-            gate_sequence=[qml.RY, qml.RZ],
-            entangler=qml.CNOT,
-            entangling_layout="all_to_all",
-            *args,
-            **kwargs,
+        # later, when building:
+        ops = ansatz.build(
+            params,
+            n_qubits=n_qubits,
+            n_layers=n_layers,
+            n_electrons=n_electrons,  # or hf_state=...
         )
+    """
+
+    def build(
+        self,
+        params: Any,
+        n_qubits: int,
+        n_layers: int,
+        **kwargs: Any,
+    ) -> list[qml.operation.Operator]:
+        # Option A: user directly passes a bitstring/array as hf_state
+        hf_state = kwargs.pop("hf_state", None)
+
+        # Option B: derive HF state from number of electrons
+        if hf_state is None:
+            n_electrons = kwargs.get("n_electrons", None)
+            if n_electrons is None:
+                raise ValueError(
+                    "HFLayerAnsatz.build requires either `hf_state` or `n_electrons` "
+                    "in kwargs."
+                )
+            hf_state = qchem.hf_state(n_electrons, n_qubits)
+
+        wires = list(range(n_qubits))
+
+        # 1) HF preparation as the very first operation
+        operations: list[qml.operation.Operator] = [
+            qml.BasisState(hf_state, wires=wires)
+        ]
+
+        # 2) All the usual layers from GenericLayerAnsatz
+        layer_ops = super().build(params, n_qubits=n_qubits, n_layers=n_layers, **kwargs)
+
+        return operations + layer_ops
 
 
 if __name__ == "__main__":
