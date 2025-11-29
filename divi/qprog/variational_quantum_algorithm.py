@@ -701,6 +701,8 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         self._curr_params = self._rng.uniform(
             0, 2 * np.pi, (self.optimizer.n_param_sets, total_params)
         )
+        self._curr_params = np.zeros((self.optimizer.n_param_sets, total_params))
+        
 
     def _run_optimization_circuits(self, **kwargs) -> dict[int, float]:
         self._curr_circuits = self._generate_circuits(**kwargs)
