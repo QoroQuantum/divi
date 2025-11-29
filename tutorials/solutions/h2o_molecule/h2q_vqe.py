@@ -5,6 +5,13 @@ from divi.qprog import HartreeFockAnsatz, UCCSDAnsatz
 from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
 from divi.qprog.sweep import MoleculeTransformer, VQEHyperparameterSweep
 
+
+### Remarks
+#
+# This is only to try out the different parameters
+#
+
+
 # Define the base H2 molecule
 base_mol = qml.qchem.Molecule(
     symbols=["H", "H"],
@@ -31,7 +38,7 @@ vqe_sweep = VQEHyperparameterSweep(
     ansatze=ansatze,
     molecule_transformer=mol_transformer,
     optimizer=optimizer,
-    max_iterations=10,
+    max_iterations=100,
     backend=ParallelSimulator(),
 )
 
@@ -47,3 +54,16 @@ print(f"Best configuration: {best_config}, Energy: {best_energy:.6f}")
 
 # Visualize the results
 vqe_sweep.visualize_results(graph_type="line")  # or graph_type="scatter"
+
+
+
+
+#####
+# Remarks: 
+# UCCSDAnsatz: is the best for gaining the best accuracy
+# Hartee-Fock: is enough for our use-case 
+# 
+#####
+
+
+

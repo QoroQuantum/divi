@@ -901,18 +901,26 @@ python-versions = ">=3.9"
 groups = ["main"]
 markers = "platform_system != \"Darwin\" or python_version == \"3.11\""
 files = [
+    {file = "cplex-22.1.2.0-cp310-cp310-macosx_10_6_x86_64.whl", hash = "sha256:3045967d8122d9dc1e2afbc72f6e029a5c1fc149c1d8a14b7ab84cf2270bf700"},
+    {file = "cplex-22.1.2.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:9a3f2d049221894654cfb3ab7123574759f3446a01cee804110aa73425318307"},
     {file = "cplex-22.1.2.0-cp310-cp310-manylinux2014_aarch64.whl", hash = "sha256:05aa14e05a374eef925618b7b229fb6720932573247aae7f1766efb74385a534"},
     {file = "cplex-22.1.2.0-cp310-cp310-manylinux2014_ppc64le.whl", hash = "sha256:e7097f6cc23180e97a63d5dfdcb37ab9833fffdc38fa7ee34e7ec6e5d34a8d0f"},
     {file = "cplex-22.1.2.0-cp310-cp310-manylinux2014_x86_64.whl", hash = "sha256:c43e67eac01a89b71b2ede70257889bf74a0d2c221f0e31ffcdc101c5520f79c"},
     {file = "cplex-22.1.2.0-cp310-cp310-win_amd64.whl", hash = "sha256:c58101462cc8aee00ef041c003e9776a4877dd1563fc5d6a737a953ce51f9f83"},
+    {file = "cplex-22.1.2.0-cp311-cp311-macosx_10_6_x86_64.whl", hash = "sha256:09b5176113c9ab7f2c049afd534627d470381280e514426ff74d6703229010c7"},
+    {file = "cplex-22.1.2.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:328eb996caa55f9e10271b9dd40391d12fe600f8f47ff26274977416d8163797"},
     {file = "cplex-22.1.2.0-cp311-cp311-manylinux2014_aarch64.whl", hash = "sha256:f976ce0166bd0e68740e4b514d1395b4f16e8103ef50d9a8f157c1cc916db216"},
     {file = "cplex-22.1.2.0-cp311-cp311-manylinux2014_ppc64le.whl", hash = "sha256:e875852bd46361b799950cc6854870a5e3d86f7238d4a8ba97648497521bb52b"},
     {file = "cplex-22.1.2.0-cp311-cp311-manylinux2014_x86_64.whl", hash = "sha256:bee12d488df86da5142ccb986fdf537df9ccff8837f33e5f0bc504b0e9b5d3f7"},
     {file = "cplex-22.1.2.0-cp311-cp311-win_amd64.whl", hash = "sha256:afbbad8aaede41255b703ab758452df9a899dbad48366bd0c9991fb219d57062"},
+    {file = "cplex-22.1.2.0-cp312-cp312-macosx_10_6_x86_64.whl", hash = "sha256:1e7693a00bc35ada61c63b13a0a0eaae5050ff51d4aedf39b2bf361d87f76ae3"},
+    {file = "cplex-22.1.2.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:1e683f2028bc6ec9999f9635fb5c11e8061f489af4a5691a3ec5c66dacb6ef2f"},
     {file = "cplex-22.1.2.0-cp312-cp312-manylinux2014_aarch64.whl", hash = "sha256:feb5b9c6f437c3cacb0dc6b12fde6bdf6e266074cac9f535e641794363a26254"},
     {file = "cplex-22.1.2.0-cp312-cp312-manylinux2014_ppc64le.whl", hash = "sha256:3e8fd6127121a28ac6499cda16c5a96fa45e5ba92c20f44abc18ee734aef819e"},
     {file = "cplex-22.1.2.0-cp312-cp312-manylinux2014_x86_64.whl", hash = "sha256:0c28a0a3b1dde31d2640965feb5d7c513ade2ad4faabf58f7783c21093674b8b"},
     {file = "cplex-22.1.2.0-cp312-cp312-win_amd64.whl", hash = "sha256:aa3c0ecec114a0e706def5674f94f04a44b6c5500168909381c034951677fcca"},
+    {file = "cplex-22.1.2.0-cp39-cp39-macosx_10_6_x86_64.whl", hash = "sha256:8650b9a80d100433fc1514b7d2cd0c10c53444672d8c1cad36845ac932ddb6e2"},
+    {file = "cplex-22.1.2.0-cp39-cp39-macosx_11_0_arm64.whl", hash = "sha256:e86b021fb89896a3d1b116d20c9a2baad600fca03ab7992d16742c4b1c97fc04"},
     {file = "cplex-22.1.2.0-cp39-cp39-manylinux2014_aarch64.whl", hash = "sha256:9332932334e3a9682a2a239a08c0169fe50e3f8d08fec84b9b120c7191c90737"},
     {file = "cplex-22.1.2.0-cp39-cp39-manylinux2014_ppc64le.whl", hash = "sha256:52ae74c59bac3d9a1319b7a6e4c0be94a9dc223fbcd028601dbf347ef8755ca4"},
     {file = "cplex-22.1.2.0-cp39-cp39-manylinux2014_x86_64.whl", hash = "sha256:3c8dc025044718863493fa8912ef6de5a70e8440e9fb0b59748b0207064f1507"},
@@ -4676,6 +4684,7 @@ files = [
     {file = "rustworkx-0.17.1-cp39-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:48784a673cf8d04f3cd246fa6b53fd1ccc4d83304503463bd561c153517bccc1"},
     {file = "rustworkx-0.17.1-cp39-abi3-win32.whl", hash = "sha256:5dbc567833ff0a8ad4580a4fe4bde92c186d36b4c45fca755fb1792e4fafe9b5"},
     {file = "rustworkx-0.17.1-cp39-abi3-win_amd64.whl", hash = "sha256:d0a48fb62adabd549f9f02927c3a159b51bf654c7388a12fc16d45452d5703ea"},
+    {file = "rustworkx-0.17.1.tar.gz", hash = "sha256:59ea01b4e603daffa4e8827316c1641eef18ae9032f0b1b14aa0181687e3108e"},
 ]
 
 [package.dependencies]
