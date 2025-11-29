@@ -1,4 +1,4 @@
-# Open End submission
+# Open Ended submission
 
 Our open end submission consists of two new additions to the devi codebase. (Link to the fork: [https://github.com/pedro2mj/qats](https://github.com/pedro2mj/qats))
 
