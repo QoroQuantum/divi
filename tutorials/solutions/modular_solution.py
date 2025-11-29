@@ -259,10 +259,17 @@ if __name__ == "__main__":
     # --- Define ansätze for NH₃ ---
     ansatze_nh3 = [
         HartreeFockAnsatz(),
-        SimpleAnsatz(),
-        BalancedAnsatz(),
-        ExpensiveAnsatz(),
         UCCSDAnsatz(),
+        HFLayerAnsatz(gate_sequence=[qml.RY],
+            entangler=qml.CNOT,
+            entangling_layout="linear",),
+        HFLayerAnsatz(gate_sequence=[qml.RY, qml.RZ],
+            entangler=qml.CNOT,
+            entangling_layout="linear",),
+        HFLayerAnsatz(gate_sequence=[qml.RY, qml.RZ],
+            entangler=qml.CNOT,
+            entangling_layout="all_to_all",)
+            
     ]
 
     nh3_calc = MoleculeEnergyCalc(
