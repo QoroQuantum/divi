@@ -3,7 +3,7 @@ import pennylane as qml
 from divi.backends import ParallelSimulator
 from divi.qprog import HartreeFockAnsatz, UCCSDAnsatz
 from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
-from divi.qprog.sweep import MoleculeTransformer, VQEHyperparameterSweep
+from divi.qprog.workflows import MoleculeTransformer, VQEHyperparameterSweep
 
 
 ### Remarks
@@ -38,7 +38,7 @@ vqe_sweep = VQEHyperparameterSweep(
     ansatze=ansatze,
     molecule_transformer=mol_transformer,
     optimizer=optimizer,
-    max_iterations=100,
+    max_iterations=10,
     backend=ParallelSimulator(),
 )
 
