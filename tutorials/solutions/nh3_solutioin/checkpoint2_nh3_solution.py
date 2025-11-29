@@ -200,33 +200,8 @@ class HFLayerAnsatz(GenericLayerAnsatz):
 
 
 if __name__ == "__main__":
-    print("H2-Molecule Energy Calculation started...")
-    # H₂ definition
-    h2_coords = np.array([(0, 0, 0), (0, 0, 0.735)])
-    h2_molecule = qml.qchem.Molecule(
-        symbols=["H", "H"],
-        coordinates=h2_coords,
-        unit="angstrom",
-    )
-
-    # Only HF ansatz for H₂ in this example
-    ansatze_h2 = [HartreeFockAnsatz()]
-
-    h2_calc = MoleculeEnergyCalc(
-        molecules=[h2_molecule],
-        hamiltonians=None,             
-        bond_sweeps=(-0.1, 0.1, 5),
-        ansatze=ansatze_h2,
-        max_iterations=50,
-        n_layers_list=[1, 2],
-    )
-
-    h2_calc.run_geometry_sweeps()
-    print("\nH₂ Summary:")
-    h2_calc.summary()
-
-    # --- NH₃ definitions ---
     print("NH3-Molecule Energy Calculation started...")
+    # --- NH₃ definitions ---
     nh3_coords1 = np.array([
         (0, 0, 0),
         (1.01, 0, 0),
