@@ -125,7 +125,7 @@ class VQEPlotCircuitExtension(VQE):
           **kwargs: Additional keyword arguments passed to the parent class.
         """
         super().__init__(**kwargs)
-        self.circuits : dict[str, qml.tape.QuantumScript] = None  # Will be initialized lazily
+        self._circuits : dict[str, qml.tape.QuantumScript] = None  # Will be initialized lazily
 
     def plot_circuits(self, backend: str = 'text') -> None:
         """Plot the circuits used in the VQE program.
