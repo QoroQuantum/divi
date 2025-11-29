@@ -1,69 +1,74 @@
 import numpy as np
 import pennylane as qml
+
 from divi.backends import ParallelSimulator
 from divi.qprog import HartreeFockAnsatz, UCCSDAnsatz
 from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
 from divi.qprog.workflows import MoleculeTransformer, VQEHyperparameterSweep
 
-
-### Remarks
-#
-# This is only to try out the different parameters
-#
-
-
 # Define the base H2 molecule
 base_mol = qml.qchem.Molecule(
     symbols=["H", "H"],
     coordinates=np.array([(0, 0, 0), (0, 0, 0.735)]),
+    unit="angstrom",
 )
 
-# Define bond length sweep (in bohr)
-bond_lengths = np.linspace(0.4, 1.2, 5)
+# Bond-length sweep (relative modifiers)
+bond_sweeps = np.linspace(-0.1, 0, 0.1)
 
 # Create a MoleculeTransformer to generate molecule variants
 mol_transformer = MoleculeTransformer(
     base_molecule=base_mol,
-    bond_modifiers=bond_lengths,
+    bond_modifiers=bond_sweeps,
 )
 
 # Choose ansatze to sweep
-ansatze = [HartreeFockAnsatz(), UCCSDAnsatz()]
+# You can also add UCCSDAnsatz() here if you like
+ansatze = [HartreeFockAnsatz()]
+
+# Number of layers to sweep over
+num_layers_list = [1, 2]
 
 # Define optimizer
 optimizer = ScipyOptimizer(method=ScipyMethod.L_BFGS_B)
 
-# Setup the hyperparameter sweep
-vqe_sweep = VQEHyperparameterSweep(
-    ansatze=ansatze,
-    molecule_transformer=mol_transformer,
-    optimizer=optimizer,
-    max_iterations=10,
-    backend=ParallelSimulator(),
-)
+# Backend
+backend = ParallelSimulator()
 
-# Create the programs (VQE runs for each ansatz & bond length)
-vqe_sweep.create_programs()
+# Store best result per layer depth
+best_results_by_layer = {}
 
-# Execute the sweep (this runs all VQE programs)
-vqe_sweep.run()
+for n_layers in num_layers_list:
+    print(f"\n=== Running VQE sweep with n_layers = {n_layers} ===")
 
-# Aggregate results to find the best energy and configuration
-best_config, best_energy = vqe_sweep.aggregate_results()
-print(f"Best configuration: {best_config}, Energy: {best_energy:.6f}")
+    # Setup the hyperparameter sweep for this specific layer depth
+    vqe_sweep = VQEHyperparameterSweep(
+        ansatze=ansatze,
+        molecule_transformer=mol_transformer,
+        optimizer=optimizer,
+        max_iterations=100,
+        backend=backend,
+        n_layers=n_layers,   # <- fixed number of layers for this sweep
+    )
 
-# Visualize the results
-vqe_sweep.visualize_results(graph_type="line")  # or graph_type="scatter"
+    # Create the programs (VQE runs for each ansatz & bond length)
+    vqe_sweep.create_programs()
+
+    # Execute the sweep (this runs all VQE programs)
+    vqe_sweep.run()
+
+    # Aggregate results to find the best energy and configuration
+    best_config, best_energy = vqe_sweep.aggregate_results()
+    best_results_by_layer[n_layers] = (best_config, best_energy)
+
+    print(f"Best configuration (layers={n_layers}): {best_config}")
+    print(f"Best energy (layers={n_layers}): {best_energy:.6f} Ha")
+
+    # Visualize the results for this layer depth
+    # (e.g. one figure per depth)
+    vqe_sweep.visualize_results(graph_type="line")  # or "scatter"
 
 
-
-
-#####
-# Remarks: 
-# UCCSDAnsatz: is the best for gaining the best accuracy
-# Hartee-Fock: is enough for our use-case 
-# 
-#####
-
-
-
+print("\n=== Summary over all layer depths ===")
+for n_layers, (cfg, E) in best_results_by_layer.items():
+    print(f"n_layers={n_layers}: E = {E:.6f} Ha, config = {cfg}")

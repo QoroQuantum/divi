@@ -1,9 +1,9 @@
 import pennylane as qml
 import numpy as np
 from divi.backends import ParallelSimulator
-from divi.qprog import GenericLayerAnsatz, HartreeFockAnsatz, UCCSDAnsatz
+from divi.qprog import GenericLayerAnsatz, HartreeFockAnsatz, UCCSDAnsatz, VQE
 from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
-from divi.qprog.workflows import VQEHyperparameterSweep
+from divi.qprog.workflows import VQEHyperparameterSweep, MoleculeTransformer
 
 # Different models: 
 
@@ -11,24 +11,24 @@ from divi.qprog.workflows import VQEHyperparameterSweep
 simple = GenericLayerAnsatz(
     gate_sequence=[qml.RY], 
     entangler=qml.CNOT, 
-    entangling_layout="linear", 
-    name="Simple")
+    entangling_layout="linear" 
+    )
 # 2. Secondly, we test the more complex ansatz with one y- and one z- rotation
 balanced = GenericLayerAnsatz(
     gate_sequence=[qml.RY, qml.RZ], 
     entangler=qml.CNOT, 
-    entangling_layout="linear", 
-    name="Balanced")
+    entangling_layout="linear"
+    )
 # 3. Thirdly, we test the more complex ansatz with one y- and one z- rotation and entangling: all-to-all
 expensive = GenericLayerAnsatz(
     gate_sequence=[qml.RY, qml.RZ], 
     entangler=qml.CNOT, 
-    entangling_layout="all-to-all",
-    name="Expensive")
+    entangling_layout="all_to_all"
+    )
 # 3. Thirdly, we test the HF-ansatz
-hf = HartreeFockAnsatz(name="HF")
+hf = HartreeFockAnsatz()
 # 4. Lastly, we benchmark the results agains the accurate UCCSD - model
-uccsd = UCCSDAnsatz(name="UCCSD")
+uccsd = UCCSDAnsatz()
 
 
 
@@ -64,14 +64,14 @@ nh3_config2_coords = np.array(
 # Create molecule objects
 nh3_molecule1 = qml.qchem.Molecule(
     symbols=["N", "H", "H", "H"],
-    coordinates=nh3_config1_coords,
+    coordinates=nh3_config1_coords
 )
 
 nh3_molecule2 = qml.qchem.Molecule(
     symbols=["N", "H", "H", "H"],
-    coordinates=nh3_config2_coords,
+    coordinates=nh3_config2_coords
 )
-
+"""
 # Build Hamiltonians with active space parameters
 hamiltonian1, qubits = qml.qchem.molecular_hamiltonian(
     nh3_molecule1,
@@ -84,8 +84,18 @@ hamiltonian2, qubits = qml.qchem.molecular_hamiltonian(
     active_electrons=active_electrons,
     active_orbitals=active_orbitals,
 )
+"""
+bond_sweeps = np.array([0.0])
+# Create a MoleculeTransformer to generate molecule variants
+mol_transformer1 = MoleculeTransformer(
+    base_molecule=nh3_molecule1,
+    bond_modifiers=bond_sweeps,
+)
 
-
+mol_transformer2 = MoleculeTransformer(
+    base_molecule=nh3_molecule2,
+    bond_modifiers=bond_sweeps,
+)
 # Benchmark these ansätze on NH3
 
 ansatze = [hf, balanced, uccsd, simple, expensive]  # add more if you want
@@ -95,8 +105,7 @@ optimizer = ScipyOptimizer(method=ScipyMethod.L_BFGS_B)
 # Sweep object for geometry 1
 sweep1 = VQEHyperparameterSweep(
     ansatze=ansatze,
-    molecule_transformer=None,     # no bond sweep, fixed geometry
-    hamiltonian=hamiltonian1,
+    molecule_transformer=mol_transformer1,
     optimizer=optimizer,
     max_iterations=30,
     backend=ParallelSimulator(),
@@ -105,8 +114,7 @@ sweep1 = VQEHyperparameterSweep(
 # Sweep object for geometry 2
 sweep2 = VQEHyperparameterSweep(
     ansatze=ansatze,
-    molecule_transformer=None,
-    hamiltonian=hamiltonian2,
+    molecule_transformer=mol_transformer2,
     optimizer=optimizer,
     max_iterations=30,
     backend=ParallelSimulator(),
