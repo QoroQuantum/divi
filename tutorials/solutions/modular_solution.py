@@ -19,7 +19,7 @@ class MoleculeEnergyCalc:
 
     def __init__(self, n_electrons = None, molecules=None, bond_sweeps=None,
                  ansatze=None, n_layers_list=None,
-                 hamiltonians=None, max_iterations=50):
+                 hamiltonians=None, max_iterations=50, visualize=False):
 
         # Create results dictionary
         self.results = {}
@@ -30,6 +30,7 @@ class MoleculeEnergyCalc:
         self.n_layers_list = n_layers_list if n_layers_list is not None else [1]
         self.hamiltonians = hamiltonians if hamiltonians is not None else []
         self.max_iterations = max_iterations
+        self.visualize = visualize 
 
         # Always create backend internally
         self.backend = ParallelSimulator(shots=4000)
@@ -52,11 +53,11 @@ class MoleculeEnergyCalc:
             )
         return ansatz  # HF, UCCSD
 
-    ###############################################################
-    # EXPLICIT HAMILTONIAN VQE
-    ###############################################################
-    def run_hamiltonian_vqe(self):
 
+    def run_hamiltonian_vqe(self):
+        """
+        Hamiltonian VQE
+        """
         print("\n=== Running VQE on Explicit Hamiltonians ===")
         self.results["hamiltonians"] = {}
 
@@ -90,11 +91,11 @@ class MoleculeEnergyCalc:
                     energies, circuits
                 )
 
-    ###############################################################
-    # GEOMETRY SWEEP MODE
-    ###############################################################
-    def run_geometry_sweeps(self):
 
+    def run_geometry_sweeps(self):
+        """
+        geometry sweep mode
+        """
         print("\n=== Running Geometry-Based Sweeps ===")
         self.results["molecules"] = {}
 
@@ -126,8 +127,15 @@ class MoleculeEnergyCalc:
 
                 best_cfg, best_E = sweep.aggregate_results()
                 self.results["molecules"][mol_idx][n_layers] = (best_cfg, best_E)
+                
+                if self.visualize:
+                # Visualize the results for this layer depth
+                # (e.g. one figure per depth)
+                    sweep.visualize_results(graph_type="line")  # or "scatter"
+        
 
-    ###############################################################
+
+    
     def summary(self):
         print("\n===== SUMMARY =====")
         for section, data in self.results.items():
@@ -257,19 +265,26 @@ if __name__ == "__main__":
     )
 
     # --- Define ansätze for NH₃ ---
+    # 1. Minimalistic ansatz with only one Y-Rotation and a linear CNOT entangler
+    minimal = HFLayerAnsatz(gate_sequence=[qml.RY],
+            entangler=qml.CNOT,
+            entangling_layout="linear",),
+    # 2. Balanced ansatz with two Rotations (Y, Z) and a linear CNOT entangler
+    balanced = HFLayerAnsatz(gate_sequence=[qml.RY, qml.RZ],
+                             entangler=qml.CNOT,
+                             entangling_layout="linear",),
+    # 3. Expensive ansatz with two Rotations (Y, Z) and a linear CNOT entangler
+    expensive = HFLayerAnsatz(gate_sequence=[qml.RY, qml.RZ],
+                              entangler=qml.CNOT,
+                              entangling_layout="all_to_all",)
+
+
     ansatze_nh3 = [
         HartreeFockAnsatz(),
-        UCCSDAnsatz(),
-        HFLayerAnsatz(gate_sequence=[qml.RY],
-            entangler=qml.CNOT,
-            entangling_layout="linear",),
-        HFLayerAnsatz(gate_sequence=[qml.RY, qml.RZ],
-            entangler=qml.CNOT,
-            entangling_layout="linear",),
-        HFLayerAnsatz(gate_sequence=[qml.RY, qml.RZ],
-            entangler=qml.CNOT,
-            entangling_layout="all_to_all",)
-            
+        minimal,
+        balanced,
+        expensive,
+        UCCSDAnsatz(),            
     ]
 
     nh3_calc = MoleculeEnergyCalc(
