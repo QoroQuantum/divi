@@ -8,7 +8,7 @@ from divi.qprog import HartreeFockAnsatz, GenericLayerAnsatz, UCCSDAnsatz, VQE
 from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
 from divi.qprog.workflows import VQEHyperparameterSweep, MoleculeTransformer
 
-
+import matplotlib.pyplot as plt
 
 class MoleculeEnergyCalc:
     """
@@ -197,12 +197,21 @@ class HFLayerAnsatz(GenericLayerAnsatz):
         layer_ops = super().build(params, n_qubits=n_qubits, n_layers=n_layers, **kwargs)
 
         return operations + layer_ops
+    
+def _extract_energy_from_sweep(sweep):    
+    res = sweep.programs
+    energies = []
+    for key, vqe in res.items():
+        energy = vqe.best_loss
+        energies.append(energy)
+    return energies
 
 
 if __name__ == "__main__":
     print("H2-Molecule Energy Calculation started...")
     # H₂ definition
-    h2_coords = np.array([(0, 0, 0), (0, 0, 0.735)])
+    opt_bond_length = 0.735
+    h2_coords = np.array([(0, 0, 0), (0, 0, opt_bond_length)])
     h2_molecule = qml.qchem.Molecule(
         symbols=["H", "H"],
         coordinates=h2_coords,
@@ -211,16 +220,23 @@ if __name__ == "__main__":
 
     # Only HF ansatz for H₂ in this example
     ansatze_h2 = [HartreeFockAnsatz()]
-
+    bond_sweep = np.arange(-0.2, 0.21, 0.04)
     h2_calc = MoleculeEnergyCalc(
         molecules=[h2_molecule],
         hamiltonians=None,             
-        bond_sweeps=(-0.1, 0.1, 5),
+        bond_sweeps=bond_sweep,
         ansatze=ansatze_h2,
         max_iterations=50,
         n_layers_list=[1, 2],
     )
 
     h2_calc.run_geometry_sweeps()
+    sweep = h2_calc.results["molecules"][0][1]
+    energies = _extract_energy_from_sweep(sweep)
+    bond_length = opt_bond_length + bond_sweep
+    print(bond_length)
+    print(energies)
+    plt.plot(bond_length, energies)
+    plt.show()
     print("\nH₂ Summary:")
     h2_calc.summary()
