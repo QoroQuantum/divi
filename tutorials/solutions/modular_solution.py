@@ -1,10 +1,14 @@
 import numpy as np
 import pennylane as qml
+from pennylane import qchem
 
 from divi.backends import ParallelSimulator
 from divi.qprog import HartreeFockAnsatz, GenericLayerAnsatz, UCCSDAnsatz, VQE
 from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
 from divi.qprog.workflows import VQEHyperparameterSweep, MoleculeTransformer
+
+from typing import Any
+
 
 
 class MoleculeEnergyCalc:
@@ -129,9 +133,6 @@ class MoleculeEnergyCalc:
             print(data)
 
 
-import pennylane as qml
-from pennylane import qchem
-from typing import Any
 
 class HFLayerAnsatz(GenericLayerAnsatz):
     """
