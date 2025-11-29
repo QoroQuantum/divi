@@ -6,38 +6,38 @@ from divi.qprog import HartreeFockAnsatz, GenericLayerAnsatz, UCCSDAnsatz, VQE
 from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
 from divi.qprog.workflows import VQEHyperparameterSweep, MoleculeTransformer
 
+
 class MoleculeEnergyCalc:
     """
-    This class calculates the ground energy for molecules using VQE sweeps.
-    Supports multiple ansätze and geometries.
+    Calculates ground state energies using VQE, 
+    for geometry sweeps OR explicit Hamiltonians.
     """
-    def __init__(self, molecules, 
-                 bond_sweeps=None, 
-                 ansatze=None, 
-                 n_layers_list=None, 
-                 hamiltonians = [], 
-                 max_iterations=50):
-        """
-        molecules: list of qml.qchem.Molecule objects
-        bond_sweeps: array of bond modifiers for MoleculeTransformer
-        ansatze: list of ansatz objects
-        n_layers_list: list of number of layers -> stays empty for HF and UCCSD ansatz
-        """
-        self.molecules = molecules
-        self.bond_sweeps = bond_sweeps if bond_sweeps is not None else np.array([0.0])
-        self.ansatze = ansatze if ansatze is not None else [HartreeFockAnsatz()] # or any generic one
-        self.max_iterations = max_iterations
-        #list of layer depths for GenericLayerAnsatz-like circuits
-        self.n_layers_list = n_layers_list if n_layers_list is not None else [1]
-        self.hamiltonians = hamiltonians or [] 
-        self.optimizer = ScipyOptimizer(method=ScipyMethod.L_BFGS_B)
-        self.backend = ParallelSimulator()
-        self.results_by_molecule = {}
 
-    def _clone_ansatz_with_layers(self, ansatz, n_layers):
+    def __init__(self, molecules=None, bond_sweeps=None,
+                 ansatze=None, n_layers_list=None,
+                 hamiltonians=None, max_iterations=50):
+
+        #### New! Create results dictionary
+        self.results = {}
+
+        self.molecules = molecules if molecules is not None else []
+        self.bond_sweeps = bond_sweeps if bond_sweeps is not None else np.array([0.0])
+        self.ansatze = ansatze if ansatze is not None else [HartreeFockAnsatz()]
+        self.n_layers_list = n_layers_list if n_layers_list is not None else [1]
+        self.hamiltonians = hamiltonians if hamiltonians is not None else []
+        self.max_iterations = max_iterations
+
+        #### New! Always create backend internally
+        self.backend = ParallelSimulator(shots=4000)
+
+        #### New! Shared optimizer
+        self.optimizer = ScipyOptimizer(method=ScipyMethod.L_BFGS_B)
+
+    #### New! unified clone helper
+    def _clone_with_layers(self, ansatz, n_layers):
         """
-        Internal helper. Creates a NEW ansatz object with the desired n_layers.
-        Safely handles HartreeFockAnsatz & UCCSDAnsatz (no layers).
+        Returns a NEW ansatz instance with n_layers (if supported).
+        HF and UCCSD ignore n_layers.
         """
         if hasattr(ansatz, "n_layers"):
             return ansatz.__class__(
@@ -46,12 +46,13 @@ class MoleculeEnergyCalc:
                 entangling_layout=getattr(ansatz, "entangling_layout", None),
                 n_layers=n_layers,
             )
-        return ansatz  # This loop is not accessible for HF / UCCSDAnsatz
-    
+        return ansatz  # HF, UCCSD
+
+    ###############################################################
+    # EXPLICIT HAMILTONIAN VQE
+    ###############################################################
     def run_hamiltonian_vqe(self):
-        """
-        Run VQE directly on a list of explicit Hamiltonians (no geometry sweep).
-        """
+
         print("\n=== Running VQE on Explicit Hamiltonians ===")
         self.results["hamiltonians"] = {}
 
@@ -71,7 +72,6 @@ class MoleculeEnergyCalc:
                         H,
                         ansatz=ans,
                         backend=self.backend,
-                        n_layers=n_layers,
                         max_iterations=self.max_iterations,
                     )
 
@@ -80,13 +80,15 @@ class MoleculeEnergyCalc:
                     energies.append(vqe.best_loss)
                     circuits.append(vqe.total_circuit_count)
 
-                self.results["hamiltonians"][h_idx][n_layers] = (energies, circuits)
+                self.results["hamiltonians"][h_idx][n_layers] = (
+                    energies, circuits
+                )
 
+    ###############################################################
+    # GEOMETRY SWEEP MODE
+    ###############################################################
     def run_geometry_sweeps(self):
-        """
-        Classical VQEHyperparameterSweep workflow with MoleculeTransformer.
-        Works for H2 or general molecules with bond sweeps.
-        """
+
         print("\n=== Running Geometry-Based Sweeps ===")
         self.results["molecules"] = {}
 
@@ -101,7 +103,9 @@ class MoleculeEnergyCalc:
             for n_layers in self.n_layers_list:
                 print(f"\n--- Molecule {mol_idx+1}, n_layers={n_layers} ---")
 
-                ans_list = [self._clone_with_layers(a, n_layers) for a in self.ansatze]
+                ans_list = [
+                    self._clone_with_layers(a, n_layers) for a in self.ansatze
+                ]
 
                 sweep = VQEHyperparameterSweep(
                     ansatze=ans_list,
@@ -115,13 +119,14 @@ class MoleculeEnergyCalc:
                 sweep.run()
 
                 best_cfg, best_E = sweep.aggregate_results()
-
                 self.results["molecules"][mol_idx][n_layers] = (best_cfg, best_E)
 
-
+    ###############################################################
     def summary(self):
         print("\n===== SUMMARY =====")
-        print(self.results)
+        for section, data in self.results.items():
+            print(f"\n> {section.upper()}")
+            print(data)
 
 
 class SimpleAnsatz(GenericLayerAnsatz):
@@ -232,12 +237,11 @@ if __name__ == "__main__":
     ]
 
     nh3_calc = MoleculeEnergyCalc(
-        hamiltonians=[H1, H2],     # <-- Direct Hamiltonian VQE  #### New!
-        molecules=None,            # <-- No geometry sweep needed
+        hamiltonians=[H1, H2],     
+        molecules=None,            
         ansatze=ansatze_nh3,
         max_iterations=40,
         n_layers_list=[1, 2],
-        backend=ParallelSimulator(shots=4000),
     )
 
     nh3_calc.run_hamiltonian_vqe()
