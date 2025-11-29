@@ -13,13 +13,13 @@ class MoleculeEnergyCalc:
     for geometry sweeps OR explicit Hamiltonians.
     """
 
-    def __init__(self, molecules=None, bond_sweeps=None,
+    def __init__(self, n_electrons = None, molecules=None, bond_sweeps=None,
                  ansatze=None, n_layers_list=None,
                  hamiltonians=None, max_iterations=50):
 
-        #### New! Create results dictionary
+        # Create results dictionary
         self.results = {}
-
+        self.n_electrons = n_electrons
         self.molecules = molecules if molecules is not None else []
         self.bond_sweeps = bond_sweeps if bond_sweeps is not None else np.array([0.0])
         self.ansatze = ansatze if ansatze is not None else [HartreeFockAnsatz()]
@@ -27,13 +27,13 @@ class MoleculeEnergyCalc:
         self.hamiltonians = hamiltonians if hamiltonians is not None else []
         self.max_iterations = max_iterations
 
-        #### New! Always create backend internally
+        # Always create backend internally
         self.backend = ParallelSimulator(shots=4000)
 
-        #### New! Shared optimizer
+        # Shared optimizer
         self.optimizer = ScipyOptimizer(method=ScipyMethod.L_BFGS_B)
 
-    #### New! unified clone helper
+    # unified clone helper
     def _clone_with_layers(self, ansatz, n_layers):
         """
         Returns a NEW ansatz instance with n_layers (if supported).
@@ -64,6 +64,7 @@ class MoleculeEnergyCalc:
 
                 energies = []
                 circuits = []
+                n_electrons = self.n_electrons
 
                 for ansatz in self.ansatze:
                     ans = self._clone_with_layers(ansatz, n_layers)
@@ -73,6 +74,7 @@ class MoleculeEnergyCalc:
                         ansatz=ans,
                         backend=self.backend,
                         max_iterations=self.max_iterations,
+                        n_electrons=n_electrons
                     )
 
                     vqe.run()
@@ -242,6 +244,7 @@ if __name__ == "__main__":
         ansatze=ansatze_nh3,
         max_iterations=40,
         n_layers_list=[1, 2],
+        n_electrons=active_electrons,
     )
 
     nh3_calc.run_hamiltonian_vqe()
