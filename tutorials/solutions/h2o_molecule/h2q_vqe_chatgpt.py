@@ -1,6 +1,6 @@
 import pennylane as qml
 from divi.backends import ParallelSimulator
-from divi.qprog.ansatze import GenericLayerAnsatz, HartreeFockAnsatz, UCCSDAnsatz
+from divi.qprog import GenericLayerAnsatz, HartreeFockAnsatz, UCCSDAnsatz
 from divi.qprog.workflows import MoleculeTransformer, VQEHyperparameterSweep
 
 # 1. Define your base molecule (example: H₂)
