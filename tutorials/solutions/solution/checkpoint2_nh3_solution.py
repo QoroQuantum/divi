@@ -255,21 +255,23 @@ if __name__ == "__main__":
     # 1. Minimalistic ansatz with only one Y-Rotation and a linear CNOT entangler
     minimal = HFLayerAnsatz(gate_sequence=[qml.RY],
             entangler=qml.CNOT,
-            entangling_layout="linear")
+            entangling_layout="linear",),
     # 2. Balanced ansatz with two Rotations (Y, Z) and a linear CNOT entangler
     balanced = HFLayerAnsatz(gate_sequence=[qml.RY, qml.RZ],
                              entangler=qml.CNOT,
-                             entangling_layout="linear")
+                             entangling_layout="linear",),
     # 3. Expensive ansatz with two Rotations (Y, Z) and a linear CNOT entangler
     expensive = HFLayerAnsatz(gate_sequence=[qml.RY, qml.RZ],
                               entangler=qml.CNOT,
-                              entangling_layout="all_to_all")
+                              entangling_layout="all_to_all",)
 
 
     ansatze_nh3 = [
+        HartreeFockAnsatz(),
         minimal,
         balanced,
-        expensive            
+        expensive,
+        UCCSDAnsatz(),            
     ]
 
     nh3_calc = MoleculeEnergyCalc(

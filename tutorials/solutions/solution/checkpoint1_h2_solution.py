@@ -5,10 +5,10 @@ from typing import Any
 
 from divi.backends import ParallelSimulator
 from divi.qprog import HartreeFockAnsatz, GenericLayerAnsatz, UCCSDAnsatz, VQE
-from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
+from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod, MonteCarloOptimizer
 from divi.qprog.workflows import VQEHyperparameterSweep, MoleculeTransformer
 
-
+import matplotlib.pyplot as plt
 
 class MoleculeEnergyCalc:
     """
@@ -19,7 +19,7 @@ class MoleculeEnergyCalc:
     def __init__(self, n_electrons = None, molecules=None, bond_sweeps=None,
                  ansatze=None, n_layers_list=None,
                  hamiltonians=None, max_iterations=50, visualize=False, 
-                 backend=ParallelSimulator(shots=10000)):
+                 backend=ParallelSimulator(shots=4000)):
 
         # Create results dictionary
         self.results = {}
@@ -36,6 +36,7 @@ class MoleculeEnergyCalc:
         self.backend = backend
 
         # Shared optimizer
+        #self.optimizer = MonteCarloOptimizer()
         self.optimizer = ScipyOptimizer(method=ScipyMethod.L_BFGS_B)
 
     # unified clone helper
@@ -144,16 +145,6 @@ class MoleculeEnergyCalc:
             print(f"\n> {section.upper()}")
             print(data)
 
-def _extract_energy_counts_from_sweep(sweep):    
-    res = sweep.programs
-    energies = []
-    counts = []
-    for key, vqe in res.items():
-        energy = vqe.best_loss
-        circuit_counts = vqe.total_circuit_count
-        counts.append(circuit_counts)
-        energies.append(energy)
-    return energies, counts
 
 
 class HFLayerAnsatz(GenericLayerAnsatz):
@@ -207,91 +198,68 @@ class HFLayerAnsatz(GenericLayerAnsatz):
         layer_ops = super().build(params, n_qubits=n_qubits, n_layers=n_layers, **kwargs)
 
         return operations + layer_ops
+    
+def _extract_energy_counts_from_sweep(sweep):    
+    res = sweep.programs
+    energies = []
+    counts = []
+    for key, vqe in res.items():
+        energy = vqe.best_loss
+        circuit_counts = vqe.total_circuit_count
+        counts.append(circuit_counts)
+        energies.append(energy)
+    return energies, counts
+
 
 
 if __name__ == "__main__":
-    print("NH3-Molecule Energy Calculation started...")
-    # --- NH₃ definitions ---
-    nh3_coords1 = np.array([
-        (0, 0, 0),
-        (1.01, 0, 0),
-        (-0.5, 0.87, 0),
-        (-0.5, -0.87, 0),
-    ])
-
-    nh3_coords2 = np.array([
-        (0, 0, 0),
-        (-1.01, 0, 0),
-        (0.5, -0.87, 0),
-        (0.5, 0.87, 0),
-    ])
-
-    nh3_molecule_1 = qml.qchem.Molecule(
-        symbols=["N", "H", "H", "H"],
-        coordinates=nh3_coords1,
-    )
-    nh3_molecule_2 = qml.qchem.Molecule(
-        symbols=["N", "H", "H", "H"],
-        coordinates=nh3_coords2,
+    print("H2-Molecule Energy Calculation started...")
+    # H₂ definition
+    opt_bond_length = 0.735
+    h2_coords = np.array([(0, 0, 0), (0, 0, opt_bond_length)])
+    h2_molecule = qml.qchem.Molecule(
+        symbols=["H", "H"],
+        coordinates=h2_coords,
+        unit="angstrom",
     )
 
-    # specific for nh3 with 12/2 active orbitals
-    active_electrons = 8
-    active_orbitals = 6 
-
-    # Build explicit Hamiltonians
-    H1, _ = qml.qchem.molecular_hamiltonian(
-        nh3_molecule_1,
-        active_electrons=active_electrons,
-        active_orbitals=active_orbitals,
-    )
-    H2, _ = qml.qchem.molecular_hamiltonian(
-        nh3_molecule_2,
-        active_electrons=active_electrons,
-        active_orbitals=active_orbitals,
-    )
-
-    # --- Define ansätze for NH₃ ---
-    # 1. Minimalistic ansatz with only one Y-Rotation and a linear CNOT entangler
-    minimal = HFLayerAnsatz(gate_sequence=[qml.RY],
-            entangler=qml.CNOT,
-            entangling_layout="linear")
-    # 2. Balanced ansatz with two Rotations (Y, Z) and a linear CNOT entangler
-    balanced = HFLayerAnsatz(gate_sequence=[qml.RY, qml.RZ],
-                             entangler=qml.CNOT,
-                             entangling_layout="linear")
-    # 3. Expensive ansatz with two Rotations (Y, Z) and a linear CNOT entangler
-    expensive = HFLayerAnsatz(gate_sequence=[qml.RY, qml.RZ],
-                              entangler=qml.CNOT,
-                              entangling_layout="all_to_all")
-
-
-    ansatze_nh3 = [
-        minimal,
-        balanced,
-        expensive            
-    ]
-
-    nh3_calc = MoleculeEnergyCalc(
-        hamiltonians=[H1, H2],     
-        molecules=None,            
-        ansatze=ansatze_nh3,
+    ansatze_h2 = [HartreeFockAnsatz()]
+    # If you want the sweep over all geometries, use this and uncomment it
+    """
+    bond_sweep = np.arange(-0.2, 0.21, 0.04)
+    h2_calc = MoleculeEnergyCalc(
+        molecules=[h2_molecule],
+        hamiltonians=None,             
+        bond_sweeps=bond_sweep,
+        ansatze=ansatze_h2,
         max_iterations=50,
-        n_layers_list=[8],
-        n_electrons=active_electrons,
+        n_layers_list=[1],
     )
+    """
 
-    nh3_calc.run_hamiltonian_vqe()
+    # If you only want the ground state in the optimal geometry, use this:
+    n_layers = [5]
+    bond_sweep = np.array([0.0])
+    h2_calc = MoleculeEnergyCalc(
+        molecules=[h2_molecule],
+        hamiltonians=None,             
+        bond_sweeps=bond_sweep,
+        ansatze=ansatze_h2,
+        max_iterations=50,
+        n_layers_list=n_layers,
+    )
+    
+    h2_calc.run_geometry_sweeps()
+    sweep = h2_calc.results["molecules"][0][n_layers[0]]
+    energies, counts = _extract_energy_counts_from_sweep(sweep)
+    bond_length = opt_bond_length + bond_sweep
+    print("Number of executed circuits:", counts)
+    print("The bond lengths of H2:", bond_length)
+    print("and the corresponding energies", energies)
 
-    energies = []
-    circuit_count = []
-    for h_ind in [0, 1]:
-        H_sweep = nh3_calc.results["hamiltonians"][h_ind][8]
-        print(f"Circuit count for run {h_ind+1}: {H_sweep.total_circuit_count}")
-        energy, count = _extract_energy_counts_from_sweep(H_sweep)
-        energies.append(energy)
-        circuit_count.append(count)
-    print("Number of executed circuits:", circuit_count)
-    print("Difference of ground state energies:", abs(energies[0] - energies[1]))
-    print("\nNH₃ Summary:")
-    nh3_calc.summary()
+    # Uncomment the following two lines to visualize the plot of bond length and ground state energies
+    #plt.plot(bond_length, energies)
+    #plt.show()
+
+    print("\nH₂ Summary:")
+    h2_calc.summary()
