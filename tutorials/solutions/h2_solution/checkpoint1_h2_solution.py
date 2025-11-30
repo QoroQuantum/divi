@@ -218,8 +218,9 @@ if __name__ == "__main__":
         unit="angstrom",
     )
 
-    # Only HF ansatz for H₂ in this example
     ansatze_h2 = [HartreeFockAnsatz()]
+    # If you want the sweep over all geometries, use this and uncomment it
+    """
     bond_sweep = np.arange(-0.2, 0.21, 0.04)
     h2_calc = MoleculeEnergyCalc(
         molecules=[h2_molecule],
@@ -227,16 +228,31 @@ if __name__ == "__main__":
         bond_sweeps=bond_sweep,
         ansatze=ansatze_h2,
         max_iterations=50,
-        n_layers_list=[1, 2],
+        n_layers_list=[1],
     )
+    """
 
+    # If you only want the ground state in the optimal geometry, use this:
+    bond_sweep = [0.0]
+    h2_calc = MoleculeEnergyCalc(
+        molecules=[h2_molecule],
+        hamiltonians=None,             
+        bond_sweeps=bond_sweep,
+        ansatze=ansatze_h2,
+        max_iterations=50,
+        n_layers_list=[1],
+    )
+    
     h2_calc.run_geometry_sweeps()
     sweep = h2_calc.results["molecules"][0][1]
     energies = _extract_energy_from_sweep(sweep)
     bond_length = opt_bond_length + bond_sweep
-    print(bond_length)
-    print(energies)
-    plt.plot(bond_length, energies)
-    plt.show()
+    print("The bond lengths of H2:", bond_length)
+    print("and the corresponding energies", energies)
+
+    # Uncomment the following two lines to visualize the plot of bond length and ground state energies
+    #plt.plot(bond_length, energies)
+    #plt.show()
+
     print("\nH₂ Summary:")
     h2_calc.summary()

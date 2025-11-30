@@ -19,7 +19,7 @@ class MoleculeEnergyCalc:
     def __init__(self, n_electrons = None, molecules=None, bond_sweeps=None,
                  ansatze=None, n_layers_list=None,
                  hamiltonians=None, max_iterations=50, visualize=False, 
-                 backend=ParallelSimulator(shots=4000)):
+                 backend=ParallelSimulator(shots=10000)):
 
         # Create results dictionary
         self.results = {}
@@ -144,6 +144,13 @@ class MoleculeEnergyCalc:
             print(f"\n> {section.upper()}")
             print(data)
 
+def _extract_energy_from_sweep(sweep):    
+    res = sweep.programs
+    energies = []
+    for key, vqe in res.items():
+        energy = vqe.best_loss
+        energies.append(energy)
+    return energies
 
 
 class HFLayerAnsatz(GenericLayerAnsatz):
@@ -269,10 +276,17 @@ if __name__ == "__main__":
         molecules=None,            
         ansatze=ansatze_nh3,
         max_iterations=40,
-        n_layers_list=[1, 2],
+        n_layers_list=[5],
         n_electrons=active_electrons,
     )
 
     nh3_calc.run_hamiltonian_vqe()
+
+    energies = []
+    for h_ind in [0, 1]:
+        H_sweep = nh3_calc.results["hamiltonians"][h_ind][5]
+        energy = _extract_energy_from_sweep(H_sweep)
+        energies.append(energy)
+    print("Difference of ground state energies:", abs(energies[0] - energies[1]))
     print("\nNH₃ Summary:")
     nh3_calc.summary()
