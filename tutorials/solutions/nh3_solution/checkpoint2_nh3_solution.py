@@ -127,7 +127,7 @@ class MoleculeEnergyCalc:
                 sweep.run()
 
                 best_cfg, best_E = sweep.aggregate_results()
-                self.results["molecules"][mol_idx][n_layers] = (best_cfg, best_E)
+                self.results["molecules"][mol_idx][n_layers] = sweep
                 
                 if self.visualize:
                 # Visualize the results for this layer depth
@@ -144,13 +144,16 @@ class MoleculeEnergyCalc:
             print(f"\n> {section.upper()}")
             print(data)
 
-def _extract_energy_from_sweep(sweep):    
+def _extract_energy_counts_from_sweep(sweep):    
     res = sweep.programs
     energies = []
+    counts = []
     for key, vqe in res.items():
         energy = vqe.best_loss
+        circuit_counts = vqe.total_circuit_count
+        counts.append(circuit_counts)
         energies.append(energy)
-    return energies
+    return energies, counts
 
 
 class HFLayerAnsatz(GenericLayerAnsatz):
@@ -275,18 +278,22 @@ if __name__ == "__main__":
         hamiltonians=[H1, H2],     
         molecules=None,            
         ansatze=ansatze_nh3,
-        max_iterations=40,
-        n_layers_list=[5],
+        max_iterations=50,
+        n_layers_list=[8],
         n_electrons=active_electrons,
     )
 
     nh3_calc.run_hamiltonian_vqe()
 
     energies = []
+    circuit_count = []
     for h_ind in [0, 1]:
-        H_sweep = nh3_calc.results["hamiltonians"][h_ind][5]
-        energy = _extract_energy_from_sweep(H_sweep)
+        H_sweep = nh3_calc.results["hamiltonians"][h_ind][8]
+        print(f"Circuit count for run {h_ind+1}: {H_sweep.total_circuit_count}")
+        energy, count = _extract_energy_counts_from_sweep(H_sweep)
         energies.append(energy)
+        circuit_count.append(count)
+    print("Number of executed circuits:", circuit_count)
     print("Difference of ground state energies:", abs(energies[0] - energies[1]))
     print("\nNH₃ Summary:")
     nh3_calc.summary()

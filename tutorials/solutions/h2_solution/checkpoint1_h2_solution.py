@@ -5,7 +5,7 @@ from typing import Any
 
 from divi.backends import ParallelSimulator
 from divi.qprog import HartreeFockAnsatz, GenericLayerAnsatz, UCCSDAnsatz, VQE
-from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
+from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod, MonteCarloOptimizer
 from divi.qprog.workflows import VQEHyperparameterSweep, MoleculeTransformer
 
 import matplotlib.pyplot as plt
@@ -36,6 +36,7 @@ class MoleculeEnergyCalc:
         self.backend = backend
 
         # Shared optimizer
+        #self.optimizer = MonteCarloOptimizer()
         self.optimizer = ScipyOptimizer(method=ScipyMethod.L_BFGS_B)
 
     # unified clone helper
@@ -127,7 +128,7 @@ class MoleculeEnergyCalc:
                 sweep.run()
 
                 best_cfg, best_E = sweep.aggregate_results()
-                self.results["molecules"][mol_idx][n_layers] = (best_cfg, best_E)
+                self.results["molecules"][mol_idx][n_layers] = sweep
                 
                 if self.visualize:
                 # Visualize the results for this layer depth
@@ -198,13 +199,17 @@ class HFLayerAnsatz(GenericLayerAnsatz):
 
         return operations + layer_ops
     
-def _extract_energy_from_sweep(sweep):    
+def _extract_energy_counts_from_sweep(sweep):    
     res = sweep.programs
     energies = []
+    counts = []
     for key, vqe in res.items():
         energy = vqe.best_loss
+        circuit_counts = vqe.total_circuit_count
+        counts.append(circuit_counts)
         energies.append(energy)
-    return energies
+    return energies, counts
+
 
 
 if __name__ == "__main__":
@@ -233,20 +238,22 @@ if __name__ == "__main__":
     """
 
     # If you only want the ground state in the optimal geometry, use this:
-    bond_sweep = [0.0]
+    n_layers = [5]
+    bond_sweep = np.array([0.0])
     h2_calc = MoleculeEnergyCalc(
         molecules=[h2_molecule],
         hamiltonians=None,             
         bond_sweeps=bond_sweep,
         ansatze=ansatze_h2,
         max_iterations=50,
-        n_layers_list=[1],
+        n_layers_list=n_layers,
     )
     
     h2_calc.run_geometry_sweeps()
-    sweep = h2_calc.results["molecules"][0][1]
-    energies = _extract_energy_from_sweep(sweep)
+    sweep = h2_calc.results["molecules"][0][n_layers[0]]
+    energies, counts = _extract_energy_counts_from_sweep(sweep)
     bond_length = opt_bond_length + bond_sweep
+    print("Number of executed circuits:", counts)
     print("The bond lengths of H2:", bond_length)
     print("and the corresponding energies", energies)
 
