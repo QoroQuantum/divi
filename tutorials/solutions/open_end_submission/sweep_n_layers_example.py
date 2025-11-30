@@ -22,7 +22,7 @@ if __name__ == "__main__":
 
     # VQE algorithm setup
     ansatze_h2 = [HartreeFockAnsatz()]
-    bond_sweeps = np.arange(-0.2, 0.21, 0.04)
+    bond_sweeps = [0.75]
     mol_transformer = MoleculeTransformer(
         base_molecule=h2_molecule,
         bond_modifiers=bond_sweeps,
@@ -43,4 +43,3 @@ if __name__ == "__main__":
     sweep.run()
 
     best_cfg, best_E = sweep.aggregate_results()
-    sweep.visualize_results(graph_type="line")  # or "scatter"
