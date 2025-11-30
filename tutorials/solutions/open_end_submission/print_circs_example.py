@@ -21,7 +21,7 @@ from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from divi.qprog import HartreeFockAnsatz, GenericLayerAnsatz
 from pennylane import qchem
 
-from divi.qprog.algorithms._extension import VQEExtension
+from divi.qprog.algorithms._vqe_extension import VQEExtension
 
 
 class HFLayerAnsatz(GenericLayerAnsatz):
@@ -100,44 +100,3 @@ if __name__ == "__main__":
 
    # Plot your circuits
    vqe_h2.plot_circuits(backend='text')
-
-   # ## NH3 example
-
-   # # Creeate your vqe instance for NH3
-
-   # nh3_coords = np.array([
-   #    (0, 0, 0),
-   #    (1.01, 0, 0),
-   #    (-0.5, 0.87, 0),
-   #    (-0.5, -0.87, 0),
-   # ])
-
-   # nh3_molecule = qml.qchem.Molecule(
-   #    symbols=["N", "H", "H", "H"],
-   #    coordinates=nh3_coords,
-   # )
-
-   # ansatz = HFLayerAnsatz(gate_sequence=[qml.RY, qml.RZ],
-   #                         entangler=qml.CNOT,
-   #                         entangling_layout="linear",)
-   # # specific for nh3 with 12/2 active orbitals
-   # active_electrons = 8
-   # active_orbitals = 6 
-
-   # H1, _ = qml.qchem.molecular_hamiltonian(
-   #    nh3_molecule,
-   #    active_electrons=active_electrons,
-   #    active_orbitals=active_orbitals,
-   # )
-
-   # vq_nh3 = VQEExtension(
-   #    hamiltonian=H1,
-   #    ansatze=ansatz,
-   #    molecule_transformer=nh3_molecule,
-   #    optimizer=ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
-   #    max_iterations=1,
-   #    backend=ParallelSimulator(shots=4000),
-   # )
-
-   # vq_nh3.plot_circuits(backend='text')
-
