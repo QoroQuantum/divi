@@ -2,14 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import dimod
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pennylane as qml
 import pytest
 import scipy.sparse as sps
-from qiskit_optimization import QuadraticProgram
-from qiskit_optimization.converters import QuadraticProgramToQubo
 
 from divi.backends import CircuitRunner
 from divi.qprog import (
@@ -819,20 +818,31 @@ class TestQUBOInput:
         assert qaoa_problem2.current_iteration == 12
 
     @pytest.fixture
-    def quadratic_program(self):
-        qp = QuadraticProgram()
-        qp.binary_var("x")
-        qp.binary_var("y")
-        qp.binary_var("z")
-        qp.minimize(linear={"x": -1, "y": -2, "z": 3})
+    def binary_quadratic_model(self):
+        bqm = dimod.BinaryQuadraticModel(
+            {"x": -1, "y": -2, "z": 3}, {}, 0.0, dimod.Vartype.BINARY
+        )
+        return bqm
 
-        return qp
+    @pytest.fixture
+    def bqm_minimize(self):
+        """BQM for minimization test: x=1, y=-2, z=3, w=-1"""
+        return dimod.BinaryQuadraticModel(
+            {"x": 1, "y": -2, "z": 3, "w": -1}, {}, 0.0, dimod.Vartype.BINARY
+        )
 
-    def test_quadratic_program_initialization(
-        self, quadratic_program, default_test_simulator
+    @pytest.fixture
+    def bqm_maximize(self):
+        """BQM for maximization test (negated for minimization): x=-1, y=2, z=-3, w=1"""
+        return dimod.BinaryQuadraticModel(
+            {"x": -1, "y": 2, "z": -3, "w": 1}, {}, 0.0, dimod.Vartype.BINARY
+        )
+
+    def test_binary_quadratic_model_initialization(
+        self, binary_quadratic_model, default_test_simulator
     ):
         qaoa_problem = QAOA(
-            problem=quadratic_program,
+            problem=binary_quadratic_model,
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=10,
@@ -858,46 +868,32 @@ class TestQUBOInput:
 
         verify_metacircuit_dict(qaoa_problem, ["cost_circuit", "meas_circuit"])
 
-    def test_quadratic_program_with_nonbinary_warns(self, quadratic_program):
-        quadratic_program.integer_var(lowerbound=0, upperbound=3, name="w")
-        quadratic_program.minimize(linear={"x": -1, "y": -2, "z": 3, "w": -1})
+    def test_binary_quadratic_model_with_spin_raises_error(self):
+        # Create a BQM with SPIN vartype (non-binary)
+        bqm = dimod.BinaryQuadraticModel(
+            {"x": -1, "y": -2, "z": 3}, {}, 0.0, dimod.Vartype.SPIN
+        )
 
-        with pytest.warns(
-            UserWarning,
-            match="Quadratic Program contains non-binary variables. Converting to QUBO.",
+        with pytest.raises(
+            ValueError,
+            match=r"BinaryQuadraticModel must have vartype='BINARY', got Vartype\.SPIN",
         ):
-            qaoa_problem = QAOA(
-                quadratic_program,
+            QAOA(
+                problem=bqm,
                 n_layers=1,
                 optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
                 max_iterations=10,
                 backend=None,
             )
 
-        assert hasattr(qaoa_problem, "_qp_converter")
-        assert isinstance(qaoa_problem._qp_converter, QuadraticProgramToQubo)
-
-        assert len(qaoa_problem.cost_hamiltonian) == 5
-        assert all(
-            isinstance(op, qml.Z) for op in qaoa_problem.cost_hamiltonian.terms()[1]
-        )
-        assert len(qaoa_problem.mixer_hamiltonian) == 5
-        assert all(
-            isinstance(op, qml.X) for op in qaoa_problem.mixer_hamiltonian.terms()[1]
-        )
-
     @pytest.mark.e2e
-    @pytest.mark.filterwarnings("ignore::UserWarning")
-    def test_quadratic_program_minimize_correct(
-        self, quadratic_program, default_test_simulator
+    def test_binary_quadratic_model_minimize_correct(
+        self, bqm_minimize, default_test_simulator
     ):
-        quadratic_program.integer_var(lowerbound=0, upperbound=3, name="w")
-        quadratic_program.minimize(linear={"x": 1, "y": -2, "z": 3, "w": -1})
-
         default_test_simulator.set_seed(1997)
 
         qaoa_problem = QAOA(
-            problem=quadratic_program,
+            problem=bqm_minimize,
             n_layers=2,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             max_iterations=15,
@@ -907,22 +903,22 @@ class TestQUBOInput:
 
         qaoa_problem.run()
 
-        np.testing.assert_equal(
-            qaoa_problem._qp_converter.interpret(qaoa_problem.solution), [0, 1, 0, 3]
-        )
+        # The optimal solution for minimize with x=1, y=-2, z=3, w=-1 is [0, 1, 0, 1]
+        # (y=1, w=1 gives energy -2-1=-3)
+        expected_solution = [0, 1, 0, 1]
+        np.testing.assert_equal(qaoa_problem.solution, expected_solution)
 
     @pytest.mark.e2e
-    @pytest.mark.filterwarnings("ignore::UserWarning")
-    def test_quadratic_program_maximize_correct(
-        self, quadratic_program, default_test_simulator
+    def test_binary_quadratic_model_maximize_correct(
+        self, bqm_maximize, default_test_simulator
     ):
-        quadratic_program.integer_var(lowerbound=0, upperbound=3, name="w")
-        quadratic_program.maximize(linear={"x": 1, "y": -2, "z": 3, "w": -1})
-
+        # For maximize, we negate the BQM (since QAOA minimizes)
+        # Original: maximize x=1, y=-2, z=3, w=-1
+        # This is equivalent to minimize: x=-1, y=2, z=-3, w=1
         default_test_simulator.set_seed(1997)
 
         qaoa_problem = QAOA(
-            problem=quadratic_program,
+            problem=bqm_maximize,
             n_layers=2,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             max_iterations=15,
@@ -932,33 +928,30 @@ class TestQUBOInput:
 
         qaoa_problem.run()
 
-        np.testing.assert_equal(
-            qaoa_problem._qp_converter.interpret(qaoa_problem.solution), [1, 0, 1, 0]
-        )
+        # For maximize (minimize negated), the optimal solution is [1, 0, 1, 0]
+        # (x=1, z=1 gives energy -1-3+1=-3 in negated form, which maximizes original)
+        expected_solution = [1, 0, 1, 0]
+        np.testing.assert_equal(qaoa_problem.solution, expected_solution)
 
     @pytest.mark.e2e
-    @pytest.mark.filterwarnings("ignore::UserWarning")
-    def test_quadratic_program_e2e_checkpointing_resume(
-        self, quadratic_program, default_test_simulator, tmp_path
+    def test_binary_quadratic_model_e2e_checkpointing_resume(
+        self, bqm_minimize, default_test_simulator, tmp_path
     ):
-        """Test QAOA QuadraticProgram e2e with checkpointing and resume functionality.
+        """Test QAOA BinaryQuadraticModel e2e with checkpointing and resume functionality.
 
-        Tests QuadraticProgram problem type handling with checkpointing, not optimizer-specific behavior.
+        Tests BinaryQuadraticModel problem type handling with checkpointing, not optimizer-specific behavior.
         Full optimizer coverage is tested with Graph problems. Uses MonteCarloOptimizer as representative.
         """
         from divi.qprog import MonteCarloOptimizer
 
         optimizer = MonteCarloOptimizer(population_size=10, n_best_sets=3)
 
-        quadratic_program.integer_var(lowerbound=0, upperbound=3, name="w")
-        quadratic_program.minimize(linear={"x": 1, "y": -2, "z": 3, "w": -1})
-
         checkpoint_dir = tmp_path / "checkpoint_test"
         default_test_simulator.set_seed(1997)
 
         # Run first half with checkpointing
         qaoa_problem1 = QAOA(
-            problem=quadratic_program,
+            problem=bqm_minimize,
             n_layers=2,
             optimizer=optimizer,
             max_iterations=7,  # First half
@@ -984,7 +977,7 @@ class TestQUBOInput:
         qaoa_problem2 = QAOA.load_state(
             checkpoint_dir,
             backend=default_test_simulator,
-            problem=quadratic_program,
+            problem=bqm_minimize,
             n_layers=2,
         )
 
@@ -997,9 +990,9 @@ class TestQUBOInput:
         qaoa_problem2.run()
 
         # Verify final results are correct
-        np.testing.assert_equal(
-            qaoa_problem2._qp_converter.interpret(qaoa_problem2.solution), [0, 1, 0, 3]
-        )
+        # The optimal solution for minimize with x=1, y=-2, z=3, w=-1 is [0, 1, 0, 1]
+        expected_solution = [0, 1, 0, 1]
+        np.testing.assert_equal(qaoa_problem2.solution, expected_solution)
 
         # Verify we completed the full run
         assert qaoa_problem2.current_iteration == 15

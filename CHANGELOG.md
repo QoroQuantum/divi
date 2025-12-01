@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### ✨ Added
 
+* `BinaryQuadraticModel` support in QAOA: added support for `dimod.BinaryQuadraticModel` as a QUBO problem input type, replacing the removed `qiskit-optimization.QuadraticProgram` support. QAOA now accepts BinaryQuadraticModel objects directly, with automatic conversion to matrix format for Hamiltonian generation. Includes comprehensive test coverage and updated tutorial (`tutorials/qaoa_binary_quadratic_model.py`)
 * Checkpointing support for variational quantum algorithms: added comprehensive checkpointing functionality with `CheckpointConfig` class (including `with_timestamped_dir()` method) using Pydantic for JSON validation, enabling state saving and resuming of optimization runs. Includes `save_state()` and `load_state()` methods on optimizer classes, comprehensive user guide (`docs/source/user_guide/checkpointing.rst`), and tutorial example (`tutorials/checkpointing.py`)
 * `precision` parameter to `VariationalQuantumAlgorithm`: added configurable precision for QASM parameter formatting (defaults to 8 decimal places). The precision parameter controls the number of decimal places used when converting circuit parameters to QASM strings, affecting the size of QASM circuits sent to cloud backends. Higher precision values result in longer QASM strings and increased data transfer overhead
 * Job cancellation support in `QoroService`: added `cancel_job()` method to cancel pending or running jobs on the Qoro Service API. The method returns a `requests.Response` object containing cancellation details (status, job_id, circuits_cancelled). Includes comprehensive test coverage for successful cancellation, permission errors (403), and conflict errors (409) when attempting to cancel non-cancellable jobs
@@ -28,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### ⚠️ Deprecated
 
 ### 🗑️ Removed
+
+* Removed `QuadraticProgram` support from QAOA: removed support for `qiskit-optimization.QuadraticProgram` as a QUBO problem input type, along with the `qiskit-optimization` dependency. Replaced with `dimod.BinaryQuadraticModel` support for better compatibility with the broader quantum optimization ecosystem. The `qiskit-optimization` dependency and related converter (`QuadraticProgramToQubo`) have been removed from the codebase
 
 ### 🐛 Fixed
 

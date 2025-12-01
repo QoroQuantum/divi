@@ -10,7 +10,6 @@ from multiprocessing import Pool
 from typing import Literal
 from warnings import warn
 
-import qiskit_ibm_runtime.fake_provider as fk_prov
 from qiskit import QuantumCircuit, transpile
 from qiskit.converters import circuit_to_dag
 from qiskit.dagcircuit import DAGOpNode
@@ -29,40 +28,76 @@ logger = logging.getLogger(__name__)
 _stevedore_logger = logging.getLogger("stevedore.extension")
 _stevedore_logger.setLevel(logging.CRITICAL)
 
-FAKE_BACKENDS = {
-    5: [
-        fk_prov.FakeManilaV2,
-        fk_prov.FakeBelemV2,
-        fk_prov.FakeLimaV2,
-        fk_prov.FakeQuitoV2,
-    ],
-    7: [
-        fk_prov.FakeOslo,
-        fk_prov.FakePerth,
-        fk_prov.FakeLagosV2,
-        fk_prov.FakeNairobiV2,
-    ],
-    15: [fk_prov.FakeMelbourneV2],
-    16: [fk_prov.FakeGuadalupeV2],
-    20: [
-        fk_prov.FakeAlmadenV2,
-        fk_prov.FakeJohannesburgV2,
-        fk_prov.FakeSingaporeV2,
-        fk_prov.FakeBoeblingenV2,
-    ],
-    27: [
-        fk_prov.FakeGeneva,
-        fk_prov.FakePeekskill,
-        fk_prov.FakeAuckland,
-        fk_prov.FakeCairoV2,
-    ],
-}
+# Lazy-loaded fake backends dictionary
+_FAKE_BACKENDS_CACHE: dict[int, list] | None = None
+
+
+def _load_fake_backends() -> dict[int, list]:
+    """Lazy load and return the FAKE_BACKENDS dictionary.
+
+    This function imports qiskit_ibm_runtime.fake_provider only when needed,
+    avoiding the ~1.16s import overhead when fake backends aren't used.
+
+    Returns:
+        dict[int, list]: Dictionary mapping qubit counts to lists of fake backend classes.
+    """
+    global _FAKE_BACKENDS_CACHE
+    if _FAKE_BACKENDS_CACHE is None:
+        # Import only when actually needed
+        import qiskit_ibm_runtime.fake_provider as fk_prov
+
+        _FAKE_BACKENDS_CACHE = {
+            5: [
+                fk_prov.FakeManilaV2,
+                fk_prov.FakeBelemV2,
+                fk_prov.FakeLimaV2,
+                fk_prov.FakeQuitoV2,
+            ],
+            7: [
+                fk_prov.FakeOslo,
+                fk_prov.FakePerth,
+                fk_prov.FakeLagosV2,
+                fk_prov.FakeNairobiV2,
+            ],
+            15: [fk_prov.FakeMelbourneV2],
+            16: [fk_prov.FakeGuadalupeV2],
+            20: [
+                fk_prov.FakeAlmadenV2,
+                fk_prov.FakeJohannesburgV2,
+                fk_prov.FakeSingaporeV2,
+                fk_prov.FakeBoeblingenV2,
+            ],
+            27: [
+                fk_prov.FakeGeneva,
+                fk_prov.FakePeekskill,
+                fk_prov.FakeAuckland,
+                fk_prov.FakeCairoV2,
+            ],
+        }
+    return _FAKE_BACKENDS_CACHE
 
 
 def _find_best_fake_backend(circuit: QuantumCircuit):
-    keys = sorted(FAKE_BACKENDS.keys())
+    """Find the best fake backend for a given circuit based on qubit count.
+
+    Args:
+        circuit: QuantumCircuit to find a backend for.
+
+    Returns:
+        List of fake backend classes that support the circuit's qubit count, or None.
+    """
+    fake_backends = _load_fake_backends()
+    keys = sorted(fake_backends.keys())
     pos = bisect.bisect_left(keys, circuit.num_qubits)
-    return FAKE_BACKENDS[keys[pos]] if pos < len(keys) else None
+    return fake_backends[keys[pos]] if pos < len(keys) else None
+
+
+# Public API for backward compatibility with tests
+def __getattr__(name: str):
+    """Lazy load FAKE_BACKENDS when accessed."""
+    if name == "FAKE_BACKENDS":
+        return _load_fake_backends()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class ParallelSimulator(CircuitRunner):

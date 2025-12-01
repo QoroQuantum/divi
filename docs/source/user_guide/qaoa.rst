@@ -123,10 +123,11 @@ Example: Finding the max-clique of a graph:
 QUBO Problems
 -------------
 
-Divi's QAOA solver can also handle Quadratic Unconstrained Binary Optimization (QUBO) problems. Divi currently supports two methods of formulating the QUBO problem:
+Divi's QAOA solver can also handle Quadratic Unconstrained Binary Optimization (QUBO) problems. Divi currently supports three methods of formulating the QUBO problem:
 
 1. **NumPy Array Input**: Pass a :class:`numpy.ndarray` or a :class:`scipy.sparse` array directly
-2. **Qiskit Quadratic Program**: Use the `qiskit-optimization` library to create :class:`qiskit_optimization.QuadraticProgram` objects
+2. **BinaryQuadraticModel**: Use the `dimod` library to create :class:`dimod.BinaryQuadraticModel` objects
+3. **List Input**: Pass a Python list (converted to NumPy array internally)
 
 In contrast to graph-based QAOA instances, the solution format for QUBO-based QAOA instances is a binary :class:`numpy.ndarray` representing the value for each variable in the original QUBO.
 
@@ -157,25 +158,26 @@ Numpy Array-based Input
    print(f"Solution: {qaoa_problem.solution}")
    print(f"Energy: {qaoa_problem.best_loss}")
 
-Qiskit Quadratic Program Input
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+BinaryQuadraticModel Input
+^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 .. code-block:: python
 
-   from qiskit_optimization import QuadraticProgram
+   import dimod
    from divi.qprog import QAOA
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import ParallelSimulator
 
-   qp = QuadraticProgram()
-   qp.binary_var("w")
-   qp.binary_var("x")
-   qp.binary_var("y")
-   qp.integer_var(lowerbound=0, upperbound=7, name="z")
-   qp.minimize(linear={"x": -3, "y": 2, "z": -1, "w": 10})
+   # Create a BinaryQuadraticModel
+   bqm = dimod.BinaryQuadraticModel(
+       linear={"w": 10, "x": -3, "y": 2},
+       quadratic={("w", "x"): -1, ("x", "y"): 1},
+       offset=0.0,
+       vartype=dimod.Vartype.BINARY
+   )
 
    qaoa_problem = QAOA(
-       problem=qp,
+       problem=bqm,
        n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        max_iterations=10,
@@ -185,11 +187,13 @@ Qiskit Quadratic Program Input
    qaoa_problem.run()
    qaoa_problem.compute_final_solution()
 
-   # The binary mask as is might be useless when importing a QuadraticProgram
-   # You can evaluate the energy of the solution sample using:
-   print(qaoa_problem.problem.objective.evaluate(qaoa_problem.solution))
-   # And you can also translate it to the QuadraticProgram's variables using:
-   print(qaoa_problem._qp_converter.interpret(qaoa_problem.solution))
+   print(f"Solution: {qaoa_problem.solution}")
+   print(f"Energy: {qaoa_problem.best_loss}")
+
+   # You can also evaluate the energy using the BinaryQuadraticModel directly:
+   # Note: solution is a numpy array, but BQM expects a dict or SampleSet
+   solution_dict = {var: int(val) for var, val in zip(bqm.variables, qaoa_problem.solution)}
+   print(f"BQM Energy: {bqm.energy(solution_dict)}")
 
 Graph Partitioning QAOA
 -----------------------

@@ -4,10 +4,10 @@
 
 import logging
 from enum import Enum
-from functools import reduce
 from typing import Any, Literal, get_args
 from warnings import warn
 
+import dimod
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
@@ -16,9 +16,6 @@ import pennylane.qaoa as pqaoa
 import rustworkx as rx
 import scipy.sparse as sps
 import sympy as sp
-from qiskit_optimization import QuadraticProgram
-from qiskit_optimization.converters import QuadraticProgramToQubo
-from qiskit_optimization.problems import VarType
 
 from divi.circuits import CircuitBundle, MetaCircuit
 from divi.qprog._hamiltonians import (
@@ -30,7 +27,7 @@ from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 logger = logging.getLogger(__name__)
 
 GraphProblemTypes = nx.Graph | rx.PyGraph
-QUBOProblemTypes = list | np.ndarray | sps.spmatrix | QuadraticProgram
+QUBOProblemTypes = list | np.ndarray | sps.spmatrix | dimod.BinaryQuadraticModel
 
 
 def _extract_loss_constant(
@@ -132,39 +129,6 @@ _SUPPORTED_INITIAL_STATES_LITERAL = Literal[
 ]
 
 
-def _convert_quadratic_program_to_pennylane_ising(qp: QuadraticProgram):
-    """Convert a Qiskit QuadraticProgram to a PennyLane Ising Hamiltonian.
-
-    Args:
-        qp (QuadraticProgram): Qiskit QuadraticProgram to convert.
-
-    Returns:
-        tuple[qml.Hamiltonian, float, int]: (pennylane_ising, constant, n_qubits) where:
-            - pennylane_ising: The Ising Hamiltonian in PennyLane format
-            - constant: The constant term
-            - n_qubits: Number of qubits required
-    """
-    qiskit_sparse_op, constant = qp.to_ising()
-
-    pauli_list = qiskit_sparse_op.paulis
-
-    pennylane_ising = 0.0
-    for pauli_string, coeff in zip(pauli_list.z, qiskit_sparse_op.coeffs):
-        sanitized_coeff = coeff.real if np.isreal(coeff) else coeff
-
-        curr_term = (
-            reduce(
-                lambda x, y: x @ y,
-                map(lambda x: qml.Z(x), np.flatnonzero(pauli_string)),
-            )
-            * sanitized_coeff.item()
-        )
-
-        pennylane_ising += curr_term
-
-    return pennylane_ising, constant.item(), pauli_list.num_qubits
-
-
 def _resolve_circuit_layers(
     initial_state, problem, graph_problem, **kwargs
 ) -> tuple[qml.operation.Operator, qml.operation.Operator, dict | None, str]:
@@ -199,14 +163,21 @@ def _resolve_circuit_layers(
 
         return *getattr(pqaoa, graph_problem.pl_string)(*params), resolved_initial_state
     else:
-        if isinstance(problem, QuadraticProgram):
-            cost_hamiltonian, constant, n_qubits = (
-                _convert_quadratic_program_to_pennylane_ising(problem)
-            )
+        # Convert BinaryQuadraticModel to matrix if needed
+        if isinstance(problem, dimod.BinaryQuadraticModel):
+            # Manual conversion from BQM to matrix (replacing deprecated to_numpy_matrix)
+            variables = list(problem.variables)
+            var_to_idx = {v: i for i, v in enumerate(variables)}
+            qubo_matrix = np.diag([problem.linear.get(v, 0) for v in variables])
+            for (u, v), coeff in problem.quadratic.items():
+                i, j = var_to_idx[u], var_to_idx[v]
+                qubo_matrix[i, j] = qubo_matrix[j, i] = coeff
         else:
-            cost_hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(problem)
+            qubo_matrix = problem
 
-            n_qubits = problem.shape[0]
+        cost_hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
+
+        n_qubits = qubo_matrix.shape[0]
 
         return (
             cost_hamiltonian,
@@ -226,7 +197,7 @@ class QAOA(VariationalQuantumAlgorithm):
     The algorithm can solve:
     - Graph problems (MaxCut, Max Clique, etc.)
     - QUBO (Quadratic Unconstrained Binary Optimization) problems
-    - Quadratic programs (converted to QUBO)
+    - BinaryQuadraticModel from dimod
 
     Attributes:
         problem (GraphProblemTypes | QUBOProblemTypes): The problem instance to solve.
@@ -385,39 +356,36 @@ class QAOA(VariationalQuantumAlgorithm):
         """Process QUBO problem, converting if necessary and setting n_qubits.
 
         Args:
-            problem: QUBO problem (QuadraticProgram, list, array, or sparse matrix).
+            problem: QUBO problem (BinaryQuadraticModel, list, array, or sparse matrix).
 
         Returns:
             Processed QUBO problem.
 
         Raises:
-            ValueError: If QUBO matrix has invalid shape.
+            ValueError: If QUBO matrix has invalid shape or BinaryQuadraticModel has non-binary variables.
         """
-        if isinstance(problem, QuadraticProgram):
-            if (
-                any(var.vartype != VarType.BINARY for var in problem.variables)
-                or problem.linear_constraints
-                or problem.quadratic_constraints
-            ):
-                warn(
-                    "Quadratic Program contains non-binary variables. Converting to QUBO."
-                )
-                self._qp_converter = QuadraticProgramToQubo()
-                problem = self._qp_converter.convert(problem)
-
-            self.n_qubits = problem.get_num_vars()
-        else:
-            if isinstance(problem, list):
-                problem = np.array(problem)
-
-            if problem.ndim != 2 or problem.shape[0] != problem.shape[1]:
+        # Handle BinaryQuadraticModel
+        if isinstance(problem, dimod.BinaryQuadraticModel):
+            if problem.vartype != dimod.Vartype.BINARY:
                 raise ValueError(
-                    "Invalid QUBO matrix."
-                    f" Got array of shape {problem.shape}."
-                    " Must be a square matrix."
+                    f"BinaryQuadraticModel must have vartype='BINARY', got {problem.vartype}"
                 )
+            self.n_qubits = len(problem.variables)
+            return problem
 
-            self.n_qubits = problem.shape[1]
+        # Handle list input
+        if isinstance(problem, list):
+            problem = np.array(problem)
+
+        # Validate matrix shape
+        if problem.ndim != 2 or problem.shape[0] != problem.shape[1]:
+            raise ValueError(
+                "Invalid QUBO matrix."
+                f" Got array of shape {problem.shape}."
+                " Must be a square matrix."
+            )
+
+        self.n_qubits = problem.shape[1]
 
         return problem
 

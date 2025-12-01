@@ -22,7 +22,6 @@ pennylane = "^0.42.3"
 qiskit = "^2.2"
 qiskit-aer = "*"
 qiskit-ibm-runtime = ">0.42"
-qiskit-optimization = {extras = ["cplex"], version = "^0.7.0"}
 mitiq = "^0.48"
 cirq-core = "^1.6"
 # Scientific computing and numerical operations
@@ -45,6 +44,7 @@ matplotlib = "^3.10.3"
 ply = "^3.11"
 basis-set-exchange = "^0.11"
 pydantic = ">=2.5.0,<2.10"
+tuna = "^0.5.11"
 
 
 [tool.poetry.group.dev.dependencies]

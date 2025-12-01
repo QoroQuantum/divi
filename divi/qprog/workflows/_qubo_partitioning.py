@@ -52,7 +52,7 @@ def _sanitize_problem_input(qubo: T) -> tuple[T, BinaryQuadraticModel]:
 class QUBOPartitioningQAOA(ProgramBatch):
     def __init__(
         self,
-        qubo: QUBOProblemTypes | BinaryQuadraticModel,
+        qubo: QUBOProblemTypes,
         decomposer: hybrid.traits.ProblemDecomposer,
         n_layers: int,
         backend: CircuitRunner,
@@ -65,7 +65,7 @@ class QUBOPartitioningQAOA(ProgramBatch):
         Initialize a QUBOPartitioningQAOA instance for solving QUBO problems using partitioning and QAOA.
 
         Args:
-            qubo (QUBOProblemTypes | BinaryQuadraticModel): The QUBO problem to solve, provided as a supported type or a BinaryQuadraticModel.
+            qubo (QUBOProblemTypes): The QUBO problem to solve, provided as a supported type.
                 Note: Variable types are assumed to be binary (not Spin).
             decomposer (hybrid.traits.ProblemDecomposer): The decomposer used to partition the QUBO problem into subproblems.
             n_layers (int): Number of QAOA layers to use for each subproblem.
