@@ -7,7 +7,7 @@ from threading import Event
 
 import pytest
 
-from divi.backends import JobStatus
+from divi.backends import ExecutionResult, JobStatus
 from divi.qprog.quantum_program import QuantumProgram
 
 
@@ -165,7 +165,9 @@ class TestQuantumProgramAsyncExecution:
         """Fixture for a mock asynchronous backend."""
         backend = mocker.Mock()
         backend.is_async = True
-        backend.submit_circuits.return_value = "fake_job_id"
+        backend.submit_circuits.return_value = ExecutionResult(
+            results=None, job_id="fake_job_id"
+        )
 
         # Use a side effect to properly simulate the callback behavior
         def poll_side_effect(*args, **kwargs):
@@ -178,9 +180,10 @@ class TestQuantumProgramAsyncExecution:
             return JobStatus.COMPLETED
 
         backend.poll_job_status.side_effect = poll_side_effect
-        backend.get_job_results.return_value = [
-            {"label": "circuit_1", "results": "final_results"}
-        ]
+        backend.get_job_results.return_value = ExecutionResult(
+            results=[{"label": "circuit_1", "results": "final_results"}],
+            job_id="fake_job_id",
+        )
         return backend
 
     @pytest.fixture
@@ -226,16 +229,19 @@ class TestQuantumProgramAsyncExecution:
         assert call_kwargs.get("service_job_id") == "fake_job_id"
         assert "poll_attempt" in call_kwargs
 
-    def test_async_workflow_sets_service_job_id(
+    def test_async_workflow_uses_job_id(
         self, mock_async_backend, async_test_program_class
     ):
-        """Tests that _curr_service_job_id is set when using an async backend."""
+        """Tests that job_id from ExecutionResult is used for async polling."""
         AsyncTestProgram = async_test_program_class()
         program = AsyncTestProgram(backend=mock_async_backend)
 
         program.run()
 
-        assert program._curr_service_job_id == "fake_job_id"
+        # Verify that poll_job_status was called with the job_id from ExecutionResult
+        mock_async_backend.poll_job_status.assert_called_once()
+        call_args = mock_async_backend.poll_job_status.call_args[0]
+        assert call_args[0] == "fake_job_id"
 
     def test_async_workflow_processes_results(
         self, mock_async_backend, async_test_program_class
@@ -315,11 +321,13 @@ class TestQuantumProgramAsyncExecution:
 
         mock_backend = mocker.Mock()
         mock_backend.is_async = False
-        mock_backend.submit_circuits.return_value = {
-            "circuit_1": {},
-            "circuit_2": {},
-            "circuit_3": {},
-        }
+        mock_backend.submit_circuits.return_value = ExecutionResult(
+            results=[
+                {"label": "circuit_1", "results": {}},
+                {"label": "circuit_2", "results": {}},
+                {"label": "circuit_3", "results": {}},
+            ]
+        )
 
         program = CircuitCountTestProgram(backend=mock_backend)
         program._curr_circuits = program._generate_circuits()

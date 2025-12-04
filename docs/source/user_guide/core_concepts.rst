@@ -187,10 +187,18 @@ Divi's backend system provides a unified interface for different execution envir
 
    .. code-block:: python
 
+      from divi.backends import ExecutionResult
+
       class MyCustomBackend(CircuitRunner):
-          def submit_circuits(self, circuits: dict[str, str]) -> Any:
+          def submit_circuits(self, circuits: dict[str, str]) -> ExecutionResult:
               # Your custom execution logic here
+              # Return ExecutionResult(results=...) for sync backends
+              # or ExecutionResult(job_id=...) for async backends
               pass
+
+   .. note::
+      The :class:`ExecutionResult` class provides a unified return type for all backends.
+      See :doc:`backends` for detailed information on working with execution results.
 
 **Available Backends:**
 

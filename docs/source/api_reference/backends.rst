@@ -14,6 +14,18 @@ All backends implement the :class:`CircuitRunner` interface, providing a consist
    :show-inheritance:
    :special-members: __init__
 
+Execution Results
+-----------------
+
+All :meth:`CircuitRunner.submit_circuits` methods return an :class:`ExecutionResult` object, which provides a unified interface for handling both synchronous and asynchronous backend responses.
+
+.. autoclass:: divi.backends.ExecutionResult
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+   :no-index:
+
 Core Backend Classes
 --------------------
 

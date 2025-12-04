@@ -130,7 +130,7 @@ Backend Options
 
       # Submit to quantum hardware
       circuits_dict = {"my_circuit": qasm_circuit}
-      job_id = service.submit_circuits(circuits_dict, qpu_system_name="ibm_one")
+      execution_result = service.submit_circuits(circuits_dict, qpu_system_name="ibm_one")
 
 Advanced Features
 -----------------

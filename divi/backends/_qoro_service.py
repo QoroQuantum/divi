@@ -18,6 +18,7 @@ from requests.adapters import HTTPAdapter, Retry
 from rich.console import Console
 
 from divi.backends import CircuitRunner
+from divi.backends._execution_result import ExecutionResult
 from divi.backends._qpu_system import (
     QPUSystem,
     get_qpu_system,
@@ -287,6 +288,15 @@ class QoroService(CircuitRunner):
 
         return response
 
+    def _extract_job_id(self, execution_result: ExecutionResult) -> str:
+        job_id = execution_result.job_id
+        if job_id is None:
+            raise ValueError(
+                "ExecutionResult must have a job_id. "
+                "This ExecutionResult appears to be from a synchronous backend."
+            )
+        return job_id
+
     def test_connection(self):
         """
         Test the connection to the Qoro API.
@@ -364,7 +374,7 @@ class QoroService(CircuitRunner):
         ham_ops: str | None = None,
         job_type: JobType | None = None,
         override_config: JobConfig | None = None,
-    ) -> str:
+    ) -> ExecutionResult:
         """
         Submit quantum circuits to the Qoro API for execution.
 
@@ -378,7 +388,7 @@ class QoroService(CircuitRunner):
                 String representing the Hamiltonian operators to measure, semicolon-separated.
                 Each term is a combination of Pauli operators, e.g. "XYZ;XXZ;ZIZ".
                 If None, no Hamiltonian operators will be measured.
-            job_type (JobType, optional):
+            job_type (JobType | None, optional):
                 Type of job to execute (e.g., SIMULATE, EXECUTE, EXPECTATION, CIRCUIT_CUT).
                 If not provided, the job type will be determined from the service configuration.
             override_config (JobConfig | None, optional):
@@ -391,7 +401,8 @@ class QoroService(CircuitRunner):
             requests.exceptions.HTTPError: If any API request fails.
 
         Returns:
-            str: The job ID for the created job.
+            ExecutionResult: Contains job_id for asynchronous execution. Use the job_id
+                to poll for results using backend.poll_job_status() and get_job_results().
         """
         # Create final job configuration by layering configurations:
         #    service defaults -> user overrides
@@ -488,51 +499,64 @@ class QoroService(CircuitRunner):
             if add_circuits_response.status_code != HTTPStatus.OK:
                 _raise_with_details(add_circuits_response)
 
-        return job_id
+        return ExecutionResult(results=None, job_id=job_id)
 
-    def delete_job(self, job_id: str) -> requests.Response:
+    def delete_job(self, execution_result: ExecutionResult) -> requests.Response:
         """
         Delete a job from the Qoro Database.
 
         Args:
-            job_id: The ID of the job to be deleted.
+            execution_result: An ExecutionResult instance with a job_id to delete.
         Returns:
             requests.Response: The response from the API.
+        Raises:
+            ValueError: If the ExecutionResult does not have a job_id.
         """
+        job_id = self._extract_job_id(execution_result)
         return self._make_request(
             "delete",
             f"job/{job_id}",
             timeout=50,
         )
 
-    def cancel_job(self, job_id: str) -> requests.Response:
+    def cancel_job(self, execution_result: ExecutionResult) -> requests.Response:
         """
         Cancel a job on the Qoro Service.
 
         Args:
-            job_id: The ID of the job to be cancelled.
+            execution_result: An ExecutionResult instance with a job_id to cancel.
         Returns:
             requests.Response: The response from the API. Use response.json() to get
                 the cancellation details (status, job_id, circuits_cancelled).
         Raises:
+            ValueError: If the ExecutionResult does not have a job_id.
             requests.exceptions.HTTPError: If the cancellation fails (e.g., 403 Forbidden,
                 or 409 Conflict if job is not in a cancellable state).
         """
+        job_id = self._extract_job_id(execution_result)
         return self._make_request(
             "post",
             f"job/{job_id}/cancel/",
             timeout=50,
         )
 
-    def get_job_results(self, job_id: str) -> list[dict]:
+    def get_job_results(self, execution_result: ExecutionResult) -> ExecutionResult:
         """
         Get the results of a job from the Qoro Database.
 
         Args:
-            job_id: The ID of the job to get results from.
+            execution_result: An ExecutionResult instance with a job_id to fetch results for.
+
         Returns:
-            list[dict]: The results of the job, with histograms decoded.
+            ExecutionResult: A new ExecutionResult instance with results populated.
+
+        Raises:
+            ValueError: If the ExecutionResult does not have a job_id.
+            requests.exceptions.HTTPError: If the job results are not available
+                (e.g., job is still running) or if the request fails.
         """
+        job_id = self._extract_job_id(execution_result)
+
         try:
             response = self._make_request(
                 "get",
@@ -553,11 +577,13 @@ class QoroService(CircuitRunner):
 
         for result in data["results"]:
             result["results"] = _decode_qh1_b64(result["results"])
-        return data["results"]
+
+        # Return a new ExecutionResult with results populated
+        return execution_result.with_results(data["results"])
 
     def poll_job_status(
         self,
-        job_id: str,
+        execution_result: ExecutionResult,
         loop_until_complete: bool = False,
         on_complete: Callable[[requests.Response], None] | None = None,
         verbose: bool = True,
@@ -567,7 +593,7 @@ class QoroService(CircuitRunner):
         Get the status of a job and optionally execute a function on completion.
 
         Args:
-            job_id: The ID of the job to check.
+            execution_result: An ExecutionResult instance with a job_id to check.
             loop_until_complete (bool): If True, polls until the job is complete or failed.
             on_complete (Callable, optional): A function to call with the final response
                 object when the job finishes.
@@ -577,7 +603,11 @@ class QoroService(CircuitRunner):
 
         Returns:
             JobStatus: The current job status.
+
+        Raises:
+            ValueError: If the ExecutionResult does not have a job_id.
         """
+        job_id = self._extract_job_id(execution_result)
 
         polling_status = None
 

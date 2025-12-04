@@ -8,6 +8,66 @@ Backend Architecture
 
 All backends in Divi implement the :class:`CircuitRunner` interface, providing a consistent API regardless of the underlying execution environment. This powerful abstraction allows you to develop your quantum programs locally and then switch to a different backend—like cloud hardware—with a single line of code.
 
+Understanding ExecutionResult
+------------------------------
+
+All backend :meth:`submit_circuits` methods return an :class:`ExecutionResult` object, which provides a unified interface for handling both synchronous and asynchronous execution.
+
+**For Synchronous Backends** (like ``ParallelSimulator``):
+   Results are available immediately after submission:
+
+   .. code-block:: python
+
+      from divi.backends import ParallelSimulator
+
+      backend = ParallelSimulator()
+      result = backend.submit_circuits({"circuit_0": qasm_string})
+
+      # Access results directly
+      for circuit_result in result.results:
+          label = circuit_result["label"]
+          counts = circuit_result["results"]
+          print(f"{label}: {counts}")
+
+**For Asynchronous Backends** (like ``QoroService``):
+   For cloud-based backends, you need to wait for the job to complete and then fetch the results:
+
+   .. code-block:: python
+
+      from divi.backends import QoroService
+
+      service = QoroService()
+      result = service.submit_circuits({"circuit_0": qasm_string})
+
+      # Wait for the job to complete
+      service.poll_job_status(result, loop_until_complete=True)
+
+      # Fetch the results
+      completed_result = service.get_job_results(result)
+
+      # Access the results
+      for circuit_result in completed_result.results:
+          label = circuit_result["label"]
+          counts = circuit_result["results"]
+          print(f"{label}: {counts}")
+
+**Note:** For most use cases, you don't need to interact with ``ExecutionResult`` directly. The backends handle the workflow automatically. The examples above show the typical patterns for accessing results from both synchronous and asynchronous backends.
+
+**Result Format:**
+   The ``results`` attribute is a list of dictionaries, each containing:
+
+   - ``label`` (str): The circuit label from your input dictionary
+   - ``results`` (dict): The execution results (bitstring counts for sampling mode, or expectation values for expectation mode)
+
+   Example:
+
+   .. code-block:: python
+
+      [
+          {"label": "circuit_0", "results": {"00": 500, "11": 500}},
+          {"label": "circuit_1", "results": {"01": 1000}}
+      ]
+
 Available Backends
 ------------------
 
@@ -132,16 +192,17 @@ The workflow for submitting circuits depends on which execution mode you're usin
    }
 
    # Submit the job in sampling mode (no ham_ops parameter)
-   job_id = service.submit_circuits(
+   execution_result = service.submit_circuits(
        circuits,
        job_type=JobType.SIMULATE  # Can also use JobType.EXECUTE for real hardware
    )
 
    # Monitor the execution until completion
-   service.poll_job_status(job_id, loop_until_complete=True)
+   service.poll_job_status(execution_result, loop_until_complete=True)
 
-   # Retrieve your results (returns histograms with bitstring counts)
-   results = service.get_job_results(job_id)
+   # Retrieve your results (returns ExecutionResult with results populated)
+   completed_result = service.get_job_results(execution_result)
+   results = completed_result.results
    # Example output shape:
    # [{'label': 'circuit_0', 'results': {'0011': 2000}},
    #  {'label': 'circuit_1', 'results': {'0011': 2000}}, ...]
@@ -162,17 +223,18 @@ The workflow for submitting circuits depends on which execution mode you're usin
    # Submit the job in expectation mode (ham_ops automatically sets JobType.EXPECTATION)
    # Note: This mode is only available on simulation backends, not real hardware
    # The QPU system in your JobConfig should be a simulation system (e.g., "qoro_maestro")
-   job_id = service.submit_circuits(
+   execution_result = service.submit_circuits(
        circuits,
        ham_ops=ham_ops
        # job_type is automatically set to JobType.EXPECTATION when ham_ops is provided
    )
 
    # Monitor the execution until completion
-   service.poll_job_status(job_id, loop_until_complete=True)
+   service.poll_job_status(execution_result, loop_until_complete=True)
 
-   # Retrieve your results (returns expectation values for each Pauli term)
-   results = service.get_job_results(job_id)
+   # Retrieve your results (returns ExecutionResult with results populated)
+   completed_result = service.get_job_results(execution_result)
+   results = completed_result.results
    # Example output shape:
    # [{'label': 'circuit_0', 'results': {'IIII': 1.0, 'XXXX': 0.0, 'YYYY': 0.0, 'ZZZZ': 1.0}}]
 
@@ -203,7 +265,7 @@ The ``QoroService`` uses a ``JobConfig`` object to manage settings for job submi
 
    # 2. Override the default configuration for a single job
    override = JobConfig(shots=2000, tag="high_shot_run")
-   job_id = service.submit_circuits(circuits, override_config=override)
+   execution_result = service.submit_circuits(circuits, override_config=override)
 
    # This job will run with 2000 shots and the tag 'high_shot_run',
    # but will still use 'qoro_maestro' and circuit packing from the default config.

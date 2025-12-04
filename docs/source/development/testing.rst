@@ -121,7 +121,7 @@ Divi uses `pytest-mock <https://pytest-mock.readthedocs.io/>`_ for clean mocking
 .. code-block:: python
 
    import pytest
-   from divi.backends import QoroService
+   from divi.backends import ExecutionResult, QoroService
 
    def test_qoro_service_submission(mocker):
        """Test QoroService circuit submission with mocked API."""
@@ -133,7 +133,8 @@ Divi uses `pytest-mock <https://pytest-mock.readthedocs.io/>`_ for clean mocking
        service = QoroService()
        result = service.submit_circuits({"test": "OPENQASM 2.0; qreg q[1];"})
 
-       assert result["job_id"] == "test-123"
+       assert isinstance(result, ExecutionResult)
+       assert result.job_id == "test-123"
        mock_post.assert_called_once()
 
    def test_backend_error_handling(mocker):

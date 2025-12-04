@@ -4,6 +4,8 @@
 
 from abc import ABC, abstractmethod
 
+from divi.backends._execution_result import ExecutionResult
+
 
 class CircuitRunner(ABC):
     """
@@ -48,7 +50,7 @@ class CircuitRunner(ABC):
         return False
 
     @abstractmethod
-    def submit_circuits(self, circuits: dict[str, str], **kwargs):
+    def submit_circuits(self, circuits: dict[str, str], **kwargs) -> ExecutionResult:
         """
         Submit quantum circuits for execution.
 
@@ -61,7 +63,8 @@ class CircuitRunner(ABC):
             **kwargs: Additional backend-specific parameters for circuit execution.
 
         Returns:
-            The return type depends on the backend implementation. Typically returns
-            measurement results or a job identifier.
+            ExecutionResult: For synchronous backends, contains results directly.
+                For asynchronous backends, contains a job_id that can be used to
+                fetch results later.
         """
         pass

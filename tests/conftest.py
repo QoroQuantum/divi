@@ -21,7 +21,7 @@ _stevedore_logger.setLevel(logging.CRITICAL)
 import pytest
 from dotenv import load_dotenv
 
-from divi.backends import CircuitRunner, ParallelSimulator
+from divi.backends import CircuitRunner, ExecutionResult, ParallelSimulator
 from tests.qprog.qprog_contracts import OPTIMIZERS_TO_TEST
 
 # Optimizers that support checkpointing - derived from OPTIMIZERS_TO_TEST
@@ -70,7 +70,7 @@ class DummySimulator(CircuitRunner):
                 }
             )
 
-        return res
+        return ExecutionResult(results=res)
 
 
 @pytest.fixture

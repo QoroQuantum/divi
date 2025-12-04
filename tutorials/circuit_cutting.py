@@ -21,10 +21,10 @@ if __name__ == "__main__":
 
     q_service = QoroService()
 
-    jobs = q_service.submit_circuits(
+    execution_result = q_service.submit_circuits(
         {"sample_cut_circuit": qasm_str}, job_type=JobType.CIRCUIT_CUT
     )
-    q_service.poll_job_status(jobs, loop_until_complete=True)
+    q_service.poll_job_status(execution_result, loop_until_complete=True)
 
-    results = q_service.get_job_results(jobs)
-    print(f"Results: {results}")
+    completed_result = q_service.get_job_results(execution_result)
+    print(f"Results: {completed_result.results}")

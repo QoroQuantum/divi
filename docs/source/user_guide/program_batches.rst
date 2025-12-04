@@ -340,7 +340,7 @@ Divi automatically optimizes parallel execution based on your backend and proble
        batch_size = 20
        for i in range(0, len(circuits), batch_size):
            batch = dict(list(circuits.items())[i:i+batch_size])
-           job_id = service.submit_circuits(batch)
+           execution_result = service.submit_circuits(batch)
 
 **Hybrid Execution** 🔄
 

@@ -29,11 +29,14 @@ if __name__ == "__main__":
 
     # Override the default number of shots and tag for this submission.
     override = JobConfig(shots=2000, tag="example_3_override")
-    job_id = service_with_config.submit_circuits(circuits, override_config=override)
+    execution_result = service_with_config.submit_circuits(
+        circuits, override_config=override
+    )
 
-    print(f"Job submitted with ID: {job_id}")
-    service_with_config.poll_job_status(job_id, loop_until_complete=True)
-    results = service_with_config.get_job_results(job_id)
+    print(f"Job submitted with ID: {execution_result.job_id}")
+    service_with_config.poll_job_status(execution_result, loop_until_complete=True)
+    completed_result = service_with_config.get_job_results(execution_result)
+    results = completed_result.results
     print("Results received.")
 
     # Verify that the total shots in the histogram matches the override.
@@ -50,11 +53,16 @@ if __name__ == "__main__":
     single_circuit = {"circuit_0": circuit}
 
     # The service will use the default tag 'tutorial_default' for this job.
-    job_id_expectation = service_with_config.submit_circuits(
+    execution_result_expectation = service_with_config.submit_circuits(
         circuits=single_circuit, ham_ops=ham_ops, job_type=JobType.EXPECTATION
     )
 
-    print(f"Expectation job submitted with ID: {job_id_expectation}")
-    service_with_config.poll_job_status(job_id_expectation, loop_until_complete=True)
-    expectation_results = service_with_config.get_job_results(job_id_expectation)
+    print(f"Expectation job submitted with ID: {execution_result_expectation.job_id}")
+    service_with_config.poll_job_status(
+        execution_result_expectation, loop_until_complete=True
+    )
+    completed_expectation_result = service_with_config.get_job_results(
+        execution_result_expectation
+    )
+    expectation_results = completed_expectation_result.results
     print(f"Expectation value results: {expectation_results}")

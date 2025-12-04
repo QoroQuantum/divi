@@ -5,9 +5,11 @@
 import bisect
 import heapq
 import logging
+import os
+import threading
 from functools import partial
-from multiprocessing import Pool
-from typing import Literal
+from multiprocessing import Pool, current_process
+from typing import Any, Literal
 from warnings import warn
 
 from qiskit import QuantumCircuit, transpile
@@ -18,13 +20,11 @@ from qiskit_aer import AerSimulator
 from qiskit_aer.noise import NoiseModel
 
 from divi.backends import CircuitRunner
+from divi.backends._execution_result import ExecutionResult
 
 logger = logging.getLogger(__name__)
 
-# Suppress stevedore extension loading errors (Qiskit v2 compatibility issue)
-# These occur when IBM backend plugins fail to load due to ProviderV1 removal.
-# The errors are harmless - they're just plugin loading failures that don't affect functionality.
-# Suppression must be at module level and before any Qiskit imports to be effective.
+# Suppress stevedore extension loading errors (harmless Qiskit v2/provider issue)
 _stevedore_logger = logging.getLogger("stevedore.extension")
 _stevedore_logger.setLevel(logging.CRITICAL)
 
@@ -33,14 +33,7 @@ _FAKE_BACKENDS_CACHE: dict[int, list] | None = None
 
 
 def _load_fake_backends() -> dict[int, list]:
-    """Lazy load and return the FAKE_BACKENDS dictionary.
-
-    This function imports qiskit_ibm_runtime.fake_provider only when needed,
-    avoiding the ~1.16s import overhead when fake backends aren't used.
-
-    Returns:
-        dict[int, list]: Dictionary mapping qubit counts to lists of fake backend classes.
-    """
+    """Lazy load and return the FAKE_BACKENDS dictionary."""
     global _FAKE_BACKENDS_CACHE
     if _FAKE_BACKENDS_CACHE is None:
         # Import only when actually needed
@@ -77,7 +70,7 @@ def _load_fake_backends() -> dict[int, list]:
     return _FAKE_BACKENDS_CACHE
 
 
-def _find_best_fake_backend(circuit: QuantumCircuit):
+def _find_best_fake_backend(circuit: QuantumCircuit) -> list[type] | None:
     """Find the best fake backend for a given circuit based on qubit count.
 
     Args:
@@ -100,10 +93,43 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+def _default_n_processes() -> int:
+    """Get a reasonable default number of processes based on CPU count.
+
+    Uses most available CPU cores (all minus 1, or 3/4 if many cores), with a
+    minimum of 2 and maximum of 16. This provides good parallelism while leaving
+    one core free for system processes.
+
+    If running in a different thread or process (not the main thread/process),
+    limits to 2 cores to avoid resource contention.
+
+    Returns:
+        int: Default number of processes to use.
+    """
+    # Check if we're running in a worker thread or subprocess
+    is_main_thread = threading.current_thread() is threading.main_thread()
+    is_main_process = current_process().name == "MainProcess"
+
+    if not (is_main_thread and is_main_process):
+        # Running in a different thread/process - limit to 2 cores
+        return 2
+
+    cpu_count = os.cpu_count() or 4
+    if cpu_count <= 4:
+        # For small systems, use all but 1 core
+        return max(2, cpu_count - 1)
+    elif cpu_count <= 16:
+        # For medium systems, use all but 1 core
+        return cpu_count - 1
+    else:
+        # For large systems, use 3/4 of cores, capped at 16
+        return min(16, int(cpu_count * 0.75))
+
+
 class ParallelSimulator(CircuitRunner):
     def __init__(
         self,
-        n_processes: int = 2,
+        n_processes: int | None = None,
         shots: int = 5000,
         simulation_seed: int | None = None,
         qiskit_backend: Backend | Literal["auto"] | None = None,
@@ -114,9 +140,11 @@ class ParallelSimulator(CircuitRunner):
         A parallel wrapper around Qiskit's AerSimulator using Qiskit's built-in parallelism.
 
         Args:
-            n_processes (int, optional): Number of parallel processes to use for transpilation and
-                simulation. Defaults to 2. This sets both the transpile num_processes and
-                AerSimulator's max_parallel_experiments.
+            n_processes (int | None, optional): Number of parallel processes to use for transpilation and
+                simulation. If None, defaults to half the available CPU cores (min 2, max 8).
+                Controls both transpilation parallelism and execution parallelism. The execution
+                parallelism mode (circuit or shot) is automatically selected based on workload
+                characteristics.
             shots (int, optional): Number of shots to perform. Defaults to 5000.
             simulation_seed (int, optional): Seed for the random number generator to ensure reproducibility. Defaults to None.
             qiskit_backend (Backend | Literal["auto"] | None, optional): A Qiskit backend to initiate the simulator from.
@@ -132,8 +160,11 @@ class ParallelSimulator(CircuitRunner):
                 " `noise_model` will be ignored and the model from the backend will be used instead."
             )
 
-        self.n_processes = n_processes
-        self.engine = "qiskit"
+        if n_processes is None:
+            n_processes = _default_n_processes()
+        elif n_processes < 1:
+            raise ValueError(f"n_processes must be >= 1, got {n_processes}")
+        self._n_processes = n_processes
         self.simulation_seed = simulation_seed
         self.qiskit_backend = qiskit_backend
         self.noise_model = noise_model
@@ -149,6 +180,30 @@ class ParallelSimulator(CircuitRunner):
         self.simulation_seed = seed
 
     @property
+    def n_processes(self) -> int:
+        """
+        Get the current number of parallel processes.
+
+        Returns:
+            int: Number of parallel processes configured.
+        """
+        return self._n_processes
+
+    @n_processes.setter
+    def n_processes(self, value: int):
+        """
+        Set the number of parallel processes (>= 1).
+
+        Controls:
+        - Transpilation parallelism
+        - OpenMP thread limit
+        - Circuit/Shot parallelism (auto-selected based on workload)
+        """
+        if value < 1:
+            raise ValueError(f"n_processes must be >= 1, got {value}")
+        self._n_processes = value
+
+    @property
     def supports_expval(self) -> bool:
         """
         Whether the backend supports expectation value measurements.
@@ -162,9 +217,36 @@ class ParallelSimulator(CircuitRunner):
         """
         return False
 
+    def _resolve_backend(self, circuit: QuantumCircuit | None = None) -> Backend | None:
+        """Resolve the backend from qiskit_backend setting."""
+        if self.qiskit_backend == "auto":
+            if circuit is None:
+                raise ValueError(
+                    "Circuit must be provided when qiskit_backend is 'auto'"
+                )
+            backend_list = _find_best_fake_backend(circuit)
+            if backend_list is None:
+                raise ValueError(
+                    f"No fake backend available for circuit with {circuit.num_qubits} qubits. "
+                    "Please provide an explicit backend or use a smaller circuit."
+                )
+            return backend_list[-1]()
+        return self.qiskit_backend
+
+    def _create_simulator(self, resolved_backend: Backend | None) -> AerSimulator:
+        """Create an AerSimulator instance from a resolved backend or noise model."""
+        return (
+            AerSimulator.from_backend(resolved_backend)
+            if resolved_backend is not None
+            else AerSimulator(noise_model=self.noise_model)
+        )
+
     def _execute_circuits_deterministically(
-        self, circuit_labels: list[str], transpiled_circuits: list, resolved_backend
-    ) -> list[dict]:
+        self,
+        circuit_labels: list[str],
+        transpiled_circuits: list[QuantumCircuit],
+        resolved_backend: Backend | None,
+    ) -> list[dict[str, Any]]:
         """
         Execute circuits individually for debugging purposes.
 
@@ -185,10 +267,7 @@ class ParallelSimulator(CircuitRunner):
             zip(circuit_labels, transpiled_circuits)
         ):
             # Create a new simulator instance for each circuit with the same seed
-            if resolved_backend is not None:
-                circuit_simulator = AerSimulator.from_backend(resolved_backend)
-            else:
-                circuit_simulator = AerSimulator(noise_model=self.noise_model)
+            circuit_simulator = self._create_simulator(resolved_backend)
 
             if self.simulation_seed is not None:
                 circuit_simulator.set_option("seed_simulator", self.simulation_seed)
@@ -201,7 +280,44 @@ class ParallelSimulator(CircuitRunner):
 
         return results
 
-    def submit_circuits(self, circuits: dict[str, str]):
+    def _configure_simulator_parallelism(
+        self, aer_simulator: AerSimulator, num_circuits: int
+    ):
+        """Configure AerSimulator parallelism options based on workload."""
+        if self.simulation_seed is not None:
+            aer_simulator.set_options(seed_simulator=self.simulation_seed)
+
+        # Default to utilizing all allocated processes for threads
+        options = {"max_parallel_threads": self.n_processes}
+
+        if num_circuits > 1:
+            # Batch mode: parallelize experiments
+            options.update(
+                {
+                    "max_parallel_experiments": min(num_circuits, self.n_processes),
+                    "max_parallel_shots": 1,
+                }
+            )
+        elif self.shots >= self.n_processes:
+            # Single circuit, high shots: parallelize shots
+            options.update(
+                {
+                    "max_parallel_experiments": 1,
+                    "max_parallel_shots": self.n_processes,
+                }
+            )
+        else:
+            # Single circuit, low shots: default behavior (usually serial shots)
+            options.update(
+                {
+                    "max_parallel_experiments": 1,
+                    "max_parallel_shots": 1,
+                }
+            )
+
+        aer_simulator.set_options(**options)
+
+    def submit_circuits(self, circuits: dict[str, str]) -> ExecutionResult:
         """
         Submit multiple circuits for parallel simulation using Qiskit's built-in parallelism.
 
@@ -213,63 +329,51 @@ class ParallelSimulator(CircuitRunner):
                 string representations.
 
         Returns:
-            list[dict]: List of result dictionaries, each containing:
-                - 'label' (str): Circuit identifier
-                - 'results' (dict): Measurement counts as {bitstring: count}
+            ExecutionResult: Contains results directly (synchronous execution).
+                Results are in the format: [{"label": str, "results": dict}, ...]
         """
         logger.debug(
             f"Simulating {len(circuits)} circuits with {self.n_processes} processes"
         )
 
-        # Convert QASM strings to QuantumCircuit objects
+        # 1. Parse Circuits
         circuit_labels = list(circuits.keys())
         qiskit_circuits = [
             QuantumCircuit.from_qasm_str(qasm) for qasm in circuits.values()
         ]
 
-        # Determine backend for transpilation
+        # 2. Resolve Backend
         if self.qiskit_backend == "auto":
-            # For "auto", find the maximum number of qubits across all circuits to determine backend
             max_qubits_circ = max(qiskit_circuits, key=lambda x: x.num_qubits)
-            resolved_backend = _find_best_fake_backend(max_qubits_circ)[-1]()
-        elif self.qiskit_backend is not None:
-            resolved_backend = self.qiskit_backend
+            resolved_backend = self._resolve_backend(max_qubits_circ)
         else:
-            resolved_backend = None
+            resolved_backend = self._resolve_backend()
 
-        # Create simulator
-        if resolved_backend is not None:
-            aer_simulator = AerSimulator.from_backend(resolved_backend)
-        else:
-            aer_simulator = AerSimulator(noise_model=self.noise_model)
+        # 3. Configure Simulator
+        aer_simulator = self._create_simulator(resolved_backend)
+        self._configure_simulator_parallelism(aer_simulator, len(qiskit_circuits))
 
-        # Set simulator options for parallelism
-        # Note: We don't set seed_simulator here because we need different seeds for each circuit
-        # to ensure deterministic results when running multiple circuits in parallel
-        aer_simulator.set_options(max_parallel_experiments=self.n_processes)
-
-        # Batch transpile all circuits (Qiskit handles parallelism internally)
+        # 4. Transpile
         transpiled_circuits = transpile(
             qiskit_circuits, aer_simulator, num_processes=self.n_processes
         )
 
-        # Use deterministic execution for debugging if enabled
+        # 5. Execute
         if self._deterministic_execution:
-            return self._execute_circuits_deterministically(
+            results = self._execute_circuits_deterministically(
                 circuit_labels, transpiled_circuits, resolved_backend
             )
+            return ExecutionResult(results=results)
 
-        # Batch execution with metadata checking for non-deterministic behavior
         job = aer_simulator.run(transpiled_circuits, shots=self.shots)
         batch_result = job.result()
 
-        # Check metadata to detect non-deterministic behavior
+        # Check for non-determinism warnings
         metadata = batch_result.metadata
-        parallel_experiments = metadata.get("parallel_experiments", 1)
-        omp_nested = metadata.get("omp_nested", False)
-
-        # If parallel execution is detected and we have a seed, warn about potential non-determinism
-        if parallel_experiments > 1 and self.simulation_seed is not None:
+        if (
+            parallel_experiments := metadata.get("parallel_experiments", 1)
+        ) > 1 and self.simulation_seed is not None:
+            omp_nested = metadata.get("omp_nested", False)
             logger.warning(
                 f"Parallel execution detected (parallel_experiments={parallel_experiments}, "
                 f"omp_nested={omp_nested}). Results may not be deterministic across different "
@@ -277,13 +381,12 @@ class ParallelSimulator(CircuitRunner):
                 "deterministic results."
             )
 
-        # Extract results and match with labels
-        results = []
-        for i, label in enumerate(circuit_labels):
-            counts = batch_result.get_counts(i)
-            results.append({"label": label, "results": dict(counts)})
-
-        return results
+        # 6. Format Results
+        results = [
+            {"label": label, "results": dict(batch_result.get_counts(i))}
+            for i, label in enumerate(circuit_labels)
+        ]
+        return ExecutionResult(results=results)
 
     @staticmethod
     def estimate_run_time_single_circuit(
@@ -303,44 +406,35 @@ class ParallelSimulator(CircuitRunner):
         """
         qiskit_circuit = QuantumCircuit.from_qasm_str(circuit)
 
-        resolved_backend = (
-            _find_best_fake_backend(qiskit_circuit)[-1]()
-            if qiskit_backend == "auto"
-            else qiskit_backend
-        )
+        if qiskit_backend == "auto":
+            if not (backend_list := _find_best_fake_backend(qiskit_circuit)):
+                raise ValueError(
+                    f"No fake backend available for circuit with {qiskit_circuit.num_qubits} qubits. "
+                    "Please provide an explicit backend or use a smaller circuit."
+                )
+            resolved_backend = backend_list[-1]()
+        else:
+            resolved_backend = qiskit_backend
 
         transpiled_circuit = transpile(
             qiskit_circuit, resolved_backend, **transpilation_kwargs
         )
 
-        dag = circuit_to_dag(transpiled_circuit)
-
         total_run_time_s = 0.0
-        for node in dag.longest_path():
-            if not isinstance(node, DAGOpNode):
-                continue
+        durations = resolved_backend.instruction_durations
 
-            op_name = node.name
-
-            # Determine qubit indices for the operation
-            if node.num_clbits == 1:
-                idx = (node.cargs[0]._index,)
-            elif op_name != "measure" and node.num_qubits > 0:
-                idx = tuple(qarg._index for qarg in node.qargs)
-            else:
-                # Skip operations without qubits or measurements without classical bits
+        for node in circuit_to_dag(transpiled_circuit).longest_path():
+            if not isinstance(node, DAGOpNode) or not node.num_qubits:
                 continue
 
             try:
-                total_run_time_s += (
-                    resolved_backend.instruction_durations.duration_by_name_qubits[
-                        (op_name, idx)
-                    ][0]
-                )
+                idx = tuple(q._index for q in node.qargs)
+                total_run_time_s += durations.duration_by_name_qubits[(node.name, idx)][
+                    0
+                ]
             except KeyError:
-                if op_name == "barrier":
-                    continue
-                warn(f"Instruction duration not found: {op_name}")
+                if node.name != "barrier":
+                    warn(f"Instruction duration not found: {node.name}")
 
         return total_run_time_s
 
@@ -378,20 +472,15 @@ class ParallelSimulator(CircuitRunner):
         else:
             estimated_run_times_sorted = sorted(precomputed_durations, reverse=True)
 
-        # Just return the longest run time if there are enough QPUs
+        # Optimization for trivial case
         if n_qpus >= len(estimated_run_times_sorted):
-            return estimated_run_times_sorted[0]
+            return estimated_run_times_sorted[0] if estimated_run_times_sorted else 0.0
 
-        # Initialize processor queue with (total_run_time, processor_id)
-        # Using a min heap to always get the processor that will be free first
-        processors = [(0, i) for i in range(n_qpus)]
-        heapq.heapify(processors)
-
-        # Assign each task to the processor that will be free first
+        # LPT (Longest Processing Time) scheduling using a min-heap of processor finish times
+        processor_finish_times = [0.0] * n_qpus
         for run_time in estimated_run_times_sorted:
-            current_run_time, processor_id = heapq.heappop(processors)
-            new_run_time = current_run_time + run_time
-            heapq.heappush(processors, (new_run_time, processor_id))
+            heapq.heappush(
+                processor_finish_times, heapq.heappop(processor_finish_times) + run_time
+            )
 
-        # The total run time is the maximum run time across all processors
-        return max(run_time for run_time, _ in processors)
+        return max(processor_finish_times)

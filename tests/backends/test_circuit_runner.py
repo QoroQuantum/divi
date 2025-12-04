@@ -4,7 +4,7 @@
 
 import pytest
 
-from divi.backends import CircuitRunner
+from divi.backends import CircuitRunner, ExecutionResult
 
 
 class ConcreteCircuitRunner(CircuitRunner):
@@ -19,7 +19,7 @@ class ConcreteCircuitRunner(CircuitRunner):
         return False
 
     def submit_circuits(self, circuits: dict[str, str], **kwargs):
-        return []
+        return ExecutionResult(results=[])
 
 
 class TestCircuitRunner:
@@ -51,4 +51,6 @@ class TestCircuitRunner:
         assert runner.shots == 100
         assert runner.supports_expval is False
         assert runner.is_async is False
-        assert runner.submit_circuits({}) == []
+        result = runner.submit_circuits({})
+        assert isinstance(result, ExecutionResult)
+        assert result.results == []

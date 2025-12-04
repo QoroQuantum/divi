@@ -4,10 +4,12 @@
 
 import warnings
 
+import pytest
 from qiskit import QuantumCircuit
 from qiskit_aer.noise import NoiseModel
 from qiskit_ibm_runtime.fake_provider import FakeQuitoV2
 
+from divi.backends import ExecutionResult
 from divi.backends._parallel_simulator import (
     FAKE_BACKENDS,
     ParallelSimulator,
@@ -194,11 +196,13 @@ class TestParallelSimulatorSubmitCircuits:
         )[0]
         self._setup_mock_transpile(mocker, n_qubits=3)
 
-        results = simulator.submit_circuits(circuits)
+        result = simulator.submit_circuits(circuits)
 
-        assert len(results) == 1
-        assert results[0]["label"] == "test_circuit"
-        assert "results" in results[0]
+        assert isinstance(result, ExecutionResult)
+        assert result.results is not None
+        assert len(result.results) == 1
+        assert result.results[0]["label"] == "test_circuit"
+        assert "results" in result.results[0]
         # Verify from_backend was called (line 200)
         mock_from_backend.assert_called_once()
 
@@ -214,10 +218,12 @@ class TestParallelSimulatorSubmitCircuits:
         )[0]
         self._setup_mock_transpile(mocker)
 
-        results = simulator.submit_circuits(circuits)
+        result = simulator.submit_circuits(circuits)
 
-        assert len(results) == 1
-        assert results[0]["label"] == "test_circuit"
+        assert isinstance(result, ExecutionResult)
+        assert result.results is not None
+        assert len(result.results) == 1
+        assert result.results[0]["label"] == "test_circuit"
         # Verify from_backend was called (line 200)
         mock_from_backend.assert_called_once_with(backend)
 
@@ -239,11 +245,13 @@ class TestParallelSimulatorSubmitCircuits:
         )
         self._setup_mock_transpile(mocker, num_circuits=2)
 
-        results = simulator.submit_circuits(circuits)
+        result = simulator.submit_circuits(circuits)
 
-        assert len(results) == 2
-        assert results[0]["label"] == "circuit1"
-        assert results[1]["label"] == "circuit2"
+        assert isinstance(result, ExecutionResult)
+        assert result.results is not None
+        assert len(result.results) == 2
+        assert result.results[0]["label"] == "circuit1"
+        assert result.results[1]["label"] == "circuit2"
         # Verify batch execution was used (not deterministic)
         assert mock_aer.run.called
 
@@ -291,10 +299,12 @@ class TestParallelSimulatorSubmitCircuits:
         )[0]
         self._setup_mock_transpile(mocker)
 
-        results = simulator.submit_circuits(circuits)
+        result = simulator.submit_circuits(circuits)
 
-        assert len(results) == 1
-        assert results[0]["label"] == "test_circuit"
+        assert isinstance(result, ExecutionResult)
+        assert result.results is not None
+        assert len(result.results) == 1
+        assert result.results[0]["label"] == "test_circuit"
         # Verify deterministic execution path was used (from_backend called in _execute_circuits_deterministically)
         # It's called once per circuit in deterministic mode
         assert mock_from_backend.call_count >= 1
@@ -314,7 +324,94 @@ class TestParallelSimulatorSubmitCircuits:
         self._setup_mock_aer_simulator(mocker)
         self._setup_mock_transpile(mocker)
 
-        results = simulator.submit_circuits(circuits)
+        result = simulator.submit_circuits(circuits)
 
-        assert len(results) == 1
-        assert results[0]["label"] == "test_circuit"
+        assert isinstance(result, ExecutionResult)
+        assert result.results is not None
+        assert len(result.results) == 1
+        assert result.results[0]["label"] == "test_circuit"
+
+
+class TestParallelSimulatorRuntimeEstimation:
+    """Tests for ParallelSimulator runtime estimation methods."""
+
+    def test_estimate_run_time_single_circuit(self, mocker):
+        """Test estimate_run_time_single_circuit method."""
+        # Mock backend with instruction durations
+        mock_backend = mocker.Mock()
+        mock_durations = mocker.Mock()
+        # Mock duration_by_name_qubits dictionary
+        # (op_name, qubits_tuple) -> (duration, unit)
+        mock_durations.duration_by_name_qubits = {
+            ("h", (0,)): (1.6e-7, "s"),
+            ("cx", (0, 1)): (3.2e-7, "s"),
+            ("measure", (0,)): (5.0e-7, "s"),
+            ("measure", (1,)): (5.0e-7, "s"),
+        }
+        mock_backend.instruction_durations = mock_durations
+
+        # Create a circuit matching the mocked durations
+        qasm = """
+        OPENQASM 2.0;
+        include "qelib1.inc";
+        qreg q[2];
+        creg c[2];
+        h q[0];
+        cx q[0], q[1];
+        measure q[0] -> c[0];
+        measure q[1] -> c[1];
+        """
+
+        # Mock transpile to return a circuit that preserves structure
+        # We need a real circuit for circuit_to_dag to work
+        transpiled_circuit = QuantumCircuit.from_qasm_str(qasm)
+        mocker.patch(
+            "divi.backends._parallel_simulator.transpile",
+            return_value=transpiled_circuit,
+        )
+
+        # We also need to mock _find_best_fake_backend if we were using "auto",
+        # but here we pass explicit backend
+
+        estimated_time = ParallelSimulator.estimate_run_time_single_circuit(
+            qasm, qiskit_backend=mock_backend
+        )
+
+        # Expected time: h(0) + cx(0,1) + max(measure(0), measure(1))?
+        # The logic in ParallelSimulator sums up durations of longest path?
+        # Code: for node in dag.longest_path(): total += duration
+        # Longest path in this circuit:
+        # q[0]: h -> cx -> measure
+        # q[1]: cx -> measure
+        # Path 0: h(1.6) + cx(3.2) + measure(5.0) = 9.8e-7
+        # Path 1: cx(3.2) + measure(5.0) = 8.2e-7
+        # So it should be roughly 9.8e-7
+
+        assert estimated_time == pytest.approx(9.8e-7)
+
+    def test_estimate_run_time_single_circuit_auto_backend(self, mocker):
+        """Test estimate_run_time_single_circuit with 'auto' backend."""
+        qasm = 'OPENQASM 2.0; include "qelib1.inc"; qreg q[1]; h q[0];'
+
+        mock_backend_cls = mocker.Mock()
+        mock_backend_instance = mock_backend_cls.return_value
+        mock_backend_instance.instruction_durations.duration_by_name_qubits = {
+            ("h", (0,)): (1.0, "s")
+        }
+
+        mocker.patch(
+            "divi.backends._parallel_simulator._find_best_fake_backend",
+            return_value=[mock_backend_cls],
+        )
+
+        transpiled_circuit = QuantumCircuit.from_qasm_str(qasm)
+        mocker.patch(
+            "divi.backends._parallel_simulator.transpile",
+            return_value=transpiled_circuit,
+        )
+
+        estimated_time = ParallelSimulator.estimate_run_time_single_circuit(
+            qasm, qiskit_backend="auto"
+        )
+
+        assert estimated_time == 1.0

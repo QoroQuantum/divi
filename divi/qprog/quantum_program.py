@@ -8,6 +8,7 @@ from threading import Event
 from typing import Any
 
 from divi.backends import CircuitRunner, JobStatus
+from divi.backends._execution_result import ExecutionResult
 from divi.circuits import CircuitBundle
 
 
@@ -27,7 +28,6 @@ class QuantumProgram(ABC):
         _seed (int | None): Random seed for reproducible results.
         _progress_queue (Queue | None): Queue for progress reporting.
         _circuits (list): List of circuits to be executed.
-        _curr_service_job_id: Current service job ID for QoroService backends.
     """
 
     def __init__(
@@ -51,7 +51,6 @@ class QuantumProgram(ABC):
         self._total_circuit_count = 0
         self._total_run_time = 0.0
         self._curr_circuits = []
-        self._curr_service_job_id = None
 
     @abstractmethod
     def run(self, **kwargs) -> tuple[int, float]:
@@ -123,11 +122,12 @@ class QuantumProgram(ABC):
         """
         return self._total_run_time
 
-    def _prepare_and_send_circuits(self, **kwargs):
+    def _prepare_and_send_circuits(self, **kwargs) -> ExecutionResult:
         """Prepare circuits for execution and submit them to the backend.
 
         Returns:
-            Backend output from circuit submission.
+            ExecutionResult: Result from circuit submission. For async backends,
+                contains job_id. For sync backends, contains results directly.
         """
         job_circuits = {}
 
@@ -137,12 +137,9 @@ class QuantumProgram(ABC):
 
         self._total_circuit_count += len(job_circuits)
 
-        backend_output = self.backend.submit_circuits(job_circuits, **kwargs)
+        execution_result = self.backend.submit_circuits(job_circuits, **kwargs)
 
-        if self.backend.is_async:
-            self._curr_service_job_id = backend_output
-
-        return backend_output
+        return execution_result
 
     def _track_runtime(self, response):
         """Extract and track runtime from a backend response.
@@ -156,11 +153,13 @@ class QuantumProgram(ABC):
         elif isinstance(response, list):
             self._total_run_time += sum(float(r.json()["run_time"]) for r in response)
 
-    def _wait_for_qoro_job_completion(self, job_id: str) -> list[dict]:
+    def _wait_for_qoro_job_completion(
+        self, execution_result: ExecutionResult
+    ) -> list[dict]:
         """Wait for a QoroService job to complete and return results.
 
         Args:
-            job_id: The QoroService job identifier.
+            execution_result: The ExecutionResult from circuit submission.
 
         Returns:
             list[dict]: The job results from the backend.
@@ -168,6 +167,10 @@ class QuantumProgram(ABC):
         Raises:
             Exception: If job fails or doesn't complete.
         """
+        job_id = execution_result.job_id
+        if job_id is None:
+            raise ValueError("ExecutionResult must have a job_id for async completion")
+
         # Build the poll callback if reporter is available
         if hasattr(self, "reporter"):
             update_function = lambda n_polls, status: self.reporter.info(
@@ -182,7 +185,7 @@ class QuantumProgram(ABC):
 
         # Poll until complete
         status = self.backend.poll_job_status(
-            job_id,
+            execution_result,
             loop_until_complete=True,
             on_complete=self._track_runtime,
             verbose=False,  # Disable the default logger in QoroService
@@ -194,7 +197,8 @@ class QuantumProgram(ABC):
 
         if status != JobStatus.COMPLETED:
             raise Exception("Job has not completed yet, cannot post-process results")
-        return self.backend.get_job_results(job_id)
+        completed_result = self.backend.get_job_results(execution_result)
+        return completed_result.results
 
     def _dispatch_circuits_and_process_results(self, **kwargs):
         """Run an iteration of the program.
@@ -207,10 +211,16 @@ class QuantumProgram(ABC):
         Returns:
             Any: Processed results from _post_process_results.
         """
-        results = self._prepare_and_send_circuits(**kwargs)
+        execution_result = self._prepare_and_send_circuits(**kwargs)
 
-        if self.backend.is_async:
-            results = self._wait_for_qoro_job_completion(self._curr_service_job_id)
+        # For async backends, poll for results
+        if execution_result.job_id is not None:
+            results = self._wait_for_qoro_job_completion(execution_result)
+        else:
+            # For sync backends, results are already available
+            results = execution_result.results
+            if results is None:
+                raise ValueError("ExecutionResult has neither results nor job_id")
 
         results = {r["label"]: r["results"] for r in results}
 
