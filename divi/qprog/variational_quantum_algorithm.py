@@ -46,7 +46,6 @@ from divi.qprog.optimizers import (
     ScipyOptimizer,
 )
 from divi.qprog.quantum_program import QuantumProgram
-from divi.reporting import LoggingProgressReporter, QueueProgressReporter
 
 logger = logging.getLogger(__name__)
 
@@ -272,13 +271,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         # Lets child classes adapt their optimization step for grad calculation routine
         self._grad_mode = False
         self._is_compute_probabilities = False
-
-        # --- Progress Reporting ---
-        self.job_id = kwargs.get("job_id", None)
-        if progress_queue and self.job_id is not None:
-            self.reporter = QueueProgressReporter(self.job_id, progress_queue)
-        else:
-            self.reporter = LoggingProgressReporter()
 
         # --- Optimizer Configuration ---
         self.optimizer = optimizer if optimizer is not None else MonteCarloOptimizer()

@@ -653,7 +653,7 @@ class TestQoroServiceMock:
         mocker.patch.object(service, "_make_request", side_effect=mock_responses)
         progress_callback = mocker.MagicMock()
         status = service.poll_job_status(
-            execution_result,
+            make_execution_result(),
             loop_until_complete=True,
             progress_callback=progress_callback,
         )
@@ -1348,6 +1348,29 @@ class TestQoroServiceMock:
                 mocker.call(2, "PENDING"),
             ]
         )
+
+    def test_poll_job_status_cancelled_mock(self, mocker, qoro_service_factory):
+        """Tests polling that detects CANCELLED status."""
+        qoro_service_mock = qoro_service_factory()
+        mock_make_request = mocker.patch.object(
+            qoro_service_mock,
+            "_make_request",
+            side_effect=[
+                make_mock_status_response(mocker, JobStatus.PENDING),
+                make_mock_status_response(mocker, JobStatus.CANCELLED),
+            ],
+        )
+
+        callback_mock = mocker.MagicMock()
+        status = qoro_service_mock.poll_job_status(
+            make_execution_result("mock_job_id"),
+            loop_until_complete=True,
+            on_complete=callback_mock,
+            verbose=False,
+        )
+        assert mock_make_request.call_count == 2
+        assert status == JobStatus.CANCELLED
+        callback_mock.assert_called_once()
 
 
 # --- Integration Tests (require API key) ---

@@ -3,13 +3,19 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from abc import ABC, abstractmethod
+from http import HTTPStatus
 from queue import Queue
 from threading import Event
 from typing import Any
+from warnings import warn
+
+import requests
 
 from divi.backends import CircuitRunner, JobStatus
 from divi.backends._execution_result import ExecutionResult
 from divi.circuits import CircuitBundle
+from divi.qprog.exceptions import _CancelledError
+from divi.reporting import LoggingProgressReporter, QueueProgressReporter
 
 
 class QuantumProgram(ABC):
@@ -44,6 +50,9 @@ class QuantumProgram(ABC):
             seed (int | None): Random seed for reproducible results. Defaults to None.
             progress_queue (Queue | None): Queue for progress reporting. Defaults to None.
             **kwargs: Additional keyword arguments for subclasses.
+                program_id (str | None): Program identifier for progress reporting in batch
+                    operations. If provided along with progress_queue, enables queue-based
+                    progress reporting.
         """
         self.backend = backend
         self._seed = seed
@@ -51,6 +60,14 @@ class QuantumProgram(ABC):
         self._total_circuit_count = 0
         self._total_run_time = 0.0
         self._curr_circuits = []
+        self._current_execution_result = None
+
+        # --- Progress Reporting ---
+        self.program_id = kwargs.get("program_id", None)
+        if progress_queue and self.program_id is not None:
+            self.reporter = QueueProgressReporter(self.program_id, progress_queue)
+        else:
+            self.reporter = LoggingProgressReporter()
 
     @abstractmethod
     def run(self, **kwargs) -> tuple[int, float]:
@@ -195,10 +212,68 @@ class QuantumProgram(ABC):
         if status == JobStatus.FAILED:
             raise RuntimeError(f"Job {job_id} has failed")
 
+        if status == JobStatus.CANCELLED:
+            # If cancellation was requested (e.g., by ProgramBatch), raise _CancelledError
+            # so it's handled gracefully. Otherwise, raise RuntimeError for unexpected cancellation.
+            if (
+                hasattr(self, "_cancellation_event")
+                and self._cancellation_event
+                and self._cancellation_event.is_set()
+            ):
+                raise _CancelledError(f"Job {job_id} was cancelled")
+            raise RuntimeError(f"Job {job_id} was cancelled")
+
         if status != JobStatus.COMPLETED:
             raise Exception("Job has not completed yet, cannot post-process results")
         completed_result = self.backend.get_job_results(execution_result)
         return completed_result.results
+
+    def cancel_unfinished_job(self):
+        """Cancel the currently running cloud job if one exists.
+
+        This method attempts to cancel the job associated with the current
+        ExecutionResult. It is best-effort and will log warnings for any errors
+        (e.g., job already completed, permission denied) without raising exceptions.
+
+        This is typically called by ProgramBatch when handling cancellation
+        to ensure cloud jobs are cancelled before local threads terminate.
+        """
+
+        if self._current_execution_result is None:
+            warn("Cannot cancel job: no current execution result", stacklevel=2)
+            return
+
+        if self._current_execution_result.job_id is None:
+            warn("Cannot cancel job: execution result has no job_id", stacklevel=2)
+            return
+
+        try:
+            self.backend.cancel_job(self._current_execution_result)
+        except requests.exceptions.HTTPError as e:
+            # Check if this is an expected error (job already completed/failed/cancelled)
+            if (
+                hasattr(e, "response")
+                and e.response is not None
+                and e.response.status_code == HTTPStatus.CONFLICT
+            ):
+                # 409 Conflict means job is already in a terminal state - this is expected
+                # in race conditions where job completes before we can cancel it.
+                if hasattr(self, "reporter"):
+                    self.reporter.info(
+                        f"Job {self._current_execution_result.job_id} already completed or cancelled"
+                    )
+            else:
+                # Unexpected error (403 Forbidden, 404 Not Found, etc.) - report it
+                if hasattr(self, "reporter"):
+                    self.reporter.info(
+                        f"Failed to cancel job {self._current_execution_result.job_id}: {e}"
+                    )
+        except Exception as e:
+            # Other unexpected errors - report them
+            if hasattr(self, "reporter"):
+                self.reporter.info(
+                    f"Failed to cancel job {self._current_execution_result.job_id}: {e}"
+                )
 
     def _dispatch_circuits_and_process_results(self, **kwargs):
         """Run an iteration of the program.
@@ -213,17 +288,24 @@ class QuantumProgram(ABC):
         """
         execution_result = self._prepare_and_send_circuits(**kwargs)
 
-        # For async backends, poll for results
-        if execution_result.job_id is not None:
-            results = self._wait_for_qoro_job_completion(execution_result)
-        else:
-            # For sync backends, results are already available
-            results = execution_result.results
-            if results is None:
-                raise ValueError("ExecutionResult has neither results nor job_id")
+        # Store the execution result for potential cancellation
+        self._current_execution_result = execution_result
 
-        results = {r["label"]: r["results"] for r in results}
+        try:
+            # For async backends, poll for results
+            if execution_result.job_id is not None:
+                results = self._wait_for_qoro_job_completion(execution_result)
+            else:
+                # For sync backends, results are already available
+                results = execution_result.results
+                if results is None:
+                    raise ValueError("ExecutionResult has neither results nor job_id")
 
-        result = self._post_process_results(results, **kwargs)
+            results = {r["label"]: r["results"] for r in results}
 
-        return result
+            result = self._post_process_results(results, **kwargs)
+
+            return result
+        finally:
+            # Clear the execution result after processing
+            self._current_execution_result = None

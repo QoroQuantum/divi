@@ -637,23 +637,24 @@ class QoroService(CircuitRunner):
                 )
                 return JobStatus(response.json()["status"])
 
+            terminal_statuses = {
+                JobStatus.COMPLETED,
+                JobStatus.FAILED,
+                JobStatus.CANCELLED,
+            }
+
             for retry_count in range(1, self.max_retries + 1):
                 response = self._make_request(
                     "get", f"job/{job_id}/status/", timeout=200
                 )
-                status = response.json()["status"]
+                status = JobStatus(response.json()["status"])
 
-                if status == JobStatus.COMPLETED.value:
+                if status in terminal_statuses:
                     if on_complete:
                         on_complete(response)
-                    return JobStatus.COMPLETED
+                    return status
 
-                if status == JobStatus.FAILED.value:
-                    if on_complete:
-                        on_complete(response)
-                    return JobStatus.FAILED
-
-                update_fn(retry_count, status)
+                update_fn(retry_count, status.value)
                 time.sleep(self.polling_interval)
 
             raise MaxRetriesReachedError(job_id, self.max_retries)

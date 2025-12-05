@@ -12,6 +12,7 @@ from threading import Lock, Thread
 import pytest
 from rich.progress import Progress
 
+from divi.backends import ExecutionResult
 from divi.qprog.batch import ProgramBatch, _queue_listener
 from divi.qprog.quantum_program import QuantumProgram
 from tests.qprog.qprog_contracts import verify_basic_program_batch_behaviour
@@ -24,8 +25,7 @@ class SimpleTestProgram(QuantumProgram):
         super().__init__(backend=None, **kwargs)
         self.circ_count = circ_count
         self.run_time = run_time
-        # Correctly save the job_id from keyword arguments
-        self.job_id = kwargs.get("job_id")
+        # program_id is automatically set by the base class from kwargs["job_id"]
         # This attribute is checked by the base ProgramBatch.aggregate_results method
         self.losses_history = [1]
 
@@ -53,8 +53,8 @@ class SampleProgramBatch(ProgramBatch):
         """Creates a set of mock programs."""
         super().create_programs()
         self.programs = {
-            "prog1": SimpleTestProgram(10, 5.5, job_id="prog1"),
-            "prog2": SimpleTestProgram(5, 10.0, job_id="prog2"),
+            "prog1": SimpleTestProgram(10, 5.5, program_id="prog1"),
+            "prog2": SimpleTestProgram(5, 10.0, program_id="prog2"),
         }
 
     def aggregate_results(self):
@@ -440,7 +440,10 @@ class TestProgramBatch:
         }
         mocker.patch("divi.qprog.batch.as_completed", return_value=[future2])
 
-        program_batch._handle_cancellation()
+        with pytest.warns(
+            UserWarning, match="Cannot cancel job: no current execution result"
+        ):
+            program_batch._handle_cancellation()
 
         program_batch._cancellation_event.set.assert_called_once()
         assert mock_progress_bar.update.call_count >= 2
@@ -467,7 +470,10 @@ class TestProgramBatch:
         program_batch._future_to_program = {future: program_batch.programs["prog1"]}
         mocker.patch("divi.qprog.batch.as_completed", return_value=[future])
 
-        program_batch._handle_cancellation()
+        with pytest.warns(
+            UserWarning, match="Cannot cancel job: no current execution result"
+        ):
+            program_batch._handle_cancellation()
 
         finishing_calls = [
             call
@@ -475,6 +481,67 @@ class TestProgramBatch:
             if call[1].get("message") == "Finishing... ⏳"
         ]
         assert len(finishing_calls) > 0
+
+    def test_handle_cancellation_calls_cancel_unfinished_job(
+        self, program_batch, mocker
+    ):
+        """Test that _handle_cancellation calls cancel_unfinished_job for unstoppable futures."""
+        program_batch.create_programs()
+        mock_progress_bar = mocker.MagicMock()
+        program_batch._progress_bar = mock_progress_bar
+        program_batch._pb_task_map = {"prog1": 1}
+        program_batch._cancellation_event = mocker.MagicMock()
+
+        future = Future()
+        future.cancel = mocker.MagicMock(return_value=False)
+
+        program_batch.futures = [future]
+        program = program_batch.programs["prog1"]
+        program_batch._future_to_program = {future: program}
+
+        # Mock cancel_unfinished_job - this prevents the warning since the actual method isn't called
+        mock_cancel = mocker.patch.object(program, "cancel_unfinished_job")
+        # Mock as_completed to return the future so Phase 3 doesn't hang
+        mocker.patch("divi.qprog.batch.as_completed", return_value=[future])
+
+        program_batch._handle_cancellation()
+
+        # Verify cancel_unfinished_job was called
+        mock_cancel.assert_called_once()
+
+    def test_handle_cancellation_delegates_to_backend_cancel_job(
+        self, program_batch, mocker
+    ):
+        """Test that _handle_cancellation delegates to backend.cancel_job via cancel_unfinished_job."""
+        program_batch.create_programs()
+        mock_progress_bar = mocker.MagicMock()
+        program_batch._progress_bar = mock_progress_bar
+        program_batch._pb_task_map = {"prog1": 1}
+        program_batch._cancellation_event = mocker.MagicMock()
+
+        future = Future()
+        future.cancel = mocker.MagicMock(return_value=False)
+
+        program_batch.futures = [future]
+        program = program_batch.programs["prog1"]
+        program_batch._future_to_program = {future: program}
+
+        # Set up program with execution result
+        execution_result = ExecutionResult(job_id="test_job_123")
+        program._current_execution_result = execution_result
+
+        # Mock backend cancel_job
+        mock_backend = mocker.Mock()
+        mock_backend.cancel_job = mocker.Mock()
+        program.backend = mock_backend
+
+        # Mock as_completed to return the future so Phase 3 doesn't hang
+        mocker.patch("divi.qprog.batch.as_completed", return_value=[future])
+
+        program_batch._handle_cancellation()
+
+        # Verify cancel_job was called on the backend
+        mock_backend.cancel_job.assert_called_once_with(execution_result)
 
     def test_join_early_return_no_executor(self, program_batch):
         """Test join returns early when no executor."""

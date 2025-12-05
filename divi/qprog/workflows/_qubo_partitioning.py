@@ -159,7 +159,7 @@ class QUBOPartitioningQAOA(ProgramBatch):
             )
 
             self._programs[prog_id] = self._constructor(
-                job_id=prog_id,
+                program_id=prog_id,
                 problem=coo_mat,
                 optimizer=copy_optimizer(self._optimizer_template),
                 progress_queue=self._queue,

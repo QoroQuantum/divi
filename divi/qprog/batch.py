@@ -15,7 +15,7 @@ from warnings import warn
 from rich.console import Console
 from rich.progress import Progress, TaskID
 
-from divi.backends import CircuitRunner, ParallelSimulator
+from divi.backends import CircuitRunner
 from divi.qprog.quantum_program import QuantumProgram
 from divi.reporting import disable_logging, make_progress_bar
 
@@ -95,7 +95,6 @@ class ProgramBatch(ABC):
         self._total_circuit_count = 0
         self._total_run_time = 0.0
 
-        self._is_local = isinstance(backend, ParallelSimulator)
         self._is_jupyter = Console().is_jupyter
 
         # Disable logging since we already have the bars to track progress
@@ -252,13 +251,12 @@ class ProgramBatch(ABC):
 
         if self._progress_bar is not None:
             with self._pb_lock:
-                self._pb_task_map[program.job_id] = self._progress_bar.add_task(
+                self._pb_task_map[program.program_id] = self._progress_bar.add_task(
                     "",
-                    job_name=f"Job {program.job_id}",
+                    job_name=f"Program {program.program_id}",
                     total=self.max_iterations,
                     completed=0,
                     message="",
-                    mode=("simulation" if self._is_local else "network"),
                 )
 
         return self._executor.submit(self._task_fn, program)
@@ -383,7 +381,7 @@ class ProgramBatch(ABC):
             if future.done():
                 continue
 
-            task_id = self._pb_task_map.get(program.job_id)
+            task_id = self._pb_task_map.get(program.program_id)
             if self._progress_bar and task_id is not None:
                 cancel_result = future.cancel()
                 if cancel_result:
@@ -391,6 +389,8 @@ class ProgramBatch(ABC):
                     successfully_cancelled.append(program)
                 else:
                     # The task is already running and cannot be stopped.
+                    # Attempt to cancel the cloud job to allow polling loop to exit.
+                    program.cancel_unfinished_job()
                     unstoppable_futures.append(future)
                     self._progress_bar.update(
                         task_id,
@@ -400,7 +400,7 @@ class ProgramBatch(ABC):
 
         # --- Phase 2: Immediately mark the successfully cancelled tasks ---
         for program in successfully_cancelled:
-            task_id = self._pb_task_map.get(program.job_id)
+            task_id = self._pb_task_map.get(program.program_id)
             if self._progress_bar and task_id is not None:
                 self._progress_bar.update(
                     task_id,
@@ -413,7 +413,7 @@ class ProgramBatch(ABC):
         if unstoppable_futures:
             for future in as_completed(unstoppable_futures):
                 program = self._future_to_program[future]
-                task_id = self._pb_task_map.get(program.job_id)
+                task_id = self._pb_task_map.get(program.program_id)
                 if self._progress_bar and task_id is not None:
                     self._progress_bar.update(
                         task_id,
@@ -505,6 +505,27 @@ class ProgramBatch(ABC):
 
     @abstractmethod
     def aggregate_results(self):
+        """
+        Aggregate results from all programs in the batch after execution.
+
+        This is an abstract method that must be implemented by subclasses. The base
+        implementation performs validation checks:
+        - Ensures programs have been created
+        - Waits for any running programs to complete (calls join() if needed)
+        - Verifies that all programs have completed execution (non-empty losses_history)
+
+        Subclasses should call super().aggregate_results() first, then implement
+        their own aggregation logic to combine results from all programs. The
+        aggregation should handle different result formats (counts dictionary,
+        expectation values, etc.) as appropriate for the specific use case.
+
+        Returns:
+            The aggregated result, format depends on the subclass implementation.
+
+        Raises:
+            RuntimeError: If no programs exist, or if programs haven't completed
+                execution (empty losses_history).
+        """
         if len(self._programs) == 0:
             raise RuntimeError("No programs to aggregate. Run create_programs() first.")
 

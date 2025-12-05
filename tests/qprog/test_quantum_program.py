@@ -2,12 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from http import HTTPStatus
 from queue import Queue
 from threading import Event
 
 import pytest
+import requests
 
 from divi.backends import ExecutionResult, JobStatus
+from divi.qprog.exceptions import _CancelledError
 from divi.qprog.quantum_program import QuantumProgram
 
 
@@ -238,10 +241,10 @@ class TestQuantumProgramAsyncExecution:
 
         program.run()
 
-        # Verify that poll_job_status was called with the job_id from ExecutionResult
+        # Verify that poll_job_status was called with the ExecutionResult
         mock_async_backend.poll_job_status.assert_called_once()
         call_args = mock_async_backend.poll_job_status.call_args[0]
-        assert call_args[0] == "fake_job_id"
+        assert call_args[0].job_id == "fake_job_id"
 
     def test_async_workflow_processes_results(
         self, mock_async_backend, async_test_program_class
@@ -358,3 +361,163 @@ class TestQuantumProgramAsyncExecution:
 
         with pytest.raises(Exception, match="Job.*has failed"):
             program.run()
+
+    def test_cancel_unfinished_job_no_execution_result(self, mocker):
+        """Test cancel_unfinished_job when _current_execution_result is None."""
+        mock_backend = mocker.Mock()
+        program = ConcreteQuantumProgram(backend=mock_backend)
+
+        with pytest.warns(
+            UserWarning, match="Cannot cancel job: no current execution result"
+        ):
+            program.cancel_unfinished_job()
+
+        mock_backend.cancel_job.assert_not_called()
+
+    def test_cancel_unfinished_job_no_job_id(self, mocker):
+        """Test cancel_unfinished_job when execution result has no job_id."""
+        mock_backend = mocker.Mock()
+        program = ConcreteQuantumProgram(backend=mock_backend)
+        program._current_execution_result = ExecutionResult(job_id=None)
+
+        with pytest.warns(
+            UserWarning, match="Cannot cancel job: execution result has no job_id"
+        ):
+            program.cancel_unfinished_job()
+
+        mock_backend.cancel_job.assert_not_called()
+
+    def test_cancel_unfinished_job_success(self, mocker):
+        """Test cancel_unfinished_job successfully cancels job."""
+        mock_backend = mocker.Mock()
+        mock_backend.cancel_job = mocker.Mock()
+        program = ConcreteQuantumProgram(backend=mock_backend)
+        program._current_execution_result = ExecutionResult(job_id="test_job_123")
+
+        program.cancel_unfinished_job()
+
+        mock_backend.cancel_job.assert_called_once_with(
+            program._current_execution_result
+        )
+
+    def test_cancel_unfinished_job_409_conflict(self, mocker):
+        """Test cancel_unfinished_job handles 409 Conflict gracefully."""
+        mock_backend = mocker.Mock()
+        mock_response = mocker.Mock()
+        mock_response.status_code = HTTPStatus.CONFLICT
+        mock_error = requests.exceptions.HTTPError("409 Conflict")
+        mock_error.response = mock_response
+        mock_backend.cancel_job = mocker.Mock(side_effect=mock_error)
+
+        program = ConcreteQuantumProgram(backend=mock_backend)
+        program.reporter = mocker.Mock()
+        program._current_execution_result = ExecutionResult(job_id="test_job_123")
+
+        program.cancel_unfinished_job()
+
+        program.reporter.info.assert_called_once_with(
+            "Job test_job_123 already completed or cancelled"
+        )
+
+    def test_cancel_unfinished_job_other_error(self, mocker):
+        """Test cancel_unfinished_job reports other errors."""
+        mock_backend = mocker.Mock()
+        mock_response = mocker.Mock()
+        mock_response.status_code = HTTPStatus.FORBIDDEN
+        mock_error = requests.exceptions.HTTPError("403 Forbidden")
+        mock_error.response = mock_response
+        mock_backend.cancel_job = mocker.Mock(side_effect=mock_error)
+
+        program = ConcreteQuantumProgram(backend=mock_backend)
+        program.reporter = mocker.Mock()
+        program._current_execution_result = ExecutionResult(job_id="test_job_123")
+
+        program.cancel_unfinished_job()
+
+        program.reporter.info.assert_called_once()
+        assert "Failed to cancel job test_job_123" in str(
+            program.reporter.info.call_args[0][0]
+        )
+
+    def test_cancel_unfinished_job_no_reporter(self, mocker):
+        """Test cancel_unfinished_job works without reporter."""
+        mock_backend = mocker.Mock()
+        mock_backend.cancel_job = mocker.Mock()
+        program = ConcreteQuantumProgram(backend=mock_backend)
+        program._current_execution_result = ExecutionResult(job_id="test_job_123")
+
+        # Should not raise even without reporter
+        program.cancel_unfinished_job()
+
+        mock_backend.cancel_job.assert_called_once()
+
+    def test_wait_for_qoro_job_completion_cancelled_with_event(self, mocker):
+        """Test _wait_for_qoro_job_completion raises _CancelledError when cancelled with event set."""
+        mock_backend = mocker.Mock()
+        mock_backend.poll_job_status.return_value = JobStatus.CANCELLED
+        mock_backend.max_retries = 100
+
+        program = ConcreteQuantumProgram(backend=mock_backend)
+        program._cancellation_event = Event()
+        program._cancellation_event.set()
+
+        execution_result = ExecutionResult(job_id="test_job")
+
+        with pytest.raises(_CancelledError, match="Job test_job was cancelled"):
+            program._wait_for_qoro_job_completion(execution_result)
+
+    def test_wait_for_qoro_job_completion_cancelled_without_event(self, mocker):
+        """Test _wait_for_qoro_job_completion raises RuntimeError when cancelled without event."""
+        mock_backend = mocker.Mock()
+        mock_backend.poll_job_status.return_value = JobStatus.CANCELLED
+        mock_backend.max_retries = 100
+
+        program = ConcreteQuantumProgram(backend=mock_backend)
+        # No cancellation event set
+
+        execution_result = ExecutionResult(job_id="test_job")
+
+        with pytest.raises(RuntimeError, match="Job test_job was cancelled"):
+            program._wait_for_qoro_job_completion(execution_result)
+
+    def test_current_execution_result_lifecycle(self, mocker):
+        """Test that _current_execution_result is set and cleared correctly."""
+        mock_backend = mocker.Mock()
+        mock_backend.is_async = False
+        mock_backend.submit_circuits.return_value = ExecutionResult(
+            results=[{"label": "circuit_1", "results": {}}]
+        )
+
+        program = ConcreteQuantumProgram(backend=mock_backend)
+        program._curr_circuits = []
+
+        # Initially None
+        assert program._current_execution_result is None
+
+        # After _prepare_and_send_circuits, should be set
+        program._prepare_and_send_circuits()
+        # Note: _current_execution_result is set in _dispatch_circuits_and_process_results
+        # So let's test the full flow
+        program._dispatch_circuits_and_process_results()
+
+        # Should be cleared after processing
+        assert program._current_execution_result is None
+
+    def test_current_execution_result_cleared_on_exception(self, mocker):
+        """Test that _current_execution_result is cleared even when exception occurs."""
+        mock_backend = mocker.Mock()
+        mock_backend.is_async = True
+        mock_backend.submit_circuits.return_value = ExecutionResult(
+            results=None, job_id="test_job"
+        )
+        mock_backend.poll_job_status.side_effect = RuntimeError("Polling failed")
+        mock_backend.max_retries = 100
+
+        program = ConcreteQuantumProgram(backend=mock_backend)
+        program._curr_circuits = []
+
+        # Should raise exception but clear _current_execution_result
+        with pytest.raises(RuntimeError):
+            program._dispatch_circuits_and_process_results()
+
+        assert program._current_execution_result is None

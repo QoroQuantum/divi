@@ -467,7 +467,7 @@ class VQEHyperparameterSweep(ProgramBatch):
         ):
             _job_id = (ansatz.name, modifier)
             self._programs[_job_id] = self._constructor(
-                job_id=_job_id,
+                program_id=_job_id,
                 molecule=molecule,
                 ansatz=ansatz,
                 optimizer=copy_optimizer(self._optimizer_template),

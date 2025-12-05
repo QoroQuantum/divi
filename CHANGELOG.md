@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * `ExecutionResult` dataclass: added a unified return type for `CircuitRunner.submit_circuits()` that handles both synchronous and asynchronous execution results. This provides a consistent interface for accessing results or job IDs across different backends
 * `precision` parameter to `VariationalQuantumAlgorithm`: added configurable precision for QASM parameter formatting (defaults to 8 decimal places). The precision parameter controls the number of decimal places used when converting circuit parameters to QASM strings, affecting the size of QASM circuits sent to cloud backends. Higher precision values result in longer QASM strings and increased data transfer overhead
 * Job cancellation support in `QoroService`: added `cancel_job()` method to cancel pending or running jobs on the Qoro Service API. The method returns a `requests.Response` object containing cancellation details (status, job_id, circuits_cancelled). Includes comprehensive test coverage for successful cancellation, permission errors (403), and conflict errors (409) when attempting to cancel non-cancellable jobs
+* Cloud job cancellation integration in `ProgramBatch`: added automatic cloud job cancellation when local batch execution is interrupted. When a `ProgramBatch` is cancelled (e.g., via KeyboardInterrupt), unstoppable futures now trigger `cancel_unfinished_job()` on their associated programs to cancel remote cloud jobs, allowing polling loops to exit gracefully. Includes `_current_execution_result` tracking in `QuantumProgram`, proper error handling for race conditions (409 Conflict) when jobs complete before cancellation, and graceful termination via `_CancelledError` exception. Includes comprehensive test coverage
 
 ### 🔄 Changed
 
@@ -28,12 +29,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Upgraded to Qiskit v2.2: updated Qiskit dependency from `<2.0` to `^2.2` with corresponding updates to `qiskit-aer` (unconstrained) and `qiskit-ibm-runtime` (updated to `>0.42` for Qiskit v2 compatibility)
 * Refactored CMA-ES implementation: migrated `PymooOptimizer` CMA-ES method from pymoo's CMAES to the dedicated `cma` library for improved performance and better algorithm support. The optimizer now uses `cma.CMAEvolutionStrategy` for CMA-ES while maintaining pymoo's DE (Differential Evolution) implementation. This change improves checkpointing reliability and algorithm behavior
 * Updated dependency constraints: relaxed version constraints for `numpy`, `pymoo` (updated to `^0.6`), `black`, and `isort` to allow latest compatible versions
+* Refactored `QoroService.poll_job_status()`: replaced repetitive if-statements for terminal statuses (COMPLETED, FAILED, CANCELLED) with a set-based check for cleaner, more maintainable code
+* Moved reporter initialization to `QuantumProgram` base class: reporter initialization logic moved from `VariationalQuantumAlgorithm` to `QuantumProgram` to provide consistent progress reporting across all program types. This eliminates code duplication and ensures all `QuantumProgram` subclasses have reporter support
+* Renamed `job_id` kwarg to `program_id` in `QuantumProgram`: changed the kwarg name from `job_id` to `program_id` to avoid confusion with `ExecutionResult.job_id` (backend job identifier). The `program_id` is used for progress tracking in batch operations, while `ExecutionResult.job_id` represents the actual backend job identifier. Updated all workflow implementations and tests accordingly
+* Updated progress bar labels: changed progress bar job name display from "Job {id}" to "Program {id}" for consistency with the `program_id` naming change
+* Added docstring to `ProgramBatch.aggregate_results()`: added comprehensive docstring documenting the method's purpose, validation checks, and expected subclass behavior
 
 ### ⚠️ Deprecated
 
 ### 🗑️ Removed
 
 * Removed `QuadraticProgram` support from QAOA: removed support for `qiskit-optimization.QuadraticProgram` as a QUBO problem input type, along with the `qiskit-optimization` dependency. Replaced with `dimod.BinaryQuadraticModel` support for better compatibility with the broader quantum optimization ecosystem. The `qiskit-optimization` dependency and related converter (`QuadraticProgramToQubo`) have been removed from the codebase
+* Removed unused `mode` parameter from progress bar: removed unused `mode` field from `ProgramBatch` progress bar task creation. The field was set but never used in any progress bar rendering logic
+* Removed unused `_is_local` attribute from `ProgramBatch`: removed `_is_local` attribute that was only set but never referenced anywhere in the codebase
 
 ### 🐛 Fixed
 

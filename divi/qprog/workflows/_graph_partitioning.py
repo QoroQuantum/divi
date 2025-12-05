@@ -530,7 +530,7 @@ class GraphPartitioningQAOA(ProgramBatch):
 
                 _subgraph = nx.relabel_nodes(subgraph, index_map)
                 self._programs[prog_id] = self._constructor(
-                    job_id=prog_id,
+                    program_id=prog_id,
                     problem=_subgraph,
                     optimizer=copy_optimizer(self._optimizer_template),
                     progress_queue=self._queue,
