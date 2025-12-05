@@ -51,8 +51,8 @@ class QuantumProgram(ABC):
             progress_queue (Queue | None): Queue for progress reporting. Defaults to None.
             **kwargs: Additional keyword arguments for subclasses.
                 program_id (str | None): Program identifier for progress reporting in batch
-                    operations. If provided along with progress_queue, enables queue-based
-                    progress reporting.
+                operations. If provided along with progress_queue, enables queue-based
+                progress reporting.
         """
         self.backend = backend
         self._seed = seed

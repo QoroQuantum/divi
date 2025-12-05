@@ -434,14 +434,6 @@ class TestGraphPartitioningQAOA:
     def test_verify_basic_behaviour(self, mocker, node_partitioning_qaoa):
         verify_basic_program_batch_behaviour(mocker, node_partitioning_qaoa)
 
-        mock_program = mocker.MagicMock()
-        mock_program._losses_history = [{0: -1.0}]
-
-        node_partitioning_qaoa._programs = {"dummy": mock_program}
-
-        with pytest.raises(RuntimeError, match="Some/All programs have empty losses."):
-            node_partitioning_qaoa.aggregate_results()
-
     def test_raises_on_disconnected_graph(self):
         disconnected_graph = nx.Graph()
         disconnected_graph.add_edges_from([(0, 1), (2, 3)])

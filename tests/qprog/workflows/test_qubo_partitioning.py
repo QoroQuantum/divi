@@ -119,7 +119,7 @@ class TestQUBOPartitioningQAOA:
             # Check the kwargs that were passed to the partial object
             assert isinstance(kwargs["problem"], sps.coo_matrix)
             assert kwargs["problem"].shape == (2, 2)
-            assert "job_id" in kwargs
+            assert "program_id" in kwargs
 
     def test_verify_basic_behaviour(self, mocker, qubo_partitioning_qaoa):
         """Verify the class adheres to the ProgramBatch contract."""
