@@ -9,13 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.5.0](https://github.com/QoroQuantum/divi/compare/v0.4.2...v0.5.0) (2025-12-12)
 
-
-### Miscellaneous Chores
-
-* release 0.5.0 ([342c7f8](https://github.com/QoroQuantum/divi/commit/342c7f858b552d63ab6fd2ee9dc130df83c8b4e9))
-
-## [Unreleased]
-
 ### ✨ Added
 
 * `BinaryQuadraticModel` support in QAOA: added support for `dimod.BinaryQuadraticModel` as a QUBO problem input type, replacing the removed `qiskit-optimization.QuadraticProgram` support. QAOA now accepts BinaryQuadraticModel objects directly, with automatic conversion to matrix format for Hamiltonian generation. Includes comprehensive test coverage and updated tutorial (`tutorials/qaoa_binary_quadratic_model.py`)
@@ -42,8 +35,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Updated progress bar labels: changed progress bar job name display from "Job {id}" to "Program {id}" for consistency with the `program_id` naming change
 * Added docstring to `ProgramBatch.aggregate_results()`: added comprehensive docstring documenting the method's purpose, validation checks, and expected subclass behavior
 
-### ⚠️ Deprecated
-
 ### 🗑️ Removed
 
 * Removed `QuadraticProgram` support from QAOA: removed support for `qiskit-optimization.QuadraticProgram` as a QUBO problem input type, along with the `qiskit-optimization` dependency. Replaced with `dimod.BinaryQuadraticModel` support for better compatibility with the broader quantum optimization ecosystem. The `qiskit-optimization` dependency and related converter (`QuadraticProgramToQubo`) have been removed from the codebase
@@ -57,13 +48,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Fixed `_raise_with_details()` to preserve response object: updated error handling to attach the HTTP response object to `HTTPError` exceptions, enabling proper error inspection in tests and error handling code
 * Fixed Qiskit v2 compatibility issues: added stevedore error suppression in `ParallelSimulator` and test configuration to handle harmless plugin loading failures caused by `ProviderV1` removal in Qiskit v2. The errors occur when IBM backend plugins attempt to load deprecated interfaces but don't affect functionality
 
-## [0.4.2] - 2025-11-18
+## [0.4.2](https://github.com/QoroQuantum/divi/compare/v0.4.1...v0.4.2) (2025-11-18)
 
 ### 🐛 Fixed
 
 * Fixed `ProgramBatch` bug where `QuantumScript` operations got intermangled due to thread-unsafe implementation.
 
-## [0.4.1] - 2025-11-16
+## [0.4.1](https://github.com/QoroQuantum/divi/compare/v0.4.0...v0.4.1) (2025-11-16)
 
 ### ✨ Added
 
@@ -95,7 +86,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Fixed test failures related to removed `_meta_circuits` attribute and incorrect parameter ordering
 * Fixed Sphinx documentation configuration to read from `project` section instead of deprecated `tool.poetry` section in pyproject.toml
 
-## [0.4.0] - 2025-11-10
+## [0.4.0](https://github.com/QoroQuantum/divi/compare/v0.3.5...v0.4.0) (2025-11-10)
 
 ### ✨ Added
 
@@ -134,7 +125,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * Fixed `QoroService.submit_circuits()` bug where `override_config` was incorrectly applied, causing wrong config values to be used for job initialization and circuit submission
 
-## [0.3.5] - 2025-10-15
+## [0.3.5](https://github.com/QoroQuantum/divi/compare/v0.3.4...v0.3.5) (2025-10-15)
 
 ### ✨ Added
 
@@ -164,7 +155,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Fixed test failures after optimizers interface change: updated test expectations for new optimizer signatures
 * Fixed and simplified Qoro API tests behavior: improved test reliability and reduced flakiness
 
-## [0.3.4] - 2025-10-04
+## [0.3.4](https://github.com/QoroQuantum/divi/compare/v0.3.3...v0.3.4) (2025-10-04)
 
 ### ✨ Added
 
@@ -186,7 +177,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Fixed sparse input bug in QUBO conversion: replaced `.A1` attribute access with `.tocoo()` method for proper sparse matrix handling in `convert_qubo_matrix_to_pennylane_ising()`
 * Fixed test failures related to ansatz refactoring: updated VQE and VQE sweep tests to work with new Ansatz abstraction interface
 
-## [0.3.3] - 2025-09-18
+## [0.3.3](https://github.com/QoroQuantum/divi/compare/v0.3.2b0...v0.3.3) (2025-09-18)
 
 ### ✨ Added
 
@@ -211,7 +202,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Fixed progress bar reporter bugs: corrected lambda function signature in `QoroService.get_job_status()` default callback to accept both retry count and status parameters, and fixed conditional logic in `ProgramBatch.join()` method
 * Fixed expected fail detection in tests: corrected test framework configuration for proper handling of expected test failures
 
-## [0.3.2b0] - 2025-08-28
+## [0.3.2b0](https://github.com/QoroQuantum/divi/compare/v0.3.1b0...v0.3.2b0) (2025-08-28)
 
 ### ✨ Added
 
@@ -237,7 +228,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * Fixed Qoro API tests: updated test expectations to match new API behavior and QASM validation integration
 
-## [0.3.1b0] - 2025-08-22
+## [0.3.1b0](https://github.com/QoroQuantum/divi/compare/v0.2.2b1...v0.3.1b0) (2025-08-22)
 
 ### ✨ Added
 
@@ -265,7 +256,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Fixed system name retrieval: improved logic to use system name from root QPUSystem object when available
 * Fixed potential issues in QoroService: corrected conditional logic for QPU system name handling in `submit_circuits()` method
 
-## [0.2.2b1] - 2025-08-08
+## [0.2.2b1](https://github.com/QoroQuantum/divi/compare/v0.2.1b1...v0.2.2b1) (2025-08-08)
 
 ### ✨ Added
 
@@ -294,7 +285,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Fixed logger message formatting: corrected string slicing in `OverwriteStreamHandler.emit()` to properly handle message overwriting (changed from `[2:-1]` to `[2:-2]`)
 * Fixed partitioning logic: corrected edge counting and subgraph validation in `_node_partition_graph()` to properly handle empty subgraphs and edge preservation
 
-## [0.2.1b1] - 2025-08-07
+## [0.2.1b1](https://github.com/QoroQuantum/divi/compare/v0.1.0-beta.1...v0.2.1b1) (2025-08-07)
 
 ### ✨ Added
 
@@ -323,7 +314,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Fixed issues with standalone Sympy symbols: corrected QASM export to properly handle Sympy symbols in parameterized circuits, preventing Pennylane errors from unresolved symbols
 * Fixed bug with postprocessing function in `ProgramBatch`: corrected postprocessing logic to properly handle results from batch execution
 
-## [0.1.0-beta.1] - 2025-06-18
+## [0.1.0-beta.1](https://github.com/QoroQuantum/divi/compare/...v0.1.0-beta.1) (2025-06-18)
 
 ### ✨ Added
 
@@ -355,15 +346,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Fixed Monte Carlo missing losses bug: resolved issue where losses were not properly tracked in Monte Carlo optimization
 * Fixed QAOA partitioning bugs: corrected graph partitioning logic for QAOA-based workflows
 * Fixed circuit chunking for large payloads: improved handling of large circuit submissions to QoroService API
-
-[Unreleased]: https://github.com/QoroQuantum/divi/compare/v0.4.1...HEAD
-[0.4.1]: https://github.com/QoroQuantum/divi/compare/v0.4.0...v0.4.1
-[0.4.0]: https://github.com/QoroQuantum/divi/compare/v0.3.5...v0.4.0
-[0.3.5]: https://github.com/QoroQuantum/divi/compare/v0.3.4...v0.3.5
-[0.3.4]: https://github.com/QoroQuantum/divi/compare/v0.3.3...v0.3.4
-[0.3.3]: https://github.com/QoroQuantum/divi/compare/v0.3.2b0...v0.3.3
-[0.3.2b0]: https://github.com/QoroQuantum/divi/compare/v0.3.1b0...v0.3.2b0
-[0.3.1b0]: https://github.com/QoroQuantum/divi/compare/v0.2.2b1...v0.3.1b0
-[0.2.2b1]: https://github.com/QoroQuantum/divi/compare/v0.2.1b1...v0.2.2b1
-[0.2.1b1]: https://github.com/QoroQuantum/divi/compare/v0.1.0-beta.1...v0.2.1b1
-[0.1.0-beta.1]: https://github.com/QoroQuantum/divi/releases/tag/v0.1.0-beta.1
