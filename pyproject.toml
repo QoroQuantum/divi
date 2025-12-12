@@ -51,6 +51,7 @@ tuna = "^0.5.11"
 black = "*"
 isort = "*"
 pre-commit = "^4.2.0"
+commitizen = "^4.10.1"
 
 
 [tool.poetry.group.ui.dependencies]
@@ -84,3 +85,10 @@ profile = "black"
 
 [tool.pytest.ini_options]
 addopts = "--no-success-flaky-report"
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+tag_format = "v$version"
+version_scheme = "semver2"
+version_provider = "poetry"
+major_version_zero = true
