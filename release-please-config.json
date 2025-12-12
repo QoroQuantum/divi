@@ -1,0 +1,58 @@
+{
+  "packages": {
+    ".": {
+      "release-type": "python",
+      "changelog-path": "CHANGELOG.md",
+      "changelog-sections": [
+        {
+          "type": "feat",
+          "section": "✨ Added"
+        },
+        {
+          "type": "fix",
+          "section": "🐛 Fixed"
+        },
+        {
+          "type": "refactor",
+          "section": "🔄 Changed"
+        },
+        {
+          "type": "chore",
+          "section": "🔧 Internal"
+        },
+        {
+          "type": "docs",
+          "section": "✨ Added"
+        },
+        {
+          "type": "style",
+          "section": "🔧 Internal"
+        },
+        {
+          "type": "perf",
+          "section": "✨ Added"
+        },
+        {
+          "type": "test",
+          "section": "🔧 Internal"
+        },
+        {
+          "type": "build",
+          "section": "🔧 Internal"
+        },
+        {
+          "type": "ci",
+          "section": "🔧 Internal"
+        },
+        {
+          "type": "deprecate",
+          "section": "⚠️ Deprecated"
+        },
+        {
+          "type": "removed",
+          "section": "🗑️ Removed"
+        }
+      ]
+    }
+  }
+}
