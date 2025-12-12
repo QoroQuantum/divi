@@ -10,10 +10,9 @@ permissions:
   issues: write
 
 jobs:
-  check-code-changes:
+  remind:
+    name: Changelog Reminder
     runs-on: ubuntu-latest
-    outputs:
-      has_code_changes: ${{ steps.check.outputs.has_code_changes }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -29,15 +28,8 @@ jobs:
             echo "has_code_changes=false" >> $GITHUB_OUTPUT
           fi
 
-  remind:
-    name: Changelog Reminder
-    needs: check-code-changes
-    if: needs.check-code-changes.outputs.has_code_changes == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
       - name: Changelog Reminder
+        if: steps.check.outputs.has_code_changes == 'true'
         uses: peterjgrainger/action-changelog-reminder@v1.3.0
         with:
           changelog_regex: 'CHANGELOG\.md'
