@@ -488,8 +488,11 @@ class ProgramBatch(ABC):
                 self._total_run_time += sum(result[1] for result in completed_futures)
                 self.futures.clear()
 
-            self._executor.shutdown(wait=False)
-            self._executor = None
+            # Shutdown executor and wait for all threads to complete
+            # This is critical for Python 3.12 to prevent process hangs
+            if self._executor is not None:
+                self._executor.shutdown(wait=True)
+                self._executor = None
 
             if self._progress_bar is not None:
                 self._queue.join()

@@ -293,7 +293,7 @@ class TestProgramBatch:
         with pytest.raises(RuntimeError, match="Batch execution failed"):
             program_batch.join()
 
-        mock_shutdown.assert_called_once_with(wait=False)
+        mock_shutdown.assert_called_once_with(wait=True)
         assert program_batch._executor is None
 
     def test_aggregate_results_calls_join_and_aggregates(self, program_batch):
