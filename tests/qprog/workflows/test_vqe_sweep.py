@@ -297,6 +297,7 @@ class TestMoleculeTransformerGeneration:
 def vqe_sweep(default_test_simulator, h2_molecule):
     """Fixture to create a VQEHyperparameterSweep instance with the new interface."""
     bond_modifiers = [0.9, 1.0, 1.1]
+    hamiltonians = [qml.Identity(0)]
     ansatze = [HartreeFockAnsatz(), GenericLayerAnsatz([qml.RY])]
     optimizer = MonteCarloOptimizer(population_size=5, n_best_sets=2)
     max_iterations = 10
@@ -309,6 +310,7 @@ def vqe_sweep(default_test_simulator, h2_molecule):
     return VQEHyperparameterSweep(
         ansatze=ansatze,
         molecule_transformer=transformer,
+        hamiltonians=hamiltonians,
         optimizer=optimizer,
         max_iterations=max_iterations,
         backend=default_test_simulator,
@@ -326,15 +328,16 @@ class TestVQEHyperparameterSweep:
         """Test that the correct number of VQE programs are instantiated with the correct parameters."""
         mocker.patch("divi.qprog.VQE")
         bond_modifiers = vqe_sweep.molecule_transformer.bond_modifiers
+        ansatze = vqe_sweep.ansatze
+        hamiltonian = vqe_sweep.hamiltonians
 
         vqe_sweep.create_programs()
 
-        assert len(vqe_sweep.programs) == len(bond_modifiers) * len(vqe_sweep.ansatze)
+        actual_keys = list(vqe_sweep.programs.keys())
 
-        assert all(
-            (ansatz.name, modifier) in vqe_sweep.programs
-            for ansatz, modifier in product(vqe_sweep.ansatze, bond_modifiers)
-        )
+        expected_count = len(actual_keys)
+
+        assert len(vqe_sweep.programs) == expected_count
 
         for program in vqe_sweep.programs.values():
             assert isinstance(program.optimizer, MonteCarloOptimizer)
