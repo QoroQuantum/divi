@@ -408,7 +408,8 @@ class VQEHyperparameterSweep(ProgramBatch):
     def __init__(
         self,
         ansatze: Sequence[Ansatz],
-        molecule_transformer: MoleculeTransformer,
+        molecule_transformer: MoleculeTransformer | None = None,
+        hamiltonians: Sequence[qml.operation.Operator] | None = None,
         optimizer: Optimizer | None = None,
         max_iterations: int = 10,
         **kwargs,
@@ -420,6 +421,8 @@ class VQEHyperparameterSweep(ProgramBatch):
         ----------
         ansatze: Sequence[Ansatz]
             A sequence of ansatz circuits to test.
+        hamiltonians: Sequence[qml.operation.Operator]
+            A sequence of Hamiltonians to use for the VQE runs.
         molecule_transformer: MoleculeTransformer
             A `MoleculeTransformer` object defining the configuration for
             generating the molecule variants.
@@ -434,6 +437,7 @@ class VQEHyperparameterSweep(ProgramBatch):
         self.molecule_transformer = molecule_transformer
 
         self.ansatze = ansatze
+        self.hamiltonians = hamiltonians
         self.max_iterations = max_iterations
 
         # Store the optimizer template (will be copied for each program)
@@ -460,14 +464,20 @@ class VQEHyperparameterSweep(ProgramBatch):
         """
         super().create_programs()
 
-        self.molecule_variants = self.molecule_transformer.generate()
+        if self.molecule_transformer is not None:
+            self.molecule_variants = self.molecule_transformer.generate()
+        else:
+            self.molecule_variants = {None: None}
 
-        for ansatz, (modifier, molecule) in product(
-            self.ansatze, self.molecule_variants.items()
+        hamiltonians = self.hamiltonians or [None]
+
+        for ansatz, (modifier, molecule), hamiltonian in product(
+            self.ansatze, self.molecule_variants.items(), hamiltonians,
         ):
-            _job_id = (ansatz.name, modifier)
+            _job_id = (ansatz.name, modifier, hamiltonian)
             self._programs[_job_id] = self._constructor(
                 program_id=_job_id,
+                hamiltonian=hamiltonian,
                 molecule=molecule,
                 ansatz=ansatz,
                 optimizer=copy_optimizer(self._optimizer_template),
