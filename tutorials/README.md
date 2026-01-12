@@ -36,6 +36,7 @@ python <example_name>.py
 
 - **`qasm_thru_service.py`** - Using QoroService cloud backend
 - **`circuit_cutting.py`** - Circuit cutting with cloud backends
+- **`backend_properties_conversion.py`** - Converting `BackendProperties` to A Qiskit `BackendV2`
 
 ## Requirements
 

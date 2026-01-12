@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -124,7 +124,7 @@ class TestGeneralQAOA:
         assert flag_state_at_call_time == [True]
 
         # 4. Verify the state was reset correctly after the function completed
-        assert qaoa_problem._is_compute_probabilities is False
+        assert qaoa_problem._is_compute_probabilities == False
 
     @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
     def test_graph_correct_circuits_count_and_energies(

@@ -1,7 +1,8 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from ._backend_properties_conversion import create_backend_from_properties
 from ._circuit_runner import CircuitRunner
 from ._execution_result import ExecutionResult
 from ._parallel_simulator import ParallelSimulator
