@@ -12,6 +12,7 @@ import dimod
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
+import numpy.typing as npt
 import pennylane as qml
 import pennylane.qaoa as pqaoa
 import rustworkx as rx
@@ -39,7 +40,8 @@ class SolutionEntry:
         bitstring (str): The measured bitstring (e.g., "101").
         count (int): Number of times this bitstring was measured.
         probability (float): Probability of measuring this bitstring.
-        state: Decoded state (list of nodes for graph problems, array of bits for QUBO).
+        state (list | np.ndarray): Decoded state (list of nodes for graph problems, 
+            array of bits for QUBO).
     """
 
     bitstring: str
@@ -505,7 +507,7 @@ class QAOA(VariationalQuantumAlgorithm):
             ]
         else:
             # Return array of binary values
-            return np.fromiter(bitstring, dtype=np.int32)
+            return np.array([int(bit) for bit in bitstring], dtype=np.int32)
 
     def top_solutions(
         self, n: int = 5, min_count: int = 0, min_prob: float = 0.0

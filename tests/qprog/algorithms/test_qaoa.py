@@ -1145,7 +1145,7 @@ class TestTopNSolutions:
         assert top[0].bitstring == "00"
         assert top[1].bitstring == "01"
 
-        # Filter with min_count=50 should keep only "00"
+        # Filter with min_count=35 should keep only "00" (40 counts)
         top = qaoa_problem.top_solutions(n=10, min_count=35)
         assert len(top) == 1
         assert top[0].bitstring == "00"
