@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 GraphProblemTypes = nx.Graph | rx.PyGraph
 QUBOProblemTypes = list | np.ndarray | sps.spmatrix | dimod.BinaryQuadraticModel
 
+# Default number of shots for count estimation when backend is not available
+_DEFAULT_SHOTS_FALLBACK = 1000
+
 
 @dataclass
 class SolutionEntry:
@@ -40,7 +43,7 @@ class SolutionEntry:
         bitstring (str): The measured bitstring (e.g., "101").
         count (int): Number of times this bitstring was measured.
         probability (float): Probability of measuring this bitstring.
-        state (list | np.ndarray): Decoded state (list of nodes for graph problems, 
+        state (list | np.ndarray): Decoded state (list of nodes for graph problems,
             array of bits for QUBO).
     """
 
@@ -563,7 +566,7 @@ class QAOA(VariationalQuantumAlgorithm):
             return []
 
         # Convert probabilities to counts (approximation based on backend shots)
-        total_shots = self.backend.shots if self.backend else 1000
+        total_shots = self.backend.shots if self.backend else _DEFAULT_SHOTS_FALLBACK
         counts_dist = {bs: prob * total_shots for bs, prob in prob_dist.items()}
 
         # Filter by min_count and min_prob

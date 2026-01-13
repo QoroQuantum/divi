@@ -1077,11 +1077,11 @@ class TestTopNSolutions:
 
         top = qaoa_problem.top_solutions(n=4)
 
-        # Expected order:
-        # 1. "00" (count ~10, prob 0.3333)
-        # 2. "01" (count ~10, prob 0.3333) - lexicographic tiebreak with "00"
-        # 3. "10" (count ~5, prob 0.1667)
-        # 4. "11" (count ~5, prob 0.1667) - lexicographic tiebreak with "10"
+        # Expected order (sorted by count desc, then lexicographic asc for tiebreak):
+        # 1. "00" (count ~10, prob 0.3333) - tied with "01", "00" < "01" lexicographically
+        # 2. "01" (count ~10, prob 0.3333) - tied with "00", "00" < "01" lexicographically
+        # 3. "10" (count ~5, prob 0.1667) - tied with "11", "10" < "11" lexicographically
+        # 4. "11" (count ~5, prob 0.1667) - tied with "10", "10" < "11" lexicographically
         assert len(top) == 4
         assert top[0].bitstring == "00"
         assert top[1].bitstring == "01"
