@@ -328,3 +328,98 @@ def test_vqe_h2_molecule_e2e_checkpointing_resume(
     assert vqe_problem3.best_loss == pytest.approx(expected_best_loss, abs=0.5)
     expected_eigenstate = np.array([1, 1, 0, 0])
     np.testing.assert_array_equal(vqe_problem3.eigenstate, expected_eigenstate)
+
+
+class TestVQEMeasurementAPI:
+    """Test suite for generic measurement API with VQE."""
+
+    def test_vqe_can_use_measurement_distribution(self, mocker, h2_hamiltonian):
+        """Test that VQE can use the generic measurement_distribution property."""
+        from divi.qprog import ScipyOptimizer, ScipyMethod
+
+        vqe_problem = VQE(
+            hamiltonian=h2_hamiltonian,
+            n_electrons=2,
+            n_layers=1,
+            ansatz=HartreeFockAnsatz(),
+            max_iterations=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+            backend=None,
+        )
+
+        # Simulate measurement results
+        mock_dist = {"1100": 0.7, "0011": 0.2, "1010": 0.1}
+        vqe_problem._best_probs = {"tag": mock_dist}
+
+        # VQE should be able to use the generic API
+        dist = vqe_problem.measurement_distribution
+        assert dist == mock_dist
+        assert len(dist) == 3
+
+    def test_vqe_can_use_top_measurements(self, mocker, h2_hamiltonian):
+        """Test that VQE can use the generic top_measurements method."""
+        from divi.qprog import ScipyOptimizer, ScipyMethod
+        from divi.qprog.variational_quantum_algorithm import MeasurementEntry
+
+        vqe_problem = VQE(
+            hamiltonian=h2_hamiltonian,
+            n_electrons=2,
+            n_layers=1,
+            ansatz=HartreeFockAnsatz(),
+            max_iterations=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+            backend=None,
+        )
+
+        # Simulate measurement results
+        mock_dist = {"1100": 0.7, "0011": 0.2, "1010": 0.1}
+        vqe_problem._best_probs = {"tag": mock_dist}
+        vqe_problem.backend = mocker.MagicMock()
+        vqe_problem.backend.shots = 100
+
+        # VQE should be able to use the generic API
+        top = vqe_problem.top_measurements(n=2)
+        assert len(top) == 2
+        assert isinstance(top[0], MeasurementEntry)
+        assert top[0].bitstring == "1100"
+        assert top[0].probability == 0.7
+
+        # Verify decoded_state uses default implementation (numpy array)
+        assert isinstance(top[0].decoded_state, np.ndarray)
+        np.testing.assert_array_equal(top[0].decoded_state, np.array([1, 1, 0, 0]))
+
+    @pytest.mark.e2e
+    def test_vqe_measurement_api_e2e(self, default_test_simulator, h2_molecule):
+        """End-to-end test of generic measurement API with VQE."""
+        from divi.qprog import ScipyOptimizer, ScipyMethod
+        from divi.qprog.variational_quantum_algorithm import MeasurementEntry
+
+        default_test_simulator.set_seed(42)
+
+        vqe_problem = VQE(
+            molecule=h2_molecule,
+            ansatz=HartreeFockAnsatz(),
+            n_layers=1,
+            max_iterations=3,
+            optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+            backend=default_test_simulator,
+            seed=42,
+        )
+
+        vqe_problem.run()
+
+        # Test measurement_distribution
+        dist = vqe_problem.measurement_distribution
+        assert isinstance(dist, dict)
+        assert len(dist) > 0
+        assert sum(dist.values()) == pytest.approx(1.0, rel=0.01)
+
+        # Test top_measurements
+        top = vqe_problem.top_measurements(n=3)
+        assert len(top) <= 3
+        assert all(isinstance(e, MeasurementEntry) for e in top)
+
+        # Verify eigenstate matches top measurement
+        if vqe_problem.eigenstate is not None and len(top) > 0:
+            # The eigenstate should correspond to the most probable measurement
+            np.testing.assert_array_equal(vqe_problem.eigenstate, top[0].decoded_state)

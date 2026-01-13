@@ -4,7 +4,7 @@
 
 # isort: skip_file
 from .quantum_program import QuantumProgram
-from .variational_quantum_algorithm import VariationalQuantumAlgorithm
+from .variational_quantum_algorithm import VariationalQuantumAlgorithm, MeasurementEntry
 from .batch import ProgramBatch
 from .algorithms import (
     QAOA,

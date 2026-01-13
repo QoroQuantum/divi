@@ -1330,3 +1330,181 @@ class TestTopNSolutions:
         # Verify state decoding is consistent
         for entry in top5:
             assert all(node in G.nodes() for node in entry.state)
+
+
+class TestGenericMeasurementAPI:
+    """Test suite for generic measurement API in VariationalQuantumAlgorithm."""
+
+    def test_measurement_distribution_before_run_raises_error(self):
+        """Test that accessing measurement_distribution before run() raises RuntimeError."""
+        qaoa_problem = QAOA(
+            problem=nx.bull_graph(),
+            graph_problem=GraphProblem.MAX_CLIQUE,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=1,
+            backend=None,
+        )
+
+        with pytest.raises(
+            RuntimeError,
+            match="measurement_distribution is not available",
+        ):
+            _ = qaoa_problem.measurement_distribution
+
+    def test_top_measurements_before_run_raises_error(self):
+        """Test that calling top_measurements before run() raises RuntimeError."""
+        qaoa_problem = QAOA(
+            problem=nx.bull_graph(),
+            graph_problem=GraphProblem.MAX_CLIQUE,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=1,
+            backend=None,
+        )
+
+        with pytest.raises(
+            RuntimeError,
+            match="top_measurements is not available",
+        ):
+            _ = qaoa_problem.top_measurements(n=5)
+
+    def test_measurement_distribution_returns_full_distribution(self, mocker):
+        """Test that measurement_distribution returns the complete probability distribution."""
+        from divi.qprog.variational_quantum_algorithm import MeasurementEntry
+
+        qaoa_problem = QAOA(
+            problem=nx.bull_graph(),
+            graph_problem=GraphProblem.MAX_CLIQUE,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=1,
+            backend=None,
+        )
+
+        # Simulate measurement results with multiple bitstrings
+        mock_dist = {"11001": 0.4, "00101": 0.3, "10010": 0.2, "01100": 0.1}
+        qaoa_problem._best_probs = {"0_NoMitigation:0_0": mock_dist}
+
+        dist = qaoa_problem.measurement_distribution
+
+        assert dist == mock_dist
+        assert len(dist) == 4
+        assert sum(dist.values()) == pytest.approx(1.0)
+
+    def test_top_measurements_returns_measurement_entries(self, mocker):
+        """Test that top_measurements returns MeasurementEntry objects."""
+        from divi.qprog.variational_quantum_algorithm import MeasurementEntry
+
+        qaoa_problem = QAOA(
+            problem=nx.Graph([(0, 1), (1, 2)]),
+            graph_problem=GraphProblem.MAXCUT,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=1,
+            backend=None,
+        )
+
+        mock_dist = {"101": 0.5, "010": 0.3, "001": 0.2}
+        qaoa_problem._best_probs = {"tag": mock_dist}
+        qaoa_problem.backend = mocker.MagicMock()
+        qaoa_problem.backend.shots = 100
+
+        top = qaoa_problem.top_measurements(n=2)
+
+        # Verify we get MeasurementEntry objects
+        assert len(top) == 2
+        assert isinstance(top[0], MeasurementEntry)
+        assert hasattr(top[0], "decoded_state")
+        assert top[0].bitstring == "101"
+
+    def test_solution_entry_and_measurement_entry_compatibility(self, mocker):
+        """Test that SolutionEntry (QAOA) and MeasurementEntry (base) are compatible."""
+        from divi.qprog.variational_quantum_algorithm import MeasurementEntry
+
+        qaoa_problem = QAOA(
+            problem=nx.Graph([(0, 1), (1, 2)]),
+            graph_problem=GraphProblem.MAXCUT,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=1,
+            backend=None,
+        )
+
+        mock_dist = {"101": 0.5, "010": 0.3}
+        qaoa_problem._best_probs = {"tag": mock_dist}
+        qaoa_problem.backend = mocker.MagicMock()
+        qaoa_problem.backend.shots = 100
+
+        # Get both types
+        solutions = qaoa_problem.top_solutions(n=2)
+        measurements = qaoa_problem.top_measurements(n=2)
+
+        # Verify same data in different formats
+        assert len(solutions) == len(measurements)
+        for sol, meas in zip(solutions, measurements):
+            assert isinstance(sol, SolutionEntry)
+            assert isinstance(meas, MeasurementEntry)
+            assert sol.bitstring == meas.bitstring
+            assert sol.count == meas.count
+            assert sol.probability == meas.probability
+            # QAOA-specific: state vs decoded_state should be equivalent
+            assert sol.state == meas.decoded_state
+
+    def test_base_class_decode_implementation_fallback(self):
+        """Test that base class _decode_bitstring_to_state has a default implementation."""
+        # This tests that algorithms that don't override the method still work
+        qaoa_problem = QAOA(
+            problem=np.array([[1, 2], [2, 3]]),  # QUBO
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=1,
+            backend=None,
+        )
+
+        # The method should work (QAOA overrides it, but we're testing the pattern)
+        decoded = qaoa_problem._decode_bitstring_to_state("101")
+        assert isinstance(decoded, (list, np.ndarray))
+
+    @pytest.mark.e2e
+    def test_measurement_api_integration(self, default_test_simulator):
+        """Integration test for generic measurement API."""
+        from divi.qprog.variational_quantum_algorithm import MeasurementEntry
+
+        G = nx.bull_graph()
+        default_test_simulator.set_seed(1997)
+
+        qaoa_problem = QAOA(
+            graph_problem=GraphProblem.MAX_CLIQUE,
+            problem=G,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+            max_iterations=5,
+            is_constrained=True,
+            backend=default_test_simulator,
+            seed=1997,
+        )
+
+        qaoa_problem.run()
+
+        # Test measurement_distribution (base class)
+        dist = qaoa_problem.measurement_distribution
+        assert isinstance(dist, dict)
+        assert len(dist) > 0
+        assert sum(dist.values()) == pytest.approx(1.0, rel=0.01)
+
+        # Test top_measurements (base class)
+        top_meas = qaoa_problem.top_measurements(n=3)
+        assert len(top_meas) <= 3
+        assert all(isinstance(e, MeasurementEntry) for e in top_meas)
+
+        # Test top_solutions (QAOA-specific)
+        top_sol = qaoa_problem.top_solutions(n=3)
+        assert len(top_sol) <= 3
+        assert all(isinstance(e, SolutionEntry) for e in top_sol)
+
+        # Verify both return equivalent data
+        assert len(top_meas) == len(top_sol)
+        for meas, sol in zip(top_meas, top_sol):
+            assert meas.bitstring == sol.bitstring
+            assert meas.probability == sol.probability

@@ -5,6 +5,7 @@
 import logging
 import pickle
 from abc import abstractmethod
+from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
 from itertools import groupby
@@ -48,6 +49,27 @@ from divi.qprog.optimizers import (
 from divi.qprog.quantum_program import QuantumProgram
 
 logger = logging.getLogger(__name__)
+
+# Default number of shots for count estimation when backend is not available
+_DEFAULT_SHOTS_FALLBACK = 1000
+
+
+@dataclass
+class MeasurementEntry:
+    """A single measurement entry from variational algorithm results.
+
+    Attributes:
+        bitstring (str): The measured bitstring (e.g., "101").
+        count (int): Number of times this bitstring was measured.
+        probability (float): Probability of measuring this bitstring.
+        decoded_state: Decoded state in algorithm-specific format (e.g., list of nodes,
+            array of bits, or other representation).
+    """
+
+    bitstring: str
+    count: int
+    probability: float
+    decoded_state: Any
 
 
 class SubclassState(BaseModel):
@@ -577,6 +599,143 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             state (dict[str, Any]): Dictionary of subclass-specific state.
         """
         pass
+
+    def _decode_bitstring_to_state(self, bitstring: str) -> Any:
+        """Decode a bitstring to an algorithm-specific state representation.
+
+        This is a default implementation that returns the bitstring as a numpy array.
+        Subclasses should override this method to provide algorithm-specific decoding
+        (e.g., QAOA decodes to node lists for graph problems, VQE may use different representations).
+
+        Args:
+            bitstring: Binary string (e.g., "101").
+
+        Returns:
+            Algorithm-specific decoded state. Default returns numpy array of integers.
+        """
+        return np.array([int(bit) for bit in bitstring], dtype=np.int32)
+
+    @property
+    def measurement_distribution(self) -> dict[str, float]:
+        """Get the full measurement distribution from the algorithm run.
+
+        Returns the complete probability distribution over all measured bitstrings.
+        Each bitstring maps to its probability of being measured. Available after
+        run() completes with final computation.
+
+        Returns:
+            dict[str, float]: Dictionary mapping bitstrings (e.g., "101") to their
+                probabilities. The bitstrings are already endianness-corrected.
+
+        Raises:
+            RuntimeError: If called before run() has been executed or if final
+                computation was not performed.
+
+        Example:
+            >>> algorithm.run()
+            >>> dist = algorithm.measurement_distribution
+            >>> print(dist)
+            {'101': 0.45, '010': 0.35, '001': 0.20}
+        """
+        if not self._best_probs:
+            raise RuntimeError(
+                "measurement_distribution is not available. "
+                "The algorithm has not been run yet or final computation was not performed. "
+                "Call run() to execute the optimization and measurement."
+            )
+        # _best_probs structure: {tag: {bitstring: prob}}
+        # We return the first (and only) entry's distribution
+        return next(iter(self._best_probs.values()))
+
+    def top_measurements(
+        self, n: int = 5, min_count: int = 0, min_prob: float = 0.0
+    ) -> list[MeasurementEntry]:
+        """Get the top-N most frequently measured bitstrings.
+
+        Returns the N most frequent measurements from the measurement distribution,
+        ordered by count (descending), with lexicographic ordering as a tiebreaker.
+
+        Args:
+            n (int): Number of top measurements to return. Defaults to 5.
+            min_count (int): Minimum number of counts required for a measurement to be included.
+                Defaults to 0 (no filtering).
+            min_prob (float): Minimum probability required for a measurement to be included.
+                Defaults to 0.0 (no filtering).
+
+        Returns:
+            list[MeasurementEntry]: List of MeasurementEntry objects containing:
+                - bitstring: The measured bitstring
+                - count: Number of measurements
+                - probability: Probability of measurement
+                - decoded_state: Algorithm-specific decoded state
+
+        Raises:
+            RuntimeError: If called before run() has been executed or if final
+                computation was not performed.
+
+        Example:
+            >>> algorithm.run()
+            >>> top5 = algorithm.top_measurements(n=5)
+            >>> for entry in top5:
+            ...     print(f"{entry.bitstring}: {entry.probability:.3f}")
+            101: 0.450
+            010: 0.350
+            001: 0.200
+
+        Note:
+            - If n <= 0, returns an empty list.
+            - If n exceeds the number of unique measurements, returns all measurements.
+            - Filtering by min_count or min_prob is applied before selecting top-N.
+            - Measurements are decoded using _decode_bitstring_to_state() which can be
+              overridden by subclasses for algorithm-specific representations.
+        """
+        # Get the probability distribution
+        try:
+            prob_dist = self.measurement_distribution
+        except RuntimeError:
+            raise RuntimeError(
+                "top_measurements is not available. "
+                "The algorithm has not been run yet or final computation was not performed. "
+                "Call run() to execute the optimization and measurement."
+            )
+
+        # Handle edge case: n <= 0
+        if n <= 0:
+            return []
+
+        # Convert probabilities to counts (approximation based on backend shots)
+        total_shots = self.backend.shots if self.backend else _DEFAULT_SHOTS_FALLBACK
+        counts_dist = {bs: prob * total_shots for bs, prob in prob_dist.items()}
+
+        # Filter by min_count and min_prob
+        filtered_items = [
+            (bitstring, count, prob_dist[bitstring])
+            for bitstring, count in counts_dist.items()
+            if count >= min_count and prob_dist[bitstring] >= min_prob
+        ]
+
+        # Sort by count (descending), then lexicographically by bitstring (ascending) for deterministic tiebreak
+        sorted_items = sorted(
+            filtered_items, key=lambda x: (-x[1], x[0])  # -count for desc, bitstring for asc
+        )
+
+        # Take top N
+        top_n_items = sorted_items[:n]
+
+        # Convert to MeasurementEntry objects
+        results = []
+        for bitstring, count, probability in top_n_items:
+            decoded_state = self._decode_bitstring_to_state(bitstring)
+            results.append(
+                MeasurementEntry(
+                    bitstring=bitstring,
+                    count=int(count),
+                    probability=probability,
+                    decoded_state=decoded_state,
+                )
+            )
+
+        return results
 
     def _get_optimizer_config(self) -> OptimizerConfig:
         """Extract optimizer configuration for checkpoint reconstruction.
