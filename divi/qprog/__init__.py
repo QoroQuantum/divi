@@ -9,6 +9,7 @@ from .batch import ProgramBatch
 from .algorithms import (
     QAOA,
     GraphProblem,
+    SolutionEntry,
     VQE,
     Ansatz,
     UCCSDAnsatz,

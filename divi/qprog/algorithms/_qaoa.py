@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Literal, get_args
 from warnings import warn
@@ -28,6 +29,23 @@ logger = logging.getLogger(__name__)
 
 GraphProblemTypes = nx.Graph | rx.PyGraph
 QUBOProblemTypes = list | np.ndarray | sps.spmatrix | dimod.BinaryQuadraticModel
+
+
+@dataclass
+class SolutionEntry:
+    """A single solution entry from QAOA measurement results.
+
+    Attributes:
+        bitstring (str): The measured bitstring (e.g., "101").
+        count (int): Number of times this bitstring was measured.
+        probability (float): Probability of measuring this bitstring.
+        state: Decoded state (list of nodes for graph problems, array of bits for QUBO).
+    """
+
+    bitstring: str
+    count: int
+    probability: float
+    state: list | np.ndarray
 
 
 def _extract_loss_constant(
@@ -438,6 +456,143 @@ class QAOA(VariationalQuantumAlgorithm):
             if self.graph_problem is not None
             else self._solution_bitstring
         )
+
+    @property
+    def solution_distribution(self) -> dict[str, float]:
+        """Get the full measurement distribution from the QAOA run.
+
+        Returns the complete probability distribution over all measured bitstrings.
+        Each bitstring maps to its probability of being measured.
+
+        Returns:
+            dict[str, float]: Dictionary mapping bitstrings (e.g., "101") to their
+                probabilities. The bitstrings are already endianness-corrected.
+
+        Raises:
+            RuntimeError: If called before run() has been executed.
+
+        Example:
+            >>> qaoa.run()
+            >>> dist = qaoa.solution_distribution
+            >>> print(dist)
+            {'101': 0.45, '010': 0.35, '001': 0.20}
+        """
+        if not self._best_probs:
+            raise RuntimeError(
+                "solution_distribution is not available. The QAOA algorithm has not been run yet. "
+                "Call run() to execute the optimization and measurement."
+            )
+        # _best_probs structure: {tag: {bitstring: prob}}
+        # We return the first (and only) entry's distribution
+        return next(iter(self._best_probs.values()))
+
+    def _decode_bitstring_to_state(self, bitstring: str):
+        """Decode a bitstring to a state representation.
+
+        Args:
+            bitstring: Binary string (e.g., "101").
+
+        Returns:
+            list | npt.NDArray[np.int32]: For graph problems, returns a list of node indices
+                where bit is '1'. For QUBO problems, returns array of binary values.
+        """
+        if isinstance(self.problem, GraphProblemTypes):
+            # Return list of node indices where bit is '1'
+            return [
+                self._circuit_wires[idx]
+                for idx, bit in enumerate(bitstring)
+                if bit == "1" and idx < len(self._circuit_wires)
+            ]
+        else:
+            # Return array of binary values
+            return np.fromiter(bitstring, dtype=np.int32)
+
+    def top_solutions(
+        self, n: int = 5, min_count: int = 0, min_prob: float = 0.0
+    ) -> list[SolutionEntry]:
+        """Get the top-N most frequently measured solutions.
+
+        Returns the N most frequent solutions from the measurement distribution,
+        ordered by count (descending), with lexicographic ordering as a tiebreaker.
+
+        Args:
+            n (int): Number of top solutions to return. Defaults to 5.
+            min_count (int): Minimum number of counts required for a solution to be included.
+                Defaults to 0 (no filtering).
+            min_prob (float): Minimum probability required for a solution to be included.
+                Defaults to 0.0 (no filtering).
+
+        Returns:
+            list[SolutionEntry]: List of SolutionEntry objects containing:
+                - bitstring: The measured bitstring
+                - count: Number of measurements
+                - probability: Probability of measurement
+                - state: Decoded state (node list for graphs, bit array for QUBO)
+
+        Raises:
+            RuntimeError: If called before run() has been executed.
+
+        Example:
+            >>> qaoa.run()
+            >>> top5 = qaoa.top_solutions(n=5)
+            >>> for entry in top5:
+            ...     print(f"{entry.bitstring}: {entry.probability:.3f}")
+            101: 0.450
+            010: 0.350
+            001: 0.200
+
+        Note:
+            - If n <= 0, returns an empty list.
+            - If n exceeds the number of unique solutions, returns all solutions.
+            - Filtering by min_count or min_prob is applied before selecting top-N.
+            - For constrained problems, all measured solutions are returned (no implicit filtering).
+        """
+        # Get the probability distribution
+        try:
+            prob_dist = self.solution_distribution
+        except RuntimeError:
+            raise RuntimeError(
+                "top_solutions is not available. The QAOA algorithm has not been run yet. "
+                "Call run() to execute the optimization and measurement."
+            )
+
+        # Handle edge case: n <= 0
+        if n <= 0:
+            return []
+
+        # Convert probabilities to counts (approximation based on backend shots)
+        total_shots = self.backend.shots if self.backend else 1000
+        counts_dist = {bs: prob * total_shots for bs, prob in prob_dist.items()}
+
+        # Filter by min_count and min_prob
+        filtered_items = [
+            (bitstring, count, prob_dist[bitstring])
+            for bitstring, count in counts_dist.items()
+            if count >= min_count and prob_dist[bitstring] >= min_prob
+        ]
+
+        # Sort by count (descending), then lexicographically by bitstring (ascending) for deterministic tiebreak
+        sorted_items = sorted(
+            filtered_items, key=lambda x: (-x[1], x[0])  # -count for desc, bitstring for asc
+        )
+
+        # Take top N
+        top_n_items = sorted_items[:n]
+
+        # Convert to SolutionEntry objects
+        results = []
+        for bitstring, count, probability in top_n_items:
+            state = self._decode_bitstring_to_state(bitstring)
+            results.append(
+                SolutionEntry(
+                    bitstring=bitstring,
+                    count=int(count),
+                    probability=probability,
+                    state=state,
+                )
+            )
+
+        return results
 
     def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
         """Generate the meta circuits for the QAOA problem.

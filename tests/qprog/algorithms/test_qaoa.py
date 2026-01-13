@@ -17,7 +17,7 @@ from divi.qprog import (
     ScipyMethod,
     ScipyOptimizer,
 )
-from divi.qprog.algorithms import _qaoa
+from divi.qprog.algorithms import _qaoa, SolutionEntry
 from divi.qprog.checkpointing import CheckpointConfig
 from tests.conftest import CHECKPOINTING_OPTIMIZERS
 from tests.qprog.qprog_contracts import (
@@ -996,3 +996,337 @@ class TestQUBOInput:
 
         # Verify we completed the full run
         assert qaoa_problem2.current_iteration == 15
+
+
+class TestTopNSolutions:
+    """Test suite for top-N solutions API."""
+
+    def test_solution_distribution_before_run_raises_error(self):
+        """Test that accessing solution_distribution before run() raises RuntimeError."""
+        qaoa_problem = QAOA(
+            problem=nx.bull_graph(),
+            graph_problem=GraphProblem.MAX_CLIQUE,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=1,
+            backend=None,
+        )
+
+        with pytest.raises(
+            RuntimeError,
+            match="solution_distribution is not available. The QAOA algorithm has not been run yet.",
+        ):
+            _ = qaoa_problem.solution_distribution
+
+    def test_top_solutions_before_run_raises_error(self):
+        """Test that calling top_solutions before run() raises RuntimeError."""
+        qaoa_problem = QAOA(
+            problem=nx.bull_graph(),
+            graph_problem=GraphProblem.MAX_CLIQUE,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=1,
+            backend=None,
+        )
+
+        with pytest.raises(
+            RuntimeError,
+            match="top_solutions is not available. The QAOA algorithm has not been run yet.",
+        ):
+            _ = qaoa_problem.top_solutions(n=5)
+
+    def test_solution_distribution_returns_full_distribution(self, mocker):
+        """Test that solution_distribution returns the complete probability distribution."""
+        qaoa_problem = QAOA(
+            problem=nx.bull_graph(),
+            graph_problem=GraphProblem.MAX_CLIQUE,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=1,
+            backend=None,
+        )
+
+        # Simulate measurement results with multiple bitstrings
+        mock_dist = {"11001": 0.4, "00101": 0.3, "10010": 0.2, "01100": 0.1}
+        qaoa_problem._best_probs = {"0_NoMitigation:0_0": mock_dist}
+
+        dist = qaoa_problem.solution_distribution
+
+        assert dist == mock_dist
+        assert len(dist) == 4
+        assert sum(dist.values()) == pytest.approx(1.0)
+
+    def test_top_solutions_ordering_with_deterministic_tiebreak(self, mocker):
+        """Test top-N ordering with deterministic lexicographic tiebreaker."""
+        qaoa_problem = QAOA(
+            problem=nx.Graph([(0, 1), (1, 2)]),
+            graph_problem=GraphProblem.MAXCUT,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=1,
+            backend=None,
+        )
+
+        # Create distribution with ties in counts
+        # "00" and "01" both have count 10 (prob 0.3333)
+        # "10" has count 5 (prob 0.1667)
+        mock_dist = {"00": 0.3333, "01": 0.3333, "10": 0.1667, "11": 0.1667}
+        qaoa_problem._best_probs = {"0_NoMitigation:0_0": mock_dist}
+        qaoa_problem.backend = mocker.MagicMock()
+        qaoa_problem.backend.shots = 30
+
+        top = qaoa_problem.top_solutions(n=4)
+
+        # Expected order:
+        # 1. "00" (count ~10, prob 0.3333)
+        # 2. "01" (count ~10, prob 0.3333) - lexicographic tiebreak with "00"
+        # 3. "10" (count ~5, prob 0.1667)
+        # 4. "11" (count ~5, prob 0.1667) - lexicographic tiebreak with "10"
+        assert len(top) == 4
+        assert top[0].bitstring == "00"
+        assert top[1].bitstring == "01"
+        assert top[2].bitstring == "10"
+        assert top[3].bitstring == "11"
+
+        # Verify counts and probabilities
+        assert top[0].count == pytest.approx(10, abs=1)
+        assert top[0].probability == pytest.approx(0.3333, abs=0.01)
+
+    def test_top_solutions_n_edge_cases(self, mocker):
+        """Test edge cases for n parameter."""
+        qaoa_problem = QAOA(
+            problem=nx.Graph([(0, 1)]),
+            graph_problem=GraphProblem.MAXCUT,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=1,
+            backend=None,
+        )
+
+        mock_dist = {"00": 0.5, "01": 0.3, "10": 0.2}
+        qaoa_problem._best_probs = {"0_NoMitigation:0_0": mock_dist}
+        qaoa_problem.backend = mocker.MagicMock()
+        qaoa_problem.backend.shots = 100
+
+        # Test n=0 returns empty list
+        assert qaoa_problem.top_solutions(n=0) == []
+
+        # Test negative n returns empty list
+        assert qaoa_problem.top_solutions(n=-5) == []
+
+        # Test n > len(dist) returns all solutions
+        top = qaoa_problem.top_solutions(n=100)
+        assert len(top) == 3
+
+        # Test n=1 returns only best
+        top = qaoa_problem.top_solutions(n=1)
+        assert len(top) == 1
+        assert top[0].bitstring == "00"
+
+    def test_top_solutions_min_count_filter(self, mocker):
+        """Test filtering by min_count."""
+        qaoa_problem = QAOA(
+            problem=nx.Graph([(0, 1), (1, 2)]),
+            graph_problem=GraphProblem.MAXCUT,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=1,
+            backend=None,
+        )
+
+        mock_dist = {"00": 0.4, "01": 0.3, "10": 0.2, "11": 0.1}
+        qaoa_problem._best_probs = {"0_NoMitigation:0_0": mock_dist}
+        qaoa_problem.backend = mocker.MagicMock()
+        qaoa_problem.backend.shots = 100
+
+        # Filter with min_count=25 should keep only "00" (40 counts) and "01" (30 counts)
+        top = qaoa_problem.top_solutions(n=10, min_count=25)
+        assert len(top) == 2
+        assert top[0].bitstring == "00"
+        assert top[1].bitstring == "01"
+
+        # Filter with min_count=50 should keep only "00"
+        top = qaoa_problem.top_solutions(n=10, min_count=35)
+        assert len(top) == 1
+        assert top[0].bitstring == "00"
+
+    def test_top_solutions_min_prob_filter(self, mocker):
+        """Test filtering by min_prob."""
+        qaoa_problem = QAOA(
+            problem=nx.Graph([(0, 1), (1, 2)]),
+            graph_problem=GraphProblem.MAXCUT,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=1,
+            backend=None,
+        )
+
+        mock_dist = {"00": 0.4, "01": 0.3, "10": 0.2, "11": 0.1}
+        qaoa_problem._best_probs = {"0_NoMitigation:0_0": mock_dist}
+        qaoa_problem.backend = mocker.MagicMock()
+        qaoa_problem.backend.shots = 100
+
+        # Filter with min_prob=0.25 should keep only "00" and "01"
+        top = qaoa_problem.top_solutions(n=10, min_prob=0.25)
+        assert len(top) == 2
+        assert top[0].bitstring == "00"
+        assert top[1].bitstring == "01"
+
+    def test_backwards_compatibility_solution_matches_top_1(self, mocker):
+        """Test that .solution matches the state of top_solutions(1)[0]."""
+        G = nx.bull_graph()
+        qaoa_problem = QAOA(
+            graph_problem=GraphProblem.MAX_CLIQUE,
+            problem=G,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=1,
+            is_constrained=True,
+            backend=None,
+        )
+
+        # Simulate measurement results
+        qaoa_problem._best_probs = {
+            "0_NoMitigation:0_0": {"11001": 0.5, "00101": 0.3, "10010": 0.2}
+        }
+        qaoa_problem.backend = mocker.MagicMock()
+        qaoa_problem.backend.shots = 100
+
+        # Patch _run_solution_measurement to do nothing
+        mocker.patch.object(qaoa_problem, "_run_solution_measurement")
+
+        qaoa_problem._perform_final_computation()
+
+        # Get top solution
+        top = qaoa_problem.top_solutions(n=1)
+
+        # Verify solution matches top[0].state
+        assert len(top) == 1
+        assert qaoa_problem.solution == top[0].state
+
+    def test_top_solutions_decodes_graph_state_correctly(self, mocker):
+        """Test that top_solutions correctly decodes bitstrings to node lists for graph problems."""
+        G = nx.Graph([(0, 1), (1, 2), (2, 3)])
+        qaoa_problem = QAOA(
+            graph_problem=GraphProblem.MAXCUT,
+            problem=G,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=1,
+            backend=None,
+        )
+
+        # Bitstring "1010" should decode to nodes [0, 2]
+        mock_dist = {"1010": 0.5, "0101": 0.3, "1111": 0.2}
+        qaoa_problem._best_probs = {"0_NoMitigation:0_0": mock_dist}
+        qaoa_problem.backend = mocker.MagicMock()
+        qaoa_problem.backend.shots = 100
+
+        top = qaoa_problem.top_solutions(n=3)
+
+        assert len(top) == 3
+        assert top[0].bitstring == "1010"
+        assert top[0].state == [0, 2]
+        assert top[1].bitstring == "0101"
+        assert top[1].state == [1, 3]
+        assert top[2].bitstring == "1111"
+        assert top[2].state == [0, 1, 2, 3]
+
+    def test_top_solutions_decodes_qubo_state_correctly(self, mocker):
+        """Test that top_solutions correctly decodes bitstrings to arrays for QUBO problems."""
+        qubo = np.array([[1, 2], [2, 3]])
+        qaoa_problem = QAOA(
+            problem=qubo,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=1,
+            backend=None,
+        )
+
+        mock_dist = {"10": 0.6, "01": 0.4}
+        qaoa_problem._best_probs = {"0_NoMitigation:0_0": mock_dist}
+        qaoa_problem.backend = mocker.MagicMock()
+        qaoa_problem.backend.shots = 100
+
+        top = qaoa_problem.top_solutions(n=2)
+
+        assert len(top) == 2
+        assert top[0].bitstring == "10"
+        np.testing.assert_array_equal(top[0].state, np.array([1, 0]))
+        assert top[1].bitstring == "01"
+        np.testing.assert_array_equal(top[1].state, np.array([0, 1]))
+
+    def test_top_solutions_with_string_node_labels(self, mocker):
+        """Test that top_solutions works with string node labels."""
+        G = nx.Graph()
+        G.add_nodes_from(["a", "b", "c"])
+        G.add_edges_from([("a", "b"), ("b", "c")])
+
+        qaoa_problem = QAOA(
+            problem=G,
+            graph_problem=GraphProblem.MAXCUT,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=1,
+            backend=None,
+        )
+
+        mock_dist = {"101": 0.6, "010": 0.4}
+        qaoa_problem._best_probs = {"0_NoMitigation:0_0": mock_dist}
+        qaoa_problem.backend = mocker.MagicMock()
+        qaoa_problem.backend.shots = 100
+
+        top = qaoa_problem.top_solutions(n=2)
+
+        assert len(top) == 2
+        assert top[0].bitstring == "101"
+        # Verify all nodes in state are strings and valid graph nodes
+        assert all(isinstance(node, str) for node in top[0].state)
+        assert all(node in G.nodes() for node in top[0].state)
+
+    @pytest.mark.e2e
+    def test_top_solutions_integration(self, default_test_simulator):
+        """Integration test with actual QAOA execution."""
+        G = nx.bull_graph()
+        default_test_simulator.set_seed(1997)
+
+        qaoa_problem = QAOA(
+            graph_problem=GraphProblem.MAX_CLIQUE,
+            problem=G,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+            max_iterations=5,
+            is_constrained=True,
+            backend=default_test_simulator,
+            seed=1997,
+        )
+
+        qaoa_problem.run()
+
+        # Test solution_distribution
+        dist = qaoa_problem.solution_distribution
+        assert isinstance(dist, dict)
+        assert len(dist) > 0
+        assert all(isinstance(k, str) for k in dist.keys())
+        assert all(isinstance(v, float) for v in dist.values())
+        assert sum(dist.values()) == pytest.approx(1.0, rel=0.01)
+
+        # Test top_solutions
+        top5 = qaoa_problem.top_solutions(n=5)
+        assert len(top5) <= 5
+        assert len(top5) > 0
+
+        # Verify ordering (descending by count)
+        for i in range(len(top5) - 1):
+            assert top5[i].count >= top5[i + 1].count
+
+        # Verify solution matches top 1
+        assert qaoa_problem.solution == top5[0].state
+
+        # Verify all bitstrings have correct length
+        for entry in top5:
+            assert len(entry.bitstring) == G.number_of_nodes()
+
+        # Verify state decoding is consistent
+        for entry in top5:
+            assert all(node in G.nodes() for node in entry.state)

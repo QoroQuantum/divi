@@ -10,5 +10,11 @@ from ._ansatze import (
     QAOAAnsatz,
     UCCSDAnsatz,
 )
-from ._qaoa import QAOA, GraphProblem, GraphProblemTypes, QUBOProblemTypes
+from ._qaoa import (
+    QAOA,
+    GraphProblem,
+    GraphProblemTypes,
+    QUBOProblemTypes,
+    SolutionEntry,
+)
 from ._vqe import VQE
