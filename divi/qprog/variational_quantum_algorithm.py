@@ -5,6 +5,7 @@
 import logging
 import pickle
 from abc import abstractmethod
+from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
 from itertools import groupby
@@ -48,6 +49,34 @@ from divi.qprog.optimizers import (
 from divi.qprog.quantum_program import QuantumProgram
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SolutionEntry:
+    """Container for a single solution with its probability and optional decoded value.
+
+    This dataclass represents one entry from a probability distribution obtained
+    after measuring a quantum circuit. It pairs a bitstring (computational basis state)
+    with its measured probability, and optionally includes a decoded representation
+    of the solution for the specific problem domain.
+
+    Attributes:
+        bitstring (str): Binary string representing a computational basis state.
+            Example: "0101" for a 4-qubit state.
+        prob (float): Measured probability for this bitstring, in range [0.0, 1.0].
+        decoded (Any | None): Optional problem-specific decoded representation.
+            For example, could be a list of node indices for graph problems,
+            or a numpy array for QUBO problems. Defaults to None.
+
+    Example:
+        >>> entry = SolutionEntry(bitstring="101", prob=0.42, decoded=[0, 2])
+        >>> print(f"{entry.bitstring}: {entry.prob:.2%}")
+        101: 42.00%
+    """
+
+    bitstring: str
+    prob: float
+    decoded: Any | None = None
 
 
 class SubclassState(BaseModel):
@@ -465,6 +494,194 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 stacklevel=2,
             )
         return self._best_probs.copy()
+
+    @property
+    def best_probabilities(self) -> dict[str, float]:
+        """Get normalized probabilities for the best parameters.
+
+        This property provides access to the probability distribution computed
+        by running measurement circuits with the best parameters found during
+        optimization. The distribution maps bitstrings (computational basis states)
+        to their measured probabilities.
+
+        The probabilities are normalized and have deterministic ordering when
+        iterated (dictionary insertion order is preserved in Python 3.7+).
+
+        Returns:
+            dict[str, float]: Dictionary mapping bitstrings to probabilities.
+                Keys are binary strings (e.g., "0101"), values are probabilities
+                in the range [0.0, 1.0]. Returns an empty dict if final computation
+                has not been performed.
+
+        Raises:
+            RuntimeError: If attempting to access probabilities before running
+                the algorithm with final computation enabled.
+
+        Note:
+            This is an alias for `best_probs` that provides clearer semantics
+            and guarantees about the returned data. To populate this distribution,
+            you must run the algorithm with `perform_final_computation=True` (the default):
+
+            >>> program.run(perform_final_computation=True)
+            >>> probs = program.best_probabilities
+
+        Example:
+            >>> program.run()
+            >>> probs = program.best_probabilities
+            >>> for bitstring, prob in probs.items():
+            ...     print(f"{bitstring}: {prob:.2%}")
+            0101: 42.50%
+            1010: 31.20%
+            ...
+        """
+        return self.best_probs
+
+    def _require_best_probs(self) -> dict[str, float]:
+        """Validate and return the probability distribution.
+
+        This is a helper method used internally to ensure that a valid probability
+        distribution exists before accessing it. Unlike the public `best_probabilities`
+        property, this method raises an exception instead of warning when the
+        distribution is not available.
+
+        Returns:
+            dict[str, float]: The internal probability distribution (not a copy).
+
+        Raises:
+            RuntimeError: If the probability distribution is empty because
+                optimization has not been run or final computation was not performed.
+        """
+        if not self._best_probs:
+            raise RuntimeError(
+                "No probability distribution available. The final computation step "
+                "must be performed to compute the probability distribution. "
+                "Call run(perform_final_computation=True) to execute optimization "
+                "and compute the distribution."
+            )
+        return self._best_probs
+
+    def _decode_solution_bitstring(self, bitstring: str) -> Any:
+        """Decode a bitstring into a problem-specific solution representation.
+
+        This is a hook method that subclasses can override to provide custom
+        decoding of bitstrings to domain-specific solution formats. The default
+        implementation returns the bitstring unchanged.
+
+        Args:
+            bitstring (str): Binary string representing a computational basis state.
+                Example: "0101" for a 4-qubit state.
+
+        Returns:
+            Any: Problem-specific decoded solution. The default implementation
+                returns the bitstring as-is. Subclasses may return other types
+                such as lists, numpy arrays, or custom objects.
+
+        Example (in a subclass):
+            >>> def _decode_solution_bitstring(self, bitstring: str) -> list[int]:
+            ...     # For a graph problem, return node indices where bit is '1'
+            ...     return [i for i, bit in enumerate(bitstring) if bit == '1']
+        """
+        return bitstring
+
+    def top_solutions(
+        self,
+        n: int = 10,
+        *,
+        min_prob: float = 0.0,
+        include_decoded: bool = False,
+    ) -> list[SolutionEntry]:
+        """Return the top-N solutions sorted by probability.
+
+        This method extracts the most probable solutions from the measured
+        probability distribution. Solutions are sorted by probability (descending)
+        with deterministic tie-breaking using lexicographic ordering of bitstrings.
+
+        Args:
+            n (int): Maximum number of solutions to return. Must be non-negative.
+                If n is 0 or negative, returns an empty list. If n exceeds the
+                number of available solutions (after filtering), returns all
+                available solutions. Defaults to 10.
+            min_prob (float): Minimum probability threshold for including solutions.
+                Only solutions with probability >= min_prob will be included.
+                Must be in range [0.0, 1.0]. Defaults to 0.0 (no filtering).
+            include_decoded (bool): Whether to populate the `decoded` field of
+                each SolutionEntry by calling `_decode_solution_bitstring()`.
+                If False, the decoded field will be None. Defaults to False.
+
+        Returns:
+            list[SolutionEntry]: List of solution entries sorted by probability
+                (descending), then by bitstring (lexicographically ascending)
+                for deterministic tie-breaking. Returns an empty list if no
+                probability distribution is available or n <= 0.
+
+        Raises:
+            RuntimeError: If probability distribution is not available because
+                optimization has not been run or final computation was not performed.
+            ValueError: If min_prob is not in range [0.0, 1.0] or n is negative.
+
+        Note:
+            The probability distribution must be computed by running the algorithm
+            with `perform_final_computation=True` (the default):
+
+            >>> program.run(perform_final_computation=True)
+            >>> top_10 = program.top_solutions(n=10)
+
+        Example:
+            >>> # Get top 5 solutions with probability >= 5%
+            >>> program.run()
+            >>> solutions = program.top_solutions(n=5, min_prob=0.05)
+            >>> for sol in solutions:
+            ...     print(f"{sol.bitstring}: {sol.prob:.2%}")
+            1010: 42.50%
+            0101: 31.20%
+            1100: 15.30%
+            0011: 8.50%
+            1111: 2.50%
+
+            >>> # Get solutions with decoding
+            >>> solutions = program.top_solutions(n=3, include_decoded=True)
+            >>> for sol in solutions:
+            ...     print(f"{sol.bitstring} -> {sol.decoded}")
+            1010 -> [0, 2]
+            0101 -> [1, 3]
+            ...
+        """
+        # Validate inputs
+        if n < 0:
+            raise ValueError(f"n must be non-negative, got {n}")
+        if not (0.0 <= min_prob <= 1.0):
+            raise ValueError(f"min_prob must be in range [0.0, 1.0], got {min_prob}")
+
+        # Handle edge case: n == 0
+        if n == 0:
+            return []
+
+        # Require probability distribution to exist
+        probs_dict = self._require_best_probs()
+
+        # Filter by minimum probability
+        filtered_items = [
+            (bitstring, prob)
+            for bitstring, prob in probs_dict.items()
+            if prob >= min_prob
+        ]
+
+        # Sort by probability (descending), then bitstring (ascending) for deterministic tie-breaking
+        sorted_items = sorted(
+            filtered_items,
+            key=lambda item: (-item[1], item[0])  # negative prob for descending
+        )
+
+        # Take top n
+        top_items = sorted_items[:n]
+
+        # Build result list
+        result = []
+        for bitstring, prob in top_items:
+            decoded = self._decode_solution_bitstring(bitstring) if include_decoded else None
+            result.append(SolutionEntry(bitstring=bitstring, prob=prob, decoded=decoded))
+
+        return result
 
     @property
     def curr_params(self) -> npt.NDArray[np.float64]:
