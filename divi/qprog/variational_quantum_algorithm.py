@@ -1,17 +1,17 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import heapq
 import logging
 import pickle
 from abc import abstractmethod
-from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
 from itertools import groupby
 from pathlib import Path
 from queue import Queue
-from typing import Any
+from typing import Any, NamedTuple
 from warnings import warn
 
 import numpy as np
@@ -51,27 +51,13 @@ from divi.qprog.quantum_program import QuantumProgram
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class SolutionEntry:
-    """Container for a single solution with its probability and optional decoded value.
+class SolutionEntry(NamedTuple):
+    """A solution entry with bitstring, probability, and optional decoded value.
 
-    This dataclass represents one entry from a probability distribution obtained
-    after measuring a quantum circuit. It pairs a bitstring (computational basis state)
-    with its measured probability, and optionally includes a decoded representation
-    of the solution for the specific problem domain.
-
-    Attributes:
-        bitstring (str): Binary string representing a computational basis state.
-            Example: "0101" for a 4-qubit state.
-        prob (float): Measured probability for this bitstring, in range [0.0, 1.0].
-        decoded (Any | None): Optional problem-specific decoded representation.
-            For example, could be a list of node indices for graph problems,
-            or a numpy array for QUBO problems. Defaults to None.
-
-    Example:
-        >>> entry = SolutionEntry(bitstring="101", prob=0.42, decoded=[0, 2])
-        >>> print(f"{entry.bitstring}: {entry.prob:.2%}")
-        101: 42.00%
+    Args:
+        bitstring: Binary string representing a computational basis state.
+        prob: Measured probability in range [0.0, 1.0].
+        decoded: Optional problem-specific decoded representation. Defaults to None.
     """
 
     bitstring: str
@@ -278,6 +264,12 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 QASM sizes manageable. Consider reducing precision if you need to minimize
                 data transfer overhead, or increase it only if you require higher numerical
                 precision in your circuit parameters.
+            decode_solution_fn (callable[[str], Any] | None): Function to decode bitstrings
+                into problem-specific solution representations. Called during final computation
+                and when `get_top_solutions(include_decoded=True)` is used. The function should
+                take a binary string (e.g., "0101") and return a decoded representation
+                (e.g., a list of indices, numpy array, or custom object). Defaults to
+                `lambda bitstring: bitstring` (identity function).
         """
 
         super().__init__(
@@ -319,6 +311,11 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         self._qem_protocol = kwargs.pop("qem_protocol", None) or _NoMitigation()
         self._precision = kwargs.pop("precision", 8)
+
+        # --- Solution Decoding ---
+        self._decode_solution_fn = kwargs.pop(
+            "decode_solution_fn", lambda bitstring: bitstring
+        )
 
         # --- Circuit Factory & Templates ---
         self._meta_circuits = None
@@ -480,23 +477,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         return self._best_loss
 
     @property
-    def best_probs(self):
-        """Get a copy of the probability distribution for the best parameters.
-
-        Returns:
-            dict: A copy of the best probability distribution.
-        """
-        if not self._best_probs:
-            warn(
-                "best_probs is empty. Either optimization has not been run yet, "
-                "or final computation was not performed. Call run() to execute the optimization.",
-                UserWarning,
-                stacklevel=2,
-            )
-        return self._best_probs.copy()
-
-    @property
-    def best_probabilities(self) -> dict[str, float]:
+    def best_probs(self) -> dict[str, float]:
         """Get normalized probabilities for the best parameters.
 
         This property provides access to the probability distribution computed
@@ -518,79 +499,34 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 the algorithm with final computation enabled.
 
         Note:
-            This is an alias for `best_probs` that provides clearer semantics
-            and guarantees about the returned data. To populate this distribution,
-            you must run the algorithm with `perform_final_computation=True` (the default):
+            To populate this distribution, you must run the algorithm with
+            `perform_final_computation=True` (the default):
 
             >>> program.run(perform_final_computation=True)
-            >>> probs = program.best_probabilities
+            >>> probs = program.best_probs
 
         Example:
             >>> program.run()
-            >>> probs = program.best_probabilities
+            >>> probs = program.best_probs
             >>> for bitstring, prob in probs.items():
             ...     print(f"{bitstring}: {prob:.2%}")
             0101: 42.50%
             1010: 31.20%
             ...
         """
-        return self.best_probs
-
-    def _require_best_probs(self) -> dict[str, float]:
-        """Validate and return the probability distribution.
-
-        This is a helper method used internally to ensure that a valid probability
-        distribution exists before accessing it. Unlike the public `best_probabilities`
-        property, this method raises an exception instead of warning when the
-        distribution is not available.
-
-        Returns:
-            dict[str, float]: The internal probability distribution (not a copy).
-
-        Raises:
-            RuntimeError: If the probability distribution is empty because
-                optimization has not been run or final computation was not performed.
-        """
         if not self._best_probs:
-            raise RuntimeError(
-                "No probability distribution available. The final computation step "
-                "must be performed to compute the probability distribution. "
-                "Call run(perform_final_computation=True) to execute optimization "
-                "and compute the distribution."
+            warn(
+                "best_probs is empty. Either optimization has not been run yet, "
+                "or final computation was not performed. Call run() to execute the optimization.",
+                UserWarning,
+                stacklevel=2,
             )
-        return self._best_probs
+        return self._best_probs.copy()
 
-    def _decode_solution_bitstring(self, bitstring: str) -> Any:
-        """Decode a bitstring into a problem-specific solution representation.
-
-        This is a hook method that subclasses can override to provide custom
-        decoding of bitstrings to domain-specific solution formats. The default
-        implementation returns the bitstring unchanged.
-
-        Args:
-            bitstring (str): Binary string representing a computational basis state.
-                Example: "0101" for a 4-qubit state.
-
-        Returns:
-            Any: Problem-specific decoded solution. The default implementation
-                returns the bitstring as-is. Subclasses may return other types
-                such as lists, numpy arrays, or custom objects.
-
-        Example (in a subclass):
-            >>> def _decode_solution_bitstring(self, bitstring: str) -> list[int]:
-            ...     # For a graph problem, return node indices where bit is '1'
-            ...     return [i for i, bit in enumerate(bitstring) if bit == '1']
-        """
-        return bitstring
-
-    def top_solutions(
-        self,
-        n: int = 10,
-        *,
-        min_prob: float = 0.0,
-        include_decoded: bool = False,
+    def get_top_solutions(
+        self, n: int = 10, *, min_prob: float = 0.0, include_decoded: bool = False
     ) -> list[SolutionEntry]:
-        """Return the top-N solutions sorted by probability.
+        """Get the top-N solutions sorted by probability.
 
         This method extracts the most probable solutions from the measured
         probability distribution. Solutions are sorted by probability (descending)
@@ -605,8 +541,9 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 Only solutions with probability >= min_prob will be included.
                 Must be in range [0.0, 1.0]. Defaults to 0.0 (no filtering).
             include_decoded (bool): Whether to populate the `decoded` field of
-                each SolutionEntry by calling `_decode_solution_bitstring()`.
-                If False, the decoded field will be None. Defaults to False.
+                each SolutionEntry by calling the `decode_solution_fn` provided
+                in the constructor. If False, the decoded field will be None.
+                Defaults to False.
 
         Returns:
             list[SolutionEntry]: List of solution entries sorted by probability
@@ -624,12 +561,12 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             with `perform_final_computation=True` (the default):
 
             >>> program.run(perform_final_computation=True)
-            >>> top_10 = program.top_solutions(n=10)
+            >>> top_10 = program.get_top_solutions(n=10)
 
         Example:
             >>> # Get top 5 solutions with probability >= 5%
             >>> program.run()
-            >>> solutions = program.top_solutions(n=5, min_prob=0.05)
+            >>> solutions = program.get_top_solutions(n=5, min_prob=0.05)
             >>> for sol in solutions:
             ...     print(f"{sol.bitstring}: {sol.prob:.2%}")
             1010: 42.50%
@@ -639,7 +576,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             1111: 2.50%
 
             >>> # Get solutions with decoding
-            >>> solutions = program.top_solutions(n=3, include_decoded=True)
+            >>> solutions = program.get_top_solutions(n=3, include_decoded=True)
             >>> for sol in solutions:
             ...     print(f"{sol.bitstring} -> {sol.decoded}")
             1010 -> [0, 2]
@@ -657,31 +594,43 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             return []
 
         # Require probability distribution to exist
-        probs_dict = self._require_best_probs()
+        if not self._best_probs:
+            raise RuntimeError(
+                "No probability distribution available. The final computation step "
+                "must be performed to compute the probability distribution. "
+                "Call run(perform_final_computation=True) to execute optimization "
+                "and compute the distribution."
+            )
+        # Extract the probability distribution (nested by parameter set)
+        # _best_probs structure: {tag: {bitstring: prob}}
+        probs_dict = next(iter(self._best_probs.values()))
 
-        # Filter by minimum probability
-        filtered_items = [
-            (bitstring, prob)
-            for bitstring, prob in probs_dict.items()
-            if prob >= min_prob
-        ]
-
-        # Sort by probability (descending), then bitstring (ascending) for deterministic tie-breaking
-        sorted_items = sorted(
-            filtered_items,
-            key=lambda item: (-item[1], item[0])  # negative prob for descending
+        # Filter by minimum probability and get top n sorted by probability (descending),
+        # then bitstring (ascending) for deterministic tie-breaking
+        top_items = heapq.nsmallest(
+            n,
+            filter(
+                lambda bitstring_prob: bitstring_prob[1] >= min_prob, probs_dict.items()
+            ),
+            key=lambda bitstring_prob: (-bitstring_prob[1], bitstring_prob[0]),
         )
 
-        # Take top n
-        top_items = sorted_items[:n]
+        # Decode items if needed
+        decoded_values = map(
+            lambda item: self._decode_solution_fn(item[0]) if include_decoded else None,
+            top_items,
+        )
 
         # Build result list
-        result = []
-        for bitstring, prob in top_items:
-            decoded = self._decode_solution_bitstring(bitstring) if include_decoded else None
-            result.append(SolutionEntry(bitstring=bitstring, prob=prob, decoded=decoded))
-
-        return result
+        return list(
+            map(
+                lambda item, decoded: SolutionEntry(
+                    bitstring=item[0], prob=item[1], decoded=decoded
+                ),
+                top_items,
+                decoded_values,
+            )
+        )
 
     @property
     def curr_params(self) -> npt.NDArray[np.float64]:

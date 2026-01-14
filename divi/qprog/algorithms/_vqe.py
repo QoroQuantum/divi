@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -204,7 +204,20 @@ class VQE(VariationalQuantumAlgorithm):
         ]
 
     def _perform_final_computation(self, **kwargs):
-        """Extract the eigenstate corresponding to the lowest energy found."""
+        """Extract the eigenstate corresponding to the lowest energy found.
+
+        This method performs the following steps:
+        1. Executes measurement circuits with the best parameters (those that achieved the lowest loss).
+        2. Retrieves the bitstring representing the eigenstate with the highest probability,
+           correcting for endianness.
+        3. Converts the bitstring to a NumPy array of integers (int32) representing the eigenstate.
+        4. Stores the eigenstate in the `_eigenstate` attribute.
+
+        Returns:
+            tuple[int, float]: A tuple containing:
+                - int: The total number of circuits executed.
+                - float: The total runtime of the optimization process.
+        """
         self.reporter.info(message="🏁 Computing Final Eigenstate 🏁", overwrite=True)
 
         self._run_solution_measurement()

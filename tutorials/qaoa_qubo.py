@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -56,7 +56,24 @@ if __name__ == "__main__":
         dimod.ExactSolver().sample(bqm).lowest().record[0]
     )
 
-    print(f"Classical Solution: {best_classical_bitstring}")
+    print(f"\nClassical Solution: {best_classical_bitstring}")
     print(f"Classical Energy: {best_classical_energy:.9f}")
-    print(f"Quantum Solution: {qaoa_problem.solution}")
-    print(f"Quantum Energy: {bqm.energy(qaoa_problem.solution):.9f}")
+    quantum_solution = qaoa_problem.solution
+    quantum_solution_bitstring = "".join(str(bit) for bit in quantum_solution)
+    print(f"\nQuantum Solution: {quantum_solution}")
+    print(f"Quantum Energy: {bqm.energy(quantum_solution):.9f}")
+
+    # Demonstrate top-N solutions functionality
+    print("\n" + "=" * 60)
+    print("Top 5 Solutions by Probability:")
+    print("=" * 60)
+    top_solutions = qaoa_problem.get_top_solutions(n=5)
+    for i, sol in enumerate(top_solutions, 1):
+        # Convert bitstring to numpy array for energy calculation
+        solution_array = np.array([int(bit) for bit in sol.bitstring])
+        energy = bqm.energy(solution_array)
+        print(
+            f"{i}. Bitstring: {sol.bitstring} | "
+            f"Probability: {sol.prob:0.2%} | "
+            f"Energy: {energy:.4f}"
+        )

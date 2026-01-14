@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -497,6 +497,15 @@ class BaseVariationalQuantumAlgorithmTest:
             kwargs["optimizer"] = self._create_mock_optimizer(mocker, n_param_sets=1)
         return SampleVQAProgram(circ_count=1, run_time=0.1, **kwargs)
 
+    def _setup_program_with_probs(self, mocker, probs_dict: dict[str, float], **kwargs):
+        """Helper to create a program with a synthetic probability distribution."""
+        program = self._create_program_with_mock_optimizer(mocker, **kwargs)
+        # Wrap in nested structure: {tag: {bitstring: prob}} to match production
+        program._best_probs = {"0_NoMitigation:0_0": probs_dict}
+        # Mark as having run optimization to avoid warnings
+        program._losses_history = [{0: -1.0}]
+        return program
+
 
 class TestParametersBehavior(BaseVariationalQuantumAlgorithmTest):
     """Test suite for parameters functionality."""
@@ -862,6 +871,22 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         # Should return new lists (not the same object)
         assert min_losses1 == min_losses2
         assert min_losses1 is not min_losses2
+
+    def test_best_probs_returns_copy(self, mocker):
+        """Test that best_probs returns a copy, not a reference."""
+        program = self._setup_program_with_probs(mocker, {"00": 0.5, "01": 0.5})
+
+        result = program.best_probs
+        # best_probs returns a shallow copy of the nested structure
+        # Modifying the outer dict keys doesn't affect original
+        original_keys = list(program._best_probs.keys())
+        result["new_tag"] = {"11": 1.0}  # Add new key to returned dict
+
+        # Original keys should be unchanged
+        assert list(program._best_probs.keys()) == original_keys
+        # But modifying nested dicts will affect original (shallow copy)
+        # So we test that the outer dict is copied, not the inner dicts
+        assert "new_tag" not in program._best_probs
 
 
 class TestCheckpointing:
@@ -1253,40 +1278,10 @@ class TestPropertyWarnings(BaseVariationalQuantumAlgorithmTest):
 
 
 class TestTopSolutionsAPI(BaseVariationalQuantumAlgorithmTest):
-    """Test suite for top_solutions() and best_probabilities API."""
+    """Test suite for get_top_solutions() and best_probs API."""
 
-    def _setup_program_with_probs(self, mocker, probs_dict: dict[str, float]):
-        """Helper to create a program with a synthetic probability distribution."""
-        program = self._create_program_with_mock_optimizer(mocker)
-        program._best_probs = probs_dict
-        # Mark as having run optimization to avoid warnings
-        program._losses_history = [{0: -1.0}]
-        return program
-
-    def test_best_probabilities_alias_for_best_probs(self, mocker):
-        """Test that best_probabilities is an alias for best_probs."""
-        probs = {"00": 0.5, "01": 0.3, "10": 0.2}
-        program = self._setup_program_with_probs(mocker, probs)
-
-        result1 = program.best_probabilities
-        result2 = program.best_probs
-
-        assert result1 == result2
-        assert result1 == probs
-
-    def test_best_probabilities_returns_copy(self, mocker):
-        """Test that best_probabilities returns a copy, not a reference."""
-        probs = {"00": 0.5, "01": 0.5}
-        program = self._setup_program_with_probs(mocker, probs)
-
-        result = program.best_probabilities
-        result["00"] = 0.99  # Modify the returned dict
-
-        # Original should be unchanged
-        assert program._best_probs["00"] == 0.5
-
-    def test_require_best_probs_raises_when_empty(self, mocker):
-        """Test that _require_best_probs raises RuntimeError when distribution is empty."""
+    def test_get_top_solutions_raises_when_no_probs(self, mocker):
+        """Test that get_top_solutions raises RuntimeError when distribution is empty."""
         program = self._create_program_with_mock_optimizer(mocker)
         program._best_probs = {}
 
@@ -1294,29 +1289,18 @@ class TestTopSolutionsAPI(BaseVariationalQuantumAlgorithmTest):
             RuntimeError,
             match="No probability distribution available.*perform_final_computation=True",
         ):
-            program._require_best_probs()
+            program.get_top_solutions(n=5)
 
-    def test_require_best_probs_returns_dict_when_available(self, mocker):
-        """Test that _require_best_probs returns the internal dict when available."""
-        probs = {"00": 0.7, "11": 0.3}
-        program = self._setup_program_with_probs(mocker, probs)
-
-        result = program._require_best_probs()
-
-        # Should return the same object (not a copy)
-        assert result is program._best_probs
-        assert result == probs
-
-    def test_decode_solution_bitstring_default_returns_identity(self, mocker):
-        """Test that default _decode_solution_bitstring returns bitstring unchanged."""
+    def test_decode_solution_fn_default_returns_identity(self, mocker):
+        """Test that default decode_solution_fn returns bitstring unchanged."""
         program = self._create_program_with_mock_optimizer(mocker)
 
-        result = program._decode_solution_bitstring("1010")
+        result = program._decode_solution_fn("1010")
 
         assert result == "1010"
 
-    def test_top_solutions_basic_sorting(self, mocker):
-        """Test that top_solutions sorts by probability descending."""
+    def test_get_top_solutions_basic_sorting(self, mocker):
+        """Test that get_top_solutions sorts by probability descending."""
         probs = {
             "00": 0.1,
             "01": 0.5,
@@ -1325,7 +1309,7 @@ class TestTopSolutionsAPI(BaseVariationalQuantumAlgorithmTest):
         }
         program = self._setup_program_with_probs(mocker, probs)
 
-        result = program.top_solutions(n=3)
+        result = program.get_top_solutions(n=3)
 
         assert len(result) == 3
         assert result[0].bitstring == "01"
@@ -1336,8 +1320,8 @@ class TestTopSolutionsAPI(BaseVariationalQuantumAlgorithmTest):
         assert result[2].bitstring == "00"
         assert result[2].prob == 0.1
 
-    def test_top_solutions_deterministic_tie_breaking(self, mocker):
-        """Test that top_solutions uses lexicographic tie-breaking for equal probabilities."""
+    def test_get_top_solutions_deterministic_tie_breaking(self, mocker):
+        """Test that get_top_solutions uses lexicographic tie-breaking for equal probabilities."""
         probs = {
             "111": 0.3,
             "000": 0.3,
@@ -1346,7 +1330,7 @@ class TestTopSolutionsAPI(BaseVariationalQuantumAlgorithmTest):
         }
         program = self._setup_program_with_probs(mocker, probs)
 
-        result = program.top_solutions(n=4)
+        result = program.get_top_solutions(n=4)
 
         assert len(result) == 4
         # Tied at 0.3: "000" < "111" lexicographically
@@ -1360,12 +1344,12 @@ class TestTopSolutionsAPI(BaseVariationalQuantumAlgorithmTest):
         assert result[3].bitstring == "101"
         assert result[3].prob == 0.2
 
-    def test_top_solutions_respects_n_parameter(self, mocker):
-        """Test that top_solutions returns at most n solutions."""
+    def test_get_top_solutions_respects_n_parameter(self, mocker):
+        """Test that get_top_solutions returns at most n solutions."""
         probs = {f"{i:03b}": 0.1 for i in range(8)}  # 8 solutions with equal prob
         program = self._setup_program_with_probs(mocker, probs)
 
-        result = program.top_solutions(n=3)
+        result = program.get_top_solutions(n=3)
 
         assert len(result) == 3
         # Should return first 3 in lexicographic order (tie-breaking)
@@ -1373,34 +1357,34 @@ class TestTopSolutionsAPI(BaseVariationalQuantumAlgorithmTest):
         assert result[1].bitstring == "001"
         assert result[2].bitstring == "010"
 
-    def test_top_solutions_n_exceeds_available(self, mocker):
-        """Test that top_solutions returns all solutions when n exceeds count."""
+    def test_get_top_solutions_n_exceeds_available(self, mocker):
+        """Test that get_top_solutions returns all solutions when n exceeds count."""
         probs = {"00": 0.6, "01": 0.4}
         program = self._setup_program_with_probs(mocker, probs)
 
-        result = program.top_solutions(n=100)
+        result = program.get_top_solutions(n=100)
 
         assert len(result) == 2  # Only 2 available
 
-    def test_top_solutions_n_zero_returns_empty(self, mocker):
-        """Test that top_solutions returns empty list when n=0."""
+    def test_get_top_solutions_n_zero_returns_empty(self, mocker):
+        """Test that get_top_solutions returns empty list when n=0."""
         probs = {"00": 0.5, "11": 0.5}
         program = self._setup_program_with_probs(mocker, probs)
 
-        result = program.top_solutions(n=0)
+        result = program.get_top_solutions(n=0)
 
         assert result == []
 
-    def test_top_solutions_n_negative_raises_error(self, mocker):
-        """Test that top_solutions raises ValueError for negative n."""
+    def test_get_top_solutions_n_negative_raises_error(self, mocker):
+        """Test that get_top_solutions raises ValueError for negative n."""
         probs = {"00": 1.0}
         program = self._setup_program_with_probs(mocker, probs)
 
         with pytest.raises(ValueError, match="n must be non-negative"):
-            program.top_solutions(n=-1)
+            program.get_top_solutions(n=-1)
 
-    def test_top_solutions_min_prob_filtering(self, mocker):
-        """Test that top_solutions filters by min_prob threshold."""
+    def test_get_top_solutions_min_prob_filtering(self, mocker):
+        """Test that get_top_solutions filters by min_prob threshold."""
         probs = {
             "00": 0.5,
             "01": 0.3,
@@ -1409,73 +1393,61 @@ class TestTopSolutionsAPI(BaseVariationalQuantumAlgorithmTest):
         }
         program = self._setup_program_with_probs(mocker, probs)
 
-        result = program.top_solutions(n=10, min_prob=0.2)
+        result = program.get_top_solutions(n=10, min_prob=0.2)
 
         # Only "00" (0.5) and "01" (0.3) should pass the threshold
         assert len(result) == 2
         assert result[0].bitstring == "00"
         assert result[1].bitstring == "01"
 
-    def test_top_solutions_min_prob_invalid_raises_error(self, mocker):
-        """Test that top_solutions raises ValueError for invalid min_prob."""
+    def test_get_top_solutions_min_prob_invalid_raises_error(self, mocker):
+        """Test that get_top_solutions raises ValueError for invalid min_prob."""
         probs = {"00": 1.0}
         program = self._setup_program_with_probs(mocker, probs)
 
         with pytest.raises(ValueError, match="min_prob must be in range"):
-            program.top_solutions(min_prob=-0.1)
+            program.get_top_solutions(min_prob=-0.1)
 
         with pytest.raises(ValueError, match="min_prob must be in range"):
-            program.top_solutions(min_prob=1.5)
+            program.get_top_solutions(min_prob=1.5)
 
-    def test_top_solutions_include_decoded_false(self, mocker):
-        """Test that top_solutions with include_decoded=False sets decoded to None."""
+    def test_get_top_solutions_include_decoded_false(self, mocker):
+        """Test that get_top_solutions with include_decoded=False sets decoded to None."""
         probs = {"00": 0.6, "11": 0.4}
         program = self._setup_program_with_probs(mocker, probs)
 
-        result = program.top_solutions(n=2, include_decoded=False)
+        result = program.get_top_solutions(n=2, include_decoded=False)
 
         assert len(result) == 2
         assert result[0].decoded is None
         assert result[1].decoded is None
 
-    def test_top_solutions_include_decoded_true_calls_decode(self, mocker):
-        """Test that top_solutions with include_decoded=True calls _decode_solution_bitstring."""
+    def test_get_top_solutions_include_decoded_true_calls_decode(self, mocker):
+        """Test that get_top_solutions with include_decoded=True uses decode_solution_fn."""
         probs = {"00": 0.6, "11": 0.4}
-        program = self._setup_program_with_probs(mocker, probs)
 
-        # Mock the decode method to return a custom value
+        # Create a custom decode function
         def mock_decode(bitstring):
             return f"decoded_{bitstring}"
 
-        mocker.patch.object(program, "_decode_solution_bitstring", side_effect=mock_decode)
+        program = self._setup_program_with_probs(
+            mocker, probs, decode_solution_fn=mock_decode
+        )
 
-        result = program.top_solutions(n=2, include_decoded=True)
+        result = program.get_top_solutions(n=2, include_decoded=True)
 
         assert len(result) == 2
         assert result[0].decoded == "decoded_00"
         assert result[1].decoded == "decoded_11"
-        # Verify decode was called for each bitstring
-        assert program._decode_solution_bitstring.call_count == 2
 
-    def test_top_solutions_no_probs_raises_runtime_error(self, mocker):
-        """Test that top_solutions raises RuntimeError when no probability distribution exists."""
-        program = self._create_program_with_mock_optimizer(mocker)
-        program._best_probs = {}
-
-        with pytest.raises(
-            RuntimeError,
-            match="No probability distribution available",
-        ):
-            program.top_solutions(n=5)
-
-    def test_top_solutions_returns_solution_entry_instances(self, mocker):
-        """Test that top_solutions returns SolutionEntry dataclass instances."""
+    def test_get_top_solutions_returns_solution_entry_instances(self, mocker):
+        """Test that get_top_solutions returns SolutionEntry namedtuple instances."""
         from divi.qprog.variational_quantum_algorithm import SolutionEntry
 
         probs = {"00": 0.6, "11": 0.4}
         program = self._setup_program_with_probs(mocker, probs)
 
-        result = program.top_solutions(n=2)
+        result = program.get_top_solutions(n=2)
 
         assert len(result) == 2
         assert isinstance(result[0], SolutionEntry)
@@ -1483,22 +1455,22 @@ class TestTopSolutionsAPI(BaseVariationalQuantumAlgorithmTest):
         assert result[0].bitstring == "00"
         assert result[0].prob == 0.6
 
-    def test_top_solutions_solution_entry_is_frozen(self, mocker):
+    def test_get_top_solutions_solution_entry_is_frozen(self, mocker):
         """Test that SolutionEntry is frozen (immutable)."""
-        from divi.qprog.variational_quantum_algorithm import SolutionEntry
+        pass
 
         probs = {"00": 1.0}
         program = self._setup_program_with_probs(mocker, probs)
 
-        result = program.top_solutions(n=1)
+        result = program.get_top_solutions(n=1)
         entry = result[0]
 
-        # Attempting to modify frozen dataclass should raise
+        # Attempting to modify immutable namedtuple should raise
         with pytest.raises((AttributeError, TypeError)):
             entry.bitstring = "11"
 
-    def test_top_solutions_combined_filters(self, mocker):
-        """Test top_solutions with both n and min_prob filters."""
+    def test_get_top_solutions_combined_filters(self, mocker):
+        """Test get_top_solutions with both n and min_prob filters."""
         probs = {
             "0000": 0.4,
             "0001": 0.25,
@@ -1511,7 +1483,7 @@ class TestTopSolutionsAPI(BaseVariationalQuantumAlgorithmTest):
         program = self._setup_program_with_probs(mocker, probs)
 
         # Request top 5, but filter out anything below 0.1
-        result = program.top_solutions(n=5, min_prob=0.1)
+        result = program.get_top_solutions(n=5, min_prob=0.1)
 
         # Should get "0000" (0.4), "0001" (0.25), "0010" (0.15), "0011" (0.1)
         # Even though we asked for 5, only 4 pass the threshold
@@ -1521,22 +1493,24 @@ class TestTopSolutionsAPI(BaseVariationalQuantumAlgorithmTest):
         assert result[2].bitstring == "0010"
         assert result[3].bitstring == "0011"
 
-    def test_top_solutions_empty_after_filtering(self, mocker):
-        """Test top_solutions returns empty list when all solutions filtered out."""
+    def test_get_top_solutions_empty_after_filtering(self, mocker):
+        """Test get_top_solutions returns empty list when all solutions filtered out."""
         probs = {"00": 0.05, "01": 0.03, "10": 0.02}
         program = self._setup_program_with_probs(mocker, probs)
 
-        result = program.top_solutions(n=10, min_prob=0.1)
+        result = program.get_top_solutions(n=10, min_prob=0.1)
 
         assert result == []
 
-    def test_top_solutions_default_parameters(self, mocker):
-        """Test top_solutions with default parameters."""
+    def test_get_top_solutions_default_parameters(self, mocker):
+        """Test get_top_solutions with default parameters."""
         # Create 15 solutions to test default n=10
         probs = {f"{i:04b}": 0.1 for i in range(15)}
         program = self._setup_program_with_probs(mocker, probs)
 
-        result = program.top_solutions()  # Should use n=10, min_prob=0.0, include_decoded=False
+        result = (
+            program.get_top_solutions()
+        )  # Should use n=10, min_prob=0.0, include_decoded=False
 
         assert len(result) == 10  # Default n=10
         # All probabilities equal, so should be in lexicographic order
@@ -1545,8 +1519,8 @@ class TestTopSolutionsAPI(BaseVariationalQuantumAlgorithmTest):
             assert result[i].decoded is None  # Default include_decoded=False
 
 
-class TestSolutionEntryDataclass:
-    """Test suite for SolutionEntry dataclass."""
+class TestSolutionEntryNamedTuple:
+    """Test suite for SolutionEntry namedtuple."""
 
     def test_solution_entry_creation(self):
         """Test basic SolutionEntry creation."""

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -239,12 +239,16 @@ class QAOA(VariationalQuantumAlgorithm):
             max_iterations (int): Maximum number of optimization iterations. Defaults to 10.
             **kwargs: Additional keyword arguments passed to the parent class, including `optimizer`.
         """
-        super().__init__(**kwargs)
-
         self.graph_problem = graph_problem
 
-        # Validate and process problem
+        # Validate and process problem (needed to determine decode function)
+        # This sets n_qubits which is needed before parent init
         self.problem = self._validate_and_set_problem(problem, graph_problem)
+
+        # Store whether user provided decode_solution_fn (we'll set it up after parent init if not)
+        user_provided_decode_fn = "decode_solution_fn" in kwargs
+
+        super().__init__(**kwargs)
 
         # Validate initial state
         if initial_state not in get_args(_SUPPORTED_INITIAL_STATES_LITERAL):
@@ -285,6 +289,22 @@ class QAOA(VariationalQuantumAlgorithm):
 
         # Extract wire labels from the cost Hamiltonian to ensure consistency
         self._circuit_wires = tuple(self._cost_hamiltonian.wires)
+
+        # Set up decode function based on problem type if user didn't provide one
+        if not user_provided_decode_fn:
+            if isinstance(self.problem, QUBOProblemTypes):
+                # For QUBO: convert bitstring to numpy array of int32
+                self._decode_solution_fn = lambda bitstring: np.fromiter(
+                    bitstring, dtype=np.int32
+                )
+            elif isinstance(self.problem, GraphProblemTypes):
+                # For Graph: map bitstring positions to graph node labels
+                circuit_wires = self._circuit_wires  # Capture for closure
+                self._decode_solution_fn = lambda bitstring: [
+                    circuit_wires[idx]
+                    for idx, bit in enumerate(bitstring)
+                    if bit == "1" and idx < len(circuit_wires)
+                ]
 
     def _save_subclass_state(self) -> dict[str, Any]:
         """Save QAOA-specific runtime state."""
@@ -508,9 +528,11 @@ class QAOA(VariationalQuantumAlgorithm):
         This method performs the following steps:
         1. Executes measurement circuits with the best parameters (those that achieved the lowest loss).
         2. Retrieves the bitstring representing the best solution, correcting for endianness.
-        3. Depending on the problem type:
-           - For QUBO problems, stores the solution as a NumPy array of bits.
-           - For graph problems, stores the solution as a list of node indices corresponding to '1's in the bitstring.
+        3. Uses the `decode_solution_fn` (configured in constructor based on problem type) to decode
+           the bitstring into the appropriate format:
+           - For QUBO problems: NumPy array of bits (int32).
+           - For graph problems: List of node indices corresponding to '1's in the bitstring.
+        4. Stores the decoded solution in the appropriate attribute.
 
         Returns:
             tuple[int, float]: A tuple containing:
@@ -529,19 +551,14 @@ class QAOA(VariationalQuantumAlgorithm):
             best_measurement_probs, key=best_measurement_probs.get
         )
 
-        if isinstance(self.problem, QUBOProblemTypes):
-            self._solution_bitstring[:] = np.fromiter(
-                best_solution_bitstring, dtype=np.int32
-            )
+        # Use decode function to get the decoded solution
+        decoded_solution = self._decode_solution_fn(best_solution_bitstring)
 
-        if isinstance(self.problem, GraphProblemTypes):
-            # Map bitstring positions to actual graph node labels
-            # Bitstring is already endianness-corrected, so positions map directly to circuit_wires
-            self._solution_nodes[:] = [
-                self._circuit_wires[idx]
-                for idx, bit in enumerate(best_solution_bitstring)
-                if bit == "1" and idx < len(self._circuit_wires)
-            ]
+        # Store in appropriate attribute based on problem type
+        if isinstance(self.problem, QUBOProblemTypes):
+            self._solution_bitstring[:] = decoded_solution
+        elif isinstance(self.problem, GraphProblemTypes):
+            self._solution_nodes[:] = decoded_solution
 
         self.reporter.info(message="🏁 Computed Final Solution! 🏁")
 
