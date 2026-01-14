@@ -115,10 +115,15 @@ Example: Finding the max-clique of a graph:
    )
 
    qaoa_problem.run()
-   qaoa_problem.compute_final_solution()
 
    print(f"Quantum Solution: {set(qaoa_problem.solution)}")
    print(f"Total circuits: {qaoa_problem.total_circuit_count}")
+
+   # Get top-N solutions by probability
+   top_solutions = qaoa_problem.get_top_solutions(n=5, include_decoded=True)
+   print("\nTop 5 solutions by probability:")
+   for i, sol in enumerate(top_solutions, 1):
+       print(f"{i}. Nodes: {sol.decoded} (probability: {sol.prob:.2%})")
 
 QUBO Problems
 -------------
@@ -153,10 +158,17 @@ Numpy Array-based Input
    )
 
    qaoa_problem.run()
-   qaoa_problem.compute_final_solution()
 
    print(f"Solution: {qaoa_problem.solution}")
    print(f"Energy: {qaoa_problem.best_loss}")
+
+   # Get top-N solutions by probability
+   top_solutions = qaoa_problem.get_top_solutions(n=5)
+   print("\nTop 5 solutions by probability:")
+   for i, sol in enumerate(top_solutions, 1):
+       solution_array = np.array([int(bit) for bit in sol.bitstring])
+       energy = bqm.energy({var: int(val) for var, val in zip(bqm.variables, solution_array)})
+       print(f"{i}. {sol.bitstring}: {sol.prob:.2%} (energy: {energy:.4f})")
 
 BinaryQuadraticModel Input
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
