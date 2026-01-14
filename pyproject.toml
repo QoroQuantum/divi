@@ -45,7 +45,6 @@ matplotlib = "^3.10.3"
 ply = "^3.11"
 basis-set-exchange = "^0.11"
 pydantic = ">=2.5.0,<2.10"
-tuna = "^0.5.11"
 
 
 [tool.poetry.group.dev.dependencies]
