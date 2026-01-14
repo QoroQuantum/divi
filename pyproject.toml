@@ -18,10 +18,11 @@ packages = [{ include = "divi" }]
 [tool.poetry.dependencies]
 python = ">=3.11,<3.13"
 # Quantum computing
-pennylane = "^0.42.3"
-qiskit = "^2.2"
+pennylane = "^0.43"
+pennylane-qiskit = "^0.43"
+qiskit = "^2.1"
 qiskit-aer = "*"
-qiskit-ibm-runtime = ">0.42"
+qiskit-ibm-runtime = "^0.41"
 mitiq = "^0.48"
 cirq-core = "^1.6"
 # Scientific computing and numerical operations
