@@ -1075,7 +1075,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             if current_loss < self._best_loss:
                 self._best_loss = current_loss
                 best_idx = np.argmin(intermediate_result.fun)
-
                 self._best_params = intermediate_result.x[best_idx].copy()
 
             self.current_iteration += 1
@@ -1124,6 +1123,12 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         self._final_params = self._minimize_res.x
 
+        # Set _best_params from final result (source of truth)
+        x = np.atleast_2d(self._minimize_res.x)
+        fun = np.atleast_1d(self._minimize_res.fun)
+        best_idx = np.argmin(fun)
+        self._best_params = x[best_idx].copy()
+
         if perform_final_computation:
             self._perform_final_computation(**kwargs)
 
@@ -1133,10 +1138,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
     def _run_solution_measurement(self) -> None:
         """Execute measurement circuits to obtain probability distributions for solution extraction."""
-        if self._best_params is None:
-            raise RuntimeError(
-                "Optimization has not been run, no best parameters available."
-            )
 
         if "meas_circuit" not in self.meta_circuits:
             raise NotImplementedError(
