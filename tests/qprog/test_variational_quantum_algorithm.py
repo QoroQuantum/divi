@@ -1457,8 +1457,6 @@ class TestTopSolutionsAPI(BaseVariationalQuantumAlgorithmTest):
 
     def test_get_top_solutions_solution_entry_is_frozen(self, mocker):
         """Test that SolutionEntry is frozen (immutable)."""
-        pass
-
         probs = {"00": 1.0}
         program = self._setup_program_with_probs(mocker, probs)
 

@@ -19,7 +19,7 @@ python <example_name>.py
 - **`vqe_h2_with_grouping.py`** - VQE with wire grouping for efficiency
 - **`vqe_hyperparameter_sweep.py`** - Hyperparameter sweeps across multiple molecules
 - **`zne_local.py`** - VQE with Zero Noise Extrapolation error mitigation
-- **`custom_vqa_quantum_script_and_qiskit.py`** - CustomVQA with QuantumScript and Qiskit inputs
+- **`custom_vqa.py`** - CustomVQA with QuantumScript and Qiskit inputs
 
 ### QAOA (Quantum Approximate Optimization Algorithm)
 

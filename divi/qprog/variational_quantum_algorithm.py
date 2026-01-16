@@ -2,7 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import heapq
 import logging
 import pickle
 from abc import abstractmethod
@@ -607,30 +606,24 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         # Filter by minimum probability and get top n sorted by probability (descending),
         # then bitstring (ascending) for deterministic tie-breaking
-        top_items = heapq.nsmallest(
-            n,
+        top_items = sorted(
             filter(
                 lambda bitstring_prob: bitstring_prob[1] >= min_prob, probs_dict.items()
             ),
             key=lambda bitstring_prob: (-bitstring_prob[1], bitstring_prob[0]),
-        )
+        )[:n]
 
-        # Decode items if needed
-        decoded_values = map(
-            lambda item: self._decode_solution_fn(item[0]) if include_decoded else None,
-            top_items,
-        )
-
-        # Build result list
-        return list(
-            map(
-                lambda item, decoded: SolutionEntry(
-                    bitstring=item[0], prob=item[1], decoded=decoded
+        # Build result list (decode on demand)
+        return [
+            SolutionEntry(
+                bitstring=bitstring,
+                prob=prob,
+                decoded=(
+                    self._decode_solution_fn(bitstring) if include_decoded else None
                 ),
-                top_items,
-                decoded_values,
             )
-        )
+            for bitstring, prob in top_items
+        ]
 
     @property
     def curr_params(self) -> npt.NDArray[np.float64]:

@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+from collections.abc import Callable
 from enum import Enum
 from typing import Any, Literal, get_args
 from warnings import warn
@@ -225,6 +226,7 @@ class QAOA(VariationalQuantumAlgorithm):
         n_layers: int = 1,
         initial_state: _SUPPORTED_INITIAL_STATES_LITERAL = "Recommended",
         max_iterations: int = 10,
+        decode_solution_fn: Callable[[str], Any] | None = None,
         **kwargs,
     ):
         """Initialize the QAOA problem.
@@ -237,6 +239,8 @@ class QAOA(VariationalQuantumAlgorithm):
             n_layers (int): Number of QAOA layers. Defaults to 1.
             initial_state (_SUPPORTED_INITIAL_STATES_LITERAL): The initial state of the circuit. Defaults to "Recommended".
             max_iterations (int): Maximum number of optimization iterations. Defaults to 10.
+            decode_solution_fn (callable[[str], Any] | None): Optional decoder for bitstrings.
+                If not provided, a default decoder is selected based on problem type.
             **kwargs: Additional keyword arguments passed to the parent class, including `optimizer`.
         """
         self.graph_problem = graph_problem
@@ -245,8 +249,8 @@ class QAOA(VariationalQuantumAlgorithm):
         # This sets n_qubits which is needed before parent init
         self.problem = self._validate_and_set_problem(problem, graph_problem)
 
-        # Store whether user provided decode_solution_fn (we'll set it up after parent init if not)
-        user_provided_decode_fn = "decode_solution_fn" in kwargs
+        if decode_solution_fn is not None:
+            kwargs["decode_solution_fn"] = decode_solution_fn
 
         super().__init__(**kwargs)
 
@@ -291,7 +295,7 @@ class QAOA(VariationalQuantumAlgorithm):
         self._circuit_wires = tuple(self._cost_hamiltonian.wires)
 
         # Set up decode function based on problem type if user didn't provide one
-        if not user_provided_decode_fn:
+        if decode_solution_fn is None:
             if isinstance(self.problem, QUBOProblemTypes):
                 # For QUBO: convert bitstring to numpy array of int32
                 self._decode_solution_fn = lambda bitstring: np.fromiter(
