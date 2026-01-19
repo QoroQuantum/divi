@@ -14,6 +14,7 @@ from mitiq.zne.scaling import fold_global
 from pennylane.measurements import ExpectationMP
 from scipy.optimize import OptimizeResult
 
+from divi.circuits import CircuitTag
 from divi.circuits.qem import ZNE
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.exceptions import _CancelledError
@@ -161,7 +162,9 @@ class TestProgram:
             program._initialize_params()
             fake_shot_histogram = {"00": 23, "01": 27, "10": 15, "11": 35}
             fake_results = {
-                f"0_mock-qem:0_{i}": fake_shot_histogram
+                CircuitTag(
+                    param_id=0, qem_name="mock-qem", qem_id=0, meas_id=i
+                ): fake_shot_histogram
                 for i in range(expected_n_groups)
             }
             expvals_collector.append(program._post_process_results(fake_results)[0])
@@ -190,7 +193,12 @@ class TestProgram:
         n_measurement_groups = 3
         for qem_run_id, shots in enumerate(mock_shots_per_sf):
             for meas_group_id in range(n_measurement_groups):
-                key = f"0_zne:{qem_run_id}_{meas_group_id}"
+                key = CircuitTag(
+                    param_id=0,
+                    qem_name="zne",
+                    qem_id=qem_run_id,
+                    meas_id=meas_group_id,
+                )
                 mock_results[key] = shots
 
         final_losses = program._post_process_results(mock_results)
@@ -210,8 +218,16 @@ class TestProgram:
 
         ham_ops = "XI;IZ;XZ"
         fake_results = {
-            "0_NoMitigation:0_0": {"XI": 0.5, "IZ": -0.3, "XZ": 0.2},
-            "1_NoMitigation:0_0": {"XI": 0.7, "IZ": -0.1, "XZ": -0.2},
+            CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0): {
+                "XI": 0.5,
+                "IZ": -0.3,
+                "XZ": 0.2,
+            },
+            CircuitTag(param_id=1, qem_name="NoMitigation", qem_id=0, meas_id=0): {
+                "XI": 0.7,
+                "IZ": -0.1,
+                "XZ": -0.2,
+            },
         }
 
         losses = program._post_process_results(fake_results, ham_ops=ham_ops)
@@ -233,7 +249,12 @@ class TestProgram:
         )
         program.loss_constant = 0.0
 
-        fake_results = {"0_NoMitigation:0_0": {"XI": 0.5, "IZ": -0.3}}
+        fake_results = {
+            CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0): {
+                "XI": 0.5,
+                "IZ": -0.3,
+            }
+        }
         with pytest.raises(
             ValueError,
             match="Hamiltonian operators.*required when using a backend.*supports expectation values",
@@ -501,7 +522,11 @@ class BaseVariationalQuantumAlgorithmTest:
         """Helper to create a program with a synthetic probability distribution."""
         program = self._create_program_with_mock_optimizer(mocker, **kwargs)
         # Wrap in nested structure: {tag: {bitstring: prob}} to match production
-        program._best_probs = {"0_NoMitigation:0_0": probs_dict}
+        program._best_probs = {
+            CircuitTag(
+                param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0
+            ): probs_dict
+        }
         # Mark as having run optimization to avoid warnings
         program._losses_history = [{0: -1.0}]
         return program
@@ -1515,6 +1540,35 @@ class TestTopSolutionsAPI(BaseVariationalQuantumAlgorithmTest):
         for i in range(10):
             assert result[i].bitstring == f"{i:04b}"
             assert result[i].decoded is None  # Default include_decoded=False
+
+
+class TestCircuitTagEncoding(BaseVariationalQuantumAlgorithmTest):
+    """Tests for CircuitTag encode/decode hooks."""
+
+    def test_encode_decode_round_trip(self, mocker):
+        program = self._create_program_with_mock_optimizer(mocker)
+        program._reset_tag_cache()
+
+        tag = CircuitTag(param_id=1, qem_name="zne", qem_id=2, meas_id=3)
+        tag_str = program._encode_tag(tag)
+
+        assert isinstance(tag_str, str)
+
+        results = {tag_str: {"00": 10, "11": 5}}
+        restored = program._decode_tags(results)
+
+        assert tag in restored
+        assert restored[tag] == {"00": 10, "11": 5}
+
+    def test_encode_decode_passthrough_for_strings(self, mocker):
+        program = self._create_program_with_mock_optimizer(mocker)
+        program._reset_tag_cache()
+
+        tag_str = program._encode_tag("plain_tag")
+        results = {tag_str: {"0": 1}}
+        restored = program._decode_tags(results)
+
+        assert restored == {"plain_tag": {"0": 1}}
 
 
 class TestSolutionEntryNamedTuple:

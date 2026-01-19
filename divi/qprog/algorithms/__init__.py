@@ -2,7 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# isort: skip_file
 from ._ansatze import (
     Ansatz,
     GenericLayerAnsatz,

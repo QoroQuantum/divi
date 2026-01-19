@@ -23,7 +23,7 @@ from divi.backends import (
     convert_counts_to_probs,
     reverse_dict_endianness,
 )
-from divi.circuits import CircuitBundle, MetaCircuit
+from divi.circuits import CircuitBundle, CircuitTag, MetaCircuit, format_circuit_tag
 from divi.circuits.qem import _NoMitigation
 from divi.qprog._expectation import _batched_expectation
 from divi.qprog._hamiltonians import convert_hamiltonian_to_pauli_string
@@ -475,7 +475,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         return self._best_loss
 
     @property
-    def best_probs(self) -> dict[str, float]:
+    def best_probs(self) -> dict[CircuitTag, dict[str, float]]:
         """Get normalized probabilities for the best parameters.
 
         This property provides access to the probability distribution computed
@@ -487,10 +487,10 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         iterated (dictionary insertion order is preserved in Python 3.7+).
 
         Returns:
-            dict[str, float]: Dictionary mapping bitstrings to probabilities.
-                Keys are binary strings (e.g., "0101"), values are probabilities
-                in the range [0.0, 1.0]. Returns an empty dict if final computation
-                has not been performed.
+            dict[CircuitTag, dict[str, float]]: Dictionary mapping CircuitTag keys to
+                bitstring probability dictionaries. Bitstrings are binary strings
+                (e.g., "0101"), values are probabilities in range [0.0, 1.0].
+                Returns an empty dict if final computation has not been performed.
 
         Raises:
             RuntimeError: If attempting to access probabilities before running
@@ -865,12 +865,11 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         return losses
 
     @staticmethod
-    def _parse_result_tag(tag: str) -> tuple[int, int]:
+    def _parse_result_tag(tag: CircuitTag) -> tuple[int, int]:
         """Extract (param_id, qem_id) from a result tag."""
-        parts = tag.split("_")
-        param_id = int(parts[0])
-        qem_id = int(parts[1].split(":")[1])
-        return param_id, qem_id
+        if not isinstance(tag, CircuitTag):
+            raise TypeError("Result tags must be CircuitTag instances.")
+        return tag.param_id, tag.qem_id
 
     def _group_results(
         self, results: dict[str, dict[str, int]]
@@ -886,6 +885,26 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             param_id, qem_id = self._parse_result_tag(tag)
             grouped.setdefault(param_id, {}).setdefault(qem_id, []).append(shots)
         return grouped
+
+    def _reset_tag_cache(self) -> None:
+        """Reset per-run tag cache for structured result tags."""
+        self._tag_map: dict[str, CircuitTag] = {}
+
+    def _encode_tag(self, tag: CircuitTag | str) -> str:
+        """Convert structured tags to backend-safe strings."""
+        if isinstance(tag, CircuitTag):
+            tag_str = format_circuit_tag(tag)
+            self._tag_map[tag_str] = tag
+            return tag_str
+        return str(tag)
+
+    def _decode_tags(
+        self, results: dict[str, dict[str, int]]
+    ) -> dict[CircuitTag | str, dict[str, int]]:
+        """Restore structured tags from backend result labels."""
+        if not self._tag_map:
+            return results
+        return {self._tag_map.get(tag, tag): shots for tag, shots in results.items()}
 
     def _apply_qem_protocol(
         self, exp_matrix: npt.NDArray[np.float64]
@@ -956,12 +975,8 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         Post-process the results of the quantum problem.
 
         Args:
-            results (dict[str, dict[str, int]]): The shot histograms of the quantum execution step.
-                The keys should be strings of format {param_id}_*_{measurement_group_id}.
-                i.e. an underscore-separated bunch of metadata, starting always with
-                the index of some parameter and ending with the index of some measurement group.
-                Any extra piece of metadata that might be relevant to the specific
-                application can be kept in the middle.
+            results (dict[CircuitTag, dict[str, int]]): The shot histograms of the quantum execution
+                step. Keys are CircuitTag instances containing param, QEM, and measurement ids.
 
         Returns:
             dict[int, float]: The energies for each parameter set grouping, where the dict keys

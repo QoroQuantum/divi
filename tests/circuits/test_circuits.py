@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -13,7 +13,13 @@ import sympy as sp
 from mitiq.zne.inference import ExpFactory
 from mitiq.zne.scaling import fold_global
 
-from divi.circuits import CircuitBundle, ExecutableQASMCircuit, MetaCircuit, to_openqasm
+from divi.circuits import (
+    CircuitBundle,
+    CircuitTag,
+    ExecutableQASMCircuit,
+    MetaCircuit,
+    to_openqasm,
+)
 from divi.circuits.qem import ZNE, _NoMitigation
 
 
@@ -33,7 +39,7 @@ class TestCircuitBundle:
         )
         assert len(qasm_list) == 1
 
-        tag = "test_bundle"
+        tag = CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0)
         executables = (ExecutableQASMCircuit(tag=tag, qasm=qasm_list[0]),)
         bundle = CircuitBundle(executables=executables)
 
@@ -123,13 +129,13 @@ class TestMetaCircuit:
         )
 
         param_list = [0.123456789, 0.212345678, 0.312345678, 0.412345678]
-        tag_prefix = "test"
+        param_idx = 7
         precision = 8
 
         method_mock = mocker.patch("divi.circuits.to_openqasm")
 
         circuit = meta_circuit.initialize_circuit_from_params(
-            param_list, tag_prefix=tag_prefix, precision=precision
+            param_list, param_idx=param_idx, precision=precision
         )
 
         # Ensure converter wasn't called since
@@ -137,7 +143,9 @@ class TestMetaCircuit:
         method_mock.assert_not_called()
 
         # Check the new Circuit object
-        assert circuit.tags == [f"{tag_prefix}_NoMitigation:0_0"]
+        assert circuit.tags == [
+            CircuitTag(param_id=param_idx, qem_name="NoMitigation", qem_id=0, meas_id=0)
+        ]
         assert len(circuit.qasm_circuits) == 1
 
         # Ensure no more symbols exist
@@ -156,14 +164,21 @@ class TestMetaCircuit:
     @pytest.mark.parametrize(
         "qem_protocol,expected_tags,expected_n_circuits",
         [
-            (_NoMitigation(), ["test_NoMitigation:0_0"], 1),
+            (
+                _NoMitigation(),
+                [CircuitTag(param_id=7, qem_name="NoMitigation", qem_id=0, meas_id=0)],
+                1,
+            ),
             (
                 ZNE(
                     folding_fn=partial(fold_global),
                     scale_factors=scale_factors,
                     extrapolation_factory=ExpFactory(scale_factors=scale_factors),
                 ),
-                [f"test_zne:{i}_0" for i in range(len(scale_factors))],
+                [
+                    CircuitTag(param_id=7, qem_name="zne", qem_id=i, meas_id=0)
+                    for i in range(len(scale_factors))
+                ],
                 3,
             ),
         ],
@@ -184,13 +199,13 @@ class TestMetaCircuit:
         )
 
         param_list = [0.123456789, 0.212345678, 0.312345678, 0.412345678]
-        tag_prefix = "test"
+        param_idx = 7
         precision = 8
 
         method_mock = mocker.patch("divi.circuits.to_openqasm")
 
         circuit = meta_circuit.initialize_circuit_from_params(
-            param_list, tag_prefix=tag_prefix, precision=precision
+            param_list, param_idx=param_idx, precision=precision
         )
 
         # Ensure converter wasn't called since

@@ -2,7 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# isort: skip_file
 from .quantum_program import QuantumProgram
 from .variational_quantum_algorithm import VariationalQuantumAlgorithm, SolutionEntry
 from .batch import ProgramBatch

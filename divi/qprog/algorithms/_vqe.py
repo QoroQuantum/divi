@@ -198,7 +198,7 @@ class VQE(VariationalQuantumAlgorithm):
 
         return [
             self.meta_circuits[circuit_type].initialize_circuit_from_params(
-                params_group, tag_prefix=f"{p}"
+                params_group, param_idx=p
             )
             for p, params_group in enumerate(self._curr_params)
         ]

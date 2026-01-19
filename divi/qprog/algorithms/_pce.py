@@ -134,6 +134,7 @@ class PCE(VQE):
         self.qubo_matrix = qubo_to_matrix(qubo_matrix)
         self.n_vars = self.qubo_matrix.shape[0]
         self.alpha = alpha
+        self._use_soft_objective = self.alpha < 5.0
         self._final_vector: npt.NDArray[np.integer] | None = None
 
         if kwargs.get("qem_protocol") is not None:
@@ -208,9 +209,6 @@ class PCE(VQE):
 
         losses = {}
 
-        # Hard cutoff for switching strategies
-        USE_SOFT_OBJECTIVE = self.alpha < 5.0
-
         for p_idx, qem_groups in self._group_results(results).items():
             # PCE ignores QEM ids; aggregate all shots for this parameter set.
             param_group = [
@@ -224,7 +222,7 @@ class PCE(VQE):
             )
 
             parities = _decode_parities(state_strings, self._variable_masks_u64)
-            if USE_SOFT_OBJECTIVE:
+            if self._use_soft_objective:
                 probs = counts / total_shots
                 losses[p_idx] = _compute_soft_energy(
                     parities, probs, self.alpha, self.qubo_matrix
