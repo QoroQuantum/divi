@@ -82,6 +82,7 @@ ipykernel = "^7.1.0"
 
 [tool.isort]
 profile = "black"
+skip_glob = ["**/__init__.py"]
 
 [tool.pytest.ini_options]
 addopts = "--no-success-flaky-report"
