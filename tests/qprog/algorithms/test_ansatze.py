@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -31,7 +31,7 @@ class TestGenericLayerAnsatz:
         [
             ([qml.RX], qml.CNOT, "linear"),
             ([qml.RY, qml.RZ], qml.CZ, "circular"),
-            ([qml.Rot], None, "all_to_all"),
+            ([qml.Rot], None, "all-to-all"),
             ([qml.RX], qml.CNOT, [(0, 2), (1, 3)]),
         ],
     )
@@ -97,6 +97,12 @@ class TestGenericLayerAnsatz:
         """Tests the parameter calculation."""
         ansatz = GenericLayerAnsatz(gate_sequence=gate_sequence)
         assert ansatz.n_params_per_layer(n_qubits) == expected_params
+
+    def test_n_params_per_layer_rejects_parameter_free_ansatz(self):
+        """Tests that parameter-free ansatz is rejected."""
+        ansatz = GenericLayerAnsatz(gate_sequence=[qml.Hadamard])
+        with pytest.raises(ValueError, match="must define at least one trainable"):
+            ansatz.n_params_per_layer(n_qubits=2)
 
     def test_build_no_entangler(self):
         """Tests building a circuit with only rotation gates."""

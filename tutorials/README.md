@@ -13,21 +13,35 @@ python <example_name>.py
 
 ## Examples by Category
 
-### VQE (Variational Quantum Eigensolver)
+### Chemistry
 
 - **`vqe_h2_molecule_local.py`** - Basic VQE calculation for H2 molecule
 - **`vqe_h2_with_grouping.py`** - VQE with wire grouping for efficiency
 - **`vqe_hyperparameter_sweep.py`** - Hyperparameter sweeps across multiple molecules
-- **`zne_local.py`** - VQE with Zero Noise Extrapolation error mitigation
-- **`custom_vqa.py`** - CustomVQA with QuantumScript and Qiskit inputs
 
-### QAOA (Quantum Approximate Optimization Algorithm)
+### Optimization (QUBO & Binary Models)
+
+- **`qaoa_qubo.py`** - QAOA for QUBO optimization problems
+- **`qaoa_binary_quadratic_model.py`** - QAOA for BinaryQuadraticModel inputs
+- **`qaoa_qubo_partitioning.py`** - QUBO partitioning for scalability
+- **`pce_qubo.py`** - PCE-VQE for a QUBO problem
+
+### Optimization (Graph Problems)
 
 - **`qaoa_max_clique_local.py`** - Basic QAOA for maximum clique problem
-- **`qaoa_qubo.py`** - QAOA for QUBO optimization problems
 - **`qaoa_graph_partitioning.py`** - Large graph partitioning with QAOA
-- **`qaoa_qubo_partitioning.py`** - QUBO partitioning for scalability
+
+### Quadratic Programming
+
 - **`qaoa_quadratic_program.py`** - QAOA for quadratic programming
+
+### Error Mitigation
+
+- **`zne_local.py`** - VQE with Zero Noise Extrapolation error mitigation
+
+### Custom Workflows
+
+- **`custom_vqa.py`** - CustomVQA with QuantumScript and Qiskit inputs
 
 ### Checkpointing
 

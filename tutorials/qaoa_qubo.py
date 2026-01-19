@@ -50,18 +50,26 @@ if __name__ == "__main__":
 
     qaoa_problem.run()
 
-    print(f"Total circuits: {qaoa_problem.total_circuit_count}")
-
+    quantum_solution = qaoa_problem.solution
+    quantum_energy = bqm.energy(quantum_solution)
     best_classical_bitstring, best_classical_energy, _ = (
         dimod.ExactSolver().sample(bqm).lowest().record[0]
     )
 
-    print(f"\nClassical Solution: {best_classical_bitstring}")
-    print(f"Classical Energy: {best_classical_energy:.9f}")
-    quantum_solution = qaoa_problem.solution
-    quantum_solution_bitstring = "".join(str(bit) for bit in quantum_solution)
-    print(f"\nQuantum Solution: {quantum_solution}")
-    print(f"Quantum Energy: {bqm.energy(quantum_solution):.9f}")
+    quantum_bitstring = "".join(str(bit) for bit in quantum_solution)
+    classical_bitstring = "".join(str(bit) for bit in best_classical_bitstring)
+    bitstring_width = max(len(quantum_bitstring), len(classical_bitstring))
+
+    print(f"Total circuits: {qaoa_problem.total_circuit_count}\n")
+    print("Method     Energy        Bitstring")
+    print("-------    -----------   " + "-" * bitstring_width)
+    print(
+        f"QAOA       {quantum_energy:>11.6f}   {quantum_bitstring:<{bitstring_width}}"
+    )
+    print(
+        f"Classical  {best_classical_energy:>11.6f}   "
+        f"{classical_bitstring:<{bitstring_width}}"
+    )
 
     # Demonstrate top-N solutions functionality
     print("\n" + "=" * 60)

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -8,6 +8,15 @@ from typing import Literal, Sequence
 from warnings import warn
 
 import pennylane as qml
+
+
+def _require_trainable_params(n_params: int, ansatz_name: str) -> int:
+    if n_params <= 0:
+        raise ValueError(
+            f"{ansatz_name} must define at least one trainable parameter. "
+            "Parameter-free circuits are not supported."
+        )
+    return n_params
 
 
 class Ansatz(ABC):
@@ -99,7 +108,7 @@ class GenericLayerAnsatz(Ansatz):
                 self._layout_fn = lambda n_qubits: zip(
                     range(n_qubits), [(i + 1) % n_qubits for i in range(n_qubits)]
                 )
-            case "all_to_all":
+            case "all-to-all":
                 self._layout_fn = lambda n_qubits: (
                     (i, j) for i in range(n_qubits) for j in range(i + 1, n_qubits)
                 )
@@ -121,7 +130,7 @@ class GenericLayerAnsatz(Ansatz):
     def n_params_per_layer(self, n_qubits: int, **kwargs) -> int:
         """Total parameters = sum of gate.num_params per qubit per layer."""
         per_qubit = sum(getattr(g, "num_params", 1) for g in self.gate_sequence)
-        return per_qubit * n_qubits
+        return _require_trainable_params(per_qubit * n_qubits, self.name)
 
     def build(
         self, params, n_qubits: int, n_layers: int, **kwargs
@@ -182,7 +191,8 @@ class QAOAAnsatz(Ansatz):
         Returns:
             int: Number of parameters needed per layer.
         """
-        return qml.QAOAEmbedding.shape(n_layers=1, n_wires=n_qubits)[1]
+        n_params = qml.QAOAEmbedding.shape(n_layers=1, n_wires=n_qubits)[1]
+        return _require_trainable_params(n_params, QAOAAnsatz.__name__)
 
     def build(
         self, params, n_qubits: int, n_layers: int, **kwargs
@@ -257,7 +267,8 @@ class UCCSDAnsatz(Ansatz):
         """
         singles, doubles = qml.qchem.excitations(n_electrons, n_qubits)
         s_wires, d_wires = qml.qchem.excitations_to_wires(singles, doubles)
-        return len(s_wires) + len(d_wires)
+        n_params = len(s_wires) + len(d_wires)
+        return _require_trainable_params(n_params, UCCSDAnsatz.__name__)
 
     def build(
         self, params, n_qubits: int, n_layers: int, **kwargs
@@ -313,7 +324,8 @@ class HartreeFockAnsatz(Ansatz):
             int: Number of parameters (number of single + double excitations).
         """
         singles, doubles = qml.qchem.excitations(n_electrons, n_qubits)
-        return len(singles) + len(doubles)
+        n_params = len(singles) + len(doubles)
+        return _require_trainable_params(n_params, HartreeFockAnsatz.__name__)
 
     def build(
         self, params, n_qubits: int, n_layers: int, **kwargs

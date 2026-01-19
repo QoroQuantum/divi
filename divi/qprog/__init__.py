@@ -10,6 +10,7 @@ from .algorithms import (
     QAOA,
     GraphProblem,
     VQE,
+    PCE,
     CustomVQA,
     Ansatz,
     UCCSDAnsatz,

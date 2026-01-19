@@ -7,7 +7,6 @@ import pickle
 from abc import abstractmethod
 from datetime import datetime
 from functools import partial
-from itertools import groupby
 from pathlib import Path
 from queue import Queue
 from typing import Any, NamedTuple
@@ -865,6 +864,91 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         return losses
 
+    @staticmethod
+    def _parse_result_tag(tag: str) -> tuple[int, int]:
+        """Extract (param_id, qem_id) from a result tag."""
+        parts = tag.split("_")
+        param_id = int(parts[0])
+        qem_id = int(parts[1].split(":")[1])
+        return param_id, qem_id
+
+    def _group_results(
+        self, results: dict[str, dict[str, int]]
+    ) -> dict[int, dict[int, list[dict[str, int]]]]:
+        """
+        Group results by parameter id and QEM id.
+
+        Returns:
+            dict[int, dict[int, list[dict[str, int]]]]: {param_id: {qem_id: [shots...]}}
+        """
+        grouped: dict[int, dict[int, list[dict[str, int]]]] = {}
+        for tag, shots in results.items():
+            param_id, qem_id = self._parse_result_tag(tag)
+            grouped.setdefault(param_id, {}).setdefault(qem_id, []).append(shots)
+        return grouped
+
+    def _apply_qem_protocol(
+        self, exp_matrix: npt.NDArray[np.float64]
+    ) -> list[npt.NDArray[np.float64]]:
+        """Apply the configured QEM protocol to expectation value matrices."""
+        return [
+            self._qem_protocol.postprocess_results(exp_vals) for exp_vals in exp_matrix
+        ]
+
+    def _compute_marginal_results(
+        self,
+        qem_groups: dict[int, list[dict[str, int]]],
+        measurement_groups: list[list[qml.operation.Operator]],
+        ham_ops: str | None,
+    ) -> list[npt.NDArray[np.float64] | list[npt.NDArray[np.float64]]]:
+        """Compute marginal results, handling backend modes and QEM."""
+        if self.backend.supports_expval:
+            if ham_ops is None:
+                raise ValueError(
+                    "Hamiltonian operators (ham_ops) are required when using a backend "
+                    "that supports expectation values, but were not provided."
+                )
+            ham_ops_list = ham_ops.split(";")
+            qem_group_values = [shots for _, shots in sorted(qem_groups.items())]
+            return [
+                self._apply_qem_protocol(
+                    np.array(
+                        [
+                            [shot_dict[op] for op in ham_ops_list]
+                            for shot_dict in shots_dicts
+                        ]
+                    ).T
+                )
+                for shots_dicts in qem_group_values
+            ] or []
+
+        shots_by_qem_idx = zip(*qem_groups.values())
+        marginal_results: list[
+            npt.NDArray[np.float64] | list[npt.NDArray[np.float64]]
+        ] = []
+        wire_order = tuple(reversed(self.cost_hamiltonian.wires))
+        for shots_dicts, curr_measurement_group in zip(
+            shots_by_qem_idx, measurement_groups
+        ):
+            exp_matrix = _batched_expectation(
+                shots_dicts, curr_measurement_group, wire_order
+            )
+            mitigated = self._apply_qem_protocol(exp_matrix)
+            marginal_results.append(mitigated if len(mitigated) > 1 else mitigated[0])
+
+        return marginal_results
+
+    @staticmethod
+    def _merge_param_group_counts(
+        param_group: list[tuple[str, dict[str, int]]],
+    ) -> dict[str, int]:
+        """Merge shot histograms for a single parameter group."""
+        shots_dict: dict[str, int] = {}
+        for _, d in param_group:
+            for s, c in d.items():
+                shots_dict[s] = shots_dict.get(s, 0) + c
+        return shots_dict
+
     def _post_process_results(
         self, results: dict[str, dict[str, int]], **kwargs
     ) -> dict[int, float]:
@@ -895,58 +979,12 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         losses = {}
         measurement_groups = self.meta_circuits["cost_circuit"].measurement_groups
 
-        # Define key functions for grouping
-        get_param_id = lambda item: int(item[0].split("_")[0])
-        get_qem_id = lambda item: int(item[0].split("_")[1].split(":")[1])
-
-        # Group the pre-sorted results by parameter ID.
-        for p, param_group_iterator in groupby(results.items(), key=get_param_id):
-            param_group_iterator = list(param_group_iterator)
-
-            # Group by QEM ID to handle error mitigation
-            qem_groups = {
-                gid: [value for _, value in group]
-                for gid, group in groupby(param_group_iterator, key=get_qem_id)
-            }
-
-            # Apply QEM protocol to expectation values (common for both backends)
-            apply_qem = lambda exp_matrix: [
-                self._qem_protocol.postprocess_results(exp_vals)
-                for exp_vals in exp_matrix
-            ]
-
-            if self.backend.supports_expval:
-                ham_ops = kwargs.get("ham_ops")
-                if ham_ops is None:
-                    raise ValueError(
-                        "Hamiltonian operators (ham_ops) are required when using a backend "
-                        "that supports expectation values, but were not provided."
-                    )
-                marginal_results = [
-                    apply_qem(
-                        np.array(
-                            [
-                                [shot_dict[op] for op in ham_ops.split(";")]
-                                for shot_dict in shots_dicts
-                            ]
-                        ).T
-                    )
-                    for shots_dicts in sorted(qem_groups.values())
-                ] or []
-            else:
-                shots_by_qem_idx = zip(*qem_groups.values())
-                marginal_results = []
-                for shots_dicts, curr_measurement_group in zip(
-                    shots_by_qem_idx, measurement_groups
-                ):
-                    wire_order = tuple(reversed(self.cost_hamiltonian.wires))
-                    exp_matrix = _batched_expectation(
-                        shots_dicts, curr_measurement_group, wire_order
-                    )
-                    mitigated = apply_qem(exp_matrix)
-                    marginal_results.append(
-                        mitigated if len(mitigated) > 1 else mitigated[0]
-                    )
+        for p, qem_groups in self._group_results(results).items():
+            marginal_results = self._compute_marginal_results(
+                qem_groups=qem_groups,
+                measurement_groups=measurement_groups,
+                ham_ops=kwargs.get("ham_ops"),
+            )
 
             pl_loss = (
                 self.meta_circuits["cost_circuit"]

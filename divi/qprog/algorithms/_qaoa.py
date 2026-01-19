@@ -14,8 +14,6 @@ import networkx as nx
 import numpy as np
 import pennylane as qml
 import pennylane.qaoa as pqaoa
-import rustworkx as rx
-import scipy.sparse as sps
 import sympy as sp
 
 from divi.circuits import CircuitBundle, MetaCircuit
@@ -23,12 +21,10 @@ from divi.qprog._hamiltonians import (
     _clean_hamiltonian,
     convert_qubo_matrix_to_pennylane_ising,
 )
+from divi.qprog.typing import GraphProblemTypes, QUBOProblemTypes, qubo_to_matrix
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 
 logger = logging.getLogger(__name__)
-
-GraphProblemTypes = nx.Graph | rx.PyGraph
-QUBOProblemTypes = list | np.ndarray | sps.spmatrix | dimod.BinaryQuadraticModel
 
 
 def _extract_loss_constant(
@@ -164,17 +160,7 @@ def _resolve_circuit_layers(
 
         return *getattr(pqaoa, graph_problem.pl_string)(*params), resolved_initial_state
     else:
-        # Convert BinaryQuadraticModel to matrix if needed
-        if isinstance(problem, dimod.BinaryQuadraticModel):
-            # Manual conversion from BQM to matrix (replacing deprecated to_numpy_matrix)
-            variables = list(problem.variables)
-            var_to_idx = {v: i for i, v in enumerate(variables)}
-            qubo_matrix = np.diag([problem.linear.get(v, 0) for v in variables])
-            for (u, v), coeff in problem.quadratic.items():
-                i, j = var_to_idx[u], var_to_idx[v]
-                qubo_matrix[i, j] = qubo_matrix[j, i] = coeff
-        else:
-            qubo_matrix = problem
+        qubo_matrix = qubo_to_matrix(problem)
 
         cost_hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
 
