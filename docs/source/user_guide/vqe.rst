@@ -43,6 +43,12 @@ Here's how to set up a basic VQE calculation for the H2 molecule:
    print(f"Ground state energy: {vqe_problem.best_loss:.6f} Ha")
    print(f"Total circuits executed: {vqe_problem.total_circuit_count}")
 
+   # Analyze probability distribution of eigenstates
+   top_eigenstates = vqe_problem.get_top_solutions(n=5)
+   print("\nTop 5 eigenstates by probability:")
+   for i, sol in enumerate(top_eigenstates, 1):
+       print(f"{i}. {sol.bitstring}: {sol.prob:.2%}")
+
 Hamiltonian Input
 ^^^^^^^^^^^^^^^^^
 

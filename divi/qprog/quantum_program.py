@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -147,10 +147,11 @@ class QuantumProgram(ABC):
                 contains job_id. For sync backends, contains results directly.
         """
         job_circuits = {}
+        self._reset_tag_cache()
 
         for bundle in self._curr_circuits:
             for executable in bundle.executables:
-                job_circuits[executable.tag] = executable.qasm
+                job_circuits[self._encode_tag(executable.tag)] = executable.qasm
 
         self._total_circuit_count += len(job_circuits)
 
@@ -302,6 +303,7 @@ class QuantumProgram(ABC):
                     raise ValueError("ExecutionResult has neither results nor job_id")
 
             results = {r["label"]: r["results"] for r in results}
+            results = self._decode_tags(results)
 
             result = self._post_process_results(results, **kwargs)
 
@@ -309,3 +311,14 @@ class QuantumProgram(ABC):
         finally:
             # Clear the execution result after processing
             self._current_execution_result = None
+
+    def _reset_tag_cache(self) -> None:
+        """Hook to reset per-run tag caches. Default is no-op."""
+
+    def _encode_tag(self, tag: Any) -> str:
+        """Convert a tag to a backend-safe string."""
+        return str(tag)
+
+    def _decode_tags(self, results: dict[str, dict[str, int]]) -> dict:
+        """Restore structured tags from backend result labels."""
+        return results

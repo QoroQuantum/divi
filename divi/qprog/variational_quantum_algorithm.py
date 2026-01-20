@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -7,10 +7,9 @@ import pickle
 from abc import abstractmethod
 from datetime import datetime
 from functools import partial
-from itertools import groupby
 from pathlib import Path
 from queue import Queue
-from typing import Any
+from typing import Any, NamedTuple
 from warnings import warn
 
 import numpy as np
@@ -24,7 +23,7 @@ from divi.backends import (
     convert_counts_to_probs,
     reverse_dict_endianness,
 )
-from divi.circuits import CircuitBundle, MetaCircuit
+from divi.circuits import CircuitBundle, CircuitTag, MetaCircuit, format_circuit_tag
 from divi.circuits.qem import _NoMitigation
 from divi.qprog._expectation import _batched_expectation
 from divi.qprog._hamiltonians import convert_hamiltonian_to_pauli_string
@@ -48,6 +47,20 @@ from divi.qprog.optimizers import (
 from divi.qprog.quantum_program import QuantumProgram
 
 logger = logging.getLogger(__name__)
+
+
+class SolutionEntry(NamedTuple):
+    """A solution entry with bitstring, probability, and optional decoded value.
+
+    Args:
+        bitstring: Binary string representing a computational basis state.
+        prob: Measured probability in range [0.0, 1.0].
+        decoded: Optional problem-specific decoded representation. Defaults to None.
+    """
+
+    bitstring: str
+    prob: float
+    decoded: Any | None = None
 
 
 class SubclassState(BaseModel):
@@ -249,6 +262,12 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 QASM sizes manageable. Consider reducing precision if you need to minimize
                 data transfer overhead, or increase it only if you require higher numerical
                 precision in your circuit parameters.
+            decode_solution_fn (callable[[str], Any] | None): Function to decode bitstrings
+                into problem-specific solution representations. Called during final computation
+                and when `get_top_solutions(include_decoded=True)` is used. The function should
+                take a binary string (e.g., "0101") and return a decoded representation
+                (e.g., a list of indices, numpy array, or custom object). Defaults to
+                `lambda bitstring: bitstring` (identity function).
         """
 
         super().__init__(
@@ -290,6 +309,11 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         self._qem_protocol = kwargs.pop("qem_protocol", None) or _NoMitigation()
         self._precision = kwargs.pop("precision", 8)
+
+        # --- Solution Decoding ---
+        self._decode_solution_fn = kwargs.pop(
+            "decode_solution_fn", lambda bitstring: bitstring
+        )
 
         # --- Circuit Factory & Templates ---
         self._meta_circuits = None
@@ -451,11 +475,42 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         return self._best_loss
 
     @property
-    def best_probs(self):
-        """Get a copy of the probability distribution for the best parameters.
+    def best_probs(self) -> dict[CircuitTag, dict[str, float]]:
+        """Get normalized probabilities for the best parameters.
+
+        This property provides access to the probability distribution computed
+        by running measurement circuits with the best parameters found during
+        optimization. The distribution maps bitstrings (computational basis states)
+        to their measured probabilities.
+
+        The probabilities are normalized and have deterministic ordering when
+        iterated (dictionary insertion order is preserved in Python 3.7+).
 
         Returns:
-            dict: A copy of the best probability distribution.
+            dict[CircuitTag, dict[str, float]]: Dictionary mapping CircuitTag keys to
+                bitstring probability dictionaries. Bitstrings are binary strings
+                (e.g., "0101"), values are probabilities in range [0.0, 1.0].
+                Returns an empty dict if final computation has not been performed.
+
+        Raises:
+            RuntimeError: If attempting to access probabilities before running
+                the algorithm with final computation enabled.
+
+        Note:
+            To populate this distribution, you must run the algorithm with
+            `perform_final_computation=True` (the default):
+
+            >>> program.run(perform_final_computation=True)
+            >>> probs = program.best_probs
+
+        Example:
+            >>> program.run()
+            >>> probs = program.best_probs
+            >>> for bitstring, prob in probs.items():
+            ...     print(f"{bitstring}: {prob:.2%}")
+            0101: 42.50%
+            1010: 31.20%
+            ...
         """
         if not self._best_probs:
             warn(
@@ -465,6 +520,109 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 stacklevel=2,
             )
         return self._best_probs.copy()
+
+    def get_top_solutions(
+        self, n: int = 10, *, min_prob: float = 0.0, include_decoded: bool = False
+    ) -> list[SolutionEntry]:
+        """Get the top-N solutions sorted by probability.
+
+        This method extracts the most probable solutions from the measured
+        probability distribution. Solutions are sorted by probability (descending)
+        with deterministic tie-breaking using lexicographic ordering of bitstrings.
+
+        Args:
+            n (int): Maximum number of solutions to return. Must be non-negative.
+                If n is 0 or negative, returns an empty list. If n exceeds the
+                number of available solutions (after filtering), returns all
+                available solutions. Defaults to 10.
+            min_prob (float): Minimum probability threshold for including solutions.
+                Only solutions with probability >= min_prob will be included.
+                Must be in range [0.0, 1.0]. Defaults to 0.0 (no filtering).
+            include_decoded (bool): Whether to populate the `decoded` field of
+                each SolutionEntry by calling the `decode_solution_fn` provided
+                in the constructor. If False, the decoded field will be None.
+                Defaults to False.
+
+        Returns:
+            list[SolutionEntry]: List of solution entries sorted by probability
+                (descending), then by bitstring (lexicographically ascending)
+                for deterministic tie-breaking. Returns an empty list if no
+                probability distribution is available or n <= 0.
+
+        Raises:
+            RuntimeError: If probability distribution is not available because
+                optimization has not been run or final computation was not performed.
+            ValueError: If min_prob is not in range [0.0, 1.0] or n is negative.
+
+        Note:
+            The probability distribution must be computed by running the algorithm
+            with `perform_final_computation=True` (the default):
+
+            >>> program.run(perform_final_computation=True)
+            >>> top_10 = program.get_top_solutions(n=10)
+
+        Example:
+            >>> # Get top 5 solutions with probability >= 5%
+            >>> program.run()
+            >>> solutions = program.get_top_solutions(n=5, min_prob=0.05)
+            >>> for sol in solutions:
+            ...     print(f"{sol.bitstring}: {sol.prob:.2%}")
+            1010: 42.50%
+            0101: 31.20%
+            1100: 15.30%
+            0011: 8.50%
+            1111: 2.50%
+
+            >>> # Get solutions with decoding
+            >>> solutions = program.get_top_solutions(n=3, include_decoded=True)
+            >>> for sol in solutions:
+            ...     print(f"{sol.bitstring} -> {sol.decoded}")
+            1010 -> [0, 2]
+            0101 -> [1, 3]
+            ...
+        """
+        # Validate inputs
+        if n < 0:
+            raise ValueError(f"n must be non-negative, got {n}")
+        if not (0.0 <= min_prob <= 1.0):
+            raise ValueError(f"min_prob must be in range [0.0, 1.0], got {min_prob}")
+
+        # Handle edge case: n == 0
+        if n == 0:
+            return []
+
+        # Require probability distribution to exist
+        if not self._best_probs:
+            raise RuntimeError(
+                "No probability distribution available. The final computation step "
+                "must be performed to compute the probability distribution. "
+                "Call run(perform_final_computation=True) to execute optimization "
+                "and compute the distribution."
+            )
+        # Extract the probability distribution (nested by parameter set)
+        # _best_probs structure: {tag: {bitstring: prob}}
+        probs_dict = next(iter(self._best_probs.values()))
+
+        # Filter by minimum probability and get top n sorted by probability (descending),
+        # then bitstring (ascending) for deterministic tie-breaking
+        top_items = sorted(
+            filter(
+                lambda bitstring_prob: bitstring_prob[1] >= min_prob, probs_dict.items()
+            ),
+            key=lambda bitstring_prob: (-bitstring_prob[1], bitstring_prob[0]),
+        )[:n]
+
+        # Build result list (decode on demand)
+        return [
+            SolutionEntry(
+                bitstring=bitstring,
+                prob=prob,
+                decoded=(
+                    self._decode_solution_fn(bitstring) if include_decoded else None
+                ),
+            )
+            for bitstring, prob in top_items
+        ]
 
     @property
     def curr_params(self) -> npt.NDArray[np.float64]:
@@ -706,6 +864,110 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         return losses
 
+    @staticmethod
+    def _parse_result_tag(tag: CircuitTag) -> tuple[int, int]:
+        """Extract (param_id, qem_id) from a result tag."""
+        if not isinstance(tag, CircuitTag):
+            raise TypeError("Result tags must be CircuitTag instances.")
+        return tag.param_id, tag.qem_id
+
+    def _group_results(
+        self, results: dict[str, dict[str, int]]
+    ) -> dict[int, dict[int, list[dict[str, int]]]]:
+        """
+        Group results by parameter id and QEM id.
+
+        Returns:
+            dict[int, dict[int, list[dict[str, int]]]]: {param_id: {qem_id: [shots...]}}
+        """
+        grouped: dict[int, dict[int, list[dict[str, int]]]] = {}
+        for tag, shots in results.items():
+            param_id, qem_id = self._parse_result_tag(tag)
+            grouped.setdefault(param_id, {}).setdefault(qem_id, []).append(shots)
+        return grouped
+
+    def _reset_tag_cache(self) -> None:
+        """Reset per-run tag cache for structured result tags."""
+        self._tag_map: dict[str, CircuitTag] = {}
+
+    def _encode_tag(self, tag: CircuitTag | str) -> str:
+        """Convert structured tags to backend-safe strings."""
+        if isinstance(tag, CircuitTag):
+            tag_str = format_circuit_tag(tag)
+            self._tag_map[tag_str] = tag
+            return tag_str
+        return str(tag)
+
+    def _decode_tags(
+        self, results: dict[str, dict[str, int]]
+    ) -> dict[CircuitTag | str, dict[str, int]]:
+        """Restore structured tags from backend result labels."""
+        if not self._tag_map:
+            return results
+        return {self._tag_map.get(tag, tag): shots for tag, shots in results.items()}
+
+    def _apply_qem_protocol(
+        self, exp_matrix: npt.NDArray[np.float64]
+    ) -> list[npt.NDArray[np.float64]]:
+        """Apply the configured QEM protocol to expectation value matrices."""
+        return [
+            self._qem_protocol.postprocess_results(exp_vals) for exp_vals in exp_matrix
+        ]
+
+    def _compute_marginal_results(
+        self,
+        qem_groups: dict[int, list[dict[str, int]]],
+        measurement_groups: list[list[qml.operation.Operator]],
+        ham_ops: str | None,
+    ) -> list[npt.NDArray[np.float64] | list[npt.NDArray[np.float64]]]:
+        """Compute marginal results, handling backend modes and QEM."""
+        if self.backend.supports_expval:
+            if ham_ops is None:
+                raise ValueError(
+                    "Hamiltonian operators (ham_ops) are required when using a backend "
+                    "that supports expectation values, but were not provided."
+                )
+            ham_ops_list = ham_ops.split(";")
+            qem_group_values = [shots for _, shots in sorted(qem_groups.items())]
+            return [
+                self._apply_qem_protocol(
+                    np.array(
+                        [
+                            [shot_dict[op] for op in ham_ops_list]
+                            for shot_dict in shots_dicts
+                        ]
+                    ).T
+                )
+                for shots_dicts in qem_group_values
+            ] or []
+
+        shots_by_qem_idx = zip(*qem_groups.values())
+        marginal_results: list[
+            npt.NDArray[np.float64] | list[npt.NDArray[np.float64]]
+        ] = []
+        wire_order = tuple(reversed(self.cost_hamiltonian.wires))
+        for shots_dicts, curr_measurement_group in zip(
+            shots_by_qem_idx, measurement_groups
+        ):
+            exp_matrix = _batched_expectation(
+                shots_dicts, curr_measurement_group, wire_order
+            )
+            mitigated = self._apply_qem_protocol(exp_matrix)
+            marginal_results.append(mitigated if len(mitigated) > 1 else mitigated[0])
+
+        return marginal_results
+
+    @staticmethod
+    def _merge_param_group_counts(
+        param_group: list[tuple[str, dict[str, int]]],
+    ) -> dict[str, int]:
+        """Merge shot histograms for a single parameter group."""
+        shots_dict: dict[str, int] = {}
+        for _, d in param_group:
+            for s, c in d.items():
+                shots_dict[s] = shots_dict.get(s, 0) + c
+        return shots_dict
+
     def _post_process_results(
         self, results: dict[str, dict[str, int]], **kwargs
     ) -> dict[int, float]:
@@ -713,12 +975,8 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         Post-process the results of the quantum problem.
 
         Args:
-            results (dict[str, dict[str, int]]): The shot histograms of the quantum execution step.
-                The keys should be strings of format {param_id}_*_{measurement_group_id}.
-                i.e. an underscore-separated bunch of metadata, starting always with
-                the index of some parameter and ending with the index of some measurement group.
-                Any extra piece of metadata that might be relevant to the specific
-                application can be kept in the middle.
+            results (dict[CircuitTag, dict[str, int]]): The shot histograms of the quantum execution
+                step. Keys are CircuitTag instances containing param, QEM, and measurement ids.
 
         Returns:
             dict[int, float]: The energies for each parameter set grouping, where the dict keys
@@ -736,58 +994,12 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         losses = {}
         measurement_groups = self.meta_circuits["cost_circuit"].measurement_groups
 
-        # Define key functions for grouping
-        get_param_id = lambda item: int(item[0].split("_")[0])
-        get_qem_id = lambda item: int(item[0].split("_")[1].split(":")[1])
-
-        # Group the pre-sorted results by parameter ID.
-        for p, param_group_iterator in groupby(results.items(), key=get_param_id):
-            param_group_iterator = list(param_group_iterator)
-
-            # Group by QEM ID to handle error mitigation
-            qem_groups = {
-                gid: [value for _, value in group]
-                for gid, group in groupby(param_group_iterator, key=get_qem_id)
-            }
-
-            # Apply QEM protocol to expectation values (common for both backends)
-            apply_qem = lambda exp_matrix: [
-                self._qem_protocol.postprocess_results(exp_vals)
-                for exp_vals in exp_matrix
-            ]
-
-            if self.backend.supports_expval:
-                ham_ops = kwargs.get("ham_ops")
-                if ham_ops is None:
-                    raise ValueError(
-                        "Hamiltonian operators (ham_ops) are required when using a backend "
-                        "that supports expectation values, but were not provided."
-                    )
-                marginal_results = [
-                    apply_qem(
-                        np.array(
-                            [
-                                [shot_dict[op] for op in ham_ops.split(";")]
-                                for shot_dict in shots_dicts
-                            ]
-                        ).T
-                    )
-                    for shots_dicts in sorted(qem_groups.values())
-                ] or []
-            else:
-                shots_by_qem_idx = zip(*qem_groups.values())
-                marginal_results = []
-                for shots_dicts, curr_measurement_group in zip(
-                    shots_by_qem_idx, measurement_groups
-                ):
-                    wire_order = tuple(reversed(self.cost_hamiltonian.wires))
-                    exp_matrix = _batched_expectation(
-                        shots_dicts, curr_measurement_group, wire_order
-                    )
-                    mitigated = apply_qem(exp_matrix)
-                    marginal_results.append(
-                        mitigated if len(mitigated) > 1 else mitigated[0]
-                    )
+        for p, qem_groups in self._group_results(results).items():
+            marginal_results = self._compute_marginal_results(
+                qem_groups=qem_groups,
+                measurement_groups=measurement_groups,
+                ham_ops=kwargs.get("ham_ops"),
+            )
 
             pl_loss = (
                 self.meta_circuits["cost_circuit"]
@@ -916,7 +1128,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             if current_loss < self._best_loss:
                 self._best_loss = current_loss
                 best_idx = np.argmin(intermediate_result.fun)
-
                 self._best_params = intermediate_result.x[best_idx].copy()
 
             self.current_iteration += 1
@@ -965,6 +1176,12 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         self._final_params = self._minimize_res.x
 
+        # Set _best_params from final result (source of truth)
+        x = np.atleast_2d(self._minimize_res.x)
+        fun = np.atleast_1d(self._minimize_res.fun)
+        best_idx = np.argmin(fun)
+        self._best_params = x[best_idx].copy()
+
         if perform_final_computation:
             self._perform_final_computation(**kwargs)
 
@@ -974,10 +1191,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
     def _run_solution_measurement(self) -> None:
         """Execute measurement circuits to obtain probability distributions for solution extraction."""
-        if self._best_params is None:
-            raise RuntimeError(
-                "Optimization has not been run, no best parameters available."
-            )
 
         if "meas_circuit" not in self.meta_circuits:
             raise NotImplementedError(

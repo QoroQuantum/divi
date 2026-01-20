@@ -70,6 +70,32 @@ QAOA Algorithm
 .. autoattribute:: divi.qprog.algorithms.QAOA.mixer_hamiltonian
    :no-index:
 
+PCE Algorithm
+~~~~~~~~~~~~~
+
+.. autoclass:: divi.qprog.algorithms.PCE
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+   :exclude-members: cost_hamiltonian
+
+Custom VQA
+~~~~~~~~~~
+
+.. autoclass:: divi.qprog.algorithms.CustomVQA
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+   :exclude-members: cost_hamiltonian, param_shape
+
+.. autoattribute:: divi.qprog.algorithms.CustomVQA.cost_hamiltonian
+   :no-index:
+
+.. autoattribute:: divi.qprog.algorithms.CustomVQA.param_shape
+   :no-index:
+
 Graph Problem Types
 ~~~~~~~~~~~~~~~~~~~
 

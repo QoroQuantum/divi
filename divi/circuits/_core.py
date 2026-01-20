@@ -1,11 +1,12 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from itertools import product
-from typing import Callable, Literal
+from typing import Literal, NamedTuple
 
 import dill
 import numpy as np
@@ -96,11 +97,25 @@ def _create_final_postprocessing_fn(coefficients, partition_indices, num_total_o
     return final_postprocessing_fn
 
 
+class CircuitTag(NamedTuple):
+    """Structured tag for identifying circuit executions."""
+
+    param_id: int
+    qem_name: str
+    qem_id: int
+    meas_id: int
+
+
+def format_circuit_tag(tag: CircuitTag) -> str:
+    """Format a CircuitTag into its wire-safe string representation."""
+    return f"{tag.param_id}_{tag.qem_name}:{tag.qem_id}_{tag.meas_id}"
+
+
 @dataclass(frozen=True)
 class ExecutableQASMCircuit:
     """Represents a single, executable QASM circuit with its associated tag."""
 
-    tag: str
+    tag: CircuitTag
     qasm: str
 
 
@@ -129,7 +144,7 @@ class CircuitBundle:
         return f"CircuitBundle ({len(self.executables)} executables)"
 
     @property
-    def tags(self) -> list[str]:
+    def tags(self) -> list[CircuitTag]:
         """A list of tags for all executables in the bundle."""
         return [e.tag for e in self.executables]
 
@@ -312,7 +327,10 @@ class MetaCircuit:
         self.__dict__.update(state)
 
     def initialize_circuit_from_params(
-        self, param_list, tag_prefix: str = "", precision: int | None = None
+        self,
+        param_list: npt.NDArray[np.floating] | list[float],
+        param_idx: int = 0,
+        precision: int | None = None,
     ) -> CircuitBundle:
         """
         Instantiate a concrete CircuitBundle by substituting symbolic parameters with values.
@@ -322,10 +340,11 @@ class MetaCircuit:
         concrete numerical values.
 
         Args:
-            param_list: Array of numerical parameter values to substitute for symbols.
+            param_list (npt.NDArray[np.floating] | list[float]): Array of numerical
+                parameter values to substitute for symbols.
                 Must match the length and order of self.symbols.
-            tag_prefix (str, optional): Prefix to prepend to circuit tags for
-                identification. Defaults to "".
+            param_idx (int, optional): Parameter set index used for structured tags.
+                Defaults to 0.
             precision (int | None, optional): Number of decimal places for parameter values
                 in the QASM output. If None, uses the precision set on this MetaCircuit instance.
                 Defaults to None.
@@ -354,16 +373,19 @@ class MetaCircuit:
         ]
 
         executables = []
+        param_id = param_idx
         for (i, body_str), (j, meas_str) in product(
             enumerate(final_qasm_bodies), enumerate(self._measurements)
         ):
             qasm_circuit = body_str + meas_str
-            tag_parts = [tag_prefix]
-            if self.qem_protocol:
-                tag_parts.append(f"{self.qem_protocol.name}:{i}")
-            tag_parts.append(str(j))
-
-            tag = "_".join(filter(None, tag_parts))
+            tag = CircuitTag(
+                param_id=param_id,
+                qem_name=(
+                    self.qem_protocol.name if self.qem_protocol else "NoMitigation"
+                ),
+                qem_id=i,
+                meas_id=j,
+            )
             executables.append(ExecutableQASMCircuit(tag=tag, qasm=qasm_circuit))
 
         return CircuitBundle(executables=tuple(executables))

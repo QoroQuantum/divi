@@ -1,8 +1,9 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+from collections.abc import Callable
 from enum import Enum
 from typing import Any, Literal, get_args
 from warnings import warn
@@ -13,8 +14,6 @@ import networkx as nx
 import numpy as np
 import pennylane as qml
 import pennylane.qaoa as pqaoa
-import rustworkx as rx
-import scipy.sparse as sps
 import sympy as sp
 
 from divi.circuits import CircuitBundle, MetaCircuit
@@ -22,12 +21,10 @@ from divi.qprog._hamiltonians import (
     _clean_hamiltonian,
     convert_qubo_matrix_to_pennylane_ising,
 )
+from divi.qprog.typing import GraphProblemTypes, QUBOProblemTypes, qubo_to_matrix
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 
 logger = logging.getLogger(__name__)
-
-GraphProblemTypes = nx.Graph | rx.PyGraph
-QUBOProblemTypes = list | np.ndarray | sps.spmatrix | dimod.BinaryQuadraticModel
 
 
 def _extract_loss_constant(
@@ -163,17 +160,7 @@ def _resolve_circuit_layers(
 
         return *getattr(pqaoa, graph_problem.pl_string)(*params), resolved_initial_state
     else:
-        # Convert BinaryQuadraticModel to matrix if needed
-        if isinstance(problem, dimod.BinaryQuadraticModel):
-            # Manual conversion from BQM to matrix (replacing deprecated to_numpy_matrix)
-            variables = list(problem.variables)
-            var_to_idx = {v: i for i, v in enumerate(variables)}
-            qubo_matrix = np.diag([problem.linear.get(v, 0) for v in variables])
-            for (u, v), coeff in problem.quadratic.items():
-                i, j = var_to_idx[u], var_to_idx[v]
-                qubo_matrix[i, j] = qubo_matrix[j, i] = coeff
-        else:
-            qubo_matrix = problem
+        qubo_matrix = qubo_to_matrix(problem)
 
         cost_hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
 
@@ -225,6 +212,7 @@ class QAOA(VariationalQuantumAlgorithm):
         n_layers: int = 1,
         initial_state: _SUPPORTED_INITIAL_STATES_LITERAL = "Recommended",
         max_iterations: int = 10,
+        decode_solution_fn: Callable[[str], Any] | None = None,
         **kwargs,
     ):
         """Initialize the QAOA problem.
@@ -237,14 +225,20 @@ class QAOA(VariationalQuantumAlgorithm):
             n_layers (int): Number of QAOA layers. Defaults to 1.
             initial_state (_SUPPORTED_INITIAL_STATES_LITERAL): The initial state of the circuit. Defaults to "Recommended".
             max_iterations (int): Maximum number of optimization iterations. Defaults to 10.
+            decode_solution_fn (callable[[str], Any] | None): Optional decoder for bitstrings.
+                If not provided, a default decoder is selected based on problem type.
             **kwargs: Additional keyword arguments passed to the parent class, including `optimizer`.
         """
-        super().__init__(**kwargs)
-
         self.graph_problem = graph_problem
 
-        # Validate and process problem
+        # Validate and process problem (needed to determine decode function)
+        # This sets n_qubits which is needed before parent init
         self.problem = self._validate_and_set_problem(problem, graph_problem)
+
+        if decode_solution_fn is not None:
+            kwargs["decode_solution_fn"] = decode_solution_fn
+
+        super().__init__(**kwargs)
 
         # Validate initial state
         if initial_state not in get_args(_SUPPORTED_INITIAL_STATES_LITERAL):
@@ -285,6 +279,22 @@ class QAOA(VariationalQuantumAlgorithm):
 
         # Extract wire labels from the cost Hamiltonian to ensure consistency
         self._circuit_wires = tuple(self._cost_hamiltonian.wires)
+
+        # Set up decode function based on problem type if user didn't provide one
+        if decode_solution_fn is None:
+            if isinstance(self.problem, QUBOProblemTypes):
+                # For QUBO: convert bitstring to numpy array of int32
+                self._decode_solution_fn = lambda bitstring: np.fromiter(
+                    bitstring, dtype=np.int32
+                )
+            elif isinstance(self.problem, GraphProblemTypes):
+                # For Graph: map bitstring positions to graph node labels
+                circuit_wires = self._circuit_wires  # Capture for closure
+                self._decode_solution_fn = lambda bitstring: [
+                    circuit_wires[idx]
+                    for idx, bit in enumerate(bitstring)
+                    if bit == "1" and idx < len(circuit_wires)
+                ]
 
     def _save_subclass_state(self) -> dict[str, Any]:
         """Save QAOA-specific runtime state."""
@@ -497,7 +507,7 @@ class QAOA(VariationalQuantumAlgorithm):
 
         return [
             self.meta_circuits[circuit_type].initialize_circuit_from_params(
-                params_group, tag_prefix=f"{p}"
+                params_group, param_idx=p
             )
             for p, params_group in enumerate(self._curr_params)
         ]
@@ -508,9 +518,11 @@ class QAOA(VariationalQuantumAlgorithm):
         This method performs the following steps:
         1. Executes measurement circuits with the best parameters (those that achieved the lowest loss).
         2. Retrieves the bitstring representing the best solution, correcting for endianness.
-        3. Depending on the problem type:
-           - For QUBO problems, stores the solution as a NumPy array of bits.
-           - For graph problems, stores the solution as a list of node indices corresponding to '1's in the bitstring.
+        3. Uses the `decode_solution_fn` (configured in constructor based on problem type) to decode
+           the bitstring into the appropriate format:
+           - For QUBO problems: NumPy array of bits (int32).
+           - For graph problems: List of node indices corresponding to '1's in the bitstring.
+        4. Stores the decoded solution in the appropriate attribute.
 
         Returns:
             tuple[int, float]: A tuple containing:
@@ -529,19 +541,14 @@ class QAOA(VariationalQuantumAlgorithm):
             best_measurement_probs, key=best_measurement_probs.get
         )
 
-        if isinstance(self.problem, QUBOProblemTypes):
-            self._solution_bitstring[:] = np.fromiter(
-                best_solution_bitstring, dtype=np.int32
-            )
+        # Use decode function to get the decoded solution
+        decoded_solution = self._decode_solution_fn(best_solution_bitstring)
 
-        if isinstance(self.problem, GraphProblemTypes):
-            # Map bitstring positions to actual graph node labels
-            # Bitstring is already endianness-corrected, so positions map directly to circuit_wires
-            self._solution_nodes[:] = [
-                self._circuit_wires[idx]
-                for idx, bit in enumerate(best_solution_bitstring)
-                if bit == "1" and idx < len(self._circuit_wires)
-            ]
+        # Store in appropriate attribute based on problem type
+        if isinstance(self.problem, QUBOProblemTypes):
+            self._solution_bitstring[:] = decoded_solution
+        elif isinstance(self.problem, GraphProblemTypes):
+            self._solution_nodes[:] = decoded_solution
 
         self.reporter.info(message="🏁 Computed Final Solution! 🏁")
 

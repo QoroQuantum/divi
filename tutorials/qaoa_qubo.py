@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -50,13 +50,38 @@ if __name__ == "__main__":
 
     qaoa_problem.run()
 
-    print(f"Total circuits: {qaoa_problem.total_circuit_count}")
-
+    quantum_solution = qaoa_problem.solution
+    quantum_energy = bqm.energy(quantum_solution)
     best_classical_bitstring, best_classical_energy, _ = (
         dimod.ExactSolver().sample(bqm).lowest().record[0]
     )
 
-    print(f"Classical Solution: {best_classical_bitstring}")
-    print(f"Classical Energy: {best_classical_energy:.9f}")
-    print(f"Quantum Solution: {qaoa_problem.solution}")
-    print(f"Quantum Energy: {bqm.energy(qaoa_problem.solution):.9f}")
+    quantum_bitstring = "".join(str(bit) for bit in quantum_solution)
+    classical_bitstring = "".join(str(bit) for bit in best_classical_bitstring)
+    bitstring_width = max(len(quantum_bitstring), len(classical_bitstring))
+
+    print(f"Total circuits: {qaoa_problem.total_circuit_count}\n")
+    print("Method     Energy        Bitstring")
+    print("-------    -----------   " + "-" * bitstring_width)
+    print(
+        f"QAOA       {quantum_energy:>11.6f}   {quantum_bitstring:<{bitstring_width}}"
+    )
+    print(
+        f"Classical  {best_classical_energy:>11.6f}   "
+        f"{classical_bitstring:<{bitstring_width}}"
+    )
+
+    # Demonstrate top-N solutions functionality
+    print("\n" + "=" * 60)
+    print("Top 5 Solutions by Probability:")
+    print("=" * 60)
+    top_solutions = qaoa_problem.get_top_solutions(n=5)
+    for i, sol in enumerate(top_solutions, 1):
+        # Convert bitstring to numpy array for energy calculation
+        solution_array = np.array([int(bit) for bit in sol.bitstring])
+        energy = bqm.energy(solution_array)
+        print(
+            f"{i}. Bitstring: {sol.bitstring} | "
+            f"Probability: {sol.prob:0.2%} | "
+            f"Energy: {energy:.4f}"
+        )

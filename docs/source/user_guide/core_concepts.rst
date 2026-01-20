@@ -63,6 +63,73 @@ Here's how a typical VQE program flows through this lifecycle:
    # 4. Execution & 5. Result Processing - All done!
    print(f"Ground state energy: {vqe.best_loss:.6f}")
 
+Analyzing Solution Distributions
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+After running optimization with any variational quantum algorithm, you can analyze the probability distribution of solutions using the :meth:`get_top_solutions` method. This is particularly useful for understanding solution quality and exploring alternative solutions beyond the single best one.
+
+The method returns a list of :class:`SolutionEntry` objects, each containing:
+- ``bitstring``: The solution bitstring (raw measurement result)
+- ``prob``: The probability of measuring this solution
+- ``decoded``: The decoded solution (if ``include_decoded=True``)
+
+Solutions are sorted by probability (descending), with lexicographic tie-breaking for deterministic ordering.
+
+**Decoding Solutions**
+
+By default, solutions are returned as raw bitstrings. However, many algorithms provide a ``decode_solution_fn`` parameter that converts bitstrings into problem-specific formats:
+
+- **QAOA with QUBO problems**: Bitstrings are automatically decoded to NumPy arrays
+- **QAOA with graph problems**: Bitstrings are decoded to lists of node indices
+- **VQE**: Bitstrings represent eigenstates (typically used as-is)
+- **Custom decoders**: You can provide your own decoding function when creating the algorithm
+
+Set ``include_decoded=True`` when calling :meth:`get_top_solutions` to include decoded solutions in the results.
+
+**Example**
+
+.. code-block:: python
+
+   import dimod
+   import numpy as np
+   from divi.qprog import QAOA
+   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+   from divi.backends import ParallelSimulator
+
+   # Create a QUBO problem
+   bqm = dimod.generators.gnp_random_bqm(10, 0.5, vartype="BINARY", seed=1997)
+   qubo_array = bqm.to_numpy_matrix()
+
+   qaoa_problem = QAOA(
+       problem=qubo_array,
+       n_layers=2,
+       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+       max_iterations=10,
+       backend=ParallelSimulator(shots=10000),
+   )
+
+   qaoa_problem.run()
+
+   # Get top 10 solutions by probability
+   top_solutions = qaoa_problem.get_top_solutions(n=10)
+
+   print("Top 10 solutions:")
+   for i, sol in enumerate(top_solutions, 1):
+       # Convert bitstring to numpy array for energy calculation
+       solution_array = np.array([int(bit) for bit in sol.bitstring])
+       solution_dict = {var: int(val) for var, val in zip(bqm.variables, solution_array)}
+       energy = bqm.energy(solution_dict)
+       print(f"{i}. {sol.bitstring}: prob={sol.prob:.2%}, energy={energy:.4f}")
+
+   # Filter solutions by minimum probability
+   high_prob_solutions = qaoa_problem.get_top_solutions(n=5, min_prob=0.01)
+   print(f"\nSolutions with probability >= 1%: {len(high_prob_solutions)}")
+
+   # Get solutions with decoded values (for graph problems, this would be node lists)
+   # For QUBO problems, decoded values are NumPy arrays
+   decoded_solutions = qaoa_problem.get_top_solutions(n=5, include_decoded=True)
+   for sol in decoded_solutions:
+       print(f"Bitstring: {sol.bitstring}, Decoded: {sol.decoded}")
 
 **Key Features:**
 

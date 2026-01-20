@@ -1,8 +1,10 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import atexit
 import logging
+import os
 from abc import ABC, abstractmethod
 from queue import Queue
 
@@ -64,12 +66,26 @@ class QueueProgressReporter(ProgressReporter):
 class LoggingProgressReporter(ProgressReporter):
     """Reports progress by logging messages to the console."""
 
+    _atexit_registered = False
+
     def __init__(self):
         # Use the same console instance that RichHandler uses to avoid interference
         self._console = Console(file=None)  # file=None uses stdout, same as RichHandler
         self._status = None  # Track active status for overwriting messages
         self._current_msg = None  # Track current main message
         self._polling_msg = None  # Track current polling message
+        self._disable_progress = self._should_disable_progress()
+
+    def _ensure_atexit_hook(self):
+        if self._disable_progress or LoggingProgressReporter._atexit_registered:
+            return
+        atexit.register(self._close_status)
+        LoggingProgressReporter._atexit_registered = True
+
+    @staticmethod
+    def _should_disable_progress() -> bool:
+        disable_env = os.getenv("DIVI_DISABLE_PROGRESS", "").strip().lower()
+        return disable_env in {"1", "true", "yes", "on"}
 
     def _close_status(self):
         """Close any active status."""
@@ -90,9 +106,12 @@ class LoggingProgressReporter(ProgressReporter):
 
     def _update_or_create_status(self):
         """Update existing status or create a new one with combined message."""
+        if self._disable_progress:
+            return
         status_msg = self._build_status_msg()
         if not status_msg:
             return
+        self._ensure_atexit_hook()
         if self._status:
             self._status.update(status_msg)
         else:
@@ -105,6 +124,9 @@ class LoggingProgressReporter(ProgressReporter):
         logger.info(f"Finished Iteration #{kwargs['iteration']}")
 
     def info(self, message: str, overwrite: bool = False, **kwargs):
+        if self._disable_progress:
+            logger.info(message)
+            return
         # A special check for iteration updates to use Rich's status for overwriting
         if "poll_attempt" in kwargs:
             self._polling_msg = (

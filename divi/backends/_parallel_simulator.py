@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -16,6 +16,7 @@ from qiskit import QuantumCircuit, transpile
 from qiskit.converters import circuit_to_dag
 from qiskit.dagcircuit import DAGOpNode
 from qiskit.providers import Backend
+from qiskit.transpiler.exceptions import TranspilerError
 from qiskit_aer import AerSimulator
 from qiskit_aer.noise import NoiseModel
 
@@ -270,7 +271,7 @@ class ParallelSimulator(CircuitRunner):
             circuit_simulator = self._create_simulator(resolved_backend)
 
             if self.simulation_seed is not None:
-                circuit_simulator.set_option("seed_simulator", self.simulation_seed)
+                circuit_simulator.set_options(seed_simulator=self.simulation_seed)
 
             # Run the single circuit
             job = circuit_simulator.run(transpiled_circuit, shots=self.shots)
@@ -421,7 +422,7 @@ class ParallelSimulator(CircuitRunner):
         )
 
         total_run_time_s = 0.0
-        durations = resolved_backend.instruction_durations
+        durations = resolved_backend.target.durations()
 
         for node in circuit_to_dag(transpiled_circuit).longest_path():
             if not isinstance(node, DAGOpNode) or not node.num_qubits:
@@ -429,10 +430,9 @@ class ParallelSimulator(CircuitRunner):
 
             try:
                 idx = tuple(q._index for q in node.qargs)
-                total_run_time_s += durations.duration_by_name_qubits[(node.name, idx)][
-                    0
-                ]
-            except KeyError:
+                duration = durations.get(node.name, idx, unit="s")
+                total_run_time_s += duration
+            except TranspilerError:
                 if node.name != "barrier":
                     warn(f"Instruction duration not found: {node.name}")
 

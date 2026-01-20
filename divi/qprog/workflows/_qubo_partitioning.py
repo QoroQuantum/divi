@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -14,9 +14,10 @@ import scipy.sparse as sps
 from dimod import BinaryQuadraticModel
 
 from divi.backends import CircuitRunner
-from divi.qprog.algorithms import QAOA, QUBOProblemTypes
+from divi.qprog.algorithms import QAOA
 from divi.qprog.batch import ProgramBatch
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer, copy_optimizer
+from divi.qprog.typing import QUBOProblemTypes
 
 
 # Helper function to merge subsamples in-place

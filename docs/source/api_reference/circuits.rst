@@ -27,6 +27,12 @@ Core Circuit Classes
    :show-inheritance:
    :special-members: __init__
 
+.. autoclass:: divi.circuits.CircuitTag
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+
 QASM Integration
 ----------------
 

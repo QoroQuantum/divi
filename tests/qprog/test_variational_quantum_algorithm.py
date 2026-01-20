@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -14,6 +14,7 @@ from mitiq.zne.scaling import fold_global
 from pennylane.measurements import ExpectationMP
 from scipy.optimize import OptimizeResult
 
+from divi.circuits import CircuitTag
 from divi.circuits.qem import ZNE
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.exceptions import _CancelledError
@@ -161,7 +162,9 @@ class TestProgram:
             program._initialize_params()
             fake_shot_histogram = {"00": 23, "01": 27, "10": 15, "11": 35}
             fake_results = {
-                f"0_mock-qem:0_{i}": fake_shot_histogram
+                CircuitTag(
+                    param_id=0, qem_name="mock-qem", qem_id=0, meas_id=i
+                ): fake_shot_histogram
                 for i in range(expected_n_groups)
             }
             expvals_collector.append(program._post_process_results(fake_results)[0])
@@ -190,7 +193,12 @@ class TestProgram:
         n_measurement_groups = 3
         for qem_run_id, shots in enumerate(mock_shots_per_sf):
             for meas_group_id in range(n_measurement_groups):
-                key = f"0_zne:{qem_run_id}_{meas_group_id}"
+                key = CircuitTag(
+                    param_id=0,
+                    qem_name="zne",
+                    qem_id=qem_run_id,
+                    meas_id=meas_group_id,
+                )
                 mock_results[key] = shots
 
         final_losses = program._post_process_results(mock_results)
@@ -210,8 +218,16 @@ class TestProgram:
 
         ham_ops = "XI;IZ;XZ"
         fake_results = {
-            "0_NoMitigation:0_0": {"XI": 0.5, "IZ": -0.3, "XZ": 0.2},
-            "1_NoMitigation:0_0": {"XI": 0.7, "IZ": -0.1, "XZ": -0.2},
+            CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0): {
+                "XI": 0.5,
+                "IZ": -0.3,
+                "XZ": 0.2,
+            },
+            CircuitTag(param_id=1, qem_name="NoMitigation", qem_id=0, meas_id=0): {
+                "XI": 0.7,
+                "IZ": -0.1,
+                "XZ": -0.2,
+            },
         }
 
         losses = program._post_process_results(fake_results, ham_ops=ham_ops)
@@ -233,7 +249,12 @@ class TestProgram:
         )
         program.loss_constant = 0.0
 
-        fake_results = {"0_NoMitigation:0_0": {"XI": 0.5, "IZ": -0.3}}
+        fake_results = {
+            CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0): {
+                "XI": 0.5,
+                "IZ": -0.3,
+            }
+        }
         with pytest.raises(
             ValueError,
             match="Hamiltonian operators.*required when using a backend.*supports expectation values",
@@ -496,6 +517,19 @@ class BaseVariationalQuantumAlgorithmTest:
         if "optimizer" not in kwargs:
             kwargs["optimizer"] = self._create_mock_optimizer(mocker, n_param_sets=1)
         return SampleVQAProgram(circ_count=1, run_time=0.1, **kwargs)
+
+    def _setup_program_with_probs(self, mocker, probs_dict: dict[str, float], **kwargs):
+        """Helper to create a program with a synthetic probability distribution."""
+        program = self._create_program_with_mock_optimizer(mocker, **kwargs)
+        # Wrap in nested structure: {tag: {bitstring: prob}} to match production
+        program._best_probs = {
+            CircuitTag(
+                param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0
+            ): probs_dict
+        }
+        # Mark as having run optimization to avoid warnings
+        program._losses_history = [{0: -1.0}]
+        return program
 
 
 class TestParametersBehavior(BaseVariationalQuantumAlgorithmTest):
@@ -862,6 +896,22 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         # Should return new lists (not the same object)
         assert min_losses1 == min_losses2
         assert min_losses1 is not min_losses2
+
+    def test_best_probs_returns_copy(self, mocker):
+        """Test that best_probs returns a copy, not a reference."""
+        program = self._setup_program_with_probs(mocker, {"00": 0.5, "01": 0.5})
+
+        result = program.best_probs
+        # best_probs returns a shallow copy of the nested structure
+        # Modifying the outer dict keys doesn't affect original
+        original_keys = list(program._best_probs.keys())
+        result["new_tag"] = {"11": 1.0}  # Add new key to returned dict
+
+        # Original keys should be unchanged
+        assert list(program._best_probs.keys()) == original_keys
+        # But modifying nested dicts will affect original (shallow copy)
+        # So we test that the outer dict is copied, not the inner dicts
+        assert "new_tag" not in program._best_probs
 
 
 class TestCheckpointing:
@@ -1250,3 +1300,340 @@ class TestPropertyWarnings(BaseVariationalQuantumAlgorithmTest):
         # best_probs should still warn because it's empty
         with pytest.warns(UserWarning, match="best_probs is empty"):
             _ = program.best_probs
+
+
+class TestTopSolutionsAPI(BaseVariationalQuantumAlgorithmTest):
+    """Test suite for get_top_solutions() and best_probs API."""
+
+    def test_get_top_solutions_raises_when_no_probs(self, mocker):
+        """Test that get_top_solutions raises RuntimeError when distribution is empty."""
+        program = self._create_program_with_mock_optimizer(mocker)
+        program._best_probs = {}
+
+        with pytest.raises(
+            RuntimeError,
+            match="No probability distribution available.*perform_final_computation=True",
+        ):
+            program.get_top_solutions(n=5)
+
+    def test_decode_solution_fn_default_returns_identity(self, mocker):
+        """Test that default decode_solution_fn returns bitstring unchanged."""
+        program = self._create_program_with_mock_optimizer(mocker)
+
+        result = program._decode_solution_fn("1010")
+
+        assert result == "1010"
+
+    def test_get_top_solutions_basic_sorting(self, mocker):
+        """Test that get_top_solutions sorts by probability descending."""
+        probs = {
+            "00": 0.1,
+            "01": 0.5,
+            "10": 0.3,
+            "11": 0.1,
+        }
+        program = self._setup_program_with_probs(mocker, probs)
+
+        result = program.get_top_solutions(n=3)
+
+        assert len(result) == 3
+        assert result[0].bitstring == "01"
+        assert result[0].prob == 0.5
+        assert result[1].bitstring == "10"
+        assert result[1].prob == 0.3
+        # For tied probabilities (0.1), lexicographic order: "00" < "11"
+        assert result[2].bitstring == "00"
+        assert result[2].prob == 0.1
+
+    def test_get_top_solutions_deterministic_tie_breaking(self, mocker):
+        """Test that get_top_solutions uses lexicographic tie-breaking for equal probabilities."""
+        probs = {
+            "111": 0.3,
+            "000": 0.3,
+            "101": 0.2,
+            "010": 0.2,
+        }
+        program = self._setup_program_with_probs(mocker, probs)
+
+        result = program.get_top_solutions(n=4)
+
+        assert len(result) == 4
+        # Tied at 0.3: "000" < "111" lexicographically
+        assert result[0].bitstring == "000"
+        assert result[0].prob == 0.3
+        assert result[1].bitstring == "111"
+        assert result[1].prob == 0.3
+        # Tied at 0.2: "010" < "101" lexicographically
+        assert result[2].bitstring == "010"
+        assert result[2].prob == 0.2
+        assert result[3].bitstring == "101"
+        assert result[3].prob == 0.2
+
+    def test_get_top_solutions_respects_n_parameter(self, mocker):
+        """Test that get_top_solutions returns at most n solutions."""
+        probs = {f"{i:03b}": 0.1 for i in range(8)}  # 8 solutions with equal prob
+        program = self._setup_program_with_probs(mocker, probs)
+
+        result = program.get_top_solutions(n=3)
+
+        assert len(result) == 3
+        # Should return first 3 in lexicographic order (tie-breaking)
+        assert result[0].bitstring == "000"
+        assert result[1].bitstring == "001"
+        assert result[2].bitstring == "010"
+
+    def test_get_top_solutions_n_exceeds_available(self, mocker):
+        """Test that get_top_solutions returns all solutions when n exceeds count."""
+        probs = {"00": 0.6, "01": 0.4}
+        program = self._setup_program_with_probs(mocker, probs)
+
+        result = program.get_top_solutions(n=100)
+
+        assert len(result) == 2  # Only 2 available
+
+    def test_get_top_solutions_n_zero_returns_empty(self, mocker):
+        """Test that get_top_solutions returns empty list when n=0."""
+        probs = {"00": 0.5, "11": 0.5}
+        program = self._setup_program_with_probs(mocker, probs)
+
+        result = program.get_top_solutions(n=0)
+
+        assert result == []
+
+    def test_get_top_solutions_n_negative_raises_error(self, mocker):
+        """Test that get_top_solutions raises ValueError for negative n."""
+        probs = {"00": 1.0}
+        program = self._setup_program_with_probs(mocker, probs)
+
+        with pytest.raises(ValueError, match="n must be non-negative"):
+            program.get_top_solutions(n=-1)
+
+    def test_get_top_solutions_min_prob_filtering(self, mocker):
+        """Test that get_top_solutions filters by min_prob threshold."""
+        probs = {
+            "00": 0.5,
+            "01": 0.3,
+            "10": 0.15,
+            "11": 0.05,
+        }
+        program = self._setup_program_with_probs(mocker, probs)
+
+        result = program.get_top_solutions(n=10, min_prob=0.2)
+
+        # Only "00" (0.5) and "01" (0.3) should pass the threshold
+        assert len(result) == 2
+        assert result[0].bitstring == "00"
+        assert result[1].bitstring == "01"
+
+    def test_get_top_solutions_min_prob_invalid_raises_error(self, mocker):
+        """Test that get_top_solutions raises ValueError for invalid min_prob."""
+        probs = {"00": 1.0}
+        program = self._setup_program_with_probs(mocker, probs)
+
+        with pytest.raises(ValueError, match="min_prob must be in range"):
+            program.get_top_solutions(min_prob=-0.1)
+
+        with pytest.raises(ValueError, match="min_prob must be in range"):
+            program.get_top_solutions(min_prob=1.5)
+
+    def test_get_top_solutions_include_decoded_false(self, mocker):
+        """Test that get_top_solutions with include_decoded=False sets decoded to None."""
+        probs = {"00": 0.6, "11": 0.4}
+        program = self._setup_program_with_probs(mocker, probs)
+
+        result = program.get_top_solutions(n=2, include_decoded=False)
+
+        assert len(result) == 2
+        assert result[0].decoded is None
+        assert result[1].decoded is None
+
+    def test_get_top_solutions_include_decoded_true_calls_decode(self, mocker):
+        """Test that get_top_solutions with include_decoded=True uses decode_solution_fn."""
+        probs = {"00": 0.6, "11": 0.4}
+
+        # Create a custom decode function
+        def mock_decode(bitstring):
+            return f"decoded_{bitstring}"
+
+        program = self._setup_program_with_probs(
+            mocker, probs, decode_solution_fn=mock_decode
+        )
+
+        result = program.get_top_solutions(n=2, include_decoded=True)
+
+        assert len(result) == 2
+        assert result[0].decoded == "decoded_00"
+        assert result[1].decoded == "decoded_11"
+
+    def test_get_top_solutions_returns_solution_entry_instances(self, mocker):
+        """Test that get_top_solutions returns SolutionEntry namedtuple instances."""
+        from divi.qprog.variational_quantum_algorithm import SolutionEntry
+
+        probs = {"00": 0.6, "11": 0.4}
+        program = self._setup_program_with_probs(mocker, probs)
+
+        result = program.get_top_solutions(n=2)
+
+        assert len(result) == 2
+        assert isinstance(result[0], SolutionEntry)
+        assert isinstance(result[1], SolutionEntry)
+        assert result[0].bitstring == "00"
+        assert result[0].prob == 0.6
+
+    def test_get_top_solutions_solution_entry_is_frozen(self, mocker):
+        """Test that SolutionEntry is frozen (immutable)."""
+        probs = {"00": 1.0}
+        program = self._setup_program_with_probs(mocker, probs)
+
+        result = program.get_top_solutions(n=1)
+        entry = result[0]
+
+        # Attempting to modify immutable namedtuple should raise
+        with pytest.raises((AttributeError, TypeError)):
+            entry.bitstring = "11"
+
+    def test_get_top_solutions_combined_filters(self, mocker):
+        """Test get_top_solutions with both n and min_prob filters."""
+        probs = {
+            "0000": 0.4,
+            "0001": 0.25,
+            "0010": 0.15,
+            "0011": 0.1,
+            "0100": 0.05,
+            "0101": 0.03,
+            "0110": 0.02,
+        }
+        program = self._setup_program_with_probs(mocker, probs)
+
+        # Request top 5, but filter out anything below 0.1
+        result = program.get_top_solutions(n=5, min_prob=0.1)
+
+        # Should get "0000" (0.4), "0001" (0.25), "0010" (0.15), "0011" (0.1)
+        # Even though we asked for 5, only 4 pass the threshold
+        assert len(result) == 4
+        assert result[0].bitstring == "0000"
+        assert result[1].bitstring == "0001"
+        assert result[2].bitstring == "0010"
+        assert result[3].bitstring == "0011"
+
+    def test_get_top_solutions_empty_after_filtering(self, mocker):
+        """Test get_top_solutions returns empty list when all solutions filtered out."""
+        probs = {"00": 0.05, "01": 0.03, "10": 0.02}
+        program = self._setup_program_with_probs(mocker, probs)
+
+        result = program.get_top_solutions(n=10, min_prob=0.1)
+
+        assert result == []
+
+    def test_get_top_solutions_default_parameters(self, mocker):
+        """Test get_top_solutions with default parameters."""
+        # Create 15 solutions to test default n=10
+        probs = {f"{i:04b}": 0.1 for i in range(15)}
+        program = self._setup_program_with_probs(mocker, probs)
+
+        result = (
+            program.get_top_solutions()
+        )  # Should use n=10, min_prob=0.0, include_decoded=False
+
+        assert len(result) == 10  # Default n=10
+        # All probabilities equal, so should be in lexicographic order
+        for i in range(10):
+            assert result[i].bitstring == f"{i:04b}"
+            assert result[i].decoded is None  # Default include_decoded=False
+
+
+class TestCircuitTagEncoding(BaseVariationalQuantumAlgorithmTest):
+    """Tests for CircuitTag encode/decode hooks."""
+
+    def test_encode_decode_round_trip(self, mocker):
+        program = self._create_program_with_mock_optimizer(mocker)
+        program._reset_tag_cache()
+
+        tag = CircuitTag(param_id=1, qem_name="zne", qem_id=2, meas_id=3)
+        tag_str = program._encode_tag(tag)
+
+        assert isinstance(tag_str, str)
+
+        results = {tag_str: {"00": 10, "11": 5}}
+        restored = program._decode_tags(results)
+
+        assert tag in restored
+        assert restored[tag] == {"00": 10, "11": 5}
+
+    def test_encode_decode_passthrough_for_strings(self, mocker):
+        program = self._create_program_with_mock_optimizer(mocker)
+        program._reset_tag_cache()
+
+        tag_str = program._encode_tag("plain_tag")
+        results = {tag_str: {"0": 1}}
+        restored = program._decode_tags(results)
+
+        assert restored == {"plain_tag": {"0": 1}}
+
+
+class TestSolutionEntryNamedTuple:
+    """Test suite for SolutionEntry namedtuple."""
+
+    def test_solution_entry_creation(self):
+        """Test basic SolutionEntry creation."""
+        from divi.qprog.variational_quantum_algorithm import SolutionEntry
+
+        entry = SolutionEntry(bitstring="101", prob=0.42, decoded=[0, 2])
+
+        assert entry.bitstring == "101"
+        assert entry.prob == 0.42
+        assert entry.decoded == [0, 2]
+
+    def test_solution_entry_decoded_defaults_to_none(self):
+        """Test that decoded defaults to None when not provided."""
+        from divi.qprog.variational_quantum_algorithm import SolutionEntry
+
+        entry = SolutionEntry(bitstring="101", prob=0.42)
+
+        assert entry.decoded is None
+
+    def test_solution_entry_is_frozen(self):
+        """Test that SolutionEntry is immutable."""
+        from divi.qprog.variational_quantum_algorithm import SolutionEntry
+
+        entry = SolutionEntry(bitstring="101", prob=0.42)
+
+        with pytest.raises((AttributeError, TypeError)):
+            entry.bitstring = "010"
+
+        with pytest.raises((AttributeError, TypeError)):
+            entry.prob = 0.99
+
+    def test_solution_entry_equality(self):
+        """Test SolutionEntry equality comparison."""
+        from divi.qprog.variational_quantum_algorithm import SolutionEntry
+
+        entry1 = SolutionEntry(bitstring="101", prob=0.42, decoded=[0, 2])
+        entry2 = SolutionEntry(bitstring="101", prob=0.42, decoded=[0, 2])
+        entry3 = SolutionEntry(bitstring="101", prob=0.42, decoded=None)
+
+        assert entry1 == entry2
+        assert entry1 != entry3  # Different decoded value
+
+    def test_solution_entry_decoded_can_be_any_type(self):
+        """Test that decoded field accepts various types."""
+        from divi.qprog.variational_quantum_algorithm import SolutionEntry
+
+        # List
+        entry1 = SolutionEntry(bitstring="101", prob=0.5, decoded=[1, 2, 3])
+        assert entry1.decoded == [1, 2, 3]
+
+        # Numpy array
+        import numpy as np
+
+        decoded_array = np.array([1, 0, 1])
+        entry2 = SolutionEntry(bitstring="101", prob=0.5, decoded=decoded_array)
+        np.testing.assert_array_equal(entry2.decoded, decoded_array)
+
+        # String
+        entry3 = SolutionEntry(bitstring="101", prob=0.5, decoded="custom_solution")
+        assert entry3.decoded == "custom_solution"
+
+        # Dict
+        entry4 = SolutionEntry(bitstring="101", prob=0.5, decoded={"nodes": [1, 2]})
+        assert entry4.decoded == {"nodes": [1, 2]}

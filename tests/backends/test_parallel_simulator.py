@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -339,16 +339,22 @@ class TestParallelSimulatorRuntimeEstimation:
         """Test estimate_run_time_single_circuit method."""
         # Mock backend with instruction durations
         mock_backend = mocker.Mock()
+        mock_target = mocker.Mock()
         mock_durations = mocker.Mock()
-        # Mock duration_by_name_qubits dictionary
-        # (op_name, qubits_tuple) -> (duration, unit)
-        mock_durations.duration_by_name_qubits = {
-            ("h", (0,)): (1.6e-7, "s"),
-            ("cx", (0, 1)): (3.2e-7, "s"),
-            ("measure", (0,)): (5.0e-7, "s"),
-            ("measure", (1,)): (5.0e-7, "s"),
-        }
-        mock_backend.instruction_durations = mock_durations
+
+        # Mock durations.get() method to return duration in seconds
+        def mock_get(inst_name, qubits, unit="s"):
+            durations_map = {
+                ("h", (0,)): 1.6e-7,
+                ("cx", (0, 1)): 3.2e-7,
+                ("measure", (0,)): 5.0e-7,
+                ("measure", (1,)): 5.0e-7,
+            }
+            return durations_map.get((inst_name, qubits), 0.0)
+
+        mock_durations.get = mock_get
+        mock_target.durations.return_value = mock_durations
+        mock_backend.target = mock_target
 
         # Create a circuit matching the mocked durations
         qasm = """
@@ -395,9 +401,18 @@ class TestParallelSimulatorRuntimeEstimation:
 
         mock_backend_cls = mocker.Mock()
         mock_backend_instance = mock_backend_cls.return_value
-        mock_backend_instance.instruction_durations.duration_by_name_qubits = {
-            ("h", (0,)): (1.0, "s")
-        }
+        mock_target = mocker.Mock()
+        mock_durations = mocker.Mock()
+
+        # Mock durations.get() method to return duration in seconds
+        def mock_get(inst_name, qubits, unit="s"):
+            if inst_name == "h" and qubits == (0,):
+                return 1.0
+            return 0.0
+
+        mock_durations.get = mock_get
+        mock_target.durations.return_value = mock_durations
+        mock_backend_instance.target = mock_target
 
         mocker.patch(
             "divi.backends._parallel_simulator._find_best_fake_backend",

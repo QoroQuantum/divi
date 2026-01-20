@@ -1,15 +1,16 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# isort: skip_file
 from .quantum_program import QuantumProgram
-from .variational_quantum_algorithm import VariationalQuantumAlgorithm
+from .variational_quantum_algorithm import VariationalQuantumAlgorithm, SolutionEntry
 from .batch import ProgramBatch
 from .algorithms import (
     QAOA,
     GraphProblem,
     VQE,
+    PCE,
+    CustomVQA,
     Ansatz,
     UCCSDAnsatz,
     QAOAAnsatz,
