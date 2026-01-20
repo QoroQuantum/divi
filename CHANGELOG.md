@@ -7,6 +7,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0](https://github.com/QoroQuantum/divi/compare/v0.5.0...v0.6.0) (2026-01-20)
+
+### ✨ Added
+
+* `SolutionEntry` dataclass and top-N solutions API in `VariationalQuantumAlgorithm`: added ability to extract the top-N best solutions from optimization runs, with `SolutionEntry` exported in `divi.qprog` for public API access
+* `CustomVQA` class: new variational quantum algorithm class for generic parameterized PennyLane and Qiskit circuits, enabling users to define custom variational algorithms with arbitrary circuit structures
+* `PCE` (Pauli Correlation Encoding) class: new VQE variant that encodes an N-variable QUBO into O(log2(N)) qubits by mapping each variable to a parity of the measured bitstring, with tutorial and refactored `_post_process_results()` in parent class for improved extensibility
+* `CircuitTag` NamedTuple: new object for more robust circuit tagging, improving circuit identification and tracking throughout the execution pipeline
+* Environment variable to disable progress bars in `LoggingProgressReporter`: added ability to disable progress bars when debugging via environment variable
+* `create_backend_from_properties()` helper: added factory for building a populated `GenericBackendV2` from `BackendProperties` with normalization, qubit inference, and input validation
+
+### 🐛 Fixed
+
+* Fixed minor bug in VQA final parameters extraction
+
+### 🔧 Build
+
+* Added `__init__` files to isort's skip configuration
+
 ## [0.5.0](https://github.com/QoroQuantum/divi/compare/v0.4.2...v0.5.0) (2025-12-12)
 
 ### ✨ Added
