@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -18,8 +18,8 @@ from divi.qprog.algorithms import (
 )
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.optimizers import PymooMethod, PymooOptimizer
-from tests.conftest import CHECKPOINTING_OPTIMIZERS
 from tests.qprog.qprog_contracts import (
+    CHECKPOINTING_OPTIMIZERS,
     OPTIMIZERS_TO_TEST,
     verify_correct_circuit_count,
     verify_metacircuit_dict,

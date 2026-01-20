@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -16,8 +16,7 @@ from divi.qprog.optimizers import (
     ScipyOptimizer,
     copy_optimizer,
 )
-from tests.conftest import CHECKPOINTING_OPTIMIZERS
-from tests.qprog.qprog_contracts import OPTIMIZERS_TO_TEST
+from tests.qprog.qprog_contracts import CHECKPOINTING_OPTIMIZERS, OPTIMIZERS_TO_TEST
 
 
 def sphere_cost_fn_population(params: np.ndarray) -> np.ndarray:

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -22,25 +22,6 @@ import pytest
 from dotenv import load_dotenv
 
 from divi.backends import CircuitRunner, ExecutionResult, ParallelSimulator
-from tests.qprog.qprog_contracts import OPTIMIZERS_TO_TEST
-
-# Optimizers that support checkpointing - derived from OPTIMIZERS_TO_TEST
-# Filters out ScipyOptimizer which doesn't support checkpointing
-CHECKPOINTING_OPTIMIZERS = {
-    "argvalues": [
-        factory
-        for factory, opt_id in zip(
-            OPTIMIZERS_TO_TEST["argvalues"], OPTIMIZERS_TO_TEST["ids"]
-        )
-        if opt_id
-        not in ["L_BFGS_B", "COBYLA", "NELDER_MEAD"]  # ScipyOptimizer variants
-    ],
-    "ids": [
-        opt_id
-        for opt_id in OPTIMIZERS_TO_TEST["ids"]
-        if opt_id not in ["L_BFGS_B", "COBYLA", "NELDER_MEAD"]
-    ],
-}
 
 
 class DummySimulator(CircuitRunner):

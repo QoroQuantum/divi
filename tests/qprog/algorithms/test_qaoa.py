@@ -19,8 +19,8 @@ from divi.qprog import (
 )
 from divi.qprog.algorithms import _qaoa
 from divi.qprog.checkpointing import CheckpointConfig
-from tests.conftest import CHECKPOINTING_OPTIMIZERS
 from tests.qprog.qprog_contracts import (
+    CHECKPOINTING_OPTIMIZERS,
     OPTIMIZERS_TO_TEST,
     verify_correct_circuit_count,
     verify_metacircuit_dict,

@@ -11,8 +11,8 @@ from qiskit.circuit import Parameter
 from divi.qprog import CustomVQA
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-from tests.conftest import CHECKPOINTING_OPTIMIZERS
 from tests.qprog.qprog_contracts import (
+    CHECKPOINTING_OPTIMIZERS,
     OPTIMIZERS_TO_TEST,
     verify_correct_circuit_count,
     verify_metacircuit_dict,
