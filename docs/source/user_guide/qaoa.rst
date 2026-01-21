@@ -196,8 +196,7 @@ BinaryQuadraticModel Input
        backend=ParallelSimulator(),
    )
 
-   qaoa_problem.run()
-   qaoa_problem.compute_final_solution()
+   qaoa_problem.run(perform_final_computation=True)
 
    print(f"Solution: {qaoa_problem.solution}")
    print(f"Energy: {qaoa_problem.best_loss}")
