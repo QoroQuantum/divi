@@ -70,6 +70,22 @@ def main() -> None:
     print(f"PCE        {energy:>11.6f}   {solution}")
     print(f"Classical  {best_classical_energy:>11.6f}   {best_classical_bitstring}")
 
+    # Demonstrate get_top_solutions - returns decoded QUBO solutions
+    print("\n" + "=" * 80)
+    print("Top 5 solutions from PCE (decoded QUBO variable assignments):")
+    print("=" * 80)
+    top_solutions = solver.get_top_solutions(n=5, min_prob=0.01)
+
+    # Print table header
+    print(f"{'Rank':<6} {'Bitstring':<20} {'Probability':<15} {'Energy':<15}")
+    print("-" * 80)
+
+    # Print table rows
+    for i, sol in enumerate(top_solutions, 1):
+        sol_array = np.array([int(c) for c in sol.bitstring])
+        sol_energy = float(bqm.energy(sol_array))
+        print(f"{i:<6} {sol.bitstring:<20} {sol.prob:>13.2%}  {sol_energy:>13.6f}")
+
 
 if __name__ == "__main__":
     main()
