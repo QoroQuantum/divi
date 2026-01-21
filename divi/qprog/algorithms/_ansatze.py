@@ -75,7 +75,7 @@ class GenericLayerAnsatz(Ansatz):
             gate_sequence (list[Callable]): List of one-qubit gate classes (e.g., qml.RY, qml.Rot).
             entangler (Callable): Two-qubit entangling gate class (e.g., qml.CNOT, qml.CZ).
                                   If None, no entanglement is applied.
-            entangling_layout (str): Layout for entangling layer ("linear", "all_to_all", etc.).
+            entangling_layout (str): Layout for entangling layer ("linear", "all-to-all", etc.).
         """
         if not all(
             issubclass(g, qml.operation.Operator) and g.num_wires == 1
@@ -122,7 +122,7 @@ class GenericLayerAnsatz(Ansatz):
                 ):
                     raise ValueError(
                         "entangling_layout must be 'linear', 'circular', "
-                        "'all_to_all', or a Sequence of tuples of integers."
+                        "'all-to-all', or a Sequence of tuples of integers."
                     )
 
                 self._layout_fn = lambda _: entangling_layout
