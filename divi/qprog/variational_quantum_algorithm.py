@@ -49,6 +49,10 @@ from divi.qprog.quantum_program import QuantumProgram
 logger = logging.getLogger(__name__)
 
 
+def _get_run_instruction() -> str:
+    return "Call run() to execute the optimization."
+
+
 class SolutionEntry(NamedTuple):
     """A solution entry with bitstring, probability, and optional decoded value.
 
@@ -392,7 +396,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         if not self._has_run_optimization():
             warn(
                 "losses_history is empty. Optimization has not been run yet. "
-                "Call run() to execute the optimization.",
+                f"{_get_run_instruction()}",
                 UserWarning,
                 stacklevel=2,
             )
@@ -411,7 +415,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         if not self._has_run_optimization():
             warn(
                 "min_losses_per_iteration is empty. Optimization has not been run yet. "
-                "Call run() to execute the optimization.",
+                f"{_get_run_instruction()}",
                 UserWarning,
                 stacklevel=2,
             )
@@ -428,7 +432,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         if len(self._final_params) == 0 or not self._has_run_optimization():
             warn(
                 "final_params is not available. Optimization has not been run yet. "
-                "Call run() to execute the optimization.",
+                f"{_get_run_instruction()}",
                 UserWarning,
                 stacklevel=2,
             )
@@ -445,7 +449,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         if len(self._best_params) == 0 or not self._has_run_optimization():
             warn(
                 "best_params is not available. Optimization has not been run yet. "
-                "Call run() to execute the optimization.",
+                f"{_get_run_instruction()}",
                 UserWarning,
                 stacklevel=2,
             )
@@ -461,7 +465,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         if not self._has_run_optimization():
             warn(
                 "best_loss has not been computed yet. Optimization has not been run. "
-                "Call run() to execute the optimization.",
+                f"{_get_run_instruction()}",
                 UserWarning,
                 stacklevel=2,
             )
@@ -515,7 +519,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         if not self._best_probs:
             warn(
                 "best_probs is empty. Either optimization has not been run yet, "
-                "or final computation was not performed. Call run() to execute the optimization.",
+                f"or final computation was not performed. {_get_run_instruction()}",
                 UserWarning,
                 stacklevel=2,
             )

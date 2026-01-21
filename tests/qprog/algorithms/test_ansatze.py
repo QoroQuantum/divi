@@ -69,7 +69,7 @@ class TestGenericLayerAnsatz:
     def test_initialization_invalid_layout_string(self):
         """Tests that initialization fails with an invalid layout string."""
         with pytest.raises(
-            ValueError, match="must be 'linear', 'circular', 'all_to_all'"
+            ValueError, match="must be 'linear', 'circular', 'all-to-all'"
         ):
             GenericLayerAnsatz(
                 gate_sequence=[qml.RX],

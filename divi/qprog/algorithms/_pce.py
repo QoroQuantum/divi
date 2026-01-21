@@ -11,6 +11,7 @@ import sympy as sp
 
 from divi.circuits import MetaCircuit
 from divi.qprog.typing import QUBOProblemTypes, qubo_to_matrix
+from divi.qprog.variational_quantum_algorithm import SolutionEntry
 
 from ._vqe import VQE
 
@@ -249,6 +250,132 @@ class PCE(VQE):
         overlaps = self._variable_masks_u64[:, None] & state_u64[None, :]
         parities = _fast_popcount_parity(overlaps).flatten()
         self._final_vector = 1 - parities
+
+    def get_top_solutions(
+        self, n: int = 10, *, min_prob: float = 0.0, include_decoded: bool = False
+    ) -> list[SolutionEntry]:
+        """Get the top-N solutions sorted by probability, with decoded QUBO variable assignments.
+
+        This method overrides the base implementation to decode encoded qubit states
+        into actual QUBO variable assignments. The bitstrings in the probability
+        distribution represent encoded qubit states (O(log2(N)) qubits), not the
+        decoded QUBO solutions (N variables).
+
+        Args:
+            n (int): Maximum number of solutions to return. Must be non-negative.
+                If n is 0 or negative, returns an empty list. If n exceeds the
+                number of available solutions (after filtering), returns all
+                available solutions. Defaults to 10.
+            min_prob (float): Minimum probability threshold for including solutions.
+                Only solutions with probability >= min_prob will be included.
+                Must be in range [0.0, 1.0]. Defaults to 0.0 (no filtering).
+            include_decoded (bool): Whether to populate the `decoded` field of
+                each SolutionEntry with the numpy array representation of the
+                QUBO solution. If False, the decoded field will be None.
+                Defaults to False.
+
+        Returns:
+            list[SolutionEntry]: List of solution entries sorted by probability
+                (descending), then by decoded bitstring (lexicographically ascending)
+                for deterministic tie-breaking. The `bitstring` field contains
+                the decoded QUBO solution as a binary string (e.g., "01011" for
+                5 variables), not the encoded qubit state. Returns an empty list
+                if no probability distribution is available or n <= 0.
+
+        Raises:
+            RuntimeError: If probability distribution is not available because
+                optimization has not been run or final computation was not performed.
+            ValueError: If min_prob is not in range [0.0, 1.0] or n is negative.
+
+        Note:
+            The probability distribution must be computed by running the algorithm
+            with `perform_final_computation=True` (the default):
+
+            >>> program.run(perform_final_computation=True)
+            >>> top_10 = program.get_top_solutions(n=10)
+
+        Example:
+            >>> # Get top 5 solutions with probability >= 5%
+            >>> program.run()
+            >>> solutions = program.get_top_solutions(n=5, min_prob=0.05)
+            >>> for sol in solutions:
+            ...     print(f"{sol.bitstring}: {sol.prob:.2%}")
+            01011: 42.50%  # Decoded QUBO solution (5 variables)
+            10100: 31.20%
+            ...
+
+            >>> # Get solutions with numpy array in decoded field
+            >>> solutions = program.get_top_solutions(n=3, include_decoded=True)
+            >>> for sol in solutions:
+            ...     print(f"{sol.bitstring} -> {sol.decoded}")
+            01011 -> [0 1 0 1 1]  # numpy array
+            ...
+        """
+        # Validate inputs
+        if n < 0:
+            raise ValueError(f"n must be non-negative, got {n}")
+        if not (0.0 <= min_prob <= 1.0):
+            raise ValueError(f"min_prob must be in range [0.0, 1.0], got {min_prob}")
+
+        # Handle edge case: n == 0
+        if n == 0:
+            return []
+
+        # Require probability distribution to exist
+        if not self._best_probs:
+            raise RuntimeError(
+                "No probability distribution available. The final computation step "
+                "must be performed to compute the probability distribution. "
+                "Call run(perform_final_computation=True) to execute optimization "
+                "and compute the distribution."
+            )
+
+        # Extract the probability distribution (nested by parameter set)
+        # _best_probs structure: {tag: {bitstring: prob}}
+        probs_dict = next(iter(self._best_probs.values()))
+
+        # Filter by minimum probability and get top n sorted by probability (descending),
+        # then bitstring (ascending) for deterministic tie-breaking
+        top_items = sorted(
+            filter(
+                lambda bitstring_prob: bitstring_prob[1] >= min_prob, probs_dict.items()
+            ),
+            key=lambda bitstring_prob: (-bitstring_prob[1], bitstring_prob[0]),
+        )[:n]
+
+        # Decode each encoded qubit state to QUBO variable assignment
+        encoded_bitstrings = [bitstring for bitstring, _ in top_items]
+        decoded_parities = _decode_parities(
+            encoded_bitstrings, self._variable_masks_u64
+        )
+        # decoded_parities shape: (n_vars, n_states), transpose to (n_states, n_vars)
+        decoded_qubo_solutions = (
+            1 - decoded_parities
+        ).T  # Convert parities to QUBO assignments
+
+        # Build result list with decoded solutions
+        result = []
+        for (encoded_bitstring, prob), decoded_solution in zip(
+            top_items, decoded_qubo_solutions
+        ):
+            # Convert decoded solution to binary string representation
+            decoded_bitstring = "".join(str(int(x)) for x in decoded_solution)
+
+            result.append(
+                SolutionEntry(
+                    bitstring=decoded_bitstring,  # Decoded QUBO solution as string
+                    prob=prob,
+                    decoded=(
+                        decoded_solution.astype(np.int32) if include_decoded else None
+                    ),
+                )
+            )
+
+        # Re-sort by decoded bitstring for deterministic tie-breaking
+        # (in case multiple encoded states decode to the same QUBO solution)
+        result.sort(key=lambda entry: (-entry.prob, entry.bitstring))
+
+        return result
 
     @property
     def solution(self) -> npt.NDArray[np.integer]:
