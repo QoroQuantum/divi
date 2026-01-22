@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -408,7 +408,8 @@ class VQEHyperparameterSweep(ProgramBatch):
     def __init__(
         self,
         ansatze: Sequence[Ansatz],
-        molecule_transformer: MoleculeTransformer,
+        molecule_transformer: MoleculeTransformer | None = None,
+        hamiltonians: Sequence[qml.operation.Operator] | None = None,
         optimizer: Optimizer | None = None,
         max_iterations: int = 10,
         **kwargs,
@@ -420,9 +421,15 @@ class VQEHyperparameterSweep(ProgramBatch):
         ----------
         ansatze: Sequence[Ansatz]
             A sequence of ansatz circuits to test.
-        molecule_transformer: MoleculeTransformer
+        hamiltonians: Sequence[qml.operation.Operator], optional
+            A sequence of Hamiltonians to use for the VQE runs. If ``None``
+            (the default), no Hamiltonians are provided explicitly and
+            molecule-based VQE runs will use their default Hamiltonians.
+        molecule_transformer: MoleculeTransformer | None, optional
             A `MoleculeTransformer` object defining the configuration for
-            generating the molecule variants.
+            generating the molecule variants. If ``None`` (the default),
+            the provided ``hamiltonians`` are used directly and no molecular
+            transformation is performed.
         optimizer: Optimizer
             The optimization algorithm for the VQE runs.
         max_iterations: int
@@ -432,9 +439,21 @@ class VQEHyperparameterSweep(ProgramBatch):
         super().__init__(backend=kwargs.pop("backend"))
 
         self.molecule_transformer = molecule_transformer
-
         self.ansatze = ansatze
+        self.hamiltonians = hamiltonians
         self.max_iterations = max_iterations
+
+        if molecule_transformer is not None and hamiltonians is not None:
+            raise ValueError(
+                "VQEHyperparameterSweep supports either a molecule sweep "
+                "(via molecule_transformer) or a Hamiltonian sweep (via hamiltonians), "
+                "but not both."
+            )
+
+        if molecule_transformer is None and not hamiltonians:
+            raise ValueError(
+                "At least one of molecule_transformer or hamiltonians must be provided."
+            )
 
         # Store the optimizer template (will be copied for each program)
         self._optimizer_template = (
@@ -460,15 +479,28 @@ class VQEHyperparameterSweep(ProgramBatch):
         """
         super().create_programs()
 
-        self.molecule_variants = self.molecule_transformer.generate()
+        # Molecule sweep or Hamiltonian sweep
+        if self.molecule_transformer is not None:
+            molecule_variants = self.molecule_transformer.generate()
+            sweep_items = (
+                (modifier, molecule, None)
+                for modifier, molecule in molecule_variants.items()
+            )
+        else:
+            if isinstance(self.hamiltonians, dict):
+                h_items = self.hamiltonians.items()
+            else:
+                h_items = enumerate(self.hamiltonians)
+            sweep_items = ((h_id, None, hamiltonian) for h_id, hamiltonian in h_items)
 
-        for ansatz, (modifier, molecule) in product(
-            self.ansatze, self.molecule_variants.items()
+        for ansatz, (item_id, molecule, hamiltonian) in product(
+            self.ansatze, sweep_items
         ):
-            _job_id = (ansatz.name, modifier)
+            _job_id = (ansatz.name, item_id)
             self._programs[_job_id] = self._constructor(
                 program_id=_job_id,
                 molecule=molecule,
+                hamiltonian=hamiltonian,
                 ansatz=ansatz,
                 optimizer=copy_optimizer(self._optimizer_template),
                 progress_queue=self._queue,

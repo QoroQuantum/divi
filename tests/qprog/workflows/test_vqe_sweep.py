@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -294,12 +294,46 @@ class TestMoleculeTransformerGeneration:
 
 
 @pytest.fixture
-def vqe_sweep(default_test_simulator, h2_molecule):
-    """Fixture to create a VQEHyperparameterSweep instance with the new interface."""
+def vqe_sweep_ansatze():
+    """Shared ansatze for VQE sweep tests."""
+    return [HartreeFockAnsatz(), GenericLayerAnsatz([qml.RY])]
+
+
+@pytest.fixture
+def vqe_sweep_optimizer():
+    """Shared optimizer for VQE sweep tests."""
+    return MonteCarloOptimizer(population_size=5, n_best_sets=2)
+
+
+@pytest.fixture
+def vqe_sweep_max_iterations():
+    """Shared max_iterations for VQE sweep tests."""
+    return 10
+
+
+@pytest.fixture
+def h2_hamiltonian(h2_molecule):
+    """Fixture for an H2 molecular Hamiltonian."""
+    hamiltonian, _ = qml.qchem.molecular_hamiltonian(h2_molecule)
+    return hamiltonian
+
+
+def _assert_common_program_settings(program, max_iterations):
+    assert isinstance(program.optimizer, MonteCarloOptimizer)
+    assert program.max_iterations == max_iterations
+    assert program.backend.shots == 5000
+
+
+@pytest.fixture
+def vqe_sweep(
+    default_test_simulator,
+    h2_molecule,
+    vqe_sweep_ansatze,
+    vqe_sweep_optimizer,
+    vqe_sweep_max_iterations,
+):
+    """Fixture to create a VQEHyperparameterSweep instance with molecule_transformer."""
     bond_modifiers = [0.9, 1.0, 1.1]
-    ansatze = [HartreeFockAnsatz(), GenericLayerAnsatz([qml.RY])]
-    optimizer = MonteCarloOptimizer(population_size=5, n_best_sets=2)
-    max_iterations = 10
 
     transformer = MoleculeTransformer(
         base_molecule=h2_molecule,
@@ -307,10 +341,32 @@ def vqe_sweep(default_test_simulator, h2_molecule):
     )
 
     return VQEHyperparameterSweep(
-        ansatze=ansatze,
+        ansatze=vqe_sweep_ansatze,
         molecule_transformer=transformer,
-        optimizer=optimizer,
-        max_iterations=max_iterations,
+        hamiltonians=None,
+        optimizer=vqe_sweep_optimizer,
+        max_iterations=vqe_sweep_max_iterations,
+        backend=default_test_simulator,
+    )
+
+
+@pytest.fixture
+def vqe_sweep_hamiltonian(
+    default_test_simulator,
+    h2_hamiltonian,
+    vqe_sweep_ansatze,
+    vqe_sweep_optimizer,
+    vqe_sweep_max_iterations,
+):
+    """Fixture to create a VQEHyperparameterSweep instance with hamiltonians."""
+    hamiltonians = [h2_hamiltonian]
+
+    return VQEHyperparameterSweep(
+        ansatze=vqe_sweep_ansatze,
+        molecule_transformer=None,
+        hamiltonians=hamiltonians,
+        optimizer=vqe_sweep_optimizer,
+        max_iterations=vqe_sweep_max_iterations,
         backend=default_test_simulator,
     )
 
@@ -322,25 +378,127 @@ class TestVQEHyperparameterSweep:
         """Test that the sweep conforms to basic batch program behavior."""
         verify_basic_program_batch_behaviour(mocker, vqe_sweep)
 
-    def test_correct_number_of_programs_created(self, mocker, vqe_sweep):
-        """Test that the correct number of VQE programs are instantiated with the correct parameters."""
+    def test_correct_number_of_programs_created_molecule_transformer(
+        self, mocker, vqe_sweep, vqe_sweep_max_iterations
+    ):
+        """Test that the correct number of VQE programs are created with molecule_transformer."""
         mocker.patch("divi.qprog.VQE")
         bond_modifiers = vqe_sweep.molecule_transformer.bond_modifiers
+        ansatze = vqe_sweep.ansatze
 
         vqe_sweep.create_programs()
 
-        assert len(vqe_sweep.programs) == len(bond_modifiers) * len(vqe_sweep.ansatze)
+        # Expected count is the cartesian product of ansatze and bond_modifiers (2 * 3 = 6)
+        expected_count = len(ansatze) * len(bond_modifiers)
+        assert len(vqe_sweep.programs) == expected_count
 
+        # Verify that all expected program keys exist
+        # Program keys are tuples of (ansatz.name, bond_modifier_value)
         assert all(
             (ansatz.name, modifier) in vqe_sweep.programs
-            for ansatz, modifier in product(vqe_sweep.ansatze, bond_modifiers)
+            for ansatz, modifier in product(ansatze, bond_modifiers)
         )
 
         for program in vqe_sweep.programs.values():
-            assert isinstance(program.optimizer, MonteCarloOptimizer)
-            assert program.max_iterations == 10
-            assert program.backend.shots == 5000
+            _assert_common_program_settings(program, vqe_sweep_max_iterations)
             assert program.molecule.symbols == ["H", "H"]
+
+    def test_correct_number_of_programs_created_hamiltonian(
+        self, mocker, vqe_sweep_hamiltonian, vqe_sweep_max_iterations
+    ):
+        """Test that the correct number of VQE programs are created with hamiltonians."""
+        mocker.patch("divi.qprog.VQE")
+        hamiltonians = vqe_sweep_hamiltonian.hamiltonians
+        ansatze = vqe_sweep_hamiltonian.ansatze
+
+        vqe_sweep_hamiltonian.create_programs()
+
+        # Expected count is the cartesian product of ansatze and hamiltonians (2 * 1 = 2)
+        expected_count = len(ansatze) * len(hamiltonians)
+        assert len(vqe_sweep_hamiltonian.programs) == expected_count
+
+        # Verify that all expected program keys exist
+        # Program keys are tuples of (ansatz.name, hamiltonian_index)
+        assert all(
+            (ansatz.name, h_id) in vqe_sweep_hamiltonian.programs
+            for ansatz, h_id in product(ansatze, range(len(hamiltonians)))
+        )
+
+        for program in vqe_sweep_hamiltonian.programs.values():
+            _assert_common_program_settings(program, vqe_sweep_max_iterations)
+            assert program.cost_hamiltonian is not None
+
+    def test_hamiltonian_dict_keys_use_ids(
+        self,
+        mocker,
+        default_test_simulator,
+        h2_hamiltonian,
+        vqe_sweep_ansatze,
+        vqe_sweep_optimizer,
+        vqe_sweep_max_iterations,
+    ):
+        """Test that dict hamiltonian inputs use the dict keys as program IDs."""
+        mocker.patch("divi.qprog.VQE")
+        hamiltonians = {"h0": h2_hamiltonian}
+
+        vqe_sweep = VQEHyperparameterSweep(
+            ansatze=vqe_sweep_ansatze,
+            molecule_transformer=None,
+            hamiltonians=hamiltonians,
+            optimizer=vqe_sweep_optimizer,
+            max_iterations=vqe_sweep_max_iterations,
+            backend=default_test_simulator,
+        )
+
+        vqe_sweep.create_programs()
+
+        expected_count = len(vqe_sweep_ansatze) * len(hamiltonians)
+        assert len(vqe_sweep.programs) == expected_count
+        assert all(
+            (ansatz.name, h_id) in vqe_sweep.programs
+            for ansatz, h_id in product(vqe_sweep_ansatze, hamiltonians.keys())
+        )
+
+    def test_hamiltonian_constant_only_raises(
+        self, default_test_simulator, vqe_sweep_optimizer, vqe_sweep_max_iterations
+    ):
+        """Test that constant-only Hamiltonians are rejected during program creation."""
+        vqe_sweep = VQEHyperparameterSweep(
+            ansatze=[HartreeFockAnsatz()],
+            molecule_transformer=None,
+            hamiltonians=[qml.Identity(0)],
+            optimizer=vqe_sweep_optimizer,
+            max_iterations=vqe_sweep_max_iterations,
+            backend=default_test_simulator,
+        )
+
+        with pytest.raises(
+            ValueError, match="Hamiltonian contains only constant terms"
+        ):
+            vqe_sweep.create_programs()
+
+    def test_molecule_transformer_and_hamiltonians_rejected(
+        self,
+        default_test_simulator,
+        h2_molecule,
+        vqe_sweep_optimizer,
+        vqe_sweep_max_iterations,
+    ):
+        """Test that providing both molecule_transformer and hamiltonians raises."""
+        transformer = MoleculeTransformer(
+            base_molecule=h2_molecule,
+            bond_modifiers=[1.0],
+        )
+
+        with pytest.raises(ValueError, match="supports either a molecule sweep"):
+            VQEHyperparameterSweep(
+                ansatze=[HartreeFockAnsatz()],
+                molecule_transformer=transformer,
+                hamiltonians=[qml.PauliZ(0)],
+                optimizer=vqe_sweep_optimizer,
+                max_iterations=vqe_sweep_max_iterations,
+                backend=default_test_simulator,
+            )
 
     def test_results_aggregated_correctly(self, mocker, vqe_sweep):
         """Test that results from multiple VQE runs are aggregated to find the minimum energy."""
