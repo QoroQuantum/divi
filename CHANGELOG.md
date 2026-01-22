@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0](https://github.com/QoroQuantum/divi/compare/v0.6.1...v0.7.0) (2026-01-22)
+
+
+### Features
+
+* add hamiltonian support for VQEHyperparameterSweep ([#39](https://github.com/QoroQuantum/divi/issues/39)) ([5d57f90](https://github.com/QoroQuantum/divi/commit/5d57f904a846868c4eb51ff9c7c6dbb75c549167))
+
 ## [0.6.1](https://github.com/QoroQuantum/divi/compare/v0.6.0...v0.6.1) (2026-01-21)
 
 
