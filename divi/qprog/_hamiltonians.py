@@ -1,8 +1,10 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from dataclasses import dataclass, field
 from functools import reduce
+from typing import Literal, Protocol
 from warnings import warn
 
 import numpy as np
@@ -17,7 +19,7 @@ def _clean_hamiltonian(
     """Separate constant and non-constant terms in a Hamiltonian.
 
     This function processes a PennyLane Hamiltonian to separate out any terms
-    that are constant (i.e., proportional to the identity operator). The sum
+    that are constant (i.e. proportional to the identity operator). The sum
     of these constant terms is returned, along with a new Hamiltonian containing
     only the non-constant terms.
 
@@ -29,15 +31,13 @@ def _clean_hamiltonian(
             - The Hamiltonian without the constant (identity) component.
             - The summed value of all constant terms.
     """
-    if hamiltonian is None:
-        return qml.Hamiltonian([], []), 0.0
 
     terms = (
         hamiltonian.operands if isinstance(hamiltonian, qml.ops.Sum) else [hamiltonian]
     )
 
-    loss_constant = 0.0
-    non_constant_terms = []
+    constant = 0.0
+    non_id_terms = []
 
     for term in terms:
         coeff = 1.0
@@ -56,20 +56,228 @@ def _clean_hamiltonian(
             is_constant = True
 
         if is_constant:
-            loss_constant += coeff
+            constant += coeff
         else:
-            non_constant_terms.append(term)
+            non_id_terms.append(term)
 
-    if not non_constant_terms:
-        return qml.Hamiltonian([], []), float(loss_constant)
+    if not non_id_terms:
+        return qml.Hamiltonian([], []), float(constant)
 
     # Reconstruct the Hamiltonian from non-constant terms
-    if len(non_constant_terms) > 1:
-        new_hamiltonian = qml.sum(*non_constant_terms)
+    if len(non_id_terms) > 1:
+        new_hamiltonian = qml.sum(*non_id_terms)
     else:
-        new_hamiltonian = non_constant_terms[0]
+        new_hamiltonian = non_id_terms[0]
 
-    return new_hamiltonian.simplify(), float(loss_constant)
+    return new_hamiltonian.simplify(), float(constant)
+
+
+def _sort_hamiltonian_terms(
+    hamiltonian: qml.operation.Operator,
+    order: Literal["absolute", "magnitude"] = "absolute",
+) -> qml.operation.Operator:
+    """Sort the terms of a Hamiltonian by their coefficient magnitude."""
+    coeffs, terms = hamiltonian.terms()
+    sorted_coeffs, sorted_terms = zip(
+        *sorted(
+            zip(coeffs, terms), key=lambda x: x[0] if order == "absolute" else abs(x[0])
+        )
+    )
+    return type(hamiltonian)(
+        *[cf * trm for cf, trm in zip(sorted_coeffs, sorted_terms)]
+    )
+
+
+class TrotterizationStrategy(Protocol):
+    """Trotterization strategy protocol."""
+
+    @property
+    def stateful(self) -> bool:
+        """True if the strategy retains state across process_hamiltonian calls.
+        This should be true for strategies that might re-process the Hamiltonian during execution.
+        """
+        ...
+
+    def process_hamiltonian(
+        self, hamiltonian: qml.operation.Operator
+    ) -> qml.operation.Operator:
+        """Trotterize the Hamiltonian."""
+        ...
+
+
+@dataclass(frozen=True)
+class ExactTrotterization(TrotterizationStrategy):
+    """Exact Trotterization strategy."""
+
+    keep_fraction: float | None = None
+    keep_top_n: int | None = None
+
+    def __post_init__(self):
+        if self.keep_fraction is not None and self.keep_top_n is not None:
+            raise ValueError(
+                "At most one of keep_fraction or keep_top_n may be provided."
+            )
+
+        if self.keep_fraction is not None and (
+            self.keep_fraction <= 0 or self.keep_fraction > 1
+        ):
+            raise ValueError(
+                f"keep_fraction must be in (0, 1], got {self.keep_fraction}"
+            )
+
+        if self.keep_top_n is not None and (
+            self.keep_top_n <= 0 or not isinstance(self.keep_top_n, int)
+        ):
+            raise ValueError(
+                f"keep_top_n must be a positive integer (>= 1), got {self.keep_top_n}"
+            )
+
+    @property
+    def stateful(self) -> bool:
+        return False
+
+    def process_hamiltonian(
+        self, hamiltonian: qml.operation.Operator
+    ) -> qml.operation.Operator:
+        """Exact Trotterize the Hamiltonian."""
+        if self.keep_fraction is not None and self.keep_fraction == 1.0:
+            warn(
+                "keep_fraction is 1.0 (no truncation); returning the full Hamiltonian.",
+                UserWarning,
+            )
+            return hamiltonian.simplify()
+
+        if self.keep_top_n is not None and self.keep_top_n >= len(hamiltonian):
+            warn(
+                "keep_top_n is greater than or equal to the number of terms; "
+                "returning the full Hamiltonian.",
+                UserWarning,
+            )
+            return hamiltonian.simplify()
+
+        if self.keep_fraction is None and self.keep_top_n is None:
+            return hamiltonian.simplify()
+
+        non_id_terms, constant = _clean_hamiltonian(hamiltonian)
+        sorted_non_id_terms = _sort_hamiltonian_terms(non_id_terms, order="magnitude")
+
+        if self.keep_top_n is not None:
+            slice_idx = -self.keep_top_n
+
+        if self.keep_fraction is not None:
+            absolute_coeffs = np.abs(sorted_non_id_terms.terms()[0])
+            target = absolute_coeffs.sum() * self.keep_fraction
+            cumsum_from_end = np.cumsum(absolute_coeffs[::-1])
+            n_keep = np.searchsorted(cumsum_from_end, target, side="left") + 1
+            slice_idx = -min(n_keep, len(absolute_coeffs))
+
+        return type(hamiltonian)(
+            *(*sorted_non_id_terms[slice_idx:], constant * qml.Identity())
+        ).simplify()
+
+
+@dataclass(frozen=True)
+class QDrift(TrotterizationStrategy):
+    """QDrift Trotterization strategy."""
+
+    keep_fraction: float | None = None
+    keep_top_n: int | None = None
+    sample_budget: int | None = None
+    sampling_strategy: Literal["uniform", "weighted"] = "uniform"
+    seed: int | None = None
+
+    # Only mutable part; not part of equality/hash so frozen instance stays hashable
+    _cache: dict = field(default_factory=dict, compare=False, hash=False)
+
+    def __post_init__(self):
+        if self.keep_fraction is None and self.sample_budget is None:
+            warn(
+                "Neither keep_fraction nor sample_budget is set; "
+                "the Hamiltonian will be returned unchanged.",
+                UserWarning,
+            )
+        elif self.sample_budget is None:
+            warn(
+                "sample_budget is not set; only the kept terms will be applied, "
+                "equivalent to ExactTrotterization.",
+                UserWarning,
+            )
+
+        if self.sampling_strategy not in ["uniform", "weighted"]:
+            raise ValueError(
+                f"Invalid sampling_strategy: {self.sampling_strategy}. Must be 'uniform' or 'weighted'."
+            )
+
+        if self.seed is not None and not isinstance(self.seed, int):
+            raise ValueError(f"seed must be an integer, got {self.seed}")
+
+    @property
+    def stateful(self) -> bool:
+        return True
+
+    def process_hamiltonian(
+        self, hamiltonian: qml.operation.Operator
+    ) -> qml.operation.Operator:
+        """QDrift Trotterize the Hamiltonian."""
+        if (
+            self.keep_fraction is None
+            and self.keep_top_n is None
+            and self.sample_budget is None
+        ):
+            return hamiltonian.simplify()
+
+        triggered_exact_trotterization = (
+            True
+            if self.keep_fraction is not None or self.keep_top_n is not None
+            else False
+        )
+
+        if hamiltonian in self._cache:
+            keep_hamiltonian, to_sample_hamiltonian = self._cache[hamiltonian]
+        else:
+            keep_hamiltonian = ExactTrotterization(
+                keep_fraction=self.keep_fraction, keep_top_n=self.keep_top_n
+            ).process_hamiltonian(hamiltonian)
+
+            if triggered_exact_trotterization:
+                to_sample_hamiltonian = (hamiltonian - keep_hamiltonian).simplify()
+            else:
+                to_sample_hamiltonian = hamiltonian.simplify()
+
+            self._cache[hamiltonian] = (keep_hamiltonian, to_sample_hamiltonian)
+
+            if triggered_exact_trotterization and qml.equal(
+                keep_hamiltonian, hamiltonian
+            ):
+                warn(
+                    "All terms were kept; there are no terms left to sample. "
+                    "Returning the full Hamiltonian.",
+                    UserWarning,
+                )
+                return hamiltonian
+
+        if self.sample_budget is None:
+            return keep_hamiltonian
+
+        if triggered_exact_trotterization and qml.equal(keep_hamiltonian, hamiltonian):
+            return hamiltonian
+
+        # to_sample_hamiltonian already set above (from cache or computation)
+        absolute_coeffs = np.abs(to_sample_hamiltonian.terms()[0])
+        sampled_hamiltonian = np.random.default_rng(self.seed).choice(
+            np.asarray(to_sample_hamiltonian),
+            size=self.sample_budget,
+            replace=True,
+            **(
+                {"p": absolute_coeffs / absolute_coeffs.sum()}
+                if self.sampling_strategy == "weighted"
+                else {}
+            ),
+        )
+
+        return (
+            qml.ops.Sum(*sampled_hamiltonian.tolist()) + keep_hamiltonian
+        ).simplify()
 
 
 def convert_hamiltonian_to_pauli_string(
@@ -82,7 +290,7 @@ def convert_hamiltonian_to_pauli_string(
     one per qubit. Multiple terms are separated by semicolons.
 
     Args:
-        hamiltonian (qml.operation.Operator): The PennyLane Operator (e.g., Hamiltonian, PauliZ) to convert.
+        hamiltonian (qml.operation.Operator): The PennyLane Operator to convert.
         n_qubits (int): Number of qubits to represent in the string.
 
     Returns:

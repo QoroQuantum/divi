@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Container
 from enum import Enum
 from typing import Any, Literal, get_args
 from warnings import warn
@@ -51,7 +51,7 @@ def _extract_loss_constant(
     return pre_calculated_constant + constant_from_hamiltonian
 
 
-def draw_graph_solution_nodes(main_graph: nx.Graph, partition_nodes):
+def draw_graph_solution_nodes(main_graph: nx.Graph, partition_nodes: Container[Any]):
     """Visualize a graph with solution nodes highlighted.
 
     Draws the graph with nodes colored to distinguish solution nodes (red) from
