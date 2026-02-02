@@ -445,7 +445,7 @@ class TestExactTrotterization:
         result.simplify()  # idempotent when already simplified
 
     def test_exact_trotterization_stateful_is_false(self):
-        """ExactTrotterization reports stateful=False (no caching)."""
+        """ExactTrotterization reports stateful=False (cache is memoization only, not state)."""
         assert ExactTrotterization(keep_top_n=2).stateful is False
 
 
@@ -480,10 +480,11 @@ class TestQDrift:
         assert len(coeffs) == len(ops)
 
     def test_seed_gives_reproducible_result(self, simple_hamiltonian):
-        """Same seed yields identical Hamiltonian from process_hamiltonian."""
-        strategy = QDrift(sample_budget=5, seed=123, sampling_strategy="uniform")
-        r1 = strategy.process_hamiltonian(simple_hamiltonian)
-        r2 = strategy.process_hamiltonian(simple_hamiltonian)
+        """Same seed yields identical first sample across fresh instances."""
+        s1 = QDrift(sample_budget=5, seed=123, sampling_strategy="uniform")
+        s2 = QDrift(sample_budget=5, seed=123, sampling_strategy="uniform")
+        r1 = s1.process_hamiltonian(simple_hamiltonian)
+        r2 = s2.process_hamiltonian(simple_hamiltonian)
         assert qml.equal(r1, r2)
 
     def test_with_keep_fraction_and_sample_budget(self, simple_hamiltonian):
@@ -548,3 +549,21 @@ class TestQDrift:
     def test_qdrift_stateful_is_true(self):
         """QDrift reports stateful=True (caches intermediate results)."""
         assert QDrift(sample_budget=5, seed=0).stateful is True
+
+    def test_n_hamiltonians_per_iteration_less_than_one_raises(self):
+        """n_hamiltonians_per_iteration must be >= 1."""
+        with pytest.raises(
+            ValueError, match="n_hamiltonians_per_iteration must be >= 1"
+        ):
+            QDrift(sample_budget=5, n_hamiltonians_per_iteration=0)
+
+    def test_rng_produces_different_samples_on_repeated_calls(self, simple_hamiltonian):
+        """Instance RNG produces different Hamiltonian samples on repeated calls."""
+        strategy = QDrift(sample_budget=4, seed=42, sampling_strategy="uniform")
+        r0 = strategy.process_hamiltonian(simple_hamiltonian)
+        r1 = strategy.process_hamiltonian(simple_hamiltonian)
+        r2 = strategy.process_hamiltonian(simple_hamiltonian)
+        # With 3 terms and sample_budget=4, sampling with replacement can produce
+        # different orderings; at least two of the three should differ
+        results = [r0, r1, r2]
+        assert not all(qml.equal(results[0], r) for r in results)

@@ -112,6 +112,10 @@ class ExactTrotterization(TrotterizationStrategy):
     keep_fraction: float | None = None
     keep_top_n: int | None = None
 
+    # Caches processed Hamiltonian to avoid re-sorting and re-slicing when the
+    # same Hamiltonian is passed repeatedly (e.g. across optimizer evaluations).
+    _cache: dict = field(default_factory=dict, compare=False, hash=False)
+
     def __post_init__(self):
         if self.keep_fraction is not None and self.keep_top_n is not None:
             raise ValueError(
@@ -134,12 +138,20 @@ class ExactTrotterization(TrotterizationStrategy):
 
     @property
     def stateful(self) -> bool:
+        # Despite having a _cache, this strategy is stateless because it only
+        # uses the cache as memoization, not as state.
         return False
 
     def process_hamiltonian(
         self, hamiltonian: qml.operation.Operator
     ) -> qml.operation.Operator:
         """Exact Trotterize the Hamiltonian."""
+        if self.keep_fraction is None and self.keep_top_n is None:
+            return hamiltonian.simplify()
+
+        if hamiltonian in self._cache:
+            return self._cache[hamiltonian]
+
         if self.keep_fraction is not None and self.keep_fraction == 1.0:
             warn(
                 "keep_fraction is 1.0 (no truncation); returning the full Hamiltonian.",
@@ -155,9 +167,6 @@ class ExactTrotterization(TrotterizationStrategy):
             )
             return hamiltonian.simplify()
 
-        if self.keep_fraction is None and self.keep_top_n is None:
-            return hamiltonian.simplify()
-
         non_id_terms, constant = _clean_hamiltonian(hamiltonian)
         sorted_non_id_terms = _sort_hamiltonian_terms(non_id_terms, order="magnitude")
 
@@ -171,9 +180,13 @@ class ExactTrotterization(TrotterizationStrategy):
             n_keep = np.searchsorted(cumsum_from_end, target, side="left") + 1
             slice_idx = -min(n_keep, len(absolute_coeffs))
 
-        return type(hamiltonian)(
+        result = type(hamiltonian)(
             *(*sorted_non_id_terms[slice_idx:], constant * qml.Identity())
         ).simplify()
+
+        self._cache[hamiltonian] = result
+
+        return result
 
 
 @dataclass(frozen=True)
@@ -185,9 +198,14 @@ class QDrift(TrotterizationStrategy):
     sample_budget: int | None = None
     sampling_strategy: Literal["uniform", "weighted"] = "uniform"
     seed: int | None = None
+    n_hamiltonians_per_iteration: int = 1
+    """Number of Hamiltonian samples per cost evaluation; losses are averaged over them."""
 
-    # Only mutable part; not part of equality/hash so frozen instance stays hashable
+    # Caches the (keep_hamiltonian, to_sample_hamiltonian) split so we avoid
+    # recomputing the deterministic part when the same Hamiltonian is passed
+    # repeatedly; only the sampling step changes each call.
     _cache: dict = field(default_factory=dict, compare=False, hash=False)
+    _rng: np.random.Generator = field(init=False, compare=False, hash=False)
 
     def __post_init__(self):
         if self.keep_fraction is None and self.sample_budget is None:
@@ -210,6 +228,13 @@ class QDrift(TrotterizationStrategy):
 
         if self.seed is not None and not isinstance(self.seed, int):
             raise ValueError(f"seed must be an integer, got {self.seed}")
+
+        if self.n_hamiltonians_per_iteration < 1:
+            raise ValueError(
+                f"n_hamiltonians_per_iteration must be >= 1, got {self.n_hamiltonians_per_iteration}"
+            )
+
+        object.__setattr__(self, "_rng", np.random.default_rng(self.seed))
 
     @property
     def stateful(self) -> bool:
@@ -264,7 +289,7 @@ class QDrift(TrotterizationStrategy):
 
         # to_sample_hamiltonian already set above (from cache or computation)
         absolute_coeffs = np.abs(to_sample_hamiltonian.terms()[0])
-        sampled_hamiltonian = np.random.default_rng(self.seed).choice(
+        sampled_hamiltonian = self._rng.choice(
             np.asarray(to_sample_hamiltonian),
             size=self.sample_budget,
             replace=True,
