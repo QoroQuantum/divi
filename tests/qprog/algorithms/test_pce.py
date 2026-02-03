@@ -409,3 +409,125 @@ def test_pce_get_top_solutions_decoding_correctness(dummy_simulator, basic_ansat
 
     # Verify all decoded solutions have correct length
     assert all(len(sol.bitstring) == 2 for sol in solutions)
+
+
+def test_pce_poly_initialization(dummy_simulator, basic_ansatz):
+    # N=3. Poly encoding should require 2 qubits.
+    # Capacity(2) = 2 + 1 = 3.
+    # Masks: 1, 2, 3 (binary 1, 10, 11) i.e. (1<<0), (1<<1), (1<<0)|(1<<1)
+    qubo = np.zeros((3, 3))
+
+    pce = PCE(
+        qubo_matrix=qubo,
+        ansatz=basic_ansatz,
+        backend=dummy_simulator,
+        encoding_type="poly",
+    )
+
+    assert pce.n_vars == 3
+    assert pce.encoding_type == "poly"
+    assert pce.n_qubits == 2
+
+    # Check masks
+    expected_masks = np.array([1, 2, 3], dtype=np.uint64)
+    # The order depends on the loop:
+    # Weight 1: 1<<0 (1), 1<<1 (2).
+    # Weight 2: (1<<0)|(1<<1) (3).
+    # So [1, 2, 3].
+    np.testing.assert_array_equal(pce._variable_masks_u64, expected_masks)
+
+
+def test_pce_poly_capacity_check(dummy_simulator, basic_ansatz):
+    # N=4. Requires 3 qubits. Capacity(2)=3 < 4.
+    qubo = np.zeros((4, 4))
+
+    # explicit n_qubits=2 should be auto-corrected to 3 (min required)
+    # The user-provided logic uses max(n_qubits, min_qubits) instead of raising.
+    pce = PCE(
+        qubo_matrix=qubo,
+        n_qubits=2,
+        ansatz=basic_ansatz,
+        backend=dummy_simulator,
+        encoding_type="poly",
+    )
+    assert pce.n_qubits == 3
+
+    # explicit n_qubits=5 (sufficient) should be respected
+    # min_qubits is 3. max(5, 3) = 5.
+    pce_explicit = PCE(
+        qubo_matrix=qubo,
+        n_qubits=5,
+        ansatz=basic_ansatz,
+        backend=dummy_simulator,
+        encoding_type="poly",
+    )
+    assert pce_explicit.n_qubits == 5
+
+
+def test_pce_invalid_encoding_type(dummy_simulator, basic_ansatz):
+    qubo = np.zeros((2, 2))
+    with pytest.raises(ValueError, match="Unknown encoding_type: sparse"):
+        PCE(
+            qubo_matrix=qubo,
+            ansatz=basic_ansatz,
+            backend=dummy_simulator,
+            encoding_type="sparse",
+        )
+
+
+def test_pce_poly_decoding_correctness(dummy_simulator, basic_ansatz):
+    """Test that poly decoding produces correct QUBO variable assignments."""
+    # N=3 variables. Poly encoding with n_qubits=2 gives capacity 3.
+    # Masks will be: [1, 2, 3] (binary 01, 10, 11)
+    qubo = np.zeros((3, 3))
+    pce = PCE(
+        qubo_matrix=qubo,
+        ansatz=basic_ansatz,
+        backend=dummy_simulator,
+        encoding_type="poly",
+    )
+
+    # Manually verify decoding for masks [1, 2, 3] (Vars 0, 1, 2):
+    # State "00" (0):
+    #   Var 0 (mask 1) & 0 = 0 -> Parity 0 -> Sol 1
+    #   Var 1 (mask 2) & 0 = 0 -> Parity 0 -> Sol 1
+    #   Var 2 (mask 3) & 0 = 0 -> Parity 0 -> Sol 1
+    #   Decoded: "111"
+
+    # State "01" (1):
+    #   Var 0 (mask 1) & 1 = 1 -> Parity 1 -> Sol 0
+    #   Var 1 (mask 2) & 1 = 0 -> Parity 0 -> Sol 1
+    #   Var 2 (mask 3) & 1 = 1 -> Parity 1 -> Sol 0
+    #   Decoded: "010"
+
+    # State "10" (2):
+    #   Var 0 (mask 1) & 2 = 0 -> Parity 0 -> Sol 1
+    #   Var 1 (mask 2) & 2 = 2 -> Parity 1 -> Sol 0
+    #   Var 2 (mask 3) & 2 = 2 -> Parity 1 -> Sol 0
+    #   Decoded: "100"
+
+    # State "11" (3):
+    #   Var 0 (mask 1) & 3 = 1 -> Parity 1 -> Sol 0
+    #   Var 1 (mask 2) & 3 = 2 -> Parity 1 -> Sol 0
+    #   Var 2 (mask 3) & 3 = 3 (bits 1,1) -> Parity 0 -> Sol 1
+    #   Decoded: "001"
+
+    pce._best_probs = {
+        CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0): {
+            "00": 0.4,
+            "01": 0.3,
+            "10": 0.2,
+            "11": 0.1,
+        }
+    }
+    pce._losses_history = [{0: -1.0}]
+
+    solutions = pce.get_top_solutions(n=4)
+
+    decoded_map = {sol.bitstring: sol.prob for sol in solutions}
+
+    # Check expected probabilities for decoded strings
+    assert decoded_map["111"] == 0.4
+    assert decoded_map["010"] == 0.3
+    assert decoded_map["100"] == 0.2
+    assert decoded_map["001"] == 0.1

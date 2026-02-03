@@ -120,44 +120,78 @@ class PCE(VQE):
         qubo_matrix: QUBOProblemTypes,
         n_qubits: int | None = None,
         alpha: float = 2.0,
+        encoding_type: str = "dense",
         **kwargs,
     ):
         """
         Args:
             qubo_matrix (QUBOProblemTypes): The N x N matrix to minimize. Accepts
                 a dense array, sparse matrix, list, or BinaryQuadraticModel.
-            n_qubits (int | None): Optional override. Must be >= ceil(log2(N)).
+            n_qubits (int | None): Optional override. Must be >= ceil(log2(N)) for dense.
                 Larger values increase circuit size without adding representational power.
             alpha (float): Scaling factor for the tanh() activation. Higher = harder
                 binary constraints, Lower = smoother gradient.
+            encoding_type (str): "dense" (logarithmic qubits, default) or "poly"
+                (polynomial qubits, weight 1 & 2 masks).
         """
 
         self.qubo_matrix = qubo_to_matrix(qubo_matrix)
         self.n_vars = self.qubo_matrix.shape[0]
         self.alpha = alpha
+        self.encoding_type = encoding_type
         self._use_soft_objective = self.alpha < 5.0
         self._final_vector: npt.NDArray[np.integer] | None = None
 
         if kwargs.get("qem_protocol") is not None:
             raise ValueError("PCE does not currently support qem_protocol.")
 
-        # Calculate required qubits (Logarithmic Scaling)
-        min_qubits = int(np.ceil(np.log2(self.n_vars + 1)))
-        if n_qubits is not None and n_qubits < min_qubits:
-            raise ValueError(
-                "n_qubits must be >= ceil(log2(N + 1)) to represent all variables. "
-                f"Got n_qubits={n_qubits}, minimum={min_qubits}."
-            )
-        if n_qubits is not None and n_qubits > min_qubits:
-            warn(
-                "n_qubits exceeds the minimum required; extra qubits increase circuit "
-                "size and can add noise without representing more variables.",
-                UserWarning,
-            )
-        self.n_qubits = n_qubits if n_qubits is not None else min_qubits
+        if self.encoding_type == "dense":
+            # Calculate required qubits (Logarithmic Scaling)
+            min_qubits = int(np.ceil(np.log2(self.n_vars + 1)))
+            if n_qubits is not None and n_qubits < min_qubits:
+                raise ValueError(
+                    "n_qubits must be >= ceil(log2(N + 1)) to represent all variables. "
+                    f"Got n_qubits={n_qubits}, minimum={min_qubits}."
+                )
+            if n_qubits is not None and n_qubits > min_qubits:
+                warn(
+                    "n_qubits exceeds the minimum required; extra qubits increase circuit "
+                    "size and can add noise without representing more variables.",
+                    UserWarning,
+                )
+            self.n_qubits = n_qubits if n_qubits is not None else min_qubits
 
-        # Pre-compute U64 masks for the fast broadcasting step later
-        self._variable_masks_u64 = np.arange(1, self.n_vars + 1, dtype=np.uint64)
+            # Pre-compute U64 masks for the fast broadcasting step later
+            self._variable_masks_u64 = np.arange(1, self.n_vars + 1, dtype=np.uint64)
+
+        elif self.encoding_type == "poly":
+            # Solve N approx n + n(n-1)/2 for n
+            discriminant = 1 + 8 * self.n_vars
+            # Note: Using (-1 + sqrt) / 2 to solve n(n+1)/2 = N
+            min_qubits = int(np.ceil((-1 + np.sqrt(discriminant)) / 2))
+
+            self.n_qubits = max(n_qubits if n_qubits else 0, min_qubits)
+
+            # Capacity check
+            max_capacity = self.n_qubits + (self.n_qubits * (self.n_qubits - 1)) // 2
+            if self.n_vars > max_capacity:
+                raise ValueError(
+                    f"Poly encoding with {self.n_qubits} qubits supports max {max_capacity} "
+                    f"vars; problem has {self.n_vars}. Increase n_qubits."
+                )
+
+            # Generate Sparse Masks (Weight 1 & 2 only)
+            masks = []
+            for i in range(self.n_qubits):
+                masks.append(1 << i)  # Weight 1
+            for i in range(self.n_qubits):
+                for j in range(i + 1, self.n_qubits):
+                    masks.append((1 << i) | (1 << j))  # Weight 2
+
+            self._variable_masks_u64 = np.array(masks[: self.n_vars], dtype=np.uint64)
+
+        else:
+            raise ValueError(f"Unknown encoding_type: {self.encoding_type}")
 
         # Placeholder Hamiltonian required by VQE; we care about the measurement
         # probability distribution, and Z-basis measurements provide it.
