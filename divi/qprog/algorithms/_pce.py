@@ -11,7 +11,10 @@ import sympy as sp
 
 from divi.circuits import MetaCircuit
 from divi.qprog.typing import QUBOProblemTypes, qubo_to_matrix
-from divi.qprog.variational_quantum_algorithm import SolutionEntry
+from divi.qprog.variational_quantum_algorithm import (
+    SolutionEntry,
+    _merge_param_group_counts,
+)
 
 from ._vqe import VQE
 
@@ -210,16 +213,17 @@ class PCE(VQE):
 
         losses = {}
 
-        for p_idx, qem_groups in self._group_results(results).items():
-            # PCE ignores QEM ids; aggregate all shots for this parameter set.
+        for p_idx, ham_groups in self._group_results(results).items():
+            # PCE ignores Hamiltonian and QEM ids; aggregate all shots for this parameter set.
             param_group = [
                 ("0", shots)
+                for qem_groups in ham_groups.values()
                 for shots_list in qem_groups.values()
                 for shots in shots_list
             ]
 
             state_strings, counts, total_shots = _aggregate_param_group(
-                param_group, self._merge_param_group_counts
+                param_group, _merge_param_group_counts
             )
 
             parities = _decode_parities(state_strings, self._variable_masks_u64)

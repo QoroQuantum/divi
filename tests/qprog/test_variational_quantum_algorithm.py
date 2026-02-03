@@ -276,6 +276,150 @@ class TestProgram:
         # Verify that the grouping strategy was overridden to "_backend_expval"
         assert program._grouping_strategy == "_backend_expval"
 
+    @pytest.mark.parametrize(
+        "n_params,n_hamiltonians,n_meas_ids",
+        [
+            (2, 1, 2),
+            (2, 3, 2),
+        ],
+        ids=["single_sample", "multi_sample"],
+    )
+    def test_group_results_returns_3_level_structure(
+        self, mocker, n_params, n_hamiltonians, n_meas_ids
+    ):
+        """_group_results returns 3-level {param_id: {ham_id: {qem_id: [shots...]}}}."""
+        program = self._create_sample_program(mocker)
+        program._initialize_params()
+
+        fake_shot = {"00": 50, "11": 50}
+        ham_ids = list(range(n_hamiltonians))
+        results = {
+            CircuitTag(
+                param_id=p,
+                qem_name="NoMitigation",
+                qem_id=0,
+                hamiltonian_id=h,
+                meas_id=m,
+            ): fake_shot
+            for p in range(n_params)
+            for h in ham_ids
+            for m in range(n_meas_ids)
+        }
+
+        grouped = program._group_results(results)
+
+        for p in range(n_params):
+            assert p in grouped
+            assert len(grouped[p]) == n_hamiltonians
+            for h in ham_ids:
+                assert h in grouped[p]
+                assert 0 in grouped[p][h]
+                assert len(grouped[p][h][0]) == n_meas_ids
+
+    def test_group_results_calls_parse_result_tag_per_result(self, mocker):
+        """_group_results invokes _parse_result_tag once per result entry."""
+        program = self._create_sample_program(mocker)
+        program._initialize_params()
+        results = {
+            CircuitTag(0, "NoMitigation", 0, 0, 0): {"00": 50, "11": 50},
+            CircuitTag(0, "NoMitigation", 0, 1, 0): {"00": 50, "11": 50},
+        }
+        spy = mocker.spy(program, "_parse_result_tag")
+        program._group_results(results)
+        assert spy.call_count == 2
+        assert spy.call_args_list[0].args[0].param_id == 0
+        assert spy.call_args_list[0].args[0].meas_id == 0
+        assert spy.call_args_list[1].args[0].meas_id == 1
+
+    def test_group_results_orders_shots_by_meas_id(self, mocker):
+        """Shots within each qem_id list are sorted by meas_id (critical for _compute_marginal_results)."""
+        program = self._create_sample_program(mocker)
+        program._initialize_params()
+        shots_a = {"00": 100, "01": 0, "10": 0, "11": 0}
+        shots_b = {"00": 0, "01": 100, "10": 0, "11": 0}
+        shots_c = {"00": 0, "01": 0, "10": 0, "11": 100}
+        # Insert in wrong order (meas_id 2, 0, 1); CircuitTag(param_id, qem_name, qem_id, meas_id, hamiltonian_id)
+        results = {
+            CircuitTag(0, "NoMitigation", 0, 2, 0): shots_c,
+            CircuitTag(0, "NoMitigation", 0, 0, 0): shots_a,
+            CircuitTag(0, "NoMitigation", 0, 1, 0): shots_b,
+        }
+        grouped = program._group_results(results)
+        # After sort: [shots_a, shots_b, shots_c] by meas_id 0,1,2
+        shots_list = grouped[0][0][0]
+        assert shots_list[0] == shots_a
+        assert shots_list[1] == shots_b
+        assert shots_list[2] == shots_c
+
+    def test_post_process_results_averages_over_hamiltonian_samples(self, mocker):
+        """_post_process_results averages energies across hamiltonian_id."""
+        program = self._create_sample_program(mocker, grouping_strategy=None)
+        program.loss_constant = 0.0
+        program.backend = self._create_mock_backend(mocker)
+
+        # Same shot histogram for all; 3 measurement groups (PauliX, PauliZ, PauliX@PauliZ)
+        fake_shot = {"00": 50, "01": 25, "10": 15, "11": 10}
+        n_groups = 3
+        results = {
+            CircuitTag(
+                param_id=0,
+                qem_name="mock-qem",
+                qem_id=0,
+                hamiltonian_id=h,
+                meas_id=m,
+            ): fake_shot
+            for h in range(3)
+            for m in range(n_groups)
+        }
+
+        losses = program._post_process_results(results)
+
+        # Single param_id; 3 hamiltonian samples with identical shots -> same energy each
+        # Average of 3 identical values = that value
+        assert len(losses) == 1
+        assert 0 in losses
+        single_sample_result = {
+            CircuitTag(param_id=0, qem_name="mock-qem", qem_id=0, meas_id=m): fake_shot
+            for m in range(n_groups)
+        }
+        expected_loss = program._post_process_results(single_sample_result)[0]
+        assert np.isclose(losses[0], expected_loss)
+
+    def test_post_process_results_merges_probability_histograms_over_hamiltonian_samples(
+        self, mocker
+    ):
+        """_post_process_results merges probability histograms when multiple ham_ids."""
+        program = self._create_sample_program(mocker, grouping_strategy=None)
+        program._is_compute_probabilities = True
+        program.backend = self._create_mock_backend(mocker)
+        program.backend.shots = 100
+
+        # Two Hamiltonian samples with different histograms
+        results = {
+            CircuitTag(
+                param_id=0,
+                qem_name="NoMitigation",
+                qem_id=0,
+                hamiltonian_id=0,
+                meas_id=0,
+            ): {"00": 80, "11": 20},
+            CircuitTag(
+                param_id=0,
+                qem_name="NoMitigation",
+                qem_id=0,
+                hamiltonian_id=1,
+                meas_id=0,
+            ): {"00": 60, "11": 40},
+        }
+
+        probs = program._post_process_results(results)
+
+        # Merged: avg(0.8, 0.6)=0.7 for "00", avg(0.2, 0.4)=0.3 for "11"
+        assert len(probs) == 1
+        prob_dict = next(iter(probs.values()))
+        assert np.isclose(prob_dict["00"], 0.7)
+        assert np.isclose(prob_dict["11"], 0.3)
+
 
 class TestBatchedExpectation:
     """Test suite for batched expectation value calculations."""

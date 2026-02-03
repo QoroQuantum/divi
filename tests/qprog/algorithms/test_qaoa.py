@@ -17,6 +17,7 @@ from divi.qprog import (
     ScipyMethod,
     ScipyOptimizer,
 )
+from divi.qprog._hamiltonians import ExactTrotterization, QDrift
 from divi.qprog.algorithms import _qaoa
 from divi.qprog.checkpointing import CheckpointConfig
 from tests.qprog.qprog_contracts import (
@@ -996,3 +997,199 @@ class TestQUBOInput:
 
         # Verify we completed the full run
         assert qaoa_problem2.current_iteration == 15
+
+
+class TestQAOAQDriftMultiSample:
+    """Tests for QAOA with multi-sample QDrift (n_hamiltonians_per_iteration > 1)."""
+
+    def test_exact_trotterization_uses_single_hamiltonian_sample(
+        self, default_test_simulator
+    ):
+        """With ExactTrotterization (no n_hamiltonians_per_iteration), only ham_id=0 is used."""
+        strategy = ExactTrotterization(keep_top_n=3)
+        qaoa = QAOA(
+            problem=nx.bull_graph(),
+            graph_problem=GraphProblem.MAXCUT,
+            n_layers=1,
+            trotterization_strategy=strategy,
+            max_iterations=1,
+            backend=default_test_simulator,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+        )
+        qaoa._initialize_params()
+        qaoa._curr_params = np.array([[0.5, 0.5]])
+        qaoa._hamiltonian_samples = [
+            strategy.process_hamiltonian(qaoa._cost_hamiltonian) for _ in range(1)
+        ]
+        bundles = qaoa._generate_circuits()
+        hamiltonian_ids = {
+            ex.tag.hamiltonian_id for b in bundles for ex in b.executables
+        }
+        assert hamiltonian_ids == {0}
+
+    def test_multi_sample_generates_circuits_with_hamiltonian_id(
+        self, default_test_simulator
+    ):
+        """_generate_circuits with hamiltonian_samples produces tags with hamiltonian_id."""
+        strategy = QDrift(
+            keep_fraction=0.3,
+            sampling_budget=5,
+            n_hamiltonians_per_iteration=3,
+            seed=42,
+        )
+        qaoa = QAOA(
+            problem=nx.bull_graph(),
+            graph_problem=GraphProblem.MAXCUT,
+            n_layers=1,
+            trotterization_strategy=strategy,
+            max_iterations=1,
+            backend=default_test_simulator,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+        )
+        qaoa._initialize_params()
+        qaoa._curr_params = np.array([[0.5, 0.5]])  # 1 param set
+
+        # Trigger multi-sample path via instance attribute
+        qaoa._hamiltonian_samples = [
+            strategy.process_hamiltonian(qaoa._cost_hamiltonian) for _ in range(3)
+        ]
+
+        bundles = qaoa._generate_circuits()
+
+        # 3 hamiltonian samples * 1 param set = 3 bundles
+        assert len(bundles) == 3
+        hamiltonian_ids = set()
+        for bundle in bundles:
+            for ex in bundle.executables:
+                assert ex.tag.hamiltonian_id >= 0
+                hamiltonian_ids.add(ex.tag.hamiltonian_id)
+        assert hamiltonian_ids == {0, 1, 2}
+
+    @pytest.mark.e2e
+    def test_multi_sample_qaoa_e2e_solution(self, default_test_simulator):
+        """QAOA with multi-sample QDrift runs to completion and finds correct MAXCUT."""
+        G = nx.bull_graph()
+        default_test_simulator.set_seed(1997)
+
+        strategy = QDrift(
+            keep_fraction=0.5,
+            sampling_budget=4,
+            n_hamiltonians_per_iteration=2,
+            seed=123,
+        )
+        qaoa = QAOA(
+            problem=G,
+            graph_problem=GraphProblem.MAXCUT,
+            n_layers=1,
+            trotterization_strategy=strategy,
+            max_iterations=10,
+            backend=default_test_simulator,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            seed=1997,
+        )
+        count, runtime = qaoa.run()
+
+        assert count > 0
+        assert runtime >= 0
+        assert len(qaoa.losses_history) == 10
+        assert qaoa.best_loss < float("inf")
+
+        # At least one of the top solutions achieves the optimal cut (more stable than single best)
+        max_cut_val, _ = nx.algorithms.approximation.maxcut.one_exchange(G)
+
+        def cut_value(partition1):
+            partition0 = set(G.nodes()) - set(partition1)
+            return sum(
+                1 for u, v in G.edges() if (u in partition0) != (v in partition0)
+            )
+
+        top_solutions = qaoa.get_top_solutions(n=5, include_decoded=True)
+        optimal_solutions = [
+            sol
+            for sol in top_solutions
+            if sol.decoded is not None and cut_value(sol.decoded) == max_cut_val
+        ]
+        assert len(optimal_solutions) >= 1
+
+        # Verify nodes in the optimal cut are valid graph nodes
+        for sol in optimal_solutions:
+            assert all(node in G.nodes() for node in sol.decoded)
+
+    def test_get_cost_circuit_for_hamiltonian_called_with_correct_ham_ids(
+        self, mocker, default_test_simulator
+    ):
+        """_get_cost_circuit_for_hamiltonian is invoked with ham_id 0, 1, 2 for multi-sample."""
+        strategy = QDrift(
+            keep_fraction=0.5,
+            sampling_budget=4,
+            n_hamiltonians_per_iteration=3,
+            seed=42,
+        )
+        qaoa = QAOA(
+            problem=nx.bull_graph(),
+            graph_problem=GraphProblem.MAXCUT,
+            n_layers=1,
+            trotterization_strategy=strategy,
+            max_iterations=1,
+            backend=default_test_simulator,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+        )
+        spy = mocker.spy(qaoa, "_get_cost_circuit_for_hamiltonian")
+        qaoa.run()
+        call_args = [c.args[0] for c in spy.call_args_list]
+        assert all(ham_id in (0, 1, 2) for ham_id in call_args)
+        assert {0, 1, 2}.issubset(set(call_args))
+
+    def test_get_cost_circuit_for_hamiltonian_fallback_when_ham_id_missing(
+        self, mocker, default_test_simulator
+    ):
+        """_get_cost_circuit_for_hamiltonian falls back to meta_circuits when ham_id not in cache."""
+        strategy = QDrift(
+            keep_fraction=0.5,
+            sampling_budget=4,
+            n_hamiltonians_per_iteration=1,
+            seed=42,
+        )
+        qaoa = QAOA(
+            problem=nx.bull_graph(),
+            graph_problem=GraphProblem.MAXCUT,
+            n_layers=1,
+            trotterization_strategy=strategy,
+            max_iterations=1,
+            backend=default_test_simulator,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+        )
+        qaoa._initialize_params()
+        default_circuit = qaoa.meta_circuits["cost_circuit"]
+        # Call with ham_id not in cache (e.g. from malformed grouped results)
+        result = qaoa._get_cost_circuit_for_hamiltonian(99)
+        assert result is default_circuit
+
+    def test_multi_sample_final_computation_merges_histograms(
+        self, default_test_simulator
+    ):
+        """Final computation with multi-sample QDrift samples Hamiltonians and merges histograms."""
+        strategy = QDrift(
+            keep_fraction=0.5,
+            sampling_budget=4,
+            n_hamiltonians_per_iteration=3,
+            seed=456,
+        )
+        qaoa = QAOA(
+            problem=nx.bull_graph(),
+            graph_problem=GraphProblem.MAXCUT,
+            n_layers=1,
+            trotterization_strategy=strategy,
+            max_iterations=2,
+            backend=default_test_simulator,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+        )
+        qaoa.run()
+        # best_probs should contain merged distribution (one entry per param set)
+        assert len(qaoa.best_probs) >= 1
+        probs = next(iter(qaoa.best_probs.values()))
+        assert isinstance(probs, dict)
+        assert all(
+            isinstance(k, str) and isinstance(v, (int, float)) for k, v in probs.items()
+        )
+        assert np.isclose(sum(probs.values()), 1.0)

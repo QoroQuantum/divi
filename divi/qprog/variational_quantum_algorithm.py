@@ -53,6 +53,64 @@ def _get_run_instruction() -> str:
     return "Call run() to execute the optimization."
 
 
+def _merge_param_group_counts(
+    param_group: list[tuple[str, dict[str, int]]],
+) -> dict[str, int]:
+    """Merge shot histograms for a single parameter group."""
+    shots_dict: dict[str, int] = {}
+    for _, d in param_group:
+        for s, c in d.items():
+            shots_dict[s] = shots_dict.get(s, 0) + c
+    return shots_dict
+
+
+def _merge_probability_histograms(
+    grouped: dict[int, dict[int, dict[int, list[dict[str, int]]]]],
+    shots: int,
+) -> dict[str, dict[str, float]]:
+    """Merge probability histograms across Hamiltonian samples for each param_id."""
+
+    merged: dict[str, dict[str, float]] = {}
+
+    for param_id, ham_dict in grouped.items():
+        # Per-ham_id: merge shots (across qem_id and meas_id), convert to probs
+        probs_per_ham: list[dict[str, float]] = []
+
+        for _, qem_dict in ham_dict.items():
+            param_group: list[tuple[str, dict[str, int]]] = []
+            for qem_shots in qem_dict.values():
+                for shot_dict in qem_shots:
+                    param_group.append(("", shot_dict))
+            merged_counts = _merge_param_group_counts(param_group)
+            probs_per_ham.append(
+                {bitstring: count / shots for bitstring, count in merged_counts.items()}
+            )
+
+        # Average probs across Hamiltonian samples for each bitstring
+        all_bitstrings = set()
+
+        for p in probs_per_ham:
+            all_bitstrings.update(p.keys())
+
+        avg_probs: dict[str, float] = {}
+
+        for bs in all_bitstrings:
+            vals = [p.get(bs, 0.0) for p in probs_per_ham]
+            avg_probs[bs] = sum(vals) / len(vals)
+
+        tag = CircuitTag(
+            param_id=param_id,
+            qem_name="NoMitigation",
+            qem_id=0,
+            hamiltonian_id=0,
+            meas_id=0,
+        )
+
+        merged[format_circuit_tag(tag)] = avg_probs
+
+    return reverse_dict_endianness(merged)
+
+
 class SolutionEntry(NamedTuple):
     """A solution entry with bitstring, probability, and optional decoded value.
 
@@ -869,26 +927,46 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         return losses
 
     @staticmethod
-    def _parse_result_tag(tag: CircuitTag) -> tuple[int, int]:
-        """Extract (param_id, qem_id) from a result tag."""
+    def _parse_result_tag(tag: CircuitTag) -> tuple[int, int, int]:
+        """Extract (param_id, qem_id, hamiltonian_id) from a result tag."""
         if not isinstance(tag, CircuitTag):
             raise TypeError("Result tags must be CircuitTag instances.")
-        return tag.param_id, tag.qem_id
+        return tag.param_id, tag.qem_id, tag.hamiltonian_id
 
     def _group_results(
         self, results: dict[str, dict[str, int]]
-    ) -> dict[int, dict[int, list[dict[str, int]]]]:
+    ) -> dict[int, dict[int, dict[int, list[dict[str, int]]]]]:
         """
-        Group results by parameter id and QEM id.
+        Group results by parameter id, hamiltonian id (for multi-sample QDrift),
+        and QEM id.
 
-        Returns:
-            dict[int, dict[int, list[dict[str, int]]]]: {param_id: {qem_id: [shots...]}}
+        Returns {param_id: {hamiltonian_id: {qem_id: [shots...]}}}.
+
+        Shots within each qem_id list are ordered by meas_id.
         """
-        grouped: dict[int, dict[int, list[dict[str, int]]]] = {}
+        grouped: dict[int, dict[int, dict[int, list[tuple[int, dict[str, int]]]]]] = {}
         for tag, shots in results.items():
-            param_id, qem_id = self._parse_result_tag(tag)
-            grouped.setdefault(param_id, {}).setdefault(qem_id, []).append(shots)
-        return grouped
+            param_id, qem_id, hamiltonian_id = self._parse_result_tag(tag)
+            inner = (
+                grouped.setdefault(param_id, {})
+                .setdefault(hamiltonian_id, {})
+                .setdefault(qem_id, [])
+            )
+            inner.append((tag.meas_id, shots))
+
+        # Sort by meas_id and strip to shots only
+        def strip_meas_id(qem_dict):
+            return {
+                q: [s for _, s in sorted(meas_shots, key=lambda x: x[0])]
+                for q, meas_shots in qem_dict.items()
+            }
+
+        result: dict[int, dict[int, dict[int, list[dict[str, int]]]]] = {}
+
+        for p, ham_dict in grouped.items():
+            result[p] = {h: strip_meas_id(qem_dict) for h, qem_dict in ham_dict.items()}
+
+        return result
 
     def _reset_tag_cache(self) -> None:
         """Reset per-run tag cache for structured result tags."""
@@ -945,7 +1023,8 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 for shots_dicts in qem_group_values
             ] or []
 
-        shots_by_qem_idx = zip(*qem_groups.values())
+        qem_group_values = [shots for _, shots in sorted(qem_groups.items())]
+        shots_by_qem_idx = zip(*qem_group_values)
         marginal_results: list[
             npt.NDArray[np.float64] | list[npt.NDArray[np.float64]]
         ] = []
@@ -960,17 +1039,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             marginal_results.append(mitigated if len(mitigated) > 1 else mitigated[0])
 
         return marginal_results
-
-    @staticmethod
-    def _merge_param_group_counts(
-        param_group: list[tuple[str, dict[str, int]]],
-    ) -> dict[str, int]:
-        """Merge shot histograms for a single parameter group."""
-        shots_dict: dict[str, int] = {}
-        for _, d in param_group:
-            for s, c in d.items():
-                shots_dict[s] = shots_dict.get(s, 0) + c
-        return shots_dict
 
     def _post_process_results(
         self, results: dict[str, dict[str, int]], **kwargs
@@ -987,6 +1055,10 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 correspond to the parameter indices.
         """
         if self._is_compute_probabilities:
+            grouped = self._group_results(results)
+            has_multi_ham = any(len(ham_dict) > 1 for ham_dict in grouped.values())
+            if has_multi_ham:
+                return _merge_probability_histograms(grouped, self.backend.shots)
             probs = convert_counts_to_probs(results, self.backend.shots)
             return reverse_dict_endianness(probs)
 
@@ -996,22 +1068,27 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             )
 
         losses = {}
-        measurement_groups = self.meta_circuits["cost_circuit"].measurement_groups
+        ham_ops = kwargs.get("ham_ops")
 
-        for p, qem_groups in self._group_results(results).items():
-            marginal_results = self._compute_marginal_results(
-                qem_groups=qem_groups,
-                measurement_groups=measurement_groups,
-                ham_ops=kwargs.get("ham_ops"),
-            )
+        for p, ham_dict in self._group_results(results).items():
+            energies: list[float] = []
+            for ham_id, qem_groups in ham_dict.items():
+                cost_circuit = (
+                    self._get_cost_circuit_for_hamiltonian(ham_id)
+                    if hasattr(self, "_get_cost_circuit_for_hamiltonian")
+                    else self.meta_circuits["cost_circuit"]
+                )
+                measurement_groups = cost_circuit.measurement_groups
+                marginal_results = self._compute_marginal_results(
+                    qem_groups=qem_groups,
+                    measurement_groups=measurement_groups,
+                    ham_ops=ham_ops,
+                )
 
-            pl_loss = (
-                self.meta_circuits["cost_circuit"]
-                .postprocessing_fn(marginal_results)
-                .item()
-            )
+                pl_loss = cost_circuit.postprocessing_fn(marginal_results).item()
+                energies.append(pl_loss)
 
-            losses[p] = pl_loss + self.loss_constant
+            losses[p] = np.mean(energies) + self.loss_constant
 
         return losses
 

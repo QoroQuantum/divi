@@ -195,7 +195,7 @@ class QDrift(TrotterizationStrategy):
 
     keep_fraction: float | None = None
     keep_top_n: int | None = None
-    sample_budget: int | None = None
+    sampling_budget: int | None = None
     sampling_strategy: Literal["uniform", "weighted"] = "uniform"
     seed: int | None = None
     n_hamiltonians_per_iteration: int = 1
@@ -208,13 +208,13 @@ class QDrift(TrotterizationStrategy):
     _rng: np.random.Generator = field(init=False, compare=False, hash=False)
 
     def __post_init__(self):
-        if self.keep_fraction is None and self.sample_budget is None:
+        if self.keep_fraction is None and self.sampling_budget is None:
             warn(
                 "Neither keep_fraction nor sample_budget is set; "
                 "the Hamiltonian will be returned unchanged.",
                 UserWarning,
             )
-        elif self.sample_budget is None:
+        elif self.sampling_budget is None:
             warn(
                 "sample_budget is not set; only the kept terms will be applied, "
                 "equivalent to ExactTrotterization.",
@@ -247,7 +247,7 @@ class QDrift(TrotterizationStrategy):
         if (
             self.keep_fraction is None
             and self.keep_top_n is None
-            and self.sample_budget is None
+            and self.sampling_budget is None
         ):
             return hamiltonian.simplify()
 
@@ -281,7 +281,7 @@ class QDrift(TrotterizationStrategy):
                 )
                 return hamiltonian
 
-        if self.sample_budget is None:
+        if self.sampling_budget is None:
             return keep_hamiltonian
 
         if triggered_exact_trotterization and qml.equal(keep_hamiltonian, hamiltonian):
@@ -291,7 +291,7 @@ class QDrift(TrotterizationStrategy):
         absolute_coeffs = np.abs(to_sample_hamiltonian.terms()[0])
         sampled_hamiltonian = self._rng.choice(
             np.asarray(to_sample_hamiltonian),
-            size=self.sample_budget,
+            size=self.sampling_budget,
             replace=True,
             **(
                 {"p": absolute_coeffs / absolute_coeffs.sum()}
