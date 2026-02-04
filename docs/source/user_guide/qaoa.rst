@@ -70,6 +70,59 @@ Based on test cases and real applications, here are some proven configurations:
    qaoa_problem.run()
    # Should find solution: [1, 0, 1]
 
+Trotterization Strategies
+-------------------------
+
+QAOA evolves the cost Hamiltonian in the ansatz. By default, Divi uses
+:class:`~divi.qprog.ExactTrotterization`, which applies all Hamiltonian terms in each
+circuit. For large Hamiltonians, this can produce deep circuits that are costly or
+infeasible on noisy hardware.
+
+**QDrift** is a randomized Trotterization strategy that approximates the cost
+Hamiltonian by sampling a subset of terms. It yields shallower circuits at the cost
+of more circuits per iteration (multiple Hamiltonian samples are averaged). On noisy
+hardware, lower depth can improve fidelity despite the higher circuit count.
+
+Key QDrift parameters:
+
+- **keep_fraction**: Deterministically keep the top fraction of terms by coefficient magnitude
+- **sampling_budget**: Number of terms to sample from the remaining Hamiltonian
+- **n_hamiltonians_per_iteration**: Multiple samples per cost evaluation; losses are averaged
+- **sampling_strategy**: ``"uniform"`` or ``"weighted"`` (by coefficient magnitude)
+
+Example: QAOA with QDrift:
+
+.. code-block:: python
+
+   import networkx as nx
+   from divi.qprog import QAOA, GraphProblem, QDrift
+   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+   from divi.backends import ParallelSimulator
+
+   G = nx.erdos_renyi_graph(12, 0.3, seed=1997)
+   qdrift = QDrift(
+       keep_fraction=0.2,
+       sampling_budget=5,
+       n_hamiltonians_per_iteration=3,
+       sampling_strategy="weighted",
+       seed=1997,
+   )
+   qaoa = QAOA(
+       problem=G,
+       graph_problem=GraphProblem.MAXCUT,
+       n_layers=1,
+       trotterization_strategy=qdrift,
+       optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+       max_iterations=5,
+       backend=ParallelSimulator(),
+   )
+   qaoa.run()
+
+For a full comparison of Exact Trotterization vs QDrift (including circuit depth and
+count), see the `qaoa_qdrift_local.py
+<https://github.com/QoroQuantum/divi/blob/main/tutorials/qaoa_qdrift_local.py>`_
+tutorial.
+
 Graph Problems
 --------------
 

@@ -30,6 +30,7 @@ python <example_name>.py
 
 - **`qaoa_max_clique_local.py`** - Basic QAOA for maximum clique problem
 - **`qaoa_graph_partitioning.py`** - Large graph partitioning with QAOA
+- **`qaoa_qdrift_local.py`** - QAOA with QDrift randomized Trotterization
 
 ### Quadratic Programming
 

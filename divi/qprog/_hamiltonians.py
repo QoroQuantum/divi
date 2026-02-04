@@ -110,7 +110,9 @@ class ExactTrotterization(TrotterizationStrategy):
     """Exact Trotterization strategy."""
 
     keep_fraction: float | None = None
+    """Fraction of terms to keep by coefficient magnitude (largest first). Must be in (0, 1]. If None, keep all terms."""
     keep_top_n: int | None = None
+    """Number of top terms to keep by coefficient magnitude. Must be >= 1. If None, keep all terms. Mutually exclusive with keep_fraction."""
 
     # Caches processed Hamiltonian to avoid re-sorting and re-slicing when the
     # same Hamiltonian is passed repeatedly (e.g. across optimizer evaluations).
@@ -194,11 +196,16 @@ class QDrift(TrotterizationStrategy):
     """QDrift Trotterization strategy."""
 
     keep_fraction: float | None = None
+    """Fraction of terms to keep deterministically by coefficient magnitude (largest first). Must be in (0, 1]. If None, all terms go to the sampling pool. Mutually exclusive with keep_top_n."""
     keep_top_n: int | None = None
+    """Number of top terms to keep deterministically by coefficient magnitude. Must be >= 1. If None, all terms go to the sampling pool. Mutually exclusive with keep_fraction."""
     sampling_budget: int | None = None
+    """Number of terms to sample from the remaining Hamiltonian per cost evaluation. If None, only kept terms are applied (equivalent to ExactTrotterization)."""
     sampling_strategy: Literal["uniform", "weighted"] = "uniform"
+    """How to sample terms: "uniform" (equal probability) or "weighted" (by coefficient magnitude)."""
     seed: int | None = None
-    n_hamiltonians_per_iteration: int = 1
+    """Random seed for reproducible sampling. If None, sampling is non-deterministic."""
+    n_hamiltonians_per_iteration: int = 10
     """Number of Hamiltonian samples per cost evaluation; losses are averaged over them."""
 
     # Caches the (keep_hamiltonian, to_sample_hamiltonian) split so we avoid
