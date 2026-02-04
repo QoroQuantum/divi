@@ -41,6 +41,7 @@
 - API tests require a Qoro API key:
   - `QORO_API_KEY=... poetry run pytest --run-api-tests`
   - or `poetry run pytest --run-api-tests --api-key your-key-here`
+- Never inline imports nor classes in test functions. If you are facing errors due to circular imports, ask for approval before inlining imports to fix it.
 
 ## Documentation
 
