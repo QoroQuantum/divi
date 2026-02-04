@@ -54,9 +54,29 @@ class DummySimulator(CircuitRunner):
         return ExecutionResult(results=res)
 
 
+class DummyExpvalBackend(CircuitRunner):
+    """Backend that supports expectation values (for PCE expval-mode tests)."""
+
+    @property
+    def is_async(self):
+        return False
+
+    @property
+    def supports_expval(self):
+        return True
+
+    def submit_circuits(self, circuits, **kwargs):
+        return ExecutionResult(results=[])
+
+
 @pytest.fixture
 def dummy_simulator():
     return DummySimulator(shots=1)
+
+
+@pytest.fixture
+def dummy_expval_backend():
+    return DummyExpvalBackend(shots=100)
 
 
 @pytest.fixture
