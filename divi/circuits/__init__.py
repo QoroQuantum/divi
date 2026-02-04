@@ -3,7 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from ._qasm_conversion import to_openqasm
-from ._qasm_validation import is_valid_qasm, validate_qasm, validate_qasm_count_qubits
+from ._qasm_validation import (
+    _format_validation_error_with_context,
+    is_valid_qasm,
+    validate_qasm,
+    validate_qasm_count_qubits,
+)
 from ._core import (
     CircuitBundle,
     ExecutableQASMCircuit,

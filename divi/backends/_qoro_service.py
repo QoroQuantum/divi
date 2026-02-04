@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -26,7 +26,11 @@ from divi.backends._qpu_system import (
     update_qpu_systems_cache,
 )
 from divi.backends._results_processing import _decode_qh1_b64
-from divi.circuits import is_valid_qasm, validate_qasm
+from divi.circuits import (
+    _format_validation_error_with_context,
+    is_valid_qasm,
+    validate_qasm,
+)
 
 API_URL = "https://app.qoroquantum.net/api"
 _MAX_PAYLOAD_SIZE_MB = 0.95
@@ -453,7 +457,10 @@ class QoroService(CircuitRunner):
                 try:
                     validate_qasm(circuit)
                 except SyntaxError as e:
-                    raise ValueError(f"Circuit '{key}' is not a valid QASM: {e}") from e
+                    msg = _format_validation_error_with_context(circuit, e)
+                    raise ValueError(
+                        f"Circuit '{key}' is not a valid QASM: {msg}"
+                    ) from e
 
         # Initialize the job without circuits to get a job_id
         init_payload = {

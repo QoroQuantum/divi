@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -58,7 +58,7 @@ TOKEN_SPECS = [
     ("MINUS", r"-"),
     ("CARET", r"\^"),
     ("STRING", r"\"[^\"\n]*\""),
-    ("NUMBER", r"\d+(?:\.\d+)?"),
+    ("NUMBER", r"\d+(?:\.\d+)?(?:[eE][+-]?\d+)?"),
     ("ID", r"[A-Za-z_][A-Za-z0-9_]*"),
 ]
 TOKEN_REGEX = re.compile("|".join(f"(?P<{n}>{p})" for n, p in TOKEN_SPECS))
@@ -647,7 +647,7 @@ class Parser:
     # ---- numbers / errors ----
     def natural_number_tok(self) -> int:
         t = self.match("NUMBER")
-        if "." in t.value:
+        if "." in t.value or "e" in t.value.lower():
             raise SyntaxError(
                 f"Expected natural number at {t.line}:{t.col}, got {t.value}"
             )
@@ -655,7 +655,7 @@ class Parser:
 
     def natural_number_tok_tok(self) -> Tok:
         t = self.match("NUMBER")
-        if "." in t.value:
+        if "." in t.value or "e" in t.value.lower():
             raise SyntaxError(
                 f"Expected natural number at {t.line}:{t.col}, got {t.value}"
             )
@@ -692,3 +692,15 @@ def is_valid_qasm(src: str) -> bool:
         return True
     except SyntaxError:
         return False
+
+
+def _format_validation_error_with_context(qasm: str, exc: SyntaxError) -> str:
+    """Append the offending line to a validation error when line:col is present."""
+    msg = str(exc)
+    m = re.search(r"at (\d+):\d+", msg)
+    if m:
+        line_no = int(m.group(1))
+        lines = qasm.splitlines()
+        if 1 <= line_no <= len(lines):
+            msg = f"{msg}\n  Line {line_no}: {lines[line_no - 1]}"
+    return msg
