@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from typing import Literal
 from warnings import warn
 
 import numpy as np
@@ -72,6 +73,82 @@ def _compute_soft_energy(
     return float(np.dot(x_soft, Qx))
 
 
+def _setup_dense_encoding(
+    n_vars: int, n_qubits: int | None
+) -> tuple[int, npt.NDArray[np.uint64]]:
+    """Compute n_qubits and variable masks for dense (logarithmic) encoding."""
+    min_qubits = int(np.ceil(np.log2(n_vars + 1)))
+    if n_qubits is not None and n_qubits < min_qubits:
+        raise ValueError(
+            "n_qubits must be >= ceil(log2(N + 1)) to represent all variables. "
+            f"Got n_qubits={n_qubits}, minimum={min_qubits}."
+        )
+
+    if n_qubits is not None and n_qubits > min_qubits:
+        warn(
+            "n_qubits exceeds the minimum required; extra qubits increase circuit "
+            "size and can add noise without representing more variables.",
+            UserWarning,
+        )
+    n_q = n_qubits if n_qubits is not None else min_qubits
+    masks = np.arange(1, n_vars + 1, dtype=np.uint64)
+    return n_q, masks
+
+
+def _setup_poly_encoding(
+    n_vars: int, n_qubits: int | None
+) -> tuple[int, npt.NDArray[np.uint64]]:
+    """Compute n_qubits and variable masks for poly (weight-1 & 2) encoding."""
+    discriminant = 1 + 8 * n_vars
+    min_qubits = int(np.ceil((-1 + np.sqrt(discriminant)) / 2))
+
+    if n_qubits is not None and n_qubits < min_qubits:
+        raise ValueError(
+            f"n_qubits must be >= {min_qubits} for poly encoding with {n_vars} vars. "
+            f"Got n_qubits={n_qubits}."
+        )
+    if n_qubits is not None and n_qubits > min_qubits:
+        warn(
+            "n_qubits exceeds the minimum required; extra qubits increase circuit "
+            "size and can add noise without representing more variables.",
+            UserWarning,
+        )
+    n_q = n_qubits if n_qubits is not None else min_qubits
+
+    max_capacity = n_q + (n_q * (n_q - 1)) // 2
+    if n_vars > max_capacity:
+        raise ValueError(
+            f"Poly encoding with {n_q} qubits supports max {max_capacity} "
+            f"vars; problem has {n_vars}. Increase n_qubits."
+        )
+
+    masks = []
+    for i in range(n_q):
+        masks.append(1 << i)
+    for i in range(n_q):
+        for j in range(i + 1, n_q):
+            masks.append((1 << i) | (1 << j))
+
+    return n_q, np.array(masks[:n_vars], dtype=np.uint64)
+
+
+def _masks_to_ham_ops(variable_masks_u64: npt.NDArray[np.uint64], n_qubits: int) -> str:
+    """Convert variable masks to semicolon-separated Pauli strings for expval backend.
+
+    Each variable's parity is <Z on qubits in mask>. For mask with bit i set, include Z
+    at wire i. Big Endian: qubit 0 is leftmost.
+    """
+    terms = []
+    for mask in variable_masks_u64:
+        m = int(mask)
+        paulis = ["I"] * n_qubits
+        for i in range(n_qubits):
+            if (m >> i) & 1:
+                paulis[i] = "Z"
+        terms.append("".join(paulis))
+    return ";".join(terms)
+
+
 def _compute_hard_cvar_energy(
     parities: npt.NDArray[np.uint8],
     counts: npt.NDArray[np.float64],
@@ -107,8 +184,9 @@ class PCE(VQE):
     """
     Generalized Pauli Correlation Encoding (PCE) VQE.
 
-    Encodes an N-variable QUBO into O(log2(N)) qubits by mapping each variable
-    to a parity (Pauli-Z correlation) of the measured bitstring. The algorithm
+    Encodes an N-variable QUBO into qubits by mapping each variable to a parity
+    (Pauli-Z correlation) of the measured bitstring. Qubit scaling depends on
+    `encoding_type`: O(log2(N)) for dense, O(sqrt(N)) for poly. The algorithm
     uses the measurement distribution to estimate these parities, applies a
     smooth relaxation when `alpha` is small, and evaluates the classical QUBO
     objective: E = x.T @ Q @ x. For larger `alpha`, it switches to a discrete
@@ -120,19 +198,21 @@ class PCE(VQE):
         qubo_matrix: QUBOProblemTypes,
         n_qubits: int | None = None,
         alpha: float = 2.0,
-        encoding_type: str = "dense",
+        encoding_type: Literal["dense", "poly"] = "dense",
         **kwargs,
     ):
         """
         Args:
             qubo_matrix (QUBOProblemTypes): The N x N matrix to minimize. Accepts
                 a dense array, sparse matrix, list, or BinaryQuadraticModel.
-            n_qubits (int | None): Optional override. Must be >= ceil(log2(N)) for dense.
-                Larger values increase circuit size without adding representational power.
+            n_qubits (int | None): Optional override. Must be >= minimum for the
+                chosen encoding (ceil(log2(N + 1)) for dense; solve n(n+1)/2 >= N
+                for poly). Larger values raise a warning for both encodings.
             alpha (float): Scaling factor for the tanh() activation. Higher = harder
                 binary constraints, Lower = smoother gradient.
-            encoding_type (str): "dense" (logarithmic qubits, default) or "poly"
-                (polynomial qubits, weight 1 & 2 masks).
+            encoding_type (Literal["dense", "poly"]): "dense" (logarithmic qubits,
+                default) or "poly" (each variable maps to parity of 1 or 2 qubits).
+            **kwargs: Additional arguments passed to VQE (e.g. ansatz, backend).
         """
 
         self.qubo_matrix = qubo_to_matrix(qubo_matrix)
@@ -146,50 +226,13 @@ class PCE(VQE):
             raise ValueError("PCE does not currently support qem_protocol.")
 
         if self.encoding_type == "dense":
-            # Calculate required qubits (Logarithmic Scaling)
-            min_qubits = int(np.ceil(np.log2(self.n_vars + 1)))
-            if n_qubits is not None and n_qubits < min_qubits:
-                raise ValueError(
-                    "n_qubits must be >= ceil(log2(N + 1)) to represent all variables. "
-                    f"Got n_qubits={n_qubits}, minimum={min_qubits}."
-                )
-            if n_qubits is not None and n_qubits > min_qubits:
-                warn(
-                    "n_qubits exceeds the minimum required; extra qubits increase circuit "
-                    "size and can add noise without representing more variables.",
-                    UserWarning,
-                )
-            self.n_qubits = n_qubits if n_qubits is not None else min_qubits
-
-            # Pre-compute U64 masks for the fast broadcasting step later
-            self._variable_masks_u64 = np.arange(1, self.n_vars + 1, dtype=np.uint64)
-
+            self.n_qubits, self._variable_masks_u64 = _setup_dense_encoding(
+                self.n_vars, n_qubits
+            )
         elif self.encoding_type == "poly":
-            # Solve N approx n + n(n-1)/2 for n
-            discriminant = 1 + 8 * self.n_vars
-            # Note: Using (-1 + sqrt) / 2 to solve n(n+1)/2 = N
-            min_qubits = int(np.ceil((-1 + np.sqrt(discriminant)) / 2))
-
-            self.n_qubits = max(n_qubits if n_qubits else 0, min_qubits)
-
-            # Capacity check
-            max_capacity = self.n_qubits + (self.n_qubits * (self.n_qubits - 1)) // 2
-            if self.n_vars > max_capacity:
-                raise ValueError(
-                    f"Poly encoding with {self.n_qubits} qubits supports max {max_capacity} "
-                    f"vars; problem has {self.n_vars}. Increase n_qubits."
-                )
-
-            # Generate Sparse Masks (Weight 1 & 2 only)
-            masks = []
-            for i in range(self.n_qubits):
-                masks.append(1 << i)  # Weight 1
-            for i in range(self.n_qubits):
-                for j in range(i + 1, self.n_qubits):
-                    masks.append((1 << i) | (1 << j))  # Weight 2
-
-            self._variable_masks_u64 = np.array(masks[: self.n_vars], dtype=np.uint64)
-
+            self.n_qubits, self._variable_masks_u64 = _setup_poly_encoding(
+                self.n_vars, n_qubits
+            )
         else:
             raise ValueError(f"Unknown encoding_type: {self.encoding_type}")
 
@@ -199,6 +242,21 @@ class PCE(VQE):
             [1.0] * self.n_qubits, [qml.PauliZ(i) for i in range(self.n_qubits)]
         )
         super().__init__(hamiltonian=placeholder_hamiltonian, **kwargs)
+
+    def _run_optimization_circuits(self, **kwargs) -> dict[int, float]:
+        """Run optimization circuits, with validation and PCE-specific ham_ops for expval."""
+        if not self._use_soft_objective and self.backend.supports_expval:
+            raise ValueError(
+                "PCE with alpha >= 5.0 (hard CVaR mode) requires shot histograms and "
+                "cannot use expectation-value backends. Use a sampling backend or set "
+                "force_sampling=True in JobConfig when using QoroService."
+            )
+        self._curr_circuits = self._generate_circuits(**kwargs)
+        if self.backend.supports_expval:
+            kwargs["ham_ops"] = _masks_to_ham_ops(
+                self._variable_masks_u64, self.n_qubits
+            )
+        return self._dispatch_circuits_and_process_results(**kwargs)
 
     def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
         """Create meta circuits, handling the edge case of zero parameters."""
@@ -230,42 +288,58 @@ class PCE(VQE):
         }
 
     def _post_process_results(
-        self, results: dict[str, dict[str, int]]
+        self, results: dict[str, dict[str, int]], **kwargs
     ) -> dict[int, float]:
         """
         Calculates loss.
         If self.alpha < 5.0, computes 'Soft Energy' (Relaxed VQE) for smooth gradients.
         If self.alpha >= 5.0, computes 'Hard CVaR Energy' for final convergence.
+        Supports both shot histograms and expectation-value results (when ham_ops provided).
         """
 
         # Return raw probabilities if requested (skip processing)
         if getattr(self, "_is_compute_probabilities", False):
             return super()._post_process_results(results)
 
+        ham_ops = kwargs.get("ham_ops")
+
         losses = {}
 
         for p_idx, qem_groups in self._group_results(results).items():
-            # PCE ignores QEM ids; aggregate all shots for this parameter set.
-            param_group = [
-                ("0", shots)
-                for shots_list in qem_groups.values()
-                for shots in shots_list
-            ]
-
-            state_strings, counts, total_shots = _aggregate_param_group(
-                param_group, self._merge_param_group_counts
-            )
-
-            parities = _decode_parities(state_strings, self._variable_masks_u64)
-            if self._use_soft_objective:
-                probs = counts / total_shots
-                losses[p_idx] = _compute_soft_energy(
-                    parities, probs, self.alpha, self.qubo_matrix
+            if ham_ops is not None:
+                # Expectation-value path: z_expectations come directly from backend
+                expval_dict = next(
+                    shots for shots_list in qem_groups.values() for shots in shots_list
                 )
+                ham_ops_list = ham_ops.split(";")
+                z_expectations = np.array(
+                    [float(expval_dict[op]) for op in ham_ops_list],
+                    dtype=np.float64,
+                )
+                x_soft = 0.5 * (1.0 + np.tanh(self.alpha * z_expectations))
+                losses[p_idx] = float(np.dot(x_soft, self.qubo_matrix @ x_soft))
             else:
-                losses[p_idx] = _compute_hard_cvar_energy(
-                    parities, counts, total_shots, self.qubo_matrix
+                # Shot histogram path
+                param_group = [
+                    ("0", shots)
+                    for shots_list in qem_groups.values()
+                    for shots in shots_list
+                ]
+
+                state_strings, counts, total_shots = _aggregate_param_group(
+                    param_group, self._merge_param_group_counts
                 )
+
+                parities = _decode_parities(state_strings, self._variable_masks_u64)
+                if self._use_soft_objective:
+                    probs = counts / total_shots
+                    losses[p_idx] = _compute_soft_energy(
+                        parities, probs, self.alpha, self.qubo_matrix
+                    )
+                else:
+                    losses[p_idx] = _compute_hard_cvar_energy(
+                        parities, counts, total_shots, self.qubo_matrix
+                    )
 
         return losses
 

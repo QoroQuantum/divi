@@ -268,6 +268,38 @@ def test_pce_qubo_e2e_checkpointing_resume(
     assert pce3.solution.shape == (qubo_small.shape[0],)
 
 
+@pytest.mark.e2e
+def test_pce_poly_e2e_solution(default_test_simulator, basic_ansatz, qubo_small):
+    """E2E test for PCE with poly encoding (3 vars, 2 qubits)."""
+    default_test_simulator.set_seed(1997)
+
+    pce = PCE(
+        qubo_matrix=qubo_small,
+        ansatz=basic_ansatz,
+        n_layers=1,
+        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+        max_iterations=5,
+        backend=default_test_simulator,
+        encoding_type="poly",
+        seed=1997,
+    )
+
+    pce.run()
+
+    assert len(pce.losses_history) == 5
+    assert isinstance(pce.best_loss, float)
+    assert isinstance(pce.best_params, np.ndarray)
+    assert pce.encoding_type == "poly"
+    assert pce.n_qubits == 2  # N=3: min 2 qubits, capacity 3
+    assert pce.solution.shape == (qubo_small.shape[0],)
+    assert set(np.unique(pce.solution)).issubset({0, 1})
+    assert all(
+        len(bitstring) == pce.n_qubits
+        for probs_dict in pce.best_probs.values()
+        for bitstring in probs_dict.keys()
+    )
+
+
 def test_pce_get_top_solutions_decodes_bitstrings(dummy_simulator, basic_ansatz):
     """Test that get_top_solutions decodes encoded qubit states to QUBO variable assignments."""
     # Create a 4-variable QUBO (requires 3 qubits: ceil(log2(4+1)) = 3)
@@ -372,96 +404,200 @@ def test_pce_get_top_solutions_min_prob_filtering(dummy_simulator, basic_ansatz)
     assert all(sol.prob >= 0.2 for sol in solutions)
 
 
-def test_pce_get_top_solutions_decoding_correctness(dummy_simulator, basic_ansatz):
-    """Test that decoding produces correct QUBO variable assignments."""
-    # For a 2-variable QUBO (2 qubits)
-    qubo = np.array([[1.0, 0.2], [0.2, 2.0]])
+def test_pce_get_top_solutions_validation_errors(dummy_simulator, basic_ansatz):
+    """Test get_top_solutions raises for invalid n, min_prob, and missing probs."""
+    qubo = np.eye(2)
     pce = PCE(
         qubo_matrix=qubo,
         ansatz=basic_ansatz,
         backend=dummy_simulator,
     )
-
-    # Manually verify decoding:
-    # Encoded "00" (0): variable masks [1, 2] & 0 = [0, 0], parities = [0, 0], decoded = [1, 1]
-    # Encoded "01" (1): variable masks [1, 2] & 1 = [1, 0], parities = [1, 0], decoded = [0, 1]
-    # Encoded "10" (2): variable masks [1, 2] & 2 = [0, 2], parities = [0, 1], decoded = [1, 0]
-    # Encoded "11" (3): variable masks [1, 2] & 3 = [1, 2], parities = [1, 1], decoded = [0, 0]
-
     pce._best_probs = {
         CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0): {
-            "00": 0.4,  # Should decode to "11"
-            "01": 0.3,  # Should decode to "01"
-            "10": 0.2,  # Should decode to "10"
-            "11": 0.1,  # Should decode to "00"
+            "00": 0.5,
+            "01": 0.5,
         }
     }
     pce._losses_history = [{0: -1.0}]
 
-    solutions = pce.get_top_solutions(n=4)
+    with pytest.raises(ValueError, match="n must be non-negative"):
+        pce.get_top_solutions(n=-1)
 
-    # Verify decoded solutions match expected values
-    decoded_bitstrings = [sol.bitstring for sol in solutions]
-    assert "11" in decoded_bitstrings  # From "00"
-    assert "01" in decoded_bitstrings  # From "01"
-    assert "10" in decoded_bitstrings  # From "10"
-    assert "00" in decoded_bitstrings  # From "11"
+    with pytest.raises(ValueError, match="min_prob must be in range"):
+        pce.get_top_solutions(n=2, min_prob=1.5)
 
-    # Verify all decoded solutions have correct length
-    assert all(len(sol.bitstring) == 2 for sol in solutions)
+    with pytest.raises(ValueError, match="min_prob must be in range"):
+        pce.get_top_solutions(n=2, min_prob=-0.1)
+
+    assert pce.get_top_solutions(n=0) == []
 
 
-def test_pce_poly_initialization(dummy_simulator, basic_ansatz):
-    # N=3. Poly encoding should require 2 qubits.
-    # Capacity(2) = 2 + 1 = 3.
-    # Masks: 1, 2, 3 (binary 1, 10, 11) i.e. (1<<0), (1<<1), (1<<0)|(1<<1)
+def test_pce_get_top_solutions_no_probs_raises(dummy_simulator, basic_ansatz):
+    """Test get_top_solutions raises when no probability distribution available."""
+    qubo = np.eye(2)
+    pce = PCE(
+        qubo_matrix=qubo,
+        ansatz=basic_ansatz,
+        backend=dummy_simulator,
+    )
+    pce._best_probs = {}
+    pce._losses_history = []
+
+    with pytest.raises(
+        RuntimeError,
+        match="No probability distribution available",
+    ):
+        pce.get_top_solutions(n=2)
+
+
+def test_pce_qem_protocol_raises(dummy_simulator, basic_ansatz):
+    """PCE raises when qem_protocol is passed (not supported)."""
+    qubo = np.eye(2)
+    with pytest.raises(ValueError, match="PCE does not currently support qem_protocol"):
+        PCE(
+            qubo_matrix=qubo,
+            ansatz=basic_ansatz,
+            backend=dummy_simulator,
+            qem_protocol=object(),
+        )
+
+
+def test_pce_poly_expval_post_process_results(dummy_simulator, basic_ansatz):
+    """Poly encoding expval: 3 vars need ZI, IZ, ZZ observables."""
     qubo = np.zeros((3, 3))
-
     pce = PCE(
         qubo_matrix=qubo,
         ansatz=basic_ansatz,
         backend=dummy_simulator,
         encoding_type="poly",
+        alpha=1.0,
+    )
+    # ham_ops from _masks_to_ham_ops for masks [1, 2, 3]: ZI, IZ, ZZ
+    results = {
+        CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0): {
+            "ZI": 0.2,
+            "IZ": -0.4,
+            "ZZ": 0.6,
+        },
+    }
+    losses = pce._post_process_results(results, ham_ops="ZI;IZ;ZZ")
+    z = np.array([0.2, -0.4, 0.6])
+    x_soft = 0.5 * (1.0 + np.tanh(pce.alpha * z))
+    expected = float(np.dot(x_soft, qubo @ x_soft))
+    assert losses[0] == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    "encoding_type,qubo,encoded_probs,expected_decoded_map,n_vars",
+    [
+        # Dense: 2 vars, masks [1,2]. "00"->"11", "01"->"01", "10"->"10", "11"->"00"
+        (
+            "dense",
+            np.array([[1.0, 0.2], [0.2, 2.0]]),
+            {"00": 0.4, "01": 0.3, "10": 0.2, "11": 0.1},
+            {"11": 0.4, "01": 0.3, "10": 0.2, "00": 0.1},
+            2,
+        ),
+        # Poly: 3 vars, masks [1,2,3]. "00"->"111", "01"->"010", "10"->"100", "11"->"001"
+        (
+            "poly",
+            np.zeros((3, 3)),
+            {"00": 0.4, "01": 0.3, "10": 0.2, "11": 0.1},
+            {"111": 0.4, "010": 0.3, "100": 0.2, "001": 0.1},
+            3,
+        ),
+    ],
+)
+def test_pce_get_top_solutions_decoding_correctness(
+    dummy_simulator,
+    basic_ansatz,
+    encoding_type,
+    qubo,
+    encoded_probs,
+    expected_decoded_map,
+    n_vars,
+):
+    """Test that decoding produces correct QUBO variable assignments for both encodings."""
+    pce = PCE(
+        qubo_matrix=qubo,
+        ansatz=basic_ansatz,
+        backend=dummy_simulator,
+        encoding_type=encoding_type,
     )
 
-    assert pce.n_vars == 3
+    pce._best_probs = {
+        CircuitTag(
+            param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0
+        ): encoded_probs
+    }
+    pce._losses_history = [{0: -1.0}]
+
+    solutions = pce.get_top_solutions(n=len(encoded_probs))
+
+    decoded_map = {sol.bitstring: sol.prob for sol in solutions}
+    for decoded_bitstring, expected_prob in expected_decoded_map.items():
+        assert decoded_map[decoded_bitstring] == expected_prob
+    assert all(len(sol.bitstring) == n_vars for sol in solutions)
+
+
+@pytest.mark.parametrize(
+    "n_vars,n_qubits,expected_n_qubits,expected_masks,expect_warning",
+    [
+        # N=3: min 2 qubits, capacity 3. Masks [1, 2, 3].
+        (3, None, 2, [1, 2, 3], False),
+        # N=4, n_qubits=5: explicit value respected, warns (exceeds min 3).
+        (4, 5, 5, None, True),
+    ],
+)
+def test_pce_poly_encoding_config(
+    dummy_simulator,
+    basic_ansatz,
+    n_vars,
+    n_qubits,
+    expected_n_qubits,
+    expected_masks,
+    expect_warning,
+):
+    """Test poly encoding: n_qubits, masks, and n_qubits validation."""
+    qubo = np.zeros((n_vars, n_vars))
+    if expect_warning:
+        with pytest.warns(UserWarning, match="n_qubits exceeds the minimum required"):
+            pce = PCE(
+                qubo_matrix=qubo,
+                ansatz=basic_ansatz,
+                backend=dummy_simulator,
+                encoding_type="poly",
+                n_qubits=n_qubits,
+            )
+    else:
+        pce = PCE(
+            qubo_matrix=qubo,
+            ansatz=basic_ansatz,
+            backend=dummy_simulator,
+            encoding_type="poly",
+            n_qubits=n_qubits,
+        )
+
+    assert pce.n_vars == n_vars
     assert pce.encoding_type == "poly"
-    assert pce.n_qubits == 2
-
-    # Check masks
-    expected_masks = np.array([1, 2, 3], dtype=np.uint64)
-    # The order depends on the loop:
-    # Weight 1: 1<<0 (1), 1<<1 (2).
-    # Weight 2: (1<<0)|(1<<1) (3).
-    # So [1, 2, 3].
-    np.testing.assert_array_equal(pce._variable_masks_u64, expected_masks)
+    assert pce.n_qubits == expected_n_qubits
+    if expected_masks is not None:
+        np.testing.assert_array_equal(
+            pce._variable_masks_u64, np.array(expected_masks, dtype=np.uint64)
+        )
 
 
-def test_pce_poly_capacity_check(dummy_simulator, basic_ansatz):
-    # N=4. Requires 3 qubits. Capacity(2)=3 < 4.
+def test_pce_poly_n_qubits_too_low_raises(dummy_simulator, basic_ansatz):
+    """Poly encoding raises when n_qubits is below minimum (N=4 requires 3)."""
     qubo = np.zeros((4, 4))
-
-    # explicit n_qubits=2 should be auto-corrected to 3 (min required)
-    # The user-provided logic uses max(n_qubits, min_qubits) instead of raising.
-    pce = PCE(
-        qubo_matrix=qubo,
-        n_qubits=2,
-        ansatz=basic_ansatz,
-        backend=dummy_simulator,
-        encoding_type="poly",
-    )
-    assert pce.n_qubits == 3
-
-    # explicit n_qubits=5 (sufficient) should be respected
-    # min_qubits is 3. max(5, 3) = 5.
-    pce_explicit = PCE(
-        qubo_matrix=qubo,
-        n_qubits=5,
-        ansatz=basic_ansatz,
-        backend=dummy_simulator,
-        encoding_type="poly",
-    )
-    assert pce_explicit.n_qubits == 5
+    with pytest.raises(ValueError, match="n_qubits must be >= 3 for poly encoding"):
+        PCE(
+            qubo_matrix=qubo,
+            n_qubits=2,
+            ansatz=basic_ansatz,
+            backend=dummy_simulator,
+            encoding_type="poly",
+        )
 
 
 def test_pce_invalid_encoding_type(dummy_simulator, basic_ansatz):
@@ -475,59 +611,47 @@ def test_pce_invalid_encoding_type(dummy_simulator, basic_ansatz):
         )
 
 
-def test_pce_poly_decoding_correctness(dummy_simulator, basic_ansatz):
-    """Test that poly decoding produces correct QUBO variable assignments."""
-    # N=3 variables. Poly encoding with n_qubits=2 gives capacity 3.
-    # Masks will be: [1, 2, 3] (binary 01, 10, 11)
-    qubo = np.zeros((3, 3))
+def test_pce_hard_cvar_expval_backend_raises(basic_ansatz, dummy_expval_backend):
+    """PCE with alpha >= 5 (hard CVaR) raises when backend supports expectation values."""
+    qubo = np.array([[1.0, 0.2], [0.2, 2.0]])
+
+    pce = PCE(
+        qubo_matrix=qubo,
+        ansatz=basic_ansatz,
+        backend=dummy_expval_backend,
+        alpha=6.0,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="hard CVaR mode.*cannot use expectation-value backends",
+    ):
+        pce.run()
+
+
+def test_pce_soft_energy_expval_post_process_results(dummy_simulator, basic_ansatz):
+    """PCE soft energy correctly processes expectation-value format results."""
+    qubo = np.array([[1.0, 0.2], [0.2, 2.0]])
     pce = PCE(
         qubo_matrix=qubo,
         ansatz=basic_ansatz,
         backend=dummy_simulator,
-        encoding_type="poly",
+        alpha=1.0,
     )
 
-    # Manually verify decoding for masks [1, 2, 3] (Vars 0, 1, 2):
-    # State "00" (0):
-    #   Var 0 (mask 1) & 0 = 0 -> Parity 0 -> Sol 1
-    #   Var 1 (mask 2) & 0 = 0 -> Parity 0 -> Sol 1
-    #   Var 2 (mask 3) & 0 = 0 -> Parity 0 -> Sol 1
-    #   Decoded: "111"
-
-    # State "01" (1):
-    #   Var 0 (mask 1) & 1 = 1 -> Parity 1 -> Sol 0
-    #   Var 1 (mask 2) & 1 = 0 -> Parity 0 -> Sol 1
-    #   Var 2 (mask 3) & 1 = 1 -> Parity 1 -> Sol 0
-    #   Decoded: "010"
-
-    # State "10" (2):
-    #   Var 0 (mask 1) & 2 = 0 -> Parity 0 -> Sol 1
-    #   Var 1 (mask 2) & 2 = 2 -> Parity 1 -> Sol 0
-    #   Var 2 (mask 3) & 2 = 2 -> Parity 1 -> Sol 0
-    #   Decoded: "100"
-
-    # State "11" (3):
-    #   Var 0 (mask 1) & 3 = 1 -> Parity 1 -> Sol 0
-    #   Var 1 (mask 2) & 3 = 2 -> Parity 1 -> Sol 0
-    #   Var 2 (mask 3) & 3 = 3 (bits 1,1) -> Parity 0 -> Sol 1
-    #   Decoded: "001"
-
-    pce._best_probs = {
+    # Expectation format: ham_ops order ZI, IZ for 2 qubits (Z on 0, Z on 1)
+    # z_expectations = [<Z_0>, <Z_1>]. With <Z_0>=0.2, <Z_1>=-0.4:
+    # x_soft = 0.5*(1 + tanh(alpha * z))
+    results = {
         CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0): {
-            "00": 0.4,
-            "01": 0.3,
-            "10": 0.2,
-            "11": 0.1,
-        }
+            "ZI": 0.2,
+            "IZ": -0.4,
+        },
     }
-    pce._losses_history = [{0: -1.0}]
 
-    solutions = pce.get_top_solutions(n=4)
+    losses = pce._post_process_results(results, ham_ops="ZI;IZ")
 
-    decoded_map = {sol.bitstring: sol.prob for sol in solutions}
-
-    # Check expected probabilities for decoded strings
-    assert decoded_map["111"] == 0.4
-    assert decoded_map["010"] == 0.3
-    assert decoded_map["100"] == 0.2
-    assert decoded_map["001"] == 0.1
+    z = np.array([0.2, -0.4])
+    x_soft = 0.5 * (1.0 + np.tanh(pce.alpha * z))
+    expected = float(x_soft @ qubo @ x_soft)
+    assert losses[0] == pytest.approx(expected)
