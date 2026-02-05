@@ -26,11 +26,8 @@ from divi.backends._qpu_system import (
     update_qpu_systems_cache,
 )
 from divi.backends._results_processing import _decode_qh1_b64
-from divi.circuits import (
-    _format_validation_error_with_context,
-    is_valid_qasm,
-    validate_qasm,
-)
+from divi.circuits import is_valid_qasm, validate_qasm
+from divi.circuits._qasm_validation import _format_validation_error_with_context
 
 API_URL = "https://app.qoroquantum.net/api"
 _MAX_PAYLOAD_SIZE_MB = 0.95

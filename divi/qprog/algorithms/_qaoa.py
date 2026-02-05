@@ -22,6 +22,7 @@ from divi.qprog._hamiltonians import (
     ExactTrotterization,
     TrotterizationStrategy,
     _clean_hamiltonian,
+    _is_empty_hamiltonian,
     convert_qubo_matrix_to_pennylane_ising,
 )
 from divi.qprog.typing import GraphProblemTypes, QUBOProblemTypes, qubo_to_matrix
@@ -285,6 +286,8 @@ class QAOA(VariationalQuantumAlgorithm):
         self._cost_hamiltonian, constant_from_hamiltonian = _clean_hamiltonian(
             cost_hamiltonian
         )
+        if _is_empty_hamiltonian(self._cost_hamiltonian):
+            raise ValueError("Hamiltonian contains only constant terms.")
 
         self.loss_constant = _extract_loss_constant(
             self.problem_metadata, constant_from_hamiltonian

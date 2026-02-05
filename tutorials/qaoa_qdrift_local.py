@@ -22,8 +22,7 @@ import warnings
 import networkx as nx
 
 from divi.backends import ParallelSimulator
-from divi.qprog import QAOA, GraphProblem
-from divi.qprog._hamiltonians import QDrift
+from divi.qprog import QAOA, GraphProblem, QDrift
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 
 

@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from functools import partial
+
 import dimod
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -9,8 +11,11 @@ import numpy as np
 import pennylane as qml
 import pytest
 import scipy.sparse as sps
+from mitiq.zne.inference import LinearFactory
+from mitiq.zne.scaling import fold_global
 
 from divi.backends import CircuitRunner
+from divi.circuits.qem import ZNE
 from divi.qprog import (
     QAOA,
     GraphProblem,
@@ -186,6 +191,17 @@ class TestGraphInput:
                 problem=nx.bull_graph(),
                 graph_problem=GraphProblem.MAX_CLIQUE,
                 initial_state="Bell",
+                backend=None,
+            )
+
+    def test_constant_only_hamiltonian_raises(self):
+        """QAOA rejects constant-only cost Hamiltonian (e.g. empty graph) at init."""
+        with pytest.raises(
+            ValueError, match="Hamiltonian contains only constant terms"
+        ):
+            QAOA(
+                problem=nx.empty_graph(1),
+                graph_problem=GraphProblem.MAXCUT,
                 backend=None,
             )
 
@@ -1193,3 +1209,64 @@ class TestQAOAQDriftMultiSample:
             isinstance(k, str) and isinstance(v, (int, float)) for k, v in probs.items()
         )
         assert np.isclose(sum(probs.values()), 1.0)
+
+    @pytest.mark.e2e
+    def test_qdrift_zne_e2e_solution(self, default_test_simulator):
+        """QAOA with QDrift + ZNE runs to completion; probabilities preserve QEM identity."""
+        G = nx.bull_graph()
+        default_test_simulator.set_seed(1997)
+
+        scale_factors = [1.0, 2.0]
+        zne_protocol = ZNE(
+            folding_fn=partial(fold_global),
+            scale_factors=scale_factors,
+            extrapolation_factory=LinearFactory(scale_factors=scale_factors),
+        )
+        strategy = QDrift(
+            keep_fraction=0.5,
+            sampling_budget=4,
+            n_hamiltonians_per_iteration=2,
+            seed=123,
+        )
+        qaoa = QAOA(
+            problem=G,
+            graph_problem=GraphProblem.MAXCUT,
+            n_layers=1,
+            trotterization_strategy=strategy,
+            qem_protocol=zne_protocol,
+            max_iterations=5,
+            backend=default_test_simulator,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            seed=1997,
+        )
+        count, runtime = qaoa.run()
+
+        assert count > 0
+        assert runtime >= 0
+        assert len(qaoa.losses_history) == 5
+        assert qaoa.best_loss < float("inf")
+
+        # best_probs: one entry per (param_id, qem_name, qem_id); ZNE has 2 scale factors
+        assert len(qaoa.best_probs) == 2
+        assert any("zne" in k.lower() for k in qaoa.best_probs.keys())
+        for probs in qaoa.best_probs.values():
+            assert np.isclose(sum(probs.values()), 1.0)
+
+        # Solution quality: at least one of top solutions achieves optimal MAXCUT
+        max_cut_val, _ = nx.algorithms.approximation.maxcut.one_exchange(G)
+
+        def cut_value(partition1):
+            partition0 = set(G.nodes()) - set(partition1)
+            return sum(
+                1 for u, v in G.edges() if (u in partition0) != (v in partition0)
+            )
+
+        top_solutions = qaoa.get_top_solutions(n=5, include_decoded=True)
+        optimal_solutions = [
+            sol
+            for sol in top_solutions
+            if sol.decoded is not None and cut_value(sol.decoded) == max_cut_val
+        ]
+        assert len(optimal_solutions) >= 1
+        for sol in optimal_solutions:
+            assert all(node in G.nodes() for node in sol.decoded)

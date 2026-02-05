@@ -130,6 +130,24 @@ def test_vqe_fail_with_constant_only_hamiltonian(dummy_simulator):
         )
 
 
+@pytest.mark.parametrize(
+    "hamiltonian",
+    [0.5 * qml.Z(0), qml.Z(0)],
+    ids=["sprod", "bare_pauli"],
+)
+def test_vqe_single_term_hamiltonian_succeeds(dummy_simulator, hamiltonian):
+    """Single-term Hamiltonians (SProd, bare Pauli) initialize without operands error."""
+    vqe_problem = VQE(
+        hamiltonian=hamiltonian,
+        n_electrons=1,
+        ansatz=HartreeFockAnsatz(),
+        n_layers=1,
+        backend=dummy_simulator,
+    )
+    assert vqe_problem.cost_hamiltonian is not None
+    assert vqe_problem.n_qubits == 1
+
+
 @pytest.mark.parametrize("ansatz_obj", **ANSAETZE_TO_TEST)
 @pytest.mark.parametrize("n_layers", [1, 2])
 def test_meta_circuit_qasm(ansatz_obj, n_layers, h2_molecule):

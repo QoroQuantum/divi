@@ -4,6 +4,7 @@
 
 import logging
 import pickle
+import re
 from abc import abstractmethod
 from datetime import datetime
 from functools import partial
@@ -65,48 +66,63 @@ def _merge_param_group_counts(
 
 
 def _merge_probability_histograms(
-    grouped: dict[int, dict[int, dict[int, list[dict[str, int]]]]],
+    grouped: dict[
+        int,
+        dict[int, dict[tuple[str, int], list[dict[str, int]]]],
+    ],
     shots: int,
 ) -> dict[str, dict[str, float]]:
-    """Merge probability histograms across Hamiltonian samples for each param_id."""
+    """Merge probability histograms across Hamiltonian samples per (param_id, qem_name, qem_id).
+
+    Preserves (qem_name, qem_id) identity. Averages probabilities across hamiltonian_id
+    within each QEM group instead of aggregating counts across qem_ids (which would
+    over-count shots for protocols like ZNE with multiple fold factors).
+    """
 
     merged: dict[str, dict[str, float]] = {}
 
     for param_id, ham_dict in grouped.items():
-        # Per-ham_id: merge shots (across qem_id and meas_id), convert to probs
-        probs_per_ham: list[dict[str, float]] = []
+        qem_keys = set()
+        for qem_dict in ham_dict.values():
+            qem_keys.update(qem_dict.keys())
 
-        for _, qem_dict in ham_dict.items():
-            param_group: list[tuple[str, dict[str, int]]] = []
-            for qem_shots in qem_dict.values():
-                for shot_dict in qem_shots:
-                    param_group.append(("", shot_dict))
-            merged_counts = _merge_param_group_counts(param_group)
-            probs_per_ham.append(
-                {bitstring: count / shots for bitstring, count in merged_counts.items()}
+        for qem_key in sorted(qem_keys, key=lambda k: k[1]):
+            qem_name, qem_id = qem_key
+            probs_per_ham: list[dict[str, float]] = []
+
+            for _, qem_dict in ham_dict.items():
+                if qem_key not in qem_dict:
+                    continue
+                shots_list = qem_dict[qem_key]
+                param_group = [("", s) for s in shots_list]
+                merged_counts = _merge_param_group_counts(param_group)
+                probs_per_ham.append(
+                    {
+                        bitstring: count / shots
+                        for bitstring, count in merged_counts.items()
+                    }
+                )
+
+            if not probs_per_ham:
+                continue
+
+            all_bitstrings = set()
+            for p in probs_per_ham:
+                all_bitstrings.update(p.keys())
+
+            avg_probs: dict[str, float] = {}
+            for bs in all_bitstrings:
+                vals = [p.get(bs, 0.0) for p in probs_per_ham]
+                avg_probs[bs] = sum(vals) / len(vals)
+
+            tag = CircuitTag(
+                param_id=param_id,
+                qem_name=qem_name,
+                qem_id=qem_id,
+                hamiltonian_id=0,
+                meas_id=0,
             )
-
-        # Average probs across Hamiltonian samples for each bitstring
-        all_bitstrings = set()
-
-        for p in probs_per_ham:
-            all_bitstrings.update(p.keys())
-
-        avg_probs: dict[str, float] = {}
-
-        for bs in all_bitstrings:
-            vals = [p.get(bs, 0.0) for p in probs_per_ham]
-            avg_probs[bs] = sum(vals) / len(vals)
-
-        tag = CircuitTag(
-            param_id=param_id,
-            qem_name="NoMitigation",
-            qem_id=0,
-            hamiltonian_id=0,
-            meas_id=0,
-        )
-
-        merged[format_circuit_tag(tag)] = avg_probs
+            merged[format_circuit_tag(tag)] = avg_probs
 
     return reverse_dict_endianness(merged)
 
@@ -927,41 +943,65 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         return losses
 
     @staticmethod
-    def _parse_result_tag(tag: CircuitTag) -> tuple[int, int, int]:
-        """Extract (param_id, qem_id, hamiltonian_id) from a result tag."""
-        if not isinstance(tag, CircuitTag):
-            raise TypeError("Result tags must be CircuitTag instances.")
-        return tag.param_id, tag.qem_id, tag.hamiltonian_id
+    def _parse_tag_full(tag: CircuitTag | str) -> tuple[int, str, int, int, int]:
+        """Extract (param_id, qem_name, qem_id, hamiltonian_id, meas_id) from a tag."""
+        if isinstance(tag, CircuitTag):
+            return (
+                tag.param_id,
+                tag.qem_name,
+                tag.qem_id,
+                tag.hamiltonian_id,
+                tag.meas_id,
+            )
+        m = re.match(r"^(\d+)_([^:]+):(\d+)_ham:(-?\d+)_(\d+)$", str(tag))
+        if not m:
+            raise ValueError(f"Cannot parse tag: {tag!r}")
+        return (
+            int(m.group(1)),
+            m.group(2),
+            int(m.group(3)),
+            int(m.group(4)),
+            int(m.group(5)),
+        )
 
-    def _group_results(
-        self, results: dict[str, dict[str, int]]
-    ) -> dict[int, dict[int, dict[int, list[dict[str, int]]]]]:
+    def _group_results(self, results: dict[str, dict[str, int]]) -> dict[
+        int,
+        dict[int, dict[tuple[str, int], list[dict[str, int]]]],
+    ]:
         """
         Group results by parameter id, hamiltonian id (for multi-sample QDrift),
-        and QEM id.
+        and (qem_name, qem_id).
 
-        Returns {param_id: {hamiltonian_id: {qem_id: [shots...]}}}.
+        Returns {param_id: {hamiltonian_id: {(qem_name, qem_id): [shots...]}}}.
 
-        Shots within each qem_id list are ordered by meas_id.
+        Shots within each (qem_name, qem_id) list are ordered by meas_id.
         """
-        grouped: dict[int, dict[int, dict[int, list[tuple[int, dict[str, int]]]]]] = {}
+        grouped: dict[
+            int,
+            dict[int, dict[tuple[str, int], list[tuple[int, dict[str, int]]]]],
+        ] = {}
         for tag, shots in results.items():
-            param_id, qem_id, hamiltonian_id = self._parse_result_tag(tag)
+            param_id, qem_name, qem_id, hamiltonian_id, meas_id = self._parse_tag_full(
+                tag
+            )
+            qem_key = (qem_name, qem_id)
             inner = (
                 grouped.setdefault(param_id, {})
                 .setdefault(hamiltonian_id, {})
-                .setdefault(qem_id, [])
+                .setdefault(qem_key, [])
             )
-            inner.append((tag.meas_id, shots))
+            inner.append((meas_id, shots))
 
-        # Sort by meas_id and strip to shots only
         def strip_meas_id(qem_dict):
             return {
                 q: [s for _, s in sorted(meas_shots, key=lambda x: x[0])]
                 for q, meas_shots in qem_dict.items()
             }
 
-        result: dict[int, dict[int, dict[int, list[dict[str, int]]]]] = {}
+        result: dict[
+            int,
+            dict[int, dict[tuple[str, int], list[dict[str, int]]]],
+        ] = {}
 
         for p, ham_dict in grouped.items():
             result[p] = {h: strip_meas_id(qem_dict) for h, qem_dict in ham_dict.items()}
@@ -998,11 +1038,12 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
     def _compute_marginal_results(
         self,
-        qem_groups: dict[int, list[dict[str, int]]],
+        qem_groups: dict[tuple[str, int], list[dict[str, int]]],
         measurement_groups: list[list[qml.operation.Operator]],
         ham_ops: str | None,
     ) -> list[npt.NDArray[np.float64] | list[npt.NDArray[np.float64]]]:
         """Compute marginal results, handling backend modes and QEM."""
+        qem_sorted = sorted(qem_groups.items(), key=lambda x: x[0][1])
         if self.backend.supports_expval:
             if ham_ops is None:
                 raise ValueError(
@@ -1010,7 +1051,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                     "that supports expectation values, but were not provided."
                 )
             ham_ops_list = ham_ops.split(";")
-            qem_group_values = [shots for _, shots in sorted(qem_groups.items())]
+            qem_group_values = [shots for _, shots in qem_sorted]
             return [
                 self._apply_qem_protocol(
                     np.array(
@@ -1023,7 +1064,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 for shots_dicts in qem_group_values
             ] or []
 
-        qem_group_values = [shots for _, shots in sorted(qem_groups.items())]
+        qem_group_values = [shots for _, shots in qem_sorted]
         shots_by_qem_idx = zip(*qem_group_values)
         marginal_results: list[
             npt.NDArray[np.float64] | list[npt.NDArray[np.float64]]

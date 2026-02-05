@@ -14,6 +14,7 @@ from divi.qprog._hamiltonians import (
     ExactTrotterization,
     QDrift,
     _clean_hamiltonian,
+    _hamiltonian_term_count,
     _is_sanitized,
     convert_hamiltonian_to_pauli_string,
     convert_qubo_matrix_to_pennylane_ising,
@@ -36,6 +37,28 @@ def test_is_sanitized(matrix, expected):
     Tests the _is_sanitized function with various matrix types.
     """
     assert _is_sanitized(matrix) == expected
+
+
+class TestHamiltonianTermCount:
+    """Tests for _hamiltonian_term_count helper."""
+
+    def test_multi_term_sum(self, simple_hamiltonian):
+        """Multi-term Sum returns correct count."""
+        assert _hamiltonian_term_count(simple_hamiltonian) == 3
+
+    def test_single_term_sprod(self):
+        """Single-term SProd (e.g. 0.5*Z(0)) returns 1."""
+        single_sprod = 0.5 * qml.Z(0)
+        assert _hamiltonian_term_count(single_sprod) == 1
+
+    def test_single_term_bare_pauli(self):
+        """Single bare Pauli operator returns 1."""
+        assert _hamiltonian_term_count(qml.Z(0)) == 1
+
+    def test_empty_hamiltonian(self):
+        """Empty Hamiltonian returns 0."""
+        empty = qml.Hamiltonian([], [])
+        assert _hamiltonian_term_count(empty) == 0
 
 
 class TestQuboToIsingConversion:
@@ -402,6 +425,47 @@ class TestExactTrotterization:
         assert qml.equal(result, simple_hamiltonian.simplify())
 
     @pytest.mark.parametrize(
+        "single_term_hamiltonian",
+        [0.5 * qml.Z(0), qml.Z(0)],
+        ids=["sprod", "bare_pauli"],
+    )
+    def test_single_term_hamiltonian_with_keep_top_n(self, single_term_hamiltonian):
+        """Single-term operators (SProd, bare Pauli) work with keep_top_n; no len() error."""
+        strategy = ExactTrotterization(keep_top_n=1)
+        with pytest.warns(UserWarning, match="keep_top_n is greater than or equal"):
+            result = strategy.process_hamiltonian(single_term_hamiltonian)
+        assert qml.equal(result, single_term_hamiltonian.simplify())
+
+    @pytest.mark.parametrize(
+        "single_term_hamiltonian",
+        [0.5 * qml.Z(0), qml.Z(0)],
+        ids=["sprod", "bare_pauli"],
+    )
+    def test_single_term_hamiltonian_with_keep_fraction(self, single_term_hamiltonian):
+        """Single-term operators work with keep_fraction; returns full operator."""
+        strategy = ExactTrotterization(keep_fraction=0.5)
+        result = strategy.process_hamiltonian(single_term_hamiltonian)
+        assert qml.equal(result, single_term_hamiltonian.simplify())
+
+    def test_constant_only_hamiltonian_raises(self):
+        """Constant-only Hamiltonian raises ValueError; rejected at boundary."""
+        constant_only = qml.Identity(0) * 5.0
+        strategy = ExactTrotterization(keep_fraction=0.5)
+        with pytest.raises(
+            ValueError, match="Hamiltonian contains only constant terms"
+        ):
+            strategy.process_hamiltonian(constant_only)
+
+    def test_constant_only_hamiltonian_zero_constant_raises(self):
+        """Constant-only Hamiltonian with zero constant raises ValueError."""
+        constant_only = qml.Hamiltonian([1.0], [qml.Identity(0)]) - qml.Identity(0)
+        strategy = ExactTrotterization(keep_fraction=0.5)
+        with pytest.raises(
+            ValueError, match="Hamiltonian contains only constant terms"
+        ):
+            strategy.process_hamiltonian(constant_only.simplify())
+
+    @pytest.mark.parametrize(
         "keep_top_n,expected",
         [
             (
@@ -531,8 +595,10 @@ class TestQDrift:
             QDrift(sampling_budget=5, seed=1.5)
 
     def test_all_none_returns_unchanged_and_warns(self, simple_hamiltonian):
-        """When keep_fraction, keep_top_n and sample_budget are all None, returns Hamiltonian unchanged."""
-        with pytest.warns(UserWarning, match="Neither keep_fraction nor sample_budget"):
+        """When keep_fraction, keep_top_n and sampling_budget are all None, returns Hamiltonian unchanged."""
+        with pytest.warns(
+            UserWarning, match="Neither keep_fraction, keep_top_n, nor sampling_budget"
+        ):
             result = QDrift().process_hamiltonian(simple_hamiltonian)
         assert qml.equal(result, simple_hamiltonian.simplify())
 
@@ -579,7 +645,7 @@ class TestQDrift:
         self, simple_hamiltonian
     ):
         """When sample_budget is None but keep_fraction set, result equals ExactTrotterization."""
-        with pytest.warns(UserWarning, match="sample_budget is not set"):
+        with pytest.warns(UserWarning, match="sampling_budget is not set"):
             qdrift = QDrift(keep_fraction=0.5)
         exact = ExactTrotterization(keep_fraction=0.5)
         qdrift_result = qdrift.process_hamiltonian(simple_hamiltonian)
@@ -611,6 +677,43 @@ class TestQDrift:
         second_messages = [str(w.message) for w in second_record]
         assert not any("no terms left to sample" in m for m in second_messages)
         assert qml.equal(second_result, simple_hamiltonian)
+
+    @pytest.mark.parametrize(
+        "single_term_hamiltonian",
+        [0.5 * qml.Z(0), qml.Z(0)],
+        ids=["sprod", "bare_pauli"],
+    )
+    def test_single_term_hamiltonian_with_keep_top_n(self, single_term_hamiltonian):
+        """Single-term operators work with QDrift keep_top_n; no len() error."""
+        with pytest.warns(
+            UserWarning,
+            match="keep_top_n is greater than or equal|All terms were kept",
+        ):
+            result = QDrift(
+                keep_top_n=1, sampling_budget=2, seed=42
+            ).process_hamiltonian(single_term_hamiltonian)
+        assert qml.equal(result, single_term_hamiltonian.simplify())
+
+    @pytest.mark.parametrize(
+        "single_term_hamiltonian",
+        [0.5 * qml.Z(0), qml.Z(0)],
+        ids=["sprod", "bare_pauli"],
+    )
+    def test_single_term_hamiltonian_with_sampling_budget_only(
+        self, single_term_hamiltonian
+    ):
+        """Single-term operators work with QDrift sampling_budget only; no np.asarray error."""
+        result = QDrift(sampling_budget=3, seed=42).process_hamiltonian(
+            single_term_hamiltonian
+        )
+        assert qml.equal(result.simplify(), (4 * single_term_hamiltonian).simplify())
+
+    def test_empty_hamiltonian_warns_and_returns_kept(self):
+        """Empty to_sample_hamiltonian (no terms) warns and returns keep_hamiltonian."""
+        empty = qml.Hamiltonian([], [])
+        with pytest.warns(UserWarning, match="No terms to sample"):
+            result = QDrift(sampling_budget=3, seed=42).process_hamiltonian(empty)
+        assert qml.equal(result, empty)
 
     def test_qdrift_stateful_is_true(self):
         """QDrift reports stateful=True (caches intermediate results)."""

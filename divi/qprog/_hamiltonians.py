@@ -13,6 +13,21 @@ import pennylane as qml
 import scipy.sparse as sps
 
 
+def _is_multi_term_sum(op: qml.operation.Operator) -> bool:
+    """True if op is a multi-term Sum or Hamiltonian (has operands and len)."""
+    return isinstance(op, (qml.Hamiltonian, qml.ops.Sum))
+
+
+def _get_terms_iterable(op: qml.operation.Operator) -> list:
+    """Return terms as a list for iteration. Works for Sum/Hamiltonian and single-term."""
+    return op.operands if _is_multi_term_sum(op) else [op]
+
+
+def _is_empty_hamiltonian(op: qml.operation.Operator) -> bool:
+    """True if op is an empty Sum/Hamiltonian (only constant terms)."""
+    return _is_multi_term_sum(op) and len(op) == 0
+
+
 def _clean_hamiltonian(
     hamiltonian: qml.operation.Operator,
 ) -> tuple[qml.operation.Operator, float]:
@@ -32,9 +47,7 @@ def _clean_hamiltonian(
             - The summed value of all constant terms.
     """
 
-    terms = (
-        hamiltonian.operands if isinstance(hamiltonian, qml.ops.Sum) else [hamiltonian]
-    )
+    terms = _get_terms_iterable(hamiltonian)
 
     constant = 0.0
     non_id_terms = []
@@ -72,20 +85,33 @@ def _clean_hamiltonian(
     return new_hamiltonian.simplify(), float(constant)
 
 
+def _hamiltonian_term_count(hamiltonian: qml.operation.Operator) -> int:
+    """Return the number of terms in a Hamiltonian.
+
+    Works for qml.Hamiltonian, qml.ops.Sum (multi-term), and single-term operators
+    such as SProd or bare Pauli operators, which do not implement __len__.
+    """
+    return len(hamiltonian) if _is_multi_term_sum(hamiltonian) else 1
+
+
 def _sort_hamiltonian_terms(
     hamiltonian: qml.operation.Operator,
     order: Literal["absolute", "magnitude"] = "absolute",
 ) -> qml.operation.Operator:
     """Sort the terms of a Hamiltonian by their coefficient magnitude."""
+    if not _is_multi_term_sum(hamiltonian):
+        return hamiltonian
     coeffs, terms = hamiltonian.terms()
     sorted_coeffs, sorted_terms = zip(
         *sorted(
             zip(coeffs, terms), key=lambda x: x[0] if order == "absolute" else abs(x[0])
         )
     )
-    return type(hamiltonian)(
-        *[cf * trm for cf, trm in zip(sorted_coeffs, sorted_terms)]
-    )
+    weighted_terms = [cf * trm for cf, trm in zip(sorted_coeffs, sorted_terms)]
+    # Avoid Sum construction for single term; preserves original operator type.
+    if len(weighted_terms) == 1:
+        return weighted_terms[0]
+    return qml.sum(*weighted_terms).simplify()
 
 
 class TrotterizationStrategy(Protocol):
@@ -161,7 +187,9 @@ class ExactTrotterization(TrotterizationStrategy):
             )
             return hamiltonian.simplify()
 
-        if self.keep_top_n is not None and self.keep_top_n >= len(hamiltonian):
+        if self.keep_top_n is not None and self.keep_top_n >= _hamiltonian_term_count(
+            hamiltonian
+        ):
             warn(
                 "keep_top_n is greater than or equal to the number of terms; "
                 "returning the full Hamiltonian.",
@@ -170,7 +198,12 @@ class ExactTrotterization(TrotterizationStrategy):
             return hamiltonian.simplify()
 
         non_id_terms, constant = _clean_hamiltonian(hamiltonian)
+        if _is_empty_hamiltonian(non_id_terms):
+            raise ValueError("Hamiltonian contains only constant terms.")
         sorted_non_id_terms = _sort_hamiltonian_terms(non_id_terms, order="magnitude")
+
+        if not _is_multi_term_sum(sorted_non_id_terms):
+            return (sorted_non_id_terms + constant * qml.Identity()).simplify()
 
         if self.keep_top_n is not None:
             slice_idx = -self.keep_top_n
@@ -182,9 +215,13 @@ class ExactTrotterization(TrotterizationStrategy):
             n_keep = np.searchsorted(cumsum_from_end, target, side="left") + 1
             slice_idx = -min(n_keep, len(absolute_coeffs))
 
-        result = type(hamiltonian)(
-            *(*sorted_non_id_terms[slice_idx:], constant * qml.Identity())
-        ).simplify()
+        coeffs, terms = sorted_non_id_terms.terms()
+        sliced_operands = [
+            c * t for c, t in zip(list(coeffs)[slice_idx:], list(terms)[slice_idx:])
+        ]
+        if constant != 0:
+            sliced_operands.append(constant * qml.Identity())
+        result = qml.sum(*sliced_operands).simplify()
 
         self._cache[hamiltonian] = result
 
@@ -215,15 +252,19 @@ class QDrift(TrotterizationStrategy):
     _rng: np.random.Generator = field(init=False, compare=False, hash=False)
 
     def __post_init__(self):
-        if self.keep_fraction is None and self.sampling_budget is None:
+        if (
+            self.keep_fraction is None
+            and self.keep_top_n is None
+            and self.sampling_budget is None
+        ):
             warn(
-                "Neither keep_fraction nor sample_budget is set; "
+                "Neither keep_fraction, keep_top_n, nor sampling_budget is set; "
                 "the Hamiltonian will be returned unchanged.",
                 UserWarning,
             )
         elif self.sampling_budget is None:
             warn(
-                "sample_budget is not set; only the kept terms will be applied, "
+                "sampling_budget is not set; only the kept terms will be applied, "
                 "equivalent to ExactTrotterization.",
                 UserWarning,
             )
@@ -295,17 +336,37 @@ class QDrift(TrotterizationStrategy):
             return hamiltonian
 
         # to_sample_hamiltonian already set above (from cache or computation)
-        absolute_coeffs = np.abs(to_sample_hamiltonian.terms()[0])
-        sampled_hamiltonian = self._rng.choice(
-            np.asarray(to_sample_hamiltonian),
-            size=self.sampling_budget,
-            replace=True,
-            **(
-                {"p": absolute_coeffs / absolute_coeffs.sum()}
-                if self.sampling_strategy == "weighted"
-                else {}
-            ),
-        )
+        terms_list = list(_get_terms_iterable(to_sample_hamiltonian))
+        if len(terms_list) == 0:
+            warn(
+                "No terms to sample; returning the kept Hamiltonian.",
+                UserWarning,
+            )
+            return keep_hamiltonian
+
+        if not _is_multi_term_sum(to_sample_hamiltonian):
+            sampled_hamiltonian = np.array(
+                [to_sample_hamiltonian] * self.sampling_budget
+            )
+        else:
+            absolute_coeffs = np.abs(to_sample_hamiltonian.terms()[0])
+            coeff_sum = absolute_coeffs.sum()
+            if coeff_sum == 0:
+                warn(
+                    "All term coefficients are zero; returning the kept Hamiltonian.",
+                    UserWarning,
+                )
+                return keep_hamiltonian
+            sampled_hamiltonian = self._rng.choice(
+                np.array(terms_list),
+                size=self.sampling_budget,
+                replace=True,
+                **(
+                    {"p": absolute_coeffs / coeff_sum}
+                    if self.sampling_strategy == "weighted"
+                    else {}
+                ),
+            )
 
         return (
             qml.ops.Sum(*sampled_hamiltonian.tolist()) + keep_hamiltonian
@@ -335,9 +396,7 @@ def convert_hamiltonian_to_pauli_string(
     identity_row = np.full(n_qubits, "I", dtype="<U1")
 
     # Handle both single operators and sums of operators (like Hamiltonians)
-    terms_to_process = (
-        hamiltonian.operands if isinstance(hamiltonian, qml.ops.Sum) else [hamiltonian]
-    )
+    terms_to_process = _get_terms_iterable(hamiltonian)
 
     terms = []
     for term in terms_to_process:

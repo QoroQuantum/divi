@@ -287,12 +287,13 @@ class TestProgram:
     def test_group_results_returns_3_level_structure(
         self, mocker, n_params, n_hamiltonians, n_meas_ids
     ):
-        """_group_results returns 3-level {param_id: {ham_id: {qem_id: [shots...]}}}."""
+        """_group_results returns 3-level {param_id: {ham_id: {(qem_name, qem_id): [shots...]}}}."""
         program = self._create_sample_program(mocker)
         program._initialize_params()
 
         fake_shot = {"00": 50, "11": 50}
         ham_ids = list(range(n_hamiltonians))
+        qem_key = ("NoMitigation", 0)
         results = {
             CircuitTag(
                 param_id=p,
@@ -313,18 +314,18 @@ class TestProgram:
             assert len(grouped[p]) == n_hamiltonians
             for h in ham_ids:
                 assert h in grouped[p]
-                assert 0 in grouped[p][h]
-                assert len(grouped[p][h][0]) == n_meas_ids
+                assert qem_key in grouped[p][h]
+                assert len(grouped[p][h][qem_key]) == n_meas_ids
 
-    def test_group_results_calls_parse_result_tag_per_result(self, mocker):
-        """_group_results invokes _parse_result_tag once per result entry."""
+    def test_group_results_calls_parse_tag_full_per_result(self, mocker):
+        """_group_results invokes _parse_tag_full once per result entry."""
         program = self._create_sample_program(mocker)
         program._initialize_params()
         results = {
             CircuitTag(0, "NoMitigation", 0, 0, 0): {"00": 50, "11": 50},
             CircuitTag(0, "NoMitigation", 0, 1, 0): {"00": 50, "11": 50},
         }
-        spy = mocker.spy(program, "_parse_result_tag")
+        spy = mocker.spy(program, "_parse_tag_full")
         program._group_results(results)
         assert spy.call_count == 2
         assert spy.call_args_list[0].args[0].param_id == 0
@@ -332,7 +333,7 @@ class TestProgram:
         assert spy.call_args_list[1].args[0].meas_id == 1
 
     def test_group_results_orders_shots_by_meas_id(self, mocker):
-        """Shots within each qem_id list are sorted by meas_id (critical for _compute_marginal_results)."""
+        """Shots within each (qem_name, qem_id) list are sorted by meas_id (critical for _compute_marginal_results)."""
         program = self._create_sample_program(mocker)
         program._initialize_params()
         shots_a = {"00": 100, "01": 0, "10": 0, "11": 0}
@@ -346,7 +347,8 @@ class TestProgram:
         }
         grouped = program._group_results(results)
         # After sort: [shots_a, shots_b, shots_c] by meas_id 0,1,2
-        shots_list = grouped[0][0][0]
+        qem_key = ("NoMitigation", 0)
+        shots_list = grouped[0][0][qem_key]
         assert shots_list[0] == shots_a
         assert shots_list[1] == shots_b
         assert shots_list[2] == shots_c
@@ -419,6 +421,34 @@ class TestProgram:
         prob_dict = next(iter(probs.values()))
         assert np.isclose(prob_dict["00"], 0.7)
         assert np.isclose(prob_dict["11"], 0.3)
+
+    def test_merge_probability_preserves_qem_identity_and_averages_per_qem(
+        self, mocker
+    ):
+        """_merge_probability_histograms preserves (qem_name, qem_id) and averages per QEM group."""
+        program = self._create_sample_program(mocker, grouping_strategy=None)
+        program._is_compute_probabilities = True
+        program.backend = self._create_mock_backend(mocker)
+        program.backend.shots = 100
+
+        # Two QEM groups (e.g. ZNE fold factors), two Hamiltonian samples each
+        # CircuitTag(param_id, qem_name, qem_id, meas_id, hamiltonian_id)
+        results = {
+            CircuitTag(0, "NoMitigation", 0, 0, 0): {"00": 80, "11": 20},
+            CircuitTag(0, "NoMitigation", 0, 0, 1): {"00": 60, "11": 40},
+            CircuitTag(0, "ZNE", 1, 0, 0): {"00": 70, "11": 30},
+            CircuitTag(0, "ZNE", 1, 0, 1): {"00": 50, "11": 50},
+        }
+
+        probs = program._post_process_results(results)
+
+        assert len(probs) == 2
+        keys = list(probs.keys())
+        assert any("NoMitigation:0" in k for k in keys)
+        assert any("ZNE:1" in k for k in keys)
+        for prob_dict in probs.values():
+            total = sum(prob_dict.values())
+            assert np.isclose(total, 1.0), f"Probs should sum to 1, got {total}"
 
 
 class TestBatchedExpectation:
