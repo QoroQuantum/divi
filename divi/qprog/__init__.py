@@ -29,4 +29,6 @@ from .optimizers import ScipyOptimizer, ScipyMethod, MonteCarloOptimizer
 from ._hamiltonians import (
     convert_qubo_matrix_to_pennylane_ising,
     convert_hamiltonian_to_pauli_string,
+    ExactTrotterization,
+    QDrift,
 )

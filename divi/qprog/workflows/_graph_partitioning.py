@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -308,7 +308,7 @@ def _bisect_with_predicate(
         changed = False
 
         while subgraphs:
-            (_, _, subgraph) = heapq.heappop(subgraphs)
+            _, _, subgraph = heapq.heappop(subgraphs)
 
             if predicate(subgraph, new_subgraphs + subgraphs):
                 new_subgraphs.extend(_split_graph(subgraph, partitioning_config))

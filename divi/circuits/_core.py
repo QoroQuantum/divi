@@ -17,6 +17,20 @@ from pennylane.transforms.core.transform_program import TransformProgram
 from divi.circuits import to_openqasm
 from divi.circuits.qem import QEMProtocol
 
+
+def _extract_coeffs(obs: qml.operation.Operator) -> list[float]:
+    """Extract coefficients from an observable, including nested scalar products."""
+    coeff = 1.0
+    base = obs
+    while isinstance(base, qml.ops.SProd):
+        coeff *= base.scalar
+        base = base.base
+    if isinstance(base, (qml.Hamiltonian, qml.ops.Sum)):
+        coeffs, _ = base.terms()
+        return [coeff * c for c in coeffs]
+    return [coeff]
+
+
 TRANSFORM_PROGRAM = TransformProgram()
 TRANSFORM_PROGRAM.add_transform(qml.transforms.split_to_single_terms)
 
@@ -104,11 +118,13 @@ class CircuitTag(NamedTuple):
     qem_name: str
     qem_id: int
     meas_id: int
+    hamiltonian_id: int = 0
+    """Hamiltonian sample index for multi-sample QDrift; 0 for single-sample (default)."""
 
 
 def format_circuit_tag(tag: CircuitTag) -> str:
     """Format a CircuitTag into its wire-safe string representation."""
-    return f"{tag.param_id}_{tag.qem_name}:{tag.qem_id}_{tag.meas_id}"
+    return f"{tag.param_id}_{tag.qem_name}:{tag.qem_id}_ham:{tag.hamiltonian_id}_{tag.meas_id}"
 
 
 @dataclass(frozen=True)
@@ -185,6 +201,21 @@ class MetaCircuit:
     )
     postprocessing_fn: Callable = field(init=False)
 
+    def _set_compiled_state(
+        self,
+        postprocessing_fn: Callable,
+        measurement_groups: tuple[tuple[qml.operation.Operator, ...], ...],
+        compiled_circuit_bodies: tuple[str, ...] | list[str],
+        measurements: tuple[str, ...] | list[str],
+    ) -> None:
+        # Use object.__setattr__ because the class is frozen
+        object.__setattr__(self, "postprocessing_fn", postprocessing_fn)
+        object.__setattr__(self, "measurement_groups", measurement_groups)
+        object.__setattr__(
+            self, "_compiled_circuit_bodies", tuple(compiled_circuit_bodies)
+        )
+        object.__setattr__(self, "_measurements", tuple(measurements))
+
     def __post_init__(self):
         """
         Compiles the circuit template after initialization.
@@ -203,49 +234,62 @@ class MetaCircuit:
             )
 
         measurement = self.source_circuit.measurements[0]
+
         # If the measurement is not an expectation value, we assume it is for sampling
         # and does not require special post-processing.
         if not hasattr(measurement, "obs") or measurement.obs is None:
             postprocessing_fn = lambda x: x
             measurement_groups = ((),)
-            (
+            compiled_circuit_bodies, measurements = self._compile_qasm(
+                measurement_groups=measurement_groups,
+                measure_all=True,
+            )
+            self._set_compiled_state(
+                postprocessing_fn,
+                measurement_groups,
                 compiled_circuit_bodies,
                 measurements,
-            ) = to_openqasm(
-                self.source_circuit,
-                measurement_groups=measurement_groups,
-                return_measurements_separately=True,
-                symbols=self.symbols,
-                qem_protocol=self.qem_protocol,
-                precision=self.precision,
             )
-            # Use object.__setattr__ because the class is frozen
-            object.__setattr__(self, "postprocessing_fn", postprocessing_fn)
-            object.__setattr__(self, "measurement_groups", measurement_groups)
-            object.__setattr__(
-                self, "_compiled_circuit_bodies", tuple(compiled_circuit_bodies)
-            )
-            object.__setattr__(self, "_measurements", tuple(measurements))
-
             return
 
         # Step 1: Use split_to_single_terms to get a flat list of measurement
         # processes. We no longer need its post-processing function.
+        single_term_mps = self._get_single_term_measurements()
+
+        # Extract the coefficients, which we will now use in our own post-processing.
+        obs = self.source_circuit.measurements[0].obs
+        coeffs = _extract_coeffs(obs)
+
+        # Step 2: Manually group the flat list of measurements based on the strategy.
+        measurement_groups, partition_indices = self._build_measurement_groups(
+            single_term_mps
+        )
+
+        # Step 3: Create our own post-processing function that handles the final summation.
+        postprocessing_fn = _create_final_postprocessing_fn(
+            coeffs, partition_indices, len(single_term_mps)
+        )
+
+        compiled_circuit_bodies, measurements = self._compile_qasm(
+            measurement_groups=measurement_groups,
+            measure_all=True,
+        )
+
+        self._set_compiled_state(
+            postprocessing_fn,
+            measurement_groups,
+            compiled_circuit_bodies,
+            measurements,
+        )
+
+    def _get_single_term_measurements(self):
         measurements_only_tape = qml.tape.QuantumScript(
             measurements=self.source_circuit.measurements
         )
         s_tapes, _ = TRANSFORM_PROGRAM((measurements_only_tape,))
-        single_term_mps = s_tapes[0].measurements
+        return s_tapes[0].measurements
 
-        # Extract the coefficients, which we will now use in our own post-processing.
-        obs = self.source_circuit.measurements[0].obs
-        if isinstance(obs, (qml.Hamiltonian, qml.ops.Sum)):
-            coeffs, _ = obs.terms()
-        else:
-            # For single observables, the coefficient is implicitly 1.0
-            coeffs = [1.0]
-
-        # Step 2: Manually group the flat list of measurements based on the strategy.
+    def _build_measurement_groups(self, single_term_mps):
         if self.grouping_strategy in ("qwc", "default"):
             obs_list = [m.obs for m in single_term_mps]
             # This computes the grouping indices for the flat list of observables
@@ -264,38 +308,34 @@ class MetaCircuit:
             measurement_groups = tuple(tuple([m.obs]) for m in single_term_mps)
             partition_indices = [[i] for i in range(len(single_term_mps))]
         elif self.grouping_strategy == "_backend_expval":
-            measurement_groups = ((),)
             # For backends that compute expectation values directly, no explicit
             # measurement basis rotations (diagonalizing gates) are needed in the QASM.
             # The `to_openqasm` function interprets an empty measurement group `()`
             # as a signal to skip adding these gates.
+            measurement_groups = ((),)
             # All observables are still tracked in a single group for post-processing.
             partition_indices = [list(range(len(single_term_mps)))]
         else:
             raise ValueError(f"Unknown grouping strategy: {self.grouping_strategy}")
 
-        # Step 3: Create our own post-processing function that handles the final summation.
-        postprocessing_fn = _create_final_postprocessing_fn(
-            coeffs, partition_indices, len(single_term_mps)
-        )
+        return measurement_groups, partition_indices
 
-        compiled_circuit_bodies, measurements = to_openqasm(
+    def _compile_qasm(
+        self,
+        measurement_groups: tuple[tuple[qml.operation.Operator, ...], ...],
+        *,
+        measure_all: bool = False,
+    ):
+        return to_openqasm(
             self.source_circuit,
             measurement_groups=measurement_groups,
             return_measurements_separately=True,
             # TODO: optimize later
-            measure_all=True,
+            measure_all=measure_all,
             symbols=self.symbols,
             qem_protocol=self.qem_protocol,
             precision=self.precision,
         )
-        # Use object.__setattr__ because the class is frozen
-        object.__setattr__(self, "postprocessing_fn", postprocessing_fn)
-        object.__setattr__(self, "measurement_groups", measurement_groups)
-        object.__setattr__(
-            self, "_compiled_circuit_bodies", tuple(compiled_circuit_bodies)
-        )
-        object.__setattr__(self, "_measurements", tuple(measurements))
 
     def __getstate__(self):
         """
@@ -331,6 +371,7 @@ class MetaCircuit:
         param_list: npt.NDArray[np.floating] | list[float],
         param_idx: int = 0,
         precision: int | None = None,
+        hamiltonian_id: int = 0,
     ) -> CircuitBundle:
         """
         Instantiate a concrete CircuitBundle by substituting symbolic parameters with values.
@@ -348,6 +389,8 @@ class MetaCircuit:
             precision (int | None, optional): Number of decimal places for parameter values
                 in the QASM output. If None, uses the precision set on this MetaCircuit instance.
                 Defaults to None.
+            hamiltonian_id (int, optional): Hamiltonian sample index for multi-sample QDrift.
+                Use 0 for single-sample (default).
 
         Returns:
             CircuitBundle: A new CircuitBundle instance with parameters substituted and proper
@@ -359,6 +402,7 @@ class MetaCircuit:
         """
         if precision is None:
             precision = self.precision
+
         mapping = dict(
             zip(
                 map(lambda x: re.escape(str(x)), self.symbols),
@@ -384,6 +428,7 @@ class MetaCircuit:
                     self.qem_protocol.name if self.qem_protocol else "NoMitigation"
                 ),
                 qem_id=i,
+                hamiltonian_id=hamiltonian_id,
                 meas_id=j,
             )
             executables.append(ExecutableQASMCircuit(tag=tag, qasm=qasm_circuit))

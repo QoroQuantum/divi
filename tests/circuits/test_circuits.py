@@ -18,9 +18,35 @@ from divi.circuits import (
     CircuitTag,
     ExecutableQASMCircuit,
     MetaCircuit,
+    format_circuit_tag,
     to_openqasm,
 )
 from divi.circuits.qem import ZNE, _NoMitigation
+
+
+class TestCircuitTag:
+    """Tests for CircuitTag and format_circuit_tag."""
+
+    def test_format_circuit_tag_single_sample_default(self):
+        """hamiltonian_id=0 (default) includes _ham:0 suffix."""
+        tag = CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0)
+        assert format_circuit_tag(tag) == "0_NoMitigation:0_ham:0_0"
+
+    def test_format_circuit_tag_multi_sample_includes_hamiltonian_id(self):
+        """hamiltonian_id >= 0 includes _ham:{id} in formatted string."""
+        tag = CircuitTag(
+            param_id=1,
+            qem_name="zne",
+            qem_id=2,
+            hamiltonian_id=3,
+            meas_id=4,
+        )
+        assert format_circuit_tag(tag) == "1_zne:2_ham:3_4"
+
+    def test_circuit_tag_hamiltonian_id_default(self):
+        """CircuitTag defaults hamiltonian_id to 0."""
+        tag = CircuitTag(param_id=0, qem_name="x", qem_id=0, meas_id=0)
+        assert tag.hamiltonian_id == 0
 
 
 class TestCircuitBundle:
@@ -346,3 +372,22 @@ class TestMetaCircuit:
             # Should be rounded to 6 decimal places
             assert len(actual.split(".")[1]) == 6 if "." in actual else True
             assert round(expected, 6) == float(actual)
+
+    def test_initialize_circuit_from_params_with_hamiltonian_id(
+        self, mocker, sample_circuit, weights_syms
+    ):
+        """Test that hamiltonian_id is included in CircuitTags when provided."""
+        meta_circuit = MetaCircuit(
+            source_circuit=sample_circuit,
+            symbols=weights_syms,
+        )
+        mocker.patch("divi.circuits._core.to_openqasm").return_value = (
+            ["OPENQASM 2.0;..."],
+            ["m0;"],
+        )
+        param_list = [0.1, 0.2, 0.3, 0.4]
+        circuit = meta_circuit.initialize_circuit_from_params(
+            param_list, param_idx=5, hamiltonian_id=2
+        )
+        assert all(tag.hamiltonian_id == 2 for tag in circuit.tags)
+        assert circuit.tags[0].param_id == 5

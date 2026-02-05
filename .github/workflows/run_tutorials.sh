@@ -40,6 +40,11 @@ sed -i \
     -e 's/max_iterations=10/max_iterations=3/' \
     -e 's/ParallelSimulator()/ParallelSimulator(shots=500)/' \
     "$TEMP_TUTORIALS_DIR"/qaoa_max_clique_local.py
+sed -i \
+    -e 's/N_NODES, N_EDGES = 12, 25/N_NODES, N_EDGES = 8, 12/' \
+    -e 's/max_iterations=5/max_iterations=3/' \
+    -e 's/shots=1000/shots=500/' \
+    "$TEMP_TUTORIALS_DIR"/qaoa_qdrift_local.py
 
 failures_file=$(mktemp)
 

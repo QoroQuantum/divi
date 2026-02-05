@@ -12,6 +12,7 @@ from multiprocessing import Pool, current_process
 from typing import Any, Literal
 from warnings import warn
 
+import numpy as np
 from qiskit import QuantumCircuit, transpile
 from qiskit.converters import circuit_to_dag
 from qiskit.dagcircuit import DAGOpNode
@@ -136,6 +137,7 @@ class ParallelSimulator(CircuitRunner):
         qiskit_backend: Backend | Literal["auto"] | None = None,
         noise_model: NoiseModel | None = None,
         _deterministic_execution: bool = False,
+        track_depth: bool = False,
     ):
         """
         A parallel wrapper around Qiskit's AerSimulator using Qiskit's built-in parallelism.
@@ -152,6 +154,8 @@ class ParallelSimulator(CircuitRunner):
             If "auto" is passed, the best-fit most recent fake backend will be chosen for the given circuit.
             Defaults to None, resulting in noiseless simulation.
             noise_model (NoiseModel, optional): Qiskit noise model to use in simulation. Defaults to None.
+            track_depth (bool, optional): If True, record circuit depth for each submitted batch.
+                Access via :attr:`depth_history` after execution. Defaults to False.
         """
         super().__init__(shots=shots)
 
@@ -170,6 +174,8 @@ class ParallelSimulator(CircuitRunner):
         self.qiskit_backend = qiskit_backend
         self.noise_model = noise_model
         self._deterministic_execution = _deterministic_execution
+        self.track_depth = track_depth
+        self._depth_history: list[list[int]] = []
 
     def set_seed(self, seed: int):
         """
@@ -217,6 +223,38 @@ class ParallelSimulator(CircuitRunner):
         Whether the backend executes circuits asynchronously.
         """
         return False
+
+    @property
+    def depth_history(self) -> list[list[int]]:
+        """
+        Circuit depth per batch when :attr:`track_depth` is True.
+
+        Each element is a list of depths (one per circuit) for that submission.
+        Empty when track_depth is False or before any circuits have been run.
+        """
+        return self._depth_history.copy()
+
+    def average_depth(self) -> float:
+        """
+        Average circuit depth across all tracked submissions.
+
+        Returns 0.0 when depth history is empty.
+        """
+        all_depths = [d for batch in self._depth_history for d in batch]
+        return float(np.mean(all_depths)) if all_depths else 0.0
+
+    def std_depth(self) -> float:
+        """
+        Standard deviation of circuit depth across all tracked submissions.
+
+        Returns 0.0 when depth history is empty or has a single value.
+        """
+        all_depths = [d for batch in self._depth_history for d in batch]
+        return float(np.std(all_depths)) if len(all_depths) > 1 else 0.0
+
+    def clear_depth_history(self) -> None:
+        """Clear the depth history. Use when reusing the backend for a new run."""
+        self._depth_history.clear()
 
     def _resolve_backend(self, circuit: QuantumCircuit | None = None) -> Backend | None:
         """Resolve the backend from qiskit_backend setting."""
@@ -342,6 +380,9 @@ class ParallelSimulator(CircuitRunner):
         qiskit_circuits = [
             QuantumCircuit.from_qasm_str(qasm) for qasm in circuits.values()
         ]
+
+        if self.track_depth:
+            self._depth_history.append([qc.depth() for qc in qiskit_circuits])
 
         # 2. Resolve Backend
         if self.qiskit_backend == "auto":

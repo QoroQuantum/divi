@@ -70,6 +70,30 @@ QAOA Algorithm
 .. autoattribute:: divi.qprog.algorithms.QAOA.mixer_hamiltonian
    :no-index:
 
+Trotterization Strategies
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+QAOA uses a trotterization strategy to evolve the cost Hamiltonian. The default is
+:class:`~divi.qprog.ExactTrotterization`; :class:`~divi.qprog.QDrift` provides
+randomized sampling for shallower circuits at the cost of more circuits per iteration.
+
+.. autoclass:: divi.qprog._hamiltonians.TrotterizationStrategy
+   :members:
+   :undoc-members:
+   :no-index:
+
+.. autoclass:: divi.qprog._hamiltonians.ExactTrotterization
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+
+.. autoclass:: divi.qprog._hamiltonians.QDrift
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+
 PCE Algorithm
 ~~~~~~~~~~~~~
 

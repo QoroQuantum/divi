@@ -11,7 +11,7 @@ import sympy as sp
 from qiskit import QuantumCircuit
 
 from divi.circuits import CircuitBundle, MetaCircuit
-from divi.qprog._hamiltonians import _clean_hamiltonian
+from divi.qprog._hamiltonians import _clean_hamiltonian, _is_empty_hamiltonian
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 
 
@@ -82,10 +82,7 @@ class CustomVQA(VariationalQuantumAlgorithm):
             )
 
         self._cost_hamiltonian, self.loss_constant = _clean_hamiltonian(measurement.obs)
-        if (
-            isinstance(self._cost_hamiltonian, qml.Hamiltonian)
-            and not self._cost_hamiltonian.operands
-        ):
+        if _is_empty_hamiltonian(self._cost_hamiltonian):
             raise ValueError("Hamiltonian contains only constant terms.")
 
         self.n_qubits = self.qscript.num_wires

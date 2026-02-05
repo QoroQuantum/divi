@@ -222,6 +222,21 @@ class TestErrorCases:
         with pytest.raises(ValueError, match="only constant terms"):
             CustomVQA(qscript=qscript, backend=dummy_simulator)
 
+    @pytest.mark.parametrize(
+        "observable",
+        [0.5 * qml.Z(0), qml.Z(0)],
+        ids=["sprod", "bare_pauli"],
+    )
+    def test_single_term_observable_succeeds(self, dummy_simulator, observable):
+        """Single-term observables (SProd, bare Pauli) initialize without operands error."""
+        ops = [qml.RX(0.0, wires=0)]
+        measurements = [qml.expval(observable)]
+        qscript = qml.tape.QuantumScript(ops=ops, measurements=measurements)
+
+        vqa = CustomVQA(qscript=qscript, backend=dummy_simulator)
+        assert vqa.cost_hamiltonian is not None
+        assert vqa.n_qubits == 1
+
     def test_no_trainable_parameters_fails(self, dummy_simulator):
         """Test that QuantumScript without trainable parameters fails."""
         # Create a script with no operations (empty circuit)

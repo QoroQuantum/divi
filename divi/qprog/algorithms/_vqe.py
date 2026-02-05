@@ -11,7 +11,7 @@ import pennylane as qml
 import sympy as sp
 
 from divi.circuits import CircuitBundle, MetaCircuit
-from divi.qprog._hamiltonians import _clean_hamiltonian
+from divi.qprog._hamiltonians import _clean_hamiltonian, _is_empty_hamiltonian
 from divi.qprog.algorithms._ansatze import Ansatz, HartreeFockAnsatz
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 
@@ -143,7 +143,7 @@ class VQE(VariationalQuantumAlgorithm):
                 )
 
         self._cost_hamiltonian, self.loss_constant = _clean_hamiltonian(hamiltonian)
-        if not self._cost_hamiltonian.operands:
+        if _is_empty_hamiltonian(self._cost_hamiltonian):
             raise ValueError("Hamiltonian contains only constant terms.")
 
     def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
