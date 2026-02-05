@@ -88,3 +88,45 @@ jobs:
 
       - name: Run tutorial scripts
         run: ./.github/workflows/run_tutorials.sh
+
+  tutorials-windows:
+    runs-on: windows-latest
+    needs: tests
+    defaults:
+      run:
+        shell: cmd
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: 2.2.1
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Cache Poetry dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pypoetry
+            .venv
+          key: poetry-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/poetry.lock') }}
+          restore-keys: |
+            poetry-${{ runner.os }}-${{ matrix.python-version }}-
+
+      - name: Install dependencies
+        run: poetry install --with testing --without dev,ui,docs
+
+      - name: Run tutorial scripts (cmd + cp1252)
+        run: |
+          chcp 1252
+          pwsh -NoProfile -File .github\workflows\run_tutorials.ps1
