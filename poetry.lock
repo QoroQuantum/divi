@@ -3722,6 +3722,7 @@ description = "A graph partitioning package"
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
+markers = "sys_platform != \"win32\""
 files = [
     {file = "pymetis-2025.2.2-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:d0b18c77d68f348a9870d039f8bd1e0c207276cedb18a63fe176cb4f72967837"},
     {file = "pymetis-2025.2.2-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:c5756c0d082ac9637337f1c25d1ddd10d4c7226bf27097b251e05d16fe006287"},
@@ -5959,4 +5960,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.13"
-content-hash = "9aabaffba368e503a490926f46bcd719313f9e19e87a9781a69b505067a5b93e"
+content-hash = "960f31e13cb20aad2f07dcb612ed22231a4247e91bead57847c860515bd17f5d"

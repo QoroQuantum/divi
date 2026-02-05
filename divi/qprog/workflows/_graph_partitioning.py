@@ -16,7 +16,6 @@ import networkx as nx
 import numpy as np
 import rustworkx as rx
 import scipy.sparse.linalg as spla
-from pymetis import part_graph
 from sklearn.cluster import SpectralClustering
 
 from divi.backends import CircuitRunner
@@ -234,6 +233,14 @@ def _apply_split_with_relabel(
         )
         parts = sc.fit_predict(adj_matrix)
     elif algorithm == "metis":
+        try:
+            from pymetis import part_graph
+        except ImportError as e:
+            raise ImportError(
+                "pymetis is required for the 'metis' partitioning algorithm but could not be "
+                "imported. On Windows, install via conda: conda install -c conda-forge pymetis. "
+                "Otherwise use 'spectral' or 'kernighan_lin' instead."
+            ) from e
         adj_list = list(nx.to_dict_of_lists(int_graph).values())
         _, parts = part_graph(n_clusters, adjacency=adj_list)
     else:
