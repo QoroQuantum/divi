@@ -1,10 +1,18 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import sys
 from collections.abc import Sequence
 
 import matplotlib.pyplot as plt
+
+try:
+    import pymetis
+except ImportError:
+    pymetis = None
+
+PYMETIS_AVAILABLE = pymetis is not None
 import networkx as nx
 import numpy as np
 import pytest
@@ -145,10 +153,14 @@ class TestPartitioningConfig:
         mock_spectral_cls.assert_called_once()
         instance.fit_predict.assert_called_once()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32" and not PYMETIS_AVAILABLE,
+        reason="pymetis not available (install via conda: conda install -c conda-forge pymetis)",
+    )
     def test_apply_split_with_relabel_metis(self, mocker):
         G = nx.path_graph(6)
 
-        mock_part_graph = mocker.patch(f"{_graph_partitioning.__name__}.part_graph")
+        mock_part_graph = mocker.patch("pymetis.part_graph")
         mock_part_graph.return_value = (None, [0, 0, 0, 1, 1, 1])
 
         clusters = _apply_split_with_relabel(G, algorithm="metis", n_clusters=2)
@@ -328,7 +340,20 @@ class TestPartitioningConfig:
         assert mock_bisect.call_count >= 1
 
     @pytest.mark.filterwarnings("ignore::UserWarning")
-    @pytest.mark.parametrize("algorithm", ["spectral", "metis", "kernighan_lin"])
+    @pytest.mark.parametrize(
+        "algorithm",
+        [
+            "spectral",
+            pytest.param(
+                "metis",
+                marks=pytest.mark.skipif(
+                    sys.platform == "win32" and not PYMETIS_AVAILABLE,
+                    reason="pymetis not available (install via conda: conda install -c conda-forge pymetis)",
+                ),
+            ),
+            "kernighan_lin",
+        ],
+    )
     def test_partition_with_min_clusters(self, algorithm):
         G = nx.complete_graph(100)
         n_clusters = 6
@@ -338,7 +363,20 @@ class TestPartitioningConfig:
         partitions = _node_partition_graph(G, config)
         self._assert_partitions_correct(G, partitions, expected_n_clusters=n_clusters)
 
-    @pytest.mark.parametrize("algorithm", ["spectral", "metis", "kernighan_lin"])
+    @pytest.mark.parametrize(
+        "algorithm",
+        [
+            "spectral",
+            pytest.param(
+                "metis",
+                marks=pytest.mark.skipif(
+                    sys.platform == "win32" and not PYMETIS_AVAILABLE,
+                    reason="pymetis not available (install via conda: conda install -c conda-forge pymetis)",
+                ),
+            ),
+            "kernighan_lin",
+        ],
+    )
     def test_partition_with_max_nodes(self, algorithm):
         G = nx.complete_graph(100)
         max_nodes = 20
@@ -352,7 +390,20 @@ class TestPartitioningConfig:
         for partition in partitions:
             assert partition.number_of_nodes() <= max_nodes
 
-    @pytest.mark.parametrize("algorithm", ["spectral", "metis", "kernighan_lin"])
+    @pytest.mark.parametrize(
+        "algorithm",
+        [
+            "spectral",
+            pytest.param(
+                "metis",
+                marks=pytest.mark.skipif(
+                    sys.platform == "win32" and not PYMETIS_AVAILABLE,
+                    reason="pymetis not available (install via conda: conda install -c conda-forge pymetis)",
+                ),
+            ),
+            "kernighan_lin",
+        ],
+    )
     def test_partition_with_both_constraints(self, algorithm):
         G = nx.complete_graph(100)
 

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -12,6 +12,8 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 from rich.text import Text
+
+from divi.reporting._qlogger import _ensure_unbuffered_stdout
 
 
 class _UnfinishedTaskWrapper:
@@ -113,6 +115,7 @@ def make_progress_bar(is_jupyter: bool = False) -> Progress:
         Progress: A configured Rich Progress instance with custom columns for
             quantum program tracking.
     """
+    _ensure_unbuffered_stdout()
     return Progress(
         TextColumn("[bold blue]{task.fields[job_name]}"),
         BarColumn(),

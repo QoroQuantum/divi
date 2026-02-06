@@ -32,7 +32,7 @@ sympy = "^1.14.0"
 scikit-learn = "^1.7.0"
 # Graph operations and partitioning
 networkx = "^3.5"
-pymetis = "^2025.1.1"
+pymetis = {version = "^2025.1.1", markers = "sys_platform != 'win32'"}
 # Optimization algorithms
 pymoo = "^0.6"
 dwave-hybrid = "^0.6.14"

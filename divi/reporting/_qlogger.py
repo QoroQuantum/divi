@@ -1,10 +1,25 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+import sys
 
 from rich.logging import RichHandler
+
+
+def _ensure_unbuffered_stdout() -> None:
+    """Ensure stdout flushes after every write so Rich progress bars display correctly.
+
+    On Windows PowerShell, Python uses line buffering by default. Rich's progress
+    bars overwrite the same line (no newline), so updates stay buffered until
+    completion. Setting write_through=True flushes after each write.
+    """
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(write_through=True)
+        except (OSError, ValueError):
+            pass
 
 
 class CustomRichFormatter(logging.Formatter):
@@ -35,6 +50,7 @@ def enable_logging(level=logging.INFO):
         This function clears any existing handlers and sets up a new handler
         with custom formatting.
     """
+    _ensure_unbuffered_stdout()
     root_logger = logging.getLogger(__name__.split(".")[0])
 
     handler = RichHandler(
