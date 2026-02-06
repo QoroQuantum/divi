@@ -9,6 +9,7 @@ import pytest
 from divi.circuits import CircuitTag
 from divi.qprog import PCE, MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
 from divi.qprog.algorithms import GenericLayerAnsatz
+from divi.qprog.algorithms._pce import _decode_parities
 from divi.qprog.checkpointing import CheckpointConfig
 from tests.qprog.qprog_contracts import verify_metacircuit_dict
 
@@ -460,6 +461,181 @@ def test_pce_qem_protocol_raises(dummy_simulator, basic_ansatz):
             backend=dummy_simulator,
             qem_protocol=object(),
         )
+
+
+def test_pce_custom_decode_parities_fn_post_process_soft(dummy_simulator, basic_ansatz):
+    """Custom decode_parities_fn is used in _post_process_results (soft energy path)."""
+    qubo = np.array([[1.0, 0.2], [0.2, 2.0]])
+
+    def all_zeros_decoder(state_strings, variable_masks_u64):
+        n_vars = len(variable_masks_u64)
+        n_states = len(state_strings)
+        return np.zeros((n_vars, n_states), dtype=np.uint8)
+
+    pce = PCE(
+        qubo_matrix=qubo,
+        ansatz=basic_ansatz,
+        backend=dummy_simulator,
+        alpha=1.0,
+        decode_parities_fn=all_zeros_decoder,
+    )
+
+    results = {
+        CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0): {
+            "00": 30,
+            "01": 10,
+        },
+        CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=1, meas_id=0): {
+            "10": 20,
+            "11": 40,
+        },
+    }
+
+    losses = pce._post_process_results(results)
+
+    # All parities 0 -> mean_parities = [0, 0] -> z_expectations = [1, 1]
+    # x_soft = 0.5 * (1 + tanh(alpha * [1, 1]))
+    z = np.array([1.0, 1.0])
+    x_soft = 0.5 * (1.0 + np.tanh(pce.alpha * z))
+    expected = float(x_soft @ qubo @ x_soft)
+    assert losses[0] == pytest.approx(expected)
+
+
+def test_pce_custom_decode_parities_fn_post_process_hard_cvar(
+    dummy_simulator, basic_ansatz
+):
+    """Custom decode_parities_fn is used in _post_process_results (hard CVaR path)."""
+    qubo = np.diag([1.0, 2.0])
+
+    def all_ones_decoder(state_strings, variable_masks_u64):
+        n_vars = len(variable_masks_u64)
+        n_states = len(state_strings)
+        return np.ones((n_vars, n_states), dtype=np.uint8)
+
+    pce = PCE(
+        qubo_matrix=qubo,
+        ansatz=basic_ansatz,
+        backend=dummy_simulator,
+        alpha=6.0,
+        decode_parities_fn=all_ones_decoder,
+    )
+
+    results = {
+        CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0): {
+            "11": 2,
+            "10": 3,
+            "01": 10,
+            "00": 25,
+        }
+    }
+    losses = pce._post_process_results(results)
+
+    # All parities 1 -> x_vals = 1 - 1 = 0 for all vars, all states
+    # So x_vals = [[0,0],[0,0],[0,0],[0,0]], energies = [0,0,0,0] for all
+    # CVaR of constant 0 is 0
+    assert losses[0] == pytest.approx(0.0)
+
+
+def test_pce_custom_decode_parities_fn_perform_final_computation(
+    mocker, dummy_simulator, basic_ansatz, qubo_identity
+):
+    """Custom decode_parities_fn is used in _perform_final_computation."""
+
+    # Decoder that returns parities [0, 1] for any input -> solution = 1 - [0,1] = [1, 0]
+    def fixed_decoder(state_strings, variable_masks_u64):
+        n_vars = len(variable_masks_u64)
+        n_states = len(state_strings)
+        out = np.zeros((n_vars, n_states), dtype=np.uint8)
+        out[1, :] = 1  # Second variable parity always 1
+        return out
+
+    pce = PCE(
+        qubo_matrix=qubo_identity,
+        ansatz=basic_ansatz,
+        backend=dummy_simulator,
+        decode_parities_fn=fixed_decoder,
+    )
+
+    pce._best_probs = {"0_NoMitigation:0_0": {"01": 1.0}}
+    mocker.patch.object(pce, "_run_solution_measurement")
+
+    pce._perform_final_computation()
+
+    # Fixed decoder returns parities [0, 1] -> solution = [1, 0]
+    np.testing.assert_array_equal(pce.solution, np.array([1, 0]))
+
+
+def test_pce_custom_decode_parities_fn_get_top_solutions(dummy_simulator, basic_ansatz):
+    """Custom decode_parities_fn is used in get_top_solutions."""
+
+    # Decoder that complements the default: return 1 - default_decoder output
+    # So decoded QUBO solution = 1 - (1 - default) = default (same as default)
+    # Or we use a decoder that returns fixed output per state
+    def complement_decoder(state_strings, variable_masks_u64):
+        default = _decode_parities(state_strings, variable_masks_u64)
+        return 1 - default
+
+    qubo = np.eye(2)
+    pce = PCE(
+        qubo_matrix=qubo,
+        ansatz=basic_ansatz,
+        backend=dummy_simulator,
+        decode_parities_fn=complement_decoder,
+    )
+
+    pce._best_probs = {
+        CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0): {
+            "00": 0.5,
+            "01": 0.3,
+            "10": 0.2,
+            "11": 0.0,
+        }
+    }
+    pce._losses_history = [{0: -1.0}]
+
+    solutions = pce.get_top_solutions(n=4)
+
+    # Default decoder: "00"->"11", "01"->"01", "10"->"10", "11"->"00"
+    # Complement decoder: "00"->"00", "01"->"10", "10"->"01", "11"->"11"
+    expected_decoded = {"00": 0.5, "10": 0.3, "01": 0.2, "11": 0.0}
+    decoded_map = {sol.bitstring: sol.prob for sol in solutions}
+    for bitstring, expected_prob in expected_decoded.items():
+        assert decoded_map[bitstring] == expected_prob
+
+
+def test_pce_decode_parities_fn_none_uses_default(dummy_simulator, basic_ansatz):
+    """Passing decode_parities_fn=None uses the built-in decoder (same as omitting)."""
+    qubo = np.array([[1.0, 0.2], [0.2, 2.0]])
+
+    pce_default = PCE(
+        qubo_matrix=qubo,
+        ansatz=basic_ansatz,
+        backend=dummy_simulator,
+        alpha=1.0,
+    )
+    pce_explicit_none = PCE(
+        qubo_matrix=qubo,
+        ansatz=basic_ansatz,
+        backend=dummy_simulator,
+        alpha=1.0,
+        decode_parities_fn=None,
+    )
+
+    results = {
+        CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0): {
+            "00": 30,
+            "01": 10,
+        },
+        CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=1, meas_id=0): {
+            "10": 20,
+            "11": 40,
+        },
+    }
+
+    losses_default = pce_default._post_process_results(results)
+    losses_explicit_none = pce_explicit_none._post_process_results(results)
+
+    assert losses_default[0] == pytest.approx(losses_explicit_none[0])
 
 
 def test_pce_poly_expval_post_process_results(dummy_simulator, basic_ansatz):

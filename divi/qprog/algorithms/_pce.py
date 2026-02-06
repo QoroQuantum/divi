@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from collections.abc import Callable
 from typing import Literal
 from warnings import warn
 
@@ -202,6 +203,9 @@ class PCE(VQE):
         n_qubits: int | None = None,
         alpha: float = 2.0,
         encoding_type: Literal["dense", "poly"] = "dense",
+        decode_parities_fn: (
+            Callable[[list[str], npt.NDArray[np.uint64]], npt.NDArray[np.uint8]] | None
+        ) = None,
         **kwargs,
     ):
         """
@@ -215,6 +219,10 @@ class PCE(VQE):
                 binary constraints, Lower = smoother gradient.
             encoding_type (Literal["dense", "poly"]): "dense" (logarithmic qubits,
                 default) or "poly" (each variable maps to parity of 1 or 2 qubits).
+            decode_parities_fn (Callable | None): Optional custom decoder for mapping
+                encoded bitstrings to parity arrays. Signature:
+                (state_strings, variable_masks_u64) -> parities. Defaults to the
+                built-in parity decoder.
             **kwargs: Additional arguments passed to VQE (e.g. ansatz, backend).
         """
 
@@ -224,6 +232,7 @@ class PCE(VQE):
         self.encoding_type = encoding_type
         self._use_soft_objective = self.alpha < 5.0
         self._final_vector: npt.NDArray[np.integer] | None = None
+        self._decode_parities_fn = decode_parities_fn or _decode_parities
 
         if kwargs.get("qem_protocol") is not None:
             raise ValueError("PCE does not currently support qem_protocol.")
@@ -338,7 +347,9 @@ class PCE(VQE):
                     param_group, _merge_param_group_counts
                 )
 
-                parities = _decode_parities(state_strings, self._variable_masks_u64)
+                parities = self._decode_parities_fn(
+                    state_strings, self._variable_masks_u64
+                )
                 if self._use_soft_objective:
                     probs = counts / total_shots
                     losses[p_idx] = _compute_soft_energy(
@@ -360,11 +371,9 @@ class PCE(VQE):
             return
 
         best_bitstring = "".join(str(x) for x in self._eigenstate)
-        state_int = int(best_bitstring, 2)
-        state_u64 = np.array([state_int], dtype=np.uint64)
-
-        overlaps = self._variable_masks_u64[:, None] & state_u64[None, :]
-        parities = _fast_popcount_parity(overlaps).flatten()
+        parities = self._decode_parities_fn(
+            [best_bitstring], self._variable_masks_u64
+        ).flatten()
         self._final_vector = 1 - parities
 
     def get_top_solutions(
@@ -461,7 +470,7 @@ class PCE(VQE):
 
         # Decode each encoded qubit state to QUBO variable assignment
         encoded_bitstrings = [bitstring for bitstring, _ in top_items]
-        decoded_parities = _decode_parities(
+        decoded_parities = self._decode_parities_fn(
             encoded_bitstrings, self._variable_masks_u64
         )
         # decoded_parities shape: (n_vars, n_states), transpose to (n_states, n_vars)
