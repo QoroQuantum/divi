@@ -5,7 +5,7 @@ build-backend = "poetry.core.masonry.api"
 
 [project]
 name = "qoro-divi"
-version = "0.6.1"
+version = "0.7.0"
 description = "A Python library to automate generating, parallelizing, and executing quantum programs."
 authors = [{ name = "Ahmed Darwish", email = "ahmed@qoroquantum.de" }, { name = "Stephen DiAdamo", email = "stephen@qoroquantum.de" }]
 readme = "README.md"
