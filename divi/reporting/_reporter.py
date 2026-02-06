@@ -10,6 +10,8 @@ from queue import Queue
 
 from rich.console import Console
 
+from divi.reporting._qlogger import _ensure_unbuffered_stdout
+
 logger = logging.getLogger(__name__)
 
 
@@ -69,6 +71,7 @@ class LoggingProgressReporter(ProgressReporter):
     _atexit_registered = False
 
     def __init__(self):
+        _ensure_unbuffered_stdout()
         # Use the same console instance that RichHandler uses to avoid interference
         self._console = Console(file=None)  # file=None uses stdout, same as RichHandler
         self._status = None  # Track active status for overwriting messages
