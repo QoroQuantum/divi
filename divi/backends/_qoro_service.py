@@ -13,7 +13,7 @@ from enum import Enum
 from http import HTTPStatus
 
 import requests
-from dotenv import dotenv_values
+from dotenv import dotenv_values, find_dotenv
 from requests.adapters import HTTPAdapter, Retry
 from rich.console import Console
 
@@ -203,7 +203,8 @@ class QoroService(CircuitRunner):
         # Set up auth_token first (needed for API calls like fetch_qpu_systems)
         if auth_token is None:
             try:
-                auth_token = dotenv_values()["QORO_API_KEY"]
+                env_path = find_dotenv(usecwd=True)
+                auth_token = dotenv_values(env_path)["QORO_API_KEY"]
             except KeyError:
                 raise ValueError("Qoro API key not provided nor found in a .env file.")
 
