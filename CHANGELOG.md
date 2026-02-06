@@ -7,6 +7,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0](https://github.com/QoroQuantum/divi/compare/v0.6.1...v0.7.0) (2026-02-06)
+
+
+### Features
+
+* **VQEHyperparameterSweep:** add hamiltonian support ([#39](https://github.com/QoroQuantum/divi/issues/39)) ([5d57f90](https://github.com/QoroQuantum/divi/commit/5d57f904a846868c4eb51ff9c7c6dbb75c549167))
+* **ParallelSimulator:** add circuit depth tracker ([2c57445](https://github.com/QoroQuantum/divi/commit/2c57445a293a9d1b8f07d4a9dc7ce28816d51280))
+* **PCE:** add polynomial encoding and tests ([8537c5c](https://github.com/QoroQuantum/divi/commit/8537c5ca9318d11a86153aed2db7981ae3745cb5))
+* **QAOA:** integrate QDrift and add tests ([666a9bd](https://github.com/QoroQuantum/divi/commit/666a9bd45ac38f575e88ae327395834a9fe81084))
+* **Trotterization:** introduce TrotterizationStrategy object and add QDrift as a strategy ([4293a28](https://github.com/QoroQuantum/divi/commit/4293a28e0c442bd555d07137d170fa3f30dfb781))
+* **PCE:** add decode_parities_fn attribute for custom bitstring decoding ([3c91b92](https://github.com/QoroQuantum/divi/commit/3c91b92197e27f9f4d1353148b4610c992882a23))
+
+### Bug Fixes
+
+* **PCE:** add missing support for expval backends for soft energy path ([70ce1cf](https://github.com/QoroQuantum/divi/commit/70ce1cf1c24c355ad5d603a4573c2692585aebec))
+* **QASM:** fix parser not allowing scientific notation ([220f466](https://github.com/QoroQuantum/divi/commit/220f4668142e8264a00da2201e90cd06cc8f4b52))
+
+
+
 ## [0.6.1](https://github.com/QoroQuantum/divi/compare/v0.6.0...v0.6.1) (2026-01-21)
 
 
