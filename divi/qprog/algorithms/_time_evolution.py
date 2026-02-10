@@ -39,7 +39,7 @@ class TimeEvolution(QuantumProgram):
         time: float = 1.0,
         n_steps: int = 1,
         order: int = 1,
-        initial_state: _INITIAL_STATE_LITERAL = "Zeros",
+        initial_state: _INITIAL_STATE_LITERAL | str = "Zeros",
         observable: qml.operation.Operator | None = None,
         **kwargs,
     ):
@@ -53,7 +53,9 @@ class TimeEvolution(QuantumProgram):
             n_steps: Number of Trotter steps.
             order: Suzuki-Trotter order (1 or even).
             initial_state: One of ``"Zeros"`` (``|0...0>``), ``"Superposition"``
-                (``|+...+>``), or ``"Ones"`` (``|1...1>``).
+                (``|+...+>``), or ``"Ones"`` (``|1...1>``), or a string
+                (e.g. ``"01+-"``) specifying the state of each qubit.
+                Characters: '0' -> |0>, '1' -> |1>, '+' -> |+>, '-' -> |->.
             observable: If None, measure qml.probs(); else qml.expval(observable).
             **kwargs: Passed to QuantumProgram (backend, seed, progress_queue, etc.).
         """
@@ -66,10 +68,25 @@ class TimeEvolution(QuantumProgram):
         if _is_empty_hamiltonian(hamiltonian_clean):
             raise ValueError("Hamiltonian contains only constant terms.")
 
+        self._circuit_wires = tuple(hamiltonian_clean.wires)
+        self.n_qubits = len(self._circuit_wires)
+
         if initial_state not in get_args(_INITIAL_STATE_LITERAL):
-            raise ValueError(
-                f"initial_state must be one of {get_args(_INITIAL_STATE_LITERAL)}, got {initial_state!r}"
+            # Check for valid custom string consisting of '0', '1', '+', '-'
+            is_valid_custom = isinstance(initial_state, str) and all(
+                c in "01+-" for c in initial_state
             )
+            if is_valid_custom:
+                if len(initial_state) != self.n_qubits:
+                    raise ValueError(
+                        f"initial_state string length ({len(initial_state)}) "
+                        f"must match number of qubits ({self.n_qubits})."
+                    )
+            else:
+                raise ValueError(
+                    f"initial_state must be one of {get_args(_INITIAL_STATE_LITERAL)} "
+                    f"or a string of '0', '1', '+', '-', got {initial_state!r}"
+                )
 
         self._hamiltonian = hamiltonian_clean
         self.trotterization_strategy = trotterization_strategy
@@ -78,8 +95,6 @@ class TimeEvolution(QuantumProgram):
         self.order = order
         self.initial_state = initial_state
         self.observable = observable
-        self._circuit_wires = tuple(hamiltonian_clean.wires)
-        self.n_qubits = len(self._circuit_wires)
 
         self._hamiltonian_samples: list[qml.operation.Operator] | None = None
         self.results: dict[str, Any] = {}
@@ -129,6 +144,16 @@ class TimeEvolution(QuantumProgram):
         elif self.initial_state == "Superposition":
             for wire in self._circuit_wires:
                 ops.append(qml.Hadamard(wires=wire))
+        elif all(c in "01+-" for c in self.initial_state):
+            for wire, char in zip(self._circuit_wires, self.initial_state):
+                if char == "1":
+                    ops.append(qml.PauliX(wires=wire))
+                elif char == "+":
+                    ops.append(qml.Hadamard(wires=wire))
+                elif char == "-":
+                    # |-> state: X then H on |0> -> X|0>=|1>, H|1>=|->
+                    ops.append(qml.PauliX(wires=wire))
+                    ops.append(qml.Hadamard(wires=wire))
 
         # Evolution: e^(-iHt)
         n_terms = len(hamiltonian) if _is_multi_term_sum(hamiltonian) else 1

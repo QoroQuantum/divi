@@ -151,6 +151,84 @@ class TestTimeEvolutionRun:
         count, _ = te.run()
         assert count >= 1
 
+    def test_run_initial_state_custom_binary(
+        self, two_qubit_hamiltonian, default_test_simulator
+    ):
+        """Test simple binary string '01'. |01> = PauliX(1) on |00>."""
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            time=0.5,
+            initial_state="01",
+            backend=default_test_simulator,
+        )
+        # Verify ops manually to ensure correct initialization
+        ops = te._build_ops(two_qubit_hamiltonian)
+        init_ops = [
+            op
+            for op in ops
+            if not isinstance(op, (qml.ops.op_math.Adjoint, qml.ops.op_math.Evolution))
+        ]
+        # Should have PauliX on wire 1
+        assert len(init_ops) == 1
+        assert isinstance(init_ops[0], qml.PauliX)
+        assert init_ops[0].wires == qml.wires.Wires(1)
+
+        count, _ = te.run()
+        assert count >= 1
+
+    def test_run_initial_state_custom_plus_minus(
+        self, two_qubit_hamiltonian, default_test_simulator
+    ):
+        """Test custom string '+-'. |+-> = H(0) (X(1) H(1)) on |00>."""
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            time=0.5,
+            initial_state="+-",
+            backend=default_test_simulator,
+        )
+        ops = te._build_ops(two_qubit_hamiltonian)
+        init_ops = [
+            op
+            for op in ops
+            if not isinstance(op, (qml.ops.op_math.Adjoint, qml.ops.op_math.Evolution))
+        ]
+
+        # Wire 0: '+' -> Hadamard
+        op0 = [op for op in init_ops if op.wires[0] == 0]
+        assert len(op0) == 1
+        assert isinstance(op0[0], qml.Hadamard)
+
+        # Wire 1: '-' -> PauliX then Hadamard
+        op1 = [op for op in init_ops if op.wires[0] == 1]
+        assert len(op1) == 2
+        assert isinstance(op1[0], qml.PauliX)
+        assert isinstance(op1[1], qml.Hadamard)
+
+        count, _ = te.run()
+        assert count >= 1
+
+    def test_run_initial_state_custom_invalid_length(
+        self, two_qubit_hamiltonian, default_test_simulator
+    ):
+        with pytest.raises(ValueError, match="must match number of qubits"):
+            TimeEvolution(
+                hamiltonian=two_qubit_hamiltonian,
+                initial_state="010",  # 3 chars for 2 qubits
+                backend=default_test_simulator,
+            )
+
+    def test_run_initial_state_custom_invalid_chars(
+        self, two_qubit_hamiltonian, default_test_simulator
+    ):
+        with pytest.raises(
+            ValueError, match="or a string of '0', '1', '\\+', '-', got"
+        ):
+            TimeEvolution(
+                hamiltonian=two_qubit_hamiltonian,
+                initial_state="02",
+                backend=default_test_simulator,
+            )
+
     def test_single_term_hamiltonian_fallback(self, default_test_simulator):
         """ExactTrotterization with keep_top_n=1 yields single-term; use evolve not TrotterProduct."""
         h = 0.5 * qml.PauliX(0) + 0.3 * qml.PauliY(0)
