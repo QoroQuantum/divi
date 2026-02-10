@@ -345,9 +345,7 @@ class QDrift(TrotterizationStrategy):
             return keep_hamiltonian
 
         if not _is_multi_term_sum(to_sample_hamiltonian):
-            sampled_hamiltonian = np.array(
-                [to_sample_hamiltonian] * self.sampling_budget
-            )
+            sampled_terms = [to_sample_hamiltonian] * self.sampling_budget
         else:
             absolute_coeffs = np.abs(to_sample_hamiltonian.terms()[0])
             coeff_sum = absolute_coeffs.sum()
@@ -357,20 +355,20 @@ class QDrift(TrotterizationStrategy):
                     UserWarning,
                 )
                 return keep_hamiltonian
-            sampled_hamiltonian = self._rng.choice(
-                np.array(terms_list),
+            probs = (
+                (absolute_coeffs / coeff_sum).tolist()
+                if self.sampling_strategy == "weighted"
+                else None
+            )
+            indices = self._rng.choice(
+                len(terms_list),
                 size=self.sampling_budget,
                 replace=True,
-                **(
-                    {"p": absolute_coeffs / coeff_sum}
-                    if self.sampling_strategy == "weighted"
-                    else {}
-                ),
+                p=probs,
             )
+            sampled_terms = [terms_list[i] for i in indices]
 
-        return (
-            qml.ops.Sum(*sampled_hamiltonian.tolist()) + keep_hamiltonian
-        ).simplify()
+        return (qml.ops.Sum(*sampled_terms) + keep_hamiltonian).simplify()
 
 
 def convert_hamiltonian_to_pauli_string(

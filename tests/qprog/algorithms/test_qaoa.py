@@ -185,16 +185,16 @@ class TestGraphInput:
                 backend=None,
             )
 
-    def test_graph_unsuppported_initial_state(self):
+    def test_graph_unsuppported_initial_state(self, dummy_simulator):
         with pytest.raises(ValueError, match="Bell"):
             QAOA(
                 problem=nx.bull_graph(),
                 graph_problem=GraphProblem.MAX_CLIQUE,
                 initial_state="Bell",
-                backend=None,
+                backend=dummy_simulator,
             )
 
-    def test_constant_only_hamiltonian_raises(self):
+    def test_constant_only_hamiltonian_raises(self, dummy_simulator):
         """QAOA rejects constant-only cost Hamiltonian (e.g. empty graph) at init."""
         with pytest.raises(
             ValueError, match="Hamiltonian contains only constant terms"
@@ -202,26 +202,26 @@ class TestGraphInput:
             QAOA(
                 problem=nx.empty_graph(1),
                 graph_problem=GraphProblem.MAXCUT,
-                backend=None,
+                backend=dummy_simulator,
             )
 
-    def test_graph_initial_state_recommended(self):
+    def test_graph_initial_state_recommended(self, dummy_simulator):
         qaoa_problem = QAOA(
             problem=nx.bull_graph(),
             graph_problem=GraphProblem.MAX_CLIQUE,
             initial_state="Recommended",
             is_constrained=True,
-            backend=None,
+            backend=dummy_simulator,
         )
 
         assert qaoa_problem.initial_state == "Zeros"
 
-    def test_graph_initial_state_superposition(self):
+    def test_graph_initial_state_superposition(self, dummy_simulator):
         qaoa_problem = QAOA(
             problem=nx.bull_graph(),
             graph_problem=GraphProblem.MAX_CLIQUE,
             initial_state="Superposition",
-            backend=None,
+            backend=dummy_simulator,
         )
 
         assert qaoa_problem.initial_state == "Superposition"
@@ -235,7 +235,9 @@ class TestGraphInput:
             == nx.bull_graph().number_of_nodes()
         )
 
-    def test_perform_final_computation_extracts_correct_solution(self, mocker):
+    def test_perform_final_computation_extracts_correct_solution(
+        self, mocker, dummy_simulator
+    ):
         G = nx.bull_graph()
         qaoa_problem = QAOA(
             graph_problem=GraphProblem.MAX_CLIQUE,
@@ -244,7 +246,7 @@ class TestGraphInput:
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=1,
             is_constrained=True,
-            backend=None,
+            backend=dummy_simulator,
         )
 
         # Simulate measurement results
@@ -384,7 +386,9 @@ class TestGraphInput:
             qaoa_problem3._solution_nodes
         ) == nx.algorithms.approximation.max_clique(G)
 
-    def test_draw_solution_returns_graph_with_expected_properties(self, mocker):
+    def test_draw_solution_returns_graph_with_expected_properties(
+        self, mocker, dummy_simulator
+    ):
         G = nx.bull_graph()
 
         qaoa_problem = QAOA(
@@ -394,7 +398,7 @@ class TestGraphInput:
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=2,
             is_constrained=True,
-            backend=None,
+            backend=dummy_simulator,
         )
 
         qaoa_problem._solution_nodes = [0, 1, 2]
@@ -429,7 +433,7 @@ class TestGraphInput:
         # Clean up the plot
         plt.close()
 
-    def test_string_node_labels_bitstring_length(self, mocker, default_test_simulator):
+    def test_string_node_labels_bitstring_length(self, mocker, dummy_simulator):
         """Test that graphs with string node labels produce correct bitstring lengths.
 
         This test verifies that bitstrings have the correct length (matching number of nodes)
@@ -447,7 +451,7 @@ class TestGraphInput:
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=1,
-            backend=default_test_simulator,
+            backend=dummy_simulator,
         )
 
         # Verify circuit_wires are correctly set up with string node labels
@@ -484,7 +488,7 @@ class TestGraphInput:
             for bitstring in probs_dict.keys()
         )
 
-    def test_string_node_labels_solution_mapping(self, mocker):
+    def test_string_node_labels_solution_mapping(self, mocker, dummy_simulator):
         """Test that solution correctly maps to string node labels."""
         # Create a graph with string node labels
         G = nx.Graph()
@@ -498,7 +502,7 @@ class TestGraphInput:
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=1,
             is_constrained=True,
-            backend=None,
+            backend=dummy_simulator,
         )
 
         # Simulate measurement results with bitstring "101" (nodes 'a' and 'c' selected)
@@ -521,7 +525,7 @@ class TestGraphInput:
             node in G.nodes() for node in qaoa_problem.solution
         ), "All solution nodes should be valid graph nodes"
 
-    def test_string_node_labels_circuit_wires(self):
+    def test_string_node_labels_circuit_wires(self, dummy_simulator):
         """Test that circuit_wires correctly uses Hamiltonian wire labels."""
         # Create a graph with string node labels
         G = nx.Graph()
@@ -534,7 +538,7 @@ class TestGraphInput:
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=1,
-            backend=None,
+            backend=dummy_simulator,
         )
 
         # Verify circuit_wires uses the Hamiltonian's wire labels (strings)
@@ -547,7 +551,7 @@ class TestGraphInput:
             isinstance(wire, str) for wire in qaoa_problem._circuit_wires
         ), "Circuit wires should be strings for string-labeled graphs"
 
-    def test_mixed_type_node_labels(self, mocker):
+    def test_mixed_type_node_labels(self, mocker, dummy_simulator):
         """Test that graphs with mixed type node labels work correctly."""
         # Create a graph with mixed type node labels (integers and strings)
         G = nx.Graph()
@@ -560,7 +564,7 @@ class TestGraphInput:
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=1,
-            backend=None,
+            backend=dummy_simulator,
         )
 
         # Verify circuit_wires contains both types
@@ -680,7 +684,7 @@ class TestQUBOInput:
 
         verify_metacircuit_dict(qaoa_problem, ["cost_circuit", "meas_circuit"])
 
-    def test_redundant_graph_problem_raises_warning(self):
+    def test_redundant_graph_problem_raises_warning(self, dummy_simulator):
         with pytest.warns(
             UserWarning,
             match="Ignoring the 'problem' argument as it is not applicable to QUBO.",
@@ -691,10 +695,10 @@ class TestQUBOInput:
                 n_layers=1,
                 optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
                 max_iterations=10,
-                backend=None,
+                backend=dummy_simulator,
             )
 
-    def test_non_square_qubo_fails(self):
+    def test_non_square_qubo_fails(self, dummy_simulator):
         with pytest.raises(
             ValueError,
             match=r"Invalid QUBO matrix\. Got array of shape \(3, 2\)\. Must be a square matrix\.",
@@ -704,10 +708,10 @@ class TestQUBOInput:
                 n_layers=1,
                 optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
                 max_iterations=10,
-                backend=None,
+                backend=dummy_simulator,
             )
 
-    def test_non_symmetrical_qubo_raises_warning(self):
+    def test_non_symmetrical_qubo_raises_warning(self, dummy_simulator):
         test_array = np.array([[1, 2], [3, 4]])
         test_array_sp = sps.csc_matrix(test_array)
 
@@ -720,7 +724,7 @@ class TestQUBOInput:
                 n_layers=1,
                 optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
                 max_iterations=10,
-                backend=None,
+                backend=dummy_simulator,
             )
 
         # Ensure the problem matrix was untouched
@@ -739,16 +743,16 @@ class TestQUBOInput:
                 n_layers=1,
                 optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
                 max_iterations=10,
-                backend=None,
+                backend=dummy_simulator,
             )
 
-    def test_qubo_fails_when_drawing_solution(self):
+    def test_qubo_fails_when_drawing_solution(self, dummy_simulator):
         qaoa_problem = QAOA(
             problem=QUBO_MATRIX_LIST,
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=10,
-            backend=None,
+            backend=dummy_simulator,
         )
 
         with pytest.raises(
@@ -885,7 +889,7 @@ class TestQUBOInput:
 
         verify_metacircuit_dict(qaoa_problem, ["cost_circuit", "meas_circuit"])
 
-    def test_binary_quadratic_model_with_spin_raises_error(self):
+    def test_binary_quadratic_model_with_spin_raises_error(self, dummy_simulator):
         # Create a BQM with SPIN vartype (non-binary)
         bqm = dimod.BinaryQuadraticModel(
             {"x": -1, "y": -2, "z": 3}, {}, 0.0, dimod.Vartype.SPIN
@@ -900,7 +904,7 @@ class TestQUBOInput:
                 n_layers=1,
                 optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
                 max_iterations=10,
-                backend=None,
+                backend=dummy_simulator,
             )
 
     @pytest.mark.e2e
