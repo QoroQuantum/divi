@@ -166,7 +166,14 @@ class TestTimeEvolutionRun:
         init_ops = [
             op
             for op in ops
-            if not isinstance(op, (qml.ops.op_math.Adjoint, qml.ops.op_math.Evolution))
+            if not isinstance(
+                op,
+                (
+                    qml.ops.op_math.Adjoint,
+                    qml.ops.op_math.Evolution,
+                    qml.TrotterProduct,
+                ),
+            )
         ]
         # Should have PauliX on wire 1
         assert len(init_ops) == 1
@@ -190,7 +197,14 @@ class TestTimeEvolutionRun:
         init_ops = [
             op
             for op in ops
-            if not isinstance(op, (qml.ops.op_math.Adjoint, qml.ops.op_math.Evolution))
+            if not isinstance(
+                op,
+                (
+                    qml.ops.op_math.Adjoint,
+                    qml.ops.op_math.Evolution,
+                    qml.TrotterProduct,
+                ),
+            )
         ]
 
         # Wire 0: '+' -> Hadamard

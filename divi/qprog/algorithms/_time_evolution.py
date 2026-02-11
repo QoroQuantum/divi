@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from typing import Any, Literal, get_args
+from warnings import warn
 
 import numpy as np
 import pennylane as qml
@@ -41,6 +42,7 @@ class TimeEvolution(QuantumProgram):
         order: int = 1,
         initial_state: _INITIAL_STATE_LITERAL | str = "Zeros",
         observable: qml.operation.Operator | None = None,
+        ensemble_size: int | None = None,
         **kwargs,
     ):
         """Initialize TimeEvolution.
@@ -57,6 +59,8 @@ class TimeEvolution(QuantumProgram):
                 (e.g. ``"01+-"``) specifying the state of each qubit.
                 Characters: '0' -> |0>, '1' -> |1>, '+' -> |+>, '-' -> |->.
             observable: If None, measure qml.probs(); else qml.expval(observable).
+            ensemble_size: Number of Hamiltonian samples to average over.
+                If None (default), falls back to the strategy's settings.
             **kwargs: Passed to QuantumProgram (backend, seed, progress_queue, etc.).
         """
         super().__init__(**kwargs)
@@ -95,6 +99,10 @@ class TimeEvolution(QuantumProgram):
         self.order = order
         self.initial_state = initial_state
         self.observable = observable
+        self.ensemble_size = ensemble_size
+
+        if ensemble_size is not None and ensemble_size < 1:
+            raise ValueError(f"ensemble_size must be >= 1, got {ensemble_size}")
 
         self._hamiltonian_samples: list[qml.operation.Operator] | None = None
         self.results: dict[str, Any] = {}
@@ -106,7 +114,21 @@ class TimeEvolution(QuantumProgram):
             tuple[int, float]: (total_circuit_count, total_run_time).
         """
         strategy = self.trotterization_strategy
-        n_samples = getattr(strategy, "n_hamiltonians_per_iteration", 1)
+        n_samples = self.ensemble_size
+
+        if n_samples is None:
+            n_samples = getattr(strategy, "n_hamiltonians_per_iteration", 1)
+        elif (
+            hasattr(strategy, "n_hamiltonians_per_iteration")
+            and strategy.n_hamiltonians_per_iteration != 1
+            and strategy.n_hamiltonians_per_iteration != n_samples
+        ):
+            warn(
+                f"Both TimeEvolution(ensemble_size={n_samples}) and "
+                f"{strategy.__class__.__name__}(n_hamiltonians_per_iteration={strategy.n_hamiltonians_per_iteration}) "
+                f"are set. ensemble_size={n_samples} will take precedence.",
+                UserWarning,
+            )
 
         if (
             n_samples > 1
@@ -158,10 +180,8 @@ class TimeEvolution(QuantumProgram):
         # Evolution: e^(-iHt)
         n_terms = len(hamiltonian) if _is_multi_term_sum(hamiltonian) else 1
         if n_terms >= 2:
-            evo = qml.adjoint(
-                qml.TrotterProduct(
-                    hamiltonian, time=self.time, n=self.n_steps, order=self.order
-                )
+            evo = qml.TrotterProduct(
+                hamiltonian, time=self.time, n=self.n_steps, order=self.order
             )
             ops.append(evo)
         else:

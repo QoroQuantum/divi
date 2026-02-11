@@ -308,13 +308,13 @@ class QDrift(TrotterizationStrategy):
         if hamiltonian in self._cache:
             keep_hamiltonian, to_sample_hamiltonian = self._cache[hamiltonian]
         else:
-            keep_hamiltonian = ExactTrotterization(
-                keep_fraction=self.keep_fraction, keep_top_n=self.keep_top_n
-            ).process_hamiltonian(hamiltonian)
-
             if triggered_exact_trotterization:
+                keep_hamiltonian = ExactTrotterization(
+                    keep_fraction=self.keep_fraction, keep_top_n=self.keep_top_n
+                ).process_hamiltonian(hamiltonian)
                 to_sample_hamiltonian = (hamiltonian - keep_hamiltonian).simplify()
             else:
+                keep_hamiltonian = 0
                 to_sample_hamiltonian = hamiltonian.simplify()
 
             self._cache[hamiltonian] = (keep_hamiltonian, to_sample_hamiltonian)
@@ -345,7 +345,8 @@ class QDrift(TrotterizationStrategy):
             return keep_hamiltonian
 
         if not _is_multi_term_sum(to_sample_hamiltonian):
-            sampled_terms = [to_sample_hamiltonian] * self.sampling_budget
+            # If there's only one term, return it as is rather than repeated.
+            sampled_terms = [to_sample_hamiltonian]
         else:
             absolute_coeffs = np.abs(to_sample_hamiltonian.terms()[0])
             coeff_sum = absolute_coeffs.sum()
@@ -355,6 +356,7 @@ class QDrift(TrotterizationStrategy):
                     UserWarning,
                 )
                 return keep_hamiltonian
+
             probs = (
                 (absolute_coeffs / coeff_sum).tolist()
                 if self.sampling_strategy == "weighted"
@@ -366,7 +368,23 @@ class QDrift(TrotterizationStrategy):
                 replace=True,
                 p=probs,
             )
-            sampled_terms = [terms_list[i] for i in indices]
+
+            if self.sampling_strategy == "weighted":
+                # Each sampled term Op_i with coeff c_i should become (V/L) * sgn(c_i) * P_i
+                # where V = sum(|c_j|) and L = sampling_budget.
+                # Since terms_list[i] is already c_i * P_i, we multiply it by V / (L * |c_i|).
+                sampled_terms = [
+                    (coeff_sum / (self.sampling_budget * absolute_coeffs[i]))
+                    * terms_list[i]
+                    for i in indices
+                ]
+            else:
+                # For uniform sampling: p_i = 1/N.
+                # E[Sum] = (L/N) * H. So we multiply by N/L to restore the original scale.
+                n_terms = len(terms_list)
+                sampled_terms = [
+                    (n_terms / self.sampling_budget) * terms_list[i] for i in indices
+                ]
 
         return (qml.ops.Sum(*sampled_terms) + keep_hamiltonian).simplify()
 
