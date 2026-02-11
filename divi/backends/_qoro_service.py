@@ -569,6 +569,7 @@ class QoroService(CircuitRunner):
         page_limit = 100
         offset = 0
         all_results: list[dict] = []
+        total_expected: int | None = None
 
         while True:
             try:
@@ -588,13 +589,22 @@ class QoroService(CircuitRunner):
             data = response.json()
             page_results = data["results"]
 
+            # Use the API's count field (if present) to know the total
+            if total_expected is None and "count" in data:
+                total_expected = data["count"]
+
             for result in page_results:
                 result["results"] = _decode_qh1_b64(result["results"])
 
             all_results.extend(page_results)
 
+            # Stop when we've fetched everything
+            if not page_results:
+                break
+            if total_expected is not None and len(all_results) >= total_expected:
+                break
             if len(page_results) < page_limit:
-                break  # Last page
+                break
             offset += page_limit
 
         return execution_result.with_results(all_results)

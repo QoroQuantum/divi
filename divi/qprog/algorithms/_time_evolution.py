@@ -13,6 +13,7 @@ from divi.circuits import CircuitBundle, CircuitTag, MetaCircuit
 from divi.qprog._expectation import _batched_expectation
 from divi.qprog._hamiltonians import (
     ExactTrotterization,
+    QDrift,
     TrotterizationStrategy,
     _clean_hamiltonian,
     _get_terms_iterable,
@@ -188,19 +189,71 @@ class TimeEvolution(QuantumProgram):
         # Evolution: e^(-iHt)
         n_terms = len(hamiltonian) if _is_multi_term_sum(hamiltonian) else 1
         if n_terms >= 2:
-            evo = qml.TrotterProduct(
-                hamiltonian, time=t, n=self.n_steps, order=self.order
-            )
-            ops.append(evo)
+            if isinstance(self.trotterization_strategy, QDrift):
+                # QDrift: the sampling already replaced Trotter decomposition.
+                # Evolve each sampled term individually as a product formula.
+                tau = t / max(self.n_steps, 1)
+                for _step in range(max(self.n_steps, 1)):
+                    for term in _get_terms_iterable(hamiltonian):
+                        ops.extend(self._single_term_evolution(term, tau))
+            else:
+                evo = qml.TrotterProduct(
+                    hamiltonian, time=t, n=self.n_steps, order=self.order
+                )
+                ops.append(evo)
         else:
             term = (
                 hamiltonian
                 if not _is_multi_term_sum(hamiltonian)
                 else _get_terms_iterable(hamiltonian)[0]
             )
-            ops.append(qml.evolve(term, coeff=t))
+            ops.extend(self._single_term_evolution(term, t))
 
         return ops
+
+    @staticmethod
+    def _single_term_evolution(
+        term: qml.operation.Operator, t: float
+    ) -> list[qml.operation.Operator]:
+        """Build native rotation gates for e^{-i * coeff * P * t}.
+
+        Avoids ``qml.exp`` / ``qml.evolve`` whose PennyLane decomposer can
+        enter infinite recursion on Pauli tensor-products.
+        """
+        # Strip coefficient:  term = coeff * P  (SProd) or just P
+        if isinstance(term, qml.ops.SProd):
+            coeff = float(term.scalar)
+            pauli = term.base
+        else:
+            coeff = 1.0
+            pauli = term
+
+        angle = 2 * coeff * t  # RZ(θ) = e^{-iZθ/2}, so θ = 2·coeff·t
+        wires = pauli.wires.tolist()
+
+        # Single-qubit Paulis
+        if isinstance(pauli, qml.PauliX):
+            return [qml.RX(angle, wires=wires[0])]
+        if isinstance(pauli, qml.PauliY):
+            return [qml.RY(angle, wires=wires[0])]
+        if isinstance(pauli, qml.PauliZ):
+            return [qml.RZ(angle, wires=wires[0])]
+
+        # Two-qubit Pauli tensor products (XX, YY, ZZ)
+        if isinstance(pauli, qml.ops.Prod):
+            factors = list(pauli.operands) if hasattr(pauli, "operands") else pauli.obs
+            if len(factors) == 2:
+                types = tuple(type(f) for f in factors)
+                w = [factors[0].wires[0], factors[1].wires[0]]
+                if types == (qml.PauliX, qml.PauliX):
+                    return [qml.IsingXX(angle, wires=w)]
+                if types == (qml.PauliY, qml.PauliY):
+                    return [qml.IsingYY(angle, wires=w)]
+                if types == (qml.PauliZ, qml.PauliZ):
+                    return [qml.IsingZZ(angle, wires=w)]
+
+        # Fallback for anything else
+        return [qml.exp(term, coeff=-1j * t)]
 
     def _build_ops(self, hamiltonian: qml.operation.Operator) -> list:
         """Build circuit ops using self.time (backward compat)."""
@@ -221,6 +274,11 @@ class TimeEvolution(QuantumProgram):
         circuit_bundles: list[CircuitBundle] = []
         use_probs = self.observable is None
         time_list = self.time_points if self.time_points is not None else [self.time]
+
+        n_nonzero_times = sum(1 for t in time_list if t != 0)
+        n_samples = len(self._hamiltonian_samples)
+        total_circuits = n_nonzero_times * n_samples
+        circuit_count = 0
 
         for time_idx, t in enumerate(time_list):
             if t == 0:
@@ -257,6 +315,20 @@ class TimeEvolution(QuantumProgram):
                     [], param_idx=time_idx, hamiltonian_id=ham_id
                 )
                 circuit_bundles.append(bundle)
+
+                circuit_count += 1
+                if total_circuits > 10 and circuit_count % 50 == 0:
+                    print(
+                        f"\r  Compiling circuits: {circuit_count}/{total_circuits}",
+                        end="",
+                        flush=True,
+                    )
+
+        if total_circuits > 10:
+            print(
+                f"\r  Compiling circuits: {total_circuits}/{total_circuits} ✓",
+                flush=True,
+            )
 
         return circuit_bundles
 
