@@ -43,6 +43,7 @@ class TimeEvolution(QuantumProgram):
         initial_state: _INITIAL_STATE_LITERAL | str = "Zeros",
         observable: qml.operation.Operator | None = None,
         ensemble_size: int | None = None,
+        time_points: list[float] | np.ndarray | None = None,
         **kwargs,
     ):
         """Initialize TimeEvolution.
@@ -51,7 +52,7 @@ class TimeEvolution(QuantumProgram):
             hamiltonian: Hamiltonian to evolve under.
             trotterization_strategy: Strategy for term selection (ExactTrotterization, QDrift).
                 Defaults to ExactTrotterization().
-            time: Evolution time t (e^(-iHt)).
+            time: Evolution time t (e^(-iHt)). Ignored when ``time_points`` is set.
             n_steps: Number of Trotter steps.
             order: Suzuki-Trotter order (1 or even).
             initial_state: One of ``"Zeros"`` (``|0...0>``), ``"Superposition"``
@@ -61,6 +62,10 @@ class TimeEvolution(QuantumProgram):
             observable: If None, measure qml.probs(); else qml.expval(observable).
             ensemble_size: Number of Hamiltonian samples to average over.
                 If None (default), falls back to the strategy's settings.
+            time_points: Optional list of evolution times. When provided, circuits
+                for every ``(time_point, ensemble_member)`` pair are generated and
+                submitted as a **single batch job**.  Results are stored as a list
+                of per-time-point dicts in ``self.results["trajectory"]``.
             **kwargs: Passed to QuantumProgram (backend, seed, progress_queue, etc.).
         """
         super().__init__(**kwargs)
@@ -100,6 +105,7 @@ class TimeEvolution(QuantumProgram):
         self.initial_state = initial_state
         self.observable = observable
         self.ensemble_size = ensemble_size
+        self.time_points = list(time_points) if time_points is not None else None
 
         if ensemble_size is not None and ensemble_size < 1:
             raise ValueError(f"ensemble_size must be >= 1, got {ensemble_size}")
@@ -144,6 +150,7 @@ class TimeEvolution(QuantumProgram):
             strategy.process_hamiltonian(self._hamiltonian) for _ in range(n_samples)
         ]
 
+        self._n_samples = n_samples
         self._curr_circuits = self._generate_circuits(**kwargs)
 
         if self.observable is not None and self.backend.supports_expval:
@@ -155,8 +162,10 @@ class TimeEvolution(QuantumProgram):
 
         return self.total_circuit_count, self.total_run_time
 
-    def _build_ops(self, hamiltonian: qml.operation.Operator) -> list:
-        """Build circuit ops: initial state, evolution, measurement."""
+    def _build_ops_for_time(
+        self, hamiltonian: qml.operation.Operator, t: float
+    ) -> list:
+        """Build circuit ops for a specific evolution time."""
         ops = []
 
         # Initial state
@@ -173,7 +182,6 @@ class TimeEvolution(QuantumProgram):
                 elif char == "+":
                     ops.append(qml.Hadamard(wires=wire))
                 elif char == "-":
-                    # |-> state: X then H on |0> -> X|0>=|1>, H|1>=|->
                     ops.append(qml.PauliX(wires=wire))
                     ops.append(qml.Hadamard(wires=wire))
 
@@ -181,7 +189,7 @@ class TimeEvolution(QuantumProgram):
         n_terms = len(hamiltonian) if _is_multi_term_sum(hamiltonian) else 1
         if n_terms >= 2:
             evo = qml.TrotterProduct(
-                hamiltonian, time=self.time, n=self.n_steps, order=self.order
+                hamiltonian, time=t, n=self.n_steps, order=self.order
             )
             ops.append(evo)
         else:
@@ -190,12 +198,21 @@ class TimeEvolution(QuantumProgram):
                 if not _is_multi_term_sum(hamiltonian)
                 else _get_terms_iterable(hamiltonian)[0]
             )
-            ops.append(qml.evolve(term, coeff=self.time))
+            ops.append(qml.evolve(term, coeff=t))
 
         return ops
 
+    def _build_ops(self, hamiltonian: qml.operation.Operator) -> list:
+        """Build circuit ops using self.time (backward compat)."""
+        return self._build_ops_for_time(hamiltonian, self.time)
+
     def _generate_circuits(self, **kwargs) -> list[CircuitBundle]:
-        """Generate circuits for each Hamiltonian sample."""
+        """Generate circuits for each (time_point, Hamiltonian sample) pair.
+
+        When ``self.time_points`` is set, circuits are generated for every
+        combination and tagged with ``param_id = time_index`` so the
+        post-processor can reconstruct per-time-step results.
+        """
         if self._hamiltonian_samples is None:
             raise RuntimeError(
                 "_hamiltonian_samples must be set before _generate_circuits; call run() first."
@@ -203,36 +220,43 @@ class TimeEvolution(QuantumProgram):
 
         circuit_bundles: list[CircuitBundle] = []
         use_probs = self.observable is None
+        time_list = self.time_points if self.time_points is not None else [self.time]
 
-        for ham_id, sample_hamiltonian in enumerate(self._hamiltonian_samples):
-            ops = self._build_ops(sample_hamiltonian)
+        for time_idx, t in enumerate(time_list):
+            if t == 0:
+                continue  # t=0 is the initial state; no circuit needed
 
-            if use_probs:
-                measurement = qml.probs()
-                meta = MetaCircuit(
-                    source_circuit=qml.tape.QuantumScript(
-                        ops=ops, measurements=[measurement]
-                    ),
-                    symbols=np.array([], dtype=object),
-                    measurement_groups_override=((),),
-                    postprocessing_fn_override=lambda x: x,
+            for ham_id, sample_hamiltonian in enumerate(self._hamiltonian_samples):
+                ops = self._build_ops_for_time(sample_hamiltonian, t)
+
+                if use_probs:
+                    measurement = qml.probs()
+                    meta = MetaCircuit(
+                        source_circuit=qml.tape.QuantumScript(
+                            ops=ops, measurements=[measurement]
+                        ),
+                        symbols=np.array([], dtype=object),
+                        measurement_groups_override=((),),
+                        postprocessing_fn_override=lambda x: x,
+                    )
+                else:
+                    measurement = qml.expval(self.observable)
+                    meta = MetaCircuit(
+                        source_circuit=qml.tape.QuantumScript(
+                            ops=ops, measurements=[measurement]
+                        ),
+                        symbols=np.array([], dtype=object),
+                        grouping_strategy=(
+                            "_backend_expval"
+                            if self.backend.supports_expval
+                            else "wires"
+                        ),
+                    )
+
+                bundle = meta.initialize_circuit_from_params(
+                    [], param_idx=time_idx, hamiltonian_id=ham_id
                 )
-            else:
-                measurement = qml.expval(self.observable)
-                meta = MetaCircuit(
-                    source_circuit=qml.tape.QuantumScript(
-                        ops=ops, measurements=[measurement]
-                    ),
-                    symbols=np.array([], dtype=object),
-                    grouping_strategy=(
-                        "_backend_expval" if self.backend.supports_expval else "wires"
-                    ),
-                )
-
-            bundle = meta.initialize_circuit_from_params(
-                [], param_idx=0, hamiltonian_id=ham_id
-            )
-            circuit_bundles.append(bundle)
+                circuit_bundles.append(bundle)
 
         return circuit_bundles
 
@@ -245,15 +269,64 @@ class TimeEvolution(QuantumProgram):
     def _post_process_results(
         self, results: dict[CircuitTag, dict[str, int]], **kwargs
     ) -> dict[str, Any]:
-        """Post-process results: convert to probs or expectation, average for QDrift."""
+        """Post-process results: convert to probs or expectation, average for QDrift.
+
+        When ``time_points`` was used, results are grouped by ``param_id``
+        (= time index) and a ``trajectory`` list of per-time-point dicts is
+        produced.  The single-time-point path remains backward compatible.
+        """
         use_probs = self.observable is None
         grouped = self._group_results(results)
 
         if use_probs:
-            ham_probs: list[dict[str, float]] = []
+            if self.time_points is not None:
+                # --- Multi-time-point path ---
+                trajectory: list[dict[str, float]] = []
+                init_state = self.initial_state
+                # Build t=0 probs from the initial state string
+                t0_probs = (
+                    {init_state: 1.0}
+                    if init_state not in get_args(_INITIAL_STATE_LITERAL)
+                    else {"0" * self.n_qubits: 1.0}
+                )
+
+                for time_idx, t in enumerate(self.time_points):
+                    if t == 0:
+                        trajectory.append(t0_probs)
+                        continue
+
+                    if time_idx not in grouped:
+                        trajectory.append(t0_probs)  # fallback
+                        continue
+
+                    ham_dict = grouped[time_idx]
+                    ham_probs: list[dict[str, float]] = []
+                    for _ham_id, qem_groups in ham_dict.items():
+                        qem_probs: list[dict[str, float]] = []
+                        for _qem_key, shots_list in sorted(
+                            qem_groups.items(), key=lambda x: x[0][1]
+                        ):
+                            merged_counts = self._merge_shot_histograms(shots_list)
+                            probs = convert_counts_to_probs(
+                                {"_merged": merged_counts}, self.backend.shots
+                            )["_merged"]
+                            qem_probs.append(probs)
+                        if qem_probs:
+                            ham_probs.append(self._average_probabilities(qem_probs))
+
+                    merged = self._average_probabilities(ham_probs)
+                    trajectory.append(
+                        reverse_dict_endianness({"_merged": merged})["_merged"]
+                    )
+
+                self.results = {"trajectory": trajectory}
+                return self.results
+
+            # --- Single-time-point path (unchanged) ---
+            ham_probs_single: list[dict[str, float]] = []
             for _p, ham_dict in grouped.items():
                 for _ham_id, qem_groups in ham_dict.items():
-                    qem_probs: list[dict[str, float]] = []
+                    qem_probs_s: list[dict[str, float]] = []
                     for _qem_key, shots_list in sorted(
                         qem_groups.items(), key=lambda x: x[0][1]
                     ):
@@ -261,11 +334,13 @@ class TimeEvolution(QuantumProgram):
                         probs = convert_counts_to_probs(
                             {"_merged": merged_counts}, self.backend.shots
                         )["_merged"]
-                        qem_probs.append(probs)
-                    if qem_probs:
-                        ham_probs.append(self._average_probabilities(qem_probs))
+                        qem_probs_s.append(probs)
+                    if qem_probs_s:
+                        ham_probs_single.append(
+                            self._average_probabilities(qem_probs_s)
+                        )
 
-            merged_probs = self._average_probabilities(ham_probs)
+            merged_probs = self._average_probabilities(ham_probs_single)
             self.results = {
                 "probs": reverse_dict_endianness({"_merged": merged_probs})["_merged"]
             }
