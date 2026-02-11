@@ -266,6 +266,12 @@ class TimeEvolution(QuantumProgram):
         """Group results by param_id, hamiltonian_id, (qem_name, qem_id)."""
         return self._group_results_by_tag(results)
 
+    def _maybe_reverse_endianness(self, probs: dict[str, float]) -> dict[str, float]:
+        """Reverse bitstring endianness only when the backend returns little-endian."""
+        if self.backend.little_endian_bitstrings:
+            return reverse_dict_endianness({"_": probs})["_"]
+        return probs
+
     def _post_process_results(
         self, results: dict[CircuitTag, dict[str, int]], **kwargs
     ) -> dict[str, Any]:
@@ -315,9 +321,7 @@ class TimeEvolution(QuantumProgram):
                             ham_probs.append(self._average_probabilities(qem_probs))
 
                     merged = self._average_probabilities(ham_probs)
-                    trajectory.append(
-                        reverse_dict_endianness({"_merged": merged})["_merged"]
-                    )
+                    trajectory.append(self._maybe_reverse_endianness(merged))
 
                 self.results = {"trajectory": trajectory}
                 return self.results
@@ -341,9 +345,7 @@ class TimeEvolution(QuantumProgram):
                         )
 
             merged_probs = self._average_probabilities(ham_probs_single)
-            self.results = {
-                "probs": reverse_dict_endianness({"_merged": merged_probs})["_merged"]
-            }
+            self.results = {"probs": self._maybe_reverse_endianness(merged_probs)}
 
             return self.results
 

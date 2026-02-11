@@ -238,6 +238,11 @@ class QoroService(CircuitRunner):
         """
         return True
 
+    @property
+    def little_endian_bitstrings(self) -> bool:
+        """Cloud backends return big-endian bitstrings (qubit 0 = leftmost bit)."""
+        return False
+
     def _resolve_and_validate_qpu_system(self, config: JobConfig) -> JobConfig:
         """Ensures the config has a valid QPUSystem object, resolving from string if needed."""
         if config.qpu_system is None:
@@ -561,30 +566,38 @@ class QoroService(CircuitRunner):
                 (e.g., job is still running) or if the request fails.
         """
         job_id = self._extract_job_id(execution_result)
+        page_limit = 100
+        offset = 0
+        all_results: list[dict] = []
 
-        try:
-            response = self._make_request(
-                "get",
-                f"job/{job_id}/resultsV2/?limit=100&offset=0",
-                timeout=100,
-            )
-        except requests.exceptions.HTTPError as e:
-            # Provide a more specific error message for 400 Bad Request
-            if e.response.status_code == HTTPStatus.BAD_REQUEST:
-                raise requests.exceptions.HTTPError(
-                    "400 Bad Request: Job results not available, likely job is still running"
-                ) from e
-            # Re-raise any other HTTP error
-            raise e
+        while True:
+            try:
+                response = self._make_request(
+                    "get",
+                    f"job/{job_id}/resultsV2/?limit={page_limit}&offset={offset}",
+                    timeout=100,
+                )
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == HTTPStatus.BAD_REQUEST:
+                    raise requests.exceptions.HTTPError(
+                        "400 Bad Request: Job results not available, "
+                        "likely job is still running"
+                    ) from e
+                raise e
 
-        # If the request was successful, process the data
-        data = response.json()
+            data = response.json()
+            page_results = data["results"]
 
-        for result in data["results"]:
-            result["results"] = _decode_qh1_b64(result["results"])
+            for result in page_results:
+                result["results"] = _decode_qh1_b64(result["results"])
 
-        # Return a new ExecutionResult with results populated
-        return execution_result.with_results(data["results"])
+            all_results.extend(page_results)
+
+            if len(page_results) < page_limit:
+                break  # Last page
+            offset += page_limit
+
+        return execution_result.with_results(all_results)
 
     def poll_job_status(
         self,
