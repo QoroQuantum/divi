@@ -45,6 +45,7 @@ class TimeEvolution(QuantumProgram):
         observable: qml.operation.Operator | None = None,
         ensemble_size: int | None = None,
         time_points: list[float] | np.ndarray | None = None,
+        batch_size: int | None = None,
         **kwargs,
     ):
         """Initialize TimeEvolution.
@@ -67,6 +68,10 @@ class TimeEvolution(QuantumProgram):
                 for every ``(time_point, ensemble_member)`` pair are generated and
                 submitted as a **single batch job**.  Results are stored as a list
                 of per-time-point dicts in ``self.results["trajectory"]``.
+            batch_size: Number of time points to submit per backend call.
+                When set together with ``time_points``, circuits are chunked
+                into groups of ``batch_size`` time points and dispatched
+                sequentially.  Defaults to None (all time points in one job).
             **kwargs: Passed to QuantumProgram (backend, seed, progress_queue, etc.).
         """
         super().__init__(**kwargs)
@@ -107,9 +112,12 @@ class TimeEvolution(QuantumProgram):
         self.observable = observable
         self.ensemble_size = ensemble_size
         self.time_points = list(time_points) if time_points is not None else None
+        self.batch_size = batch_size
 
         if ensemble_size is not None and ensemble_size < 1:
             raise ValueError(f"ensemble_size must be >= 1, got {ensemble_size}")
+        if batch_size is not None and batch_size < 1:
+            raise ValueError(f"batch_size must be >= 1, got {batch_size}")
 
         self._hamiltonian_samples: list[qml.operation.Operator] | None = None
         self.results: dict[str, Any] = {}
@@ -152,16 +160,133 @@ class TimeEvolution(QuantumProgram):
         ]
 
         self._n_samples = n_samples
-        self._curr_circuits = self._generate_circuits(**kwargs)
 
         if self.observable is not None and self.backend.supports_expval:
             kwargs["ham_ops"] = convert_hamiltonian_to_pauli_string(
                 self.observable, self.n_qubits
             )
 
-        self._dispatch_circuits_and_process_results(**kwargs)
+        # --- Batched execution path ---
+        if (
+            self.time_points is not None
+            and self.batch_size is not None
+            and len(self.time_points) > self.batch_size
+        ):
+            self._run_batched(**kwargs)
+        else:
+            self._curr_circuits = self._generate_circuits(**kwargs)
+            self._dispatch_circuits_and_process_results(**kwargs)
 
         return self.total_circuit_count, self.total_run_time
+
+    def _run_batched(self, **kwargs) -> None:
+        """Execute time evolution in batches of ``batch_size`` time points.
+
+        Circuits are generated and dispatched for each chunk of time points
+        independently.  Raw results are accumulated across batches and then
+        post-processed once at the end.
+        """
+        all_time_points = self.time_points
+        bs = self.batch_size
+        n_batches = (len(all_time_points) + bs - 1) // bs
+        all_results: dict[CircuitTag, dict[str, int]] = {}
+
+        for batch_idx in range(n_batches):
+            start = batch_idx * bs
+            end = min(start + bs, len(all_time_points))
+            batch_time_points = all_time_points[start:end]
+
+            print(
+                f"\n  Batch {batch_idx + 1}/{n_batches}: "
+                f"time points {start}–{end - 1} "
+                f"({len(batch_time_points)} points)"
+            )
+
+            # Generate circuits only for this chunk, keeping global time indices
+            self._curr_circuits = self._generate_circuits_for_time_indices(
+                [(start + i, t) for i, t in enumerate(batch_time_points)],
+                **kwargs,
+            )
+
+            # Submit and collect raw results
+            execution_result = self._prepare_and_send_circuits(**kwargs)
+            self._current_execution_result = execution_result
+
+            try:
+                if execution_result.job_id is not None:
+                    results = self._wait_for_qoro_job_completion(execution_result)
+                else:
+                    results = execution_result.results
+                    if results is None:
+                        raise ValueError(
+                            "ExecutionResult has neither results nor job_id"
+                        )
+
+                results = {r["label"]: r["results"] for r in results}
+                results = {self._parse_tag(k): v for k, v in results.items()}
+                all_results.update(results)
+            finally:
+                self._current_execution_result = None
+
+        # Post-process all accumulated results at once
+        self._post_process_results(all_results, **kwargs)
+
+    def _generate_circuits_for_time_indices(
+        self,
+        indexed_time_points: list[tuple[int, float]],
+        **kwargs,
+    ) -> list[CircuitBundle]:
+        """Generate circuits for specific (global_time_index, time) pairs.
+
+        This is the batching-aware variant of ``_generate_circuits``.  Each
+        circuit's ``param_idx`` is set to the global time index so that the
+        post-processor can reconstruct the full trajectory.
+        """
+        if self._hamiltonian_samples is None:
+            raise RuntimeError(
+                "_hamiltonian_samples must be set before circuit generation."
+            )
+
+        circuit_bundles: list[CircuitBundle] = []
+        use_probs = self.observable is None
+
+        for time_idx, t in indexed_time_points:
+            if t == 0:
+                continue
+
+            for ham_id, sample_hamiltonian in enumerate(self._hamiltonian_samples):
+                ops = self._build_ops_for_time(sample_hamiltonian, t)
+
+                if use_probs:
+                    measurement = qml.probs()
+                    meta = MetaCircuit(
+                        source_circuit=qml.tape.QuantumScript(
+                            ops=ops, measurements=[measurement]
+                        ),
+                        symbols=np.array([], dtype=object),
+                        measurement_groups_override=((),),
+                        postprocessing_fn_override=lambda x: x,
+                    )
+                else:
+                    measurement = qml.expval(self.observable)
+                    meta = MetaCircuit(
+                        source_circuit=qml.tape.QuantumScript(
+                            ops=ops, measurements=[measurement]
+                        ),
+                        symbols=np.array([], dtype=object),
+                        grouping_strategy=(
+                            "_backend_expval"
+                            if self.backend.supports_expval
+                            else "wires"
+                        ),
+                    )
+
+                bundle = meta.initialize_circuit_from_params(
+                    [], param_idx=time_idx, hamiltonian_id=ham_id
+                )
+                circuit_bundles.append(bundle)
+
+        return circuit_bundles
 
     def _build_ops_for_time(
         self, hamiltonian: qml.operation.Operator, t: float
