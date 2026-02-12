@@ -40,6 +40,7 @@ Alternatively, you can install using pip:
    user_guide/core_concepts
    user_guide/vqe
    user_guide/qaoa
+   user_guide/time_evolution
    user_guide/backends
    user_guide/program_batches
    user_guide/error_mitigation

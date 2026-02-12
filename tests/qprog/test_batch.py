@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -21,8 +21,8 @@ from tests.qprog.qprog_contracts import verify_basic_program_batch_behaviour
 class SimpleTestProgram(QuantumProgram):
     """A simple mock program for testing ProgramBatch execution."""
 
-    def __init__(self, circ_count: int, run_time: float, **kwargs):
-        super().__init__(backend=None, **kwargs)
+    def __init__(self, circ_count: int, run_time: float, *, backend, **kwargs):
+        super().__init__(backend=backend, **kwargs)
         self.circ_count = circ_count
         self.run_time = run_time
         # program_id is automatically set by the base class from kwargs["job_id"]
@@ -53,8 +53,12 @@ class SampleProgramBatch(ProgramBatch):
         """Creates a set of mock programs."""
         super().create_programs()
         self.programs = {
-            "prog1": SimpleTestProgram(10, 5.5, program_id="prog1"),
-            "prog2": SimpleTestProgram(5, 10.0, program_id="prog2"),
+            "prog1": SimpleTestProgram(
+                10, 5.5, backend=self.backend, program_id="prog1"
+            ),
+            "prog2": SimpleTestProgram(
+                5, 10.0, backend=self.backend, program_id="prog2"
+            ),
         }
 
     def aggregate_results(self):
@@ -65,8 +69,8 @@ class SampleProgramBatch(ProgramBatch):
 
 
 @pytest.fixture
-def program_batch(default_test_simulator):
-    batch = SampleProgramBatch(backend=default_test_simulator)
+def program_batch(dummy_simulator):
+    batch = SampleProgramBatch(backend=dummy_simulator)
     yield batch
     try:
         batch.reset()

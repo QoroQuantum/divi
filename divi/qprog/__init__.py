@@ -8,6 +8,7 @@ from .batch import ProgramBatch
 from .algorithms import (
     QAOA,
     GraphProblem,
+    TimeEvolution,
     VQE,
     PCE,
     CustomVQA,
@@ -31,4 +32,5 @@ from ._hamiltonians import (
     convert_hamiltonian_to_pauli_string,
     ExactTrotterization,
     QDrift,
+    TrotterizationStrategy,
 )

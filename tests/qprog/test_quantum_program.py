@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -10,8 +10,13 @@ import pytest
 import requests
 
 from divi.backends import ExecutionResult, JobStatus
+from divi.circuits import CircuitTag, format_circuit_tag
 from divi.qprog.exceptions import _CancelledError
 from divi.qprog.quantum_program import QuantumProgram
+
+# Reusable CircuitTag for tests that use simple single-circuit mocks
+_TEST_TAG = CircuitTag(0, "NoMitigation", 0, 0, 0)
+_TEST_TAG_STR = format_circuit_tag(_TEST_TAG)
 
 
 class ConcreteQuantumProgram(QuantumProgram):
@@ -184,7 +189,7 @@ class TestQuantumProgramAsyncExecution:
 
         backend.poll_job_status.side_effect = poll_side_effect
         backend.get_job_results.return_value = ExecutionResult(
-            results=[{"label": "circuit_1", "results": "final_results"}],
+            results=[{"label": _TEST_TAG_STR, "results": "final_results"}],
             job_id="fake_job_id",
         )
         return backend
@@ -201,7 +206,7 @@ class TestQuantumProgramAsyncExecution:
 
                 def _generate_circuits(self, **kwargs):
                     executable = mocker.Mock()
-                    executable.tag = "circuit_1"
+                    executable.tag = _TEST_TAG
                     executable.qasm = "fake_qasm"
                     bundle = mocker.Mock()
                     bundle.executables = [executable]
@@ -255,7 +260,8 @@ class TestQuantumProgramAsyncExecution:
 
         result = program.run()
 
-        assert result == {"circuit_1": "final_results"}
+        assert _TEST_TAG in result
+        assert result[_TEST_TAG] == "final_results"
 
     def test_async_workflow_without_reporter(
         self, mock_async_backend, async_test_program_class
@@ -269,7 +275,8 @@ class TestQuantumProgramAsyncExecution:
 
         mock_async_backend.submit_circuits.assert_called_once()
         mock_async_backend.poll_job_status.assert_called_once()
-        assert result == {"circuit_1": "final_results"}
+        assert _TEST_TAG in result
+        assert result[_TEST_TAG] == "final_results"
 
     def test_async_workflow_tracks_runtime(
         self, mock_async_backend, async_test_program_class
@@ -299,19 +306,23 @@ class TestQuantumProgramAsyncExecution:
         Tests that _prepare_and_send_circuits correctly increments _total_circuit_count.
         """
 
+        tag1 = CircuitTag(0, "NoMitigation", 0, 0, 0)
+        tag2 = CircuitTag(0, "NoMitigation", 0, 1, 0)
+        tag3 = CircuitTag(0, "NoMitigation", 0, 2, 0)
+
         class CircuitCountTestProgram(ConcreteQuantumProgram):
             def _generate_circuits(self, **kwargs):
                 # Create multiple bundles with multiple executables
                 executable1 = mocker.Mock()
-                executable1.tag = "circuit_1"
+                executable1.tag = tag1
                 executable1.qasm = "qasm_1"
 
                 executable2 = mocker.Mock()
-                executable2.tag = "circuit_2"
+                executable2.tag = tag2
                 executable2.qasm = "qasm_2"
 
                 executable3 = mocker.Mock()
-                executable3.tag = "circuit_3"
+                executable3.tag = tag3
                 executable3.qasm = "qasm_3"
 
                 bundle1 = mocker.Mock()
@@ -326,9 +337,9 @@ class TestQuantumProgramAsyncExecution:
         mock_backend.is_async = False
         mock_backend.submit_circuits.return_value = ExecutionResult(
             results=[
-                {"label": "circuit_1", "results": {}},
-                {"label": "circuit_2", "results": {}},
-                {"label": "circuit_3", "results": {}},
+                {"label": format_circuit_tag(tag1), "results": {}},
+                {"label": format_circuit_tag(tag2), "results": {}},
+                {"label": format_circuit_tag(tag3), "results": {}},
             ]
         )
 
@@ -485,11 +496,16 @@ class TestQuantumProgramAsyncExecution:
         mock_backend = mocker.Mock()
         mock_backend.is_async = False
         mock_backend.submit_circuits.return_value = ExecutionResult(
-            results=[{"label": "circuit_1", "results": {}}]
+            results=[{"label": _TEST_TAG_STR, "results": {}}]
         )
 
         program = ConcreteQuantumProgram(backend=mock_backend)
-        program._curr_circuits = []
+        executable = mocker.Mock()
+        executable.tag = _TEST_TAG
+        executable.qasm = "fake_qasm"
+        bundle = mocker.Mock()
+        bundle.executables = [executable]
+        program._curr_circuits = [bundle]
 
         # Initially None
         assert program._current_execution_result is None

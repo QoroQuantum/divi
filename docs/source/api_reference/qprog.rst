@@ -104,6 +104,15 @@ PCE Algorithm
    :special-members: __init__
    :exclude-members: cost_hamiltonian
 
+Time Evolution
+~~~~~~~~~~~~~~
+
+.. autoclass:: divi.qprog.algorithms.TimeEvolution
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+
 Custom VQA
 ~~~~~~~~~~
 

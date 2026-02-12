@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -48,6 +48,22 @@ class CircuitRunner(ABC):
                   returns results immediately (e.g., ParallelSimulator).
         """
         return False
+
+    @property
+    def little_endian_bitstrings(self) -> bool:
+        """Whether the backend returns bitstrings in little-endian order.
+
+        Qiskit/Aer returns little-endian (qubit 0 is the rightmost bit),
+        while cloud backends like Maestro return big-endian (qubit 0 is the
+        leftmost bit).  Consumers that need physical qubit-position mapping
+        (e.g. ``TimeEvolution``) use this flag to decide whether an
+        endianness swap is required.
+
+        Returns:
+            bool: ``True`` if bitstrings are little-endian (default for
+                Qiskit-based simulators).
+        """
+        return True
 
     @abstractmethod
     def submit_circuits(self, circuits: dict[str, str], **kwargs) -> ExecutionResult:

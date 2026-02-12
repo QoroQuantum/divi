@@ -1,12 +1,22 @@
 #!/bin/bash
 
-set -e
+set -euo pipefail
 
 # Create a temporary directory and copy tutorials into it
 TEMP_TUTORIALS_DIR=$(mktemp -d)
 cp -r tutorials/* "$TEMP_TUTORIALS_DIR/"
+failures_file=$(mktemp)
+parallel_log=$(mktemp)
 
-export PYTHONPATH=$(pwd):$PYTHONPATH
+export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
+# Default to 2 minutes per tutorial script; value can be overridden globally via env.
+TUTORIAL_TIMEOUT_SECONDS="${TUTORIAL_TIMEOUT_SECONDS:-120}"
+
+cleanup() {
+  rm -f "$failures_file" "$parallel_log"
+  rm -rf "$TEMP_TUTORIALS_DIR"
+}
+trap cleanup EXIT
 
 # Convert array to string for easier export/import
 EXPECTED_FAILURES_STR="tutorials/qasm_thru_service.py|tutorials/circuit_cutting.py"
@@ -46,8 +56,6 @@ sed -i \
     -e 's/shots=1000/shots=500/' \
     "$TEMP_TUTORIALS_DIR"/qaoa_qdrift_local.py
 
-failures_file=$(mktemp)
-
 run_test() {
   local file="$1"
   # Extract the original relative path for display and failure checking
@@ -62,14 +70,14 @@ run_test() {
 
   if [[ $expected -eq 1 ]]; then
     echo "⚠️ Expecting failure for $original_file_path"
-    if poetry run python "$file"; then
+    if timeout --signal=TERM --kill-after=30s "${TUTORIAL_TIMEOUT_SECONDS}s" poetry run python "$file"; then
       echo "❌ $original_file_path was expected to fail but passed"
       echo "$original_file_path (unexpected success)" >> "$failures_file"
     else
       echo "✅ $original_file_path failed as expected"
     fi
   else
-    if ! poetry run python "$file"; then
+    if ! timeout --signal=TERM --kill-after=30s "${TUTORIAL_TIMEOUT_SECONDS}s" poetry run python "$file"; then
       echo "❌ $original_file_path failed unexpectedly"
       echo "$original_file_path (unexpected failure)" >> "$failures_file"
     else
@@ -81,27 +89,23 @@ run_test() {
 export -f run_test
 export failures_file
 export EXPECTED_FAILURES_STR
+export TUTORIAL_TIMEOUT_SECONDS
 
 # Run tests in parallel: 2× cores, logs grouped per job
-ls "$TEMP_TUTORIALS_DIR"/*.py | parallel -j $(( $(nproc) * 2 )) --joblog parallel.log run_test {}
+parallel -j $(( $(nproc) * 2 )) --joblog "$parallel_log" run_test {} ::: "$TEMP_TUTORIALS_DIR"/*.py
 
 echo ""
 if [[ -s "$failures_file" ]]; then
   echo "❌ Some scripts failed:"
   sed 's/^/   - /' "$failures_file"
-  rm -f "$failures_file"
   status=1
 else
   echo "✅ All tutorials scripts behaved as expected."
-  rm -f "$failures_file"
   status=0
 fi
 
-# Cleanup the temporary directory
-rm -rf "$TEMP_TUTORIALS_DIR"
-
 echo ""
-echo "📜 Parallel execution summary (from parallel.log):"
-cat parallel.log
+echo "📜 Parallel execution summary (from $parallel_log):"
+cat "$parallel_log"
 
 exit $status

@@ -12,5 +12,6 @@ from ._ansatze import (
 )
 from ._custom_vqa import CustomVQA
 from ._qaoa import QAOA, GraphProblem
+from ._time_evolution import TimeEvolution
 from ._vqe import VQE
 from ._pce import PCE
