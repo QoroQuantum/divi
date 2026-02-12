@@ -28,7 +28,7 @@ pip install qoro-divi
 
 ## 📚 Documentation
 
-- Full documentation is available at: <https://docs.qoroquantum.net/divi>
+- Full documentation is available at: <https://qoroquantum.github.io/divi/>
 - Tutorials can be found in the `tutorials` folder.
 
 ## 🧪 Testing
