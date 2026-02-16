@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -254,6 +254,7 @@ class PymooOptimizer(Optimizer):
         }
         cma_kwargs["popsize"] = self.population_size
         cma_kwargs["seed"] = rng.integers(0, 2**32)
+        cma_kwargs.setdefault("verbose", -9)
 
         es = cma.CMAEvolutionStrategy(x0, sigma0, cma_kwargs)
         return es

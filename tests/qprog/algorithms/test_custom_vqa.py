@@ -124,7 +124,7 @@ class TestInitialization:
         assert isinstance(program.qscript, qml.tape.QuantumScript)
         assert program.n_qubits == expected_n_qubits
         assert program.n_layers == 1
-        assert program.n_params == 2
+        assert program.n_params_per_layer == 2
         assert program.param_shape == (2,)
         assert isinstance(program.cost_hamiltonian, qml.operation.Operator)
         verify_metacircuit_dict(program, ["cost_circuit"])
@@ -149,7 +149,7 @@ class TestInitialization:
         )
 
         assert program.param_shape == expected_shape
-        assert program.n_params == 2
+        assert program.n_params_per_layer == 2
 
     def test_qiskit_parameter_names_preserved(
         self, qiskit_circuit_with_measurements, dummy_simulator
@@ -298,7 +298,7 @@ class TestParameterHandling:
 
         program = CustomVQA(qscript=qscript, backend=dummy_simulator)
         assert program.n_qubits == 2
-        assert program.n_params == 2
+        assert program.n_params_per_layer == 2
 
 
 class TestQiskitConversion:
@@ -339,7 +339,7 @@ class TestQiskitConversion:
         program = CustomVQA(qscript=circuit, backend=dummy_simulator)
 
         assert program.n_qubits == expected_n_qubits
-        assert program.n_params == expected_n_params
+        assert program.n_params_per_layer == expected_n_params
         assert isinstance(program.cost_hamiltonian, qml.operation.Operator)
 
         if len(expected_measured_wires) > 1:
@@ -418,7 +418,7 @@ class TestOptimization:
         assert len(program.losses_history) == 5
         assert isinstance(program.best_loss, float)
         assert isinstance(program.best_params, np.ndarray)
-        assert program.best_params.shape == (program.n_params,)
+        assert program.best_params.shape == (program.n_params_per_layer,)
 
     @pytest.mark.e2e
     def test_e2e_qiskit_optimization(
@@ -439,7 +439,7 @@ class TestOptimization:
         assert len(program.losses_history) == 5
         assert isinstance(program.best_loss, float)
         assert isinstance(program.best_params, np.ndarray)
-        assert program.best_params.shape == (program.n_params,)
+        assert program.best_params.shape == (program.n_params_per_layer,)
 
 
 class TestCheckpointing:

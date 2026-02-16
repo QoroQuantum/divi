@@ -38,7 +38,7 @@ Development Environment
 Divi uses Poetry for dependency management with several groups:
 
 - **dev**: Core development tools (`Black <https://github.com/psf/black>`_, `isort <https://github.com/pycqa/isort>`_, `pre-commit <https://pre-commit.com/>`_)
-- **testing**: Testing framework and utilities (`pytest <https://pytest.org/>`_, `pytest-mock <https://pytest-mock.readthedocs.io/>`_, `flaky <https://github.com/box/flaky>`_)
+- **testing**: Testing framework and utilities (`pytest <https://pytest.org/>`_, `pytest-mock <https://pytest-mock.readthedocs.io/>`_)
 - **docs**: Documentation building (`Sphinx <https://www.sphinx-doc.org/>`_, `nbsphinx <https://nbsphinx.readthedocs.io/>`_)
 - **ui**: Dashboard and visualization tools (`Dash <https://dash.plotly.com/>`_, `Bootstrap <https://dash-bootstrap-components.opensource.faculty.ai/>`_)
 - **jupyter**: Jupyter notebook support (`ipywidgets <https://ipywidgets.readthedocs.io/>`_)

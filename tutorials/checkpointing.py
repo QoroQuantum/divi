@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -17,7 +17,6 @@ from pathlib import Path
 import numpy as np
 import pennylane as qml
 
-from divi.backends import ParallelSimulator
 from divi.qprog import VQE, HartreeFockAnsatz
 from divi.qprog.checkpointing import (
     CheckpointConfig,
@@ -26,6 +25,7 @@ from divi.qprog.checkpointing import (
     list_checkpoints,
 )
 from divi.qprog.optimizers import MonteCarloOptimizer
+from tutorials._backend import get_backend
 
 if __name__ == "__main__":
     # Set up checkpoint directories
@@ -49,7 +49,7 @@ if __name__ == "__main__":
             n_layers=1,
             optimizer=MonteCarloOptimizer(population_size=10),
             max_iterations=3,
-            backend=ParallelSimulator(),
+            backend=get_backend(),
         )
 
         vqe1.run(checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir))
@@ -85,7 +85,7 @@ if __name__ == "__main__":
 
         vqe2 = VQE.load_state(
             checkpoint_dir=checkpoint_dir,
-            backend=ParallelSimulator(),
+            backend=get_backend(),
             molecule=mol,
             ansatz=HartreeFockAnsatz(),
             n_layers=1,
@@ -113,7 +113,7 @@ if __name__ == "__main__":
             n_layers=1,
             optimizer=MonteCarloOptimizer(population_size=10),
             max_iterations=5,
-            backend=ParallelSimulator(),
+            backend=get_backend(),
         )
 
         vqe3.run(

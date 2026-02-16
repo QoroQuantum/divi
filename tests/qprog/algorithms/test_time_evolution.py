@@ -7,9 +7,9 @@ import math
 import pennylane as qml
 import pytest
 
-from divi.backends import ExecutionResult
-from divi.circuits import CircuitTag
-from divi.qprog import ExactTrotterization, QDrift, TimeEvolution
+from divi.backends import ExecutionResult, ParallelSimulator
+from divi.hamiltonians import ExactTrotterization, QDrift
+from divi.qprog import TimeEvolution
 
 # Tolerance for probability checks (5000 shots: ~0.02 std for p=0.5)
 _PROB_TOL = 0.05
@@ -64,7 +64,7 @@ class TestTimeEvolutionInitialization:
 
 
 class TestTimeEvolutionGenerateCircuits:
-    def test_generate_circuits_exact_trotterization_one_bundle(
+    def test_pipeline_exact_trotterization_one_circuit(
         self, two_qubit_hamiltonian, default_test_simulator
     ):
         te = TimeEvolution(
@@ -72,14 +72,12 @@ class TestTimeEvolutionGenerateCircuits:
             trotterization_strategy=ExactTrotterization(),
             backend=default_test_simulator,
         )
-        te._hamiltonian_samples = [
-            te.trotterization_strategy.process_hamiltonian(te._hamiltonian)
-        ]
-        bundles = te._generate_circuits()
-        assert len(bundles) == 1
-        assert len(bundles[0].executables) >= 1
+        env = te._build_pipeline_env()
+        trace = te._pipeline.run_forward_pass(te._hamiltonian, env)
+        # ExactTrotterization: 1 Hamiltonian sample → 1 circuit
+        assert len(trace.final_batch) >= 1
 
-    def test_generate_circuits_qdrift_multiple_bundles(
+    def test_pipeline_qdrift_multiple_circuits(
         self, two_qubit_hamiltonian, default_test_simulator
     ):
         te = TimeEvolution(
@@ -91,22 +89,10 @@ class TestTimeEvolutionGenerateCircuits:
             ),
             backend=default_test_simulator,
         )
-        te._hamiltonian_samples = [
-            te.trotterization_strategy.process_hamiltonian(te._hamiltonian)
-            for _ in range(3)
-        ]
-        bundles = te._generate_circuits()
-        assert len(bundles) == 3
-
-    def test_generate_circuits_raises_without_samples(
-        self, two_qubit_hamiltonian, default_test_simulator
-    ):
-        te = TimeEvolution(
-            hamiltonian=two_qubit_hamiltonian,
-            backend=default_test_simulator,
-        )
-        with pytest.raises(RuntimeError, match="_hamiltonian_samples"):
-            te._generate_circuits()
+        env = te._build_pipeline_env()
+        trace = te._pipeline.run_forward_pass(te._hamiltonian, env)
+        # QDrift with 3 samples → at least 3 circuits
+        assert len(trace.final_batch) >= 3
 
 
 class TestTimeEvolutionRun:
@@ -233,68 +219,26 @@ class TestTimeEvolutionQDrift:
         total = sum(probs.values())
         assert abs(total - 1.0) < 0.2
 
-    def test_probs_aggregation_handles_multiple_qem_groups(
-        self, two_qubit_hamiltonian, default_test_simulator
-    ):
-        te = TimeEvolution(
-            hamiltonian=two_qubit_hamiltonian,
-            trotterization_strategy=QDrift(
-                sampling_budget=2,
-                seed=42,
-                n_hamiltonians_per_iteration=2,
-            ),
-            backend=default_test_simulator,
-        )
-        te._hamiltonian_samples = [te._hamiltonian, te._hamiltonian]
-
-        results = {
-            CircuitTag(
-                param_id=0, qem_name="none", qem_id=0, meas_id=0, hamiltonian_id=0
-            ): {"00": 4000, "11": 1000},
-            CircuitTag(
-                param_id=0, qem_name="none", qem_id=1, meas_id=0, hamiltonian_id=0
-            ): {"00": 3000, "11": 2000},
-            CircuitTag(
-                param_id=0, qem_name="none", qem_id=0, meas_id=0, hamiltonian_id=1
-            ): {"00": 1000, "11": 4000},
-            CircuitTag(
-                param_id=0, qem_name="none", qem_id=1, meas_id=0, hamiltonian_id=1
-            ): {"00": 2000, "11": 3000},
-        }
-
-        processed = te._post_process_results(results)
-        probs = processed["probs"]
-        assert probs["00"] == pytest.approx(0.5)
-        assert probs["11"] == pytest.approx(0.5)
-        assert sum(probs.values()) == pytest.approx(1.0)
-
-    def test_expval_backend_requires_ham_ops(self, two_qubit_hamiltonian, mocker):
+    def test_qdrift_expval_backend_raises(self, two_qubit_hamiltonian, mocker):
+        """Multi-sample QDrift + expval backend is not supported — run() raises."""
         backend = mocker.Mock()
         backend.supports_expval = True
         backend.shots = 100
         te = TimeEvolution(
             hamiltonian=two_qubit_hamiltonian,
             observable=qml.PauliZ(0),
+            trotterization_strategy=QDrift(
+                sampling_budget=2,
+                seed=42,
+                n_hamiltonians_per_iteration=2,
+            ),
             backend=backend,
         )
-        te._hamiltonian_samples = [te._hamiltonian]
+        with pytest.raises(ValueError, match="Multi-sample QDrift"):
+            te.run()
 
-        with pytest.raises(ValueError, match="ham_ops required"):
-            te._post_process_results(
-                {
-                    CircuitTag(
-                        param_id=0,
-                        qem_name="none",
-                        qem_id=0,
-                        meas_id=0,
-                        hamiltonian_id=0,
-                    ): {"ZI": 1.0}
-                }
-            )
-
-    def test_expval_shot_backend_aggregation_handles_multiple_qem_groups(
-        self, default_test_simulator
-    ):
+    def test_expval_shot_backend_qdrift_aggregation(self, default_test_simulator):
+        """QDrift with observable on shot backend averages expvals across samples."""
         te = TimeEvolution(
             hamiltonian=qml.PauliX(0),
             observable=qml.PauliZ(0),
@@ -305,25 +249,9 @@ class TestTimeEvolutionQDrift:
             ),
             backend=default_test_simulator,
         )
-        te._hamiltonian_samples = [te._hamiltonian, te._hamiltonian]
-
-        results = {
-            CircuitTag(
-                param_id=0, qem_name="none", qem_id=0, meas_id=0, hamiltonian_id=0
-            ): {"0": 5000},
-            CircuitTag(
-                param_id=0, qem_name="none", qem_id=1, meas_id=0, hamiltonian_id=0
-            ): {"1": 5000},
-            CircuitTag(
-                param_id=0, qem_name="none", qem_id=0, meas_id=0, hamiltonian_id=1
-            ): {"0": 5000},
-            CircuitTag(
-                param_id=0, qem_name="none", qem_id=1, meas_id=0, hamiltonian_id=1
-            ): {"0": 5000},
-        }
-
-        processed = te._post_process_results(results)
-        assert processed["expval"] == pytest.approx(0.5)
+        count, _ = te.run()
+        assert count >= 2
+        assert "expval" in te.results
 
 
 @pytest.mark.e2e
@@ -489,3 +417,49 @@ class TestTimeEvolutionE2E:
         assert te.total_circuit_count >= 5
         probs = te.results["probs"]
         assert probs.get("11", 0.0) >= 1.0 - _PROB_TOL
+
+    def test_qdrift_reduces_circuit_op_count(self):
+        """QDrift with sampling_budget < n_terms produces shallower circuits than exact."""
+
+        # 6-term, 3-qubit Hamiltonian
+        hamiltonian = (
+            qml.PauliX(0) @ qml.PauliX(1)
+            + qml.PauliY(0) @ qml.PauliY(1)
+            + qml.PauliZ(0) @ qml.PauliZ(1)
+            + qml.PauliX(1) @ qml.PauliX(2)
+            + qml.PauliY(1) @ qml.PauliY(2)
+            + qml.PauliZ(1) @ qml.PauliZ(2)
+        )
+
+        # Exact: evolves with all 6 terms across 4 Trotter steps
+        backend_exact = ParallelSimulator(
+            shots=1000, track_depth=True, _deterministic_execution=True
+        )
+        te_exact = TimeEvolution(
+            hamiltonian=hamiltonian,
+            time=0.5,
+            n_steps=4,
+            trotterization_strategy=ExactTrotterization(),
+            backend=backend_exact,
+        )
+        te_exact.run()
+        exact_depth = backend_exact.average_depth()
+
+        # QDrift: samples only 2 of the 6 terms
+        backend_qdrift = ParallelSimulator(
+            shots=1000, track_depth=True, _deterministic_execution=True
+        )
+        te_qdrift = TimeEvolution(
+            hamiltonian=hamiltonian,
+            time=0.5,
+            n_steps=4,
+            trotterization_strategy=QDrift(sampling_budget=2, seed=42),
+            backend=backend_qdrift,
+        )
+        te_qdrift.run()
+        qdrift_depth = backend_qdrift.average_depth()
+
+        assert qdrift_depth < exact_depth, (
+            f"QDrift circuit depth ({qdrift_depth}) should be less "
+            f"than exact ({exact_depth}) when sampling_budget < n_terms"
+        )

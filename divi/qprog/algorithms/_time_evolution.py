@@ -7,18 +7,17 @@ from typing import Any, Literal, get_args
 import numpy as np
 import pennylane as qml
 
-from divi.backends import convert_counts_to_probs, reverse_dict_endianness
-from divi.circuits import CircuitBundle, CircuitTag, MetaCircuit
-from divi.qprog._expectation import _batched_expectation
-from divi.qprog._hamiltonians import (
+from divi.circuits import MetaCircuit
+from divi.hamiltonians import (
     ExactTrotterization,
     TrotterizationStrategy,
     _clean_hamiltonian,
     _get_terms_iterable,
     _is_empty_hamiltonian,
     _is_multi_term_sum,
-    convert_hamiltonian_to_pauli_string,
 )
+from divi.pipeline import CircuitPipeline
+from divi.pipeline.stages import MeasurementStage, TrotterSpecStage
 from divi.qprog.quantum_program import QuantumProgram
 
 _INITIAL_STATE_LITERAL = Literal["Zeros", "Superposition", "Ones"]
@@ -81,8 +80,38 @@ class TimeEvolution(QuantumProgram):
         self._circuit_wires = tuple(hamiltonian_clean.wires)
         self.n_qubits = len(self._circuit_wires)
 
-        self._hamiltonian_samples: list[qml.operation.Operator] | None = None
         self.results: dict[str, Any] = {}
+
+        self._build_pipelines()
+
+    def _build_pipelines(self) -> None:
+        trotter = TrotterSpecStage(
+            trotterization_strategy=self.trotterization_strategy,
+            meta_circuit_factory=self._meta_circuit_factory,
+        )
+        self._pipeline = CircuitPipeline(stages=[trotter, MeasurementStage()])
+
+    def _meta_circuit_factory(
+        self, hamiltonian: qml.operation.Operator, ham_id: int
+    ) -> MetaCircuit:
+        """Factory for TrotterSpecStage: build a MetaCircuit for one Hamiltonian sample."""
+        ops = self._build_ops(hamiltonian)
+        use_probs = self.observable is None
+
+        if use_probs:
+            measurement = qml.probs()
+            return MetaCircuit(
+                source_circuit=qml.tape.QuantumScript(
+                    ops=ops, measurements=[measurement]
+                ),
+                symbols=np.array([], dtype=object),
+            )
+
+        measurement = qml.expval(self.observable)
+        return MetaCircuit(
+            source_circuit=qml.tape.QuantumScript(ops=ops, measurements=[measurement]),
+            symbols=np.array([], dtype=object),
+        )
 
     def run(self, **kwargs) -> tuple[int, float]:
         """Execute time evolution.
@@ -90,8 +119,9 @@ class TimeEvolution(QuantumProgram):
         Returns:
             tuple[int, float]: (total_circuit_count, total_run_time).
         """
-        strategy = self.trotterization_strategy
-        n_samples = getattr(strategy, "n_hamiltonians_per_iteration", 1)
+        n_samples = getattr(
+            self.trotterization_strategy, "n_hamiltonians_per_iteration", 1
+        )
 
         if (
             n_samples > 1
@@ -103,18 +133,17 @@ class TimeEvolution(QuantumProgram):
                 "Use a shot-based backend or set observable=None for probs."
             )
 
-        self._hamiltonian_samples = [
-            strategy.process_hamiltonian(self._hamiltonian) for _ in range(n_samples)
-        ]
+        env = self._build_pipeline_env()
 
-        self._curr_circuits = self._generate_circuits(**kwargs)
+        result = self._pipeline.run(initial_spec=self._hamiltonian, env=env)
+        self._total_circuit_count += env.artifacts.get("circuit_count", 0)
+        self._total_run_time += env.artifacts.get("run_time", 0.0)
+        self._current_execution_result = env.artifacts.get("_current_execution_result")
 
-        if self.observable is not None and self.backend.supports_expval:
-            kwargs["ham_ops"] = convert_hamiltonian_to_pauli_string(
-                self.observable, self.n_qubits
-            )
-
-        self._dispatch_circuits_and_process_results(**kwargs)
+        if self.observable is None:
+            self.results = {"probs": next(iter(result.values()))}
+        else:
+            self.results = {"expval": float(next(iter(result.values())))}
 
         return self.total_circuit_count, self.total_run_time
 
@@ -148,137 +177,3 @@ class TimeEvolution(QuantumProgram):
             ops.append(qml.evolve(term, coeff=self.time))
 
         return ops
-
-    def _generate_circuits(self, **kwargs) -> list[CircuitBundle]:
-        """Generate circuits for each Hamiltonian sample."""
-        if self._hamiltonian_samples is None:
-            raise RuntimeError(
-                "_hamiltonian_samples must be set before _generate_circuits; call run() first."
-            )
-
-        circuit_bundles: list[CircuitBundle] = []
-        use_probs = self.observable is None
-
-        for ham_id, sample_hamiltonian in enumerate(self._hamiltonian_samples):
-            ops = self._build_ops(sample_hamiltonian)
-
-            if use_probs:
-                measurement = qml.probs()
-                meta = MetaCircuit(
-                    source_circuit=qml.tape.QuantumScript(
-                        ops=ops, measurements=[measurement]
-                    ),
-                    symbols=np.array([], dtype=object),
-                    measurement_groups_override=((),),
-                    postprocessing_fn_override=lambda x: x,
-                )
-            else:
-                measurement = qml.expval(self.observable)
-                meta = MetaCircuit(
-                    source_circuit=qml.tape.QuantumScript(
-                        ops=ops, measurements=[measurement]
-                    ),
-                    symbols=np.array([], dtype=object),
-                    grouping_strategy=(
-                        "_backend_expval" if self.backend.supports_expval else "wires"
-                    ),
-                )
-
-            bundle = meta.initialize_circuit_from_params(
-                [], param_idx=0, hamiltonian_id=ham_id
-            )
-            circuit_bundles.append(bundle)
-
-        return circuit_bundles
-
-    def _group_results(
-        self, results: dict[CircuitTag, dict[str, int]]
-    ) -> dict[int, dict[int, dict[tuple[str, int], list[dict[str, int]]]]]:
-        """Group results by param_id, hamiltonian_id, (qem_name, qem_id)."""
-        return self._group_results_by_tag(results)
-
-    def _post_process_results(
-        self, results: dict[CircuitTag, dict[str, int]], **kwargs
-    ) -> dict[str, Any]:
-        """Post-process results: convert to probs or expectation, average for QDrift."""
-        use_probs = self.observable is None
-        grouped = self._group_results(results)
-
-        if use_probs:
-            ham_probs: list[dict[str, float]] = []
-            for _p, ham_dict in grouped.items():
-                for _ham_id, qem_groups in ham_dict.items():
-                    qem_probs: list[dict[str, float]] = []
-                    for _qem_key, shots_list in sorted(
-                        qem_groups.items(), key=lambda x: x[0][1]
-                    ):
-                        merged_counts = self._merge_shot_histograms(shots_list)
-                        probs = convert_counts_to_probs(
-                            {"_merged": merged_counts}, self.backend.shots
-                        )["_merged"]
-                        qem_probs.append(probs)
-                    if qem_probs:
-                        ham_probs.append(self._average_probabilities(qem_probs))
-
-            merged_probs = self._average_probabilities(ham_probs)
-            self.results = {
-                "probs": reverse_dict_endianness({"_merged": merged_probs})["_merged"]
-            }
-
-            return self.results
-
-        # Expval path
-        ops = self._build_ops(self._hamiltonian_samples[0])
-        meta = MetaCircuit(
-            source_circuit=qml.tape.QuantumScript(
-                ops=ops, measurements=[qml.expval(self.observable)]
-            ),
-            symbols=np.array([], dtype=object),
-            grouping_strategy=(
-                "_backend_expval" if self.backend.supports_expval else "wires"
-            ),
-        )
-
-        wire_order = tuple(reversed(self._circuit_wires))
-        ham_energies: list[float] = []
-        ham_ops = kwargs.get("ham_ops")
-        ham_ops_list = ham_ops.split(";") if ham_ops is not None else None
-
-        def _append_expval(meta, marginal_results: list[np.ndarray]) -> float:
-            pl_exp = meta.postprocessing_fn(marginal_results)
-            return pl_exp.item() if hasattr(pl_exp, "item") else float(pl_exp)
-
-        for _p, ham_dict in grouped.items():
-            for _ham_id, qem_groups in ham_dict.items():
-                qem_sorted = sorted(qem_groups.items(), key=lambda x: x[0][1])
-                qem_energies: list[float] = []
-
-                if self.backend.supports_expval:
-                    if ham_ops_list is None:
-                        raise ValueError(
-                            "ham_ops required for expval backend but not provided."
-                        )
-                    for _, shots_dicts in qem_sorted:
-                        exp_arr = np.array(
-                            [[d[op] for op in ham_ops_list] for d in shots_dicts]
-                        ).T
-                        marginal = exp_arr.flatten()
-                        qem_energies.append(_append_expval(meta, [marginal]))
-                else:
-                    for _, shots_dicts in qem_sorted:
-                        marginal_results: list[np.ndarray] = []
-                        for shots_dict, obs_group in zip(
-                            shots_dicts, meta.measurement_groups
-                        ):
-                            exp_matrix = _batched_expectation(
-                                [shots_dict], list(obs_group), wire_order
-                            )
-                            marginal_results.append(exp_matrix[:, 0])
-                        qem_energies.append(_append_expval(meta, marginal_results))
-
-                if qem_energies:
-                    ham_energies.append(float(np.mean(qem_energies)))
-
-        expval = float(np.mean(ham_energies)) if ham_energies else 0.0
-        self.results = {"expval": expval}
-        return self.results

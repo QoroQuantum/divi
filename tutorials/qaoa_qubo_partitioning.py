@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -8,9 +8,9 @@ import dimod
 import hybrid
 import numpy as np
 
-from divi.backends import ParallelSimulator
 from divi.qprog import QUBOPartitioningQAOA
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from tutorials._backend import get_backend
 
 if __name__ == "__main__":
     bqm: dimod.BinaryQuadraticModel = dimod.generators.gnp_random_bqm(
@@ -28,7 +28,7 @@ if __name__ == "__main__":
         n_layers=2,
         optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
         max_iterations=10,
-        backend=ParallelSimulator(),
+        backend=get_backend(),
     )
 
     qubo_partition.create_programs()

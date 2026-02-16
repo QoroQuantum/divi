@@ -36,6 +36,12 @@ Every variational quantum program in Divi follows a consistent lifecycle:
 4. **Execution** 🚀 - Run circuits on quantum backends
 5. **Result Processing** 📊 - Extract and analyze final results
 
+.. note::
+   Internally, steps 2–5 are orchestrated by a **circuit pipeline** that uses an
+   *expand → execute → reduce* pattern. You don't need to interact with the pipeline
+   directly when using built-in algorithms, but understanding it enables powerful
+   customisation. See :doc:`pipelines` for a deep dive.
+
 Here's how a typical VQE program flows through this lifecycle:
 
 .. code-block:: python
@@ -262,6 +268,12 @@ Divi's backend system provides a unified interface for different execution envir
               # Return ExecutionResult(results=...) for sync backends
               # or ExecutionResult(job_id=...) for async backends
               pass
+
+   .. note::
+      Built-in programs never call ``submit_circuits`` directly — the
+      :doc:`circuit pipeline <pipelines>` handles circuit submission and result
+      collection automatically. The ``CircuitRunner`` interface is still the
+      extension point if you need to add a new execution backend.
 
    .. note::
       The :class:`ExecutionResult` class provides a unified return type for all backends.

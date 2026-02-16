@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -7,9 +7,9 @@ import warnings
 
 import networkx as nx
 
-from divi.backends import ParallelSimulator
 from divi.qprog import GraphPartitioningQAOA, GraphProblem, PartitioningConfig
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from tutorials._backend import get_backend
 
 
 def generate_random_graph(n_nodes: int, n_edges: int) -> nx.Graph:
@@ -79,7 +79,7 @@ if __name__ == "__main__":
         ),
         optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
         max_iterations=20,
-        backend=ParallelSimulator(),
+        backend=get_backend(),
     )
 
     qaoa_batch.create_programs()

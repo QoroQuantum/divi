@@ -1,8 +1,7 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import re
 from functools import partial
 from itertools import product
 from warnings import warn
@@ -12,9 +11,7 @@ import numpy as np
 import pennylane as qml
 from pennylane.tape import QuantumScript
 from pennylane.wires import Wires
-from sympy import Expr, Symbol
-
-from divi.circuits.qem import QEMProtocol
+from sympy import Expr
 
 from ._cirq import ExtendedQasmParser as QasmParser
 
@@ -117,15 +114,112 @@ def _ops_to_qasm(operations, precision, wires):
     return qasm_str
 
 
+def circuit_body_to_qasm(
+    main_qscript,
+    precision: int | None = None,
+) -> str:
+    """
+    Convert the circuit body (operations only) to OpenQASM 2.0.
+
+    Returns headers, qreg/creg, and gate operations. No measurement instructions.
+    The body is stable until QEM (e.g. folding) modifies it.
+
+    Args:
+        main_qscript: The quantum circuit to convert.
+        precision: Decimal digits for parameter values. None for default formatting.
+
+    Returns:
+        OpenQASM 2.0 string (headers + registers + operations).
+    """
+    main_qasm_str = 'OPENQASM 2.0;\ninclude "qelib1.inc";\n'
+
+    if main_qscript.num_wires == 0:
+        return main_qasm_str
+
+    wires = main_qscript.wires
+    main_qasm_str += f"qreg q[{len(wires)}];\ncreg c[{len(wires)}];\n"
+
+    # Wrapping Sympy Symbols in a numpy object to bypass Pennylane's sanitization
+    for op in main_qscript.operations:
+        if qml.math.get_interface(*op.data) == "sympy":
+            op.data = np.array(op.data)
+
+    [transformed_tape], _ = qml.transforms.convert_to_numpy_parameters(main_qscript)
+    operations = transformed_tape.operations
+
+    just_ops = QuantumScript(operations)
+    [decomposed_tape], _ = qml.transforms.decompose(
+        just_ops, gate_set=lambda obj: obj.name in OPENQASM_GATES
+    )
+
+    _to_qasm = partial(_ops_to_qasm, precision=precision, wires=wires)
+    main_qasm_str += _to_qasm(decomposed_tape.operations)
+
+    return main_qasm_str
+
+
+def measurements_to_qasm(
+    main_qscript,
+    measurement_groups: list[list[qml.measurements.ExpectationMP]],
+    measure_all: bool = True,
+    precision: int | None = None,
+) -> list[str]:
+    """
+    Convert measurement groups to OpenQASM 2.0 measurement instructions.
+
+    For each group: diagonalizing gates (if any) + measure instructions.
+
+    Args:
+        main_qscript: The quantum circuit (for wires) to convert.
+        measurement_groups: List of commuting observable groups.
+        measure_all: If True, measure all qubits; else only those in the group.
+        precision: Decimal digits for parameter values. None for default.
+
+    Returns:
+        List of measurement QASM strings, one per group.
+    """
+    wires = main_qscript.wires
+    _to_qasm = partial(_ops_to_qasm, precision=precision, wires=wires)
+    measurement_qasms = []
+
+    for meas_group in measurement_groups:
+        wrapped_group = [
+            m if isinstance(m, qml.measurements.MeasurementProcess) else qml.expval(m)
+            for m in meas_group
+        ]
+
+        curr_diag_qasm_str = (
+            _to_qasm(diag_ops)
+            if (
+                diag_ops := QuantumScript(
+                    measurements=wrapped_group
+                ).diagonalizing_gates
+            )
+            else ""
+        )
+
+        measure_qasm_str = ""
+        if measure_all:
+            for wire in range(len(wires)):
+                measure_qasm_str += f"measure q[{wire}] -> c[{wire}];\n"
+        else:
+            measured_wires = Wires.all_wires([m.wires for m in meas_group])
+            for w in measured_wires:
+                wire_indx = main_qscript.wires.index(w)
+                measure_qasm_str += f"measure q[{wire_indx}] -> c[{wire_indx}];\n"
+
+        measurement_qasms.append(curr_diag_qasm_str + measure_qasm_str)
+
+    return measurement_qasms
+
+
 def to_openqasm(
     main_qscript,
     measurement_groups: list[list[qml.measurements.ExpectationMP]],
     measure_all: bool = True,
     precision: int | None = None,
     return_measurements_separately: bool = False,
-    symbols: list[Symbol] = None,
-    qem_protocol: QEMProtocol | None = None,
-) -> list[str] | tuple[str, list[str]]:
+) -> list[str] | list[tuple[str, str]] | tuple[list[str], list[str]]:
     """
     Serialize the circuit as an OpenQASM 2.0 program.
 
@@ -149,131 +243,29 @@ def to_openqasm(
         precision (int): decimal digits to display for parameters
         return_measurements_separately (bool): whether to not append the measurement instructions
             and their diagonalizations to the main circuit QASM code and return separately.
-        symbols (list): Sympy symbols present in the circuit. Needed for some QEM routines.
-        qem_protocol (QEMProtocol): An optional QEMProtocol object for error mitigation, which may modify the circuit.
 
     Returns:
-        list[str] or tuple[str, list[str]]: OpenQASM serialization of the circuit
+        list[str] or list[tuple[str, str]] or tuple[list[str], list[str]]: OpenQASM serialization of the circuit
     """
-
-    if qem_protocol and symbols is None:
-        raise ValueError(
-            "When passing a QEMProtocol instance, the Sympy symbols in the circuit should be provided for the openqasm 3 conversion."
-        )
-
-    wires = main_qscript.wires
-
-    _to_qasm = partial(_ops_to_qasm, precision=precision, wires=wires)
-
-    # Add the QASM headers
-    main_qasm_str = (
-        'OPENQASM 3.0;\ninclude "stdgates.inc";\n'
-        if qem_protocol
-        else 'OPENQASM 2.0;\ninclude "qelib1.inc";\n'
-    )
-
-    if main_qscript.num_wires == 0:
-        # empty circuit
-        return main_qasm_str
-
-    if qem_protocol:
-        # Flatten symbols list to handle both individual symbols and arrays of symbols
-        flat_symbols = []
-        for symbol in symbols:
-            if isinstance(symbol, np.ndarray):
-                # If it's a numpy array of symbols, flatten it
-                flat_symbols.extend(symbol.flatten())
-            else:
-                # Individual symbol
-                flat_symbols.append(symbol)
-
-        # Declare each symbol individually in QASM 3.0
-        for symbol in flat_symbols:
-            main_qasm_str += f"input angle[32] {str(symbol)};\n"
-
-    # create the quantum and classical registers
-    main_qasm_str += (
-        f"qubit[{len(wires)}] q;\n" if qem_protocol else f"qreg q[{len(wires)}];\n"
-    )
-    main_qasm_str += (
-        f"bit[{len(wires)}] c;\n" if qem_protocol else f"creg c[{len(wires)}];\n"
-    )
-
-    # Wrapping Sympy Symbols in a numpy object to bypass
-    # Pennylane's sanitization
-    for op in main_qscript.operations:
-        if qml.math.get_interface(*op.data) == "sympy":
-            op.data = np.array(op.data)
-
-    [transformed_tape], _ = qml.transforms.convert_to_numpy_parameters(main_qscript)
-    operations = transformed_tape.operations
-
-    # Decompose the queue
-    just_ops = QuantumScript(operations)
-    [decomposed_tape], _ = qml.transforms.decompose(
-        just_ops, gate_set=lambda obj: obj.name in OPENQASM_GATES
-    )
-
-    main_qasm_str += _to_qasm(decomposed_tape.operations)
-
-    main_qasm_strs = []
-    if qem_protocol:
-        for circ in qem_protocol.modify_circuit(_cirq_circuit_from_qasm(main_qasm_str)):
-            # Convert back to QASM2.0 code, with the symbolic parameters
-            qasm_str = cirq.qasm(circ)
-            # Remove redundant newlines
-            qasm_str = re.sub(r"\n+", "\n", qasm_str)
-            # Remove comments
-            qasm_str = re.sub(r"^//.*\n?", "", qasm_str, flags=re.MULTILINE)
-            # Add missing classical reg
-            qasm_str = re.sub(r"qreg q\[(\d+)\];", r"qreg q[\1];creg c[\1];", qasm_str)
-
-            main_qasm_strs.append(qasm_str)
-    else:
-        main_qasm_strs.append(main_qasm_str)
-
-    qasm_circuits = []
-    measurement_qasms = []
-
-    # Create a copy of the program for every measurement that we have
-    for meas_group in measurement_groups:
-        # Ensure all items in measurement group are MeasurementProcess instances
-        wrapped_group = [
-            m if isinstance(m, qml.measurements.MeasurementProcess) else qml.expval(m)
-            for m in meas_group
-        ]
-
-        curr_diag_qasm_str = (
-            _to_qasm(diag_ops)
-            if (
-                diag_ops := QuantumScript(
-                    measurements=wrapped_group
-                ).diagonalizing_gates
-            )
-            else ""
-        )
-
-        measure_qasm_str = ""
-        if measure_all:
-            for wire in range(len(wires)):
-                measure_qasm_str += f"measure q[{wire}] -> c[{wire}];\n"
-        else:
-            measured_wires = Wires.all_wires([m.wires for m in meas_group])
-
-            for w in measured_wires:
-                wire_indx = main_qscript.wires.index(w)
-                measure_qasm_str += f"measure q[{wire_indx}] -> c[{wire_indx}];\n"
-
-        measurement_qasms.append(curr_diag_qasm_str + measure_qasm_str)
-
-    if not return_measurements_separately:
-        qasm_circuits.extend(product(main_qasm_strs, measurement_qasms))
+    body = circuit_body_to_qasm(main_qscript, precision=precision)
 
     if len(measurement_groups) == 0:
         warn(
             "No measurement groups provided. Returning the QASM of the circuit operations only."
         )
-        qasm_circuits.extend(np.atleast_1d(main_qasm_strs).tolist())
-        return qasm_circuits
+        # Empty circuit returns str; otherwise list of body strings
+        if main_qscript.num_wires == 0:
+            return body
+        return [body]
 
-    return qasm_circuits or (np.atleast_1d(main_qasm_strs).tolist(), measurement_qasms)
+    measurement_qasms = measurements_to_qasm(
+        main_qscript,
+        measurement_groups=measurement_groups,
+        measure_all=measure_all,
+        precision=precision,
+    )
+
+    if return_measurements_separately:
+        return ([body], measurement_qasms)
+
+    return list(product([body], measurement_qasms))

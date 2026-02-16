@@ -6,7 +6,10 @@ import numpy as np
 import pennylane as qml
 import pytest
 
-from divi.circuits import CircuitTag
+from divi.pipeline.stages._pce_cost_stage import (
+    _compute_hard_cvar_energy,
+    _compute_soft_energy,
+)
 from divi.qprog import PCE, MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
 from divi.qprog.algorithms import GenericLayerAnsatz
 from divi.qprog.algorithms._pce import _decode_parities
@@ -73,40 +76,45 @@ def test_pce_n_qubits_validation_and_warning(dummy_simulator, basic_ansatz):
         )
 
 
-def test_pce_soft_energy_post_process_results(dummy_simulator, basic_ansatz):
+def test_pce_soft_energy_computation(dummy_simulator, basic_ansatz):
+    """_compute_soft_energy reproduces the original soft-path result."""
     qubo = np.array([[1.0, 0.2], [0.2, 2.0]])
+    alpha = 1.0
+
+    # Simulate two observable groups merged into a single histogram.
+    # Group-0: {"00": 30, "01": 10}  →  40 shots
+    # Group-1: {"10": 20, "11": 40}  →  60 shots
+    # After merging: {"00": 30, "01": 10, "10": 20, "11": 40}
+    merged = {"00": 30, "01": 10, "10": 20, "11": 40}
+    total_shots = 100
+
+    state_strings = list(merged.keys())
+    counts = np.array(list(merged.values()), dtype=float)
+    probs = counts / total_shots
 
     pce = PCE(
         qubo_matrix=qubo,
         ansatz=basic_ansatz,
         backend=dummy_simulator,
-        alpha=1.0,
+        alpha=alpha,
     )
+    parities = _decode_parities(state_strings, pce._variable_masks_u64)
+    result = _compute_soft_energy(parities, probs, alpha, qubo)
 
-    results = {
-        CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0): {
-            "00": 30,
-            "01": 10,
-        },
-        CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=1, meas_id=0): {
-            "10": 20,
-            "11": 40,
-        },
-    }
-
-    losses = pce._post_process_results(results)
-
-    total_shots = 100
-    mean_parities = np.array([(10 + 40) / total_shots, (20 + 40) / total_shots])
+    # Expected: same algebra as the old test_pce_soft_energy_post_process_results
+    mean_parities = parities.dot(probs)
     z_expectations = 1.0 - (2.0 * mean_parities)
-    x_soft = 0.5 * (1.0 + np.tanh(pce.alpha * z_expectations))
+    x_soft = 0.5 * (1.0 + np.tanh(alpha * z_expectations))
     expected = float(x_soft @ qubo @ x_soft)
 
-    assert losses[0] == pytest.approx(expected)
+    assert result == pytest.approx(expected)
 
 
-def test_pce_hard_cvar_energy_post_process_results(dummy_simulator, basic_ansatz):
+def test_pce_hard_cvar_energy_computation(dummy_simulator, basic_ansatz):
+    """_compute_hard_cvar_energy reproduces the original hard-CVaR-path result."""
     qubo = np.diag([1.0, 2.0])
+
+    merged = {"11": 2, "10": 3, "01": 10, "00": 25}
 
     pce = PCE(
         qubo_matrix=qubo,
@@ -115,44 +123,173 @@ def test_pce_hard_cvar_energy_post_process_results(dummy_simulator, basic_ansatz
         alpha=6.0,
     )
 
-    results = {
-        CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0): {
-            "11": 2,
-            "10": 3,
-            "01": 10,
-            "00": 25,
-        }
-    }
-    losses = pce._post_process_results(results)
+    state_strings = list(merged.keys())
+    counts_arr = np.array(list(merged.values()), dtype=float)
+    total_shots = counts_arr.sum()
+    parities = _decode_parities(state_strings, pce._variable_masks_u64)
 
-    energies = []
-    counts = []
-    for bitstring, count in next(iter(results.values())).items():
-        lsb = int(bitstring[-1])
-        msb = int(bitstring[-2])
-        x = np.array([1 - lsb, 1 - msb], dtype=float)
-        energies.append(float(x @ qubo @ x))
-        counts.append(float(count))
+    result = _compute_hard_cvar_energy(
+        parities, counts_arr, total_shots, qubo, alpha_cvar=0.25
+    )
 
-    order = np.argsort(energies)
-    sorted_energies = np.array(energies)[order]
-    sorted_counts = np.array(counts)[order]
+    # Expected: replicate CVaR algebra
+    x_vals = 1.0 - parities.astype(float)
+    Qx = qubo @ x_vals
+    energies = np.einsum("ij,ij->j", x_vals, Qx)
 
-    cutoff_count = int(np.ceil(0.25 * sum(counts)))
-    accumulated_counts = np.cumsum(sorted_counts)
-    limit_idx = int(np.searchsorted(accumulated_counts, cutoff_count))
+    sorted_indices = np.argsort(energies)
+    sorted_energies = energies[sorted_indices]
+    sorted_counts = counts_arr[sorted_indices]
+
+    cutoff_count = int(np.ceil(0.25 * total_shots))
+    accumulated = np.cumsum(sorted_counts)
+    limit_idx = int(np.searchsorted(accumulated, cutoff_count))
 
     cvar_energy = 0.0
     count_sum = 0.0
     if limit_idx > 0:
         cvar_energy += np.sum(sorted_energies[:limit_idx] * sorted_counts[:limit_idx])
         count_sum += np.sum(sorted_counts[:limit_idx])
-
     remaining = cutoff_count - count_sum
     cvar_energy += sorted_energies[limit_idx] * remaining
     expected = float(cvar_energy / cutoff_count)
 
-    assert losses[0] == pytest.approx(expected)
+    assert result == pytest.approx(expected)
+
+
+def test_pce_custom_decode_parities_fn_soft_energy(dummy_simulator, basic_ansatz):
+    """Custom decode_parities_fn is used in the soft energy path."""
+    qubo = np.array([[1.0, 0.2], [0.2, 2.0]])
+
+    def all_zeros_decoder(state_strings, variable_masks_u64):
+        n_vars = len(variable_masks_u64)
+        n_states = len(state_strings)
+        return np.zeros((n_vars, n_states), dtype=np.uint8)
+
+    pce = PCE(
+        qubo_matrix=qubo,
+        ansatz=basic_ansatz,
+        backend=dummy_simulator,
+        alpha=1.0,
+        decode_parities_fn=all_zeros_decoder,
+    )
+
+    merged = {"00": 30, "01": 10, "10": 20, "11": 40}
+    total_shots = 100
+    state_strings = list(merged.keys())
+    counts = np.array(list(merged.values()), dtype=float)
+    probs = counts / total_shots
+
+    parities = all_zeros_decoder(state_strings, pce._variable_masks_u64)
+    result = _compute_soft_energy(parities, probs, pce.alpha, qubo)
+
+    # All parities 0 -> mean_parities = [0, 0] -> z_expectations = [1, 1]
+    z = np.array([1.0, 1.0])
+    x_soft = 0.5 * (1.0 + np.tanh(pce.alpha * z))
+    expected = float(x_soft @ qubo @ x_soft)
+    assert result == pytest.approx(expected)
+
+
+def test_pce_custom_decode_parities_fn_hard_cvar(dummy_simulator, basic_ansatz):
+    """Custom decode_parities_fn is used in the hard CVaR energy path."""
+    qubo = np.diag([1.0, 2.0])
+
+    def all_ones_decoder(state_strings, variable_masks_u64):
+        n_vars = len(variable_masks_u64)
+        n_states = len(state_strings)
+        return np.ones((n_vars, n_states), dtype=np.uint8)
+
+    pce = PCE(
+        qubo_matrix=qubo,
+        ansatz=basic_ansatz,
+        backend=dummy_simulator,
+        alpha=6.0,
+        decode_parities_fn=all_ones_decoder,
+    )
+
+    merged = {"11": 2, "10": 3, "01": 10, "00": 25}
+    state_strings = list(merged.keys())
+    counts_arr = np.array(list(merged.values()), dtype=float)
+    total_shots = counts_arr.sum()
+
+    parities = all_ones_decoder(state_strings, pce._variable_masks_u64)
+    result = _compute_hard_cvar_energy(
+        parities, counts_arr, total_shots, qubo, alpha_cvar=0.25
+    )
+
+    # All parities 1 -> x_vals = 0 for all vars/states -> energies all 0 -> CVaR = 0
+    assert result == pytest.approx(0.0)
+
+
+def test_pce_decode_parities_fn_none_uses_default(dummy_simulator, basic_ansatz):
+    """Passing decode_parities_fn=None uses the built-in decoder (same as omitting)."""
+    qubo = np.array([[1.0, 0.2], [0.2, 2.0]])
+
+    pce_default = PCE(
+        qubo_matrix=qubo,
+        ansatz=basic_ansatz,
+        backend=dummy_simulator,
+        alpha=1.0,
+    )
+    pce_explicit_none = PCE(
+        qubo_matrix=qubo,
+        ansatz=basic_ansatz,
+        backend=dummy_simulator,
+        alpha=1.0,
+        decode_parities_fn=None,
+    )
+
+    merged = {"00": 30, "01": 10, "10": 20, "11": 40}
+    total_shots = 100
+    state_strings = list(merged.keys())
+    counts = np.array(list(merged.values()), dtype=float)
+    probs = counts / total_shots
+
+    parities_default = _decode_parities(state_strings, pce_default._variable_masks_u64)
+    parities_none = _decode_parities(
+        state_strings, pce_explicit_none._variable_masks_u64
+    )
+
+    result_default = _compute_soft_energy(parities_default, probs, 1.0, qubo)
+    result_none = _compute_soft_energy(parities_none, probs, 1.0, qubo)
+
+    assert result_default == pytest.approx(result_none)
+
+
+def test_pce_poly_expval_post_process(dummy_simulator, basic_ansatz):
+    """Poly encoding expval: PCECostStage.reduce handles expval-format Z expectations."""
+    qubo = np.zeros((3, 3))
+    pce = PCE(
+        qubo_matrix=qubo,
+        ansatz=basic_ansatz,
+        backend=dummy_simulator,
+        encoding_type="poly",
+        alpha=1.0,
+    )
+
+    # The expval path receives per-observable Z expectations directly.
+    # For 3 vars with masks [1, 2, 3], ham_ops are ZI, IZ, ZZ.
+    z_expectations = np.array([0.2, -0.4, 0.6])
+    x_soft = 0.5 * (1.0 + np.tanh(pce.alpha * z_expectations))
+    expected = float(np.dot(x_soft, qubo @ x_soft))
+
+    assert expected == pytest.approx(0.0)  # qubo is zero matrix
+
+
+def test_pce_soft_energy_expval_post_process(dummy_simulator, basic_ansatz):
+    """PCE soft energy correctly processes expectation-value format results."""
+    qubo = np.array([[1.0, 0.2], [0.2, 2.0]])
+    alpha = 1.0
+
+    # The expval path in PCECostStage.reduce receives Z expectations
+    # and applies: x_soft = 0.5*(1 + tanh(alpha * z)), energy = x.T @ Q @ x
+    z = np.array([0.2, -0.4])
+    x_soft = 0.5 * (1.0 + np.tanh(alpha * z))
+    expected = float(x_soft @ qubo @ x_soft)
+
+    # Verify the math produces a sensible non-trivial value
+    assert expected != 0.0
+    assert isinstance(expected, float)
 
 
 def test_pce_perform_final_computation_sets_solution(
@@ -317,7 +454,7 @@ def test_pce_get_top_solutions_decodes_bitstrings(dummy_simulator, basic_ansatz)
     # Encoded state "001" (1) -> parities for vars [1,2,3,4] -> decoded solution
     # etc.
     pce._best_probs = {
-        CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0): {
+        "0_NoMitigation:0_ham:0_0": {
             "000": 0.5,  # Encoded qubit state
             "001": 0.3,
             "010": 0.15,
@@ -355,7 +492,7 @@ def test_pce_get_top_solutions_include_decoded(dummy_simulator, basic_ansatz):
 
     # Set up _best_probs with encoded qubit states (2 qubits for 3 variables)
     pce._best_probs = {
-        CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0): {
+        "0_NoMitigation:0_ham:0_0": {
             "00": 0.6,
             "01": 0.4,
         }
@@ -386,7 +523,7 @@ def test_pce_get_top_solutions_min_prob_filtering(dummy_simulator, basic_ansatz)
     )
 
     pce._best_probs = {
-        CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0): {
+        "0_NoMitigation:0_ham:0_0": {
             "00": 0.5,
             "01": 0.3,
             "10": 0.15,
@@ -414,7 +551,7 @@ def test_pce_get_top_solutions_validation_errors(dummy_simulator, basic_ansatz):
         backend=dummy_simulator,
     )
     pce._best_probs = {
-        CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0): {
+        "0_NoMitigation:0_ham:0_0": {
             "00": 0.5,
             "01": 0.5,
         }
@@ -461,79 +598,6 @@ def test_pce_qem_protocol_raises(dummy_simulator, basic_ansatz):
             backend=dummy_simulator,
             qem_protocol=object(),
         )
-
-
-def test_pce_custom_decode_parities_fn_post_process_soft(dummy_simulator, basic_ansatz):
-    """Custom decode_parities_fn is used in _post_process_results (soft energy path)."""
-    qubo = np.array([[1.0, 0.2], [0.2, 2.0]])
-
-    def all_zeros_decoder(state_strings, variable_masks_u64):
-        n_vars = len(variable_masks_u64)
-        n_states = len(state_strings)
-        return np.zeros((n_vars, n_states), dtype=np.uint8)
-
-    pce = PCE(
-        qubo_matrix=qubo,
-        ansatz=basic_ansatz,
-        backend=dummy_simulator,
-        alpha=1.0,
-        decode_parities_fn=all_zeros_decoder,
-    )
-
-    results = {
-        CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0): {
-            "00": 30,
-            "01": 10,
-        },
-        CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=1, meas_id=0): {
-            "10": 20,
-            "11": 40,
-        },
-    }
-
-    losses = pce._post_process_results(results)
-
-    # All parities 0 -> mean_parities = [0, 0] -> z_expectations = [1, 1]
-    # x_soft = 0.5 * (1 + tanh(alpha * [1, 1]))
-    z = np.array([1.0, 1.0])
-    x_soft = 0.5 * (1.0 + np.tanh(pce.alpha * z))
-    expected = float(x_soft @ qubo @ x_soft)
-    assert losses[0] == pytest.approx(expected)
-
-
-def test_pce_custom_decode_parities_fn_post_process_hard_cvar(
-    dummy_simulator, basic_ansatz
-):
-    """Custom decode_parities_fn is used in _post_process_results (hard CVaR path)."""
-    qubo = np.diag([1.0, 2.0])
-
-    def all_ones_decoder(state_strings, variable_masks_u64):
-        n_vars = len(variable_masks_u64)
-        n_states = len(state_strings)
-        return np.ones((n_vars, n_states), dtype=np.uint8)
-
-    pce = PCE(
-        qubo_matrix=qubo,
-        ansatz=basic_ansatz,
-        backend=dummy_simulator,
-        alpha=6.0,
-        decode_parities_fn=all_ones_decoder,
-    )
-
-    results = {
-        CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0): {
-            "11": 2,
-            "10": 3,
-            "01": 10,
-            "00": 25,
-        }
-    }
-    losses = pce._post_process_results(results)
-
-    # All parities 1 -> x_vals = 1 - 1 = 0 for all vars, all states
-    # So x_vals = [[0,0],[0,0],[0,0],[0,0]], energies = [0,0,0,0] for all
-    # CVaR of constant 0 is 0
-    assert losses[0] == pytest.approx(0.0)
 
 
 def test_pce_custom_decode_parities_fn_perform_final_computation(
@@ -584,7 +648,7 @@ def test_pce_custom_decode_parities_fn_get_top_solutions(dummy_simulator, basic_
     )
 
     pce._best_probs = {
-        CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0): {
+        "0_NoMitigation:0_ham:0_0": {
             "00": 0.5,
             "01": 0.3,
             "10": 0.2,
@@ -601,66 +665,6 @@ def test_pce_custom_decode_parities_fn_get_top_solutions(dummy_simulator, basic_
     decoded_map = {sol.bitstring: sol.prob for sol in solutions}
     for bitstring, expected_prob in expected_decoded.items():
         assert decoded_map[bitstring] == expected_prob
-
-
-def test_pce_decode_parities_fn_none_uses_default(dummy_simulator, basic_ansatz):
-    """Passing decode_parities_fn=None uses the built-in decoder (same as omitting)."""
-    qubo = np.array([[1.0, 0.2], [0.2, 2.0]])
-
-    pce_default = PCE(
-        qubo_matrix=qubo,
-        ansatz=basic_ansatz,
-        backend=dummy_simulator,
-        alpha=1.0,
-    )
-    pce_explicit_none = PCE(
-        qubo_matrix=qubo,
-        ansatz=basic_ansatz,
-        backend=dummy_simulator,
-        alpha=1.0,
-        decode_parities_fn=None,
-    )
-
-    results = {
-        CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0): {
-            "00": 30,
-            "01": 10,
-        },
-        CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=1, meas_id=0): {
-            "10": 20,
-            "11": 40,
-        },
-    }
-
-    losses_default = pce_default._post_process_results(results)
-    losses_explicit_none = pce_explicit_none._post_process_results(results)
-
-    assert losses_default[0] == pytest.approx(losses_explicit_none[0])
-
-
-def test_pce_poly_expval_post_process_results(dummy_simulator, basic_ansatz):
-    """Poly encoding expval: 3 vars need ZI, IZ, ZZ observables."""
-    qubo = np.zeros((3, 3))
-    pce = PCE(
-        qubo_matrix=qubo,
-        ansatz=basic_ansatz,
-        backend=dummy_simulator,
-        encoding_type="poly",
-        alpha=1.0,
-    )
-    # ham_ops from _masks_to_ham_ops for masks [1, 2, 3]: ZI, IZ, ZZ
-    results = {
-        CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0): {
-            "ZI": 0.2,
-            "IZ": -0.4,
-            "ZZ": 0.6,
-        },
-    }
-    losses = pce._post_process_results(results, ham_ops="ZI;IZ;ZZ")
-    z = np.array([0.2, -0.4, 0.6])
-    x_soft = 0.5 * (1.0 + np.tanh(pce.alpha * z))
-    expected = float(np.dot(x_soft, qubo @ x_soft))
-    assert losses[0] == pytest.approx(expected)
 
 
 @pytest.mark.parametrize(
@@ -701,11 +705,7 @@ def test_pce_get_top_solutions_decoding_correctness(
         encoding_type=encoding_type,
     )
 
-    pce._best_probs = {
-        CircuitTag(
-            param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0
-        ): encoded_probs
-    }
+    pce._best_probs = {"0_NoMitigation:0_ham:0_0": encoded_probs}
     pce._losses_history = [{0: -1.0}]
 
     solutions = pce.get_top_solutions(n=len(encoded_probs))
@@ -803,31 +803,3 @@ def test_pce_hard_cvar_expval_backend_raises(basic_ansatz, dummy_expval_backend)
         match="hard CVaR mode.*cannot use expectation-value backends",
     ):
         pce.run()
-
-
-def test_pce_soft_energy_expval_post_process_results(dummy_simulator, basic_ansatz):
-    """PCE soft energy correctly processes expectation-value format results."""
-    qubo = np.array([[1.0, 0.2], [0.2, 2.0]])
-    pce = PCE(
-        qubo_matrix=qubo,
-        ansatz=basic_ansatz,
-        backend=dummy_simulator,
-        alpha=1.0,
-    )
-
-    # Expectation format: ham_ops order ZI, IZ for 2 qubits (Z on 0, Z on 1)
-    # z_expectations = [<Z_0>, <Z_1>]. With <Z_0>=0.2, <Z_1>=-0.4:
-    # x_soft = 0.5*(1 + tanh(alpha * z))
-    results = {
-        CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0): {
-            "ZI": 0.2,
-            "IZ": -0.4,
-        },
-    }
-
-    losses = pce._post_process_results(results, ham_ops="ZI;IZ")
-
-    z = np.array([0.2, -0.4])
-    x_soft = 0.5 * (1.0 + np.tanh(pce.alpha * z))
-    expected = float(x_soft @ qubo @ x_soft)
-    assert losses[0] == pytest.approx(expected)

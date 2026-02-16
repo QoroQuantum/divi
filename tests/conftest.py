@@ -22,6 +22,7 @@ import pytest
 from dotenv import load_dotenv
 
 from divi.backends import CircuitRunner, ExecutionResult, ParallelSimulator
+from divi.pipeline import PipelineEnv
 
 
 class DummySimulator(CircuitRunner):
@@ -77,6 +78,12 @@ def dummy_simulator():
 @pytest.fixture
 def dummy_expval_backend():
     return DummyExpvalBackend(shots=100)
+
+
+@pytest.fixture
+def dummy_pipeline_env(dummy_expval_backend):
+    """PipelineEnv with dummy expval backend (for pipeline tests)."""
+    return PipelineEnv(backend=dummy_expval_backend)
 
 
 @pytest.fixture

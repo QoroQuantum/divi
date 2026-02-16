@@ -27,7 +27,7 @@ sed -i \
     -e 's/\[HartreeFockAnsatz(), UCCSDAnsatz()\]/\[HartreeFockAnsatz()\]/' \
     -e 's/max_iterations=3/max_iterations=2/' \
     "$TEMP_TUTORIALS_DIR"/vqe_hyperparameter_sweep.py
-sed -i 's/n_processes=4/n_processes=4,shots=500/g' "$TEMP_TUTORIALS_DIR"/zne_local.py
+sed -i 's/n_processes=4/n_processes=4,shots=500/g' "$TEMP_TUTORIALS_DIR"/zne.py
 sed -i \
     -e 's/max_iterations=10/max_iterations=3/' \
     -e 's/n_layers=2/n_layers=1/' \
@@ -37,24 +37,24 @@ sed -i \
     -e 's/N_EDGES = 40/N_EDGES = 15/' \
     -e 's/max_n_nodes_per_cluster=10/max_n_nodes_per_cluster=5/' \
     -e 's/max_iterations=20/max_iterations=5/' \
-    -e 's/ParallelSimulator()/ParallelSimulator(shots=500)/' \
+    -e 's/get_backend()/get_backend(shots=500)/' \
     "$TEMP_TUTORIALS_DIR"/qaoa_graph_partitioning.py
 sed -i \
     -e 's/n_layers=2/n_layers=1/' \
     -e 's/max_iterations=10/max_iterations=3/' \
-    -e 's/ParallelSimulator(shots=10000)/ParallelSimulator(shots=500)/' \
+    -e 's/get_backend(shots=10000)/get_backend(shots=500)/' \
     "$TEMP_TUTORIALS_DIR"/qaoa_qubo.py
-sed -i 's/ParallelSimulator()/ParallelSimulator(shots=500)/' "$TEMP_TUTORIALS_DIR"/vqe_h2_molecule_local.py
+sed -i 's/get_backend()/get_backend(shots=500)/' "$TEMP_TUTORIALS_DIR"/vqe_h2_molecule.py
 sed -i \
     -e 's/n_layers=2/n_layers=1/' \
-    -e 's/max_iterations=10/max_iterations=3/' \
-    -e 's/ParallelSimulator()/ParallelSimulator(shots=500)/' \
-    "$TEMP_TUTORIALS_DIR"/qaoa_max_clique_local.py
+    -e 's/max_iterations=5/max_iterations=3/' \
+    -e 's/get_backend()/get_backend(shots=500)/' \
+    "$TEMP_TUTORIALS_DIR"/qaoa_max_clique.py
 sed -i \
     -e 's/N_NODES, N_EDGES = 12, 25/N_NODES, N_EDGES = 8, 12/' \
     -e 's/max_iterations=5/max_iterations=3/' \
     -e 's/shots=1000/shots=500/' \
-    "$TEMP_TUTORIALS_DIR"/qaoa_qdrift_local.py
+    "$TEMP_TUTORIALS_DIR"/qaoa_qdrift.py
 
 run_test() {
   local file="$1"

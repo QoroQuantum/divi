@@ -10,8 +10,9 @@ import numpy.typing as npt
 import pennylane as qml
 import sympy as sp
 
-from divi.circuits import CircuitBundle, MetaCircuit
-from divi.qprog._hamiltonians import _clean_hamiltonian, _is_empty_hamiltonian
+from divi.circuits import MetaCircuit
+from divi.hamiltonians import _clean_hamiltonian, _is_empty_hamiltonian
+from divi.pipeline.stages import CircuitSpecStage
 from divi.qprog.algorithms._ansatze import Ansatz, HartreeFockAnsatz
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 
@@ -78,21 +79,23 @@ class VQE(VariationalQuantumAlgorithm):
             hamiltonian=hamiltonian, molecule=molecule, n_electrons=n_electrons
         )
 
-    @property
-    def cost_hamiltonian(self) -> qml.operation.Operator:
-        """The cost Hamiltonian for the VQE problem."""
-        return self._cost_hamiltonian
+        # Build pipelines once (structure is fixed; only env changes per call)
+
+        self._build_pipelines()
+
+    def _build_pipelines(self) -> None:
+        self._cost_pipeline = self._build_cost_pipeline(CircuitSpecStage())
+        self._measurement_pipeline = self._build_measurement_pipeline()
 
     @property
-    def n_params(self):
-        """Get the total number of parameters for the VQE ansatz.
+    def n_params_per_layer(self):
+        """Get the number of trainable parameters per ansatz layer.
 
         Returns:
-            int: Total number of parameters (n_params_per_layer * n_layers).
+            int: Parameters per layer for the current ansatz and qubit count.
         """
-        return (
-            self.ansatz.n_params_per_layer(self.n_qubits, n_electrons=self.n_electrons)
-            * self.n_layers
+        return self.ansatz.n_params_per_layer(
+            self.n_qubits, n_electrons=self.n_electrons
         )
 
     @property
@@ -146,11 +149,11 @@ class VQE(VariationalQuantumAlgorithm):
         if _is_empty_hamiltonian(self._cost_hamiltonian):
             raise ValueError("Hamiltonian contains only constant terms.")
 
-    def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
-        """Create the meta-circuit dictionary for VQE.
+    def _create_meta_circuit_factories(self) -> dict[str, MetaCircuit]:
+        """Create the meta-circuit factories for VQE.
 
         Returns:
-            dict[str, MetaCircuit]: Dictionary containing the cost circuit template.
+            dict[str, MetaCircuit]: Dictionary containing cost and measurement circuit templates.
         """
         weights_syms = sp.symarray(
             "w",
@@ -169,55 +172,26 @@ class VQE(VariationalQuantumAlgorithm):
             n_electrons=self.n_electrons,
         )
 
+        symbols = weights_syms.flatten()
         return {
-            "cost_circuit": self._meta_circuit_factory(
-                qml.tape.QuantumScript(
+            "cost_circuit": MetaCircuit(
+                source_circuit=qml.tape.QuantumScript(
                     ops=ops, measurements=[qml.expval(self._cost_hamiltonian)]
                 ),
-                symbols=weights_syms.flatten(),
+                symbols=symbols,
+                precision=self._precision,
             ),
-            "meas_circuit": self._meta_circuit_factory(
-                qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()]),
-                symbols=weights_syms.flatten(),
-                grouping_strategy="wires",
+            "meas_circuit": MetaCircuit(
+                source_circuit=qml.tape.QuantumScript(
+                    ops=ops, measurements=[qml.probs()]
+                ),
+                symbols=symbols,
+                precision=self._precision,
             ),
         }
 
-    def _generate_circuits(self) -> list[CircuitBundle]:
-        """Generate the circuits for the VQE problem.
-
-        Generates circuits for each parameter set in the current parameters.
-        Each circuit is tagged with its parameter index for result processing.
-
-        Returns:
-            list[CircuitBundle]: List of CircuitBundle objects for execution.
-        """
-        circuit_type = (
-            "cost_circuit" if not self._is_compute_probabilities else "meas_circuit"
-        )
-
-        return [
-            self.meta_circuits[circuit_type].initialize_circuit_from_params(
-                params_group, param_idx=p
-            )
-            for p, params_group in enumerate(self._curr_params)
-        ]
-
     def _perform_final_computation(self, **kwargs):
-        """Extract the eigenstate corresponding to the lowest energy found.
-
-        This method performs the following steps:
-        1. Executes measurement circuits with the best parameters (those that achieved the lowest loss).
-        2. Retrieves the bitstring representing the eigenstate with the highest probability,
-           correcting for endianness.
-        3. Converts the bitstring to a NumPy array of integers (int32) representing the eigenstate.
-        4. Stores the eigenstate in the `_eigenstate` attribute.
-
-        Returns:
-            tuple[int, float]: A tuple containing:
-                - int: The total number of circuits executed.
-                - float: The total runtime of the optimization process.
-        """
+        """Extract the eigenstate corresponding to the lowest energy found."""
         self.reporter.info(message="🏁 Computing Final Eigenstate 🏁", overwrite=True)
 
         self._run_solution_measurement()

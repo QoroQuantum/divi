@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -194,7 +194,7 @@ def run_vqe(noiseless_clicks, noisy_clicks, zne_clicks):
     qasm_circuits = []
     for program in problem.programs.values():
         qasm_circuits.extend(
-            program.meta_circuits["cost_circuit"]
+            program.meta_circuit_factories["cost_circuit"]
             .initialize_circuit_from_params(program.final_params[0])
             .qasm_circuits
         )

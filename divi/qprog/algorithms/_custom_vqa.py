@@ -2,7 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import Any
 from warnings import warn
 
 import numpy as np
@@ -10,8 +9,9 @@ import pennylane as qml
 import sympy as sp
 from qiskit import QuantumCircuit
 
-from divi.circuits import CircuitBundle, MetaCircuit
-from divi.qprog._hamiltonians import _clean_hamiltonian, _is_empty_hamiltonian
+from divi.circuits import MetaCircuit
+from divi.hamiltonians import _clean_hamiltonian, _is_empty_hamiltonian
+from divi.pipeline.stages import CircuitSpecStage
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 
 
@@ -101,7 +101,7 @@ class CustomVQA(VariationalQuantumAlgorithm):
         self._param_shape = self._resolve_param_shape(
             param_shape, len(trainable_param_indices)
         )
-        self._n_params = int(np.prod(self._param_shape))
+        self._n_params_per_layer = int(np.prod(self._param_shape))
 
         self._trainable_param_indices = trainable_param_indices
         self._param_symbols = (
@@ -113,14 +113,17 @@ class CustomVQA(VariationalQuantumAlgorithm):
         )
 
         flat_symbols = self._param_symbols.flatten().tolist()
+
+        # Build cost pipeline once (structure is fixed; only env changes per call).
+        # No measurement pipeline needed — _perform_final_computation is a no-op.
+
+        self._build_pipelines()
         self._qscript = self.qscript.bind_new_parameters(
             flat_symbols, self._trainable_param_indices
         )
 
-    @property
-    def cost_hamiltonian(self) -> qml.operation.Operator:
-        """The cost Hamiltonian for the QuantumScript optimization."""
-        return self._cost_hamiltonian
+    def _build_pipelines(self) -> None:
+        self._cost_pipeline = self._build_cost_pipeline(CircuitSpecStage())
 
     @property
     def param_shape(self) -> tuple[int, ...]:
@@ -222,39 +225,20 @@ class CustomVQA(VariationalQuantumAlgorithm):
             "qscript must be a PennyLane QuantumScript or a Qiskit QuantumCircuit."
         )
 
-    def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
-        """Create the meta-circuit dictionary for CustomVQA.
+    def _create_meta_circuit_factories(self) -> dict[str, MetaCircuit]:
+        """Create the meta-circuit factories for CustomVQA.
 
         Returns:
-            dict[str, MetaCircuit]: Dictionary containing the cost circuit template.
+            dict[str, MetaCircuit]: Dictionary containing the cost circuit factory.
         """
         return {
-            "cost_circuit": self._meta_circuit_factory(
-                self._qscript, symbols=self._param_symbols.flatten()
+            "cost_circuit": MetaCircuit(
+                source_circuit=self._qscript,
+                symbols=self._param_symbols.flatten(),
+                precision=self._precision,
             )
         }
 
-    def _generate_circuits(self) -> list[CircuitBundle]:
-        """Generate circuits for the current parameter sets.
-
-        Returns:
-            list[CircuitBundle]: Circuit bundles tagged by parameter index.
-        """
-        return [
-            self.meta_circuits["cost_circuit"].initialize_circuit_from_params(
-                params_group, param_idx=p
-            )
-            for p, params_group in enumerate(self._curr_params)
-        ]
-
     def _perform_final_computation(self, **kwargs) -> None:
         """No-op by default for custom QuantumScript optimization."""
-        pass
-
-    def _save_subclass_state(self) -> dict[str, Any]:
-        """Save subclass-specific state for checkpointing."""
-        return {}
-
-    def _load_subclass_state(self, state: dict[str, Any]) -> None:
-        """Load subclass-specific state from a checkpoint."""
         pass
