@@ -14,6 +14,7 @@ from http import HTTPStatus
 
 import requests
 from dotenv import dotenv_values, find_dotenv
+from qiskit import QuantumCircuit
 from requests.adapters import HTTPAdapter, Retry
 from rich.console import Console
 
@@ -184,6 +185,7 @@ class QoroService(CircuitRunner):
         config: JobConfig | None = None,
         polling_interval: float = 3.0,
         max_retries: int = 5000,
+        track_depth: bool = False,
     ):
         """Initializes the QoroService client.
 
@@ -198,6 +200,9 @@ class QoroService(CircuitRunner):
                 The interval in seconds for polling job status. Defaults to 3.0.
             max_retries (int, optional):
                 The maximum number of retries for polling. Defaults to 5000.
+            track_depth (bool, optional):
+                If True, record circuit depth for each submitted batch.
+                Access via :attr:`depth_history` after execution. Defaults to False.
         """
 
         # Set up auth_token first (needed for API calls like fetch_qpu_systems)
@@ -222,7 +227,7 @@ class QoroService(CircuitRunner):
         # Resolve string qpu_system names and validate that one is present.
         self.config = self._resolve_and_validate_qpu_system(config)
 
-        super().__init__(shots=self.config.shots)
+        super().__init__(shots=self.config.shots, track_depth=track_depth)
 
     @property
     def supports_expval(self) -> bool:
@@ -459,6 +464,15 @@ class QoroService(CircuitRunner):
                     raise ValueError(
                         f"Circuit '{key}' is not a valid QASM: {msg}"
                     ) from e
+
+        # Track circuit depth if enabled
+        if self.track_depth:
+            self._depth_history.append(
+                [
+                    QuantumCircuit.from_qasm_str(qasm).depth()
+                    for qasm in circuits.values()
+                ]
+            )
 
         # Initialize the job without circuits to get a job_id
         init_payload = {

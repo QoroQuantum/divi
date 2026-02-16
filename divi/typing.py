@@ -1,12 +1,24 @@
-# SPDX-FileCopyrightText: 2026 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
+
+from collections.abc import Hashable
 
 import dimod
 import networkx as nx
 import numpy as np
 import rustworkx as rx
 import scipy.sparse as sps
+
+# ── Pipeline type aliases ────────────────────────────────────────────
+
+AxisLabel = tuple[
+    str, Hashable
+]  # A single (axis_name, value) pair used in batch and branch keys.
+
+QASMTag = tuple[AxisLabel, ...]  # Sequence of AxisLabels labelling a QASM body variant.
+
+# ── QProg type aliases ───────────────────────────────────────────────
 
 GraphProblemTypes = nx.Graph | rx.PyGraph
 QUBOProblemTypes = list | np.ndarray | sps.spmatrix | dimod.BinaryQuadraticModel

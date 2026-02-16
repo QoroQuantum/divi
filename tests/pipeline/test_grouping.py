@@ -6,10 +6,8 @@ import numpy as np
 import pennylane as qml
 import pytest
 
-pass
-
-from divi.circuits import MetaCircuit
-from divi.circuits._grouping import compute_measurement_groups
+from divi.circuits import MetaCircuit, measurements_to_qasm
+from divi.pipeline._grouping import compute_measurement_groups
 
 
 class TestComputeMeasurementGroups:
@@ -144,60 +142,55 @@ class TestComputeMeasurementGroups:
             compute_measurement_groups(measurement, "invalid_strategy")
 
 
-class TestMetaCircuitOverride:
-    """Tests for MetaCircuit with measurement_groups and postprocessing_fn override."""
+class TestMetaCircuitWithGrouping:
+    """Tests for MetaCircuit + compute_measurement_groups + measurements_to_qasm (no compile_metacircuit)."""
 
-    def test_override_produces_same_qasm_as_computed(self):
-        """Override path produces equivalent QASM to computed path for probs."""
+    def test_wires_and_explicit_empty_group_produce_same_measurement_qasm(self):
+        """measurement_groups from 'wires' vs explicit ((),) produce same measurement QASM for probs."""
         ops = [qml.Hadamard(0), qml.CNOT(wires=[0, 1])]
         circuit = qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()])
         symbols = np.array([])
+        meta = MetaCircuit(source_circuit=circuit, symbols=symbols)
 
-        meta_computed = MetaCircuit(
-            source_circuit=circuit,
-            symbols=symbols,
-            grouping_strategy="wires",
+        meas_groups_wires, _, _ = compute_measurement_groups(
+            circuit.measurements[0], "wires"
         )
-        meta_override = MetaCircuit(
-            source_circuit=circuit,
-            symbols=symbols,
-            measurement_groups_override=((),),
-            postprocessing_fn_override=lambda x: x,
+        meas_qasms_wires = measurements_to_qasm(
+            circuit, list(meas_groups_wires), precision=meta.precision
+        )
+        meas_qasms_explicit = measurements_to_qasm(
+            circuit, [()], precision=meta.precision
         )
 
-        bundle_computed = meta_computed.initialize_circuit_from_params([])
-        bundle_override = meta_override.initialize_circuit_from_params([])
-
-        assert len(bundle_computed.executables) == len(bundle_override.executables)
-        for e1, e2 in zip(bundle_computed.executables, bundle_override.executables):
-            assert e1.qasm == e2.qasm
+        assert len(meas_qasms_wires) == len(meas_qasms_explicit) == 1
+        assert meas_qasms_wires[0] == meas_qasms_explicit[0]
+        assert "measure" in meas_qasms_wires[0]
 
 
 class TestParameterFreeMetaCircuit:
-    """Tests for parameter-free MetaCircuit (empty symbols)."""
+    """Tests for parameter-free MetaCircuit with set_measurement_bodies (no compile_metacircuit)."""
 
-    def test_initialize_circuit_from_params_empty_symbols(self):
-        """Parameter-free circuit: empty symbols, empty param_list produces valid QASM."""
+    def test_meta_with_measurement_bodies_produces_valid_full_qasm(self):
+        """MetaCircuit with set_measurement_bodies yields valid body+meas QASM."""
         ops = [qml.Hadamard(0), qml.CNOT(wires=[0, 1])]
         circuit = qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()])
         symbols = np.array([], dtype=object)
 
-        meta = MetaCircuit(
-            source_circuit=circuit,
-            symbols=symbols,
-            measurement_groups_override=((),),
-            postprocessing_fn_override=lambda x: x,
+        meta = MetaCircuit(source_circuit=circuit, symbols=symbols)
+        meas_qasms = measurements_to_qasm(
+            meta.source_circuit, [()], precision=meta.precision
         )
+        meta.set_measurement_bodies((((), meas_qasms[0]),))
 
-        bundle = meta.initialize_circuit_from_params([])
+        body = meta.circuit_body_qasms[0][1]
+        meas = meta.measurement_qasms[0][1]
+        full_qasm = body + meas
 
-        assert len(bundle.executables) >= 1
-        for ex in bundle.executables:
-            assert "OPENQASM" in ex.qasm
-            assert "qreg" in ex.qasm
-            assert "h " in ex.qasm or "h(" in ex.qasm
-            assert "cx " in ex.qasm or "cx(" in ex.qasm
-            assert "measure" in ex.qasm
+        assert "OPENQASM" in full_qasm
+        assert "qreg" in full_qasm
+        assert "h " in full_qasm or "h(" in full_qasm
+        assert "cx " in full_qasm or "cx(" in full_qasm
+        assert "measure" in full_qasm
 
     def test_parameter_free_qasm_not_corrupted(self):
         """Parameter-free QASM must not be corrupted by empty regex substitution."""
@@ -205,18 +198,14 @@ class TestParameterFreeMetaCircuit:
         circuit = qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()])
         symbols = np.array([], dtype=object)
 
-        meta = MetaCircuit(
-            source_circuit=circuit,
-            symbols=symbols,
-            measurement_groups_override=((),),
-            postprocessing_fn_override=lambda x: x,
+        meta = MetaCircuit(source_circuit=circuit, symbols=symbols)
+        meas_qasms = measurements_to_qasm(
+            meta.source_circuit, [()], precision=meta.precision
         )
+        meta.set_measurement_bodies((((), meas_qasms[0]),))
 
-        bundle = meta.initialize_circuit_from_params([])
-        qasm = bundle.executables[0].qasm
+        full_qasm = meta.circuit_body_qasms[0][1] + meta.measurement_qasms[0][1]
 
-        # QASM should contain exactly one h gate and one rz gate, not duplicated
-        assert qasm.count("h ") + qasm.count("h(") >= 1
-        assert "rz(0.5" in qasm or "rz(0.50000000" in qasm
-        # No corruption from empty-pattern substitution (would duplicate chars)
-        assert len(qasm) < 500
+        assert full_qasm.count("h ") + full_qasm.count("h(") >= 1
+        assert "rz(0.5" in full_qasm or "rz(0.50000000" in full_qasm
+        assert len(full_qasm) < 500

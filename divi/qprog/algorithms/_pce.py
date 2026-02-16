@@ -12,8 +12,10 @@ import pennylane as qml
 import sympy as sp
 
 from divi.circuits import MetaCircuit
-from divi.qprog.typing import QUBOProblemTypes, qubo_to_matrix
+from divi.pipeline import CircuitPipeline
+from divi.pipeline.stages import CircuitSpecStage, ParameterBindingStage, PCECostStage
 from divi.qprog.variational_quantum_algorithm import SolutionEntry
+from divi.typing import QUBOProblemTypes, qubo_to_matrix
 
 from ._vqe import VQE
 
@@ -60,20 +62,6 @@ def _decode_parities(
     states = np.array([int(s, 2) for s in state_strings], dtype=np.uint64)
     overlaps = variable_masks_u64[:, None] & states[None, :]
     return _fast_popcount_parity(overlaps)
-
-
-def _compute_soft_energy(
-    parities: npt.NDArray[np.uint8],
-    probs: npt.NDArray[np.float64],
-    alpha: float,
-    qubo_matrix: npt.NDArray[np.float64] | np.ndarray,
-) -> float:
-    """Compute the relaxed (soft) QUBO energy from parity expectations."""
-    mean_parities = parities.dot(probs)
-    z_expectations = 1.0 - (2.0 * mean_parities)
-    x_soft = 0.5 * (1.0 + np.tanh(alpha * z_expectations))
-    Qx = qubo_matrix @ x_soft
-    return float(np.dot(x_soft, Qx))
 
 
 def _setup_dense_encoding(
@@ -152,37 +140,6 @@ def _masks_to_ham_ops(variable_masks_u64: npt.NDArray[np.uint64], n_qubits: int)
     return ";".join(terms)
 
 
-def _compute_hard_cvar_energy(
-    parities: npt.NDArray[np.uint8],
-    counts: npt.NDArray[np.float64],
-    total_shots: float,
-    qubo_matrix: npt.NDArray[np.float64] | np.ndarray,
-    alpha_cvar: float = 0.25,
-) -> float:
-    """Compute CVaR energy from sampled hard assignments."""
-    x_vals = 1.0 - parities.astype(float)
-    Qx = qubo_matrix @ x_vals
-    energies = np.einsum("ij,ij->j", x_vals, Qx)
-
-    sorted_indices = np.argsort(energies)
-    sorted_energies = energies[sorted_indices]
-    sorted_counts = counts[sorted_indices]
-
-    cutoff_count = int(np.ceil(alpha_cvar * total_shots))
-    accumulated_counts = np.cumsum(sorted_counts)
-    limit_idx = np.searchsorted(accumulated_counts, cutoff_count)
-
-    cvar_energy = 0.0
-    count_sum = 0
-    if limit_idx > 0:
-        cvar_energy += np.sum(sorted_energies[:limit_idx] * sorted_counts[:limit_idx])
-        count_sum += np.sum(sorted_counts[:limit_idx])
-
-    remaining = cutoff_count - count_sum
-    cvar_energy += sorted_energies[limit_idx] * remaining
-    return float(cvar_energy / cutoff_count)
-
-
 class PCE(VQE):
     """
     Generalized Pauli Correlation Encoding (PCE) VQE.
@@ -252,25 +209,46 @@ class PCE(VQE):
         placeholder_hamiltonian = qml.Hamiltonian(
             [1.0] * self.n_qubits, [qml.PauliZ(i) for i in range(self.n_qubits)]
         )
+        # PCE uses its own PCECostStage, so disable base-class grouping
+        # to suppress the misleading "overriding grouping_strategy" warning.
+        kwargs.setdefault("grouping_strategy", None)
         super().__init__(hamiltonian=placeholder_hamiltonian, **kwargs)
 
+    def _build_pipelines(self) -> None:
+        # Override VQE's cost pipeline: use PCECostStage instead of
+        # MeasurementStage.  PCECostStage has the same expand
+        # (Z-basis measurement QASMs) but sets ResultFormat.COUNTS and its
+        # reduce applies the nonlinear QUBO energy formula instead of the
+        # linear Hamiltonian combination.
+        # QEMStage is intentionally excluded — ZNE is not applicable to
+        # counts-based measurements.
+        self._cost_pipeline = CircuitPipeline(
+            stages=[
+                CircuitSpecStage(),
+                PCECostStage(
+                    qubo_matrix=self.qubo_matrix,
+                    alpha=self.alpha,
+                    use_soft_objective=self._use_soft_objective,
+                    decode_parities_fn=self._decode_parities_fn,
+                    variable_masks_u64=self._variable_masks_u64,
+                ),
+                ParameterBindingStage(),
+            ]
+        )
+        self._measurement_pipeline = self._build_measurement_pipeline()
+
     def _run_optimization_circuits(self, **kwargs) -> dict[int, float]:
-        """Run optimization circuits, with validation and PCE-specific ham_ops for expval."""
+        """Run cost evaluation via the pipeline."""
         if not self._use_soft_objective and self.backend.supports_expval:
             raise ValueError(
                 "PCE with alpha >= 5.0 (hard CVaR mode) requires shot histograms and "
                 "cannot use expectation-value backends. Use a sampling backend or set "
                 "force_sampling=True in JobConfig when using QoroService."
             )
-        self._curr_circuits = self._generate_circuits(**kwargs)
-        if self.backend.supports_expval:
-            kwargs["ham_ops"] = _masks_to_ham_ops(
-                self._variable_masks_u64, self.n_qubits
-            )
-        return self._dispatch_circuits_and_process_results(**kwargs)
+        return super()._run_optimization_circuits(**kwargs)
 
-    def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
-        """Create meta circuits, handling the edge case of zero parameters."""
+    def _create_meta_circuit_factories(self) -> dict[str, MetaCircuit]:
+        """Create meta-circuit factories, handling the edge case of zero parameters."""
         n_params = self.ansatz.n_params_per_layer(
             self.n_qubits, n_electrons=self.n_electrons
         )
@@ -285,79 +263,21 @@ class PCE(VQE):
         )
 
         return {
-            "cost_circuit": self._meta_circuit_factory(
-                qml.tape.QuantumScript(
+            "cost_circuit": MetaCircuit(
+                source_circuit=qml.tape.QuantumScript(
                     ops=ops, measurements=[qml.expval(self._cost_hamiltonian)]
                 ),
                 symbols=weights_syms.flatten(),
+                precision=self._precision,
             ),
-            "meas_circuit": self._meta_circuit_factory(
-                qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()]),
+            "meas_circuit": MetaCircuit(
+                source_circuit=qml.tape.QuantumScript(
+                    ops=ops, measurements=[qml.probs()]
+                ),
                 symbols=weights_syms.flatten(),
-                grouping_strategy="wires",
+                precision=self._precision,
             ),
         }
-
-    def _post_process_results(
-        self, results: dict[str, dict[str, int]], **kwargs
-    ) -> dict[int, float]:
-        """
-        Calculates loss.
-        If self.alpha < 5.0, computes 'Soft Energy' (Relaxed VQE) for smooth gradients.
-        If self.alpha >= 5.0, computes 'Hard CVaR Energy' for final convergence.
-        Supports both shot histograms and expectation-value results (when ham_ops provided).
-        """
-
-        # Return raw probabilities if requested (skip processing)
-        if getattr(self, "_is_compute_probabilities", False):
-            return super()._post_process_results(results)
-
-        ham_ops = kwargs.get("ham_ops")
-
-        losses = {}
-
-        for p_idx, ham_groups in self._group_results(results).items():
-            if ham_ops is not None:
-                # Expectation-value path: z_expectations come directly from backend
-                expval_dict = next(
-                    shots
-                    for qem_dict in ham_groups.values()
-                    for shots_list in qem_dict.values()
-                    for shots in shots_list
-                )
-                ham_ops_list = ham_ops.split(";")
-                z_expectations = np.array(
-                    [float(expval_dict[op]) for op in ham_ops_list],
-                    dtype=np.float64,
-                )
-                x_soft = 0.5 * (1.0 + np.tanh(self.alpha * z_expectations))
-                losses[p_idx] = float(np.dot(x_soft, self.qubo_matrix @ x_soft))
-            else:
-                # Shot histogram path: PCE ignores Hamiltonian and QEM ids;
-                # aggregate all shots for this parameter set.
-                param_group = [
-                    ("0", shots)
-                    for qem_dict in ham_groups.values()
-                    for shots_list in qem_dict.values()
-                    for shots in shots_list
-                ]
-
-                state_strings, counts, total_shots = _aggregate_param_group(param_group)
-
-                parities = self._decode_parities_fn(
-                    state_strings, self._variable_masks_u64
-                )
-                if self._use_soft_objective:
-                    probs = counts / total_shots
-                    losses[p_idx] = _compute_soft_energy(
-                        parities, probs, self.alpha, self.qubo_matrix
-                    )
-                else:
-                    losses[p_idx] = _compute_hard_cvar_energy(
-                        parities, counts, total_shots, self.qubo_matrix
-                    )
-
-        return losses
 
     def _perform_final_computation(self, **kwargs) -> None:
         """Compute the final eigenstate and decode it into a PCE vector."""

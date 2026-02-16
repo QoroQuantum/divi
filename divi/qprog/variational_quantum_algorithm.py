@@ -6,7 +6,6 @@ import logging
 import pickle
 from abc import abstractmethod
 from datetime import datetime
-from functools import partial
 from pathlib import Path
 from queue import Queue
 from typing import Any, NamedTuple
@@ -18,15 +17,16 @@ import pennylane as qml
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 from scipy.optimize import OptimizeResult
 
-from divi.backends import (
-    CircuitRunner,
-    convert_counts_to_probs,
-    reverse_dict_endianness,
-)
-from divi.circuits import CircuitBundle, CircuitTag, MetaCircuit, format_circuit_tag
+from divi.backends import CircuitRunner
+from divi.circuits import MetaCircuit
 from divi.circuits.qem import _NoMitigation
-from divi.qprog._expectation import _batched_expectation
-from divi.qprog._hamiltonians import convert_hamiltonian_to_pauli_string
+from divi.pipeline import CircuitPipeline
+from divi.pipeline.stages import (
+    CircuitSpecStage,
+    MeasurementStage,
+    ParameterBindingStage,
+    QEMStage,
+)
 from divi.qprog.checkpointing import (
     PROGRAM_STATE_FILE,
     CheckpointConfig,
@@ -47,6 +47,16 @@ from divi.qprog.optimizers import (
 from divi.qprog.quantum_program import QuantumProgram
 
 logger = logging.getLogger(__name__)
+
+PARAM_SET_AXIS = "param_set"
+
+
+def _extract_param_set_idx(key: tuple) -> int:
+    """Extract the param_set index from a pipeline result key."""
+    for axis_name, idx in key:
+        if axis_name == PARAM_SET_AXIS:
+            return idx
+    raise KeyError(f"No '{PARAM_SET_AXIS}' axis found in pipeline result key: {key}")
 
 
 def _get_run_instruction() -> str:
@@ -99,7 +109,7 @@ class ProgramState(BaseModel):
     total_circuit_count: int = Field(validation_alias="_total_circuit_count")
     total_run_time: float = Field(validation_alias="_total_run_time")
     seed: int | None = Field(validation_alias="_seed")
-    grouping_strategy: str = Field(validation_alias="_grouping_strategy")
+    grouping_strategy: str | None = Field(validation_alias="_grouping_strategy")
 
     # Arrays
     curr_params: list[list[float]] | None = Field(
@@ -220,7 +230,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         _grouping_strategy (str): Strategy for grouping quantum operations.
         _qem_protocol (QEMProtocol): Quantum error mitigation protocol.
         _cancellation_event (Event | None): Event for graceful termination.
-        _meta_circuit_factory (callable): Factory for creating MetaCircuit instances.
+        _meta_circuit_factories (dict): Lazily-built mapping of circuit names to MetaCircuit factories.
     """
 
     def __init__(
@@ -234,10 +244,10 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         """Initialize the VariationalQuantumAlgorithm.
 
         This constructor is specifically designed for hybrid quantum-classical
-        variational algorithms. The instance variables `n_layers` and `n_params`
-        must be set by subclasses, where:
+        variational algorithms. The instance variables `n_layers` and
+        `n_params_per_layer` must be set by subclasses, where:
         - `n_layers` is the number of layers in the quantum circuit.
-        - `n_params` is the number of parameters per layer.
+        - `n_params_per_layer` is the number of parameters per layer.
 
         For exotic variational algorithms where these variables may not be applicable,
         the `_initialize_params` method should be overridden to set the parameters.
@@ -251,7 +261,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         Keyword Args:
             initial_params (npt.NDArray[np.float64] | None): Initial parameters with shape
-                (n_param_sets, n_layers * n_params). If provided, these will be set as
+                (n_param_sets, n_layers * n_params_per_layer). If provided, these will be set as
                 the current parameters via the `curr_params` setter (which includes validation).
                 Defaults to None.
             grouping_strategy (str): Strategy for grouping operations in Pennylane transforms.
@@ -299,17 +309,25 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         self.optimizer = optimizer if optimizer is not None else MonteCarloOptimizer()
 
         # --- Backend & Circuit Configuration ---
-        if backend and backend.supports_expval:
-            grouping_strategy = kwargs.pop("grouping_strategy", None)
-            if grouping_strategy is not None and grouping_strategy != "_backend_expval":
+        _UNSET = object()
+        grouping_strategy = kwargs.pop("grouping_strategy", _UNSET)
+        if self.backend.supports_expval and grouping_strategy not in (
+            None,
+            "_backend_expval",
+        ):
+            if grouping_strategy is not _UNSET:
                 warn(
-                    "Backend supports direct expectation value calculation, but a grouping_strategy was provided. "
-                    "The grouping strategy will be ignored.",
+                    "Backend supports direct expectation value calculation, but a "
+                    "grouping_strategy was provided. Overriding to use the "
+                    "backend's native expval support.",
                     UserWarning,
+                    stacklevel=2,
                 )
             self._grouping_strategy = "_backend_expval"
         else:
-            self._grouping_strategy = kwargs.pop("grouping_strategy", "qwc")
+            self._grouping_strategy = (
+                grouping_strategy if grouping_strategy is not _UNSET else "qwc"
+            )
 
         self._qem_protocol = kwargs.pop("qem_protocol", None) or _NoMitigation()
         self._precision = kwargs.pop("precision", 8)
@@ -320,23 +338,15 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         )
 
         # --- Circuit Factory & Templates ---
-        self._meta_circuits = None
-        self._meta_circuit_factory = partial(
-            MetaCircuit,
-            # No grouping strategy for expectation value measurements
-            grouping_strategy=self._grouping_strategy,
-            qem_protocol=self._qem_protocol,
-            precision=self._precision,
-        )
+        self._meta_circuit_factories = None
 
         # --- Control Flow ---
         self._cancellation_event = None
 
     @property
-    @abstractmethod
     def cost_hamiltonian(self) -> qml.operation.Operator:
         """The cost Hamiltonian for the variational problem."""
-        pass
+        return self._cost_hamiltonian
 
     @property
     def total_circuit_count(self) -> int:
@@ -357,23 +367,27 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         return self._total_run_time
 
     @property
-    def meta_circuits(self) -> dict[str, MetaCircuit]:
-        """Get the meta-circuit templates used by this program.
+    def meta_circuit_factories(self) -> dict[str, MetaCircuit]:
+        """Get the meta-circuit factories used by this program.
 
         Returns:
             dict[str, MetaCircuit]: Dictionary mapping circuit names to their
-                MetaCircuit templates.
+                MetaCircuit factories.
         """
-        return self._meta_circuits
+        return self._meta_circuit_factories
 
     @property
-    def n_params(self):
-        """Get the total number of parameters in the quantum circuit.
+    def n_params_per_layer(self):
+        """Number of trainable parameters per layer.
+
+        Subclasses must set ``_n_params_per_layer`` (or override this property)
+        so that the base class can compute the total parameter count as
+        ``n_layers * n_params_per_layer``.
 
         Returns:
-            int: Total number of trainable parameters (n_layers * n_params_per_layer).
+            int: Trainable parameters per layer.
         """
-        return self._n_params
+        return self._n_params_per_layer
 
     def _has_run_optimization(self) -> bool:
         """Check if optimization has been run at least once.
@@ -479,7 +493,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         return self._best_loss
 
     @property
-    def best_probs(self) -> dict[CircuitTag, dict[str, float]]:
+    def best_probs(self) -> dict[str, dict[str, float]]:
         """Get normalized probabilities for the best parameters.
 
         This property provides access to the probability distribution computed
@@ -491,7 +505,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         iterated (dictionary insertion order is preserved in Python 3.7+).
 
         Returns:
-            dict[CircuitTag, dict[str, float]]: Dictionary mapping CircuitTag keys to
+            dict[str, dict[str, float]]: Dictionary mapping parameter-set keys to
                 bitstring probability dictionaries. Bitstrings are binary strings
                 (e.g., "0101"), values are probabilities in range [0.0, 1.0].
                 Returns an empty dict if final computation has not been performed.
@@ -650,7 +664,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         Args:
             value (npt.NDArray[np.float64] | None): Parameters with shape
-                (n_param_sets, n_layers * n_params), or None to reset
+                (n_param_sets, n_layers * n_params_per_layer), or None to reset
                 to uninitialized state.
 
         Raises:
@@ -682,58 +696,41 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         return SubclassState(data=self._save_subclass_state())
 
     @property
-    def meta_circuits(self) -> dict[str, MetaCircuit]:
-        """Get the meta-circuit templates used by this program.
+    def meta_circuit_factories(self) -> dict[str, MetaCircuit]:
+        """Get the meta-circuit factories used by this program.
 
         Returns:
             dict[str, MetaCircuit]: Dictionary mapping circuit names to their
-                MetaCircuit templates.
+                MetaCircuit factories.
         """
-        # Lazy initialization: each instance has its own _meta_circuits.
-        # Note: When used with ProgramBatch, meta_circuits is initialized sequentially
+        # Lazy initialization: each instance has its own _meta_circuit_factories.
+        # Note: When used with ProgramBatch, meta_circuit_factories is initialized sequentially
         # in the main thread before parallel execution to avoid thread-safety issues.
-        if self._meta_circuits is None:
-            self._meta_circuits = self._create_meta_circuits_dict()
-        return self._meta_circuits
+        if self._meta_circuit_factories is None:
+            self._meta_circuit_factories = self._create_meta_circuit_factories()
+
+        return self._meta_circuit_factories
 
     @abstractmethod
-    def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
+    def _create_meta_circuit_factories(self) -> dict[str, MetaCircuit]:
         pass
 
-    @abstractmethod
-    def _generate_circuits(self, **kwargs) -> list[CircuitBundle]:
-        """Generate quantum circuits for execution.
-
-        This method should generate and return a list of Circuit objects based on
-        the current algorithm state and parameters. The circuits will be executed
-        by the backend.
-
-        Args:
-            **kwargs: Additional keyword arguments for circuit generation.
-
-        Returns:
-            list[CircuitBundle]: List of Circuit objects to be executed.
-        """
-        pass
-
-    @abstractmethod
     def _save_subclass_state(self) -> dict[str, Any]:
         """Hook method for subclasses to save additional state.
 
-        Subclasses must override this method to return a dictionary of
-        state variables that should be included in the checkpoint.
+        Override to return a dictionary of state variables that should be
+        included in the checkpoint. Default returns an empty dict.
 
         Returns:
             dict[str, Any]: Dictionary of subclass-specific state.
         """
-        pass
+        return {}
 
-    @abstractmethod
     def _load_subclass_state(self, state: dict[str, Any]) -> None:
         """Hook method for subclasses to load additional state.
 
-        Subclasses must override this method to restore state variables
-        from the checkpoint dictionary. This is called after instance creation.
+        Override to restore state variables from the checkpoint dictionary.
+        Default is a no-op.
 
         Args:
             state (dict[str, Any]): Dictionary of subclass-specific state.
@@ -821,10 +818,10 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         Get the expected shape for initial parameters.
 
         Returns:
-            tuple[int, int]: Shape (n_param_sets, n_layers * n_params) that
+            tuple[int, int]: Shape (n_param_sets, n_layers * n_params_per_layer) that
                 initial parameters should have for this quantum program.
         """
-        return (self.optimizer.n_param_sets, self.n_layers * self.n_params)
+        return (self.optimizer.n_param_sets, self.n_layers * self.n_params_per_layer)
 
     def _validate_initial_params(self, params: npt.NDArray[np.float64]):
         """
@@ -851,188 +848,80 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         Generates random parameters with values uniformly distributed between
         0 and 2π. The number of parameter sets depends on the optimizer being used.
         """
-        total_params = self.n_layers * self.n_params
+        total_params = self.n_layers * self.n_params_per_layer
         self._curr_params = self._rng.uniform(
             0, 2 * np.pi, (self.optimizer.n_param_sets, total_params)
         )
 
-    def _run_optimization_circuits(self, **kwargs) -> dict[int, float]:
-        self._curr_circuits = self._generate_circuits(**kwargs)
+    # ------------------------------------------------------------------ #
+    # Pipeline builders
+    # ------------------------------------------------------------------ #
 
-        if self.backend.supports_expval:
-            kwargs["ham_ops"] = convert_hamiltonian_to_pauli_string(
-                self.cost_hamiltonian, self.n_qubits
-            )
+    def _build_pipeline_env(self, **overrides) -> "PipelineEnv":
+        """Construct a PipelineEnv, injecting the current parameter sets."""
+        overrides.setdefault("param_sets", self._curr_params)
+        return super()._build_pipeline_env(**overrides)
 
-        losses = self._dispatch_circuits_and_process_results(**kwargs)
+    def _build_cost_pipeline(self, spec_stage: "Stage") -> "CircuitPipeline":
+        """Build the cost-evaluation pipeline.
 
-        return losses
-
-    def _group_results(self, results: dict[CircuitTag, dict[str, int]]) -> dict[
-        int,
-        dict[int, dict[tuple[str, int], list[dict[str, int]]]],
-    ]:
-        """
-        Group results by parameter id, hamiltonian id (for multi-sample QDrift),
-        and (qem_name, qem_id).
-
-        Returns {param_id: {hamiltonian_id: {(qem_name, qem_id): [shots...]}}}.
-
-        Shots within each (qem_name, qem_id) list are ordered by meas_id.
-        """
-        return self._group_results_by_tag(results)
-
-    def _merge_probability_histograms(
-        self,
-        grouped: dict[
-            int,
-            dict[int, dict[tuple[str, int], list[dict[str, int]]]],
-        ],
-    ) -> dict[str, dict[str, float]]:
-        """Merge probabilities across Hamiltonian samples while preserving QEM identity."""
-        merged: dict[str, dict[str, float]] = {}
-
-        for param_id, ham_dict in grouped.items():
-            qem_keys = set()
-            for qem_dict in ham_dict.values():
-                qem_keys.update(qem_dict.keys())
-
-            for qem_key in sorted(qem_keys, key=lambda k: k[1]):
-                qem_name, qem_id = qem_key
-                probs_per_ham: list[dict[str, float]] = []
-
-                for _, qem_dict in ham_dict.items():
-                    if qem_key not in qem_dict:
-                        continue
-                    shots_list = qem_dict[qem_key]
-                    merged_counts = self._merge_shot_histograms(shots_list)
-                    probs_per_ham.append(
-                        {
-                            bitstring: count / self.backend.shots
-                            for bitstring, count in merged_counts.items()
-                        }
-                    )
-
-                if not probs_per_ham:
-                    continue
-
-                tag = CircuitTag(
-                    param_id=param_id,
-                    qem_name=qem_name,
-                    qem_id=qem_id,
-                    hamiltonian_id=0,
-                    meas_id=0,
-                )
-                merged[format_circuit_tag(tag)] = self._average_probabilities(
-                    probs_per_ham
-                )
-
-        return reverse_dict_endianness(merged)
-
-    def _apply_qem_protocol(
-        self, exp_matrix: npt.NDArray[np.float64]
-    ) -> list[npt.NDArray[np.float64]]:
-        """Apply the configured QEM protocol to expectation value matrices."""
-        return [
-            self._qem_protocol.postprocess_results(exp_vals) for exp_vals in exp_matrix
-        ]
-
-    def _compute_marginal_results(
-        self,
-        qem_groups: dict[tuple[str, int], list[dict[str, int]]],
-        measurement_groups: list[list[qml.operation.Operator]],
-        ham_ops: str | None,
-    ) -> list[npt.NDArray[np.float64] | list[npt.NDArray[np.float64]]]:
-        """Compute marginal results, handling backend modes and QEM."""
-        qem_sorted = sorted(qem_groups.items(), key=lambda x: x[0][1])
-        if self.backend.supports_expval:
-            if ham_ops is None:
-                raise ValueError(
-                    "Hamiltonian operators (ham_ops) are required when using a backend "
-                    "that supports expectation values, but were not provided."
-                )
-            ham_ops_list = ham_ops.split(";")
-            qem_group_values = [shots for _, shots in qem_sorted]
-            return [
-                self._apply_qem_protocol(
-                    np.array(
-                        [
-                            [shot_dict[op] for op in ham_ops_list]
-                            for shot_dict in shots_dicts
-                        ]
-                    ).T
-                )
-                for shots_dicts in qem_group_values
-            ] or []
-
-        qem_group_values = [shots for _, shots in qem_sorted]
-        shots_by_qem_idx = zip(*qem_group_values)
-        marginal_results: list[
-            npt.NDArray[np.float64] | list[npt.NDArray[np.float64]]
-        ] = []
-        wire_order = tuple(reversed(self.cost_hamiltonian.wires))
-        for shots_dicts, curr_measurement_group in zip(
-            shots_by_qem_idx, measurement_groups
-        ):
-            exp_matrix = _batched_expectation(
-                shots_dicts, curr_measurement_group, wire_order
-            )
-            mitigated = self._apply_qem_protocol(exp_matrix)
-            marginal_results.append(mitigated if len(mitigated) > 1 else mitigated[0])
-
-        return marginal_results
-
-    def _post_process_results(
-        self, results: dict[CircuitTag, dict[str, int]], **kwargs
-    ) -> dict[int, float]:
-        """
-        Post-process the results of the quantum problem.
+        Stages: spec_stage → Measurement → ParameterBinding → QEM.
 
         Args:
-            results (dict[CircuitTag, dict[str, int]]): The shot histograms of the quantum execution
-                step. Keys are CircuitTag instances containing param, QEM, and measurement ids.
-
-        Returns:
-            dict[int, float]: The energies for each parameter set grouping, where the dict keys
-                correspond to the parameter indices.
+            spec_stage: A SpecStage producing MetaCircuit(s) from the
+                cost Hamiltonian (e.g. TrotterSpecStage).
         """
-        if self._is_compute_probabilities:
-            grouped = self._group_results(results)
-            has_multi_ham = any(len(ham_dict) > 1 for ham_dict in grouped.values())
-            if has_multi_ham:
-                return self._merge_probability_histograms(grouped)
-            probs = convert_counts_to_probs(results, self.backend.shots)
-            return reverse_dict_endianness(probs)
 
-        if not (self._cancellation_event and self._cancellation_event.is_set()):
-            self.reporter.info(
-                message="Post-processing output", iteration=self.current_iteration
-            )
+        return CircuitPipeline(
+            stages=[
+                spec_stage,
+                MeasurementStage(grouping_strategy=self._grouping_strategy),
+                ParameterBindingStage(),
+                QEMStage(protocol=self._qem_protocol),
+            ]
+        )
 
-        losses = {}
-        ham_ops = kwargs.get("ham_ops")
+    def _build_measurement_pipeline(self) -> "CircuitPipeline":
+        """Build the measurement pipeline for solution extraction.
 
-        for p, ham_dict in self._group_results(results).items():
-            energies: list[float] = []
-            for ham_id, qem_groups in ham_dict.items():
-                cost_circuit = (
-                    self._get_cost_circuit_for_hamiltonian(ham_id)
-                    if hasattr(self, "_get_cost_circuit_for_hamiltonian")
-                    else self.meta_circuits["cost_circuit"]
-                )
-                measurement_groups = cost_circuit.measurement_groups
-                marginal_results = self._compute_marginal_results(
-                    qem_groups=qem_groups,
-                    measurement_groups=measurement_groups,
-                    ham_ops=ham_ops,
-                )
+        Stages: SingleCircuitSpec → Measurement → ParameterBinding.
 
-                pl_loss = cost_circuit.postprocessing_fn(marginal_results).item()
-                energies.append(pl_loss)
+        Note: QEM is intentionally excluded — ZNE error mitigation applies
+        only to cost evaluation (expectation values), not probability extraction.
+        """
 
-            losses[p] = np.mean(energies) + self.loss_constant
+        return CircuitPipeline(
+            stages=[
+                CircuitSpecStage(),
+                MeasurementStage(),
+                ParameterBindingStage(),
+            ]
+        )
 
-        return losses
+    # ------------------------------------------------------------------ #
+    # Execution
+    # ------------------------------------------------------------------ #
+
+    def _run_optimization_circuits(self, **kwargs) -> dict[int, float]:
+        """Run cost evaluation via the pipeline.
+
+        Uses ``_cost_pipeline`` with the ``cost_circuit`` meta-circuit factory.
+        Subclasses that need a different initial spec (e.g. QAOA passes the
+        Hamiltonian directly) should override this method.
+        """
+        env = self._build_pipeline_env()
+        result = self._cost_pipeline.run(
+            initial_spec=self.meta_circuit_factories["cost_circuit"],
+            env=env,
+        )
+        self._total_circuit_count += env.artifacts.get("circuit_count", 0)
+        self._total_run_time += env.artifacts.get("run_time", 0.0)
+        self._current_execution_result = env.artifacts.get("_current_execution_result")
+
+        return {
+            _extract_param_set_idx(key): value + self.loss_constant
+            for key, value in result.items()
+        }
 
     def _perform_final_computation(self, **kwargs) -> None:
         """
@@ -1113,7 +1002,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 return losses.item()
 
         self._grad_shift_mask = _compute_parameter_shift_mask(
-            self.n_layers * self.n_params
+            self.n_layers * self.n_params_per_layer
         )
 
         def grad_fn(params):
@@ -1213,19 +1102,17 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         return self.total_circuit_count, self.total_run_time
 
     def _run_solution_measurement(self) -> None:
-        """Execute measurement circuits to obtain probability distributions for solution extraction."""
-
-        if "meas_circuit" not in self.meta_circuits:
-            raise NotImplementedError(
-                f"{type(self).__name__} does not implement a 'meas_circuit'."
-            )
-
-        self._is_compute_probabilities = True
-
-        # Compute probabilities for best parameters (the ones that achieved best loss)
+        """Execute measurement circuits via the pipeline to obtain probabilities."""
         self._curr_params = np.atleast_2d(self._best_params)
-        self._curr_circuits = self._generate_circuits()
-        best_probs = self._dispatch_circuits_and_process_results()
-        self._best_probs.update(best_probs)
+        env = self._build_pipeline_env()
+        result = self._measurement_pipeline.run(
+            initial_spec=self.meta_circuit_factories["meas_circuit"],
+            env=env,
+        )
+        self._total_circuit_count += env.artifacts.get("circuit_count", 0)
+        self._total_run_time += env.artifacts.get("run_time", 0.0)
+        self._current_execution_result = env.artifacts.get("_current_execution_result")
 
-        self._is_compute_probabilities = False
+        self._best_probs = {
+            _extract_param_set_idx(key): value for key, value in result.items()
+        }

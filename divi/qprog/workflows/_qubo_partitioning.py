@@ -17,7 +17,7 @@ from divi.backends import CircuitRunner
 from divi.qprog.algorithms import QAOA
 from divi.qprog.batch import ProgramBatch
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer, copy_optimizer
-from divi.qprog.typing import QUBOProblemTypes
+from divi.typing import QUBOProblemTypes
 
 
 # Helper function to merge subsamples in-place

@@ -21,9 +21,10 @@ import warnings
 
 import networkx as nx
 
-from divi.backends import ParallelSimulator
-from divi.qprog import QAOA, GraphProblem, QDrift
+from divi.hamiltonians import QDrift
+from divi.qprog import QAOA, GraphProblem
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from tutorials._backend import get_backend
 
 
 def _generate_random_graph(
@@ -63,7 +64,7 @@ if __name__ == "__main__":
     max_cut_val, _ = nx.algorithms.approximation.maxcut.one_exchange(G)
 
     # Single backend with depth tracking; reset tracker between runs to compare depths
-    backend = ParallelSimulator(shots=1000, track_depth=True)
+    backend = get_backend(shots=1000, track_depth=True)
 
     common = dict(
         problem=G,

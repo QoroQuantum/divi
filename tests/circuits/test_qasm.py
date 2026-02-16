@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -9,7 +9,7 @@ import sympy as sp
 from sympy import Symbol
 
 from divi.circuits._qasm_conversion import _ops_to_qasm, to_openqasm
-from divi.circuits.qem import _NoMitigation
+from divi.circuits.qem import _NoMitigation, apply_protocol_to_qasm
 
 
 class TestOpsToQasm:
@@ -93,11 +93,6 @@ class TestToOpenqasm:
         """Fixture for the default measurement group with expval(PauliZ(0))."""
         return [[qml.expval(qml.PauliZ(0))]]
 
-    @pytest.fixture
-    def qem_protocol(self):
-        """Fixture for a QEM protocol instance."""
-        return _NoMitigation()
-
     def _assert_result_structure(self, result, expected_length=1):
         """Helper to assert the structure of a result list with tuples."""
         assert isinstance(result, list)
@@ -123,18 +118,23 @@ class TestToOpenqasm:
         else:
             assert measurement not in measurements_str
 
-    def test_qem_protocol_without_symbols_raises_error(
-        self, simple_circuit, default_measurement_group, qem_protocol
+    def test_apply_protocol_to_qasm_without_symbols_on_symbolic_qasm_raises_error(
+        self, default_measurement_group
     ):
-        """Test that QEM protocol without symbols raises ValueError."""
+        """Symbolic QASM should fail parsing if symbols are not declared."""
+        theta = Symbol("theta")
+        symbolic_circuit = qml.tape.QuantumScript(
+            ops=[qml.RX(theta, wires=0)], measurements=[qml.expval(qml.PauliZ(0))]
+        )
+        circuits, _ = to_openqasm(
+            symbolic_circuit,
+            default_measurement_group,
+            return_measurements_separately=True,
+        )
+        qasm_body = circuits[0]
 
-        with pytest.raises(
-            ValueError,
-            match="When passing a QEMProtocol instance, the Sympy symbols in the circuit should be provided",
-        ):
-            to_openqasm(
-                simple_circuit, default_measurement_group, qem_protocol=qem_protocol
-            )
+        with pytest.raises(Exception):
+            apply_protocol_to_qasm(qasm_body, _NoMitigation())
 
     def test_empty_circuit_returns_header_only(self):
         """Test empty circuit returns only QASM headers."""
@@ -145,7 +145,11 @@ class TestToOpenqasm:
         qscript._wires = qml.wires.Wires([])
         measurement_groups = []
 
-        result = to_openqasm(qscript, measurement_groups)
+        with pytest.warns(
+            UserWarning,
+            match="No measurement groups provided",
+        ):
+            result = to_openqasm(qscript, measurement_groups)
 
         # Should return just the QASM headers as a string (early return)
         assert isinstance(result, str)
@@ -237,47 +241,54 @@ class TestToOpenqasm:
         # Should not have any measurements
         assert "measure" not in result[0]
 
-    def test_qem_protocol_with_symbols(
-        self, simple_circuit, default_measurement_group, qem_protocol
-    ):
-        """Test QEM protocol with symbols works correctly."""
-
-        symbols = [Symbol("theta")]
-
-        result = to_openqasm(
-            simple_circuit,
+    def test_apply_protocol_to_qasm_with_symbols(self, default_measurement_group):
+        """Test apply_protocol_to_qasm works on symbolic circuits when symbols are provided."""
+        theta = Symbol("theta")
+        symbolic_circuit = qml.tape.QuantumScript(
+            ops=[qml.RX(theta, wires=0)], measurements=[qml.expval(qml.PauliZ(0))]
+        )
+        circuits, _ = to_openqasm(
+            symbolic_circuit,
             default_measurement_group,
-            symbols=symbols,
-            qem_protocol=qem_protocol,
+            return_measurements_separately=True,
+        )
+        qasm_body = circuits[0]
+
+        result = apply_protocol_to_qasm(
+            qasm_body,
+            _NoMitigation(),
+            symbols=[theta],
         )
 
-        # Should work without error and return tuples
-        circuit, measurements = self._assert_result_structure(result)
-        # QEM protocol processing converts back to OpenQASM 2.0
-        assert "OPENQASM 2.0;" in circuit
+        assert isinstance(result, tuple) and len(result) == 1
+        assert result[0][0] == (("qem", 0),)  # single (tag, body) pair
+        assert "OPENQASM 2.0;" in result[0][1]
 
-    def test_qem_protocol_with_empty_symbols_list(
-        self, simple_circuit, default_measurement_group, qem_protocol
+    def test_apply_protocol_to_qasm_with_empty_symbols_list(
+        self, simple_circuit, default_measurement_group
     ):
-        """Test QEM protocol with empty symbols list (potential edge case)."""
-
-        symbols = []  # Empty symbols list
-
-        # This should work without error even with empty symbols
-        result = to_openqasm(
+        """Empty symbols list should be fine for non-symbolic QASM."""
+        circuits, _ = to_openqasm(
             simple_circuit,
             default_measurement_group,
-            symbols=symbols,
-            qem_protocol=qem_protocol,
+            return_measurements_separately=True,
+        )
+        qasm_body = circuits[0]
+
+        result = apply_protocol_to_qasm(
+            qasm_body,
+            _NoMitigation(),
+            symbols=[],
         )
 
-        # Should work without error
-        self._assert_result_structure(result)
+        assert isinstance(result, tuple) and len(result) == 1
+        assert isinstance(result[0], tuple) and len(result[0]) == 2
+        assert isinstance(result[0][1], str)
 
-    def test_qem_protocol_with_sympy_array_symbols(
-        self, default_measurement_group, qem_protocol
+    def test_apply_protocol_to_qasm_with_sympy_array_symbols(
+        self, default_measurement_group
     ):
-        """Test QEM protocol with numpy array of sympy symbols (from sp.symarray).
+        """Test apply_protocol_to_qasm with numpy array of sympy symbols (from sp.symarray).
 
         This test verifies that when symbols contains numpy arrays (from sp.symarray),
         they are properly flattened and declared individually in QASM 3.0 format.
@@ -302,24 +313,26 @@ class TestToOpenqasm:
         symbols = [beta, thetas]
 
         # This should work without error - array symbols should be flattened
-        result = to_openqasm(
+        circuits, _ = to_openqasm(
             circuit,
             default_measurement_group,
+            return_measurements_separately=True,
+        )
+        qasm_body = circuits[0]
+
+        result = apply_protocol_to_qasm(
+            qasm_body,
+            _NoMitigation(),
             symbols=symbols,
-            qem_protocol=qem_protocol,
         )
 
-        # Should work without error - the fact that we get here without an exception
-        # means the fix worked (the QASM parser successfully parsed the flattened symbols)
-        # Before the fix, this would fail with QasmException due to array notation
-        self._assert_result_structure(result)
+        assert isinstance(result, tuple) and len(result) == 1
+        assert isinstance(result[0][1], str)
 
-    def test_qem_protocol_cirq_conversion_bug(
+    def test_apply_protocol_to_qasm_multiple_modified_circuits(
         self, simple_circuit, default_measurement_group
     ):
-        """Test QEM protocol cirq conversion with multiple circuits."""
-
-        symbols = [Symbol("theta")]
+        """Test apply_protocol_to_qasm returns one QASM per modified cirq circuit."""
 
         # Use a mock QEM protocol that returns multiple circuits
         class MockQEMProtocol:
@@ -327,26 +340,25 @@ class TestToOpenqasm:
                 # Return multiple circuits to test the loop
                 return [cirq_circuit, cirq_circuit]
 
-        qem_protocol = MockQEMProtocol()
-
-        result = to_openqasm(
+        circuits, _ = to_openqasm(
             simple_circuit,
             default_measurement_group,
-            symbols=symbols,
-            qem_protocol=qem_protocol,
+            return_measurements_separately=True,
+        )
+        qasm_body = circuits[0]
+
+        result = apply_protocol_to_qasm(
+            qasm_body,
+            MockQEMProtocol(),
+            symbols=[Symbol("theta")],
         )
 
-        # Should return multiple circuits (one for each QEM circuit)
-        assert (
-            isinstance(result, list) and len(result) == 2
-        )  # Two circuits from QEM protocol
-
-        # Each result should be a tuple
-        for circuit, measurements in result:
-            assert isinstance(circuit, str)
-            assert isinstance(measurements, str)
-            # QEM protocol processing converts back to OpenQASM 2.0
-            self._assert_qasm_headers(circuit)
+        # Should return multiple (tag, body) pairs (one per QEM circuit)
+        assert isinstance(result, tuple) and len(result) == 2
+        for tag, qasm_str in result:
+            assert isinstance(tag, tuple)
+            assert isinstance(qasm_str, str)
+            self._assert_qasm_headers(qasm_str)
 
     def test_diagonalizing_gates_edge_case(
         self, simple_circuit, default_measurement_group
@@ -443,10 +455,10 @@ class TestToOpenqasm:
         self._assert_measurement(measurement_qasm, 1, should_exist=True)
         self._assert_measurement(measurement_qasm, 2, should_exist=True)
 
-    def test_qem_protocol_qasm_cleanup_works(
+    def test_apply_protocol_to_qasm_cleanup_works(
         self, monkeypatch, simple_circuit, default_measurement_group
     ):
-        """Test that QASM from cirq is correctly cleaned up."""
+        """Test that QASM from cirq is correctly cleaned up by apply_protocol_to_qasm."""
 
         # A "dirty" QASM string with features that should be cleaned.
         dirty_qasm_from_cirq = """
@@ -471,17 +483,22 @@ rx(0.5) q[0];
                 # This doesn't need to be a real circuit, as cirq.qasm is mocked
                 return [None]
 
-        # 3. Run the function with the mock protocol
-        result = to_openqasm(
+        circuits, _ = to_openqasm(
             simple_circuit,
             default_measurement_group,
-            qem_protocol=MockQEMProtocol(),
-            symbols=[Symbol("theta")],  # Must be provided
             return_measurements_separately=True,
         )
+        qasm_body = circuits[0]
 
-        circuits, _measurements = result
-        cleaned_qasm = circuits[0]
+        # 3. Run the function with the mock protocol
+        result = apply_protocol_to_qasm(
+            qasm_body,
+            MockQEMProtocol(),
+            symbols=[Symbol("theta")],
+        )
+
+        assert isinstance(result, tuple) and len(result) == 1
+        cleaned_qasm = result[0][1]  # (tag, body) -> body
 
         # 4. Assert the cleanup was successful
         assert "//" not in cleaned_qasm  # Comments should be removed

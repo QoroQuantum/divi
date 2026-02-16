@@ -7,9 +7,9 @@ from functools import partial
 import dimod
 import numpy as np
 
-from divi.backends import ParallelSimulator
 from divi.qprog import QAOA
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from tutorials._backend import get_backend
 
 
 def _bqm_to_numpy_matrix(bqm):
@@ -45,7 +45,7 @@ if __name__ == "__main__":
         n_layers=2,
         optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
         max_iterations=10,
-        backend=ParallelSimulator(shots=10000),
+        backend=get_backend(shots=10000),
     )
 
     qaoa_problem.run()

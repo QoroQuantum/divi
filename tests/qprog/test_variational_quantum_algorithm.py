@@ -2,27 +2,20 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from functools import partial
 from typing import Any
 
 import numpy as np
 import pennylane as qml
 import pytest
 import sympy as sp
-from mitiq.zne.inference import LinearFactory
-from mitiq.zne.scaling import fold_global
-from pennylane.measurements import ExpectationMP
 from scipy.optimize import OptimizeResult
 
-from divi.circuits import CircuitTag
-from divi.circuits.qem import ZNE
+from divi.circuits import MetaCircuit
+from divi.pipeline.stages import CircuitSpecStage
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.exceptions import _CancelledError
 from divi.qprog.optimizers import MonteCarloOptimizer
-from divi.qprog.variational_quantum_algorithm import (
-    VariationalQuantumAlgorithm,
-    _batched_expectation,
-)
+from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 
 
 @pytest.fixture
@@ -41,7 +34,7 @@ class SampleVQAProgram(VariationalQuantumAlgorithm):
         self.run_time = run_time
 
         self.n_layers = 1
-        self._n_params = 4
+        self._n_params_per_layer = 4
         self.current_iteration = 0
         self.max_iterations = 0  # Default value to prevent AttributeError
 
@@ -52,12 +45,16 @@ class SampleVQAProgram(VariationalQuantumAlgorithm):
         )
         self.loss_constant = 0.0
 
+    def _build_pipelines(self) -> None:
+        self._cost_pipeline = self._build_cost_pipeline(CircuitSpecStage())
+        self._measurement_pipeline = self._build_measurement_pipeline()
+
     @property
     def cost_hamiltonian(self) -> qml.operation.Operator:
         """The cost Hamiltonian for the VQA problem."""
         return self._cost_hamiltonian
 
-    def _create_meta_circuits_dict(self):
+    def _create_meta_circuit_factories(self):
         symbols = [sp.Symbol("beta"), sp.symarray("theta", 3)]
         ops = [
             qml.RX(symbols[0], wires=0),
@@ -67,15 +64,12 @@ class SampleVQAProgram(VariationalQuantumAlgorithm):
         source_circuit = qml.tape.QuantumScript(
             ops=ops, measurements=[qml.expval(self.cost_hamiltonian)]
         )
-        meta_circuit = self._meta_circuit_factory(
+        meta_circuit = MetaCircuit(
             source_circuit=source_circuit,
             symbols=symbols,
+            precision=self._precision,
         )
         return {"cost_circuit": meta_circuit}
-
-    def _generate_circuits(self, **kwargs):
-        """Generate circuits - dummy implementation for testing."""
-        return []
 
     def run(
         self,
@@ -135,7 +129,7 @@ class TestProgram:
 
         program._initialize_params()
         first_init = program._curr_params[0]
-        assert first_init.shape == (program.n_layers * program.n_params,)
+        assert first_init.shape == (program.n_layers * program.n_params_per_layer,)
 
         program._initialize_params()
         second_init = program._curr_params[0]
@@ -143,125 +137,6 @@ class TestProgram:
         np.testing.assert_raises(
             AssertionError, np.testing.assert_array_equal, first_init, second_init
         )
-
-    def test_grouping_strategies_and_expectation_values(self, mocker):
-        """Test that different grouping strategies produce expected number of groups and identical expectation values."""
-        strategies = [(None, 3, 2), ("wires", 2, 2), ("qwc", 1, 1)]
-        expvals_collector = []
-
-        for strategy, expected_n_groups, expected_n_diag in strategies:
-            program = self._create_sample_program(mocker, grouping_strategy=strategy)
-            program.loss_constant = 0.5
-            program.backend = self._create_mock_backend(mocker)
-
-            meta_circuit = program.meta_circuits["cost_circuit"]
-            assert len(meta_circuit.measurement_groups) == expected_n_groups
-            assert (
-                len(tuple(filter(lambda x: "h" in x, meta_circuit._measurements)))
-                == expected_n_diag
-            )
-
-            program._initialize_params()
-            fake_shot_histogram = {"00": 23, "01": 27, "10": 15, "11": 35}
-            fake_results = {
-                CircuitTag(
-                    param_id=0, qem_name="mock-qem", qem_id=0, meas_id=i
-                ): fake_shot_histogram
-                for i in range(expected_n_groups)
-            }
-            expvals_collector.append(program._post_process_results(fake_results)[0])
-
-        assert len(expvals_collector) == 3
-        assert all(value == expvals_collector[0] for value in expvals_collector[1:])
-
-    def test_post_process_with_zne(self, mocker):
-        """Tests that _post_process_results correctly applies ZNE extrapolation."""
-        scale_factors = [1.0, 2.0, 3.0]
-        zne_protocol = ZNE(
-            folding_fn=partial(fold_global),
-            scale_factors=scale_factors,
-            extrapolation_factory=LinearFactory(scale_factors=scale_factors),
-        )
-        program = self._create_sample_program(mocker, qem_protocol=zne_protocol)
-        program.loss_constant = 0.0
-        program.backend = self._create_mock_backend(mocker)
-
-        mock_shots_per_sf = [
-            {"00": 95, "11": 5},
-            {"00": 90, "11": 10},
-            {"00": 85, "11": 15},
-        ]
-        mock_results = {}
-        n_measurement_groups = 3
-        for qem_run_id, shots in enumerate(mock_shots_per_sf):
-            for meas_group_id in range(n_measurement_groups):
-                key = CircuitTag(
-                    param_id=0,
-                    qem_name="zne",
-                    qem_id=qem_run_id,
-                    meas_id=meas_group_id,
-                )
-                mock_results[key] = shots
-
-        final_losses = program._post_process_results(mock_results)
-        assert np.isclose(final_losses[0], 3.0)
-
-    def test_post_process_with_expectation_values_happy_path(self, mocker):
-        """Test _post_process_results when backend supports expectation values with multiple parameter sets."""
-        mock_backend = self._create_mock_backend(mocker, supports_expval=True)
-        mock_optimizer = self._create_mock_optimizer(mocker, n_param_sets=2)
-        program = self._create_sample_program(
-            mocker,
-            grouping_strategy=None,
-            backend=mock_backend,
-            optimizer=mock_optimizer,
-        )
-        program.loss_constant = 0.5
-
-        ham_ops = "XI;IZ;XZ"
-        fake_results = {
-            CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0): {
-                "XI": 0.5,
-                "IZ": -0.3,
-                "XZ": 0.2,
-            },
-            CircuitTag(param_id=1, qem_name="NoMitigation", qem_id=0, meas_id=0): {
-                "XI": 0.7,
-                "IZ": -0.1,
-                "XZ": -0.2,
-            },
-        }
-
-        losses = program._post_process_results(fake_results, ham_ops=ham_ops)
-
-        assert len(losses) == 2
-        assert 0 in losses
-        assert 1 in losses
-
-        expected_loss_0 = 0.5 + (-0.3) + 0.2 + program.loss_constant
-        expected_loss_1 = 0.7 + (-0.1) + (-0.2) + program.loss_constant
-        assert np.isclose(losses[0], expected_loss_0)
-        assert np.isclose(losses[1], expected_loss_1)
-
-    def test_post_process_with_expectation_values_missing_ham_ops(self, mocker):
-        """Test _post_process_results raises error when ham_ops is missing but supports_expval is True."""
-        mock_backend = self._create_mock_backend(mocker, supports_expval=True)
-        program = self._create_sample_program(
-            mocker, grouping_strategy="_backend_expval", backend=mock_backend
-        )
-        program.loss_constant = 0.0
-
-        fake_results = {
-            CircuitTag(param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0): {
-                "XI": 0.5,
-                "IZ": -0.3,
-            }
-        }
-        with pytest.raises(
-            ValueError,
-            match="Hamiltonian operators.*required when using a backend.*supports expectation values",
-        ):
-            program._post_process_results(fake_results)
 
     def test_grouping_strategy_warning_with_expval_backend(self, mocker):
         """Test that a warning is issued when grouping_strategy is provided but backend supports expval."""
@@ -277,405 +152,6 @@ class TestProgram:
 
         # Verify that the grouping strategy was overridden to "_backend_expval"
         assert program._grouping_strategy == "_backend_expval"
-
-    @pytest.mark.parametrize(
-        "n_params,n_hamiltonians,n_meas_ids",
-        [
-            (2, 1, 2),
-            (2, 3, 2),
-        ],
-        ids=["single_sample", "multi_sample"],
-    )
-    def test_group_results_returns_3_level_structure(
-        self, mocker, n_params, n_hamiltonians, n_meas_ids
-    ):
-        """_group_results returns 3-level {param_id: {ham_id: {(qem_name, qem_id): [shots...]}}}."""
-        program = self._create_sample_program(mocker)
-        program._initialize_params()
-
-        fake_shot = {"00": 50, "11": 50}
-        ham_ids = list(range(n_hamiltonians))
-        qem_key = ("NoMitigation", 0)
-        results = {
-            CircuitTag(
-                param_id=p,
-                qem_name="NoMitigation",
-                qem_id=0,
-                hamiltonian_id=h,
-                meas_id=m,
-            ): fake_shot
-            for p in range(n_params)
-            for h in ham_ids
-            for m in range(n_meas_ids)
-        }
-
-        grouped = program._group_results(results)
-
-        for p in range(n_params):
-            assert p in grouped
-            assert len(grouped[p]) == n_hamiltonians
-            for h in ham_ids:
-                assert h in grouped[p]
-                assert qem_key in grouped[p][h]
-                assert len(grouped[p][h][qem_key]) == n_meas_ids
-
-    def test_group_results_groups_circuit_tag_keys_correctly(self, mocker):
-        """_group_results correctly groups results by param_id, hamiltonian_id, qem_key."""
-        program = self._create_sample_program(mocker)
-        program._initialize_params()
-        # CircuitTag(param_id, qem_name, qem_id, meas_id, hamiltonian_id)
-        results = {
-            CircuitTag(0, "NoMitigation", 0, 0, 0): {"00": 50, "11": 50},
-            CircuitTag(0, "NoMitigation", 0, 0, 1): {"00": 50, "11": 50},
-        }
-        grouped = program._group_results(results)
-        qem_key = ("NoMitigation", 0)
-        assert grouped[0][0][qem_key] == [{"00": 50, "11": 50}]
-        assert grouped[0][1][qem_key] == [{"00": 50, "11": 50}]
-
-    def test_group_results_orders_shots_by_meas_id(self, mocker):
-        """Shots within each (qem_name, qem_id) list are sorted by meas_id (critical for _compute_marginal_results)."""
-        program = self._create_sample_program(mocker)
-        program._initialize_params()
-        shots_a = {"00": 100, "01": 0, "10": 0, "11": 0}
-        shots_b = {"00": 0, "01": 100, "10": 0, "11": 0}
-        shots_c = {"00": 0, "01": 0, "10": 0, "11": 100}
-        # Insert in wrong order (meas_id 2, 0, 1); CircuitTag(param_id, qem_name, qem_id, meas_id, hamiltonian_id)
-        results = {
-            CircuitTag(0, "NoMitigation", 0, 2, 0): shots_c,
-            CircuitTag(0, "NoMitigation", 0, 0, 0): shots_a,
-            CircuitTag(0, "NoMitigation", 0, 1, 0): shots_b,
-        }
-        grouped = program._group_results(results)
-        # After sort: [shots_a, shots_b, shots_c] by meas_id 0,1,2
-        qem_key = ("NoMitigation", 0)
-        shots_list = grouped[0][0][qem_key]
-        assert shots_list[0] == shots_a
-        assert shots_list[1] == shots_b
-        assert shots_list[2] == shots_c
-
-    def test_post_process_results_averages_over_hamiltonian_samples(self, mocker):
-        """_post_process_results averages energies across hamiltonian_id."""
-        program = self._create_sample_program(mocker, grouping_strategy=None)
-        program.loss_constant = 0.0
-        program.backend = self._create_mock_backend(mocker)
-
-        # Same shot histogram for all; 3 measurement groups (PauliX, PauliZ, PauliX@PauliZ)
-        fake_shot = {"00": 50, "01": 25, "10": 15, "11": 10}
-        n_groups = 3
-        results = {
-            CircuitTag(
-                param_id=0,
-                qem_name="mock-qem",
-                qem_id=0,
-                hamiltonian_id=h,
-                meas_id=m,
-            ): fake_shot
-            for h in range(3)
-            for m in range(n_groups)
-        }
-
-        losses = program._post_process_results(results)
-
-        # Single param_id; 3 hamiltonian samples with identical shots -> same energy each
-        # Average of 3 identical values = that value
-        assert len(losses) == 1
-        assert 0 in losses
-        single_sample_result = {
-            CircuitTag(param_id=0, qem_name="mock-qem", qem_id=0, meas_id=m): fake_shot
-            for m in range(n_groups)
-        }
-        expected_loss = program._post_process_results(single_sample_result)[0]
-        assert np.isclose(losses[0], expected_loss)
-
-    def test_post_process_results_merges_probability_histograms_over_hamiltonian_samples(
-        self, mocker
-    ):
-        """_post_process_results merges probability histograms when multiple ham_ids."""
-        program = self._create_sample_program(mocker, grouping_strategy=None)
-        program._is_compute_probabilities = True
-        program.backend = self._create_mock_backend(mocker)
-        program.backend.shots = 100
-
-        # Two Hamiltonian samples with different histograms
-        results = {
-            CircuitTag(
-                param_id=0,
-                qem_name="NoMitigation",
-                qem_id=0,
-                hamiltonian_id=0,
-                meas_id=0,
-            ): {"00": 80, "11": 20},
-            CircuitTag(
-                param_id=0,
-                qem_name="NoMitigation",
-                qem_id=0,
-                hamiltonian_id=1,
-                meas_id=0,
-            ): {"00": 60, "11": 40},
-        }
-
-        probs = program._post_process_results(results)
-
-        # Merged: avg(0.8, 0.6)=0.7 for "00", avg(0.2, 0.4)=0.3 for "11"
-        assert len(probs) == 1
-        prob_dict = next(iter(probs.values()))
-        assert np.isclose(prob_dict["00"], 0.7)
-        assert np.isclose(prob_dict["11"], 0.3)
-
-    def test_merge_probability_preserves_qem_identity_and_averages_per_qem(
-        self, mocker
-    ):
-        """_merge_probability_histograms preserves (qem_name, qem_id) and averages per QEM group."""
-        program = self._create_sample_program(mocker, grouping_strategy=None)
-        program._is_compute_probabilities = True
-        program.backend = self._create_mock_backend(mocker)
-        program.backend.shots = 100
-
-        # Two QEM groups (e.g. ZNE fold factors), two Hamiltonian samples each
-        # CircuitTag(param_id, qem_name, qem_id, meas_id, hamiltonian_id)
-        results = {
-            CircuitTag(0, "NoMitigation", 0, 0, 0): {"00": 80, "11": 20},
-            CircuitTag(0, "NoMitigation", 0, 0, 1): {"00": 60, "11": 40},
-            CircuitTag(0, "ZNE", 1, 0, 0): {"00": 70, "11": 30},
-            CircuitTag(0, "ZNE", 1, 0, 1): {"00": 50, "11": 50},
-        }
-
-        probs = program._post_process_results(results)
-
-        assert len(probs) == 2
-        keys = list(probs.keys())
-        assert any("NoMitigation:0" in k for k in keys)
-        assert any("ZNE:1" in k for k in keys)
-        for prob_dict in probs.values():
-            total = sum(prob_dict.values())
-            assert np.isclose(total, 1.0), f"Probs should sum to 1, got {total}"
-
-
-class TestBatchedExpectation:
-    """Test suite for batched expectation value calculations."""
-
-    def test_matches_pennylane_baseline(self):
-        """
-        Validates that the optimized batched_expectation function produces results
-        identical to PennyLane's standard ExpectationMP processing.
-        """
-        wire_order = (3, 2, 1, 0)
-        shot_histogram = {"0000": 100, "0101": 200, "1011": 300, "1111": 400}
-        observables = [
-            qml.PauliZ(0),
-            qml.PauliZ(2),
-            qml.Identity(1),
-            qml.PauliZ(1) @ qml.PauliZ(3),
-        ]
-
-        baseline_expvals = []
-        for obs in observables:
-            mp = ExpectationMP(obs)
-            expval = mp.process_counts(counts=shot_histogram, wire_order=wire_order)
-            baseline_expvals.append(expval)
-
-        optimized_expvals_matrix = _batched_expectation(
-            [shot_histogram], observables, wire_order
-        )
-        optimized_expvals = optimized_expvals_matrix[:, 0]
-
-        assert isinstance(optimized_expvals, np.ndarray)
-        np.testing.assert_allclose(optimized_expvals, baseline_expvals)
-
-    def test_with_multiple_histograms(self):
-        """
-        Tests that batched_expectation correctly processes a list of different
-        shot histograms in a single call.
-        """
-        hist_1 = {"00": 100}
-        hist_2 = {"11": 50}
-        hist_3 = {"01": 25, "10": 75}
-        observables = [qml.PauliZ(0), qml.PauliZ(1), qml.PauliZ(0) @ qml.PauliZ(1)]
-        wire_order = (1, 0)
-
-        expected_1 = np.array([1.0, 1.0, 1.0])
-        expected_2 = np.array([-1.0, -1.0, 1.0])
-        expected_3 = np.array([0.5, -0.5, -1.0])
-
-        result_matrix = _batched_expectation(
-            [hist_1, hist_2, hist_3], observables, wire_order
-        )
-
-        assert result_matrix.shape == (3, 3)
-        np.testing.assert_allclose(result_matrix[:, 0], expected_1)
-        np.testing.assert_allclose(result_matrix[:, 1], expected_2)
-        np.testing.assert_allclose(result_matrix[:, 2], expected_3)
-
-    def test_raises_for_unsupported_observable(self):
-        """
-        Ensures that a KeyError is raised when an observable outside
-        the supported set (Pauli, Identity) is provided.
-        """
-        shots = {"0": 100}
-        wire_order = (0,)
-        unsupported_observables = [qml.PauliZ(0), qml.Hadamard(0)]
-
-        with pytest.raises(KeyError):
-            _batched_expectation(
-                shots_dicts=[shots],
-                observables=unsupported_observables,
-                wire_order=wire_order,
-            )
-
-    @pytest.mark.parametrize(
-        "n_qubits",
-        [1, 10, 32, 64, 65, 100, 150, 200, 500, 1000],
-        ids=lambda n: f"{n}-qubits",
-    )
-    def test_qubit_counts_no_overflow(self, n_qubits):
-        """
-        Tests that _batched_expectation works correctly across a wide range of qubit counts
-        without integer overflow errors, including the critical boundary at 64.
-
-        This test would have caught the bug where 150-qubit circuits caused OverflowError
-        when converting bitstrings to uint64.
-        """
-        wire_order = tuple(range(n_qubits - 1, -1, -1))
-
-        # Create test bitstrings including edge cases that would overflow uint64
-        test_bitstrings = [
-            "0" * n_qubits,  # All 0s
-            "1" * n_qubits,  # All 1s - would overflow uint64 for >64 qubits
-            "1" + "0" * (n_qubits - 1),  # MSB=1, rest 0s
-            "0" * (n_qubits - 1) + "1",  # LSB=1, rest 0s
-        ]
-
-        shot_histogram = {bs: 100 for bs in test_bitstrings}
-
-        # Test observables on first, middle, and last qubits
-        # Ensure mid_qubit is within valid wire range [0, n_qubits-1]
-        mid_qubit = n_qubits // 2 if n_qubits > 1 else 0
-        observables = [
-            qml.PauliZ(0),
-            qml.PauliZ(n_qubits - 1),
-        ]
-        # Add Identity observable if we have a valid middle qubit
-        if n_qubits > 1:
-            observables.append(qml.Identity(mid_qubit))
-        # Add product observable for larger systems
-        if n_qubits >= 50:
-            observables.append(qml.PauliZ(mid_qubit // 2) @ qml.PauliZ(mid_qubit))
-
-        # Remove duplicates
-        observables = list(dict.fromkeys(observables))
-
-        # Should not raise OverflowError
-        result = _batched_expectation([shot_histogram], observables, wire_order)
-
-        # Verify results are valid
-        assert result.shape == (len(observables), 1)
-        assert not np.isnan(result).any(), "Results should not contain NaN"
-        assert not np.isinf(result).any(), "Results should not contain Inf"
-
-        # Verify expectation values are in valid range
-        for i, obs in enumerate(observables):
-            if isinstance(obs, qml.PauliZ) or (
-                hasattr(obs, "name") and obs.name == "Prod"
-            ):
-                assert -1.0 <= result[i, 0] <= 1.0
-
-    def test_boundary_qubit_count_both_paths_work(self):
-        """
-        Tests that both code paths (<=64 and >64 qubits) work correctly at the boundary.
-
-        This ensures the conditional logic correctly switches between integer and
-        character array representations.
-        """
-        # Test at exactly 64 qubits (uses integer path)
-        wire_order_64 = tuple(range(63, -1, -1))
-        shot_histogram_64 = {"1" * 64: 100, "0" * 64: 100}
-        observables_64 = [qml.PauliZ(0), qml.PauliZ(31), qml.PauliZ(63)]
-
-        result_64 = _batched_expectation(
-            [shot_histogram_64], observables_64, wire_order_64
-        )
-
-        # Test at 65 qubits (uses character array path)
-        wire_order_65 = tuple(range(64, -1, -1))
-        shot_histogram_65 = {"1" * 65: 100, "0" * 65: 100}
-        observables_65 = [qml.PauliZ(0), qml.PauliZ(32), qml.PauliZ(64)]
-
-        result_65 = _batched_expectation(
-            [shot_histogram_65], observables_65, wire_order_65
-        )
-
-        # Both should complete without errors and produce valid results
-        assert result_64.shape[0] == len(observables_64)
-        assert result_65.shape[0] == len(observables_65)
-        assert not np.isnan(result_64).any()
-        assert not np.isnan(result_65).any()
-
-    @pytest.mark.parametrize(
-        "n_qubits",
-        [4, 32, 64, 65, 100, 150, 500, 1000],
-        ids=lambda n: f"{n}qubits",
-    )
-    def test_matches_pennylane_baseline(self, n_qubits):
-        """
-        Validates that results match PennyLane's baseline implementation across
-        various qubit counts, ensuring correctness of both code paths.
-        """
-        wire_order = tuple(range(n_qubits - 1, -1, -1))
-        shot_histogram = {"0" * n_qubits: 50, "1" * n_qubits: 50}
-        observables = [qml.PauliZ(0)]
-
-        # Get baseline from PennyLane
-        baseline_expvals = []
-        for obs in observables:
-            mp = ExpectationMP(obs)
-            expval = mp.process_counts(counts=shot_histogram, wire_order=wire_order)
-            baseline_expvals.append(expval)
-
-        # Get result from our optimized function
-        optimized_expvals = _batched_expectation(
-            [shot_histogram], observables, wire_order
-        )[:, 0]
-
-        # Should match PennyLane's results
-        np.testing.assert_allclose(optimized_expvals, baseline_expvals, rtol=1e-10)
-
-    @pytest.mark.parametrize(
-        "n_qubits,observable_wires",
-        [
-            (100, [0, 50]),
-            (150, [0, 50, 100]),
-            (150, [0, 75, 125]),
-            (200, [0, 100, 199]),
-            (500, [0, 250, 499]),
-            (1000, [0, 500, 999]),
-        ],
-        ids=["100q_2w", "150q_3w", "150q_3w_alt", "200q_3w", "500q_3w", "1000q_3w"],
-    )
-    def test_product_observables_large_qubit_counts(self, n_qubits, observable_wires):
-        """
-        Tests that product observables (multi-qubit) work correctly for large qubit counts.
-        """
-        wire_order = tuple(range(n_qubits - 1, -1, -1))
-        shot_histogram = {
-            "0" * n_qubits: 100,
-            "1" * n_qubits: 100,
-            "1" + "0" * (n_qubits - 1): 100,
-        }
-
-        # Create product observable from wire indices
-        obs = qml.PauliZ(observable_wires[0])
-        for wire in observable_wires[1:]:
-            obs = obs @ qml.PauliZ(wire)
-        observables = [obs]
-
-        result = _batched_expectation([shot_histogram], observables, wire_order)
-
-        # Verify results
-        assert result.shape == (1, 1)
-        assert not np.isnan(result).any()
-        # Product observables should be in range [-1, 1]
-        assert np.abs(result[0, 0]) <= 1.0 + 1e-10
 
 
 class BaseVariationalQuantumAlgorithmTest:
@@ -703,11 +179,7 @@ class BaseVariationalQuantumAlgorithmTest:
         """Helper to create a program with a synthetic probability distribution."""
         program = self._create_program_with_mock_optimizer(mocker, **kwargs)
         # Wrap in nested structure: {tag: {bitstring: prob}} to match production
-        program._best_probs = {
-            CircuitTag(
-                param_id=0, qem_name="NoMitigation", qem_id=0, meas_id=0
-            ): probs_dict
-        }
+        program._best_probs = {"0_NoMitigation:0_ham:0_0": probs_dict}
         # Mark as having run optimization to avoid warnings
         program._losses_history = [{0: -1.0}]
         return program
@@ -826,7 +298,7 @@ class TestParametersBehavior(BaseVariationalQuantumAlgorithmTest):
         assert program._curr_params is not None
         expected_shape = (
             program.optimizer.n_param_sets,
-            program.n_layers * program.n_params,
+            program.n_layers * program.n_params_per_layer,
         )
         assert program._curr_params.shape == expected_shape
 
@@ -1368,19 +840,19 @@ class TestPrecisionFunctionality(BaseVariationalQuantumAlgorithmTest):
 
     def test_precision_used_in_qasm_conversion(self, mocker, mock_backend):
         """Test that precision is used when creating QASM circuits."""
-        mock_to_openqasm = mocker.patch("divi.circuits._core.to_openqasm")
-        mock_to_openqasm.return_value = (["circuit_body"], ["measurement"])
+        mock_body_to_qasm = mocker.patch("divi.circuits._core.circuit_body_to_qasm")
+        mock_body_to_qasm.return_value = "OPENQASM 2.0;"
 
         program = SampleVQAProgram(
             circ_count=1, run_time=0.1, backend=mock_backend, precision=5
         )
 
-        # Access meta_circuits to trigger creation and QASM conversion
-        _ = program.meta_circuits
+        # Access meta_circuit_factories to trigger creation and QASM conversion
+        _ = program.meta_circuit_factories
 
-        # Verify to_openqasm was called with precision=5
-        assert mock_to_openqasm.called
-        call_kwargs = mock_to_openqasm.call_args[1]
+        # Verify circuit_body_to_qasm was called with precision=5
+        assert mock_body_to_qasm.called
+        call_kwargs = mock_body_to_qasm.call_args[1]
         assert call_kwargs["precision"] == 5
 
     def test_different_precision_values(self, mock_backend):
@@ -1394,9 +866,9 @@ class TestPrecisionFunctionality(BaseVariationalQuantumAlgorithmTest):
             )
             assert program._precision == precision
 
-            # Verify it propagates to the factory
-            factory_keywords = program._meta_circuit_factory.keywords
-            assert factory_keywords["precision"] == precision
+            # Verify precision propagates to created MetaCircuits
+            meta_circuit = program.meta_circuit_factories["cost_circuit"]
+            assert meta_circuit.precision == precision
 
 
 class TestPropertyWarnings(BaseVariationalQuantumAlgorithmTest):
@@ -1721,31 +1193,6 @@ class TestTopSolutionsAPI(BaseVariationalQuantumAlgorithmTest):
         for i in range(10):
             assert result[i].bitstring == f"{i:04b}"
             assert result[i].decoded is None  # Default include_decoded=False
-
-
-class TestCircuitTagEncoding(BaseVariationalQuantumAlgorithmTest):
-    """Tests for CircuitTag encode/decode hooks."""
-
-    def test_encode_decode_round_trip(self, mocker):
-        program = self._create_program_with_mock_optimizer(mocker)
-
-        tag = CircuitTag(param_id=1, qem_name="zne", qem_id=2, meas_id=3)
-        tag_str = program._encode_tag(tag)
-
-        assert isinstance(tag_str, str)
-
-        results = {tag_str: {"00": 10, "11": 5}}
-        restored = {program._parse_tag(k): v for k, v in results.items()}
-
-        assert tag in restored
-        assert restored[tag] == {"00": 10, "11": 5}
-
-    def test_parse_tag_raises_for_unparseable_string_keys(self, mocker):
-        """_parse_tag raises ValueError for keys that do not match the tag format."""
-        program = self._create_program_with_mock_optimizer(mocker)
-
-        with pytest.raises(ValueError, match="Cannot parse tag"):
-            program._parse_tag("plain_tag")
 
 
 class TestSolutionEntryNamedTuple:

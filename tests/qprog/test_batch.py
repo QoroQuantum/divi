@@ -29,6 +29,9 @@ class SimpleTestProgram(QuantumProgram):
         # This attribute is checked by the base ProgramBatch.aggregate_results method
         self.losses_history = [1]
 
+    def _build_pipelines(self) -> None:
+        pass
+
     def run(self) -> tuple[int, float]:
         """A mock run that just returns the preset values."""
         return self.circ_count, self.run_time

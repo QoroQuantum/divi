@@ -24,7 +24,7 @@ To run specific test files:
 
 .. code-block:: bash
 
-   poetry run pytest tests/qprog/test_core.py
+   poetry run pytest tests/test_hamiltonians.py
 
 **Parallel Testing** (Recommended for CI/Large Test Suites)
 
@@ -71,13 +71,19 @@ Tests are organized in the ``tests/`` directory:
 
 - ``tests/qprog/`` - Tests for quantum programs and algorithms
 - ``tests/circuits/`` - Tests for circuit operations and QEM
+- ``tests/backends/`` - Tests for backend implementations
+- ``tests/pipeline/`` - Tests for the circuit pipeline and stages
+- ``tests/reporting/`` - Tests for progress reporters
+- ``tests/test_hamiltonians.py`` - Tests for Hamiltonian utilities and Trotterization
 - ``tests/conftest.py`` - Shared fixtures and configuration
 
 **Key Fixtures Available:**
 
-- ``dummy_simulator``: Fast mock simulator for unit tests
-- ``default_test_simulator``: Deterministic ParallelSimulator for integration tests
-- ``api_key``: Fixture providing API key for cloud tests
+- ``dummy_simulator``: Fast mock simulator returning random counts (for unit tests)
+- ``dummy_expval_backend``: Mock backend that supports expectation values (for PCE tests)
+- ``dummy_pipeline_env``: ``PipelineEnv`` wrapping the expval backend (for pipeline tests)
+- ``default_test_simulator``: Deterministic ``ParallelSimulator`` (for integration tests)
+- ``api_key``: Fixture providing API key for cloud tests (module-scoped)
 
 Writing Tests
 -------------
@@ -105,7 +111,7 @@ Writing Tests
            ansatz=HartreeFockAnsatz(),
            backend=dummy_simulator
        )
-       assert vqe.n_params is not None
+       assert vqe.n_params_per_layer is not None
        assert vqe.n_layers is not None
 
    @pytest.mark.requires_api_key
@@ -146,26 +152,12 @@ Divi uses `pytest-mock <https://pytest-mock.readthedocs.io/>`_ for clean mocking
        with pytest.raises(ConnectionError):
            service.submit_circuits({"test": "circuit"})
 
-**Flaky Test Handling**
-
-Divi uses the `flaky <https://github.com/box/flaky>`_ package to handle intermittently failing tests:
-
-.. code-block:: python
-
-   from flaky import flaky
-
-   @flaky(max_runs=3, min_passes=2)
-   def test_occasionally_failing_test():
-       """Test that sometimes fails due to randomness."""
-       pass
-
 **Test Configuration**
 
 Key pytest settings in ``pytest.ini``:
 
-- ``--no-success-flaky-report``: Cleaner output for flaky tests
-- Custom markers for test categorization
-- Deprecation warning filters for cleaner output
+- Custom markers for test categorization (``requires_api_key``, ``algo``, ``e2e``)
+- Deprecation and syntax warning filters for cleaner output
 
 **Coverage Reporting**
 

@@ -71,7 +71,7 @@ def test_vqe_basic_initialization_with_molecule(default_test_simulator, h2_molec
     assert vqe_problem.n_qubits == 4
 
     assert isinstance(vqe_problem.cost_hamiltonian, qml.operation.Operator)
-    verify_metacircuit_dict(vqe_problem, ["cost_circuit"])
+    verify_metacircuit_dict(vqe_problem, ["cost_circuit", "meas_circuit"])
 
 
 def test_vqe_basic_initialization_with_hamiltonian(
@@ -92,7 +92,7 @@ def test_vqe_basic_initialization_with_hamiltonian(
     assert vqe_problem.n_qubits == 4
 
     assert isinstance(vqe_problem.cost_hamiltonian, qml.operation.Operator)
-    verify_metacircuit_dict(vqe_problem, ["cost_circuit"])
+    verify_metacircuit_dict(vqe_problem, ["cost_circuit", "meas_circuit"])
 
 
 def test_vqe_clean_hamiltonian_logic(h2_hamiltonian, dummy_simulator):
@@ -159,13 +159,15 @@ def test_meta_circuit_qasm(ansatz_obj, n_layers, h2_molecule, dummy_simulator):
         backend=dummy_simulator,
     )
 
-    meta_circuit_obj = vqe_problem.meta_circuits["cost_circuit"]
-    meta_circuit_qasm = meta_circuit_obj._compiled_circuit_bodies[0]
+    meta_circuit_obj = vqe_problem.meta_circuit_factories["cost_circuit"]
+    # circuit_body_qasms is a tuple of (tag, qasm_str) pairs
+    _, meta_circuit_qasm = meta_circuit_obj.circuit_body_qasms[0]
 
     pattern = r"w_(\d+)_(\d+)"
     matches = re.findall(pattern, meta_circuit_qasm)
 
-    assert len(set(matches)) == vqe_problem.n_params
+    total_params = vqe_problem.n_layers * vqe_problem.n_params_per_layer
+    assert len(set(matches)) == total_params
     assert len(set(matches)) // n_layers == ansatz_obj.n_params_per_layer(
         vqe_problem.n_qubits, n_electrons=vqe_problem.n_electrons
     )
@@ -207,12 +209,12 @@ def test_vqe_fail_with_hw_efficient_ansatz(h2_molecule, dummy_simulator):
     """Test that HW_EFFICIENT ansatz raises NotImplementedError."""
 
     with pytest.raises(NotImplementedError):
-        # Need to access the meta_circuits property to trigger the NotImplementedError
+        # Need to access the meta_circuit_factories property to trigger the NotImplementedError
         VQE(
             molecule=h2_molecule,
             ansatz=HardwareEfficientAnsatz(),
             backend=dummy_simulator,
-        ).meta_circuits
+        ).meta_circuit_factories
 
 
 @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
@@ -257,7 +259,9 @@ def test_vqe_h2_molecule_e2e_solution(optimizer, default_test_simulator, h2_mole
 
     assert isinstance(vqe_problem.best_loss, float)
     assert isinstance(vqe_problem.best_params, np.ndarray)
-    assert vqe_problem.best_params.shape == (vqe_problem.n_params,)
+    assert vqe_problem.best_params.shape == (
+        vqe_problem.n_layers * vqe_problem.n_params_per_layer,
+    )
 
     # The ground state of H2 in this configuration is |1100>
     # This corresponds to occupying the two lowest energy orbitals.
@@ -341,7 +345,9 @@ def test_vqe_h2_molecule_e2e_checkpointing_resume(
     assert len(vqe_problem3.losses_history) == 5
     assert isinstance(vqe_problem3.best_loss, float)
     assert isinstance(vqe_problem3.best_params, np.ndarray)
-    assert vqe_problem3.best_params.shape == (vqe_problem3.n_params,)
+    assert vqe_problem3.best_params.shape == (
+        vqe_problem3.n_layers * vqe_problem3.n_params_per_layer,
+    )
 
     # The ground state of H2 in this configuration is |1100>
     expected_best_loss = -1.1398024781381293

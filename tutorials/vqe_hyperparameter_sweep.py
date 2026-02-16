@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -7,7 +7,6 @@ import time
 import numpy as np
 import pennylane as qml
 
-from divi.backends import ParallelSimulator
 from divi.qprog import (
     HartreeFockAnsatz,
     MoleculeTransformer,
@@ -15,6 +14,7 @@ from divi.qprog import (
     VQEHyperparameterSweep,
 )
 from divi.qprog.optimizers import MonteCarloOptimizer
+from tutorials._backend import get_backend
 
 if __name__ == "__main__":
     mol = qml.qchem.Molecule(
@@ -32,7 +32,7 @@ if __name__ == "__main__":
         ansatze=[HartreeFockAnsatz(), UCCSDAnsatz()],
         optimizer=optim,
         max_iterations=3,
-        backend=ParallelSimulator(shots=2000),
+        backend=get_backend(shots=2000),
     )
 
     t1 = time.time()
