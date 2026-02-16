@@ -21,7 +21,6 @@ from sklearn.cluster import SpectralClustering
 from divi.backends import CircuitRunner
 from divi.qprog import QAOA, ProgramBatch
 from divi.qprog.algorithms._qaoa import (
-    _SUPPORTED_INITIAL_STATES_LITERAL,
     GraphProblem,
     GraphProblemTypes,
     draw_graph_solution_nodes,
@@ -438,7 +437,7 @@ class GraphPartitioningQAOA(ProgramBatch):
         n_layers: int,
         backend: CircuitRunner,
         partitioning_config: PartitioningConfig,
-        initial_state: _SUPPORTED_INITIAL_STATES_LITERAL = "Recommended",
+        initial_state: str = "Recommended",
         aggregate_fn: AggregateFn = linear_aggregation,
         optimizer: Optimizer | None = None,
         max_iterations=10,

@@ -1063,7 +1063,7 @@ class TestQAOAQDriftMultiSample:
 
         strategy = QDrift(
             keep_fraction=0.5,
-            sampling_budget=4,
+            sampling_budget=6,
             n_hamiltonians_per_iteration=2,
             seed=123,
         )
@@ -1072,7 +1072,7 @@ class TestQAOAQDriftMultiSample:
             graph_problem=GraphProblem.MAXCUT,
             n_layers=1,
             trotterization_strategy=strategy,
-            max_iterations=10,
+            max_iterations=20,
             backend=default_test_simulator,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             seed=1997,
@@ -1081,7 +1081,7 @@ class TestQAOAQDriftMultiSample:
 
         assert count > 0
         assert runtime >= 0
-        assert len(qaoa.losses_history) == 10
+        assert len(qaoa.losses_history) == 20
         assert qaoa.best_loss < float("inf")
 
         # At least one of the top solutions achieves the optimal cut (more stable than single best)

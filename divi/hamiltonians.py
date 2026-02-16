@@ -291,7 +291,16 @@ class QDrift(TrotterizationStrategy):
     def process_hamiltonian(
         self, hamiltonian: qml.operation.Operator
     ) -> qml.operation.Operator:
-        """QDrift Trotterize the Hamiltonian."""
+        """Apply the QDrift randomized channel to a Hamiltonian.
+
+        Implements the QDrift protocol (Campbell 2019): for H = Σ c_i P_i,
+        randomly sample L terms and rescale their coefficients so that
+        E[H_sampled] = H.
+
+        Rescaling rules (L = sampling_budget, λ = Σ|c_i|, N = #terms):
+          - Weighted: term_i → (λ / (L · |c_i|)) · c_i · P_i
+          - Uniform:  term_i → (N / L) · c_i · P_i
+        """
         if (
             self.keep_fraction is None
             and self.keep_top_n is None
@@ -308,13 +317,13 @@ class QDrift(TrotterizationStrategy):
         if hamiltonian in self._cache:
             keep_hamiltonian, to_sample_hamiltonian = self._cache[hamiltonian]
         else:
-            keep_hamiltonian = ExactTrotterization(
-                keep_fraction=self.keep_fraction, keep_top_n=self.keep_top_n
-            ).process_hamiltonian(hamiltonian)
-
             if triggered_exact_trotterization:
+                keep_hamiltonian = ExactTrotterization(
+                    keep_fraction=self.keep_fraction, keep_top_n=self.keep_top_n
+                ).process_hamiltonian(hamiltonian)
                 to_sample_hamiltonian = (hamiltonian - keep_hamiltonian).simplify()
             else:
+                keep_hamiltonian = None
                 to_sample_hamiltonian = hamiltonian.simplify()
 
             self._cache[hamiltonian] = (keep_hamiltonian, to_sample_hamiltonian)
@@ -330,6 +339,8 @@ class QDrift(TrotterizationStrategy):
                 return hamiltonian
 
         if self.sampling_budget is None:
+            if keep_hamiltonian is None:
+                return hamiltonian.simplify()
             return keep_hamiltonian
 
         if triggered_exact_trotterization and qml.equal(keep_hamiltonian, hamiltonian):
@@ -342,10 +353,13 @@ class QDrift(TrotterizationStrategy):
                 "No terms to sample; returning the kept Hamiltonian.",
                 UserWarning,
             )
+            if keep_hamiltonian is None:
+                return qml.Hamiltonian([], [])
             return keep_hamiltonian
 
         if not _is_multi_term_sum(to_sample_hamiltonian):
-            sampled_terms = [to_sample_hamiltonian] * self.sampling_budget
+            # Single term: no sampling needed, return as-is.
+            sampled_terms = [to_sample_hamiltonian]
         else:
             absolute_coeffs = np.abs(to_sample_hamiltonian.terms()[0])
             coeff_sum = absolute_coeffs.sum()
@@ -366,9 +380,27 @@ class QDrift(TrotterizationStrategy):
                 replace=True,
                 p=probs,
             )
-            sampled_terms = [terms_list[i] for i in indices]
 
-        return (qml.ops.Sum(*sampled_terms) + keep_hamiltonian).simplify()
+            # --- QDrift coefficient rescaling ---
+            # Each sampled term must be rescaled so that E[H_sampled] = H.
+            if self.sampling_strategy == "weighted":
+                # Weighted (p_i = |c_i|/λ): scale by λ / (L · |c_i|)
+                sampled_terms = [
+                    (coeff_sum / (self.sampling_budget * absolute_coeffs[i]))
+                    * terms_list[i]
+                    for i in indices
+                ]
+            else:
+                # Uniform (p_i = 1/N): scale by N/L
+                n_terms = len(terms_list)
+                sampled_terms = [
+                    (n_terms / self.sampling_budget) * terms_list[i] for i in indices
+                ]
+
+        sampled_sum = qml.ops.Sum(*sampled_terms)
+        if keep_hamiltonian is not None:
+            sampled_sum = sampled_sum + keep_hamiltonian
+        return sampled_sum.simplify()
 
 
 def convert_hamiltonian_to_pauli_string(

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import Any, Literal, get_args
+from typing import Any
 
 import numpy as np
 import pennylane as qml
@@ -18,9 +18,11 @@ from divi.hamiltonians import (
 )
 from divi.pipeline import CircuitPipeline
 from divi.pipeline.stages import MeasurementStage, TrotterSpecStage
+from divi.qprog.algorithms._initial_state import (
+    build_initial_state_ops,
+    validate_initial_state,
+)
 from divi.qprog.quantum_program import QuantumProgram
-
-_INITIAL_STATE_LITERAL = Literal["Zeros", "Superposition", "Ones"]
 
 
 class TimeEvolution(QuantumProgram):
@@ -38,7 +40,7 @@ class TimeEvolution(QuantumProgram):
         time: float = 1.0,
         n_steps: int = 1,
         order: int = 1,
-        initial_state: _INITIAL_STATE_LITERAL = "Zeros",
+        initial_state: str = "Zeros",
         observable: qml.operation.Operator | None = None,
         **kwargs,
     ):
@@ -52,7 +54,8 @@ class TimeEvolution(QuantumProgram):
             n_steps: Number of Trotter steps.
             order: Suzuki-Trotter order (1 or even).
             initial_state: One of ``"Zeros"`` (``|0...0>``), ``"Superposition"``
-                (``|+...+>``), or ``"Ones"`` (``|1...1>``).
+                (``|+...+>``), ``"Ones"`` (``|1...1>``), or a per-qubit string
+                of ``'0'``, ``'1'``, ``'+'``, ``'-'`` (e.g. ``"01+-"``).
             observable: If None, measure qml.probs(); else qml.expval(observable).
             **kwargs: Passed to QuantumProgram (backend, seed, progress_queue, etc.).
         """
@@ -65,20 +68,17 @@ class TimeEvolution(QuantumProgram):
         if _is_empty_hamiltonian(hamiltonian_clean):
             raise ValueError("Hamiltonian contains only constant terms.")
 
-        if initial_state not in get_args(_INITIAL_STATE_LITERAL):
-            raise ValueError(
-                f"initial_state must be one of {get_args(_INITIAL_STATE_LITERAL)}, got {initial_state!r}"
-            )
-
         self._hamiltonian = hamiltonian_clean
         self.trotterization_strategy = trotterization_strategy
         self.time = time
         self.n_steps = n_steps
         self.order = order
-        self.initial_state = initial_state
         self.observable = observable
         self._circuit_wires = tuple(hamiltonian_clean.wires)
         self.n_qubits = len(self._circuit_wires)
+
+        validate_initial_state(initial_state, self.n_qubits)
+        self.initial_state = initial_state
 
         self.results: dict[str, Any] = {}
 
@@ -149,15 +149,7 @@ class TimeEvolution(QuantumProgram):
 
     def _build_ops(self, hamiltonian: qml.operation.Operator) -> list:
         """Build circuit ops: initial state, evolution, measurement."""
-        ops = []
-
-        # Initial state
-        if self.initial_state == "Ones":
-            for wire in self._circuit_wires:
-                ops.append(qml.PauliX(wires=wire))
-        elif self.initial_state == "Superposition":
-            for wire in self._circuit_wires:
-                ops.append(qml.Hadamard(wires=wire))
+        ops = build_initial_state_ops(self.initial_state, self._circuit_wires)
 
         # Evolution: e^(-iHt)
         n_terms = len(hamiltonian) if _is_multi_term_sum(hamiltonian) else 1
