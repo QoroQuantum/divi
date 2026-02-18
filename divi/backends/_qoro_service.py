@@ -7,7 +7,7 @@ import gzip
 import json
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, fields, replace
 from enum import Enum
 from http import HTTPStatus
@@ -336,7 +336,7 @@ class QoroService(CircuitRunner):
     def _compress_data(value) -> bytes:
         return base64.b64encode(gzip.compress(value.encode("utf-8"))).decode("utf-8")
 
-    def _split_circuits(self, circuits: dict[str, str]) -> list[dict[str, str]]:
+    def _split_circuits(self, circuits: Mapping[str, str]) -> list[dict[str, str]]:
         """
         Splits circuits into chunks by estimating payload size with a simplified,
         consistent overhead calculation.
@@ -377,7 +377,7 @@ class QoroService(CircuitRunner):
 
     def submit_circuits(
         self,
-        circuits: dict[str, str],
+        circuits: Mapping[str, str],
         ham_ops: str | None = None,
         job_type: JobType | None = None,
         override_config: JobConfig | None = None,

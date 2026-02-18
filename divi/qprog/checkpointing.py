@@ -1,10 +1,11 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
 """Checkpointing utilities for variational quantum algorithms."""
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -215,7 +216,7 @@ def _atomic_write(path: Path, content: str) -> None:
 
 
 def _validate_checkpoint_json(
-    path: Path, required_fields: list[str] | None = None
+    path: Path, required_fields: Sequence[str] | None = None
 ) -> dict[str, Any]:
     """Validate that a checkpoint JSON file exists and is valid.
 
@@ -267,7 +268,7 @@ def _validate_checkpoint_json(
 def _load_and_validate_pydantic_model(
     path: Path,
     model_class: type,
-    required_fields: list[str] | None = None,
+    required_fields: Sequence[str] | None = None,
     error_context: str | None = None,
 ) -> Any:
     """Load and validate a checkpoint JSON file with a Pydantic model.

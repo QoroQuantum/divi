@@ -4,7 +4,8 @@
 
 import heapq
 import string
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from functools import partial
 from typing import Literal
@@ -14,17 +15,21 @@ import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
+import pennylane as qml
+import pennylane.qaoa as pqaoa
 import rustworkx as rx
 import scipy.sparse.linalg as spla
 from sklearn.cluster import SpectralClustering
 
 from divi.backends import CircuitRunner
+from divi.hamiltonians import _get_terms_iterable
 from divi.qprog import QAOA, ProgramBatch
 from divi.qprog.algorithms._qaoa import (
     GraphProblem,
     GraphProblemTypes,
     draw_graph_solution_nodes,
 )
+from divi.qprog.batch import beam_search_aggregate
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer, copy_optimizer
 
 AggregateFn = Callable[
@@ -377,8 +382,8 @@ def _node_partition_graph(
 
 def linear_aggregation(
     curr_solution: Sequence[Literal[0] | Literal[1]],
-    subproblem_solution: set[int],
-    subproblem_reverse_index_map: dict[int, int],
+    subproblem_solution: AbstractSet[int],
+    subproblem_reverse_index_map: Mapping[int, int],
 ):
     """Linearly combines a subproblem's solution into the main solution vector.
 
@@ -407,8 +412,8 @@ def linear_aggregation(
 
 def dominance_aggregation(
     curr_solution: Sequence[Literal[0] | Literal[1]],
-    subproblem_solution: set[int],
-    subproblem_reverse_index_map: dict[int, int],
+    subproblem_solution: AbstractSet[int],
+    subproblem_reverse_index_map: Mapping[int, int],
 ):
     for node in subproblem_solution:
         original_index = subproblem_reverse_index_map[node]
@@ -438,7 +443,6 @@ class GraphPartitioningQAOA(ProgramBatch):
         backend: CircuitRunner,
         partitioning_config: PartitioningConfig,
         initial_state: str = "Recommended",
-        aggregate_fn: AggregateFn = linear_aggregation,
         optimizer: Optimizer | None = None,
         max_iterations=10,
         **kwargs,
@@ -454,8 +458,7 @@ class GraphPartitioningQAOA(ProgramBatch):
             partitioning_config (PartitioningConfig): the configuration of the partitioning as to the algorithm and
             expected output.
             initial_state ("Zeros", "Ones", "Superposition", "Recommended", optional): Initial state for the QAOA algorithm. Defaults to "Recommended".
-            aggregate_fn (optional): Aggregation function to combine results. Defaults to `linear_aggregation`.
-            optimizer (optional): Optimizer to use for QAOA. Defaults to `Optimizers.MONTE_CARLO`.
+            optimizer (optional): Optimizer to use for QAOA. Defaults to ``MonteCarloOptimizer``.
             max_iterations (int, optional): Maximum number of optimization iterations. Defaults to 10.
             **kwargs: Additional keyword arguments passed to the QAOA constructor.
 
@@ -463,7 +466,9 @@ class GraphPartitioningQAOA(ProgramBatch):
         super().__init__(backend=backend)
 
         self.main_graph = graph
+        self._graph_problem = graph_problem
         self.is_edge_problem = graph_problem == GraphProblem.EDGE_PARTITIONING
+        self._full_graph_hamiltonian = None  # lazily built by _evaluate_solution
 
         check_fn = (
             nx.is_connected if not self.is_edge_problem else nx.is_weakly_connected
@@ -475,7 +480,6 @@ class GraphPartitioningQAOA(ProgramBatch):
         self.max_iterations = max_iterations
 
         self.solution = None
-        self.aggregate_fn = aggregate_fn
 
         # Store the optimizer template (will be copied for each program)
         self._optimizer_template = (
@@ -542,19 +546,110 @@ class GraphPartitioningQAOA(ProgramBatch):
                     progress_queue=self._queue,
                 )
 
-    def aggregate_results(self):
+    def _extend_solution(self, current_solution, prog_id, candidate):
+        """Extend a global solution with a partition candidate's decoded bits.
+
+        Uses ``reverse_index_maps`` to map the candidate's local node indices
+        to global positions in the solution vector.
+
+        Args:
+            current_solution (list[int]): Current global solution vector.
+            prog_id: Program identifier (key into ``reverse_index_maps``).
+            candidate: A ``SolutionEntry`` with ``decoded`` containing a list
+                of local node indices selected by the candidate.
+
+        Returns:
+            list[int]: A new solution vector with the candidate's bits applied.
+        """
+        extended = list(current_solution)
+        reverse_map = self.reverse_index_maps[prog_id]
+
+        # Reset all positions belonging to this partition to 0
+        for global_idx in reverse_map.values():
+            extended[global_idx] = 0
+
+        # Set positions for nodes in the candidate's decoded solution to 1
+        for local_node in candidate.decoded:
+            global_idx = reverse_map[local_node]
+            extended[global_idx] = 1
+
+        return extended
+
+    def _build_full_graph_hamiltonian(self):
+        """Build and cache the cost Hamiltonian for the full (unpartitioned) graph.
+
+        Uses PennyLane's QAOA module to construct the Hamiltonian that encodes
+        the complete problem objective, including all inter-partition edges.
+        """
+        if self._full_graph_hamiltonian is not None:
+            return
+
+        cost_h, _ = getattr(pqaoa, self._graph_problem.pl_string)(self.main_graph)
+        self._full_graph_hamiltonian = cost_h
+
+    def _evaluate_solution(self, solution):
+        """Evaluate a global solution against the full-graph cost Hamiltonian.
+
+        Classically computes the expectation value of the cost Hamiltonian on
+        the computational-basis state defined by *solution*.  This is generic
+        across all ``GraphProblem`` types and correctly accounts for edges that
+        span different partitions.
+
+        The evaluation assumes the cost Hamiltonian is diagonal (Z-only terms),
+        which holds for all standard QAOA graph encodings.
+
+        Args:
+            solution (list[int]): Binary solution vector over the graph nodes.
+
+        Returns:
+            float: Hamiltonian energy of the solution (lower is better).
+        """
+        self._build_full_graph_hamiltonian()
+        hamiltonian = self._full_graph_hamiltonian
+
+        wire_to_bit = {w: solution[w] for w in hamiltonian.wires}
+
+        energy = 0.0
+        for term in _get_terms_iterable(hamiltonian):
+            coeff = 1.0
+            base_op = term
+
+            if isinstance(term, qml.ops.SProd):
+                coeff = float(term.scalar)
+                base_op = term.base
+
+            eigenvalue = 1.0
+            for wire in base_op.wires:
+                eigenvalue *= 1 - 2 * wire_to_bit[wire]
+
+            energy += coeff * eigenvalue
+
+        return energy
+
+    def aggregate_results(self, beam_width=1, n_partition_candidates=None):
         """
         Aggregates the results from all QAOA subprograms to form a global solution.
 
-        This method collects the final bitstring solutions from each partitioned subgraph's QAOA program,
-        using the aggregation function specified at initialization (e.g., linear or dominance aggregation).
-        It reconstructs the global solution by mapping each subgraph's solution back to the original node indices
-        using the stored reverse index maps.
+        Uses beam search across the top candidate bitstrings from each partition.
+        The ``beam_width`` parameter controls the search:
 
-        The final solution is stored in `self.solution` as a list of node indices assigned to the selected partition.
+        - ``beam_width=1``: Greedy (takes the best candidate per partition).
+        - ``beam_width > 1``: Standard beam search.
+        - ``beam_width=None``: Exhaustive search over all candidate combinations.
+
+        The final solution is stored in ``self.solution`` as a list of node indices
+        assigned to the selected partition.
+
+        Args:
+            beam_width (int | None): Width of the beam search. Defaults to ``1``
+                (greedy).
+            n_partition_candidates (int | None): Number of candidate bitstrings
+                to extract from each partition. Defaults to ``beam_width``.
 
         Raises:
-            RuntimeError: If no programs exist, if programs have not been run, or if results are incomplete.
+            RuntimeError: If no programs exist, if programs have not been run,
+                or if results are incomplete.
+
         Returns:
             list[int]: The list of node indices in the final aggregated solution.
         """
@@ -565,14 +660,18 @@ class GraphPartitioningQAOA(ProgramBatch):
                 "Not all final probabilities computed yet. Please call `run()` first."
             )
 
-        # Extract the solutions from each program
-        for prog_id, program in self.programs.items():
-            self._bitstring_solution = self.aggregate_fn(
-                self._bitstring_solution,
-                program.solution,
-                self.reverse_index_maps[prog_id],
-            )
+        initial_solution = [0] * self.main_graph.number_of_nodes()
 
+        best_solution = beam_search_aggregate(
+            programs=self._programs,
+            initial_solution=initial_solution,
+            extend_fn=self._extend_solution,
+            evaluate_fn=self._evaluate_solution,
+            beam_width=beam_width,
+            n_partition_candidates=n_partition_candidates,
+        )
+
+        self._bitstring_solution = best_solution
         self.solution = list(np.where(self._bitstring_solution)[0])
 
         return self.solution

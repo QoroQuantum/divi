@@ -230,6 +230,44 @@ For large QUBO problems, Divi integrates with D-Wave's hybrid solvers:
    solution, energy = qubo_partition.aggregate_results()
    print(f"Final energy: {energy:.6f}")
 
+Beam Search Aggregation
+^^^^^^^^^^^^^^^^^^^^^^^
+
+When aggregating partition results, each partition has multiple candidate bitstrings ranked by probability. By default, aggregation picks only the **single best** candidate from each partition (greedy). Beam search explores multiple candidates per partition to find better global combinations.
+
+**How it works** 🔍
+
+The ``aggregate_results`` method accepts two parameters:
+
+- ``beam_width`` — how many partial solutions are kept after each partition step.
+- ``n_partition_candidates`` — how many candidates to extract from each partition (defaults to ``beam_width``).
+
+.. code-block:: python
+
+   # Greedy (default): single best candidate per partition
+   solution = qaoa_partition.aggregate_results(beam_width=1)
+
+   # Beam search: keep top 5 partial solutions, consider 5 candidates per partition
+   solution = qaoa_partition.aggregate_results(beam_width=5)
+
+   # Wider candidate pool with narrow beam: consider 10 candidates per partition
+   # but only keep the best 3 partial solutions after each step
+   solution = qaoa_partition.aggregate_results(beam_width=3, n_partition_candidates=10)
+
+   # Exhaustive: try all candidate combinations (expensive for many partitions)
+   solution = qaoa_partition.aggregate_results(beam_width=None)
+
+**When to use beam search** 💡
+
+- **Greedy** (``beam_width=1``): Fast, good for problems with low inter-partition coupling.
+- **Bounded beam** (``beam_width=k``): Good trade-off for problems with moderate coupling between partitions. Start with ``beam_width=3`` and increase if solution quality improves.
+- **Exhaustive** (``beam_width=None``): Guarantees the global optimum across all candidate combinations, but scales exponentially with the number of partitions.
+
+.. tip::
+
+   Setting ``n_partition_candidates`` higher than ``beam_width`` is useful when you want each partition to propose many alternatives (wider local search) while keeping memory usage controlled (narrow beam).
+
+
 Custom Batch Workflows
 ----------------------
 

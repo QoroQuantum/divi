@@ -84,10 +84,22 @@ if __name__ == "__main__":
 
     qaoa_batch.create_programs()
     qaoa_batch.run(blocking=True)
-    quantum_solution = qaoa_batch.aggregate_results()
+
+    print(f"Total circuits: {qaoa_batch.total_circuit_count}")
+
+    # --- Greedy aggregation (default) ---
+    greedy_solution = qaoa_batch.aggregate_results(beam_width=1)
+
+    # --- Beam search aggregation ---
+    # beam_width=3: keep top 3 partial solutions after each partition step
+    # n_partition_candidates=5: consider 5 candidates from each partition
+    beam_solution = qaoa_batch.aggregate_results(beam_width=3, n_partition_candidates=5)
 
     classical_cut_size, classical_partition = nx.approximation.one_exchange(
         graph, seed=1
     )
-    print(f"Total circuits: {qaoa_batch.total_circuit_count}")
-    analyze_results(quantum_solution, classical_cut_size)
+
+    print("\n--- Greedy vs Beam Search ---")
+    analyze_results(greedy_solution, classical_cut_size)
+    print("  (with beam_width=3, n_partition_candidates=5)")
+    analyze_results(beam_solution, classical_cut_size)

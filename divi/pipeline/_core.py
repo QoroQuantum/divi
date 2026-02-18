@@ -27,7 +27,7 @@ from divi.pipeline.abc import (
 from divi.pipeline.stages import MeasurementStage
 
 
-def _path_children(keys: list[Any]) -> dict[str, list[str]]:
+def _path_children(keys: Sequence[Any]) -> dict[str, list[str]]:
     children: dict[str, set[str]] = defaultdict(set)
     for key in keys:
         if isinstance(key, tuple) and key and isinstance(key[0], tuple):

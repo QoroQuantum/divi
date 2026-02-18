@@ -528,24 +528,30 @@ class TestGraphPartitioningQAOA:
         prog_keys = list(node_partitioning_qaoa.programs.keys())
         prog_1_key, prog_2_key = prog_keys[0], prog_keys[1]
 
-        # Mock the solution for the first program to be an empty set (all-zeros bitstring)
-        node_partitioning_qaoa.programs[prog_1_key]._solution_nodes = []
+        # Get the number of nodes (qubits) in each subgraph
+        n_qubits_1 = node_partitioning_qaoa.programs[prog_1_key].n_qubits
+        n_qubits_2 = node_partitioning_qaoa.programs[prog_2_key].n_qubits
 
-        # Mock the solution for the second program to be all nodes in its partition (all-ones bitstring)
-        prog_2_subgraph_nodes = list(
-            node_partitioning_qaoa.programs[prog_2_key].problem.nodes()
-        )
-        node_partitioning_qaoa.programs[prog_2_key]._solution_nodes = (
-            prog_2_subgraph_nodes
-        )
+        # Mock _best_probs: program 1 has all-zeros (empty solution), program 2 has all-ones
+        all_zeros_bitstring = "0" * n_qubits_1
+        all_ones_bitstring = "1" * n_qubits_2
 
-        # For any other programs, mock their solutions as empty
+        node_partitioning_qaoa.programs[prog_1_key]._best_probs = {
+            "tag": {all_zeros_bitstring: 1.0}
+        }
+        node_partitioning_qaoa.programs[prog_2_key]._best_probs = {
+            "tag": {all_ones_bitstring: 1.0}
+        }
+
+        # For any other programs, mock as all-zeros
         for key in prog_keys[2:]:
-            node_partitioning_qaoa.programs[key]._solution_nodes = []
+            n_qubits = node_partitioning_qaoa.programs[key].n_qubits
+            node_partitioning_qaoa.programs[key]._best_probs = {
+                "tag": {"0" * n_qubits: 1.0}
+            }
 
-        # Ensure all programs appear to have been run by populating the 'final_probs' dict
+        # Ensure all programs appear to have been run
         for program in node_partitioning_qaoa.programs.values():
-            program._best_probs = {"dummy_key": {"00": 0.5, "11": 0.5}}
             program._losses_history = [{"dummy_loss": 0.0}]
 
         # The expected global solution should contain only the original nodes from the second program

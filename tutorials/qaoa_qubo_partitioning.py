@@ -36,13 +36,25 @@ if __name__ == "__main__":
 
     print(f"Total circuits: {qubo_partition.total_circuit_count}")
 
-    quantum_solution, quantum_energy = qubo_partition.aggregate_results()
+    # --- Greedy aggregation (default) ---
+    greedy_solution, greedy_energy = qubo_partition.aggregate_results(beam_width=1)
+
+    # --- Beam search aggregation ---
+    # beam_width=3: keep top 3 partial solutions after each partition step
+    # n_partition_candidates=5: consider 5 candidates from each partition
+    beam_solution, beam_energy = qubo_partition.aggregate_results(
+        beam_width=3, n_partition_candidates=5
+    )
 
     best_classical_bitstring, best_classical_energy, _ = (
         dimod.SimulatedAnnealingSampler().sample(bqm).lowest().record[0]
     )
 
-    print(f"Classical Solution: {best_classical_bitstring}")
+    print(f"\nClassical Solution: {best_classical_bitstring}")
     print(f"Classical Energy: {best_classical_energy:.9f}")
-    print(f"Quantum Solution: {quantum_solution}")
-    print(f"Quantum Energy: {quantum_energy:.9f}")
+    print(f"\n--- Greedy (beam_width=1) ---")
+    print(f"Solution: {greedy_solution}")
+    print(f"Energy:   {greedy_energy:.9f}")
+    print(f"\n--- Beam Search (beam_width=3, n_partition_candidates=5) ---")
+    print(f"Solution: {beam_solution}")
+    print(f"Energy:   {beam_energy:.9f}")
