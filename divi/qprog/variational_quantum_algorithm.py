@@ -36,6 +36,7 @@ from divi.qprog.checkpointing import (
     _load_and_validate_pydantic_model,
     resolve_checkpoint_path,
 )
+from divi.qprog.early_stopping import EarlyStopping, StopReason
 from divi.qprog.exceptions import _CancelledError
 from divi.qprog.optimizers import (
     MonteCarloOptimizer,
@@ -59,8 +60,7 @@ def _extract_param_set_idx(key: tuple) -> int:
     raise KeyError(f"No '{PARAM_SET_AXIS}' axis found in pipeline result key: {key}")
 
 
-def _get_run_instruction() -> str:
-    return "Call run() to execute the optimization."
+_RUN_INSTRUCTION = "Call run() to execute the optimization."
 
 
 class SolutionEntry(NamedTuple):
@@ -109,6 +109,9 @@ class ProgramState(BaseModel):
     total_circuit_count: int = Field(validation_alias="_total_circuit_count")
     total_run_time: float = Field(validation_alias="_total_run_time")
     seed: int | None = Field(validation_alias="_seed")
+    stop_reason: str | None = Field(
+        default=None, validation_alias="_serialized_stop_reason"
+    )
     grouping_strategy: str | None = Field(validation_alias="_grouping_strategy")
 
     # Arrays
@@ -226,7 +229,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         _curr_params (npt.NDArray[np.float64]): Current parameter values.
         _seed (int | None): Random seed for parameter initialization.
         _rng (np.random.Generator): Random number generator.
-        _grad_mode (bool): Whether currently computing gradients.
+
         _grouping_strategy (str): Strategy for grouping quantum operations.
         _qem_protocol (QEMProtocol): Quantum error mitigation protocol.
         _cancellation_event (Event | None): Event for graceful termination.
@@ -239,6 +242,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         optimizer: Optimizer | None = None,
         seed: int | None = None,
         progress_queue: Queue | None = None,
+        early_stopping: EarlyStopping | None = None,
         **kwargs,
     ):
         """Initialize the VariationalQuantumAlgorithm.
@@ -258,6 +262,10 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 Defaults to MonteCarloOptimizer().
             seed (int | None): Random seed for parameter initialization. Defaults to None.
             progress_queue (Queue | None): Queue for progress reporting. Defaults to None.
+            early_stopping (EarlyStopping | None): Early stopping controller. When
+                provided, the optimisation loop will be halted if any of the
+                configured criteria are met (e.g. patience exceeded, gradient
+                below threshold, cost variance settled). Defaults to None.
 
         Keyword Args:
             initial_params (npt.NDArray[np.float64] | None): Initial parameters with shape
@@ -294,19 +302,29 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         self._final_params = []
         self._best_loss = float("inf")
         self._best_probs = {}
+        self.optimize_result: OptimizeResult | None = None
+        """Raw result object returned by the underlying optimizer, or ``None``
+        before :meth:`run` is called.
+
+        Always populated after :meth:`run` completes.  When optimisation
+        converges normally, ``success`` is ``True``.  When early stopping
+        or cancellation terminates the run, ``success`` is ``False`` and the
+        ``message`` field describes the reason.
+
+        See :class:`scipy.optimize.OptimizeResult` for the full specification.
+        """
         self._curr_params = kwargs.pop("initial_params", None)
 
         # --- Random Number Generation ---
         self._seed = seed
         self._rng = np.random.default_rng(self._seed)
 
-        # --- Computation Mode Flags ---
-        # Lets child classes adapt their optimization step for grad calculation routine
-        self._grad_mode = False
-        self._is_compute_probabilities = False
-
         # --- Optimizer Configuration ---
         self.optimizer = optimizer if optimizer is not None else MonteCarloOptimizer()
+
+        # --- Early Stopping ---
+        self._early_stopping = early_stopping
+        self._stop_reason: StopReason | None = None
 
         # --- Backend & Circuit Configuration ---
         _UNSET = object()
@@ -398,6 +416,17 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         return len(self._losses_history) > 0
 
     @property
+    def stop_reason(self) -> StopReason | None:
+        """Reason the optimisation was stopped early, or ``None``.
+
+        Returns:
+            StopReason | None: The :class:`~divi.qprog.early_stopping.StopReason`
+                that triggered early stopping, or ``None`` if optimisation
+                completed normally or has not been run yet.
+        """
+        return self._stop_reason
+
+    @property
     def losses_history(self) -> list[dict]:
         """Get a copy of the optimization loss history.
 
@@ -410,7 +439,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         if not self._has_run_optimization():
             warn(
                 "losses_history is empty. Optimization has not been run yet. "
-                f"{_get_run_instruction()}",
+                f"{_RUN_INSTRUCTION}",
                 UserWarning,
                 stacklevel=2,
             )
@@ -429,7 +458,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         if not self._has_run_optimization():
             warn(
                 "min_losses_per_iteration is empty. Optimization has not been run yet. "
-                f"{_get_run_instruction()}",
+                f"{_RUN_INSTRUCTION}",
                 UserWarning,
                 stacklevel=2,
             )
@@ -446,7 +475,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         if len(self._final_params) == 0 or not self._has_run_optimization():
             warn(
                 "final_params is not available. Optimization has not been run yet. "
-                f"{_get_run_instruction()}",
+                f"{_RUN_INSTRUCTION}",
                 UserWarning,
                 stacklevel=2,
             )
@@ -463,7 +492,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         if len(self._best_params) == 0 or not self._has_run_optimization():
             warn(
                 "best_params is not available. Optimization has not been run yet. "
-                f"{_get_run_instruction()}",
+                f"{_RUN_INSTRUCTION}",
                 UserWarning,
                 stacklevel=2,
             )
@@ -479,7 +508,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         if not self._has_run_optimization():
             warn(
                 "best_loss has not been computed yet. Optimization has not been run. "
-                f"{_get_run_instruction()}",
+                f"{_RUN_INSTRUCTION}",
                 UserWarning,
                 stacklevel=2,
             )
@@ -533,7 +562,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         if not self._best_probs:
             warn(
                 "best_probs is empty. Either optimization has not been run yet, "
-                f"or final computation was not performed. {_get_run_instruction()}",
+                f"or final computation was not performed. {_RUN_INSTRUCTION}",
                 UserWarning,
                 stacklevel=2,
             )
@@ -694,6 +723,10 @@ class VariationalQuantumAlgorithm(QuantumProgram):
     @property
     def _serialized_subclass_state(self) -> SubclassState:
         return SubclassState(data=self._save_subclass_state())
+
+    @property
+    def _serialized_stop_reason(self) -> str | None:
+        return self._stop_reason.value if self._stop_reason is not None else None
 
     @property
     def meta_circuit_factories(self) -> dict[str, MetaCircuit]:
@@ -1005,8 +1038,10 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             self.n_layers * self.n_params_per_layer
         )
 
+        last_grad_norm: float | None = None
+
         def grad_fn(params):
-            self._grad_mode = True
+            nonlocal last_grad_norm
 
             self.reporter.info(
                 message="📈 Computing Gradients 📈", iteration=self.current_iteration
@@ -1021,7 +1056,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             neg_shifts = exp_vals_arr[1::2]
             grads = 0.5 * (pos_shifts - neg_shifts)
 
-            self._grad_mode = False
+            last_grad_norm = float(np.linalg.norm(grads))
 
             return grads
 
@@ -1053,6 +1088,20 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             if self._cancellation_event and self._cancellation_event.is_set():
                 raise _CancelledError("Cancellation requested by batch.")
 
+            # --- Early stopping ---
+            if self._early_stopping is not None:
+                reason = self._early_stopping.check(
+                    current_loss,
+                    grad_norm=last_grad_norm,
+                )
+                if reason is not None:
+                    self._stop_reason = reason
+                    self.reporter.info(
+                        message=f"Early stopping triggered: {reason.value}",
+                        iteration=self.current_iteration,
+                    )
+                    raise StopIteration
+
             # The scipy implementation of COBYLA interprets the `maxiter` option
             # as the maximum number of function evaluations, not iterations.
             # To provide a consistent user experience, we disable `scipy`'s
@@ -1073,7 +1122,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             self._validate_initial_params(self._curr_params)
 
         try:
-            self._minimize_res = self.optimizer.optimize(
+            self.optimize_result = self.optimizer.optimize(
                 cost_fn=cost_fn,
                 initial_params=self._curr_params,
                 callback_fn=_iteration_counter,
@@ -1081,18 +1130,32 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 max_iterations=self.max_iterations,
                 rng=self._rng,
             )
-        except _CancelledError:
-            # The optimizer was stopped by our callback. This is not a real
-            # error, just a signal to exit this task cleanly.
-            return self._total_circuit_count, self._total_run_time
+        except (_CancelledError, StopIteration) as exc:
+            if isinstance(exc, _CancelledError):
+                message = "Optimisation cancelled."
+            else:
+                reason = self._stop_reason.value if self._stop_reason else "Stopped"
+                message = f"Early stopping: {reason}"
 
-        self._final_params = self._minimize_res.x
+            self.optimize_result = OptimizeResult(
+                x=np.atleast_2d(self._best_params),
+                fun=np.atleast_1d(self._best_loss),
+                nit=self.current_iteration,
+                success=False,
+                message=message,
+            )
 
-        # Set _best_params from final result (source of truth)
-        x = np.atleast_2d(self._minimize_res.x)
-        fun = np.atleast_1d(self._minimize_res.fun)
-        best_idx = np.argmin(fun)
-        self._best_params = x[best_idx].copy()
+            if isinstance(exc, _CancelledError):
+                return self._total_circuit_count, self._total_run_time
+        else:
+            self.optimize_result.success = True
+            self.optimize_result.message = "Optimisation converged."
+
+            # Set _best_params from final result (source of truth)
+            x = np.atleast_2d(self.optimize_result.x)
+            self._best_params = x[np.argmin(self.optimize_result.fun)].copy()
+
+        self._final_params = self.optimize_result.x
 
         if perform_final_computation:
             self._perform_final_computation(**kwargs)

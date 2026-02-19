@@ -59,6 +59,24 @@ Job Management
    :members:
    :undoc-members:
 
+Execution Configuration
+-----------------------
+
+.. autoclass:: divi.backends.ExecutionConfig
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+   :no-index:
+
+.. autoclass:: divi.backends.Simulator
+   :members:
+   :undoc-members:
+
+.. autoclass:: divi.backends.SimulationMethod
+   :members:
+   :undoc-members:
+
 .. automodule:: divi.backends
    :members:
    :undoc-members:

@@ -31,6 +31,20 @@ Core Classes
    :show-inheritance:
    :special-members: __init__
 
+Early Stopping
+~~~~~~~~~~~~~~
+
+.. autoclass:: divi.qprog.EarlyStopping
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+
+.. autoclass:: divi.qprog.early_stopping.StopReason
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Algorithms
 ----------
 
@@ -209,6 +223,7 @@ Divi provides workflow classes for managing large-scale quantum computations, in
    :members:
    :undoc-members:
    :show-inheritance:
+   :exclude-members: VQEHyperparameterSweep, MoleculeTransformer, GraphPartitioningQAOA, PartitioningConfig, QUBOPartitioningQAOA
 
 VQE Hyperparameter Sweep
 ~~~~~~~~~~~~~~~~~~~~~~~~

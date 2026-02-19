@@ -4,7 +4,7 @@
 
 from .quantum_program import QuantumProgram
 from .variational_quantum_algorithm import VariationalQuantumAlgorithm, SolutionEntry
-from .batch import ProgramBatch
+from .batch import ProgramBatch, beam_search_aggregate
 from .algorithms import (
     QAOA,
     GraphProblem,
@@ -27,3 +27,4 @@ from .workflows import (
     MoleculeTransformer,
 )
 from .optimizers import ScipyOptimizer, ScipyMethod, MonteCarloOptimizer
+from .early_stopping import EarlyStopping

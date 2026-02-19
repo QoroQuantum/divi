@@ -7,7 +7,8 @@ from http import HTTPStatus
 import pytest
 import requests
 
-from divi.backends import ExecutionResult, _qoro_service
+from divi.backends import ExecutionConfig, ExecutionResult, _qoro_service
+from divi.backends._execution_config import SimulationMethod, Simulator
 from divi.backends._qoro_service import (
     JobConfig,
     JobStatus,
@@ -121,33 +122,64 @@ def assert_delete_successful(service, result):
     assert res.status_code == 204, "Deletion should be successful"
 
 
+def create_failed_job(service):
+    """Create a job pre-marked as FAILED via the create_failed endpoint.
+
+    This is a test-only helper; the endpoint is not part of the public SDK.
+    """
+    response = service._make_request(
+        "post", "job/create_failed/", json={"tag": "test"}, timeout=10
+    )
+    job_id = response.json()["job_id"]
+    return ExecutionResult(job_id=job_id)
+
+
 class TestQoroServiceMock:
     """Test suite for QoroService with mocked dependencies."""
 
     # --- Tests for initialization ---
 
     def test_initialization_without_api_key_and_no_env_file(self, mocker):
-        """Test initialization without API key and no .env file."""
-        # Mock dotenv_values to raise KeyError (simulating missing QORO_API_KEY)
+        """Test initialization without API key, no .env, and no os.environ."""
         mock_dotenv = mocker.patch("divi.backends._qoro_service.dotenv_values")
-        mock_dotenv.return_value = {}  # Empty env file
+        mock_dotenv.return_value = {}
+        mocker.patch.dict("os.environ", {}, clear=True)
 
-        # This test is a special case and cannot use the factory, as it tests
-        # the exact logic that the factory is designed to hide (init failure).
         mocker.patch.object(QoroService, "fetch_qpu_systems", return_value=[])
         with pytest.raises(
-            ValueError, match="Qoro API key not provided nor found in a .env file"
+            ValueError,
+            match="Qoro API key not provided nor found in a .env file "
+            "or QORO_API_KEY environment variable",
         ):
             QoroService(auth_token=None)
 
     def test_initialization_with_env_api_key(self, mocker, qoro_service_factory):
         """Test initialization with API key from .env file."""
-        # Mock dotenv_values to return API key
         mock_dotenv = mocker.patch("divi.backends._qoro_service.dotenv_values")
         mock_dotenv.return_value = {"QORO_API_KEY": "env_api_key"}
 
         service = qoro_service_factory(auth_token=None)
         assert service.auth_token == "Bearer env_api_key"
+
+    def test_initialization_with_os_environ_api_key(self, mocker, qoro_service_factory):
+        """Test fallback to os.environ when .env has no key."""
+        mock_dotenv = mocker.patch("divi.backends._qoro_service.dotenv_values")
+        mock_dotenv.return_value = {}  # .env missing QORO_API_KEY
+        mocker.patch.dict("os.environ", {"QORO_API_KEY": "os_env_key"})
+
+        service = qoro_service_factory(auth_token=None)
+        assert service.auth_token == "Bearer os_env_key"
+
+    def test_initialization_explicit_token_takes_priority(
+        self, mocker, qoro_service_factory
+    ):
+        """Test that an explicit auth_token arg takes priority over env sources."""
+        mock_dotenv = mocker.patch("divi.backends._qoro_service.dotenv_values")
+        mock_dotenv.return_value = {"QORO_API_KEY": "env_api_key"}
+        mocker.patch.dict("os.environ", {"QORO_API_KEY": "os_env_key"})
+
+        service = qoro_service_factory(auth_token="explicit_key")
+        assert service.auth_token == "Bearer explicit_key"
 
     @pytest.mark.parametrize(
         "input_value, expected_stored_value",
@@ -414,13 +446,15 @@ class TestQoroServiceMock:
         init_payload = mock_make_request.call_args_list[0].kwargs["json"]
         assert init_payload["qpu_system_name"] == "override_qpu_system"
 
-    def test_qoro_service_init_fails_with_none_qpu_system(self, qoro_service_factory):
-        """Tests that QoroService initialization fails if the final config has no qpu_system."""
-        with pytest.raises(
-            ValueError, match="JobConfig must have a qpu_system. It cannot be None."
-        ):
-            # The factory mocks fetch_qpu_systems, so we can initialize
-            qoro_service_factory(config=JobConfig(qpu_system=None))
+    def test_qoro_service_init_defaults_qpu_system_with_warning(
+        self, qoro_service_factory
+    ):
+        """Tests that QoroService defaults to qoro_maestro with a warning when qpu_system is None."""
+        with pytest.warns(match="No qpu_system specified in JobConfig"):
+            service = qoro_service_factory(
+                config=JobConfig(shots=1000, qpu_system=None)
+            )
+        assert service.config.qpu_system.name == "qoro_maestro"
 
     # --- Tests for core functionality ---
 
@@ -1373,6 +1407,330 @@ class TestQoroServiceMock:
         assert status == JobStatus.CANCELLED
         callback_mock.assert_called_once()
 
+    # --- Tests for execution config ---
+
+    def test_set_execution_config_success(self, mocker, qoro_service_factory):
+        """Test setting execution config on a PENDING job."""
+        service = qoro_service_factory()
+        response_data = {
+            "status": "ok",
+            "job_id": "job_1",
+            "execution_configuration": {
+                "bond_dimension": 512,
+                "truncation_threshold": 1e-8,
+                "simulator_type": 1,
+                "simulation_type": 1,
+                "api_meta": {"optimization_level": 2},
+            },
+        }
+        mock_response = mocker.MagicMock(
+            status_code=HTTPStatus.OK, json=lambda: response_data
+        )
+        mock_make_request = mocker.patch.object(
+            service, "_make_request", return_value=mock_response
+        )
+
+        config = ExecutionConfig(
+            bond_dimension=512,
+            truncation_threshold=1e-8,
+            simulator=Simulator.QCSim,
+            simulation_method=SimulationMethod.MatrixProductState,
+            api_meta={"optimization_level": 2},
+        )
+        result = service.set_execution_config(make_execution_result("job_1"), config)
+
+        mock_make_request.assert_called_once_with(
+            "post",
+            "job/job_1/execution_config/",
+            json={
+                "bond_dimension": 512,
+                "truncation_threshold": 1e-8,
+                "simulator_type": 1,
+                "simulation_type": 1,
+                "api_meta": {"optimization_level": 2},
+            },
+            timeout=50,
+        )
+        assert result == response_data
+        assert result["status"] == "ok"
+        assert result["execution_configuration"]["bond_dimension"] == 512
+
+    def test_set_execution_config_conflict(self, mocker, qoro_service_factory):
+        """Test 409 Conflict when job is not PENDING."""
+        service = qoro_service_factory()
+        mock_response = mocker.MagicMock()
+        mock_response.status_code = 409
+        mock_response.reason = "Conflict"
+        mock_response.json.return_value = {"error": "Job is not in PENDING status"}
+
+        mock_error = requests.exceptions.HTTPError("409 Conflict")
+        mock_error.response = mock_response
+
+        mocker.patch.object(service, "_make_request", side_effect=mock_error)
+
+        config = ExecutionConfig(bond_dimension=64)
+        with pytest.raises(requests.exceptions.HTTPError, match="409 Conflict"):
+            service.set_execution_config(make_execution_result("job_1"), config)
+
+    def test_set_execution_config_validation_error(self, mocker, qoro_service_factory):
+        """Test 400 Bad Request for invalid api_meta keys."""
+        service = qoro_service_factory()
+        mock_response = mocker.MagicMock()
+        mock_response.status_code = 400
+        mock_response.reason = "Bad Request"
+        mock_response.json.return_value = {
+            "error": "Unknown api_meta key: 'invalid_key'"
+        }
+
+        mock_error = requests.exceptions.HTTPError("400 Bad Request")
+        mock_error.response = mock_response
+
+        mocker.patch.object(service, "_make_request", side_effect=mock_error)
+
+        config = ExecutionConfig(api_meta={"invalid_key": 42})
+        with pytest.raises(requests.exceptions.HTTPError, match="400 Bad Request"):
+            service.set_execution_config(make_execution_result("job_1"), config)
+
+    def test_set_execution_config_forbidden(self, mocker, qoro_service_factory):
+        """Test 403 Forbidden when bond_dimension exceeds tier cap."""
+        service = qoro_service_factory()
+        mock_response = mocker.MagicMock()
+        mock_response.status_code = 403
+        mock_response.reason = "Forbidden"
+        mock_response.json.return_value = {
+            "error": "Free tier limits bond dimension to 32. "
+            "Upgrade your plan to use higher values."
+        }
+
+        mock_error = requests.exceptions.HTTPError("403 Forbidden")
+        mock_error.response = mock_response
+
+        mocker.patch.object(service, "_make_request", side_effect=mock_error)
+
+        config = ExecutionConfig(bond_dimension=256)
+        with pytest.raises(requests.exceptions.HTTPError, match="403 Forbidden"):
+            service.set_execution_config(make_execution_result("job_1"), config)
+
+    def test_get_execution_config_success(self, mocker, qoro_service_factory):
+        """Test retrieving execution config successfully."""
+        service = qoro_service_factory()
+        response_data = {
+            "job_id": "job_1",
+            "execution_configuration": {
+                "bond_dimension": 512,
+                "truncation_threshold": 1e-8,
+                "simulator_type": 1,
+                "simulation_type": 1,
+                "api_meta": {"optimization_level": 2},
+            },
+        }
+        mock_response = mocker.MagicMock(
+            status_code=HTTPStatus.OK, json=lambda: response_data
+        )
+        mock_make_request = mocker.patch.object(
+            service, "_make_request", return_value=mock_response
+        )
+
+        config = service.get_execution_config(make_execution_result("job_1"))
+
+        mock_make_request.assert_called_once_with(
+            "get", "job/job_1/execution_config/", timeout=50
+        )
+        assert isinstance(config, ExecutionConfig)
+        assert config.bond_dimension == 512
+        assert config.truncation_threshold == 1e-8
+        assert config.simulator == Simulator.QCSim
+        assert config.simulation_method == SimulationMethod.MatrixProductState
+        assert config.api_meta == {"optimization_level": 2}
+
+    def test_get_execution_config_not_found(self, mocker, qoro_service_factory):
+        """Test 404 when no execution config exists for the job."""
+        service = qoro_service_factory()
+        mock_response = mocker.MagicMock()
+        mock_response.status_code = 404
+        mock_response.reason = "Not Found"
+        mock_response.json.return_value = {
+            "detail": "No execution configuration exists for this job."
+        }
+
+        mock_error = requests.exceptions.HTTPError("404 Not Found")
+        mock_error.response = mock_response
+
+        mocker.patch.object(service, "_make_request", side_effect=mock_error)
+
+        with pytest.raises(requests.exceptions.HTTPError, match="404 Not Found"):
+            service.get_execution_config(make_execution_result("job_1"))
+
+    # --- Tests for credit endpoints ---
+
+    def test_get_credit_balance(self, mocker, qoro_service_factory):
+        """Tests get_credit_balance returns the expected dict."""
+        service = qoro_service_factory()
+        mock_response = mocker.MagicMock()
+        mock_response.json.return_value = {
+            "balance": "500.00",
+            "total_used": "0",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+        mock_make_request = mocker.patch.object(
+            service, "_make_request", return_value=mock_response
+        )
+
+        result = service.get_credit_balance()
+
+        mock_make_request.assert_called_once_with("get", "credits/", timeout=10)
+        assert result["balance"] == "500.00"
+        assert "total_used" in result
+        assert "created_at" in result
+        assert "updated_at" in result
+
+    def test_get_credit_transactions(self, mocker, qoro_service_factory):
+        """Tests get_credit_transactions returns the expected paginated dict."""
+        service = qoro_service_factory()
+        mock_response = mocker.MagicMock()
+        mock_response.json.return_value = {
+            "count": 1,
+            "total_pages": 1,
+            "next": None,
+            "previous": None,
+            "results": [
+                {
+                    "id": 1,
+                    "amount": "500.00",
+                    "balance_after": "500.00",
+                    "transaction_type": "PURCHASE",
+                    "description": "Credit addition",
+                    "job_id": None,
+                    "created_at": "2026-01-01T00:00:00Z",
+                }
+            ],
+        }
+        mock_make_request = mocker.patch.object(
+            service, "_make_request", return_value=mock_response
+        )
+
+        result = service.get_credit_transactions()
+
+        mock_make_request.assert_called_once_with(
+            "get",
+            "credits/transactions/",
+            params={"page": 1, "page_size": 20},
+            timeout=10,
+        )
+        assert result["count"] == 1
+        assert len(result["results"]) == 1
+        assert result["results"][0]["transaction_type"] == "PURCHASE"
+
+    def test_get_credit_transactions_custom_pagination(
+        self, mocker, qoro_service_factory
+    ):
+        """Tests that page and page_size are forwarded as query params."""
+        service = qoro_service_factory()
+        mock_response = mocker.MagicMock()
+        mock_response.json.return_value = {
+            "count": 0,
+            "total_pages": 0,
+            "next": None,
+            "previous": None,
+            "results": [],
+        }
+        mock_make_request = mocker.patch.object(
+            service, "_make_request", return_value=mock_response
+        )
+
+        service.get_credit_transactions(page=3, page_size=5)
+
+        mock_make_request.assert_called_once_with(
+            "get",
+            "credits/transactions/",
+            params={"page": 3, "page_size": 5},
+            timeout=10,
+        )
+
+
+# --- ExecutionConfig Unit Tests ---
+
+
+class TestExecutionConfig:
+    """Unit tests for ExecutionConfig dataclass methods."""
+
+    def test_to_payload_all_fields(self):
+        """Test to_payload with all fields set."""
+        config = ExecutionConfig(
+            bond_dimension=256,
+            truncation_threshold=1e-6,
+            simulator=Simulator.GpuSim,
+            simulation_method=SimulationMethod.TensorNetwork,
+            api_meta={"resilience_level": 1},
+        )
+        payload = config.to_payload()
+        assert payload == {
+            "bond_dimension": 256,
+            "truncation_threshold": 1e-6,
+            "simulator_type": 4,
+            "simulation_type": 3,
+            "api_meta": {"resilience_level": 1},
+        }
+
+    def test_to_payload_partial_fields(self):
+        """Test to_payload omits None fields."""
+        config = ExecutionConfig(bond_dimension=64)
+        payload = config.to_payload()
+        assert payload == {"bond_dimension": 64}
+        assert "truncation_threshold" not in payload
+        assert "simulator_type" not in payload
+        assert "simulation_type" not in payload
+        assert "api_meta" not in payload
+
+    def test_to_payload_empty(self):
+        """Test to_payload with no fields set returns empty dict."""
+        config = ExecutionConfig()
+        assert config.to_payload() == {}
+
+    def test_from_response_all_fields(self):
+        """Test from_response with all fields present."""
+        data = {
+            "bond_dimension": 128,
+            "truncation_threshold": 1e-10,
+            "simulator_type": 2,
+            "simulation_type": 5,
+            "api_meta": {"max_execution_time": 600},
+        }
+        config = ExecutionConfig.from_response(data)
+        assert config.bond_dimension == 128
+        assert config.truncation_threshold == 1e-10
+        assert config.simulator == Simulator.CompositeQiskitAer
+        assert config.simulation_method == SimulationMethod.ExtendedStabilizer
+        assert config.api_meta == {"max_execution_time": 600}
+
+    def test_from_response_partial_fields(self):
+        """Test from_response with missing fields defaults to None."""
+        data = {"bond_dimension": 32}
+        config = ExecutionConfig.from_response(data)
+        assert config.bond_dimension == 32
+        assert config.truncation_threshold is None
+        assert config.simulator is None
+        assert config.simulation_method is None
+        assert config.api_meta is None
+
+    def test_from_response_empty(self):
+        """Test from_response with empty dict."""
+        config = ExecutionConfig.from_response({})
+        assert config == ExecutionConfig()
+
+    def test_roundtrip(self):
+        """Test that to_payload → from_response gives back the same config."""
+        original = ExecutionConfig(
+            bond_dimension=512,
+            truncation_threshold=1e-8,
+            simulator=Simulator.QCSim,
+            simulation_method=SimulationMethod.MatrixProductState,
+            api_meta={"optimization_level": 2},
+        )
+        reconstructed = ExecutionConfig.from_response(original.to_payload())
+        assert reconstructed == original
+
 
 # --- Depth Tracking Tests ---
 
@@ -1449,6 +1807,30 @@ class TestQoroServiceDepthTracker:
 class TestQoroServiceWithApiKey:
     """Integration tests for the QoroService, requiring a valid API key."""
 
+    @pytest.fixture(autouse=True)
+    def auto_cleanup(self, qoro_service):
+        """Automatically deletes all jobs submitted during a test."""
+        jobs = []
+        original_submit = qoro_service.submit_circuits
+
+        def tracking_submit(*args, **kwargs):
+            result = original_submit(*args, **kwargs)
+            jobs.append(result)
+            return result
+
+        qoro_service.submit_circuits = tracking_submit
+        yield
+        for result in jobs:
+            try:
+                qoro_service.delete_job(result)
+            except Exception:
+                pass
+
+    def test_initialization_with_deactivated_token(self, locked_account_key):
+        """Test that initializing with a deactivated token raises 401."""
+        with pytest.raises(requests.exceptions.HTTPError, match="401 Unauthorized"):
+            QoroService(auth_token=locked_account_key)
+
     def test_service_connection_test(self, qoro_service):
         """Tests the connection to the live service."""
         response = qoro_service.test_connection()
@@ -1460,7 +1842,6 @@ class TestQoroServiceWithApiKey:
 
         assert isinstance(result, ExecutionResult), "Should return ExecutionResult"
         assert result.job_id is not None, "Job ID should be present"
-        assert_delete_successful(qoro_service, result)
 
     def test_submit_and_cancel_circuits(self, qoro_service, circuits):
         """Tests submitting and then cancelling circuits."""
@@ -1481,9 +1862,6 @@ class TestQoroServiceWithApiKey:
             "circuits_cancelled" in cancel_result
         ), "Should include circuits_cancelled"
 
-        # Cleanup: delete the cancelled job
-        assert_delete_successful(qoro_service, result)
-
     def test_cancel_completed_job_fails(self, qoro_service, circuits):
         """Tests that cancelling a completed job fails with 409 Conflict."""
         # Use only one circuit for a quicker test
@@ -1502,9 +1880,6 @@ class TestQoroServiceWithApiKey:
         assert (
             exc_info.value.response.status_code == HTTPStatus.CONFLICT
         ), "Cancelling completed job should return 409 Conflict"
-
-        # Cleanup
-        assert_delete_successful(qoro_service, result)
 
     def test_cancel_nonexistent_job_fails(self, qoro_service):
         """Tests that cancelling a non-existent job fails."""
@@ -1528,8 +1903,6 @@ class TestQoroServiceWithApiKey:
         assert status is not None, "Status should not be None"
         assert status in JobStatus, "Status should be a valid JobStatus"
 
-        assert_delete_successful(qoro_service, result)
-
     def test_retry_get_job_status(self, qoro_service, circuits):
         """Tests the retry mechanism for polling job status."""
         result = qoro_service.submit_circuits(circuits)
@@ -1540,8 +1913,6 @@ class TestQoroServiceWithApiKey:
 
         with pytest.raises(MaxRetriesReachedError):
             qoro_service_temp.poll_job_status(result, loop_until_complete=True)
-
-        assert_delete_successful(qoro_service, result)
 
     def test_fetch_qpu_systems(self, qoro_service):
         """Tests fetching the list of QPU systems."""
@@ -1570,9 +1941,6 @@ class TestQoroServiceWithApiKey:
         assert "label" in results[0]
         assert "results" in results[0]
         assert isinstance(results[0]["results"], dict)
-
-        # Cleanup
-        assert_delete_successful(qoro_service, result)
 
     def test_get_job_results_expectation_value(self, qoro_service, circuits):
         """Tests submitting an expectation value job and fetching results."""
@@ -1608,5 +1976,95 @@ class TestQoroServiceWithApiKey:
             isinstance(val, (float, int)) for val in exp_values.values()
         ), "Expectation values should be numeric"
 
-        # Cleanup
-        assert_delete_successful(qoro_service, result)
+    def test_set_and_get_execution_config(self, qoro_service, circuits):
+        """Tests setting and retrieving execution config on a PENDING job."""
+        single_circuit = {"circuit_1": circuits["circuit_0"]}
+        result = qoro_service.submit_circuits(single_circuit)
+
+        config = ExecutionConfig(
+            bond_dimension=16,
+            simulator=Simulator.QCSim,
+            simulation_method=SimulationMethod.MatrixProductState,
+            api_meta={"optimization_level": 1},
+        )
+        response = qoro_service.set_execution_config(result, config)
+        assert response["status"] == "ok"
+        assert response["job_id"] == result.job_id
+        assert response["execution_configuration"]["bond_dimension"] == 16
+
+        # Retrieve and verify round-trip
+        retrieved = qoro_service.get_execution_config(result)
+        assert isinstance(retrieved, ExecutionConfig)
+        assert retrieved.bond_dimension == 16
+        assert retrieved.simulator == Simulator.QCSim
+        assert retrieved.simulation_method == SimulationMethod.MatrixProductState
+        assert retrieved.api_meta == {"optimization_level": 1}
+
+    def test_set_execution_config_non_pending_job(self, qoro_service, circuits):
+        """Tests that setting execution config on a non-PENDING job returns 409."""
+        single_circuit = {"circuit_1": circuits["circuit_0"]}
+        result = qoro_service.submit_circuits(single_circuit)
+
+        # Wait for job to complete
+        status = qoro_service.poll_job_status(result, loop_until_complete=True)
+        assert status == JobStatus.COMPLETED
+
+        config = ExecutionConfig(bond_dimension=16)
+        with pytest.raises(requests.exceptions.HTTPError) as exc_info:
+            qoro_service.set_execution_config(result, config)
+
+        assert (
+            exc_info.value.response.status_code == HTTPStatus.CONFLICT
+        ), "Setting config on completed job should return 409 Conflict"
+
+    def test_get_credit_balance(self, qoro_service):
+        """Tests fetching credit balance from the live service."""
+        result = qoro_service.get_credit_balance()
+        assert isinstance(result, dict)
+        assert "balance" in result
+        assert "total_used" in result
+        assert "created_at" in result
+        assert "updated_at" in result
+
+    def test_get_credit_transactions(self, qoro_service):
+        """Tests fetching credit transactions from the live service."""
+        result = qoro_service.get_credit_transactions(page=1, page_size=5)
+        assert isinstance(result, dict)
+        assert "count" in result
+        assert "total_pages" in result
+        assert "results" in result
+        assert isinstance(result["results"], list)
+        if result["results"]:
+            tx = result["results"][0]
+            assert "id" in tx
+            assert "amount" in tx
+            assert "transaction_type" in tx
+            assert "created_at" in tx
+
+    @pytest.fixture
+    def failed_job(self, qoro_service):
+        """Creates a pre-failed job and deletes it after the test."""
+        result = create_failed_job(qoro_service)
+        yield result
+        try:
+            qoro_service.delete_job(result)
+        except Exception:
+            pass
+
+    def test_poll_failed_job_status(self, qoro_service, failed_job):
+        """Tests that polling a pre-failed job returns FAILED status."""
+        status = qoro_service.poll_job_status(failed_job)
+        assert status == JobStatus.FAILED
+
+    def test_get_results_of_failed_job(self, qoro_service, failed_job):
+        """Tests that fetching results of a failed job raises an error."""
+        with pytest.raises(requests.exceptions.HTTPError):
+            qoro_service.get_job_results(failed_job)
+
+    def test_cancel_failed_job(self, qoro_service, failed_job):
+        """Tests that cancelling a failed job returns 409 Conflict."""
+        with pytest.raises(requests.exceptions.HTTPError) as exc_info:
+            qoro_service.cancel_job(failed_job)
+        assert (
+            exc_info.value.response.status_code == HTTPStatus.CONFLICT
+        ), "Cancelling a failed job should return 409 Conflict"

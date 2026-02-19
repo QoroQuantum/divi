@@ -8,7 +8,7 @@ import dimod
 import hybrid
 import numpy as np
 
-from divi.qprog import QUBOPartitioningQAOA
+from divi.qprog import EarlyStopping, QUBOPartitioningQAOA
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from tutorials._backend import get_backend
 
@@ -27,7 +27,8 @@ if __name__ == "__main__":
         composer=hybrid.SplatComposer(),
         n_layers=2,
         optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
-        max_iterations=10,
+        max_iterations=30,
+        early_stopping=EarlyStopping(patience=5),
         backend=get_backend(),
     )
 
@@ -36,13 +37,47 @@ if __name__ == "__main__":
 
     print(f"Total circuits: {qubo_partition.total_circuit_count}")
 
-    quantum_solution, quantum_energy = qubo_partition.aggregate_results()
+    # --- Greedy aggregation (default) ---
+    greedy_solution, greedy_energy = qubo_partition.aggregate_results(
+        beam_width=1, n_partition_candidates=5
+    )
+
+    # --- Beam search aggregation ---
+    # beam_width=3: keep top 3 partial solutions after each partition step
+    # n_partition_candidates=5: consider 5 candidates from each partition
+    beam_solution, beam_energy = qubo_partition.aggregate_results(
+        beam_width=3, n_partition_candidates=5
+    )
 
     best_classical_bitstring, best_classical_energy, _ = (
         dimod.SimulatedAnnealingSampler().sample(bqm).lowest().record[0]
     )
 
-    print(f"Classical Solution: {best_classical_bitstring}")
-    print(f"Classical Energy: {best_classical_energy:.9f}")
-    print(f"Quantum Solution: {quantum_solution}")
-    print(f"Quantum Energy: {quantum_energy:.9f}")
+    # --- Print comparison table ---
+    rows = [
+        ("Classical (SA)", best_classical_energy, str(best_classical_bitstring), "-"),
+        (
+            "Greedy (beam=1)",
+            greedy_energy,
+            str(greedy_solution),
+            qubo_partition.total_circuit_count,
+        ),
+        (
+            "Beam Search (beam=3)",
+            beam_energy,
+            str(beam_solution),
+            qubo_partition.total_circuit_count,
+        ),
+    ]
+    pad = "  "
+    col_m, col_e, col_c = 22, 16, 10
+    sep_len = col_m + col_e + col_c + len(pad) * 2
+    print("\n" + "-" * sep_len)
+    print(f"{'Method':<{col_m}}{pad}{'Energy':>{col_e}}{pad}{'# Circuits':>{col_c}}")
+    print("-" * sep_len)
+    for method, energy, sol, circuits in rows:
+        print(
+            f"{method:<{col_m}}{pad}{energy:>{col_e}.6f}{pad}{str(circuits):>{col_c}}"
+        )
+        print(f"  Solution: {sol}")
+    print("-" * sep_len)

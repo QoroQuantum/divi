@@ -8,6 +8,7 @@ These convert raw backend results (shot counts) into the value format expected
 by the reduce chain (expectation values or probability distributions).
 """
 
+from collections.abc import Mapping, Sequence
 from functools import lru_cache, reduce
 from typing import Any
 
@@ -53,8 +54,8 @@ def _get_eigvals_from_key(key: tuple[str, ...]) -> npt.NDArray[np.int8]:
 
 
 def _batched_expectation(
-    shots_dicts: list[dict[str, int]],
-    observables: list[qml.operation.Operation],
+    shots_dicts: Sequence[Mapping[str, int]],
+    observables: Sequence[qml.operation.Operation],
     wire_order: tuple[int, ...],
 ) -> npt.NDArray[np.float64]:
     """Vectorised counts → expectation values for multiple observables/histograms.

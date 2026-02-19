@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 
 import numpy as np
 
@@ -54,7 +55,7 @@ class CircuitRunner(ABC):
         return False
 
     @abstractmethod
-    def submit_circuits(self, circuits: dict[str, str], **kwargs) -> ExecutionResult:
+    def submit_circuits(self, circuits: Mapping[str, str], **kwargs) -> ExecutionResult:
         """
         Submit quantum circuits for execution.
 

@@ -143,6 +143,7 @@ Set ``include_decoded=True`` when calling :meth:`get_top_solutions` to include d
 - **Optimization Loop** 🔄 - Built-in integration with classical optimizers
 - **Loss Tracking** 📈 - Detailed history of loss values during optimization
 - **Best Result Storage** 💾 - Automatic tracking of the best parameters and loss value found
+- **Early Stopping** 🛑 - Configurable criteria to terminate optimisation when convergence stalls (see :doc:`optimizers`)
 
 **Key Properties:**
 

@@ -6,7 +6,7 @@ import logging
 import pickle
 from collections.abc import Callable, Container
 from enum import Enum
-from typing import Any, Literal, get_args
+from typing import Any
 from warnings import warn
 
 import dimod
@@ -26,6 +26,10 @@ from divi.hamiltonians import (
     convert_qubo_matrix_to_pennylane_ising,
 )
 from divi.pipeline.stages import TrotterSpecStage
+from divi.qprog.algorithms._initial_state import (
+    build_initial_state_ops,
+    validate_initial_state,
+)
 from divi.qprog.variational_quantum_algorithm import (
     VariationalQuantumAlgorithm,
     _extract_param_set_idx,
@@ -129,11 +133,6 @@ class GraphProblem(Enum):
         self.unconstrained_initial_state = unconstrained_initial_state
 
 
-_SUPPORTED_INITIAL_STATES_LITERAL = Literal[
-    "Zeros", "Ones", "Superposition", "Recommended"
-]
-
-
 def _resolve_circuit_layers(
     initial_state, problem, graph_problem, **kwargs
 ) -> tuple[qml.operation.Operator, qml.operation.Operator, dict | None, str]:
@@ -217,7 +216,7 @@ class QAOA(VariationalQuantumAlgorithm):
         problem: GraphProblemTypes | QUBOProblemTypes,
         *,
         graph_problem: GraphProblem | None = None,
-        initial_state: _SUPPORTED_INITIAL_STATES_LITERAL = "Recommended",
+        initial_state: str = "Recommended",
         decode_solution_fn: Callable[[str], Any] | None = None,
         trotterization_strategy: TrotterizationStrategy | None = None,
         max_iterations: int = 10,
@@ -231,7 +230,7 @@ class QAOA(VariationalQuantumAlgorithm):
                 For graph inputs, the graph problem to solve must be provided
                 through the `graph_problem` variable.
             graph_problem (GraphProblem | None): The graph problem to solve. Defaults to None.
-            initial_state (_SUPPORTED_INITIAL_STATES_LITERAL): The initial state of the circuit. Defaults to "Recommended".
+            initial_state (str): The initial state of the circuit. Defaults to "Recommended".
             decode_solution_fn (callable[[str], Any] | None): Optional decoder for bitstrings.
                 If not provided, a default decoder is selected based on problem type.
             trotterization_strategy (TrotterizationStrategy | None): The trotterization strategy to use. Defaults to ExactTrotterization.
@@ -249,12 +248,6 @@ class QAOA(VariationalQuantumAlgorithm):
             kwargs["decode_solution_fn"] = decode_solution_fn
 
         super().__init__(**kwargs)
-
-        # Validate initial state
-        if initial_state not in get_args(_SUPPORTED_INITIAL_STATES_LITERAL):
-            raise ValueError(
-                f"Unsupported Initial State. Got {initial_state}. Must be one of: {get_args(_SUPPORTED_INITIAL_STATES_LITERAL)}"
-            )
 
         if trotterization_strategy is None:
             trotterization_strategy = ExactTrotterization()
@@ -280,6 +273,10 @@ class QAOA(VariationalQuantumAlgorithm):
             graph_problem=self.graph_problem,
             **kwargs,
         )
+
+        # Validate the *resolved* initial state ("Recommended" has been
+        # mapped to a concrete value by _resolve_circuit_layers).
+        validate_initial_state(self.initial_state, self.n_qubits)
         self.problem_metadata = problem_metadata[0] if problem_metadata else {}
 
         # Extract and combine constants
@@ -486,13 +483,7 @@ class QAOA(VariationalQuantumAlgorithm):
 
     def _build_qaoa_ops(self, cost_hamiltonian: qml.operation.Operator) -> list:
         """Build QAOA layer ops for a given cost Hamiltonian."""
-        ops = []
-        if self.initial_state == "Ones":
-            for wire in self._circuit_wires:
-                ops.append(qml.PauliX(wires=wire))
-        elif self.initial_state == "Superposition":
-            for wire in self._circuit_wires:
-                ops.append(qml.Hadamard(wires=wire))
+        ops = build_initial_state_ops(self.initial_state, self._circuit_wires)
 
         for layer_params in self._sym_params:
             gamma, beta = layer_params

@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from collections.abc import Sequence
 from functools import partial
 from itertools import product
 from warnings import warn
@@ -160,7 +161,7 @@ def circuit_body_to_qasm(
 
 def measurements_to_qasm(
     main_qscript,
-    measurement_groups: list[list[qml.measurements.ExpectationMP]],
+    measurement_groups: Sequence[Sequence[qml.measurements.ExpectationMP]],
     measure_all: bool = True,
     precision: int | None = None,
 ) -> list[str]:
@@ -215,7 +216,7 @@ def measurements_to_qasm(
 
 def to_openqasm(
     main_qscript,
-    measurement_groups: list[list[qml.measurements.ExpectationMP]],
+    measurement_groups: Sequence[Sequence[qml.measurements.ExpectationMP]],
     measure_all: bool = True,
     precision: int | None = None,
     return_measurements_separately: bool = False,

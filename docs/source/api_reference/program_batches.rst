@@ -93,3 +93,8 @@ QUBO Partitioning QAOA
    :undoc-members:
    :show-inheritance:
    :special-members: __init__
+
+Beam Search Aggregation
+~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autofunction:: divi.qprog.batch.beam_search_aggregate

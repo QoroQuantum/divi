@@ -7,6 +7,7 @@ import heapq
 import logging
 import os
 import threading
+from collections.abc import Mapping, Sequence
 from functools import partial
 from multiprocessing import Pool, current_process
 from typing import Any, Literal
@@ -274,7 +275,7 @@ class ParallelSimulator(CircuitRunner):
             circuit_simulator = self._create_simulator(resolved_backend)
 
             if self.simulation_seed is not None:
-                circuit_simulator.set_options(seed_simulator=self.simulation_seed)
+                circuit_simulator.set_options(seed_simulator=self.simulation_seed + i)
 
             # Run the single circuit
             job = circuit_simulator.run(transpiled_circuit, shots=self.shots)
@@ -321,7 +322,7 @@ class ParallelSimulator(CircuitRunner):
 
         aer_simulator.set_options(**options)
 
-    def submit_circuits(self, circuits: dict[str, str]) -> ExecutionResult:
+    def submit_circuits(self, circuits: Mapping[str, str]) -> ExecutionResult:
         """
         Submit multiple circuits for parallel simulation using Qiskit's built-in parallelism.
 
@@ -446,8 +447,8 @@ class ParallelSimulator(CircuitRunner):
 
     @staticmethod
     def estimate_run_time_batch(
-        circuits: list[str] | None = None,
-        precomputed_durations: list[float] | None = None,
+        circuits: Sequence[str] | None = None,
+        precomputed_durations: Sequence[float] | None = None,
         n_qpus: int = 5,
         **transpilation_kwargs,
     ) -> float:

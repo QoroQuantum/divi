@@ -702,14 +702,14 @@ class TestQDrift:
     def test_single_term_hamiltonian_with_sampling_budget_only(
         self, single_term_hamiltonian
     ):
-        """Single-term operators work with QDrift sampling_budget only; no np.asarray error."""
+        """Single-term operators work with QDrift sampling_budget only; returns term unchanged."""
         result = QDrift(sampling_budget=3, seed=42).process_hamiltonian(
             single_term_hamiltonian
         )
-        assert qml.equal(result.simplify(), (4 * single_term_hamiltonian).simplify())
+        assert qml.equal(result.simplify(), single_term_hamiltonian.simplify())
 
     def test_empty_hamiltonian_warns_and_returns_kept(self):
-        """Empty to_sample_hamiltonian (no terms) warns and returns keep_hamiltonian."""
+        """Empty to_sample_hamiltonian (no terms) warns and returns empty Hamiltonian."""
         empty = qml.Hamiltonian([], [])
         with pytest.warns(UserWarning, match="No terms to sample"):
             result = QDrift(sampling_budget=3, seed=42).process_hamiltonian(empty)

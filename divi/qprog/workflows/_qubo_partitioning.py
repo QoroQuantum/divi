@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import copy
 import string
 from functools import partial
 from typing import TypeVar
@@ -15,7 +16,7 @@ from dimod import BinaryQuadraticModel
 
 from divi.backends import CircuitRunner
 from divi.qprog.algorithms import QAOA
-from divi.qprog.batch import ProgramBatch
+from divi.qprog.batch import ProgramBatch, beam_search_aggregate
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer, copy_optimizer
 from divi.typing import QUBOProblemTypes
 
@@ -72,9 +73,9 @@ class QUBOPartitioningQAOA(ProgramBatch):
             n_layers (int): Number of QAOA layers to use for each subproblem.
             backend (CircuitRunner): Backend responsible for running quantum circuits.
             composer (hybrid.traits.SubsamplesComposer, optional): Composer to aggregate subsamples from subproblems.
-                Defaults to hybrid.SplatComposer().
+                Defaults to hybrid.SplatComposer(). Only used when ``beam_width=1`` (greedy).
             optimizer (Optimizer, optional): Optimizer to use for QAOA.
-                Defaults to Optimizer.MONTE_CARLO.
+                Defaults to MonteCarloOptimizer.
             max_iterations (int, optional): Maximum number of optimization iterations.
                 Defaults to 10.
             **kwargs: Additional keyword arguments passed to the QAOA constructor.
@@ -96,6 +97,9 @@ class QUBOPartitioningQAOA(ProgramBatch):
             optimizer if optimizer is not None else MonteCarloOptimizer()
         )
 
+        # Extract early_stopping so each sub-program gets its own copy
+        self._early_stopping_template = kwargs.pop("early_stopping", None)
+
         self._constructor = partial(
             QAOA,
             max_iterations=self.max_iterations,
@@ -103,7 +107,6 @@ class QUBOPartitioningQAOA(ProgramBatch):
             n_layers=n_layers,
             **kwargs,
         )
-        pass
 
     def create_programs(self):
         """
@@ -125,9 +128,14 @@ class QUBOPartitioningQAOA(ProgramBatch):
         super().create_programs()
 
         self.prog_id_to_bqm_subproblem_states = {}
+        self._variable_maps = {}  # prog_id -> list of global variable indices
 
         init_state = hybrid.State.from_problem(self._bqm)
         _bqm_partitions = self._partitioning.run(init_state).result()
+
+        # Build a variable-to-index map for the full BQM
+        all_variables = list(self._bqm.variables)
+        var_to_global_idx = {v: i for i, v in enumerate(all_variables)}
 
         for i, partition in enumerate(_bqm_partitions):
             if i > 0:
@@ -138,6 +146,11 @@ class QUBOPartitioningQAOA(ProgramBatch):
 
             prog_id = (string.ascii_uppercase[i], len(partition.subproblem))
             self.prog_id_to_bqm_subproblem_states[prog_id] = partition
+
+            # Store mapping: local position -> global variable index
+            self._variable_maps[prog_id] = [
+                var_to_global_idx[v] for v in partition.subproblem.variables
+            ]
 
             if partition.subproblem.num_interactions == 0:
                 # Skip creating a full QAOA program for this trivial case.
@@ -163,16 +176,62 @@ class QUBOPartitioningQAOA(ProgramBatch):
                 program_id=prog_id,
                 problem=coo_mat,
                 optimizer=copy_optimizer(self._optimizer_template),
+                early_stopping=copy.deepcopy(self._early_stopping_template),
                 progress_queue=self._queue,
             )
 
-    def aggregate_results(self) -> tuple[npt.NDArray[np.int32], float]:
+    def _extend_solution(self, current_solution, prog_id, candidate):
+        """Extend a global solution with a partition candidate's decoded bits.
+
+        Uses ``_variable_maps`` to map the candidate's local variable positions
+        to global positions in the solution vector.
+
+        Args:
+            current_solution (list[int]): Current global solution vector.
+            prog_id: Program identifier (key into ``_variable_maps``).
+            candidate: A ``SolutionEntry`` with ``decoded`` containing a numpy
+                array of binary values for the subproblem variables.
+
+        Returns:
+            list[int]: A new solution vector with the candidate's bits applied.
+        """
+        extended = list(current_solution)
+        global_indices = self._variable_maps[prog_id]
+
+        for local_idx, global_idx in enumerate(global_indices):
+            extended[global_idx] = int(candidate.decoded[local_idx])
+
+        return extended
+
+    def _evaluate_solution(self, solution):
+        """Evaluate a QUBO solution using the BQM energy function.
+
+        Args:
+            solution (list[int]): Binary solution vector.
+
+        Returns:
+            float: The BQM energy for the given solution.
+        """
+        variables = list(self._bqm.variables)
+        sample = dict(zip(variables, solution))
+        return self._bqm.energy(sample)
+
+    def aggregate_results(
+        self, beam_width=1, n_partition_candidates=None
+    ) -> tuple[npt.NDArray[np.int32], float]:
         """
         Aggregate results from all QUBO subproblems into a global solution.
 
-        Collects solutions from each partitioned subproblem (both QAOA-optimized and
-        trivial ones) and uses the hybrid framework composer to combine them into
-        a final solution for the original QUBO problem.
+        Uses the hybrid framework composer to assemble per-partition solutions
+        into a global result.  When ``beam_width > 1`` or ``beam_width is None``,
+        beam search is used first to select the best candidate combination
+        across partitions before feeding them through the composer.
+
+        Args:
+            beam_width (int | None): Width of the beam search. Defaults to ``1``
+                (greedy).
+            n_partition_candidates (int | None): Number of candidate bitstrings
+                to extract from each partition. Defaults to ``beam_width``.
 
         Returns:
             tuple: A tuple containing:
@@ -190,20 +249,30 @@ class QUBOPartitioningQAOA(ProgramBatch):
                 "Not all final probabilities computed yet. Please call `run()` first."
             )
 
+        n_vars = len(self._bqm.variables)
+        best_solution = beam_search_aggregate(
+            programs=self._programs,
+            initial_solution=[0] * n_vars,
+            extend_fn=self._extend_solution,
+            evaluate_fn=self._evaluate_solution,
+            beam_width=beam_width,
+            n_partition_candidates=n_partition_candidates,
+        )
+
+        # Build per-partition SampleSets and feed through the composer
         for (
             prog_id,
             bqm_subproblem_state,
         ) in self.prog_id_to_bqm_subproblem_states.items():
 
             if prog_id in self.trivial_program_ids:
-                # Case 1: Trivial problem. Solve classically.
-                # The solution is any bitstring (e.g., all zeros) with energy 0.
                 var_to_val = {v: 0 for v in bqm_subproblem_state.subproblem.variables}
             else:
-                subproblem = self._programs[prog_id]
-                var_to_val = dict(
-                    zip(bqm_subproblem_state.subproblem.variables, subproblem.solution)
-                )
+                variables = list(bqm_subproblem_state.subproblem.variables)
+                global_indices = self._variable_maps[prog_id]
+                var_to_val = {
+                    v: best_solution[gi] for v, gi in zip(variables, global_indices)
+                }
 
             sample_set = dimod.SampleSet.from_samples(
                 dimod.as_samples(var_to_val), "BINARY", 0

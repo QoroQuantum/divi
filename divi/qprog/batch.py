@@ -1,11 +1,13 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
 import atexit
+import heapq
 import traceback
 import warnings
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from queue import Empty, Queue
 from threading import Event, Lock, Thread
@@ -546,3 +548,119 @@ class ProgramBatch(ABC):
                 raise RuntimeError(
                     "Some/All programs have empty losses. Did you call run()?"
                 )
+
+
+def beam_search_aggregate(
+    programs: dict,
+    initial_solution: Sequence[int],
+    extend_fn: Callable,
+    evaluate_fn: Callable[[list[int]], float],
+    beam_width: int | None = None,
+    n_partition_candidates: int | None = None,
+) -> list[int]:
+    """Beam search aggregation over partitioned quantum program results.
+
+    Searches across the top candidate bitstrings from each partition program
+    to find the best global solution. Tunable from greedy (``beam_width=1``)
+    through bounded beam search to exhaustive (``beam_width=None``).
+
+    Args:
+        programs: Dictionary mapping program IDs to executed
+            ``VariationalQuantumAlgorithm`` instances.  Each program must have
+            been run so that ``get_top_solutions`` is available.
+        initial_solution: Starting solution vector (e.g. all-zeros of the
+            appropriate global size).
+        extend_fn: ``(current_solution, prog_id, candidate) -> extended_solution``.
+            Takes the current (possibly partial) global solution, a program
+            identifier, and a ``SolutionEntry`` candidate, and returns a **new**
+            solution list with the candidate's bits written into the correct
+            global positions.
+        evaluate_fn: ``(solution) -> float``.  Scores a global solution vector.
+            **Lower is better** (cost minimisation convention).
+        beam_width: How many partial solutions are retained after each
+            expansion step.
+
+            * ``1``    – greedy search (keeps only the best partial solution).
+            * ``k``    – standard beam search retaining *k* partial solutions.
+            * ``None`` – exhaustive search (no pruning).
+
+        n_partition_candidates: How many candidate bitstrings to extract from
+            each partition.  Defaults to ``beam_width`` when ``None``.  Must be
+            ``>= beam_width`` when both are integers (extracting fewer
+            candidates than the beam width would waste beam capacity).
+
+    Returns:
+        The best global solution vector found.
+
+    Raises:
+        ValueError: If ``beam_width`` is less than 1, or if
+            ``n_partition_candidates`` is less than 1, or if
+            ``n_partition_candidates < beam_width``.
+    """
+    if beam_width is not None and beam_width < 1:
+        raise ValueError(f"beam_width must be >= 1 or None, got {beam_width}")
+
+    if n_partition_candidates is not None and n_partition_candidates < 1:
+        raise ValueError(
+            f"n_partition_candidates must be >= 1 or None, got {n_partition_candidates}"
+        )
+
+    if (
+        beam_width is not None
+        and n_partition_candidates is not None
+        and n_partition_candidates < beam_width
+    ):
+        raise ValueError(
+            f"n_partition_candidates ({n_partition_candidates}) must be >= "
+            f"beam_width ({beam_width}). Extracting fewer candidates than the "
+            f"beam width wastes beam capacity."
+        )
+
+    # Resolve the number of candidates to fetch per partition
+    if n_partition_candidates is not None:
+        n_fetch = n_partition_candidates
+    elif beam_width is not None:
+        n_fetch = beam_width
+    else:
+        n_fetch = 2**20  # exhaustive
+
+    # Initialise beam: list of (score, solution) tuples
+    beam = [(evaluate_fn(initial_solution), list(initial_solution))]
+
+    for prog_id, program in programs.items():
+        candidates = program.get_top_solutions(n=n_fetch, include_decoded=True)
+
+        # When a program has no candidates (e.g. trivial partition),
+        # carry the beam forward unchanged.
+        if not candidates:
+            continue
+
+        if beam_width is not None:
+            # Bounded mode: maintain a max-heap of size beam_width.
+            # We negate scores so that Python's min-heap acts as a max-heap,
+            # letting us efficiently evict the worst (highest-cost) entry.
+            heap: list[tuple[float, int, list[int]]] = []
+            tie = 0  # monotonic counter to break score ties stably
+            for _score, partial_solution in beam:
+                for candidate in candidates:
+                    extended = extend_fn(partial_solution, prog_id, candidate)
+                    new_score = evaluate_fn(extended)
+                    entry = (-new_score, tie, extended)
+                    tie += 1
+                    if len(heap) < beam_width:
+                        heapq.heappush(heap, entry)
+                    else:
+                        heapq.heappushpop(heap, entry)
+            beam = [(-neg_score, sol) for neg_score, _tie, sol in heap]
+        else:
+            # Exhaustive mode: keep all combinations
+            new_beam = []
+            for _score, partial_solution in beam:
+                for candidate in candidates:
+                    extended = extend_fn(partial_solution, prog_id, candidate)
+                    new_score = evaluate_fn(extended)
+                    new_beam.append((new_score, extended))
+            beam = new_beam
+
+    # Return the best solution
+    return min(beam, key=lambda entry: entry[0])[1]

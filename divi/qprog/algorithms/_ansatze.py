@@ -62,7 +62,7 @@ class GenericLayerAnsatz(Ansatz):
 
     def __init__(
         self,
-        gate_sequence: list[qml.operation.Operator],
+        gate_sequence: Sequence[qml.operation.Operator],
         entangler: qml.operation.Operator | None = None,
         entangling_layout: (
             Literal["linear", "brick", "circular", "all-to-all"]

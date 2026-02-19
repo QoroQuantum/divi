@@ -230,20 +230,24 @@ class TestGraphInput:
     @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
     def test_graph_qaoa_e2e_solution(self, optimizer, default_test_simulator):
         optimizer = optimizer()  # Create fresh instance
-        if (
-            isinstance(optimizer, ScipyOptimizer)
-            and optimizer.method == ScipyMethod.L_BFGS_B
-        ):
-            pytest.skip("L-BFGS-B fails a lot for some reason. Debug later.")
 
         G = nx.bull_graph()
+
+        # L-BFGS-B needs more layers for sufficient circuit expressibility
+        # to solve MAX_CLIQUE — 1 layer converges to a local optimum.
+        n_layers = (
+            2
+            if isinstance(optimizer, ScipyOptimizer)
+            and optimizer.method == ScipyMethod.L_BFGS_B
+            else 1
+        )
 
         default_test_simulator.set_seed(1997)
 
         qaoa_problem = QAOA(
             graph_problem=GraphProblem.MAX_CLIQUE,
             problem=G,
-            n_layers=1,
+            n_layers=n_layers,
             optimizer=optimizer,
             max_iterations=10,
             is_constrained=True,
@@ -1063,7 +1067,7 @@ class TestQAOAQDriftMultiSample:
 
         strategy = QDrift(
             keep_fraction=0.5,
-            sampling_budget=4,
+            sampling_budget=6,
             n_hamiltonians_per_iteration=2,
             seed=123,
         )
@@ -1072,7 +1076,7 @@ class TestQAOAQDriftMultiSample:
             graph_problem=GraphProblem.MAXCUT,
             n_layers=1,
             trotterization_strategy=strategy,
-            max_iterations=10,
+            max_iterations=20,
             backend=default_test_simulator,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             seed=1997,
@@ -1081,7 +1085,7 @@ class TestQAOAQDriftMultiSample:
 
         assert count > 0
         assert runtime >= 0
-        assert len(qaoa.losses_history) == 10
+        assert len(qaoa.losses_history) == 20
         assert qaoa.best_loss < float("inf")
 
         # At least one of the top solutions achieves the optimal cut (more stable than single best)

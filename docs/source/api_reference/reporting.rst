@@ -82,3 +82,4 @@ Thread-safe progress reporter that sends updates through a queue for external mo
    :members:
    :undoc-members:
    :show-inheritance:
+   :exclude-members: LoggingProgressReporter, QueueProgressReporter

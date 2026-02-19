@@ -4,6 +4,7 @@
 
 from ._backend_properties_conversion import create_backend_from_properties
 from ._circuit_runner import CircuitRunner
+from ._execution_config import ExecutionConfig, SimulationMethod, Simulator
 from ._execution_result import ExecutionResult
 from ._parallel_simulator import ParallelSimulator
 from ._qoro_service import JobConfig, JobStatus, JobType, QoroService

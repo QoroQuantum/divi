@@ -13,7 +13,11 @@ import sympy as sp
 from divi.circuits import MetaCircuit
 from divi.hamiltonians import _clean_hamiltonian, _is_empty_hamiltonian
 from divi.pipeline.stages import CircuitSpecStage
-from divi.qprog.algorithms._ansatze import Ansatz, HartreeFockAnsatz
+from divi.qprog.algorithms._ansatze import Ansatz, HartreeFockAnsatz, UCCSDAnsatz
+from divi.qprog.algorithms._initial_state import (
+    build_initial_state_ops,
+    validate_initial_state,
+)
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 
 
@@ -49,6 +53,7 @@ class VQE(VariationalQuantumAlgorithm):
         n_electrons: int | None = None,
         n_layers: int = 1,
         ansatz: Ansatz | None = None,
+        initial_state: str = "Zeros",
         max_iterations=10,
         **kwargs,
     ) -> None:
@@ -62,6 +67,9 @@ class VQE(VariationalQuantumAlgorithm):
             n_layers (int): Number of ansatz layers. Defaults to 1.
             ansatz (Ansatz | None): The ansatz to use for the VQE problem.
                 Defaults to HartreeFockAnsatz.
+            initial_state (str): Initial state preparation. One of ``"Zeros"``,
+                ``"Ones"``, ``"Superposition"``, or a per-qubit string of
+                ``'0'``, ``'1'``, ``'+'``, ``'-'``.  Defaults to ``"Zeros"``.
             max_iterations (int): Maximum number of optimization iterations. Defaults to 10.
             **kwargs: Additional keyword arguments passed to the parent class.
         """
@@ -78,6 +86,23 @@ class VQE(VariationalQuantumAlgorithm):
         self._process_problem_input(
             hamiltonian=hamiltonian, molecule=molecule, n_electrons=n_electrons
         )
+
+        # Validate & store initial state (n_qubits is now set)
+        validate_initial_state(initial_state, self.n_qubits)
+        self.initial_state = initial_state
+
+        if initial_state != "Zeros" and isinstance(
+            self.ansatz, (HartreeFockAnsatz, UCCSDAnsatz)
+        ):
+            warn(
+                f"initial_state={initial_state!r} supplied with a chemistry "
+                f"ansatz ({self.ansatz.name}) that embeds its own "
+                f"reference-state preparation. The initial-state operators "
+                f"will be prepended before the ansatz and may produce "
+                f"unphysical circuits.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         # Build pipelines once (structure is fixed; only env changes per call)
 
@@ -171,6 +196,14 @@ class VQE(VariationalQuantumAlgorithm):
             n_layers=self.n_layers,
             n_electrons=self.n_electrons,
         )
+
+        # Prepend initial-state ops when the user explicitly requested
+        # a non-default state.
+        if self.initial_state != "Zeros":
+            ops = (
+                build_initial_state_ops(self.initial_state, list(range(self.n_qubits)))
+                + ops
+            )
 
         symbols = weights_syms.flatten()
         return {

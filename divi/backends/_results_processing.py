@@ -1,8 +1,9 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
 import base64
+from collections.abc import Mapping
 
 
 def _decode_qh1_b64(encoded: dict) -> dict[str, int]:
@@ -106,7 +107,7 @@ def _decompress_histogram(buf: bytes) -> dict[str, int]:
 
 
 def reverse_dict_endianness(
-    probs_dict: dict[str, dict[str, float]],
+    probs_dict: Mapping[str, Mapping[str, float]],
 ) -> dict[str, dict[str, float]]:
     """Reverse endianness of all bitstrings in a dictionary of probability distributions."""
     return {
@@ -116,7 +117,7 @@ def reverse_dict_endianness(
 
 
 def convert_counts_to_probs(
-    counts: dict[str, dict[str, int]], shots: int
+    counts: Mapping[str, Mapping[str, int]], shots: int
 ) -> dict[str, dict[str, float]]:
     """Convert raw counts to probability distributions.
 
