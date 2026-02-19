@@ -11,10 +11,10 @@ Divi is designed to allow researchers, students, and enterprises to deploy quant
 
 ## 🚀 Features
 
-- 🧠 **Smart Job Parallelization**: Automatically parallelizes your quantum programs based on task structure.
-- 🌐 **Cloud Execution**: Send jobs to local or remote clusters with minimal configuration.
-- 🔌 **Extensible API**: Easily integrate with your existing quantum stack.
-- 📦 **Lightweight & Modular**: Install and use only what you need.
+- **Smart Job Parallelization**: Automatically parallelizes your quantum programs based on task structure.
+- **Cloud Execution**: Send jobs to local or remote clusters with minimal configuration.
+- **Extensible API**: Easily integrate with your existing quantum stack.
+- **Lightweight & Modular**: Install and use only what you need.
 
 ---
 
