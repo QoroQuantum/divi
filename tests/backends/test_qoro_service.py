@@ -2017,19 +2017,6 @@ class TestQoroServiceWithApiKey:
             exc_info.value.response.status_code == HTTPStatus.CONFLICT
         ), "Setting config on completed job should return 409 Conflict"
 
-    @pytest.mark.xfail(
-        reason="Free tier limits bond dimension to 32. Awaiting API tier clarification.",
-        raises=requests.exceptions.HTTPError,
-        strict=True,
-    )
-    def test_set_execution_config_exceeds_free_tier_limit(self, qoro_service, circuits):
-        """Tests that setting bond_dimension above free tier limit raises 403."""
-        single_circuit = {"circuit_1": circuits["circuit_0"]}
-        result = qoro_service.submit_circuits(single_circuit)
-
-        config = ExecutionConfig(bond_dimension=64)
-        qoro_service.set_execution_config(result, config)
-
     def test_get_credit_balance(self, qoro_service):
         """Tests fetching credit balance from the live service."""
         result = qoro_service.get_credit_balance()

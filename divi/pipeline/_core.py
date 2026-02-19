@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import copy
+import logging
 from collections import Counter, defaultdict
 from collections.abc import Callable, Sequence
 from typing import Any
@@ -25,6 +26,38 @@ from divi.pipeline.abc import (
     StageToken,
 )
 from divi.pipeline.stages import MeasurementStage
+
+logger = logging.getLogger(__name__)
+
+_DEEPCOPY_MAX_RETRIES = 5
+
+
+def _safe_deepcopy(obj: Any) -> Any:
+    """Thread-safe wrapper around ``copy.deepcopy``.
+
+    PennyLane's ``Operator.__deepcopy__`` iterates over ``self.__dict__.items()``
+    without holding a lock.  When several threads deep-copy objects that share
+    the same PennyLane gate instances (common in ``ProgramBatch`` runs), a
+    concurrent lazy-init or cache update on the operator can mutate its
+    ``__dict__`` mid-iteration, raising
+    ``RuntimeError: dictionary changed size during iteration``.
+
+    The mutation is benign (it only *adds* a cached / lazily-computed
+    attribute), so the copy simply needs to be retried.
+    """
+    for attempt in range(_DEEPCOPY_MAX_RETRIES):
+        try:
+            return copy.deepcopy(obj)
+        except RuntimeError as exc:
+            if "dictionary changed size during iteration" not in str(exc):
+                raise
+            if attempt + 1 == _DEEPCOPY_MAX_RETRIES:
+                raise
+            logger.debug(
+                "deepcopy hit dict-mutation race (attempt %d/%d), retrying",
+                attempt + 1,
+                _DEEPCOPY_MAX_RETRIES,
+            )
 
 
 def _path_children(keys: Sequence[Any]) -> dict[str, list[str]]:
@@ -280,7 +313,7 @@ class CircuitPipeline:
                         # in-place mutations (via object.__setattr__) do not
                         # corrupt this snapshot.  Required for partial-rerun
                         # caching when first_stateful_idx > 1.
-                        batch=copy.deepcopy(expansion_result.batch),
+                        batch=_safe_deepcopy(expansion_result.batch),
                         stage_name=stage.name,
                     )
                 )
@@ -307,7 +340,7 @@ class CircuitPipeline:
             # ParameterBindingStage.set_circuit_bodies).  Without this copy the
             # cached initial_batch would be the same Python object that
             # downstream stages later modify, corrupting the cache.
-            initial_batch_snapshot = copy.deepcopy(data)
+            initial_batch_snapshot = _safe_deepcopy(data)
 
             final_batch, bundle_tokens, expansions = run_bundle_stages(
                 data, self._stages[1:]
@@ -330,9 +363,9 @@ class CircuitPipeline:
         # downstream stages (e.g. MetaCircuit.set_circuit_bodies) do not
         # corrupt the cached expansion data for future partial reruns.
         if first_stateful_idx == 1:
-            data = copy.deepcopy(cached.initial_batch)
+            data = _safe_deepcopy(cached.initial_batch)
         else:
-            data = copy.deepcopy(cached.stage_expansions[first_stateful_idx - 2].batch)
+            data = _safe_deepcopy(cached.stage_expansions[first_stateful_idx - 2].batch)
 
         final_batch, rerun_tokens, rerun_expansions = run_bundle_stages(
             data, self._stages[first_stateful_idx:]
