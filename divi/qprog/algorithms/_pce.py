@@ -13,10 +13,7 @@ import sympy as sp
 
 from divi.circuits import MetaCircuit
 from divi.qprog.typing import QUBOProblemTypes, qubo_to_matrix
-from divi.qprog.variational_quantum_algorithm import (
-    SolutionEntry,
-    _merge_param_group_counts,
-)
+from divi.qprog.variational_quantum_algorithm import SolutionEntry
 
 from ._vqe import VQE
 
@@ -44,10 +41,12 @@ def _fast_popcount_parity(arr_input: npt.NDArray[np.integer]) -> npt.NDArray[np.
 
 def _aggregate_param_group(
     param_group: list[tuple[str, dict[str, int]]],
-    merge_counts_fn,
 ) -> tuple[list[str], npt.NDArray[np.float64], float]:
     """Aggregate a parameter group into states, counts, and total shots."""
-    shots_dict = merge_counts_fn(param_group)
+    shots_dict: dict[str, int] = {}
+    for _, histogram in param_group:
+        for bitstring, count in histogram.items():
+            shots_dict[bitstring] = shots_dict.get(bitstring, 0) + count
     state_strings = list(shots_dict.keys())
     counts = np.array(list(shots_dict.values()), dtype=float)
     total_shots = counts.sum()
@@ -343,9 +342,7 @@ class PCE(VQE):
                     for shots in shots_list
                 ]
 
-                state_strings, counts, total_shots = _aggregate_param_group(
-                    param_group, _merge_param_group_counts
-                )
+                state_strings, counts, total_shots = _aggregate_param_group(param_group)
 
                 parities = self._decode_parities_fn(
                     state_strings, self._variable_masks_u64

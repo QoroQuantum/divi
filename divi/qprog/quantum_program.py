@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import re
 from abc import ABC, abstractmethod
 from http import HTTPStatus
 from queue import Queue
@@ -13,7 +14,7 @@ import requests
 
 from divi.backends import CircuitRunner, JobStatus
 from divi.backends._execution_result import ExecutionResult
-from divi.circuits import CircuitBundle
+from divi.circuits import CircuitBundle, CircuitTag, format_circuit_tag
 from divi.qprog.exceptions import _CancelledError
 from divi.reporting import LoggingProgressReporter, QueueProgressReporter
 
@@ -54,6 +55,9 @@ class QuantumProgram(ABC):
                 operations. If provided along with progress_queue, enables queue-based
                 progress reporting.
         """
+        if backend is None:
+            raise ValueError("QuantumProgram requires a backend.")
+
         self.backend = backend
         self._seed = seed
         self._progress_queue = progress_queue
@@ -303,7 +307,7 @@ class QuantumProgram(ABC):
                     raise ValueError("ExecutionResult has neither results nor job_id")
 
             results = {r["label"]: r["results"] for r in results}
-            results = self._decode_tags(results)
+            results = {self._parse_tag(k): v for k, v in results.items()}
 
             result = self._post_process_results(results, **kwargs)
 
@@ -315,10 +319,84 @@ class QuantumProgram(ABC):
     def _reset_tag_cache(self) -> None:
         """Hook to reset per-run tag caches. Default is no-op."""
 
-    def _encode_tag(self, tag: Any) -> str:
-        """Convert a tag to a backend-safe string."""
-        return str(tag)
+    @staticmethod
+    def _parse_tag(tag: str) -> CircuitTag:
+        """Parse a tag string to CircuitTag. Raises ValueError if format is invalid."""
+        m = re.match(r"^(\d+)_([^:]+):(\d+)_ham:(-?\d+)_(\d+)$", str(tag))
 
-    def _decode_tags(self, results: dict[str, dict[str, int]]) -> dict:
-        """Restore structured tags from backend result labels."""
-        return results
+        if not m:
+            raise ValueError(f"Cannot parse tag: {tag!r}")
+        return CircuitTag(
+            param_id=int(m.group(1)),
+            qem_name=m.group(2),
+            qem_id=int(m.group(3)),
+            meas_id=int(m.group(5)),
+            hamiltonian_id=int(m.group(4)),
+        )
+
+    @staticmethod
+    def _encode_tag(tag: CircuitTag) -> str:
+        """Convert a tag to a backend-safe string."""
+        return format_circuit_tag(tag)
+
+    @staticmethod
+    def _group_results_by_tag(
+        results: dict[CircuitTag, dict[str, int]],
+    ) -> dict[int, dict[int, dict[tuple[str, int], list[dict[str, int]]]]]:
+        """Group results by parameter id, Hamiltonian sample id, and QEM key.
+
+        Returns:
+            dict[int, dict[int, dict[tuple[str, int], list[dict[str, int]]]]]:
+                Nested mapping in the shape
+                ``{param_id: {hamiltonian_id: {(qem_name, qem_id): [shots_by_meas_id]}}}``.
+        """
+        grouped: dict[
+            int,
+            dict[int, dict[tuple[str, int], list[tuple[int, dict[str, int]]]]],
+        ] = {}
+        for tag, shots in results.items():
+            qem_key = (tag.qem_name, tag.qem_id)
+            grouped.setdefault(tag.param_id, {}).setdefault(
+                tag.hamiltonian_id, {}
+            ).setdefault(qem_key, []).append((tag.meas_id, shots))
+
+        return {
+            param_id: {
+                ham_id: {
+                    qem_key: [
+                        shots
+                        for _, shots in sorted(meas_shots, key=lambda item: item[0])
+                    ]
+                    for qem_key, meas_shots in qem_dict.items()
+                }
+                for ham_id, qem_dict in ham_dict.items()
+            }
+            for param_id, ham_dict in grouped.items()
+        }
+
+    @staticmethod
+    def _merge_shot_histograms(shots_dicts: list[dict[str, int]]) -> dict[str, int]:
+        """Merge multiple shot histograms into a single histogram."""
+        merged_counts: dict[str, int] = {}
+        for shots_dict in shots_dicts:
+            for bitstring, count in shots_dict.items():
+                merged_counts[bitstring] = merged_counts.get(bitstring, 0) + count
+        return merged_counts
+
+    @staticmethod
+    def _average_probabilities(
+        probs_per_group: list[dict[str, float]],
+    ) -> dict[str, float]:
+        """Average probability dictionaries over all observed bitstrings."""
+        if not probs_per_group:
+            return {}
+
+        all_bitstrings = set()
+        for probs in probs_per_group:
+            all_bitstrings.update(probs.keys())
+
+        n_groups = len(probs_per_group)
+        return {
+            bitstring: sum(p.get(bitstring, 0.0) for p in probs_per_group) / n_groups
+            for bitstring in all_bitstrings
+        }
