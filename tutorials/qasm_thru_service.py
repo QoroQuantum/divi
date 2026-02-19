@@ -1,8 +1,15 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from divi.backends import JobConfig, JobType, QoroService
+from divi.backends import (
+    ExecutionConfig,
+    JobConfig,
+    JobType,
+    QoroService,
+    SimulationMethod,
+    Simulator,
+)
 
 if __name__ == "__main__":
     # Example 1: Initialize the service with default configuration.
@@ -66,3 +73,34 @@ if __name__ == "__main__":
     )
     expectation_results = completed_expectation_result.results
     print(f"Expectation value results: {expectation_results}")
+
+    # Example 5: Set execution configuration on a PENDING job.
+    print("\n" + "=" * 60)
+    print("=== Example 3: Set execution configuration on a PENDING job ===")
+    print("=" * 60)
+
+    # Submit a job — it starts in PENDING status.
+    exec_result = service.submit_circuits({"circuit_0": circuit})
+    print(f"Job submitted with ID: {exec_result.job_id}")
+
+    # Attach an execution configuration while the job is still PENDING.
+    exec_config = ExecutionConfig(
+        bond_dimension=16,
+        simulator=Simulator.QCSim,
+        simulation_method=SimulationMethod.MatrixProductState,
+        api_meta={"optimization_level": 2},
+    )
+    response = service.set_execution_config(exec_result, exec_config)
+    print(f"Execution config set: {response['status']}")
+
+    # Retrieve the config to confirm the round-trip.
+    retrieved_config = service.get_execution_config(exec_result)
+    print(f"Retrieved bond_dimension: {retrieved_config.bond_dimension}")
+    print(f"Retrieved simulator: {retrieved_config.simulator}")
+    print(f"Retrieved simulation_method: {retrieved_config.simulation_method}")
+    print(f"Retrieved api_meta: {retrieved_config.api_meta}")
+
+    # Complete the job and clean up.
+    service.poll_job_status(exec_result, loop_until_complete=True)
+    service.delete_job(exec_result)
+    print("Job completed and cleaned up.")

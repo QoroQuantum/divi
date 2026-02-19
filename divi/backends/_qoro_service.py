@@ -6,7 +6,9 @@ import base64
 import gzip
 import json
 import logging
+import os
 import time
+import warnings
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, fields, replace
 from enum import Enum
@@ -19,6 +21,7 @@ from requests.adapters import HTTPAdapter, Retry
 from rich.console import Console
 
 from divi.backends import CircuitRunner
+from divi.backends._execution_config import ExecutionConfig
 from divi.backends._execution_result import ExecutionResult
 from divi.backends._qpu_system import (
     QPUSystem,
@@ -192,10 +195,13 @@ class QoroService(CircuitRunner):
         Args:
             auth_token (str | None, optional):
                 The authentication token for the Qoro API. If not provided,
-                it will be read from the QORO_API_KEY in a .env file.
+                it will be read from ``QORO_API_KEY`` in a ``.env`` file,
+                falling back to the ``QORO_API_KEY`` environment variable.
             config (JobConfig | None, optional):
                 A JobConfig object containing default job settings. If not
-                provided, a default configuration will be created.
+                provided, a default configuration will be created. If the
+                config has no ``qpu_system``, it defaults to ``qoro_maestro``
+                with a warning.
             polling_interval (float, optional):
                 The interval in seconds for polling job status. Defaults to 3.0.
             max_retries (int, optional):
@@ -211,7 +217,12 @@ class QoroService(CircuitRunner):
                 env_path = find_dotenv(usecwd=True)
                 auth_token = dotenv_values(env_path)["QORO_API_KEY"]
             except KeyError:
-                raise ValueError("Qoro API key not provided nor found in a .env file.")
+                auth_token = os.environ.get("QORO_API_KEY")
+                if auth_token is None:
+                    raise ValueError(
+                        "Qoro API key not provided nor found in a .env file "
+                        "or QORO_API_KEY environment variable."
+                    )
 
         self.auth_token = "Bearer " + auth_token
         self.polling_interval = polling_interval
@@ -246,10 +257,12 @@ class QoroService(CircuitRunner):
     def _resolve_and_validate_qpu_system(self, config: JobConfig) -> JobConfig:
         """Ensures the config has a valid QPUSystem object, resolving from string if needed."""
         if config.qpu_system is None:
-            raise ValueError(
-                "JobConfig must have a qpu_system. It cannot be None. "
-                "Please provide a QPUSystem object or a valid system name string."
+            warnings.warn(
+                f"No qpu_system specified in JobConfig. "
+                f"Defaulting to '{_DEFAULT_QPU_SYSTEM.name}'.",
+                stacklevel=2,
             )
+            return replace(config, qpu_system=_DEFAULT_QPU_SYSTEM)
 
         if isinstance(config.qpu_system, str):
             resolved_qpu = get_qpu_system(config.qpu_system)
@@ -331,6 +344,69 @@ class QoroService(CircuitRunner):
         systems = parse_qpu_systems(response.json())
         update_qpu_systems_cache(systems)
         return systems
+
+    def get_credit_balance(self) -> dict:
+        """
+        Get the current credit balance for the authenticated user.
+
+        Returns:
+            dict: A dictionary containing the credit account information::
+
+                {
+                    "balance": "500.00",
+                    "total_used": "0",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z"
+                }
+
+        Raises:
+            requests.exceptions.HTTPError: If the request fails (e.g., 401
+                if the token is deactivated).
+        """
+        response = self._make_request("get", "credits/", timeout=10)
+        return response.json()
+
+    def get_credit_transactions(self, page: int = 1, page_size: int = 20) -> dict:
+        """
+        Get paginated credit transaction history for the authenticated user.
+
+        Args:
+            page (int, optional): Page number to retrieve. Defaults to 1.
+            page_size (int, optional): Number of transactions per page.
+                Defaults to 20. Maximum is 100.
+
+        Returns:
+            dict: A paginated response containing transaction records::
+
+                {
+                    "count": 1,
+                    "total_pages": 1,
+                    "next": null,
+                    "previous": null,
+                    "results": [
+                        {
+                            "id": 1,
+                            "amount": "500.00",
+                            "balance_after": "500.00",
+                            "transaction_type": "PURCHASE",
+                            "description": "...",
+                            "job_id": null,
+                            "created_at": "2026-01-01T00:00:00Z"
+                        }
+                    ]
+                }
+
+        Raises:
+            requests.exceptions.HTTPError: If the request fails (e.g., 401
+                if the token is deactivated).
+        """
+        response = self._make_request(
+            "get",
+            "credits/transactions/",
+            params={"page": page, "page_size": page_size},
+            timeout=10,
+        )
+        return response.json()
 
     @staticmethod
     def _compress_data(value) -> bytes:
@@ -558,6 +634,69 @@ class QoroService(CircuitRunner):
             f"job/{job_id}/cancel/",
             timeout=50,
         )
+
+    def set_execution_config(
+        self,
+        execution_result: ExecutionResult,
+        config: ExecutionConfig,
+    ) -> dict:
+        """Set or overwrite the execution configuration for a job.
+
+        The job must be in ``PENDING`` status. Re-calling this method
+        overwrites any previously set configuration.
+
+        Args:
+            execution_result: An ExecutionResult instance whose ``job_id``
+                identifies the target job.
+            config: The execution configuration to attach.
+
+        Returns:
+            dict: The API response containing ``status``, ``job_id`` and
+                ``execution_configuration``.
+
+        Raises:
+            ValueError: If the ExecutionResult does not have a job_id.
+            requests.exceptions.HTTPError:
+                - 400: Validation errors (unknown ``api_meta`` keys, wrong
+                  types, payload too large).
+                - 403: ``bond_dimension`` exceeds the user's tier cap.
+                - 409: Job is not in ``PENDING`` status.
+        """
+        job_id = self._extract_job_id(execution_result)
+        response = self._make_request(
+            "post",
+            f"job/{job_id}/execution_config/",
+            json=config.to_payload(),
+            timeout=50,
+        )
+        return response.json()
+
+    def get_execution_config(
+        self,
+        execution_result: ExecutionResult,
+    ) -> ExecutionConfig:
+        """Retrieve the execution configuration for an existing job.
+
+        Args:
+            execution_result: An ExecutionResult instance whose ``job_id``
+                identifies the target job.
+
+        Returns:
+            ExecutionConfig: The execution configuration attached to the job.
+
+        Raises:
+            ValueError: If the ExecutionResult does not have a job_id.
+            requests.exceptions.HTTPError:
+                - 404: No execution configuration exists for this job.
+        """
+        job_id = self._extract_job_id(execution_result)
+        response = self._make_request(
+            "get",
+            f"job/{job_id}/execution_config/",
+            timeout=50,
+        )
+        data = response.json()
+        return ExecutionConfig.from_response(data["execution_configuration"])
 
     def get_job_results(self, execution_result: ExecutionResult) -> ExecutionResult:
         """

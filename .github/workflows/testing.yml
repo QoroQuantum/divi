@@ -51,6 +51,7 @@ jobs:
         run: poetry run pytest --run-api-tests -m "requires_api_key"
         env:
           QORO_API_KEY: ${{ secrets.QORO_API_KEY }}
+          LOCKED_ACCOUNT_KEY: ${{ secrets.LOCKED_ACCOUNT_KEY }}
 
   tutorials:
     runs-on: ubuntu-latest

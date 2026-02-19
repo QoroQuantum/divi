@@ -270,6 +270,48 @@ The ``QoroService`` uses a ``JobConfig`` object to manage settings for job submi
    # This job will run with 2000 shots and the tag 'high_shot_run',
    # but will still use 'qoro_maestro' and circuit packing from the default config.
 
+Execution Configuration
+^^^^^^^^^^^^^^^^^^^^^^^
+
+After submitting a job and before it starts running, you can attach an **execution configuration** to fine-tune simulation parameters such as the simulator backend, simulation method, bond dimension, and runtime metadata.
+
+.. code-block:: python
+
+   from divi.backends import (
+       QoroService, ExecutionConfig, Simulator, SimulationMethod
+   )
+
+   service = QoroService()
+
+   # Submit a job (it starts in PENDING status)
+   result = service.submit_circuits(circuits)
+
+   # Attach an execution configuration while the job is still PENDING
+   config = ExecutionConfig(
+       bond_dimension=256,
+       truncation_threshold=1e-8,
+       simulator=Simulator.QCSim,
+       simulation_method=SimulationMethod.MatrixProductState,
+       api_meta={"optimization_level": 2},
+   )
+   service.set_execution_config(result, config)
+
+   # Retrieve the configuration to verify
+   retrieved = service.get_execution_config(result)
+   print(retrieved.bond_dimension)  # 256
+
+All ``ExecutionConfig`` fields are optional—only the fields you set will be sent to the server. Re-calling ``set_execution_config`` overwrites any previously set configuration.
+
+.. note::
+
+   Execution configuration can only be set on jobs in **PENDING** status. Attempting to set it on a running or completed job will raise a ``409 Conflict`` error.
+
+.. warning::
+
+   The ``bond_dimension`` field is subject to tier-based caps. Free-tier users are limited to a maximum of 32. Exceeding the cap returns a ``403 Forbidden`` error.
+
+The ``api_meta`` field accepts a dictionary of runtime pass-through metadata. See the API reference for the full list of allowed keys (e.g. ``optimization_level``, ``resilience_level``, ``max_execution_time``).
+
 Backend Selection Guide
 -----------------------
 

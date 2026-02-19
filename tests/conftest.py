@@ -140,3 +140,20 @@ def api_key(request):
 
     # Teardown code
     print(f"\nTeardown: Cleaning up resources initialized with API key: {key[:8]}...")
+
+
+@pytest.fixture(scope="module")
+def locked_account_key(request):
+    if not request.config.getoption("--run-api-tests"):
+        pytest.skip("Skipping API tests. Use --run-api-tests to run them.")
+
+    load_dotenv()
+
+    key = os.getenv("LOCKED_ACCOUNT_KEY")
+
+    if not key:
+        pytest.skip(
+            "Skipping locked account test: LOCKED_ACCOUNT_KEY not found in .env or environment."
+        )
+
+    yield key
