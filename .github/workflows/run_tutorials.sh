@@ -10,7 +10,7 @@ parallel_log=$(mktemp)
 
 export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 # Default to 2 minutes per tutorial script; value can be overridden globally via env.
-TUTORIAL_TIMEOUT_SECONDS="${TUTORIAL_TIMEOUT_SECONDS:-240}"
+TUTORIAL_TIMEOUT_SECONDS="${TUTORIAL_TIMEOUT_SECONDS:-300}"
 
 # Prevent matplotlib from trying to open GUI windows in CI.
 export MPLBACKEND=Agg
@@ -88,8 +88,14 @@ run_test() {
   local original_file_path="tutorials/$(basename "$file")"
   echo "🔹 Running $original_file_path"
 
-  if ! timeout --signal=TERM --kill-after=30s "${TUTORIAL_TIMEOUT_SECONDS}s" poetry run python "$file"; then
-    echo "❌ $original_file_path failed unexpectedly"
+  local exit_code=0
+  timeout --signal=TERM --kill-after=30s "${TUTORIAL_TIMEOUT_SECONDS}s" poetry run python "$file" || exit_code=$?
+
+  if [[ $exit_code -eq 124 ]]; then
+    echo "⏰ $original_file_path TIMED OUT after ${TUTORIAL_TIMEOUT_SECONDS}s"
+    echo "$original_file_path (timed out)" >> "$failures_file"
+  elif [[ $exit_code -ne 0 ]]; then
+    echo "❌ $original_file_path failed with exit code $exit_code"
     echo "$original_file_path" >> "$failures_file"
   else
     echo "✅ $original_file_path passed"

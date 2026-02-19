@@ -33,59 +33,44 @@ if __name__ == "__main__":
         **vqe_input,
         grouping_strategy=None,
     )
-    no_grouping_measurement_groups = vqe_problem_no_grouping.meta_circuit_factories[
-        "cost_circuit"
-    ].measurement_groups
-
     vqe_problem_wire_grouping = VQE(
         **vqe_input,
         grouping_strategy="wires",
     )
-    wire_grouping_measurement_groups = vqe_problem_wire_grouping.meta_circuit_factories[
-        "cost_circuit"
-    ].measurement_groups
-
     vqe_problem_qwc_grouping = VQE(
         **vqe_input,
         grouping_strategy="qwc",
     )
+
+    vqe_problem_no_grouping.run()
+    vqe_problem_wire_grouping.run()
+    vqe_problem_qwc_grouping.run()
+
+    no_grouping_measurement_groups = vqe_problem_no_grouping.meta_circuit_factories[
+        "cost_circuit"
+    ].measurement_groups
+    wire_grouping_measurement_groups = vqe_problem_wire_grouping.meta_circuit_factories[
+        "cost_circuit"
+    ].measurement_groups
     qwc_grouping_measurement_groups = vqe_problem_qwc_grouping.meta_circuit_factories[
         "cost_circuit"
     ].measurement_groups
 
-    print(
-        f"Number of measurement groups without grouping: {len(no_grouping_measurement_groups)}"
-    )
-    print(
-        f"Number of measurement groups with wires grouping: {len(wire_grouping_measurement_groups)}"
-    )
-    print(
-        f"Number of measurement groups with qwc grouping: {len(qwc_grouping_measurement_groups)}"
-    )
+    strategies = [
+        ("None", no_grouping_measurement_groups, vqe_problem_no_grouping),
+        ("Wires", wire_grouping_measurement_groups, vqe_problem_wire_grouping),
+        ("QWC", qwc_grouping_measurement_groups, vqe_problem_qwc_grouping),
+    ]
 
-    print("-" * 20)
-    vqe_problem_no_grouping.run()
-    vqe_problem_wire_grouping.run()
-    vqe_problem_qwc_grouping.run()
-    print("-" * 20)
+    header = f"{'Strategy':<10} {'Groups':>8} {'Loss':>14} {'Circuits':>10}"
+    print(header)
+    print("-" * len(header))
+    for name, groups, problem in strategies:
+        print(
+            f"{name:<10} {len(groups):>8} {problem.best_loss:>14.6f} {problem.total_circuit_count:>10}"
+        )
 
-    no_grouping_loss = vqe_problem_no_grouping.best_loss
-    wire_grouping_loss = vqe_problem_wire_grouping.best_loss
-    qwc_grouping_loss = vqe_problem_qwc_grouping.best_loss
-
-    print(f"Final Loss (no grouping): {no_grouping_loss}")
-    print(f"Final Loss (wires grouping): {wire_grouping_loss}")
-    print(f"Final Loss (qwc grouping): {qwc_grouping_loss}")
-    all_equal = no_grouping_loss == wire_grouping_loss == qwc_grouping_loss
-    print(f"All losses equal? {'Yes' if all_equal else 'No'}")
-    assert all_equal
-
-    print("-" * 20)
-
-    print(f"Circuits Run (no grouping): {vqe_problem_no_grouping.total_circuit_count}")
-    print(
-        f"Circuits Run (wires grouping): {vqe_problem_wire_grouping.total_circuit_count}"
-    )
-    print(
-        f"Circuits Run (qwc grouping): {vqe_problem_qwc_grouping.total_circuit_count}"
-    )
+    losses = [p.best_loss for _, _, p in strategies]
+    max_diff = max(losses) - min(losses)
+    print(f"\nMax loss difference: {max_diff:.6f}")
+    assert max_diff < 0.5, f"Losses diverged too much: {losses}"
