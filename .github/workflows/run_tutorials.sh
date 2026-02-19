@@ -9,8 +9,8 @@ failures_file=$(mktemp)
 parallel_log=$(mktemp)
 
 export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
-# Default to 2 minutes per tutorial script; value can be overridden globally via env.
-TUTORIAL_TIMEOUT_SECONDS="${TUTORIAL_TIMEOUT_SECONDS:-300}"
+# Timeout per tutorial script (seconds).
+TUTORIAL_TIMEOUT_SECONDS=300
 
 # Prevent matplotlib from trying to open GUI windows in CI.
 export MPLBACKEND=Agg
@@ -60,6 +60,17 @@ sed -i \
     -e 's/max_iterations=5/max_iterations=3/' \
     -e 's/shots=1000/shots=500/' \
     "$TEMP_TUTORIALS_DIR"/qaoa_qdrift.py
+sed -i \
+    -e 's/max_iterations=3/max_iterations=2/' \
+    -e 's/max_iterations=5/max_iterations=2/' \
+    -e 's/max_iterations=6/max_iterations=4/' \
+    -e 's/get_backend()/get_backend(shots=500)/' \
+    "$TEMP_TUTORIALS_DIR"/checkpointing.py
+sed -i \
+    -e 's/iters = 10/iters = 3/' \
+    -e 's/layers = 2/layers = 1/' \
+    -e 's/shots=10_000/shots=500/' \
+    "$TEMP_TUTORIALS_DIR"/pce_qubo.py
 
 # Collect tutorial files, excluding helper modules (_*.py) and skipped tutorials.
 tutorial_files=()

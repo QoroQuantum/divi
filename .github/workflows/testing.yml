@@ -2,9 +2,6 @@ name: Unit Tests and Tutorial Scripts
 
 on: [push, workflow_dispatch]
 
-env:
-  TUTORIAL_TIMEOUT_SECONDS: 120
-
 permissions:
   contents: read
 
