@@ -91,15 +91,12 @@ def _create_final_postprocessing_fn(coefficients, partition_indices, num_total_o
             group_idx, idx_within_group = reverse_map[original_flat_idx]
 
             group_result = grouped_results[group_idx]
-            # When a group has one measurement, the result is a scalar.
-            if len(partition_indices[group_idx]) == 1:
-                flat_results[original_flat_idx] = float(
-                    np.asarray(group_result).flat[0]
-                )
+            if isinstance(group_result, dict):
+                val = group_result[idx_within_group]
             else:
-                flat_results[original_flat_idx] = float(
-                    np.asarray(group_result[idx_within_group]).flat[0]
-                )
+                # Scalar from custom execute_fn or single-obs shorthand.
+                val = group_result
+            flat_results[original_flat_idx] = float(np.asarray(val).flat[0])
 
         # Perform the final summation using the efficient dot product method.
         return np.dot(coefficients, flat_results)

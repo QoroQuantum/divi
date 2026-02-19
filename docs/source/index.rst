@@ -38,6 +38,7 @@ Alternatively, you can install using pip:
    :caption: User Guide
 
    user_guide/core_concepts
+   user_guide/pipelines
    user_guide/vqe
    user_guide/qaoa
    user_guide/time_evolution
@@ -55,6 +56,7 @@ Alternatively, you can install using pip:
    api_reference/program_batches
    api_reference/backends
    api_reference/circuits
+   api_reference/pipeline
    api_reference/reporting
    api_reference/utils
 

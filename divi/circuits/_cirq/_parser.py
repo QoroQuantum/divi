@@ -1,8 +1,6 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
-
-from __future__ import annotations
 
 import sympy
 from cirq.contrib.qasm_import._lexer import QasmLexer

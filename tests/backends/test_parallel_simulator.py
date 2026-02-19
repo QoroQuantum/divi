@@ -15,6 +15,7 @@ from divi.backends._parallel_simulator import (
     ParallelSimulator,
     _find_best_fake_backend,
 )
+from tests.backends import circuit_runner_contracts as contracts
 
 
 class TestFindBestFakeBackend:
@@ -333,23 +334,9 @@ class TestParallelSimulatorSubmitCircuits:
 
 
 class TestParallelSimulatorDepthTracker:
-    """Tests for ParallelSimulator depth tracking (track_depth, depth_history, average_depth, std_depth, clear_depth_history)."""
+    """Tests for ParallelSimulator depth tracking via shared CircuitRunner contracts."""
 
-    def _create_qasm_circuit(self, n_gates=1):
-        """Helper to create a QASM circuit string. n_gates=1 gives depth 2 (h+measure), n_gates=2 adds cx for depth 3."""
-        base = """
-        OPENQASM 2.0;
-        include "qelib1.inc";
-        qreg q[2];
-        creg c[2];
-        h q[0];
-        """
-        if n_gates >= 2:
-            base += "cx q[0], q[1];\n        "
-        base += "measure q[0] -> c[0];\n        measure q[1] -> c[1];"
-        return base
-
-    def _setup_mock_submit(self, mocker):
+    def _setup_mock_submit(self, mocker, num_circuits=2):
         """Helper to mock AerSimulator and transpile for submit_circuits."""
         mock_aer = mocker.Mock()
         mock_result = mocker.Mock()
@@ -362,130 +349,53 @@ class TestParallelSimulatorDepthTracker:
         )
         mocker.patch(
             "divi.backends._parallel_simulator.transpile",
-            return_value=[
-                QuantumCircuit.from_qasm_str(self._create_qasm_circuit()),
-                QuantumCircuit.from_qasm_str(self._create_qasm_circuit(n_gates=2)),
-            ],
+            return_value=[QuantumCircuit.from_qasm_str(contracts.QASM_DEPTH_2)]
+            * num_circuits,
         )
 
-    def test_depth_history_empty_when_track_depth_false(self, mocker):
-        """When track_depth is False, depth_history remains empty after submit."""
+    def test_depth_tracking_disabled(self, mocker):
         self._setup_mock_submit(mocker)
         simulator = ParallelSimulator(track_depth=False, shots=10)
-        circuits = {
-            "c1": self._create_qasm_circuit(),
-            "c2": self._create_qasm_circuit(n_gates=2),
-        }
+        contracts.verify_depth_tracking_disabled(
+            simulator, {"c1": contracts.QASM_DEPTH_2}
+        )
 
-        simulator.submit_circuits(circuits)
-
-        assert simulator.depth_history == []
-        assert simulator.average_depth() == 0.0
-        assert simulator.std_depth() == 0.0
-
-    def test_depth_history_recorded_when_track_depth_true(self, mocker):
-        """When track_depth is True, depths are recorded per batch."""
+    def test_depth_tracking_records(self, mocker):
         self._setup_mock_submit(mocker)
         simulator = ParallelSimulator(track_depth=True, shots=10)
-        circuits = {
-            "c1": self._create_qasm_circuit(),
-            "c2": self._create_qasm_circuit(n_gates=2),
-        }
+        contracts.verify_depth_tracking_records(
+            simulator,
+            {"c1": contracts.QASM_DEPTH_2, "c2": contracts.QASM_DEPTH_3},
+            expected_depths_sorted=[2, 3],
+        )
 
-        simulator.submit_circuits(circuits)
-
-        # Depth is recorded from QASM-parsed circuits (before transpile mock)
-        # c1: h, measure -> depth 2; c2: h, cx, measure -> depth 3
-        assert len(simulator.depth_history) == 1
-        assert len(simulator.depth_history[0]) == 2
-        assert simulator.depth_history[0][0] == 2  # h + measure
-        assert simulator.depth_history[0][1] == 3  # h + cx + measure
-        assert simulator.average_depth() == 2.5
-        assert simulator.std_depth() == pytest.approx(0.5)
-
-    def test_depth_history_returns_copy(self, mocker):
-        """depth_history returns a copy; mutating it does not affect internal state."""
-        self._setup_mock_submit(mocker)
+    def test_depth_history_accumulates(self, mocker):
+        self._setup_mock_submit(mocker, num_circuits=2)
         simulator = ParallelSimulator(track_depth=True, shots=10)
-        circuits = {"c1": self._create_qasm_circuit()}
-
-        simulator.submit_circuits(circuits)
-        history = simulator.depth_history
-        history.clear()
-
-        assert len(simulator.depth_history) == 1
-        assert len(history) == 0
-
-    def test_depth_history_accumulates_across_submissions(self, mocker):
-        """Multiple submit_circuits calls append to depth_history."""
-        mock_aer = mocker.Mock()
-        mock_result = mocker.Mock()
-        mock_result.get_counts.return_value = {"0": 50, "1": 50}
-        mock_result.metadata = {"parallel_experiments": 1, "omp_nested": False}
-        mock_aer.run.return_value.result.return_value = mock_result
-        mocker.patch(
-            "divi.backends._parallel_simulator.AerSimulator",
-            return_value=mock_aer,
+        contracts.verify_depth_history_accumulates(
+            simulator,
+            {"c1": contracts.QASM_DEPTH_2},
+            {"c2": contracts.QASM_DEPTH_3, "c3": contracts.QASM_DEPTH_3},
         )
-
-        simulator = ParallelSimulator(track_depth=True, shots=10)
-        qasm1 = self._create_qasm_circuit()
-        qasm2 = self._create_qasm_circuit(n_gates=2)
-
-        mocker.patch(
-            "divi.backends._parallel_simulator.transpile",
-            return_value=[QuantumCircuit.from_qasm_str(qasm1)],
-        )
-        simulator.submit_circuits({"c1": qasm1})
-
-        mocker.patch(
-            "divi.backends._parallel_simulator.transpile",
-            return_value=[
-                QuantumCircuit.from_qasm_str(qasm2),
-                QuantumCircuit.from_qasm_str(qasm2),
-            ],
-        )
-        simulator.submit_circuits({"c2": qasm2, "c3": qasm2})
-
-        assert len(simulator.depth_history) == 2
-        assert len(simulator.depth_history[0]) == 1
-        assert len(simulator.depth_history[1]) == 2
 
     def test_clear_depth_history(self, mocker):
-        """clear_depth_history empties the tracker."""
         self._setup_mock_submit(mocker)
         simulator = ParallelSimulator(track_depth=True, shots=10)
-        circuits = {"c1": self._create_qasm_circuit()}
+        contracts.verify_clear_depth_history(simulator, {"c1": contracts.QASM_DEPTH_2})
 
-        simulator.submit_circuits(circuits)
-        assert len(simulator.depth_history) == 1
-
-        simulator.clear_depth_history()
-        assert simulator.depth_history == []
-        assert simulator.average_depth() == 0.0
-        assert simulator.std_depth() == 0.0
-
-    def test_average_depth_single_value_std_zero(self, mocker):
-        """std_depth returns 0.0 when only one depth value exists."""
-        mock_aer = mocker.Mock()
-        mock_result = mocker.Mock()
-        mock_result.get_counts.return_value = {"0": 50, "1": 50}
-        mock_result.metadata = {"parallel_experiments": 1, "omp_nested": False}
-        mock_aer.run.return_value.result.return_value = mock_result
-        mocker.patch(
-            "divi.backends._parallel_simulator.AerSimulator",
-            return_value=mock_aer,
-        )
-        mocker.patch(
-            "divi.backends._parallel_simulator.transpile",
-            return_value=[QuantumCircuit.from_qasm_str(self._create_qasm_circuit())],
-        )
-
+    def test_depth_history_returns_copy(self, mocker):
+        self._setup_mock_submit(mocker)
         simulator = ParallelSimulator(track_depth=True, shots=10)
-        simulator.submit_circuits({"c1": self._create_qasm_circuit()})
+        contracts.verify_depth_history_returns_copy(
+            simulator, {"c1": contracts.QASM_DEPTH_2}
+        )
 
-        assert simulator.average_depth() == 2.0  # h + measure
-        assert simulator.std_depth() == 0.0
+    def test_std_depth_zero_for_single_value(self, mocker):
+        self._setup_mock_submit(mocker)
+        simulator = ParallelSimulator(track_depth=True, shots=10)
+        contracts.verify_std_depth_zero_for_single_value(
+            simulator, {"c1": contracts.QASM_DEPTH_2}
+        )
 
 
 class TestParallelSimulatorRuntimeEstimation:

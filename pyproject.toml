@@ -62,7 +62,6 @@ dash-bootstrap-components = "^2.0.3"
 [tool.poetry.group.testing.dependencies]
 pytest = "^8.4.0"
 pytest-mock = "^3.14.1"
-flaky = "^3.8.1"
 pytest-xdist = "^3.8.0"
 pytest-cov = "^7.0.0"
 
@@ -83,9 +82,6 @@ ipykernel = "^7.1.0"
 [tool.isort]
 profile = "black"
 skip_glob = ["**/__init__.py"]
-
-[tool.pytest.ini_options]
-addopts = "--no-success-flaky-report"
 
 [tool.commitizen]
 name = "cz_conventional_commits"

@@ -1,13 +1,13 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
 import pennylane as qml
 
-from divi.backends import ParallelSimulator
 from divi.qprog import VQE, HartreeFockAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from tutorials._backend import get_backend
 
 if __name__ == "__main__":
     mol = qml.qchem.Molecule(
@@ -15,7 +15,7 @@ if __name__ == "__main__":
     )
 
     # Create backend with deterministic execution enabled for debugging
-    backend = ParallelSimulator(
+    backend = get_backend(
         simulation_seed=1997, shots=500, _deterministic_execution=True
     )
 
@@ -33,7 +33,7 @@ if __name__ == "__main__":
         **vqe_input,
         grouping_strategy=None,
     )
-    no_grouping_measurement_groups = vqe_problem_no_grouping.meta_circuits[
+    no_grouping_measurement_groups = vqe_problem_no_grouping.meta_circuit_factories[
         "cost_circuit"
     ].measurement_groups
 
@@ -41,7 +41,7 @@ if __name__ == "__main__":
         **vqe_input,
         grouping_strategy="wires",
     )
-    wire_grouping_measurement_groups = vqe_problem_wire_grouping.meta_circuits[
+    wire_grouping_measurement_groups = vqe_problem_wire_grouping.meta_circuit_factories[
         "cost_circuit"
     ].measurement_groups
 
@@ -49,7 +49,7 @@ if __name__ == "__main__":
         **vqe_input,
         grouping_strategy="qwc",
     )
-    qwc_grouping_measurement_groups = vqe_problem_qwc_grouping.meta_circuits[
+    qwc_grouping_measurement_groups = vqe_problem_qwc_grouping.meta_circuit_factories[
         "cost_circuit"
     ].measurement_groups
 

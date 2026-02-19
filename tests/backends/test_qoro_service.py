@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -25,6 +25,7 @@ from divi.backends._qpu_system import (
     update_qpu_systems_cache,
 )
 from divi.circuits import validate_qasm
+from tests.backends import circuit_runner_contracts as contracts
 
 # --- Test Fixtures ---
 
@@ -1371,6 +1372,74 @@ class TestQoroServiceMock:
         assert mock_make_request.call_count == 2
         assert status == JobStatus.CANCELLED
         callback_mock.assert_called_once()
+
+
+# --- Depth Tracking Tests ---
+
+
+class TestQoroServiceDepthTracker:
+    """Tests for QoroService depth tracking via shared CircuitRunner contracts."""
+
+    def _make_runner(self, mocker, qoro_service_factory, *, track_depth):
+        """Create a QoroService with mocked API calls, ready for depth-tracking tests."""
+        service = qoro_service_factory(track_depth=track_depth)
+
+        mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=True)
+
+        mock_init = mocker.MagicMock()
+        mock_init.status_code = HTTPStatus.CREATED
+        mock_init.json.return_value = {"job_id": "depth_test_job"}
+
+        mock_add = mocker.MagicMock()
+        mock_add.status_code = HTTPStatus.OK
+
+        mocker.patch.object(
+            service,
+            "_make_request",
+            side_effect=[mock_init, mock_add] * 10,
+        )
+        return service
+
+    def test_track_depth_defaults_to_false(self, qoro_service_factory):
+        """track_depth defaults to False."""
+        service = qoro_service_factory()
+        assert service.track_depth is False
+
+    def test_depth_tracking_disabled(self, mocker, qoro_service_factory):
+        runner = self._make_runner(mocker, qoro_service_factory, track_depth=False)
+        contracts.verify_depth_tracking_disabled(runner, {"c1": contracts.QASM_DEPTH_2})
+
+    def test_depth_tracking_records(self, mocker, qoro_service_factory):
+        runner = self._make_runner(mocker, qoro_service_factory, track_depth=True)
+        contracts.verify_depth_tracking_records(
+            runner,
+            {"c1": contracts.QASM_DEPTH_2, "c2": contracts.QASM_DEPTH_3},
+            expected_depths_sorted=[2, 3],
+        )
+
+    def test_depth_history_accumulates(self, mocker, qoro_service_factory):
+        runner = self._make_runner(mocker, qoro_service_factory, track_depth=True)
+        contracts.verify_depth_history_accumulates(
+            runner,
+            {"c1": contracts.QASM_DEPTH_2},
+            {"c2": contracts.QASM_DEPTH_3, "c3": contracts.QASM_DEPTH_3},
+        )
+
+    def test_clear_depth_history(self, mocker, qoro_service_factory):
+        runner = self._make_runner(mocker, qoro_service_factory, track_depth=True)
+        contracts.verify_clear_depth_history(runner, {"c1": contracts.QASM_DEPTH_2})
+
+    def test_depth_history_returns_copy(self, mocker, qoro_service_factory):
+        runner = self._make_runner(mocker, qoro_service_factory, track_depth=True)
+        contracts.verify_depth_history_returns_copy(
+            runner, {"c1": contracts.QASM_DEPTH_2}
+        )
+
+    def test_std_depth_zero_for_single_value(self, mocker, qoro_service_factory):
+        runner = self._make_runner(mocker, qoro_service_factory, track_depth=True)
+        contracts.verify_std_depth_zero_for_single_value(
+            runner, {"c1": contracts.QASM_DEPTH_2}
+        )
 
 
 # --- Integration Tests (require API key) ---

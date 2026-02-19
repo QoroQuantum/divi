@@ -8,9 +8,9 @@ import pennylane as qml
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
 
-from divi.backends import ParallelSimulator
 from divi.qprog import CustomVQA
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from tutorials._backend import get_backend
 
 
 def build_quantum_script() -> qml.tape.QuantumScript:
@@ -45,7 +45,7 @@ if __name__ == "__main__":
         param_shape=(2,),
         optimizer=optimizer,
         max_iterations=5,
-        backend=ParallelSimulator(),
+        backend=get_backend(),
     )
     program1.run(perform_final_computation=False)
     print(f"Best loss: {program1.best_loss:.4f}")
@@ -60,7 +60,7 @@ if __name__ == "__main__":
         param_shape=(2,),
         optimizer=optimizer,
         max_iterations=5,
-        backend=ParallelSimulator(),
+        backend=get_backend(),
     )
     program2.run(perform_final_computation=False)
     print(f"Best loss: {program2.best_loss:.4f}")

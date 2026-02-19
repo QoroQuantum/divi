@@ -17,11 +17,11 @@ Public functions are available directly from the ``divi.backends`` module:
 Hamiltonian Utilities
 ---------------------
 
-The ``divi.qprog._hamiltonians`` module provides functions for working with Hamiltonians, including QUBO conversion and Hamiltonian manipulation.
+The ``divi.hamiltonians`` module provides functions for working with Hamiltonians, including QUBO conversion and Hamiltonian manipulation.
 
-.. autofunction:: divi.qprog._hamiltonians.convert_hamiltonian_to_pauli_string
+.. autofunction:: divi.hamiltonians.convert_hamiltonian_to_pauli_string
 
-.. autofunction:: divi.qprog._hamiltonians.convert_qubo_matrix_to_pennylane_ising
+.. autofunction:: divi.hamiltonians.convert_qubo_matrix_to_pennylane_ising
 
 Expectation Value Computation
 -----------------------------

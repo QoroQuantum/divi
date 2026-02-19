@@ -79,48 +79,61 @@ Performance Considerations
 Custom Error Mitigation Protocols
 ---------------------------------
 
-You can implement custom error mitigation strategies by inheriting from :class:`QEMProtocol`:
+You can implement custom error mitigation strategies by inheriting from
+:class:`~divi.circuits.qem.QEMProtocol`.  The protocol operates on **Cirq** circuits
+and must implement three members:
 
 .. code-block:: python
 
+   from collections.abc import Sequence
+   from cirq.circuits.circuit import Circuit
    from divi.circuits.qem import QEMProtocol
-   import numpy as np
 
-   class ReadoutErrorMitigation(QEMProtocol):
-       """Simple readout error mitigation protocol"""
+   class WeightedAveraging(QEMProtocol):
+       """A simple protocol that runs the circuit twice and averages results."""
 
-       def __init__(self, calibration_matrix=None):
-           self.calibration_matrix = calibration_matrix
-           self.name = "Readout Error Mitigation"
+       @property
+       def name(self) -> str:
+           return "weighted_avg"
 
-       def modify_circuit(self, circuit):
-           """No circuit modification needed for readout mitigation"""
-           return [circuit]
+       def modify_circuit(self, cirq_circuit: Circuit) -> Sequence[Circuit]:
+           """Return one or more Cirq circuits to execute.
 
-       def postprocess_results(self, results):
-           """Apply readout error correction to measurement results"""
-           if self.calibration_matrix is None:
-               return results[0]  # No correction if no calibration
+           For noise-scaling techniques the list contains multiple variants;
+           for simple protocols it may return the original circuit unchanged.
+           """
+           # Run the same circuit twice (e.g. with different readout strategies)
+           return [cirq_circuit, cirq_circuit]
 
-           # Apply matrix correction to measurement probabilities
-           corrected_probs = np.dot(results[0], self.calibration_matrix)
-           return corrected_probs
+       def postprocess_results(self, results: Sequence[float]) -> float:
+           """Combine the results of all circuits into a single mitigated value.
 
-   # Usage example
-   calibration_matrix = np.array([[0.9, 0.1], [0.1, 0.9]])
-   readout_mitigation = ReadoutErrorMitigation(calibration_matrix=calibration_matrix)
+           ``results`` contains one expectation value per circuit returned by
+           ``modify_circuit``, in the same order.
+           """
+           return sum(results) / len(results)
 
+   # Pass the custom protocol when constructing any variational program
    vqe = VQE(
        molecule=h2_molecule,
-       qem_protocol=readout_mitigation,
-       backend=ParallelSimulator()
+       qem_protocol=WeightedAveraging(),
+       backend=ParallelSimulator(),
    )
 
-**Key Methods to Implement:**
+.. note::
+   When a ``qem_protocol`` is provided, the :doc:`circuit pipeline <pipelines>`
+   automatically wraps it in a :class:`~divi.pipeline.stages.QEMStage`.
+   During execution, ``modify_circuit`` is called in the *expand* pass and
+   ``postprocess_results`` is called in the *reduce* pass — you don't need to
+   manage pipeline integration yourself.
 
-- ``modify_circuit(circuit)`` - Modify circuits before execution (return list of circuits)
-- ``postprocess_results(results)`` - Process results after execution
-- ``name`` - Protocol name for identification
+**Key Members to Implement:**
+
+- ``name`` *(property)* — Unique protocol name used as the pipeline axis identifier
+- ``modify_circuit(cirq_circuit)`` — Transform or replicate a Cirq circuit before
+  execution. Return a ``Sequence[Circuit]``
+- ``postprocess_results(results)`` — Combine a ``Sequence[float]`` of per-circuit
+  expectation values into a single ``float``
 
 Next Steps
 ----------
@@ -128,3 +141,4 @@ Next Steps
 - 🛠️ **API Reference**: Learn about custom protocols in :doc:`../api_reference/circuits`
 - 📊 **Program Batches**: Apply mitigation to large computations in :doc:`program_batches`
 - 📈 **Advanced Usage**: Explore :class:`mitiq` documentation for more sophisticated techniques
+- 🔧 **Pipelines**: Understand how stages compose in :doc:`pipelines`

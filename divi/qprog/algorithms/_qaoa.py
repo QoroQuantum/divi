@@ -17,16 +17,20 @@ import pennylane as qml
 import pennylane.qaoa as pqaoa
 import sympy as sp
 
-from divi.circuits import CircuitBundle, MetaCircuit
-from divi.qprog._hamiltonians import (
+from divi.circuits import MetaCircuit
+from divi.hamiltonians import (
     ExactTrotterization,
     TrotterizationStrategy,
     _clean_hamiltonian,
     _is_empty_hamiltonian,
     convert_qubo_matrix_to_pennylane_ising,
 )
-from divi.qprog.typing import GraphProblemTypes, QUBOProblemTypes, qubo_to_matrix
-from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
+from divi.pipeline.stages import TrotterSpecStage
+from divi.qprog.variational_quantum_algorithm import (
+    VariationalQuantumAlgorithm,
+    _extract_param_set_idx,
+)
+from divi.typing import GraphProblemTypes, QUBOProblemTypes, qubo_to_matrix
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +207,7 @@ class QAOA(VariationalQuantumAlgorithm):
         optimizer (Optimizer): Classical optimizer for parameter updates.
         max_iterations (int): Maximum number of optimization iterations.
         current_iteration (int): Current optimization iteration.
-        _n_params (int): Number of parameters per layer (always 2 for QAOA).
+        _n_params_per_layer (int): Number of parameters per layer (always 2 for QAOA).
         _solution_nodes (list[int] | None): Solution nodes for graph problems.
         _solution_bitstring (npt.NDArray[np.int32] | None): Solution bitstring for QUBO problems.
     """
@@ -260,14 +264,10 @@ class QAOA(VariationalQuantumAlgorithm):
         self.max_iterations = max_iterations
         self.current_iteration = 0
         self.trotterization_strategy = trotterization_strategy
-        self._n_params = 2
+        self._n_params_per_layer = 2
 
         self._solution_nodes = []
         self._solution_bitstring = []
-        self._cost_circuit_by_hamiltonian: dict[int, MetaCircuit] = {}
-        self._hamiltonian_samples: list[qml.operation.Operator] | None = None
-        self._curr_ham: qml.operation.Operator | None = None
-
         # Resolve hamiltonians and problem metadata
         (
             cost_hamiltonian,
@@ -296,6 +296,15 @@ class QAOA(VariationalQuantumAlgorithm):
         # Extract wire labels from the cost Hamiltonian to ensure consistency
         self._circuit_wires = tuple(self._cost_hamiltonian.wires)
 
+        # Cache symbolic parameters for the ansatz (used by meta circuit factory)
+        betas = sp.symarray("β", self.n_layers)
+        gammas = sp.symarray("γ", self.n_layers)
+        self._sym_params = np.vstack((betas, gammas)).transpose()
+
+        # Build pipelines
+
+        self._build_pipelines()
+
         # Set up decode function based on problem type if user didn't provide one
         if decode_solution_fn is None:
             if isinstance(self.problem, QUBOProblemTypes):
@@ -311,6 +320,15 @@ class QAOA(VariationalQuantumAlgorithm):
                     for idx, bit in enumerate(bitstring)
                     if bit == "1" and idx < len(circuit_wires)
                 ]
+
+    def _build_pipelines(self) -> None:
+        self._cost_pipeline = self._build_cost_pipeline(
+            TrotterSpecStage(
+                trotterization_strategy=self.trotterization_strategy,
+                meta_circuit_factory=self._cost_meta_circuit_factory,
+            )
+        )
+        self._measurement_pipeline = self._build_measurement_pipeline()
 
     def _save_subclass_state(self) -> dict[str, Any]:
         """Save QAOA-specific runtime state."""
@@ -448,11 +466,6 @@ class QAOA(VariationalQuantumAlgorithm):
         return problem
 
     @property
-    def cost_hamiltonian(self) -> qml.operation.Operator:
-        """The cost Hamiltonian for the QAOA problem."""
-        return self._cost_hamiltonian
-
-    @property
     def mixer_hamiltonian(self) -> qml.operation.Operator:
         """The mixer Hamiltonian for the QAOA problem."""
         return self._mixer_hamiltonian
@@ -473,10 +486,6 @@ class QAOA(VariationalQuantumAlgorithm):
 
     def _build_qaoa_ops(self, cost_hamiltonian: qml.operation.Operator) -> list:
         """Build QAOA layer ops for a given cost Hamiltonian."""
-        betas = sp.symarray("β", self.n_layers)
-        gammas = sp.symarray("γ", self.n_layers)
-        sym_params = np.vstack((betas, gammas)).transpose()
-
         ops = []
         if self.initial_state == "Ones":
             for wire in self._circuit_wires:
@@ -485,119 +494,63 @@ class QAOA(VariationalQuantumAlgorithm):
             for wire in self._circuit_wires:
                 ops.append(qml.Hadamard(wires=wire))
 
-        for layer_params in sym_params:
+        for layer_params in self._sym_params:
             gamma, beta = layer_params
             ops.append(pqaoa.cost_layer(gamma, cost_hamiltonian))
             ops.append(pqaoa.mixer_layer(beta, self._mixer_hamiltonian))
 
         return ops
 
-    def _create_meta_circuits_dict(self) -> dict[str, MetaCircuit]:
-        """Generate meta circuits for the QAOA problem.
-
-        Uses self._curr_ham if set (temporary, from _generate_circuits), else
-        self._cost_hamiltonian. When _curr_ham is set, returns only the circuit
-        type needed for the current mode (cost or meas per self._is_compute_probabilities).
-        Otherwise returns both cost_circuit and meas_circuit for lazy init.
-        """
-        ham = self._curr_ham if self._curr_ham is not None else self._cost_hamiltonian
-        ops = self._build_qaoa_ops(ham)
-        betas = sp.symarray("β", self.n_layers)
-        gammas = sp.symarray("γ", self.n_layers)
-        sym_params = np.vstack((betas, gammas)).transpose()
-
-        result: dict[str, MetaCircuit] = {}
-        build_both = self._curr_ham is None
-
-        if build_both or not self._is_compute_probabilities:
-            result["cost_circuit"] = self._meta_circuit_factory(
-                qml.tape.QuantumScript(ops=ops, measurements=[qml.expval(ham)]),
-                symbols=sym_params.flatten(),
-            )
-        if build_both or self._is_compute_probabilities:
-            result["meas_circuit"] = self._meta_circuit_factory(
-                qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()]),
-                symbols=sym_params.flatten(),
-                grouping_strategy="wires",
-            )
-
-        return result
-
-    def _get_cost_circuit_for_hamiltonian(self, ham_id: int) -> MetaCircuit:
-        """Return the cost circuit for a given Hamiltonian sample."""
-        return self._cost_circuit_by_hamiltonian.get(
-            ham_id, self.meta_circuits["cost_circuit"]
+    def _cost_meta_circuit_factory(
+        self, processed_ham: qml.operation.Operator, ham_id: int
+    ) -> MetaCircuit:
+        """Build a cost MetaCircuit for a given (possibly QDrift-sampled) Hamiltonian."""
+        return MetaCircuit(
+            source_circuit=qml.tape.QuantumScript(
+                ops=self._build_qaoa_ops(processed_ham),
+                measurements=[qml.expval(processed_ham)],
+            ),
+            symbols=self._sym_params.flatten(),
+            precision=self._precision,
         )
 
-    def _generate_circuits(self, **kwargs) -> list[CircuitBundle]:
-        """Generate the circuits for the QAOA problem.
+    def _create_meta_circuit_factories(self) -> dict[str, MetaCircuit]:
+        """Generate meta-circuit factories for the QAOA problem."""
+        ops = self._build_qaoa_ops(self._cost_hamiltonian)
 
-        Generates circuits for each parameter set and Hamiltonian sample.
-        Single-sample uses [self._cost_hamiltonian]; multi-sample QDrift uses
-        multiple samples. Same interface for both.
-        """
-        if self._hamiltonian_samples is None:
-            raise RuntimeError(
-                "_hamiltonian_samples must be set before _generate_circuits; "
-                "call _run_optimization_circuits or _run_solution_measurement first."
-            )
-
-        use_meas = self._is_compute_probabilities
-
-        circuit_bundles: list[CircuitBundle] = []
-        try:
-            for ham_id, sample_hamiltonian in enumerate(self._hamiltonian_samples):
-                self._curr_ham = sample_hamiltonian
-                circuits = self._create_meta_circuits_dict()
-                circuit = circuits["meas_circuit" if use_meas else "cost_circuit"]
-
-                if not use_meas:
-                    self._cost_circuit_by_hamiltonian[ham_id] = circuit
-
-                for p, params_group in enumerate(self._curr_params):
-                    bundle = circuit.initialize_circuit_from_params(
-                        params_group, param_idx=p, hamiltonian_id=ham_id
-                    )
-                    circuit_bundles.append(bundle)
-        finally:
-            self._curr_ham = None
-            self._hamiltonian_samples = None
-
-        return circuit_bundles
+        return {
+            "cost_circuit": MetaCircuit(
+                source_circuit=qml.tape.QuantumScript(
+                    ops=ops, measurements=[qml.expval(self._cost_hamiltonian)]
+                ),
+                symbols=self._sym_params.flatten(),
+                precision=self._precision,
+            ),
+            "meas_circuit": MetaCircuit(
+                source_circuit=qml.tape.QuantumScript(
+                    ops=ops, measurements=[qml.probs()]
+                ),
+                symbols=self._sym_params.flatten(),
+                precision=self._precision,
+            ),
+        }
 
     def _run_optimization_circuits(self, **kwargs) -> dict[int, float]:
-        strategy = self.trotterization_strategy
-        n_samples = getattr(strategy, "n_hamiltonians_per_iteration", 1)
+        """Run cost evaluation via the pipeline."""
 
-        if n_samples > 1:
-            if self.backend.supports_expval:
-                raise ValueError(
-                    "Multi-sample QDrift is not supported with backends that compute "
-                    "expectation values directly; each Hamiltonian sample requires "
-                    "different observables. Use a shot-based backend instead."
-                )
-            self._cost_circuit_by_hamiltonian.clear()
+        env = self._build_pipeline_env()
+        result = self._cost_pipeline.run(
+            initial_spec=self._cost_hamiltonian,
+            env=env,
+        )
+        self._total_circuit_count += env.artifacts.get("circuit_count", 0)
+        self._total_run_time += env.artifacts.get("run_time", 0.0)
+        self._current_execution_result = env.artifacts.get("_current_execution_result")
 
-        self._hamiltonian_samples = [
-            strategy.process_hamiltonian(self._cost_hamiltonian)
-            for _ in range(n_samples)
-        ]
-
-        if strategy.stateful:
-            # Invalidate meta-circuits to force rebuild
-            self._meta_circuits = None
-
-        return super()._run_optimization_circuits(**kwargs)
-
-    def _run_solution_measurement(self) -> None:
-        """Execute measurement circuits, sampling Hamiltonians when using multi-sample QDrift."""
-        strategy = self.trotterization_strategy
-        n_samples = getattr(strategy, "n_hamiltonians_per_iteration", 1)
-        self._hamiltonian_samples = [
-            strategy.process_hamiltonian(self._cost_hamiltonian)
-            for _ in range(n_samples)
-        ]
-        super()._run_solution_measurement()
+        return {
+            _extract_param_set_idx(key): value + self.loss_constant
+            for key, value in result.items()
+        }
 
     def _perform_final_computation(self, **kwargs):
         """Extract the optimal solution from the QAOA optimization process.
@@ -623,7 +576,7 @@ class QAOA(VariationalQuantumAlgorithm):
 
         best_measurement_probs = next(iter(self._best_probs.values()))
 
-        # Endianness is corrected in _post_process_results
+        # Endianness is corrected in the pipeline's format dispatch
         best_solution_bitstring = max(
             best_measurement_probs, key=best_measurement_probs.get
         )

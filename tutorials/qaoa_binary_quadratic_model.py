@@ -1,13 +1,13 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
 import dimod
 from dimod import ExactSolver
 
-from divi.backends import ParallelSimulator
 from divi.qprog import QAOA
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from tutorials._backend import get_backend
 
 if __name__ == "__main__":
     # Create a BinaryQuadraticModel with more complexity
@@ -30,7 +30,7 @@ if __name__ == "__main__":
         n_layers=2,
         optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
         max_iterations=10,
-        backend=ParallelSimulator(shots=10000),
+        backend=get_backend(shots=10000),
     )
 
     qaoa_problem.run()

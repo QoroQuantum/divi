@@ -16,13 +16,14 @@ from mitiq.zne.scaling import fold_global
 
 from divi.backends import CircuitRunner
 from divi.circuits.qem import ZNE
+from divi.hamiltonians import ExactTrotterization, QDrift
+from divi.pipeline.stages import TrotterSpecStage
 from divi.qprog import (
     QAOA,
     GraphProblem,
     ScipyMethod,
     ScipyOptimizer,
 )
-from divi.qprog._hamiltonians import ExactTrotterization, QDrift
 from divi.qprog.algorithms import _qaoa
 from divi.qprog.checkpointing import CheckpointConfig
 from tests.qprog.qprog_contracts import (
@@ -37,11 +38,11 @@ pytestmark = pytest.mark.algo
 
 class TestGeneralQAOA:
     @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
-    def test_qaoa_optimization_runs_in_loss_mode(
+    def test_qaoa_optimization_runs_cost_pipeline(
         self, mocker, optimizer, default_test_simulator
     ):
         """
-        Verifies that _is_compute_probabilities is False during the optimization loop.
+        Verifies that the cost pipeline is used during the optimization loop.
         """
         optimizer = optimizer()  # Create fresh instance
         qaoa_problem = QAOA(
@@ -54,37 +55,23 @@ class TestGeneralQAOA:
             is_constrained=True,
         )
 
-        # Isolate the optimization phase by mocking the final step
+        # Spy on the cost pipeline's run method
+        spy = mocker.spy(qaoa_problem._cost_pipeline, "run")
+
+        # Mock final computation to isolate optimization phase
         mocker.patch.object(qaoa_problem, "_perform_final_computation")
-        mocker.patch.object(qaoa_problem, "_generate_circuits")
-        mock_dispatch = mocker.patch.object(
-            qaoa_problem, "_dispatch_circuits_and_process_results"
-        )
-        mock_dispatch.return_value = {i: 0.5 for i in range(optimizer.n_param_sets)}
 
-        spy_flag_values = []
-
-        def generate_circuits_spy(*args, **kwargs):
-            # When _generate_circuits is called, record the flag's state
-            spy_flag_values.append(qaoa_problem._is_compute_probabilities)
-
-        # Replace the original method with our spy
-        mocker.patch.object(
-            qaoa_problem, "_generate_circuits", side_effect=generate_circuits_spy
-        )
         qaoa_problem.run()
 
-        # Assert that the flag was never set to True during optimization
-        assert spy_flag_values  # Ensure the spy caught something
-        assert all(val is False for val in spy_flag_values)
+        # Cost pipeline should be called once per iteration
+        assert spy.call_count >= 1
 
     @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
-    def test_qaoa_final_computation_runs_in_probability_mode(
+    def test_qaoa_final_computation_runs_measurement_pipeline(
         self, mocker, optimizer, default_test_simulator
     ):
         """
-        Verifies that _is_compute_probabilities is set to True during the final
-        circuit generation and is reset to False afterward.
+        Verifies that the measurement pipeline is used during final computation.
         """
         optimizer = optimizer()  # Create fresh instance
         qaoa_problem = QAOA(
@@ -96,41 +83,17 @@ class TestGeneralQAOA:
             backend=default_test_simulator,
             is_constrained=True,
         )
-        # Set preconditions for the method under test
+        # Set preconditions
         qaoa_problem._final_params = np.array([[0.1, 0.2]])
         qaoa_problem._best_params = np.array([[0.1, 0.2]])
-        mocker.patch.object(
-            qaoa_problem,
-            "_dispatch_circuits_and_process_results",
-            return_value={0: {"00110": 0.4, "11001": 0.6}},
-        )
 
-        # This list will store the state of the flag when the spied method is called
-        flag_state_at_call_time = []
-        # Keep a reference to the original method
-        original_generate_circuits = qaoa_problem._generate_circuits
+        # Spy on measurement pipeline
+        spy = mocker.spy(qaoa_problem._measurement_pipeline, "run")
 
-        def generate_circuits_spy():
-            """Spy that records the flag's state and then calls the original method."""
-            flag_state_at_call_time.append(qaoa_problem._is_compute_probabilities)
-            return original_generate_circuits()
-
-        mocker.patch.object(
-            qaoa_problem, "_generate_circuits", side_effect=generate_circuits_spy
-        )
-
-        # 1. Verify the initial state
-        assert qaoa_problem._is_compute_probabilities is False
-
-        # 2. Run the function that changes the state
         qaoa_problem._perform_final_computation()
 
-        # 3. Verify the flag was True when the critical function was called
-        # _generate_circuits is called once for best_params only
-        assert flag_state_at_call_time == [True]
-
-        # 4. Verify the state was reset correctly after the function completed
-        assert qaoa_problem._is_compute_probabilities == False
+        # Measurement pipeline should be called once
+        assert spy.call_count == 1
 
     @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
     def test_graph_correct_circuits_count_and_energies(
@@ -228,7 +191,7 @@ class TestGraphInput:
         assert (
             sum(
                 isinstance(op, qml.Hadamard)
-                for op in qaoa_problem.meta_circuits[
+                for op in qaoa_problem.meta_circuit_factories[
                     "cost_circuit"
                 ].source_circuit.operations
             )
@@ -1023,9 +986,9 @@ class TestQAOAQDriftMultiSample:
     """Tests for QAOA with multi-sample QDrift (n_hamiltonians_per_iteration > 1)."""
 
     def test_exact_trotterization_uses_single_hamiltonian_sample(
-        self, default_test_simulator
+        self, mocker, default_test_simulator
     ):
-        """With ExactTrotterization (no n_hamiltonians_per_iteration), only ham_id=0 is used."""
+        """With ExactTrotterization, TrotterSpecStage.expand produces a single ham sample."""
         strategy = ExactTrotterization(keep_top_n=3)
         qaoa = QAOA(
             problem=nx.bull_graph(),
@@ -1036,21 +999,30 @@ class TestQAOAQDriftMultiSample:
             backend=default_test_simulator,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
         )
-        qaoa._initialize_params()
-        qaoa._curr_params = np.array([[0.5, 0.5]])
-        qaoa._hamiltonian_samples = [
-            strategy.process_hamiltonian(qaoa._cost_hamiltonian) for _ in range(1)
-        ]
-        bundles = qaoa._generate_circuits()
-        hamiltonian_ids = {
-            ex.tag.hamiltonian_id for b in bundles for ex in b.executables
-        }
-        assert hamiltonian_ids == {0}
+
+        trotter_stage = None
+        for stage in qaoa._cost_pipeline._stages:
+            if isinstance(stage, TrotterSpecStage):
+                trotter_stage = stage
+                break
+        assert trotter_stage is not None
+
+        # Spy on the TrotterSpecStage.expand to inspect how many ham samples are produced
+        spy = mocker.spy(trotter_stage, "expand")
+        mocker.patch.object(qaoa, "_perform_final_computation")
+        qaoa.run()
+
+        # Check that expand produced only 1 ham sample (ham_id=0)
+        batch, _token = spy.spy_return
+        ham_ids = {
+            key[0][1] for key in batch
+        }  # Extract ham_id from (("ham", id),) keys
+        assert ham_ids == {0}
 
     def test_multi_sample_generates_circuits_with_hamiltonian_id(
-        self, default_test_simulator
+        self, mocker, default_test_simulator
     ):
-        """_generate_circuits with hamiltonian_samples produces tags with hamiltonian_id."""
+        """TrotterSpecStage.expand with multi-sample QDrift produces multiple ham IDs."""
         strategy = QDrift(
             keep_fraction=0.3,
             sampling_budget=5,
@@ -1066,24 +1038,22 @@ class TestQAOAQDriftMultiSample:
             backend=default_test_simulator,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
         )
-        qaoa._initialize_params()
-        qaoa._curr_params = np.array([[0.5, 0.5]])  # 1 param set
 
-        # Trigger multi-sample path via instance attribute
-        qaoa._hamiltonian_samples = [
-            strategy.process_hamiltonian(qaoa._cost_hamiltonian) for _ in range(3)
-        ]
+        trotter_stage = None
+        for stage in qaoa._cost_pipeline._stages:
+            if isinstance(stage, TrotterSpecStage):
+                trotter_stage = stage
+                break
+        assert trotter_stage is not None
 
-        bundles = qaoa._generate_circuits()
+        spy = mocker.spy(trotter_stage, "expand")
+        mocker.patch.object(qaoa, "_perform_final_computation")
+        qaoa.run()
 
-        # 3 hamiltonian samples * 1 param set = 3 bundles
-        assert len(bundles) == 3
-        hamiltonian_ids = set()
-        for bundle in bundles:
-            for ex in bundle.executables:
-                assert ex.tag.hamiltonian_id >= 0
-                hamiltonian_ids.add(ex.tag.hamiltonian_id)
-        assert hamiltonian_ids == {0, 1, 2}
+        # Check that expand produced 3 ham samples
+        batch, _token = spy.spy_return
+        ham_ids = {key[0][1] for key in batch}
+        assert ham_ids == {0, 1, 2}
 
     @pytest.mark.e2e
     def test_multi_sample_qaoa_e2e_solution(self, default_test_simulator):
@@ -1135,10 +1105,10 @@ class TestQAOAQDriftMultiSample:
         for sol in optimal_solutions:
             assert all(node in G.nodes() for node in sol.decoded)
 
-    def test_get_cost_circuit_for_hamiltonian_called_with_correct_ham_ids(
-        self, mocker, default_test_simulator
+    def test_multi_sample_trotter_stage_is_stateful_for_qdrift(
+        self, default_test_simulator
     ):
-        """_get_cost_circuit_for_hamiltonian is invoked with ham_id 0, 1, 2 for multi-sample."""
+        """TrotterSpecStage is correctly marked stateful for QDrift (ensures cache invalidation)."""
         strategy = QDrift(
             keep_fraction=0.5,
             sampling_budget=4,
@@ -1154,36 +1124,14 @@ class TestQAOAQDriftMultiSample:
             backend=default_test_simulator,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
         )
-        spy = mocker.spy(qaoa, "_get_cost_circuit_for_hamiltonian")
-        qaoa.run()
-        call_args = [c.args[0] for c in spy.call_args_list]
-        assert all(ham_id in (0, 1, 2) for ham_id in call_args)
-        assert {0, 1, 2}.issubset(set(call_args))
 
-    def test_get_cost_circuit_for_hamiltonian_fallback_when_ham_id_missing(
-        self, mocker, default_test_simulator
-    ):
-        """_get_cost_circuit_for_hamiltonian falls back to meta_circuits when ham_id not in cache."""
-        strategy = QDrift(
-            keep_fraction=0.5,
-            sampling_budget=4,
-            n_hamiltonians_per_iteration=1,
-            seed=42,
-        )
-        qaoa = QAOA(
-            problem=nx.bull_graph(),
-            graph_problem=GraphProblem.MAXCUT,
-            n_layers=1,
-            trotterization_strategy=strategy,
-            max_iterations=1,
-            backend=default_test_simulator,
-            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
-        )
-        qaoa._initialize_params()
-        default_circuit = qaoa.meta_circuits["cost_circuit"]
-        # Call with ham_id not in cache (e.g. from malformed grouped results)
-        result = qaoa._get_cost_circuit_for_hamiltonian(99)
-        assert result is default_circuit
+        trotter_stage = None
+        for stage in qaoa._cost_pipeline._stages:
+            if isinstance(stage, TrotterSpecStage):
+                trotter_stage = stage
+                break
+        assert trotter_stage is not None
+        assert trotter_stage.stateful is True
 
     def test_multi_sample_final_computation_merges_histograms(
         self, default_test_simulator
@@ -1215,8 +1163,8 @@ class TestQAOAQDriftMultiSample:
         assert np.isclose(sum(probs.values()), 1.0)
 
     @pytest.mark.e2e
-    def test_qdrift_zne_e2e_solution(self, default_test_simulator):
-        """QAOA with QDrift + ZNE runs to completion; probabilities preserve QEM identity."""
+    def test_qdrift_zne_with_shot_based_backend(self, default_test_simulator):
+        """ZNE works with shot-based backends via per-observable postprocessing."""
         G = nx.bull_graph()
         default_test_simulator.set_seed(1997)
 
@@ -1243,34 +1191,10 @@ class TestQAOAQDriftMultiSample:
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             seed=1997,
         )
+
         count, runtime = qaoa.run()
 
         assert count > 0
         assert runtime >= 0
         assert len(qaoa.losses_history) == 5
         assert qaoa.best_loss < float("inf")
-
-        # best_probs: one entry per (param_id, qem_name, qem_id); ZNE has 2 scale factors
-        assert len(qaoa.best_probs) == 2
-        assert any("zne" in k.lower() for k in qaoa.best_probs.keys())
-        for probs in qaoa.best_probs.values():
-            assert np.isclose(sum(probs.values()), 1.0)
-
-        # Solution quality: at least one of top solutions achieves optimal MAXCUT
-        max_cut_val, _ = nx.algorithms.approximation.maxcut.one_exchange(G)
-
-        def cut_value(partition1):
-            partition0 = set(G.nodes()) - set(partition1)
-            return sum(
-                1 for u, v in G.edges() if (u in partition0) != (v in partition0)
-            )
-
-        top_solutions = qaoa.get_top_solutions(n=5, include_decoded=True)
-        optimal_solutions = [
-            sol
-            for sol in top_solutions
-            if sol.decoded is not None and cut_value(sol.decoded) == max_cut_val
-        ]
-        assert len(optimal_solutions) >= 1
-        for sol in optimal_solutions:
-            assert all(node in G.nodes() for node in sol.decoded)

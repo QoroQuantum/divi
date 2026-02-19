@@ -14,10 +14,10 @@ import dimod
 import numpy as np
 import pennylane as qml
 
-from divi.backends import ParallelSimulator
 from divi.qprog import PCE, GenericLayerAnsatz
 from divi.qprog.optimizers import PymooMethod, PymooOptimizer
-from divi.qprog.typing import qubo_to_matrix
+from divi.typing import qubo_to_matrix
+from tutorials._backend import get_backend
 
 
 def create_optimizer(pop_size: int) -> PymooOptimizer:
@@ -45,7 +45,7 @@ def main() -> None:
     qubo_mat = qubo_to_matrix(bqm)
 
     optimizer = create_optimizer(pop_size)
-    backend = ParallelSimulator(shots=10_000)
+    backend = get_backend(shots=10_000)
 
     solver = PCE(
         qubo_matrix=qubo_mat,

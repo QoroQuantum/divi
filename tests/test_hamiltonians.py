@@ -9,8 +9,8 @@ import pennylane as qml
 import pytest
 import scipy.sparse as sps
 
-from divi.qprog import _hamiltonians
-from divi.qprog._hamiltonians import (
+from divi import hamiltonians
+from divi.hamiltonians import (
     ExactTrotterization,
     QDrift,
     _clean_hamiltonian,
@@ -527,7 +527,7 @@ class TestExactTrotterization:
         self, mocker, simple_hamiltonian, strategy_kwargs
     ):
         """Repeated process_hamiltonian with same Hamiltonian uses cache; returns same object."""
-        spy = mocker.spy(_hamiltonians, "_sort_hamiltonian_terms")
+        spy = mocker.spy(hamiltonians, "_sort_hamiltonian_terms")
         strategy = ExactTrotterization(**strategy_kwargs)
         result1 = strategy.process_hamiltonian(simple_hamiltonian)
         result2 = strategy.process_hamiltonian(simple_hamiltonian)
@@ -568,7 +568,7 @@ class TestExactTrotterization:
         self, mocker, simple_hamiltonian, strategy_kwargs, warn_match
     ):
         """Early-return paths do not use cache; _sort_hamiltonian_terms never called."""
-        spy = mocker.spy(_hamiltonians, "_sort_hamiltonian_terms")
+        spy = mocker.spy(hamiltonians, "_sort_hamiltonian_terms")
         strategy = ExactTrotterization(**strategy_kwargs)
         for _ in range(2):
             if warn_match is not None:
