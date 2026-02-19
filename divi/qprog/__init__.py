@@ -27,3 +27,4 @@ from .workflows import (
     MoleculeTransformer,
 )
 from .optimizers import ScipyOptimizer, ScipyMethod, MonteCarloOptimizer
+from .early_stopping import EarlyStopping

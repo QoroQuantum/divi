@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import copy
 import heapq
 import string
 from collections.abc import Callable, Mapping, Sequence
@@ -22,7 +23,7 @@ import scipy.sparse.linalg as spla
 from sklearn.cluster import SpectralClustering
 
 from divi.backends import CircuitRunner
-from divi.hamiltonians import _get_terms_iterable
+from divi.hamiltonians import _clean_hamiltonian, _get_terms_iterable
 from divi.qprog import QAOA, ProgramBatch
 from divi.qprog.algorithms._qaoa import (
     GraphProblem,
@@ -486,6 +487,9 @@ class GraphPartitioningQAOA(ProgramBatch):
             optimizer if optimizer is not None else MonteCarloOptimizer()
         )
 
+        # Extract early_stopping so each sub-program gets its own copy
+        self._early_stopping_template = kwargs.pop("early_stopping", None)
+
         self._constructor = partial(
             QAOA,
             initial_state=initial_state,
@@ -543,6 +547,7 @@ class GraphPartitioningQAOA(ProgramBatch):
                     program_id=prog_id,
                     problem=_subgraph,
                     optimizer=copy_optimizer(self._optimizer_template),
+                    early_stopping=copy.deepcopy(self._early_stopping_template),
                     progress_queue=self._queue,
                 )
 
@@ -580,12 +585,16 @@ class GraphPartitioningQAOA(ProgramBatch):
 
         Uses PennyLane's QAOA module to construct the Hamiltonian that encodes
         the complete problem objective, including all inter-partition edges.
+        Identity terms are separated using :func:`_clean_hamiltonian` so that
+        the cached Hamiltonian contains only Pauli terms.
         """
         if self._full_graph_hamiltonian is not None:
             return
 
         cost_h, _ = getattr(pqaoa, self._graph_problem.pl_string)(self.main_graph)
-        self._full_graph_hamiltonian = cost_h
+        self._full_graph_hamiltonian, self._hamiltonian_constant = _clean_hamiltonian(
+            cost_h
+        )
 
     def _evaluate_solution(self, solution):
         """Evaluate a global solution against the full-graph cost Hamiltonian.
@@ -609,7 +618,7 @@ class GraphPartitioningQAOA(ProgramBatch):
 
         wire_to_bit = {w: solution[w] for w in hamiltonian.wires}
 
-        energy = 0.0
+        energy = self._hamiltonian_constant
         for term in _get_terms_iterable(hamiltonian):
             coeff = 1.0
             base_op = term

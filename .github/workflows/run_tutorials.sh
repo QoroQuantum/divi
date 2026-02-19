@@ -12,14 +12,19 @@ export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 # Default to 2 minutes per tutorial script; value can be overridden globally via env.
 TUTORIAL_TIMEOUT_SECONDS="${TUTORIAL_TIMEOUT_SECONDS:-120}"
 
+# Prevent matplotlib from trying to open GUI windows in CI.
+export MPLBACKEND=Agg
+
 cleanup() {
   rm -f "$failures_file" "$parallel_log"
   rm -rf "$TEMP_TUTORIALS_DIR"
 }
 trap cleanup EXIT
 
-# Convert array to string for easier export/import
-EXPECTED_FAILURES_STR="tutorials/qasm_thru_service.py|tutorials/circuit_cutting.py"
+# Tutorials that are known to fail (e.g. require API keys or missing deps).
+# These are skipped entirely rather than run-and-expected-to-fail, to avoid
+# network hangs and wasted CI time.
+SKIP_TUTORIALS="qasm_thru_service.py|circuit_cutting.py"
 
 sed -i \
     -e 's/shots=2000/shots=100/' \
@@ -56,43 +61,48 @@ sed -i \
     -e 's/shots=1000/shots=500/' \
     "$TEMP_TUTORIALS_DIR"/qaoa_qdrift.py
 
+# Collect tutorial files, excluding helper modules (_*.py) and skipped tutorials.
+tutorial_files=()
+for f in "$TEMP_TUTORIALS_DIR"/*.py; do
+  basename="$(basename "$f")"
+
+  # Skip private helper modules (e.g. _backend.py).
+  [[ "$basename" == _* ]] && continue
+
+  # Skip tutorials that are known to fail.
+  if echo "$basename" | grep -qE "^(${SKIP_TUTORIALS})$"; then
+    echo "⏭️  Skipping $basename (known failure)"
+    continue
+  fi
+
+  tutorial_files+=("$f")
+done
+
+if [[ ${#tutorial_files[@]} -eq 0 ]]; then
+  echo "⚠️  No tutorial files to run."
+  exit 0
+fi
+
 run_test() {
   local file="$1"
-  # Extract the original relative path for display and failure checking
   local original_file_path="tutorials/$(basename "$file")"
   echo "🔹 Running $original_file_path"
 
-  # Check if this file is expected to fail
-  local expected=0
-  if [[ "|${EXPECTED_FAILURES_STR}|" == *"|${original_file_path}|"* ]]; then
-    expected=1
-  fi
-
-  if [[ $expected -eq 1 ]]; then
-    echo "⚠️ Expecting failure for $original_file_path"
-    if timeout --signal=TERM --kill-after=30s "${TUTORIAL_TIMEOUT_SECONDS}s" poetry run python "$file"; then
-      echo "❌ $original_file_path was expected to fail but passed"
-      echo "$original_file_path (unexpected success)" >> "$failures_file"
-    else
-      echo "✅ $original_file_path failed as expected"
-    fi
+  if ! timeout --signal=TERM --kill-after=30s "${TUTORIAL_TIMEOUT_SECONDS}s" poetry run python "$file"; then
+    echo "❌ $original_file_path failed unexpectedly"
+    echo "$original_file_path" >> "$failures_file"
   else
-    if ! timeout --signal=TERM --kill-after=30s "${TUTORIAL_TIMEOUT_SECONDS}s" poetry run python "$file"; then
-      echo "❌ $original_file_path failed unexpectedly"
-      echo "$original_file_path (unexpected failure)" >> "$failures_file"
-    else
-      echo "✅ $original_file_path passed"
-    fi
+    echo "✅ $original_file_path passed"
   fi
 }
 
 export -f run_test
 export failures_file
-export EXPECTED_FAILURES_STR
 export TUTORIAL_TIMEOUT_SECONDS
 
-# Run tests in parallel: 2× cores, logs grouped per job
-parallel -j $(( $(nproc) * 2 )) --joblog "$parallel_log" run_test {} ::: "$TEMP_TUTORIALS_DIR"/*.py
+# Run tests in parallel: 2× cores, logs grouped per job.
+# --halt never: don't abort remaining jobs when one fails (let all finish).
+parallel -j $(( $(nproc) * 2 )) --halt never --joblog "$parallel_log" run_test {} ::: "${tutorial_files[@]}"
 
 echo ""
 if [[ -s "$failures_file" ]]; then
@@ -100,7 +110,7 @@ if [[ -s "$failures_file" ]]; then
   sed 's/^/   - /' "$failures_file"
   status=1
 else
-  echo "✅ All tutorials scripts behaved as expected."
+  echo "✅ All tutorial scripts passed."
   status=0
 fi
 

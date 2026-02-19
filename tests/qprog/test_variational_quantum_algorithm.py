@@ -13,6 +13,7 @@ from scipy.optimize import OptimizeResult
 from divi.circuits import MetaCircuit
 from divi.pipeline.stages import CircuitSpecStage
 from divi.qprog.checkpointing import CheckpointConfig
+from divi.qprog.early_stopping import EarlyStopping, StopReason
 from divi.qprog.exceptions import _CancelledError
 from divi.qprog.optimizers import MonteCarloOptimizer
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
@@ -1261,3 +1262,118 @@ class TestSolutionEntryNamedTuple:
         # Dict
         entry4 = SolutionEntry(bitstring="101", prob=0.5, decoded={"nodes": [1, 2]})
         assert entry4.decoded == {"nodes": [1, 2]}
+
+
+class TestEarlyStoppingIntegration(BaseVariationalQuantumAlgorithmTest):
+    """Integration tests for early stopping within the full run() loop."""
+
+    def _setup_optimizer_with_flat_losses(
+        self, program, mocker, n_iterations, loss_value=-0.5
+    ):
+        """Configure a mock optimizer that produces constant (flat) losses."""
+        mock_optimizer = mocker.MagicMock()
+        mock_optimizer.n_param_sets = program.optimizer.n_param_sets
+
+        def mock_optimize_logic(cost_fn, initial_params, callback_fn, **kwargs):
+            last_result = None
+            for i in range(n_iterations):
+                params = np.full_like(initial_params, float(i))
+                _ = cost_fn(params)
+                result = OptimizeResult(x=params, fun=np.array([loss_value]))
+                callback_fn(result)
+                last_result = result
+            return last_result
+
+        mock_optimizer.optimize.side_effect = mock_optimize_logic
+        program.optimizer = mock_optimizer
+
+    def test_early_stopping_patience_stops_run(self, mocker):
+        """Verify that patience-based early stopping terminates the run early."""
+        es = EarlyStopping(patience=3, min_delta=0.0)
+        program = self._create_program_with_mock_optimizer(
+            mocker, seed=42, early_stopping=es
+        )
+        program.max_iterations = 100  # Would run forever without early stopping
+
+        mocker.patch.object(
+            program, "_run_optimization_circuits", return_value={0: -0.5}
+        )
+        self._setup_optimizer_with_flat_losses(program, mocker, n_iterations=100)
+
+        program.run()
+
+        # Should have stopped after patience+1 iterations (1 to set best, then 3 stale)
+        assert program.current_iteration == 4
+        assert program.stop_reason == StopReason.PATIENCE_EXCEEDED
+
+    def test_no_early_stopping_runs_all_iterations(self, mocker):
+        """Verify normal behavior when early_stopping is None."""
+        program = self._create_program_with_mock_optimizer(mocker, seed=42)
+        program.max_iterations = 5
+
+        mocker.patch.object(
+            program, "_run_optimization_circuits", return_value={0: -0.5}
+        )
+        self._setup_optimizer_with_flat_losses(program, mocker, n_iterations=5)
+
+        program.run()
+
+        assert program.current_iteration == 5
+        assert program.stop_reason is None
+
+    def test_stop_reason_is_none_before_run(self, mocker):
+        """Verify stop_reason is None before run() is called."""
+        program = self._create_program_with_mock_optimizer(mocker, seed=42)
+        assert program.stop_reason is None
+
+    def test_stop_reason_is_none_when_not_triggered(self, mocker):
+        """Verify stop_reason stays None when loss keeps improving."""
+        es = EarlyStopping(patience=3, min_delta=0.0)
+        program = self._create_program_with_mock_optimizer(
+            mocker, seed=42, early_stopping=es
+        )
+        program.max_iterations = 5
+
+        # Each iteration produces a better loss
+        losses = [{0: -0.1 * (i + 1)} for i in range(5)]
+        mocker.patch.object(program, "_run_optimization_circuits", side_effect=losses)
+
+        mock_optimizer = mocker.MagicMock()
+        mock_optimizer.n_param_sets = program.optimizer.n_param_sets
+
+        def mock_optimize_logic(cost_fn, initial_params, callback_fn, **kwargs):
+            last_result = None
+            for i in range(5):
+                params = np.full_like(initial_params, float(i))
+                actual_loss = cost_fn(params)
+                result = OptimizeResult(x=params, fun=actual_loss)
+                callback_fn(result)
+                last_result = result
+            return last_result
+
+        mock_optimizer.optimize.side_effect = mock_optimize_logic
+        program.optimizer = mock_optimizer
+
+        program.run()
+
+        assert program.current_iteration == 5
+        assert program.stop_reason is None
+
+    def test_final_computation_still_runs_after_early_stop(self, mocker):
+        """Verify _perform_final_computation is called after early stopping."""
+        es = EarlyStopping(patience=2, min_delta=0.0)
+        program = self._create_program_with_mock_optimizer(
+            mocker, seed=42, early_stopping=es
+        )
+        program.max_iterations = 100
+
+        mocker.patch.object(
+            program, "_run_optimization_circuits", return_value={0: -0.5}
+        )
+        self._setup_optimizer_with_flat_losses(program, mocker, n_iterations=100)
+        mock_final = mocker.spy(program, "_perform_final_computation")
+
+        program.run()
+
+        assert program.stop_reason == StopReason.PATIENCE_EXCEEDED
+        mock_final.assert_called_once()

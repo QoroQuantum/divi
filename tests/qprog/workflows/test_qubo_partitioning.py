@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -79,6 +79,78 @@ class TestSanitizeProblemInput:
         unsupported = {"a": 1, "b": 2}
         with pytest.raises(ValueError, match="Got an unsupported QUBO input format"):
             _sanitize_problem_input(unsupported)
+
+
+# --- Test Evaluate Solution ---
+
+
+class TestEvaluateSolution:
+    """Tests for QUBOPartitioningQAOA._evaluate_solution."""
+
+    @staticmethod
+    def _make_qaoa(qubo, backend):
+        """Create a minimal QUBOPartitioningQAOA for unit-testing only."""
+        decomposer = hybrid.EnergyImpactDecomposer(size=2)
+        return QUBOPartitioningQAOA(
+            qubo=qubo,
+            decomposer=decomposer,
+            n_layers=1,
+            max_iterations=1,
+            backend=backend,
+        )
+
+    def test_known_qubo_optimal(self, dummy_simulator):
+        """Verify energy for the known optimal solution [1,1,0,0]."""
+        qubo = {
+            (0, 0): -0.5,
+            (1, 1): 1,
+            (0, 1): -2,
+            (2, 2): 1,
+            (3, 3): 1,
+            (2, 3): 2,
+        }
+        bqm = dimod.BinaryQuadraticModel.from_qubo(qubo)
+        qaoa = self._make_qaoa(bqm, dummy_simulator)
+        energy = qaoa._evaluate_solution([1, 1, 0, 0])
+        assert energy == pytest.approx(-1.5)
+
+    def test_all_zeros(self, dummy_simulator):
+        """All-zero solution has energy 0 for a QUBO with no constant offset."""
+        qubo = {
+            (0, 0): -0.5,
+            (1, 1): 1,
+            (0, 1): -2,
+        }
+        bqm = dimod.BinaryQuadraticModel.from_qubo(qubo)
+        qaoa = self._make_qaoa(bqm, dummy_simulator)
+        energy = qaoa._evaluate_solution([0, 0])
+        assert energy == pytest.approx(0.0)
+
+    def test_diagonal_qubo(self, dummy_simulator):
+        """Diagonal QUBO (only linear terms): energy = sum of selected biases."""
+        qubo = np.diag([-1.0, 2.0, -3.0])
+        qaoa = self._make_qaoa(qubo, dummy_simulator)
+        # x = [1,0,1] → energy = -1 + 0 + (-3) = -4
+        energy = qaoa._evaluate_solution([1, 0, 1])
+        assert energy == pytest.approx(-4.0)
+
+    def test_lower_energy_is_better(self, dummy_simulator):
+        """Verify that optimal solution has lowest energy."""
+        qubo = {
+            (0, 0): -0.5,
+            (1, 1): 1,
+            (0, 1): -2,
+            (2, 2): 1,
+            (3, 3): 1,
+            (2, 3): 2,
+        }
+        bqm = dimod.BinaryQuadraticModel.from_qubo(qubo)
+        qaoa = self._make_qaoa(bqm, dummy_simulator)
+        optimal = qaoa._evaluate_solution([1, 1, 0, 0])
+        suboptimal = qaoa._evaluate_solution([1, 0, 0, 0])
+        all_ones = qaoa._evaluate_solution([1, 1, 1, 1])
+        assert optimal < suboptimal
+        assert optimal < all_ones
 
 
 # --- Test QUBOPartitioningQAOA Class ---

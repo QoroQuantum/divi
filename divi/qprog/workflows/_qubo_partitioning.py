@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import copy
 import string
 from functools import partial
 from typing import TypeVar
@@ -96,6 +97,9 @@ class QUBOPartitioningQAOA(ProgramBatch):
             optimizer if optimizer is not None else MonteCarloOptimizer()
         )
 
+        # Extract early_stopping so each sub-program gets its own copy
+        self._early_stopping_template = kwargs.pop("early_stopping", None)
+
         self._constructor = partial(
             QAOA,
             max_iterations=self.max_iterations,
@@ -172,6 +176,7 @@ class QUBOPartitioningQAOA(ProgramBatch):
                 program_id=prog_id,
                 problem=coo_mat,
                 optimizer=copy_optimizer(self._optimizer_template),
+                early_stopping=copy.deepcopy(self._early_stopping_template),
                 progress_queue=self._queue,
             )
 
@@ -199,19 +204,17 @@ class QUBOPartitioningQAOA(ProgramBatch):
         return extended
 
     def _evaluate_solution(self, solution):
-        """Evaluate a QUBO solution by computing x^T Q x.
+        """Evaluate a QUBO solution using the BQM energy function.
 
         Args:
             solution (list[int]): Binary solution vector.
 
         Returns:
-            float: The QUBO energy for the given solution.
+            float: The BQM energy for the given solution.
         """
-        from divi.typing import qubo_to_matrix
-
-        Q = qubo_to_matrix(self.main_qubo)
-        x = np.array(solution, dtype=np.float64)
-        return float(x @ Q @ x)
+        variables = list(self._bqm.variables)
+        sample = dict(zip(variables, solution))
+        return self._bqm.energy(sample)
 
     def aggregate_results(
         self, beam_width=1, n_partition_candidates=None

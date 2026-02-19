@@ -134,6 +134,118 @@ Choosing the Right Optimizer
 - **Circuit Depth**: Deeper circuits benefit from more robust optimizers like CMA-ES or Monte Carlo
 - **Noise Resilience**: Nelder-Mead and COBYLA are more robust to quantum noise than gradient-based methods
 
+Early Stopping
+--------------
+
+Long-running optimisations can waste resources once convergence has effectively
+stalled.  Divi's :class:`~divi.qprog.EarlyStopping` controller lets you
+terminate the loop automatically based on configurable criteria.
+
+Pass an ``EarlyStopping`` instance to any variational algorithm:
+
+.. code-block:: python
+
+   from divi.qprog import VQE, EarlyStopping
+   from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
+
+   vqe = VQE(
+       molecule=molecule,
+       backend=backend,
+       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+       max_iterations=200,
+       early_stopping=EarlyStopping(
+           patience=10,
+           min_delta=1e-5,
+       ),
+   )
+
+   vqe.run()
+   print(f"Stopped at iteration {vqe.current_iteration}")
+   print(f"Reason: {vqe.stop_reason}")        # e.g. "patience_exceeded"
+   print(f"Converged: {vqe.optimize_result.success}")  # False for early stop
+
+Stopping Criteria
+^^^^^^^^^^^^^^^^^
+
+Three criteria are available and are evaluated **in priority order** after every
+iteration.  The first one that fires stops the loop.
+
+1. **Patience** *(always active)* — Stop when the cost has not improved by at
+   least ``min_delta`` for ``patience`` consecutive iterations.
+
+   .. code-block:: python
+
+      EarlyStopping(patience=10, min_delta=1e-4)
+
+2. **Gradient norm** *(optional)* — Stop when the L2 norm of the gradient falls
+   below ``grad_norm_threshold``.  Only effective with gradient-based optimisers
+   such as ``ScipyOptimizer(method=ScipyMethod.L_BFGS_B)``.
+
+   .. code-block:: python
+
+      EarlyStopping(patience=10, grad_norm_threshold=1e-6)
+
+3. **Cost variance** *(optional)* — Stop when the rolling variance of the last
+   ``variance_window`` cost values drops below ``variance_threshold``.  Useful
+   for noisy landscapes where cost oscillates but no longer trends downward.
+
+   .. code-block:: python
+
+      EarlyStopping(
+          patience=10,
+          variance_window=20,
+          variance_threshold=1e-8,
+      )
+
+All three criteria can be enabled simultaneously; the first one that triggers
+will stop the loop.
+
+After the Run
+^^^^^^^^^^^^^
+
+After ``run()`` completes, use :attr:`~divi.qprog.VariationalQuantumAlgorithm.stop_reason`
+to determine *why* optimisation ended:
+
+- ``None`` — optimisation ran to ``max_iterations`` without triggering early stopping
+- ``"patience_exceeded"`` — cost plateaued
+- ``"gradient_below_threshold"`` — gradient vanished
+- ``"cost_variance_settled"`` — cost variance settled
+
+The :attr:`~divi.qprog.VariationalQuantumAlgorithm.optimize_result` attribute
+is always populated and its ``message`` field includes the stop reason.
+
+Inspecting Optimizer Results
+----------------------------
+
+After running a variational algorithm, you can inspect the raw result object
+returned by the underlying optimizer via the
+:attr:`~divi.qprog.VariationalQuantumAlgorithm.optimize_result` property.
+This exposes optimizer-specific diagnostics such as:
+
+- ``nfev`` – number of cost-function evaluations
+- ``njev`` – number of Jacobian (gradient) evaluations (gradient-based optimizers)
+- ``nit`` – number of iterations completed
+- ``success`` – whether the optimizer converged
+- ``message`` – convergence or termination message
+
+.. code-block:: python
+
+   program.run()
+
+   result = program.optimize_result
+   if result is not None:
+       print(f"Function evaluations: {result.nfev}")
+       print(f"Converged: {result.success}")
+
+.. note::
+
+   ``optimize_result`` is always populated after :meth:`run` completes.
+   When optimisation converges normally, ``success`` is ``True``.
+   When early stopping or cancellation terminates the run, ``success`` is
+   ``False`` and the ``message`` field describes the reason.  The available
+   attributes depend on the optimizer; see :class:`scipy.optimize.OptimizeResult`
+   for the full specification.
+
 Next Steps
 ----------
 

@@ -97,12 +97,14 @@ def verify_correct_circuit_count(obj: QuantumProgram):
         if obj.optimizer.method in (ScipyMethod.NELDER_MEAD, ScipyMethod.COBYLA):
             assert (
                 adjusted_total_circuit_count
-                == obj._minimize_res.nfev * circuits_per_param_set
+                == obj.optimize_result.nfev * circuits_per_param_set
             )
         elif obj.optimizer.method == ScipyMethod.L_BFGS_B:
-            evaluation_circuits_count = obj._minimize_res.nfev * circuits_per_param_set
+            evaluation_circuits_count = (
+                obj.optimize_result.nfev * circuits_per_param_set
+            )
             gradient_circuits_count = (
-                obj._minimize_res.njev
+                obj.optimize_result.njev
                 * circuits_per_param_set
                 * obj.n_layers
                 * obj.n_params_per_layer

@@ -88,7 +88,9 @@ if __name__ == "__main__":
     print(f"Total circuits: {qaoa_batch.total_circuit_count}")
 
     # --- Greedy aggregation (default) ---
-    greedy_solution = qaoa_batch.aggregate_results(beam_width=1)
+    greedy_solution = qaoa_batch.aggregate_results(
+        beam_width=1, n_partition_candidates=5
+    )
 
     # --- Beam search aggregation ---
     # beam_width=3: keep top 3 partial solutions after each partition step

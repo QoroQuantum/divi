@@ -297,8 +297,8 @@ class QDrift(TrotterizationStrategy):
         randomly sample L terms and rescale their coefficients so that
         E[H_sampled] = H.
 
-        Rescaling rules (L = sampling_budget, λ = Σ|c_i|, N = #terms):
-          - Weighted: term_i → (λ / (L · |c_i|)) · c_i · P_i
+        Rescaling rules (L = sampling_budget, λ = Σ\|c_i\|, N = #terms):
+          - Weighted: term_i → (λ / (L · \|c_i\|)) · c_i · P_i
           - Uniform:  term_i → (N / L) · c_i · P_i
         """
         if (

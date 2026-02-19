@@ -17,7 +17,7 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from divi.backends import ParallelSimulator
+from divi.backends import CircuitRunner
 from divi.qprog import (
     GraphPartitioningQAOA,
     GraphProblem,
@@ -36,7 +36,7 @@ from divi.qprog.workflows._graph_partitioning import (
 )
 from tests.qprog.qprog_contracts import verify_basic_program_batch_behaviour
 
-problem_args = {
+_PROBLEM_ARGS = {
     "graph": nx.erdos_renyi_graph(15, 0.2, seed=1997),
     "graph_problem": GraphProblem.MAXCUT,
     "n_layers": 1,
@@ -45,8 +45,12 @@ problem_args = {
     ),
     "optimizer": ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
     "max_iterations": 10,
-    "backend": ParallelSimulator(shots=5000),
 }
+
+
+@pytest.fixture
+def problem_args(dummy_simulator):
+    return {**_PROBLEM_ARGS, "backend": dummy_simulator}
 
 
 class TestPartitioningConfig:
@@ -476,8 +480,85 @@ class TestAggregationFunctions:
         assert result == expected
 
 
+class TestEvaluateSolution:
+    """Tests for GraphPartitioningQAOA._evaluate_solution.
+
+    Uses small graphs with analytically-known MaxCut energies so we can
+    verify the Hamiltonian evaluation is correct.
+    """
+
+    @staticmethod
+    def _make_qaoa(graph, backend, graph_problem=GraphProblem.MAXCUT):
+        """Create a minimal GraphPartitioningQAOA for unit-testing only."""
+        return GraphPartitioningQAOA(
+            graph=graph,
+            graph_problem=graph_problem,
+            n_layers=1,
+            partitioning_config=PartitioningConfig(minimum_n_clusters=1),
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=1,
+            backend=backend,
+        )
+
+    def test_perfect_maxcut_on_4_cycle(self, dummy_simulator):
+        """A bipartite 4-cycle has a perfect cut of 4 edges."""
+        graph = nx.cycle_graph(4)
+        qaoa = self._make_qaoa(graph, dummy_simulator)
+        # [1,0,1,0] cuts all 4 edges
+        energy = qaoa._evaluate_solution([1, 0, 1, 0])
+        assert energy == pytest.approx(-4.0)
+
+    def test_no_cut_all_zeros(self, dummy_simulator):
+        """All-zero assignment cuts nothing."""
+        graph = nx.cycle_graph(4)
+        qaoa = self._make_qaoa(graph, dummy_simulator)
+        energy = qaoa._evaluate_solution([0, 0, 0, 0])
+        assert energy == pytest.approx(0.0)
+
+    def test_no_cut_all_ones(self, dummy_simulator):
+        """All-one assignment cuts nothing."""
+        graph = nx.cycle_graph(4)
+        qaoa = self._make_qaoa(graph, dummy_simulator)
+        energy = qaoa._evaluate_solution([1, 1, 1, 1])
+        assert energy == pytest.approx(0.0)
+
+    def test_partial_cut_on_4_cycle(self, dummy_simulator):
+        """[1,1,0,0] on a 4-cycle cuts edges (0,3) and (1,2) = 2 cut edges."""
+        graph = nx.cycle_graph(4)
+        qaoa = self._make_qaoa(graph, dummy_simulator)
+        energy = qaoa._evaluate_solution([1, 1, 0, 0])
+        assert energy == pytest.approx(-2.0)
+
+    def test_weighted_graph(self, dummy_simulator):
+        """Weighted edges: MaxCut Hamiltonian counts cut edges."""
+        graph = nx.Graph()
+        graph.add_edge(0, 1, weight=3.0)
+        graph.add_edge(1, 2, weight=5.0)
+        qaoa = self._make_qaoa(graph, dummy_simulator)
+        # [1,0,1] cuts both edges
+        energy = qaoa._evaluate_solution([1, 0, 1])
+        assert energy == pytest.approx(-2.0)
+
+    def test_triangle_graph(self, dummy_simulator):
+        """A triangle (K3): best cut has 2 edges, e.g. [1,0,0]."""
+        graph = nx.complete_graph(3)
+        qaoa = self._make_qaoa(graph, dummy_simulator)
+        # [1,0,0] cuts edges (0,1) and (0,2) = 2 cut edges
+        energy = qaoa._evaluate_solution([1, 0, 0])
+        assert energy == pytest.approx(-2.0)
+
+    def test_lower_energy_means_more_cuts(self, dummy_simulator):
+        """Verify that more cuts produce lower (more negative) energy."""
+        graph = nx.cycle_graph(4)
+        qaoa = self._make_qaoa(graph, dummy_simulator)
+        no_cut = qaoa._evaluate_solution([0, 0, 0, 0])
+        partial_cut = qaoa._evaluate_solution([1, 1, 0, 0])
+        perfect_cut = qaoa._evaluate_solution([1, 0, 1, 0])
+        assert no_cut > partial_cut > perfect_cut
+
+
 @pytest.fixture
-def node_partitioning_qaoa():
+def node_partitioning_qaoa(problem_args):
     return GraphPartitioningQAOA(**problem_args)
 
 
@@ -485,7 +566,7 @@ class TestGraphPartitioningQAOA:
     def test_verify_basic_behaviour(self, mocker, node_partitioning_qaoa):
         verify_basic_program_batch_behaviour(mocker, node_partitioning_qaoa)
 
-    def test_raises_on_disconnected_graph(self):
+    def test_raises_on_disconnected_graph(self, problem_args):
         disconnected_graph = nx.Graph()
         disconnected_graph.add_edges_from([(0, 1), (2, 3)])
 
@@ -496,11 +577,11 @@ class TestGraphPartitioningQAOA:
             GraphPartitioningQAOA(**args)
 
     def test_correct_initialization(self, node_partitioning_qaoa):
-        assert node_partitioning_qaoa.main_graph == problem_args["graph"]
+        assert node_partitioning_qaoa.main_graph == _PROBLEM_ARGS["graph"]
         assert node_partitioning_qaoa.is_edge_problem == False
         assert (
             node_partitioning_qaoa.partitioning_config
-            == problem_args["partitioning_config"]
+            == _PROBLEM_ARGS["partitioning_config"]
         )
 
     def test_correct_number_of_programs_created(self, mocker, node_partitioning_qaoa):
@@ -510,15 +591,14 @@ class TestGraphPartitioningQAOA:
 
         assert (
             len(node_partitioning_qaoa.programs)
-            >= problem_args["partitioning_config"].minimum_n_clusters
+            >= _PROBLEM_ARGS["partitioning_config"].minimum_n_clusters
         )
 
         # Assert common values propagated to all programs
         for program in node_partitioning_qaoa.programs.values():
             assert isinstance(program.optimizer, ScipyOptimizer)
             assert program.max_iterations == 10
-            assert isinstance(program.backend, ParallelSimulator)
-            assert program.backend.shots == 5000
+            assert isinstance(program.backend, CircuitRunner)
 
     def test_results_aggregated_correctly(self, node_partitioning_qaoa):
         # Create programs and partitions
@@ -597,7 +677,7 @@ class TestGraphPartitioningQAOA:
         node_partitioning_qaoa.draw_solution()
         mock_aggregate.assert_called_once()
 
-    def test_draw_partitions_logic(self, mocker):
+    def test_draw_partitions_logic(self, mocker, problem_args):
         # 1. Setup a predictable scenario
         graph = nx.path_graph(4)  # Nodes 0, 1, 2, 3
         args = problem_args.copy()
