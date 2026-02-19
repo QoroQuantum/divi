@@ -106,6 +106,8 @@ class TestProgram:
         """Helper to create a SampleVQAProgram with common defaults."""
         if "optimizer" not in kwargs:
             kwargs["optimizer"] = self._create_mock_optimizer(mocker)
+        if "backend" not in kwargs:
+            kwargs["backend"] = self._create_mock_backend(mocker)
         return SampleVQAProgram(10, 5.5, seed=1997, **kwargs)
 
     def _create_mock_backend(self, mocker, shots=100, supports_expval=False):
@@ -317,20 +319,19 @@ class TestProgram:
                 assert qem_key in grouped[p][h]
                 assert len(grouped[p][h][qem_key]) == n_meas_ids
 
-    def test_group_results_calls_parse_tag_full_per_result(self, mocker):
-        """_group_results invokes _parse_tag_full once per result entry."""
+    def test_group_results_groups_circuit_tag_keys_correctly(self, mocker):
+        """_group_results correctly groups results by param_id, hamiltonian_id, qem_key."""
         program = self._create_sample_program(mocker)
         program._initialize_params()
+        # CircuitTag(param_id, qem_name, qem_id, meas_id, hamiltonian_id)
         results = {
             CircuitTag(0, "NoMitigation", 0, 0, 0): {"00": 50, "11": 50},
-            CircuitTag(0, "NoMitigation", 0, 1, 0): {"00": 50, "11": 50},
+            CircuitTag(0, "NoMitigation", 0, 0, 1): {"00": 50, "11": 50},
         }
-        spy = mocker.spy(program, "_parse_tag_full")
-        program._group_results(results)
-        assert spy.call_count == 2
-        assert spy.call_args_list[0].args[0].param_id == 0
-        assert spy.call_args_list[0].args[0].meas_id == 0
-        assert spy.call_args_list[1].args[0].meas_id == 1
+        grouped = program._group_results(results)
+        qem_key = ("NoMitigation", 0)
+        assert grouped[0][0][qem_key] == [{"00": 50, "11": 50}]
+        assert grouped[0][1][qem_key] == [{"00": 50, "11": 50}]
 
     def test_group_results_orders_shots_by_meas_id(self, mocker):
         """Shots within each (qem_name, qem_id) list are sorted by meas_id (critical for _compute_marginal_results)."""
@@ -687,9 +688,15 @@ class BaseVariationalQuantumAlgorithmTest:
         return mock_optimizer
 
     def _create_program_with_mock_optimizer(self, mocker, **kwargs):
-        """Helper method to create SampleProgram with mocked optimizer."""
+        """Helper method to create SampleProgram with mocked optimizer and backend."""
         if "optimizer" not in kwargs:
             kwargs["optimizer"] = self._create_mock_optimizer(mocker, n_param_sets=1)
+        if "backend" not in kwargs:
+            backend = mocker.MagicMock()
+            backend.shots = 1000
+            backend.is_async = False
+            backend.supports_expval = False
+            kwargs["backend"] = backend
         return SampleVQAProgram(circ_count=1, run_time=0.1, **kwargs)
 
     def _setup_program_with_probs(self, mocker, probs_dict: dict[str, float], **kwargs):
@@ -748,7 +755,7 @@ class TestParametersBehavior(BaseVariationalQuantumAlgorithmTest):
         assert np.array_equal(program.curr_params, custom_curr_params)
         assert np.array_equal(program._curr_params, custom_curr_params)
 
-    def test_run_validates_parameter_shape(self, mocker):
+    def test_run_validates_parameter_shape(self, mocker, mock_backend):
         """Test that run() validates parameter shape if curr_params is set manually."""
         invalid_params = np.array([[0.1, 0.2]])  # Wrong shape
         mock_optimizer = self._create_mock_optimizer(mocker, n_param_sets=1)
@@ -759,7 +766,7 @@ class TestParametersBehavior(BaseVariationalQuantumAlgorithmTest):
                 run_time=0.1,
                 optimizer=mock_optimizer,
                 initial_params=invalid_params,
-                backend=None,
+                backend=mock_backend,
             ).run()
 
     def test_curr_params_returns_copy_not_reference(self, mocker):
@@ -1721,7 +1728,6 @@ class TestCircuitTagEncoding(BaseVariationalQuantumAlgorithmTest):
 
     def test_encode_decode_round_trip(self, mocker):
         program = self._create_program_with_mock_optimizer(mocker)
-        program._reset_tag_cache()
 
         tag = CircuitTag(param_id=1, qem_name="zne", qem_id=2, meas_id=3)
         tag_str = program._encode_tag(tag)
@@ -1729,20 +1735,17 @@ class TestCircuitTagEncoding(BaseVariationalQuantumAlgorithmTest):
         assert isinstance(tag_str, str)
 
         results = {tag_str: {"00": 10, "11": 5}}
-        restored = program._decode_tags(results)
+        restored = {program._parse_tag(k): v for k, v in results.items()}
 
         assert tag in restored
         assert restored[tag] == {"00": 10, "11": 5}
 
-    def test_encode_decode_passthrough_for_strings(self, mocker):
+    def test_parse_tag_raises_for_unparseable_string_keys(self, mocker):
+        """_parse_tag raises ValueError for keys that do not match the tag format."""
         program = self._create_program_with_mock_optimizer(mocker)
-        program._reset_tag_cache()
 
-        tag_str = program._encode_tag("plain_tag")
-        results = {tag_str: {"0": 1}}
-        restored = program._decode_tags(results)
-
-        assert restored == {"plain_tag": {"0": 1}}
+        with pytest.raises(ValueError, match="Cannot parse tag"):
+            program._parse_tag("plain_tag")
 
 
 class TestSolutionEntryNamedTuple:

@@ -12,103 +12,10 @@ import dill
 import numpy as np
 import numpy.typing as npt
 import pennylane as qml
-from pennylane.transforms.core.transform_program import TransformProgram
 
 from divi.circuits import to_openqasm
+from divi.circuits._grouping import compute_measurement_groups
 from divi.circuits.qem import QEMProtocol
-
-
-def _extract_coeffs(obs: qml.operation.Operator) -> list[float]:
-    """Extract coefficients from an observable, including nested scalar products."""
-    coeff = 1.0
-    base = obs
-    while isinstance(base, qml.ops.SProd):
-        coeff *= base.scalar
-        base = base.base
-    if isinstance(base, (qml.Hamiltonian, qml.ops.Sum)):
-        coeffs, _ = base.terms()
-        return [coeff * c for c in coeffs]
-    return [coeff]
-
-
-TRANSFORM_PROGRAM = TransformProgram()
-TRANSFORM_PROGRAM.add_transform(qml.transforms.split_to_single_terms)
-
-
-def _wire_grouping(measurements: list[qml.measurements.MeasurementProcess]):
-    """
-    Groups a list of PennyLane MeasurementProcess objects by mutually non-overlapping wires.
-
-    Each group contains measurements whose wires do not overlap with those of any other
-    measurement in the same group. This enables parallel measurement of compatible observables,
-    e.g., for grouped execution or more efficient sampling.
-
-    Returns:
-        partition_indices (list[list[int]]): Indices of the original measurements in each group.
-        mp_groups (list[list[MeasurementProcess]]): Grouped MeasurementProcess objects.
-    """
-    mp_groups = []
-    wires_for_each_group = []
-    group_mapping = {}  # original_index -> (group_idx, pos_in_group)
-
-    for i, mp in enumerate(measurements):
-        added = False
-        for group_idx, wires in enumerate(wires_for_each_group):
-            if not qml.wires.Wires.shared_wires([wires, mp.wires]):
-                mp_groups[group_idx].append(mp)
-                wires_for_each_group[group_idx] += mp.wires
-                group_mapping[i] = (group_idx, len(mp_groups[group_idx]) - 1)
-                added = True
-                break
-        if not added:
-            mp_groups.append([mp])
-            wires_for_each_group.append(mp.wires)
-            group_mapping[i] = (len(mp_groups) - 1, 0)
-
-    partition_indices = [[] for _ in range(len(mp_groups))]
-    for original_idx, (group_idx, _) in group_mapping.items():
-        partition_indices[group_idx].append(original_idx)
-
-    return partition_indices, mp_groups
-
-
-def _create_final_postprocessing_fn(coefficients, partition_indices, num_total_obs):
-    """Create a wrapper fn that reconstructs the flat results list and computes the final energy."""
-    reverse_map = [None] * num_total_obs
-    for group_idx, indices_in_group in enumerate(partition_indices):
-        for idx_within_group, original_flat_idx in enumerate(indices_in_group):
-            reverse_map[original_flat_idx] = (group_idx, idx_within_group)
-
-    missing_indices = [i for i, v in enumerate(reverse_map) if v is None]
-    if missing_indices:
-        raise RuntimeError(
-            f"partition_indices does not cover all observable indices. Missing indices: {missing_indices}"
-        )
-
-    def final_postprocessing_fn(grouped_results):
-        """
-        Takes grouped results, flattens them to the original order,
-        multiplies by coefficients, and sums to get the final energy.
-        """
-        if len(grouped_results) != len(partition_indices):
-            raise RuntimeError(
-                f"Expected {len(partition_indices)} grouped results, but got {len(grouped_results)}."
-            )
-        flat_results = np.zeros(num_total_obs, dtype=np.float64)
-        for original_flat_idx in range(num_total_obs):
-            group_idx, idx_within_group = reverse_map[original_flat_idx]
-
-            group_result = grouped_results[group_idx]
-            # When a group has one measurement, the result is a scalar.
-            if len(partition_indices[group_idx]) == 1:
-                flat_results[original_flat_idx] = group_result
-            else:
-                flat_results[original_flat_idx] = group_result[idx_within_group]
-
-        # Perform the final summation using the efficient dot product method.
-        return np.dot(coefficients, flat_results)
-
-    return final_postprocessing_fn
 
 
 class CircuitTag(NamedTuple):
@@ -192,14 +99,20 @@ class MetaCircuit:
     """Quantum error mitigation protocol to apply."""
     precision: int = 8
     """Number of decimal places for parameter values in QASM conversion."""
+    measurement_groups_override: (
+        tuple[tuple[qml.operation.Operator, ...], ...] | None
+    ) = None
+    """Pre-computed measurement groups. When provided with postprocessing_fn_override, skips grouping."""
+    postprocessing_fn_override: Callable | None = None
+    """Pre-computed postprocessing function. When provided with measurement_groups_override, skips grouping."""
 
     # --- Compiled artifacts ---
     _compiled_circuit_bodies: tuple[str, ...] = field(init=False)
     _measurements: tuple[str, ...] = field(init=False)
-    measurement_groups: tuple[tuple[qml.operation.Operator, ...], ...] = field(
+    _measurement_groups: tuple[tuple[qml.operation.Operator, ...], ...] = field(
         init=False
     )
-    postprocessing_fn: Callable = field(init=False)
+    _postprocessing_fn: Callable = field(init=False)
 
     def _set_compiled_state(
         self,
@@ -209,12 +122,22 @@ class MetaCircuit:
         measurements: tuple[str, ...] | list[str],
     ) -> None:
         # Use object.__setattr__ because the class is frozen
-        object.__setattr__(self, "postprocessing_fn", postprocessing_fn)
-        object.__setattr__(self, "measurement_groups", measurement_groups)
+        object.__setattr__(self, "_postprocessing_fn", postprocessing_fn)
+        object.__setattr__(self, "_measurement_groups", measurement_groups)
         object.__setattr__(
             self, "_compiled_circuit_bodies", tuple(compiled_circuit_bodies)
         )
         object.__setattr__(self, "_measurements", tuple(measurements))
+
+    @property
+    def postprocessing_fn(self) -> Callable:
+        """Postprocessing function to combine grouped results."""
+        return self._postprocessing_fn
+
+    @property
+    def measurement_groups(self) -> tuple[tuple[qml.operation.Operator, ...], ...]:
+        """Measurement groups for circuit compilation."""
+        return self._measurement_groups
 
     def __post_init__(self):
         """
@@ -235,40 +158,18 @@ class MetaCircuit:
 
         measurement = self.source_circuit.measurements[0]
 
-        # If the measurement is not an expectation value, we assume it is for sampling
-        # and does not require special post-processing.
-        if not hasattr(measurement, "obs") or measurement.obs is None:
-            postprocessing_fn = lambda x: x
-            measurement_groups = ((),)
-            compiled_circuit_bodies, measurements = self._compile_qasm(
-                measurement_groups=measurement_groups,
-                measure_all=True,
+        # When both overrides are provided, use them directly.
+        if (
+            self.measurement_groups_override is not None
+            and self.postprocessing_fn_override is not None
+        ):
+            postprocessing_fn = self.postprocessing_fn_override
+            measurement_groups = self.measurement_groups_override
+        else:
+            # Compute from measurement and grouping_strategy.
+            measurement_groups, _, postprocessing_fn = compute_measurement_groups(
+                measurement, self.grouping_strategy
             )
-            self._set_compiled_state(
-                postprocessing_fn,
-                measurement_groups,
-                compiled_circuit_bodies,
-                measurements,
-            )
-            return
-
-        # Step 1: Use split_to_single_terms to get a flat list of measurement
-        # processes. We no longer need its post-processing function.
-        single_term_mps = self._get_single_term_measurements()
-
-        # Extract the coefficients, which we will now use in our own post-processing.
-        obs = self.source_circuit.measurements[0].obs
-        coeffs = _extract_coeffs(obs)
-
-        # Step 2: Manually group the flat list of measurements based on the strategy.
-        measurement_groups, partition_indices = self._build_measurement_groups(
-            single_term_mps
-        )
-
-        # Step 3: Create our own post-processing function that handles the final summation.
-        postprocessing_fn = _create_final_postprocessing_fn(
-            coeffs, partition_indices, len(single_term_mps)
-        )
 
         compiled_circuit_bodies, measurements = self._compile_qasm(
             measurement_groups=measurement_groups,
@@ -281,44 +182,6 @@ class MetaCircuit:
             compiled_circuit_bodies,
             measurements,
         )
-
-    def _get_single_term_measurements(self):
-        measurements_only_tape = qml.tape.QuantumScript(
-            measurements=self.source_circuit.measurements
-        )
-        s_tapes, _ = TRANSFORM_PROGRAM((measurements_only_tape,))
-        return s_tapes[0].measurements
-
-    def _build_measurement_groups(self, single_term_mps):
-        if self.grouping_strategy in ("qwc", "default"):
-            obs_list = [m.obs for m in single_term_mps]
-            # This computes the grouping indices for the flat list of observables
-            partition_indices = qml.pauli.compute_partition_indices(obs_list)
-            measurement_groups = tuple(
-                tuple(single_term_mps[i].obs for i in group)
-                for group in partition_indices
-            )
-        elif self.grouping_strategy == "wires":
-            partition_indices, grouped_mps = _wire_grouping(single_term_mps)
-            measurement_groups = tuple(
-                tuple(m.obs for m in group) for group in grouped_mps
-            )
-        elif self.grouping_strategy is None:
-            # Each measurement is its own group
-            measurement_groups = tuple(tuple([m.obs]) for m in single_term_mps)
-            partition_indices = [[i] for i in range(len(single_term_mps))]
-        elif self.grouping_strategy == "_backend_expval":
-            # For backends that compute expectation values directly, no explicit
-            # measurement basis rotations (diagonalizing gates) are needed in the QASM.
-            # The `to_openqasm` function interprets an empty measurement group `()`
-            # as a signal to skip adding these gates.
-            measurement_groups = ((),)
-            # All observables are still tracked in a single group for post-processing.
-            partition_indices = [list(range(len(single_term_mps)))]
-        else:
-            raise ValueError(f"Unknown grouping strategy: {self.grouping_strategy}")
-
-        return measurement_groups, partition_indices
 
     def _compile_qasm(
         self,
@@ -348,7 +211,7 @@ class MetaCircuit:
             dict: State dictionary with serialized postprocessing function.
         """
         state = self.__dict__.copy()
-        state["postprocessing_fn"] = dill.dumps(self.postprocessing_fn)
+        state["postprocessing_fn"] = dill.dumps(self._postprocessing_fn)
         return state
 
     def __setstate__(self, state):
@@ -362,7 +225,8 @@ class MetaCircuit:
             state (dict): State dictionary from pickling with serialized
                 postprocessing function.
         """
-        state["postprocessing_fn"] = dill.loads(state["postprocessing_fn"])
+        state["_postprocessing_fn"] = dill.loads(state["postprocessing_fn"])
+        del state["postprocessing_fn"]
 
         self.__dict__.update(state)
 
@@ -403,18 +267,22 @@ class MetaCircuit:
         if precision is None:
             precision = self.precision
 
-        mapping = dict(
-            zip(
-                map(lambda x: re.escape(str(x)), self.symbols),
-                map(lambda x: f"{x:.{precision}f}", param_list),
+        # Parameter-free circuits: skip substitution when symbols is empty.
+        if len(self.symbols) == 0:
+            final_qasm_bodies = list(self._compiled_circuit_bodies)
+        else:
+            mapping = dict(
+                zip(
+                    map(lambda x: re.escape(str(x)), self.symbols),
+                    map(lambda x: f"{x:.{precision}f}", param_list),
+                )
             )
-        )
-        pattern = re.compile("|".join(k for k in mapping.keys()))
+            pattern = re.compile("|".join(k for k in mapping.keys()))
 
-        final_qasm_bodies = [
-            pattern.sub(lambda match: mapping[match.group(0)], body)
-            for body in self._compiled_circuit_bodies
-        ]
+            final_qasm_bodies = [
+                pattern.sub(lambda match: mapping[match.group(0)], body)
+                for body in self._compiled_circuit_bodies
+            ]
 
         executables = []
         param_id = param_idx

@@ -40,6 +40,10 @@ python <example_name>.py
 
 - **`zne_local.py`** - VQE with Zero Noise Extrapolation error mitigation
 
+### Dynamics
+
+- **`time_evolution_local.py`** - Hamiltonian time evolution with probs, observables, and QDrift
+
 ### Custom Workflows
 
 - **`custom_vqa.py`** - CustomVQA with QuantumScript and Qiskit inputs

@@ -42,6 +42,7 @@
   - `QORO_API_KEY=... poetry run pytest --run-api-tests`
   - or `poetry run pytest --run-api-tests --api-key your-key-here`
 - Never inline imports nor classes in test functions. If you are facing errors due to circular imports, ask for approval before inlining imports to fix it.
+- Use simulator fixtures from `tests/conftest.py`: `dummy_simulator` when a real backend is not needed (returns fake counts), `default_test_simulator` for actual circuit execution (QASM→shots), `dummy_expval_backend` for expval-mode tests. Do not create new `ParallelSimulator` instances in tests.
 
 ## Documentation
 

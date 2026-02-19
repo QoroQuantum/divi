@@ -150,13 +150,13 @@ def test_vqe_single_term_hamiltonian_succeeds(dummy_simulator, hamiltonian):
 
 @pytest.mark.parametrize("ansatz_obj", **ANSAETZE_TO_TEST)
 @pytest.mark.parametrize("n_layers", [1, 2])
-def test_meta_circuit_qasm(ansatz_obj, n_layers, h2_molecule):
+def test_meta_circuit_qasm(ansatz_obj, n_layers, h2_molecule, dummy_simulator):
     """Test the QASM representation of the meta circuits."""
     vqe_problem = VQE(
         molecule=h2_molecule,
         ansatz=ansatz_obj,
         n_layers=n_layers,
-        backend=None,
+        backend=dummy_simulator,
     )
 
     meta_circuit_obj = vqe_problem.meta_circuits["cost_circuit"]
@@ -203,13 +203,15 @@ def test_vqe_initialization_with_initial_params(default_test_simulator, h2_molec
     np.testing.assert_array_equal(vqe_problem.curr_params, dummy_params)
 
 
-def test_vqe_fail_with_hw_efficient_ansatz(h2_molecule):
+def test_vqe_fail_with_hw_efficient_ansatz(h2_molecule, dummy_simulator):
     """Test that HW_EFFICIENT ansatz raises NotImplementedError."""
 
     with pytest.raises(NotImplementedError):
         # Need to access the meta_circuits property to trigger the NotImplementedError
         VQE(
-            molecule=h2_molecule, ansatz=HardwareEfficientAnsatz(), backend=None
+            molecule=h2_molecule,
+            ansatz=HardwareEfficientAnsatz(),
+            backend=dummy_simulator,
         ).meta_circuits
 
 
