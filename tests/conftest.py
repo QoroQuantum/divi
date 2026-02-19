@@ -26,6 +26,10 @@ from divi.pipeline import PipelineEnv
 
 
 class DummySimulator(CircuitRunner):
+    def __init__(self, shots, seed=42):
+        super().__init__(shots=shots)
+        self._rng = random.Random(seed)
+
     @property
     def is_async(self):
         return False
@@ -46,8 +50,8 @@ class DummySimulator(CircuitRunner):
                 {
                     "label": label,
                     "results": {
-                        "0" * n_qubits: 50 * random.randint(1, 5),
-                        "1" * n_qubits: 50 * random.randint(1, 5),
+                        "0" * n_qubits: 50 * self._rng.randint(1, 5),
+                        "1" * n_qubits: 50 * self._rng.randint(1, 5),
                     },
                 }
             )

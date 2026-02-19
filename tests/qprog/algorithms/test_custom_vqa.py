@@ -359,12 +359,6 @@ class TestOptimization:
     def test_optimization_runs(self, optimizer, simple_quantum_script, dummy_simulator):
         """Test that optimization runs with various optimizers."""
         optimizer = optimizer()
-        # Skip L_BFGS_B as it may not run iterations with dummy simulator
-        if (
-            isinstance(optimizer, ScipyOptimizer)
-            and optimizer.method == ScipyMethod.L_BFGS_B
-        ):
-            pytest.skip("L_BFGS_B may not run iterations with dummy simulator")
 
         program = CustomVQA(
             qscript=simple_quantum_script,
@@ -390,6 +384,7 @@ class TestOptimization:
     ):
         """Test that optimization runs with various Qiskit circuit configurations."""
         optimizer = optimizer()
+
         circuit = request.getfixturevalue(circuit_fixture)
         program = CustomVQA(
             qscript=circuit,

@@ -275,7 +275,7 @@ class ParallelSimulator(CircuitRunner):
             circuit_simulator = self._create_simulator(resolved_backend)
 
             if self.simulation_seed is not None:
-                circuit_simulator.set_options(seed_simulator=self.simulation_seed)
+                circuit_simulator.set_options(seed_simulator=self.simulation_seed + i)
 
             # Run the single circuit
             job = circuit_simulator.run(transpiled_circuit, shots=self.shots)

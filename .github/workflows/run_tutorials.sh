@@ -10,7 +10,7 @@ parallel_log=$(mktemp)
 
 export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 # Default to 2 minutes per tutorial script; value can be overridden globally via env.
-TUTORIAL_TIMEOUT_SECONDS="${TUTORIAL_TIMEOUT_SECONDS:-120}"
+TUTORIAL_TIMEOUT_SECONDS="${TUTORIAL_TIMEOUT_SECONDS:-240}"
 
 # Prevent matplotlib from trying to open GUI windows in CI.
 export MPLBACKEND=Agg

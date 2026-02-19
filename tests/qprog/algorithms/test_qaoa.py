@@ -230,20 +230,24 @@ class TestGraphInput:
     @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
     def test_graph_qaoa_e2e_solution(self, optimizer, default_test_simulator):
         optimizer = optimizer()  # Create fresh instance
-        if (
-            isinstance(optimizer, ScipyOptimizer)
-            and optimizer.method == ScipyMethod.L_BFGS_B
-        ):
-            pytest.skip("L-BFGS-B fails a lot for some reason. Debug later.")
 
         G = nx.bull_graph()
+
+        # L-BFGS-B needs more layers for sufficient circuit expressibility
+        # to solve MAX_CLIQUE — 1 layer converges to a local optimum.
+        n_layers = (
+            2
+            if isinstance(optimizer, ScipyOptimizer)
+            and optimizer.method == ScipyMethod.L_BFGS_B
+            else 1
+        )
 
         default_test_simulator.set_seed(1997)
 
         qaoa_problem = QAOA(
             graph_problem=GraphProblem.MAX_CLIQUE,
             problem=G,
-            n_layers=1,
+            n_layers=n_layers,
             optimizer=optimizer,
             max_iterations=10,
             is_constrained=True,
