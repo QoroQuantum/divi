@@ -66,7 +66,7 @@ vqe = VQE(molecule=molecule, backend=service)
 vqe.run()
 ```
 
-**Get started for free** → Sign up at [dash.qoroquantum.net](https://dash.qoroquantum.net/) and receive **20 trial credits** to run your first quantum programs on our cloud.
+**Get started for free** → Sign up at [dash.qoroquantum.net](https://dash.qoroquantum.net/) and receive **$100 worth of credits** to run your first quantum programs on our cloud.
 
 ## 🧩 Key Features
 
