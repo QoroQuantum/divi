@@ -3,7 +3,7 @@ Pipelines
 
 Every quantum program in Divi executes circuits through a **circuit pipeline**.
 The pipeline models the journey from a high-level specification (e.g. a
-Hamiltonian or a ``MetaCircuit``) to final, reduced results as a sequence of
+Hamiltonian or a :class:`~divi.circuits.MetaCircuit`) to final, reduced results as a sequence of
 composable **stages**.
 
 This guide explains how the pipeline works, lists the built-in stages shipped
@@ -11,7 +11,7 @@ with Divi, and shows two practical examples of extending Divi with custom
 algorithms.
 
 .. note::
-   If you are using built-in algorithms like VQE, QAOA, or TimeEvolution you
+   If you are using built-in algorithms like :class:`VQE`, :class:`QAOA`, or :class:`TimeEvolution` you
    **don't need to interact with the pipeline directly** — each algorithm
    constructs its own pipeline internally.  This guide is for users who want to
    understand the internals or extend Divi with new algorithms and stages.
@@ -32,7 +32,7 @@ Execution has three phases:
    binding parameter values, or applying error-mitigation circuit variants.
 
 2. **Execute** — The final batch is compiled to OpenQASM and submitted to the
-   configured backend (``CircuitRunner``).  This step is handled automatically.
+   configured backend (:class:`CircuitRunner`).  This step is handled automatically.
 
 3. **Reduce** (backward pass) — Stages are visited in *reverse* order and each
    one collapses or aggregates the raw results using a token it saved during the
@@ -61,6 +61,26 @@ Execution has three phases:
 
    ◄──────────────────────────────────────────────── Reduce (backward) ──
 
+Pipeline data model
+~~~~~~~~~~~~~~~~~~~
+
+Batches and results are keyed by **node keys** so that multi-stage expansion
+and reduction stay consistent:
+
+- **NodeKey** (from :mod:`divi.pipeline.abc`): A tuple of ``(axis_name, value)``
+  pairs, e.g. ``(("circuit", 0),)`` for a single circuit or ``(("bell", 0),)``
+  for a custom spec. Keys are preserved from the spec stage's ``expand`` through
+  execute and into each stage's ``reduce``.
+
+- **MetaCircuitBatch**: A ``dict[NodeKey, MetaCircuit]``. The spec stage produces
+  this; bundle stages consume and produce batches (or expansion results) keyed
+  by the same or extended keys.
+
+- **Flow**: Spec ``expand`` → one batch of :class:`~divi.circuits.MetaCircuit` →
+  bundle stages add axes (e.g. parameter sets, measurement groups) → execute
+  compiles to OpenQASM and runs on the backend → **reduce** in reverse order
+  collapses results back to the final shape (e.g. a single expectation value or
+  a dict of bitstring probabilities per key).
 
 Built-in Stages
 ---------------
@@ -76,12 +96,12 @@ Divi ships with six stages that cover the most common quantum workflows:
      - Description
    * - :class:`~divi.pipeline.stages.CircuitSpecStage`
      - Spec
-     - Passes a single ``MetaCircuit`` through as a one-element batch.
-       Used by VQE, CustomVQA, and other algorithms that receive a pre-built circuit.
+     - Passes a single :class:`~divi.circuits.MetaCircuit` through as a one-element batch.
+       Used by :class:`VQE`, :class:`CustomVQA`, and other algorithms that receive a pre-built circuit.
    * - :class:`~divi.pipeline.stages.TrotterSpecStage`
      - Spec
      - Generates Trotterised circuits from a Hamiltonian for time-evolution and
-       QAOA workflows.
+       :class:`QAOA` workflows.
    * - :class:`~divi.pipeline.stages.MeasurementStage`
      - Bundle
      - Splits multi-observable Hamiltonians into compatible measurement groups
@@ -186,7 +206,7 @@ field Ising model:
    print(f"Ground-state energy: {program.best_loss:.4f}")
    print(f"Optimal parameters: {program.best_params}")
 
-Under the hood, ``CustomVQA`` builds a cost pipeline identical to VQE's:
+Under the hood, :class:`CustomVQA` builds a cost pipeline identical to :class:`VQE`'s:
 
 .. code-block:: text
 
@@ -206,7 +226,7 @@ when the built-in spec stages don't cover your circuit-generation logic.
 A ``SpecStage`` must implement two methods:
 
 - ``expand(spec, env)`` — Convert an input specification into a keyed batch of
-  ``MetaCircuit`` objects and return a token for later use.
+  :class:`~divi.circuits.MetaCircuit` objects and return a token for later use.
 - ``reduce(results, env, token)`` — Aggregate the per-key results back into a
   single output using the stored token.
 
@@ -215,6 +235,7 @@ Bell-state circuit and measures its probabilities:
 
 .. code-block:: python
 
+   import numpy as np
    import pennylane as qml
    from divi.circuits import MetaCircuit
    from divi.pipeline import CircuitPipeline, PipelineEnv, SpecStage
@@ -242,10 +263,13 @@ Bell-state circuit and measures its probabilities:
                ops=[qml.Hadamard(0), qml.CNOT(wires=[0, 1])],
                measurements=[qml.probs()],
            )
-           meta = MetaCircuit(source_circuit=qscript, symbols=[])
+           meta = MetaCircuit(
+               source_circuit=qscript,
+               symbols=np.array([], dtype=object),
+           )
 
-           # Return a single-element batch keyed by "bell"
-           batch: MetaCircuitBatch = {"bell": meta}
+           # NodeKey: tuple of (axis_name, value); one entry for a single circuit
+           batch: MetaCircuitBatch = {(("bell", 0),): meta}
            return batch, None   # No reduce token needed
 
        def reduce(self, results, env, token):
@@ -264,7 +288,7 @@ Bell-state circuit and measures its probabilities:
    result = pipeline.run(initial_spec=None, env=env)
 
    print(result)
-   # Expected: {"bell": {"00": ~0.5, "11": ~0.5}}
+   # Result is keyed by NodeKey: result[(("bell", 0),)] ≈ {"00": ~0.5, "11": ~0.5}
 
 This pattern composes naturally — you can insert any ``BundleStage`` between the
 spec stage and the measurement stage to add parameter binding, error mitigation,

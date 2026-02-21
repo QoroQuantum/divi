@@ -52,7 +52,7 @@ The most common program batch scenario is running VQE across multiple molecular 
 
    # Configure Monte Carlo optimizer for robustness
    mc_optimizer = MonteCarloOptimizer(
-       n_param_sets=10,    # Try 10 parameter combinations per molecule
+       population_size=10,  # Try 10 parameter combinations per molecule
        n_best_sets=3       # Keep top 3 for next iteration
    )
 
@@ -92,7 +92,7 @@ The most common program batch scenario is running VQE across multiple molecular 
            UCCSDAnsatz(),
            GenericLayerAnsatz([qml.RY, qml.RZ], entangling_layout="circular")
        ],
-       optimizer=MonteCarloOptimizer(n_param_sets=5),
+       optimizer=MonteCarloOptimizer(population_size=5),
        max_iterations=50,
        backend=ParallelSimulator(shots=5000)
    )
@@ -402,7 +402,7 @@ Combine local and cloud execution for optimal performance:
 Progress Monitoring and Control
 -------------------------------
 
-Divi provides automatic progress tracking for long-running batches. When you execute a batch that contains compatible programs (like VQE or QAOA), a progress bar will be displayed in your console, showing the status of each program in real-time.
+Divi provides automatic progress tracking for long-running batches. When you execute a batch that contains compatible programs (like :class:`VQE` or :class:`QAOA`), a progress bar will be displayed in your console, showing the status of each program in real-time.
 
 **Stopping a Batch** 🛑
 

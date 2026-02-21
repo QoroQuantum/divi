@@ -91,9 +91,6 @@ class JobType(Enum):
     EXPECTATION = "EXPECTATION"
     """Compute expectation values for Hamiltonian operators (simulation only)."""
 
-    CIRCUIT_CUT = "CIRCUIT_CUT"
-    """Automatically decompose large circuits that wouldn't fit on a QPU."""
-
 
 @dataclass(frozen=True)
 class JobConfig:
@@ -472,15 +469,14 @@ class QoroService(CircuitRunner):
                 Each term is a combination of Pauli operators, e.g. "XYZ;XXZ;ZIZ".
                 If None, no Hamiltonian operators will be measured.
             job_type (JobType | None, optional):
-                Type of job to execute (e.g., SIMULATE, EXECUTE, EXPECTATION, CIRCUIT_CUT).
+                Type of job to execute (e.g., SIMULATE, EXECUTE, EXPECTATION).
                 If not provided, the job type will be determined from the service configuration.
             override_config (JobConfig | None, optional):
                 Configuration object to override the service's default settings.
                 If not provided, default values are used.
 
         Raises:
-            ValueError: If more than one circuit is submitted for a CIRCUIT_CUT job,
-                        or if any circuit is not valid QASM.
+            ValueError: If any circuit is not valid QASM.
             requests.exceptions.HTTPError: If any API request fails.
 
         Returns:
@@ -527,9 +523,6 @@ class QoroService(CircuitRunner):
             job_type = JobType.SIMULATE
 
         # Validate circuits
-        if job_type == JobType.CIRCUIT_CUT and len(circuits) > 1:
-            raise ValueError("Only one circuit allowed for circuit-cutting jobs.")
-
         for key, circuit in circuits.items():
             if not is_valid_qasm(circuit):
                 # Get the actual error message for better error reporting

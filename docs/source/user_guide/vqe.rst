@@ -3,14 +3,14 @@ VQE
 
 The Variational Quantum Eigensolver (VQE) is a quantum algorithm for finding the ground state energy of quantum systems, particularly useful for quantum chemistry applications.
 
-For our VQE implementation, we integrate tightly with PennyLane's `qchem <https://docs.pennylane.ai/en/stable/code/qml_qchem.html>`_ module and their Hamiltonian objects. As such, the VQE constructor accepts either a `Molecule <https://docs.pennylane.ai/en/stable/code/api/pennylane.qchem.Molecule.html>`_ object, out of which the molecular Hamiltonian is generated, or the Hamiltonian itself.
+For our :class:`VQE` implementation, we integrate tightly with PennyLane's `qchem <https://docs.pennylane.ai/en/stable/code/qml_qchem.html>`_ module and their Hamiltonian objects. As such, the :class:`VQE` constructor accepts either a `Molecule <https://docs.pennylane.ai/en/stable/code/api/pennylane.qchem.Molecule.html>`_ object, out of which the molecular Hamiltonian is generated, or the Hamiltonian itself.
 
-Divi offers two VQE modes: standard single-instance ground-state energy estimation, and hyperparameter sweep mode for large-scale simulations.
+Divi offers two :class:`VQE` modes: standard single-instance ground-state energy estimation, and hyperparameter sweep mode for large-scale simulations.
 
-Basic VQE Usage
----------------
+Basic :class:`VQE` Usage
+--------------------------------
 
-Here's how to set up a basic VQE calculation for the H2 molecule:
+Here's how to set up a basic :class:`VQE` calculation for the H2 molecule:
 
 .. code-block:: python
 
@@ -171,7 +171,7 @@ Divi uses `Z-matrices <https://en.wikipedia.org/wiki/Z-matrix_(chemistry)>`_ to 
    )
 
    # Set up Monte Carlo optimizer
-   mc_optimizer = MonteCarloOptimizer(n_param_sets=10, n_best_sets=3)
+   mc_optimizer = MonteCarloOptimizer(population_size=10, n_best_sets=3)
 
    # Create hyperparameter sweep
    vqe_sweep = VQEHyperparameterSweep(

@@ -109,20 +109,30 @@ intersphinx_mapping = {
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
-html_theme = "sphinx_rtd_theme"
+html_theme = "furo"
 html_static_path = ["_static"]
+
 
 # Favicon configuration
 html_favicon = "_static/favicon.ico"
 
 # Theme options
 html_theme_options = {
-    "navigation_depth": 2,
-    "collapse_navigation": False,
-    "sticky_navigation": True,
-    "includehidden": True,
-    "titles_only": False,
-    "logo_only": False,
+    "navigation_with_keys": True,
+    "light_css_variables": {
+        "color-brand-primary": "#CC3366",
+        "color-brand-content": "#CC3366",
+        "font-stack": "Poppins, sans-serif",
+        "font-stack--headings": "Poppins, sans-serif",
+        "font-stack--monospace": "ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, 'Liberation Mono', monospace",
+    },
+    "dark_css_variables": {
+        "color-brand-primary": "#FDB9FD",
+        "color-brand-content": "#FDB9FD",
+        "color-background-primary": "#131313",
+        "color-background-secondary": "#1a1a1a",
+        "color-foreground-primary": "#E9EEF6",
+    },
 }
 
 # GitHub Pages specific configuration
@@ -131,16 +141,12 @@ html_extra_path = []
 html_copy_source = False
 html_show_sourcelink = False
 
-# Ensure the global toctree is used for navigation
-html_sidebars = {
-    "**": ["searchbox.html", "globaltoc.html", "relations.html", "sourcelink.html"]
-}
-
 # -- Additional configuration for better module discovery ---------------------
 
 # Add modules to be documented
 add_module_names = False
 pygments_style = "sphinx"
+pygments_dark_style = "monokai"
 
 # Configure autosectionlabel
 autosectionlabel_prefix_document = True

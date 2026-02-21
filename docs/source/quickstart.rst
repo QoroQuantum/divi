@@ -61,7 +61,7 @@ Choosing the Right Algorithm
 
 Divi offers specialized algorithms for different problem types:
 
-**VQE - Quantum Chemistry** ⚗️
+**:class:`VQE` - Quantum Chemistry** ⚗️
    Perfect for molecular ground state calculations, dissociation curves, and electronic structure problems.
 
    .. code-block:: python
@@ -75,7 +75,7 @@ Divi offers specialized algorithms for different problem types:
           backend=ParallelSimulator()
       )
 
-**QAOA - Optimization Problems** 🎯
+**:class:`QAOA` - Optimization Problems** 🎯
    Ideal for combinatorial optimization: Max-Cut, Max-Clique, traveling salesman, and similar NP-hard problems.
 
    .. code-block:: python
@@ -97,7 +97,7 @@ Backend Options
 ---------------
 
 **Local Development** 💻
-   Use ``ParallelSimulator`` for fast iteration and testing:
+   Use :class:`ParallelSimulator` for fast iteration and testing:
 
    .. code-block:: python
 
@@ -108,11 +108,11 @@ Backend Options
       )
 
 **Cloud & Hardware** ☁️
-   Access real quantum computers through ``QoroService`` (contact us for access):
+   Access real quantum computers through :class:`QoroService` (contact us for access):
 
    .. code-block:: python
 
-      from divi.backends import QoroService
+      from divi.backends import QoroService, JobConfig
 
       # Initialize cloud service
       service = QoroService()  # Uses QORO_API_KEY from .env file
@@ -128,9 +128,11 @@ Backend Options
       measure q[0] -> c[0];
       measure q[1] -> c[1];"""
 
-      # Submit to quantum hardware
+      # Submit to quantum hardware (use JobConfig to select QPU system)
       circuits_dict = {"my_circuit": qasm_circuit}
-      execution_result = service.submit_circuits(circuits_dict, qpu_system_name="ibm_one")
+      execution_result = service.submit_circuits(
+          circuits_dict, override_config=JobConfig(qpu_system="ibm_one")
+      )
 
 Advanced Features
 -----------------
@@ -162,7 +164,7 @@ Advanced Features
       sweep = VQEHyperparameterSweep(
          molecule_transformer=transformer,
          ansatze=[HartreeFockAnsatz(), UCCSDAnsatz()],
-         optimizer=MonteCarloOptimizer(n_param_sets=5, n_best_sets=2),
+         optimizer=MonteCarloOptimizer(population_size=5, n_best_sets=2),
          max_iterations=10,
          backend=ParallelSimulator(n_processes=4),
       )

@@ -3,7 +3,7 @@ Optimizers
 
 Divi provides built-in support for optimizing quantum programs using three distinct methods, each suited to different problem types and user requirements.
 
-All optimizers can be accessed through the `divi.qprog.optimizers` module. Scipy-based optimizers rely on the `ScipyMethod` enum to specify the optimizer used.
+All optimizers can be accessed through the ``divi.qprog.optimizers`` module. Scipy-based optimizers rely on the :class:`ScipyMethod` enum to specify the optimizer used.
 
 Monte Carlo Optimization
 -------------------------
@@ -16,12 +16,12 @@ The Monte Carlo [#kalos2008]_ method in Divi is a stochastic global optimization
 
 Monte Carlo optimization can help identify promising regions in high-dimensional parameter spaces before applying more refined methods.
 
-In Divi, one can configure the optimizer; providing the size of the population `n_param_sets`, and the number of well-performing parameter sets to carry on to the subsequent iteration `n_best_sets`.
+In Divi, one can configure the optimizer; providing the size of the population ``n_param_sets``, and the number of well-performing parameter sets to carry on to the subsequent iteration ``n_best_sets``. For :class:`MonteCarloOptimizer`, pass ``population_size`` (and optionally ``n_best_sets``) in the constructor; the read-only property ``n_param_sets`` then reflects the population size.
 
 SciPy Optimizers
 ----------------
 
-Divi provides several SciPy-based optimizers through the `ScipyOptimizer` class:
+Divi provides several SciPy-based optimizers through the :class:`ScipyOptimizer` class:
 
 Nelder-Mead
 -----------
@@ -67,7 +67,7 @@ Use COBYLA when:
 - Gradients are inaccessible or too noisy.
 - You seek a reliable optimizer for low to moderate-dimensional spaces.
 
-COBYLA is also a good choice of optimizer when trying out QAOA for a new problem/experimenting, but your mileage may vary.
+COBYLA is also a good choice of optimizer when trying out :class:`QAOA` for a new problem/experimenting, but your mileage may vary.
 
 .. code-block:: python
 
@@ -101,24 +101,24 @@ Differential Evolution [#storn1997]_ is a method that optimizes a problem by ite
 Choosing the Right Optimizer
 ----------------------------
 
-**For VQE:**
+**For :class:`VQE`:**
 
 - **L-BFGS-B**: Best for smooth, differentiable landscapes with good initial parameters
 - **Monte Carlo**: Excellent for exploration and avoiding local minima
 - **COBYLA**: Good for constrained problems or when gradients are unreliable
 - **Nelder-Mead**: Robust choice for noisy or discontinuous landscapes
 
-**For QAOA:**
+**For :class:`QAOA`:**
 
-- **COBYLA**: Often the best starting point for QAOA problems
+- **COBYLA**: Often the best starting point for :class:`QAOA` problems
 - **Nelder-Mead**: Good for noisy landscapes and parameter initialization
 - **Monte Carlo**: Excellent for global exploration and avoiding barren plateaus
 - **L-BFGS-B**: Use when you have good initial parameters and smooth landscapes
 
 **For PyMOO Optimizers:**
 
-- **CMA-ES**: Excellent for high-dimensional parameter spaces and when you need robust global optimization. Particularly effective for VQE with many parameters.
-- **Differential Evolution**: Good for multimodal optimization landscapes and when you need to escape local minima. Works well for QAOA parameter optimization.
+- **CMA-ES**: Excellent for high-dimensional parameter spaces and when you need robust global optimization. Particularly effective for :class:`VQE` with many parameters.
+- **Differential Evolution**: Good for multimodal optimization landscapes and when you need to escape local minima. Works well for :class:`QAOA` parameter optimization.
 
 **For Hyperparameter Sweeps:**
 
@@ -129,9 +129,9 @@ Choosing the Right Optimizer
 
 **Quantum-Specific Considerations:**
 
-- **Barren Plateaus**: Use Monte Carlo or CMA-ES to avoid getting trapped in flat regions
+- **Barren Plateaus**: Use :class:`MonteCarloOptimizer` or CMA-ES to avoid getting trapped in flat regions
 - **Parameter Initialization**: Start with small random values (typically [-0.1, 0.1]) for better convergence
-- **Circuit Depth**: Deeper circuits benefit from more robust optimizers like CMA-ES or Monte Carlo
+- **Circuit Depth**: Deeper circuits benefit from more robust optimizers like CMA-ES or :class:`MonteCarloOptimizer`
 - **Noise Resilience**: Nelder-Mead and COBYLA are more robust to quantum noise than gradient-based methods
 
 Early Stopping

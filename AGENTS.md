@@ -46,10 +46,12 @@
 
 ## Documentation
 
-- Install doc deps: `poetry install --with docs`
-- Build: `cd docs` once, then run `make build`
-- Live reload: `cd docs` once, then run `make dev`
-- Serve built docs: `cd docs` once, then run `make serve`
+- **Always use the Makefile** in `docs/` for documentation tasks; do not invoke `sphinx-build` or other Sphinx commands directly.
+- From the repo root: `cd docs` then run the desired target (e.g. `make build`, `make dev`).
+- Install doc deps: `make install` (from `docs/`) or `poetry install --with docs`
+- Build: `cd docs` then `make build`
+- Live reload: `cd docs` then `make dev`
+- Serve built docs: `cd docs` then `make serve`
 
 ## Commit conventions
 

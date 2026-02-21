@@ -27,24 +27,26 @@ Core Architecture
 .. code-block:: python
 
    from divi.qprog.batch import ProgramBatch
+   from divi.qprog import VQE, QAOA
    from divi.backends import ParallelSimulator
 
    class MyBatch(ProgramBatch):
        def create_programs(self):
+           super().create_programs()  # Required: initializes internal state
            # Create multiple quantum programs
            self.programs = {
                "program_1": VQE(...),
                "program_2": QAOA(...),
-               "program_3": VQE(...)
+               "program_3": VQE(...),
            }
 
-       def run(self):
-           # Execute all programs in parallel
-           return super().run()
+       def run(self, blocking=True):
+           return super().run(blocking=blocking)
 
-   # Run program batch
+   # Run program batch: create programs first, then execute
    batch = MyBatch(backend=ParallelSimulator())
-   results = batch.run()
+   batch.create_programs()
+   batch.run(blocking=True)
 
 Workflows
 ---------

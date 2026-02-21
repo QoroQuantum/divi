@@ -3,8 +3,8 @@ Core Concepts
 
 This guide explains the fundamental concepts and architecture that make Divi work. Understanding these concepts will help you use Divi more effectively and build custom quantum algorithms.
 
-The QuantumProgram Base Class
------------------------------
+The :class:`QuantumProgram` Base Class
+--------------------------------------
 
 All quantum algorithms in Divi inherit from the abstract base class :class:`QuantumProgram`, which provides a streamlined interface for all quantum programs. Its primary role is to establish a common structure for executing circuits and managing backend communication.
 
@@ -20,10 +20,10 @@ All quantum algorithms in Divi inherit from the abstract base class :class:`Quan
 - ``total_circuit_count`` - Total circuits executed so far
 - ``total_run_time`` - Cumulative execution time in seconds
 
-The VariationalQuantumAlgorithm Class
----------------------------------------
+The :class:`VariationalQuantumAlgorithm` Class
+----------------------------------------------
 
-For algorithms that rely on optimizing parameters, Divi provides the :class:`VariationalQuantumAlgorithm` class. This is the base class for algorithms like VQE and QAOA, and it extends `QuantumProgram` with advanced features for optimization and result tracking.
+For algorithms that rely on optimizing parameters, Divi provides the :class:`VariationalQuantumAlgorithm` class. This is the base class for algorithms like :class:`VQE` and :class:`QAOA`, and it extends :class:`QuantumProgram` with advanced features for optimization and result tracking.
 
 .. note::
    For complete API documentation of all properties and methods, see :doc:`../api_reference/qprog`.
@@ -42,7 +42,7 @@ Every variational quantum program in Divi follows a consistent lifecycle:
    directly when using built-in algorithms, but understanding it enables powerful
    customisation. See :doc:`pipelines` for a deep dive.
 
-Here's how a typical VQE program flows through this lifecycle:
+Here's how a typical :class:`VQE` program flows through this lifecycle:
 
 .. code-block:: python
 
@@ -85,9 +85,9 @@ Solutions are sorted by probability (descending), with lexicographic tie-breakin
 
 By default, solutions are returned as raw bitstrings. However, many algorithms provide a ``decode_solution_fn`` parameter that converts bitstrings into problem-specific formats:
 
-- **QAOA with QUBO problems**: Bitstrings are automatically decoded to NumPy arrays
-- **QAOA with graph problems**: Bitstrings are decoded to lists of node indices
-- **VQE**: Bitstrings represent eigenstates (typically used as-is)
+- :class:`QAOA` with QUBO problems: Bitstrings are automatically decoded to NumPy arrays
+- :class:`QAOA` with graph problems: Bitstrings are decoded to lists of node indices
+- :class:`VQE`: Bitstrings represent eigenstates (typically used as-is)
 - **Custom decoders**: You can provide your own decoding function when creating the algorithm
 
 Set ``include_decoded=True`` when calling :meth:`get_top_solutions` to include decoded solutions in the results.
@@ -211,8 +211,10 @@ Circuit Architecture
 
 Divi uses a two-tier circuit system for maximum efficiency:
 
-**MetaCircuit** 🏗️
-   Symbolic circuit templates with parameters that can be instantiated multiple times:
+:class:`MetaCircuit` 🏗️
+   Symbolic circuit templates with parameters. You provide a PennyLane
+   :class:`~pennylane.tape.QuantumScript` (one measurement) and an array of
+   sympy symbols; the circuit body is converted to OpenQASM once and reused:
 
    .. code-block:: python
 
@@ -221,42 +223,36 @@ Divi uses a two-tier circuit system for maximum efficiency:
       import sympy as sp
 
       # Define symbolic parameters
-      params = sp.symarray("theta", 3)
+      symbols = sp.symarray("theta", 3)
 
-      # Create parameterized circuit
-      with qml.tape.QuantumTape() as tape:
-          qml.RY(params[0], wires=0)
-          qml.RX(params[1], wires=1)
-          qml.CNOT(wires=[0, 1])
-          qml.RY(params[2], wires=0)
-          qml.expval(qml.PauliZ(0))
+      # Create parameterized circuit (exactly one measurement required)
+      ops = [
+          qml.RY(symbols[0], wires=0),
+          qml.RX(symbols[1], wires=1),
+          qml.CNOT(wires=[0, 1]),
+          qml.RY(symbols[2], wires=0),
+      ]
+      tape = qml.tape.QuantumScript(ops=ops, measurements=[qml.expval(qml.PauliZ(0))])
 
-      # Create reusable template
-      meta_circuit = MetaCircuit(tape, params)
+      # Create the logical circuit template (QASM is computed in __post_init__)
+      meta_circuit = MetaCircuit(source_circuit=tape, symbols=symbols)
 
-      # Generate specific circuits
-      circuit1 = meta_circuit.initialize_circuit_from_params([0.1, 0.2, 0.3])
-      circuit2 = meta_circuit.initialize_circuit_from_params([0.4, 0.5, 0.6])
+   When you run algorithms like :class:`VQE` or :class:`QAOA`, the pipeline creates
+   :class:`MetaCircuit`\ s and binds parameter values to produce concrete OpenQASM
+   circuits that are submitted to the backend.
 
-**Circuit** ⚡
-   Concrete circuit instances with specific parameter values and QASM representations:
-
-   .. code-block:: python
-
-      # Each Circuit contains:
-      print(f"Circuit ID: {circuit1.circuit_id}")
-      print(f"Tags: {circuit1.tags}")
-      print(f"QASM circuits: {len(circuit1.qasm_circuits)}")
-
-      # Access the underlying PennyLane circuit
-      pl_circuit = circuit1.main_circuit
+Concrete circuits ⚡
+   The pipeline turns :class:`MetaCircuit` batches into keyed OpenQASM strings (label
+   → QASM) and passes them to the backend. Parameter binding, measurement grouping,
+   and optional error-mitigation stages happen inside the pipeline; see :doc:`pipelines`
+   for details.
 
 Backend Abstraction
 -------------------
 
 Divi's backend system provides a unified interface for different execution environments:
 
-**CircuitRunner Interface** 🎯
+:class:`CircuitRunner` interface 🎯
    All backends implement this common interface:
 
    .. code-block:: python
@@ -273,7 +269,7 @@ Divi's backend system provides a unified interface for different execution envir
    .. note::
       Built-in programs never call ``submit_circuits`` directly — the
       :doc:`circuit pipeline <pipelines>` handles circuit submission and result
-      collection automatically. The ``CircuitRunner`` interface is still the
+      collection automatically. The :class:`CircuitRunner` interface is still the
       extension point if you need to add a new execution backend.
 
    .. note::
@@ -282,8 +278,8 @@ Divi's backend system provides a unified interface for different execution envir
 
 **Available Backends:**
 
-- **ParallelSimulator** 💻 - Local high-performance simulator
-- **QoroService** ☁️ - Cloud quantum computing service
+- :class:`ParallelSimulator` 💻 - Local high-performance simulator
+- :class:`QoroService` ☁️ - Cloud quantum computing service
 
 **Backend Selection:**
 
@@ -307,7 +303,7 @@ Divi's backend system provides a unified interface for different execution envir
 Parameter Management
 --------------------
 
-Divi handles parameter optimization automatically, but you can also set custom initial parameters. This applies to all variational algorithms (VQE, QAOA, and custom implementations).
+Divi handles parameter optimization automatically, but you can also set custom initial parameters. This applies to all variational algorithms (:class:`VQE`, :class:`QAOA`, and custom implementations).
 
 **Automatic Initialization** ⚡
    Parameters are randomly initialized between 0 and 2π when not specified:
@@ -386,7 +382,7 @@ Divi handles parameter optimization automatically, but you can also set custom i
           # "Initial parameters must have shape (1, 8), got (1, 3)"
 
 **Multiple Parameter Sets** 🔄
-   Some optimizers (like MonteCarloOptimizer) work with multiple parameter sets simultaneously.
+   Some optimizers (like :class:`MonteCarloOptimizer`) work with multiple parameter sets simultaneously.
    The first dimension represents the number of parameter sets. Always use :meth:`get_expected_param_shape()`
    to verify the correct shape before setting custom parameters:
 
@@ -437,7 +433,7 @@ After execution, Divi provides rich result analysis capabilities:
 
 **Solution Probabilities** 🎲
    After optimization completes, access probability distributions for the best solution.
-   For VQE and QAOA, the ``best_probs`` property contains a dictionary mapping bitstrings to their measurement
+   For :class:`VQE` and :class:`QAOA`, the ``best_probs`` property contains a dictionary mapping bitstrings to their measurement
    probabilities (essentially a shots histogram from the final measurement). If you implement a custom
    variational algorithm, you are free to adjust this structure to suit your needs:
 

@@ -1020,20 +1020,9 @@ class TestQoroServiceMock:
         with pytest.raises(ValueError, match="Circuit 'circuit_1' is not a valid QASM"):
             qoro_service_mock.submit_circuits({"circuit_1": "invalid_qasm"})
 
-        # Test 2: Circuit cut constraint
+        # Test 2: API error during init
         mocker.patch(
             f"{_qoro_service.__name__}.{is_valid_qasm.__name__}", return_value=True
-        )
-        with pytest.raises(
-            ValueError, match="Only one circuit allowed for circuit-cutting jobs."
-        ):
-            qoro_service_mock.submit_circuits(
-                {"c1": "qasm1", "c2": "qasm2"}, job_type=JobType.CIRCUIT_CUT
-            )
-
-        # Test 3: API error during init
-        mocker.patch(
-            f"{is_valid_qasm.__module__}.{is_valid_qasm.__name__}", return_value=True
         )
         mocker.patch.object(
             qoro_service_mock,
@@ -1046,7 +1035,7 @@ class TestQoroServiceMock:
         with pytest.raises(requests.exceptions.HTTPError):
             qoro_service_mock.submit_circuits({"c1": "qasm"})
 
-        # Test 4: API error during add_circuits
+        # Test 3: API error during add_circuits
         mocker.patch(
             f"{is_valid_qasm.__module__}.{is_valid_qasm.__name__}", return_value=True
         )

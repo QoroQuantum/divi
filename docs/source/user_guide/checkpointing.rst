@@ -13,7 +13,7 @@ Divi's checkpointing system saves both the program state (parameters, losses, it
 - **Manage long runs** - Break up very long optimizations into manageable chunks
 - **Adjust iteration targets** - Change `max_iterations` after loading to continue beyond the original target
 
-Checkpointing is supported for all :class:`VariationalQuantumAlgorithm` subclasses (VQE, QAOA) and works with checkpointing-capable optimizers:
+Checkpointing is supported for all :class:`VariationalQuantumAlgorithm` subclasses (:class:`VQE`, :class:`QAOA`) and works with checkpointing-capable optimizers:
 
 - :class:`MonteCarloOptimizer`
 - :class:`PymooOptimizer` (CMAES and DE methods)
@@ -129,10 +129,10 @@ By default, ``load_state()`` loads the latest checkpoint. To load a specific che
        n_layers=1,
    )
 
-Complete Example: QAOA with Checkpointing
-------------------------------------------
+Complete Example: :class:`QAOA` with Checkpointing
+--------------------------------------------------
 
-Here's a complete example showing checkpointing with QAOA:
+Here's a complete example showing checkpointing with :class:`QAOA`:
 
 .. code-block:: python
 
@@ -258,7 +258,7 @@ The ``program_state.json`` file contains:
 - Best parameters found so far
 - Current parameters
 - Random number generator state
-- Algorithm-specific state (e.g., eigenstate for VQE, solution nodes for QAOA)
+- Algorithm-specific state (e.g., eigenstate for :class:`VQE`, solution nodes for :class:`QAOA`)
 
 The ``optimizer_state.json`` file contains optimizer-specific data:
 
@@ -304,7 +304,7 @@ Always handle these exceptions appropriately:
 Limitations
 -----------
 
-- **ScipyOptimizer** does not support checkpointing
+- **:class:`ScipyOptimizer`** does not support checkpointing
 - Checkpoints are **not portable** across different Python versions or library versions
 - Problem configuration must be **manually provided** when loading (not stored in checkpoint)
 - Checkpoint files can be **large** for population-based optimizers (MonteCarlo, Pymoo)

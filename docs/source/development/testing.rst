@@ -98,18 +98,30 @@ Writing Tests
 
 **Example Test with Fixtures:**
 
+The ``dummy_simulator`` fixture is defined in ``tests/conftest.py`` and provides
+a fake backend (no real circuit execution). Use it so tests do not depend on a
+real backend. Common test data (e.g. a minimal molecule) can be created inline
+or in a shared fixture:
+
 .. code-block:: python
 
+   import numpy as np
    import pytest
+   import pennylane as qml
    from divi.qprog import VQE
    from divi.qprog.algorithms import HartreeFockAnsatz
 
    def test_vqe_initialization(dummy_simulator):
        """Test that VQE initializes correctly with mock backend."""
+       # Minimal H2 molecule for testing (or use a fixture from conftest)
+       mol = qml.qchem.Molecule(
+           symbols=["H", "H"],
+           coordinates=np.array([[0.0, 0.0, -0.6614], [0.0, 0.0, 0.6614]]),
+       )
        vqe = VQE(
-           molecule=mock_molecule,
+           molecule=mol,
            ansatz=HartreeFockAnsatz(),
-           backend=dummy_simulator
+           backend=dummy_simulator,
        )
        assert vqe.n_params_per_layer is not None
        assert vqe.n_layers is not None

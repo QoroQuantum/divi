@@ -13,7 +13,7 @@ Understanding ExecutionResult
 
 All backend :meth:`submit_circuits` methods return an :class:`ExecutionResult` object, which provides a unified interface for handling both synchronous and asynchronous execution.
 
-**For Synchronous Backends** (like ``ParallelSimulator``):
+**For Synchronous Backends** (like :class:`ParallelSimulator`):
    Results are available immediately after submission:
 
    .. code-block:: python
@@ -29,7 +29,7 @@ All backend :meth:`submit_circuits` methods return an :class:`ExecutionResult` o
           counts = circuit_result["results"]
           print(f"{label}: {counts}")
 
-**For Asynchronous Backends** (like ``QoroService``):
+**For Asynchronous Backends** (like :class:`QoroService`):
    For cloud-based backends, you need to wait for the job to complete and then fetch the results:
 
    .. code-block:: python
@@ -51,7 +51,7 @@ All backend :meth:`submit_circuits` methods return an :class:`ExecutionResult` o
           counts = circuit_result["results"]
           print(f"{label}: {counts}")
 
-**Note:** For most use cases, you don't need to interact with ``ExecutionResult`` directly. The backends handle the workflow automatically. The examples above show the typical patterns for accessing results from both synchronous and asynchronous backends.
+**Note:** For most use cases, you don't need to interact with :class:`ExecutionResult` directly. The backends handle the workflow automatically. The examples above show the typical patterns for accessing results from both synchronous and asynchronous backends.
 
 **Result Format:**
    The ``results`` attribute is a list of dictionaries, each containing:
@@ -73,15 +73,15 @@ Available Backends
 
 Divi comes with two primary backends out of the box:
 
-* **ParallelSimulator**: A high-performance local simulator with parallel execution capabilities, perfect for development and testing.
-* **QoroService**: A cloud-based quantum computing service for accessing powerful simulators and real quantum hardware.
+* **:class:`ParallelSimulator`**: A high-performance local simulator with parallel execution capabilities, perfect for development and testing.
+* **:class:`QoroService`**: A cloud-based quantum computing service for accessing powerful simulators and real quantum hardware.
 
 Let's dive into each one.
 
-ParallelSimulator
------------------
+:class:`ParallelSimulator`
+--------------------------
 
-The ``ParallelSimulator`` is your go-to backend for local development, testing, and research. It's designed for speed and flexibility, allowing you to iterate quickly without needing an internet connection.
+The :class:`ParallelSimulator` is your go-to backend for local development, testing, and research. It's designed for speed and flexibility, allowing you to iterate quickly without needing an internet connection.
 
 **Key Features:**
 
@@ -111,16 +111,16 @@ Using the simulator is straightforward. You can create a default instance or con
 Advanced Configuration
 ^^^^^^^^^^^^^^^^^^^^^^
 
-You can tune the ``ParallelSimulator`` for different scenarios, like maximizing performance or simulating a noisy environment.
+You can tune the :class:`ParallelSimulator` for different scenarios, like maximizing performance or simulating a noisy environment.
 
 .. code-block:: python
 
    # High-performance configuration for production-level simulations
    backend = ParallelSimulator(
        shots=10000,           # Increase measurement shots for higher precision
-       n_processes=8,        # Use more parallel processes
+       n_processes=8,         # Use more parallel processes
        qiskit_backend="auto", # Let Divi auto-select the best available simulator
-       seed=42               # Set a random seed for reproducible results
+       simulation_seed=42     # Set a random seed for reproducible results
    )
 
    # Noisy simulation to mimic real hardware
@@ -131,22 +131,22 @@ You can tune the ``ParallelSimulator`` for different scenarios, like maximizing 
        n_processes=2
    )
 
-QoroService
------------
+:class:`QoroService`
+-------------------------
 
-The ``QoroService`` provides access to cloud-based quantum computing resources, including advanced simulation services with greater bandwidth and a wider variety of simulation types (such as tensor networks), as well as real quantum hardware. While ``ParallelSimulator`` is ideal for local prototyping, ``QoroService`` offers production-grade simulation capabilities and hardware access. The service supports two execution modes: **sampling mode** for measurement histograms (available on both simulation and hardware) and **expectation mode** for expectation values (currently simulation-only).
+The :class:`QoroService` provides access to cloud-based quantum computing resources, including advanced simulation services with greater bandwidth and a wider variety of simulation types (such as tensor networks), as well as real quantum hardware. While :class:`ParallelSimulator` is ideal for local prototyping, :class:`QoroService` offers production-grade simulation capabilities and hardware access. The service supports two execution modes: **sampling mode** for measurement histograms (available on both simulation and hardware) and **expectation mode** for expectation values (currently simulation-only).
 
 **Key Features:**
 
 * **Advanced Simulation**: Access production-grade simulation services with greater bandwidth and a variety of simulation types, including tensor networks, beyond what's available in local prototyping.
 * **Real Hardware**: Run your algorithms on actual quantum computers.
 * **Scalable Execution**: The service is designed to handle large queues of jobs efficiently.
-* **Circuit Packing**: Enable circuit packing optimization via ``JobConfig.use_circuit_packing`` to improve execution efficiency by combining multiple circuits into optimized batches.
-* **Job Configuration**: Use ``JobConfig`` to configure job settings including shots, QPU system selection, circuit packing, and tags. Set default configurations at service initialization or override them per job.
+* **Circuit Packing**: Enable circuit packing optimization via :attr:`JobConfig.use_circuit_packing` to improve execution efficiency by combining multiple circuits into optimized batches.
+* **Job Configuration**: Use :class:`JobConfig` to configure job settings including shots, QPU system selection, circuit packing, and tags. Set default configurations at service initialization or override them per job.
 * **Job Management**: Track job status (PENDING, RUNNING, COMPLETED, FAILED, CANCELLED), poll for completion with configurable intervals, retrieve results, and delete jobs.
 
-Getting Started with QoroService
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Getting Started with :class:`QoroService`
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 To use the service, you'll first need to initialize it and test your connection.
 
@@ -163,7 +163,7 @@ To use the service, you'll first need to initialize it and test your connection.
 Execution Modes
 ^^^^^^^^^^^^^^^
 
-The ``QoroService`` supports two distinct execution modes:
+The :class:`QoroService` supports two distinct execution modes:
 
 1. **Sampling Mode** (circuit-only input): Submit circuits without Hamiltonian operators.
    The service executes the circuits with a specified number of shots and returns
@@ -240,14 +240,14 @@ The workflow for submitting circuits depends on which execution mode you're usin
 
 .. note::
 
-   **Bitstring Ordering**: ``QoroService`` returns bitstrings in **Little Endian** ordering (least significant bit first, rightmost bit is qubit 0), but Hamiltonian operators passed via the ``ham_ops`` parameter should follow **Big Endian** ordering (most significant bit first, leftmost bit is qubit 0). For example, a 4-qubit system with qubits labeled 0-3: the bitstring ``"0011"`` in results represents qubit 0=1, qubit 1=1, qubit 2=0, qubit 3=0 (reading right to left), while the Hamiltonian operator ``"ZIZI"`` applies Z to qubit 0, I to qubit 1, Z to qubit 2, and I to qubit 3 (reading left to right).
+   **Bitstring Ordering**: :class:`QoroService` returns bitstrings in **Little Endian** ordering (least significant bit first, rightmost bit is qubit 0), but Hamiltonian operators passed via the ``ham_ops`` parameter should follow **Big Endian** ordering (most significant bit first, leftmost bit is qubit 0). For example, a 4-qubit system with qubits labeled 0-3: the bitstring ``"0011"`` in results represents qubit 0=1, qubit 1=1, qubit 2=0, qubit 3=0 (reading right to left), while the Hamiltonian operator ``"ZIZI"`` applies Z to qubit 0, I to qubit 1, Z to qubit 2, and I to qubit 3 (reading left to right).
 
-Configuring Jobs with JobConfig
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Configuring Jobs with :class:`JobConfig`
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The ``QoroService`` uses a ``JobConfig`` object to manage settings for job submissions. You can configure it in two ways:
+The :class:`QoroService` uses a :class:`JobConfig` object to manage settings for job submissions. You can configure it in two ways:
 
-1.  **Default Configuration**: Set a default ``JobConfig`` when you initialize the service. This configuration will apply to all jobs unless you override it.
+1.  **Default Configuration**: Set a default :class:`JobConfig` when you initialize the service. This configuration will apply to all jobs unless you override it.
 2.  **Override Configuration**: For a specific job, you can provide an ``override_config`` to the ``submit_circuits`` method.
 
 .. code-block:: python
@@ -317,9 +317,9 @@ Backend Selection Guide
 
 Choosing the right backend depends on what stage of development you're in.
 
-* **For Development and Testing**, use ``ParallelSimulator``. It offers fast iteration cycles, easy debugging, and is completely free.
-* **For Production Runs**, use ``QoroService``. It provides access to real quantum hardware, scalable execution, and advanced features.
-* **For Research**, it's often best to use both. Start with ``ParallelSimulator`` for rapid prototyping and then use ``QoroService`` for final validation and to compare simulated results against real hardware.
+* **For Development and Testing**, use :class:`ParallelSimulator`. It offers fast iteration cycles, easy debugging, and is completely free.
+* **For Production Runs**, use :class:`QoroService`. It provides access to real quantum hardware, scalable execution, and advanced features.
+* **For Research**, it's often best to use both. Start with :class:`ParallelSimulator` for rapid prototyping and then use :class:`QoroService` for final validation and to compare simulated results against real hardware.
 
 Backend Comparison
 ------------------
@@ -356,7 +356,7 @@ The best choice of backend depends on your specific needs. Here's a summary of t
 Best Practices
 --------------
 
-1.  **Start Local**: Always begin your development and testing with the ``ParallelSimulator``.
+1.  **Start Local**: Always begin your development and testing with the :class:`ParallelSimulator`.
 2.  **Monitor Resources**: Keep an eye on your circuit counts and execution times to avoid unexpected costs.
 3.  **Choose the Right Backend**: Select your backend based on your specific problem requirements.
 4.  **Handle Errors Gracefully**: Implement proper error handling and fallbacks in your code.
