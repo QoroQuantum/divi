@@ -7,6 +7,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0](https://github.com/QoroQuantum/divi/compare/v0.7.0...v0.8.0) (2026-02-21)
+
+### ✨ Added
+
+* **EarlyStopping** (and **StopReason**) in ``divi.qprog.early_stopping`` so variational algorithms can stop when convergence is reached ([aaf70f0](https://github.com/QoroQuantum/divi/commit/aaf70f05ed39e0874211ad1e23d1d51e1f90b336))
+* Pipeline execution model for composing and running multi-step workflows ([#59](https://github.com/QoroQuantum/divi/issues/59)) ([b945836](https://github.com/QoroQuantum/divi/commit/b945836924347271d06470293bb2759fa9526715))
+* **beam_search_aggregate** in ``divi.qprog.batch`` for the aggregation step when combining results from partitioned programs into a global solution ([301ffc9](https://github.com/QoroQuantum/divi/commit/301ffc9841acd44ef8d7ea2f4773ca43a1dbd3a6))
+* **ExecutionConfig** for QoroService to control how jobs are run ([107b6e4](https://github.com/QoroQuantum/divi/commit/107b6e4927128ab683f35b3c6c7d514ef522150f))
+* **TimeEvolution** — new ``QuantumProgram`` subclass in ``divi.qprog.algorithms`` for Hamiltonian time evolution ([#57](https://github.com/QoroQuantum/divi/issues/57)) ([dec65f4](https://github.com/QoroQuantum/divi/commit/dec65f42a37f062c517c3d54b6abf109741ce4e2))
+
+### 🐛 Fixed
+
+* **QDrift:** Coefficients are now re-scaled correctly before sampling so the approximated dynamics stay faithful to the original ([6f5f9ab](https://github.com/QoroQuantum/divi/commit/6f5f9ab367ce6103108cb28d96aba54acac7cc60))
+
+### 🔧 Internal
+
+* CI and tooling: tutorial timeouts, docs script, release-please config and manifest, grouping tutorial ([3b8dbc6](https://github.com/QoroQuantum/divi/commit/3b8dbc6b3f06ec34e387bf453e614e03c8945208), [8d7ffbf](https://github.com/QoroQuantum/divi/commit/8d7ffbf0cb1762cd3dc538d199f92d2a1fd5c17c), [a3fdd17](https://github.com/QoroQuantum/divi/commit/a3fdd17f08e308b9d3b6dee17faea2bd8b1bd800), [555e9bb](https://github.com/QoroQuantum/divi/commit/555e9bbef1290cf7c52feed5ede84b95bc4ecafd), [c6cddb9](https://github.com/QoroQuantum/divi/commit/c6cddb9657ae103c563eef56992fce56b9400b80))
+* L-BFGS-B test corrections ([4c02d25](https://github.com/QoroQuantum/divi/commit/4c02d258bfc574d0ab067835cb03d6ac2a74039b))
+* Improved test coverage for PCE, checkpointing, grouping, and core pipeline functions ([7e61cad](https://github.com/QoroQuantum/divi/commit/7e61cadbf8eaa16bb925ba28e2784d1439aea54f))
+
+### 📝 Documentation
+
+* Docs now use the Furo theme ([f3d02a2](https://github.com/QoroQuantum/divi/commit/f3d02a24e787a83ab2061eb40437ebde71729211))
+* Pipelines guide: text diagram replaced with a Mermaid figure ([1d2ba3e](https://github.com/QoroQuantum/divi/commit/1d2ba3e3bed306810fb5499a77e1cb3fb0a94de1))
+
 ## [0.7.0](https://github.com/QoroQuantum/divi/compare/v0.6.1...v0.7.0) (2026-02-06)
 
 ### ✨ Added
