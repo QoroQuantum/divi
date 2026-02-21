@@ -40,6 +40,7 @@ extensions = [
     "sphinx.ext.coverage",  # Documentation coverage
     "sphinx_autodoc_typehints",
     "nbsphinx",
+    "sphinxcontrib.mermaid",
     "sphinxcontrib.spelling",  # Spelling checker
 ]
 
@@ -115,6 +116,20 @@ html_static_path = ["_static"]
 
 # Favicon configuration
 html_favicon = "_static/favicon.ico"
+
+# Mermaid: tighter subgraph and diagram spacing, smaller font
+mermaid_init_config = {
+    "startOnLoad": False,
+    "themeVariables": {
+        "fontSize": "12px",
+    },
+    "flowchart": {
+        "nodeSpacing": 25,
+        "rankSpacing": 20,
+        "diagramPadding": 8,
+        "subGraphTitleMargin": {"top": 0, "bottom": 0},
+    },
+}
 
 # Theme options
 html_theme_options = {

@@ -38,28 +38,27 @@ Execution has three phases:
    one collapses or aggregates the raw results using a token it saved during the
    expand pass.  The pipeline returns the fully reduced result to the caller.
 
-.. code-block:: text
+.. mermaid::
 
-   ── Expand (forward) ──────────────────────────────────────────────────►
-
-   ┌────────────┐          ┌─────────────────┐          ┌─────────────┐
-   │ SpecStage  │ ───────► │  BundleStage #1 │ ───────► │ BundleStage │ ─► …
-   └────────────┘          └─────────────────┘          └─────────────┘
-
-                                                                 │
-                                                                 ▼
-                                                           ╔═══════════╗
-                                                           ║  Execute  ║
-                                                           ╚═══════════╝
-                                                                 │
-                                                                 ▼
-
-   ┌────────────┐          ┌─────────────────┐          ┌─────────────┐
-   │   final    │ ◄─────── │  intermediate   │ ◄─────── │    raw      │
-   │   result   │          │    result       │          │   results   │
-   └────────────┘          └─────────────────┘          └─────────────┘
-
-   ◄──────────────────────────────────────────────── Reduce (backward) ──
+   flowchart TB
+       subgraph row1["Expand (Forward)"]
+           direction LR
+           A[SpecStage] --> B[BundleStage #1]
+           B --> C[BundleStage …]
+       end
+       subgraph row2["Execute"]
+           EXEC[Execute]
+       end
+       subgraph row3["Reduce (Backward)"]
+           direction RL
+           R1[Raw results] --> R2[Intermediate result]
+           R2 --> R3[Final result]
+       end
+       row1 --> row2
+       row2 --> row3
+       style row1 fill:#CC3366,stroke:#e8e8e8
+       style row2 fill:#CC3366,stroke:#e8e8e8
+       style row3 fill:#CC3366,stroke:#e8e8e8
 
 Pipeline data model
 ~~~~~~~~~~~~~~~~~~~
