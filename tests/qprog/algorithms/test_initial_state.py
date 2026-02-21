@@ -112,7 +112,7 @@ class TestTimeEvolutionCustomInitialState:
         )
         count, _ = te.run()
         assert count >= 1
-        probs = te.results["probs"]
+        probs = te.results
         assert probs.get("10", 0.0) >= 0.95
 
     def test_custom_string_plus_minus(self, default_test_simulator):
@@ -125,7 +125,7 @@ class TestTimeEvolutionCustomInitialState:
         )
         count, _ = te.run()
         assert count >= 1
-        assert "probs" in te.results
+        assert te.results is not None
 
     def test_invalid_custom_string_raises(self, default_test_simulator):
         with pytest.raises(ValueError, match="initial_state"):

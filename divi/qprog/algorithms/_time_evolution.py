@@ -2,8 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import Any
-
 import numpy as np
 import pennylane as qml
 
@@ -80,7 +78,7 @@ class TimeEvolution(QuantumProgram):
         validate_initial_state(initial_state, self.n_qubits)
         self.initial_state = initial_state
 
-        self.results: dict[str, Any] = {}
+        self.results: dict[str, float] | float | None = None
 
         self._build_pipelines()
 
@@ -140,10 +138,12 @@ class TimeEvolution(QuantumProgram):
         self._total_run_time += env.artifacts.get("run_time", 0.0)
         self._current_execution_result = env.artifacts.get("_current_execution_result")
 
-        if self.observable is None:
-            self.results = {"probs": next(iter(result.values()))}
-        else:
-            self.results = {"expval": float(next(iter(result.values())))}
+        if len(result) != 1:
+            raise RuntimeError(
+                f"Expected exactly 1 pipeline result, got {len(result)}."
+            )
+        (raw,) = result.values()
+        self.results = raw if self.observable is None else float(raw)
 
         return self.total_circuit_count, self.total_run_time
 

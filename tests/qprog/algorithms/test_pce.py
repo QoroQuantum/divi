@@ -12,7 +12,11 @@ from divi.pipeline.stages._pce_cost_stage import (
 )
 from divi.qprog import PCE, MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
 from divi.qprog.algorithms import GenericLayerAnsatz
-from divi.qprog.algorithms._pce import _decode_parities
+from divi.qprog.algorithms._pce import (
+    _aggregate_param_group,
+    _decode_parities,
+    _masks_to_ham_ops,
+)
 from divi.qprog.checkpointing import CheckpointConfig
 from tests.qprog.qprog_contracts import verify_metacircuit_dict
 
@@ -803,3 +807,86 @@ def test_pce_hard_cvar_expval_backend_raises(basic_ansatz, dummy_expval_backend)
         match="hard CVaR mode.*cannot use expectation-value backends",
     ):
         pce.run()
+
+
+class TestAggregateParamGroup:
+    """Tests for _aggregate_param_group covering L44-55."""
+
+    def test_single_histogram(self):
+        """Single param group entry returns its own histogram."""
+        group = [("label_0", {"00": 10, "01": 5})]
+        states, counts, total = _aggregate_param_group(group)
+        assert set(states) == {"00", "01"}
+        assert total == 15.0
+        assert counts.sum() == 15.0
+
+    def test_merges_multiple_histograms(self):
+        """Multiple histograms are merged, overlapping keys summed."""
+        group = [
+            ("label_0", {"00": 10, "01": 5}),
+            ("label_1", {"01": 3, "10": 7}),
+        ]
+        states, counts, total = _aggregate_param_group(group)
+
+        state_to_count = dict(zip(states, counts.tolist()))
+        assert state_to_count["00"] == 10
+        assert state_to_count["01"] == 8  # 5 + 3
+        assert state_to_count["10"] == 7
+        assert total == 25.0
+
+    def test_empty_histograms(self):
+        """Empty histograms produce empty results."""
+        group = [("label_0", {})]
+        states, counts, total = _aggregate_param_group(group)
+        assert states == []
+        assert len(counts) == 0
+        assert total == 0.0
+
+
+class TestMasksToHamOps:
+    """Tests for _masks_to_ham_ops covering L126-140."""
+
+    def test_single_qubit_masks(self):
+        """Masks [1, 2] with 2 qubits → ZI and IZ."""
+        masks = np.array([1, 2], dtype=np.uint64)
+        result = _masks_to_ham_ops(masks, n_qubits=2)
+        assert result == "ZI;IZ"
+
+    def test_two_qubit_mask(self):
+        """Mask 3 (bits 0 and 1) with 2 qubits → ZZ."""
+        masks = np.array([3], dtype=np.uint64)
+        result = _masks_to_ham_ops(masks, n_qubits=2)
+        assert result == "ZZ"
+
+    def test_three_qubit_poly_masks(self):
+        """Poly encoding masks [1, 2, 3] with 2 qubits."""
+        masks = np.array([1, 2, 3], dtype=np.uint64)
+        result = _masks_to_ham_ops(masks, n_qubits=2)
+        # mask 1 = bit 0 → ZI, mask 2 = bit 1 → IZ, mask 3 = bits 0,1 → ZZ
+        assert result == "ZI;IZ;ZZ"
+
+    def test_identity_mask(self):
+        """Mask 0 → all Identity."""
+        masks = np.array([0], dtype=np.uint64)
+        result = _masks_to_ham_ops(masks, n_qubits=3)
+        assert result == "III"
+
+
+def test_pce_perform_final_computation_none_eigenstate(
+    mocker, dummy_simulator, basic_ansatz, qubo_identity
+):
+    """When _eigenstate is None, _final_vector is set to None (L286-288)."""
+    pce = PCE(
+        qubo_matrix=qubo_identity,
+        ansatz=basic_ansatz,
+        backend=dummy_simulator,
+    )
+    # Mock the parent's _perform_final_computation so _eigenstate stays None
+    mocker.patch(
+        "divi.qprog.algorithms._pce.VQE._perform_final_computation",
+    )
+    pce._eigenstate = None
+
+    pce._perform_final_computation()
+
+    assert pce._final_vector is None

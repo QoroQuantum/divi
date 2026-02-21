@@ -16,7 +16,7 @@ from divi.pipeline._compilation import (
     _collapse_to_parent_results,
     _compile_batch,
 )
-from divi.pipeline._core import _validate_stage_order
+from divi.pipeline._core import _safe_deepcopy, _validate_stage_order
 from divi.pipeline.stages import MeasurementStage
 
 from .helpers import (
@@ -288,3 +288,54 @@ def test_run_with_default_execute_fn_and_shots_backend_auto_converts_counts(
     key = next(iter(reduced))
     assert key == (("spec", "circ"),)
     assert isinstance(reduced[key], (int, float))
+
+
+class TestSafeDeepcopy:
+    """Tests for _safe_deepcopy covering retry logic (L48-60)."""
+
+    def test_success_without_errors(self):
+        """Normal deepcopy succeeds on first try."""
+        obj = {"a": [1, 2, 3]}
+        result = _safe_deepcopy(obj)
+        assert result == obj
+        assert result is not obj
+
+    def test_retry_succeeds_after_transient_error(self, mocker):
+        """Transient dict-mutation race retries and succeeds."""
+        original = {"key": "value"}
+        race_error = RuntimeError("dictionary changed size during iteration")
+
+        mock_deepcopy = mocker.patch(
+            "divi.pipeline._core.copy.deepcopy",
+            side_effect=[race_error, race_error, original.copy()],
+        )
+
+        result = _safe_deepcopy(original)
+        assert result == original
+        assert mock_deepcopy.call_count == 3
+
+    def test_exhausted_retries_raises(self, mocker):
+        """After max retries, the RuntimeError is re-raised."""
+        race_error = RuntimeError("dictionary changed size during iteration")
+
+        mocker.patch(
+            "divi.pipeline._core.copy.deepcopy",
+            side_effect=[race_error] * 5,
+        )
+
+        with pytest.raises(RuntimeError, match="dictionary changed size"):
+            _safe_deepcopy({"key": "value"})
+
+    def test_unrelated_runtime_error_not_retried(self, mocker):
+        """A RuntimeError with a different message is raised immediately."""
+        unrelated_error = RuntimeError("some other error")
+
+        mock_deepcopy = mocker.patch(
+            "divi.pipeline._core.copy.deepcopy",
+            side_effect=unrelated_error,
+        )
+
+        with pytest.raises(RuntimeError, match="some other error"):
+            _safe_deepcopy({"key": "value"})
+
+        assert mock_deepcopy.call_count == 1

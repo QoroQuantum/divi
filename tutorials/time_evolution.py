@@ -45,7 +45,7 @@ if __name__ == "__main__":
         backend=backend,
     )
     te_probs.run()
-    _print_sorted_probs("Example 1 — Probability mode", te_probs.results["probs"])
+    _print_sorted_probs("Example 1 — Probability mode", te_probs.results)
     print(f"  Analytical: |11⟩ with probability 1.0")
     print(f"  Circuits executed: {te_probs.total_circuit_count}")
 
@@ -70,9 +70,9 @@ if __name__ == "__main__":
 
     print("\nExample 2 — Observable mode")
     print("---------------------------")
-    print(f"  Estimated ⟨Z₀⟩:  {te_expval.results['expval']:.6f}")
+    print(f"  Estimated ⟨Z₀⟩:  {te_expval.results:.6f}")
     print(f"  Exact     ⟨Z₀⟩:  {exact_z:.6f}")
-    print(f"  Error:            {abs(te_expval.results['expval'] - exact_z):.6f}")
+    print(f"  Error:            {abs(te_expval.results - exact_z):.6f}")
     print(f"  Circuits executed: {te_expval.total_circuit_count}")
 
     # ── Example 3: QDrift randomized Trotterization ──────────────────
@@ -97,7 +97,5 @@ if __name__ == "__main__":
         backend=backend,
     )
     te_qdrift.run()
-    _print_sorted_probs(
-        "Example 3 — QDrift probability mode", te_qdrift.results["probs"]
-    )
+    _print_sorted_probs("Example 3 — QDrift probability mode", te_qdrift.results)
     print(f"  Circuits executed: {te_qdrift.total_circuit_count}")

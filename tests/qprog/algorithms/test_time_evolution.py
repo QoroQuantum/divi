@@ -106,8 +106,7 @@ class TestTimeEvolutionRun:
         count, runtime = te.run()
         assert count >= 1
         assert runtime >= 0
-        assert "probs" in te.results
-        probs = te.results["probs"]
+        probs = te.results
         assert isinstance(probs, dict)
         total = sum(probs.values())
         assert abs(total - 1.0) < 0.1  # Approximate due to shots
@@ -123,7 +122,7 @@ class TestTimeEvolutionRun:
         )
         count, _ = te.run()
         assert count >= 1
-        assert "probs" in te.results
+        assert te.results is not None
 
     def test_run_initial_state_ones(
         self, two_qubit_hamiltonian, default_test_simulator
@@ -148,7 +147,7 @@ class TestTimeEvolutionRun:
         )
         count, _ = te.run()
         assert count >= 1
-        assert "probs" in te.results
+        assert te.results is not None
 
 
 class TestTimeEvolutionObservable:
@@ -163,8 +162,8 @@ class TestTimeEvolutionObservable:
         )
         count, _ = te.run()
         assert count >= 1
-        assert "expval" in te.results
-        assert -1.1 <= te.results["expval"] <= 1.1
+        assert te.results is not None
+        assert -1.1 <= te.results <= 1.1
 
     def test_run_with_observable_expval_backend_multi_term(
         self, two_qubit_hamiltonian, dummy_expval_backend, mocker
@@ -194,8 +193,8 @@ class TestTimeEvolutionObservable:
         )
         count, _ = te.run()
         assert count >= 1
-        assert "expval" in te.results
-        assert te.results["expval"] == pytest.approx(2.0)
+        assert te.results is not None
+        assert te.results == pytest.approx(2.0)
 
 
 class TestTimeEvolutionQDrift:
@@ -214,8 +213,8 @@ class TestTimeEvolutionQDrift:
         )
         count, _ = te.run()
         assert count >= 3
-        assert "probs" in te.results
-        probs = te.results["probs"]
+        assert te.results is not None
+        probs = te.results
         total = sum(probs.values())
         assert abs(total - 1.0) < 0.2
 
@@ -251,7 +250,7 @@ class TestTimeEvolutionQDrift:
         )
         count, _ = te.run()
         assert count >= 2
-        assert "expval" in te.results
+        assert te.results is not None
 
 
 @pytest.mark.e2e
@@ -267,7 +266,7 @@ class TestTimeEvolutionE2E:
             backend=default_test_simulator,
         )
         te.run()
-        probs = te.results["probs"]
+        probs = te.results
         assert probs.get("11", 0.0) >= 1.0 - _PROB_TOL
         for key in ("00", "01", "10"):
             assert probs.get(key, 0.0) <= _PROB_TOL
@@ -282,7 +281,7 @@ class TestTimeEvolutionE2E:
             backend=default_test_simulator,
         )
         te.run()
-        probs = te.results["probs"]
+        probs = te.results
         assert probs.get("0", 0.0) >= 1.0 - _PROB_TOL
         assert probs.get("1", 0.0) <= _PROB_TOL
 
@@ -295,7 +294,7 @@ class TestTimeEvolutionE2E:
             backend=default_test_simulator,
         )
         te.run()
-        probs = te.results["probs"]
+        probs = te.results
         total = sum(probs.values())
         assert abs(total - 1.0) <= _PROB_TOL
         for key in ("00", "01", "10", "11"):
@@ -314,7 +313,7 @@ class TestTimeEvolutionE2E:
             backend=default_test_simulator,
         )
         te.run()
-        probs = te.results["probs"]
+        probs = te.results
         total = sum(probs.values())
         assert abs(total - 1.0) <= _PROB_TOL
         for key in ("00", "01", "10", "11"):
@@ -333,7 +332,7 @@ class TestTimeEvolutionE2E:
             backend=default_test_simulator,
         )
         te.run()
-        probs = te.results["probs"]
+        probs = te.results
         assert probs.get("11", 0.0) >= 1.0 - _PROB_TOL
         for key in ("00", "01", "10"):
             assert probs.get(key, 0.0) <= _PROB_TOL
@@ -353,7 +352,7 @@ class TestTimeEvolutionE2E:
         )
         te.run()
         assert te.total_circuit_count >= 3
-        probs = te.results["probs"]
+        probs = te.results
         assert probs.get("00", 0.0) >= 1.0 - _PROB_TOL
 
     def test_qdrift_keep_top_n_evolves_correctly(self, default_test_simulator):
@@ -372,7 +371,7 @@ class TestTimeEvolutionE2E:
         )
         te.run()
         assert te.total_circuit_count >= 3
-        probs = te.results["probs"]
+        probs = te.results
         assert probs.get("11", 0.0) >= 1.0 - _PROB_TOL
 
     def test_qdrift_heisenberg_xx_superposition_uniform(self, default_test_simulator):
@@ -390,7 +389,7 @@ class TestTimeEvolutionE2E:
         )
         te.run()
         assert te.total_circuit_count >= 5
-        probs = te.results["probs"]
+        probs = te.results
         total = sum(probs.values())
         assert abs(total - 1.0) <= _PROB_TOL
         for key in ("00", "01", "10", "11"):
@@ -415,7 +414,7 @@ class TestTimeEvolutionE2E:
         )
         te.run()
         assert te.total_circuit_count >= 5
-        probs = te.results["probs"]
+        probs = te.results
         assert probs.get("11", 0.0) >= 1.0 - _PROB_TOL
 
     def test_qdrift_reduces_circuit_op_count(self):

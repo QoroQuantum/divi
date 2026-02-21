@@ -7,7 +7,12 @@ import pennylane as qml
 import pytest
 
 from divi.circuits import MetaCircuit, measurements_to_qasm
-from divi.pipeline._grouping import compute_measurement_groups
+from divi.pipeline._grouping import (
+    _create_final_postprocessing_fn,
+    _extract_coeffs,
+    _wire_grouping,
+    compute_measurement_groups,
+)
 
 
 class TestComputeMeasurementGroups:
@@ -209,3 +214,114 @@ class TestParameterFreeMetaCircuit:
         assert full_qasm.count("h ") + full_qasm.count("h(") >= 1
         assert "rz(0.5" in full_qasm or "rz(0.50000000" in full_qasm
         assert len(full_qasm) < 500
+
+
+class TestExtractCoeffs:
+    """Tests for _extract_coeffs covering nested SProd (L17-19)."""
+
+    def test_single_operator_returns_one(self):
+        """A plain PauliZ (no SProd, no Hamiltonian) should return [1.0]."""
+        obs = qml.PauliZ(0)
+        assert _extract_coeffs(obs) == [1.0]
+
+    def test_sprod_single_operator(self):
+        """SProd wrapping a single operator extracts the scalar."""
+        obs = qml.s_prod(3.0, qml.PauliZ(0))
+        assert _extract_coeffs(obs) == pytest.approx([3.0])
+
+    def test_nested_sprod_with_hamiltonian(self):
+        """Nested SProd wrapping a Hamiltonian multiplies through all scalars."""
+        inner_ham = qml.Hamiltonian([0.5, 0.3], [qml.PauliZ(0), qml.PauliX(1)])
+        # 2.0 * (0.5 Z0 + 0.3 X1) → coeffs should be [1.0, 0.6]
+        obs = qml.s_prod(2.0, inner_ham)
+        result = _extract_coeffs(obs)
+        assert result == pytest.approx([1.0, 0.6])
+
+    def test_double_nested_sprod(self):
+        """Double nested SProd: 2.0 * (3.0 * Z0) → [6.0]."""
+        obs = qml.s_prod(2.0, qml.s_prod(3.0, qml.PauliZ(0)))
+        assert _extract_coeffs(obs) == pytest.approx([6.0])
+
+    def test_hamiltonian_without_sprod(self):
+        """Hamiltonian without SProd wrapping returns its own coefficients."""
+        ham = qml.Hamiltonian([0.7, -0.4], [qml.PauliZ(0), qml.PauliZ(1)])
+        assert _extract_coeffs(ham) == pytest.approx([0.7, -0.4])
+
+
+class TestWireGrouping:
+    """Tests for _wire_grouping covering the grouping loop (L48-54)."""
+
+    def test_non_overlapping_measurements_grouped_together(self):
+        """Measurements on non-overlapping wires should be in the same group."""
+        mps = [
+            qml.expval(qml.PauliZ(0)),
+            qml.expval(qml.PauliZ(1)),
+            qml.expval(qml.PauliZ(2)),
+        ]
+        partition_indices, mp_groups = _wire_grouping(mps)
+
+        # All three on different wires → should fit in one group
+        assert len(mp_groups) == 1
+        assert len(mp_groups[0]) == 3
+        assert partition_indices == [[0, 1, 2]]
+
+    def test_overlapping_measurements_split_into_groups(self):
+        """Measurements on overlapping wires should be in separate groups."""
+        mps = [
+            qml.expval(qml.PauliZ(0)),
+            qml.expval(qml.PauliZ(0)),  # same wire as first
+        ]
+        partition_indices, mp_groups = _wire_grouping(mps)
+
+        assert len(mp_groups) == 2
+        assert partition_indices == [[0], [1]]
+
+    def test_mixed_overlapping_and_non_overlapping(self):
+        """Mix of overlapping and non-overlapping wires."""
+        mps = [
+            qml.expval(qml.PauliZ(0)),  # Group 0
+            qml.expval(qml.PauliZ(1)),  # Group 0 (non-overlapping with wire 0)
+            qml.expval(qml.PauliZ(0) @ qml.PauliZ(1)),  # Group 1 (overlaps both)
+        ]
+        partition_indices, mp_groups = _wire_grouping(mps)
+
+        assert len(mp_groups) == 2
+        # First two non-overlapping → same group; third overlaps → new group
+        assert 0 in partition_indices[0]
+        assert 1 in partition_indices[0]
+        assert 2 in partition_indices[1]
+
+
+class TestPostprocessingFnErrors:
+    """Tests for _create_final_postprocessing_fn error paths (L74-88)."""
+
+    def test_missing_indices_raises(self):
+        """partition_indices that don't cover all observables raises RuntimeError."""
+        # 3 total observables but only indices 0, 1 covered
+        with pytest.raises(RuntimeError, match="Missing indices"):
+            _create_final_postprocessing_fn(
+                coefficients=[1.0, 1.0, 1.0],
+                partition_indices=[[0, 1]],  # missing index 2
+                num_total_obs=3,
+            )
+
+    def test_wrong_group_count_raises(self):
+        """Wrong number of grouped results raises RuntimeError."""
+        postproc = _create_final_postprocessing_fn(
+            coefficients=[1.0, 1.0],
+            partition_indices=[[0], [1]],
+            num_total_obs=2,
+        )
+        with pytest.raises(RuntimeError, match="Expected 2 grouped results"):
+            postproc([0.5])  # only 1 group instead of 2
+
+    def test_correct_postprocessing(self):
+        """A correct setup computes the dot product properly."""
+        postproc = _create_final_postprocessing_fn(
+            coefficients=[2.0, 3.0],
+            partition_indices=[[0], [1]],
+            num_total_obs=2,
+        )
+        result = postproc([0.5, -1.0])
+        # 2.0 * 0.5 + 3.0 * (-1.0) = 1.0 - 3.0 = -2.0
+        assert result == pytest.approx(-2.0)

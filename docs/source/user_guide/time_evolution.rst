@@ -5,8 +5,8 @@ The :class:`~divi.qprog.TimeEvolution` program simulates real-time quantum dynam
 
 It supports two output modes:
 
-- **Probability mode**: returns ``{"probs": {...}}`` with measured basis-state probabilities.
-- **Observable mode**: returns ``{"expval": value}`` for a provided observable.
+- **Probability mode**: ``te.results`` contains measured basis-state probabilities (``dict[str, float]``).
+- **Observable mode**: ``te.results`` contains the estimated expectation value (``float``).
 
 Basic Usage
 -----------
@@ -30,7 +30,7 @@ Use probability mode when you want a final-state distribution:
    )
    te.run()
 
-   probs = te.results["probs"]
+   probs = te.results
    print(probs)
    print(f"Circuits executed: {te.total_circuit_count}")
 
@@ -56,7 +56,7 @@ Provide ``observable=...`` to estimate expectation values after evolution:
        backend=backend,
    )
    te.run()
-   print(f"<Z0> = {te.results['expval']:.6f}")
+   print(f"<Z0> = {te.results:.6f}")
 
 QDrift Trotterization
 ---------------------
@@ -86,7 +86,7 @@ For large Hamiltonians, you can use :class:`~divi.qprog.QDrift` to sample terms 
        backend=backend,
    )
    te.run()
-   print(te.results["probs"])
+   print(te.results)
 
 .. note::
    Multi-sample QDrift with ``observable`` on an expectation-value backend is currently not supported.

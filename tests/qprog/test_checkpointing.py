@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -9,21 +9,28 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
 from divi.qprog.checkpointing import (
+    OPTIMIZER_STATE_FILE,
     PROGRAM_STATE_FILE,
     CheckpointConfig,
+    CheckpointCorruptedError,
     CheckpointInfo,
     CheckpointNotFoundError,
+    _atomic_write,
     _ensure_checkpoint_dir,
     _extract_iteration_from_subdir,
     _find_latest_checkpoint_subdir,
     _get_checkpoint_subdir_name,
     _get_checkpoint_subdir_path,
+    _load_and_validate_pydantic_model,
+    _validate_checkpoint_json,
     cleanup_old_checkpoints,
     get_checkpoint_info,
     get_latest_checkpoint,
     list_checkpoints,
+    resolve_checkpoint_path,
 )
 
 
@@ -412,3 +419,207 @@ class TestManagementUtilities:
         assert isinstance(info.timestamp, datetime)
         assert isinstance(info.size_bytes, int)
         assert isinstance(info.is_valid, bool)
+
+
+class TestResolveCheckpointPath:
+    """Tests for resolve_checkpoint_path covering L133-158."""
+
+    def test_nonexistent_main_dir_raises(self, tmp_path):
+        """resolve_checkpoint_path raises when main_dir doesn't exist."""
+        nonexistent = tmp_path / "does_not_exist"
+        with pytest.raises(
+            CheckpointNotFoundError, match="Checkpoint directory not found"
+        ):
+            resolve_checkpoint_path(nonexistent)
+
+    def test_specific_subdirectory_not_found_raises(self, tmp_path):
+        """resolve_checkpoint_path raises with available_directories when subdirectory missing."""
+        main_dir = tmp_path / "checkpoints"
+        main_dir.mkdir()
+        (main_dir / "checkpoint_001").mkdir()
+
+        with pytest.raises(
+            CheckpointNotFoundError, match="Checkpoint subdirectory not found"
+        ) as exc_info:
+            resolve_checkpoint_path(main_dir, subdirectory="checkpoint_999")
+
+        assert "checkpoint_001" in exc_info.value.available_directories
+
+    def test_resolves_latest_when_no_subdirectory(self, tmp_path):
+        """resolve_checkpoint_path resolves the latest checkpoint if no subdirectory given."""
+        main_dir = tmp_path / "checkpoints"
+        main_dir.mkdir()
+        (main_dir / "checkpoint_001").mkdir()
+        (main_dir / "checkpoint_003").mkdir()
+        (main_dir / "checkpoint_002").mkdir()
+
+        result = resolve_checkpoint_path(main_dir)
+        assert result.name == "checkpoint_003"
+
+    def test_resolves_specific_subdirectory(self, tmp_path):
+        """resolve_checkpoint_path resolves a specific subdirectory when given."""
+        main_dir = tmp_path / "checkpoints"
+        main_dir.mkdir()
+        (main_dir / "checkpoint_001").mkdir()
+        (main_dir / "checkpoint_002").mkdir()
+
+        result = resolve_checkpoint_path(main_dir, subdirectory="checkpoint_001")
+        assert result.name == "checkpoint_001"
+
+    def test_accepts_str_main_dir(self, tmp_path):
+        """resolve_checkpoint_path accepts a string path."""
+        main_dir = tmp_path / "checkpoints"
+        main_dir.mkdir()
+        (main_dir / "checkpoint_001").mkdir()
+
+        result = resolve_checkpoint_path(str(main_dir))
+        assert result.name == "checkpoint_001"
+
+
+class TestValidationAndAtomicWrite:
+    """Tests for _atomic_write, _validate_checkpoint_json, _load_and_validate_pydantic_model."""
+
+    def test_atomic_write_success(self, tmp_path):
+        """Atomic write creates the file with correct content."""
+        target = tmp_path / "output.json"
+        _atomic_write(target, '{"key": "value"}')
+        assert target.read_text() == '{"key": "value"}'
+
+    def test_atomic_write_cleans_up_temp_on_failure(self, tmp_path, mocker):
+        """If rename fails, the temp file must be cleaned up."""
+        target = tmp_path / "output.json"
+        temp_file = target.with_suffix(".json.tmp")
+
+        mocker.patch.object(Path, "replace", side_effect=PermissionError("denied"))
+        with pytest.raises(OSError, match="Failed to write checkpoint file"):
+            _atomic_write(target, '{"key": "value"}')
+
+        # Temp file should be cleaned up
+        assert not temp_file.exists()
+
+    def test_validate_checkpoint_json_file_not_found(self, tmp_path):
+        """Missing file raises CheckpointNotFoundError."""
+        missing = tmp_path / "missing.json"
+        with pytest.raises(CheckpointNotFoundError):
+            _validate_checkpoint_json(missing)
+
+    def test_validate_checkpoint_json_corrupt(self, tmp_path):
+        """Corrupt JSON raises CheckpointCorruptedError."""
+        corrupt_file = tmp_path / "corrupt.json"
+        corrupt_file.write_text("{invalid json///")
+        with pytest.raises(CheckpointCorruptedError, match="not valid JSON"):
+            _validate_checkpoint_json(corrupt_file)
+
+    def test_validate_checkpoint_json_missing_fields(self, tmp_path):
+        """Missing required fields raises CheckpointCorruptedError."""
+        valid_json = tmp_path / "data.json"
+        valid_json.write_text('{"present_field": 1}')
+        with pytest.raises(CheckpointCorruptedError, match="missing required fields"):
+            _validate_checkpoint_json(valid_json, required_fields=["missing_field"])
+
+    def test_validate_checkpoint_json_valid(self, tmp_path):
+        """Valid JSON with required fields returns parsed data."""
+        valid_json = tmp_path / "data.json"
+        valid_json.write_text('{"iteration": 5, "params": [1, 2]}')
+        data = _validate_checkpoint_json(valid_json, required_fields=["iteration"])
+        assert data["iteration"] == 5
+
+    def test_load_and_validate_pydantic_model_not_found(self, tmp_path):
+        """Nonexistent file re-raises CheckpointNotFoundError."""
+        missing = tmp_path / "missing.json"
+
+        class DummyModel(BaseModel):
+            x: int
+
+        with pytest.raises(CheckpointNotFoundError):
+            _load_and_validate_pydantic_model(missing, DummyModel)
+
+    def test_load_and_validate_pydantic_model_invalid_data(self, tmp_path):
+        """Invalid data for Pydantic model raises CheckpointCorruptedError."""
+        bad_file = tmp_path / "bad.json"
+        bad_file.write_text('{"x": "not_an_int"}')
+
+        class StrictModel(BaseModel):
+            x: int
+
+            class Config:
+                strict = True
+
+        with pytest.raises(CheckpointCorruptedError, match="Failed to validate"):
+            _load_and_validate_pydantic_model(bad_file, StrictModel)
+
+    def test_load_and_validate_pydantic_model_success(self, tmp_path):
+        """Valid data returns a Pydantic model instance."""
+        good_file = tmp_path / "good.json"
+        good_file.write_text('{"x": 42}')
+
+        class SimpleModel(BaseModel):
+            x: int
+
+        result = _load_and_validate_pydantic_model(good_file, SimpleModel)
+        assert result.x == 42
+
+    def test_load_and_validate_pydantic_model_with_context(self, tmp_path):
+        """Error context is included in the error message."""
+        bad_file = tmp_path / "bad.json"
+        bad_file.write_text('{"x": "not_an_int"}')
+
+        class StrictModel(BaseModel):
+            x: int
+
+            class Config:
+                strict = True
+
+        with pytest.raises(
+            CheckpointCorruptedError, match="Failed to validate Program state"
+        ):
+            _load_and_validate_pydantic_model(
+                bad_file, StrictModel, error_context="Program state"
+            )
+
+
+class TestEdgeCases:
+    """Tests for edge cases in get_checkpoint_info, list_checkpoints, and error attributes."""
+
+    def test_get_checkpoint_info_on_file_raises(self, tmp_path):
+        """get_checkpoint_info raises when path is a file, not a directory."""
+        file_path = tmp_path / "checkpoint_001"
+        file_path.write_text("not a directory")
+
+        with pytest.raises(CheckpointNotFoundError, match="not a directory"):
+            get_checkpoint_info(file_path)
+
+    def test_list_checkpoints_on_file_raises(self, tmp_path):
+        """list_checkpoints raises when path is a file, not a directory."""
+        file_path = tmp_path / "checkpoints"
+        file_path.write_text("not a directory")
+
+        with pytest.raises(CheckpointNotFoundError, match="not a directory"):
+            list_checkpoints(file_path)
+
+    def test_checkpoint_corrupted_error_attributes(self):
+        """CheckpointCorruptedError stores file_path and details."""
+        err = CheckpointCorruptedError(
+            "test error", file_path=Path("/tmp/test.json"), details="bad data"
+        )
+        assert err.file_path == Path("/tmp/test.json")
+        assert err.details == "bad data"
+        assert str(err) == "test error"
+
+    def test_list_checkpoints_skips_files_inside_dir(self, tmp_path):
+        """list_checkpoints should skip non-directory entries inside main_dir."""
+        main_dir = tmp_path / "checkpoints"
+        main_dir.mkdir()
+
+        # Valid checkpoint
+        valid = main_dir / "checkpoint_001"
+        valid.mkdir()
+        (valid / PROGRAM_STATE_FILE).write_text('{"data": 1}')
+        (valid / OPTIMIZER_STATE_FILE).write_text('{"data": 1}')
+
+        # A file that looks like a checkpoint name
+        (main_dir / "checkpoint_002").write_text("i am a file")
+
+        checkpoints = list_checkpoints(main_dir)
+        assert len(checkpoints) == 1
+        assert checkpoints[0].iteration == 1
