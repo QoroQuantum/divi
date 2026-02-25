@@ -1,0 +1,12 @@
+{
+  "import_lines": [
+    "from divi.backends import CircuitRunner, ExecutionConfig, ExecutionResult, JobConfig, JobStatus, JobType, ParallelSimulator, QoroService, SimulationMethod, Simulator, convert_counts_to_probs, create_backend_from_properties, reverse_dict_endianness",
+    "from divi.circuits import MetaCircuit, circuit_body_to_qasm, is_valid_qasm, measurements_to_qasm, to_openqasm, validate_qasm, validate_qasm_count_qubits",
+    "from divi.qprog import Ansatz, CustomVQA, EarlyStopping, GenericLayerAnsatz, GraphPartitioningQAOA, GraphProblem, HardwareEfficientAnsatz, HartreeFockAnsatz, MoleculeTransformer, MonteCarloOptimizer, PCE, PartitioningConfig, ProgramBatch, QAOA, QAOAAnsatz, QUBOPartitioningQAOA, QuantumProgram, ScipyMethod, ScipyOptimizer, SolutionEntry, TimeEvolution, UCCSDAnsatz, VQE, VQEHyperparameterSweep, VariationalQuantumAlgorithm, beam_search_aggregate"
+  ],
+  "project": {
+    "name": "qoro-divi",
+    "version": "0.8.0",
+    "python": ">=3.11,<3.13"
+  }
+}
