@@ -126,7 +126,10 @@ tutorial.
 Graph Problems
 --------------
 
-Divi includes built-in support for several common graph-based optimization problems:
+Divi supports several common graph-based optimization problems out of the box,
+including Max-Clique, MaxCut, Max Independent Set, Max Weight Cycle, and
+Min Vertex Cover.  Pass the desired problem type via the :class:`GraphProblem`
+enum:
 
 .. list-table::
    :header-rows: 1

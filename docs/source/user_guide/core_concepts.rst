@@ -247,6 +247,55 @@ Concrete circuits ⚡
    and optional error-mitigation stages happen inside the pipeline; see :doc:`pipelines`
    for details.
 
+Creating Custom Quantum Circuits
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+In Divi, built-in algorithms like :class:`VQE`, :class:`QAOA`, and
+:class:`TimeEvolution` generate quantum circuits automatically — you don't need to
+create circuits manually for most use cases.
+
+If you need a **custom ansatz or circuit**, use :class:`CustomVQA`. It lets you
+define your own PennyLane circuit template and Hamiltonian while Divi handles
+compilation, execution, and optimisation:
+
+.. code-block:: python
+
+   import pennylane as qml
+   from divi.qprog import CustomVQA
+   from divi.backends import ParallelSimulator
+
+   qscript = qml.tape.QuantumScript(
+       ops=[
+           qml.RY(0.0, wires=0),
+           qml.RX(0.0, wires=1),
+           qml.CNOT(wires=[0, 1]),
+       ],
+       measurements=[qml.expval(qml.Z(0) @ qml.Z(1) + 0.5 * qml.X(0))],
+   )
+
+   program = CustomVQA(
+       qscript=qscript,
+       param_shape=(2,),
+       backend=ParallelSimulator(),
+   )
+   program.run(perform_final_computation=False)
+
+In this example, the ``0.0`` values in ``ops`` are placeholders. ``CustomVQA``
+replaces trainable slots with internal symbols and optimizes them.
+``param_shape`` defines the shape of one parameter set and must match the number
+of trainable parameters in ``qscript`` (here: 2).
+
+``run()`` returns ``(total_circuit_count, total_run_time)``. Optimisation outputs
+are read from the program object:
+
+.. code-block:: python
+
+   print(program.best_loss)       # Best objective value
+   print(program.best_params)     # Flat array of optimized parameters
+   print(program.best_params.reshape(program.param_shape))  # Reshaped to param_shape
+
+For the full tutorial, see `custom_vqa.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/custom_vqa.py>`_.
+
 Backend Abstraction
 -------------------
 

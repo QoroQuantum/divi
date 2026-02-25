@@ -1,6 +1,8 @@
 Program Batches and Workflows
 ===============================
 
+A :class:`~divi.qprog.ProgramBatch` is the base class for running multiple quantum programs in parallel — it handles scheduling, progress tracking, and result aggregation so you don't have to.
+
 Divi's program batch capabilities enable efficient execution of large-scale quantum computations across multiple problems, parameter sweeps, and optimization scenarios. This guide explains how to leverage Divi's parallelization features for maximum performance.
 
 Program Batch Overview

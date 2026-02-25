@@ -131,8 +131,8 @@ You can tune the :class:`ParallelSimulator` for different scenarios, like maximi
        n_processes=2
    )
 
-:class:`QoroService`
--------------------------
+QoroService (Cloud Backend)
+---------------------------
 
 The :class:`QoroService` provides access to cloud-based quantum computing resources, including advanced simulation services with greater bandwidth and a wider variety of simulation types (such as tensor networks), as well as real quantum hardware. While :class:`ParallelSimulator` is ideal for local prototyping, :class:`QoroService` offers production-grade simulation capabilities and hardware access. The service supports two execution modes: **sampling mode** for measurement histograms (available on both simulation and hardware) and **expectation mode** for expectation values (currently simulation-only).
 
@@ -352,6 +352,50 @@ The best choice of backend depends on your specific needs. Here's a summary of t
    * - **Availability**
      - Always (Local)
      - Queue-dependent
+
+Job Cancellation
+----------------
+
+When using :class:`QoroService`, you can cancel running or pending jobs at any time.
+This is useful for long-running computations that you no longer need, or when you
+want to free up queue slots for higher-priority work.
+
+.. code-block:: python
+
+   from divi.backends import QoroService
+
+   service = QoroService()
+   result = service.submit_circuits(circuits)
+
+   # Cancel the job if it's still running
+   service.cancel_job(result)
+
+For variational algorithms like :class:`VQE` and :class:`QAOA` running in a
+:class:`ProgramBatch`, pressing ``Ctrl+C`` during execution will gracefully
+cancel all pending programs.  Each :class:`QuantumProgram` also exposes a
+:meth:`cancel_unfinished_job` method that cancels any in-flight job for that
+program.
+
+Depth Tracking
+--------------
+
+All :class:`CircuitRunner` backends can track the depth of executed circuits.
+Enable tracking with ``track_depth=True`` to collect statistics about your
+circuit depths across a full optimisation run.
+
+.. code-block:: python
+
+   from divi.backends import ParallelSimulator
+
+   backend = ParallelSimulator(track_depth=True)
+
+   # After running your algorithm:
+   print(backend.average_depth())  # Mean depth across tracked circuits
+   print(backend.std_depth())      # Standard deviation of depth
+
+The depth tracker records the depth of every circuit submitted to the backend.
+After a run, use :meth:`average_depth` for the mean and :meth:`std_depth`
+for the standard deviation across all tracked circuits.
 
 Best Practices
 --------------

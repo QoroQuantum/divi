@@ -1,7 +1,7 @@
 Time Evolution
 ==============
 
-The :class:`~divi.qprog.TimeEvolution` program simulates real-time quantum dynamics under a Hamiltonian using Trotterized evolution.
+The :class:`~divi.qprog.TimeEvolution` program performs Hamiltonian time evolution simulation — simulating real-time quantum dynamics under a given Hamiltonian. Divi supports multiple Trotterization techniques out of the box: :class:`~divi.hamiltonians.ExactTrotterization` (full Trotter-Suzuki decomposition) and :class:`~divi.hamiltonians.QDrift` (randomized term sampling for shallower circuits on large Hamiltonians).
 
 It supports two output modes:
 
