@@ -248,7 +248,7 @@ Configuring Jobs with :class:`JobConfig`
 The :class:`QoroService` uses a :class:`JobConfig` object to manage settings for job submissions. You can configure it in two ways:
 
 1.  **Default Configuration**: Set a default :class:`JobConfig` when you initialize the service. This configuration will apply to all jobs unless you override it.
-2.  **Override Configuration**: For a specific job, you can provide an ``override_config`` to the ``submit_circuits`` method.
+2.  **Override Configuration**: For a specific job, you can provide an ``override_job_config`` to the ``submit_circuits`` method.
 
 .. code-block:: python
 
@@ -265,7 +265,7 @@ The :class:`QoroService` uses a :class:`JobConfig` object to manage settings for
 
    # 2. Override the default configuration for a single job
    override = JobConfig(shots=2000, tag="high_shot_run")
-   execution_result = service.submit_circuits(circuits, override_config=override)
+   execution_result = service.submit_circuits(circuits, override_job_config=override)
 
    # This job will run with 2000 shots and the tag 'high_shot_run',
    # but will still use 'qoro_maestro' and circuit packing from the default config.
@@ -273,7 +273,9 @@ The :class:`QoroService` uses a :class:`JobConfig` object to manage settings for
 Execution Configuration
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-After submitting a job and before it starts running, you can attach an **execution configuration** to fine-tune simulation parameters such as the simulator backend, simulation method, bond dimension, and runtime metadata.
+Pass an **execution configuration** during submission so your job starts with
+the intended simulator backend, simulation method, bond dimension, and runtime
+metadata already applied.
 
 .. code-block:: python
 
@@ -283,10 +285,6 @@ After submitting a job and before it starts running, you can attach an **executi
 
    service = QoroService()
 
-   # Submit a job (it starts in PENDING status)
-   result = service.submit_circuits(circuits)
-
-   # Attach an execution configuration while the job is still PENDING
    config = ExecutionConfig(
        bond_dimension=256,
        truncation_threshold=1e-8,
@@ -294,13 +292,16 @@ After submitting a job and before it starts running, you can attach an **executi
        simulation_method=SimulationMethod.MatrixProductState,
        api_meta={"optimization_level": 2},
    )
-   service.set_execution_config(result, config)
+   result = service.submit_circuits(circuits, execution_config=config)
 
    # Retrieve the configuration to verify
    retrieved = service.get_execution_config(result)
    print(retrieved.bond_dimension)  # 256
 
-All ``ExecutionConfig`` fields are optional—only the fields you set will be sent to the server. Re-calling ``set_execution_config`` overwrites any previously set configuration.
+All ``ExecutionConfig`` fields are optional; only the fields you provide are
+sent to the service. You can update the configuration later with
+``set_execution_config`` as long as the job is still ``PENDING``; each call
+replaces the previous execution configuration for that job.
 
 .. note::
 

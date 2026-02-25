@@ -37,7 +37,7 @@ if __name__ == "__main__":
     # Override the default number of shots and tag for this submission.
     override = JobConfig(shots=2000, tag="example_3_override")
     execution_result = service_with_config.submit_circuits(
-        circuits, override_config=override
+        circuits, override_job_config=override
     )
 
     print(f"Job submitted with ID: {execution_result.job_id}")
@@ -74,24 +74,22 @@ if __name__ == "__main__":
     expectation_results = completed_expectation_result.results
     print(f"Expectation value results: {expectation_results}")
 
-    # Example 5: Set execution configuration on a PENDING job.
+    # Example 5: Submit with inline execution configuration.
     print("\n" + "=" * 60)
-    print("=== Example 3: Set execution configuration on a PENDING job ===")
+    print("=== Example 3: Submit with inline execution configuration ===")
     print("=" * 60)
 
-    # Submit a job — it starts in PENDING status.
-    exec_result = service.submit_circuits({"circuit_0": circuit})
-    print(f"Job submitted with ID: {exec_result.job_id}")
-
-    # Attach an execution configuration while the job is still PENDING.
     exec_config = ExecutionConfig(
         bond_dimension=16,
         simulator=Simulator.QCSim,
         simulation_method=SimulationMethod.MatrixProductState,
         api_meta={"optimization_level": 2},
     )
-    response = service.set_execution_config(exec_result, exec_config)
-    print(f"Execution config set: {response['status']}")
+    exec_result = service.submit_circuits(
+        {"circuit_0": circuit},
+        execution_config=exec_config,
+    )
+    print(f"Job submitted with ID: {exec_result.job_id}")
 
     # Retrieve the config to confirm the round-trip.
     retrieved_config = service.get_execution_config(exec_result)

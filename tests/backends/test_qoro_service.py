@@ -419,10 +419,10 @@ class TestQoroServiceMock:
         result = base.override(JobConfig(shots=500))
         assert result.shots == 500
 
-    def test_submit_circuits_with_override_config_qpu_system_object(
+    def test_submit_circuits_with_override_job_config_qpu_system_object(
         self, mocker, qoro_service_factory
     ):
-        """Test submitting circuits with an override_config that has a QPUSystem object."""
+        """Test submitting circuits with an override_job_config that has a QPUSystem object."""
         qoro_service_mock = qoro_service_factory()
         mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=True)
 
@@ -440,7 +440,9 @@ class TestQoroServiceMock:
         # Override with QPUSystem object directly
         override_qpu = QPUSystem(name="override_qpu_system")
         override_conf = JobConfig(qpu_system=override_qpu)
-        qoro_service_mock.submit_circuits({"c1": "qasm"}, override_config=override_conf)
+        qoro_service_mock.submit_circuits(
+            {"c1": "qasm"}, override_job_config=override_conf
+        )
 
         # Assert the correct qpu_system_name was sent in the init payload
         init_payload = mock_make_request.call_args_list[0].kwargs["json"]
@@ -835,7 +837,7 @@ class TestQoroServiceMock:
         qoro_service_mock.submit_circuits(
             {"c1": "qasm"},
             job_type=JobType.EXECUTE,
-            override_config=JobConfig(tag="my_custom_tag"),
+            override_job_config=JobConfig(tag="my_custom_tag"),
         )
 
         # The parameters should be in the first (init) call
@@ -844,18 +846,56 @@ class TestQoroServiceMock:
         assert payload.get("tag") == "my_custom_tag"
         assert payload.get("job_type") == JobType.EXECUTE.value
 
+    def test_submit_circuits_with_inline_execution_config(self, submit_circuits_mock):
+        """Test submitting circuits with inline execution configuration on init."""
+        qoro_service_mock, mock_make_request = submit_circuits_mock
+        qoro_service_mock.submit_circuits(
+            {"c1": "qasm"},
+            execution_config=ExecutionConfig(
+                bond_dimension=64,
+                simulation_method=SimulationMethod.MatrixProductState,
+                simulator=Simulator.QCSim,
+                api_meta={"optimization_level": 2},
+            ),
+        )
+
+        _, called_kwargs = mock_make_request.call_args_list[0]
+        payload = called_kwargs.get("json", {})
+        assert payload.get("execution_configuration") == {
+            "bond_dimension": 64,
+            "simulation_type": int(SimulationMethod.MatrixProductState),
+            "simulator_type": int(Simulator.QCSim),
+            "api_meta": {"optimization_level": 2},
+        }
+
+    def test_submit_circuits_with_empty_inline_execution_config(
+        self, submit_circuits_mock
+    ):
+        """Test sending an empty inline execution configuration payload."""
+        qoro_service_mock, mock_make_request = submit_circuits_mock
+        qoro_service_mock.submit_circuits(
+            {"c1": "qasm"},
+            execution_config=ExecutionConfig(),
+        )
+
+        _, called_kwargs = mock_make_request.call_args_list[0]
+        payload = called_kwargs.get("json", {})
+        assert payload.get("execution_configuration") == {}
+
     def test_submit_circuits_with_packing_override(self, submit_circuits_mock):
         """Test submitting circuits with circuit packing override."""
         qoro_service_mock, mock_make_request = submit_circuits_mock
         circuits = {"circuit_1": "mock_qasm"}
         qoro_service_mock.submit_circuits(
-            circuits, override_config=JobConfig(use_circuit_packing=True)
+            circuits, override_job_config=JobConfig(use_circuit_packing=True)
         )
         _, called_kwargs = mock_make_request.call_args_list[0]
         assert called_kwargs.get("json", {}).get("use_packing") is True
 
-    def test_submit_circuits_with_config_override(self, mocker, qoro_service_factory):
-        """Verify that override_config merges with service config and is used consistently."""
+    def test_submit_circuits_with_job_config_override(
+        self, mocker, qoro_service_factory
+    ):
+        """Verify that override_job_config merges with service config and is used consistently."""
         # Create a service with default config
         service_with_default = qoro_service_factory(
             auth_token="test_token", max_retries=3, polling_interval=0.01
@@ -873,7 +913,7 @@ class TestQoroServiceMock:
 
         # Override shots in submit_circuits
         service_with_default.submit_circuits(
-            {"circuit_1": "mock_qasm"}, override_config=JobConfig(shots=2000)
+            {"circuit_1": "mock_qasm"}, override_job_config=JobConfig(shots=2000)
         )
 
         # Verify init payload is minimal (no shots/ham_ops)
@@ -885,10 +925,10 @@ class TestQoroServiceMock:
         _, add_kwargs = mock_make_request.call_args_list[1]
         assert add_kwargs.get("json", {}).get("shots") == 2000
 
-    def test_submit_circuits_with_override_config_string_qpu(
+    def test_submit_circuits_with_override_job_config_string_qpu(
         self, mocker, qoro_service_factory
     ):
-        """Test submitting circuits with an override_config that has a string qpu_system."""
+        """Test submitting circuits with an override_job_config that has a string qpu_system."""
         qoro_service_mock = qoro_service_factory()
         mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=True)
 
@@ -910,7 +950,9 @@ class TestQoroServiceMock:
         )
 
         override_conf = JobConfig(qpu_system="string_qpu_name")
-        qoro_service_mock.submit_circuits({"c1": "qasm"}, override_config=override_conf)
+        qoro_service_mock.submit_circuits(
+            {"c1": "qasm"}, override_job_config=override_conf
+        )
 
         # Assert that resolution happened
         mock_get_qpu.assert_called_once_with("string_qpu_name")
@@ -1982,6 +2024,24 @@ class TestQoroServiceWithApiKey:
         assert response["execution_configuration"]["bond_dimension"] == 16
 
         # Retrieve and verify round-trip
+        retrieved = qoro_service.get_execution_config(result)
+        assert isinstance(retrieved, ExecutionConfig)
+        assert retrieved.bond_dimension == 16
+        assert retrieved.simulator == Simulator.QCSim
+        assert retrieved.simulation_method == SimulationMethod.MatrixProductState
+        assert retrieved.api_meta == {"optimization_level": 1}
+
+    def test_submit_with_inline_execution_config(self, qoro_service, circuits):
+        """Tests attaching execution config directly in submit_circuits."""
+        single_circuit = {"circuit_1": circuits["circuit_0"]}
+        config = ExecutionConfig(
+            bond_dimension=16,
+            simulator=Simulator.QCSim,
+            simulation_method=SimulationMethod.MatrixProductState,
+            api_meta={"optimization_level": 1},
+        )
+        result = qoro_service.submit_circuits(single_circuit, execution_config=config)
+
         retrieved = qoro_service.get_execution_config(result)
         assert isinstance(retrieved, ExecutionConfig)
         assert retrieved.bond_dimension == 16

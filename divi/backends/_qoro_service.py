@@ -453,7 +453,8 @@ class QoroService(CircuitRunner):
         circuits: Mapping[str, str],
         ham_ops: str | None = None,
         job_type: JobType | None = None,
-        override_config: JobConfig | None = None,
+        execution_config: ExecutionConfig | None = None,
+        override_job_config: JobConfig | None = None,
     ) -> ExecutionResult:
         """
         Submit quantum circuits to the Qoro API for execution.
@@ -471,7 +472,12 @@ class QoroService(CircuitRunner):
             job_type (JobType | None, optional):
                 Type of job to execute (e.g., SIMULATE, EXECUTE, EXPECTATION).
                 If not provided, the job type will be determined from the service configuration.
-            override_config (JobConfig | None, optional):
+            execution_config (ExecutionConfig | None, optional):
+                Optional execution configuration to attach during job initialization.
+                When provided, it is sent inline to ``job/init`` as
+                ``execution_configuration`` to avoid race conditions between job
+                creation and subsequent configuration updates.
+            override_job_config (JobConfig | None, optional):
                 Configuration object to override the service's default settings.
                 If not provided, default values are used.
 
@@ -485,8 +491,8 @@ class QoroService(CircuitRunner):
         """
         # Create final job configuration by layering configurations:
         #    service defaults -> user overrides
-        if override_config:
-            config = self.config.override(override_config)
+        if override_job_config:
+            config = self.config.override(override_job_config)
             job_config = self._resolve_and_validate_qpu_system(config)
         else:
             job_config = self.config
@@ -552,6 +558,8 @@ class QoroService(CircuitRunner):
             ),
             "use_packing": job_config.use_circuit_packing or False,
         }
+        if execution_config is not None:
+            init_payload["execution_configuration"] = execution_config.to_payload()
 
         init_response = self._make_request(
             "post", "job/init/", json=init_payload, timeout=100

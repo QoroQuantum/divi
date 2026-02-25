@@ -131,7 +131,7 @@ Backend Options
       # Submit to quantum hardware (use JobConfig to select QPU system)
       circuits_dict = {"my_circuit": qasm_circuit}
       execution_result = service.submit_circuits(
-          circuits_dict, override_config=JobConfig(qpu_system="ibm_one")
+          circuits_dict, override_job_config=JobConfig(qpu_system="ibm_one")
       )
 
 Advanced Features
