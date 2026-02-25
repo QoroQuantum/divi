@@ -7,10 +7,49 @@ from functools import partial
 import dimod
 import hybrid
 import numpy as np
+import pennylane as qml
 
 from divi.qprog import EarlyStopping, QUBOPartitioningQAOA
+from divi.qprog.algorithms import GenericLayerAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from tutorials._backend import get_backend
+
+
+def _run_partitioning_engine(
+    bqm: dimod.BinaryQuadraticModel, engine: str, engine_kwargs: dict
+) -> dict:
+    """Run one partitioning engine and return comparable metrics."""
+    qubo_partition = QUBOPartitioningQAOA(
+        qubo=bqm,
+        decomposer=hybrid.EnergyImpactDecomposer(size=5),
+        composer=hybrid.SplatComposer(),
+        engine=engine,
+        n_layers=2,
+        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+        max_iterations=30,
+        early_stopping=EarlyStopping(patience=5),
+        backend=get_backend(),
+        **engine_kwargs,
+    )
+
+    qubo_partition.create_programs()
+    qubo_partition.run().join()
+
+    greedy_solution, greedy_energy = qubo_partition.aggregate_results(
+        beam_width=1, n_partition_candidates=5
+    )
+    beam_solution, beam_energy = qubo_partition.aggregate_results(
+        beam_width=3, n_partition_candidates=5
+    )
+
+    return {
+        "greedy_energy": greedy_energy,
+        "greedy_solution": greedy_solution,
+        "beam_energy": beam_energy,
+        "beam_solution": beam_solution,
+        "total_circuits": qubo_partition.total_circuit_count,
+    }
+
 
 if __name__ == "__main__":
     bqm: dimod.BinaryQuadraticModel = dimod.generators.gnp_random_bqm(
@@ -21,52 +60,49 @@ if __name__ == "__main__":
         bias_generator=partial(np.random.default_rng().uniform, -5, 5),
     )
 
-    qubo_partition = QUBOPartitioningQAOA(
-        qubo=bqm,
-        decomposer=hybrid.EnergyImpactDecomposer(size=5),
-        composer=hybrid.SplatComposer(),
-        n_layers=2,
-        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
-        max_iterations=30,
-        early_stopping=EarlyStopping(patience=5),
-        backend=get_backend(),
-    )
-
-    qubo_partition.create_programs()
-    qubo_partition.run().join()
-
-    print(f"Total circuits: {qubo_partition.total_circuit_count}")
-
-    # --- Greedy aggregation (default) ---
-    greedy_solution, greedy_energy = qubo_partition.aggregate_results(
-        beam_width=1, n_partition_candidates=5
-    )
-
-    # --- Beam search aggregation ---
-    # beam_width=3: keep top 3 partial solutions after each partition step
-    # n_partition_candidates=5: consider 5 candidates from each partition
-    beam_solution, beam_energy = qubo_partition.aggregate_results(
-        beam_width=3, n_partition_candidates=5
-    )
+    results_by_engine = {
+        "qaoa": _run_partitioning_engine(bqm=bqm, engine="qaoa", engine_kwargs={}),
+        "pce": _run_partitioning_engine(
+            bqm=bqm,
+            engine="pce",
+            engine_kwargs={
+                "ansatz": GenericLayerAnsatz([qml.RY, qml.RZ]),
+                "encoding_type": "dense",
+                "alpha": 2.0,
+            },
+        ),
+    }
 
     best_classical_bitstring, best_classical_energy, _ = (
         dimod.SimulatedAnnealingSampler().sample(bqm).lowest().record[0]
     )
 
-    # --- Print comparison table ---
+    # --- Print side-by-side comparison table ---
     rows = [
         ("Classical (SA)", best_classical_energy, str(best_classical_bitstring), "-"),
         (
-            "Greedy (beam=1)",
-            greedy_energy,
-            str(greedy_solution),
-            qubo_partition.total_circuit_count,
+            "QAOA Greedy (beam=1)",
+            results_by_engine["qaoa"]["greedy_energy"],
+            str(results_by_engine["qaoa"]["greedy_solution"]),
+            results_by_engine["qaoa"]["total_circuits"],
         ),
         (
-            "Beam Search (beam=3)",
-            beam_energy,
-            str(beam_solution),
-            qubo_partition.total_circuit_count,
+            "QAOA Beam (beam=3)",
+            results_by_engine["qaoa"]["beam_energy"],
+            str(results_by_engine["qaoa"]["beam_solution"]),
+            results_by_engine["qaoa"]["total_circuits"],
+        ),
+        (
+            "PCE Greedy (beam=1)",
+            results_by_engine["pce"]["greedy_energy"],
+            str(results_by_engine["pce"]["greedy_solution"]),
+            results_by_engine["pce"]["total_circuits"],
+        ),
+        (
+            "PCE Beam (beam=3)",
+            results_by_engine["pce"]["beam_energy"],
+            str(results_by_engine["pce"]["beam_solution"]),
+            results_by_engine["pce"]["total_circuits"],
         ),
     ]
     pad = "  "

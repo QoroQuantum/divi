@@ -303,10 +303,16 @@ For large graphs that exceed quantum hardware limitations, use GraphPartitioning
 
    print(f"Total circuits executed: {qaoa_partition.total_circuit_count}")
 
-QUBO Partitioning QAOA
-----------------------
+QUBO Partitioning (QAOA or PCE)
+-------------------------------
 
-For large QUBO problems, use QUBOPartitioningQAOA with D-Wave's hybrid library:
+For large QUBO problems, use ``QUBOPartitioningQAOA`` with D-Wave's hybrid library.
+You can choose the per-partition engine via ``engine``:
+
+- ``engine="qaoa"`` (default): standard QAOA partitions.
+- ``engine="pce"``: PCE partitions (supports PCE-specific kwargs like ``encoding_type`` and ``alpha``).
+
+QAOA partitions:
 
 .. code-block:: python
 
@@ -337,6 +343,37 @@ For large QUBO problems, use QUBOPartitioningQAOA with D-Wave's hybrid library:
 
    print(f"Quantum solution: {quantum_solution}")
    print(f"Quantum energy: {quantum_energy:.6f}")
+
+PCE partitions:
+
+.. code-block:: python
+
+   import dimod
+   import hybrid
+   import pennylane as qml
+   from divi.qprog import QUBOPartitioningQAOA
+   from divi.qprog.algorithms import GenericLayerAnsatz
+   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+   from divi.backends import ParallelSimulator
+
+   large_bqm = dimod.generators.gnp_random_bqm(25, 0.5, vartype="BINARY")
+
+   qubo_partition = QUBOPartitioningQAOA(
+       qubo=large_bqm,
+       decomposer=hybrid.EnergyImpactDecomposer(size=5),
+       engine="pce",
+       ansatz=GenericLayerAnsatz([qml.RY, qml.RZ]),
+       n_layers=2,
+       encoding_type="dense",
+       alpha=2.0,
+       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+       max_iterations=10,
+       backend=ParallelSimulator(),
+   )
+
+   qubo_partition.create_programs()
+   qubo_partition.run()
+   quantum_solution, quantum_energy = qubo_partition.aggregate_results()
 
 What's Happening?
 ^^^^^^^^^^^^^^^^^

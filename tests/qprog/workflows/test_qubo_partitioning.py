@@ -5,11 +5,13 @@
 import dimod
 import hybrid
 import numpy as np
+import pennylane as qml
 import pytest
 import scipy.sparse as sps
 
 from divi.backends import ParallelSimulator
-from divi.qprog import QAOA, ScipyMethod, ScipyOptimizer
+from divi.qprog import PCE, QAOA, ScipyMethod, ScipyOptimizer
+from divi.qprog.algorithms import GenericLayerAnsatz
 from divi.qprog.workflows._qubo_partitioning import (
     QUBOPartitioningQAOA,
     _sanitize_problem_input,
@@ -33,6 +35,11 @@ def sample_qubo_matrix():
 
 
 @pytest.fixture
+def basic_ansatz() -> GenericLayerAnsatz:
+    return GenericLayerAnsatz([qml.RY, qml.RZ])
+
+
+@pytest.fixture
 def qubo_partitioning_qaoa(sample_qubo_matrix):
     """Provides a default QUBOPartitioningQAOA instance for testing."""
     # A simple decomposer that splits variables into two groups
@@ -41,6 +48,22 @@ def qubo_partitioning_qaoa(sample_qubo_matrix):
         qubo=sample_qubo_matrix,
         decomposer=decomposer,
         n_layers=1,
+        optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+        max_iterations=10,
+        backend=ParallelSimulator(shots=1000),
+    )
+
+
+@pytest.fixture
+def qubo_partitioning_pce(sample_qubo_matrix, basic_ansatz):
+    """Provides a QUBOPartitioningQAOA configured to use PCE partitions."""
+    decomposer = hybrid.EnergyImpactDecomposer(size=2)
+    return QUBOPartitioningQAOA(
+        qubo=sample_qubo_matrix,
+        decomposer=decomposer,
+        n_layers=1,
+        engine="pce",
+        ansatz=basic_ansatz,
         optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
         max_iterations=10,
         backend=ParallelSimulator(shots=1000),
@@ -163,6 +186,7 @@ class TestQUBOPartitioningQAOA:
         assert isinstance(qubo_partitioning_qaoa._partitioning, hybrid.Unwind)
         assert isinstance(qubo_partitioning_qaoa._aggregating, hybrid.Runnable)
         assert qubo_partitioning_qaoa.max_iterations == 10
+        assert qubo_partitioning_qaoa.engine == "qaoa"
 
     def test_create_programs(self, mocker, qubo_partitioning_qaoa):
         # Mock the QAOA constructor to verify it's called correctly
@@ -192,6 +216,49 @@ class TestQUBOPartitioningQAOA:
             assert isinstance(kwargs["problem"], sps.coo_matrix)
             assert kwargs["problem"].shape == (2, 2)
             assert "program_id" in kwargs
+
+    def test_correct_initialization_pce(
+        self, qubo_partitioning_pce, sample_qubo_matrix
+    ):
+        assert np.array_equal(qubo_partitioning_pce.main_qubo, sample_qubo_matrix)
+        assert qubo_partitioning_pce.engine == "pce"
+
+    def test_create_programs_pce_uses_qubo_matrix_kwarg(
+        self, mocker, qubo_partitioning_pce
+    ):
+        mock_constructor = mocker.MagicMock()
+        qubo_partitioning_pce._constructor = mock_constructor
+        qubo_partitioning_pce.create_programs()
+
+        assert len(qubo_partitioning_pce.programs) == 2
+        assert mock_constructor.call_count == 2
+
+        for call in mock_constructor.call_args_list:
+            kwargs = call.kwargs
+            assert "qubo_matrix" in kwargs
+            assert "problem" not in kwargs
+            assert isinstance(kwargs["qubo_matrix"], sps.coo_matrix)
+            assert kwargs["qubo_matrix"].shape == (2, 2)
+            assert "program_id" in kwargs
+
+    def test_create_programs_pce_creates_pce_programs(self, qubo_partitioning_pce):
+        qubo_partitioning_pce.create_programs()
+        assert len(qubo_partitioning_pce.programs) == 2
+        assert all(
+            isinstance(program, PCE)
+            for program in qubo_partitioning_pce.programs.values()
+        )
+
+    def test_invalid_engine_raises(self, sample_qubo_matrix):
+        decomposer = hybrid.EnergyImpactDecomposer(size=2)
+        with pytest.raises(ValueError, match="Unsupported engine"):
+            QUBOPartitioningQAOA(
+                qubo=sample_qubo_matrix,
+                decomposer=decomposer,
+                n_layers=1,
+                engine="invalid",
+                backend=ParallelSimulator(shots=1000),
+            )
 
     def test_verify_basic_behaviour(self, mocker, qubo_partitioning_qaoa):
         """Verify the class adheres to the ProgramBatch contract."""
@@ -295,6 +362,44 @@ class TestQUBOPartitioningQAOA:
         solution, energy = batch.aggregate_results()
 
         # The known optimal solution for this QUBO is [1, 1, 0, 0]
+        expected_solution = np.array([1, 1, 0, 0])
+        np.testing.assert_array_equal(solution, expected_solution)
+
+        assert isinstance(energy, float)
+        assert energy == pytest.approx(-1.5)
+
+    @pytest.mark.e2e
+    def test_qubo_partitioning_pce_e2e(self, default_test_simulator, basic_ansatz):
+        """An end-to-end test solving a small QUBO with PCE engine."""
+        qubo = {
+            (0, 0): -0.5,
+            (1, 1): 1,
+            (0, 1): -2,
+            (2, 2): 1,
+            (3, 3): 1,
+            (2, 3): 2,
+        }
+        bqm = dimod.BinaryQuadraticModel.from_qubo(qubo)
+        decomposer = hybrid.EnergyImpactDecomposer(size=2)
+
+        default_test_simulator.set_seed(1997)
+
+        batch = QUBOPartitioningQAOA(
+            qubo=bqm,
+            decomposer=decomposer,
+            n_layers=2,
+            engine="pce",
+            ansatz=basic_ansatz,
+            optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+            max_iterations=15,
+            backend=default_test_simulator,
+            seed=1997,
+        )
+
+        batch.create_programs()
+        batch.run(blocking=True)
+        solution, energy = batch.aggregate_results()
+
         expected_solution = np.array([1, 1, 0, 0])
         np.testing.assert_array_equal(solution, expected_solution)
 

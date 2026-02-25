@@ -193,8 +193,8 @@ Different partitioning algorithms for different graph structures:
        minimum_n_clusters=None
    )
 
-QUBO Partitioning
-^^^^^^^^^^^^^^^^^
+QUBO Partitioning (QAOA or PCE)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 For large QUBO problems, Divi integrates with D-Wave's hybrid solvers:
 
@@ -213,11 +213,12 @@ For large QUBO problems, Divi integrates with D-Wave's hybrid solvers:
        vartype="BINARY"
    )
 
-   # Set up hybrid decomposition
+   # Set up hybrid decomposition (QAOA engine, default)
    qubo_partition = QUBOPartitioningQAOA(
        qubo=large_bqm,
        decomposer=hybrid.EnergyImpactDecomposer(size=15),  # Decompose into size-15 chunks
        composer=hybrid.SplatComposer(),                    # Recombine solutions
+        engine="qaoa",
        n_layers=3,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        max_iterations=15,
@@ -231,6 +232,28 @@ For large QUBO problems, Divi integrates with D-Wave's hybrid solvers:
    # Get final solution
    solution, energy = qubo_partition.aggregate_results()
    print(f"Final energy: {energy:.6f}")
+
+To use PCE as the per-partition engine, set ``engine="pce"`` and pass PCE-specific
+arguments (for example ``ansatz``, ``encoding_type``, ``alpha``):
+
+.. code-block:: python
+
+   import pennylane as qml
+   from divi.qprog.algorithms import GenericLayerAnsatz
+
+   qubo_partition = QUBOPartitioningQAOA(
+       qubo=large_bqm,
+       decomposer=hybrid.EnergyImpactDecomposer(size=15),
+       composer=hybrid.SplatComposer(),
+       engine="pce",
+       ansatz=GenericLayerAnsatz([qml.RY, qml.RZ]),
+       n_layers=2,
+       encoding_type="dense",
+       alpha=2.0,
+       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+       max_iterations=15,
+       backend=ParallelSimulator(),
+   )
 
 Beam Search Aggregation
 ^^^^^^^^^^^^^^^^^^^^^^^

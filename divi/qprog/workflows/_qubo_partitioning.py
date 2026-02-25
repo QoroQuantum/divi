@@ -5,7 +5,7 @@
 import copy
 import string
 from functools import partial
-from typing import TypeVar
+from typing import Literal, TypeVar
 
 import dimod
 import hybrid
@@ -15,7 +15,7 @@ import scipy.sparse as sps
 from dimod import BinaryQuadraticModel
 
 from divi.backends import CircuitRunner
-from divi.qprog.algorithms import QAOA
+from divi.qprog.algorithms import PCE, QAOA
 from divi.qprog.batch import ProgramBatch, beam_search_aggregate
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer, copy_optimizer
 from divi.typing import QUBOProblemTypes
@@ -58,27 +58,31 @@ class QUBOPartitioningQAOA(ProgramBatch):
         decomposer: hybrid.traits.ProblemDecomposer,
         n_layers: int,
         backend: CircuitRunner,
+        engine: Literal["qaoa", "pce"] = "qaoa",
         composer: hybrid.traits.SubsamplesComposer = hybrid.SplatComposer(),
         optimizer: Optimizer | None = None,
         max_iterations: int = 10,
         **kwargs,
     ):
         """
-        Initialize a QUBOPartitioningQAOA instance for solving QUBO problems using partitioning and QAOA.
+        Initialize a partitioning workflow for solving QUBO problems with QAOA or PCE.
 
         Args:
             qubo (QUBOProblemTypes): The QUBO problem to solve, provided as a supported type.
                 Note: Variable types are assumed to be binary (not Spin).
             decomposer (hybrid.traits.ProblemDecomposer): The decomposer used to partition the QUBO problem into subproblems.
-            n_layers (int): Number of QAOA layers to use for each subproblem.
+            n_layers (int): Number of ansatz layers to use for each subproblem.
             backend (CircuitRunner): Backend responsible for running quantum circuits.
+            engine (Literal["qaoa", "pce"], optional): Per-partition quantum engine.
+                Defaults to ``"qaoa"``.
             composer (hybrid.traits.SubsamplesComposer, optional): Composer to aggregate subsamples from subproblems.
                 Defaults to hybrid.SplatComposer(). Only used when ``beam_width=1`` (greedy).
-            optimizer (Optimizer, optional): Optimizer to use for QAOA.
+            optimizer (Optimizer, optional): Optimizer to use for the selected engine.
                 Defaults to MonteCarloOptimizer.
             max_iterations (int, optional): Maximum number of optimization iterations.
                 Defaults to 10.
-            **kwargs: Additional keyword arguments passed to the QAOA constructor.
+            **kwargs: Additional keyword arguments forwarded to the selected
+                engine constructor (e.g. ``encoding_type`` for PCE).
 
         """
         super().__init__(backend=backend)
@@ -100,8 +104,21 @@ class QUBOPartitioningQAOA(ProgramBatch):
         # Extract early_stopping so each sub-program gets its own copy
         self._early_stopping_template = kwargs.pop("early_stopping", None)
 
+        engine_name = engine.lower()
+        if engine_name == "qaoa":
+            self._engine_constructor = QAOA
+            self._problem_kwarg = "problem"
+        elif engine_name == "pce":
+            self._engine_constructor = PCE
+            self._problem_kwarg = "qubo_matrix"
+        else:
+            raise ValueError(
+                f"Unsupported engine: {engine!r}. Supported values are 'qaoa' and 'pce'."
+            )
+
+        self.engine = engine_name
         self._constructor = partial(
-            QAOA,
+            self._engine_constructor,
             max_iterations=self.max_iterations,
             backend=self.backend,
             n_layers=n_layers,
@@ -110,11 +127,12 @@ class QUBOPartitioningQAOA(ProgramBatch):
 
     def create_programs(self):
         """
-        Partition the main QUBO problem and instantiate QAOA programs for each subproblem.
+        Partition the main QUBO problem and instantiate engine programs for each subproblem.
 
         This implementation:
         - Uses the configured decomposer to split the main QUBO into subproblems.
-        - For each subproblem, creates a QAOA program with the specified parameters.
+        - For each subproblem, creates a QAOA/PCE program with the specified
+          parameters.
         - Stores each program in `self.programs` with a unique identifier.
 
         Unique Identifier Format:
@@ -174,7 +192,7 @@ class QUBOPartitioningQAOA(ProgramBatch):
 
             self._programs[prog_id] = self._constructor(
                 program_id=prog_id,
-                problem=coo_mat,
+                **{self._problem_kwarg: coo_mat},
                 optimizer=copy_optimizer(self._optimizer_template),
                 early_stopping=copy.deepcopy(self._early_stopping_template),
                 progress_queue=self._queue,
