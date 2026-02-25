@@ -41,6 +41,41 @@ AggregateFn = Callable[
 # once a proper endpoint is exposed
 _MAXIMUM_AVAILABLE_QUBITS = 30
 
+# Partitioning is currently most robust for cut-style objectives (e.g., MAXCUT).
+# For structure-dependent objectives, partitioning can hide/remove cross-partition
+# constraints and therefore requires stronger user guidance.
+_PARTITIONING_COMPATIBILITY_TIERS: dict[
+    GraphProblem, tuple[Literal["high-risk", "heuristic-risk"], str]
+] = {
+    GraphProblem.MAX_WEIGHT_CYCLE: (
+        "high-risk",
+        "partitioning can break cycles across cluster boundaries.",
+    ),
+    GraphProblem.MAX_CLIQUE: (
+        "heuristic-risk",
+        "partitioning can hide cross-partition adjacency needed for global cliques.",
+    ),
+    GraphProblem.MAX_INDEPENDENT_SET: (
+        "heuristic-risk",
+        "partitioning can hide cross-partition conflicts between selected vertices.",
+    ),
+    GraphProblem.MIN_VERTEX_COVER: (
+        "heuristic-risk",
+        "partitioning can hide cross-partition edges that must be covered globally.",
+    ),
+}
+
+
+def _build_partitioning_warning_message(
+    graph_problem: GraphProblem, risk_level: Literal["high-risk", "heuristic-risk"]
+) -> str:
+    warning_prefix = (
+        "High-risk graph partitioning objective"
+        if risk_level == "high-risk"
+        else "Heuristic-risk graph partitioning objective"
+    )
+    return f"{warning_prefix}: {graph_problem}."
+
 
 @dataclass(frozen=True, eq=True)
 class PartitioningConfig:
@@ -470,6 +505,7 @@ class GraphPartitioningQAOA(ProgramBatch):
         self._graph_problem = graph_problem
         self.is_edge_problem = graph_problem == GraphProblem.EDGE_PARTITIONING
         self._full_graph_hamiltonian = None  # lazily built by _evaluate_solution
+        self._warn_if_partitioning_is_risky()
 
         check_fn = (
             nx.is_connected if not self.is_edge_problem else nx.is_weakly_connected
@@ -498,6 +534,33 @@ class GraphPartitioningQAOA(ProgramBatch):
             backend=self.backend,
             n_layers=n_layers,
             **kwargs,
+        )
+
+    def _warn_if_partitioning_is_risky(self):
+        compatibility = _PARTITIONING_COMPATIBILITY_TIERS.get(self._graph_problem)
+        if compatibility is None:
+            return
+
+        risk_level, rationale = compatibility
+        warning_message = _build_partitioning_warning_message(
+            self._graph_problem, risk_level
+        )
+        if risk_level == "high-risk":
+            warn(
+                f"{warning_message} "
+                "Aggregation is heuristic and may miss globally valid/high-quality "
+                f"solutions because {rationale}",
+                UserWarning,
+                stacklevel=2,
+            )
+            return
+
+        warn(
+            f"{warning_message} "
+            "Results may be sensitive to partition boundaries because "
+            f"{rationale}",
+            UserWarning,
+            stacklevel=2,
         )
 
     def create_programs(self):

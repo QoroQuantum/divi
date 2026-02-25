@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import sys
+import warnings
 from collections.abc import Sequence
 
 import matplotlib.pyplot as plt
@@ -575,6 +576,45 @@ class TestGraphPartitioningQAOA:
 
         with pytest.raises(ValueError, match="Provided graph is not fully connected."):
             GraphPartitioningQAOA(**args)
+
+    def test_warns_with_high_risk_message_for_cycle_based_problem(self, problem_args):
+        args = problem_args.copy()
+        args["graph_problem"] = GraphProblem.MAX_WEIGHT_CYCLE
+
+        with pytest.warns(
+            UserWarning,
+            match="High-risk graph partitioning objective:.*MAX_WEIGHT_CYCLE",
+        ):
+            GraphPartitioningQAOA(**args)
+
+    @pytest.mark.parametrize(
+        "graph_problem",
+        [
+            GraphProblem.MAX_CLIQUE,
+            GraphProblem.MAX_INDEPENDENT_SET,
+            GraphProblem.MIN_VERTEX_COVER,
+        ],
+    )
+    def test_warns_with_heuristic_risk_message_for_partitioning_sensitive_objectives(
+        self, problem_args, graph_problem
+    ):
+        args = problem_args.copy()
+        args["graph_problem"] = graph_problem
+
+        with pytest.warns(
+            UserWarning,
+            match=(
+                "Heuristic-risk graph partitioning objective:" f".*{graph_problem.name}"
+            ),
+        ):
+            GraphPartitioningQAOA(**args)
+
+    def test_does_not_warn_for_maxcut_partitioning(self, problem_args):
+        with warnings.catch_warnings(record=True) as captured_warnings:
+            warnings.simplefilter("always")
+            GraphPartitioningQAOA(**problem_args)
+
+        assert len(captured_warnings) == 0
 
     def test_correct_initialization(self, node_partitioning_qaoa):
         assert node_partitioning_qaoa.main_graph == _PROBLEM_ARGS["graph"]
