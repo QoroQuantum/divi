@@ -362,6 +362,7 @@ class TestProgramBatch:
                 "job_status": "running",
                 "message": "Processing...",
                 "final_status": "completed",
+                "loss": -0.321,
             }
         )
         listener_thread = Thread(
@@ -386,6 +387,7 @@ class TestProgramBatch:
         assert call_kwargs["max_retries"] == 5
         assert call_kwargs["service_job_id"] == "service_123"
         assert call_kwargs["job_status"] == "running"
+        assert call_kwargs["loss"] == -0.321
 
     def test_reset_listener_thread_timeout(self, program_batch, mocker):
         """Test reset handles listener thread timeout warning."""

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -80,12 +80,34 @@ class TestPhaseStatusColumn:
         assert status in str(result)
         assert emoji in str(result)
 
+    def test_render_final_status_keeps_last_loss(self, mocker, column):
+        """Test final status rendering keeps the last loss when present."""
+        task = self._create_task(
+            mocker, {"final_status": "Success", "loss": -0.123456789}
+        )
+        result = column.render(task)
+        result_str = str(result)
+
+        assert "Success" in result_str
+        assert "loss: -0.123457" in result_str
+
     def test_render_with_message_only(self, mocker, column):
         """Test rendering with just a message (no final_status)."""
         task = self._create_task(mocker, {"message": "Processing..."})
         result = column.render(task)
 
         assert "Processing..." in str(result)
+
+    def test_render_with_message_and_loss(self, mocker, column):
+        """Test rendering includes formatted loss when present."""
+        task = self._create_task(
+            mocker, {"message": "Optimizing...", "loss": -0.123456789}
+        )
+        result = column.render(task)
+        result_str = str(result)
+
+        assert "Optimizing..." in result_str
+        assert "loss: -0.123457" in result_str
 
     @pytest.mark.parametrize(
         "fields,expected_strings,check_highlighting",

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -72,6 +72,14 @@ class TestQueueProgressReporter:
         reporter.update()
         mock_queue.put.assert_called_once_with({"job_id": "test_job", "progress": 1})
 
+    def test_update_with_loss(self, mock_queue):
+        """Test the update method forwards loss when available."""
+        reporter = QueueProgressReporter(job_id="test_job", progress_queue=mock_queue)
+        reporter.update(loss=-0.123456789)
+        mock_queue.put.assert_called_once_with(
+            {"job_id": "test_job", "progress": 1, "loss": -0.123456789}
+        )
+
     def test_info_simple_message(self, mock_queue):
         """
         Test the info method with a simple message.
@@ -139,6 +147,15 @@ class TestLoggingProgressReporter:
         mock_logger.info.assert_called_once()
         logged_message = mock_logger.info.call_args[0][0]
         assert "Finished Iteration #5" in logged_message
+
+    def test_update_with_loss(self, mocker):
+        """Test update logs iteration and formatted loss."""
+        mock_logger = mocker.patch("divi.reporting._reporter.logger")
+        reporter = LoggingProgressReporter()
+        reporter.update(iteration=5, loss=-0.123456789)
+        mock_logger.info.assert_called_once_with(
+            "Finished Iteration #5 (loss=-0.123457)"
+        )
 
     def test_info_simple_message(self, mocker):
         """

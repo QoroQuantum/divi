@@ -67,13 +67,22 @@ class PhaseStatusColumn(ProgressColumn):
 
         return ""
 
+    @staticmethod
+    def _build_loss_string(loss: float | None) -> str:
+        """Build a compact loss display when a numeric loss is present."""
+        if loss is None:
+            return ""
+        return f" [loss: {float(loss):.6f}]"
+
     def render(self, task):
         final_status = task.fields.get("final_status")
+        loss = task.fields.get("loss")
+        loss_str = self._build_loss_string(loss)
 
         # Early return for final statuses
         if final_status in self._STATUS_MESSAGES:
             message, style = self._STATUS_MESSAGES[final_status]
-            return Text(message, style=style)
+            return Text(f"{message}{loss_str}", style=style)
 
         # Build message with polling information
         message = task.fields.get("message")
@@ -89,8 +98,7 @@ class PhaseStatusColumn(ProgressColumn):
             polling_str = self._build_polling_string(
                 split_job_id, job_status, poll_attempt, max_retries
             )
-
-        final_text = Text(f"[{message}]{polling_str}")
+        final_text = Text(f"[{message}]{loss_str}{polling_str}")
 
         # Highlight job ID if present
         if split_job_id is not None:

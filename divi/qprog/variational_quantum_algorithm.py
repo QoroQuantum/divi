@@ -1079,7 +1079,9 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
             self.current_iteration += 1
 
-            self.reporter.update(iteration=self.current_iteration)
+            self.reporter.update(
+                iteration=self.current_iteration, loss=float(current_loss)
+            )
 
             # Checkpointing
             if checkpoint_config._should_checkpoint(self.current_iteration):

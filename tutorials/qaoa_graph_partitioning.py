@@ -6,6 +6,8 @@ import random
 import warnings
 
 import networkx as nx
+from rich.console import Console
+from rich.table import Table
 
 from divi.qprog import GraphPartitioningQAOA, GraphProblem, PartitioningConfig
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
@@ -58,12 +60,11 @@ def analyze_results(quantum_solution, classical_cut_size):
         if (u in quantum_solution) != (v in quantum_solution):
             cut_edges += 1
 
-    print(
-        f"Quantum Cut Size to Classical Cut Size Ratio = {cut_edges / classical_cut_size}"
-    )
+    return cut_edges / classical_cut_size
 
 
 if __name__ == "__main__":
+    console = Console()
     N_NODES = 30
     N_EDGES = 40
 
@@ -101,7 +102,13 @@ if __name__ == "__main__":
         graph, seed=1
     )
 
-    print("\n--- Greedy vs Beam Search ---")
-    analyze_results(greedy_solution, classical_cut_size)
-    print("  (with beam_width=3, n_partition_candidates=5)")
-    analyze_results(beam_solution, classical_cut_size)
+    greedy_ratio = analyze_results(greedy_solution, classical_cut_size)
+    beam_ratio = analyze_results(beam_solution, classical_cut_size)
+
+    console.print("\n[bold]Greedy vs Beam Search[/bold]")
+    table = Table(show_header=True, header_style="bold cyan")
+    table.add_column("Method")
+    table.add_column("Cut/Classical Ratio", justify="right")
+    table.add_row("Greedy (beam_width=1, n=5)", f"{greedy_ratio:.6f}")
+    table.add_row("Beam (beam_width=3, n=5)", f"{beam_ratio:.6f}")
+    console.print(table)

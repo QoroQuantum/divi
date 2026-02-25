@@ -43,6 +43,8 @@ class QueueProgressReporter(ProgressReporter):
 
     def update(self, **kwargs):
         payload = {"job_id": self._job_id, "progress": 1}
+        if "loss" in kwargs and kwargs["loss"] is not None:
+            payload["loss"] = kwargs["loss"]
         self._queue.put(payload)
 
     def info(self, message: str, **kwargs):
@@ -124,6 +126,13 @@ class LoggingProgressReporter(ProgressReporter):
     def update(self, **kwargs):
         # Close any active status before logging
         self._close_status()
+        loss = kwargs.get("loss")
+        if loss is not None:
+            logger.info(
+                f"Finished Iteration #{kwargs['iteration']} (loss={float(loss):.6f})"
+            )
+            return
+
         logger.info(f"Finished Iteration #{kwargs['iteration']}")
 
     def info(self, message: str, overwrite: bool = False, **kwargs):

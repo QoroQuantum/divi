@@ -57,6 +57,8 @@ def _queue_listener(
             update_args["message"] = msg.get("message")
         if "final_status" in msg:
             update_args["final_status"] = msg.get("final_status", "")
+        if "loss" in msg:
+            update_args["loss"] = msg.get("loss")
 
         update_args["refresh"] = is_jupyter
 
