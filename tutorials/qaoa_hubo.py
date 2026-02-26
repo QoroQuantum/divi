@@ -13,9 +13,18 @@ Hamiltonian builders:
 - ``"quadratized"``  – reduces the polynomial to quadratic form by
                        introducing ancilla qubits with a penalty strength.
 
+The quadratized builder uses a penalty parameter (quadratization_strength)
+to enforce the consistency of ancilla qubits with the original variables.
+Larger values tighten the constraint but can make the landscape harder to
+optimize; smaller values may yield invalid (inconsistent) solutions.
+When comparing different strengths in the table below, a *lower* penalty
+can sometimes yield a better solution: the optimizer then follows the
+actual problem landscape rather than being dominated by penalty wells,
+which can trap it in a consistent but suboptimal assignment.
+
 This tutorial defines a small 4-variable cubic HUBO with string-labelled
-variables, solves it with both builders, and compares to the exact
-classical minimum.
+variables, solves it with both builders at several penalty strengths, and
+compares to the exact classical minimum.
 """
 
 from rich.console import Console
@@ -66,29 +75,36 @@ if __name__ == "__main__":
         hamiltonian_builder="native",
         n_layers=2,
         optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
-        max_iterations=30,
+        max_iterations=15,
         backend=get_backend(shots=10000),
         seed=42,
     )
     qaoa_native.run()
 
-    # ── Solve with the quadratized builder ───────────────────────────
-    qaoa_quad = QAOA(
-        problem=hubo,
-        hamiltonian_builder="quadratized",
-        quadratization_strength=5.0,
-        n_layers=3,
-        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
-        max_iterations=50,
-        backend=get_backend(shots=10000),
-        seed=42,
-    )
-    qaoa_quad.run()
+    # ── Solve with the quadratized builder (several penalty strengths) ─
+    quadratization_strengths = [1.0, 3.0, 5.0, 10.0]
+    qaoa_quad_runs: list[tuple[float, QAOA]] = []
+    for strength in quadratization_strengths:
+        qaoa = QAOA(
+            problem=hubo,
+            hamiltonian_builder="quadratized",
+            quadratization_strength=strength,
+            n_layers=3,
+            optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+            max_iterations=15,
+            backend=get_backend(shots=10000),
+            seed=42,
+        )
+        qaoa.run()
+        qaoa_quad_runs.append((strength, qaoa))
 
     # ── Compare results ──────────────────────────────────────────────
     # HUBO solutions are returned as dicts mapping variable names to values.
+    # Note: Quadratized "Energy" is the optimizer's loss (full Hamiltonian).
+    # A lower penalty (e.g. P=1) can outperform higher P because the landscape
+    # stays dominated by the problem terms; high P can trap the optimizer in
+    # a consistent but suboptimal assignment.
     native_solution = qaoa_native.solution
-    quad_solution = qaoa_quad.solution
 
     def format_assignment(sol: dict) -> str:
         return "  ".join(f"{k}={v}" for k, v in sorted(sol.items()))
@@ -114,11 +130,13 @@ if __name__ == "__main__":
         format_assignment(native_solution),
         str(qaoa_native.total_circuit_count),
     )
-    table.add_row(
-        "Quadratized",
-        f"{qaoa_quad.best_loss:.4f}",
-        format_assignment(quad_solution),
-        str(qaoa_quad.total_circuit_count),
-    )
+    for strength, qaoa_quad in qaoa_quad_runs:
+        quad_solution = qaoa_quad.solution
+        table.add_row(
+            f"Quadratized (P={strength})",
+            f"{qaoa_quad.best_loss:.4f}",
+            format_assignment(quad_solution),
+            str(qaoa_quad.total_circuit_count),
+        )
 
     console.print(table)
