@@ -1,5 +1,5 @@
-QAOA
-====
+Combinatorial Optimization with QAOA and PCE
+============================================
 
 The Quantum Approximate Optimization Algorithm (QAOA) is designed to solve combinatorial optimization problems on near-term quantum computers.
 
@@ -254,13 +254,85 @@ BinaryQuadraticModel Input
 
    qaoa_problem.run(perform_final_computation=True)
 
-   print(f"Solution: {qaoa_problem.solution}")
+   # BQMs with string variables return a dict solution.
+   print(f"Solution: {qaoa_problem.solution}")  # e.g. {"w": 0, "x": 1, "y": 0}
    print(f"Energy: {qaoa_problem.best_loss}")
 
-   # You can also evaluate the energy using the BinaryQuadraticModel directly:
-   # Note: solution is a numpy array, but BQM expects a dict or SampleSet
-   solution_dict = {var: int(val) for var, val in zip(bqm.variables, qaoa_problem.solution)}
-   print(f"BQM Energy: {bqm.energy(solution_dict)}")
+   # Evaluate energy using the BinaryQuadraticModel directly:
+   print(f"BQM Energy: {bqm.energy(qaoa_problem.solution)}")
+
+HUBO Problems
+-------------
+
+Divi's QAOA solver supports Higher-Order Binary Optimization (HUBO) problems —
+polynomials with cubic or higher-degree interactions.  A HUBO is passed as a
+dictionary mapping variable tuples to coefficients:
+
+.. code-block:: python
+
+   hubo = {
+       ("a",): -2.0,           # linear
+       ("a", "b"): 1.5,        # quadratic
+       ("a", "b", "c"): 2.0,   # cubic
+   }
+
+Variables can use any hashable labels (strings, integers, etc.).
+
+Hamiltonian Builders
+^^^^^^^^^^^^^^^^^^^^
+
+QAOA offers two strategies for converting a HUBO into an Ising Hamiltonian:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 75
+
+   * - Builder
+     - Description
+   * - ``"native"`` (default)
+     - Maps each polynomial term directly to a multi-Z Ising interaction.
+       No ancilla qubits are added.
+   * - ``"quadratized"``
+     - Reduces the polynomial to quadratic form by introducing ancilla qubits
+       with a configurable penalty strength (``quadratization_strength``).
+
+Example
+^^^^^^^
+
+.. code-block:: python
+
+   from divi.qprog import QAOA
+   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+   from divi.backends import ParallelSimulator
+
+   hubo = {
+       ("a",): -2.0,
+       ("b",): 1.0,
+       ("c",): -3.0,
+       ("a", "b"): 1.5,
+       ("c", "d"): -1.0,
+       ("a", "b", "c"): 2.0,
+   }
+
+   qaoa = QAOA(
+       problem=hubo,
+       hamiltonian_builder="native",
+       n_layers=2,
+       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+       max_iterations=30,
+       backend=ParallelSimulator(shots=10000),
+   )
+
+   qaoa.run()
+
+   # HUBO solutions are dictionaries mapping variable names to binary values.
+   print(qaoa.solution)   # e.g. {"a": 1, "b": 0, "c": 1, "d": 1}
+
+.. note::
+
+   When variables have non-integer labels, ``.solution`` returns a
+   ``dict[variable_name, int]``.  For QUBO matrices (integer-indexed),
+   ``.solution`` remains a NumPy array for backwards compatibility.
 
 Graph Partitioning QAOA
 -----------------------

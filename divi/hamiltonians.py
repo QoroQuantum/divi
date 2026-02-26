@@ -2,15 +2,26 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from collections.abc import Callable, Hashable
 from dataclasses import dataclass, field
 from functools import reduce
-from typing import Literal, Protocol
+from itertools import combinations
+from typing import Any, Literal, NamedTuple, Protocol
 from warnings import warn
 
+import dimod
 import numpy as np
 import numpy.typing as npt
 import pennylane as qml
 import scipy.sparse as sps
+
+from divi.typing import (
+    BinaryPolynomialProblem,
+    HUBOProblemTypes,
+    HUBOTerm,
+    QUBOProblemTypes,
+    qubo_to_matrix,
+)
 
 
 def _is_multi_term_sum(op: qml.operation.Operator) -> bool:
@@ -465,6 +476,298 @@ def convert_hamiltonian_to_pauli_string(
     return ";".join(terms)
 
 
+class IsingEncoding(NamedTuple):
+    """Result of converting a binary polynomial problem to an Ising Hamiltonian."""
+
+    operator: qml.operation.Operator
+    constant: float
+    decode_fn: Callable[[str], Any]
+    metadata: dict[str, object] | None = None
+
+
+class BinaryToIsingConverter(Protocol):
+    """Protocol for pluggable binary-to-Ising converters."""
+
+    def convert(self, problem: BinaryPolynomialProblem) -> IsingEncoding:
+        """Convert a canonical binary-polynomial problem to an Ising Hamiltonian."""
+        ...
+
+
+def _z_product(indices: tuple[int, ...]) -> qml.operation.Operator:
+    """Build a Z-product operator for the given wire indices."""
+    if len(indices) == 1:
+        return qml.Z(indices[0])
+    return reduce(lambda left, right: left @ right, (qml.Z(i) for i in indices))
+
+
+@dataclass(frozen=True)
+class NativeIsingConverter(BinaryToIsingConverter):
+    """Convert binary polynomials to Ising operators by exact substitution x=(1-Z)/2."""
+
+    zero_tol: float = 1e-12
+
+    def convert(self, problem: BinaryPolynomialProblem) -> IsingEncoding:
+        n_qubits = problem.n_vars
+        if n_qubits == 0:
+            return IsingEncoding(
+                operator=qml.Hamiltonian([], []),
+                constant=problem.constant,
+                decode_fn=lambda bitstring: np.array([], dtype=np.int32),
+                metadata={"strategy": "native", "term_count": 0},
+            )
+
+        z_term_weights: dict[tuple[int, ...], float] = {}
+        constant = 0.0
+
+        for term, coeff in problem.terms.items():
+            if abs(coeff) <= self.zero_tol:
+                continue
+
+            if len(term) == 0:
+                constant += float(coeff)
+                continue
+
+            term_indices = tuple(problem.variable_to_idx[var] for var in term)
+            scale = float(coeff) / (2 ** len(term_indices))
+
+            for subset_size in range(len(term_indices) + 1):
+                for subset in combinations(term_indices, subset_size):
+                    contribution = scale if subset_size % 2 == 0 else -scale
+                    if subset_size == 0:
+                        constant += contribution
+                        continue
+                    z_term_weights[subset] = (
+                        z_term_weights.get(subset, 0.0) + contribution
+                    )
+
+        weighted_terms = [
+            weight * _z_product(indices)
+            for indices, weight in z_term_weights.items()
+            if abs(weight) > self.zero_tol
+        ]
+        operator = (
+            qml.sum(*weighted_terms).simplify()
+            if weighted_terms
+            else qml.Hamiltonian([], [])
+        )
+
+        variable_to_idx = problem.variable_to_idx
+        variable_order = problem.variable_order
+
+        def _decode(bitstring: str) -> np.ndarray:
+            return np.fromiter(
+                (int(bitstring[variable_to_idx[var]]) for var in variable_order),
+                dtype=np.int32,
+            )
+
+        return IsingEncoding(
+            operator=operator,
+            constant=float(constant),
+            decode_fn=_decode,
+            metadata={"strategy": "native", "term_count": len(weighted_terms)},
+        )
+
+
+@dataclass(frozen=True)
+class QuadratizedIsingConverter(BinaryToIsingConverter):
+    """Convert binary polynomials to Ising operators via quadratization to QUBO/BQM."""
+
+    strength: float = 10.0
+
+    def convert(self, problem: BinaryPolynomialProblem) -> IsingEncoding:
+        if problem.n_vars == 0:
+            return IsingEncoding(
+                operator=qml.Hamiltonian([], []),
+                constant=problem.constant,
+                decode_fn=lambda bitstring: np.array([], dtype=np.int32),
+                metadata={"strategy": "quadratized", "ancilla_count": 0},
+            )
+
+        bqm = dimod.make_quadratic(problem.polynomial, self.strength, dimod.BINARY)
+        qubo_terms, offset = bqm.to_qubo()
+
+        variable_order = tuple(sorted(bqm.variables, key=repr))
+        var_to_idx = {var: idx for idx, var in enumerate(variable_order)}
+        qubo_matrix = np.zeros((len(variable_order), len(variable_order)), dtype=float)
+
+        for (u, v), coeff in qubo_terms.items():
+            i, j = var_to_idx[u], var_to_idx[v]
+            qubo_matrix[i, j] += float(coeff)
+
+        # Quadratization output can be asymmetric depending on term ordering.
+        # Normalize once here so converter-level warning semantics stay reserved
+        # for direct external unsanitized inputs.
+        if not _is_sanitized(qubo_matrix):
+            qubo_matrix = (qubo_matrix + qubo_matrix.T) / 2
+
+        operator, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
+        original_vars = set(problem.variable_order)
+        original_variable_order = problem.variable_order
+        ancilla_variables = [var for var in variable_order if var not in original_vars]
+
+        # Build decode function that maps measured bitstring (over all variables
+        # including ancillas) back to the original variable assignments only.
+        measure_variable_to_idx = var_to_idx
+
+        def _decode(bitstring: str) -> np.ndarray:
+            return np.fromiter(
+                (
+                    int(bitstring[measure_variable_to_idx[var]])
+                    for var in original_variable_order
+                ),
+                dtype=np.int32,
+            )
+
+        return IsingEncoding(
+            operator=operator,
+            constant=float(constant + offset),
+            decode_fn=_decode,
+            metadata={
+                "strategy": "quadratized",
+                "strength": self.strength,
+                "ancilla_count": len(ancilla_variables),
+                "ancilla_variables": ancilla_variables,
+            },
+        )
+
+
+def _default_variable_order(variables: set[Hashable]) -> tuple[Hashable, ...]:
+    """Build deterministic variable order for mixed, potentially incomparable labels."""
+    return tuple(sorted(variables, key=repr))
+
+
+def _normalize_hubo_term_key(term: Any) -> HUBOTerm:
+    """Validate and normalize a HUBO term key to a tuple."""
+    if isinstance(term, tuple):
+        term_tuple = term
+    elif isinstance(term, frozenset):
+        term_tuple = tuple(term)
+    else:
+        raise ValueError(
+            "HUBO term keys must be tuples (or frozensets from BinaryPolynomial internals), "
+            f"got {type(term)}"
+        )
+
+    if len(set(term_tuple)) != len(term_tuple):
+        raise ValueError(
+            f"Invalid HUBO term {term_tuple}: duplicate variables in a monomial are not allowed."
+        )
+
+    for variable in term_tuple:
+        if not isinstance(variable, Hashable):
+            raise ValueError(f"HUBO variable must be hashable, got {type(variable)}")
+
+    return term_tuple
+
+
+def hubo_to_binary_polynomial(hubo: HUBOProblemTypes) -> dimod.BinaryPolynomial:
+    """Convert HUBO input to a dimod BinaryPolynomial with BINARY vartype."""
+    if isinstance(hubo, dimod.BinaryPolynomial):
+        if hubo.vartype != dimod.Vartype.BINARY:
+            raise ValueError(
+                f"BinaryPolynomial must have vartype='BINARY', got {hubo.vartype}"
+            )
+        return hubo
+
+    if isinstance(hubo, dict):
+        poly_terms: dict[frozenset[Hashable], float] = {}
+        for raw_term, coeff in hubo.items():
+            term = _normalize_hubo_term_key(raw_term)
+            key = frozenset(term)
+            poly_terms[key] = poly_terms.get(key, 0.0) + float(coeff)
+        return dimod.BinaryPolynomial(poly_terms, dimod.Vartype.BINARY)
+
+    raise ValueError(f"Unsupported HUBO type: {type(hubo)}")
+
+
+def qubo_to_binary_polynomial(qubo: QUBOProblemTypes) -> dimod.BinaryPolynomial:
+    """Convert supported QUBO inputs to a binary polynomial."""
+    if isinstance(qubo, dimod.BinaryQuadraticModel):
+        if qubo.vartype != dimod.Vartype.BINARY:
+            raise ValueError(
+                f"BinaryQuadraticModel must have vartype='BINARY', got {qubo.vartype}"
+            )
+        poly_terms: dict[frozenset[Hashable], float] = {
+            frozenset({var}): float(coeff)
+            for var, coeff in qubo.linear.items()
+            if coeff != 0
+        }
+        for (u, v), coeff in qubo.quadratic.items():
+            key = frozenset({u, v})
+            poly_terms[key] = poly_terms.get(key, 0.0) + float(coeff)
+        if qubo.offset != 0:
+            poly_terms[frozenset()] = float(qubo.offset)
+        return dimod.BinaryPolynomial(poly_terms, dimod.Vartype.BINARY)
+
+    matrix = qubo_to_matrix(qubo)
+    if sps.isspmatrix(matrix):
+        coo_matrix = matrix.tocoo()
+        rows, cols, values = coo_matrix.row, coo_matrix.col, coo_matrix.data
+        n_vars = matrix.shape[0]
+    else:
+        rows, cols = matrix.nonzero()
+        values = matrix[rows, cols]
+        n_vars = matrix.shape[0]
+
+    poly_terms: dict[frozenset[Hashable], float] = {}
+    for i, j, coeff in zip(rows, cols, values):
+        if coeff == 0:
+            continue
+        key = frozenset({int(i)}) if i == j else frozenset({int(i), int(j)})
+        poly_terms[key] = poly_terms.get(key, 0.0) + float(coeff)
+
+    for idx in range(n_vars):
+        poly_terms.setdefault(frozenset({idx}), 0.0)
+
+    return dimod.BinaryPolynomial(poly_terms, dimod.Vartype.BINARY)
+
+
+def normalize_binary_polynomial_problem(
+    problem: QUBOProblemTypes | HUBOProblemTypes,
+    *,
+    variable_order: tuple[Hashable, ...] | list[Hashable] | None = None,
+) -> BinaryPolynomialProblem:
+    """Normalize QUBO/HUBO input into canonical binary-polynomial representation."""
+    if isinstance(problem, QUBOProblemTypes):
+        polynomial = qubo_to_binary_polynomial(problem)
+    else:
+        polynomial = hubo_to_binary_polynomial(problem)
+
+    variables = set(polynomial.variables)
+    if variable_order is None:
+        resolved_order = _default_variable_order(variables)
+    else:
+        resolved_order = tuple(variable_order)
+        if len(set(resolved_order)) != len(resolved_order):
+            raise ValueError("variable_order must not contain duplicates.")
+        if set(resolved_order) != variables:
+            raise ValueError(
+                "variable_order must contain exactly the variables present in the problem."
+            )
+
+    variable_to_idx = {var: idx for idx, var in enumerate(resolved_order)}
+    constant = float(polynomial.get(frozenset(), 0.0))
+    return BinaryPolynomialProblem(
+        polynomial=polynomial,
+        variable_order=resolved_order,
+        variable_to_idx=variable_to_idx,
+        constant=constant,
+    )
+
+
+def _resolve_ising_converter(
+    hamiltonian_builder: Literal["native", "quadratized"],
+    *,
+    quadratization_strength: float,
+) -> BinaryToIsingConverter:
+    """Resolve a converter selector string."""
+    if hamiltonian_builder == "native":
+        return NativeIsingConverter()
+    if hamiltonian_builder == "quadratized":
+        return QuadratizedIsingConverter(strength=quadratization_strength)
+    raise ValueError("hamiltonian_builder must be either 'native' or 'quadratized'.")
+
+
 def _is_sanitized(
     qubo_matrix: npt.NDArray[np.float64] | sps.spmatrix,
 ) -> npt.NDArray[np.float64] | sps.spmatrix:
@@ -596,15 +899,7 @@ def convert_qubo_matrix_to_pennylane_ising(
     # Construct the Ising Hamiltonian as a PennyLane operator
     pauli_string = qml.Identity(0) * 0
     for term, weight in zip(ising_terms, ising_weights):
-        if len(term) == 1:
-            # Single-qubit term (Z operator)
-            curr_term = qml.Z(term[0]) * weight
-        else:
-            # Two-qubit term (ZZ interaction)
-            curr_term = (
-                reduce(lambda x, y: x @ y, map(lambda x: qml.Z(x), term)) * weight
-            )
-
+        curr_term = _z_product(tuple(term)) * weight
         pauli_string += curr_term
 
     return pauli_string.simplify(), constant_term

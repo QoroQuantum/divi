@@ -42,13 +42,18 @@ if __name__ == "__main__":
     best_classical = classical_samples.first
     classical_solution = [best_classical.sample[v] for v in bqm.variables]
 
-    # Get quantum solution (solution is a numpy array from _solution_bitstring)
-    quantum_solution = qaoa_problem.solution
-    solution_dict = {var: int(val) for var, val in zip(bqm.variables, quantum_solution)}
+    # Get quantum solution (dict for named BQM vars, else array in variable order)
+    sol = qaoa_problem.solution
+    solution_dict = (
+        {v: int(sol[v]) for v in bqm.variables}
+        if isinstance(sol, dict)
+        else dict(zip(bqm.variables, sol))
+    )
     quantum_energy = bqm.energy(solution_dict)
+    quantum_values = [solution_dict[v] for v in bqm.variables]
 
     # Print solutions side by side for easy comparison
     print(f"Classical Solution:\t[{''.join(map(str, classical_solution))}]")
-    print(f"Quantum Solution:\t[{''.join(map(str, quantum_solution))}]")
+    print(f"Quantum Solution:\t[{''.join(map(str, quantum_values))}]")
     print(f"Classical Energy:\t{best_classical.energy:.9f}")
     print(f"Quantum Energy:\t\t{quantum_energy:.9f}")

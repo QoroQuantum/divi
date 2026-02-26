@@ -1,5 +1,5 @@
-Checkpointing
-=============
+Resuming Long-Running or Interrupted Runs
+=========================================
 
 Checkpointing allows you to save the state of your quantum algorithm optimization at any point and resume from that exact state later. This is essential for long-running optimizations, debugging, and resuming interrupted computations.
 

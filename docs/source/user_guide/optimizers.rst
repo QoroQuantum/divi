@@ -250,7 +250,7 @@ Next Steps
 ----------
 
 - 🔬 **Tutorials**: Try the runnable examples in the `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ directory.
-- ⚡ **Algorithm Guides**: Learn about :doc:`vqe` and :doc:`qaoa` for algorithm-specific guidance.
+- ⚡ **Algorithm Guides**: Learn about :doc:`ground_state_energy_estimation_vqe` and :doc:`combinatorial_optimization_qaoa_pce` for algorithm-specific guidance.
 - ⚡ **Batching and Sweeps**: See how to use optimizers in large-scale computations in the :doc:`program_batches` guide.
 
 References

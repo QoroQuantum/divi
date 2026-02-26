@@ -12,12 +12,15 @@ import scipy.sparse as sps
 from divi import hamiltonians
 from divi.hamiltonians import (
     ExactTrotterization,
+    NativeIsingConverter,
     QDrift,
+    QuadratizedIsingConverter,
     _clean_hamiltonian,
     _hamiltonian_term_count,
     _is_sanitized,
     convert_hamiltonian_to_pauli_string,
     convert_qubo_matrix_to_pennylane_ising,
+    normalize_binary_polynomial_problem,
 )
 
 
@@ -108,6 +111,17 @@ class TestQuboToIsingConversion:
         assert np.isclose(constant, -0.5)
         assert qml.equal(hamiltonian, expected_hamiltonian)
 
+    def test_non_sanitized_sparse_qubo_raises_warning(self):
+        """Non-sanitized sparse QUBO raises warning and is symmetrized."""
+        qubo_matrix = sps.csc_matrix([[-1.0, 3.0], [1.0, -1.0]])
+
+        with pytest.warns(UserWarning, match="neither symmetric nor upper triangular"):
+            hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
+
+        expected_hamiltonian = 0.5 * (qml.Z(0) @ qml.Z(1))
+        assert np.isclose(constant, -0.5)
+        assert qml.equal(hamiltonian, expected_hamiltonian)
+
     def test_diagonal_qubo(self):
         """
         Tests a purely diagonal QUBO matrix, which should result in only Z terms.
@@ -166,6 +180,101 @@ class TestQuboToIsingConversion:
         assert h_map.keys() == e_map.keys()
         for key in h_map:
             assert np.isclose(h_map[key], e_map[key])
+
+
+class TestBinaryToIsingConverters:
+    """Tests for Protocol-based binary-to-Ising converters."""
+
+    @staticmethod
+    def _eval_polynomial_energy(problem, assignment):
+        energy = 0.0
+        for term, coeff in problem.terms.items():
+            if len(term) == 0:
+                energy += coeff
+                continue
+            prod = 1.0
+            for var in term:
+                prod *= assignment[var]
+            energy += coeff * prod
+        return float(energy)
+
+    @staticmethod
+    def _eval_ising_energy(operator, constant, assignment, variable_to_idx):
+        if _hamiltonian_term_count(operator) == 0:
+            return float(constant)
+
+        coeffs, ops = operator.terms()
+        z_vals = {i: 1 - (2 * assignment[var]) for var, i in variable_to_idx.items()}
+        energy = float(constant)
+        for coeff, op in zip(coeffs, ops):
+            if isinstance(op, qml.ops.Prod):
+                wires = [int(wire) for wire in op.wires]
+                parity = np.prod([z_vals[w] for w in wires])
+            else:
+                parity = z_vals[int(op.wires[0])]
+            energy += float(coeff) * float(parity)
+        return float(energy)
+
+    def test_native_converter_matches_polynomial_energy(self):
+        hubo = {
+            ("x0",): -1.0,
+            ("x0", "x1"): 2.0,
+            ("x0", "x1", "x2"): 4.0,
+            (): 0.5,
+        }
+        problem = normalize_binary_polynomial_problem(
+            hubo, variable_order=("x0", "x1", "x2")
+        )
+
+        result = NativeIsingConverter().convert(problem)
+        assert result.metadata["strategy"] == "native"
+        assert len(result.operator.wires) == 3
+
+        # Test decode_fn returns correct assignments
+        decoded = result.decode_fn("101")
+        assert list(decoded) == [1, 0, 1]
+
+        for x0 in (0, 1):
+            for x1 in (0, 1):
+                for x2 in (0, 1):
+                    assignment = {"x0": x0, "x1": x1, "x2": x2}
+                    poly_energy = self._eval_polynomial_energy(problem, assignment)
+                    ising_energy = self._eval_ising_energy(
+                        result.operator,
+                        result.constant,
+                        assignment,
+                        problem.variable_to_idx,
+                    )
+                    assert ising_energy == pytest.approx(poly_energy)
+
+    def test_quadratized_converter_introduces_ancillas_for_cubic_term(self):
+        problem = normalize_binary_polynomial_problem(
+            {("x0", "x1", "x2"): 1.0},
+            variable_order=("x0", "x1", "x2"),
+        )
+        result = QuadratizedIsingConverter(strength=5.0).convert(problem)
+
+        assert result.metadata["strategy"] == "quadratized"
+        assert result.metadata["ancilla_count"] >= 1
+
+        # decode_fn should return only original variables
+        n_measure_qubits = len(result.operator.wires)
+        bitstring = "1" * n_measure_qubits
+        decoded = result.decode_fn(bitstring)
+        assert len(decoded) == problem.n_vars
+
+        if _hamiltonian_term_count(result.operator) > 0:
+            _, ops = result.operator.terms()
+            for op in ops:
+                locality = len(op.wires)
+                assert locality <= 2
+
+    def test_quadratized_converter_has_no_ancillas_for_quadratic_input(self):
+        qubo = np.array([[1.0, -0.5], [0.0, 2.0]])
+        problem = normalize_binary_polynomial_problem(qubo)
+        result = QuadratizedIsingConverter(strength=5.0).convert(problem)
+
+        assert result.metadata["ancilla_count"] == 0
 
 
 class TestCleanHamiltonian:

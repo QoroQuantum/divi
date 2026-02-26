@@ -6,10 +6,9 @@ import logging
 import pickle
 from collections.abc import Callable, Container
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 from warnings import warn
 
-import dimod
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
@@ -20,10 +19,12 @@ import sympy as sp
 from divi.circuits import MetaCircuit
 from divi.hamiltonians import (
     ExactTrotterization,
+    IsingEncoding,
     TrotterizationStrategy,
     _clean_hamiltonian,
     _is_empty_hamiltonian,
-    convert_qubo_matrix_to_pennylane_ising,
+    _resolve_ising_converter,
+    normalize_binary_polynomial_problem,
 )
 from divi.pipeline.stages import TrotterSpecStage
 from divi.qprog.algorithms._initial_state import (
@@ -34,33 +35,14 @@ from divi.qprog.variational_quantum_algorithm import (
     VariationalQuantumAlgorithm,
     _extract_param_set_idx,
 )
-from divi.typing import GraphProblemTypes, QUBOProblemTypes, qubo_to_matrix
+from divi.typing import (
+    BinaryPolynomialProblem,
+    GraphProblemTypes,
+    HUBOProblemTypes,
+    QUBOProblemTypes,
+)
 
 logger = logging.getLogger(__name__)
-
-
-def _extract_loss_constant(
-    problem_metadata: dict, constant_from_hamiltonian: float
-) -> float:
-    """Extract and combine loss constants from problem metadata and hamiltonian.
-
-    Args:
-        problem_metadata: Metadata dictionary that may contain a "constant" key.
-        constant_from_hamiltonian: Constant extracted from the hamiltonian.
-
-    Returns:
-        Combined loss constant.
-    """
-    pre_calculated_constant = 0.0
-    if "constant" in problem_metadata:
-        pre_calculated_constant = problem_metadata.get("constant")
-        try:
-            pre_calculated_constant = pre_calculated_constant.item()
-        except (AttributeError, TypeError):
-            # If .item() doesn't exist or fails, ensure it's a float
-            pre_calculated_constant = float(pre_calculated_constant)
-
-    return pre_calculated_constant + constant_from_hamiltonian
 
 
 def draw_graph_solution_nodes(main_graph: nx.Graph, partition_nodes: Container[Any]):
@@ -133,52 +115,29 @@ class GraphProblem(Enum):
         self.unconstrained_initial_state = unconstrained_initial_state
 
 
-def _resolve_circuit_layers(
-    initial_state, problem, graph_problem, **kwargs
+def _resolve_graph_circuit_layers(
+    initial_state: str,
+    problem: GraphProblemTypes,
+    graph_problem: GraphProblem,
+    *,
+    is_constrained: bool,
 ) -> tuple[qml.operation.Operator, qml.operation.Operator, dict | None, str]:
-    """Generate the cost and mixer Hamiltonians for a given problem.
-
-    Args:
-        initial_state (str): The initial state specification.
-        problem (GraphProblemTypes | QUBOProblemTypes): The problem to solve (graph or QUBO).
-        graph_problem (GraphProblem | None): The graph problem type (if applicable).
-        **kwargs: Additional keyword arguments.
-
-    Returns:
-        tuple[qml.operation.Operator, qml.operation.Operator, dict | None, str]: (cost_hamiltonian, mixer_hamiltonian, metadata, resolved_initial_state)
-    """
-
-    if isinstance(problem, GraphProblemTypes):
-        is_constrained = kwargs.pop("is_constrained", True)
-
-        if graph_problem == GraphProblem.MAXCUT:
-            params = (problem,)
-        else:
-            params = (problem, is_constrained)
-
-        if initial_state == "Recommended":
-            resolved_initial_state = (
-                graph_problem.constrained_initial_state
-                if is_constrained
-                else graph_problem.constrained_initial_state
-            )
-        else:
-            resolved_initial_state = initial_state
-
-        return *getattr(pqaoa, graph_problem.pl_string)(*params), resolved_initial_state
+    """Generate graph-problem QAOA cost and mixer Hamiltonians."""
+    if graph_problem == GraphProblem.MAXCUT:
+        params = (problem,)
     else:
-        qubo_matrix = qubo_to_matrix(problem)
+        params = (problem, is_constrained)
 
-        cost_hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
-
-        n_qubits = qubo_matrix.shape[0]
-
-        return (
-            cost_hamiltonian,
-            pqaoa.x_mixer(range(n_qubits)),
-            {"constant": constant},
-            "Superposition",
+    if initial_state == "Recommended":
+        resolved_initial_state = (
+            graph_problem.constrained_initial_state
+            if is_constrained
+            else graph_problem.unconstrained_initial_state
         )
+    else:
+        resolved_initial_state = initial_state
+
+    return *getattr(pqaoa, graph_problem.pl_string)(*params), resolved_initial_state
 
 
 class QAOA(VariationalQuantumAlgorithm):
@@ -213,11 +172,13 @@ class QAOA(VariationalQuantumAlgorithm):
 
     def __init__(
         self,
-        problem: GraphProblemTypes | QUBOProblemTypes,
+        problem: GraphProblemTypes | QUBOProblemTypes | HUBOProblemTypes,
         *,
         graph_problem: GraphProblem | None = None,
         initial_state: str = "Recommended",
         decode_solution_fn: Callable[[str], Any] | None = None,
+        hamiltonian_builder: Literal["native", "quadratized"] = "native",
+        quadratization_strength: float = 10.0,
         trotterization_strategy: TrotterizationStrategy | None = None,
         max_iterations: int = 10,
         n_layers: int = 1,
@@ -226,23 +187,33 @@ class QAOA(VariationalQuantumAlgorithm):
         """Initialize the QAOA problem.
 
         Args:
-            problem (GraphProblemTypes | QUBOProblemTypes): The problem to solve, can either be a graph or a QUBO.
+            problem (GraphProblemTypes | QUBOProblemTypes | HUBOProblemTypes): The problem to solve, can either be a graph or a binary polynomial optimization problem.
                 For graph inputs, the graph problem to solve must be provided
                 through the `graph_problem` variable.
             graph_problem (GraphProblem | None): The graph problem to solve. Defaults to None.
             initial_state (str): The initial state of the circuit. Defaults to "Recommended".
             decode_solution_fn (callable[[str], Any] | None): Optional decoder for bitstrings.
                 If not provided, a default decoder is selected based on problem type.
+            hamiltonian_builder: Hamiltonian conversion backend for binary polynomial
+                problems. Accepts "native" or "quadratized".
+            quadratization_strength: Penalty strength used when
+                `hamiltonian_builder="quadratized"`.
             trotterization_strategy (TrotterizationStrategy | None): The trotterization strategy to use. Defaults to ExactTrotterization.
             max_iterations (int): Maximum number of optimization iterations. Defaults to 10.
             n_layers (int): Number of QAOA layers. Defaults to 1.
             **kwargs: Additional keyword arguments passed to the parent class, including `optimizer`.
         """
         self.graph_problem = graph_problem
+        self._ising_encoding: IsingEncoding | None = None
 
         # Validate and process problem (needed to determine decode function)
         # This sets n_qubits which is needed before parent init
-        self.problem = self._validate_and_set_problem(problem, graph_problem)
+        self.problem = self._validate_and_set_problem(
+            problem,
+            graph_problem,
+            hamiltonian_builder=hamiltonian_builder,
+            quadratization_strength=quadratization_strength,
+        )
 
         if decode_solution_fn is not None:
             kwargs["decode_solution_fn"] = decode_solution_fn
@@ -262,22 +233,34 @@ class QAOA(VariationalQuantumAlgorithm):
         self._solution_nodes = []
         self._solution_bitstring = []
         # Resolve hamiltonians and problem metadata
-        (
-            cost_hamiltonian,
-            self._mixer_hamiltonian,
-            *problem_metadata,
-            self.initial_state,
-        ) = _resolve_circuit_layers(
-            initial_state=initial_state,
-            problem=self.problem,
-            graph_problem=self.graph_problem,
-            **kwargs,
-        )
+        if isinstance(self.problem, GraphProblemTypes):
+            (
+                cost_hamiltonian,
+                self._mixer_hamiltonian,
+                *problem_metadata,
+                self.initial_state,
+            ) = _resolve_graph_circuit_layers(
+                initial_state=initial_state,
+                problem=self.problem,
+                graph_problem=self.graph_problem,
+                is_constrained=kwargs.get("is_constrained", True),
+            )
+        else:
+            if self._ising_encoding is None:
+                raise ValueError(
+                    "Missing Ising encoding for binary polynomial problem."
+                )
+            cost_hamiltonian = self._ising_encoding.operator
+            self._mixer_hamiltonian = pqaoa.x_mixer(range(self.n_qubits))
+            self.initial_state = "Superposition"
 
         # Validate the *resolved* initial state ("Recommended" has been
         # mapped to a concrete value by _resolve_circuit_layers).
         validate_initial_state(self.initial_state, self.n_qubits)
-        self.problem_metadata = problem_metadata[0] if problem_metadata else {}
+        if isinstance(self.problem, GraphProblemTypes):
+            self.problem_metadata = problem_metadata[0] if problem_metadata else {}
+        else:
+            self.problem_metadata = self._ising_encoding.metadata or {}
 
         # Extract and combine constants
         self._cost_hamiltonian, constant_from_hamiltonian = _clean_hamiltonian(
@@ -286,9 +269,12 @@ class QAOA(VariationalQuantumAlgorithm):
         if _is_empty_hamiltonian(self._cost_hamiltonian):
             raise ValueError("Hamiltonian contains only constant terms.")
 
-        self.loss_constant = _extract_loss_constant(
-            self.problem_metadata, constant_from_hamiltonian
-        )
+        if self._ising_encoding is not None:
+            self.loss_constant = (
+                self._ising_encoding.constant + constant_from_hamiltonian
+            )
+        else:
+            self.loss_constant = constant_from_hamiltonian
 
         # Extract wire labels from the cost Hamiltonian to ensure consistency
         self._circuit_wires = tuple(self._cost_hamiltonian.wires)
@@ -304,11 +290,9 @@ class QAOA(VariationalQuantumAlgorithm):
 
         # Set up decode function based on problem type if user didn't provide one
         if decode_solution_fn is None:
-            if isinstance(self.problem, QUBOProblemTypes):
-                # For QUBO: convert bitstring to numpy array of int32
-                self._decode_solution_fn = lambda bitstring: np.fromiter(
-                    bitstring, dtype=np.int32
-                )
+            if self.graph_problem is None:
+                # Binary polynomial problems decode via the converter's decode_fn.
+                self._decode_solution_fn = self._ising_encoding.decode_fn
             elif isinstance(self.problem, GraphProblemTypes):
                 # For Graph: map bitstring positions to graph node labels
                 circuit_wires = self._circuit_wires  # Capture for closure
@@ -375,13 +359,16 @@ class QAOA(VariationalQuantumAlgorithm):
 
     def _validate_and_set_problem(
         self,
-        problem: GraphProblemTypes | QUBOProblemTypes,
+        problem: GraphProblemTypes | QUBOProblemTypes | HUBOProblemTypes,
         graph_problem: GraphProblem | None,
-    ) -> GraphProblemTypes | QUBOProblemTypes:
+        *,
+        hamiltonian_builder: Literal["native", "quadratized"],
+        quadratization_strength: float,
+    ) -> GraphProblemTypes | BinaryPolynomialProblem:
         """Validate and process the problem input, setting n_qubits and graph_problem.
 
         Args:
-            problem: The problem to solve (graph or QUBO).
+            problem: The problem to solve (graph or binary polynomial optimization).
             graph_problem: The graph problem type (if applicable).
 
         Returns:
@@ -390,51 +377,37 @@ class QAOA(VariationalQuantumAlgorithm):
         Raises:
             ValueError: If problem type or graph_problem is invalid.
         """
-        if isinstance(problem, QUBOProblemTypes):
+        if isinstance(problem, GraphProblemTypes):
+            return self._process_graph_problem(problem, graph_problem)
+        else:
             if graph_problem is not None:
-                warn("Ignoring the 'problem' argument as it is not applicable to QUBO.")
+                warn(
+                    "Ignoring the 'graph_problem' argument as it is not applicable to binary polynomial inputs."
+                )
 
             self.graph_problem = None
-            return self._process_qubo_problem(problem)
-        else:
-            return self._process_graph_problem(problem, graph_problem)
-
-    def _process_qubo_problem(self, problem: QUBOProblemTypes) -> QUBOProblemTypes:
-        """Process QUBO problem, converting if necessary and setting n_qubits.
-
-        Args:
-            problem: QUBO problem (BinaryQuadraticModel, list, array, or sparse matrix).
-
-        Returns:
-            Processed QUBO problem.
-
-        Raises:
-            ValueError: If QUBO matrix has invalid shape or BinaryQuadraticModel has non-binary variables.
-        """
-        # Handle BinaryQuadraticModel
-        if isinstance(problem, dimod.BinaryQuadraticModel):
-            if problem.vartype != dimod.Vartype.BINARY:
-                raise ValueError(
-                    f"BinaryQuadraticModel must have vartype='BINARY', got {problem.vartype}"
-                )
-            self.n_qubits = len(problem.variables)
-            return problem
-
-        # Handle list input
-        if isinstance(problem, list):
-            problem = np.array(problem)
-
-        # Validate matrix shape
-        if problem.ndim != 2 or problem.shape[0] != problem.shape[1]:
-            raise ValueError(
-                "Invalid QUBO matrix."
-                f" Got array of shape {problem.shape}."
-                " Must be a square matrix."
+            return self._process_binary_problem(
+                problem,
+                hamiltonian_builder=hamiltonian_builder,
+                quadratization_strength=quadratization_strength,
             )
 
-        self.n_qubits = problem.shape[1]
+    def _process_binary_problem(
+        self,
+        problem: QUBOProblemTypes | HUBOProblemTypes,
+        *,
+        hamiltonian_builder: Literal["native", "quadratized"],
+        quadratization_strength: float,
+    ) -> BinaryPolynomialProblem:
+        """Normalize binary optimization input and convert to Ising."""
+        canonical_problem = normalize_binary_polynomial_problem(problem)
+        converter = _resolve_ising_converter(
+            hamiltonian_builder, quadratization_strength=quadratization_strength
+        )
+        self._ising_encoding = converter.convert(canonical_problem)
+        self.n_qubits = len(self._ising_encoding.operator.wires)
 
-        return problem
+        return canonical_problem
 
     def _process_graph_problem(
         self,
@@ -472,14 +445,18 @@ class QAOA(VariationalQuantumAlgorithm):
         """Get the solution found by QAOA optimization.
 
         Returns:
-            list[int] | npt.NDArray[np.int32]: For graph problems, returns a list of selected node indices.
-                For QUBO problems, returns a list/array of binary values.
+            For graph problems, a list of selected node indices.
+            For QUBO problems, a list of binary values.
+            For HUBO problems with non-integer variable names, a dictionary
+            mapping variable names to binary values.
         """
-        return (
-            self._solution_nodes
-            if self.graph_problem is not None
-            else self._solution_bitstring
-        )
+        if self.graph_problem is not None:
+            return self._solution_nodes
+        if isinstance(self.problem, BinaryPolynomialProblem):
+            vo = self.problem.variable_order
+            if vo != tuple(range(self.problem.n_vars)):
+                return dict(zip(vo, self._solution_bitstring))
+        return self._solution_bitstring
 
     def _build_qaoa_ops(self, cost_hamiltonian: qml.operation.Operator) -> list:
         """Build QAOA layer ops for a given cost Hamiltonian."""
@@ -576,7 +553,7 @@ class QAOA(VariationalQuantumAlgorithm):
         decoded_solution = self._decode_solution_fn(best_solution_bitstring)
 
         # Store in appropriate attribute based on problem type
-        if isinstance(self.problem, QUBOProblemTypes):
+        if self.graph_problem is None:
             self._solution_bitstring[:] = decoded_solution
         elif isinstance(self.problem, GraphProblemTypes):
             self._solution_nodes[:] = decoded_solution

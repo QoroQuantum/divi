@@ -16,7 +16,11 @@ from mitiq.zne.scaling import fold_global
 
 from divi.backends import CircuitRunner
 from divi.circuits.qem import ZNE
-from divi.hamiltonians import ExactTrotterization, QDrift
+from divi.hamiltonians import (
+    ExactTrotterization,
+    QDrift,
+    normalize_binary_polynomial_problem,
+)
 from divi.pipeline.stages import TrotterSpecStage
 from divi.qprog import (
     QAOA,
@@ -26,6 +30,17 @@ from divi.qprog import (
 )
 from divi.qprog.algorithms import _qaoa
 from divi.qprog.checkpointing import CheckpointConfig
+from divi.typing import BinaryPolynomialProblem
+from tests.qprog.algorithms.problems import (
+    HUBO_CUBIC,
+    QUBO_MATRIX,
+    QUBO_SOLUTION,
+    exact_hubo_minima,
+    make_bqm_maximize,
+    make_bqm_minimize,
+    make_bull_graph,
+    make_string_node_graph,
+)
 from tests.qprog.qprog_contracts import (
     CHECKPOINTING_OPTIMIZERS,
     OPTIMIZERS_TO_TEST,
@@ -117,7 +132,7 @@ class TestGeneralQAOA:
 
 class TestGraphInput:
     def test_graph_basic_initialization(self, default_test_simulator):
-        G = nx.bull_graph()
+        G = make_bull_graph()
 
         qaoa_problem = QAOA(
             problem=G,
@@ -201,7 +216,7 @@ class TestGraphInput:
     def test_perform_final_computation_extracts_correct_solution(
         self, mocker, dummy_simulator
     ):
-        G = nx.bull_graph()
+        G = make_bull_graph()
         qaoa_problem = QAOA(
             graph_problem=GraphProblem.MAX_CLIQUE,
             problem=G,
@@ -558,9 +573,7 @@ class TestGraphInput:
     def test_string_node_labels_e2e(self, default_test_simulator):
         """End-to-end test with string node labels."""
         # Create a simple graph with string labels
-        G = nx.Graph()
-        G.add_nodes_from(["node0", "node1", "node2"])
-        G.add_edges_from([("node0", "node1"), ("node1", "node2")])
+        G = make_string_node_graph()
 
         default_test_simulator.set_seed(1997)
 
@@ -592,21 +605,14 @@ class TestGraphInput:
         ), "All solution nodes should be valid graph nodes"
 
 
-QUBO_MATRIX_LIST = [
-    [-3.0, 4.0, 0.0],
-    [0.0, 2.0, 0.0],
-    [0.0, 0.0, -3.0],
-]
-QUBO_MATRIX_NP = np.array(QUBO_MATRIX_LIST)
-
 QUBO_FORMATS_TO_TEST = {
     "argvalues": [
-        QUBO_MATRIX_LIST,
-        QUBO_MATRIX_NP,
-        sps.csc_matrix(QUBO_MATRIX_NP),
-        sps.csr_matrix(QUBO_MATRIX_NP),
-        sps.coo_matrix(QUBO_MATRIX_NP),
-        sps.lil_matrix(QUBO_MATRIX_NP),
+        QUBO_MATRIX.tolist(),
+        QUBO_MATRIX,
+        sps.csc_matrix(QUBO_MATRIX),
+        sps.csr_matrix(QUBO_MATRIX),
+        sps.coo_matrix(QUBO_MATRIX),
+        sps.lil_matrix(QUBO_MATRIX),
     ],
     "ids": ["List", "Numpy", "CSC", "CSR", "COO", "LIL"],
 }
@@ -632,12 +638,12 @@ class TestQUBOInput:
         assert qaoa_problem.max_iterations == 10
         assert qaoa_problem.graph_problem == None
         assert qaoa_problem.n_layers == 1
-        if isinstance(input_qubo, sps.spmatrix):
-            np.testing.assert_equal(
-                qaoa_problem.problem.toarray(), input_qubo.toarray()
-            )
-        else:
-            np.testing.assert_equal(qaoa_problem.problem, input_qubo)
+        assert isinstance(qaoa_problem.problem, BinaryPolynomialProblem)
+        assert qaoa_problem.problem.n_vars == 3
+
+        expected_problem = normalize_binary_polynomial_problem(input_qubo)
+        assert qaoa_problem.problem.variable_order == expected_problem.variable_order
+        assert qaoa_problem.problem.terms == expected_problem.terms
 
         assert len(qaoa_problem.cost_hamiltonian) == 4
         assert all(
@@ -654,16 +660,92 @@ class TestQUBOInput:
     def test_redundant_graph_problem_raises_warning(self, dummy_simulator):
         with pytest.warns(
             UserWarning,
-            match="Ignoring the 'problem' argument as it is not applicable to QUBO.",
+            match="Ignoring the 'graph_problem' argument as it is not applicable to binary polynomial inputs.",
         ):
             QAOA(
-                problem=QUBO_MATRIX_LIST,
+                problem=QUBO_MATRIX.tolist(),
                 graph_problem="max_clique",
                 n_layers=1,
                 optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
                 max_iterations=10,
                 backend=dummy_simulator,
             )
+
+    def test_hubo_dict_initialization_native_builder(self, dummy_simulator):
+        hubo = {
+            ("x0",): -1.0,
+            ("x0", "x1"): 2.0,
+            ("x0", "x1", "x2"): 1.5,
+            (): 0.25,
+        }
+
+        qaoa_problem = QAOA(
+            problem=hubo,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=1,
+            backend=dummy_simulator,
+        )
+
+        assert qaoa_problem.graph_problem is None
+        assert qaoa_problem.n_qubits == 3
+        assert qaoa_problem.problem.n_vars == 3
+        assert qaoa_problem.problem_metadata["strategy"] == "native"
+
+    def test_hubo_dict_quadratized_builder_adds_ancillas(self, dummy_simulator):
+        hubo = {("x0", "x1", "x2"): 1.0}
+        qaoa_problem = QAOA(
+            problem=hubo,
+            hamiltonian_builder="quadratized",
+            quadratization_strength=5.0,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=1,
+            backend=dummy_simulator,
+        )
+
+        assert qaoa_problem.problem_metadata["strategy"] == "quadratized"
+        assert qaoa_problem.problem_metadata["ancilla_count"] >= 1
+        assert qaoa_problem.n_qubits >= qaoa_problem.problem.n_vars
+
+    def test_invalid_hamiltonian_builder_raises(self, dummy_simulator):
+        with pytest.raises(
+            ValueError,
+            match="hamiltonian_builder must be either 'native' or 'quadratized'",
+        ):
+            QAOA(
+                problem=QUBO_MATRIX.tolist(),
+                hamiltonian_builder="custom",  # type: ignore[arg-type]
+                n_layers=1,
+                optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+                max_iterations=1,
+                backend=dummy_simulator,
+            )
+
+    def test_quadratized_decode_excludes_ancillas(self, mocker, dummy_simulator):
+        hubo = {("x0", "x1", "x2"): 1.0}
+        qaoa_problem = QAOA(
+            problem=hubo,
+            hamiltonian_builder="quadratized",
+            quadratization_strength=5.0,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=1,
+            backend=dummy_simulator,
+        )
+
+        # Build a best-probability bitstring over measurement qubits (including ancillas).
+        best_bitstring = "1" * qaoa_problem.n_qubits
+        qaoa_problem._best_probs = {"0_NoMitigation:0_0": {best_bitstring: 1.0}}
+        mocker.patch.object(qaoa_problem, "_run_solution_measurement")
+
+        qaoa_problem._perform_final_computation()
+
+        # Decoded solution maps original variable names and excludes ancillas.
+        sol = qaoa_problem.solution
+        assert isinstance(sol, dict)
+        assert set(sol.keys()) == set(qaoa_problem.problem.variable_order)
+        assert all(v == 1 for v in sol.values())
 
     def test_non_square_qubo_fails(self, dummy_simulator):
         with pytest.raises(
@@ -678,44 +760,36 @@ class TestQUBOInput:
                 backend=dummy_simulator,
             )
 
-    def test_non_symmetrical_qubo_raises_warning(self, dummy_simulator):
+    def test_non_symmetrical_qubo_normalizes_problem(self, dummy_simulator):
         test_array = np.array([[1, 2], [3, 4]])
         test_array_sp = sps.csc_matrix(test_array)
 
-        with pytest.warns(
-            UserWarning,
-            match=r"The QUBO matrix is neither symmetric nor upper triangular\. Symmetrizing it for the Ising Hamiltonian creation\.",
-        ):
-            qaoa_problem = QAOA(
-                problem=test_array,
-                n_layers=1,
-                optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
-                max_iterations=10,
-                backend=dummy_simulator,
-            )
-
-        # Ensure the problem matrix was untouched
-        np.testing.assert_equal(
-            qaoa_problem.problem,
-            np.array([[1, 2], [3, 4]]),
+        qaoa_problem = QAOA(
+            problem=test_array,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=10,
+            backend=dummy_simulator,
         )
 
+        assert isinstance(qaoa_problem.problem, BinaryPolynomialProblem)
+        expected_dense = normalize_binary_polynomial_problem(test_array)
+        assert qaoa_problem.problem.terms == expected_dense.terms
+
         # Test again for sparse matrix
-        with pytest.warns(
-            UserWarning,
-            match=r"The QUBO matrix is neither symmetric nor upper triangular\. Symmetrizing it for the Ising Hamiltonian creation\.",
-        ):
-            QAOA(
-                problem=test_array_sp,
-                n_layers=1,
-                optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
-                max_iterations=10,
-                backend=dummy_simulator,
-            )
+        qaoa_problem_sparse = QAOA(
+            problem=test_array_sp,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=10,
+            backend=dummy_simulator,
+        )
+        expected_sparse = normalize_binary_polynomial_problem(test_array_sp)
+        assert qaoa_problem_sparse.problem.terms == expected_sparse.terms
 
     def test_qubo_fails_when_drawing_solution(self, dummy_simulator):
         qaoa_problem = QAOA(
-            problem=QUBO_MATRIX_LIST,
+            problem=QUBO_MATRIX.tolist(),
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=10,
@@ -729,11 +803,31 @@ class TestQUBOInput:
             qaoa_problem.draw_solution()
 
     @pytest.mark.e2e
+    @pytest.mark.parametrize("builder", ["native", "quadratized"])
+    def test_hubo_e2e_recovers_exact_minimum(self, builder, default_test_simulator):
+        default_test_simulator.set_seed(1997)
+        _, exact_minima = exact_hubo_minima(HUBO_CUBIC, n_vars=3)
+
+        qaoa_problem = QAOA(
+            problem=HUBO_CUBIC,
+            hamiltonian_builder=builder,
+            quadratization_strength=5.0,
+            n_layers=2,
+            optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+            max_iterations=18,
+            backend=default_test_simulator,
+            seed=1997,
+        )
+
+        qaoa_problem.run()
+        assert any(np.array_equal(qaoa_problem.solution, x) for x in exact_minima)
+
+    @pytest.mark.e2e
     def test_qubo_returns_correct_solution(self, default_test_simulator):
         default_test_simulator.set_seed(1997)
 
         qaoa_problem = QAOA(
-            problem=QUBO_MATRIX_NP,
+            problem=QUBO_MATRIX,
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             max_iterations=12,
@@ -743,7 +837,7 @@ class TestQUBOInput:
 
         qaoa_problem.run()
 
-        np.testing.assert_equal(qaoa_problem.solution, [1, 0, 1])
+        np.testing.assert_equal(qaoa_problem.solution, QUBO_SOLUTION)
 
     @pytest.mark.e2e
     def test_qubo_e2e_checkpointing_resume(self, default_test_simulator, tmp_path):
@@ -761,7 +855,7 @@ class TestQUBOInput:
 
         # Run first half with checkpointing
         qaoa_problem1 = QAOA(
-            problem=QUBO_MATRIX_NP,
+            problem=QUBO_MATRIX,
             n_layers=1,
             optimizer=optimizer,
             max_iterations=6,  # First half
@@ -787,7 +881,7 @@ class TestQUBOInput:
         qaoa_problem2 = QAOA.load_state(
             checkpoint_dir,
             backend=default_test_simulator,
-            problem=QUBO_MATRIX_NP,
+            problem=QUBO_MATRIX,
             n_layers=1,
         )
 
@@ -800,7 +894,7 @@ class TestQUBOInput:
         qaoa_problem2.run()
 
         # Verify final results are correct
-        np.testing.assert_equal(qaoa_problem2.solution, [1, 0, 1])
+        np.testing.assert_equal(qaoa_problem2.solution, QUBO_SOLUTION)
 
         # Verify we completed the full run
         assert qaoa_problem2.current_iteration == 12
@@ -815,16 +909,12 @@ class TestQUBOInput:
     @pytest.fixture
     def bqm_minimize(self):
         """BQM for minimization test: x=1, y=-2, z=3, w=-1"""
-        return dimod.BinaryQuadraticModel(
-            {"x": 1, "y": -2, "z": 3, "w": -1}, {}, 0.0, dimod.Vartype.BINARY
-        )
+        return make_bqm_minimize()
 
     @pytest.fixture
     def bqm_maximize(self):
         """BQM for maximization test (negated for minimization): x=-1, y=2, z=-3, w=1"""
-        return dimod.BinaryQuadraticModel(
-            {"x": -1, "y": 2, "z": -3, "w": 1}, {}, 0.0, dimod.Vartype.BINARY
-        )
+        return make_bqm_maximize()
 
     def test_binary_quadratic_model_initialization(
         self, binary_quadratic_model, default_test_simulator
@@ -891,10 +981,10 @@ class TestQUBOInput:
 
         qaoa_problem.run()
 
-        # The optimal solution for minimize with x=1, y=-2, z=3, w=-1 is [0, 1, 0, 1]
-        # (y=1, w=1 gives energy -2-1=-3)
-        expected_solution = [0, 1, 0, 1]
-        np.testing.assert_equal(qaoa_problem.solution, expected_solution)
+        # BQM has string variables → solution is a dict.
+        # Optimal: w=0, x=1, y=0, z=1 (x=1, z=3 dominate minimization).
+        expected_solution = {"w": 0, "x": 1, "y": 0, "z": 1}
+        assert qaoa_problem.solution == expected_solution
 
     @pytest.mark.e2e
     def test_binary_quadratic_model_maximize_correct(
@@ -916,10 +1006,10 @@ class TestQUBOInput:
 
         qaoa_problem.run()
 
-        # For maximize (minimize negated), the optimal solution is [1, 0, 1, 0]
-        # (x=1, z=1 gives energy -1-3+1=-3 in negated form, which maximizes original)
-        expected_solution = [1, 0, 1, 0]
-        np.testing.assert_equal(qaoa_problem.solution, expected_solution)
+        # BQM has string variables → solution is a dict.
+        # Optimal for negated maximize: w=1, x=0, y=1, z=0.
+        expected_solution = {"w": 1, "x": 0, "y": 1, "z": 0}
+        assert qaoa_problem.solution == expected_solution
 
     @pytest.mark.e2e
     def test_binary_quadratic_model_e2e_checkpointing_resume(
@@ -978,9 +1068,8 @@ class TestQUBOInput:
         qaoa_problem2.run()
 
         # Verify final results are correct
-        # The optimal solution for minimize with x=1, y=-2, z=3, w=-1 is [0, 1, 0, 1]
-        expected_solution = [0, 1, 0, 1]
-        np.testing.assert_equal(qaoa_problem2.solution, expected_solution)
+        expected_solution = {"w": 0, "x": 1, "y": 0, "z": 1}
+        assert qaoa_problem2.solution == expected_solution
 
         # Verify we completed the full run
         assert qaoa_problem2.current_iteration == 15
@@ -1062,7 +1151,7 @@ class TestQAOAQDriftMultiSample:
     @pytest.mark.e2e
     def test_multi_sample_qaoa_e2e_solution(self, default_test_simulator):
         """QAOA with multi-sample QDrift runs to completion and finds correct MAXCUT."""
-        G = nx.bull_graph()
+        G = make_bull_graph()
         default_test_simulator.set_seed(1997)
 
         strategy = QDrift(
@@ -1169,7 +1258,7 @@ class TestQAOAQDriftMultiSample:
     @pytest.mark.e2e
     def test_qdrift_zne_with_shot_based_backend(self, default_test_simulator):
         """ZNE works with shot-based backends via per-observable postprocessing."""
-        G = nx.bull_graph()
+        G = make_bull_graph()
         default_test_simulator.set_seed(1997)
 
         scale_factors = [1.0, 2.0]

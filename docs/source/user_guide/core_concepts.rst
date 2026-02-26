@@ -508,7 +508,7 @@ After execution, Divi provides rich result analysis capabilities:
 Next Steps
 ----------
 
-- 📖 **Algorithms**: Learn about specific algorithms in :doc:`vqe` and :doc:`qaoa`
+- 📖 **Algorithms**: Learn about specific algorithms in :doc:`ground_state_energy_estimation_vqe` and :doc:`combinatorial_optimization_qaoa_pce`
 - ⚡ **Backends**: Explore execution options in :doc:`backends`
 - 🛠️ **Customization**: Create custom algorithms using the :doc:`../api_reference/qprog`
 - 💡 **Examples**: See practical applications in the Tutorials section

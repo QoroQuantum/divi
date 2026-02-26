@@ -48,7 +48,7 @@ def main() -> None:
     backend = get_backend(shots=10_000)
 
     solver = PCE(
-        qubo_matrix=qubo_mat,
+        problem=qubo_mat,
         ansatz=ansatz,
         optimizer=optimizer,
         backend=backend,

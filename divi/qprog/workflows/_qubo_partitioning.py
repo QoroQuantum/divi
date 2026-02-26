@@ -110,7 +110,7 @@ class QUBOPartitioningQAOA(ProgramBatch):
             self._problem_kwarg = "problem"
         elif engine_name == "pce":
             self._engine_constructor = PCE
-            self._problem_kwarg = "qubo_matrix"
+            self._problem_kwarg = "problem"
         else:
             raise ValueError(
                 f"Unsupported engine: {engine!r}. Supported values are 'qaoa' and 'pce'."
@@ -131,14 +131,13 @@ class QUBOPartitioningQAOA(ProgramBatch):
 
         This implementation:
         - Uses the configured decomposer to split the main QUBO into subproblems.
-        - For each subproblem, creates a QAOA/PCE program with the specified
-          parameters.
+        - For each subproblem, creates a QAOA/PCE program with the specified parameters.
         - Stores each program in `self.programs` with a unique identifier.
 
         Unique Identifier Format:
             Each key in `self.programs` is a tuple of the form (letter, size), where:
-                - letter: An uppercase letter ('A', 'B', 'C', ...) indicating the partition index.
-                - size: The number of variables in the subproblem.
+            - letter: An uppercase letter ('A', 'B', 'C', ...) indicating the partition index.
+            - size: The number of variables in the subproblem.
 
             Example: ('A', 5) refers to the first partition with 5 variables.
         """

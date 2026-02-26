@@ -10,7 +10,7 @@ parallel_log=$(mktemp)
 
 export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 # Timeout per tutorial script (seconds).
-TUTORIAL_TIMEOUT_SECONDS=300
+TUTORIAL_TIMEOUT_SECONDS=600
 
 # Prevent matplotlib from trying to open GUI windows in CI.
 export MPLBACKEND=Agg
@@ -34,7 +34,7 @@ sed -i \
     "$TEMP_TUTORIALS_DIR"/vqe_hyperparameter_sweep.py
 sed -i 's/n_processes=4/n_processes=4,shots=500/g' "$TEMP_TUTORIALS_DIR"/zne.py
 sed -i \
-    -e 's/max_iterations=10/max_iterations=3/' \
+    -e 's/max_iterations=30/max_iterations=5/' \
     -e 's/n_layers=2/n_layers=1/' \
     "$TEMP_TUTORIALS_DIR"/qaoa_qubo_partitioning.py
 sed -i \
