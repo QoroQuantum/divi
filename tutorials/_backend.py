@@ -16,6 +16,7 @@ Usage in a tutorial::
 """
 
 import argparse
+import os
 
 from divi.backends import CircuitRunner, JobConfig, ParallelSimulator, QoroService
 
@@ -56,6 +57,10 @@ def get_backend(
         A ``ParallelSimulator`` (``--local``, default) or
         ``QoroService`` (``--maestro``) instance.
     """
+    ci_max_shots = os.environ.get("DIVI_CI_MAX_SHOTS")
+    if ci_max_shots is not None:
+        shots = min(shots, int(ci_max_shots))
+
     mode = _parse_mode()
 
     if mode == "maestro":
