@@ -85,6 +85,7 @@ sed -i 's/n_processes=4/n_processes=4,shots=500/g' "$TEMP_TUTORIALS_DIR"/zne.py
 sed -i \
     -e 's/max_iterations=30/max_iterations=5/' \
     -e 's/n_layers=2/n_layers=1/' \
+    -e 's/get_backend()/get_backend(shots=500)/' \
     "$TEMP_TUTORIALS_DIR"/qaoa_qubo_partitioning.py
 sed -i \
     -e 's/N_NODES = 30/N_NODES = 10/' \
