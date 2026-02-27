@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections.abc import Hashable
+from dataclasses import dataclass
 
 import dimod
 import networkx as nx
@@ -22,6 +23,31 @@ QASMTag = tuple[AxisLabel, ...]  # Sequence of AxisLabels labelling a QASM body 
 
 GraphProblemTypes = nx.Graph | rx.PyGraph
 QUBOProblemTypes = list | np.ndarray | sps.spmatrix | dimod.BinaryQuadraticModel
+HUBOTerm = tuple[Hashable, ...]
+HUBOProblemTypes = dict[HUBOTerm, float] | dimod.BinaryPolynomial
+
+
+@dataclass(frozen=True)
+class BinaryPolynomialProblem:
+    """Canonical internal representation for binary polynomial optimization problems."""
+
+    polynomial: dimod.BinaryPolynomial
+    variable_order: tuple[Hashable, ...]
+    variable_to_idx: dict[Hashable, int]
+    constant: float
+
+    @property
+    def terms(self) -> dict[HUBOTerm, float]:
+        """Terms with tuple keys ordered by variable_order (derived from polynomial)."""
+        result: dict[HUBOTerm, float] = {}
+        for term, coeff in self.polynomial.items():
+            ordered = tuple(sorted(term, key=lambda var: self.variable_to_idx[var]))
+            result[ordered] = float(coeff)
+        return result
+
+    @property
+    def n_vars(self) -> int:
+        return len(self.variable_order)
 
 
 def qubo_to_matrix(qubo: QUBOProblemTypes) -> np.ndarray | sps.spmatrix:

@@ -12,10 +12,11 @@ import pennylane as qml
 import sympy as sp
 
 from divi.circuits import MetaCircuit
+from divi.hamiltonians import normalize_binary_polynomial_problem
 from divi.pipeline import CircuitPipeline
 from divi.pipeline.stages import CircuitSpecStage, ParameterBindingStage, PCECostStage
 from divi.qprog.variational_quantum_algorithm import SolutionEntry
-from divi.typing import QUBOProblemTypes, qubo_to_matrix
+from divi.typing import BinaryPolynomialProblem, HUBOProblemTypes, QUBOProblemTypes
 
 from ._vqe import VQE
 
@@ -155,7 +156,7 @@ class PCE(VQE):
 
     def __init__(
         self,
-        qubo_matrix: QUBOProblemTypes,
+        problem: QUBOProblemTypes | HUBOProblemTypes,
         n_qubits: int | None = None,
         alpha: float = 2.0,
         encoding_type: Literal["dense", "poly"] = "dense",
@@ -166,8 +167,8 @@ class PCE(VQE):
     ):
         """
         Args:
-            qubo_matrix (QUBOProblemTypes): The N x N matrix to minimize. Accepts
-                a dense array, sparse matrix, list, or BinaryQuadraticModel.
+            problem (QUBOProblemTypes | HUBOProblemTypes): Binary polynomial
+                objective to minimize. Supports QUBO and HUBO inputs.
             n_qubits (int | None): Optional override. Must be >= minimum for the
                 chosen encoding (ceil(log2(N + 1)) for dense; solve n(n+1)/2 >= N
                 for poly). Larger values raise a warning for both encodings.
@@ -181,9 +182,10 @@ class PCE(VQE):
                 built-in parity decoder.
             **kwargs: Additional arguments passed to VQE (e.g. ansatz, backend).
         """
-
-        self.qubo_matrix = qubo_to_matrix(qubo_matrix)
-        self.n_vars = self.qubo_matrix.shape[0]
+        self.problem: BinaryPolynomialProblem = normalize_binary_polynomial_problem(
+            problem
+        )
+        self.n_vars = self.problem.n_vars
         self.alpha = alpha
         self.encoding_type = encoding_type
         self._use_soft_objective = self.alpha < 5.0
@@ -226,7 +228,7 @@ class PCE(VQE):
             stages=[
                 CircuitSpecStage(),
                 PCECostStage(
-                    qubo_matrix=self.qubo_matrix,
+                    problem=self.problem,
                     alpha=self.alpha,
                     use_soft_objective=self._use_soft_objective,
                     decode_parities_fn=self._decode_parities_fn,
@@ -420,12 +422,21 @@ class PCE(VQE):
         return result
 
     @property
-    def solution(self) -> npt.NDArray[np.integer]:
-        """
-        Returns the final optimized vector (hard binary 0/1) based on the best parameters found.
-        You must run .run() before calling this.
+    def solution(self) -> npt.NDArray[np.integer] | dict:
+        """Return the final optimized solution based on the best parameters found.
+
+        Returns:
+            For QUBO problems, a binary 0/1 NumPy array. For HUBO problems
+            with non-integer variable names, a dictionary mapping variable
+            names to binary values.
+
+        Raises:
+            RuntimeError: If :meth:`run` has not been called yet.
         """
         if self._final_vector is None:
             raise RuntimeError("Run the VQE optimization first.")
 
+        vo = self.problem.variable_order
+        if vo != tuple(range(self.problem.n_vars)):
+            return dict(zip(vo, self._final_vector))
         return self._final_vector

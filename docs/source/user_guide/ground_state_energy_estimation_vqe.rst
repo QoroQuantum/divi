@@ -1,5 +1,5 @@
-VQE
-===
+Ground-State Energy Estimation with VQE
+========================================
 
 The Variational Quantum Eigensolver (VQE) is a quantum algorithm for finding the ground state energy of quantum systems, particularly useful for quantum chemistry applications.
 
@@ -93,7 +93,7 @@ You can set initial parameters via the constructor ``initial_params`` argument o
 Available Ansätze
 -----------------
 
-Divi provides several built-in ansätze for VQE calculations. For detailed documentation of each ansatz class, see the :ref:`user_guide/vqe:Available Ansätze` section in the API reference.
+Divi provides several built-in ansätze for VQE calculations. For detailed documentation of each ansatz class, see the :ref:`user_guide/ground_state_energy_estimation_vqe:Available Ansätze` section in the API reference.
 
 Custom Ansätze
 ^^^^^^^^^^^^^^
@@ -229,4 +229,4 @@ Next Steps
 
 - Try the runnable examples in the `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ directory
 - Learn about :doc:`optimizers` for optimization strategies
-- Explore :doc:`error_mitigation` for improving results
+- Explore :doc:`improving_results_zne` for improving results

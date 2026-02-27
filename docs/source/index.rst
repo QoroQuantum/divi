@@ -39,14 +39,14 @@ Alternatively, you can install using pip:
 
    user_guide/core_concepts
    user_guide/pipelines
-   user_guide/vqe
-   user_guide/qaoa
-   user_guide/time_evolution
+   user_guide/ground_state_energy_estimation_vqe
+   user_guide/combinatorial_optimization_qaoa_pce
+   user_guide/hamiltonian_time_evolution
    user_guide/backends
    user_guide/program_batches
-   user_guide/error_mitigation
+   user_guide/improving_results_zne
    user_guide/optimizers
-   user_guide/checkpointing
+   user_guide/resuming_long_runs
 
 .. toctree::
    :maxdepth: 1

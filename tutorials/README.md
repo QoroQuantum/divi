@@ -22,6 +22,7 @@ python <example_name>.py
 ### Optimization (QUBO & Binary Models)
 
 - **`qaoa_qubo.py`** - QAOA for QUBO optimization problems
+- **`qaoa_hubo.py`** - QAOA for Higher-Order Binary Optimization (HUBO) problems
 - **`qaoa_binary_quadratic_model.py`** - QAOA for BinaryQuadraticModel inputs
 - **`qaoa_qubo_partitioning.py`** - QUBO partitioning for scalability
 - **`pce_qubo.py`** - PCE-VQE for a QUBO problem

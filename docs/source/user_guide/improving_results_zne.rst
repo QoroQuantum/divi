@@ -1,5 +1,5 @@
-Error Mitigation
-================
+Improving Results with Zero Noise Extrapolation (ZNE)
+========================================================
 
 Divi provides built-in error mitigation to improve results from noisy quantum hardware. The main technique is Zero Noise Extrapolation (ZNE), which runs circuits at different noise levels and extrapolates to the zero-noise limit using :class:`mitiq.zne.inference.RichardsonFactory` and :class:`mitiq.zne.scaling.fold_gates_at_random`.
 

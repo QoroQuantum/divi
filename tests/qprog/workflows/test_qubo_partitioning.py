@@ -223,7 +223,7 @@ class TestQUBOPartitioningQAOA:
         assert np.array_equal(qubo_partitioning_pce.main_qubo, sample_qubo_matrix)
         assert qubo_partitioning_pce.engine == "pce"
 
-    def test_create_programs_pce_uses_qubo_matrix_kwarg(
+    def test_create_programs_pce_uses_problem_kwarg(
         self, mocker, qubo_partitioning_pce
     ):
         mock_constructor = mocker.MagicMock()
@@ -235,10 +235,9 @@ class TestQUBOPartitioningQAOA:
 
         for call in mock_constructor.call_args_list:
             kwargs = call.kwargs
-            assert "qubo_matrix" in kwargs
-            assert "problem" not in kwargs
-            assert isinstance(kwargs["qubo_matrix"], sps.coo_matrix)
-            assert kwargs["qubo_matrix"].shape == (2, 2)
+            assert "problem" in kwargs
+            assert isinstance(kwargs["problem"], sps.coo_matrix)
+            assert kwargs["problem"].shape == (2, 2)
             assert "program_id" in kwargs
 
     def test_create_programs_pce_creates_pce_programs(self, qubo_partitioning_pce):

@@ -18,6 +18,12 @@ from divi.qprog.algorithms._pce import (
     _masks_to_ham_ops,
 )
 from divi.qprog.checkpointing import CheckpointConfig
+from tests.qprog.algorithms.problems import (
+    HUBO_CUBIC,
+    PCE_QUBO_MATRIX,
+    PCE_QUBO_SOLUTION,
+    exact_hubo_minima,
+)
 from tests.qprog.qprog_contracts import verify_metacircuit_dict
 
 pytestmark = pytest.mark.algo
@@ -33,22 +39,11 @@ def qubo_identity() -> np.ndarray:
     return np.array([[1.0, 0.0], [0.0, 1.0]])
 
 
-@pytest.fixture
-def qubo_small() -> np.ndarray:
-    return np.array(
-        [
-            [1.0, -0.2, 0.0],
-            [-0.2, 0.5, 0.0],
-            [0.0, 0.0, -1.0],
-        ]
-    )
-
-
 def test_pce_basic_initialization(dummy_simulator, basic_ansatz):
     qubo = np.array([[1.0, 0.2], [0.2, 2.0]])
 
     pce = PCE(
-        qubo_matrix=qubo,
+        problem=qubo,
         ansatz=basic_ansatz,
         n_layers=1,
         backend=dummy_simulator,
@@ -60,12 +55,55 @@ def test_pce_basic_initialization(dummy_simulator, basic_ansatz):
     verify_metacircuit_dict(pce, ["cost_circuit", "meas_circuit"])
 
 
+def test_pce_hubo_basic_initialization(dummy_simulator, basic_ansatz):
+    hubo = {
+        ("x0",): -1.0,
+        ("x0", "x1"): 0.5,
+        ("x0", "x1", "x2"): 2.0,
+        (): 0.25,
+    }
+
+    pce = PCE(
+        problem=hubo,
+        ansatz=basic_ansatz,
+        n_layers=1,
+        backend=dummy_simulator,
+    )
+
+    assert pce.n_vars == 3
+    assert pce.problem.constant == pytest.approx(0.25)
+    verify_metacircuit_dict(pce, ["cost_circuit", "meas_circuit"])
+
+
+def test_pce_hubo_quadratized_objective_helpers(dummy_simulator, basic_ansatz):
+    hubo = {
+        ("x0",): -1.0,
+        ("x1",): 0.25,
+        ("x0", "x1", "x2"): 1.5,
+    }
+    pce = PCE(
+        problem=hubo,
+        ansatz=basic_ansatz,
+        backend=dummy_simulator,
+        alpha=1.0,
+    )
+
+    merged = {"000": 30, "001": 10, "010": 20, "011": 40}
+    state_strings = list(merged.keys())
+    counts = np.array(list(merged.values()), dtype=float)
+    probs = counts / counts.sum()
+    parities = _decode_parities(state_strings, pce._variable_masks_u64)
+
+    energy = _compute_soft_energy(parities, probs, pce.alpha, pce.problem)
+    assert isinstance(energy, float)
+
+
 def test_pce_n_qubits_validation_and_warning(dummy_simulator, basic_ansatz):
     qubo = np.zeros((3, 3))
 
     with pytest.raises(ValueError, match=r"n_qubits must be >= ceil\(log2\(N \+ 1\)\)"):
         PCE(
-            qubo_matrix=qubo,
+            problem=qubo,
             n_qubits=1,
             ansatz=basic_ansatz,
             backend=dummy_simulator,
@@ -73,7 +111,7 @@ def test_pce_n_qubits_validation_and_warning(dummy_simulator, basic_ansatz):
 
     with pytest.warns(UserWarning, match="n_qubits exceeds the minimum required"):
         PCE(
-            qubo_matrix=qubo,
+            problem=qubo,
             n_qubits=3,
             ansatz=basic_ansatz,
             backend=dummy_simulator,
@@ -97,13 +135,13 @@ def test_pce_soft_energy_computation(dummy_simulator, basic_ansatz):
     probs = counts / total_shots
 
     pce = PCE(
-        qubo_matrix=qubo,
+        problem=qubo,
         ansatz=basic_ansatz,
         backend=dummy_simulator,
         alpha=alpha,
     )
     parities = _decode_parities(state_strings, pce._variable_masks_u64)
-    result = _compute_soft_energy(parities, probs, alpha, qubo)
+    result = _compute_soft_energy(parities, probs, alpha, pce.problem)
 
     # Expected: same algebra as the old test_pce_soft_energy_post_process_results
     mean_parities = parities.dot(probs)
@@ -121,7 +159,7 @@ def test_pce_hard_cvar_energy_computation(dummy_simulator, basic_ansatz):
     merged = {"11": 2, "10": 3, "01": 10, "00": 25}
 
     pce = PCE(
-        qubo_matrix=qubo,
+        problem=qubo,
         ansatz=basic_ansatz,
         backend=dummy_simulator,
         alpha=6.0,
@@ -133,7 +171,7 @@ def test_pce_hard_cvar_energy_computation(dummy_simulator, basic_ansatz):
     parities = _decode_parities(state_strings, pce._variable_masks_u64)
 
     result = _compute_hard_cvar_energy(
-        parities, counts_arr, total_shots, qubo, alpha_cvar=0.25
+        parities, counts_arr, total_shots, pce.problem, alpha_cvar=0.25
     )
 
     # Expected: replicate CVaR algebra
@@ -171,7 +209,7 @@ def test_pce_custom_decode_parities_fn_soft_energy(dummy_simulator, basic_ansatz
         return np.zeros((n_vars, n_states), dtype=np.uint8)
 
     pce = PCE(
-        qubo_matrix=qubo,
+        problem=qubo,
         ansatz=basic_ansatz,
         backend=dummy_simulator,
         alpha=1.0,
@@ -185,7 +223,7 @@ def test_pce_custom_decode_parities_fn_soft_energy(dummy_simulator, basic_ansatz
     probs = counts / total_shots
 
     parities = all_zeros_decoder(state_strings, pce._variable_masks_u64)
-    result = _compute_soft_energy(parities, probs, pce.alpha, qubo)
+    result = _compute_soft_energy(parities, probs, pce.alpha, pce.problem)
 
     # All parities 0 -> mean_parities = [0, 0] -> z_expectations = [1, 1]
     z = np.array([1.0, 1.0])
@@ -204,7 +242,7 @@ def test_pce_custom_decode_parities_fn_hard_cvar(dummy_simulator, basic_ansatz):
         return np.ones((n_vars, n_states), dtype=np.uint8)
 
     pce = PCE(
-        qubo_matrix=qubo,
+        problem=qubo,
         ansatz=basic_ansatz,
         backend=dummy_simulator,
         alpha=6.0,
@@ -218,7 +256,7 @@ def test_pce_custom_decode_parities_fn_hard_cvar(dummy_simulator, basic_ansatz):
 
     parities = all_ones_decoder(state_strings, pce._variable_masks_u64)
     result = _compute_hard_cvar_energy(
-        parities, counts_arr, total_shots, qubo, alpha_cvar=0.25
+        parities, counts_arr, total_shots, pce.problem, alpha_cvar=0.25
     )
 
     # All parities 1 -> x_vals = 0 for all vars/states -> energies all 0 -> CVaR = 0
@@ -230,13 +268,13 @@ def test_pce_decode_parities_fn_none_uses_default(dummy_simulator, basic_ansatz)
     qubo = np.array([[1.0, 0.2], [0.2, 2.0]])
 
     pce_default = PCE(
-        qubo_matrix=qubo,
+        problem=qubo,
         ansatz=basic_ansatz,
         backend=dummy_simulator,
         alpha=1.0,
     )
     pce_explicit_none = PCE(
-        qubo_matrix=qubo,
+        problem=qubo,
         ansatz=basic_ansatz,
         backend=dummy_simulator,
         alpha=1.0,
@@ -254,8 +292,12 @@ def test_pce_decode_parities_fn_none_uses_default(dummy_simulator, basic_ansatz)
         state_strings, pce_explicit_none._variable_masks_u64
     )
 
-    result_default = _compute_soft_energy(parities_default, probs, 1.0, qubo)
-    result_none = _compute_soft_energy(parities_none, probs, 1.0, qubo)
+    result_default = _compute_soft_energy(
+        parities_default, probs, 1.0, pce_default.problem
+    )
+    result_none = _compute_soft_energy(
+        parities_none, probs, 1.0, pce_explicit_none.problem
+    )
 
     assert result_default == pytest.approx(result_none)
 
@@ -264,7 +306,7 @@ def test_pce_poly_expval_post_process(dummy_simulator, basic_ansatz):
     """Poly encoding expval: PCECostStage.reduce handles expval-format Z expectations."""
     qubo = np.zeros((3, 3))
     pce = PCE(
-        qubo_matrix=qubo,
+        problem=qubo,
         ansatz=basic_ansatz,
         backend=dummy_simulator,
         encoding_type="poly",
@@ -301,7 +343,7 @@ def test_pce_perform_final_computation_sets_solution(
 ):
 
     pce = PCE(
-        qubo_matrix=qubo_identity,
+        problem=qubo_identity,
         ansatz=basic_ansatz,
         backend=dummy_simulator,
     )
@@ -316,7 +358,7 @@ def test_pce_perform_final_computation_sets_solution(
 
 def test_pce_solution_requires_run(dummy_simulator, basic_ansatz, qubo_identity):
     pce = PCE(
-        qubo_matrix=qubo_identity,
+        problem=qubo_identity,
         ansatz=basic_ansatz,
         backend=dummy_simulator,
     )
@@ -326,11 +368,12 @@ def test_pce_solution_requires_run(dummy_simulator, basic_ansatz, qubo_identity)
 
 
 @pytest.mark.e2e
-def test_pce_qubo_e2e_solution(default_test_simulator, basic_ansatz, qubo_small):
+def test_pce_qubo_e2e_solution(default_test_simulator, basic_ansatz):
     default_test_simulator.set_seed(1997)
+    qubo = PCE_QUBO_MATRIX.copy()
 
     pce = PCE(
-        qubo_matrix=qubo_small,
+        problem=qubo,
         ansatz=basic_ansatz,
         n_layers=1,
         optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
@@ -344,8 +387,9 @@ def test_pce_qubo_e2e_solution(default_test_simulator, basic_ansatz, qubo_small)
     assert len(pce.losses_history) == 5
     assert isinstance(pce.best_loss, float)
     assert isinstance(pce.best_params, np.ndarray)
-    assert pce.solution.shape == (qubo_small.shape[0],)
+    assert pce.solution.shape == (qubo.shape[0],)
     assert set(np.unique(pce.solution)).issubset({0, 1})
+    np.testing.assert_array_equal(pce.solution, PCE_QUBO_SOLUTION)
     assert all(
         len(bitstring) == pce.n_qubits
         for probs_dict in pce.best_probs.values()
@@ -355,13 +399,14 @@ def test_pce_qubo_e2e_solution(default_test_simulator, basic_ansatz, qubo_small)
 
 @pytest.mark.e2e
 def test_pce_qubo_e2e_checkpointing_resume(
-    default_test_simulator, basic_ansatz, qubo_small, tmp_path
+    default_test_simulator, basic_ansatz, tmp_path
 ):
     default_test_simulator.set_seed(1997)
+    qubo = PCE_QUBO_MATRIX.copy()
     checkpoint_dir = tmp_path / "checkpoint_test"
 
     pce1 = PCE(
-        qubo_matrix=qubo_small,
+        problem=qubo,
         ansatz=basic_ansatz,
         n_layers=1,
         optimizer=MonteCarloOptimizer(population_size=5, n_best_sets=2),
@@ -382,7 +427,7 @@ def test_pce_qubo_e2e_checkpointing_resume(
     pce2 = PCE.load_state(
         checkpoint_dir,
         backend=default_test_simulator,
-        qubo_matrix=qubo_small,
+        problem=qubo,
         ansatz=basic_ansatz,
         n_layers=1,
     )
@@ -397,7 +442,7 @@ def test_pce_qubo_e2e_checkpointing_resume(
     pce3 = PCE.load_state(
         checkpoint_dir,
         backend=default_test_simulator,
-        qubo_matrix=qubo_small,
+        problem=qubo,
         ansatz=basic_ansatz,
         n_layers=1,
     )
@@ -407,16 +452,17 @@ def test_pce_qubo_e2e_checkpointing_resume(
     assert pce3.current_iteration == 5
 
     assert isinstance(pce3.best_loss, float)
-    assert pce3.solution.shape == (qubo_small.shape[0],)
+    assert pce3.solution.shape == (qubo.shape[0],)
 
 
 @pytest.mark.e2e
-def test_pce_poly_e2e_solution(default_test_simulator, basic_ansatz, qubo_small):
+def test_pce_poly_e2e_solution(default_test_simulator, basic_ansatz):
     """E2E test for PCE with poly encoding (3 vars, 2 qubits)."""
     default_test_simulator.set_seed(1997)
+    qubo = PCE_QUBO_MATRIX.copy()
 
     pce = PCE(
-        qubo_matrix=qubo_small,
+        problem=qubo,
         ansatz=basic_ansatz,
         n_layers=1,
         optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
@@ -433,7 +479,7 @@ def test_pce_poly_e2e_solution(default_test_simulator, basic_ansatz, qubo_small)
     assert isinstance(pce.best_params, np.ndarray)
     assert pce.encoding_type == "poly"
     assert pce.n_qubits == 2  # N=3: min 2 qubits, capacity 3
-    assert pce.solution.shape == (qubo_small.shape[0],)
+    assert pce.solution.shape == (qubo.shape[0],)
     assert set(np.unique(pce.solution)).issubset({0, 1})
     assert all(
         len(bitstring) == pce.n_qubits
@@ -442,12 +488,32 @@ def test_pce_poly_e2e_solution(default_test_simulator, basic_ansatz, qubo_small)
     )
 
 
+@pytest.mark.e2e
+def test_pce_hubo_e2e_solution(default_test_simulator, basic_ansatz):
+    """PCE solves a small cubic HUBO and reaches exact minimum assignment."""
+    default_test_simulator.set_seed(1997)
+    _, exact_minima = exact_hubo_minima(HUBO_CUBIC, n_vars=3)
+
+    pce = PCE(
+        problem=HUBO_CUBIC,
+        ansatz=basic_ansatz,
+        n_layers=1,
+        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+        max_iterations=10,
+        backend=default_test_simulator,
+        seed=1997,
+    )
+
+    pce.run()
+    assert any(np.array_equal(pce.solution, x) for x in exact_minima)
+
+
 def test_pce_get_top_solutions_decodes_bitstrings(dummy_simulator, basic_ansatz):
     """Test that get_top_solutions decodes encoded qubit states to QUBO variable assignments."""
     # Create a 4-variable QUBO (requires 3 qubits: ceil(log2(4+1)) = 3)
     qubo = np.eye(4)
     pce = PCE(
-        qubo_matrix=qubo,
+        problem=qubo,
         ansatz=basic_ansatz,
         backend=dummy_simulator,
     )
@@ -489,7 +555,7 @@ def test_pce_get_top_solutions_include_decoded(dummy_simulator, basic_ansatz):
     """Test that get_top_solutions with include_decoded=True returns numpy arrays."""
     qubo = np.eye(3)
     pce = PCE(
-        qubo_matrix=qubo,
+        problem=qubo,
         ansatz=basic_ansatz,
         backend=dummy_simulator,
     )
@@ -521,7 +587,7 @@ def test_pce_get_top_solutions_min_prob_filtering(dummy_simulator, basic_ansatz)
     """Test that get_top_solutions filters by min_prob correctly."""
     qubo = np.eye(2)
     pce = PCE(
-        qubo_matrix=qubo,
+        problem=qubo,
         ansatz=basic_ansatz,
         backend=dummy_simulator,
     )
@@ -550,7 +616,7 @@ def test_pce_get_top_solutions_validation_errors(dummy_simulator, basic_ansatz):
     """Test get_top_solutions raises for invalid n, min_prob, and missing probs."""
     qubo = np.eye(2)
     pce = PCE(
-        qubo_matrix=qubo,
+        problem=qubo,
         ansatz=basic_ansatz,
         backend=dummy_simulator,
     )
@@ -578,7 +644,7 @@ def test_pce_get_top_solutions_no_probs_raises(dummy_simulator, basic_ansatz):
     """Test get_top_solutions raises when no probability distribution available."""
     qubo = np.eye(2)
     pce = PCE(
-        qubo_matrix=qubo,
+        problem=qubo,
         ansatz=basic_ansatz,
         backend=dummy_simulator,
     )
@@ -597,7 +663,7 @@ def test_pce_qem_protocol_raises(dummy_simulator, basic_ansatz):
     qubo = np.eye(2)
     with pytest.raises(ValueError, match="PCE does not currently support qem_protocol"):
         PCE(
-            qubo_matrix=qubo,
+            problem=qubo,
             ansatz=basic_ansatz,
             backend=dummy_simulator,
             qem_protocol=object(),
@@ -618,7 +684,7 @@ def test_pce_custom_decode_parities_fn_perform_final_computation(
         return out
 
     pce = PCE(
-        qubo_matrix=qubo_identity,
+        problem=qubo_identity,
         ansatz=basic_ansatz,
         backend=dummy_simulator,
         decode_parities_fn=fixed_decoder,
@@ -645,7 +711,7 @@ def test_pce_custom_decode_parities_fn_get_top_solutions(dummy_simulator, basic_
 
     qubo = np.eye(2)
     pce = PCE(
-        qubo_matrix=qubo,
+        problem=qubo,
         ansatz=basic_ansatz,
         backend=dummy_simulator,
         decode_parities_fn=complement_decoder,
@@ -703,7 +769,7 @@ def test_pce_get_top_solutions_decoding_correctness(
 ):
     """Test that decoding produces correct QUBO variable assignments for both encodings."""
     pce = PCE(
-        qubo_matrix=qubo,
+        problem=qubo,
         ansatz=basic_ansatz,
         backend=dummy_simulator,
         encoding_type=encoding_type,
@@ -743,7 +809,7 @@ def test_pce_poly_encoding_config(
     if expect_warning:
         with pytest.warns(UserWarning, match="n_qubits exceeds the minimum required"):
             pce = PCE(
-                qubo_matrix=qubo,
+                problem=qubo,
                 ansatz=basic_ansatz,
                 backend=dummy_simulator,
                 encoding_type="poly",
@@ -751,7 +817,7 @@ def test_pce_poly_encoding_config(
             )
     else:
         pce = PCE(
-            qubo_matrix=qubo,
+            problem=qubo,
             ansatz=basic_ansatz,
             backend=dummy_simulator,
             encoding_type="poly",
@@ -772,7 +838,7 @@ def test_pce_poly_n_qubits_too_low_raises(dummy_simulator, basic_ansatz):
     qubo = np.zeros((4, 4))
     with pytest.raises(ValueError, match="n_qubits must be >= 3 for poly encoding"):
         PCE(
-            qubo_matrix=qubo,
+            problem=qubo,
             n_qubits=2,
             ansatz=basic_ansatz,
             backend=dummy_simulator,
@@ -784,7 +850,7 @@ def test_pce_invalid_encoding_type(dummy_simulator, basic_ansatz):
     qubo = np.zeros((2, 2))
     with pytest.raises(ValueError, match="Unknown encoding_type: sparse"):
         PCE(
-            qubo_matrix=qubo,
+            problem=qubo,
             ansatz=basic_ansatz,
             backend=dummy_simulator,
             encoding_type="sparse",
@@ -796,7 +862,7 @@ def test_pce_hard_cvar_expval_backend_raises(basic_ansatz, dummy_expval_backend)
     qubo = np.array([[1.0, 0.2], [0.2, 2.0]])
 
     pce = PCE(
-        qubo_matrix=qubo,
+        problem=qubo,
         ansatz=basic_ansatz,
         backend=dummy_expval_backend,
         alpha=6.0,
@@ -877,7 +943,7 @@ def test_pce_perform_final_computation_none_eigenstate(
 ):
     """When _eigenstate is None, _final_vector is set to None (L286-288)."""
     pce = PCE(
-        qubo_matrix=qubo_identity,
+        problem=qubo_identity,
         ansatz=basic_ansatz,
         backend=dummy_simulator,
     )

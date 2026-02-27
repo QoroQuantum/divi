@@ -49,7 +49,10 @@ class QEMStage(BundleStage):
                 axis_name=self.axis_name,
                 symbols=meta.symbols,
             )
-            out[parent_key] = meta.set_circuit_bodies(updated_bodies)
+            symbol_names = tuple(str(s) for s in meta.symbols)
+            out[parent_key] = meta.set_circuit_bodies(
+                updated_bodies, symbol_names=symbol_names
+            )
 
         return ExpansionResult(batch=out), None
 

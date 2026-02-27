@@ -61,8 +61,8 @@ Choosing the Right Algorithm
 
 Divi offers specialized algorithms for different problem types:
 
-**:class:`VQE` - Quantum Chemistry** ⚗️
-   Perfect for molecular ground state calculations, dissociation curves, and electronic structure problems.
+**VQE – Quantum Chemistry** ⚗️
+   Use :class:`VQE` for molecular ground state calculations, dissociation curves, and electronic structure problems.
 
    .. code-block:: python
 
@@ -75,8 +75,8 @@ Divi offers specialized algorithms for different problem types:
           backend=ParallelSimulator()
       )
 
-**:class:`QAOA` - Optimization Problems** 🎯
-   Ideal for combinatorial optimization: Max-Cut, Max-Clique, traveling salesman, and similar NP-hard problems.
+**QAOA – Optimization Problems** 🎯
+   Use :class:`QAOA` for combinatorial optimization: Max-Cut, Max-Clique, traveling salesman, QUBO/HUBO, and similar NP-hard problems (graphs or binary polynomial formulations).
 
    .. code-block:: python
 
@@ -92,6 +92,43 @@ Divi offers specialized algorithms for different problem types:
           n_layers=3,
           backend=ParallelSimulator()
       )
+
+**PCE – QUBO/HUBO with Pauli Correlation Encoding** 📐
+   Use :class:`PCE` for QUBO and higher-order (HUBO) binary optimization with parity-based encoding and configurable cost (e.g. CVaR). Good when you want an alternative to QAOA for binary polynomial problems.
+
+   .. code-block:: python
+
+      import numpy as np
+      from divi.qprog import PCE, GenericLayerAnsatz
+      from divi.backends import ParallelSimulator
+
+      qubo_matrix = np.array([[-1.0, 2.0], [0.0, 1.0]])
+      pce = PCE(
+          problem=qubo_matrix,
+          ansatz=GenericLayerAnsatz(n_layers=2),
+          n_layers=2,
+          backend=ParallelSimulator(),
+      )
+      pce.run()
+
+**TimeEvolution – Hamiltonian Dynamics** ⏱️
+   Use :class:`TimeEvolution` to simulate real-time quantum dynamics under a Hamiltonian (Trotter-Suzuki or QDrift). Supports probability or observable mode.
+
+   .. code-block:: python
+
+      import math
+      import pennylane as qml
+      from divi.qprog import TimeEvolution
+      from divi.backends import ParallelSimulator
+
+      te = TimeEvolution(
+          hamiltonian=qml.PauliX(0) + qml.PauliX(1),
+          time=math.pi / 2,
+          initial_state="Zeros",
+          backend=ParallelSimulator(shots=5000),
+      )
+      te.run()
+      print(te.results)  # basis-state probabilities or expectation value
 
 Backend Options
 ---------------
@@ -229,7 +266,7 @@ Next Steps & Getting Help
 
 **Documentation & Support:**
 
-* 📖 **User Guide**: Complete guides including :doc:`user_guide/core_concepts`, :doc:`user_guide/vqe`, and :doc:`user_guide/qaoa`
+* 📖 **User Guide**: Complete guides including :doc:`user_guide/core_concepts`, :doc:`user_guide/ground_state_energy_estimation_vqe`, and :doc:`user_guide/combinatorial_optimization_qaoa_pce`
 * 🔧 **API Reference**: Detailed function documentation in :doc:`api_reference/qprog`, :doc:`api_reference/backends`, and :doc:`api_reference/circuits`
 * 🐛 **Issues**: Report bugs on `GitHub <https://github.com/QoroQuantum/divi>`_
 
