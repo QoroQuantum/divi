@@ -50,6 +50,16 @@ class TestMetaCircuit:
         assert meta.circuit_body_qasms[0][0] == ()
         assert "OPENQASM 2.0" in meta.circuit_body_qasms[0][1]
 
+    def test_metacircuit_templates_populated(self, expval_circuit, weights_syms):
+        """__post_init__ builds circuit_body_templates alongside circuit_body_qasms."""
+        meta = MetaCircuit(source_circuit=expval_circuit, symbols=weights_syms)
+        assert meta.circuit_body_templates is not None
+        assert len(meta.circuit_body_templates) == len(meta.circuit_body_qasms)
+        tag, template = meta.circuit_body_templates[0]
+        assert tag == ()
+        assert len(template.fragments) == len(template.slot_indices) + 1
+        assert len(template.slot_indices) > 0
+
     def test_metacircuit_raises_on_no_measurements(
         self, no_measurement_circuit, weights_syms
     ):

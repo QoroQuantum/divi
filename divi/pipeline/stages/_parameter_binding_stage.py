@@ -2,11 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import re
-
 import numpy as np
 
 from divi.circuits import MetaCircuit
+from divi.circuits._qasm_template import render_template
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
@@ -17,6 +16,16 @@ from divi.pipeline.abc import (
 )
 
 PARAM_SET_AXIS = "param_set"
+
+
+def _format_param(value: float, precision: int) -> str:
+    """Format a numeric parameter for QASM insertion.
+
+    Formats to *precision* decimal places, strips trailing zeros and dots,
+    and normalises negative zero to ``"0"``.
+    """
+    s = f"{float(value):.{precision}f}".rstrip("0").rstrip(".")
+    return "0" if s in {"-0", ""} else s
 
 
 class ParameterBindingStage(BundleStage):
@@ -49,46 +58,34 @@ class ParameterBindingStage(BundleStage):
                 continue
 
             precision = node.precision
+            templates = node.circuit_body_templates
+            n_symbols = len(node.symbols)
 
-            # Build a single regex that matches any symbol name in the QASM body,
-            # so we can substitute all symbols in one pass per body string.
             bound_bodies: list[tuple[tuple[tuple[str, str], ...], str]] = []
-            symbol_names = tuple(re.escape(str(symbol)) for symbol in node.symbols)
-            pattern = re.compile("|".join(symbol_names))
 
             # For each param set, bind concrete values into every body variant.
             for param_set_idx, param_values in enumerate(param_sets):
-                if len(param_values) != len(symbol_names):
+                if len(param_values) != n_symbols:
                     raise ValueError(
-                        f"ParameterBindingStage expected {len(symbol_names)} parameters "
+                        f"ParameterBindingStage expected {n_symbols} parameters "
                         f"for key '{key}', got {len(param_values)} in param set "
                         f"{param_set_idx}."
                     )
 
-                # Format each value to the circuit's declared precision,
-                # stripping trailing zeros (e.g. 1.5000 → "1.5", -0.0 → "0").
-                formatted_values = []
-                for value in param_values:
-                    formatted = f"{float(value):.{precision}f}".rstrip("0").rstrip(".")
-                    formatted_values.append(
-                        "0" if formatted in {"-0", ""} else formatted
-                    )
-                mapping = dict(
-                    zip(
-                        symbol_names,
-                        formatted_values,
-                    )
+                formatted_values = tuple(
+                    _format_param(v, precision) for v in param_values
                 )
+
                 param_set_tag = (PARAM_SET_AXIS, param_set_idx)
 
                 # Produce one bound body per (existing body variant × param set),
                 # appending the param_set axis label to the QASM tag tuple.
-                for qasm_tag, qasm_body in node.circuit_body_qasms:
+                for qasm_tag, template in templates:
                     bound_tag = (*qasm_tag, param_set_tag)
                     bound_bodies.append(
                         (
                             bound_tag,
-                            pattern.sub(lambda m: mapping[m.group(0)], qasm_body),
+                            render_template(template, formatted_values),
                         )
                     )
 
