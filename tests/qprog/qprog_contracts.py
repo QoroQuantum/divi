@@ -5,6 +5,7 @@
 import pytest
 
 from divi.circuits import MetaCircuit
+from divi.pipeline._grouping import compute_measurement_groups
 from divi.qprog import (
     MonteCarloOptimizer,
     ProgramBatch,
@@ -63,36 +64,48 @@ def verify_metacircuit_dict(obj: QuantumProgram, expected_keys: list[str]):
     )
 
 
+def _get_n_obs_groups(meta: MetaCircuit, supports_expval: bool) -> int:
+    """Compute the number of observable groups the MeasurementStage would produce.
+
+    Mirrors the grouping logic in MeasurementStage.expand() so that the test
+    can independently predict the expected circuit count.
+    """
+    measurement = meta.source_circuit.measurements[0]
+    is_probs = not hasattr(measurement, "obs") or measurement.obs is None
+    if is_probs:
+        return 1
+
+    strategy = "_backend_expval" if supports_expval else "qwc"
+    groups, _, _ = compute_measurement_groups(measurement, strategy)
+    return max(len(groups), 1)
+
+
 def verify_correct_circuit_count(obj: QuantumProgram):
     assert obj.current_iteration == 1
     assert len(obj.losses_history) == 1
+
+    supports_expval = obj.backend.supports_expval
 
     extra_computation_offset = 0
     if isinstance(obj, VariationalQuantumAlgorithm):
         # VQA subclasses with a meas_circuit will run an extra computation
         if "meas_circuit" in obj.meta_circuit_factories:
-            meas_groups = obj.meta_circuit_factories["meas_circuit"].measurement_groups
-            # ProbsMeasurementStage produces 1 circuit without measurement
-            # groups; ObservableGroupingStage produces len(groups) circuits.
-            extra_computation_offset = max(len(meas_groups), 1)
+            meas_meta = obj.meta_circuit_factories["meas_circuit"]
+            extra_computation_offset = _get_n_obs_groups(meas_meta, supports_expval)
 
     adjusted_total_circuit_count = obj.total_circuit_count - extra_computation_offset
 
     if isinstance(obj.optimizer, MonteCarloOptimizer):
-        # Calculate expected circuits per parameter set based on measurement groups.
-        # max(len, 1) handles cases where groups are empty (e.g. TrotterSpecStage
-        # creates MetaCircuits internally, so the reference cost_circuit may not
-        # have measurement_groups set).
-        circuits_per_param_set = max(
-            len(obj.meta_circuit_factories["cost_circuit"].measurement_groups), 1
+        circuits_per_param_set = _get_n_obs_groups(
+            obj.meta_circuit_factories["cost_circuit"], supports_expval
         )
         assert (
             adjusted_total_circuit_count
             == obj.optimizer.n_param_sets * circuits_per_param_set
         )
     elif isinstance(obj.optimizer, ScipyOptimizer):
-        circuits_per_param_set = max(
-            len(obj.meta_circuit_factories["cost_circuit"].measurement_groups), 1
+        circuits_per_param_set = _get_n_obs_groups(
+            obj.meta_circuit_factories["cost_circuit"], supports_expval
         )
         if obj.optimizer.method in (ScipyMethod.NELDER_MEAD, ScipyMethod.COBYLA):
             assert (

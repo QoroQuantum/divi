@@ -4,8 +4,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Self
+from dataclasses import dataclass, replace
 
 import numpy as np
 import numpy.typing as npt
@@ -33,13 +32,13 @@ class MetaCircuit:
     Multi-dimensional inputs are flattened in ``__post_init__``."""
     precision: int = 8
     """Number of decimal places for parameter values in QASM conversion."""
-    circuit_body_qasms: tuple[tuple[QASMTag, str], ...] = field(init=False)
-    """OpenQASM 2.0 body. Computed in __post_init__ when None; QEMStage overrides via replace()."""
-    measurement_qasms: tuple[tuple[QASMTag, str], ...] = field(init=False)
-    """OpenQASM 2.0 body. Computed in __post_init__ when None; QEMStage overrides via replace()."""
-    measurement_groups: tuple[tuple[object, ...], ...] = field(init=False)
+    circuit_body_qasms: tuple[tuple[QASMTag, str], ...] | None = None
+    """OpenQASM 2.0 body. Computed in __post_init__ when None; setters return new instances via replace()."""
+    measurement_qasms: tuple[tuple[QASMTag, str], ...] = ()
+    """OpenQASM 2.0 measurement QASM. Set by MeasurementStage via set_measurement_bodies()."""
+    measurement_groups: tuple[tuple[object, ...], ...] = ()
     """Cached grouped observables set by MeasurementStage."""
-    circuit_body_templates: tuple[tuple[QASMTag, QASMTemplate], ...] = field(init=False)
+    circuit_body_templates: tuple[tuple[QASMTag, QASMTemplate], ...] | None = None
     """Pre-split QASM templates for fast parameter binding."""
 
     def __post_init__(self):
@@ -58,11 +57,12 @@ class MetaCircuit:
             np.asarray(self.symbols, dtype=object).flatten(),
         )
 
-        body = circuit_body_to_qasm(self.source_circuit, precision=self.precision)
-        self.set_circuit_bodies((((), body),))
-        self._build_templates()
-        self.set_measurement_bodies(())
-        self.set_measurement_groups(())
+        if self.circuit_body_qasms is None:
+            body = circuit_body_to_qasm(self.source_circuit, precision=self.precision)
+            object.__setattr__(self, "circuit_body_qasms", (((), body),))
+
+        if self.circuit_body_templates is None:
+            self._build_templates()
 
     def _build_templates(self):
         """Build :class:`QASMTemplate` instances from current bodies and symbols."""
@@ -77,30 +77,31 @@ class MetaCircuit:
         self,
         bodies: tuple[tuple[QASMTag, str], ...],
         symbol_names: tuple[str, ...] | None = None,
-    ) -> Self:
-        """Set circuit body QASMs, optionally rebuilding templates.
+    ) -> MetaCircuit:
+        """Return a new MetaCircuit with updated circuit body QASMs.
 
         Args:
             bodies: Tagged QASM body strings.
             symbol_names: If provided, the bodies still contain symbolic
                 parameters and templates are rebuilt for fast parameter
-                binding.  If ``None``, templates are left unchanged (use
-                this when the bodies are already fully bound).
+                binding.  If ``None``, templates are carried over from
+                ``self`` (use this when the bodies are already fully bound).
         """
-        object.__setattr__(self, "circuit_body_qasms", bodies)
+        overrides: dict = {"circuit_body_qasms": bodies}
         if symbol_names is not None:
-            templates = tuple(
+            overrides["circuit_body_templates"] = tuple(
                 (tag, build_template(body, symbol_names)) for tag, body in bodies
             )
-            object.__setattr__(self, "circuit_body_templates", templates)
-        return self
+        return replace(self, **overrides)
 
-    def set_measurement_bodies(self, bodies: tuple[tuple[QASMTag, str], ...]) -> Self:
-        object.__setattr__(self, "measurement_qasms", bodies)
-        return self
+    def set_measurement_bodies(
+        self, bodies: tuple[tuple[QASMTag, str], ...]
+    ) -> MetaCircuit:
+        """Return a new MetaCircuit with updated measurement QASMs."""
+        return replace(self, measurement_qasms=bodies)
 
     def set_measurement_groups(
         self, measurement_groups: tuple[tuple[object, ...], ...]
-    ) -> Self:
-        object.__setattr__(self, "measurement_groups", measurement_groups)
-        return self
+    ) -> MetaCircuit:
+        """Return a new MetaCircuit with updated measurement groups."""
+        return replace(self, measurement_groups=measurement_groups)

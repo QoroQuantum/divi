@@ -185,7 +185,7 @@ class TestParameterFreeMetaCircuit:
         meas_qasms = measurements_to_qasm(
             meta.source_circuit, [()], precision=meta.precision
         )
-        meta.set_measurement_bodies((((), meas_qasms[0]),))
+        meta = meta.set_measurement_bodies((((), meas_qasms[0]),))
 
         body = meta.circuit_body_qasms[0][1]
         meas = meta.measurement_qasms[0][1]
@@ -207,7 +207,7 @@ class TestParameterFreeMetaCircuit:
         meas_qasms = measurements_to_qasm(
             meta.source_circuit, [()], precision=meta.precision
         )
-        meta.set_measurement_bodies((((), meas_qasms[0]),))
+        meta = meta.set_measurement_bodies((((), meas_qasms[0]),))
 
         full_qasm = meta.circuit_body_qasms[0][1] + meta.measurement_qasms[0][1]
 

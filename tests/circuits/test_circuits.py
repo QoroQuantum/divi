@@ -118,28 +118,36 @@ class TestMetaCircuit:
         assert mock_body.called
         assert mock_body.call_args[1]["precision"] == 6
 
-    def test_set_circuit_bodies_overrides_body(self, expval_circuit, weights_syms):
-        """set_circuit_bodies overwrites circuit_body_qasms and returns self."""
-        meta = MetaCircuit(source_circuit=expval_circuit, symbols=weights_syms)
-        new_bodies = (((("qem", 0),), "custom_body_qasm"),)
-        out = meta.set_circuit_bodies(new_bodies)
-        assert out is meta
-        assert meta.circuit_body_qasms == new_bodies
-
-    def test_set_measurement_bodies_sets_measurement_qasms(
+    def test_set_circuit_bodies_returns_new_instance(
         self, expval_circuit, weights_syms
     ):
-        """set_measurement_bodies sets measurement_qasms (e.g. for pipeline stages)."""
+        """set_circuit_bodies returns a new MetaCircuit; the original is unchanged."""
+        meta = MetaCircuit(source_circuit=expval_circuit, symbols=weights_syms)
+        original_bodies = meta.circuit_body_qasms
+        new_bodies = (((("qem", 0),), "custom_body_qasm"),)
+        out = meta.set_circuit_bodies(new_bodies)
+        assert out is not meta
+        assert out.circuit_body_qasms == new_bodies
+        assert meta.circuit_body_qasms == original_bodies
+
+    def test_set_measurement_bodies_returns_new_instance(
+        self, expval_circuit, weights_syms
+    ):
+        """set_measurement_bodies returns a new MetaCircuit; the original is unchanged."""
         meta = MetaCircuit(source_circuit=expval_circuit, symbols=weights_syms)
         meas_bodies = (((("obs_group", 0),), "measure q[0] -> c[0];\n"),)
         out = meta.set_measurement_bodies(meas_bodies)
-        assert out is meta
-        assert meta.measurement_qasms == meas_bodies
+        assert out is not meta
+        assert out.measurement_qasms == meas_bodies
+        assert meta.measurement_qasms == ()
 
-    def test_set_measurement_groups(self, expval_circuit, weights_syms):
-        """set_measurement_groups overwrites measurement_groups and returns self."""
+    def test_set_measurement_groups_returns_new_instance(
+        self, expval_circuit, weights_syms
+    ):
+        """set_measurement_groups returns a new MetaCircuit; the original is unchanged."""
         meta = MetaCircuit(source_circuit=expval_circuit, symbols=weights_syms)
         groups = ((qml.PauliZ(0),),)
         out = meta.set_measurement_groups(groups)
-        assert out is meta
-        assert meta.measurement_groups == groups
+        assert out is not meta
+        assert out.measurement_groups == groups
+        assert meta.measurement_groups == ()
