@@ -261,7 +261,7 @@ The :class:`QoroService` uses a :class:`JobConfig` object to manage settings for
        use_circuit_packing=True,
        tag="default_run"
    )
-   service = QoroService(config=default_config)
+   service = QoroService(job_config=default_config)
 
    # 2. Override the default configuration for a single job
    override = JobConfig(shots=2000, tag="high_shot_run")
@@ -270,12 +270,28 @@ The :class:`QoroService` uses a :class:`JobConfig` object to manage settings for
    # This job will run with 2000 shots and the tag 'high_shot_run',
    # but will still use 'qoro_maestro' and circuit packing from the default config.
 
+You can also update the service's default configuration after construction:
+
+.. code-block:: python
+
+   # Update the service's default job configuration
+   service.job_config = JobConfig(shots=2000, qpu_system="qoro_maestro")
+
+   # Update the service's default execution configuration
+   service.execution_config = ExecutionConfig(bond_dimension=512)
+
+The ``job_config`` setter automatically resolves string QPU system names and
+defaults ``qpu_system`` when ``None``, just like the constructor does.
+
 Execution Configuration
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-Pass an **execution configuration** during submission so your job starts with
-the intended simulator backend, simulation method, bond dimension, and runtime
-metadata already applied.
+Control the simulator backend, simulation method, bond dimension, and runtime
+metadata for your jobs using :class:`ExecutionConfig`. Like :class:`JobConfig`,
+you can configure it in two ways:
+
+1.  **Default Configuration**: Set a default :class:`ExecutionConfig` when you initialize the service. This configuration will apply to all jobs unless you override it.
+2.  **Per-submission Override**: Pass an ``execution_config`` to ``submit_circuits`` to override the default for a single job. Non-None fields in the override take precedence.
 
 .. code-block:: python
 
@@ -283,20 +299,26 @@ metadata already applied.
        QoroService, ExecutionConfig, Simulator, SimulationMethod
    )
 
-   service = QoroService()
-
-   config = ExecutionConfig(
+   # 1. Set a service-level default execution configuration
+   default_exec = ExecutionConfig(
        bond_dimension=256,
-       truncation_threshold=1e-8,
        simulator=Simulator.QCSim,
        simulation_method=SimulationMethod.MatrixProductState,
-       api_meta={"optimization_level": 2},
    )
-   result = service.submit_circuits(circuits, execution_config=config)
+   service = QoroService(execution_config=default_exec)
+
+   # All submissions use the default execution config
+   result = service.submit_circuits(circuits)
+
+   # 2. Override specific fields for a single submission
+   override = ExecutionConfig(bond_dimension=512, api_meta={"optimization_level": 2})
+   result = service.submit_circuits(circuits, override_execution_config=override)
+   # Uses bond_dimension=512 and api_meta from the override,
+   # but keeps simulator and simulation_method from the default.
 
    # Retrieve the configuration to verify
    retrieved = service.get_execution_config(result)
-   print(retrieved.bond_dimension)  # 256
+   print(retrieved.bond_dimension)  # 512
 
 All ``ExecutionConfig`` fields are optional; only the fields you provide are
 sent to the service. You can update the configuration later with

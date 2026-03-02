@@ -8,9 +8,8 @@ import pytest
 import requests
 
 from divi.backends import ExecutionConfig, ExecutionResult, _qoro_service
-from divi.backends._execution_config import SimulationMethod, Simulator
+from divi.backends._config import JobConfig, SimulationMethod, Simulator
 from divi.backends._qoro_service import (
-    JobConfig,
     JobStatus,
     JobType,
     MaxRetriesReachedError,
@@ -454,9 +453,9 @@ class TestQoroServiceMock:
         """Tests that QoroService defaults to qoro_maestro with a warning when qpu_system is None."""
         with pytest.warns(match="No qpu_system specified in JobConfig"):
             service = qoro_service_factory(
-                config=JobConfig(shots=1000, qpu_system=None)
+                job_config=JobConfig(shots=1000, qpu_system=None)
             )
-        assert service.config.qpu_system.name == "qoro_maestro"
+        assert service.job_config.qpu_system.name == "qoro_maestro"
 
     # --- Tests for core functionality ---
 
@@ -851,7 +850,7 @@ class TestQoroServiceMock:
         qoro_service_mock, mock_make_request = submit_circuits_mock
         qoro_service_mock.submit_circuits(
             {"c1": "qasm"},
-            execution_config=ExecutionConfig(
+            override_execution_config=ExecutionConfig(
                 bond_dimension=64,
                 simulation_method=SimulationMethod.MatrixProductState,
                 simulator=Simulator.QCSim,
@@ -875,12 +874,143 @@ class TestQoroServiceMock:
         qoro_service_mock, mock_make_request = submit_circuits_mock
         qoro_service_mock.submit_circuits(
             {"c1": "qasm"},
-            execution_config=ExecutionConfig(),
+            override_execution_config=ExecutionConfig(),
         )
 
         _, called_kwargs = mock_make_request.call_args_list[0]
         payload = called_kwargs.get("json", {})
         assert payload.get("execution_configuration") == {}
+
+    def test_constructor_stores_execution_config(self, qoro_service_factory):
+        """Test that the constructor stores the execution_config attribute."""
+        exec_config = ExecutionConfig(bond_dimension=64)
+        service = qoro_service_factory(execution_config=exec_config)
+        assert service.execution_config is exec_config
+
+    def test_constructor_execution_config_defaults_to_none(self, qoro_service_factory):
+        """Test that execution_config defaults to None when not provided."""
+        service = qoro_service_factory()
+        assert service.execution_config is None
+
+    # --- Tests for job_config / execution_config setters ---
+
+    def test_set_job_config_after_init(self, qoro_service_factory):
+        """Reassigning job_config stores the new value and updates supports_expval."""
+        service = qoro_service_factory()
+        new_config = JobConfig(
+            shots=2000, qpu_system=QPUSystem(name="hw", supports_expval=False)
+        )
+        service.job_config = new_config
+        assert service.job_config.shots == 2000
+        assert service.supports_expval is False
+
+    def test_set_job_config_resolves_string_qpu(self, qoro_service_factory):
+        """Setting job_config with a string qpu_system resolves it to QPUSystem."""
+        update_qpu_systems_cache([QPUSystem(name="qoro_maestro", supports_expval=True)])
+        service = qoro_service_factory()
+        service.job_config = JobConfig(shots=100, qpu_system="qoro_maestro")
+        assert isinstance(service.job_config.qpu_system, QPUSystem)
+        assert service.job_config.qpu_system.name == "qoro_maestro"
+
+    def test_set_job_config_defaults_none_qpu(self, qoro_service_factory):
+        """Setting job_config with qpu_system=None defaults with a warning."""
+        service = qoro_service_factory()
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            service.job_config = JobConfig(shots=500, qpu_system=None)
+            assert len(w) == 1
+            assert "Defaulting to" in str(w[0].message)
+        assert isinstance(service.job_config.qpu_system, QPUSystem)
+
+    def test_set_execution_config_after_init(self, qoro_service_factory):
+        """Reassigning execution_config stores the new value."""
+        service = qoro_service_factory()
+        new_exec = ExecutionConfig(bond_dimension=256)
+        service.execution_config = new_exec
+        assert service.execution_config is new_exec
+
+    def test_set_execution_config_to_none(self, qoro_service_factory):
+        """Clearing execution_config by setting to None."""
+        exec_config = ExecutionConfig(bond_dimension=64)
+        service = qoro_service_factory(execution_config=exec_config)
+        assert service.execution_config is exec_config
+        service.execution_config = None
+        assert service.execution_config is None
+
+    def test_submit_uses_default_execution_config(self, mocker, qoro_service_factory):
+        """Service-level execution_config should flow to the init payload."""
+        mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=True)
+
+        default_exec = ExecutionConfig(
+            bond_dimension=128,
+            simulator=Simulator.QCSim,
+        )
+        service = qoro_service_factory(execution_config=default_exec)
+
+        mock_init_resp = mocker.MagicMock()
+        mock_init_resp.status_code = HTTPStatus.CREATED
+        mock_init_resp.json.return_value = {"job_id": "test_id"}
+        mock_add_resp = mocker.MagicMock()
+        mock_add_resp.status_code = HTTPStatus.OK
+
+        mock_req = mocker.patch.object(
+            service, "_make_request", side_effect=[mock_init_resp, mock_add_resp]
+        )
+
+        service.submit_circuits({"c1": "qasm"})
+
+        _, called_kwargs = mock_req.call_args_list[0]
+        payload = called_kwargs.get("json", {})
+        assert payload["execution_configuration"] == default_exec.to_payload()
+
+    def test_submit_explicit_overrides_default_execution_config(
+        self, mocker, qoro_service_factory
+    ):
+        """Explicit execution_config's non-None fields should override the default."""
+        mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=True)
+
+        default_exec = ExecutionConfig(
+            bond_dimension=128,
+            simulator=Simulator.QiskitAer,
+        )
+        service = qoro_service_factory(execution_config=default_exec)
+
+        mock_init_resp = mocker.MagicMock()
+        mock_init_resp.status_code = HTTPStatus.CREATED
+        mock_init_resp.json.return_value = {"job_id": "test_id"}
+        mock_add_resp = mocker.MagicMock()
+        mock_add_resp.status_code = HTTPStatus.OK
+
+        mock_req = mocker.patch.object(
+            service, "_make_request", side_effect=[mock_init_resp, mock_add_resp]
+        )
+
+        override_exec = ExecutionConfig(bond_dimension=256)
+        service.submit_circuits({"c1": "qasm"}, override_execution_config=override_exec)
+
+        _, called_kwargs = mock_req.call_args_list[0]
+        payload = called_kwargs.get("json", {})
+        # bond_dimension overridden, simulator preserved from default
+        expected = ExecutionConfig(
+            bond_dimension=256, simulator=Simulator.QiskitAer
+        ).to_payload()
+        assert payload["execution_configuration"] == expected
+
+    def test_submit_explicit_execution_config_without_default(
+        self, submit_circuits_mock
+    ):
+        """Explicit execution_config should work when no service default is set."""
+        service, mock_req = submit_circuits_mock
+        assert service.execution_config is None
+
+        exec_config = ExecutionConfig(bond_dimension=64)
+        service.submit_circuits({"c1": "qasm"}, override_execution_config=exec_config)
+
+        _, called_kwargs = mock_req.call_args_list[0]
+        payload = called_kwargs.get("json", {})
+        assert payload["execution_configuration"] == {"bond_dimension": 64}
 
     def test_submit_circuits_with_packing_override(self, submit_circuits_mock):
         """Test submitting circuits with circuit packing override."""
@@ -2040,7 +2170,9 @@ class TestQoroServiceWithApiKey:
             simulation_method=SimulationMethod.MatrixProductState,
             api_meta={"optimization_level": 1},
         )
-        result = qoro_service.submit_circuits(single_circuit, execution_config=config)
+        result = qoro_service.submit_circuits(
+            single_circuit, override_execution_config=config
+        )
 
         retrieved = qoro_service.get_execution_config(result)
         assert isinstance(retrieved, ExecutionConfig)

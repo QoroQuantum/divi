@@ -2,8 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import IntEnum
+
+from divi.backends._qpu_system import QPUSystem
 
 
 class Simulator(IntEnum):
@@ -79,6 +81,29 @@ class ExecutionConfig:
     api_meta: dict | None = field(default=None)
     """Runtime pass-through metadata."""
 
+    def override(self, other: "ExecutionConfig") -> "ExecutionConfig":
+        """Creates a new config by overriding attributes with non-None values.
+
+        This method ensures immutability by always returning a new
+        ``ExecutionConfig`` object and leaving the original instance unmodified.
+
+        Args:
+            other: Another ExecutionConfig instance to take values from. Only
+                non-None attributes from this instance will be used for the
+                override.
+
+        Returns:
+            A new ExecutionConfig instance with the merged configurations.
+        """
+        current_attrs = {f.name: getattr(self, f.name) for f in fields(self)}
+
+        for f in fields(other):
+            other_value = getattr(other, f.name)
+            if other_value is not None:
+                current_attrs[f.name] = other_value
+
+        return ExecutionConfig(**current_attrs)
+
     def to_payload(self) -> dict:
         """Serialise to the JSON body expected by the API.
 
@@ -128,3 +153,64 @@ class ExecutionConfig:
             ),
             api_meta=data.get("api_meta"),
         )
+
+
+@dataclass(frozen=True)
+class JobConfig:
+    """Configuration for a Qoro Service job."""
+
+    shots: int | None = None
+    """Number of shots for the job."""
+
+    qpu_system: QPUSystem | str | None = None
+    """The QPU system to use, can be a string or a QPUSystem object."""
+
+    use_circuit_packing: bool | None = None
+    """Whether to use circuit packing optimization."""
+
+    tag: str = "default"
+    """Tag to associate with the job for identification."""
+
+    force_sampling: bool = False
+    """Whether to force sampling instead of expectation value measurements."""
+
+    def override(self, other: "JobConfig") -> "JobConfig":
+        """Creates a new config by overriding attributes with non-None values.
+
+        This method ensures immutability by always returning a new `JobConfig` object
+        and leaving the original instance unmodified.
+
+        Args:
+            other: Another JobConfig instance to take values from. Only non-None
+                   attributes from this instance will be used for the override.
+
+        Returns:
+            A new JobConfig instance with the merged configurations.
+        """
+        current_attrs = {f.name: getattr(self, f.name) for f in fields(self)}
+
+        for f in fields(other):
+            other_value = getattr(other, f.name)
+            if other_value is not None:
+                current_attrs[f.name] = other_value
+
+        return JobConfig(**current_attrs)
+
+    def __post_init__(self):
+        """Sanitizes and validates the configuration."""
+        if self.shots is not None and self.shots <= 0:
+            raise ValueError(f"Shots must be a positive integer. Got {self.shots}.")
+
+        if isinstance(self.qpu_system, str):
+            # Defer resolution - will be resolved in QoroService.__init__() after fetch_qpu_systems()
+            # This allows JobConfig to be created before QoroService exists
+            pass
+        elif self.qpu_system is not None and not isinstance(self.qpu_system, QPUSystem):
+            raise TypeError(
+                f"Expected a QPUSystem instance or str, got {type(self.qpu_system)}"
+            )
+
+        if self.use_circuit_packing is not None and not isinstance(
+            self.use_circuit_packing, bool
+        ):
+            raise TypeError(f"Expected a bool, got {type(self.use_circuit_packing)}")

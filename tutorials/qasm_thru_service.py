@@ -22,10 +22,9 @@ if __name__ == "__main__":
     default_config = JobConfig(
         shots=500,
         qpu_system="qoro_maestro",
-        use_circuit_packing=True,
         tag="tutorial_default",
     )
-    service_with_config = QoroService(config=default_config)
+    service_with_config = QoroService(job_config=default_config)
 
     # Example 3: Submit a job with an override JobConfig.
     print("\n" + "=" * 60)
@@ -74,20 +73,41 @@ if __name__ == "__main__":
     expectation_results = completed_expectation_result.results
     print(f"Expectation value results: {expectation_results}")
 
-    # Example 5: Submit with inline execution configuration.
+    # Example 5: Update configs after construction.
     print("\n" + "=" * 60)
-    print("=== Example 3: Submit with inline execution configuration ===")
+    print("=== Example 4: Update configs after construction ===")
     print("=" * 60)
 
-    exec_config = ExecutionConfig(
+    service_with_config.job_config = JobConfig(
+        shots=3000, qpu_system="qoro_maestro", tag="updated_config"
+    )
+    print(f"Updated job_config shots: {service_with_config.job_config.shots}")
+
+    service_with_config.execution_config = ExecutionConfig(bond_dimension=16)
+    print(f"Updated execution_config: {service_with_config.execution_config}")
+
+    # Example 6: Service-level default execution configuration.
+    print("\n" + "=" * 60)
+    print("=== Example 3: Service-level default execution configuration ===")
+    print("=" * 60)
+
+    default_exec_config = ExecutionConfig(
         bond_dimension=16,
         simulator=Simulator.QCSim,
         simulation_method=SimulationMethod.MatrixProductState,
-        api_meta={"optimization_level": 2},
     )
-    exec_result = service.submit_circuits(
+    service_with_exec = QoroService(execution_config=default_exec_config)
+
+    # All submissions will use the default execution config.
+    exec_result = service_with_exec.submit_circuits({"circuit_0": circuit})
+
+    # Per-submission overrides are still possible; non-None fields win.
+    override_exec = ExecutionConfig(
+        bond_dimension=32, api_meta={"optimization_level": 2}
+    )
+    exec_result = service_with_exec.submit_circuits(
         {"circuit_0": circuit},
-        execution_config=exec_config,
+        override_execution_config=override_exec,
     )
     print(f"Job submitted with ID: {exec_result.job_id}")
 

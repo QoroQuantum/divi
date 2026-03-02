@@ -10,7 +10,7 @@ import os
 import time
 import warnings
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, fields, replace
+from dataclasses import replace
 from enum import Enum
 from http import HTTPStatus
 
@@ -21,7 +21,7 @@ from requests.adapters import HTTPAdapter, Retry
 from rich.console import Console
 
 from divi.backends import CircuitRunner
-from divi.backends._execution_config import ExecutionConfig
+from divi.backends._config import ExecutionConfig, JobConfig
 from divi.backends._execution_result import ExecutionResult
 from divi.backends._qpu_system import (
     QPUSystem,
@@ -92,67 +92,6 @@ class JobType(Enum):
     """Compute expectation values for Hamiltonian operators (simulation only)."""
 
 
-@dataclass(frozen=True)
-class JobConfig:
-    """Configuration for a Qoro Service job."""
-
-    shots: int | None = None
-    """Number of shots for the job."""
-
-    qpu_system: QPUSystem | str | None = None
-    """The QPU system to use, can be a string or a QPUSystem object."""
-
-    use_circuit_packing: bool | None = None
-    """Whether to use circuit packing optimization."""
-
-    tag: str = "default"
-    """Tag to associate with the job for identification."""
-
-    force_sampling: bool = False
-    """Whether to force sampling instead of expectation value measurements."""
-
-    def override(self, other: "JobConfig") -> "JobConfig":
-        """Creates a new config by overriding attributes with non-None values.
-
-        This method ensures immutability by always returning a new `JobConfig` object
-        and leaving the original instance unmodified.
-
-        Args:
-            other: Another JobConfig instance to take values from. Only non-None
-                   attributes from this instance will be used for the override.
-
-        Returns:
-            A new JobConfig instance with the merged configurations.
-        """
-        current_attrs = {f.name: getattr(self, f.name) for f in fields(self)}
-
-        for f in fields(other):
-            other_value = getattr(other, f.name)
-            if other_value is not None:
-                current_attrs[f.name] = other_value
-
-        return JobConfig(**current_attrs)
-
-    def __post_init__(self):
-        """Sanitizes and validates the configuration."""
-        if self.shots is not None and self.shots <= 0:
-            raise ValueError(f"Shots must be a positive integer. Got {self.shots}.")
-
-        if isinstance(self.qpu_system, str):
-            # Defer resolution - will be resolved in QoroService.__init__() after fetch_qpu_systems()
-            # This allows JobConfig to be created before QoroService exists
-            pass
-        elif self.qpu_system is not None and not isinstance(self.qpu_system, QPUSystem):
-            raise TypeError(
-                f"Expected a QPUSystem instance or str, got {type(self.qpu_system)}"
-            )
-
-        if self.use_circuit_packing is not None and not isinstance(
-            self.use_circuit_packing, bool
-        ):
-            raise TypeError(f"Expected a bool, got {type(self.use_circuit_packing)}")
-
-
 class MaxRetriesReachedError(Exception):
     """Exception raised when the maximum number of retries is reached."""
 
@@ -182,7 +121,8 @@ class QoroService(CircuitRunner):
     def __init__(
         self,
         auth_token: str | None = None,
-        config: JobConfig | None = None,
+        job_config: JobConfig | None = None,
+        execution_config: ExecutionConfig | None = None,
         polling_interval: float = 3.0,
         max_retries: int = 5000,
         track_depth: bool = False,
@@ -194,11 +134,16 @@ class QoroService(CircuitRunner):
                 The authentication token for the Qoro API. If not provided,
                 it will be read from ``QORO_API_KEY`` in a ``.env`` file,
                 falling back to the ``QORO_API_KEY`` environment variable.
-            config (JobConfig | None, optional):
+            job_config (JobConfig | None, optional):
                 A JobConfig object containing default job settings. If not
                 provided, a default configuration will be created. If the
-                config has no ``qpu_system``, it defaults to ``qoro_maestro``
+                job_config has no ``qpu_system``, it defaults to ``qoro_maestro``
                 with a warning.
+            execution_config (ExecutionConfig | None, optional):
+                Default execution configuration for submitted jobs. When
+                provided, every call to :meth:`submit_circuits` will use
+                this config unless an explicit ``execution_config`` argument
+                overrides it.
             polling_interval (float, optional):
                 The interval in seconds for polling job status. Defaults to 3.0.
             max_retries (int, optional):
@@ -228,21 +173,43 @@ class QoroService(CircuitRunner):
         # Fetch QPU systems (needs auth_token to be set)
         self.fetch_qpu_systems()
 
-        # Set up config
-        if config is None:
-            config = _DEFAULT_JOB_CONFIG
+        # Set up job config
+        if job_config is None:
+            job_config = _DEFAULT_JOB_CONFIG
 
-        # Resolve string qpu_system names and validate that one is present.
-        self.config = self._resolve_and_validate_qpu_system(config)
+        self.job_config = job_config
 
-        super().__init__(shots=self.config.shots, track_depth=track_depth)
+        self.execution_config = execution_config
+
+        super().__init__(shots=self.job_config.shots, track_depth=track_depth)
 
     @property
     def supports_expval(self) -> bool:
         """
         Whether the backend supports expectation value measurements.
         """
-        return self.config.qpu_system.supports_expval and not self.config.force_sampling
+        return (
+            self.job_config.qpu_system.supports_expval
+            and not self.job_config.force_sampling
+        )
+
+    @property
+    def job_config(self) -> JobConfig:
+        """The service's default job configuration."""
+        return self._job_config
+
+    @job_config.setter
+    def job_config(self, value: JobConfig) -> None:
+        self._job_config = self._resolve_and_validate_qpu_system(value)
+
+    @property
+    def execution_config(self) -> ExecutionConfig | None:
+        """The service's default execution configuration."""
+        return self._execution_config
+
+    @execution_config.setter
+    def execution_config(self, value: ExecutionConfig | None) -> None:
+        self._execution_config = value
 
     @property
     def is_async(self) -> bool:
@@ -453,7 +420,7 @@ class QoroService(CircuitRunner):
         circuits: Mapping[str, str],
         ham_ops: str | None = None,
         job_type: JobType | None = None,
-        execution_config: ExecutionConfig | None = None,
+        override_execution_config: ExecutionConfig | None = None,
         override_job_config: JobConfig | None = None,
     ) -> ExecutionResult:
         """
@@ -472,11 +439,12 @@ class QoroService(CircuitRunner):
             job_type (JobType | None, optional):
                 Type of job to execute (e.g., SIMULATE, EXECUTE, EXPECTATION).
                 If not provided, the job type will be determined from the service configuration.
-            execution_config (ExecutionConfig | None, optional):
-                Optional execution configuration to attach during job initialization.
-                When provided, it is sent inline to ``job/init`` as
-                ``execution_configuration`` to avoid race conditions between job
-                creation and subsequent configuration updates.
+            override_execution_config (ExecutionConfig | None, optional):
+                Execution configuration override for this submission. When
+                provided, its non-None fields override the service-level
+                ``execution_config`` set in the constructor. When omitted, the
+                service-level default is used (if any). The merged config is
+                sent inline to ``job/init`` as ``execution_configuration``.
             override_job_config (JobConfig | None, optional):
                 Configuration object to override the service's default settings.
                 If not provided, default values are used.
@@ -492,10 +460,10 @@ class QoroService(CircuitRunner):
         # Create final job configuration by layering configurations:
         #    service defaults -> user overrides
         if override_job_config:
-            config = self.config.override(override_job_config)
+            config = self.job_config.override(override_job_config)
             job_config = self._resolve_and_validate_qpu_system(config)
         else:
-            job_config = self.config
+            job_config = self.job_config
 
         # Handle Hamiltonian operators: validate compatibility and auto-infer job type
         if ham_ops is not None:
@@ -548,6 +516,14 @@ class QoroService(CircuitRunner):
                     for qasm in circuits.values()
                 ]
             )
+
+        # Resolve execution config: service default -> explicit override
+        if override_execution_config is not None and self.execution_config is not None:
+            execution_config = self.execution_config.override(override_execution_config)
+        elif override_execution_config is not None:
+            execution_config = override_execution_config
+        else:
+            execution_config = self.execution_config
 
         # Initialize the job without circuits to get a job_id
         init_payload = {
