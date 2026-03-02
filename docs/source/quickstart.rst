@@ -165,11 +165,16 @@ Backend Options
       measure q[0] -> c[0];
       measure q[1] -> c[1];"""
 
-      # Submit to quantum hardware (use JobConfig to select QPU system)
+      # Submit to a simulator cluster
       circuits_dict = {"my_circuit": qasm_circuit}
       execution_result = service.submit_circuits(
-          circuits_dict, override_job_config=JobConfig(qpu_system="ibm_one")
+          circuits_dict, override_job_config=JobConfig(simulator_cluster="qoro_maestro")
       )
+
+      # Target real quantum hardware (contact us for QPU access)
+      # execution_result = service.submit_circuits(
+      #     circuits_dict, override_job_config=JobConfig(qpu_system="ibm_one")
+      # )
 
 Advanced Features
 -----------------

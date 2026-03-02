@@ -8,4 +8,5 @@ from ._config import ExecutionConfig, JobConfig, SimulationMethod, Simulator
 from ._execution_result import ExecutionResult
 from ._parallel_simulator import ParallelSimulator
 from ._qoro_service import JobStatus, JobType, QoroService
+from ._systems import QPUSystem, SimulatorCluster
 from ._results_processing import convert_counts_to_probs, reverse_dict_endianness

@@ -21,7 +21,7 @@ if __name__ == "__main__":
     # Example 2: Initialize the service with a custom default JobConfig.
     default_config = JobConfig(
         shots=500,
-        qpu_system="qoro_maestro",
+        simulator_cluster="qoro_maestro",
         tag="tutorial_default",
     )
     service_with_config = QoroService(job_config=default_config)
@@ -79,7 +79,7 @@ if __name__ == "__main__":
     print("=" * 60)
 
     service_with_config.job_config = JobConfig(
-        shots=3000, qpu_system="qoro_maestro", tag="updated_config"
+        shots=3000, simulator_cluster="qoro_maestro", tag="updated_config"
     )
     print(f"Updated job_config shots: {service_with_config.job_config.shots}")
 

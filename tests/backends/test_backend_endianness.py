@@ -86,7 +86,7 @@ def test_qoro_service_and_parallel_simulator_produce_equivalent_bitstrings(api_k
 
     qoro_service = QoroService(
         auth_token=api_key,
-        job_config=JobConfig(qpu_system="qoro_maestro", shots=shots),
+        job_config=JobConfig(simulator_cluster="qoro_maestro", shots=shots),
     )
     qoro_result = qoro_service.submit_circuits(circuits)
     status = qoro_service.poll_job_status(qoro_result, loop_until_complete=True)

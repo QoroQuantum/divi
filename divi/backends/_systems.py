@@ -1,8 +1,8 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Data models for Quantum Processing Units (QPUs) and QPUSystems."""
+"""Data models for Quantum Processing Units (QPUs), QPUSystems, and SimulatorClusters."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, replace
 from threading import RLock
 
 _AVAILABLE_QPU_SYSTEMS: dict[str, QPUSystem] = {}
+_AVAILABLE_SIMULATOR_CLUSTERS: dict[str, SimulatorCluster] = {}
 _CACHE_LOCK = RLock()
 
 
@@ -45,6 +46,23 @@ class QPUSystem:
     qpus: list[QPU] = field(default_factory=list)
     access_level: str = "PUBLIC"
     supports_expval: bool = False
+
+
+@dataclass(frozen=True, repr=True)
+class SimulatorCluster:
+    """Represents a simulator cluster for cloud-based quantum simulation.
+
+    Attributes:
+        name: The name of the simulator cluster.
+        access_level: The access level for this cluster (e.g., 'PUBLIC', 'ADMIN').
+        minimum_tier: The minimum token tier required to access this cluster.
+        supports_expval: Whether the cluster supports expectation value jobs.
+    """
+
+    name: str
+    access_level: str = "PUBLIC"
+    minimum_tier: str = "FREE"
+    supports_expval: bool = True
 
 
 def parse_qpu_systems(json_data: list) -> list[QPUSystem]:
@@ -99,3 +117,55 @@ def get_available_qpu_systems() -> list[QPUSystem]:
     """Returns a list of all available QPU systems from the cache."""
     with _CACHE_LOCK:
         return list(_AVAILABLE_QPU_SYSTEMS.values())
+
+
+def parse_simulator_clusters(json_data: list) -> list[SimulatorCluster]:
+    """Parses a list of simulator cluster data from JSON into SimulatorCluster objects."""
+    return [
+        SimulatorCluster(
+            name=cluster_data["name"],
+            access_level=cluster_data.get("access_level", "PUBLIC"),
+            minimum_tier=cluster_data.get("minimum_tier", "FREE"),
+        )
+        for cluster_data in json_data
+    ]
+
+
+def update_simulator_clusters_cache(clusters: list[SimulatorCluster]):
+    """Updates the cache of available simulator clusters."""
+    with _CACHE_LOCK:
+        _AVAILABLE_SIMULATOR_CLUSTERS.clear()
+        for cluster in clusters:
+            _AVAILABLE_SIMULATOR_CLUSTERS[cluster.name] = cluster
+
+
+def get_simulator_cluster(name: str) -> SimulatorCluster:
+    """Get a SimulatorCluster object by its name from the cache.
+
+    Args:
+        name: The name of the simulator cluster to retrieve.
+
+    Returns:
+        The SimulatorCluster object with the matching name.
+
+    Raises:
+        ValueError: If the cache is empty or the cluster is not found.
+    """
+    with _CACHE_LOCK:
+        if not _AVAILABLE_SIMULATOR_CLUSTERS:
+            raise ValueError(
+                "Simulator clusters cache is empty. "
+                "Call `QoroService.fetch_simulator_clusters()` to populate it."
+            )
+        try:
+            return _AVAILABLE_SIMULATOR_CLUSTERS[name]
+        except KeyError:
+            raise ValueError(
+                f"SimulatorCluster with name '{name}' not found in cache."
+            ) from None
+
+
+def get_available_simulator_clusters() -> list[SimulatorCluster]:
+    """Returns a list of all available simulator clusters from the cache."""
+    with _CACHE_LOCK:
+        return list(_AVAILABLE_SIMULATOR_CLUSTERS.values())

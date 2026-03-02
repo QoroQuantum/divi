@@ -167,8 +167,8 @@ The :class:`QoroService` supports two distinct execution modes:
 
 1. **Sampling Mode** (circuit-only input): Submit circuits without Hamiltonian operators.
    The service executes the circuits with a specified number of shots and returns
-   measurement histograms (bitstring counts). This mode works with both simulation
-   (``JobType.SIMULATE``) and real hardware (``JobType.EXECUTE``).
+   measurement histograms (bitstring counts). This mode uses ``JobType.EXECUTE``
+   and works with both simulator clusters and QPU systems.
 
 2. **Expectation Mode** (circuit with Pauli terms): Submit circuits along with
    Hamiltonian operators specified as semicolon-separated Pauli terms (e.g., ``"XYZ;XXZ;ZIZ"``).
@@ -194,7 +194,7 @@ The workflow for submitting circuits depends on which execution mode you're usin
    # Submit the job in sampling mode (no ham_ops parameter)
    execution_result = service.submit_circuits(
        circuits,
-       job_type=JobType.SIMULATE  # Can also use JobType.EXECUTE for real hardware
+       job_type=JobType.EXECUTE
    )
 
    # Monitor the execution until completion
@@ -257,7 +257,7 @@ The :class:`QoroService` uses a :class:`JobConfig` object to manage settings for
    # 1. Set a custom default configuration for the service
    default_config = JobConfig(
        shots=500,
-       qpu_system="qoro_maestro",
+       simulator_cluster="qoro_maestro",
        use_circuit_packing=True,
        tag="default_run"
    )
@@ -275,13 +275,14 @@ You can also update the service's default configuration after construction:
 .. code-block:: python
 
    # Update the service's default job configuration
-   service.job_config = JobConfig(shots=2000, qpu_system="qoro_maestro")
+   service.job_config = JobConfig(shots=2000, simulator_cluster="qoro_maestro")
 
    # Update the service's default execution configuration
    service.execution_config = ExecutionConfig(bond_dimension=512)
 
-The ``job_config`` setter automatically resolves string QPU system names and
-defaults ``qpu_system`` when ``None``, just like the constructor does.
+The ``job_config`` setter automatically resolves string target names and
+defaults to the ``qoro_maestro`` simulator cluster when neither
+``simulator_cluster`` nor ``qpu_system`` is set, just like the constructor does.
 
 Execution Configuration
 ^^^^^^^^^^^^^^^^^^^^^^^

@@ -5,7 +5,7 @@
 from dataclasses import dataclass, field, fields
 from enum import IntEnum
 
-from divi.backends._qpu_system import QPUSystem
+from divi.backends._systems import QPUSystem, SimulatorCluster
 
 
 class Simulator(IntEnum):
@@ -157,13 +157,21 @@ class ExecutionConfig:
 
 @dataclass(frozen=True)
 class JobConfig:
-    """Configuration for a Qoro Service job."""
+    """Configuration for a Qoro Service job.
+
+    Exactly one of ``simulator_cluster`` or ``qpu_system`` should be set to
+    target the job. If neither is provided, the service defaults to the
+    ``qoro_maestro`` simulator cluster.
+    """
 
     shots: int | None = None
     """Number of shots for the job."""
 
+    simulator_cluster: SimulatorCluster | str | None = None
+    """The simulator cluster to target, can be a string name or a SimulatorCluster object."""
+
     qpu_system: QPUSystem | str | None = None
-    """The QPU system to use, can be a string or a QPUSystem object."""
+    """The QPU system to target, can be a string name or a QPUSystem object."""
 
     use_circuit_packing: bool | None = None
     """Whether to use circuit packing optimization."""
@@ -180,6 +188,10 @@ class JobConfig:
         This method ensures immutability by always returning a new `JobConfig` object
         and leaving the original instance unmodified.
 
+        If the override sets ``simulator_cluster``, any existing ``qpu_system``
+        is cleared (and vice versa), so the mutual-exclusivity constraint is
+        preserved.
+
         Args:
             other: Another JobConfig instance to take values from. Only non-None
                    attributes from this instance will be used for the override.
@@ -194,6 +206,12 @@ class JobConfig:
             if other_value is not None:
                 current_attrs[f.name] = other_value
 
+        # Ensure mutual exclusivity: if override sets one target, clear the other
+        if other.simulator_cluster is not None:
+            current_attrs["qpu_system"] = None
+        elif other.qpu_system is not None:
+            current_attrs["simulator_cluster"] = None
+
         return JobConfig(**current_attrs)
 
     def __post_init__(self):
@@ -201,10 +219,22 @@ class JobConfig:
         if self.shots is not None and self.shots <= 0:
             raise ValueError(f"Shots must be a positive integer. Got {self.shots}.")
 
+        if self.simulator_cluster is not None and self.qpu_system is not None:
+            raise ValueError(
+                "Provide either 'simulator_cluster' or 'qpu_system', not both."
+            )
+
+        if isinstance(self.simulator_cluster, str):
+            pass  # Deferred resolution in QoroService
+        elif self.simulator_cluster is not None and not isinstance(
+            self.simulator_cluster, SimulatorCluster
+        ):
+            raise TypeError(
+                f"Expected a SimulatorCluster instance or str, got {type(self.simulator_cluster)}"
+            )
+
         if isinstance(self.qpu_system, str):
-            # Defer resolution - will be resolved in QoroService.__init__() after fetch_qpu_systems()
-            # This allows JobConfig to be created before QoroService exists
-            pass
+            pass  # Deferred resolution in QoroService
         elif self.qpu_system is not None and not isinstance(self.qpu_system, QPUSystem):
             raise TypeError(
                 f"Expected a QPUSystem instance or str, got {type(self.qpu_system)}"

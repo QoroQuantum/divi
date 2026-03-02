@@ -17,12 +17,17 @@ from divi.backends._qoro_service import (
     _raise_with_details,
     is_valid_qasm,
 )
-from divi.backends._qpu_system import (
+from divi.backends._systems import (
     QPUSystem,
+    SimulatorCluster,
     get_available_qpu_systems,
+    get_available_simulator_clusters,
     get_qpu_system,
+    get_simulator_cluster,
     parse_qpu_systems,
+    parse_simulator_clusters,
     update_qpu_systems_cache,
+    update_simulator_clusters_cache,
 )
 from divi.circuits import validate_qasm
 from tests.backends import circuit_runner_contracts as contracts
@@ -37,9 +42,19 @@ def qoro_service(api_key):
 
 
 @pytest.fixture
-def qoro_service_factory(mocker):
-    """Provides a factory to create mocked QoroService instances."""
-    mocker.patch.object(QoroService, "fetch_qpu_systems", return_value=[])
+def qoro_service_factory():
+    """Provides a factory to create mocked QoroService instances.
+
+    Temporarily replaces ``_make_request`` during construction so that
+    ``fetch_qpu_systems`` and ``fetch_simulator_clusters`` receive empty
+    responses. The original method is restored immediately after construction,
+    so tests can set up their own mocks freely.
+    """
+
+    class _EmptyResponse:
+        @staticmethod
+        def json():
+            return []
 
     def _factory(**kwargs):
         config = {
@@ -48,7 +63,14 @@ def qoro_service_factory(mocker):
             "polling_interval": 0.01,
         }
         config.update(kwargs)
-        return QoroService(**config)
+
+        original = QoroService._make_request
+        QoroService._make_request = lambda self, *a, **kw: _EmptyResponse()
+        try:
+            service = QoroService(**config)
+        finally:
+            QoroService._make_request = original
+        return service
 
     return _factory
 
@@ -145,6 +167,7 @@ class TestQoroServiceMock:
         mocker.patch.dict("os.environ", {}, clear=True)
 
         mocker.patch.object(QoroService, "fetch_qpu_systems", return_value=[])
+        mocker.patch.object(QoroService, "fetch_simulator_clusters", return_value=[])
         with pytest.raises(
             ValueError,
             match="Qoro API key not provided nor found in a .env file "
@@ -213,6 +236,29 @@ class TestQoroServiceMock:
         """
         with pytest.raises(TypeError):
             JobConfig(qpu_system=invalid_input)
+
+    def test_job_config_simulator_cluster_accepts_valid_types(self):
+        """Tests that JobConfig accepts string, SimulatorCluster, and None."""
+        assert (
+            JobConfig(simulator_cluster="my_cluster").simulator_cluster == "my_cluster"
+        )
+        cluster = SimulatorCluster(name="c")
+        assert JobConfig(simulator_cluster=cluster).simulator_cluster == cluster
+        assert JobConfig(simulator_cluster=None).simulator_cluster is None
+
+    def test_job_config_simulator_cluster_rejects_invalid_types(self):
+        """Tests that JobConfig raises a TypeError for invalid simulator_cluster types."""
+        for invalid in (123, ["a"], {"a": "b"}):
+            with pytest.raises(TypeError):
+                JobConfig(simulator_cluster=invalid)
+
+    def test_job_config_rejects_both_targets(self):
+        """Tests that JobConfig raises ValueError when both targets are set."""
+        with pytest.raises(ValueError, match="not both"):
+            JobConfig(
+                simulator_cluster=SimulatorCluster(name="cluster"),
+                qpu_system=QPUSystem(name="qpu"),
+            )
 
     def test_job_config_shots_validation(self):
         """Tests that JobConfig validates shots values."""
@@ -447,15 +493,11 @@ class TestQoroServiceMock:
         init_payload = mock_make_request.call_args_list[0].kwargs["json"]
         assert init_payload["qpu_system_name"] == "override_qpu_system"
 
-    def test_qoro_service_init_defaults_qpu_system_with_warning(
-        self, qoro_service_factory
-    ):
-        """Tests that QoroService defaults to qoro_maestro with a warning when qpu_system is None."""
-        with pytest.warns(match="No qpu_system specified in JobConfig"):
-            service = qoro_service_factory(
-                job_config=JobConfig(shots=1000, qpu_system=None)
-            )
-        assert service.job_config.qpu_system.name == "qoro_maestro"
+    def test_qoro_service_init_defaults_with_warning(self, qoro_service_factory):
+        """Tests that QoroService defaults to qoro_maestro simulator cluster with a warning."""
+        with pytest.warns(match="No simulator_cluster or qpu_system specified"):
+            service = qoro_service_factory(job_config=JobConfig(shots=1000))
+        assert service.job_config.simulator_cluster.name == "qoro_maestro"
 
     # --- Tests for core functionality ---
 
@@ -568,9 +610,15 @@ class TestQoroServiceMock:
 
         # This test is a special case: it tests `fetch_qpu_systems` itself,
         # so we cannot mock it. Instead, we mock the underlying `_make_request`.
-        mock_response = mocker.MagicMock()
-        mock_response.json.return_value = mock_json_data
-        mocker.patch.object(QoroService, "_make_request", return_value=mock_response)
+        mock_qpu_response = mocker.MagicMock()
+        mock_qpu_response.json.return_value = mock_json_data
+        mock_cluster_response = mocker.MagicMock()
+        mock_cluster_response.json.return_value = []
+        mocker.patch.object(
+            QoroService,
+            "_make_request",
+            side_effect=[mock_qpu_response, mock_cluster_response],
+        )
 
         service = QoroService(auth_token="test_token")
 
@@ -580,7 +628,10 @@ class TestQoroServiceMock:
         assert qpu_systems[0].name == "test_qpu"
         assert len(qpu_systems[0].qpus) == 2
 
-        # Test fetch_qpu_systems
+        # Test fetch_qpu_systems (re-patch _make_request for explicit call)
+        mock_qpu_response2 = mocker.MagicMock()
+        mock_qpu_response2.json.return_value = mock_json_data
+        mocker.patch.object(service, "_make_request", return_value=mock_qpu_response2)
         mock_update_cache = mocker.patch.object(
             _qoro_service, "update_qpu_systems_cache"
         )
@@ -628,6 +679,72 @@ class TestQoroServiceMock:
         # Test 3: Cache is populated, system not found
         with pytest.raises(ValueError, match="QPUSystem with name 'system3' not found"):
             get_qpu_system("system3")
+
+    def test_fetch_simulator_clusters(self, mocker, qoro_service_factory):
+        """Test fetch_simulator_clusters."""
+        mock_json_data = [
+            {"name": "qoro_maestro", "access_level": "PUBLIC", "minimum_tier": "FREE"},
+            {"name": "gpu_cluster", "access_level": "ADMIN", "minimum_tier": "PRO"},
+        ]
+
+        service = qoro_service_factory()
+
+        mock_response = mocker.MagicMock()
+        mock_response.json.return_value = mock_json_data
+        mocker.patch.object(service, "_make_request", return_value=mock_response)
+        mock_update_cache = mocker.patch.object(
+            _qoro_service, "update_simulator_clusters_cache"
+        )
+
+        result = service.fetch_simulator_clusters()
+        assert len(result) == 2
+        assert result[0].name == "qoro_maestro"
+        assert result[1].minimum_tier == "PRO"
+        mock_update_cache.assert_called_once_with(result)
+
+    def test_parse_simulator_clusters(self):
+        """Test parse_simulator_clusters handles various JSON shapes."""
+        clusters = parse_simulator_clusters(
+            [
+                {"name": "c1", "access_level": "PUBLIC", "minimum_tier": "FREE"},
+                {"name": "c2"},  # optional fields should default
+            ]
+        )
+        assert len(clusters) == 2
+        assert clusters[0] == SimulatorCluster(
+            name="c1", access_level="PUBLIC", minimum_tier="FREE"
+        )
+        assert clusters[1].access_level == "PUBLIC"
+        assert clusters[1].minimum_tier == "FREE"
+
+    def test_update_simulator_clusters_cache(self):
+        """Test that the simulator clusters cache is correctly updated."""
+        clusters = [
+            SimulatorCluster(name="cluster1"),
+            SimulatorCluster(name="cluster2", minimum_tier="PRO"),
+        ]
+        update_simulator_clusters_cache(clusters)
+
+        cached = get_available_simulator_clusters()
+        assert len(cached) == 2
+
+        c1 = get_simulator_cluster("cluster1")
+        assert c1.name == "cluster1"
+        assert c1.supports_expval is True
+
+    def test_get_simulator_cluster(self):
+        """Test get_simulator_cluster functionality with caching."""
+        update_simulator_clusters_cache([])
+        with pytest.raises(ValueError, match="Simulator clusters cache is empty"):
+            get_simulator_cluster("cluster1")
+
+        update_simulator_clusters_cache([SimulatorCluster(name="cluster1")])
+        assert get_simulator_cluster("cluster1").name == "cluster1"
+
+        with pytest.raises(
+            ValueError, match="SimulatorCluster with name 'missing' not found"
+        ):
+            get_simulator_cluster("missing")
 
     def test_poll_job_status_comprehensive(self, mocker, qoro_service_factory):
         """Test poll_job_status functionality."""
@@ -894,8 +1011,8 @@ class TestQoroServiceMock:
 
     # --- Tests for job_config / execution_config setters ---
 
-    def test_set_job_config_after_init(self, qoro_service_factory):
-        """Reassigning job_config stores the new value and updates supports_expval."""
+    def test_set_job_config_after_init_with_qpu_system(self, qoro_service_factory):
+        """Reassigning job_config with a QPUSystem updates supports_expval."""
         service = qoro_service_factory()
         new_config = JobConfig(
             shots=2000, qpu_system=QPUSystem(name="hw", supports_expval=False)
@@ -904,25 +1021,47 @@ class TestQoroServiceMock:
         assert service.job_config.shots == 2000
         assert service.supports_expval is False
 
+    def test_set_job_config_after_init_with_simulator_cluster(
+        self, qoro_service_factory
+    ):
+        """Reassigning job_config with a SimulatorCluster works correctly."""
+        service = qoro_service_factory()
+        new_config = JobConfig(
+            shots=2000, simulator_cluster=SimulatorCluster(name="test_cluster")
+        )
+        service.job_config = new_config
+        assert service.job_config.shots == 2000
+        assert service.supports_expval is True
+
     def test_set_job_config_resolves_string_qpu(self, qoro_service_factory):
         """Setting job_config with a string qpu_system resolves it to QPUSystem."""
-        update_qpu_systems_cache([QPUSystem(name="qoro_maestro", supports_expval=True)])
         service = qoro_service_factory()
+        update_qpu_systems_cache([QPUSystem(name="qoro_maestro", supports_expval=True)])
         service.job_config = JobConfig(shots=100, qpu_system="qoro_maestro")
         assert isinstance(service.job_config.qpu_system, QPUSystem)
         assert service.job_config.qpu_system.name == "qoro_maestro"
 
-    def test_set_job_config_defaults_none_qpu(self, qoro_service_factory):
-        """Setting job_config with qpu_system=None defaults with a warning."""
+    def test_set_job_config_resolves_string_simulator_cluster(
+        self, qoro_service_factory
+    ):
+        """Setting job_config with a string simulator_cluster resolves it."""
+        service = qoro_service_factory()
+        update_simulator_clusters_cache([SimulatorCluster(name="qoro_maestro")])
+        service.job_config = JobConfig(shots=100, simulator_cluster="qoro_maestro")
+        assert isinstance(service.job_config.simulator_cluster, SimulatorCluster)
+        assert service.job_config.simulator_cluster.name == "qoro_maestro"
+
+    def test_set_job_config_defaults_no_target(self, qoro_service_factory):
+        """Setting job_config with no target defaults with a warning."""
         service = qoro_service_factory()
         import warnings
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            service.job_config = JobConfig(shots=500, qpu_system=None)
+            service.job_config = JobConfig(shots=500)
             assert len(w) == 1
             assert "Defaulting to" in str(w[0].message)
-        assert isinstance(service.job_config.qpu_system, QPUSystem)
+        assert isinstance(service.job_config.simulator_cluster, SimulatorCluster)
 
     def test_set_execution_config_after_init(self, qoro_service_factory):
         """Reassigning execution_config stores the new value."""
@@ -1090,6 +1229,41 @@ class TestQoroServiceMock:
         # Assert the correct qpu_system_name was sent in the init payload
         init_payload = mock_make_request.call_args_list[0].kwargs["json"]
         assert init_payload["qpu_system_name"] == "resolved_qpu"
+        assert "simulator_cluster" not in init_payload
+
+    def test_submit_circuits_with_override_job_config_string_simulator_cluster(
+        self, mocker, qoro_service_factory
+    ):
+        """Test submitting circuits with an override_job_config that has a string simulator_cluster."""
+        qoro_service_mock = qoro_service_factory()
+        mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=True)
+
+        mock_init_response = mocker.MagicMock(
+            status_code=HTTPStatus.CREATED, json=lambda: {"job_id": "mock_job_id"}
+        )
+        mock_add_response = mocker.MagicMock(status_code=HTTPStatus.OK)
+        mock_make_request = mocker.patch.object(
+            qoro_service_mock,
+            "_make_request",
+            side_effect=[mock_init_response, mock_add_response],
+        )
+
+        mock_cluster = SimulatorCluster(name="resolved_cluster")
+        mock_get_cluster = mocker.patch(
+            "divi.backends._qoro_service.get_simulator_cluster",
+            return_value=mock_cluster,
+        )
+
+        override_conf = JobConfig(simulator_cluster="string_cluster_name")
+        qoro_service_mock.submit_circuits(
+            {"c1": "qasm"}, override_job_config=override_conf
+        )
+
+        mock_get_cluster.assert_called_once_with("string_cluster_name")
+
+        init_payload = mock_make_request.call_args_list[0].kwargs["json"]
+        assert init_payload["simulator_cluster"] == "resolved_cluster"
+        assert "qpu_system_name" not in init_payload
 
     def test_submit_circuits_with_expectation_value(self, submit_circuits_mock):
         """Test submitting circuits with expectation value job type and ham_ops."""
@@ -1147,13 +1321,13 @@ class TestQoroServiceMock:
             ],
         )
 
-        # Should error when ham_ops is used with SIMULATE job
+        # Should error when ham_ops is used with EXECUTE job
         with pytest.raises(
             ValueError,
             match="Hamiltonian operators are only supported for EXPECTATION job type.",
         ):
             qoro_service_mock.submit_circuits(
-                {"c1": "qasm"}, ham_ops="XII", job_type=JobType.SIMULATE
+                {"c1": "qasm"}, ham_ops="XII", job_type=JobType.EXECUTE
             )
 
     def test_submit_circuits_ham_ops_auto_infers_expectation_job_type(

@@ -23,13 +23,17 @@ from rich.console import Console
 from divi.backends import CircuitRunner
 from divi.backends._config import ExecutionConfig, JobConfig
 from divi.backends._execution_result import ExecutionResult
-from divi.backends._qpu_system import (
-    QPUSystem,
-    get_qpu_system,
-    parse_qpu_systems,
-    update_qpu_systems_cache,
-)
 from divi.backends._results_processing import _decode_qh1_b64
+from divi.backends._systems import (
+    QPUSystem,
+    SimulatorCluster,
+    get_qpu_system,
+    get_simulator_cluster,
+    parse_qpu_systems,
+    parse_simulator_clusters,
+    update_qpu_systems_cache,
+    update_simulator_clusters_cache,
+)
 from divi.circuits import is_valid_qasm, validate_qasm
 from divi.circuits._qasm_validation import _format_validation_error_with_context
 
@@ -83,13 +87,10 @@ class JobType(Enum):
     """Type of job to execute on the Qoro Service."""
 
     EXECUTE = "EXECUTE"
-    """Execute circuits on real quantum hardware (sampling mode only)."""
-
-    SIMULATE = "SIMULATE"
-    """Simulate circuits using cloud-based simulation services (sampling mode)."""
+    """Run circuits and return measurement count histograms."""
 
     EXPECTATION = "EXPECTATION"
-    """Compute expectation values for Hamiltonian operators (simulation only)."""
+    """Compute expectation values for Hamiltonian operators."""
 
 
 class MaxRetriesReachedError(Exception):
@@ -104,10 +105,10 @@ class MaxRetriesReachedError(Exception):
         super().__init__(self.message)
 
 
-_DEFAULT_QPU_SYSTEM = QPUSystem(name="qoro_maestro", supports_expval=True)
+_DEFAULT_SIMULATOR_CLUSTER = SimulatorCluster(name="qoro_maestro")
 
 _DEFAULT_JOB_CONFIG = JobConfig(
-    shots=1000, qpu_system=_DEFAULT_QPU_SYSTEM, use_circuit_packing=False
+    shots=1000, simulator_cluster=_DEFAULT_SIMULATOR_CLUSTER, use_circuit_packing=False
 )
 
 
@@ -137,8 +138,9 @@ class QoroService(CircuitRunner):
             job_config (JobConfig | None, optional):
                 A JobConfig object containing default job settings. If not
                 provided, a default configuration will be created. If the
-                job_config has no ``qpu_system``, it defaults to ``qoro_maestro``
-                with a warning.
+                job_config has neither ``simulator_cluster`` nor ``qpu_system``,
+                it defaults to the ``qoro_maestro`` simulator cluster with a
+                warning.
             execution_config (ExecutionConfig | None, optional):
                 Default execution configuration for submitted jobs. When
                 provided, every call to :meth:`submit_circuits` will use
@@ -153,7 +155,7 @@ class QoroService(CircuitRunner):
                 Access via :attr:`depth_history` after execution. Defaults to False.
         """
 
-        # Set up auth_token first (needed for API calls like fetch_qpu_systems)
+        # Set up auth_token first (needed for API calls like fetch_simulator_clusters)
         if auth_token is None:
             try:
                 env_path = find_dotenv(usecwd=True)
@@ -170,8 +172,9 @@ class QoroService(CircuitRunner):
         self.polling_interval = polling_interval
         self.max_retries = max_retries
 
-        # Fetch QPU systems (needs auth_token to be set)
+        # Fetch available systems (needs auth_token to be set)
         self.fetch_qpu_systems()
+        self.fetch_simulator_clusters()
 
         # Set up job config
         if job_config is None:
@@ -188,10 +191,8 @@ class QoroService(CircuitRunner):
         """
         Whether the backend supports expectation value measurements.
         """
-        return (
-            self.job_config.qpu_system.supports_expval
-            and not self.job_config.force_sampling
-        )
+        target = self.job_config.simulator_cluster or self.job_config.qpu_system
+        return target.supports_expval and not self.job_config.force_sampling
 
     @property
     def job_config(self) -> JobConfig:
@@ -200,7 +201,7 @@ class QoroService(CircuitRunner):
 
     @job_config.setter
     def job_config(self, value: JobConfig) -> None:
-        self._job_config = self._resolve_and_validate_qpu_system(value)
+        self._job_config = self._resolve_and_validate_target(value)
 
     @property
     def execution_config(self) -> ExecutionConfig | None:
@@ -218,19 +219,27 @@ class QoroService(CircuitRunner):
         """
         return True
 
-    def _resolve_and_validate_qpu_system(self, config: JobConfig) -> JobConfig:
-        """Ensures the config has a valid QPUSystem object, resolving from string if needed."""
-        if config.qpu_system is None:
+    def _resolve_and_validate_target(self, config: JobConfig) -> JobConfig:
+        """Ensures the config has a valid target, resolving strings if needed.
+
+        If neither ``simulator_cluster`` nor ``qpu_system`` is set, defaults to
+        the ``qoro_maestro`` simulator cluster with a warning.
+        """
+        if config.simulator_cluster is None and config.qpu_system is None:
             warnings.warn(
-                f"No qpu_system specified in JobConfig. "
-                f"Defaulting to '{_DEFAULT_QPU_SYSTEM.name}'.",
+                "No simulator_cluster or qpu_system specified in JobConfig. "
+                f"Defaulting to simulator cluster '{_DEFAULT_SIMULATOR_CLUSTER.name}'.",
                 stacklevel=2,
             )
-            return replace(config, qpu_system=_DEFAULT_QPU_SYSTEM)
+            return replace(config, simulator_cluster=_DEFAULT_SIMULATOR_CLUSTER)
+
+        if isinstance(config.simulator_cluster, str):
+            resolved = get_simulator_cluster(config.simulator_cluster)
+            return replace(config, simulator_cluster=resolved)
 
         if isinstance(config.qpu_system, str):
-            resolved_qpu = get_qpu_system(config.qpu_system)
-            return replace(config, qpu_system=resolved_qpu)
+            resolved = get_qpu_system(config.qpu_system)
+            return replace(config, qpu_system=resolved)
 
         return config
 
@@ -308,6 +317,18 @@ class QoroService(CircuitRunner):
         systems = parse_qpu_systems(response.json())
         update_qpu_systems_cache(systems)
         return systems
+
+    def fetch_simulator_clusters(self) -> list[SimulatorCluster]:
+        """
+        Get the list of available simulator clusters from the Qoro API.
+
+        Returns:
+            List of SimulatorCluster objects.
+        """
+        response = self._make_request("get", "simulatorcluster/", timeout=10)
+        clusters = parse_simulator_clusters(response.json())
+        update_simulator_clusters_cache(clusters)
+        return clusters
 
     def get_credit_balance(self) -> dict:
         """
@@ -437,8 +458,8 @@ class QoroService(CircuitRunner):
                 Each term is a combination of Pauli operators, e.g. "XYZ;XXZ;ZIZ".
                 If None, no Hamiltonian operators will be measured.
             job_type (JobType | None, optional):
-                Type of job to execute (e.g., SIMULATE, EXECUTE, EXPECTATION).
-                If not provided, the job type will be determined from the service configuration.
+                Type of job to execute (EXECUTE or EXPECTATION).
+                If not provided, defaults to EXECUTE.
             override_execution_config (ExecutionConfig | None, optional):
                 Execution configuration override for this submission. When
                 provided, its non-None fields override the service-level
@@ -461,7 +482,7 @@ class QoroService(CircuitRunner):
         #    service defaults -> user overrides
         if override_job_config:
             config = self.job_config.override(override_job_config)
-            job_config = self._resolve_and_validate_qpu_system(config)
+            job_config = self._resolve_and_validate_target(config)
         else:
             job_config = self.job_config
 
@@ -494,7 +515,7 @@ class QoroService(CircuitRunner):
                 )
 
         if job_type is None:
-            job_type = JobType.SIMULATE
+            job_type = JobType.EXECUTE
 
         # Validate circuits
         for key, circuit in circuits.items():
@@ -529,11 +550,12 @@ class QoroService(CircuitRunner):
         init_payload = {
             "tag": job_config.tag,
             "job_type": job_type.value,
-            "qpu_system_name": (
-                job_config.qpu_system.name if job_config.qpu_system else None
-            ),
             "use_packing": job_config.use_circuit_packing or False,
         }
+        if job_config.simulator_cluster:
+            init_payload["simulator_cluster"] = job_config.simulator_cluster.name
+        elif job_config.qpu_system:
+            init_payload["qpu_system_name"] = job_config.qpu_system.name
         if execution_config is not None:
             init_payload["execution_configuration"] = execution_config.to_payload()
 

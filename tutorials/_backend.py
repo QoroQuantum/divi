@@ -64,7 +64,7 @@ def get_backend(
     mode = _parse_mode()
 
     if mode == "maestro":
-        config = JobConfig(shots=shots, qpu_system="qoro_maestro")
+        config = JobConfig(shots=shots, simulator_cluster="qoro_maestro")
         service = QoroService(job_config=config)
         service.track_depth = track_depth
         return service
