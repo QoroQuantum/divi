@@ -42,11 +42,17 @@ def _run_partitioning_engine(
         beam_width=3, n_partition_candidates=5
     )
 
+    # Retrieve multiple ranked solutions via beam search
+    top_solutions = qubo_partition.get_top_solutions(
+        n=5, beam_width=5, n_partition_candidates=5
+    )
+
     return {
         "greedy_energy": greedy_energy,
         "greedy_solution": greedy_solution,
         "beam_energy": beam_energy,
         "beam_solution": beam_solution,
+        "top_solutions": top_solutions,
         "total_circuits": qubo_partition.total_circuit_count,
     }
 
@@ -117,3 +123,11 @@ if __name__ == "__main__":
         )
         print(f"  Solution: {sol}")
     print("-" * sep_len)
+
+    # --- Print top-N solutions per engine ---
+    for engine_name, res in results_by_engine.items():
+        print(f"\nTop-5 solutions ({engine_name.upper()}):")
+        print(f"  {'Rank':<6}{pad}{'Energy':>12}{pad}Solution")
+        print(f"  {'-' * 50}")
+        for rank, (sol, energy) in enumerate(res["top_solutions"], 1):
+            print(f"  {rank:<6}{pad}{energy:>12.6f}{pad}{sol}")

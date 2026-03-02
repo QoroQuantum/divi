@@ -16,7 +16,7 @@ from dimod import BinaryQuadraticModel
 
 from divi.backends import CircuitRunner
 from divi.qprog.algorithms import PCE, QAOA
-from divi.qprog.batch import ProgramBatch, beam_search_aggregate
+from divi.qprog.batch import ProgramBatch, _beam_search_aggregate_top_n
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer, copy_optimizer
 from divi.typing import QUBOProblemTypes
 
@@ -267,41 +267,90 @@ class QUBOPartitioningQAOA(ProgramBatch):
             )
 
         n_vars = len(self._bqm.variables)
-        best_solution = beam_search_aggregate(
+        _, best_solution = _beam_search_aggregate_top_n(
             programs=self._programs,
             initial_solution=[0] * n_vars,
             extend_fn=self._extend_solution,
             evaluate_fn=self._evaluate_solution,
             beam_width=beam_width,
             n_partition_candidates=n_partition_candidates,
-        )
+        )[0]
 
-        # Build per-partition SampleSets and feed through the composer
+        self.solution, self.solution_energy = self._compose_solution(best_solution)
+
+        return self.solution, self.solution_energy
+
+    def _compose_solution(self, solution):
+        """Run a single solution through the hybrid composer pipeline.
+
+        Operates on a copy of the subproblem states to avoid mutating
+        shared state.
+
+        Returns:
+            tuple[npt.NDArray[np.int32], float]: ``(solution_array, energy)``.
+        """
+        states_copy = {}
         for (
             prog_id,
             bqm_subproblem_state,
         ) in self.prog_id_to_bqm_subproblem_states.items():
-
             if prog_id in self.trivial_program_ids:
                 var_to_val = {v: 0 for v in bqm_subproblem_state.subproblem.variables}
             else:
                 variables = list(bqm_subproblem_state.subproblem.variables)
                 global_indices = self._variable_maps[prog_id]
                 var_to_val = {
-                    v: best_solution[gi] for v, gi in zip(variables, global_indices)
+                    v: solution[gi] for v, gi in zip(variables, global_indices)
                 }
 
             sample_set = dimod.SampleSet.from_samples(
                 dimod.as_samples(var_to_val), "BINARY", 0
             )
+            states_copy[prog_id] = bqm_subproblem_state.updated(subsamples=sample_set)
 
-            self.prog_id_to_bqm_subproblem_states[prog_id] = (
-                bqm_subproblem_state.updated(subsamples=sample_set)
-            )
-
-        states = hybrid.States(*list(self.prog_id_to_bqm_subproblem_states.values()))
+        states = hybrid.States(*list(states_copy.values()))
         final_state = self._aggregating.run(states).result()
 
-        self.solution, self.solution_energy, _ = final_state.samples.record[0]
+        sol, energy, _ = final_state.samples.record[0]
+        return np.array(sol, dtype=np.int32), float(energy)
 
-        return self.solution, self.solution_energy
+    def get_top_solutions(self, n=10, *, beam_width=1, n_partition_candidates=None):
+        """Get the top-N global solutions as ``(solution_array, energy)`` tuples.
+
+        Each solution is run through the hybrid composer pipeline.
+
+        Args:
+            n (int): Number of solutions to return. Must be >= 1.
+            beam_width (int | None): Beam width for search.
+            n_partition_candidates (int | None): Candidates per partition.
+
+        Returns:
+            list[tuple[npt.NDArray[np.int32], float]]: Each element is
+                ``(solution_vector, energy)``, ordered best-first by energy.
+        """
+        if n < 1:
+            raise ValueError(f"n must be >= 1, got {n}")
+
+        self._check_ready_for_aggregation()
+
+        if any(len(program.best_probs) == 0 for program in self.programs.values()):
+            raise RuntimeError(
+                "Not all final probabilities computed yet. Please call `run()` first."
+            )
+
+        n_vars = len(self._bqm.variables)
+        top_results = _beam_search_aggregate_top_n(
+            programs=self._programs,
+            initial_solution=[0] * n_vars,
+            extend_fn=self._extend_solution,
+            evaluate_fn=self._evaluate_solution,
+            beam_width=beam_width,
+            n_partition_candidates=n_partition_candidates,
+            top_n=n,
+        )
+
+        composed = [
+            self._compose_solution(solution) for _score, solution in top_results
+        ]
+        composed.sort(key=lambda entry: entry[1])
+        return composed

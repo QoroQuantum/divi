@@ -695,6 +695,110 @@ class TestGraphPartitioningQAOA:
         with pytest.raises(RuntimeError, match="Some/All programs have empty losses"):
             node_partitioning_qaoa.aggregate_results()
 
+    def test_get_top_solutions_numerical_correctness(self, node_partitioning_qaoa):
+        """Verify that get_top_solutions returns correctly ranked, distinct solutions.
+
+        Uses the standard 15-node fixture. Each partition is given two candidates
+        ("all-zeros" = no nodes selected, "all-ones" = all nodes selected).
+        The beam search should produce distinct global solutions sorted by
+        MaxCut energy (lower is better).
+        """
+        node_partitioning_qaoa.create_programs()
+        prog_keys = list(node_partitioning_qaoa.programs.keys())
+        n_nodes = node_partitioning_qaoa.main_graph.number_of_nodes()
+
+        # Mock two candidates per partition
+        for key in prog_keys:
+            n_qubits = node_partitioning_qaoa.programs[key].n_qubits
+            node_partitioning_qaoa.programs[key]._best_probs = {
+                "tag": {"0" * n_qubits: 0.3, "1" * n_qubits: 0.7}
+            }
+            node_partitioning_qaoa.programs[key]._losses_history = [{"dummy_loss": 0.0}]
+
+        n_partitions = len(prog_keys)
+        # 2 candidates^n_partitions combinations
+        n_expected = min(2**n_partitions, 2**n_partitions)
+
+        results = node_partitioning_qaoa.get_top_solutions(
+            n=n_expected, beam_width=n_expected, n_partition_candidates=n_expected
+        )
+
+        assert len(results) == n_expected
+        assert all(isinstance(r, list) for r in results)
+
+        # All returned nodes must be valid graph nodes
+        graph_nodes = set(node_partitioning_qaoa.main_graph.nodes())
+        for r in results:
+            assert set(r).issubset(graph_nodes)
+
+        # Results should be sorted by energy (lower = more cut edges = better)
+        energies = [
+            node_partitioning_qaoa._evaluate_solution(
+                [1 if i in r else 0 for i in range(n_nodes)]
+            )
+            for r in results
+        ]
+        assert energies == sorted(energies)
+
+        # Solutions should be distinct
+        solution_tuples = [tuple(sorted(r)) for r in results]
+        assert len(set(solution_tuples)) == len(results)
+
+    def test_get_top_solutions_matches_aggregate_results(self, node_partitioning_qaoa):
+        """The best solution from get_top_solutions matches aggregate_results."""
+        node_partitioning_qaoa.create_programs()
+
+        prog_keys = list(node_partitioning_qaoa.programs.keys())
+        prog_1_key, prog_2_key = prog_keys[0], prog_keys[1]
+
+        n_qubits_1 = node_partitioning_qaoa.programs[prog_1_key].n_qubits
+        n_qubits_2 = node_partitioning_qaoa.programs[prog_2_key].n_qubits
+
+        # Program 1: all-zeros (no nodes selected), Program 2: all-ones (all nodes selected)
+        node_partitioning_qaoa.programs[prog_1_key]._best_probs = {
+            "tag": {"0" * n_qubits_1: 1.0}
+        }
+        node_partitioning_qaoa.programs[prog_2_key]._best_probs = {
+            "tag": {"1" * n_qubits_2: 1.0}
+        }
+        for key in prog_keys[2:]:
+            n_qubits = node_partitioning_qaoa.programs[key].n_qubits
+            node_partitioning_qaoa.programs[key]._best_probs = {
+                "tag": {"0" * n_qubits: 1.0}
+            }
+        for program in node_partitioning_qaoa.programs.values():
+            program._losses_history = [{"dummy_loss": 0.0}]
+
+        expected_nodes = set(
+            node_partitioning_qaoa.reverse_index_maps[prog_2_key].values()
+        )
+
+        results = node_partitioning_qaoa.get_top_solutions(n=1, beam_width=1)
+        assert len(results) == 1
+        assert set(results[0]) == expected_nodes
+
+    def test_get_top_solutions_does_not_mutate_solution(self, node_partitioning_qaoa):
+        """get_top_solutions is side-effect-free on self.solution."""
+        node_partitioning_qaoa.create_programs()
+
+        for program in node_partitioning_qaoa.programs.values():
+            n_qubits = program.n_qubits
+            program._best_probs = {"tag": {"0" * n_qubits: 1.0}}
+            program._losses_history = [{"dummy_loss": 0.0}]
+
+        node_partitioning_qaoa.solution = None
+        node_partitioning_qaoa.get_top_solutions(n=2, beam_width=2)
+        assert node_partitioning_qaoa.solution is None
+
+    def test_get_top_solutions_raises_if_not_run(self, node_partitioning_qaoa):
+        node_partitioning_qaoa.create_programs()
+        with pytest.raises(RuntimeError, match="Some/All programs have empty losses"):
+            node_partitioning_qaoa.get_top_solutions()
+
+    def test_get_top_solutions_raises_on_invalid_n(self, node_partitioning_qaoa):
+        with pytest.raises(ValueError, match="n must be >= 1"):
+            node_partitioning_qaoa.get_top_solutions(n=0)
+
     def test_draw_partitions_raises_if_not_created(self, node_partitioning_qaoa):
         """
         Tests that a RuntimeError is raised if draw_partitions is called before

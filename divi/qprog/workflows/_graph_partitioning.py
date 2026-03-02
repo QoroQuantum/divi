@@ -30,7 +30,7 @@ from divi.qprog.algorithms._qaoa import (
     GraphProblemTypes,
     draw_graph_solution_nodes,
 )
-from divi.qprog.batch import beam_search_aggregate
+from divi.qprog.batch import _beam_search_aggregate_top_n
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer, copy_optimizer
 
 AggregateFn = Callable[
@@ -734,19 +734,53 @@ class GraphPartitioningQAOA(ProgramBatch):
 
         initial_solution = [0] * self.main_graph.number_of_nodes()
 
-        best_solution = beam_search_aggregate(
+        _, best_solution = _beam_search_aggregate_top_n(
             programs=self._programs,
             initial_solution=initial_solution,
             extend_fn=self._extend_solution,
             evaluate_fn=self._evaluate_solution,
             beam_width=beam_width,
             n_partition_candidates=n_partition_candidates,
-        )
+        )[0]
 
         self._bitstring_solution = best_solution
         self.solution = list(np.where(self._bitstring_solution)[0])
 
         return self.solution
+
+    def get_top_solutions(self, n=10, *, beam_width=1, n_partition_candidates=None):
+        """Get the top-N global solutions as lists of selected node indices.
+
+        Args:
+            n (int): Number of solutions to return. Must be >= 1.
+            beam_width (int | None): Beam width for search.
+            n_partition_candidates (int | None): Candidates per partition.
+
+        Returns:
+            list[list[int]]: Each element is a list of node indices in the
+                selected partition, ordered best-first by cost Hamiltonian energy.
+        """
+        if n < 1:
+            raise ValueError(f"n must be >= 1, got {n}")
+
+        self._check_ready_for_aggregation()
+
+        if any(len(program.best_probs) == 0 for program in self.programs.values()):
+            raise RuntimeError(
+                "Not all final probabilities computed yet. Please call `run()` first."
+            )
+
+        top_results = _beam_search_aggregate_top_n(
+            programs=self._programs,
+            initial_solution=[0] * self.main_graph.number_of_nodes(),
+            extend_fn=self._extend_solution,
+            evaluate_fn=self._evaluate_solution,
+            beam_width=beam_width,
+            n_partition_candidates=n_partition_candidates,
+            top_n=n,
+        )
+
+        return [list(np.where(solution)[0]) for _score, solution in top_results]
 
     def draw_partitions(
         self,

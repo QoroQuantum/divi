@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import atexit
-import heapq
 import traceback
 import warnings
 from abc import ABC, abstractmethod
@@ -19,6 +18,10 @@ from rich.progress import Progress, TaskID
 
 from divi.backends import CircuitRunner
 from divi.qprog.quantum_program import QuantumProgram
+from divi.qprog.variational_quantum_algorithm import (
+    SolutionEntry,
+    VariationalQuantumAlgorithm,
+)
 from divi.reporting import disable_logging, make_progress_bar
 
 
@@ -510,6 +513,26 @@ class ProgramBatch(ABC):
         except TypeError:
             pass
 
+    def _check_ready_for_aggregation(self):
+        """Validate that programs exist, are complete, and results are ready."""
+        if len(self._programs) == 0:
+            raise RuntimeError("No programs to aggregate. Run create_programs() first.")
+
+        if self._executor is not None:
+            self.join()
+
+        # Suppress warnings when checking for empty losses_history for cleanliness sake
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", category=UserWarning, message=".*losses_history is empty.*"
+            )
+            if any(
+                len(program.losses_history) == 0 for program in self._programs.values()
+            ):
+                raise RuntimeError(
+                    "Some/All programs have empty losses. Did you call run()?"
+                )
+
     @abstractmethod
     def aggregate_results(self):
         """
@@ -533,71 +556,58 @@ class ProgramBatch(ABC):
             RuntimeError: If no programs exist, or if programs haven't completed
                 execution (empty losses_history).
         """
-        if len(self._programs) == 0:
-            raise RuntimeError("No programs to aggregate. Run create_programs() first.")
+        self._check_ready_for_aggregation()
 
-        if self._executor is not None:
-            self.join()
+    def get_top_solutions(self, n=10, *, beam_width=1, n_partition_candidates=None):
+        """Get the top-N global solutions from beam search aggregation.
 
-        # Suppress warnings when checking for empty losses_history for cleanliness sake
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore", category=UserWarning, message=".*losses_history is empty.*"
-            )
-            if any(
-                len(program.losses_history) == 0 for program in self._programs.values()
-            ):
-                raise RuntimeError(
-                    "Some/All programs have empty losses. Did you call run()?"
-                )
+        Available on subclasses that use beam-search-based aggregation
+        (e.g., ``GraphPartitioningQAOA``, ``QUBOPartitioningQAOA``).
+
+        Args:
+            n (int): Number of top solutions to return. Must be >= 1.
+            beam_width (int | None): Beam search width. Internally bumped
+                to at least ``n`` so the beam retains enough candidates.
+            n_partition_candidates (int | None): Candidates per partition.
+                Defaults to ``beam_width``.
+
+        Returns:
+            Subclass-specific format. See subclass documentation.
+
+        Raises:
+            NotImplementedError: If the subclass does not override this method.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support get_top_solutions."
+        )
 
 
-def beam_search_aggregate(
-    programs: dict,
+def _beam_search_aggregate_top_n(
+    programs: dict[Any, VariationalQuantumAlgorithm],
     initial_solution: Sequence[int],
-    extend_fn: Callable,
+    extend_fn: Callable[[list[int], Any, SolutionEntry], list[int]],
     evaluate_fn: Callable[[list[int]], float],
     beam_width: int | None = None,
     n_partition_candidates: int | None = None,
-) -> list[int]:
-    """Beam search aggregation over partitioned quantum program results.
-
-    Searches across the top candidate bitstrings from each partition program
-    to find the best global solution. Tunable from greedy (``beam_width=1``)
-    through bounded beam search to exhaustive (``beam_width=None``).
+    top_n: int = 1,
+) -> list[tuple[float, list[int]]]:
+    """Core beam search returning the top-N ``(score, solution)`` pairs.
 
     Args:
         programs: Dictionary mapping program IDs to executed
-            ``VariationalQuantumAlgorithm`` instances.  Each program must have
-            been run so that ``get_top_solutions`` is available.
-        initial_solution: Starting solution vector (e.g. all-zeros of the
-            appropriate global size).
+            ``VariationalQuantumAlgorithm`` instances.
+        initial_solution: Starting solution vector.
         extend_fn: ``(current_solution, prog_id, candidate) -> extended_solution``.
-            Takes the current (possibly partial) global solution, a program
-            identifier, and a ``SolutionEntry`` candidate, and returns a **new**
-            solution list with the candidate's bits written into the correct
-            global positions.
-        evaluate_fn: ``(solution) -> float``.  Scores a global solution vector.
-            **Lower is better** (cost minimisation convention).
-        beam_width: How many partial solutions are retained after each
-            expansion step.
-
-            * ``1``    – greedy search (keeps only the best partial solution).
-            * ``k``    – standard beam search retaining *k* partial solutions.
-            * ``None`` – exhaustive search (no pruning).
-
-        n_partition_candidates: How many candidate bitstrings to extract from
-            each partition.  Defaults to ``beam_width`` when ``None``.  Must be
-            ``>= beam_width`` when both are integers (extracting fewer
-            candidates than the beam width would waste beam capacity).
+        evaluate_fn: ``(solution) -> float``.  Lower is better.
+        beam_width: Maximum candidates to retain per partition step.
+            ``None`` means keep all (exhaustive).
+        n_partition_candidates: Candidates to fetch per partition.
+            Defaults to ``beam_width`` (or all when exhaustive).
+        top_n: Number of top solutions to return.
 
     Returns:
-        The best global solution vector found.
-
-    Raises:
-        ValueError: If ``beam_width`` is less than 1, or if
-            ``n_partition_candidates`` is less than 1, or if
-            ``n_partition_candidates < beam_width``.
+        List of ``(score, solution)`` tuples sorted ascending by score
+        (best first), with at most ``top_n`` entries.
     """
     if beam_width is not None and beam_width < 1:
         raise ValueError(f"beam_width must be >= 1 or None, got {beam_width}")
@@ -606,6 +616,10 @@ def beam_search_aggregate(
         raise ValueError(
             f"n_partition_candidates must be >= 1 or None, got {n_partition_candidates}"
         )
+
+    # Ensure the beam retains enough candidates for top_n
+    if beam_width is not None and beam_width < top_n:
+        beam_width = top_n
 
     if (
         beam_width is not None
@@ -626,43 +640,23 @@ def beam_search_aggregate(
     else:
         n_fetch = 2**20  # exhaustive
 
-    # Initialise beam: list of (score, solution) tuples
-    beam = [(evaluate_fn(initial_solution), list(initial_solution))]
+    beam: list[tuple[float, list[int]]] = [
+        (evaluate_fn(initial_solution), list(initial_solution))
+    ]
 
     for prog_id, program in programs.items():
         candidates = program.get_top_solutions(n=n_fetch, include_decoded=True)
-
-        # When a program has no candidates (e.g. trivial partition),
-        # carry the beam forward unchanged.
         if not candidates:
             continue
 
-        if beam_width is not None:
-            # Bounded mode: maintain a max-heap of size beam_width.
-            # We negate scores so that Python's min-heap acts as a max-heap,
-            # letting us efficiently evict the worst (highest-cost) entry.
-            heap: list[tuple[float, int, list[int]]] = []
-            tie = 0  # monotonic counter to break score ties stably
-            for _score, partial_solution in beam:
-                for candidate in candidates:
-                    extended = extend_fn(partial_solution, prog_id, candidate)
-                    new_score = evaluate_fn(extended)
-                    entry = (-new_score, tie, extended)
-                    tie += 1
-                    if len(heap) < beam_width:
-                        heapq.heappush(heap, entry)
-                    else:
-                        heapq.heappushpop(heap, entry)
-            beam = [(-neg_score, sol) for neg_score, _tie, sol in heap]
-        else:
-            # Exhaustive mode: keep all combinations
-            new_beam = []
-            for _score, partial_solution in beam:
-                for candidate in candidates:
-                    extended = extend_fn(partial_solution, prog_id, candidate)
-                    new_score = evaluate_fn(extended)
-                    new_beam.append((new_score, extended))
-            beam = new_beam
+        new_beam: list[tuple[float, list[int]]] = []
+        for _, partial_solution in beam:
+            for candidate in candidates:
+                extended = extend_fn(partial_solution, prog_id, candidate)
+                new_beam.append((evaluate_fn(extended), extended))
 
-    # Return the best solution
-    return min(beam, key=lambda entry: entry[0])[1]
+        new_beam.sort(key=lambda entry: entry[0])
+        beam = new_beam[:beam_width] if beam_width is not None else new_beam
+
+    beam.sort(key=lambda entry: entry[0])
+    return beam[:top_n]

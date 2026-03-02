@@ -327,6 +327,116 @@ class TestQUBOPartitioningQAOA:
         ):
             qubo_partitioning_qaoa.aggregate_results()
 
+    def test_get_top_solutions_numerical_correctness(self):
+        """Verify exact solutions and energies for a known QUBO problem.
+
+        The QUBO has known optimal [1,1,0,0] with energy -1.5.
+        The decomposer splits into partition A (vars 2,3) and B (vars 0,1).
+        Mocking two candidates per partition ("00" and "11") produces 4 global
+        solutions whose energies can be computed analytically.
+        """
+        qubo = {
+            (0, 0): -0.5,
+            (1, 1): 1,
+            (0, 1): -2,
+            (2, 2): 1,
+            (3, 3): 1,
+            (2, 3): 2,
+        }
+        bqm = dimod.BinaryQuadraticModel.from_qubo(qubo)
+        decomposer = hybrid.EnergyImpactDecomposer(size=2)
+
+        batch = QUBOPartitioningQAOA(
+            qubo=bqm,
+            decomposer=decomposer,
+            n_layers=1,
+            max_iterations=1,
+            backend=ParallelSimulator(shots=100),
+        )
+        batch.create_programs()
+
+        # Mock two candidates per partition: "00" and "11"
+        for program in batch.programs.values():
+            program._best_probs = {"tag": {"00": 0.3, "11": 0.7}}
+            program._losses_history = [{"dummy_loss": 0.0}]
+
+        results = batch.get_top_solutions(n=4, beam_width=4, n_partition_candidates=4)
+
+        # Expected solutions sorted by energy:
+        # [1,1,0,0] -> -1.5, [0,0,0,0] -> 0.0, [1,1,1,1] -> 2.5, [0,0,1,1] -> 4.0
+        assert len(results) == 4
+
+        solutions = [tuple(sol.tolist()) for sol, _ in results]
+        energies = [energy for _, energy in results]
+
+        assert solutions[0] == (1, 1, 0, 0)
+        assert energies[0] == pytest.approx(-1.5)
+
+        assert solutions[1] == (0, 0, 0, 0)
+        assert energies[1] == pytest.approx(0.0)
+
+        assert solutions[2] == (1, 1, 1, 1)
+        assert energies[2] == pytest.approx(2.5)
+
+        assert solutions[3] == (0, 0, 1, 1)
+        assert energies[3] == pytest.approx(4.0)
+
+    def test_get_top_solutions_best_matches_aggregate(self, qubo_partitioning_qaoa):
+        """The best solution from get_top_solutions matches aggregate_results."""
+        qubo_partitioning_qaoa.create_programs()
+
+        for program in qubo_partitioning_qaoa.programs.values():
+            n_qubits = program.n_qubits
+            program._best_probs = {"tag": {"0" * n_qubits: 0.6, "1" * n_qubits: 0.4}}
+            program._losses_history = [{"dummy_loss": 0.0}]
+
+        agg_solution, agg_energy = qubo_partitioning_qaoa.aggregate_results()
+
+        # Re-create to avoid the mutation from aggregate_results
+        qubo_partitioning_qaoa.reset()
+        qubo_partitioning_qaoa.create_programs()
+        for program in qubo_partitioning_qaoa.programs.values():
+            n_qubits = program.n_qubits
+            program._best_probs = {"tag": {"0" * n_qubits: 0.6, "1" * n_qubits: 0.4}}
+            program._losses_history = [{"dummy_loss": 0.0}]
+
+        results = qubo_partitioning_qaoa.get_top_solutions(n=1, beam_width=1)
+        assert len(results) == 1
+        top_solution, top_energy = results[0]
+
+        np.testing.assert_array_equal(top_solution, agg_solution)
+        assert top_energy == pytest.approx(agg_energy)
+
+    def test_get_top_solutions_does_not_mutate_state(self, qubo_partitioning_qaoa):
+        """get_top_solutions does not mutate prog_id_to_bqm_subproblem_states."""
+        qubo_partitioning_qaoa.create_programs()
+
+        for program in qubo_partitioning_qaoa.programs.values():
+            n_qubits = program.n_qubits
+            program._best_probs = {"tag": {"0" * n_qubits: 1.0}}
+            program._losses_history = [{"dummy_loss": 0.0}]
+
+        # Snapshot subproblem state ids before the call
+        state_ids_before = {
+            k: id(v)
+            for k, v in qubo_partitioning_qaoa.prog_id_to_bqm_subproblem_states.items()
+        }
+
+        qubo_partitioning_qaoa.get_top_solutions(n=2, beam_width=2)
+
+        # The original state objects should not have been replaced
+        for k, v in qubo_partitioning_qaoa.prog_id_to_bqm_subproblem_states.items():
+            assert id(v) == state_ids_before[k]
+
+    def test_get_top_solutions_raises_if_not_run(self, qubo_partitioning_qaoa):
+        qubo_partitioning_qaoa.create_programs()
+        with pytest.raises(RuntimeError, match="Some/All programs have empty losses"):
+            qubo_partitioning_qaoa.get_top_solutions()
+
+    def test_get_top_solutions_raises_on_invalid_n(self, qubo_partitioning_qaoa):
+        with pytest.raises(ValueError, match="n must be >= 1"):
+            qubo_partitioning_qaoa.get_top_solutions(n=0)
+
     @pytest.mark.e2e
     def test_qubo_partitioning_e2e(self, default_test_simulator):
         """An end-to-end test solving a small QUBO."""

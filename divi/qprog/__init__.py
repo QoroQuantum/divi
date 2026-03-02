@@ -4,7 +4,7 @@
 
 from .quantum_program import QuantumProgram
 from .variational_quantum_algorithm import VariationalQuantumAlgorithm, SolutionEntry
-from .batch import ProgramBatch, beam_search_aggregate
+from .batch import ProgramBatch
 from .algorithms import (
     QAOA,
     GraphProblem,

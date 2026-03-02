@@ -98,6 +98,12 @@ if __name__ == "__main__":
     # n_partition_candidates=5: consider 5 candidates from each partition
     beam_solution = qaoa_batch.aggregate_results(beam_width=3, n_partition_candidates=5)
 
+    # --- Top-N solutions ---
+    # Retrieve multiple ranked solutions using beam search
+    top_solutions = qaoa_batch.get_top_solutions(
+        n=5, beam_width=5, n_partition_candidates=5
+    )
+
     classical_cut_size, classical_partition = nx.approximation.one_exchange(
         graph, seed=1
     )
@@ -112,3 +118,13 @@ if __name__ == "__main__":
     table.add_row("Greedy (beam_width=1, n=5)", f"{greedy_ratio:.6f}")
     table.add_row("Beam (beam_width=3, n=5)", f"{beam_ratio:.6f}")
     console.print(table)
+
+    console.print("\n[bold]Top-5 Solutions[/bold]")
+    top_table = Table(show_header=True, header_style="bold cyan")
+    top_table.add_column("Rank", justify="right")
+    top_table.add_column("Selected Nodes")
+    top_table.add_column("Cut/Classical Ratio", justify="right")
+    for i, sol in enumerate(top_solutions, 1):
+        ratio = analyze_results(sol, classical_cut_size)
+        top_table.add_row(str(i), str(sol), f"{ratio:.6f}")
+    console.print(top_table)

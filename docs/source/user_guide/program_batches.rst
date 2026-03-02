@@ -292,6 +292,29 @@ The ``aggregate_results`` method accepts two parameters:
 
    Setting ``n_partition_candidates`` higher than ``beam_width`` is useful when you want each partition to propose many alternatives (wider local search) while keeping memory usage controlled (narrow beam).
 
+Top-N Solutions
+^^^^^^^^^^^^^^^
+
+Both :class:`~divi.qprog.workflows.GraphPartitioningQAOA` and :class:`~divi.qprog.workflows.QUBOPartitioningQAOA` expose a ``get_top_solutions`` method that returns multiple ranked global solutions using beam search.
+
+.. code-block:: python
+
+   # Graph partitioning: returns a list of node-index lists, best-first
+   top_solutions = qaoa_partition.get_top_solutions(
+       n=5, beam_width=5, n_partition_candidates=10
+   )
+   for rank, selected_nodes in enumerate(top_solutions, 1):
+       print(f"{rank}. Nodes: {selected_nodes}")
+
+   # QUBO partitioning: returns a list of (solution_array, energy) tuples, best-first
+   top_solutions = qubo_partition.get_top_solutions(
+       n=5, beam_width=5, n_partition_candidates=10
+   )
+   for rank, (solution, energy) in enumerate(top_solutions, 1):
+       print(f"{rank}. Energy: {energy:.6f}, Solution: {solution}")
+
+This is useful when you want to inspect alternative solutions or post-process candidates with domain-specific constraints. The ``beam_width`` is automatically increased to at least ``n`` so the beam retains enough candidates.
+
 
 Custom Batch Workflows
 ----------------------

@@ -4,8 +4,29 @@
 
 import pytest
 
-from divi.qprog.batch import beam_search_aggregate
+from divi.qprog.batch import _beam_search_aggregate_top_n
 from divi.qprog.variational_quantum_algorithm import SolutionEntry
+
+
+def beam_search_aggregate(
+    programs,
+    initial_solution,
+    extend_fn,
+    evaluate_fn,
+    beam_width=None,
+    n_partition_candidates=None,
+):
+    """Test-local shorthand wrapping _beam_search_aggregate_top_n for top_n=1."""
+    return _beam_search_aggregate_top_n(
+        programs,
+        initial_solution,
+        extend_fn,
+        evaluate_fn,
+        beam_width,
+        n_partition_candidates,
+        top_n=1,
+    )[0][1]
+
 
 # ──────────────────────────────────────────────────────────────────────
 #  Helpers: lightweight mock VQA programs for testing
@@ -536,3 +557,107 @@ class TestBeamSearchAggregatePruning:
         )
 
         assert weighted_evaluate(wider_result) <= weighted_evaluate(greedy_result)
+
+
+class TestBeamSearchAggregateTopN:
+    """Test _beam_search_aggregate_top_n returning multiple ranked solutions."""
+
+    def _make_two_partition_setup(self):
+        candidates_a = [
+            SolutionEntry(bitstring="10", prob=0.6, decoded=[1, 0]),
+            SolutionEntry(bitstring="01", prob=0.3, decoded=[0, 1]),
+            SolutionEntry(bitstring="00", prob=0.1, decoded=[0, 0]),
+        ]
+        candidates_b = [
+            SolutionEntry(bitstring="10", prob=0.7, decoded=[1, 0]),
+            SolutionEntry(bitstring="01", prob=0.2, decoded=[0, 1]),
+            SolutionEntry(bitstring="00", prob=0.1, decoded=[0, 0]),
+        ]
+        programs = {"A": _MockProgram(candidates_a), "B": _MockProgram(candidates_b)}
+        var_maps = {"A": [0, 1], "B": [2, 3]}
+        return programs, var_maps
+
+    def test_top_n_returns_n_results(self):
+        programs, var_maps = self._make_two_partition_setup()
+        results = _beam_search_aggregate_top_n(
+            programs=programs,
+            initial_solution=[0, 0, 0, 0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_sum_evaluate,
+            beam_width=3,
+            top_n=3,
+        )
+        assert len(results) == 3
+        assert all(isinstance(r, tuple) and len(r) == 2 for r in results)
+
+    def test_top_n_sorted_ascending(self):
+        programs, var_maps = self._make_two_partition_setup()
+        results = _beam_search_aggregate_top_n(
+            programs=programs,
+            initial_solution=[0, 0, 0, 0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_sum_evaluate,
+            beam_width=3,
+            top_n=3,
+        )
+        scores = [score for score, _sol in results]
+        assert scores == sorted(scores)
+
+    def test_top_n_1_matches_original(self):
+        programs, var_maps = self._make_two_partition_setup()
+        kwargs = dict(
+            programs=programs,
+            initial_solution=[0, 0, 0, 0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_sum_evaluate,
+            beam_width=2,
+        )
+        original = beam_search_aggregate(**kwargs)
+        top_1 = _beam_search_aggregate_top_n(**kwargs, top_n=1)
+        assert top_1[0][1] == original
+
+    def test_beam_width_bumped_to_n(self):
+        """top_n=3 with beam_width=1 still returns 3 results."""
+        programs, var_maps = self._make_two_partition_setup()
+        results = _beam_search_aggregate_top_n(
+            programs=programs,
+            initial_solution=[0, 0, 0, 0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_sum_evaluate,
+            beam_width=1,
+            top_n=3,
+        )
+        assert len(results) == 3
+
+    def test_top_n_bump_validates_against_n_partition_candidates(self):
+        """n_partition_candidates must be >= beam_width *after* the top_n bump."""
+        with pytest.raises(
+            ValueError, match="n_partition_candidates.*must be >= beam_width"
+        ):
+            _beam_search_aggregate_top_n(
+                programs={},
+                initial_solution=[0],
+                extend_fn=lambda c, p, s: c,
+                evaluate_fn=lambda s: 0.0,
+                beam_width=2,
+                n_partition_candidates=3,
+                top_n=5,
+            )
+
+    def test_top_n_greater_than_beam_capped(self):
+        """When fewer solutions exist than top_n, returns all available."""
+        candidates = [SolutionEntry(bitstring="1", prob=0.9, decoded=[1])]
+        programs = {"A": _MockProgram(candidates)}
+        var_maps = {"A": [0]}
+        results = _beam_search_aggregate_top_n(
+            programs=programs,
+            initial_solution=[0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_sum_evaluate,
+            beam_width=1,
+            top_n=10,
+        )
+        # Only 1 candidate per partition × 1 partition = at most beam_width solutions
+        # beam_width bumped to 10 but only 1 candidate exists
+        assert len(results) >= 1
+        assert len(results) <= 10
