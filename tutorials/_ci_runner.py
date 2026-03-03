@@ -61,6 +61,7 @@ NO_PATCHES = [
 
 TUTORIALS: dict[str, dict] = {
     "vqe_hyperparameter_sweep.py": {
+        "timeout_seconds": 180,
         "patches": [
             ("shots=2000", "shots=100"),
             (
@@ -89,6 +90,11 @@ TUTORIALS: dict[str, dict] = {
         "patches": [
             ("max_iterations=30", "max_iterations=5"),
             ("n_layers=2", "n_layers=1"),
+            ("gnp_random_bqm(\n        25,", "gnp_random_bqm(\n        15,"),
+            ("beam_width=3", "beam_width=2"),
+            ("beam_width=5", "beam_width=2"),
+            ("n_partition_candidates=5", "n_partition_candidates=3"),
+            ("get_top_solutions(\n        n=5,", "get_top_solutions(\n        n=3,"),
         ],
     },
     "qaoa_graph_partitioning.py": {
@@ -248,7 +254,7 @@ def main() -> None:
     parser.add_argument(
         "--max-workers",
         type=int,
-        default=(os.cpu_count() or 2) * 2,
+        default=os.cpu_count() or 2,
         help="Max parallel tutorial processes.",
     )
     args = parser.parse_args()
