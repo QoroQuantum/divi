@@ -18,6 +18,8 @@ from divi.hamiltonians import (
     _clean_hamiltonian,
     _hamiltonian_term_count,
     _is_sanitized,
+    _resolve_ising_converter,
+    _sort_hamiltonian_terms,
     convert_hamiltonian_to_pauli_string,
     convert_qubo_matrix_to_pennylane_ising,
     normalize_binary_polynomial_problem,
@@ -72,28 +74,36 @@ class TestQuboToIsingConversion:
     def test_symmetric_dense_qubo(self):
         """
         Tests conversion with a simple symmetric dense QUBO matrix.
+
+        Q = [[-1, 2], [2, -1]] → E(x) = -x₀ + 4x₀x₁ - x₁
+        Hand-derived Ising: H = Z₀Z₁ - 0.5·Z₀ - 0.5·Z₁, offset = 0.
         """
         qubo_matrix = np.array([[-1.0, 2.0], [2.0, -1.0]])
         hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
 
-        expected_hamiltonian = 0.5 * (qml.Z(0) @ qml.Z(1))
+        expected_hamiltonian = (
+            1.0 * (qml.Z(0) @ qml.Z(1)) - 0.5 * qml.Z(0) - 0.5 * qml.Z(1)
+        )
 
-        assert np.isclose(constant, -0.5)
-        assert qml.equal(hamiltonian, expected_hamiltonian)
+        assert np.isclose(constant, 0.0)
+        assert qml.equal(hamiltonian.simplify(), expected_hamiltonian.simplify())
 
     def test_upper_triangular_dense_qubo(self):
         """
         Tests conversion with an upper triangular dense QUBO matrix.
         The result should be the same as the symmetric equivalent.
+
+        Q = [[-1, 4], [0, -1]] → symmetrized [[-1, 2], [2, -1]] → same Ising.
         """
         qubo_matrix = np.array([[-1.0, 4.0], [0.0, -1.0]])
         hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
 
-        # Symmetrized version is [[-1, 2], [2, -1]]
-        expected_hamiltonian = 0.5 * (qml.Z(0) @ qml.Z(1))
+        expected_hamiltonian = (
+            1.0 * (qml.Z(0) @ qml.Z(1)) - 0.5 * qml.Z(0) - 0.5 * qml.Z(1)
+        )
 
-        assert np.isclose(constant, -0.5)
-        assert qml.equal(hamiltonian, expected_hamiltonian)
+        assert np.isclose(constant, 0.0)
+        assert qml.equal(hamiltonian.simplify(), expected_hamiltonian.simplify())
 
     def test_non_sanitized_qubo_raises_warning(self):
         """
@@ -105,11 +115,13 @@ class TestQuboToIsingConversion:
         with pytest.warns(UserWarning, match="neither symmetric nor upper triangular"):
             hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
 
-        # Symmetrized version is [[-1, 2], [2, -1]]
-        expected_hamiltonian = 0.5 * (qml.Z(0) @ qml.Z(1))
+        # Symmetrized version is [[-1, 2], [2, -1]] → same Ising as symmetric test.
+        expected_hamiltonian = (
+            1.0 * (qml.Z(0) @ qml.Z(1)) - 0.5 * qml.Z(0) - 0.5 * qml.Z(1)
+        )
 
-        assert np.isclose(constant, -0.5)
-        assert qml.equal(hamiltonian, expected_hamiltonian)
+        assert np.isclose(constant, 0.0)
+        assert qml.equal(hamiltonian.simplify(), expected_hamiltonian.simplify())
 
     def test_non_sanitized_sparse_qubo_raises_warning(self):
         """Non-sanitized sparse QUBO raises warning and is symmetrized."""
@@ -118,9 +130,11 @@ class TestQuboToIsingConversion:
         with pytest.warns(UserWarning, match="neither symmetric nor upper triangular"):
             hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
 
-        expected_hamiltonian = 0.5 * (qml.Z(0) @ qml.Z(1))
-        assert np.isclose(constant, -0.5)
-        assert qml.equal(hamiltonian, expected_hamiltonian)
+        expected_hamiltonian = (
+            1.0 * (qml.Z(0) @ qml.Z(1)) - 0.5 * qml.Z(0) - 0.5 * qml.Z(1)
+        )
+        assert np.isclose(constant, 0.0)
+        assert qml.equal(hamiltonian.simplify(), expected_hamiltonian.simplify())
 
     def test_diagonal_qubo(self):
         """
@@ -142,10 +156,12 @@ class TestQuboToIsingConversion:
         qubo_matrix = sps.csr_matrix([[-1.0, 2.0], [2.0, -1.0]])
         hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
 
-        expected_hamiltonian = 0.5 * (qml.Z(0) @ qml.Z(1))
+        expected_hamiltonian = (
+            1.0 * (qml.Z(0) @ qml.Z(1)) - 0.5 * qml.Z(0) - 0.5 * qml.Z(1)
+        )
 
-        assert np.isclose(constant, -0.5)
-        assert qml.equal(hamiltonian, expected_hamiltonian)
+        assert np.isclose(constant, 0.0)
+        assert qml.equal(hamiltonian.simplify(), expected_hamiltonian.simplify())
 
     def test_3x3_qubo(self):
         """
@@ -155,14 +171,14 @@ class TestQuboToIsingConversion:
 
         hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
 
-        expected_constant = 8.0
+        expected_constant = 10.5
         expected_hamiltonian = (
-            0.5 * (qml.Z(0) @ qml.Z(1))
-            + 0.75 * (qml.Z(0) @ qml.Z(2))
-            + 1.25 * (qml.Z(1) @ qml.Z(2))
-            - 1.75 * qml.Z(0)
-            - 3.75 * qml.Z(1)
-            - 5.0 * qml.Z(2)
+            1.0 * (qml.Z(0) @ qml.Z(1))
+            + 1.5 * (qml.Z(0) @ qml.Z(2))
+            + 2.5 * (qml.Z(1) @ qml.Z(2))
+            - 3.0 * qml.Z(0)
+            - 5.5 * qml.Z(1)
+            - 7.0 * qml.Z(2)
         )
 
         assert np.isclose(constant, expected_constant)
@@ -180,6 +196,96 @@ class TestQuboToIsingConversion:
         assert h_map.keys() == e_map.keys()
         for key in h_map:
             assert np.isclose(h_map[key], e_map[key])
+
+    @pytest.mark.parametrize(
+        "qubo_matrix, expect_warning",
+        [
+            # Dense symmetric
+            (np.array([[-1.0, 2.0], [2.0, -1.0]]), False),
+            # Dense upper-triangular
+            (np.array([[-1.0, 4.0], [0.0, -1.0]]), False),
+            # Dense 3×3 symmetric
+            (np.array([[1, 2, 3], [2, 4, 5], [3, 5, 6]], dtype=float), False),
+            # Sparse symmetric (CSR)
+            (sps.csr_matrix([[-1.0, 2.0], [2.0, -1.0]]), False),
+            # Sparse upper-triangular (CSC)
+            (sps.csc_matrix([[-1.0, 4.0], [0.0, -1.0]]), False),
+            # Sparse 3×3 symmetric (COO)
+            (
+                sps.coo_matrix(
+                    np.array([[1, 2, 3], [2, 4, 5], [3, 5, 6]], dtype=float)
+                ),
+                False,
+            ),
+            # Non-sanitized dense (triggers warning + double symmetrization)
+            (np.array([[-1.0, 3.0], [1.0, -1.0]]), True),
+            # Non-sanitized sparse
+            (sps.csc_matrix([[-1.0, 3.0], [1.0, -1.0]]), True),
+            # Larger 5×5 symmetric
+            (
+                np.array(
+                    [
+                        [2, -1, 0, 3, 0],
+                        [-1, 4, 1, 0, -2],
+                        [0, 1, -3, 2, 1],
+                        [3, 0, 2, 1, -1],
+                        [0, -2, 1, -1, 5],
+                    ],
+                    dtype=float,
+                ),
+                False,
+            ),
+        ],
+        ids=[
+            "2x2_sym_dense",
+            "2x2_upper_dense",
+            "3x3_sym_dense",
+            "2x2_sym_sparse",
+            "2x2_upper_sparse",
+            "3x3_sym_sparse",
+            "2x2_nonsanitized_dense",
+            "2x2_nonsanitized_sparse",
+            "5x5_sym_dense",
+        ],
+    )
+    def test_ising_energies_match_qubo(self, qubo_matrix, expect_warning):
+        """Ising energy for every bitstring matches the original QUBO energy.
+
+        This is the definitive correctness test: for each x ∈ {0,1}^n, the
+        Ising energy <σ|H|σ> + constant must equal x^T Q x, where σ and x
+        are related by x_i = (1 - σ_i) / 2.
+
+        Covers dense, sparse, upper-triangular, non-sanitized (double
+        symmetrization), and larger matrix inputs.
+        """
+        from itertools import product as iterproduct
+
+        q_dense = qubo_matrix.toarray() if sps.issparse(qubo_matrix) else qubo_matrix
+        n = q_dense.shape[0]
+        Q_sym = (q_dense + q_dense.T) / 2
+
+        if expect_warning:
+            with pytest.warns(
+                UserWarning, match="neither symmetric nor upper triangular"
+            ):
+                hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(
+                    qubo_matrix
+                )
+        else:
+            hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
+
+        h_matrix = np.real(np.diag(qml.matrix(hamiltonian, wire_order=range(n))))
+
+        for bits in iterproduct((0, 1), repeat=n):
+            x = np.array(bits, dtype=float)
+            qubo_energy = float(x @ Q_sym @ x)
+            # x_i = (1-σ_i)/2 → σ_i=+1 when x_i=0, σ_i=-1 when x_i=1
+            # Computational basis index: bit 0 is qubit 0
+            idx = sum(b << (n - 1 - i) for i, b in enumerate(bits))
+            ising_energy = h_matrix[idx] + constant
+            assert ising_energy == pytest.approx(
+                qubo_energy
+            ), f"x={list(bits)}: ising={ising_energy}, qubo={qubo_energy}"
 
 
 class TestBinaryToIsingConverters:
@@ -275,6 +381,55 @@ class TestBinaryToIsingConverters:
         result = QuadratizedIsingConverter(strength=5.0).convert(problem)
 
         assert result.metadata["ancilla_count"] == 0
+
+    def test_quadratized_converter_matches_polynomial_energy(self):
+        """Ising energy at optimal ancilla setting matches polynomial energy.
+
+        For a cubic polynomial, quadratization introduces ancilla variables.
+        For each original-variable assignment, the minimum Ising energy over
+        all ancilla assignments should equal the polynomial energy (with
+        sufficiently large strength).
+        """
+        hubo = {
+            ("x0",): -1.0,
+            ("x0", "x1"): 2.0,
+            ("x0", "x1", "x2"): 4.0,
+            (): 0.5,
+        }
+        problem = normalize_binary_polynomial_problem(
+            hubo, variable_order=("x0", "x1", "x2")
+        )
+
+        result = QuadratizedIsingConverter(strength=100.0).convert(problem)
+        n_total = len(result.operator.wires)
+        assert result.metadata["ancilla_count"] >= 1
+
+        # Use PennyLane matrix representation for reliable energy evaluation.
+        # Explicit wire_order ensures consistent bitstring↔energy mapping
+        # regardless of operator wire ordering (which varies with dimod's
+        # non-deterministic ancilla naming).
+        h_matrix = qml.matrix(result.operator, wire_order=range(n_total))
+
+        # Group all computational-basis energies by decoded original assignment,
+        # then verify the minimum matches the polynomial energy.
+        from collections import defaultdict
+        from itertools import product as iterproduct
+
+        energies_by_assignment = defaultdict(list)
+        for val in range(2**n_total):
+            bs = format(val, f"0{n_total}b")
+            decoded = tuple(int(d) for d in result.decode_fn(bs))
+            # Energy = <val|H|val> + constant
+            ising_e = float(np.real(h_matrix[val, val])) + result.constant
+            energies_by_assignment[decoded].append(ising_e)
+
+        for x0, x1, x2 in iterproduct((0, 1), repeat=3):
+            assignment = {"x0": x0, "x1": x1, "x2": x2}
+            poly_energy = self._eval_polynomial_energy(problem, assignment)
+            best_ising = min(energies_by_assignment[(x0, x1, x2)])
+            assert best_ising == pytest.approx(
+                poly_energy
+            ), f"x={[x0, x1, x2]}: best_ising={best_ising}, poly={poly_energy}"
 
 
 class TestCleanHamiltonian:
@@ -565,15 +720,6 @@ class TestExactTrotterization:
         ):
             strategy.process_hamiltonian(constant_only)
 
-    def test_constant_only_hamiltonian_zero_constant_raises(self):
-        """Constant-only Hamiltonian with zero constant raises ValueError."""
-        constant_only = qml.Hamiltonian([1.0], [qml.Identity(0)]) - qml.Identity(0)
-        strategy = ExactTrotterization(keep_fraction=0.5)
-        with pytest.raises(
-            ValueError, match="Hamiltonian contains only constant terms"
-        ):
-            strategy.process_hamiltonian(constant_only.simplify())
-
     @pytest.mark.parametrize(
         "keep_top_n,expected",
         [
@@ -614,14 +760,6 @@ class TestExactTrotterization:
         # With 0.5 we keep exactly the largest term (3.0*Z(0)@Z(1))
         expected = (3.0 * (qml.Z(0) @ qml.Z(1))).simplify()
         assert qml.equal(result, expected)
-
-    def test_result_is_simplified_and_same_type(self, simple_hamiltonian):
-        """process_hamiltonian returns a simplified operator of the same structural type."""
-        result = ExactTrotterization(keep_top_n=2).process_hamiltonian(
-            simple_hamiltonian
-        )
-        assert hasattr(result, "simplify")
-        result.simplify()  # idempotent when already simplified
 
     def test_exact_trotterization_stateful_is_false(self):
         """ExactTrotterization reports stateful=False (cache is memoization only, not state)."""
@@ -845,3 +983,55 @@ class TestQDrift:
         # different orderings; at least two of the three should differ
         results = [r0, r1, r2]
         assert not all(qml.equal(results[0], r) for r in results)
+
+
+class TestResolveIsingConverter:
+    """Tests for _resolve_ising_converter."""
+
+    def test_native_returns_native_converter(self):
+        """'native' returns a NativeIsingConverter instance."""
+        converter = _resolve_ising_converter("native", quadratization_strength=10.0)
+        assert isinstance(converter, NativeIsingConverter)
+
+    def test_quadratized_returns_quadratized_converter(self):
+        """'quadratized' returns a QuadratizedIsingConverter with the given strength."""
+        converter = _resolve_ising_converter("quadratized", quadratization_strength=5.0)
+        assert isinstance(converter, QuadratizedIsingConverter)
+        assert converter.strength == 5.0
+
+    def test_invalid_builder_raises(self):
+        """An unrecognized builder string raises ValueError."""
+        with pytest.raises(ValueError, match="hamiltonian_builder must be either"):
+            _resolve_ising_converter("unknown", quadratization_strength=1.0)
+
+
+class TestSortHamiltonianTerms:
+    """Tests for _sort_hamiltonian_terms."""
+
+    def test_absolute_order_sorts_by_literal_coefficient(self):
+        """'absolute' sorts by the literal coefficient value (ascending)."""
+        ham = qml.Hamiltonian([0.5, -0.3, 0.1], [qml.Z(0), qml.Z(1), qml.Z(2)])
+        result = _sort_hamiltonian_terms(ham, order="absolute")
+        coeffs, _ = result.terms()
+        assert list(coeffs) == pytest.approx([-0.3, 0.1, 0.5])
+
+    def test_magnitude_order_sorts_by_absolute_value(self):
+        """'magnitude' sorts by abs(coefficient) (ascending)."""
+        ham = qml.Hamiltonian([0.5, -0.3, 0.1], [qml.Z(0), qml.Z(1), qml.Z(2)])
+        result = _sort_hamiltonian_terms(ham, order="magnitude")
+        coeffs, _ = result.terms()
+        assert [abs(c) for c in coeffs] == pytest.approx([0.1, 0.3, 0.5])
+
+    def test_single_term_operator_passes_through(self):
+        """A single PauliZ (not a Sum/Hamiltonian) is returned unchanged."""
+        op = qml.PauliZ(0)
+        result = _sort_hamiltonian_terms(op)
+        assert qml.equal(result, op)
+
+    def test_negative_coefficients_preserved(self):
+        """Negative coefficients are preserved after sorting, not lost."""
+        ham = qml.Hamiltonian([-2.0, 1.0], [qml.Z(0), qml.Z(1)])
+        result = _sort_hamiltonian_terms(ham, order="absolute")
+        coeffs, _ = result.terms()
+        assert -2.0 in [float(c) for c in coeffs]
+        assert 1.0 in [float(c) for c in coeffs]

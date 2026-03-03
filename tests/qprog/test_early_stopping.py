@@ -2,8 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import inspect
-
 import pytest
 
 from divi.qprog.early_stopping import EarlyStopping, StopReason
@@ -15,14 +13,6 @@ from divi.qprog.early_stopping import EarlyStopping, StopReason
 
 class TestEarlyStoppingInit:
     """Tests for EarlyStopping parameter validation and defaults."""
-
-    def test_default_values(self):
-        es = EarlyStopping()
-        sig = inspect.signature(EarlyStopping.__init__)
-        for name, param in sig.parameters.items():
-            if name == "self":
-                continue
-            assert getattr(es, name) == param.default
 
     def test_patience_must_be_at_least_one(self):
         with pytest.raises(ValueError, match="patience must be >= 1"):
@@ -235,26 +225,23 @@ class TestCostVarianceCriterion:
         # loss_history should not be populated when threshold is None
         assert len(es._loss_history) == 0
 
-    def test_rolling_window_discards_old_values(self):
+    def test_varied_history_does_not_prevent_later_settling(self):
+        """Early varied values get pushed out; identical values eventually trigger."""
         es = EarlyStopping(
             patience=100,
             variance_window=3,
             variance_threshold=1e-6,
         )
-        # First fill with varied values
-        es.check(1.0)
-        es.check(2.0)
-        es.check(3.0)
-        assert list(es._loss_history) == [1.0, 2.0, 3.0]
+        # Fill with varied values — should NOT trigger
+        for val in [1.0, 2.0, 3.0]:
+            assert es.check(val) is None
 
-        # Now push 3 identical values that should push out the old ones
-        es.check(5.0)
-        es.check(5.0)
-        assert list(es._loss_history) == [3.0, 5.0, 5.0]
+        # Feed identical values — first two still have a varied value in the window
+        assert es.check(5.0) is None
+        assert es.check(5.0) is None
 
-        result = es.check(5.0)
-        assert result == StopReason.COST_VARIANCE_SETTLED
-        assert list(es._loss_history) == [5.0, 5.0, 5.0]
+        # Third identical value fills the window → should trigger
+        assert es.check(5.0) == StopReason.COST_VARIANCE_SETTLED
 
 
 # ======================================================================

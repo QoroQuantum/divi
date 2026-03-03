@@ -25,6 +25,7 @@ from divi.qprog import (
     PartitioningConfig,
     ScipyMethod,
     ScipyOptimizer,
+    SolutionEntry,
 )
 from divi.qprog.workflows import _graph_partitioning
 from divi.qprog.workflows._graph_partitioning import (
@@ -169,9 +170,9 @@ class TestPartitioningConfig:
         mock_part_graph.return_value = (None, [0, 0, 0, 1, 1, 1])
 
         clusters = _apply_split_with_relabel(G, algorithm="metis", n_clusters=2)
+        mock_part_graph.assert_called_once()
 
         self._assert_partitions_correct(G, clusters, expected_n_clusters=2)
-        mock_part_graph.assert_called_once()
 
     def test_apply_split_with_relabel_invalid_algorithm_raises(self):
         with pytest.raises(RuntimeError, match="Relabeling only needed"):
@@ -181,6 +182,11 @@ class TestPartitioningConfig:
 
     @pytest.mark.parametrize("algorithm", ["metis", "spectral"])
     def test_split_graph(self, algorithm, mocker):
+        """_split_graph routes to _apply_split_with_relabel with the correct args.
+
+        Note: this is a delegation test. _split_graph is a thin router; the
+        real partitioning logic is tested in test_apply_split_with_relabel_*.
+        """
         G = nx.path_graph(9)
         config = PartitioningConfig(
             minimum_n_clusters=3, partitioning_algorithm=algorithm
@@ -881,3 +887,90 @@ class TestGraphPartitioningQAOA:
 
         # Verify that the plot was commanded to be shown
         mock_show.assert_called_once()
+
+
+class TestExtendSolutionGraph:
+    """Tests for GraphPartitioningQAOA._extend_solution."""
+
+    def test_sets_selected_nodes_and_zeroes_others(self, dummy_simulator):
+        """Candidate's decoded nodes are set to 1; other partition nodes reset to 0."""
+        graph = nx.path_graph(6)  # nodes 0-5
+        qaoa = GraphPartitioningQAOA(
+            graph=graph,
+            graph_problem=GraphProblem.MAXCUT,
+            n_layers=1,
+            partitioning_config=PartitioningConfig(
+                minimum_n_clusters=2, partitioning_algorithm="spectral"
+            ),
+            backend=dummy_simulator,
+        )
+        qaoa.create_programs()
+
+        # Pick the first partition
+        prog_id = list(qaoa.reverse_index_maps.keys())[0]
+        reverse_map = qaoa.reverse_index_maps[prog_id]
+
+        # Create a candidate that selects only the first local node
+        first_local_node = list(reverse_map.keys())[0]
+        candidate = SolutionEntry(bitstring="", prob=1.0, decoded=[first_local_node])
+
+        initial = [0] * graph.number_of_nodes()
+        result = qaoa._extend_solution(initial, prog_id, candidate)
+
+        # The global index for the selected node should be 1
+        assert result[reverse_map[first_local_node]] == 1
+        # All other partition positions should be 0
+        for local_node, global_idx in reverse_map.items():
+            if local_node != first_local_node:
+                assert result[global_idx] == 0
+
+    def test_resets_partition_positions_before_applying(self, dummy_simulator):
+        """Pre-existing 1s in the partition's positions are cleared first."""
+        graph = nx.path_graph(6)
+        qaoa = GraphPartitioningQAOA(
+            graph=graph,
+            graph_problem=GraphProblem.MAXCUT,
+            n_layers=1,
+            partitioning_config=PartitioningConfig(
+                minimum_n_clusters=2, partitioning_algorithm="spectral"
+            ),
+            backend=dummy_simulator,
+        )
+        qaoa.create_programs()
+
+        prog_id = list(qaoa.reverse_index_maps.keys())[0]
+        reverse_map = qaoa.reverse_index_maps[prog_id]
+
+        # Start with all 1s, apply empty decoded → all partition positions become 0
+        candidate_empty = SolutionEntry(bitstring="", prob=1.0, decoded=[])
+
+        result = qaoa._extend_solution(
+            [1] * graph.number_of_nodes(), prog_id, candidate_empty
+        )
+
+        # All positions for this partition should be 0
+        for global_idx in reverse_map.values():
+            assert result[global_idx] == 0
+
+    def test_does_not_mutate_input(self, dummy_simulator):
+        """_extend_solution returns a new list, not a mutation of the input."""
+        graph = nx.path_graph(4)
+        qaoa = GraphPartitioningQAOA(
+            graph=graph,
+            graph_problem=GraphProblem.MAXCUT,
+            n_layers=1,
+            partitioning_config=PartitioningConfig(
+                minimum_n_clusters=2, partitioning_algorithm="spectral"
+            ),
+            backend=dummy_simulator,
+        )
+        qaoa.create_programs()
+
+        prog_id = list(qaoa.reverse_index_maps.keys())[0]
+        original = [0] * graph.number_of_nodes()
+
+        candidate = SolutionEntry(bitstring="", prob=1.0, decoded=[])
+        result = qaoa._extend_solution(original, prog_id, candidate)
+
+        assert result is not original
+        assert original == [0] * graph.number_of_nodes()

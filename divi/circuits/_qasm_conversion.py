@@ -115,7 +115,7 @@ def _ops_to_qasm(operations, precision, wires):
     return qasm_str
 
 
-def circuit_body_to_qasm(
+def _circuit_body_to_qasm(
     main_qscript,
     precision: int | None = None,
 ) -> str:
@@ -159,7 +159,7 @@ def circuit_body_to_qasm(
     return main_qasm_str
 
 
-def measurements_to_qasm(
+def _measurements_to_qasm(
     main_qscript,
     measurement_groups: Sequence[Sequence[qml.measurements.ExpectationMP]],
     measure_all: bool = True,
@@ -248,7 +248,7 @@ def to_openqasm(
     Returns:
         list[str] or list[tuple[str, str]] or tuple[list[str], list[str]]: OpenQASM serialization of the circuit
     """
-    body = circuit_body_to_qasm(main_qscript, precision=precision)
+    body = _circuit_body_to_qasm(main_qscript, precision=precision)
 
     if len(measurement_groups) == 0:
         warn(
@@ -259,7 +259,7 @@ def to_openqasm(
             return body
         return [body]
 
-    measurement_qasms = measurements_to_qasm(
+    measurement_qasms = _measurements_to_qasm(
         main_qscript,
         measurement_groups=measurement_groups,
         measure_all=measure_all,

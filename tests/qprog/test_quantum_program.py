@@ -9,8 +9,7 @@ from threading import Event
 import pytest
 import requests
 
-from divi.backends import ExecutionResult, JobStatus
-from divi.qprog.exceptions import _CancelledError
+from divi.backends import ExecutionResult
 from divi.qprog.quantum_program import QuantumProgram
 
 
@@ -208,38 +207,3 @@ class TestQuantumProgramJobManagement:
         program.cancel_unfinished_job()
 
         mock_backend.cancel_job.assert_called_once()
-
-    def test_wait_for_async_result_cancelled_with_event(self, mocker):
-        """Test _wait_for_async_result raises _CancelledError when cancelled with event set."""
-        from divi.pipeline._core import _wait_for_async_result
-        from divi.pipeline.abc import PipelineEnv
-
-        mock_backend = mocker.Mock()
-        mock_backend.poll_job_status.return_value = JobStatus.CANCELLED
-        mock_backend.max_retries = 100
-
-        cancel_event = Event()
-        cancel_event.set()
-        env = PipelineEnv(backend=mock_backend, cancellation_event=cancel_event)
-
-        execution_result = ExecutionResult(job_id="test_job")
-
-        with pytest.raises(_CancelledError, match="Job test_job was cancelled"):
-            _wait_for_async_result(mock_backend, execution_result, env)
-
-    def test_wait_for_async_result_cancelled_without_event(self, mocker):
-        """Test _wait_for_async_result raises RuntimeError when cancelled without event."""
-        from divi.pipeline._core import _wait_for_async_result
-        from divi.pipeline.abc import PipelineEnv
-
-        mock_backend = mocker.Mock()
-        mock_backend.poll_job_status.return_value = JobStatus.CANCELLED
-        mock_backend.max_retries = 100
-
-        env = PipelineEnv(backend=mock_backend)
-        # No cancellation event set
-
-        execution_result = ExecutionResult(job_id="test_job")
-
-        with pytest.raises(RuntimeError, match="Job test_job was cancelled"):
-            _wait_for_async_result(mock_backend, execution_result, env)

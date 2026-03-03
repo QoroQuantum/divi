@@ -68,7 +68,12 @@ class QueueProgressReporter(ProgressReporter):
 
 
 class LoggingProgressReporter(ProgressReporter):
-    """Reports progress by logging messages to the console."""
+    """Reports progress by logging messages to the console.
+
+    Set the ``DIVI_DISABLE_PROGRESS`` environment variable to a truthy value
+    (``1``, ``true``, ``yes``, or ``on``) to suppress the Rich spinner and
+    fall back to plain log messages.
+    """
 
     _atexit_registered = False
 

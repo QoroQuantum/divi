@@ -119,44 +119,52 @@ def test_pce_n_qubits_validation_and_warning(dummy_simulator, basic_ansatz):
 
 
 def test_pce_soft_energy_computation(dummy_simulator, basic_ansatz):
-    """_compute_soft_energy reproduces the original soft-path result."""
-    qubo = np.array([[1.0, 0.2], [0.2, 2.0]])
-    alpha = 1.0
+    """_compute_soft_energy returns correct energy for a mixed histogram.
 
-    # Simulate two observable groups merged into a single histogram.
-    # Group-0: {"00": 30, "01": 10}  →  40 shots
-    # Group-1: {"10": 20, "11": 40}  →  60 shots
-    # After merging: {"00": 30, "01": 10, "10": 20, "11": 40}
-    merged = {"00": 30, "01": 10, "10": 20, "11": 40}
-    total_shots = 100
+    qubo = diag([1, 2]), alpha = 1, histogram: {"00": 3, "11": 1} (4 shots)
+    masks = [1, 2] (one qubit per variable).
 
-    state_strings = list(merged.keys())
-    counts = np.array(list(merged.values()), dtype=float)
-    probs = counts / total_shots
+    "00"=0: both parities 0.  "11"=3: both parities 1.
+    probs = [0.75, 0.25].
+    mean_parity = [0*0.75 + 1*0.25, 0*0.75 + 1*0.25] = [0.25, 0.25].
+    z = 1 - 2*0.25 = [0.5, 0.5].
+    x = 0.5*(1 + tanh(0.5)) = e/(e+1)   [algebraic identity].
+    energy = 1*x² + 2*x² = 3*(e/(e+1))².
+    """
+    qubo = np.diag([1.0, 2.0])
 
     pce = PCE(
         problem=qubo,
         ansatz=basic_ansatz,
         backend=dummy_simulator,
-        alpha=alpha,
+        alpha=1.0,
     )
-    parities = _decode_parities(state_strings, pce._variable_masks_u64)
-    result = _compute_soft_energy(parities, probs, alpha, pce.problem)
 
-    # Expected: same algebra as the old test_pce_soft_energy_post_process_results
-    mean_parities = parities.dot(probs)
-    z_expectations = 1.0 - (2.0 * mean_parities)
-    x_soft = 0.5 * (1.0 + np.tanh(alpha * z_expectations))
-    expected = float(x_soft @ qubo @ x_soft)
+    states = ["00", "11"]
+    counts = np.array([3, 1], dtype=float)
+    probs = counts / counts.sum()
+    parities = _decode_parities(states, pce._variable_masks_u64)
 
+    result = _compute_soft_energy(parities, probs, 1.0, pce.problem)
+
+    expected = 3.0 * (np.e / (np.e + 1)) ** 2
     assert result == pytest.approx(expected)
 
 
 def test_pce_hard_cvar_energy_computation(dummy_simulator, basic_ansatz):
-    """_compute_hard_cvar_energy reproduces the original hard-CVaR-path result."""
-    qubo = np.diag([1.0, 2.0])
+    """_compute_hard_cvar_energy returns correct CVaR for a mixed histogram.
 
-    merged = {"11": 2, "10": 3, "01": 10, "00": 25}
+    qubo = diag([1, 2]), alpha_cvar = 0.5, histogram (10 shots):
+      "11" (x=[0,0]) → energy=0, count=4
+      "10" (x=[1,0]) → energy=1, count=2
+      "01" (x=[0,1]) → energy=2, count=3
+      "00" (x=[1,1]) → energy=3, count=1
+
+    CVaR(0.5) takes the best ceil(0.5*10)=5 shots:
+      4 shots at energy 0  +  1 shot at energy 1  =  1
+      CVaR = 1/5 = 0.2
+    """
+    qubo = np.diag([1.0, 2.0])
 
     pce = PCE(
         problem=qubo,
@@ -165,38 +173,15 @@ def test_pce_hard_cvar_energy_computation(dummy_simulator, basic_ansatz):
         alpha=6.0,
     )
 
-    state_strings = list(merged.keys())
-    counts_arr = np.array(list(merged.values()), dtype=float)
-    total_shots = counts_arr.sum()
-    parities = _decode_parities(state_strings, pce._variable_masks_u64)
+    states = ["11", "10", "01", "00"]
+    counts_arr = np.array([4, 2, 3, 1], dtype=float)
+    parities = _decode_parities(states, pce._variable_masks_u64)
 
     result = _compute_hard_cvar_energy(
-        parities, counts_arr, total_shots, pce.problem, alpha_cvar=0.25
+        parities, counts_arr, 10.0, pce.problem, alpha_cvar=0.5
     )
 
-    # Expected: replicate CVaR algebra
-    x_vals = 1.0 - parities.astype(float)
-    Qx = qubo @ x_vals
-    energies = np.einsum("ij,ij->j", x_vals, Qx)
-
-    sorted_indices = np.argsort(energies)
-    sorted_energies = energies[sorted_indices]
-    sorted_counts = counts_arr[sorted_indices]
-
-    cutoff_count = int(np.ceil(0.25 * total_shots))
-    accumulated = np.cumsum(sorted_counts)
-    limit_idx = int(np.searchsorted(accumulated, cutoff_count))
-
-    cvar_energy = 0.0
-    count_sum = 0.0
-    if limit_idx > 0:
-        cvar_energy += np.sum(sorted_energies[:limit_idx] * sorted_counts[:limit_idx])
-        count_sum += np.sum(sorted_counts[:limit_idx])
-    remaining = cutoff_count - count_sum
-    cvar_energy += sorted_energies[limit_idx] * remaining
-    expected = float(cvar_energy / cutoff_count)
-
-    assert result == pytest.approx(expected)
+    assert result == pytest.approx(0.2)
 
 
 def test_pce_custom_decode_parities_fn_soft_energy(dummy_simulator, basic_ansatz):
@@ -300,42 +285,6 @@ def test_pce_decode_parities_fn_none_uses_default(dummy_simulator, basic_ansatz)
     )
 
     assert result_default == pytest.approx(result_none)
-
-
-def test_pce_poly_expval_post_process(dummy_simulator, basic_ansatz):
-    """Poly encoding expval: PCECostStage.reduce handles expval-format Z expectations."""
-    qubo = np.zeros((3, 3))
-    pce = PCE(
-        problem=qubo,
-        ansatz=basic_ansatz,
-        backend=dummy_simulator,
-        encoding_type="poly",
-        alpha=1.0,
-    )
-
-    # The expval path receives per-observable Z expectations directly.
-    # For 3 vars with masks [1, 2, 3], ham_ops are ZI, IZ, ZZ.
-    z_expectations = np.array([0.2, -0.4, 0.6])
-    x_soft = 0.5 * (1.0 + np.tanh(pce.alpha * z_expectations))
-    expected = float(np.dot(x_soft, qubo @ x_soft))
-
-    assert expected == pytest.approx(0.0)  # qubo is zero matrix
-
-
-def test_pce_soft_energy_expval_post_process(dummy_simulator, basic_ansatz):
-    """PCE soft energy correctly processes expectation-value format results."""
-    qubo = np.array([[1.0, 0.2], [0.2, 2.0]])
-    alpha = 1.0
-
-    # The expval path in PCECostStage.reduce receives Z expectations
-    # and applies: x_soft = 0.5*(1 + tanh(alpha * z)), energy = x.T @ Q @ x
-    z = np.array([0.2, -0.4])
-    x_soft = 0.5 * (1.0 + np.tanh(alpha * z))
-    expected = float(x_soft @ qubo @ x_soft)
-
-    # Verify the math produces a sensible non-trivial value
-    assert expected != 0.0
-    assert isinstance(expected, float)
 
 
 def test_pce_perform_final_computation_sets_solution(

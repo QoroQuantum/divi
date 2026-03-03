@@ -107,13 +107,6 @@ def _setup_poly_encoding(
         )
     n_q = n_qubits if n_qubits is not None else min_qubits
 
-    max_capacity = n_q + (n_q * (n_q - 1)) // 2
-    if n_vars > max_capacity:
-        raise ValueError(
-            f"Poly encoding with {n_q} qubits supports max {max_capacity} "
-            f"vars; problem has {n_vars}. Increase n_qubits."
-        )
-
     masks = []
     for i in range(n_q):
         masks.append(1 << i)

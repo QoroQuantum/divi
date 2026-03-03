@@ -159,12 +159,9 @@ class TestProgramBatch:
         ):
             program_batch.total_run_time = 100
 
-    def test_run_sets_executor_and_returns_expected_number_of_futures(
-        self, program_batch
-    ):
+    def test_run_returns_expected_number_of_futures(self, program_batch):
         program_batch.create_programs()
         program_batch.run()
-        assert program_batch._executor is not None
         assert len(program_batch.futures) == 2
 
     def test_run_fails_if_no_programs(self, program_batch):

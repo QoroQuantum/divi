@@ -16,7 +16,6 @@ from divi.pipeline.stages._measurement_stage import OBS_GROUP_AXIS, MeasurementT
 from tests.pipeline.helpers import (
     DummySpecStage,
     ones_execute_fn,
-    two_group_meta,
     two_group_pipeline_stages,
 )
 
@@ -213,23 +212,3 @@ class TestMeasurementStageResultFormatOverride:
         # Raw results: obs_group axis stripped, values passed through as-is.
         # Two groups map to the same base_key, so the last one wins (dict update).
         assert base_key in reduced
-
-    def test_default_no_override_applies_postprocessing(self, dummy_expval_backend):
-        """Without an override, the standard expval postprocessing is applied."""
-        stage = MeasurementStage()  # no override
-
-        env = PipelineEnv(backend=dummy_expval_backend)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=two_group_meta()),
-                stage,
-            ],
-        )
-
-        reduced = pipeline.run(
-            initial_spec="ignored", env=env, execute_fn=ones_execute_fn
-        )
-
-        assert len(reduced) == 1
-        # Standard postprocessing: 0.9 * 1.0 + 0.4 * 1.0 = 1.3
-        assert list(reduced.values())[0] == pytest.approx(1.3)

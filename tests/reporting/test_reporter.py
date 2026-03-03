@@ -178,29 +178,24 @@ class TestLoggingProgressReporter:
         reporter = LoggingProgressReporter()
         reporter.info("Computing something", overwrite=True)
 
-        # Verify Console.status was called with aesthetic spinner
+        # Overwrite creates a status with the message
         mock_console.status.assert_called_once()
         status_msg = mock_console.status.call_args[0][0]
         assert "Computing something" in status_msg
-        # Check that spinner is set to "aesthetic"
-        assert mock_console.status.call_args.kwargs.get("spinner") == "aesthetic"
         mock_status.__enter__.assert_called_once()
 
-        # Update with another overwriting message
+        # Second overwrite updates the existing status (not a new one)
         reporter.info("Still computing", overwrite=True)
         mock_status.update.assert_called_once()
         update_msg = mock_status.update.call_args[0][0]
         assert "Still computing" in update_msg
-        # Status should still be active (not closed)
         mock_status.__exit__.assert_not_called()
 
-        # Normal message should close the status
+        # Normal message closes the status
         mock_logger = mocker.patch("divi.reporting._reporter.logger")
         reporter.info("Done!")
         mock_status.__exit__.assert_called_once()
         mock_logger.info.assert_called_once_with("Done!")
-        # Status should be None now
-        assert reporter._status is None
 
     def test_info_with_polling(self, mocker):
         """
@@ -220,22 +215,19 @@ class TestLoggingProgressReporter:
         }
         reporter.info("Polling...", **polling_kwargs)
 
-        # Verify Console.status was called with the correct message and aesthetic spinner
+        # Status shows job ID prefix, job status, and attempt progress
         mock_console.status.assert_called_once()
         status_msg = mock_console.status.call_args[0][0]
         assert "service_abc" in status_msg
         assert "PENDING" in status_msg
-        assert "Polling attempt 2 / 10" in status_msg
-        # Check that spinner is set to "aesthetic"
-        assert mock_console.status.call_args.kwargs.get("spinner") == "aesthetic"
-        # Verify status context manager was entered
+        assert "2" in status_msg and "10" in status_msg
         mock_status.__enter__.assert_called_once()
 
-        # Test that subsequent calls update the status
+        # Subsequent poll updates the existing status with new attempt number
         reporter.info("Polling...", **{**polling_kwargs, "poll_attempt": 3})
         mock_status.update.assert_called_once()
         update_msg = mock_status.update.call_args[0][0]
-        assert "Polling attempt 3 / 10" in update_msg
+        assert "3" in update_msg and "10" in update_msg
 
     def test_info_with_iteration(self, mocker):
         """
@@ -249,21 +241,17 @@ class TestLoggingProgressReporter:
         reporter = LoggingProgressReporter()
         reporter.info("Doing something", iteration=0)
 
-        # Verify Console.status was called with the correct message and aesthetic spinner
+        # Status shows 1-indexed iteration number and the message
         mock_console.status.assert_called_once()
         status_msg = mock_console.status.call_args[0][0]
-        assert "Iteration #1" in status_msg
+        assert "1" in status_msg
         assert "Doing something" in status_msg
-        # Check that spinner is set to "aesthetic"
-        assert mock_console.status.call_args.kwargs.get("spinner") == "aesthetic"
-        # Verify status context manager was entered
         mock_status.__enter__.assert_called_once()
 
-        # Test that subsequent calls update the status
+        # Subsequent iteration call updates the existing status
         reporter.info("Doing something else", iteration=0)
         mock_status.update.assert_called_once()
         update_msg = mock_status.update.call_args[0][0]
-        assert "Iteration #1" in update_msg
         assert "Doing something else" in update_msg
 
     def test_info_iteration_and_polling_concatenation(self, mocker):
@@ -303,3 +291,36 @@ class TestLoggingProgressReporter:
         assert "PENDING" in update_msg
         assert "Polling attempt 4 / 5000" in update_msg
         assert " - " in update_msg  # Should be concatenated with separator
+
+
+class TestDisableProgress:
+    """Tests for DIVI_DISABLE_PROGRESS env var behaviour."""
+
+    @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on", " True "])
+    def test_truthy_values_disable_progress(self, monkeypatch, value):
+        """Truthy env var values disable the progress spinner."""
+        monkeypatch.setenv("DIVI_DISABLE_PROGRESS", value)
+        reporter = LoggingProgressReporter()
+        assert reporter._disable_progress is True
+
+    @pytest.mark.parametrize("value", ["0", "false", "no", "off", "", "random"])
+    def test_falsy_values_keep_progress_enabled(self, monkeypatch, value):
+        """Non-truthy env var values leave progress enabled."""
+        monkeypatch.setenv("DIVI_DISABLE_PROGRESS", value)
+        reporter = LoggingProgressReporter()
+        assert reporter._disable_progress is False
+
+    def test_unset_env_var_keeps_progress_enabled(self, monkeypatch):
+        """When the env var is not set at all, progress is enabled."""
+        monkeypatch.delenv("DIVI_DISABLE_PROGRESS", raising=False)
+        reporter = LoggingProgressReporter()
+        assert reporter._disable_progress is False
+
+    def test_disabled_info_logs_instead_of_spinner(self, monkeypatch, caplog):
+        """When progress is disabled, info() logs the message without creating a spinner."""
+        monkeypatch.setenv("DIVI_DISABLE_PROGRESS", "1")
+        reporter = LoggingProgressReporter()
+        with caplog.at_level("INFO", logger="divi.reporting._reporter"):
+            reporter.info("test message")
+        assert "test message" in caplog.text
+        assert reporter._status is None

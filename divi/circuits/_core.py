@@ -10,7 +10,7 @@ import numpy as np
 import numpy.typing as npt
 import pennylane as qml
 
-from divi.circuits._qasm_conversion import circuit_body_to_qasm
+from divi.circuits._qasm_conversion import _circuit_body_to_qasm
 from divi.circuits._qasm_template import QASMTemplate, build_template
 from divi.typing import QASMTag
 
@@ -58,7 +58,7 @@ class MetaCircuit:
         )
 
         if self.circuit_body_qasms is None:
-            body = circuit_body_to_qasm(self.source_circuit, precision=self.precision)
+            body = _circuit_body_to_qasm(self.source_circuit, precision=self.precision)
             object.__setattr__(self, "circuit_body_qasms", (((), body),))
 
         if self.circuit_body_templates is None:

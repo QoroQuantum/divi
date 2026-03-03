@@ -5,7 +5,8 @@
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from divi.circuits import MetaCircuit, measurements_to_qasm
+from divi.circuits import MetaCircuit
+from divi.circuits._qasm_conversion import _measurements_to_qasm
 from divi.hamiltonians import convert_hamiltonian_to_pauli_string
 from divi.pipeline._grouping import GroupingStrategy, compute_measurement_groups
 from divi.pipeline.abc import (
@@ -155,7 +156,7 @@ class MeasurementStage(BundleStage):
             measurement_groups, _, postprocessing_fn = compute_measurement_groups(
                 measurement, strategy
             )
-            measurement_qasms = measurements_to_qasm(
+            measurement_qasms = _measurements_to_qasm(
                 meta.source_circuit, measurement_groups, precision=meta.precision
             )
             tagged_measurement_qasms = tuple(

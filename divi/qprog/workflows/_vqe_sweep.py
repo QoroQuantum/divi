@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import inspect
+import copy
 from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -17,12 +17,6 @@ import pennylane as qml
 
 from divi.qprog import VQE, Ansatz, ProgramBatch
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer, copy_optimizer
-
-
-def _ctor_attrs(obj):
-    sig = inspect.signature(obj.__class__.__init__)
-    arg_names = list(sig.parameters.keys())[1:]  # skip 'self'
-    return {name: getattr(obj, name) for name in arg_names if hasattr(obj, name)}
 
 
 class _ZMatrixEntry(NamedTuple):
@@ -368,8 +362,6 @@ class MoleculeTransformer:
             )
 
     def generate(self) -> dict[float, qml.qchem.Molecule]:
-        base_attrs = _ctor_attrs(self.base_molecule)
-
         variants = {}
         original_coords = self.base_molecule.coordinates
         mode = "scale" if all(v > 0 for v in self.bond_modifiers) else "delta"
@@ -392,9 +384,9 @@ class MoleculeTransformer:
                         transformed_coords, original_coords, self.alignment_atoms
                     )
 
-            # A single molecule is created after all bonds have been modified
-            base_attrs["coordinates"] = transformed_coords
-            mol = qml.qchem.Molecule(**base_attrs)
+            # Clone the base molecule with the new coordinates
+            mol = copy.copy(self.base_molecule)
+            mol.coordinates = transformed_coords
             variants[value] = mol
 
         return variants

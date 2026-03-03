@@ -4,8 +4,6 @@
 
 """Tests for divi.circuits._qasm_template."""
 
-import re
-
 from divi.circuits._qasm_template import build_template, render_template
 
 
@@ -49,21 +47,38 @@ class TestBuildTemplate:
 
 
 class TestRenderTemplate:
-    def test_roundtrip_matches_regex(self):
-        """Rendered template must produce the same string as a correctly-ordered regex sub."""
+    def test_render_replaces_all_symbols_with_values(self):
+        """All symbol names are replaced and each value appears the expected number of times."""
         body = 'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[3];\ncreg c[3];\nry(w_0) q[0];\nry(w_1) q[1];\nry(w_2) q[2];\ncx q[0],q[1];\nrz(w_0) q[1];\n'
         symbols = ("w_0", "w_1", "w_2")
         values = ("1.5", "2.7", "0.3")
 
-        # Reference: longest-first regex substitution
-        escaped = sorted((re.escape(s) for s in symbols), key=len, reverse=True)
-        pattern = re.compile("|".join(escaped))
-        mapping = dict(zip(symbols, values))
-        expected = pattern.sub(lambda m: mapping[m.group(0)], body)
+        template = build_template(body, symbols)
+        result = render_template(template, values)
+
+        # No symbol names remain in the output
+        for sym in symbols:
+            assert sym not in result
+
+        # Each value appears the same number of times its symbol did in the body
+        assert result.count("1.5") == 2  # w_0 appears twice (ry + rz)
+        assert result.count("2.7") == 1  # w_1 appears once
+        assert result.count("0.3") == 1  # w_2 appears once
+
+        # Non-parameterized structure is preserved
+        assert result.startswith('OPENQASM 2.0;\ninclude "qelib1.inc";')
+        assert "cx q[0],q[1];" in result
+
+    def test_overlapping_prefix_symbols_substitute_correctly(self):
+        """Symbols that are prefixes of each other (w, w_0, w_01) are each replaced independently."""
+        body = "rx(w) q[0];\nry(w_0) q[1];\nrz(w_01) q[2];\n"
+        symbols = ("w", "w_0", "w_01")
+        values = ("A", "B", "C")
 
         template = build_template(body, symbols)
         result = render_template(template, values)
-        assert result == expected
+
+        assert result == "rx(A) q[0];\nry(B) q[1];\nrz(C) q[2];\n"
 
     def test_empty_slots(self):
         body = "rx(1.0) q[0];\n"

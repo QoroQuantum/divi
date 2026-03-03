@@ -130,6 +130,17 @@ def test_vqe_fail_with_constant_only_hamiltonian(dummy_simulator):
         )
 
 
+def test_vqe_fail_with_neither_hamiltonian_nor_molecule(dummy_simulator):
+    """VQE raises ValueError when neither hamiltonian nor molecule is provided."""
+    with pytest.raises(
+        ValueError, match="Either one of `molecule` and `hamiltonian` must be provided"
+    ):
+        VQE(
+            ansatz=HartreeFockAnsatz(),
+            backend=dummy_simulator,
+        )
+
+
 @pytest.mark.parametrize(
     "hamiltonian",
     [0.5 * qml.Z(0), qml.Z(0)],

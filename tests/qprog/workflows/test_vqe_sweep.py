@@ -16,6 +16,10 @@ from divi.qprog.workflows import (
     VQEHyperparameterSweep,
     _vqe_sweep,
 )
+from divi.qprog.workflows._vqe_sweep import (
+    _cartesian_to_zmatrix,
+    _zmatrix_to_cartesian,
+)
 from tests.qprog.qprog_contracts import verify_basic_program_batch_behaviour
 
 
@@ -38,9 +42,13 @@ def water_molecule():
     return qml.qchem.Molecule(symbols, coordinates)
 
 
-def get_pairwise_distances(molecule):
+def get_pairwise_distances(coords_or_molecule):
     """Helper function to calculate a symmetric matrix of all pairwise atomic distances."""
-    return squareform(pdist(molecule.coordinates))
+    if hasattr(coords_or_molecule, "coordinates"):
+        coords = coords_or_molecule.coordinates
+    else:
+        coords = coords_or_molecule
+    return squareform(pdist(coords))
 
 
 class TestMoleculeTransformerValidation:
@@ -546,24 +554,28 @@ class TestVQEHyperparameterSweep:
 
         vqe_sweep.visualize_results(graph_type="line")
 
-        # Check that plot was called for each ansatz
+        # One plot call per ansatz
         assert mock_plot.call_count == len(vqe_sweep.ansatze)
 
-        # Construct expected calls
-        call_hartree_fock = mocker.call(
-            [0.9, 1.0, 1.1],
-            [-9.0, -10.0, -11.0],
-            label="HartreeFockAnsatz",
-            color="blue",
-        )
-        call_ry = mocker.call(
-            [0.9, 1.0, 1.1],
-            [-10.0, -11.0, -12.0],
-            label="GenericLayerAnsatz",
-            color="g",
-        )
+        # Collect per-call data
+        calls_by_label = {}
+        for call in mock_plot.call_args_list:
+            label = call.kwargs["label"]
+            calls_by_label[label] = {
+                "x": call.args[0],
+                "y": call.args[1],
+                "color": call.kwargs["color"],
+            }
 
-        mock_plot.assert_has_calls([call_hartree_fock, call_ry], any_order=True)
+        # Each ansatz gets its correct data series
+        assert calls_by_label["HartreeFockAnsatz"]["x"] == [0.9, 1.0, 1.1]
+        assert calls_by_label["HartreeFockAnsatz"]["y"] == [-9.0, -10.0, -11.0]
+        assert calls_by_label["GenericLayerAnsatz"]["x"] == [0.9, 1.0, 1.1]
+        assert calls_by_label["GenericLayerAnsatz"]["y"] == [-10.0, -11.0, -12.0]
+
+        # Each ansatz gets a distinct color
+        colors = [c["color"] for c in calls_by_label.values()]
+        assert len(set(colors)) == len(colors)
 
     def test_visualize_results_with_invalid_graph_type(self, mocker, vqe_sweep):
         """Test that providing an invalid graph type raises a ValueError."""
@@ -897,6 +909,72 @@ class TestZMatrixConversion:
         # Should handle zero angles correctly
         assert coords.shape == (4, 3)
         assert np.all(np.isfinite(coords))
+
+    def test_roundtrip_two_atoms(self):
+        """Cartesian -> Z-matrix -> Cartesian recovers original coordinates for 2 atoms."""
+        coords = np.array([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0]])
+        connectivity = [(0, 1)]
+
+        zmatrix = _cartesian_to_zmatrix(coords, connectivity)
+        recovered = _zmatrix_to_cartesian(zmatrix)
+
+        # Bond length must be preserved; absolute position may differ (origin/orientation freedom)
+        original_dist = np.linalg.norm(coords[1] - coords[0])
+        recovered_dist = np.linalg.norm(recovered[1] - recovered[0])
+        np.testing.assert_almost_equal(recovered_dist, original_dist, decimal=10)
+
+    def test_roundtrip_three_atoms(self):
+        """Cartesian -> Z-matrix -> Cartesian preserves pairwise distances for 3 atoms."""
+        coords = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.5, 0.866, 0.0],  # roughly equilateral triangle
+            ]
+        )
+        connectivity = [(0, 1), (1, 2)]
+
+        zmatrix = _cartesian_to_zmatrix(coords, connectivity)
+        recovered = _zmatrix_to_cartesian(zmatrix)
+
+        original_dists = get_pairwise_distances(coords)
+        recovered_dists = get_pairwise_distances(recovered)
+        np.testing.assert_array_almost_equal(
+            recovered_dists, original_dists, decimal=10
+        )
+
+    def test_roundtrip_four_atoms_with_dihedral(self):
+        """Cartesian -> Z-matrix -> Cartesian preserves geometry for 4 atoms (dihedral path)."""
+        # Non-planar arrangement to exercise dihedral angles
+        coords = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.5, 1.0, 0.0],
+                [1.5, 1.0, 1.2],  # out-of-plane
+            ]
+        )
+        connectivity = [(0, 1), (1, 2), (2, 3)]
+
+        zmatrix = _cartesian_to_zmatrix(coords, connectivity)
+        recovered = _zmatrix_to_cartesian(zmatrix)
+
+        original_dists = get_pairwise_distances(coords)
+        recovered_dists = get_pairwise_distances(recovered)
+        np.testing.assert_array_almost_equal(recovered_dists, original_dists, decimal=8)
+
+    def test_roundtrip_water_molecule(self, water_molecule):
+        """Roundtrip preserves water molecule geometry (realistic molecule)."""
+        coords = np.array(water_molecule.coordinates)
+        # O-H bonds: O is atom 0, H's are atoms 1 and 2
+        connectivity = [(0, 1), (0, 2)]
+
+        zmatrix = _cartesian_to_zmatrix(coords, connectivity)
+        recovered = _zmatrix_to_cartesian(zmatrix)
+
+        original_dists = get_pairwise_distances(coords)
+        recovered_dists = get_pairwise_distances(recovered)
+        np.testing.assert_array_almost_equal(recovered_dists, original_dists, decimal=8)
 
 
 class TestBondTransformation:

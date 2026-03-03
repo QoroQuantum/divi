@@ -881,15 +881,17 @@ def convert_qubo_matrix_to_pennylane_ising(
             constant_term += weight / 2
         else:
             # Off-diagonal elements (i < j since we're using triu)
+            # Factor of weight/2 because x^T Q x for symmetric Q counts both
+            # (i,j) and (j,i), so triu entry is half the total interaction.
             ising_terms.append([i, j])
-            ising_weights.append(weight / 4)
+            ising_weights.append(weight / 2)
 
             # Update linear terms
-            linear_terms[i] -= weight / 4
-            linear_terms[j] -= weight / 4
+            linear_terms[i] -= weight / 2
+            linear_terms[j] -= weight / 2
 
             # Update constant term
-            constant_term += weight / 4
+            constant_term += weight / 2
 
     # Add the linear terms (Z operators)
     for i, curr_lin_term in filter(lambda x: x[1] != 0, enumerate(linear_terms)):

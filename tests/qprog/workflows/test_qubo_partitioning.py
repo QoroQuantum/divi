@@ -12,6 +12,7 @@ import scipy.sparse as sps
 from divi.backends import ParallelSimulator
 from divi.qprog import PCE, QAOA, ScipyMethod, ScipyOptimizer
 from divi.qprog.algorithms import GenericLayerAnsatz
+from divi.qprog.variational_quantum_algorithm import SolutionEntry
 from divi.qprog.workflows._qubo_partitioning import (
     QUBOPartitioningQAOA,
     _sanitize_problem_input,
@@ -222,23 +223,6 @@ class TestQUBOPartitioningQAOA:
     ):
         assert np.array_equal(qubo_partitioning_pce.main_qubo, sample_qubo_matrix)
         assert qubo_partitioning_pce.engine == "pce"
-
-    def test_create_programs_pce_uses_problem_kwarg(
-        self, mocker, qubo_partitioning_pce
-    ):
-        mock_constructor = mocker.MagicMock()
-        qubo_partitioning_pce._constructor = mock_constructor
-        qubo_partitioning_pce.create_programs()
-
-        assert len(qubo_partitioning_pce.programs) == 2
-        assert mock_constructor.call_count == 2
-
-        for call in mock_constructor.call_args_list:
-            kwargs = call.kwargs
-            assert "problem" in kwargs
-            assert isinstance(kwargs["problem"], sps.coo_matrix)
-            assert kwargs["problem"].shape == (2, 2)
-            assert "program_id" in kwargs
 
     def test_create_programs_pce_creates_pce_programs(self, qubo_partitioning_pce):
         qubo_partitioning_pce.create_programs()
@@ -514,3 +498,211 @@ class TestQUBOPartitioningQAOA:
 
         assert isinstance(energy, float)
         assert energy == pytest.approx(-1.5)
+
+
+class TestExtendSolutionQUBO:
+    """Tests for QUBOPartitioningQAOA._extend_solution."""
+
+    @staticmethod
+    def _make_instance(qubo, backend):
+        decomposer = hybrid.EnergyImpactDecomposer(size=2)
+        return QUBOPartitioningQAOA(
+            qubo=qubo,
+            decomposer=decomposer,
+            n_layers=1,
+            max_iterations=1,
+            backend=backend,
+        )
+
+    def test_maps_local_bits_to_global_positions(self, dummy_simulator):
+        """Candidate's decoded bits appear at the correct global indices."""
+        qubo = {
+            (0, 0): -0.5,
+            (1, 1): 1,
+            (0, 1): -2,
+            (2, 2): 1,
+            (3, 3): 1,
+            (2, 3): 2,
+        }
+        bqm = dimod.BinaryQuadraticModel.from_qubo(qubo)
+        batch = self._make_instance(bqm, dummy_simulator)
+        batch.create_programs()
+
+        # Pick a program and build a candidate with all-ones decoded
+        prog_id = list(batch.programs.keys())[0]
+        global_indices = batch._variable_maps[prog_id]
+        n_local = len(global_indices)
+
+        candidate = SolutionEntry(
+            bitstring="1" * n_local,
+            prob=1.0,
+            decoded=np.ones(n_local, dtype=np.int32),
+        )
+
+        result = batch._extend_solution([0, 0, 0, 0], prog_id, candidate)
+
+        # Only the positions mapped by this program should be set to 1
+        for local_idx, global_idx in enumerate(global_indices):
+            assert result[global_idx] == 1
+        # Other positions should remain 0
+        other_positions = set(range(4)) - set(global_indices)
+        for idx in other_positions:
+            assert result[idx] == 0
+
+    def test_does_not_mutate_input(self, dummy_simulator):
+        """_extend_solution returns a new list, not a mutation of the input."""
+        qubo = np.diag([-1.0, -1.0, -1.0])
+        batch = self._make_instance(qubo, dummy_simulator)
+        batch.create_programs()
+
+        prog_id = list(batch._variable_maps.keys())[0]
+        global_indices = batch._variable_maps[prog_id]
+        n_local = len(global_indices)
+
+        original = [0, 0, 0]
+        candidate = SolutionEntry(
+            bitstring="1" * n_local,
+            prob=1.0,
+            decoded=np.ones(n_local, dtype=np.int32),
+        )
+
+        result = batch._extend_solution(original, prog_id, candidate)
+
+        assert result is not original
+        assert original == [0, 0, 0]
+
+    def test_overwrites_previous_partition_values(self, dummy_simulator):
+        """Extending with zeros overwrites previous ones at mapped positions."""
+        qubo = {
+            (0, 0): -0.5,
+            (1, 1): 1,
+            (0, 1): -2,
+            (2, 2): 1,
+            (3, 3): 1,
+            (2, 3): 2,
+        }
+        bqm = dimod.BinaryQuadraticModel.from_qubo(qubo)
+        batch = self._make_instance(bqm, dummy_simulator)
+        batch.create_programs()
+
+        prog_id = list(batch.programs.keys())[0]
+        global_indices = batch._variable_maps[prog_id]
+        n_local = len(global_indices)
+
+        # Start with all-ones solution
+        candidate_zeros = SolutionEntry(
+            bitstring="0" * n_local,
+            prob=1.0,
+            decoded=np.zeros(n_local, dtype=np.int32),
+        )
+
+        result = batch._extend_solution([1, 1, 1, 1], prog_id, candidate_zeros)
+
+        # Mapped positions should now be 0
+        for global_idx in global_indices:
+            assert result[global_idx] == 0
+        # Other positions should remain 1
+        other_positions = set(range(4)) - set(global_indices)
+        for idx in other_positions:
+            assert result[idx] == 1
+
+
+class TestComposeSolutionQUBO:
+    """Tests for QUBOPartitioningQAOA._compose_solution."""
+
+    @staticmethod
+    def _make_instance(qubo, backend):
+        decomposer = hybrid.EnergyImpactDecomposer(size=2)
+        return QUBOPartitioningQAOA(
+            qubo=qubo,
+            decomposer=decomposer,
+            n_layers=1,
+            max_iterations=1,
+            backend=backend,
+        )
+
+    def test_optimal_solution_has_correct_energy(self, dummy_simulator):
+        """_compose_solution returns (solution, energy) matching the QUBO energy."""
+        qubo = {
+            (0, 0): -0.5,
+            (1, 1): 1,
+            (0, 1): -2,
+            (2, 2): 1,
+            (3, 3): 1,
+            (2, 3): 2,
+        }
+        bqm = dimod.BinaryQuadraticModel.from_qubo(qubo)
+        batch = self._make_instance(bqm, dummy_simulator)
+        batch.create_programs()
+
+        # [1,1,0,0] is the optimal solution with energy -1.5
+        solution_array, energy = batch._compose_solution([1, 1, 0, 0])
+
+        assert isinstance(solution_array, np.ndarray)
+        assert energy == pytest.approx(-1.5)
+        np.testing.assert_array_equal(solution_array, [1, 1, 0, 0])
+
+    def test_all_zeros_returns_zero_energy(self, dummy_simulator):
+        """All-zero solution has zero energy for a QUBO with no constant offset."""
+        qubo = {
+            (0, 0): -0.5,
+            (1, 1): 1,
+            (0, 1): -2,
+        }
+        bqm = dimod.BinaryQuadraticModel.from_qubo(qubo)
+        batch = self._make_instance(bqm, dummy_simulator)
+        batch.create_programs()
+
+        solution_array, energy = batch._compose_solution([0, 0])
+
+        assert energy == pytest.approx(0.0)
+
+    def test_does_not_mutate_subproblem_states(self, dummy_simulator):
+        """_compose_solution operates on copies and doesn't alter shared state."""
+        qubo = {
+            (0, 0): -0.5,
+            (1, 1): 1,
+            (0, 1): -2,
+            (2, 2): 1,
+            (3, 3): 1,
+            (2, 3): 2,
+        }
+        bqm = dimod.BinaryQuadraticModel.from_qubo(qubo)
+        batch = self._make_instance(bqm, dummy_simulator)
+        batch.create_programs()
+
+        # Snapshot subproblem state identities before call
+        state_ids_before = {
+            k: id(v) for k, v in batch.prog_id_to_bqm_subproblem_states.items()
+        }
+
+        batch._compose_solution([1, 1, 0, 0])
+
+        # Original state objects should not have been replaced
+        for k, v in batch.prog_id_to_bqm_subproblem_states.items():
+            assert id(v) == state_ids_before[k]
+
+
+class TestMergeSubstates:
+    """Tests for _merge_substates helper."""
+
+    def test_merges_two_sample_sets(self):
+        """_merge_substates horizontally stacks subsamples from two states.
+
+        hstack_samplesets merges variables from both states into one sample,
+        not adding rows.
+        """
+        from divi.qprog.workflows._qubo_partitioning import _merge_substates
+
+        ss1 = dimod.SampleSet.from_samples({"a": 0}, "BINARY", -1.0)
+        ss2 = dimod.SampleSet.from_samples({"b": 1}, "BINARY", -0.5)
+
+        state1 = hybrid.State(subsamples=ss1)
+        state2 = hybrid.State(subsamples=ss2)
+
+        merged = _merge_substates(None, (state1, state2))
+
+        # hstack merges variables: result has both 'a' and 'b'
+        merged_vars = set(merged.subsamples.variables)
+        assert "a" in merged_vars
+        assert "b" in merged_vars

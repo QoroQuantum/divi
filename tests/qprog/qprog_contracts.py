@@ -67,8 +67,10 @@ def verify_metacircuit_dict(obj: QuantumProgram, expected_keys: list[str]):
 def _get_n_obs_groups(meta: MetaCircuit, supports_expval: bool) -> int:
     """Compute the number of observable groups the MeasurementStage would produce.
 
-    Mirrors the grouping logic in MeasurementStage.expand() so that the test
-    can independently predict the expected circuit count.
+    Note: this mirrors production grouping logic, so it acts as a regression
+    guard (catches accidental changes to circuit counts) rather than a
+    correctness test. If the production logic has a bug, this helper has
+    the same bug.
     """
     measurement = meta.source_circuit.measurements[0]
     is_probs = not hasattr(measurement, "obs") or measurement.obs is None
@@ -81,6 +83,12 @@ def _get_n_obs_groups(meta: MetaCircuit, supports_expval: bool) -> int:
 
 
 def verify_correct_circuit_count(obj: QuantumProgram):
+    """Verify the total circuit count matches the expected value for one iteration.
+
+    Note: this recomputes the expected count using the same grouping logic as
+    production code, so it serves as a regression guard — not a correctness
+    proof. See ``_get_n_obs_groups`` for details.
+    """
     assert obj.current_iteration == 1
     assert len(obj.losses_history) == 1
 

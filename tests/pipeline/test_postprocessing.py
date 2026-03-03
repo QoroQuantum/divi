@@ -7,9 +7,15 @@ import pennylane as qml
 import pytest
 from pennylane.measurements import ExpectationMP
 
-from divi.pipeline import CircuitPipeline, PipelineEnv
+from divi.circuits import MetaCircuit
+from divi.pipeline import CircuitPipeline
 from divi.pipeline._compilation import _compile_batch
-from divi.pipeline._postprocessing import _batched_expectation, _counts_to_expvals
+from divi.pipeline._postprocessing import (
+    _batched_expectation,
+    _counts_to_expvals,
+    _counts_to_probs,
+    _find_batch_key,
+)
 from divi.pipeline.abc import ChildResults
 from divi.pipeline.stages import MeasurementStage
 from tests.pipeline.helpers import DummySpecStage, two_group_meta
@@ -40,18 +46,49 @@ class TestCountsToExpvals:
             else:
                 assert isinstance(v, (int, float))
 
-    def test_auto_converts_counts_when_backend_lacks_expval(self, dummy_simulator):
-        """Pipeline with shots backend auto-converts counts → expvals."""
-        env = PipelineEnv(backend=dummy_simulator)
+    def test_multi_obs_group_returns_dict(self, dummy_pipeline_env):
+        """When multiple observables share a measurement group, result is a dict.
+
+        Z(0) and Z(1) operate on different wires, so with 'wires' strategy
+        they land in the same group → len(col) > 1 → dict return.
+
+        Hand-derived expected values from counts {"00": 70, "01": 5, "10": 15, "11": 10}:
+          ⟨Z(0)⟩ and ⟨Z(1)⟩ are 0.5 and 0.7 (order depends on wire ordering),
+          so sorted values are [0.5, 0.7] regardless of convention.
+        """
+        # Build a MetaCircuit with a 2-term Hamiltonian on separate wires
+        qscript = qml.tape.QuantumScript(
+            ops=[qml.Hadamard(0), qml.Hadamard(1)],
+            measurements=[qml.expval(0.5 * qml.Z(0) + 0.3 * qml.Z(1))],
+        )
+        meta = MetaCircuit(source_circuit=qscript, symbols=np.array([], dtype=object))
+
         pipeline = CircuitPipeline(
             stages=[
-                DummySpecStage(meta=two_group_meta()),
-                MeasurementStage(),
+                DummySpecStage(meta=meta),
+                MeasurementStage(grouping_strategy="wires"),
             ]
         )
-        reduced = pipeline.run(initial_spec="x", env=env)
-        assert len(reduced) == 1
-        assert isinstance(list(reduced.values())[0], (int, float))
+        trace = pipeline.run_forward_pass("x", dummy_pipeline_env)
+        _, lineage_by_label = _compile_batch(trace.final_batch)
+
+        # Asymmetric counts so Z(0) and Z(1) give different expectation values
+        raw: ChildResults = {
+            bk: {"00": 70, "01": 5, "10": 15, "11": 10}
+            for bk in lineage_by_label.values()
+        }
+
+        result = _counts_to_expvals(raw, trace.final_batch)
+
+        # At least one result should be a dict (multi-obs group)
+        dict_results = [v for v in result.values() if isinstance(v, dict)]
+        assert len(dict_results) >= 1
+
+        for d in dict_results:
+            assert len(d) == 2
+            assert all(isinstance(k, int) for k in d.keys())
+            # Sorted expvals are [0.5, 0.7] regardless of wire ordering
+            assert sorted(d.values()) == pytest.approx([0.5, 0.7])
 
 
 class TestBatchedExpectation:
@@ -278,3 +315,66 @@ class TestBatchedExpectation:
         assert not np.isnan(result).any()
         # Product observables should be in range [-1, 1]
         assert np.abs(result[0, 0]) <= 1.0 + 1e-10
+
+
+class TestFindBatchKey:
+    """Tests for _find_batch_key."""
+
+    def test_exact_match(self):
+        """Branch key that equals a batch key is found."""
+        batch_keys = {("a", "b"), ("c",)}
+        assert _find_batch_key(("a", "b"), batch_keys) == ("a", "b")
+
+    def test_subset_match(self):
+        """Batch key whose axes are a subset of the branch key is found."""
+        batch_keys = {("x",)}
+        result = _find_batch_key(("x", "y", "z"), batch_keys)
+        assert result == ("x",)
+
+    def test_empty_batch_key_matches_anything(self):
+        """An empty batch key is a subset of every branch key."""
+        batch_keys = {()}
+        assert _find_batch_key(("a", "b"), batch_keys) == ()
+
+    def test_no_match_raises_key_error(self):
+        """KeyError is raised when no batch key is a subset of the branch key."""
+        batch_keys = {("x", "y")}
+        with pytest.raises(KeyError, match="No batch key matches branch key"):
+            _find_batch_key(("a", "b"), batch_keys)
+
+    def test_empty_batch_keys_set_raises_key_error(self):
+        """KeyError is raised when batch_keys is empty."""
+        with pytest.raises(KeyError, match="No batch key matches branch key"):
+            _find_batch_key(("a",), set())
+
+
+class TestCountsToProbs:
+    """Tests for _counts_to_probs."""
+
+    def test_reverses_bitstrings_and_normalises(self):
+        """Bitstrings are reversed (PennyLane->MSB-first) and divided by shots."""
+        raw = {("obs",): {"100": 30, "010": 70}}
+        result = _counts_to_probs(raw, shots=100)
+        # "100" reversed -> "001", "010" reversed -> "010"
+        assert result[("obs",)] == {"001": 0.3, "010": 0.7}
+
+    def test_non_dict_values_pass_through(self):
+        """Non-dict results (e.g. floats from expval) are left unchanged."""
+        raw = {("a",): 0.42, ("b",): {"11": 5, "00": 5}}
+        result = _counts_to_probs(raw, shots=10)
+        assert result[("a",)] == 0.42
+        assert result[("b",)] == {"11": 0.5, "00": 0.5}
+
+    def test_empty_input(self):
+        """Empty ChildResults returns empty output."""
+        assert _counts_to_probs({}, shots=100) == {}
+
+    def test_multiple_branch_keys(self):
+        """Each branch key is processed independently."""
+        raw = {
+            ("x",): {"10": 4, "01": 6},
+            ("y",): {"110": 2, "001": 8},
+        }
+        result = _counts_to_probs(raw, shots=10)
+        assert result[("x",)] == {"01": 0.4, "10": 0.6}
+        assert result[("y",)] == {"011": 0.2, "100": 0.8}

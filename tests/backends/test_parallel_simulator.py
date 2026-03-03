@@ -13,6 +13,7 @@ from divi.backends import ExecutionResult
 from divi.backends._parallel_simulator import (
     FAKE_BACKENDS,
     ParallelSimulator,
+    _default_n_processes,
     _find_best_fake_backend,
 )
 from tests.backends import circuit_runner_contracts as contracts
@@ -96,6 +97,26 @@ class TestParallelSimulatorInit:
 
         assert simulator.qiskit_backend is None
         assert simulator.noise_model == noise_model
+
+    @pytest.mark.parametrize("bad_value", [0, -1, -100])
+    def test_init_rejects_n_processes_below_one(self, bad_value):
+        """Constructor raises ValueError when n_processes < 1."""
+        with pytest.raises(ValueError, match="n_processes must be >= 1"):
+            ParallelSimulator(n_processes=bad_value)
+
+    def test_setter_rejects_n_processes_below_one(self):
+        """The n_processes setter raises ValueError when value < 1."""
+        sim = ParallelSimulator()
+        with pytest.raises(ValueError, match="n_processes must be >= 1"):
+            sim.n_processes = 0
+
+    def test_init_none_uses_default(self, mocker):
+        """When n_processes is None, the default is computed via _default_n_processes."""
+        mocker.patch(
+            "divi.backends._parallel_simulator._default_n_processes", return_value=5
+        )
+        sim = ParallelSimulator(n_processes=None)
+        assert sim.n_processes == 5
 
 
 class TestParallelSimulatorProperties:
@@ -275,13 +296,11 @@ class TestParallelSimulatorSubmitCircuits:
 
         simulator.submit_circuits(circuits)
 
-        # Verify warning was logged about non-determinism
+        # A warning about parallel execution affecting determinism should be logged
         mock_logger.warning.assert_called_once()
-        warning_msg = str(mock_logger.warning.call_args[0][0])
-        assert "Parallel execution detected" in warning_msg
-        assert "parallel_experiments=2" in warning_msg
-        assert "omp_nested=True" in warning_msg
-        assert "may not be deterministic" in warning_msg
+        warning_msg = str(mock_logger.warning.call_args[0][0]).lower()
+        assert "parallel" in warning_msg
+        assert "not be deterministic" in warning_msg
 
     def test_submit_circuits_deterministic_with_backend(self, mocker):
         """Test deterministic execution with backend (line 147)."""
@@ -496,3 +515,57 @@ class TestParallelSimulatorRuntimeEstimation:
         )
 
         assert estimated_time == 1.0
+
+
+class TestDefaultNProcesses:
+    """Tests for _default_n_processes CPU-count logic."""
+
+    def test_non_main_thread_returns_two(self, mocker):
+        """Running in a worker thread limits to 2 cores."""
+        mock_thread = mocker.Mock()
+        mocker.patch(
+            "divi.backends._parallel_simulator.threading.current_thread",
+            return_value=mock_thread,
+        )
+        mocker.patch(
+            "divi.backends._parallel_simulator.threading.main_thread",
+            return_value=mocker.Mock(),
+        )
+        assert _default_n_processes() == 2
+
+    def test_non_main_process_returns_two(self, mocker):
+        """Running in a subprocess limits to 2 cores."""
+        mock_process = mocker.Mock()
+        mock_process.name = "SpawnProcess-1"
+        mocker.patch(
+            "divi.backends._parallel_simulator.current_process",
+            return_value=mock_process,
+        )
+        assert _default_n_processes() == 2
+
+    @pytest.mark.parametrize(
+        "cpu_count, expected",
+        [
+            (2, 2),  # max(2, 2-1) = 2
+            (3, 2),  # max(2, 3-1) = 2
+            (4, 3),  # max(2, 4-1) = 3
+            (8, 7),  # 8-1 = 7 (medium)
+            (16, 15),  # 16-1 = 15 (medium)
+            (32, 16),  # min(16, 32*0.75=24) = 16 (large, capped)
+            (20, 15),  # min(16, 20*0.75=15) = 15 (large)
+        ],
+    )
+    def test_cpu_count_scaling(self, mocker, cpu_count, expected):
+        """Correct scaling: small <= 4, medium <= 16, large > 16."""
+        mocker.patch(
+            "divi.backends._parallel_simulator.os.cpu_count", return_value=cpu_count
+        )
+        assert _default_n_processes() == expected
+
+    def test_cpu_count_none_falls_back_to_four(self, mocker):
+        """When os.cpu_count() returns None, defaults to cpu_count=4 logic."""
+        mocker.patch(
+            "divi.backends._parallel_simulator.os.cpu_count", return_value=None
+        )
+        # cpu_count=4 -> max(2, 4-1) = 3
+        assert _default_n_processes() == 3

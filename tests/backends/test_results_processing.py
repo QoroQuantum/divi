@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -10,6 +10,8 @@ from divi.backends._results_processing import (
     _int_to_bitstr,
     _rle_bool_decode,
     _uleb128_decode,
+    convert_counts_to_probs,
+    reverse_dict_endianness,
 )
 
 
@@ -167,3 +169,65 @@ class TestQoroServiceUtilities:
         assert _int_to_bitstr(5, 4) == "0101"
         assert _int_to_bitstr(1, 2) == "01"
         assert _int_to_bitstr(7, 3) == "111"
+
+
+class TestReverseDictEndianness:
+    """Tests for reverse_dict_endianness."""
+
+    def test_single_tag_single_bitstring(self):
+        """Bitstrings are reversed within each tag."""
+        result = reverse_dict_endianness({"tag0": {"100": 0.5, "011": 0.5}})
+        assert result == {"tag0": {"001": 0.5, "110": 0.5}}
+
+    def test_multiple_tags(self):
+        """Each tag's bitstrings are reversed independently."""
+        inp = {
+            "a": {"10": 0.7, "01": 0.3},
+            "b": {"11": 1.0},
+        }
+        result = reverse_dict_endianness(inp)
+        assert result == {
+            "a": {"01": 0.7, "10": 0.3},
+            "b": {"11": 1.0},
+        }
+
+    def test_empty_outer_dict(self):
+        """Empty input returns empty output."""
+        assert reverse_dict_endianness({}) == {}
+
+    def test_palindromic_bitstrings_unchanged(self):
+        """Palindromic bitstrings are unaffected by reversal."""
+        result = reverse_dict_endianness({"t": {"010": 0.4, "111": 0.6}})
+        assert result == {"t": {"010": 0.4, "111": 0.6}}
+
+
+class TestConvertCountsToProbs:
+    """Tests for convert_counts_to_probs."""
+
+    def test_basic_conversion(self):
+        """Counts are divided by shots to produce probabilities."""
+        counts = {"tag0": {"00": 30, "11": 70}}
+        result = convert_counts_to_probs(counts, shots=100)
+        assert result == {"tag0": {"00": 0.3, "11": 0.7}}
+
+    def test_multiple_tags(self):
+        """Each tag is converted independently."""
+        counts = {
+            "a": {"0": 5, "1": 5},
+            "b": {"0": 2, "1": 8},
+        }
+        result = convert_counts_to_probs(counts, shots=10)
+        assert result == {
+            "a": {"0": 0.5, "1": 0.5},
+            "b": {"0": 0.2, "1": 0.8},
+        }
+
+    def test_empty_dict(self):
+        """Empty input returns empty output."""
+        assert convert_counts_to_probs({}, shots=100) == {}
+
+    def test_single_shot(self):
+        """With shots=1, counts equal probabilities."""
+        counts = {"t": {"101": 1}}
+        result = convert_counts_to_probs(counts, shots=1)
+        assert result == {"t": {"101": 1.0}}

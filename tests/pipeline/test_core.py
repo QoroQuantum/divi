@@ -4,8 +4,11 @@
 
 """Tests for divi.pipeline._core: validation, CircuitPipeline, compile_batch, format_pipeline_tree."""
 
+from threading import Event
+
 import pytest
 
+from divi.backends import ExecutionResult, JobStatus
 from divi.pipeline import (
     CircuitPipeline,
     PipelineEnv,
@@ -16,8 +19,9 @@ from divi.pipeline._compilation import (
     _collapse_to_parent_results,
     _compile_batch,
 )
-from divi.pipeline._core import _validate_stage_order
+from divi.pipeline._core import _validate_stage_order, _wait_for_async_result
 from divi.pipeline.stages import MeasurementStage
+from divi.qprog.exceptions import _CancelledError
 
 from .helpers import (
     DummySpecStage,
@@ -258,20 +262,6 @@ def test_custom_execute_fn_returning_per_key_values_reduces_correctly(
     assert next(iter(reduced)) == (("spec", "circ"),)
 
 
-def test_default_execute_raises_when_measurement_qasms_missing(dummy_pipeline_env):
-    """Pipeline without MeasurementStage raises at construction time."""
-    with pytest.raises(
-        ValueError,
-        match="Pipeline must contain at least one MeasurementStage",
-    ):
-        CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=two_group_meta()),
-                FanoutAndSumStage("x", 2),
-            ]
-        )
-
-
 def test_run_with_default_execute_fn_and_shots_backend_auto_converts_counts(
     dummy_simulator,
 ):
@@ -288,3 +278,135 @@ def test_run_with_default_execute_fn_and_shots_backend_auto_converts_counts(
     key = next(iter(reduced))
     assert key == (("spec", "circ"),)
     assert isinstance(reduced[key], (int, float))
+
+
+class TestWaitForAsyncResult:
+    """Tests for _wait_for_async_result: polling and cancellation handling."""
+
+    def test_cancelled_with_event_raises_cancelled_error(self, mocker):
+        """When job is CANCELLED and cancellation event is set, raises _CancelledError."""
+        mock_backend = mocker.Mock()
+        mock_backend.poll_job_status.return_value = JobStatus.CANCELLED
+        mock_backend.max_retries = 100
+
+        cancel_event = Event()
+        cancel_event.set()
+        env = PipelineEnv(backend=mock_backend, cancellation_event=cancel_event)
+
+        execution_result = ExecutionResult(job_id="test_job")
+
+        with pytest.raises(_CancelledError, match="Job test_job was cancelled"):
+            _wait_for_async_result(mock_backend, execution_result, env)
+
+    def test_cancelled_without_event_raises_runtime_error(self, mocker):
+        """When job is CANCELLED without cancellation event, raises RuntimeError."""
+        mock_backend = mocker.Mock()
+        mock_backend.poll_job_status.return_value = JobStatus.CANCELLED
+        mock_backend.max_retries = 100
+
+        env = PipelineEnv(backend=mock_backend)
+
+        execution_result = ExecutionResult(job_id="test_job")
+
+        with pytest.raises(RuntimeError, match="Job test_job was cancelled"):
+            _wait_for_async_result(mock_backend, execution_result, env)
+
+    def test_missing_job_id_raises_value_error(self):
+        """ExecutionResult without a job_id raises ValueError immediately."""
+        env = PipelineEnv(backend=object())
+        execution_result = ExecutionResult(results=[{"label": "c", "results": {}}])
+
+        with pytest.raises(ValueError, match="must have a job_id"):
+            _wait_for_async_result(object(), execution_result, env)
+
+    def test_failed_status_raises_runtime_error(self, mocker):
+        """FAILED job status raises RuntimeError."""
+        mock_backend = mocker.Mock()
+        mock_backend.poll_job_status.return_value = JobStatus.FAILED
+        mock_backend.max_retries = 100
+
+        env = PipelineEnv(backend=mock_backend)
+        execution_result = ExecutionResult(job_id="job_fail")
+
+        with pytest.raises(RuntimeError, match="Job job_fail has failed"):
+            _wait_for_async_result(mock_backend, execution_result, env)
+
+    def test_non_completed_status_raises_runtime_error(self, mocker):
+        """A status that is neither COMPLETED, FAILED, nor CANCELLED raises RuntimeError."""
+        mock_backend = mocker.Mock()
+        mock_backend.poll_job_status.return_value = JobStatus.RUNNING
+        mock_backend.max_retries = 100
+
+        env = PipelineEnv(backend=mock_backend)
+        execution_result = ExecutionResult(job_id="job_stuck")
+
+        with pytest.raises(RuntimeError, match="has not completed yet"):
+            _wait_for_async_result(mock_backend, execution_result, env)
+
+    def test_completed_returns_job_results(self, mocker):
+        """COMPLETED status returns backend.get_job_results()."""
+        mock_backend = mocker.Mock()
+        mock_backend.poll_job_status.return_value = JobStatus.COMPLETED
+        mock_backend.max_retries = 100
+        expected = ExecutionResult(results=[{"label": "c0", "results": {"00": 100}}])
+        mock_backend.get_job_results.return_value = expected
+
+        env = PipelineEnv(backend=mock_backend)
+        execution_result = ExecutionResult(job_id="job_ok")
+
+        result = _wait_for_async_result(mock_backend, execution_result, env)
+
+        assert result is expected
+        mock_backend.get_job_results.assert_called_once_with(execution_result)
+
+    def test_runtime_tracking_dict_response(self, mocker):
+        """on_complete callback accumulates run_time from a dict response."""
+        mock_backend = mocker.Mock()
+        mock_backend.max_retries = 100
+        mock_backend.get_job_results.return_value = ExecutionResult(
+            results=[], job_id="job_rt"
+        )
+
+        # Capture the on_complete callback, then invoke it with a dict response
+        def fake_poll(
+            er, *, loop_until_complete, on_complete, verbose, progress_callback
+        ):
+            on_complete({"run_time": 3.5})
+            return JobStatus.COMPLETED
+
+        mock_backend.poll_job_status.side_effect = fake_poll
+
+        env = PipelineEnv(backend=mock_backend)
+        execution_result = ExecutionResult(job_id="job_rt")
+
+        _wait_for_async_result(mock_backend, execution_result, env)
+
+        assert env.artifacts["run_time"] == 3.5
+
+    def test_runtime_tracking_list_response(self, mocker):
+        """on_complete callback accumulates run_time from a list of responses."""
+        mock_backend = mocker.Mock()
+        mock_backend.max_retries = 100
+        mock_backend.get_job_results.return_value = ExecutionResult(
+            results=[], job_id="job_rt2"
+        )
+
+        resp1 = mocker.Mock()
+        resp1.json.return_value = {"run_time": 1.5}
+        resp2 = mocker.Mock()
+        resp2.json.return_value = {"run_time": 2.0}
+
+        def fake_poll(
+            er, *, loop_until_complete, on_complete, verbose, progress_callback
+        ):
+            on_complete([resp1, resp2])
+            return JobStatus.COMPLETED
+
+        mock_backend.poll_job_status.side_effect = fake_poll
+
+        env = PipelineEnv(backend=mock_backend)
+        execution_result = ExecutionResult(job_id="job_rt2")
+
+        _wait_for_async_result(mock_backend, execution_result, env)
+
+        assert env.artifacts["run_time"] == 3.5

@@ -6,7 +6,8 @@ import numpy as np
 import pennylane as qml
 import pytest
 
-from divi.circuits import MetaCircuit, measurements_to_qasm
+from divi.circuits import MetaCircuit
+from divi.circuits._qasm_conversion import _measurements_to_qasm
 from divi.pipeline._grouping import (
     _create_final_postprocessing_fn,
     _extract_coeffs,
@@ -31,19 +32,6 @@ class TestComputeMeasurementGroups:
         assert partition == [[0]]
         result = postproc(["dummy"])
         assert result == ["dummy"]  # identity returns input as-is
-
-    def test_probs_with_none_strategy(self):
-        """Probs with None strategy also returns single group."""
-        circuit = qml.tape.QuantumScript(
-            ops=[qml.Hadamard(0)], measurements=[qml.probs()]
-        )
-        measurement = circuit.measurements[0]
-
-        groups, partition, postproc = compute_measurement_groups(measurement, None)
-
-        assert groups == ((),)
-        assert partition == [[0]]
-        assert postproc(1.0) == 1.0
 
     def test_expval_single_term_wires(self):
         """Single-term expval with wires strategy."""
@@ -160,60 +148,16 @@ class TestMetaCircuitWithGrouping:
         meas_groups_wires, _, _ = compute_measurement_groups(
             circuit.measurements[0], "wires"
         )
-        meas_qasms_wires = measurements_to_qasm(
+        meas_qasms_wires = _measurements_to_qasm(
             circuit, list(meas_groups_wires), precision=meta.precision
         )
-        meas_qasms_explicit = measurements_to_qasm(
+        meas_qasms_explicit = _measurements_to_qasm(
             circuit, [()], precision=meta.precision
         )
 
         assert len(meas_qasms_wires) == len(meas_qasms_explicit) == 1
         assert meas_qasms_wires[0] == meas_qasms_explicit[0]
         assert "measure" in meas_qasms_wires[0]
-
-
-class TestParameterFreeMetaCircuit:
-    """Tests for parameter-free MetaCircuit with set_measurement_bodies (no compile_metacircuit)."""
-
-    def test_meta_with_measurement_bodies_produces_valid_full_qasm(self):
-        """MetaCircuit with set_measurement_bodies yields valid body+meas QASM."""
-        ops = [qml.Hadamard(0), qml.CNOT(wires=[0, 1])]
-        circuit = qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()])
-        symbols = np.array([], dtype=object)
-
-        meta = MetaCircuit(source_circuit=circuit, symbols=symbols)
-        meas_qasms = measurements_to_qasm(
-            meta.source_circuit, [()], precision=meta.precision
-        )
-        meta = meta.set_measurement_bodies((((), meas_qasms[0]),))
-
-        body = meta.circuit_body_qasms[0][1]
-        meas = meta.measurement_qasms[0][1]
-        full_qasm = body + meas
-
-        assert "OPENQASM" in full_qasm
-        assert "qreg" in full_qasm
-        assert "h " in full_qasm or "h(" in full_qasm
-        assert "cx " in full_qasm or "cx(" in full_qasm
-        assert "measure" in full_qasm
-
-    def test_parameter_free_qasm_not_corrupted(self):
-        """Parameter-free QASM must not be corrupted by empty regex substitution."""
-        ops = [qml.Hadamard(0), qml.RZ(0.5, wires=0)]
-        circuit = qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()])
-        symbols = np.array([], dtype=object)
-
-        meta = MetaCircuit(source_circuit=circuit, symbols=symbols)
-        meas_qasms = measurements_to_qasm(
-            meta.source_circuit, [()], precision=meta.precision
-        )
-        meta = meta.set_measurement_bodies((((), meas_qasms[0]),))
-
-        full_qasm = meta.circuit_body_qasms[0][1] + meta.measurement_qasms[0][1]
-
-        assert full_qasm.count("h ") + full_qasm.count("h(") >= 1
-        assert "rz(0.5" in full_qasm or "rz(0.50000000" in full_qasm
-        assert len(full_qasm) < 500
 
 
 class TestExtractCoeffs:

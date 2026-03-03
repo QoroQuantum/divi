@@ -189,8 +189,7 @@ def _compute_parameter_shift_mask(n_params: int) -> npt.NDArray[np.float64]:
             the shift to apply to each parameter for a single evaluation.
             The values are multiples of 0.5 * pi, with alternating signs.
     """
-    mask_arr = np.arange(0, 2 * n_params, 2)
-    mask_arr[0] = 1
+    mask_arr = 1 << np.arange(n_params)
 
     binary_matrix = ((mask_arr[:, np.newaxis] & (1 << np.arange(n_params))) > 0).astype(
         np.float64

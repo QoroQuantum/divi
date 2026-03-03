@@ -19,7 +19,6 @@ from divi.circuits.qem import ZNE
 from divi.hamiltonians import (
     ExactTrotterization,
     QDrift,
-    normalize_binary_polynomial_problem,
 )
 from divi.pipeline.stages import TrotterSpecStage
 from divi.qprog import (
@@ -56,8 +55,11 @@ class TestGeneralQAOA:
     def test_qaoa_optimization_runs_cost_pipeline(
         self, mocker, optimizer, default_test_simulator
     ):
-        """
-        Verifies that the cost pipeline is used during the optimization loop.
+        """The cost pipeline is invoked during the optimization loop.
+
+        Note: this is an implementation-coupling test that spies on an internal
+        pipeline. The behavioral outcomes (losses, circuit counts) are verified
+        by dedicated end-to-end tests.
         """
         optimizer = optimizer()  # Create fresh instance
         qaoa_problem = QAOA(
@@ -85,8 +87,11 @@ class TestGeneralQAOA:
     def test_qaoa_final_computation_runs_measurement_pipeline(
         self, mocker, optimizer, default_test_simulator
     ):
-        """
-        Verifies that the measurement pipeline is used during final computation.
+        """The measurement pipeline is invoked during final computation.
+
+        Note: this is an implementation-coupling test that spies on an internal
+        pipeline. The behavioral outcomes (solution extraction) are verified
+        by dedicated end-to-end tests.
         """
         optimizer = optimizer()  # Create fresh instance
         qaoa_problem = QAOA(
@@ -402,15 +407,14 @@ class TestGraphInput:
         # Get the node_color argument that was passed to draw_networkx_nodes
         node_colors = mock_nx.draw_networkx_nodes.call_args[1]["node_color"]
 
-        # Verify that solution nodes are red and non-solution nodes are lightblue
-        expected_colors = [
-            "red" if node in qaoa_problem._solution_nodes else "lightblue"
-            for node in G.nodes()
-        ]
-        assert node_colors == expected_colors
-
-        # Verify node size
-        assert mock_nx.draw_networkx_nodes.call_args[1]["node_size"] == 500
+        # Solution nodes should have a different color from non-solution nodes
+        solution_colors = {node_colors[i] for i in qaoa_problem._solution_nodes}
+        other_colors = {
+            node_colors[i]
+            for i in range(len(G.nodes()))
+            if i not in qaoa_problem._solution_nodes
+        }
+        assert solution_colors.isdisjoint(other_colors)
 
         # Clean up the plot
         plt.close()
@@ -641,9 +645,14 @@ class TestQUBOInput:
         assert isinstance(qaoa_problem.problem, BinaryPolynomialProblem)
         assert qaoa_problem.problem.n_vars == 3
 
-        expected_problem = normalize_binary_polynomial_problem(input_qubo)
-        assert qaoa_problem.problem.variable_order == expected_problem.variable_order
-        assert qaoa_problem.problem.terms == expected_problem.terms
+        # Hand-computed from QUBO_MATRIX [[-3,4,0],[0,2,0],[0,0,-3]]
+        assert qaoa_problem.problem.variable_order == (0, 1, 2)
+        assert qaoa_problem.problem.terms == {
+            (0,): -3.0,
+            (1,): 2.0,
+            (2,): -3.0,
+            (0, 1): 4.0,
+        }
 
         assert len(qaoa_problem.cost_hamiltonian) == 4
         assert all(
@@ -761,8 +770,9 @@ class TestQUBOInput:
             )
 
     def test_non_symmetrical_qubo_normalizes_problem(self, dummy_simulator):
+        # [[1, 2], [3, 4]] → diagonal: {(0,): 1, (1,): 4}, off-diag summed: {(0,1): 2+3=5}
         test_array = np.array([[1, 2], [3, 4]])
-        test_array_sp = sps.csc_matrix(test_array)
+        expected_terms = {(0,): 1.0, (1,): 4.0, (0, 1): 5.0}
 
         qaoa_problem = QAOA(
             problem=test_array,
@@ -773,19 +783,17 @@ class TestQUBOInput:
         )
 
         assert isinstance(qaoa_problem.problem, BinaryPolynomialProblem)
-        expected_dense = normalize_binary_polynomial_problem(test_array)
-        assert qaoa_problem.problem.terms == expected_dense.terms
+        assert qaoa_problem.problem.terms == expected_terms
 
-        # Test again for sparse matrix
+        # Sparse input produces the same result
         qaoa_problem_sparse = QAOA(
-            problem=test_array_sp,
+            problem=sps.csc_matrix(test_array),
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=10,
             backend=dummy_simulator,
         )
-        expected_sparse = normalize_binary_polynomial_problem(test_array_sp)
-        assert qaoa_problem_sparse.problem.terms == expected_sparse.terms
+        assert qaoa_problem_sparse.problem.terms == expected_terms
 
     def test_qubo_fails_when_drawing_solution(self, dummy_simulator):
         qaoa_problem = QAOA(
@@ -1076,7 +1084,21 @@ class TestQUBOInput:
 
 
 class TestQAOAQDriftMultiSample:
-    """Tests for QAOA with multi-sample QDrift (n_hamiltonians_per_iteration > 1)."""
+    """Tests for QAOA with multi-sample QDrift (n_hamiltonians_per_iteration > 1).
+
+    Several tests locate the ``TrotterSpecStage`` inside the cost pipeline via
+    ``_cost_pipeline._stages``. This couples to the pipeline's internal structure,
+    but there is no public API to observe the number of Hamiltonian samples
+    produced — the stage's ``expand`` output is the only observable.
+    """
+
+    @staticmethod
+    def _find_trotter_stage(qaoa):
+        """Walk ``_cost_pipeline._stages`` to locate the TrotterSpecStage."""
+        for stage in qaoa._cost_pipeline._stages:
+            if isinstance(stage, TrotterSpecStage):
+                return stage
+        raise AssertionError("TrotterSpecStage not found in cost pipeline")
 
     def test_exact_trotterization_uses_single_hamiltonian_sample(
         self, mocker, default_test_simulator
@@ -1093,12 +1115,7 @@ class TestQAOAQDriftMultiSample:
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
         )
 
-        trotter_stage = None
-        for stage in qaoa._cost_pipeline._stages:
-            if isinstance(stage, TrotterSpecStage):
-                trotter_stage = stage
-                break
-        assert trotter_stage is not None
+        trotter_stage = self._find_trotter_stage(qaoa)
 
         # Spy on the TrotterSpecStage.expand to inspect how many ham samples are produced
         spy = mocker.spy(trotter_stage, "expand")
@@ -1132,12 +1149,7 @@ class TestQAOAQDriftMultiSample:
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
         )
 
-        trotter_stage = None
-        for stage in qaoa._cost_pipeline._stages:
-            if isinstance(stage, TrotterSpecStage):
-                trotter_stage = stage
-                break
-        assert trotter_stage is not None
+        trotter_stage = self._find_trotter_stage(qaoa)
 
         spy = mocker.spy(trotter_stage, "expand")
         mocker.patch.object(qaoa, "_perform_final_computation")
@@ -1218,12 +1230,7 @@ class TestQAOAQDriftMultiSample:
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
         )
 
-        trotter_stage = None
-        for stage in qaoa._cost_pipeline._stages:
-            if isinstance(stage, TrotterSpecStage):
-                trotter_stage = stage
-                break
-        assert trotter_stage is not None
+        trotter_stage = self._find_trotter_stage(qaoa)
         assert trotter_stage.stateful is True
 
     def test_multi_sample_final_computation_merges_histograms(

@@ -1,12 +1,15 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import cirq
 import pytest
 import sympy
 from cirq.contrib.qasm_import.exception import QasmException
+from cirq.protocols.qasm import QasmArgs
 
 from divi.circuits._cirq._parser import ExtendedQasmLexer, ExtendedQasmParser
+from divi.circuits._cirq._qasm_export import patched_format_field
 
 
 class TestExtendedQasmLexer:
@@ -97,22 +100,6 @@ class TestExtendedQasmParser:
         # Verify circuit was created successfully
         assert result is not None
 
-    def test_expr_identifier_with_input_param(self):
-        """Test that input parameters can be used in expressions."""
-        parser = ExtendedQasmParser()
-        qasm = """
-        OPENQASM 2.0;
-        include "qelib1.inc";
-        qreg q[1];
-        input angle[32] theta;
-        rx(theta) q[0];
-        """
-
-        parser.parse(qasm)
-
-        # The parameter should be accessible
-        assert "theta" in parser.input_params
-
     def test_expr_identifier_not_in_custom_gate_scope_raises(self):
         """Test that using undefined parameter outside custom gate scope raises error."""
         parser = ExtendedQasmParser()
@@ -158,3 +145,65 @@ class TestExtendedQasmParser:
 
         # Should parse successfully - the parameter 'param' is in custom_gate_scoped_params
         assert result is not None
+
+
+class TestPatchedFormatField:
+    """Tests for the patched QasmArgs.format_field that adds symbolic parameter support."""
+
+    @pytest.fixture
+    def qasm_args(self):
+        """Returns a QasmArgs instance with a qubit_id_map for one qubit."""
+        q = cirq.LineQubit(0)
+        return QasmArgs(precision=5, qubit_id_map={q: "q[0]"})
+
+    def test_float_half_turns_formats_as_pi_multiple(self, qasm_args):
+        """A float with half_turns spec produces 'pi*value'."""
+        result = patched_format_field(qasm_args, 0.25, "half_turns")
+        assert result == "pi*0.25"
+
+    def test_float_half_turns_zero_formats_as_zero(self, qasm_args):
+        """A float 0.0 with half_turns spec produces '0', not 'pi*0'."""
+        result = patched_format_field(qasm_args, 0.0, "half_turns")
+        assert result == "0"
+
+    def test_float_precision_is_applied(self):
+        """Float values are rounded to the QasmArgs precision."""
+        q = cirq.LineQubit(0)
+        args = QasmArgs(precision=3, qubit_id_map={q: "q[0]"})
+        result = patched_format_field(args, 0.123456789, "half_turns")
+        assert result == "pi*0.123"
+
+    def test_int_half_turns_formats_as_pi_multiple(self, qasm_args):
+        """An integer with half_turns spec produces 'pi*value'."""
+        result = patched_format_field(qasm_args, 1, "half_turns")
+        assert result == "pi*1"
+
+    def test_int_zero_half_turns_formats_as_zero(self, qasm_args):
+        """Integer 0 with half_turns spec produces '0'."""
+        result = patched_format_field(qasm_args, 0, "half_turns")
+        assert result == "0"
+
+    def test_qid_maps_to_qubit_name(self, qasm_args):
+        """A Cirq Qid is mapped through qubit_id_map."""
+        q = cirq.LineQubit(0)
+        result = patched_format_field(qasm_args, q, "")
+        assert result == "q[0]"
+
+    def test_sympy_symbol_without_half_turns(self, qasm_args):
+        """A bare sympy symbol with empty spec returns str(symbol)."""
+        theta = sympy.Symbol("theta")
+        result = patched_format_field(qasm_args, theta, "")
+        assert result == "theta"
+
+    def test_sympy_symbol_with_half_turns_multiplied_by_pi(self, qasm_args):
+        """A sympy symbol with half_turns spec is multiplied by pi."""
+        theta = sympy.Symbol("theta")
+        result = patched_format_field(qasm_args, theta, "half_turns")
+        assert result == "pi*theta"
+
+    def test_sympy_expression_with_half_turns(self, qasm_args):
+        """A sympy expression with half_turns spec is multiplied by pi."""
+        expr = 2 * sympy.Symbol("alpha") + 1
+        result = patched_format_field(qasm_args, expr, "half_turns")
+        # sympy may reorder, so parse and compare symbolically
+        assert sympy.simplify(sympy.sympify(result) - sympy.pi * expr) == 0

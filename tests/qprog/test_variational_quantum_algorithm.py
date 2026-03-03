@@ -15,8 +15,11 @@ from divi.pipeline.stages import CircuitSpecStage
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.early_stopping import EarlyStopping, StopReason
 from divi.qprog.exceptions import _CancelledError
-from divi.qprog.optimizers import MonteCarloOptimizer
-from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
+from divi.qprog.optimizers import MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
+from divi.qprog.variational_quantum_algorithm import (
+    VariationalQuantumAlgorithm,
+    _compute_parameter_shift_mask,
+)
 
 
 @pytest.fixture
@@ -841,7 +844,7 @@ class TestPrecisionFunctionality(BaseVariationalQuantumAlgorithmTest):
 
     def test_precision_used_in_qasm_conversion(self, mocker, mock_backend):
         """Test that precision is used when creating QASM circuits."""
-        mock_body_to_qasm = mocker.patch("divi.circuits._core.circuit_body_to_qasm")
+        mock_body_to_qasm = mocker.patch("divi.circuits._core._circuit_body_to_qasm")
         mock_body_to_qasm.return_value = "OPENQASM 2.0;"
 
         program = SampleVQAProgram(
@@ -1377,3 +1380,200 @@ class TestEarlyStoppingIntegration(BaseVariationalQuantumAlgorithmTest):
 
         assert program.stop_reason == StopReason.PATIENCE_EXCEEDED
         mock_final.assert_called_once()
+
+
+class TestComputeParameterShiftMask:
+    """Spec: _compute_parameter_shift_mask produces a valid parameter shift rule matrix."""
+
+    @pytest.mark.parametrize("n_params", [1, 2, 3, 5, 8])
+    def test_shape(self, n_params):
+        mask = _compute_parameter_shift_mask(n_params)
+        assert mask.shape == (2 * n_params, n_params)
+
+    @pytest.mark.parametrize("n_params", [1, 2, 3, 5, 8])
+    def test_row_pairs_are_opposite_signs(self, n_params):
+        """Positive and negative shifts must be mirrors of each other."""
+        mask = _compute_parameter_shift_mask(n_params)
+        for i in range(n_params):
+            np.testing.assert_array_equal(mask[2 * i], -mask[2 * i + 1])
+
+    @pytest.mark.parametrize("n_params", [1, 2, 3, 4, 5, 8])
+    def test_each_row_pair_shifts_exactly_one_parameter(self, n_params):
+        """Each row pair should shift exactly one parameter at column i."""
+        mask = _compute_parameter_shift_mask(n_params)
+        for i in range(n_params):
+            row = mask[2 * i]
+            nonzero_cols = np.nonzero(row)[0]
+            assert (
+                len(nonzero_cols) == 1
+            ), f"Row pair {i} shifts {len(nonzero_cols)} params: columns {nonzero_cols.tolist()}"
+            assert nonzero_cols[0] == i
+
+    @pytest.mark.parametrize("n_params", [1, 2, 3, 5, 8])
+    def test_shift_magnitude_is_half_pi(self, n_params):
+        mask = _compute_parameter_shift_mask(n_params)
+        nonzero = mask[mask != 0]
+        np.testing.assert_allclose(np.abs(nonzero), 0.5 * np.pi)
+
+    def test_known_values_n_equals_1(self):
+        mask = _compute_parameter_shift_mask(1)
+        expected = np.array([[np.pi / 2], [-np.pi / 2]])
+        np.testing.assert_array_equal(mask, expected)
+
+    def test_known_values_n_equals_2(self):
+        mask = _compute_parameter_shift_mask(2)
+        h = np.pi / 2
+        expected = np.array(
+            [
+                [h, 0],
+                [-h, 0],
+                [0, h],
+                [0, -h],
+            ]
+        )
+        np.testing.assert_array_equal(mask, expected)
+
+
+class TestGradientFunction(BaseVariationalQuantumAlgorithmTest):
+    """Spec: grad_fn correctly computes parameter-shift gradients from pipeline results."""
+
+    def _create_lbfgsb_program(self, mocker, n_params_per_layer=4, **kwargs):
+        """Create a SampleVQAProgram with L-BFGS-B optimizer."""
+        optimizer = ScipyOptimizer(method=ScipyMethod.L_BFGS_B)
+        backend = mocker.MagicMock()
+        backend.shots = 1000
+        backend.is_async = False
+        backend.supports_expval = False
+        program = SampleVQAProgram(
+            circ_count=1,
+            run_time=0.1,
+            optimizer=optimizer,
+            backend=backend,
+            seed=42,
+            **kwargs,
+        )
+        program._n_params_per_layer = n_params_per_layer
+        program.max_iterations = 2
+        return program
+
+    def test_gradient_with_known_return_values(self, mocker):
+        """grad_fn produces 0.5 * (positive_shift_values - negative_shift_values)."""
+        program = self._create_lbfgsb_program(mocker, n_params_per_layer=3)
+        n_params = program.n_layers * program.n_params_per_layer
+
+        # Predetermined values: index i returns float(i)
+        # Even indices (0, 2, 4) are positive shifts, odd (1, 3, 5) are negative
+        mock_values = {i: float(i) for i in range(2 * n_params)}
+        expected_grads = np.array(
+            [
+                0.5 * (mock_values[2 * i] - mock_values[2 * i + 1])
+                for i in range(n_params)
+            ]
+        )
+
+        grad_call_count = [0]
+        pass
+
+        def mock_run(**kwargs):
+            n_sets = program._curr_params.shape[0]
+            if n_sets == 1:
+                return {0: -0.5}
+            else:
+                grad_call_count[0] += 1
+                return {i: mock_values[i] for i in range(n_sets)}
+
+        mocker.patch.object(program, "_run_optimization_circuits", side_effect=mock_run)
+        program.run(perform_final_computation=False)
+
+        assert grad_call_count[0] >= 1, "grad_fn was never called"
+        # L-BFGS-B stores the jacobian in optimize_result.jac
+        np.testing.assert_allclose(program.optimize_result.jac, expected_grads)
+
+    def test_gradient_is_zero_when_all_shifts_equal(self, mocker):
+        """When all shifted evaluations return the same value, gradient is zero."""
+        program = self._create_lbfgsb_program(mocker, n_params_per_layer=3)
+
+        def mock_run(**kwargs):
+            n_sets = program._curr_params.shape[0]
+            return {i: -0.5 for i in range(n_sets)}
+
+        mocker.patch.object(program, "_run_optimization_circuits", side_effect=mock_run)
+        program.run(perform_final_computation=False)
+
+        # L-BFGS-B converges immediately on a flat landscape (zero gradient)
+        np.testing.assert_allclose(program.optimize_result.jac, 0.0, atol=1e-10)
+
+    def test_shifted_params_are_mask_plus_input(self, mocker):
+        """During gradient computation, _curr_params equals shift_mask + original_params."""
+        program = self._create_lbfgsb_program(mocker, n_params_per_layer=3)
+        n_params = program.n_layers * program.n_params_per_layer
+
+        captured = []
+
+        def mock_run(**kwargs):
+            n_sets = program._curr_params.shape[0]
+            if n_sets > 1:
+                captured.append(program._curr_params.copy())
+            return {i: float(i) * 0.1 for i in range(n_sets)}
+
+        mocker.patch.object(program, "_run_optimization_circuits", side_effect=mock_run)
+
+        # Record initial params before run (they get initialized lazily)
+        initial_params = program.curr_params.squeeze().copy()
+
+        program.run(perform_final_computation=False)
+
+        assert len(captured) >= 1
+        # First gradient call uses the initial params
+        shifted = captured[0]
+        assert shifted.shape == (2 * n_params, n_params)
+
+        # Each row pair should differ from the initial params by exactly ±π/2
+        # in exactly one column (the parameter being shifted)
+        for i in range(n_params):
+            diff_pos = shifted[2 * i] - initial_params
+            nonzero = np.nonzero(np.abs(diff_pos) > 1e-10)[0]
+            assert len(nonzero) == 1, f"Row {2*i} shifts {len(nonzero)} params"
+            assert nonzero[0] == i
+            np.testing.assert_allclose(np.abs(diff_pos[nonzero[0]]), np.pi / 2)
+
+
+class TestLBFGSBGradientIntegration(BaseVariationalQuantumAlgorithmTest):
+    """Integration: L-BFGS-B uses the gradient function during optimization."""
+
+    def test_lbfgsb_evaluates_gradient(self, mocker):
+        """L-BFGS-B calls the gradient function, producing 2*n_params shifted param sets."""
+        optimizer = ScipyOptimizer(method=ScipyMethod.L_BFGS_B)
+        backend = mocker.MagicMock()
+        backend.shots = 1000
+        backend.is_async = False
+        backend.supports_expval = False
+
+        program = SampleVQAProgram(
+            circ_count=1,
+            run_time=0.1,
+            optimizer=optimizer,
+            backend=backend,
+            seed=42,
+        )
+        program.max_iterations = 2
+        n_params = program.n_layers * program.n_params_per_layer
+
+        grad_calls = []
+
+        def mock_run(**kwargs):
+            n_sets = program._curr_params.shape[0]
+            if n_sets > 1:
+                grad_calls.append(n_sets)
+            return {i: float(i) * 0.1 - 0.5 for i in range(n_sets)}
+
+        mocker.patch.object(program, "_run_optimization_circuits", side_effect=mock_run)
+        program.run(perform_final_computation=False)
+
+        # L-BFGS-B must have called the gradient function at least once
+        assert len(grad_calls) >= 1
+        # Each gradient call should use exactly 2*n_params shifted parameter sets
+        for n_sets in grad_calls:
+            assert n_sets == 2 * n_params
+        # The optimize result should record gradient evaluations
+        assert program.optimize_result.njev >= 1

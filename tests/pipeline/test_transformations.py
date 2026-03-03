@@ -4,9 +4,12 @@
 
 """Tests for divi.pipeline.transformations."""
 
+import pytest
+
 from divi.pipeline.transformations import (
     group_by_base_key,
     reduce_mean,
+    reduce_merge_histograms,
     reduce_postprocess_ordered,
     strip_axis_from_label,
 )
@@ -79,3 +82,77 @@ class TestReducePostprocessOrdered:
         fns = {("A",): lambda v: v[0] - v[1], ("B",): lambda v: v[0] + v[1]}
         out = reduce_postprocess_ordered(grouped, fns)
         assert out == {("A",): -1, ("B",): 30}
+
+
+class TestReduceMergeHistograms:
+    """Tests for reduce_merge_histograms: probability histogram averaging across ham samples."""
+
+    def test_merges_two_histograms(self):
+        """Averages probability dicts across two Hamiltonian samples."""
+        grouped = {(("circ", 0),): [{"00": 0.8, "11": 0.2}, {"00": 0.6, "11": 0.4}]}
+
+        result = reduce_merge_histograms(grouped)
+
+        assert (("circ", 0),) in result
+        assert result[(("circ", 0),)]["00"] == pytest.approx(0.7)
+        assert result[(("circ", 0),)]["11"] == pytest.approx(0.3)
+
+    def test_merged_probabilities_sum_to_one(self):
+        """Merged probability distribution sums to 1.0."""
+        grouped = {
+            (("circ", 0),): [
+                {"00": 0.5, "01": 0.3, "10": 0.15, "11": 0.05},
+                {"00": 0.2, "01": 0.4, "10": 0.1, "11": 0.3},
+                {"00": 0.3, "01": 0.3, "10": 0.2, "11": 0.2},
+            ]
+        }
+
+        result = reduce_merge_histograms(grouped)
+        prob_dict = result[(("circ", 0),)]
+        total = sum(prob_dict.values())
+        assert total == pytest.approx(1.0)
+
+    def test_handles_disjoint_bitstrings(self):
+        """Averaging when histograms have different bitstring keys uses 0 for missing."""
+        grouped = {
+            (("circ", 0),): [
+                {"00": 0.8, "11": 0.2},
+                {"01": 0.6, "10": 0.4},
+            ]
+        }
+
+        result = reduce_merge_histograms(grouped)
+        prob_dict = result[(("circ", 0),)]
+        assert prob_dict["00"] == pytest.approx(0.4)
+        assert prob_dict["11"] == pytest.approx(0.1)
+        assert prob_dict["01"] == pytest.approx(0.3)
+        assert prob_dict["10"] == pytest.approx(0.2)
+
+    def test_empty_prob_dicts(self):
+        """Empty list of prob dicts returns empty dict."""
+        grouped = {(("circ", 0),): []}
+
+        result = reduce_merge_histograms(grouped)
+        assert result[(("circ", 0),)] == {}
+
+    def test_single_histogram_identity(self):
+        """Single histogram merges to itself."""
+        grouped = {(("circ", 0),): [{"00": 0.7, "11": 0.3}]}
+
+        result = reduce_merge_histograms(grouped)
+        assert result[(("circ", 0),)]["00"] == pytest.approx(0.7)
+        assert result[(("circ", 0),)]["11"] == pytest.approx(0.3)
+
+    def test_multiple_base_keys(self):
+        """Multiple base keys are each merged independently."""
+        grouped = {
+            (("circ", 0),): [{"00": 0.8, "11": 0.2}, {"00": 0.6, "11": 0.4}],
+            (("circ", 1),): [{"01": 1.0}, {"01": 0.5, "10": 0.5}],
+        }
+
+        result = reduce_merge_histograms(grouped)
+
+        assert result[(("circ", 0),)]["00"] == pytest.approx(0.7)
+        assert result[(("circ", 0),)]["11"] == pytest.approx(0.3)
+        assert result[(("circ", 1),)]["01"] == pytest.approx(0.75)
+        assert result[(("circ", 1),)]["10"] == pytest.approx(0.25)

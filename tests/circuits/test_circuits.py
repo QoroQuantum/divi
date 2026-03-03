@@ -4,6 +4,7 @@
 
 import re
 
+import numpy as np
 import pennylane as qml
 import pytest
 import sympy as sp
@@ -11,6 +12,7 @@ import sympy as sp
 from divi.circuits import (
     MetaCircuit,
 )
+from divi.circuits._qasm_conversion import _measurements_to_qasm
 
 
 class TestMetaCircuit:
@@ -106,7 +108,7 @@ class TestMetaCircuit:
         self, mocker, expval_circuit, weights_syms
     ):
         """MetaCircuit __post_init__ calls circuit_body_to_qasm with precision."""
-        mock_body = mocker.patch("divi.circuits._core.circuit_body_to_qasm")
+        mock_body = mocker.patch("divi.circuits._core._circuit_body_to_qasm")
         mock_body.return_value = 'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[4];creg c[4];\nry(w_0) q[0];\n'
 
         meta = MetaCircuit(
@@ -151,3 +153,79 @@ class TestMetaCircuit:
         assert out is not meta
         assert out.measurement_groups == groups
         assert meta.measurement_groups == ()
+
+    def test_2d_symbol_array_is_flattened(self):
+        """A 2D numpy array of symbols is flattened to 1D by __post_init__."""
+
+        symbols_2d = sp.symarray("x", (2, 3))  # shape (2, 3)
+        assert symbols_2d.shape == (2, 3)
+
+        # Build a circuit that uses all 6 symbols
+        ops = [qml.RX(symbols_2d[i, j], wires=0) for i in range(2) for j in range(3)]
+        circuit = qml.tape.QuantumScript(ops=ops, measurements=[qml.expval(qml.Z(0))])
+
+        meta = MetaCircuit(source_circuit=circuit, symbols=symbols_2d)
+
+        assert meta.symbols.ndim == 1
+        assert len(meta.symbols) == 6
+        # All original symbols are present
+        for sym in symbols_2d.flatten():
+            assert sym in meta.symbols
+
+    def test_1d_symbol_array_unchanged(self, sample_circuit, weights_syms):
+        """A 1D symbol array passes through __post_init__ unchanged."""
+        meta = MetaCircuit(source_circuit=sample_circuit, symbols=weights_syms)
+        assert meta.symbols.ndim == 1
+        assert len(meta.symbols) == len(weights_syms)
+        np.testing.assert_array_equal(meta.symbols, weights_syms)
+
+    def test_list_of_symbols_converted_to_array(self, sample_circuit, weights_syms):
+        """A plain Python list of symbols is normalized to a numpy array."""
+        meta = MetaCircuit(source_circuit=sample_circuit, symbols=list(weights_syms))
+        assert isinstance(meta.symbols, np.ndarray)
+        assert meta.symbols.ndim == 1
+        assert len(meta.symbols) == len(weights_syms)
+
+
+class TestParameterFreeMetaCircuit:
+    """Tests for parameter-free MetaCircuit with set_measurement_bodies."""
+
+    def test_meta_with_measurement_bodies_produces_valid_full_qasm(self):
+        """MetaCircuit with set_measurement_bodies yields valid body+meas QASM."""
+        ops = [qml.Hadamard(0), qml.CNOT(wires=[0, 1])]
+        circuit = qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()])
+        symbols = np.array([], dtype=object)
+
+        meta = MetaCircuit(source_circuit=circuit, symbols=symbols)
+        meas_qasms = _measurements_to_qasm(
+            meta.source_circuit, [()], precision=meta.precision
+        )
+        meta = meta.set_measurement_bodies((((), meas_qasms[0]),))
+
+        body = meta.circuit_body_qasms[0][1]
+        meas = meta.measurement_qasms[0][1]
+        full_qasm = body + meas
+
+        assert "OPENQASM" in full_qasm
+        assert "qreg" in full_qasm
+        assert "h " in full_qasm or "h(" in full_qasm
+        assert "cx " in full_qasm or "cx(" in full_qasm
+        assert "measure" in full_qasm
+
+    def test_parameter_free_qasm_not_corrupted(self):
+        """Parameter-free QASM must not be corrupted by empty regex substitution."""
+        ops = [qml.Hadamard(0), qml.RZ(0.5, wires=0)]
+        circuit = qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()])
+        symbols = np.array([], dtype=object)
+
+        meta = MetaCircuit(source_circuit=circuit, symbols=symbols)
+        meas_qasms = _measurements_to_qasm(
+            meta.source_circuit, [()], precision=meta.precision
+        )
+        meta = meta.set_measurement_bodies((((), meas_qasms[0]),))
+
+        full_qasm = meta.circuit_body_qasms[0][1] + meta.measurement_qasms[0][1]
+
+        assert full_qasm.count("h ") + full_qasm.count("h(") >= 1
+        assert "rz(0.5" in full_qasm or "rz(0.50000000" in full_qasm
+        assert len(full_qasm) < 500

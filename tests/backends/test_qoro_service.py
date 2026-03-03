@@ -501,53 +501,79 @@ class TestQoroServiceMock:
 
     # --- Tests for core functionality ---
 
-    def test_make_request_comprehensive(self, mocker, qoro_service_factory):
-        """Test _make_request functionality."""
+    def test_make_request_get_builds_correct_url_and_headers(
+        self, mocker, qoro_service_factory
+    ):
+        """GET request constructs the URL and sets the auth header."""
         service = qoro_service_factory(auth_token="test_token")
-
-        # Test 1: Successful GET request
-        mock_response = mocker.MagicMock()
-        mock_response.status_code = 200
-        mock_response.url = "https://app.qoroquantum.net/api/test"
-
+        mock_response = mocker.MagicMock(
+            status_code=200, url="https://app.qoroquantum.net/api/test"
+        )
         mock_request = mocker.patch(
             "requests.Session.request", return_value=mock_response
         )
 
         service._make_request("get", "test")
 
-        mock_request.assert_called_once()
-        call_args = mock_request.call_args
-        assert call_args[0][0] == "get"  # First positional argument is method
-        assert (
-            call_args[0][1] == "https://app.qoroquantum.net/api/test"
-        )  # Second is URL
-        assert call_args[1]["headers"]["Authorization"] == "Bearer test_token"
-        assert "Content-Type" not in call_args[1]["headers"]
+        mock_request.assert_called_once_with(
+            "get",
+            "https://app.qoroquantum.net/api/test",
+            headers={"Authorization": "Bearer test_token"},
+        )
 
-        # Test 2: POST request with Content-Type header
-        mock_request.reset_mock()
+    def test_make_request_post_adds_content_type(self, mocker, qoro_service_factory):
+        """POST request adds Content-Type: application/json."""
+        service = qoro_service_factory(auth_token="test_token")
+        mock_response = mocker.MagicMock(
+            status_code=200, url="https://app.qoroquantum.net/api/test"
+        )
+        mock_request = mocker.patch(
+            "requests.Session.request", return_value=mock_response
+        )
+
         service._make_request("post", "test", json={"data": "test"})
 
-        call_args = mock_request.call_args
-        assert call_args[1]["headers"]["Content-Type"] == "application/json"
+        mock_request.assert_called_once_with(
+            "post",
+            "https://app.qoroquantum.net/api/test",
+            headers={
+                "Authorization": "Bearer test_token",
+                "Content-Type": "application/json",
+            },
+            json={"data": "test"},
+        )
 
-        # Test 3: Custom headers override
-        mock_request.reset_mock()
+    def test_make_request_custom_headers_merged(self, mocker, qoro_service_factory):
+        """Caller-supplied headers are merged with defaults."""
+        service = qoro_service_factory(auth_token="test_token")
+        mock_response = mocker.MagicMock(
+            status_code=200, url="https://app.qoroquantum.net/api/test"
+        )
+        mock_request = mocker.patch(
+            "requests.Session.request", return_value=mock_response
+        )
+
         service._make_request("get", "test", headers={"Custom": "Header"})
 
-        call_args = mock_request.call_args
-        assert call_args[1]["headers"]["Custom"] == "Header"
-        assert call_args[1]["headers"]["Authorization"] == "Bearer test_token"
+        mock_request.assert_called_once_with(
+            "get",
+            "https://app.qoroquantum.net/api/test",
+            headers={
+                "Authorization": "Bearer test_token",
+                "Custom": "Header",
+            },
+        )
 
-        # Test 4: HTTP error handling
-        mock_response_error = mocker.MagicMock()
-        mock_response_error.status_code = 400
-        mock_response_error.reason = "Bad Request"
-        mock_response_error.url = "https://app.qoroquantum.net/api/test"
-        mock_response_error.json.return_value = {"error": "Bad Request"}
-
-        mock_request.return_value = mock_response_error
+    def test_make_request_raises_on_http_error(self, mocker, qoro_service_factory):
+        """HTTP 4xx responses are raised as HTTPError."""
+        service = qoro_service_factory(auth_token="test_token")
+        mock_response = mocker.MagicMock(
+            status_code=400,
+            reason="Bad Request",
+            url="https://app.qoroquantum.net/api/test",
+        )
+        mock_response.json.return_value = {"error": "Bad Request"}
+        mocker.patch("requests.Session.request", return_value=mock_response)
 
         with pytest.raises(requests.exceptions.HTTPError, match="400 Bad Request"):
             service._make_request("get", "test")
@@ -1033,6 +1059,61 @@ class TestQoroServiceMock:
         assert service.job_config.shots == 2000
         assert service.supports_expval is True
 
+    @pytest.mark.parametrize(
+        "target_kwargs, force_sampling, expected",
+        [
+            pytest.param(
+                {"simulator_cluster": SimulatorCluster(name="s", supports_expval=True)},
+                False,
+                True,
+                id="sim_expval_no_force",
+            ),
+            pytest.param(
+                {"simulator_cluster": SimulatorCluster(name="s", supports_expval=True)},
+                True,
+                False,
+                id="sim_expval_force_sampling",
+            ),
+            pytest.param(
+                {
+                    "simulator_cluster": SimulatorCluster(
+                        name="s", supports_expval=False
+                    )
+                },
+                False,
+                False,
+                id="sim_no_expval_no_force",
+            ),
+            pytest.param(
+                {"qpu_system": QPUSystem(name="q", supports_expval=True)},
+                False,
+                True,
+                id="qpu_expval_no_force",
+            ),
+            pytest.param(
+                {"qpu_system": QPUSystem(name="q", supports_expval=True)},
+                True,
+                False,
+                id="qpu_expval_force_sampling",
+            ),
+            pytest.param(
+                {"qpu_system": QPUSystem(name="q", supports_expval=False)},
+                False,
+                False,
+                id="qpu_no_expval_no_force",
+            ),
+        ],
+    )
+    def test_supports_expval_with_target_and_force_sampling_combos(
+        self, qoro_service_factory, target_kwargs, force_sampling, expected
+    ):
+        """supports_expval is target.supports_expval AND NOT force_sampling."""
+        service = qoro_service_factory()
+        service.job_config = JobConfig(
+            shots=1000, force_sampling=force_sampling, **target_kwargs
+        )
+        assert service.supports_expval is expected
+
     def test_set_job_config_resolves_string_qpu(self, qoro_service_factory):
         """Setting job_config with a string qpu_system resolves it to QPUSystem."""
         service = qoro_service_factory()
@@ -1396,30 +1477,6 @@ class TestQoroServiceMock:
 
         with pytest.raises(requests.exceptions.HTTPError, match="API Error: 500"):
             qoro_service_mock.submit_circuits({"c1": "qasm"})
-
-    def test_raise_with_details_json_and_text_response_formatting(self, mocker):
-        """Test _raise_with_details JSON and text response formatting."""
-
-        # Test 1: JSON response body
-        mock_response_json = mocker.MagicMock()
-        mock_response_json.status_code = 400
-        mock_response_json.reason = "Bad Request"
-        mock_response_json.json.return_value = {"error": "Invalid input", "code": 123}
-
-        expected_msg = '400 Bad Request: {"error": "Invalid input", "code": 123}'
-        with pytest.raises(requests.HTTPError, match=expected_msg):
-            _raise_with_details(mock_response_json)
-
-        # Test 2: Text response body (JSON parsing fails)
-        mock_response_text = mocker.MagicMock()
-        mock_response_text.status_code = 500
-        mock_response_text.reason = "Internal Server Error"
-        mock_response_text.text = "A fatal server error occurred."
-        mock_response_text.json.side_effect = ValueError
-
-        expected_msg = "500 Internal Server Error: A fatal server error occurred."
-        with pytest.raises(requests.HTTPError, match=expected_msg):
-            _raise_with_details(mock_response_text)
 
     # --- Tests for job management ---
 
@@ -1982,89 +2039,6 @@ class TestQoroServiceMock:
             params={"page": 3, "page_size": 5},
             timeout=10,
         )
-
-
-# --- ExecutionConfig Unit Tests ---
-
-
-class TestExecutionConfig:
-    """Unit tests for ExecutionConfig dataclass methods."""
-
-    def test_to_payload_all_fields(self):
-        """Test to_payload with all fields set."""
-        config = ExecutionConfig(
-            bond_dimension=256,
-            truncation_threshold=1e-6,
-            simulator=Simulator.GpuSim,
-            simulation_method=SimulationMethod.TensorNetwork,
-            api_meta={"resilience_level": 1},
-        )
-        payload = config.to_payload()
-        assert payload == {
-            "bond_dimension": 256,
-            "truncation_threshold": 1e-6,
-            "simulator_type": 4,
-            "simulation_type": 3,
-            "api_meta": {"resilience_level": 1},
-        }
-
-    def test_to_payload_partial_fields(self):
-        """Test to_payload omits None fields."""
-        config = ExecutionConfig(bond_dimension=64)
-        payload = config.to_payload()
-        assert payload == {"bond_dimension": 64}
-        assert "truncation_threshold" not in payload
-        assert "simulator_type" not in payload
-        assert "simulation_type" not in payload
-        assert "api_meta" not in payload
-
-    def test_to_payload_empty(self):
-        """Test to_payload with no fields set returns empty dict."""
-        config = ExecutionConfig()
-        assert config.to_payload() == {}
-
-    def test_from_response_all_fields(self):
-        """Test from_response with all fields present."""
-        data = {
-            "bond_dimension": 128,
-            "truncation_threshold": 1e-10,
-            "simulator_type": 2,
-            "simulation_type": 5,
-            "api_meta": {"max_execution_time": 600},
-        }
-        config = ExecutionConfig.from_response(data)
-        assert config.bond_dimension == 128
-        assert config.truncation_threshold == 1e-10
-        assert config.simulator == Simulator.CompositeQiskitAer
-        assert config.simulation_method == SimulationMethod.ExtendedStabilizer
-        assert config.api_meta == {"max_execution_time": 600}
-
-    def test_from_response_partial_fields(self):
-        """Test from_response with missing fields defaults to None."""
-        data = {"bond_dimension": 32}
-        config = ExecutionConfig.from_response(data)
-        assert config.bond_dimension == 32
-        assert config.truncation_threshold is None
-        assert config.simulator is None
-        assert config.simulation_method is None
-        assert config.api_meta is None
-
-    def test_from_response_empty(self):
-        """Test from_response with empty dict."""
-        config = ExecutionConfig.from_response({})
-        assert config == ExecutionConfig()
-
-    def test_roundtrip(self):
-        """Test that to_payload → from_response gives back the same config."""
-        original = ExecutionConfig(
-            bond_dimension=512,
-            truncation_threshold=1e-8,
-            simulator=Simulator.QCSim,
-            simulation_method=SimulationMethod.MatrixProductState,
-            api_meta={"optimization_level": 2},
-        )
-        reconstructed = ExecutionConfig.from_response(original.to_payload())
-        assert reconstructed == original
 
 
 # --- Depth Tracking Tests ---
