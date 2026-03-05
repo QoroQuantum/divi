@@ -28,6 +28,26 @@ Alternatively, you can install using pip:
 
    pip install qoro-divi
 
+Nightly Builds
+--------------
+
+Nightly development builds are published daily from ``main``. To install the latest nightly:
+
+.. code-block:: bash
+
+   pip install qoro-divi --pre
+
+Or pin a specific nightly by date:
+
+.. code-block:: bash
+
+   pip install qoro-divi==0.8.0.dev20260305
+
+.. note::
+
+   Nightly builds may contain unstable or experimental features.
+   For production use, stick with the stable release (``pip install qoro-divi``).
+
 .. toctree::
    :maxdepth: 1
 

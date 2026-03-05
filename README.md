@@ -26,6 +26,14 @@
 pip install qoro-divi
 ```
 
+### Nightly Builds
+
+To install the latest development build (published daily from `main`):
+
+```bash
+pip install qoro-divi --pre
+```
+
 Run a VQE energy minimization in a few lines:
 
 ```python
