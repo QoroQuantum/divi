@@ -7,6 +7,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0](https://github.com/QoroQuantum/divi/compare/v0.8.0...v0.9.0) (2026-03-05)
+
+
+### ✨ Added
+
+* add support for HUBOs for QAOA and PCE ([acaed60](https://github.com/QoroQuantum/divi/commit/acaed606b51773145dc00d277d22c8b5c1f889e0))
+* **GraphPartitioningQAOA:** add warnings for partitioning-incompatible graph problems ([02a6f8d](https://github.com/QoroQuantum/divi/commit/02a6f8d2b91232e63942ca9f925222c2a87c75ab))
+* **MetaCircuit:** add immutability to MetaCircuit and get rid of hacky slow deepcopying code ([08b8498](https://github.com/QoroQuantum/divi/commit/08b849832f5a0a8c34a4525c017444aafae9ce93))
+* **MetaCircuit:** speed up parameter binding in pipeline ([2e22dce](https://github.com/QoroQuantum/divi/commit/2e22dce63a25a86418e34f7b0b5bfaad8c8fc183))
+* **ProgramBatch:** add top-n function that mirrors single-instance behavior ([e22d1e7](https://github.com/QoroQuantum/divi/commit/e22d1e7aede8476c6b6aa1c5fac84a5590d99c2c))
+* **QoroService:** add SimulatorCluster support and split QPU/simulator targeting ([fa77af9](https://github.com/QoroQuantum/divi/commit/fa77af9267c9f6e74ee6e8f4ac76e6e543fa63f6))
+* **QoroService:** consolidate config module, add property-based config access, and support execution config overrides ([b67bb49](https://github.com/QoroQuantum/divi/commit/b67bb49770464cd08067e31e13f4ea21a5499644))
+* **QUBOPartitioningQAOA:** allow choice between QAOA and PCE as the underlying subprogram algorithm ([1e3b418](https://github.com/QoroQuantum/divi/commit/1e3b418a3abf182064c5c8cc370340b31021055d))
+* **reporting:** show loss in progress bars for variational algorithms ([c8ff260](https://github.com/QoroQuantum/divi/commit/c8ff260e7353da2c5ae3c2315b5699294e52d092))
+
+
+### 🐛 Fixed
+
+* **QoroService:** ExecutionConfig can now be passed when submitting circuits ([b58e3f1](https://github.com/QoroQuantum/divi/commit/b58e3f1e82c2e90def27dfe727d046c388a08430))
+
+
+### 🔧 Internal
+
+* add cleaner tutorial CI script ([18a827a](https://github.com/QoroQuantum/divi/commit/18a827ac2742ada03e5938c4a2a5a40609f988f2))
+* add missing shot reduction for QUBO partitioning tutorial ([3a3a77a](https://github.com/QoroQuantum/divi/commit/3a3a77a3ce42ad4be33f21dcada5e526e44e85b6))
+* introduce nightly pypi builds ([a86b7d6](https://github.com/QoroQuantum/divi/commit/a86b7d61b64cd4a6385d9ad082c992865f3f923a))
+* Merge pull request [#61](https://github.com/QoroQuantum/divi/issues/61) from QoroQuantum/hubos ([c632cb1](https://github.com/QoroQuantum/divi/commit/c632cb12464ea3a49ef469cc318bd18a9d9ef2fa))
+* overhaul test suite based on audit report findings ([b99bc3b](https://github.com/QoroQuantum/divi/commit/b99bc3bee9141ea445999287ec43671321f68568))
+* refactor run_tutorials.sh and raise error for non-sed'ed tutorials ([df324e2](https://github.com/QoroQuantum/divi/commit/df324e27ee68e661d5bda7b26b1097e37fc6c5ab))
+* trim down QUBO partitioning tutorial and increase timeout of VQE hyperparameter sweep tutorial ([6e81a77](https://github.com/QoroQuantum/divi/commit/6e81a77551d5262252569d3406b2ae5f34e7bd6a))
+
+
+### 📝 Documentation
+
+* Expanding some docs for better RAG retrieval ([7c7f2b5](https://github.com/QoroQuantum/divi/commit/7c7f2b56136fabf9ed645d415a0a21cf236875aa))
+
 ## [0.8.0](https://github.com/QoroQuantum/divi/compare/v0.7.0...v0.8.0) (2026-02-21)
 
 ### ✨ Added
