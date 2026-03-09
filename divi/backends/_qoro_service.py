@@ -714,29 +714,38 @@ class QoroService(CircuitRunner):
         """
         job_id = self._extract_job_id(execution_result)
 
-        try:
-            response = self._make_request(
-                "get",
-                f"job/{job_id}/resultsV2/?limit=100&offset=0",
-                timeout=100,
-            )
-        except requests.exceptions.HTTPError as e:
-            # Provide a more specific error message for 400 Bad Request
-            if e.response.status_code == HTTPStatus.BAD_REQUEST:
-                raise requests.exceptions.HTTPError(
-                    "400 Bad Request: Job results not available, likely job is still running"
-                ) from e
-            # Re-raise any other HTTP error
-            raise e
+        all_results: list[dict] = []
+        limit = 100
+        offset = 0
 
-        # If the request was successful, process the data
-        data = response.json()
+        while True:
+            try:
+                response = self._make_request(
+                    "get",
+                    f"job/{job_id}/resultsV2/?limit={limit}&offset={offset}",
+                    timeout=100,
+                )
+            except requests.exceptions.HTTPError as e:
+                # Provide a more specific error message for 400 Bad Request
+                if e.response.status_code == HTTPStatus.BAD_REQUEST:
+                    raise requests.exceptions.HTTPError(
+                        "400 Bad Request: Job results not available, likely job is still running"
+                    ) from e
+                # Re-raise any other HTTP error
+                raise e
 
-        for result in data["results"]:
-            result["results"] = _decode_qh1_b64(result["results"])
+            data = response.json()
+
+            for result in data["results"]:
+                result["results"] = _decode_qh1_b64(result["results"])
+            all_results.extend(data["results"])
+
+            if data.get("next") is None:
+                break
+            offset += limit
 
         # Return a new ExecutionResult with results populated
-        return execution_result.with_results(data["results"])
+        return execution_result.with_results(all_results)
 
     def poll_job_status(
         self,

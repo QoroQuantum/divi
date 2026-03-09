@@ -1607,6 +1607,107 @@ class TestQoroServiceMock:
         with pytest.raises(requests.exceptions.HTTPError, match="API Error: 404"):
             qoro_service_mock.get_job_results(make_execution_result("job_1"))
 
+    # --- Tests for get_job_results pagination ---
+
+    def test_get_job_results_single_page(self, mocker, qoro_service_factory):
+        """Results fit in one page — next is None, no further requests."""
+        service = qoro_service_factory()
+        mocker.patch(
+            "divi.backends._qoro_service._decode_qh1_b64",
+            side_effect=lambda x: x,
+        )
+        page = {
+            "count": 2,
+            "next": None,
+            "results": [
+                {"label": "c0", "results": {"a": 1}},
+                {"label": "c1", "results": {"b": 2}},
+            ],
+        }
+        mock_request = mocker.patch.object(
+            service,
+            "_make_request",
+            return_value=mocker.MagicMock(status_code=200, json=lambda: page),
+        )
+
+        result = service.get_job_results(make_execution_result("job_1"))
+
+        mock_request.assert_called_once()
+        assert len(result.results) == 2
+
+    def test_get_job_results_paginates_multiple_pages(
+        self, mocker, qoro_service_factory
+    ):
+        """160 results across two pages — all are collected."""
+        service = qoro_service_factory()
+        mocker.patch(
+            "divi.backends._qoro_service._decode_qh1_b64",
+            side_effect=lambda x: x,
+        )
+
+        page1_results = [{"label": f"c{i}", "results": {"v": i}} for i in range(100)]
+        page2_results = [
+            {"label": f"c{i}", "results": {"v": i}} for i in range(100, 160)
+        ]
+        page1 = {
+            "count": 160,
+            "next": "http://api.example.com/job/job_1/resultsV2/?limit=100&offset=100",
+            "results": page1_results,
+        }
+        page2 = {"count": 160, "next": None, "results": page2_results}
+
+        responses = iter(
+            [
+                mocker.MagicMock(status_code=200, json=lambda p=p: p)
+                for p in [page1, page2]
+            ]
+        )
+        mock_request = mocker.patch.object(
+            service, "_make_request", side_effect=lambda *a, **kw: next(responses)
+        )
+
+        result = service.get_job_results(make_execution_result("job_1"))
+
+        assert mock_request.call_count == 2
+        assert len(result.results) == 160
+        # Verify offset incremented correctly
+        first_call_endpoint = mock_request.call_args_list[0][0][1]
+        second_call_endpoint = mock_request.call_args_list[1][0][1]
+        assert "offset=0" in first_call_endpoint
+        assert "offset=100" in second_call_endpoint
+
+    def test_get_job_results_pagination_error_on_second_page(
+        self, mocker, qoro_service_factory
+    ):
+        """HTTP error on the second page propagates correctly."""
+        service = qoro_service_factory()
+        mocker.patch(
+            "divi.backends._qoro_service._decode_qh1_b64",
+            side_effect=lambda x: x,
+        )
+
+        page1 = {
+            "count": 160,
+            "next": "http://api.example.com/job/job_1/resultsV2/?limit=100&offset=100",
+            "results": [{"label": f"c{i}", "results": {"v": i}} for i in range(100)],
+        }
+        page1_response = mocker.MagicMock(status_code=200, json=lambda: page1)
+
+        mock_error_response = mocker.MagicMock()
+        mock_error_response.status_code = 500
+        http_error = requests.exceptions.HTTPError(
+            "Server Error", response=mock_error_response
+        )
+
+        mocker.patch.object(
+            service,
+            "_make_request",
+            side_effect=[page1_response, http_error],
+        )
+
+        with pytest.raises(requests.exceptions.HTTPError, match="Server Error"):
+            service.get_job_results(make_execution_result("job_1"))
+
     # --- Tests for cancel_job ---
 
     def test_cancel_job_success(self, mocker, qoro_service_factory):
