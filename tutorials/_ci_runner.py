@@ -83,6 +83,8 @@ TUTORIALS: dict[str, dict] = {
                 "ParallelSimulator(n_processes=4",
                 "ParallelSimulator(n_processes=4, shots=500",
             ),
+            ("max_iterations=10", "max_iterations=3"),
+            ("population_size=10", "population_size=5"),
         ],
     },
     "qaoa_qubo_partitioning.py": {

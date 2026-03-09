@@ -12,41 +12,48 @@ from mitiq.zne.scaling import fold_gates_at_random
 from divi.backends import ParallelSimulator
 from divi.circuits.qem import ZNE
 from divi.qprog import VQE, HartreeFockAnsatz
-from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from divi.qprog.optimizers import PymooMethod, PymooOptimizer
 
 if __name__ == "__main__":
     mol = qml.qchem.Molecule(
         symbols=["H", "H"], coordinates=np.array([(0, 0, 0), (0, 0, 0.5)])
     )
 
-    args = dict(
+    common = dict(
         molecule=mol,
         n_layers=1,
         ansatz=HartreeFockAnsatz(),
-        optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
-        max_iterations=5,
+        max_iterations=10,
         seed=1997,
     )
 
     # --- Exact (statevector) ---
-    vqe_exact = VQE(backend=ParallelSimulator(n_processes=4), **args)
+    vqe_exact = VQE(
+        backend=ParallelSimulator(n_processes=4),
+        optimizer=PymooOptimizer(method=PymooMethod.DE, population_size=10),
+        **common,
+    )
     vqe_exact.run()
 
     # --- Noisy (shot-based with noise model) ---
-    noisy_backend = ParallelSimulator(n_processes=4, qiskit_backend="auto")
-    vqe_noisy = VQE(backend=noisy_backend, **args)
+    vqe_noisy = VQE(
+        backend=ParallelSimulator(n_processes=4, qiskit_backend="auto"),
+        optimizer=PymooOptimizer(method=PymooMethod.DE, population_size=10),
+        **common,
+    )
     vqe_noisy.run()
 
     # --- ZNE-mitigated (shot-based + zero-noise extrapolation) ---
     scale_factors = [1.0, 3.0, 5.0]
     vqe_zne = VQE(
         backend=ParallelSimulator(n_processes=4, qiskit_backend="auto"),
+        optimizer=PymooOptimizer(method=PymooMethod.DE, population_size=10),
         qem_protocol=ZNE(
             scale_factors,
             partial(fold_gates_at_random),
             RichardsonFactory(scale_factors=scale_factors),
         ),
-        **args,
+        **common,
     )
     vqe_zne.run()
 
