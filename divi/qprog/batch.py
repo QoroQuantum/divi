@@ -17,12 +17,13 @@ from rich.console import Console
 from rich.progress import Progress, TaskID
 
 from divi.backends import CircuitRunner
+from divi.qprog._batch_coordinator import _BatchCoordinator, _ProxyBackend
 from divi.qprog.quantum_program import QuantumProgram
 from divi.qprog.variational_quantum_algorithm import (
     SolutionEntry,
     VariationalQuantumAlgorithm,
 )
-from divi.reporting import disable_logging, make_progress_bar
+from divi.reporting import disable_logging, make_batch_display
 
 
 def _queue_listener(
@@ -32,6 +33,10 @@ def _queue_listener(
     done_event: Event,
     is_jupyter: bool,
     lock: Lock,
+    program_key_to_task_ids: dict[str, list[TaskID]] | None = None,
+    batch_progress: Progress | None = None,
+    batch_task_id: TaskID | None = None,
+    live_display: Any | None = None,
 ):
     while not done_event.is_set():
         try:
@@ -42,6 +47,23 @@ def _queue_listener(
             progress_bar.console.log(f"[queue_listener] Unexpected exception: {e}")
             continue
 
+        # --- Batch-level messages from the coordinator ---
+        if msg.get("batch"):
+            if batch_progress is not None and batch_task_id is not None:
+                _handle_batch_message(
+                    msg,
+                    batch_progress,
+                    batch_task_id,
+                    progress_bar,
+                    program_key_to_task_ids or {},
+                    lock,
+                )
+            if is_jupyter and live_display is not None:
+                live_display.refresh()
+            queue.task_done()
+            continue
+
+        # --- Regular per-program messages ---
         with lock:
             task_id = pb_task_map[msg["job_id"]]
 
@@ -63,10 +85,64 @@ def _queue_listener(
         if "loss" in msg:
             update_args["loss"] = msg.get("loss")
 
-        update_args["refresh"] = is_jupyter
-
         progress_bar.update(task_id, **update_args)
+
+        if is_jupyter and live_display is not None:
+            live_display.refresh()
+
         queue.task_done()
+
+
+def _handle_batch_message(
+    msg: dict[str, Any],
+    batch_progress: Progress,
+    batch_task_id: TaskID,
+    program_progress: Progress,
+    program_key_to_task_ids: dict[str, list[TaskID]],
+    lock: Lock,
+):
+    """Process a batch-level progress message using the separate batch Progress bar."""
+    color = msg.get("batch_color", "")
+    n_circuits = msg.get("n_circuits", 0)
+    n_programs = msg.get("n_programs", 0)
+    final_status = msg.get("final_status")
+
+    # Build update args for the batch row
+    update_args: dict[str, Any] = {}
+
+    if not final_status:
+        # Show the batch row and update its label/color
+        update_args["visible"] = True
+        update_args["job_name"] = f"Batch: {n_circuits} circuits, {n_programs} programs"
+        update_args["batch_color"] = color
+
+        # Color-code participating programs
+        with lock:
+            for prog_key in msg.get("program_keys", []):
+                for tid in program_key_to_task_ids.get(prog_key, []):
+                    program_progress.update(tid, batch_color=color)
+
+    if "poll_attempt" in msg:
+        update_args["poll_attempt"] = msg["poll_attempt"]
+    if "max_retries" in msg:
+        update_args["max_retries"] = msg["max_retries"]
+    if "service_job_id" in msg:
+        update_args["service_job_id"] = msg["service_job_id"]
+    if "job_status" in msg:
+        update_args["job_status"] = msg["job_status"]
+    if msg.get("message"):
+        update_args["message"] = msg["message"]
+
+    if final_status:
+        update_args["final_status"] = final_status
+        # Hide the batch row and clear program colors
+        update_args["visible"] = False
+        with lock:
+            for prog_key in msg.get("program_keys", []):
+                for tid in program_key_to_task_ids.get(prog_key, []):
+                    program_progress.update(tid, batch_color="")
+
+    batch_progress.update(batch_task_id, **update_args)
 
 
 def _default_task_function(program: QuantumProgram):
@@ -98,6 +174,8 @@ class ProgramBatch(ABC):
         self._executor = None
         self._task_fn = _default_task_function
         self._programs = {}
+        self._coordinator: _BatchCoordinator | None = None
+        self._program_key_map: dict[QuantumProgram, str] = {}
 
         self._total_circuit_count = 0
         self._total_run_time = 0.0
@@ -202,6 +280,12 @@ class ProgramBatch(ABC):
             Any running programs will be forcefully stopped. Results from incomplete
             programs will be lost.
         """
+        # Shutdown coordinator before clearing programs
+        if self._coordinator is not None:
+            self._coordinator.shutdown()
+            self._coordinator = None
+        self._program_key_map.clear()
+
         self._programs.clear()
 
         # Stop any active executor
@@ -221,13 +305,15 @@ class ProgramBatch(ABC):
                 warn("Listener thread did not terminate within timeout.")
             self._listener_thread = None
 
-        # Stop the progress bar if it's still active
-        if getattr(self, "_progress_bar", None) is not None:
+        # Stop the live display if it's still active
+        if getattr(self, "_live_display", None) is not None:
             try:
-                self._progress_bar.stop()
+                self._live_display.stop()
             except Exception:
                 pass  # Already stopped or not running
+            self._live_display = None
             self._progress_bar = None
+            self._batch_progress = None
             self._pb_task_map.clear()
 
     def _atexit_cleanup_hook(self):
@@ -245,7 +331,8 @@ class ProgramBatch(ABC):
         Add a quantum program to the thread pool executor for execution.
 
         Sets up the program with cancellation support and progress tracking, then
-        submits it for execution in a separate thread.
+        submits it for execution in a separate thread.  The program is
+        automatically deregistered from the batch coordinator when it finishes.
 
         Args:
             program (QuantumProgram): The quantum program to execute.
@@ -258,15 +345,35 @@ class ProgramBatch(ABC):
 
         if self._progress_bar is not None:
             with self._pb_lock:
-                self._pb_task_map[program.program_id] = self._progress_bar.add_task(
+                task_id = self._progress_bar.add_task(
                     "",
                     job_name=f"Program {program.program_id}",
                     total=self.max_iterations,
                     completed=0,
                     message="",
+                    batch_color="",
                 )
+                self._pb_task_map[program.program_id] = task_id
 
-        return self._executor.submit(self._task_fn, program)
+                # Link program_key to this progress bar task for batch coloring
+                prog_key = self._program_key_map.get(program)
+                if prog_key is not None and hasattr(self, "_program_key_to_task_ids"):
+                    self._program_key_to_task_ids.setdefault(prog_key, []).append(
+                        task_id
+                    )
+
+        coordinator = self._coordinator
+        program_key = self._program_key_map.get(program)
+        task_fn = self._task_fn
+
+        def _coordinated_task(prog):
+            try:
+                return task_fn(prog)
+            finally:
+                if coordinator is not None and program_key is not None:
+                    coordinator.deregister_program(program_key)
+
+        return self._executor.submit(_coordinated_task, program)
 
     def run(self, blocking: bool = False):
         """
@@ -297,11 +404,13 @@ class ProgramBatch(ABC):
         if len(self._programs) == 0:
             raise RuntimeError("No programs to run.")
 
-        self._progress_bar = (
-            make_progress_bar(is_jupyter=self._is_jupyter)
-            if hasattr(self, "max_iterations")
-            else None
-        )
+        self._progress_bar = None
+        self._batch_progress = None
+        self._live_display = None
+        if hasattr(self, "max_iterations"):
+            self._batch_progress, self._progress_bar, self._live_display = (
+                make_batch_display(is_jupyter=self._is_jupyter)
+            )
 
         # Validate that all program instances are unique to prevent thread-safety issues
         program_instances = list(self._programs.values())
@@ -319,8 +428,42 @@ class ProgramBatch(ABC):
         self._pb_task_map = {}
         self._pb_lock = Lock()
 
+        # Set up batch coordinator to merge circuit submissions.
+        # The coordinator gets the progress queue so it can report
+        # batch-level status (polling, completion) for merged jobs.
+        progress_queue = getattr(self, "_queue", None)
+        self._coordinator = _BatchCoordinator(
+            self.backend, progress_queue=progress_queue
+        )
+        self._program_key_map = {}
+        for idx, (prog_id, program) in enumerate(self._programs.items()):
+            program_key = str(idx)
+            self._program_key_map[program] = program_key
+            self._coordinator.register_program(program_key)
+            program.backend = _ProxyBackend(
+                self.backend, self._coordinator, program_key
+            )
+
         if self._progress_bar is not None:
-            self._progress_bar.start()
+            self._live_display.start()
+
+            # Pre-create a single batch status row in the batch Progress bar.
+            # It starts hidden and is shown/hidden by the queue listener
+            # as flush groups start and complete.
+            self._batch_task_id = self._batch_progress.add_task(
+                "",
+                job_name="",
+                total=0,
+                visible=False,
+                batch_color="",
+                message="",
+                final_status="",
+            )
+
+            # Build reverse mapping: program_key -> list of progress bar task IDs.
+            # Populated lazily as programs are added to the executor.
+            self._program_key_to_task_ids: dict[str, list] = {}
+
             self._listener_thread = Thread(
                 target=_queue_listener,
                 args=(
@@ -330,6 +473,10 @@ class ProgramBatch(ABC):
                     self._done_event,
                     self._is_jupyter,
                     self._pb_lock,
+                    self._program_key_to_task_ids,
+                    self._batch_progress,
+                    self._batch_task_id,
+                    self._live_display,
                 ),
                 daemon=True,
             )
@@ -379,6 +526,10 @@ class ProgramBatch(ABC):
         the result of future.cancel().
         """
         self._cancellation_event.set()
+
+        # Cancel the coordinator to unblock any programs waiting on the barrier
+        if self._coordinator is not None:
+            self._coordinator.cancel()
 
         successfully_cancelled = []
         unstoppable_futures = []
@@ -492,8 +643,24 @@ class ProgramBatch(ABC):
                 self._total_circuit_count += sum(
                     result[0] for result in completed_futures
                 )
-                self._total_run_time += sum(result[1] for result in completed_futures)
+                # For async backends the individual programs don't track runtime
+                # (the proxy returns sync results). Use the coordinator's total
+                # which is captured from the real backend's poll responses.
+                if (
+                    self._coordinator is not None
+                    and self._coordinator.total_runtime > 0
+                ):
+                    self._total_run_time += self._coordinator.total_runtime
+                else:
+                    self._total_run_time += sum(
+                        result[1] for result in completed_futures
+                    )
                 self.futures.clear()
+
+            # Shutdown coordinator
+            if self._coordinator is not None:
+                self._coordinator.shutdown()
+                self._coordinator = None
 
             # Shutdown executor and wait for all threads to complete
             # This is critical for Python 3.12 to prevent process hangs
@@ -505,7 +672,7 @@ class ProgramBatch(ABC):
                 self._queue.join()
                 self._done_event.set()
                 self._listener_thread.join()
-                self._progress_bar.stop()
+                self._live_display.stop()
 
         # After successful cleanup, try to unregister the hook.
         try:

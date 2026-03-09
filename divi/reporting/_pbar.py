@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from rich.console import Group
+from rich.live import Live
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
@@ -14,6 +16,20 @@ from rich.progress import (
 from rich.text import Text
 
 from divi.reporting._qlogger import _ensure_unbuffered_stdout
+
+# Colors assigned to flush groups to visually associate
+# batch status rows with their participating programs.
+BATCH_COLORS = ("green", "cyan", "magenta", "yellow", "red", "blue")
+
+
+class BatchIndicatorColumn(ProgressColumn):
+    """Renders a colored square prefix to associate programs with their batch."""
+
+    def render(self, task):
+        color = task.fields.get("batch_color", "")
+        if color:
+            return Text("■ ", style=color)
+        return Text("  ")
 
 
 class _UnfinishedTaskWrapper:
@@ -125,6 +141,7 @@ def make_progress_bar(is_jupyter: bool = False) -> Progress:
     """
     _ensure_unbuffered_stdout()
     return Progress(
+        BatchIndicatorColumn(),
         TextColumn("[bold blue]{task.fields[job_name]}"),
         BarColumn(),
         MofNCompleteColumn(),
@@ -132,7 +149,42 @@ def make_progress_bar(is_jupyter: bool = False) -> Progress:
         ConditionalSpinnerColumn(),
         PhaseStatusColumn(),
         # For jupyter notebooks, refresh manually instead
-        auto_refresh=not is_jupyter,
-        # Give a dummy positive value if is_jupyter
+        auto_refresh=False,
         refresh_per_second=10 if not is_jupyter else 999,
     )
+
+
+def _make_batch_status_bar(is_jupyter: bool = False) -> Progress:
+    """Create a lightweight progress bar for batch status lines (no bar/M-of-N/time)."""
+    return Progress(
+        BatchIndicatorColumn(),
+        TextColumn("[bold blue]{task.fields[job_name]}"),
+        ConditionalSpinnerColumn(),
+        PhaseStatusColumn(),
+        auto_refresh=False,
+        refresh_per_second=10 if not is_jupyter else 999,
+    )
+
+
+def make_batch_display(
+    is_jupyter: bool = False,
+) -> tuple[Progress, Progress, Live]:
+    """Create a composed Live display with separate batch status and program progress bars.
+
+    In Jupyter environments auto-refresh is disabled to avoid double-rendering
+    issues (rich#1737). The caller is responsible for calling ``live.refresh()``
+    after each update.
+
+    Returns:
+        Tuple of (batch_progress, program_progress, live_display).
+    """
+    _ensure_unbuffered_stdout()
+    batch_progress = _make_batch_status_bar(is_jupyter=is_jupyter)
+    program_progress = make_progress_bar(is_jupyter=is_jupyter)
+    group = Group(batch_progress, program_progress)
+    live = Live(
+        group,
+        auto_refresh=not is_jupyter,
+        refresh_per_second=10 if not is_jupyter else 999,
+    )
+    return batch_progress, program_progress, live
