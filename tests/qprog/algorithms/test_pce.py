@@ -303,7 +303,8 @@ def test_pce_perform_final_computation_sets_solution(
 
     pce._perform_final_computation()
 
-    np.testing.assert_array_equal(pce.solution, np.array([0, 1]))
+    with pytest.warns(UserWarning, match="PCE.solution returns the decoded"):
+        np.testing.assert_array_equal(pce.solution, np.array([0, 1]))
 
 
 def test_pce_solution_requires_run(dummy_simulator, basic_ansatz, qubo_identity):
@@ -646,7 +647,8 @@ def test_pce_custom_decode_parities_fn_perform_final_computation(
     pce._perform_final_computation()
 
     # Fixed decoder returns parities [0, 1] -> solution = [1, 0]
-    np.testing.assert_array_equal(pce.solution, np.array([1, 0]))
+    with pytest.warns(UserWarning, match="PCE.solution returns the decoded"):
+        np.testing.assert_array_equal(pce.solution, np.array([1, 0]))
 
 
 def test_pce_custom_decode_parities_fn_get_top_solutions(dummy_simulator, basic_ansatz):

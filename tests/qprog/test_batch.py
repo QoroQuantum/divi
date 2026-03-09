@@ -120,6 +120,8 @@ class TestProgramBatch:
         program_batch._executor = mocker.MagicMock(spec=ThreadPoolExecutor)
         program_batch._listener_thread = mocker.MagicMock(spec=Thread)
         program_batch._progress_bar = mocker.MagicMock()
+        program_batch._batch_progress = mocker.MagicMock()
+        program_batch._live_display = mocker.MagicMock()
         program_batch.futures = [mocker.MagicMock()]
         program_batch._pb_task_map = {}
 
@@ -130,7 +132,7 @@ class TestProgramBatch:
         mock_executor = program_batch._executor
         done_event_set_spy = mocker.spy(program_batch._done_event, "set")
         mock_listener_thread = program_batch._listener_thread
-        mock_progress_bar = program_batch._progress_bar
+        mock_live_display = program_batch._live_display
 
         # Call the method under test
         program_batch.reset()
@@ -139,7 +141,7 @@ class TestProgramBatch:
         mock_executor.shutdown.assert_called_once_with(wait=False)
         done_event_set_spy.assert_called_once()
         mock_listener_thread.join.assert_called_once()
-        mock_progress_bar.stop.assert_called_once()
+        mock_live_display.stop.assert_called_once()
 
         # Assert that state attributes are cleared
         assert program_batch._executor is None
@@ -188,7 +190,7 @@ class TestProgramBatch:
             program_batch.run()
 
     def test_run_submits_correct_tasks(self, program_batch, mocker):
-        """Tests that run() submits the correct function and arguments to the executor."""
+        """Tests that run() submits the correct number of tasks to the executor."""
         program_batch.create_programs()
         mock_executor_class = mocker.patch("divi.qprog.batch.ThreadPoolExecutor")
         mock_executor = mock_executor_class.return_value
@@ -208,10 +210,12 @@ class TestProgramBatch:
 
         assert mock_executor.submit.call_count == len(program_batch.programs)
 
-        # The function submitted should be the internal _task_fn
-        task_fn = program_batch._task_fn
-        for program in program_batch.programs.values():
-            mock_executor.submit.assert_any_call(task_fn, program)
+        # Each submit call should receive a callable and the correct program
+        programs = list(program_batch.programs.values())
+        for i, call_args in enumerate(mock_executor.submit.call_args_list):
+            submitted_fn, submitted_program = call_args[0]
+            assert callable(submitted_fn)
+            assert submitted_program is programs[i]
 
         # Clean up the non-blocking run. This should now terminate correctly.
         program_batch.join()
@@ -399,16 +403,18 @@ class TestProgramBatch:
         mock_thread.join.assert_called_once_with(timeout=1)
 
     def test_reset_progress_bar_exception(self, program_batch, mocker):
-        """Test reset handles progress bar stop exception."""
+        """Test reset handles live display stop exception."""
         program_batch.create_programs()
-        mock_progress_bar = mocker.MagicMock()
-        mock_progress_bar.stop.side_effect = Exception("Stop failed")
-        program_batch._progress_bar = mock_progress_bar
+        mock_live_display = mocker.MagicMock()
+        mock_live_display.stop.side_effect = Exception("Stop failed")
+        program_batch._live_display = mock_live_display
+        program_batch._progress_bar = mocker.MagicMock()
+        program_batch._batch_progress = mocker.MagicMock()
         program_batch._pb_task_map = {}
 
         # Should not raise exception, just pass silently
         program_batch.reset()
-        mock_progress_bar.stop.assert_called_once()
+        mock_live_display.stop.assert_called_once()
 
     def test_atexit_cleanup_warning(self, program_batch, mocker):
         """Test atexit cleanup hook issues warning."""
@@ -625,10 +631,9 @@ def test_queue_listener(mocker):
     listener_thread.join(timeout=1)
     assert not listener_thread.is_alive()
 
-    common_kwargs = {"advance": 1, "refresh": False}
     expected_calls = [
-        mocker.call(1, message="step 1", final_status="running", **common_kwargs),
-        mocker.call(2, poll_attempt=3, **common_kwargs),
+        mocker.call(1, advance=1, message="step 1", final_status="running"),
+        mocker.call(2, advance=1, poll_attempt=3),
     ]
     mock_progress_bar.update.assert_has_calls(expected_calls, any_order=True)
     assert mock_queue.empty()
