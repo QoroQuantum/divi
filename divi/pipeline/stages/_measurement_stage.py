@@ -62,6 +62,10 @@ class MeasurementStage(BundleStage):
         return OBS_GROUP_AXIS
 
     @property
+    def handles_measurement(self) -> bool:
+        return True
+
+    @property
     def stateful(self) -> bool:
         return False
 

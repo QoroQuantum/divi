@@ -70,11 +70,13 @@ class SolutionEntry(NamedTuple):
         bitstring: Binary string representing a computational basis state.
         prob: Measured probability in range [0.0, 1.0].
         decoded: Optional problem-specific decoded representation. Defaults to None.
+        energy: Optional objective energy for this solution. Defaults to None.
     """
 
     bitstring: str
     prob: float
     decoded: Any | None = None
+    energy: float | None = None
 
 
 class SubclassState(BaseModel):

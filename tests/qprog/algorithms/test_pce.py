@@ -9,6 +9,7 @@ import pytest
 from divi.pipeline.stages._pce_cost_stage import (
     _compute_hard_cvar_energy,
     _compute_soft_energy,
+    _evaluate_binary_polynomial,
 )
 from divi.qprog import PCE, MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
 from divi.qprog.algorithms import GenericLayerAnsatz
@@ -905,3 +906,91 @@ def test_pce_perform_final_computation_none_eigenstate(
     pce._perform_final_computation()
 
     assert pce._final_vector is None
+
+
+class TestGetTopSolutionsSortBy:
+    """Tests for the sort_by parameter of PCE.get_top_solutions."""
+
+    @pytest.fixture
+    def pce_with_probs(self, dummy_simulator, basic_ansatz):
+        """PCE instance with a 2-var diagonal QUBO and pre-set probability distribution.
+
+        qubo = diag([1, 2]), masks = [1, 2], 2 qubits.
+        Encoded states and their decoded solutions + energies:
+          "00" (int 0) → parities [0, 0] → x = [1, 1] → energy = 1*1 + 2*1 = 3
+          "01" (int 1) → parities [1, 0] → x = [0, 1] → energy = 0 + 2*1 = 2
+          "10" (int 2) → parities [0, 1] → x = [1, 0] → energy = 1*1 + 0 = 1
+          "11" (int 3) → parities [1, 1] → x = [0, 0] → energy = 0
+        """
+        qubo = np.diag([1.0, 2.0])
+        pce = PCE(
+            problem=qubo,
+            ansatz=basic_ansatz,
+            backend=dummy_simulator,
+        )
+        pce._best_probs = {
+            "0_NoMitigation:0_ham:0_0": {
+                "00": 0.4,  # decoded "11", energy 3
+                "01": 0.1,  # decoded "01", energy 2
+                "10": 0.2,  # decoded "10", energy 1
+                "11": 0.3,  # decoded "00", energy 0
+            }
+        }
+        pce._losses_history = [{0: -1.0}]
+        return pce
+
+    def test_default_sort_by_prob(self, pce_with_probs):
+        """Default sort_by='prob' sorts descending by probability."""
+        solutions = pce_with_probs.get_top_solutions(n=4)
+        probs = [s.prob for s in solutions]
+        assert probs == [0.4, 0.3, 0.2, 0.1]
+
+    def test_sort_by_energy_ascending(self, pce_with_probs):
+        """sort_by='energy' sorts ascending by energy."""
+        solutions = pce_with_probs.get_top_solutions(n=4, sort_by="energy")
+
+        # Verify energy ordering: 0, 1, 2, 3
+        energies = []
+        for sol in solutions:
+            x = np.array([int(c) for c in sol.bitstring], dtype=float)
+            energy = _evaluate_binary_polynomial(x, pce_with_probs.problem)
+            energies.append(energy)
+        assert energies == pytest.approx([0.0, 1.0, 2.0, 3.0])
+
+    def test_sort_by_energy_includes_energy_field(self, pce_with_probs):
+        """sort_by='energy' populates the energy field in SolutionEntry."""
+        solutions = pce_with_probs.get_top_solutions(n=4, sort_by="energy")
+
+        assert solutions[0].energy == pytest.approx(0.0)
+        assert solutions[1].energy == pytest.approx(1.0)
+        assert solutions[2].energy == pytest.approx(2.0)
+        assert solutions[3].energy == pytest.approx(3.0)
+
+    def test_sort_by_prob_energy_is_none(self, pce_with_probs):
+        """sort_by='prob' leaves the energy field as None."""
+        solutions = pce_with_probs.get_top_solutions(n=4)
+        for sol in solutions:
+            assert sol.energy is None
+
+    def test_sort_by_energy_with_min_prob(self, pce_with_probs):
+        """sort_by='energy' respects min_prob filtering."""
+        solutions = pce_with_probs.get_top_solutions(
+            n=4, sort_by="energy", min_prob=0.15
+        )
+        # Only probs >= 0.15: 0.4, 0.3, 0.2 → sorted by energy
+        assert len(solutions) == 3
+        assert all(sol.prob >= 0.15 for sol in solutions)
+        # Energy should still be ascending
+        assert solutions[0].energy < solutions[1].energy < solutions[2].energy
+
+    def test_sort_by_energy_with_n_limit(self, pce_with_probs):
+        """sort_by='energy' with n < total returns only the n lowest-energy solutions."""
+        solutions = pce_with_probs.get_top_solutions(n=2, sort_by="energy")
+        assert len(solutions) == 2
+        assert solutions[0].energy == pytest.approx(0.0)
+        assert solutions[1].energy == pytest.approx(1.0)
+
+    def test_sort_by_invalid_raises(self, pce_with_probs):
+        """Invalid sort_by value raises ValueError."""
+        with pytest.raises(ValueError, match="sort_by must be"):
+            pce_with_probs.get_top_solutions(n=4, sort_by="invalid")

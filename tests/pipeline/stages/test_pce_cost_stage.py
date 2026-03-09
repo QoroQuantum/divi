@@ -2,20 +2,23 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for divi.pipeline.stages._pce_cost_stage (PCECostStage.reduce).
+"""Tests for divi.pipeline.stages._pce_cost_stage (PCECostStage).
 
-Focus: histogram merging, path routing (soft/hard/expval), observable ordering,
-and multi-param-set independence.  Energy *values* for the helpers are already
-covered in tests/qprog/algorithms/test_pce.py, so here we use hand-computed
-expected values or comparative assertions.
+Focus: expand behaviour (single Z-basis circuit regardless of backend),
+path routing (soft vs hard CVaR), and multi-param-set independence.
+Energy *values* for the helpers are already covered in
+tests/qprog/algorithms/test_pce.py, so here we use hand-computed expected
+values or comparative assertions.
 """
 
 import numpy as np
+import pennylane as qml
 import pytest
 
+from divi.circuits._core import MetaCircuit
 from divi.hamiltonians import normalize_binary_polynomial_problem
 from divi.pipeline.abc import PipelineEnv, ResultFormat
-from divi.pipeline.stages._pce_cost_stage import PCECostStage
+from divi.pipeline.stages._pce_cost_stage import PCE_MEAS_AXIS, PCECostStage
 from divi.qprog.algorithms._pce import _decode_parities
 
 # ---------------------------------------------------------------------------
@@ -51,75 +54,127 @@ def _make_env(result_format: ResultFormat):
     return env
 
 
-def _obs_key(param_idx: int, obs_idx: int):
-    """Build a child-result label for (param_set, obs_group)."""
-    return (("param_set", param_idx), ("obs_group", obs_idx))
+def _meas_key(param_idx: int):
+    """Build a child-result label for (param_set, pce_meas)."""
+    return (("param_set", param_idx), (PCE_MEAS_AXIS, 0))
+
+
+def _make_z_hamiltonian_batch(n_qubits: int) -> dict[int, MetaCircuit]:
+    """Build a single-entry MetaCircuit batch with expval(Z0+Z1+...+Zn)."""
+    H = qml.Hamiltonian([1.0] * n_qubits, [qml.PauliZ(i) for i in range(n_qubits)])
+    tape = qml.tape.QuantumScript(
+        [qml.RY(0.5, wires=i) for i in range(n_qubits)],
+        [qml.expval(H)],
+    )
+    return {0: MetaCircuit(source_circuit=tape, symbols=np.array([]))}
+
+
+def _make_expval_backend():
+    """Create a mock backend that supports expval."""
+    return type("MockBackend", (), {"supports_expval": True})()
+
+
+def _make_sampling_backend():
+    """Create a mock backend that does NOT support expval."""
+    return type("MockBackend", (), {"supports_expval": False})()
 
 
 # ---------------------------------------------------------------------------
-# Tests: histogram merging
+# Tests: expand produces a single Z-basis circuit (no obs_group blowup)
 # ---------------------------------------------------------------------------
 
 
-class TestReduceHistogramMerging:
-    """Verify that reduce correctly merges multiple observable-group histograms."""
+class TestExpandSingleCircuit:
+    """PCECostStage.expand should produce one measurement circuit per param_set."""
 
-    def test_split_histograms_equal_single_merged(self):
-        """Splitting a histogram across obs groups gives the same energy as one group."""
+    def test_expand_one_circuit_per_param_set_expval_backend(self):
+        """With an expval-capable backend, still produces exactly 1 circuit."""
+        n_qubits = 16
+        batch = _make_z_hamiltonian_batch(n_qubits)
+        stage = _make_stage(np.eye(n_qubits), alpha=1.0, soft=True)
+
+        env = PipelineEnv(backend=_make_expval_backend())
+        result, _ = stage.expand(batch, env)
+
+        expanded = list(result.batch.values())[0]
+        assert len(expanded.measurement_qasms) == 1
+
+    def test_expand_one_circuit_per_param_set_sampling_backend(self):
+        """With a sampling-only backend, produces exactly 1 circuit."""
+        n_qubits = 16
+        batch = _make_z_hamiltonian_batch(n_qubits)
+        stage = _make_stage(np.eye(n_qubits), alpha=1.0, soft=True)
+
+        env = PipelineEnv(backend=_make_sampling_backend())
+        result, _ = stage.expand(batch, env)
+
+        expanded = list(result.batch.values())[0]
+        assert len(expanded.measurement_qasms) == 1
+
+    def test_expand_result_format_is_counts(self):
+        """Result format must be COUNTS after expand, regardless of backend."""
+        n_qubits = 4
+        batch = _make_z_hamiltonian_batch(n_qubits)
+        stage = _make_stage(np.eye(n_qubits), alpha=1.0, soft=True)
+
+        env = PipelineEnv(backend=_make_expval_backend())
+        stage.expand(batch, env)
+
+        assert env.result_format == ResultFormat.COUNTS
+
+    def test_expand_no_ham_ops_artifact(self):
+        """ham_ops must NOT be set — PCE never uses the backend expval path."""
+        n_qubits = 4
+        batch = _make_z_hamiltonian_batch(n_qubits)
+        stage = _make_stage(np.eye(n_qubits), alpha=1.0, soft=True)
+
+        env = PipelineEnv(backend=_make_expval_backend())
+        stage.expand(batch, env)
+
+        assert "ham_ops" not in env.artifacts
+
+
+# ---------------------------------------------------------------------------
+# Tests: reduce — histogram processing and path routing
+# ---------------------------------------------------------------------------
+
+
+class TestReduceHistogram:
+    """Verify that reduce correctly processes single-histogram results."""
+
+    def test_single_histogram_produces_energy(self):
+        """A single histogram per param_set produces a valid energy."""
         qubo = np.diag([1.0, 2.0])
         stage = _make_stage(qubo, alpha=1.0, soft=True)
         env = _make_env(ResultFormat.COUNTS)
 
-        merged_result = stage.reduce(
-            {_obs_key(0, 0): {"00": 30, "01": 10, "10": 20, "11": 40}},
+        result = stage.reduce(
+            {_meas_key(0): {"00": 30, "01": 10, "10": 20, "11": 40}},
             env,
             token=None,
         )
 
-        split_result = stage.reduce(
-            {
-                _obs_key(0, 0): {"00": 30, "01": 10},
-                _obs_key(0, 1): {"10": 20, "11": 40},
-            },
-            env,
-            token=None,
-        )
+        assert len(result) == 1
+        assert isinstance(list(result.values())[0], float)
 
-        assert list(split_result.values())[0] == pytest.approx(
-            list(merged_result.values())[0]
-        )
-
-    def test_overlapping_bitstrings_are_summed(self):
-        """Overlapping keys across obs groups are summed, not overwritten."""
+    def test_different_histograms_produce_different_energies(self):
+        """Different shot distributions yield different energies."""
         qubo = np.diag([1.0, 2.0])
         stage = _make_stage(qubo, alpha=1.0, soft=True)
         env = _make_env(ResultFormat.COUNTS)
 
-        # "01" appears in both groups: 5 + 3 = 8
-        overlap_result = stage.reduce(
-            {
-                _obs_key(0, 0): {"00": 10, "01": 5},
-                _obs_key(0, 1): {"01": 3, "10": 7},
-            },
+        result_a = stage.reduce(
+            {_meas_key(0): {"00": 100}},
+            env,
+            token=None,
+        )
+        result_b = stage.reduce(
+            {_meas_key(0): {"11": 100}},
             env,
             token=None,
         )
 
-        # Equivalent single group with the merged histogram
-        single_result = stage.reduce(
-            {_obs_key(0, 0): {"00": 10, "01": 8, "10": 7}},
-            env,
-            token=None,
-        )
-
-        assert list(overlap_result.values())[0] == pytest.approx(
-            list(single_result.values())[0]
-        )
-
-
-# ---------------------------------------------------------------------------
-# Tests: path routing (soft vs hard CVaR vs expval)
-# ---------------------------------------------------------------------------
+        assert list(result_a.values())[0] != pytest.approx(list(result_b.values())[0])
 
 
 class TestReducePathRouting:
@@ -135,10 +190,10 @@ class TestReducePathRouting:
         hard_stage = _make_stage(qubo, alpha=6.0, soft=False, alpha_cvar=0.25)
 
         soft_energy = list(
-            soft_stage.reduce({_obs_key(0, 0): histogram}, env, token=None).values()
+            soft_stage.reduce({_meas_key(0): histogram}, env, token=None).values()
         )[0]
         hard_energy = list(
-            hard_stage.reduce({_obs_key(0, 0): histogram}, env, token=None).values()
+            hard_stage.reduce({_meas_key(0): histogram}, env, token=None).values()
         )[0]
 
         assert soft_energy != pytest.approx(hard_energy)
@@ -155,7 +210,7 @@ class TestReducePathRouting:
         stage = _make_stage(qubo, alpha=1.0, soft=True)
         env = _make_env(ResultFormat.COUNTS)
 
-        result = stage.reduce({_obs_key(0, 0): {"00": 100}}, env, token=None)
+        result = stage.reduce({_meas_key(0): {"00": 100}}, env, token=None)
 
         x = 0.5 * (1.0 + np.tanh(1.0))  # ≈ 0.8808
         expected = 1.0 * x**2 + 2.0 * x**2  # 3 * x²
@@ -172,79 +227,28 @@ class TestReducePathRouting:
         stage = _make_stage(qubo, alpha=6.0, soft=False, alpha_cvar=0.25)
         env = _make_env(ResultFormat.COUNTS)
 
-        result = stage.reduce({_obs_key(0, 0): {"11": 100}}, env, token=None)
+        result = stage.reduce({_meas_key(0): {"11": 100}}, env, token=None)
 
         assert list(result.values())[0] == pytest.approx(0.0)
 
+    def test_hard_cvar_selects_low_energy_tail(self):
+        """CVaR with alpha_cvar=0.5 selects the lower-energy half of shots.
 
-# ---------------------------------------------------------------------------
-# Tests: expval path
-# ---------------------------------------------------------------------------
+        qubo = diag([1, 2]), masks = [1, 2].
+        Bitstring "11" → parities [1, 1] → x = [0, 0] → energy = 0.
+        Bitstring "00" → parities [0, 0] → x = [1, 1] → energy = 1+2 = 3.
 
-
-class TestReduceExpvalPath:
-    """PCECostStage.reduce with ResultFormat.EXPVALS."""
-
-    def test_expval_zero_expectations(self):
-        """Z-expectations all zero → x_soft = [0.5, 0.5] → hand-computed energy.
-
-        qubo = diag([1, 2]), z = [0, 0].
-        x_soft = 0.5*(1 + tanh(0)) = [0.5, 0.5].
-        energy = 1*0.5² + 2*0.5² = 0.25 + 0.5 = 0.75.
+        50 shots of "11" (energy 0) + 50 shots of "00" (energy 3).
+        Mean energy = 1.5.
+        CVaR(0.5) takes the lowest 50 shots → all "11" → energy = 0.
         """
         qubo = np.diag([1.0, 2.0])
-        stage = _make_stage(qubo, alpha=1.0, soft=True)
-        env = _make_env(ResultFormat.EXPVALS)
+        stage = _make_stage(qubo, alpha=6.0, soft=False, alpha_cvar=0.5)
+        env = _make_env(ResultFormat.COUNTS)
 
-        result = stage.reduce(
-            {_obs_key(0, 0): 0.0, _obs_key(0, 1): 0.0},
-            env,
-            token=None,
-        )
+        result = stage.reduce({_meas_key(0): {"11": 50, "00": 50}}, env, token=None)
 
-        assert list(result.values())[0] == pytest.approx(0.75)
-
-    def test_expval_saturated_positive(self):
-        """Large positive Z → x_soft ≈ 1 → energy ≈ sum of diagonal.
-
-        qubo = diag([1, 2]), z = [100, 100].
-        tanh(100) ≈ 1, x_soft ≈ [1, 1].
-        energy ≈ 1*1² + 2*1² = 3.0.
-        """
-        qubo = np.diag([1.0, 2.0])
-        stage = _make_stage(qubo, alpha=1.0, soft=True)
-        env = _make_env(ResultFormat.EXPVALS)
-
-        result = stage.reduce(
-            {_obs_key(0, 0): 100.0, _obs_key(0, 1): 100.0},
-            env,
-            token=None,
-        )
-
-        assert list(result.values())[0] == pytest.approx(3.0, abs=1e-6)
-
-    def test_expval_preserves_observable_order(self):
-        """Out-of-order obs_group indices are sorted, mapping Z values correctly.
-
-        qubo = diag([1, 2]), alpha=1. Provide z0=0, z1=100 but obs_group 1 first.
-        Correct ordering: x_soft ≈ [0.5, 1.0].
-        energy = 1*0.5² + 2*1² = 0.25 + 2.0 = 2.25.
-        Wrong ordering (swapped): x_soft ≈ [1.0, 0.5].
-        energy = 1*1² + 2*0.5² = 1.0 + 0.5 = 1.5.
-        """
-        qubo = np.diag([1.0, 2.0])
-        stage = _make_stage(qubo, alpha=1.0, soft=True)
-        env = _make_env(ResultFormat.EXPVALS)
-
-        # Deliberately provide obs_group 1 before obs_group 0
-        result = stage.reduce(
-            {_obs_key(0, 1): 100.0, _obs_key(0, 0): 0.0},
-            env,
-            token=None,
-        )
-
-        # If ordering is correct: z=[0, 100] → x≈[0.5, 1.0] → ≈2.25
-        assert list(result.values())[0] == pytest.approx(2.25, abs=1e-2)
+        assert list(result.values())[0] == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -255,15 +259,15 @@ class TestReduceExpvalPath:
 class TestReduceMultiParamSet:
     """Each param_set is reduced independently."""
 
-    def test_counts_two_param_sets_independent(self):
+    def test_two_param_sets_independent(self):
         """Two param_sets with different histograms produce different energies."""
         qubo = np.diag([1.0, 2.0])
         stage = _make_stage(qubo, alpha=1.0, soft=True)
         env = _make_env(ResultFormat.COUNTS)
 
         results = {
-            _obs_key(0, 0): {"00": 100},  # all parities 0
-            _obs_key(1, 0): {"11": 100},  # all parities 1
+            _meas_key(0): {"00": 100},  # all parities 0
+            _meas_key(1): {"11": 100},  # all parities 1
         }
 
         reduced = stage.reduce(results, env, token=None)
@@ -272,25 +276,3 @@ class TestReduceMultiParamSet:
         energies = list(reduced.values())
         # Different histograms must yield different energies
         assert energies[0] != pytest.approx(energies[1])
-
-    def test_expval_two_param_sets_independent(self):
-        """Two param_sets with different Z-expectations produce different energies."""
-        qubo = np.diag([1.0, 2.0])
-        stage = _make_stage(qubo, alpha=1.0, soft=True)
-        env = _make_env(ResultFormat.EXPVALS)
-
-        results = {
-            _obs_key(0, 0): 0.0,
-            _obs_key(0, 1): 0.0,
-            _obs_key(1, 0): 100.0,
-            _obs_key(1, 1): 100.0,
-        }
-
-        reduced = stage.reduce(results, env, token=None)
-
-        assert len(reduced) == 2
-        key_0 = (("param_set", 0),)
-        key_1 = (("param_set", 1),)
-        # z=[0,0] → energy=0.75; z=[100,100] → energy≈3.0
-        assert reduced[key_0] == pytest.approx(0.75)
-        assert reduced[key_1] == pytest.approx(3.0, abs=1e-6)

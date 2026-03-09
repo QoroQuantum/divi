@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pipeline stage for PCE observable grouping and binary-polynomial reduction."""
+"""Pipeline stage for PCE Z-basis measurement and binary-polynomial reduction."""
 
 from collections.abc import Callable
 from typing import Any
@@ -10,13 +10,23 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-from divi.pipeline.abc import ChildResults, PipelineEnv, ResultFormat, StageToken
-from divi.pipeline.stages._measurement_stage import (
-    OBS_GROUP_AXIS,
-    MeasurementStage,
+from divi.pipeline.abc import (
+    BundleStage,
+    ChildResults,
+    ExpansionResult,
+    MetaCircuitBatch,
+    PipelineEnv,
+    ResultFormat,
+    StageToken,
 )
-from divi.pipeline.transformations import group_by_base_key
 from divi.typing import BinaryPolynomialProblem
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+PCE_MEAS_AXIS = "pce_meas"
+# Axis name for the single Z-basis measurement circuit emitted by PCECostStage.
 
 # ---------------------------------------------------------------------------
 # PCE energy helpers
@@ -107,16 +117,14 @@ def _compute_hard_cvar_energy(
     return float(cvar_energy / cutoff_count)
 
 
-class PCECostStage(MeasurementStage):
-    """MeasurementStage variant whose reduce computes polynomial energy.
+class PCECostStage(BundleStage):
+    """Pipeline stage that emits a single Z-basis measurement and computes
+    nonlinear binary-polynomial energy from shot histograms.
 
-    Expand is inherited from MeasurementStage (sets up Z-basis measurement QASMs)
-    but overrides ``result_format`` to ``COUNTS`` so raw shot histograms reach
-    the reduce step for nonlinear energy computation.
-
-    Reduce aggregates histograms across observable groups for each param set
-    and applies the PCE nonlinear energy formula instead of the standard
-    linear Hamiltonian combination.
+    PCE only needs raw bitstring counts (not expectation values), so this
+    stage bypasses MeasurementStage's observable grouping entirely.  Expand
+    generates a single "measure all qubits" QASM per circuit spec, and
+    reduce applies the soft tanh or hard CVaR energy formula.
 
     Args:
         problem: Canonical binary polynomial problem used for objective evaluation.
@@ -138,11 +146,7 @@ class PCECostStage(MeasurementStage):
         variable_masks_u64: npt.NDArray[np.uint64],
         alpha_cvar: float = 0.25,
     ) -> None:
-        # No grouping — each Z observable gets its own measurement circuit.
-        super().__init__(
-            grouping_strategy=None,
-            result_format_override=ResultFormat.COUNTS,
-        )
+        super().__init__(name="PCECostStage")
         self._problem = problem
         self._alpha = alpha
         self._soft = use_soft_objective
@@ -150,53 +154,60 @@ class PCECostStage(MeasurementStage):
         self._masks = variable_masks_u64
         self._alpha_cvar = alpha_cvar
 
+    @property
+    def axis_name(self) -> str:
+        return PCE_MEAS_AXIS
+
+    @property
+    def handles_measurement(self) -> bool:
+        return True
+
+    def expand(
+        self, batch: MetaCircuitBatch, env: PipelineEnv
+    ) -> tuple[ExpansionResult, StageToken]:
+        """Emit a single Z-basis measurement circuit per circuit spec.
+
+        Generates "measure all qubits" QASM and sets the result format to
+        COUNTS so raw shot histograms reach reduce.
+        """
+        env.result_format = ResultFormat.COUNTS
+
+        out = {}
+        for key, meta in batch.items():
+            n_qubits = len(meta.source_circuit.wires)
+            measure_qasm = "".join(
+                f"measure q[{i}] -> c[{i}];\n" for i in range(n_qubits)
+            )
+            tagged = ((((PCE_MEAS_AXIS, 0),), measure_qasm),)
+            out[key] = meta.set_measurement_bodies(tagged)
+
+        return ExpansionResult(batch=out), None
+
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken
     ) -> ChildResults:
-        """Aggregate observable-group results and compute polynomial energy.
+        """Compute polynomial energy from shot histograms.
 
-        For shot-based backends: merge histograms across observable groups,
-        then compute parity-based soft or hard CVaR energy.
-
-        For expval backends: collect per-Z expectation values, then apply
-        the PCE soft energy formula.
+        Each param set has a single histogram (no observable-group merging
+        needed).  Applies the soft tanh or hard CVaR energy formula.
         """
-        grouped = group_by_base_key(results, OBS_GROUP_AXIS, indexed=True)
-
         reduced: dict[object, Any] = {}
-        for base_key, indexed_items in grouped.items():
-            # indexed_items: dict[obs_group_idx, value]
-            # Sort by index to preserve observable order for expval path.
-            values = [indexed_items[k] for k in sorted(indexed_items)]
+        for key, histogram in results.items():
+            base_key = tuple(ax for ax in key if ax[0] != PCE_MEAS_AXIS)
 
-            if env.result_format == ResultFormat.EXPVALS:
-                # Each value is a scalar Z expectation.
-                z_expectations = np.array(values, dtype=np.float64)
-                x_soft = 0.5 * (1.0 + np.tanh(self._alpha * z_expectations))
-                reduced[base_key] = float(
-                    _evaluate_binary_polynomial(x_soft, self._problem)
+            state_strings = list(histogram.keys())
+            counts = np.array(list(histogram.values()), dtype=float)
+            total_shots = counts.sum()
+            parities = self._decode(state_strings, self._masks)
+
+            if self._soft:
+                probs = counts / total_shots
+                reduced[base_key] = _compute_soft_energy(
+                    parities, probs, self._alpha, self._problem
                 )
             else:
-                # Each value is a histogram dict {bitstring: count}.
-                # Merge all histograms for this param set.
-                shots_dict: dict[str, int] = {}
-                for histogram in values:
-                    for bitstring, count in histogram.items():
-                        shots_dict[bitstring] = shots_dict.get(bitstring, 0) + count
-
-                state_strings = list(shots_dict.keys())
-                counts = np.array(list(shots_dict.values()), dtype=float)
-                total_shots = counts.sum()
-                parities = self._decode(state_strings, self._masks)
-
-                if self._soft:
-                    probs = counts / total_shots
-                    reduced[base_key] = _compute_soft_energy(
-                        parities, probs, self._alpha, self._problem
-                    )
-                else:
-                    reduced[base_key] = _compute_hard_cvar_energy(
-                        parities, counts, total_shots, self._problem, self._alpha_cvar
-                    )
+                reduced[base_key] = _compute_hard_cvar_energy(
+                    parities, counts, total_shots, self._problem, self._alpha_cvar
+                )
 
         return reduced

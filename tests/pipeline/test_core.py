@@ -57,7 +57,7 @@ class TestValidateStageOrder:
         """Single spec stage without MeasurementStage raises."""
         with pytest.raises(
             ValueError,
-            match="Pipeline must contain at least one MeasurementStage",
+            match="Pipeline must contain at least one stage that handles measurement",
         ):
             CircuitPipeline(stages=[DummySpecStage(meta=two_group_meta())])
 
@@ -65,7 +65,7 @@ class TestValidateStageOrder:
         """Pipeline with spec + bundle but no MeasurementStage raises."""
         with pytest.raises(
             ValueError,
-            match="Pipeline must contain at least one MeasurementStage",
+            match="Pipeline must contain at least one stage that handles measurement",
         ):
             CircuitPipeline(
                 stages=[

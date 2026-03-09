@@ -38,9 +38,10 @@ class TestQuboToMatrixBQM:
         idx_b = variables.index("b")
         assert result[idx_a, idx_a] == pytest.approx(1.0)
         assert result[idx_b, idx_b] == pytest.approx(-2.0)
-        # Off-diagonal should match quadratic bias (symmetric)
-        assert result[idx_a, idx_b] == pytest.approx(0.5)
-        assert result[idx_b, idx_a] == pytest.approx(0.5)
+        # Off-diagonal should be half the quadratic bias (symmetric convention:
+        # Q[i,j] = Q[j,i] = J_ij/2 so that x^T Q x = BQM energy - offset)
+        assert result[idx_a, idx_b] == pytest.approx(0.25)
+        assert result[idx_b, idx_a] == pytest.approx(0.25)
 
     def test_non_binary_bqm_raises(self):
         """A non-BINARY (SPIN) BQM should raise ValueError."""

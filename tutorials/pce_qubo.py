@@ -24,7 +24,7 @@ def create_optimizer(pop_size: int) -> PymooOptimizer:
     return PymooOptimizer(method=PymooMethod.DE, population_size=pop_size)
 
 
-def main() -> None:
+def main():
     pop_size = 10
     iters = 10
     layers = 2
@@ -57,24 +57,26 @@ def main() -> None:
         alpha=1.0,
     )
     solver.run()
-    solution = solver.solution
-    energy = float(bqm.energy(solution))
 
-    best_classical_bitstring, best_classical_energy, _ = (
+    best_classical_array, best_classical_energy, _ = (
         dimod.ExactSolver().sample(bqm).lowest().record[0]
     )
+    best_classical_bitstring = "".join(str(int(b)) for b in best_classical_array)
+
+    # Get top solutions sorted by energy (ascending)
+    top_solutions = solver.get_top_solutions(n=5, min_prob=0.01, sort_by="energy")
+    best_pce = top_solutions[0]
 
     print(f"Total circuits: {solver.total_circuit_count}\n")
     print("Method     Energy        Solution")
     print("-------    -----------   --------------------------------")
-    print(f"PCE        {energy:>11.6f}   {solution}")
+    print(f"PCE        {best_pce.energy:>11.6f}   {best_pce.bitstring}")
     print(f"Classical  {best_classical_energy:>11.6f}   {best_classical_bitstring}")
 
     # Demonstrate get_top_solutions - returns decoded QUBO solutions
     print("\n" + "=" * 80)
     print("Top 5 solutions from PCE (decoded QUBO variable assignments):")
     print("=" * 80)
-    top_solutions = solver.get_top_solutions(n=5, min_prob=0.01)
 
     # Print table header
     print(f"{'Rank':<6} {'Bitstring':<20} {'Probability':<15} {'Energy':<15}")
@@ -82,9 +84,7 @@ def main() -> None:
 
     # Print table rows
     for i, sol in enumerate(top_solutions, 1):
-        sol_array = np.array([int(c) for c in sol.bitstring])
-        sol_energy = float(bqm.energy(sol_array))
-        print(f"{i:<6} {sol.bitstring:<20} {sol.prob:>13.2%}  {sol_energy:>13.6f}")
+        print(f"{i:<6} {sol.bitstring:<20} {sol.prob:>13.2%}  {sol.energy:>13.6f}")
 
 
 if __name__ == "__main__":

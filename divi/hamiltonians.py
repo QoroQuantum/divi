@@ -632,7 +632,14 @@ class QuadratizedIsingConverter(BinaryToIsingConverter):
 
 
 def _default_variable_order(variables: set[Hashable]) -> tuple[Hashable, ...]:
-    """Build deterministic variable order for mixed, potentially incomparable labels."""
+    """Build deterministic variable order for mixed, potentially incomparable labels.
+
+    Sorts integers numerically (0, 1, 2, ..., 10, 11) rather than
+    lexicographically ("0", "1", "10", "11", ..., "2").  Non-integer
+    labels fall back to ``repr``-based ordering.
+    """
+    if all(isinstance(v, int) for v in variables):
+        return tuple(sorted(variables))
     return tuple(sorted(variables, key=repr))
 
 

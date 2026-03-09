@@ -169,6 +169,14 @@ class SpecStage(Stage[InT, MetaCircuitBatch], ABC):
 class BundleStage(Stage[MetaCircuitBatch, ExpansionResult], ABC):
     """Abstract stage that transforms a keyed MetaCircuit batch."""
 
+    @property
+    def handles_measurement(self) -> bool:
+        """Whether this stage sets up measurement circuits and result format.
+
+        Pipelines must contain at least one stage with this property True.
+        """
+        return False
+
     @abstractmethod
     def expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv

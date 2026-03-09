@@ -73,7 +73,7 @@ def qubo_to_matrix(qubo: QUBOProblemTypes) -> np.ndarray | sps.spmatrix:
         matrix = np.diag([qubo.linear.get(v, 0) for v in variables])
         for (u, v), coeff in qubo.quadratic.items():
             i, j = var_to_idx[u], var_to_idx[v]
-            matrix[i, j] = matrix[j, i] = coeff
+            matrix[i, j] = matrix[j, i] = coeff / 2
         return matrix
 
     if isinstance(qubo, list):

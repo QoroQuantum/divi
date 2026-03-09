@@ -24,7 +24,6 @@ from divi.pipeline.abc import (
     Stage,
     StageToken,
 )
-from divi.pipeline.stages import MeasurementStage
 
 logger = logging.getLogger(__name__)
 
@@ -171,10 +170,10 @@ def _validate_stage_order(stages: Sequence[Stage]) -> None:
             "any 'bundle' stage"
         )
 
-    if not any(isinstance(s, MeasurementStage) for s in stages):
+    if not any(isinstance(s, BundleStage) and s.handles_measurement for s in stages):
         raise ValueError(
-            "Pipeline must contain at least one MeasurementStage "
-            "(or a subclass of it)"
+            "Pipeline must contain at least one stage that handles measurement "
+            "(a stage with handles_measurement=True)"
         )
 
     axis_counts = Counter(stage.axis_name for stage in stages)

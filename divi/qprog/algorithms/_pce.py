@@ -15,10 +15,10 @@ from divi.circuits import MetaCircuit
 from divi.hamiltonians import normalize_binary_polynomial_problem
 from divi.pipeline import CircuitPipeline
 from divi.pipeline.stages import CircuitSpecStage, ParameterBindingStage, PCECostStage
+from divi.pipeline.stages._pce_cost_stage import _evaluate_binary_polynomial
+from divi.qprog.algorithms._vqe import VQE
 from divi.qprog.variational_quantum_algorithm import SolutionEntry
 from divi.typing import BinaryPolynomialProblem, HUBOProblemTypes, QUBOProblemTypes
-
-from ._vqe import VQE
 
 # Pre-computed 8-bit popcount table for O(1) lookups
 _POPCOUNT_TABLE_8BIT = np.array([bin(i).count("1") for i in range(256)], dtype=np.uint8)
@@ -204,17 +204,18 @@ class PCE(VQE):
         placeholder_hamiltonian = qml.Hamiltonian(
             [1.0] * self.n_qubits, [qml.PauliZ(i) for i in range(self.n_qubits)]
         )
-        # PCE uses its own PCECostStage, so disable base-class grouping
-        # to suppress the misleading "overriding grouping_strategy" warning.
-        kwargs.setdefault("grouping_strategy", None)
+        # PCE replaces the cost pipeline with PCECostStage (a standalone
+        # BundleStage), so VQE's grouping_strategy is irrelevant for cost
+        # evaluation.  Pop it to avoid the "overriding grouping_strategy"
+        # warning from VQE.__init__ when the backend supports expval.
+        kwargs.pop("grouping_strategy", None)
         super().__init__(hamiltonian=placeholder_hamiltonian, **kwargs)
 
     def _build_pipelines(self) -> None:
-        # Override VQE's cost pipeline: use PCECostStage instead of
-        # MeasurementStage.  PCECostStage has the same expand
-        # (Z-basis measurement QASMs) but sets ResultFormat.COUNTS and its
-        # reduce applies the nonlinear QUBO energy formula instead of the
-        # linear Hamiltonian combination.
+        # Override VQE's cost pipeline: PCECostStage is a standalone
+        # BundleStage (not a MeasurementStage subclass) that emits a single
+        # "measure all qubits" QASM per circuit spec and computes nonlinear
+        # binary-polynomial energy from raw shot histograms.
         # QEMStage is intentionally excluded — ZNE is not applicable to
         # counts-based measurements.
         self._cost_pipeline = CircuitPipeline(
@@ -289,9 +290,14 @@ class PCE(VQE):
         self._final_vector = 1 - parities
 
     def get_top_solutions(
-        self, n: int = 10, *, min_prob: float = 0.0, include_decoded: bool = False
+        self,
+        n: int = 10,
+        *,
+        min_prob: float = 0.0,
+        include_decoded: bool = False,
+        sort_by: Literal["prob", "energy"] = "prob",
     ) -> list[SolutionEntry]:
-        """Get the top-N solutions sorted by probability, with decoded QUBO variable assignments.
+        """Get the top-N solutions with decoded QUBO variable assignments.
 
         This method overrides the base implementation to decode encoded qubit states
         into actual QUBO variable assignments. The bitstrings in the probability
@@ -310,49 +316,32 @@ class PCE(VQE):
                 each SolutionEntry with the numpy array representation of the
                 QUBO solution. If False, the decoded field will be None.
                 Defaults to False.
+            sort_by: Sort order for the returned solutions.
+                ``"prob"`` (default): descending by probability.
+                ``"energy"``: ascending by objective energy. When set, the
+                ``energy`` field of each ``SolutionEntry`` is populated.
 
         Returns:
-            list[SolutionEntry]: List of solution entries sorted by probability
-                (descending), then by decoded bitstring (lexicographically ascending)
-                for deterministic tie-breaking. The `bitstring` field contains
-                the decoded QUBO solution as a binary string (e.g., "01011" for
-                5 variables), not the encoded qubit state. Returns an empty list
-                if no probability distribution is available or n <= 0.
+            list[SolutionEntry]: List of solution entries sorted according to
+                ``sort_by``, with decoded bitstring for deterministic tie-breaking.
+                The `bitstring` field contains the decoded QUBO solution as a
+                binary string (e.g., "01011" for 5 variables), not the encoded
+                qubit state. Returns an empty list if no probability distribution
+                is available or n <= 0.
 
         Raises:
             RuntimeError: If probability distribution is not available because
                 optimization has not been run or final computation was not performed.
-            ValueError: If min_prob is not in range [0.0, 1.0] or n is negative.
-
-        Note:
-            The probability distribution must be computed by running the algorithm
-            with `perform_final_computation=True` (the default):
-
-            >>> program.run(perform_final_computation=True)
-            >>> top_10 = program.get_top_solutions(n=10)
-
-        Example:
-            >>> # Get top 5 solutions with probability >= 5%
-            >>> program.run()
-            >>> solutions = program.get_top_solutions(n=5, min_prob=0.05)
-            >>> for sol in solutions:
-            ...     print(f"{sol.bitstring}: {sol.prob:.2%}")
-            01011: 42.50%  # Decoded QUBO solution (5 variables)
-            10100: 31.20%
-            ...
-
-            >>> # Get solutions with numpy array in decoded field
-            >>> solutions = program.get_top_solutions(n=3, include_decoded=True)
-            >>> for sol in solutions:
-            ...     print(f"{sol.bitstring} -> {sol.decoded}")
-            01011 -> [0 1 0 1 1]  # numpy array
-            ...
+            ValueError: If min_prob is not in range [0.0, 1.0], n is negative,
+                or sort_by is not one of ``"prob"`` or ``"energy"``.
         """
         # Validate inputs
         if n < 0:
             raise ValueError(f"n must be non-negative, got {n}")
         if not (0.0 <= min_prob <= 1.0):
             raise ValueError(f"min_prob must be in range [0.0, 1.0], got {min_prob}")
+        if sort_by not in ("prob", "energy"):
+            raise ValueError(f"sort_by must be 'prob' or 'energy', got '{sort_by}'")
 
         # Handle edge case: n == 0
         if n == 0:
@@ -371,52 +360,62 @@ class PCE(VQE):
         # _best_probs structure: {tag: {bitstring: prob}}
         probs_dict = next(iter(self._best_probs.values()))
 
-        # Filter by minimum probability and get top n sorted by probability (descending),
-        # then bitstring (ascending) for deterministic tie-breaking
-        top_items = sorted(
-            filter(
-                lambda bitstring_prob: bitstring_prob[1] >= min_prob, probs_dict.items()
-            ),
-            key=lambda bitstring_prob: (-bitstring_prob[1], bitstring_prob[0]),
-        )[:n]
+        # Filter by minimum probability
+        filtered = [(bs, prob) for bs, prob in probs_dict.items() if prob >= min_prob]
 
-        # Decode each encoded qubit state to QUBO variable assignment
-        encoded_bitstrings = [bitstring for bitstring, _ in top_items]
+        # Decode all filtered encoded qubit states to QUBO variable assignments
+        encoded_bitstrings = [bs for bs, _ in filtered]
         decoded_parities = self._decode_parities_fn(
             encoded_bitstrings, self._variable_masks_u64
         )
         # decoded_parities shape: (n_vars, n_states), transpose to (n_states, n_vars)
-        decoded_qubo_solutions = (
-            1 - decoded_parities
-        ).T  # Convert parities to QUBO assignments
+        decoded_qubo_solutions = (1 - decoded_parities).T
 
-        # Build result list with decoded solutions
+        # Build full result list with decoded solutions and optional energy
+        compute_energy = sort_by == "energy"
         result = []
         for (encoded_bitstring, prob), decoded_solution in zip(
-            top_items, decoded_qubo_solutions
+            filtered, decoded_qubo_solutions
         ):
-            # Convert decoded solution to binary string representation
             decoded_bitstring = "".join(str(int(x)) for x in decoded_solution)
-
+            energy = (
+                float(
+                    _evaluate_binary_polynomial(
+                        decoded_solution.astype(float), self.problem
+                    )
+                )
+                if compute_energy
+                else None
+            )
             result.append(
                 SolutionEntry(
-                    bitstring=decoded_bitstring,  # Decoded QUBO solution as string
+                    bitstring=decoded_bitstring,
                     prob=prob,
                     decoded=(
                         decoded_solution.astype(np.int32) if include_decoded else None
                     ),
+                    energy=energy,
                 )
             )
 
-        # Re-sort by decoded bitstring for deterministic tie-breaking
-        # (in case multiple encoded states decode to the same QUBO solution)
-        result.sort(key=lambda entry: (-entry.prob, entry.bitstring))
+        # Sort and take top n
+        if sort_by == "energy":
+            result.sort(key=lambda e: (e.energy, e.bitstring))
+        else:
+            result.sort(key=lambda e: (-e.prob, e.bitstring))
 
-        return result
+        return result[:n]
 
     @property
     def solution(self) -> npt.NDArray[np.integer] | dict:
-        """Return the final optimized solution based on the best parameters found.
+        """Return the most-probable decoded assignment from the final measurement.
+
+        .. note::
+
+            This returns the assignment corresponding to the **highest-probability**
+            encoded bitstring, which may not be the lowest-energy solution.
+            For energy-ranked solutions, use
+            :meth:`get_top_solutions(sort_by="energy") <get_top_solutions>` instead.
 
         Returns:
             For QUBO problems, a binary 0/1 NumPy array. For HUBO problems
@@ -428,6 +427,15 @@ class PCE(VQE):
         """
         if self._final_vector is None:
             raise RuntimeError("Run the VQE optimization first.")
+
+        warn(
+            "PCE.solution returns the decoded assignment of the most-probable "
+            "encoded bitstring. Because PCE operates in a compressed qubit space "
+            "(O(log2(N)) qubits for N variables), the most-probable encoded state "
+            "does not necessarily decode to the lowest-energy QUBO solution. "
+            "Use get_top_solutions(sort_by='energy') for energy-ranked results.",
+            stacklevel=2,
+        )
 
         vo = self.problem.variable_order
         if vo != tuple(range(self.problem.n_vars)):
