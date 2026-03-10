@@ -16,7 +16,7 @@ from dimod import BinaryQuadraticModel
 
 from divi.backends import CircuitRunner
 from divi.qprog.algorithms import PCE, QAOA
-from divi.qprog.batch import ProgramBatch, _beam_search_aggregate_top_n
+from divi.qprog.ensemble import ProgramEnsemble, _beam_search_aggregate_top_n
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer, copy_optimizer
 from divi.typing import QUBOProblemTypes
 
@@ -51,7 +51,7 @@ def _sanitize_problem_input(qubo: T) -> tuple[T, BinaryQuadraticModel]:
     raise ValueError(f"Got an unsupported QUBO input format: {type(qubo)}")
 
 
-class QUBOPartitioningQAOA(ProgramBatch):
+class QUBOPartitioningQAOA(ProgramEnsemble):
     def __init__(
         self,
         qubo: QUBOProblemTypes,

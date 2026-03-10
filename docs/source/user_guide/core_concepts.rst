@@ -40,7 +40,7 @@ Every variational quantum program in Divi follows a consistent lifecycle:
    Internally, steps 2–5 are orchestrated by a **circuit pipeline** that uses an
    *expand → execute → reduce* pattern. You don't need to interact with the pipeline
    directly when using built-in algorithms, but understanding it enables powerful
-   customisation. See :doc:`pipelines` for a deep dive.
+   customization. See :doc:`pipelines` for a deep dive.
 
 Here's how a typical :class:`VQE` program flows through this lifecycle:
 
@@ -143,7 +143,7 @@ Set ``include_decoded=True`` when calling :meth:`get_top_solutions` to include d
 - **Optimization Loop** 🔄 - Built-in integration with classical optimizers
 - **Loss Tracking** 📈 - Detailed history of loss values during optimization
 - **Best Result Storage** 💾 - Automatic tracking of the best parameters and loss value found
-- **Early Stopping** 🛑 - Configurable criteria to terminate optimisation when convergence stalls (see :doc:`optimizers`)
+- **Early Stopping** 🛑 - Configurable criteria to terminate optimization when convergence stalls (see :doc:`optimizers`)
 
 **Key Properties:**
 
@@ -256,7 +256,7 @@ create circuits manually for most use cases.
 
 If you need a **custom ansatz or circuit**, use :class:`CustomVQA`. It lets you
 define your own PennyLane circuit template and Hamiltonian while Divi handles
-compilation, execution, and optimisation:
+compilation, execution, and optimization:
 
 .. code-block:: python
 
@@ -285,7 +285,7 @@ replaces trainable slots with internal symbols and optimizes them.
 ``param_shape`` defines the shape of one parameter set and must match the number
 of trainable parameters in ``qscript`` (here: 2).
 
-``run()`` returns ``(total_circuit_count, total_run_time)``. Optimisation outputs
+``run()`` returns ``(total_circuit_count, total_run_time)``. optimization outputs
 are read from the program object:
 
 .. code-block:: python

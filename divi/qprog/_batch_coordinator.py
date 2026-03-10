@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Batch coordinator for ProgramBatch circuit submission.
+"""Batch coordinator for ProgramEnsemble circuit submission.
 
 Provides a proxy backend and coordinator that merge circuit submissions
 from multiple QuantumProgram instances into single backend calls,
@@ -14,8 +14,11 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from concurrent.futures import Future
+from dataclasses import dataclass
+from enum import Enum
 from queue import Queue
 from threading import Event, Lock, Thread
+from typing import NamedTuple
 
 from divi.backends import CircuitRunner, JobStatus
 from divi.backends._execution_result import ExecutionResult
@@ -29,16 +32,76 @@ logger = logging.getLogger(__name__)
 _TAG_SEP = "@"
 
 
+class BatchMode(Enum):
+    """Controls whether circuit submissions are merged across programs.
+
+    Attributes:
+        MERGED: Circuit submissions from all programs are merged into single
+            backend calls via the batch coordinator.
+        OFF: Each program submits circuits independently to the backend.
+    """
+
+    MERGED = "merged"
+    OFF = "off"
+
+
+@dataclass(frozen=True)
+class BatchConfig:
+    """Configuration for circuit batching in :meth:`ProgramEnsemble.run`.
+
+    Attributes:
+        mode: Whether to merge circuit submissions across programs.
+            Defaults to :attr:`BatchMode.MERGED`.
+        max_batch_size: Maximum number of circuits per merged backend call.
+            When set, the coordinator flushes early once the pending circuit
+            count reaches this limit instead of waiting for every active
+            program to submit.  ``None`` (the default) preserves the
+            wait-for-all barrier behaviour.  Only meaningful when
+            ``mode`` is :attr:`BatchMode.MERGED`.
+    """
+
+    mode: BatchMode = BatchMode.MERGED
+    max_batch_size: int | None = None
+
+    def __post_init__(self):
+        if self.max_batch_size is not None and self.max_batch_size < 1:
+            raise ValueError(
+                f"max_batch_size must be >= 1 or None, got {self.max_batch_size}"
+            )
+        if self.mode is BatchMode.OFF and self.max_batch_size is not None:
+            raise ValueError("max_batch_size has no effect when mode is BatchMode.OFF.")
+
+
+class _PendingEntry(NamedTuple):
+    """A single program's pending submission awaiting the flush barrier."""
+
+    circuits: dict[str, str]
+    kwargs: dict
+    future: Future
+
+
+# Batch dict type used throughout the coordinator.
+_Batch = dict[str, _PendingEntry]
+
+
 class _FlushGroup:
     """Tracks one merged submission: the per-program futures and the backend job."""
 
-    __slots__ = ("futures", "execution_result", "color", "program_keys")
+    __slots__ = ("futures", "execution_result", "color", "program_keys", "label")
 
-    def __init__(self, futures: dict[str, Future], color: str):
+    def __init__(self, futures: dict[str, Future], color: str, label: str = ""):
         self.futures = futures
         self.program_keys = set(futures.keys())
         self.color = color
+        self.label = label
         self.execution_result: ExecutionResult | None = None
+
+
+def _fail_futures(batch: _Batch, exc: BaseException) -> None:
+    """Set *exc* on all unresolved futures in *batch*."""
+    for entry in batch.values():
+        if not entry.future.done():
+            entry.future.set_exception(exc)
 
 
 class _BatchCoordinator:
@@ -54,9 +117,11 @@ class _BatchCoordinator:
         self,
         real_backend: CircuitRunner,
         progress_queue: Queue | None = None,
+        batch_config: BatchConfig | None = None,
     ):
         self._real_backend = real_backend
         self._progress_queue = progress_queue
+        self._batch_config = batch_config or BatchConfig()
         self._lock = Lock()
         self._cancelled = Event()
 
@@ -64,8 +129,7 @@ class _BatchCoordinator:
         self._active_programs: set[str] = set()
 
         # Pending submissions waiting for the barrier.
-        # Maps program_key -> (prefixed_circuits, kwargs, Future)
-        self._pending: dict[str, tuple[dict[str, str], dict, Future]] = {}
+        self._pending: _Batch = {}
 
         # In-flight flush groups (background threads processing backend jobs).
         self._in_flight: list[_FlushGroup] = []
@@ -126,7 +190,9 @@ class _BatchCoordinator:
             if self._cancelled.is_set():
                 raise _CancelledError("Batch coordinator has been cancelled.")
 
-            self._pending[program_key] = (prefixed_circuits, kwargs, future)
+            self._pending[program_key] = _PendingEntry(
+                prefixed_circuits, kwargs, future
+            )
 
             if self._should_flush():
                 self._trigger_flush()
@@ -138,11 +204,24 @@ class _BatchCoordinator:
     # Barrier & flush
     # ------------------------------------------------------------------
 
+    def _pending_circuit_count(self) -> int:
+        """Total circuits across all pending submissions (lock must be held)."""
+        return sum(len(entry.circuits) for entry in self._pending.values())
+
     def _should_flush(self) -> bool:
         """Check whether the barrier condition is met (lock must be held)."""
         if not self._pending:
             return False
-        return len(self._pending) >= len(self._active_programs)
+        # Barrier: all active programs have submitted.
+        if len(self._pending) >= len(self._active_programs):
+            return True
+        # Circuit-count cap: flush early when pending circuits hit the limit.
+        if (
+            self._batch_config.max_batch_size is not None
+            and self._pending_circuit_count() >= self._batch_config.max_batch_size
+        ):
+            return True
+        return False
 
     def _next_color(self) -> str:
         """Return the next color in the cycle (lock must be held)."""
@@ -160,7 +239,7 @@ class _BatchCoordinator:
 
         color = self._next_color()
         flush_group = _FlushGroup(
-            futures={key: entry[2] for key, entry in batch.items()},
+            futures={key: entry.future for key, entry in batch.items()},
             color=color,
         )
         with self._in_flight_lock:
@@ -187,6 +266,7 @@ class _BatchCoordinator:
         msg = {
             "batch": True,
             "batch_id": id(flush_group),
+            "batch_label": flush_group.label,
             "batch_color": flush_group.color,
             "program_keys": list(flush_group.program_keys),
             "n_circuits": n_circuits,
@@ -197,123 +277,195 @@ class _BatchCoordinator:
         self._progress_queue.put(msg)
 
     @staticmethod
-    def _kwargs_key(kwargs: dict) -> tuple:
-        """Return a hashable key for grouping programs with compatible kwargs."""
-        return tuple(sorted(kwargs.items()))
+    def _merge_circuits_and_kwargs(
+        batch: _Batch,
+    ) -> tuple[dict[str, str], dict]:
+        """Merge circuits from all programs and build unified submit kwargs.
 
-    def _do_flush(
-        self,
-        batch: dict[str, tuple[dict[str, str], dict, Future]],
-        flush_group: _FlushGroup,
-    ) -> None:
+        When all programs share identical kwargs the circuits are merged in
+        batch iteration order and the common kwargs are returned directly.
+
+        When programs have different ``ham_ops``, circuits are **reordered** so
+        that circuits sharing the same ``ham_ops`` are contiguous.  The
+        individual ``ham_ops`` strings are combined with ``|`` and a
+        ``circuit_ham_map`` is computed so the backend routes each group to the
+        correct circuit slice.
+
+        Returns:
+            ``(merged_circuits, submit_kwargs)``
+        """
+        all_kwargs = [entry.kwargs for entry in batch.values()]
+
+        # Fast path: all kwargs identical → simple merge, no reordering.
+        if all(kw == all_kwargs[0] for kw in all_kwargs):
+            merged: dict[str, str] = {}
+            for entry in batch.values():
+                merged.update(entry.circuits)
+            return merged, dict(all_kwargs[0])
+
+        # Slow path: different ham_ops values across programs.
+        # Group by ham_ops so circuits with the same observable are contiguous.
+        ham_to_programs: dict[str, list[str]] = {}
+        for prog_key, entry in batch.items():
+            ham = entry.kwargs["ham_ops"]
+            ham_to_programs.setdefault(ham, []).append(prog_key)
+
+        merged = {}
+        ham_groups: list[str] = []
+        circuit_ham_map: list[list[int]] = []
+        offset = 0
+
+        for ham, prog_keys in ham_to_programs.items():
+            group_start = offset
+            for pk in prog_keys:
+                circuits = batch[pk].circuits
+                merged.update(circuits)
+                offset += len(circuits)
+            ham_groups.append(ham)
+            circuit_ham_map.append([group_start, offset])
+
+        # Base kwargs from first program, replacing ham_ops with merged version.
+        merged_kw = {k: v for k, v in all_kwargs[0].items() if k != "ham_ops"}
+        merged_kw["ham_ops"] = "|".join(ham_groups)
+        merged_kw["circuit_ham_map"] = circuit_ham_map
+        return merged, merged_kw
+
+    @staticmethod
+    def _split_by_ham_ops(batch: _Batch) -> list[_Batch]:
+        """Split a batch into compatible sub-batches.
+
+        Programs with ``ham_ops`` cannot be merged with programs without it
+        because the backend treats the two as fundamentally different job types
+        (observable evaluation vs shot-based sampling).  This method partitions
+        the batch so each sub-batch can be merged safely.
+        """
+        with_ham: _Batch = {}
+        without_ham: _Batch = {}
+        for prog_key, entry in batch.items():
+            if entry.kwargs.get("ham_ops") is not None:
+                with_ham[prog_key] = entry
+            else:
+                without_ham[prog_key] = entry
+
+        return [sb for sb in (with_ham, without_ham) if sb]
+
+    def _do_flush(self, batch: _Batch, flush_group: _FlushGroup) -> None:
         """Merge circuits, submit to real backend, demux results, resolve futures.
 
-        Programs with identical submit kwargs are merged into a single backend
-        call.  Programs with different kwargs (e.g. different ``ham_ops``) are
-        submitted in separate calls within the same flush.
+        Programs are first split into compatible sub-batches (with/without
+        ``ham_ops``) so that each backend call receives a uniform set of
+        kwargs.  Within a sub-batch, programs with different ``ham_ops``
+        values are merged using ``circuit_ham_map``.
         """
+        sub_flush_groups: list[_FlushGroup] = []
         try:
             if self._cancelled.is_set():
-                for _, (_, _, fut) in batch.items():
-                    if not fut.done():
-                        fut.set_exception(
-                            _CancelledError("Batch coordinator has been cancelled.")
-                        )
+                _fail_futures(
+                    batch, _CancelledError("Batch coordinator has been cancelled.")
+                )
                 return
 
-            n_circuits = sum(len(circuits) for circuits, _, _ in batch.values())
-            n_programs = len(batch)
-
-            # Notify progress: batch submitted
-            self._send_batch_progress(
-                flush_group,
-                n_circuits=n_circuits,
-                n_programs=n_programs,
-                message="Submitting",
-            )
-
-            # --- Group programs by compatible kwargs ---
-            groups: dict[tuple, list[str]] = {}
-            for prog_key, (_, kwargs, _) in batch.items():
-                key = self._kwargs_key(kwargs)
-                groups.setdefault(key, []).append(prog_key)
-
-            # --- Submit each group and collect results ---
-            all_results: list[dict] = []
+            sub_batches = self._split_by_ham_ops(batch)
             total_runtime = 0.0
 
-            for _kw_key, prog_keys in groups.items():
-                merged_circuits: dict[str, str] = {}
-                group_kwargs = batch[prog_keys[0]][1]
-                for pk in prog_keys:
-                    merged_circuits.update(batch[pk][0])
-
-                execution_result = self._real_backend.submit_circuits(
-                    merged_circuits, **group_kwargs
-                )
-                flush_group.execution_result = execution_result
-
-                runtime = 0.0
-                if execution_result.job_id is not None:
-                    results_list, runtime = self._poll_and_get_results(
-                        execution_result, flush_group, n_circuits, n_programs
+            # Build (sub_batch, flush_group) pairs. When there's only one
+            # sub-batch reuse the parent flush_group; otherwise create
+            # labelled sub-groups so progress lines are distinct.
+            sub_groups: list[tuple[_Batch, _FlushGroup]] = []
+            if len(sub_batches) == 1:
+                sub_groups.append((sub_batches[0], flush_group))
+            else:
+                for sub_batch in sub_batches:
+                    has_ham = any(e.kwargs.get("ham_ops") for e in sub_batch.values())
+                    sub_fg = _FlushGroup(
+                        futures={k: e.future for k, e in sub_batch.items()},
+                        color=flush_group.color,
+                        label="expval" if has_ham else "shots",
                     )
-                else:
-                    results_list = execution_result.results
-                    if results_list is None:
-                        raise ValueError(
-                            "ExecutionResult has neither results nor job_id."
-                        )
+                    sub_flush_groups.append(sub_fg)
+                    with self._in_flight_lock:
+                        self._in_flight.append(sub_fg)
+                    sub_groups.append((sub_batch, sub_fg))
 
-                all_results.extend(results_list)
+            for sub_batch, sub_fg in sub_groups:
+                runtime = self._submit_sub_batch(sub_batch, sub_fg)
                 total_runtime += runtime
 
-            # Track cumulative runtime
             self._total_runtime += total_runtime
-
-            # Notify progress: batch complete
-            self._send_batch_progress(
-                flush_group,
-                n_circuits=n_circuits,
-                n_programs=n_programs,
-                final_status="Success",
-            )
-
-            # --- Demultiplex results by tag prefix ---
-            program_results: dict[str, list[dict]] = {}
-            for item in all_results:
-                label = item["label"]
-                prefix, original_label = label.split(_TAG_SEP, 1)
-                prog_key = prefix
-                program_results.setdefault(prog_key, []).append(
-                    {"label": original_label, "results": item["results"]}
-                )
-
-            # --- Resolve futures ---
-            per_program_runtime = total_runtime / n_programs if n_programs > 0 else 0.0
-
-            for prog_key, (_, _, fut) in batch.items():
-                if not fut.done():
-                    fut.set_result(
-                        (program_results.get(prog_key, []), per_program_runtime)
-                    )
 
         except _CancelledError:
             self._send_batch_progress(flush_group, final_status="Cancelled")
-            for _, (_, _, fut) in batch.items():
-                if not fut.done():
-                    fut.set_exception(
-                        _CancelledError("Batch coordinator has been cancelled.")
-                    )
+            _fail_futures(
+                batch, _CancelledError("Batch coordinator has been cancelled.")
+            )
         except Exception as exc:
             self._send_batch_progress(flush_group, final_status="Failed")
-            for _, (_, _, fut) in batch.items():
-                if not fut.done():
-                    fut.set_exception(exc)
+            _fail_futures(batch, exc)
         finally:
             with self._in_flight_lock:
-                if flush_group in self._in_flight:
-                    self._in_flight.remove(flush_group)
+                for fg in [flush_group, *sub_flush_groups]:
+                    if fg in self._in_flight:
+                        self._in_flight.remove(fg)
+
+    def _submit_sub_batch(self, sub_batch: _Batch, flush_group: _FlushGroup) -> float:
+        """Merge, submit, poll, demux, and resolve a single compatible sub-batch.
+
+        Returns the runtime reported by the backend.
+        """
+        merged_circuits, submit_kwargs = self._merge_circuits_and_kwargs(sub_batch)
+
+        n_circuits = len(merged_circuits)
+        n_programs = len(sub_batch)
+
+        self._send_batch_progress(
+            flush_group,
+            n_circuits=n_circuits,
+            n_programs=n_programs,
+        )
+
+        execution_result = self._real_backend.submit_circuits(
+            merged_circuits, **submit_kwargs
+        )
+        flush_group.execution_result = execution_result
+
+        if self._cancelled.is_set():
+            raise _CancelledError("Batch coordinator has been cancelled.")
+
+        # --- Collect results (sync or async) ---
+        runtime = 0.0
+        if execution_result.job_id is not None:
+            results_list, runtime = self._poll_and_get_results(
+                execution_result, flush_group, n_circuits, n_programs
+            )
+        else:
+            results_list = execution_result.results
+            if results_list is None:
+                raise ValueError("ExecutionResult has neither results nor job_id.")
+
+        self._send_batch_progress(
+            flush_group,
+            n_circuits=n_circuits,
+            n_programs=n_programs,
+            final_status="Success",
+        )
+
+        # --- Demultiplex results by tag prefix ---
+        program_results: dict[str, list[dict]] = {}
+        for item in results_list:
+            prefix, original_label = item["label"].split(_TAG_SEP, 1)
+            program_results.setdefault(prefix, []).append(
+                {"label": original_label, "results": item["results"]}
+            )
+
+        # --- Resolve futures ---
+        per_program_runtime = runtime / n_programs if n_programs > 0 else 0.0
+        for prog_key, entry in sub_batch.items():
+            if not entry.future.done():
+                entry.future.set_result(
+                    (program_results.get(prog_key, []), per_program_runtime)
+                )
+
+        return runtime
 
     # ------------------------------------------------------------------
     # Async backend helpers
@@ -396,11 +548,10 @@ class _BatchCoordinator:
 
         # Resolve any pending futures that haven't been flushed yet
         with self._lock:
-            for _, (_, _, fut) in self._pending.items():
-                if not fut.done():
-                    fut.set_exception(
-                        _CancelledError("Batch coordinator has been cancelled.")
-                    )
+            _fail_futures(
+                self._pending,
+                _CancelledError("Batch coordinator has been cancelled."),
+            )
             self._pending.clear()
 
     def shutdown(self) -> None:
@@ -432,7 +583,6 @@ class _ProxyBackend(CircuitRunner):
         self._real = real_backend
         self._coordinator = coordinator
         self._program_key = program_key
-        self._last_runtime = 0.0
 
     # --- Delegated properties ---
 
@@ -462,9 +612,7 @@ class _ProxyBackend(CircuitRunner):
             for tag, qasm in circuits.items()
         }
 
-        results, runtime = self._coordinator.submit(
+        results, _runtime = self._coordinator.submit(
             self._program_key, prefixed, **kwargs
         )
-        self._last_runtime = runtime
-
         return ExecutionResult(results=results)

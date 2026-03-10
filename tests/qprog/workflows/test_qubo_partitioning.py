@@ -17,7 +17,7 @@ from divi.qprog.workflows._qubo_partitioning import (
     QUBOPartitioningQAOA,
     _sanitize_problem_input,
 )
-from tests.qprog.qprog_contracts import verify_basic_program_batch_behaviour
+from tests.qprog.qprog_contracts import verify_basic_program_ensemble_behaviour
 
 # --- Fixtures and Test Data ---
 
@@ -244,8 +244,8 @@ class TestQUBOPartitioningQAOA:
             )
 
     def test_verify_basic_behaviour(self, mocker, qubo_partitioning_qaoa):
-        """Verify the class adheres to the ProgramBatch contract."""
-        verify_basic_program_batch_behaviour(mocker, qubo_partitioning_qaoa)
+        """Verify the class adheres to the ProgramEnsemble contract."""
+        verify_basic_program_ensemble_behaviour(mocker, qubo_partitioning_qaoa)
 
     def test_trivial_subproblem_is_identified_and_skipped(self):
         """

@@ -36,7 +36,7 @@ from divi.qprog.workflows._graph_partitioning import (
     dominance_aggregation,
     linear_aggregation,
 )
-from tests.qprog.qprog_contracts import verify_basic_program_batch_behaviour
+from tests.qprog.qprog_contracts import verify_basic_program_ensemble_behaviour
 
 _PROBLEM_ARGS = {
     "graph": nx.erdos_renyi_graph(15, 0.2, seed=1997),
@@ -571,7 +571,7 @@ def node_partitioning_qaoa(problem_args):
 
 class TestGraphPartitioningQAOA:
     def test_verify_basic_behaviour(self, mocker, node_partitioning_qaoa):
-        verify_basic_program_batch_behaviour(mocker, node_partitioning_qaoa)
+        verify_basic_program_ensemble_behaviour(mocker, node_partitioning_qaoa)
 
     def test_raises_on_disconnected_graph(self, problem_args):
         disconnected_graph = nx.Graph()

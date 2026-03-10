@@ -1,12 +1,12 @@
-Program Batches
-================
+Program Ensembles
+==================
 
-The ``divi.qprog.batch`` module provides powerful program batch capabilities for running multiple quantum programs in parallel, managing large-scale hyperparameter sweeps, and handling complex workflows.
+The ``divi.qprog.ensemble`` module provides powerful program ensemble capabilities for running multiple quantum programs in parallel, managing large-scale hyperparameter sweeps, and handling complex workflows.
 
 Overview
 --------
 
-Program batches in Divi enable you to:
+Program ensembles in Divi enable you to:
 
 - **Parallel Execution**: Run multiple quantum programs simultaneously
 - **Hyperparameter Sweeps**: Systematically explore parameter spaces
@@ -16,37 +16,53 @@ Program batches in Divi enable you to:
 Core Architecture
 -----------------
 
-.. autoclass:: divi.qprog.batch.ProgramBatch
+.. autoclass:: divi.qprog.ensemble.ProgramEnsemble
    :members:
    :undoc-members:
    :show-inheritance:
    :special-members: __init__
 
+.. autoclass:: divi.qprog.ensemble.BatchMode
+   :members:
+   :undoc-members:
+   :no-index:
+
+.. autoclass:: divi.qprog.ensemble.BatchConfig
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :no-index:
+
 **Usage:**
 
 .. code-block:: python
 
-   from divi.qprog.batch import ProgramBatch
-   from divi.qprog import VQE, QAOA
+   from divi.qprog.ensemble import ProgramEnsemble
+   from divi.qprog import VQE, QAOA, BatchConfig, BatchMode
    from divi.backends import ParallelSimulator
 
-   class MyBatch(ProgramBatch):
+   class MyEnsemble(ProgramEnsemble):
        def create_programs(self):
            super().create_programs()  # Required: initializes internal state
            # Create multiple quantum programs
-           self.programs = {
+           self._programs = {
                "program_1": VQE(...),
                "program_2": QAOA(...),
                "program_3": VQE(...),
            }
 
-       def run(self, blocking=True):
-           return super().run(blocking=blocking)
+       def aggregate_results(self):
+           super().aggregate_results()
+           # Collect results from all programs
+           ...
 
-   # Run program batch: create programs first, then execute
-   batch = MyBatch(backend=ParallelSimulator())
-   batch.create_programs()
-   batch.run(blocking=True)
+   # Run program ensemble: create programs first, then execute
+   ensemble = MyEnsemble(backend=ParallelSimulator())
+   ensemble.create_programs()
+   ensemble.run(blocking=True)
+
+   # Disable circuit batching for local simulators
+   ensemble.run(blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF))
 
 Workflows
 ---------

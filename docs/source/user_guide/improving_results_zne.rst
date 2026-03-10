@@ -139,6 +139,6 @@ Next Steps
 ----------
 
 - 🛠️ **API Reference**: Learn about custom protocols in :doc:`../api_reference/circuits`
-- 📊 **Program Batches**: Apply mitigation to large computations in :doc:`program_batches`
+- 📊 **Program Ensembles**: Apply mitigation to large computations in :doc:`program_ensembles`
 - 📈 **Advanced Usage**: Explore :class:`mitiq` documentation for more sophisticated techniques
 - 🔧 **Pipelines**: Understand how stages compose in :doc:`pipelines`

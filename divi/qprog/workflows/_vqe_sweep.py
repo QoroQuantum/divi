@@ -15,7 +15,7 @@ import numpy as np
 import numpy.typing as npt
 import pennylane as qml
 
-from divi.qprog import VQE, Ansatz, ProgramBatch
+from divi.qprog import VQE, Ansatz, ProgramEnsemble
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer, copy_optimizer
 
 
@@ -392,7 +392,7 @@ class MoleculeTransformer:
         return variants
 
 
-class VQEHyperparameterSweep(ProgramBatch):
+class VQEHyperparameterSweep(ProgramEnsemble):
     """Allows user to carry out a grid search across different values
     for the ansatz and the bond length used in a VQE program.
     """

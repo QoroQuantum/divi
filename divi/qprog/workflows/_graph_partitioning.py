@@ -24,13 +24,13 @@ from sklearn.cluster import SpectralClustering
 
 from divi.backends import CircuitRunner
 from divi.hamiltonians import _clean_hamiltonian, _get_terms_iterable
-from divi.qprog import QAOA, ProgramBatch
+from divi.qprog import QAOA, ProgramEnsemble
 from divi.qprog.algorithms._qaoa import (
     GraphProblem,
     GraphProblemTypes,
     draw_graph_solution_nodes,
 )
-from divi.qprog.batch import _beam_search_aggregate_top_n
+from divi.qprog.ensemble import _beam_search_aggregate_top_n
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer, copy_optimizer
 
 AggregateFn = Callable[
@@ -470,7 +470,7 @@ def dominance_aggregation(
     return curr_solution
 
 
-class GraphPartitioningQAOA(ProgramBatch):
+class GraphPartitioningQAOA(ProgramEnsemble):
     def __init__(
         self,
         graph: GraphProblemTypes,

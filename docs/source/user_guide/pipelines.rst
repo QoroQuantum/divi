@@ -145,9 +145,9 @@ example, :class:`~divi.qprog.VQE` builds two pipelines:
            ParameterBindingStage(),  # Bind best params
        ])
 
-The **cost pipeline** evaluates expectation values during optimisation (with
+The **cost pipeline** evaluates expectation values during optimization (with
 optional error mitigation), while the **measurement pipeline** samples the
-probability distribution after optimisation to extract the solution.
+probability distribution after optimization to extract the solution.
 
 
 Example 1: Custom Algorithm with CustomVQA
@@ -155,7 +155,7 @@ Example 1: Custom Algorithm with CustomVQA
 
 The simplest way to run a custom parameterised circuit through the pipeline is
 :class:`~divi.qprog.CustomVQA`.  It wraps a **PennyLane QuantumScript** (or a
-Qiskit ``QuantumCircuit``) and optimises its parameters end-to-end, reusing all
+Qiskit ``QuantumCircuit``) and optimizes its parameters end-to-end, reusing all
 the VQA infrastructure.
 
 The following example finds the ground-state energy of a two-qubit transverse-
@@ -300,4 +300,4 @@ What's Next
 - 📕 **API Reference**: Full class documentation in :doc:`../api_reference/pipeline`
 - 🎛️ **Error Mitigation**: Add a :class:`~divi.circuits.qem.QEMProtocol` to your pipeline in :doc:`improving_results_zne`
 - ⚡ **Custom Circuits**: Wrap any ``QuantumScript`` with :class:`~divi.qprog.CustomVQA` from :doc:`../api_reference/qprog`
-- 📊 **Program Batches**: Scale pipelines across parameter sweeps in :doc:`program_batches`
+- 📊 **Program Ensembles**: Scale pipelines across parameter sweeps in :doc:`program_ensembles`

@@ -338,9 +338,11 @@ def test_pce_qubo_e2e_solution(default_test_simulator, basic_ansatz):
     assert len(pce.losses_history) == 5
     assert isinstance(pce.best_loss, float)
     assert isinstance(pce.best_params, np.ndarray)
-    assert pce.solution.shape == (qubo.shape[0],)
-    assert set(np.unique(pce.solution)).issubset({0, 1})
-    np.testing.assert_array_equal(pce.solution, PCE_QUBO_SOLUTION)
+    with pytest.warns(UserWarning, match="PCE.solution returns the decoded"):
+        solution = pce.solution
+    assert solution.shape == (qubo.shape[0],)
+    assert set(np.unique(solution)).issubset({0, 1})
+    np.testing.assert_array_equal(solution, PCE_QUBO_SOLUTION)
     assert all(
         len(bitstring) == pce.n_qubits
         for probs_dict in pce.best_probs.values()
@@ -403,7 +405,8 @@ def test_pce_qubo_e2e_checkpointing_resume(
     assert pce3.current_iteration == 5
 
     assert isinstance(pce3.best_loss, float)
-    assert pce3.solution.shape == (qubo.shape[0],)
+    with pytest.warns(UserWarning, match="PCE.solution returns the decoded"):
+        assert pce3.solution.shape == (qubo.shape[0],)
 
 
 @pytest.mark.e2e
@@ -430,8 +433,10 @@ def test_pce_poly_e2e_solution(default_test_simulator, basic_ansatz):
     assert isinstance(pce.best_params, np.ndarray)
     assert pce.encoding_type == "poly"
     assert pce.n_qubits == 2  # N=3: min 2 qubits, capacity 3
-    assert pce.solution.shape == (qubo.shape[0],)
-    assert set(np.unique(pce.solution)).issubset({0, 1})
+    with pytest.warns(UserWarning, match="PCE.solution returns the decoded"):
+        solution = pce.solution
+    assert solution.shape == (qubo.shape[0],)
+    assert set(np.unique(solution)).issubset({0, 1})
     assert all(
         len(bitstring) == pce.n_qubits
         for probs_dict in pce.best_probs.values()
@@ -456,7 +461,9 @@ def test_pce_hubo_e2e_solution(default_test_simulator, basic_ansatz):
     )
 
     pce.run()
-    assert any(np.array_equal(pce.solution, x) for x in exact_minima)
+    with pytest.warns(UserWarning, match="PCE.solution returns the decoded"):
+        solution = pce.solution
+    assert any(np.array_equal(solution, x) for x in exact_minima)
 
 
 def test_pce_get_top_solutions_decodes_bitstrings(dummy_simulator, basic_ansatz):

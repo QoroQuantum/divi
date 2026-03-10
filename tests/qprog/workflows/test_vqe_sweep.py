@@ -20,7 +20,7 @@ from divi.qprog.workflows._vqe_sweep import (
     _cartesian_to_zmatrix,
     _zmatrix_to_cartesian,
 )
-from tests.qprog.qprog_contracts import verify_basic_program_batch_behaviour
+from tests.qprog.qprog_contracts import verify_basic_program_ensemble_behaviour
 
 
 @pytest.fixture
@@ -384,7 +384,7 @@ class TestVQEHyperparameterSweep:
 
     def test_verify_basic_behaviour(self, mocker, vqe_sweep):
         """Test that the sweep conforms to basic batch program behavior."""
-        verify_basic_program_batch_behaviour(mocker, vqe_sweep)
+        verify_basic_program_ensemble_behaviour(mocker, vqe_sweep)
 
     def test_correct_number_of_programs_created_molecule_transformer(
         self, mocker, vqe_sweep, vqe_sweep_max_iterations

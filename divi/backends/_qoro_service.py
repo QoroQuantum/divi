@@ -440,6 +440,7 @@ class QoroService(CircuitRunner):
         self,
         circuits: Mapping[str, str],
         ham_ops: str | None = None,
+        circuit_ham_map: list[list[int]] | None = None,
         job_type: JobType | None = None,
         override_execution_config: ExecutionConfig | None = None,
         override_job_config: JobConfig | None = None,
@@ -456,7 +457,14 @@ class QoroService(CircuitRunner):
             ham_ops (str | None, optional):
                 String representing the Hamiltonian operators to measure, semicolon-separated.
                 Each term is a combination of Pauli operators, e.g. "XYZ;XXZ;ZIZ".
-                If None, no Hamiltonian operators will be measured.
+                Multiple groups can be pipe-delimited (e.g. "XYZ;XXZ|ZI;IZ") when
+                ``circuit_ham_map`` is provided to assign each group to a slice of
+                circuits. If None, no Hamiltonian operators will be measured.
+            circuit_ham_map (list[list[int]] | None, optional):
+                Maps each ``|``-delimited group in ``ham_ops`` to a ``[start, end)``
+                slice of the ordered circuit list.  Must have the same length as
+                ``ham_ops.split("|")``.  When None, a single ``ham_ops`` group is
+                applied to all circuits.
             job_type (JobType | None, optional):
                 Type of job to execute (EXECUTE or EXPECTATION).
                 If not provided, defaults to EXECUTE.
@@ -497,22 +505,32 @@ class QoroService(CircuitRunner):
             if job_type is None:
                 job_type = JobType.EXPECTATION
 
-            # Validate observables format
-
-            terms = ham_ops.split(";")
-            if len(terms) == 0:
-                raise ValueError(
-                    "Hamiltonian operators must be non-empty semicolon-separated strings."
-                )
-            ham_ops_length = len(terms[0])
-            if not all(len(term) == ham_ops_length for term in terms):
-                raise ValueError("All Hamiltonian operators must have the same length.")
-            # Validate that each term only contains I, X, Y, Z
+            # Validate observables format (each |-delimited group independently)
             valid_paulis = {"I", "X", "Y", "Z"}
-            if not all(all(c in valid_paulis for c in term) for term in terms):
-                raise ValueError(
-                    "Hamiltonian operators must contain only I, X, Y, Z characters."
-                )
+            ham_groups = ham_ops.split("|")
+            for group in ham_groups:
+                terms = group.split(";")
+                if len(terms) == 0:
+                    raise ValueError(
+                        "Hamiltonian operators must be non-empty semicolon-separated strings."
+                    )
+                ham_ops_length = len(terms[0])
+                if not all(len(term) == ham_ops_length for term in terms):
+                    raise ValueError(
+                        "All Hamiltonian operators must have the same length."
+                    )
+                if not all(all(c in valid_paulis for c in term) for term in terms):
+                    raise ValueError(
+                        "Hamiltonian operators must contain only I, X, Y, Z characters."
+                    )
+
+            # Validate circuit_ham_map consistency
+            if circuit_ham_map is not None:
+                if len(circuit_ham_map) != len(ham_groups):
+                    raise ValueError(
+                        f"circuit_ham_map length ({len(circuit_ham_map)}) must match "
+                        f"number of ham_ops groups ({len(ham_groups)})."
+                    )
 
         if job_type is None:
             job_type = JobType.EXECUTE
@@ -581,6 +599,8 @@ class QoroService(CircuitRunner):
             # Include shots/ham_ops in add_circuits payload
             if ham_ops is not None:
                 add_circuits_payload["observables"] = ham_ops
+                if circuit_ham_map is not None:
+                    add_circuits_payload["circuit_ham_map"] = circuit_ham_map
             else:
                 add_circuits_payload["shots"] = job_config.shots
 

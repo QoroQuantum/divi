@@ -106,7 +106,7 @@ class PipelineEnv:
     """Progress reporter for async polling feedback."""
 
     cancellation_event: Event | None = None
-    """Threading event signalling cancellation (set by ProgramBatch)."""
+    """Threading event signalling cancellation (set by ProgramEnsemble)."""
 
 
 class Stage(ABC, Generic[InT, OutT]):

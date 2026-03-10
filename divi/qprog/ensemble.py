@@ -8,148 +8,39 @@ import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
-from queue import Empty, Queue
+from queue import Queue
 from threading import Event, Lock, Thread
 from typing import Any
 from warnings import warn
 
 from rich.console import Console
-from rich.progress import Progress, TaskID
+from rich.progress import TaskID
 
 from divi.backends import CircuitRunner
-from divi.qprog._batch_coordinator import _BatchCoordinator, _ProxyBackend
+from divi.qprog._batch_coordinator import (
+    BatchConfig,
+    BatchMode,
+    _BatchCoordinator,
+    _ProxyBackend,
+)
 from divi.qprog.quantum_program import QuantumProgram
 from divi.qprog.variational_quantum_algorithm import (
     SolutionEntry,
     VariationalQuantumAlgorithm,
 )
-from divi.reporting import disable_logging, make_batch_display
-
-
-def _queue_listener(
-    queue: Queue,
-    progress_bar: Progress,
-    pb_task_map: dict[QuantumProgram, TaskID],
-    done_event: Event,
-    is_jupyter: bool,
-    lock: Lock,
-    program_key_to_task_ids: dict[str, list[TaskID]] | None = None,
-    batch_progress: Progress | None = None,
-    batch_task_id: TaskID | None = None,
-    live_display: Any | None = None,
-):
-    while not done_event.is_set():
-        try:
-            msg: dict[str, Any] = queue.get(timeout=0.1)
-        except Empty:
-            continue
-        except Exception as e:
-            progress_bar.console.log(f"[queue_listener] Unexpected exception: {e}")
-            continue
-
-        # --- Batch-level messages from the coordinator ---
-        if msg.get("batch"):
-            if batch_progress is not None and batch_task_id is not None:
-                _handle_batch_message(
-                    msg,
-                    batch_progress,
-                    batch_task_id,
-                    progress_bar,
-                    program_key_to_task_ids or {},
-                    lock,
-                )
-            if is_jupyter and live_display is not None:
-                live_display.refresh()
-            queue.task_done()
-            continue
-
-        # --- Regular per-program messages ---
-        with lock:
-            task_id = pb_task_map[msg["job_id"]]
-
-        # Prepare update arguments, starting with progress.
-        update_args = {"advance": msg["progress"]}
-
-        if "poll_attempt" in msg:
-            update_args["poll_attempt"] = msg.get("poll_attempt", 0)
-        if "max_retries" in msg:
-            update_args["max_retries"] = msg.get("max_retries")
-        if "service_job_id" in msg:
-            update_args["service_job_id"] = msg.get("service_job_id")
-        if "job_status" in msg:
-            update_args["job_status"] = msg.get("job_status")
-        if msg.get("message"):
-            update_args["message"] = msg.get("message")
-        if "final_status" in msg:
-            update_args["final_status"] = msg.get("final_status", "")
-        if "loss" in msg:
-            update_args["loss"] = msg.get("loss")
-
-        progress_bar.update(task_id, **update_args)
-
-        if is_jupyter and live_display is not None:
-            live_display.refresh()
-
-        queue.task_done()
-
-
-def _handle_batch_message(
-    msg: dict[str, Any],
-    batch_progress: Progress,
-    batch_task_id: TaskID,
-    program_progress: Progress,
-    program_key_to_task_ids: dict[str, list[TaskID]],
-    lock: Lock,
-):
-    """Process a batch-level progress message using the separate batch Progress bar."""
-    color = msg.get("batch_color", "")
-    n_circuits = msg.get("n_circuits", 0)
-    n_programs = msg.get("n_programs", 0)
-    final_status = msg.get("final_status")
-
-    # Build update args for the batch row
-    update_args: dict[str, Any] = {}
-
-    if not final_status:
-        # Show the batch row and update its label/color
-        update_args["visible"] = True
-        update_args["job_name"] = f"Batch: {n_circuits} circuits, {n_programs} programs"
-        update_args["batch_color"] = color
-
-        # Color-code participating programs
-        with lock:
-            for prog_key in msg.get("program_keys", []):
-                for tid in program_key_to_task_ids.get(prog_key, []):
-                    program_progress.update(tid, batch_color=color)
-
-    if "poll_attempt" in msg:
-        update_args["poll_attempt"] = msg["poll_attempt"]
-    if "max_retries" in msg:
-        update_args["max_retries"] = msg["max_retries"]
-    if "service_job_id" in msg:
-        update_args["service_job_id"] = msg["service_job_id"]
-    if "job_status" in msg:
-        update_args["job_status"] = msg["job_status"]
-    if msg.get("message"):
-        update_args["message"] = msg["message"]
-
-    if final_status:
-        update_args["final_status"] = final_status
-        # Hide the batch row and clear program colors
-        update_args["visible"] = False
-        with lock:
-            for prog_key in msg.get("program_keys", []):
-                for tid in program_key_to_task_ids.get(prog_key, []):
-                    program_progress.update(tid, batch_color="")
-
-    batch_progress.update(batch_task_id, **update_args)
+from divi.reporting import (
+    disable_logging,
+    make_batch_display,
+    make_progress_display,
+    queue_listener,
+)
 
 
 def _default_task_function(program: QuantumProgram):
     return program.run()
 
 
-class ProgramBatch(ABC):
+class ProgramEnsemble(ABC):
     """This abstract class provides the basic scaffolding for higher-order
     computations that require more than one quantum program to achieve its goal.
 
@@ -320,7 +211,7 @@ class ProgramBatch(ABC):
         # This hook is only registered for non-blocking runs.
         if self._executor is not None:
             warn(
-                "A non-blocking ProgramBatch run was not explicitly closed with "
+                "A non-blocking ProgramEnsemble run was not explicitly closed with "
                 "'join()'. The batch was cleaned up automatically on exit.",
                 UserWarning,
             )
@@ -357,7 +248,7 @@ class ProgramBatch(ABC):
 
                 # Link program_key to this progress bar task for batch coloring
                 prog_key = self._program_key_map.get(program)
-                if prog_key is not None and hasattr(self, "_program_key_to_task_ids"):
+                if prog_key is not None:
                     self._program_key_to_task_ids.setdefault(prog_key, []).append(
                         task_id
                     )
@@ -375,7 +266,12 @@ class ProgramBatch(ABC):
 
         return self._executor.submit(_coordinated_task, program)
 
-    def run(self, blocking: bool = False):
+    def run(
+        self,
+        blocking: bool = False,
+        *,
+        batch_config: BatchConfig = BatchConfig(),
+    ):
         """
         Execute all programs in the batch.
 
@@ -386,9 +282,16 @@ class ProgramBatch(ABC):
             blocking (bool, optional): If True, waits for all programs to complete
                 before returning. If False, returns immediately and programs run in
                 the background. Defaults to False.
+            batch_config (BatchConfig): Configuration for circuit batching.
+                Controls whether submissions are merged and how.  Defaults to
+                ``BatchConfig()`` which merges all submissions via a wait-for-all
+                barrier.  Use ``BatchConfig(mode=BatchMode.OFF)`` to let each
+                program submit independently, or
+                ``BatchConfig(max_batch_size=50)`` to cap the number of circuits
+                per merged backend call.
 
         Returns:
-            ProgramBatch: Returns self for method chaining.
+            ProgramEnsemble: Returns self for method chaining.
 
         Raises:
             RuntimeError: If a batch is already running or if no programs have been
@@ -407,10 +310,16 @@ class ProgramBatch(ABC):
         self._progress_bar = None
         self._batch_progress = None
         self._live_display = None
+        batching_enabled = batch_config.mode is BatchMode.MERGED
         if hasattr(self, "max_iterations"):
-            self._batch_progress, self._progress_bar, self._live_display = (
-                make_batch_display(is_jupyter=self._is_jupyter)
-            )
+            if batching_enabled:
+                self._batch_progress, self._progress_bar, self._live_display = (
+                    make_batch_display(is_jupyter=self._is_jupyter)
+                )
+            else:
+                self._progress_bar, self._live_display = make_progress_display(
+                    is_jupyter=self._is_jupyter
+                )
 
         # Validate that all program instances are unique to prevent thread-safety issues
         program_instances = list(self._programs.values())
@@ -427,57 +336,50 @@ class ProgramBatch(ABC):
         self._future_to_program = {}
         self._pb_task_map = {}
         self._pb_lock = Lock()
+        self._program_key_to_task_ids: dict[str, list[TaskID]] = {}
 
         # Set up batch coordinator to merge circuit submissions.
-        # The coordinator gets the progress queue so it can report
-        # batch-level status (polling, completion) for merged jobs.
-        progress_queue = getattr(self, "_queue", None)
-        self._coordinator = _BatchCoordinator(
-            self.backend, progress_queue=progress_queue
-        )
-        self._program_key_map = {}
-        for idx, (prog_id, program) in enumerate(self._programs.items()):
-            program_key = str(idx)
-            self._program_key_map[program] = program_key
-            self._coordinator.register_program(program_key)
-            program.backend = _ProxyBackend(
-                self.backend, self._coordinator, program_key
+        if batching_enabled:
+            progress_queue = getattr(self, "_queue", None)
+            self._coordinator = _BatchCoordinator(
+                self.backend,
+                progress_queue=progress_queue,
+                batch_config=batch_config,
             )
+            self._program_key_map = {}
+            for idx, (prog_id, program) in enumerate(self._programs.items()):
+                program_key = str(idx)
+                self._program_key_map[program] = program_key
+                self._coordinator.register_program(program_key)
+                program.backend = _ProxyBackend(
+                    self.backend, self._coordinator, program_key
+                )
 
         if self._progress_bar is not None:
             self._live_display.start()
 
-            # Pre-create a single batch status row in the batch Progress bar.
-            # It starts hidden and is shown/hidden by the queue listener
-            # as flush groups start and complete.
-            self._batch_task_id = self._batch_progress.add_task(
-                "",
-                job_name="",
-                total=0,
-                visible=False,
-                batch_color="",
-                message="",
-                final_status="",
-            )
+            listener_kwargs = {
+                "live_display": self._live_display,
+                "is_jupyter": self._is_jupyter,
+            }
 
-            # Build reverse mapping: program_key -> list of progress bar task IDs.
-            # Populated lazily as programs are added to the executor.
-            self._program_key_to_task_ids: dict[str, list] = {}
+            if batching_enabled and self._batch_progress is not None:
+                listener_kwargs.update(
+                    batch_progress=self._batch_progress,
+                    batch_task_ids={},
+                    program_key_to_task_ids=self._program_key_to_task_ids,
+                )
 
             self._listener_thread = Thread(
-                target=_queue_listener,
+                target=queue_listener,
                 args=(
                     self._queue,
                     self._progress_bar,
                     self._pb_task_map,
                     self._done_event,
-                    self._is_jupyter,
                     self._pb_lock,
-                    self._program_key_to_task_ids,
-                    self._batch_progress,
-                    self._batch_task_id,
-                    self._live_display,
                 ),
+                kwargs=listener_kwargs,
                 daemon=True,
             )
             self._listener_thread.start()
@@ -521,42 +423,50 @@ class ProgramBatch(ABC):
                     pass  # Skip failed futures
 
     def _handle_cancellation(self):
-        """
-        Handles cancellation gracefully, providing accurate feedback by checking
-        the result of future.cancel().
+        """Handle cancellation gracefully with accurate progress feedback.
+
+        With the batch coordinator active, cancellation works as follows:
+        1. ``coordinator.cancel()`` sets the cancelled flag, cancels any
+           in-flight backend jobs, and resolves pending futures with
+           ``_CancelledError``.
+        2. The program threads see the ``_CancelledError`` (or the
+           ``_cancellation_event``) and exit.
+        3. We wait for all still-running futures and mark them in the
+           progress bar.
+
+        Without the coordinator the legacy path applies: we try
+        ``future.cancel()`` for pending tasks and ``cancel_unfinished_job()``
+        for running ones.
         """
         self._cancellation_event.set()
 
-        # Cancel the coordinator to unblock any programs waiting on the barrier
+        # Cancel the coordinator first — it unblocks all programs waiting
+        # on the barrier and cancels real backend jobs.
         if self._coordinator is not None:
             self._coordinator.cancel()
 
         successfully_cancelled = []
         unstoppable_futures = []
 
-        # --- Phase 1: Attempt to cancel all non-finished tasks ---
         for future, program in self._future_to_program.items():
             if future.done():
                 continue
 
-            task_id = self._pb_task_map.get(program.program_id)
-            if self._progress_bar and task_id is not None:
-                cancel_result = future.cancel()
-                if cancel_result:
-                    # The task was pending and was successfully cancelled.
-                    successfully_cancelled.append(program)
-                else:
-                    # The task is already running and cannot be stopped.
-                    # Attempt to cancel the cloud job to allow polling loop to exit.
+            cancel_result = future.cancel()
+            if cancel_result:
+                successfully_cancelled.append(program)
+            else:
+                # Already running — cancel the backend job directly only
+                # when there is no coordinator (the coordinator already
+                # cancelled real backend jobs above; the proxy has no job_id).
+                if self._coordinator is None:
                     program.cancel_unfinished_job()
-                    unstoppable_futures.append(future)
-                    self._progress_bar.update(
-                        task_id,
-                        message="Finishing... ⏳",
-                        refresh=self._is_jupyter,
-                    )
+                unstoppable_futures.append(future)
+                task_id = self._pb_task_map.get(program.program_id)
+                if self._progress_bar and task_id is not None:
+                    self._progress_bar.update(task_id, message="Finishing... ⏳")
 
-        # --- Phase 2: Immediately mark the successfully cancelled tasks ---
+        # Immediately mark successfully cancelled tasks
         for program in successfully_cancelled:
             task_id = self._pb_task_map.get(program.program_id)
             if self._progress_bar and task_id is not None:
@@ -564,21 +474,18 @@ class ProgramBatch(ABC):
                     task_id,
                     final_status="Cancelled",
                     message="Cancelled by user",
-                    refresh=self._is_jupyter,
                 )
 
-        # --- Phase 3: Wait for the unstoppable tasks to finish ---
-        if unstoppable_futures:
-            for future in as_completed(unstoppable_futures):
-                program = self._future_to_program[future]
-                task_id = self._pb_task_map.get(program.program_id)
-                if self._progress_bar and task_id is not None:
-                    self._progress_bar.update(
-                        task_id,
-                        final_status="Aborted",
-                        message="Completed during cancellation",
-                        refresh=self._is_jupyter,
-                    )
+        # Wait for running tasks to finish
+        for future in as_completed(unstoppable_futures):
+            program = self._future_to_program[future]
+            task_id = self._pb_task_map.get(program.program_id)
+            if self._progress_bar and task_id is not None:
+                self._progress_bar.update(
+                    task_id,
+                    final_status="Aborted",
+                    message="Completed during cancellation",
+                )
 
     def join(self):
         """
@@ -610,12 +517,12 @@ class ProgramBatch(ABC):
                 completed_futures.append(future.result())
 
         except KeyboardInterrupt:
-
             if self._progress_bar is not None:
                 self._progress_bar.console.print(
-                    "[bold yellow]Shutdown signal received, waiting for programs to finish current iteration...[/bold yellow]"
+                    "[bold yellow]Shutdown signal received, waiting for programs "
+                    "to finish current iteration...[/bold yellow]"
                 )
-                self._handle_cancellation()
+            self._handle_cancellation()
 
             # Collect results from any futures that completed before/during cancellation
             self._collect_completed_results(completed_futures)
@@ -623,16 +530,16 @@ class ProgramBatch(ABC):
             return False
 
         except Exception as e:
-            # A task has failed. Print the error and cancel the rest.
-            print(f"A task failed with an exception. Cancelling remaining tasks...")
+            # A task has failed. Cancel the coordinator and remaining futures.
             traceback.print_exception(type(e), e, e.__traceback__)
+
+            if self._coordinator is not None:
+                self._coordinator.cancel()
+            for f in self.futures:
+                f.cancel()
 
             # Collect results from any futures that completed before the failure
             self._collect_completed_results(completed_futures)
-
-            # Cancel all other futures that have not yet completed.
-            for f in self.futures:
-                f.cancel()
 
             # Re-raise a new error to indicate the batch failed.
             raise RuntimeError("Batch execution failed and was cancelled.") from e

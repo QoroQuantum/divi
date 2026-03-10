@@ -28,11 +28,11 @@ class StopReason(str, Enum):
 
 
 class EarlyStopping:
-    """Early stopping controller for variational quantum algorithm optimisation.
+    """Early stopping controller for variational quantum algorithm optimization.
 
-    Tracks optimisation progress and signals when to stop based on
+    Tracks optimization progress and signals when to stop based on
     configurable criteria.  A single instance is created before the
-    optimisation loop and :meth:`check` is called once per iteration.
+    optimization loop and :meth:`check` is called once per iteration.
 
     Args:
         patience: Number of consecutive iterations with no improvement
@@ -100,7 +100,7 @@ class EarlyStopping:
 
         Returns:
             A :class:`StopReason` if any criterion triggered, otherwise
-            ``None`` (meaning optimisation should continue).
+            ``None`` (meaning optimization should continue).
         """
         # 1. Patience --------------------------------------------------
         if current_loss < self._tracked_best - self.min_delta:

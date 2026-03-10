@@ -264,7 +264,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             seed (int | None): Random seed for parameter initialization. Defaults to None.
             progress_queue (Queue | None): Queue for progress reporting. Defaults to None.
             early_stopping (EarlyStopping | None): Early stopping controller. When
-                provided, the optimisation loop will be halted if any of the
+                provided, the optimization loop will be halted if any of the
                 configured criteria are met (e.g. patience exceeded, gradient
                 below threshold, cost variance settled). Defaults to None.
 
@@ -307,7 +307,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         """Raw result object returned by the underlying optimizer, or ``None``
         before :meth:`run` is called.
 
-        Always populated after :meth:`run` completes.  When optimisation
+        Always populated after :meth:`run` completes.  When optimization
         converges normally, ``success`` is ``True``.  When early stopping
         or cancellation terminates the run, ``success`` is ``False`` and the
         ``message`` field describes the reason.
@@ -418,11 +418,11 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
     @property
     def stop_reason(self) -> StopReason | None:
-        """Reason the optimisation was stopped early, or ``None``.
+        """Reason the optimization was stopped early, or ``None``.
 
         Returns:
             StopReason | None: The :class:`~divi.qprog.early_stopping.StopReason`
-                that triggered early stopping, or ``None`` if optimisation
+                that triggered early stopping, or ``None`` if optimization
                 completed normally or has not been run yet.
         """
         return self._stop_reason
@@ -738,7 +738,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 MetaCircuit factories.
         """
         # Lazy initialization: each instance has its own _meta_circuit_factories.
-        # Note: When used with ProgramBatch, meta_circuit_factories is initialized sequentially
+        # Note: When used with ProgramEnsemble, meta_circuit_factories is initialized sequentially
         # in the main thread before parallel execution to avoid thread-safety issues.
         if self._meta_circuit_factories is None:
             self._meta_circuit_factories = self._create_meta_circuit_factories()
@@ -1135,7 +1135,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             )
         except (_CancelledError, StopIteration) as exc:
             if isinstance(exc, _CancelledError):
-                message = "Optimisation cancelled."
+                message = "optimization cancelled."
             else:
                 reason = self._stop_reason.value if self._stop_reason else "Stopped"
                 message = f"Early stopping: {reason}"
@@ -1152,7 +1152,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 return self._total_circuit_count, self._total_run_time
         else:
             self.optimize_result.success = True
-            self.optimize_result.message = "Optimisation converged."
+            self.optimize_result.message = "optimization converged."
 
             # Set _best_params from final result (source of truth)
             x = np.atleast_2d(self.optimize_result.x)

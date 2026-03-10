@@ -137,7 +137,7 @@ Choosing the Right Optimizer
 Early Stopping
 --------------
 
-Long-running optimisations can waste resources once convergence has effectively
+Long-running optimizations can waste resources once convergence has effectively
 stalled.  Divi's :class:`~divi.qprog.EarlyStopping` controller lets you
 terminate the loop automatically based on configurable criteria.
 
@@ -204,9 +204,9 @@ After the Run
 ^^^^^^^^^^^^^
 
 After ``run()`` completes, use :attr:`~divi.qprog.VariationalQuantumAlgorithm.stop_reason`
-to determine *why* optimisation ended:
+to determine *why* optimization ended:
 
-- ``None`` — optimisation ran to ``max_iterations`` without triggering early stopping
+- ``None`` — optimization ran to ``max_iterations`` without triggering early stopping
 - ``"patience_exceeded"`` — cost plateaued
 - ``"gradient_below_threshold"`` — gradient vanished
 - ``"cost_variance_settled"`` — cost variance settled
@@ -240,7 +240,7 @@ This exposes optimizer-specific diagnostics such as:
 .. note::
 
    ``optimize_result`` is always populated after :meth:`run` completes.
-   When optimisation converges normally, ``success`` is ``True``.
+   When optimization converges normally, ``success`` is ``True``.
    When early stopping or cancellation terminates the run, ``success`` is
    ``False`` and the ``message`` field describes the reason.  The available
    attributes depend on the optimizer; see :class:`scipy.optimize.OptimizeResult`
@@ -251,7 +251,7 @@ Next Steps
 
 - 🔬 **Tutorials**: Try the runnable examples in the `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ directory.
 - ⚡ **Algorithm Guides**: Learn about :doc:`ground_state_energy_estimation_vqe` and :doc:`combinatorial_optimization_qaoa_pce` for algorithm-specific guidance.
-- ⚡ **Batching and Sweeps**: See how to use optimizers in large-scale computations in the :doc:`program_batches` guide.
+- ⚡ **Batching and Sweeps**: See how to use optimizers in large-scale computations in the :doc:`program_ensembles` guide.
 
 References
 ----------

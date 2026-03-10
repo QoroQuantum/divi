@@ -395,7 +395,7 @@ want to free up queue slots for higher-priority work.
    service.cancel_job(result)
 
 For variational algorithms like :class:`VQE` and :class:`QAOA` running in a
-:class:`ProgramBatch`, pressing ``Ctrl+C`` during execution will gracefully
+:class:`ProgramEnsemble`, pressing ``Ctrl+C`` during execution will gracefully
 cancel all pending programs.  Each :class:`QuantumProgram` also exposes a
 :meth:`cancel_unfinished_job` method that cancels any in-flight job for that
 program.
@@ -405,7 +405,7 @@ Depth Tracking
 
 All :class:`CircuitRunner` backends can track the depth of executed circuits.
 Enable tracking with ``track_depth=True`` to collect statistics about your
-circuit depths across a full optimisation run.
+circuit depths across a full optimization run.
 
 .. code-block:: python
 

@@ -63,7 +63,7 @@ Or pin a specific nightly by date:
    user_guide/combinatorial_optimization_qaoa_pce
    user_guide/hamiltonian_time_evolution
    user_guide/backends
-   user_guide/program_batches
+   user_guide/program_ensembles
    user_guide/improving_results_zne
    user_guide/optimizers
    user_guide/resuming_long_runs
@@ -73,7 +73,7 @@ Or pin a specific nightly by date:
    :caption: API Reference
 
    api_reference/qprog
-   api_reference/program_batches
+   api_reference/program_ensembles
    api_reference/backends
    api_reference/circuits
    api_reference/pipeline
