@@ -307,7 +307,13 @@ class _BatchCoordinator:
         # Group by ham_ops so circuits with the same observable are contiguous.
         ham_to_programs: dict[str, list[str]] = {}
         for prog_key, entry in batch.items():
-            ham = entry.kwargs["ham_ops"]
+            ham = entry.kwargs.get("ham_ops")
+            if ham is None:
+                raise ValueError(
+                    f"Program {prog_key!r} has no 'ham_ops' but its kwargs "
+                    f"differ from other programs in the sub-batch. "
+                    f"Cannot merge programs with incompatible submit kwargs."
+                )
             ham_to_programs.setdefault(ham, []).append(prog_key)
 
         merged = {}
@@ -391,7 +397,8 @@ class _BatchCoordinator:
                 runtime = self._submit_sub_batch(sub_batch, sub_fg)
                 total_runtime += runtime
 
-            self._total_runtime += total_runtime
+            with self._lock:
+                self._total_runtime += total_runtime
 
         except _CancelledError:
             self._send_batch_progress(flush_group, final_status="Cancelled")
