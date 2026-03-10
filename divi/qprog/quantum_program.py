@@ -113,7 +113,7 @@ class QuantumProgram(ABC):
         ExecutionResult. It is best-effort and will log warnings for any errors
         (e.g., job already completed, permission denied) without raising exceptions.
 
-        This is typically called by ProgramBatch when handling cancellation
+        This is typically called by ProgramEnsemble when handling cancellation
         to ensure cloud jobs are cancelled before local threads terminate.
         """
         result = self._current_execution_result

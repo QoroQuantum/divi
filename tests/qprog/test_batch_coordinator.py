@@ -1,0 +1,878 @@
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Unit tests for _BatchCoordinator, _ProxyBackend, and related helpers."""
+
+from __future__ import annotations
+
+from concurrent.futures import Future
+from queue import Queue
+from threading import Barrier, Event, Thread
+
+import pytest
+
+from divi.backends import CircuitRunner, ExecutionResult
+from divi.qprog._batch_coordinator import (
+    _TAG_SEP,
+    BatchConfig,
+    _Batch,
+    _BatchCoordinator,
+    _fail_futures,
+    _FlushGroup,
+    _PendingEntry,
+    _ProxyBackend,
+)
+from divi.qprog.exceptions import _CancelledError
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+class FakeSyncBackend(CircuitRunner):
+    """Minimal synchronous backend that echoes circuit labels as results."""
+
+    def __init__(self, shots: int = 100):
+        super().__init__(shots=shots)
+        self.submitted: list[dict[str, str]] = []
+
+    @property
+    def is_async(self) -> bool:
+        return False
+
+    @property
+    def supports_expval(self) -> bool:
+        return False
+
+    def submit_circuits(self, circuits, **kwargs) -> ExecutionResult:
+        self.submitted.append(dict(circuits))
+        results = [
+            {"label": label, "results": {"00": self._shots}} for label in circuits
+        ]
+        return ExecutionResult(results=results)
+
+
+class FakeExpvalBackend(CircuitRunner):
+    """Synchronous backend that supports expval and records kwargs."""
+
+    def __init__(self, shots: int = 100):
+        super().__init__(shots=shots)
+        self.call_log: list[tuple[dict, dict]] = []
+
+    @property
+    def is_async(self) -> bool:
+        return False
+
+    @property
+    def supports_expval(self) -> bool:
+        return True
+
+    def submit_circuits(self, circuits, **kwargs) -> ExecutionResult:
+        self.call_log.append((dict(circuits), dict(kwargs)))
+        results = [{"label": label, "results": {"expval": 0.5}} for label in circuits]
+        return ExecutionResult(results=results)
+
+
+def _make_entry(circuits: dict[str, str], kwargs: dict | None = None) -> _PendingEntry:
+    """Create a _PendingEntry with a fresh Future."""
+    return _PendingEntry(circuits, kwargs or {}, Future())
+
+
+# ---------------------------------------------------------------------------
+# _PendingEntry
+# ---------------------------------------------------------------------------
+
+
+class TestPendingEntry:
+    def test_named_access(self):
+        entry = _make_entry({"t": "qasm"}, {"ham_ops": "Z"})
+        assert entry.circuits == {"t": "qasm"}
+        assert entry.kwargs == {"ham_ops": "Z"}
+        assert isinstance(entry.future, Future)
+
+    def test_unpacking(self):
+        entry = _make_entry({"t": "qasm"})
+        circuits, kwargs, future = entry
+        assert circuits == {"t": "qasm"}
+        assert kwargs == {}
+        assert isinstance(future, Future)
+
+
+# ---------------------------------------------------------------------------
+# _fail_futures
+# ---------------------------------------------------------------------------
+
+
+class TestFailFutures:
+    def test_sets_exception_on_all_unresolved(self):
+        batch: _Batch = {
+            "a": _make_entry({"c1": "q"}),
+            "b": _make_entry({"c2": "q"}),
+        }
+        exc = RuntimeError("boom")
+        _fail_futures(batch, exc)
+
+        for entry in batch.values():
+            with pytest.raises(RuntimeError, match="boom"):
+                entry.future.result(timeout=0)
+
+    def test_skips_already_resolved(self):
+        batch: _Batch = {"a": _make_entry({"c": "q"})}
+        batch["a"].future.set_result("ok")
+
+        # Should not raise — already resolved future is skipped.
+        _fail_futures(batch, RuntimeError("boom"))
+        assert batch["a"].future.result() == "ok"
+
+
+# ---------------------------------------------------------------------------
+# _FlushGroup
+# ---------------------------------------------------------------------------
+
+
+class TestFlushGroup:
+    def test_program_keys_from_futures(self):
+        fg = _FlushGroup(
+            futures={"prog_a": Future(), "prog_b": Future()},
+            color="green",
+            label="expval",
+        )
+        assert fg.program_keys == {"prog_a", "prog_b"}
+        assert fg.color == "green"
+        assert fg.label == "expval"
+        assert fg.execution_result is None
+
+
+# ---------------------------------------------------------------------------
+# _BatchCoordinator — static helpers
+# ---------------------------------------------------------------------------
+
+
+class TestMergeCircuitsAndKwargs:
+    """Tests for _BatchCoordinator._merge_circuits_and_kwargs."""
+
+    def test_identical_kwargs_fast_path(self):
+        """When all programs share identical kwargs, circuits merge directly."""
+        batch: _Batch = {
+            "p1": _make_entry({"p1@c1": "q1", "p1@c2": "q2"}, {"shots": 100}),
+            "p2": _make_entry({"p2@c1": "q3"}, {"shots": 100}),
+        }
+        merged, kw = _BatchCoordinator._merge_circuits_and_kwargs(batch)
+
+        assert merged == {"p1@c1": "q1", "p1@c2": "q2", "p2@c1": "q3"}
+        assert kw == {"shots": 100}
+
+    def test_different_ham_ops_produces_circuit_ham_map(self):
+        """Programs with different ham_ops get reordered with circuit_ham_map."""
+        batch: _Batch = {
+            "p1": _make_entry({"p1@c1": "q1", "p1@c2": "q2"}, {"ham_ops": "Z0"}),
+            "p2": _make_entry({"p2@c1": "q3"}, {"ham_ops": "Z1"}),
+        }
+        merged, kw = _BatchCoordinator._merge_circuits_and_kwargs(batch)
+
+        assert len(merged) == 3
+        assert kw["ham_ops"] == "Z0|Z1"
+        assert kw["circuit_ham_map"] == [[0, 2], [2, 3]]
+
+    def test_same_ham_ops_grouped(self):
+        """Programs sharing the same ham_ops end up in one contiguous slice."""
+        batch: _Batch = {
+            "p1": _make_entry({"p1@c1": "q1"}, {"ham_ops": "XX"}),
+            "p2": _make_entry({"p2@c1": "q2"}, {"ham_ops": "ZZ"}),
+            "p3": _make_entry({"p3@c1": "q3"}, {"ham_ops": "XX"}),
+        }
+        merged, kw = _BatchCoordinator._merge_circuits_and_kwargs(batch)
+
+        # p1 and p3 share "XX" so they should be contiguous.
+        assert kw["ham_ops"] == "XX|ZZ"
+        assert kw["circuit_ham_map"] == [[0, 2], [2, 3]]
+
+
+class TestSplitByHamOps:
+    """Tests for _BatchCoordinator._split_by_ham_ops."""
+
+    def test_all_with_ham_ops(self):
+        batch: _Batch = {
+            "p1": _make_entry({}, {"ham_ops": "Z"}),
+            "p2": _make_entry({}, {"ham_ops": "X"}),
+        }
+        result = _BatchCoordinator._split_by_ham_ops(batch)
+        assert len(result) == 1
+        assert set(result[0].keys()) == {"p1", "p2"}
+
+    def test_all_without_ham_ops(self):
+        batch: _Batch = {
+            "p1": _make_entry({}, {}),
+            "p2": _make_entry({}, {}),
+        }
+        result = _BatchCoordinator._split_by_ham_ops(batch)
+        assert len(result) == 1
+        assert set(result[0].keys()) == {"p1", "p2"}
+
+    def test_mixed_splits_into_two(self):
+        batch: _Batch = {
+            "p1": _make_entry({}, {"ham_ops": "Z"}),
+            "p2": _make_entry({}, {}),
+            "p3": _make_entry({}, {"ham_ops": "X"}),
+        }
+        result = _BatchCoordinator._split_by_ham_ops(batch)
+        assert len(result) == 2
+
+        with_ham = result[0]
+        without_ham = result[1]
+        assert set(with_ham.keys()) == {"p1", "p3"}
+        assert set(without_ham.keys()) == {"p2"}
+
+    def test_empty_batch(self):
+        assert _BatchCoordinator._split_by_ham_ops({}) == []
+
+
+# ---------------------------------------------------------------------------
+# _BatchCoordinator — registration & barrier
+# ---------------------------------------------------------------------------
+
+
+class TestRegistrationAndBarrier:
+    def test_register_and_deregister(self):
+        coord = _BatchCoordinator(FakeSyncBackend())
+        coord.register_program("a")
+        coord.register_program("b")
+        assert coord._active_programs == {"a", "b"}
+
+        coord.deregister_program("a")
+        assert coord._active_programs == {"b"}
+
+    def test_deregister_unknown_is_safe(self):
+        coord = _BatchCoordinator(FakeSyncBackend())
+        coord.deregister_program("nonexistent")  # should not raise
+
+    def test_should_flush_when_all_submitted(self):
+        coord = _BatchCoordinator(FakeSyncBackend())
+        coord.register_program("a")
+        coord.register_program("b")
+
+        # One pending — not ready.
+        coord._pending["a"] = _make_entry({})
+        assert not coord._should_flush()
+
+        # Both pending — ready.
+        coord._pending["b"] = _make_entry({})
+        assert coord._should_flush()
+
+
+# ---------------------------------------------------------------------------
+# _BatchCoordinator — end-to-end flush with sync backend
+# ---------------------------------------------------------------------------
+
+
+class TestFlushWithSyncBackend:
+    """Integration tests using FakeSyncBackend to verify the full
+    submit → barrier → merge → demux → resolve cycle."""
+
+    def test_two_programs_single_flush(self):
+        """Two programs submit concurrently; results are demuxed correctly."""
+        backend = FakeSyncBackend()
+        coord = _BatchCoordinator(backend)
+        coord.register_program("p1")
+        coord.register_program("p2")
+
+        results = {}
+        barrier = Barrier(2)
+
+        def _submit(key, circuits):
+            barrier.wait(timeout=5)
+            results[key] = coord.submit(key, circuits)
+
+        t1 = Thread(
+            target=_submit,
+            args=("p1", {f"p1{_TAG_SEP}c1": "q1", f"p1{_TAG_SEP}c2": "q2"}),
+        )
+        t2 = Thread(
+            target=_submit,
+            args=("p2", {f"p2{_TAG_SEP}c1": "q3"}),
+        )
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        # Both programs should have received their demuxed results.
+        p1_results, p1_runtime = results["p1"]
+        p2_results, p2_runtime = results["p2"]
+
+        assert len(p1_results) == 2
+        assert len(p2_results) == 1
+        assert all(r["label"].startswith("c") for r in p1_results)
+        assert p2_results[0]["label"] == "c1"
+
+        # Backend should have been called exactly once (merged).
+        assert len(backend.submitted) == 1
+        assert len(backend.submitted[0]) == 3
+
+    def test_three_programs_single_flush(self):
+        """Three programs all reach the barrier together."""
+        backend = FakeSyncBackend()
+        coord = _BatchCoordinator(backend)
+        for key in ("a", "b", "c"):
+            coord.register_program(key)
+
+        results = {}
+        barrier = Barrier(3)
+
+        def _submit(key):
+            barrier.wait(timeout=5)
+            circuits = {f"{key}{_TAG_SEP}circ": f"qasm_{key}"}
+            results[key] = coord.submit(key, circuits)
+
+        threads = [Thread(target=_submit, args=(k,)) for k in ("a", "b", "c")]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        for key in ("a", "b", "c"):
+            r, _ = results[key]
+            assert len(r) == 1
+            assert r[0]["label"] == "circ"
+
+        assert len(backend.submitted) == 1
+
+    def test_deregister_triggers_flush_for_remaining(self):
+        """When a program deregisters, the barrier shrinks and pending
+        submissions flush immediately."""
+        backend = FakeSyncBackend()
+        coord = _BatchCoordinator(backend)
+        coord.register_program("p1")
+        coord.register_program("p2")
+
+        result_holder = {}
+        submitted_event = Event()
+
+        def _submit_p1():
+            result_holder["p1"] = coord.submit("p1", {f"p1{_TAG_SEP}c1": "q1"})
+            submitted_event.set()
+
+        t = Thread(target=_submit_p1)
+        t.start()
+
+        # p1 is now blocked waiting for p2. Deregistering p2 should flush.
+        import time
+
+        time.sleep(0.1)  # Give p1's thread time to submit
+        coord.deregister_program("p2")
+        t.join(timeout=10)
+
+        assert submitted_event.is_set()
+        p1_results, _ = result_holder["p1"]
+        assert len(p1_results) == 1
+
+    def test_multiple_flush_rounds(self):
+        """Programs go through multiple submit rounds (like VQE iterations)."""
+        backend = FakeSyncBackend()
+        coord = _BatchCoordinator(backend)
+        coord.register_program("p1")
+        coord.register_program("p2")
+
+        n_rounds = 3
+        all_results = {"p1": [], "p2": []}
+        barrier = Barrier(2)
+
+        def _run_rounds(key):
+            for i in range(n_rounds):
+                barrier.wait(timeout=5)
+                circuits = {f"{key}{_TAG_SEP}r{i}": f"qasm_{key}_{i}"}
+                res, _ = coord.submit(key, circuits)
+                all_results[key].append(res)
+
+        t1 = Thread(target=_run_rounds, args=("p1",))
+        t2 = Thread(target=_run_rounds, args=("p2",))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        # Each round should produce exactly one merged backend call.
+        assert len(backend.submitted) == n_rounds
+        for key in ("p1", "p2"):
+            assert len(all_results[key]) == n_rounds
+            for i, round_results in enumerate(all_results[key]):
+                assert len(round_results) == 1
+                assert round_results[0]["label"] == f"r{i}"
+
+
+# ---------------------------------------------------------------------------
+# _BatchCoordinator — ham_ops sub-batch splitting
+# ---------------------------------------------------------------------------
+
+
+class TestHamOpsSplitting:
+    """Tests that mixed ham_ops batches are split into separate backend calls."""
+
+    def test_mixed_batch_produces_two_backend_calls(self):
+        """Programs with/without ham_ops are submitted separately."""
+        backend = FakeExpvalBackend()
+        coord = _BatchCoordinator(backend)
+        coord.register_program("expval_prog")
+        coord.register_program("shots_prog")
+
+        results = {}
+        barrier = Barrier(2)
+
+        def _submit(key, circuits, **kwargs):
+            barrier.wait(timeout=5)
+            prefixed = {f"{key}{_TAG_SEP}{t}": q for t, q in circuits.items()}
+            results[key] = coord.submit(key, prefixed, **kwargs)
+
+        t1 = Thread(
+            target=_submit,
+            args=("expval_prog", {"c1": "q1"}),
+            kwargs={"ham_ops": "Z0 Z1"},
+        )
+        t2 = Thread(
+            target=_submit,
+            args=("shots_prog", {"c1": "q2", "c2": "q3"}),
+        )
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        # Two separate backend calls (one for expval, one for shots).
+        assert len(backend.call_log) == 2
+
+        # Verify each program got its own results back.
+        expval_res, _ = results["expval_prog"]
+        shots_res, _ = results["shots_prog"]
+        assert len(expval_res) == 1
+        assert len(shots_res) == 2
+
+    def test_homogeneous_ham_ops_single_call(self):
+        """Programs all having ham_ops produce a single merged call."""
+        backend = FakeExpvalBackend()
+        coord = _BatchCoordinator(backend)
+        coord.register_program("p1")
+        coord.register_program("p2")
+
+        results = {}
+        barrier = Barrier(2)
+
+        def _submit(key, ham):
+            barrier.wait(timeout=5)
+            prefixed = {f"{key}{_TAG_SEP}c1": "qasm"}
+            results[key] = coord.submit(key, prefixed, ham_ops=ham)
+
+        t1 = Thread(target=_submit, args=("p1", "Z0"))
+        t2 = Thread(target=_submit, args=("p2", "Z0"))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        # Same ham_ops → single merged call.
+        assert len(backend.call_log) == 1
+        _, kw = backend.call_log[0]
+        assert kw["ham_ops"] == "Z0"
+        assert "circuit_ham_map" not in kw  # fast path, identical kwargs
+
+    def test_different_ham_ops_merged_with_map(self):
+        """Programs with different ham_ops get merged with circuit_ham_map."""
+        backend = FakeExpvalBackend()
+        coord = _BatchCoordinator(backend)
+        coord.register_program("p1")
+        coord.register_program("p2")
+
+        results = {}
+        barrier = Barrier(2)
+
+        def _submit(key, ham):
+            barrier.wait(timeout=5)
+            prefixed = {f"{key}{_TAG_SEP}c1": "qasm"}
+            results[key] = coord.submit(key, prefixed, ham_ops=ham)
+
+        t1 = Thread(target=_submit, args=("p1", "Z0"))
+        t2 = Thread(target=_submit, args=("p2", "X1"))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        # Different ham_ops → single call with circuit_ham_map.
+        assert len(backend.call_log) == 1
+        _, kw = backend.call_log[0]
+        assert "Z0" in kw["ham_ops"]
+        assert "X1" in kw["ham_ops"]
+        assert "circuit_ham_map" in kw
+
+
+# ---------------------------------------------------------------------------
+# _BatchCoordinator — progress messages
+# ---------------------------------------------------------------------------
+
+
+class TestBatchProgress:
+    def test_progress_messages_sent_to_queue(self):
+        """Flush sends start and success progress messages."""
+        queue = Queue()
+        backend = FakeSyncBackend()
+        coord = _BatchCoordinator(backend, progress_queue=queue)
+        coord.register_program("p1")
+
+        # Single program → barrier met immediately on submit.
+        coord.submit("p1", {f"p1{_TAG_SEP}c1": "q1"})
+
+        messages = []
+        while not queue.empty():
+            messages.append(queue.get_nowait())
+
+        # At minimum: one start message and one success message.
+        assert len(messages) >= 2
+        assert messages[0]["batch"] is True
+        assert messages[0]["n_circuits"] == 1
+        assert messages[0]["n_programs"] == 1
+        assert messages[-1].get("final_status") == "Success"
+
+    def test_no_progress_without_queue(self):
+        """When no queue is provided, nothing breaks."""
+        backend = FakeSyncBackend()
+        coord = _BatchCoordinator(backend, progress_queue=None)
+        coord.register_program("p1")
+        coord.submit("p1", {f"p1{_TAG_SEP}c1": "q1"})
+        # No assertion needed — just verifying no error.
+
+    def test_color_cycling(self):
+        """Each flush group gets the next color in the cycle."""
+        queue = Queue()
+        backend = FakeSyncBackend()
+        coord = _BatchCoordinator(backend, progress_queue=queue)
+
+        coord.register_program("p1")
+        coord.submit("p1", {f"p1{_TAG_SEP}c1": "q1"})
+        coord.submit("p1", {f"p1{_TAG_SEP}c2": "q2"})
+
+        messages = []
+        while not queue.empty():
+            messages.append(queue.get_nowait())
+
+        colors = [m["batch_color"] for m in messages if "final_status" not in m]
+        # First flush → first color, second flush → second color.
+        assert colors[0] != colors[1]
+
+    def test_mixed_ham_ops_sends_labelled_messages(self):
+        """Sub-batches from ham_ops splitting include labels."""
+        queue = Queue()
+        backend = FakeExpvalBackend()
+        coord = _BatchCoordinator(backend, progress_queue=queue)
+        coord.register_program("p1")
+        coord.register_program("p2")
+
+        barrier = Barrier(2)
+
+        def _submit(key, **kwargs):
+            barrier.wait(timeout=5)
+            coord.submit(key, {f"{key}{_TAG_SEP}c1": "qasm"}, **kwargs)
+
+        t1 = Thread(target=_submit, args=("p1",), kwargs={"ham_ops": "Z"})
+        t2 = Thread(target=_submit, args=("p2",))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        messages = []
+        while not queue.empty():
+            messages.append(queue.get_nowait())
+
+        labels = {m.get("batch_label") for m in messages}
+        assert "expval" in labels
+        assert "shots" in labels
+
+
+# ---------------------------------------------------------------------------
+# _BatchCoordinator — cancellation
+# ---------------------------------------------------------------------------
+
+
+class TestCancellation:
+    def test_cancel_rejects_new_submissions(self):
+        coord = _BatchCoordinator(FakeSyncBackend())
+        coord.register_program("p1")
+        coord.cancel()
+
+        with pytest.raises(_CancelledError):
+            coord.submit("p1", {"c": "q"})
+
+    def test_cancel_resolves_pending_futures(self):
+        coord = _BatchCoordinator(FakeSyncBackend())
+        coord.register_program("p1")
+        coord.register_program("p2")
+
+        # Add a pending entry that hasn't flushed yet.
+        entry = _make_entry({"c": "q"})
+        coord._pending["p1"] = entry
+
+        coord.cancel()
+
+        with pytest.raises(_CancelledError):
+            entry.future.result(timeout=0)
+
+    def test_shutdown_clears_active_programs(self):
+        coord = _BatchCoordinator(FakeSyncBackend())
+        coord.register_program("p1")
+        coord.shutdown()
+
+        assert len(coord._active_programs) == 0
+
+    def test_flush_after_cancel_resolves_with_error(self):
+        """If cancel is called while a flush is in progress, futures get
+        the cancellation error."""
+        backend = FakeSyncBackend()
+        coord = _BatchCoordinator(backend)
+        coord.register_program("p1")
+        coord.register_program("p2")
+
+        # Manually trigger a cancel before p2 submits.
+        result_holder = {}
+        error_holder = {}
+        barrier = Barrier(2)
+
+        def _submit_p1():
+            barrier.wait(timeout=5)
+            try:
+                result_holder["p1"] = coord.submit("p1", {f"p1{_TAG_SEP}c1": "q"})
+            except _CancelledError as e:
+                error_holder["p1"] = e
+
+        t = Thread(target=_submit_p1)
+        t.start()
+
+        barrier.wait(timeout=5)
+        import time
+
+        time.sleep(0.1)
+        coord.cancel()
+        t.join(timeout=10)
+
+        assert "p1" in error_holder
+
+
+# ---------------------------------------------------------------------------
+# _BatchCoordinator — total_runtime
+# ---------------------------------------------------------------------------
+
+
+class TestTotalRuntime:
+    def test_runtime_zero_for_sync_backend(self):
+        """Sync backends report no runtime (no polling)."""
+        backend = FakeSyncBackend()
+        coord = _BatchCoordinator(backend)
+        coord.register_program("p1")
+        coord.submit("p1", {f"p1{_TAG_SEP}c1": "q"})
+
+        # Sync backend → no runtime tracking.
+        assert coord.total_runtime == 0.0
+
+
+# ---------------------------------------------------------------------------
+# _ProxyBackend
+# ---------------------------------------------------------------------------
+
+
+class TestProxyBackend:
+    def test_delegates_properties(self):
+        real = FakeSyncBackend(shots=200)
+        coord = _BatchCoordinator(real)
+        proxy = _ProxyBackend(real, coord, "prog_1")
+
+        assert proxy.shots == 200
+        assert proxy.supports_expval == real.supports_expval
+        assert proxy.is_async is False
+        assert proxy.max_retries == 0
+
+    def test_submit_prefixes_tags_and_returns_results(self):
+        """Proxy prefixes circuit tags and returns demuxed results."""
+        backend = FakeSyncBackend()
+        coord = _BatchCoordinator(backend)
+        coord.register_program("prog_1")
+
+        proxy = _ProxyBackend(backend, coord, "prog_1")
+        result = proxy.submit_circuits({"circuit_a": "qasm_a", "circuit_b": "qasm_b"})
+
+        assert result.results is not None
+        assert len(result.results) == 2
+        labels = {r["label"] for r in result.results}
+        assert labels == {"circuit_a", "circuit_b"}
+
+    def test_proxy_integrates_with_coordinator_barrier(self):
+        """Two proxies submit through the coordinator and results are correct."""
+        backend = FakeSyncBackend()
+        coord = _BatchCoordinator(backend)
+        coord.register_program("p1")
+        coord.register_program("p2")
+
+        proxy1 = _ProxyBackend(backend, coord, "p1")
+        proxy2 = _ProxyBackend(backend, coord, "p2")
+
+        results = {}
+        barrier = Barrier(2)
+
+        def _submit(proxy, key):
+            barrier.wait(timeout=5)
+            results[key] = proxy.submit_circuits({f"c_{key}": f"qasm_{key}"})
+
+        t1 = Thread(target=_submit, args=(proxy1, "p1"))
+        t2 = Thread(target=_submit, args=(proxy2, "p2"))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        # Each proxy gets only its own results.
+        assert len(results["p1"].results) == 1
+        assert results["p1"].results[0]["label"] == "c_p1"
+        assert len(results["p2"].results) == 1
+        assert results["p2"].results[0]["label"] == "c_p2"
+
+        # Single merged backend call.
+        assert len(backend.submitted) == 1
+
+    def test_little_endian_bitstrings_delegated(self):
+        """little_endian_bitstrings is delegated to the real backend."""
+        real = FakeSyncBackend()
+        real.little_endian_bitstrings = True  # type: ignore[attr-defined]
+        coord = _BatchCoordinator(real)
+        proxy = _ProxyBackend(real, coord, "p")
+        assert proxy.little_endian_bitstrings is True
+
+
+# ---------------------------------------------------------------------------
+# _BatchCoordinator — max_batch_size
+# ---------------------------------------------------------------------------
+
+
+class TestMaxBatchSize:
+    def test_flush_triggered_by_circuit_limit(self):
+        """Pending circuits reaching the limit triggers a flush even when
+        not all programs have submitted."""
+        coord = _BatchCoordinator(
+            FakeSyncBackend(), batch_config=BatchConfig(max_batch_size=3)
+        )
+        coord.register_program("a")
+        coord.register_program("b")
+        coord.register_program("c")
+
+        # Two programs with combined 3 circuits should trigger flush.
+        coord._pending["a"] = _make_entry({"a@c1": "q", "a@c2": "q"})
+        coord._pending["b"] = _make_entry({"b@c1": "q"})
+        assert coord._should_flush()
+
+    def test_no_flush_below_limit(self):
+        """Below the circuit limit and not all submitted → no flush."""
+        coord = _BatchCoordinator(
+            FakeSyncBackend(), batch_config=BatchConfig(max_batch_size=5)
+        )
+        coord.register_program("a")
+        coord.register_program("b")
+        coord.register_program("c")
+
+        coord._pending["a"] = _make_entry({"a@c1": "q", "a@c2": "q"})
+        assert not coord._should_flush()
+
+    def test_barrier_still_works_below_limit(self):
+        """All programs submitted but below limit → still flushes (barrier)."""
+        coord = _BatchCoordinator(
+            FakeSyncBackend(), batch_config=BatchConfig(max_batch_size=100)
+        )
+        coord.register_program("a")
+        coord.register_program("b")
+
+        coord._pending["a"] = _make_entry({"a@c1": "q"})
+        coord._pending["b"] = _make_entry({"b@c1": "q"})
+        assert coord._should_flush()
+
+    def test_partial_flush_integration(self):
+        """Threaded: A+B flush early via limit, C flushes after A/B deregister."""
+        backend = FakeSyncBackend()
+        coord = _BatchCoordinator(backend, batch_config=BatchConfig(max_batch_size=2))
+        coord.register_program("a")
+        coord.register_program("b")
+        coord.register_program("c")
+
+        results = {}
+        ab_barrier = Barrier(2)
+        ab_done = Event()
+
+        def _submit(key, circuits):
+            results[key] = coord.submit(key, circuits)
+
+        def _submit_ab(key, circuits):
+            ab_barrier.wait(timeout=5)
+            _submit(key, circuits)
+            ab_done.set()
+
+        t_a = Thread(
+            target=_submit_ab,
+            args=("a", {f"a{_TAG_SEP}c1": "q"}),
+        )
+        t_b = Thread(
+            target=_submit_ab,
+            args=("b", {f"b{_TAG_SEP}c1": "q"}),
+        )
+        t_a.start()
+        t_b.start()
+        t_a.join(timeout=10)
+        t_b.join(timeout=10)
+
+        # A+B should have flushed (2 circuits == limit).
+        assert "a" in results
+        assert "b" in results
+
+        # Deregister a and b so c can flush on its own.
+        coord.deregister_program("a")
+        coord.deregister_program("b")
+
+        t_c = Thread(
+            target=_submit,
+            args=("c", {f"c{_TAG_SEP}c1": "q"}),
+        )
+        t_c.start()
+        t_c.join(timeout=10)
+
+        assert "c" in results
+        # Two backend calls: one for A+B, one for C.
+        assert len(backend.submitted) == 2
+
+    def test_single_program_exceeds_limit(self):
+        """A single program submitting more circuits than the limit still works."""
+        backend = FakeSyncBackend()
+        coord = _BatchCoordinator(backend, batch_config=BatchConfig(max_batch_size=2))
+        coord.register_program("p1")
+
+        # Single program: barrier triggers immediately regardless of limit.
+        result = coord.submit(
+            "p1",
+            {f"p1{_TAG_SEP}c1": "q", f"p1{_TAG_SEP}c2": "q", f"p1{_TAG_SEP}c3": "q"},
+        )
+        assert len(result[0]) == 3
+        assert len(backend.submitted) == 1
+
+    def test_max_batch_size_none_default(self):
+        """None preserves the wait-for-all barrier behaviour."""
+        coord = _BatchCoordinator(FakeSyncBackend(), batch_config=BatchConfig())
+        coord.register_program("a")
+        coord.register_program("b")
+
+        # Only one submitted → not all → should not flush.
+        coord._pending["a"] = _make_entry({"a@c1": "q", "a@c2": "q", "a@c3": "q"})
+        assert not coord._should_flush()
+
+        # Both submitted → should flush.
+        coord._pending["b"] = _make_entry({"b@c1": "q"})
+        assert coord._should_flush()
+
+    def test_pending_circuit_count(self):
+        """_pending_circuit_count correctly sums circuits."""
+        coord = _BatchCoordinator(FakeSyncBackend())
+        coord._pending["a"] = _make_entry({"c1": "q", "c2": "q"})
+        coord._pending["b"] = _make_entry({"c3": "q"})
+        assert coord._pending_circuit_count() == 3

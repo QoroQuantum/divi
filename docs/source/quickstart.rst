@@ -179,7 +179,7 @@ Backend Options
 Advanced Features
 -----------------
 
-**Program Batches** 🔄
+**Program Ensembles** 🔄
    Run multiple quantum programs in parallel for hyperparameter sweeps and large-scale problems:
 
    .. code-block:: python
@@ -265,7 +265,7 @@ Next Steps & Getting Help
 **Continue Learning:**
 
 * 🎯 **Try More Examples**: Explore the `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ directory
-* ⚡ **Scale Up**: Learn about :doc:`user_guide/program_batches` for parallel execution
+* ⚡ **Scale Up**: Learn about :doc:`user_guide/program_ensembles` for parallel execution
 * 🛠️ **Customize**: Create your own algorithms using the :doc:`api_reference/qprog`
 * 📊 **Monitor Progress**: Explore :doc:`api_reference/reporting` for advanced progress tracking
 

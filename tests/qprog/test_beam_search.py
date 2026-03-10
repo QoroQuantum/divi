@@ -4,7 +4,7 @@
 
 import pytest
 
-from divi.qprog.batch import _beam_search_aggregate_top_n
+from divi.qprog.ensemble import _beam_search_aggregate_top_n
 from divi.qprog.variational_quantum_algorithm import SolutionEntry
 
 

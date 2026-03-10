@@ -15,6 +15,7 @@ Core Architecture
    :members:
    :undoc-members:
    :show-inheritance:
+   :exclude-members: BatchConfig, BatchMode, ProgramEnsemble
 
 Core Classes
 ------------

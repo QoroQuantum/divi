@@ -2,11 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from threading import Lock
+
 import pytest
+from rich.progress import Progress, TextColumn
 
 from divi.reporting._pbar import (
     ConditionalSpinnerColumn,
     PhaseStatusColumn,
+    handle_batch_message,
     make_progress_bar,
 )
 
@@ -182,11 +186,364 @@ class TestPhaseStatusColumn:
 class TestMakeProgressBar:
     """Tests for make_progress_bar function."""
 
-    @pytest.mark.parametrize("is_jupyter", [True, False, None])
-    def test_make_progress_bar(self, is_jupyter):
-        """Test creating progress bar with different jupyter settings."""
-        kwargs = {} if is_jupyter is None else {"is_jupyter": is_jupyter}
-        progress = make_progress_bar(**kwargs)
+    def test_make_progress_bar(self):
+        """Test creating progress bar."""
+        progress = make_progress_bar()
 
         assert progress is not None
         assert hasattr(progress, "add_task")
+
+
+# ---------------------------------------------------------------------------
+# Helpers for batch message tests
+# ---------------------------------------------------------------------------
+
+
+def _make_simple_progress() -> Progress:
+    """A minimal Progress instance (no columns needed for state tests)."""
+    return Progress(TextColumn("{task.fields[job_name]}"), auto_refresh=False)
+
+
+def _task_fields(progress: Progress, task_id) -> dict:
+    """Read fields dict from a Rich Progress task."""
+    return progress._tasks[task_id].fields
+
+
+def _task_visible(progress: Progress, task_id) -> bool:
+    return progress._tasks[task_id].visible
+
+
+# ---------------------------------------------------------------------------
+# handle_batch_message
+# ---------------------------------------------------------------------------
+
+
+class TestHandleBatchMessage:
+    """Tests for handle_batch_message progress bar state management."""
+
+    @pytest.fixture
+    def batch_progress(self):
+        return _make_simple_progress()
+
+    @pytest.fixture
+    def program_progress(self):
+        return _make_simple_progress()
+
+    @pytest.fixture
+    def lock(self):
+        return Lock()
+
+    def test_creates_row_lazily(self, batch_progress, program_progress, lock):
+        """First message for a batch_id creates a new task row."""
+        batch_task_ids: dict[int, int] = {}
+
+        handle_batch_message(
+            {
+                "batch_id": 1,
+                "batch_color": "green",
+                "batch_label": "",
+                "n_circuits": 5,
+                "n_programs": 2,
+                "program_keys": [],
+            },
+            batch_progress,
+            batch_task_ids,
+            program_progress,
+            {},
+            lock,
+        )
+
+        assert 1 in batch_task_ids
+        task_id = batch_task_ids[1]
+        assert _task_visible(batch_progress, task_id)
+        fields = _task_fields(batch_progress, task_id)
+        assert "5 circuits" in fields["job_name"]
+        assert "2 programs" in fields["job_name"]
+        assert fields["batch_color"] == "green"
+
+    def test_reuses_existing_row(self, batch_progress, program_progress, lock):
+        """Subsequent messages with the same batch_id reuse the same task row."""
+        batch_task_ids: dict[int, int] = {}
+
+        for i in range(3):
+            handle_batch_message(
+                {
+                    "batch_id": 42,
+                    "batch_color": "cyan",
+                    "n_circuits": 10,
+                    "n_programs": 3,
+                    "program_keys": [],
+                },
+                batch_progress,
+                batch_task_ids,
+                program_progress,
+                {},
+                lock,
+            )
+
+        # Only one task row should exist.
+        assert len(batch_task_ids) == 1
+        assert len(batch_progress.tasks) == 1
+
+    def test_labelled_batch_prefix(self, batch_progress, program_progress, lock):
+        """Label is included in the job_name prefix."""
+        batch_task_ids: dict[int, int] = {}
+
+        handle_batch_message(
+            {
+                "batch_id": 1,
+                "batch_color": "red",
+                "batch_label": "expval",
+                "n_circuits": 3,
+                "n_programs": 1,
+                "program_keys": [],
+            },
+            batch_progress,
+            batch_task_ids,
+            program_progress,
+            {},
+            lock,
+        )
+
+        fields = _task_fields(batch_progress, batch_task_ids[1])
+        assert fields["job_name"].startswith("Batch (expval)")
+
+    def test_unlabelled_batch_prefix(self, batch_progress, program_progress, lock):
+        """Without a label, prefix is just 'Batch'."""
+        batch_task_ids: dict[int, int] = {}
+
+        handle_batch_message(
+            {
+                "batch_id": 1,
+                "batch_color": "blue",
+                "batch_label": "",
+                "n_circuits": 2,
+                "n_programs": 1,
+                "program_keys": [],
+            },
+            batch_progress,
+            batch_task_ids,
+            program_progress,
+            {},
+            lock,
+        )
+
+        fields = _task_fields(batch_progress, batch_task_ids[1])
+        assert fields["job_name"].startswith("Batch:")
+
+    def test_final_status_hides_row_and_cleans_up(
+        self, batch_progress, program_progress, lock
+    ):
+        """A final_status message hides the row and removes the batch_id mapping."""
+        batch_task_ids: dict[int, int] = {}
+
+        # Create the row first.
+        handle_batch_message(
+            {
+                "batch_id": 7,
+                "batch_color": "green",
+                "n_circuits": 1,
+                "n_programs": 1,
+                "program_keys": [],
+            },
+            batch_progress,
+            batch_task_ids,
+            program_progress,
+            {},
+            lock,
+        )
+        task_id = batch_task_ids[7]
+        assert _task_visible(batch_progress, task_id)
+
+        # Now send success.
+        handle_batch_message(
+            {
+                "batch_id": 7,
+                "batch_color": "green",
+                "n_circuits": 1,
+                "n_programs": 1,
+                "final_status": "Success",
+                "program_keys": [],
+            },
+            batch_progress,
+            batch_task_ids,
+            program_progress,
+            {},
+            lock,
+        )
+
+        assert 7 not in batch_task_ids
+        assert not _task_visible(batch_progress, task_id)
+
+    def test_program_color_set_on_start(self, batch_progress, program_progress, lock):
+        """Active batch colors the participating program rows."""
+        # Create program rows.
+        p1_tid = program_progress.add_task(
+            "", job_name="prog1", batch_color="", total=10
+        )
+        p2_tid = program_progress.add_task(
+            "", job_name="prog2", batch_color="", total=10
+        )
+        program_key_to_task_ids = {"p1": [p1_tid], "p2": [p2_tid]}
+        batch_task_ids: dict[int, int] = {}
+
+        handle_batch_message(
+            {
+                "batch_id": 1,
+                "batch_color": "magenta",
+                "n_circuits": 4,
+                "n_programs": 2,
+                "program_keys": ["p1", "p2"],
+            },
+            batch_progress,
+            batch_task_ids,
+            program_progress,
+            program_key_to_task_ids,
+            lock,
+        )
+
+        assert _task_fields(program_progress, p1_tid)["batch_color"] == "magenta"
+        assert _task_fields(program_progress, p2_tid)["batch_color"] == "magenta"
+
+    def test_program_color_cleared_on_final(
+        self, batch_progress, program_progress, lock
+    ):
+        """Final status clears batch color from program rows."""
+        p1_tid = program_progress.add_task(
+            "", job_name="prog1", batch_color="cyan", total=10
+        )
+        program_key_to_task_ids = {"p1": [p1_tid]}
+        batch_task_ids: dict[int, int] = {}
+
+        # Create, then finalize.
+        for msg in [
+            {
+                "batch_id": 1,
+                "batch_color": "cyan",
+                "n_circuits": 1,
+                "n_programs": 1,
+                "program_keys": ["p1"],
+            },
+            {
+                "batch_id": 1,
+                "batch_color": "cyan",
+                "n_circuits": 1,
+                "n_programs": 1,
+                "final_status": "Success",
+                "program_keys": ["p1"],
+            },
+        ]:
+            handle_batch_message(
+                msg,
+                batch_progress,
+                batch_task_ids,
+                program_progress,
+                program_key_to_task_ids,
+                lock,
+            )
+
+        assert _task_fields(program_progress, p1_tid)["batch_color"] == ""
+
+    def test_polling_fields_forwarded(self, batch_progress, program_progress, lock):
+        """Polling metadata is forwarded to the batch task."""
+        batch_task_ids: dict[int, int] = {}
+
+        handle_batch_message(
+            {
+                "batch_id": 1,
+                "batch_color": "green",
+                "n_circuits": 1,
+                "n_programs": 1,
+                "program_keys": [],
+                "service_job_id": "job-abc",
+                "job_status": "PENDING",
+                "poll_attempt": 3,
+                "max_retries": 100,
+            },
+            batch_progress,
+            batch_task_ids,
+            program_progress,
+            {},
+            lock,
+        )
+
+        fields = _task_fields(batch_progress, batch_task_ids[1])
+        assert fields["service_job_id"] == "job-abc"
+        assert fields["job_status"] == "PENDING"
+        assert fields["poll_attempt"] == 3
+        assert fields["max_retries"] == 100
+
+    def test_multiple_concurrent_batches(self, batch_progress, program_progress, lock):
+        """Multiple batch_ids can coexist simultaneously."""
+        batch_task_ids: dict[int, int] = {}
+
+        for bid, color, label in [(1, "green", "expval"), (2, "cyan", "shots")]:
+            handle_batch_message(
+                {
+                    "batch_id": bid,
+                    "batch_color": color,
+                    "batch_label": label,
+                    "n_circuits": 3,
+                    "n_programs": 1,
+                    "program_keys": [],
+                },
+                batch_progress,
+                batch_task_ids,
+                program_progress,
+                {},
+                lock,
+            )
+
+        assert len(batch_task_ids) == 2
+        assert len(batch_progress.tasks) == 2
+
+        fields_1 = _task_fields(batch_progress, batch_task_ids[1])
+        fields_2 = _task_fields(batch_progress, batch_task_ids[2])
+        assert "expval" in fields_1["job_name"]
+        assert "shots" in fields_2["job_name"]
+        assert fields_1["batch_color"] == "green"
+        assert fields_2["batch_color"] == "cyan"
+
+    def test_final_one_batch_keeps_other(self, batch_progress, program_progress, lock):
+        """Finalizing one batch doesn't affect another active batch."""
+        batch_task_ids: dict[int, int] = {}
+
+        # Start two batches.
+        for bid in (10, 20):
+            handle_batch_message(
+                {
+                    "batch_id": bid,
+                    "batch_color": "green",
+                    "n_circuits": 1,
+                    "n_programs": 1,
+                    "program_keys": [],
+                },
+                batch_progress,
+                batch_task_ids,
+                program_progress,
+                {},
+                lock,
+            )
+
+        tid_20 = batch_task_ids[20]
+
+        # Finalize batch 10.
+        handle_batch_message(
+            {
+                "batch_id": 10,
+                "batch_color": "green",
+                "n_circuits": 1,
+                "n_programs": 1,
+                "final_status": "Success",
+                "program_keys": [],
+            },
+            batch_progress,
+            batch_task_ids,
+            program_progress,
+            {},
+            lock,
+        )
+
+        assert 10 not in batch_task_ids
+        assert 20 in batch_task_ids
+        assert _task_visible(batch_progress, tid_20)

@@ -1,16 +1,16 @@
-Program Batches and Workflows
-===============================
+Program Ensembles and Workflows
+================================
 
-A :class:`~divi.qprog.ProgramBatch` is the base class for running multiple quantum programs in parallel — it handles scheduling, progress tracking, and result aggregation so you don't have to.
+A :class:`~divi.qprog.ProgramEnsemble` is the base class for running multiple quantum programs in parallel — it handles scheduling, progress tracking, and result aggregation so you don't have to.
 
-Divi's program batch capabilities enable efficient execution of large-scale quantum computations across multiple problems, parameter sweeps, and optimization scenarios. This guide explains how to leverage Divi's parallelization features for maximum performance.
+Divi's program ensemble capabilities enable efficient execution of large-scale quantum computations across multiple problems, parameter sweeps, and optimization scenarios. This guide explains how to leverage Divi's parallelization features for maximum performance.
 
-Program Batch Overview
+Program Ensemble Overview
 -------------------------
 
-**What are Program Batches?** 📦
+**What are Program Ensembles?** 📦
 
-Program batches allow you to run multiple quantum programs simultaneously, automatically distributing work across available computational resources. This is essential for:
+Program ensembles allow you to run multiple quantum programs simultaneously, automatically distributing work across available computational resources. This is essential for:
 
 - **Problem Decomposition** 🧩 - Breaking down large problems into smaller, solvable parts
 - **Parameter Sweeps** 🔄 - Testing multiple parameter combinations
@@ -28,7 +28,7 @@ Program batches allow you to run multiple quantum programs simultaneously, autom
 VQE Hyperparameter Sweeps
 -------------------------
 
-The most common program batch scenario is running VQE across multiple molecular configurations:
+The most common program ensemble scenario is running VQE across multiple molecular configurations:
 
 **Basic Parameter Sweep** 🎯
 
@@ -319,18 +319,18 @@ This is useful when you want to inspect alternative solutions or post-process ca
 Custom Batch Workflows
 ----------------------
 
-You can create custom program batch workflows by inheriting from :class:`~divi.qprog.ProgramBatch`:
+You can create custom program ensemble workflows by inheriting from :class:`~divi.qprog.ProgramEnsemble`:
 
 **Custom Batch Implementation** 🛠️
 
 .. code-block:: python
 
-   from divi.qprog import ProgramBatch, VQE
+   from divi.qprog import ProgramEnsemble, VQE
    from divi.backends import CircuitRunner, ParallelSimulator
    import pennylane as qml
    import numpy as np
 
-   class CustomParameterSweep(ProgramBatch):
+   class CustomParameterSweep(ProgramEnsemble):
        def __init__(self, backend: CircuitRunner, molecules, parameters):
            super().__init__(backend)
            self.molecules = molecules
@@ -450,11 +450,89 @@ Combine local and cloud execution for optimal performance:
 Progress Monitoring and Control
 -------------------------------
 
-Divi provides automatic progress tracking for long-running batches. When you execute a batch that contains compatible programs (like :class:`VQE` or :class:`QAOA`), a progress bar will be displayed in your console, showing the status of each program in real-time.
+Divi provides automatic progress tracking for long-running ensembles. When you
+execute an ensemble that contains compatible programs (like :class:`VQE` or
+:class:`QAOA`), a rich progress display appears in your console showing the
+status of each program in real-time.
 
-**Stopping a Batch** 🛑
+When circuit batching is active (the default), an additional batch status line
+appears below the per-program progress bars. It shows the merged job's polling
+status — how many circuits were merged, which programs are part of the current
+flush group, and the backend job ID.
 
-You can gracefully stop a running batch at any time by pressing ``Ctrl+C``. Divi will catch the signal, attempt to cancel any pending programs, and allow any currently running programs to finish their current iteration before shutting down.
+**Stopping an Ensemble** 🛑
+
+You can gracefully stop a running ensemble at any time by pressing ``Ctrl+C``.
+Divi will catch the signal, cancel any in-flight backend jobs, and allow any
+currently running programs to finish their current iteration before shutting
+down.
+
+Circuit Batching
+----------------
+
+By default, :meth:`~divi.qprog.ProgramEnsemble.run` merges the circuit
+submissions from all programs in the ensemble into **single backend calls**.
+This behaviour is controlled by :class:`~divi.qprog.BatchConfig`.
+
+**How it works**
+
+Each optimization iteration, every program calls ``submit_circuits`` on its
+backend. With batching enabled, these calls are intercepted by a coordinator
+that:
+
+1. Collects circuit submissions from all active programs (barrier-based flush).
+2. Merges them into a single payload with namespaced circuit tags.
+3. Submits the merged payload to the real backend in one call.
+4. Polls for results once (instead of N times).
+5. Demultiplexes the results back to each program by tag prefix.
+
+This happens transparently — programs are unaware they're sharing a backend
+call.
+
+**When to use batching**
+
+- **Cloud backends** (:class:`~divi.backends.QoroService`): batching reduces
+  the number of API calls, authentication round-trips, and polling loops.
+  This is the primary use case.
+- **Local simulators** (:class:`~divi.backends.ParallelSimulator`): batching
+  adds synchronization overhead for no network benefit. The simulator already
+  parallelizes circuits internally.
+
+**Limiting batch size**
+
+By default the coordinator waits for **all** active programs to submit before
+merging circuits.  For large ensembles this can produce very large merged jobs.
+Use ``max_batch_size`` to cap the number of circuits per flush:
+
+.. code-block:: python
+
+   from divi.qprog import BatchConfig
+
+   # Flush as soon as 50 circuits are pending (partial flush)
+   ensemble.run(blocking=True, batch_config=BatchConfig(max_batch_size=50))
+
+When the pending circuit count reaches ``max_batch_size`` the coordinator
+flushes immediately — even if some programs haven't submitted yet.  Those
+programs will be included in a later flush.  This reduces per-job size on
+the backend and can improve latency for large ensembles.
+
+``max_batch_size`` controls **merging granularity**, not individual payload
+size.  A single program that submits more circuits than the limit will still
+flush normally.
+
+**Disabling batching**
+
+Pass ``BatchConfig(mode=BatchMode.OFF)`` to disable batching entirely:
+
+.. code-block:: python
+
+   from divi.qprog import BatchConfig, BatchMode
+
+   # Each program submits circuits independently
+   ensemble.run(blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF))
+
+   # Merged submissions (default)
+   ensemble.run(blocking=True)
 
 Performance Optimization
 ------------------------
@@ -507,7 +585,7 @@ Next Steps
 ----------
 
 - ⚡ **Backend Optimization**: Learn about performance tuning in :doc:`backends`.
-- 🛠️ **Custom Workflows**: Create your own batch processors using :class:`~divi.qprog.ProgramBatch`.
+- 🛠️ **Custom Workflows**: Create your own batch processors using :class:`~divi.qprog.ProgramEnsemble`.
 - 📊 **Result Analysis**: Learn about advanced result visualization, e.g., using :meth:`~divi.qprog.workflows.VQEHyperparameterSweep.visualize_results`.
 
 Batch processing is where Divi's true power shines - enabling quantum computations that would be impractical with traditional approaches!

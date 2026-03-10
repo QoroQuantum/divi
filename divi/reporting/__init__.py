@@ -2,6 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from ._pbar import BATCH_COLORS, make_batch_display, make_progress_bar
+from ._pbar import (
+    BATCH_COLORS,
+    handle_batch_message,
+    make_batch_display,
+    make_progress_bar,
+    make_progress_display,
+    queue_listener,
+)
 from ._qlogger import disable_logging, enable_logging
 from ._reporter import LoggingProgressReporter, ProgressReporter, QueueProgressReporter

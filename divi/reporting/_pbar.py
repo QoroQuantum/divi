@@ -2,6 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from queue import Empty, Queue
+from threading import Event, Lock
+from typing import Any
+
 from rich.console import Group
 from rich.live import Live
 from rich.progress import (
@@ -10,6 +14,7 @@ from rich.progress import (
     Progress,
     ProgressColumn,
     SpinnerColumn,
+    TaskID,
     TextColumn,
     TimeElapsedColumn,
 )
@@ -63,10 +68,10 @@ class ConditionalSpinnerColumn(ProgressColumn):
 
 class PhaseStatusColumn(ProgressColumn):
     _STATUS_MESSAGES = {
-        "Success": ("• Success! ✅", "bold green"),
-        "Failed": ("• Failed! ❌", "bold red"),
-        "Cancelled": ("• Cancelled ⏹️", "bold yellow"),
-        "Aborted": ("• Aborted ⚠️", "dim magenta"),
+        "Success": ("• Success! ✅ ", "bold green"),
+        "Failed": ("• Failed! ❌ ", "bold red"),
+        "Cancelled": ("• Cancelled ⏹️ ", "bold yellow"),
+        "Aborted": ("• Aborted ⚠️ ", "dim magenta"),
     }
 
     def __init__(self, table_column=None):
@@ -114,7 +119,8 @@ class PhaseStatusColumn(ProgressColumn):
             polling_str = self._build_polling_string(
                 split_job_id, job_status, poll_attempt, max_retries
             )
-        final_text = Text(f"[{message}]{loss_str}{polling_str}")
+        msg_str = f"[{message}]" if message else ""
+        final_text = Text(f"{msg_str}{loss_str}{polling_str}")
 
         # Highlight job ID if present
         if split_job_id is not None:
@@ -123,23 +129,11 @@ class PhaseStatusColumn(ProgressColumn):
         return final_text
 
 
-def make_progress_bar(is_jupyter: bool = False) -> Progress:
+def make_progress_bar() -> Progress:
+    """Create a Rich Progress bar for per-program tracking.
+
+    Auto-refresh is disabled; the enclosing ``Live`` display handles refresh.
     """
-    Create a customized Rich progress bar for tracking quantum program execution.
-
-    Builds a progress bar with custom columns including job name, completion status,
-    elapsed time, spinner, and phase status indicators. Automatically adapts refresh
-    behavior for Jupyter notebook environments.
-
-    Args:
-        is_jupyter (bool, optional): Whether the progress bar is being displayed in
-            a Jupyter notebook environment. Affects refresh behavior. Defaults to False.
-
-    Returns:
-        Progress: A configured Rich Progress instance with custom columns for
-            quantum program tracking.
-    """
-    _ensure_unbuffered_stdout()
     return Progress(
         BatchIndicatorColumn(),
         TextColumn("[bold blue]{task.fields[job_name]}"),
@@ -148,22 +142,37 @@ def make_progress_bar(is_jupyter: bool = False) -> Progress:
         TimeElapsedColumn(),
         ConditionalSpinnerColumn(),
         PhaseStatusColumn(),
-        # For jupyter notebooks, refresh manually instead
         auto_refresh=False,
-        refresh_per_second=10 if not is_jupyter else 999,
     )
 
 
-def _make_batch_status_bar(is_jupyter: bool = False) -> Progress:
-    """Create a lightweight progress bar for batch status lines (no bar/M-of-N/time)."""
+def _make_batch_status_bar() -> Progress:
+    """Create a lightweight Progress bar for batch status lines (no bar/M-of-N/time)."""
     return Progress(
         BatchIndicatorColumn(),
         TextColumn("[bold blue]{task.fields[job_name]}"),
         ConditionalSpinnerColumn(),
         PhaseStatusColumn(),
         auto_refresh=False,
-        refresh_per_second=10 if not is_jupyter else 999,
     )
+
+
+def make_progress_display(
+    is_jupyter: bool = False,
+) -> tuple[Progress, Live]:
+    """Create a ``Live``-wrapped progress bar for per-program tracking.
+
+    Returns:
+        Tuple of (program_progress, live_display).
+    """
+    _ensure_unbuffered_stdout()
+    program_progress = make_progress_bar()
+    live = Live(
+        program_progress,
+        auto_refresh=not is_jupyter,
+        refresh_per_second=10,
+    )
+    return program_progress, live
 
 
 def make_batch_display(
@@ -179,12 +188,166 @@ def make_batch_display(
         Tuple of (batch_progress, program_progress, live_display).
     """
     _ensure_unbuffered_stdout()
-    batch_progress = _make_batch_status_bar(is_jupyter=is_jupyter)
-    program_progress = make_progress_bar(is_jupyter=is_jupyter)
-    group = Group(batch_progress, program_progress)
+    batch_progress = _make_batch_status_bar()
+    program_progress = make_progress_bar()
+    group = Group(program_progress, batch_progress)
     live = Live(
         group,
         auto_refresh=not is_jupyter,
-        refresh_per_second=10 if not is_jupyter else 999,
+        refresh_per_second=10,
     )
     return batch_progress, program_progress, live
+
+
+# ---------------------------------------------------------------------------
+# Queue listener & batch message handler
+# ---------------------------------------------------------------------------
+
+
+def queue_listener(
+    queue: Queue,
+    progress_bar: Progress,
+    pb_task_map: dict[Any, TaskID],
+    done_event: Event,
+    lock: Lock,
+    *,
+    batch_progress: Progress | None = None,
+    batch_task_ids: dict[int, TaskID] | None = None,
+    program_key_to_task_ids: dict[str, list[TaskID]] | None = None,
+    live_display: Live | None = None,
+    is_jupyter: bool = False,
+):
+    """Drain a message queue and update progress bars accordingly.
+
+    Runs in a daemon thread until *done_event* is set.  Messages with
+    ``batch=True`` are routed to :func:`handle_batch_message`; all others
+    update the per-program *progress_bar*.
+    """
+    while not done_event.is_set():
+        try:
+            msg: dict[str, Any] = queue.get(timeout=0.1)
+        except Empty:
+            continue
+        except Exception as e:
+            progress_bar.console.log(f"[queue_listener] Unexpected exception: {e}")
+            continue
+
+        # --- Batch-level messages from the coordinator ---
+        if msg.get("batch"):
+            if batch_progress is not None and batch_task_ids is not None:
+                handle_batch_message(
+                    msg,
+                    batch_progress,
+                    batch_task_ids,
+                    progress_bar,
+                    program_key_to_task_ids or {},
+                    lock,
+                )
+            if is_jupyter and live_display is not None:
+                live_display.refresh()
+            queue.task_done()
+            continue
+
+        # --- Regular per-program messages ---
+        with lock:
+            task_id = pb_task_map[msg["job_id"]]
+
+        # Prepare update arguments, starting with progress.
+        update_args = {"advance": msg["progress"]}
+
+        if "poll_attempt" in msg:
+            update_args["poll_attempt"] = msg.get("poll_attempt", 0)
+        if "max_retries" in msg:
+            update_args["max_retries"] = msg.get("max_retries")
+        if "service_job_id" in msg:
+            update_args["service_job_id"] = msg.get("service_job_id")
+        if "job_status" in msg:
+            update_args["job_status"] = msg.get("job_status")
+        if msg.get("message"):
+            update_args["message"] = msg.get("message")
+        if "final_status" in msg:
+            update_args["final_status"] = msg.get("final_status", "")
+        if "loss" in msg:
+            update_args["loss"] = msg.get("loss")
+
+        progress_bar.update(task_id, **update_args)
+
+        if is_jupyter and live_display is not None:
+            live_display.refresh()
+
+        queue.task_done()
+
+
+def handle_batch_message(
+    msg: dict[str, Any],
+    batch_progress: Progress,
+    batch_task_ids: dict[int, TaskID],
+    program_progress: Progress,
+    program_key_to_task_ids: dict[str, list[TaskID]],
+    lock: Lock,
+):
+    """Process a batch-level progress message using the separate batch Progress bar.
+
+    Batch rows are created dynamically per ``batch_id`` so that split
+    sub-batches (e.g. expval vs shots) each get their own status line.
+    """
+    batch_id = msg.get("batch_id")
+    color = msg.get("batch_color", "")
+    label = msg.get("batch_label", "")
+    n_circuits = msg.get("n_circuits", 0)
+    n_programs = msg.get("n_programs", 0)
+    final_status = msg.get("final_status")
+
+    # Lazily create a batch row for this batch_id
+    if batch_id not in batch_task_ids:
+        batch_task_ids[batch_id] = batch_progress.add_task(
+            "",
+            job_name="",
+            total=0,
+            visible=False,
+            batch_color="",
+            message="",
+            final_status="",
+        )
+    task_id = batch_task_ids[batch_id]
+
+    # Build update args for the batch row
+    update_args: dict[str, Any] = {}
+
+    if not final_status:
+        # Show the batch row and update its label/color
+        update_args["visible"] = True
+        prefix = f"Batch ({label})" if label else "Batch"
+        update_args["job_name"] = (
+            f"{prefix}: {n_circuits} circuits, {n_programs} programs"
+        )
+        update_args["batch_color"] = color
+
+        # Color-code participating programs
+        with lock:
+            for prog_key in msg.get("program_keys", []):
+                for tid in program_key_to_task_ids.get(prog_key, []):
+                    program_progress.update(tid, batch_color=color)
+
+    if "poll_attempt" in msg:
+        update_args["poll_attempt"] = msg["poll_attempt"]
+    if "max_retries" in msg:
+        update_args["max_retries"] = msg["max_retries"]
+    if "service_job_id" in msg:
+        update_args["service_job_id"] = msg["service_job_id"]
+    if "job_status" in msg:
+        update_args["job_status"] = msg["job_status"]
+    if msg.get("message"):
+        update_args["message"] = msg["message"]
+
+    if final_status:
+        # Hide the batch row and clear program colors
+        update_args["visible"] = False
+        with lock:
+            for prog_key in msg.get("program_keys", []):
+                for tid in program_key_to_task_ids.get(prog_key, []):
+                    program_progress.update(tid, batch_color="")
+        # Clean up the mapping
+        del batch_task_ids[batch_id]
+
+    batch_progress.update(task_id, **update_args)

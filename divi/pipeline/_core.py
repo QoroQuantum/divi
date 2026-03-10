@@ -114,7 +114,7 @@ def _wait_for_async_result(backend, execution_result, env):
         raise RuntimeError(f"Job {job_id} has failed")
 
     if status == JobStatus.CANCELLED:
-        # If cancellation was requested (e.g., by ProgramBatch), raise _CancelledError
+        # If cancellation was requested (e.g., by ProgramEnsemble), raise _CancelledError
         # so it's handled gracefully. Otherwise, raise RuntimeError for unexpected cancellation.
         if env.cancellation_event and env.cancellation_event.is_set():
             raise _CancelledError(f"Job {job_id} was cancelled")

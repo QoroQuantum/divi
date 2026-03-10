@@ -8,7 +8,7 @@ from divi.circuits import MetaCircuit
 from divi.pipeline._grouping import compute_measurement_groups
 from divi.qprog import (
     MonteCarloOptimizer,
-    ProgramBatch,
+    ProgramEnsemble,
     QuantumProgram,
     ScipyMethod,
     ScipyOptimizer,
@@ -138,7 +138,7 @@ def verify_correct_circuit_count(obj: QuantumProgram):
             )
 
 
-def verify_basic_program_batch_behaviour(mocker, obj: ProgramBatch):
+def verify_basic_program_ensemble_behaviour(mocker, obj: ProgramEnsemble):
 
     with pytest.raises(RuntimeError, match="No programs to run"):
         obj.run()
