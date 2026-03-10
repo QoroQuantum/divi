@@ -1135,7 +1135,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             )
         except (_CancelledError, StopIteration) as exc:
             if isinstance(exc, _CancelledError):
-                message = "optimization cancelled."
+                message = "Optimization cancelled."
             else:
                 reason = self._stop_reason.value if self._stop_reason else "Stopped"
                 message = f"Early stopping: {reason}"
@@ -1152,7 +1152,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 return self._total_circuit_count, self._total_run_time
         else:
             self.optimize_result.success = True
-            self.optimize_result.message = "optimization converged."
+            self.optimize_result.message = "Optimization converged."
 
             # Set _best_params from final result (source of truth)
             x = np.atleast_2d(self.optimize_result.x)
