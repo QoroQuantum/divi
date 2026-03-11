@@ -7,19 +7,58 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0](https://github.com/QoroQuantum/divi/compare/v0.8.0...v0.9.0) (2026-03-11)
+
+### ✨ Added
+
+* **HUBO support:** `QAOA` and `PCE` now support Higher-Order Unconstrained Binary Optimization (HUBO) problems in addition to QUBOs ([acaed60](https://github.com/QoroQuantum/divi/commit/acaed606b51773145dc00d277d22c8b5c1f889e0))
+* `GraphPartitioningQAOA`: warnings when the graph problem is incompatible with partitioning, so you can avoid invalid configurations ([02a6f8d](https://github.com/QoroQuantum/divi/commit/02a6f8d2b91232e63942ca9f925222c2a87c75ab))
+* `MetaCircuit`: circuits are now immutable and parameter binding in the pipeline is faster; the previous deep-copy workaround has been removed ([08b8498](https://github.com/QoroQuantum/divi/commit/08b849832f5a0a8c34a4525c017444aafae9ce93), [2e22dce](https://github.com/QoroQuantum/divi/commit/2e22dce63a25a86418e34f7b0b5bfaad8c8fc183))
+* `ProgramEnsemble` (formerly `ProgramBatch`): renamed class; ensembles that use beam-search aggregation (e.g. `GraphPartitioningQAOA`, `QUBOPartitioningQAOA`) now expose `get_top_solutions(n=...)` to return the top-N global solutions from partition results, mirroring the single-program `get_top_solutions` API ([8fed611](https://github.com/QoroQuantum/divi/commit/8fed6115d0e886e77c337367dd4e298652babd69), [e22d1e7](https://github.com/QoroQuantum/divi/commit/e22d1e7aede8476c6b6aa1c5fac84a5590d99c2c))
+* **Circuit batching:** `ProgramEnsemble` can batch many circuits into fewer jobs via `BatchConfig` to improve network utilization and avoid submitting many small jobs with very few circuits ([8fed611](https://github.com/QoroQuantum/divi/commit/8fed6115d0e886e77c337367dd4e298652babd69))
+* `QoroService`: support for `SimulatorCluster` and clearer separation between QPU and simulator targeting ([fa77af9](https://github.com/QoroQuantum/divi/commit/fa77af9267c9f6e74ee6e8f4ac76e6e543fa63f6))
+* `QoroService`: consolidated configuration module with property-based config access and support for execution config overrides per submission ([b67bb49](https://github.com/QoroQuantum/divi/commit/b67bb49770464cd08067e31e13f4ea21a5499644))
+* `QUBOPartitioningQAOA`: you can now choose between `QAOA` and `PCE` as the underlying subprogram algorithm for partitioned QUBO solving ([1e3b418](https://github.com/QoroQuantum/divi/commit/1e3b418a3abf182064c5c8cc370340b31021055d))
+* **Progress reporting:** loss values are now shown in progress bars for variational algorithms ([c8ff260](https://github.com/QoroQuantum/divi/commit/c8ff260e7353da2c5ae3c2315b5699294e52d092))
+* `TimeEvolutionTrajectory`: new ensemble class for applying time evolution across multiple time points in one workflow ([562751a](https://github.com/QoroQuantum/divi/commit/562751a99440ef18c6e09135189512c44c097255))
+
+### 🐛 Fixed
+
+* `PCE`: `PCECostStage` is no longer tied to `MeasurementStage`; QUBO matrix energy double-counting has been corrected and solutions are now returned sorted by energy ([f682872](https://github.com/QoroQuantum/divi/commit/f682872cfdea7f368f24761dd07df976636f15a5))
+* `QoroService`: `ExecutionConfig` can now be passed to `submit_circuits()` and is sent inline with job init, so execution config is applied at creation time instead of requiring a separate `set_execution_config()` call after submit (which could be too late if the job started before the config was applied); job-level overrides are now via `override_job_config` (formerly `override_config`) ([b58e3f1](https://github.com/QoroQuantum/divi/commit/b58e3f1e82c2e90def27dfe727d046c388a08430))
+* `QoroService`: pagination no longer uses hardcoded values ([ed4573c](https://github.com/QoroQuantum/divi/commit/ed4573cfd6ce1d2d630c4bbb343db466f6283274))
+
+### 🔧 Internal
+
+* **Tutorials:** Refactored CI script for running tutorials ([18a827a](https://github.com/QoroQuantum/divi/commit/18a827ac2742ada03e5938c4a2a5a40609f988f2))
+* **Tutorials:** Added missing shot reduction for the QUBO partitioning tutorial ([3a3a77a](https://github.com/QoroQuantum/divi/commit/3a3a77a3ce42ad4be33f21dcada5e526e44e85b6))
+* **Batching:** Added private batching option to sort circuits before execution for reproducible runs ([1a92155](https://github.com/QoroQuantum/divi/commit/1a92155a1e40f56854cc45c05ca53d2ebea52e4d))
+* **Docs:** Made Sphinx build in CI auto-detect venv when `sphinx-build` is not on PATH ([6b94366](https://github.com/QoroQuantum/divi/commit/6b94366ff0e7a3cae606127a46e70d009d8b258b))
+* **CI:** Introduced nightly PyPI builds ([a86b7d6](https://github.com/QoroQuantum/divi/commit/a86b7d61b64cd4a6385d9ad082c992865f3f923a))
+* **Tests:** Overhauled test suite based on audit report findings ([b99bc3b](https://github.com/QoroQuantum/divi/commit/b99bc3bee9141ea445999287ec43671321f68568))
+* **Tutorials:** Refactored `run_tutorials.sh` with stricter error handling for non-sed'd tutorials ([df324e2](https://github.com/QoroQuantum/divi/commit/df324e27ee68e661d5bda7b26b1097e37fc6c5ab))
+* **Tutorials:** Trimmed QUBO partitioning tutorial and increased VQE hyperparameter sweep tutorial timeout ([6e81a77](https://github.com/QoroQuantum/divi/commit/6e81a77551d5262252569d3406b2ae5f34e7bd6a))
+* **Tutorials:** Replaced Nelder-Mead with Pymoo DE in ZNE tutorial for more meaningful results ([a13afcc](https://github.com/QoroQuantum/divi/commit/a13afcc621fef6400d011c3d94233207b8234cec))
+* **Docs:** Updated documentation workflow to use Make for Sphinx and correct artifact path ([609af8a](https://github.com/QoroQuantum/divi/commit/609af8adc4cc0db3c003fe0a5d9498cabad67d20))
+
+### 📝 Documentation
+
+* Expanded selected docs to improve RAG retrieval ([7c7f2b5](https://github.com/QoroQuantum/divi/commit/7c7f2b56136fabf9ed645d415a0a21cf236875aa))
+* Spelling corrections ([c2febfa](https://github.com/QoroQuantum/divi/commit/c2febfa722cce13b540b736df1f3b72d5b0c0a22))
+
 ## [0.8.0](https://github.com/QoroQuantum/divi/compare/v0.7.0...v0.8.0) (2026-02-21)
 
 ### ✨ Added
 
-* **EarlyStopping** (and **StopReason**) in ``divi.qprog.early_stopping`` so variational algorithms can stop when convergence is reached ([aaf70f0](https://github.com/QoroQuantum/divi/commit/aaf70f05ed39e0874211ad1e23d1d51e1f90b336))
+* `EarlyStopping` (and `StopReason`) in `divi.qprog.early_stopping` so variational algorithms can stop when convergence is reached ([aaf70f0](https://github.com/QoroQuantum/divi/commit/aaf70f05ed39e0874211ad1e23d1d51e1f90b336))
 * Pipeline execution model for composing and running multi-step workflows ([#59](https://github.com/QoroQuantum/divi/issues/59)) ([b945836](https://github.com/QoroQuantum/divi/commit/b945836924347271d06470293bb2759fa9526715))
-* **beam_search_aggregate** in ``divi.qprog.batch`` for the aggregation step when combining results from partitioned programs into a global solution ([301ffc9](https://github.com/QoroQuantum/divi/commit/301ffc9841acd44ef8d7ea2f4773ca43a1dbd3a6))
-* **ExecutionConfig** for QoroService to control how jobs are run ([107b6e4](https://github.com/QoroQuantum/divi/commit/107b6e4927128ab683f35b3c6c7d514ef522150f))
-* **TimeEvolution** — new ``QuantumProgram`` subclass in ``divi.qprog.algorithms`` for Hamiltonian time evolution ([#57](https://github.com/QoroQuantum/divi/issues/57)) ([dec65f4](https://github.com/QoroQuantum/divi/commit/dec65f42a37f062c517c3d54b6abf109741ce4e2))
+* `beam_search_aggregate` in `divi.qprog.batch` for the aggregation step when combining results from partitioned programs into a global solution ([301ffc9](https://github.com/QoroQuantum/divi/commit/301ffc9841acd44ef8d7ea2f4773ca43a1dbd3a6))
+* `ExecutionConfig` for `QoroService` to control how jobs are run ([107b6e4](https://github.com/QoroQuantum/divi/commit/107b6e4927128ab683f35b3c6c7d514ef522150f))
+* `TimeEvolution` — new `QuantumProgram` subclass in `divi.qprog.algorithms` for Hamiltonian time evolution ([#57](https://github.com/QoroQuantum/divi/issues/57)) ([dec65f4](https://github.com/QoroQuantum/divi/commit/dec65f42a37f062c517c3d54b6abf109741ce4e2))
 
 ### 🐛 Fixed
 
-* **QDrift:** Coefficients are now re-scaled correctly before sampling so the approximated dynamics stay faithful to the original ([6f5f9ab](https://github.com/QoroQuantum/divi/commit/6f5f9ab367ce6103108cb28d96aba54acac7cc60))
+* `QDrift`: Coefficients are now re-scaled correctly before sampling so the approximated dynamics stay faithful to the original ([6f5f9ab](https://github.com/QoroQuantum/divi/commit/6f5f9ab367ce6103108cb28d96aba54acac7cc60))
 
 ### 🔧 Internal
 
@@ -36,28 +75,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### ✨ Added
 
-* **VQEHyperparameterSweep:** add hamiltonian support ([#39](https://github.com/QoroQuantum/divi/issues/39)) ([5d57f90](https://github.com/QoroQuantum/divi/commit/5d57f904a846868c4eb51ff9c7c6dbb75c549167))
-* **ParallelSimulator:** add circuit depth tracker ([2c57445](https://github.com/QoroQuantum/divi/commit/2c57445a293a9d1b8f07d4a9dc7ce28816d51280))
-* **PCE:** add polynomial encoding and tests ([8537c5c](https://github.com/QoroQuantum/divi/commit/8537c5ca9318d11a86153aed2db7981ae3745cb5))
-* **QAOA:** integrate QDrift and add tests ([666a9bd](https://github.com/QoroQuantum/divi/commit/666a9bd45ac38f575e88ae327395834a9fe81084))
-* **Trotterization:** introduce TrotterizationStrategy object and add QDrift as a strategy ([4293a28](https://github.com/QoroQuantum/divi/commit/4293a28e0c442bd555d07137d170fa3f30dfb781))
-* **PCE:** add decode_parities_fn attribute for custom bitstring decoding ([3c91b92](https://github.com/QoroQuantum/divi/commit/3c91b92197e27f9f4d1353148b4610c992882a23))
+* `VQEHyperparameterSweep`: add hamiltonian support ([#39](https://github.com/QoroQuantum/divi/issues/39)) ([5d57f90](https://github.com/QoroQuantum/divi/commit/5d57f904a846868c4eb51ff9c7c6dbb75c549167))
+* `ParallelSimulator`: add circuit depth tracker ([2c57445](https://github.com/QoroQuantum/divi/commit/2c57445a293a9d1b8f07d4a9dc7ce28816d51280))
+* `PCE`: add polynomial encoding and tests ([8537c5c](https://github.com/QoroQuantum/divi/commit/8537c5ca9318d11a86153aed2db7981ae3745cb5))
+* `QAOA`: integrate QDrift and add tests ([666a9bd](https://github.com/QoroQuantum/divi/commit/666a9bd45ac38f575e88ae327395834a9fe81084))
+* **Trotterization**: introduce `TrotterizationStrategy` object and add `QDrift` as a strategy ([4293a28](https://github.com/QoroQuantum/divi/commit/4293a28e0c442bd555d07137d170fa3f30dfb781))
+* `PCE`: add decode_parities_fn attribute for custom bitstring decoding ([3c91b92](https://github.com/QoroQuantum/divi/commit/3c91b92197e27f9f4d1353148b4610c992882a23))
 
 ### 🐛 Fixed
 
-* **PCE:** add missing support for expval backends for soft energy path ([70ce1cf](https://github.com/QoroQuantum/divi/commit/70ce1cf1c24c355ad5d603a4573c2692585aebec))
-* **QASM:** fix parser not allowing scientific notation ([220f466](https://github.com/QoroQuantum/divi/commit/220f4668142e8264a00da2201e90cd06cc8f4b52))
+* `PCE`: add missing support for expval backends for soft energy path ([70ce1cf](https://github.com/QoroQuantum/divi/commit/70ce1cf1c24c355ad5d603a4573c2692585aebec))
+* **QASM parser:** fix not allowing scientific notation ([220f466](https://github.com/QoroQuantum/divi/commit/220f4668142e8264a00da2201e90cd06cc8f4b52))
 
 ## [0.6.1](https://github.com/QoroQuantum/divi/compare/v0.6.0...v0.6.1) (2026-01-21)
 
 ### 🐛 Fixed
 
-* **Ansatz:** fix typo in ansatz argument for all-to-all connectivity ([e35c218](https://github.com/QoroQuantum/divi/commit/e35c218214b8822fecce1695f81fc44b1853bc5a))
-* **PCE:** get_top_solutions now provides the decoded bitstrings in PCE ([6d4868f](https://github.com/QoroQuantum/divi/commit/6d4868f1e1f573a354f5c13908d59916d50349c4))
+* `Ansatz`: fix typo in ansatz argument for all-to-all connectivity ([e35c218](https://github.com/QoroQuantum/divi/commit/e35c218214b8822fecce1695f81fc44b1853bc5a))
+* `PCE`: `get_top_solutions` now provides the decoded bitstrings in `PCE` ([6d4868f](https://github.com/QoroQuantum/divi/commit/6d4868f1e1f573a354f5c13908d59916d50349c4))
 
 ### 📝 Documentation
 
-* fix outdated docs QAOA example ([c739d36](https://github.com/QoroQuantum/divi/commit/c739d36267c93dd4235409c1c6115bf75ae15342))
+* fix outdated docs `QAOA` example ([c739d36](https://github.com/QoroQuantum/divi/commit/c739d36267c93dd4235409c1c6115bf75ae15342))
 
 ## [0.6.0](https://github.com/QoroQuantum/divi/compare/v0.5.0...v0.6.0) (2026-01-20)
 
@@ -72,7 +111,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 🐛 Fixed
 
-* Fixed minor bug in VQA final parameters extraction
+* Fixed minor bug in `VariationalQuantumAlgorithm` final parameters extraction
 
 ### 🔧 Build
 
@@ -82,7 +121,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### ✨ Added
 
-* `BinaryQuadraticModel` support in QAOA: added support for `dimod.BinaryQuadraticModel` as a QUBO problem input type, replacing the removed `qiskit-optimization.QuadraticProgram` support. QAOA now accepts BinaryQuadraticModel objects directly, with automatic conversion to matrix format for Hamiltonian generation. Includes comprehensive test coverage and updated tutorial (`tutorials/qaoa_binary_quadratic_model.py`)
+* `BinaryQuadraticModel` support in `QAOA`: added support for `dimod.BinaryQuadraticModel` as a QUBO problem input type, replacing the removed `qiskit-optimization.QuadraticProgram` support. `QAOA` now accepts BinaryQuadraticModel objects directly, with automatic conversion to matrix format for Hamiltonian generation. Includes comprehensive test coverage and updated tutorial (`tutorials/qaoa_binary_quadratic_model.py`)
 * Checkpointing support for variational quantum algorithms: added comprehensive checkpointing functionality with `CheckpointConfig` class (including `with_timestamped_dir()` method) using Pydantic for JSON validation, enabling state saving and resuming of optimization runs. Includes `save_state()` and `load_state()` methods on optimizer classes, comprehensive user guide (`docs/source/user_guide/checkpointing.rst`), and tutorial example (`tutorials/checkpointing.py`)
 * `ExecutionResult` dataclass: added a unified return type for `CircuitRunner.submit_circuits()` that handles both synchronous and asynchronous execution results. This provides a consistent interface for accessing results or job IDs across different backends
 * `precision` parameter to `VariationalQuantumAlgorithm`: added configurable precision for QASM parameter formatting (defaults to 8 decimal places). The precision parameter controls the number of decimal places used when converting circuit parameters to QASM strings, affecting the size of QASM circuits sent to cloud backends. Higher precision values result in longer QASM strings and increased data transfer overhead
@@ -108,7 +147,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 🗑️ Removed
 
-* Removed `QuadraticProgram` support from QAOA: removed support for `qiskit-optimization.QuadraticProgram` as a QUBO problem input type, along with the `qiskit-optimization` dependency. Replaced with `dimod.BinaryQuadraticModel` support for better compatibility with the broader quantum optimization ecosystem. The `qiskit-optimization` dependency and related converter (`QuadraticProgramToQubo`) have been removed from the codebase
+* Removed `QuadraticProgram` support from `QAOA`: removed support for `qiskit-optimization.QuadraticProgram` as a QUBO problem input type, along with the `qiskit-optimization` dependency. Replaced with `dimod.BinaryQuadraticModel` support for better compatibility with the broader quantum optimization ecosystem. The `qiskit-optimization` dependency and related converter (`QuadraticProgramToQubo`) have been removed from the codebase
 * Removed unused `mode` parameter from progress bar: removed unused `mode` field from `ProgramBatch` progress bar task creation. The field was set but never used in any progress bar rendering logic
 * Removed unused `_is_local` attribute from `ProgramBatch`: removed `_is_local` attribute that was only set but never referenced anywhere in the codebase
 
@@ -152,7 +191,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 🐛 Fixed
 
-* Fixed QAOA bug for non-integer graph labels
+* Fixed `QAOA` bug for non-integer graph labels
 * Fixed parameter initialization in `VariationalQuantumAlgorithm` where user-provided `initial_params` were being overwritten by automatic initialization
 * Fixed test failures related to removed `_meta_circuits` attribute and incorrect parameter ordering
 * Fixed Sphinx documentation configuration to read from `project` section instead of deprecated `tool.poetry` section in pyproject.toml
@@ -161,10 +200,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### ✨ Added
 
-* Support for expectation value calculation in QoroService (Maestro backend): ability to compute expectation values directly without sampling when backend supports it
-* `JobConfig` dataclass for improved job management in QoroService: provides structured configuration with validation, override capabilities, and QPU system resolution
+* Support for expectation value calculation in `QoroService` (Maestro backend): ability to compute expectation values directly without sampling when backend supports it
+* `JobConfig` dataclass for improved job management in `QoroService`: provides structured configuration with validation, override capabilities, and QPU system resolution
 * Ability to maintain older best parameters in new Monte-Carlo population via `keep_best_params` parameter in `MonteCarloOptimizer`
-* Comprehensive Sphinx documentation: user guides covering core concepts, backends, optimizers, program batches, QAOA, VQE, and error mitigation, plus complete API reference
+* Comprehensive Sphinx documentation: user guides covering core concepts, backends, optimizers, program batches, `QAOA`, `VQE`, and error mitigation, plus complete API reference
 * GitHub Actions workflow for automated Sphinx documentation deployment to GitHub Pages
 * Matrix-aware dependency caching for CI/CD workflows: caching keys that account for Python version matrix
 * Coverage configuration for tests: `.coveragerc` file to track test coverage
@@ -180,7 +219,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Enhanced optimizer callback functions: ensured consistent parameter and cost array shapes across all optimizers, and updated type hints from `Callable | None` to `Callable[[OptimizeResult], Any] | None` for better type safety
 * Refactored circuit management: renamed `_circuits` to `_curr_circuits` in `QuantumProgram` and `VariationalQuantumAlgorithm` to better reflect that it stores only the current iteration's circuits
 * Simplified probability storage in `VariationalQuantumAlgorithm`: changed from storing `_best_probs` and `_final_probs` dictionaries to computing them on-demand using new `_process_probability_results()` method with `reverse_dict_endianness` for consistent endianness handling, and refactored `_perform_final_computation()` to accept keyword arguments
-* Updated documentation and examples: changed `best_loss` retrieval method for VQE and QAOA algorithms, and enhanced user guide with backend selection and error handling strategies
+* Updated documentation and examples: changed `best_loss` retrieval method for `VQE` and `QAOA` algorithms, and enhanced user guide with backend selection and error handling strategies
 * Improved Sphinx documentation configuration: enhanced `conf.py` with better metadata extraction and API reference organization
 * Refactored `QuantumProgram` class: extracted variational algorithm logic into `VariationalQuantumAlgorithm` base class, reducing `QuantumProgram` from 759 lines to a more focused abstract base class
 * Streamlined CI/CD workflows: consolidated and simplified GitHub Actions workflows for testing and documentation deployment
@@ -222,7 +261,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 🐛 Fixed
 
-* Fixed QoroService tests: updated tests to match new init/add circuit submission flow
+* Fixed `QoroService` tests: updated tests to match new init/add circuit submission flow
 * Fixed test failures after optimizers interface change: updated test expectations for new optimizer signatures
 * Fixed and simplified Qoro API tests behavior: improved test reliability and reduced flakiness
 
@@ -239,14 +278,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Restructured project for better modularity: moved `exp/` directory to `extern/`, moved backend-related files (`interfaces.py`, `qoro_service.py`, `qpu_system.py`, `_parallel_simulator.py`) to `backends/` subdirectory, moved circuit-related files to `circuits/` subdirectory, and reorganized test files to match new structure
 * Improved QASM validation API: changed `is_valid_qasm()` return type from `bool` to `bool | str` to return error messages, and updated `QoroService.submit_circuits()` to use this improved validation with clearer error messages
 * Enhanced QASM parser error handling: added validation to prevent redefinition of built-in gates with clearer error messages including line and column numbers
-* Refactored VQE to use new Ansatz abstraction: extracted ansatz logic into `_ansatze.py` module, reducing VQE code complexity and enabling better extensibility
+* Refactored VQE to use new `Ansatz` abstraction: extracted ansatz logic into `_ansatze.py` module, reducing VQE code complexity and enabling better extensibility
 * Updated tutorial examples: modified tutorial examples to use new ansatz interface
 
 ### 🐛 Fixed
 
 * Fixed wire order handling in expectation value calculation: updated to use `cost_hamiltonian.wires` when available instead of assuming integer wire indices, enabling support for non-integer wire labels
 * Fixed sparse input bug in QUBO conversion: replaced `.A1` attribute access with `.tocoo()` method for proper sparse matrix handling in `convert_qubo_matrix_to_pennylane_ising()`
-* Fixed test failures related to ansatz refactoring: updated VQE and VQE sweep tests to work with new Ansatz abstraction interface
+* Fixed test failures related to ansatz refactoring: updated VQE and VQE sweep tests to work with new `Ansatz` abstraction interface
 
 ## [0.3.3](https://github.com/QoroQuantum/divi/compare/v0.3.2b0...v0.3.3) (2025-09-18)
 
@@ -322,10 +361,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 🐛 Fixed
 
-* Fixed QoroService endpoint: corrected API endpoint from `/qpu_systems/` to `/qpusystem/` in `qpu_systems()` method
+* Fixed `QoroService` endpoint: corrected API endpoint from `/qpu_systems/` to `/qpusystem/` in `qpu_systems()` method
 * Fixed QPU system name property: corrected property setter logic to properly handle `None` values and prevent infinite recursion when setting system name
-* Fixed system name retrieval: improved logic to use system name from root QPUSystem object when available
-* Fixed potential issues in QoroService: corrected conditional logic for QPU system name handling in `submit_circuits()` method
+* Fixed system name retrieval: improved logic to use system name from root `QPUSystem` object when available
+* Fixed potential issues in `QoroService`: corrected conditional logic for QPU system name handling in `submit_circuits()` method
 
 ## [0.2.2b1](https://github.com/QoroQuantum/divi/compare/v0.2.1b1...v0.2.2b1) (2025-08-08)
 
@@ -338,7 +377,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Support for pymetis and Kernighan-Lin partitioning methods: added support for additional graph partitioning algorithms beyond spectral clustering
 * Apache 2.0 license headers across the codebase: added comprehensive license headers to all source files with copyright notice and full Apache 2.0 license text
 * Pre-commit hook for license header insertion: added automated license header insertion to pre-commit configuration for consistent license management
-* `charge` parameter to VQE constructor: added optional charge argument for molecular calculations (defaults to 0)
+* `charge` parameter to `VQE` constructor: added optional charge argument for molecular calculations (defaults to 0)
 * Improved job naming for partitioning: enhanced job name generation in graph partitioning workflows for better identification
 * Progress bar behavior improvements for Jupyter: added `is_jupyter` parameter to `make_progress_bar()` function with manual refresh mode and improved terminal size handling in `OverwriteStreamHandler` for Jupyter notebook compatibility
 * Python-dotenv support: added `python-dotenv` dependency and support for loading environment variables from `.env` files, including `.env` in `.gitignore`
@@ -393,21 +432,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * `QuantumProgram` abstract base class: core abstraction for managing quantum computations with abstract methods for circuit generation, parameter initialization, and result processing
 * `VQE` (Variational Quantum Eigensolver) class: implementation supporting multiple ansatze (UCCSD, RY, RYRZ, Hardware Efficient, QAOA, Hartree-Fock) with molecular chemistry support via symbols, bond lengths, and coordinate structures
 * `QAOA` (Quantum Approximate Optimization Algorithm) class: implementation for solving combinatorial optimization problems on graphs
-* `GraphPartitioningQAOA` class: `ProgramBatch` implementation for solving large graph problems by partitioning into smaller subproblems using QAOA
+* `GraphPartitioningQAOA` class: `ProgramBatch` implementation for solving large graph problems by partitioning into smaller subproblems using `QAOA`
 * `ProgramBatch` abstract base class: framework for higher-order computations requiring multiple quantum programs, with abstract `create_programs()` method
-* `VQEHyperparameterSweep` class: functionality for performing hyperparameter sweeps on VQE problems with molecular transformations
+* `VQEHyperparameterSweep` class: functionality for performing hyperparameter sweeps on `VQE` problems with molecular transformations
 * `MLAE` (Maximum Likelihood Amplitude Estimation) class: implementation for amplitude estimation (later removed in v0.3.2b0)
 * `Optimizers` enum: support for Nelder-Mead, Monte Carlo, and L-BFGS-B optimization methods with parameter shift rule for gradient-based optimization
 * `QoroService` class: cloud-based quantum execution backend via REST API with job submission, polling, and result retrieval
 * `ParallelSimulator` class: local quantum circuit simulator using Qiskit Aer with parallel execution support
-* Observable grouping: efficient expectation value calculation for VQE using Pennylane's `split_non_commuting` transform to group commuting observables
+* Observable grouping: efficient expectation value calculation for `VQE` using Pennylane's `split_non_commuting` transform to group commuting observables
 * QUBO and Quadratic Program support: integration with Qiskit Optimization for solving Quadratic Unconstrained Binary Optimization problems and general Quadratic Programs via `QuadraticProgramToQubo` converter
 * QASM circuit generation: basic QASM string generation from quantum circuits (import/export functionality added in v0.2.1b1)
 * Seeding support: reproducible simulations via `seed` parameter in `QuantumProgram` and `ParallelSimulator`
 * Progress reporting: basic progress tracking infrastructure integrated into `QuantumProgram` and `ProgramBatch` classes
 * Logging infrastructure: centralized logging module (`qlogger`) with `OverwriteStreamHandler` for progress message updates
 * Test suite: comprehensive pytest-based test coverage for core classes including `QuantumProgram`, `VQE`, `QAOA`, `GraphPartitioningQAOA`, `ProgramBatch`, and backend classes
-* Tutorial examples: demonstration scripts for VQE, QAOA, and graph partitioning workflows
+* Tutorial examples: demonstration scripts for `VQE`, `QAOA`, and graph partitioning workflows
 * Documentation: Sphinx-based documentation framework with API reference generation
 * Development tooling: Poetry for dependency management and package building, pre-commit hooks with black and isort for code formatting
 
@@ -415,5 +454,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * Fixed measurement phase bug: corrected measurement handling in quantum circuit execution
 * Fixed Monte Carlo missing losses bug: resolved issue where losses were not properly tracked in Monte Carlo optimization
-* Fixed QAOA partitioning bugs: corrected graph partitioning logic for QAOA-based workflows
-* Fixed circuit chunking for large payloads: improved handling of large circuit submissions to QoroService API
+* Fixed `QAOA` partitioning bugs: corrected graph partitioning logic for `QAOA`-based workflows
+* Fixed circuit chunking for large payloads: improved handling of large circuit submissions to `QoroService` API
