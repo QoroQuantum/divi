@@ -58,10 +58,25 @@ class BatchConfig:
             program to submit.  ``None`` (the default) preserves the
             wait-for-all barrier behavior.  Only meaningful when
             ``mode`` is :attr:`BatchMode.MERGED`.
+        _sort_programs: Whether to sort programs by key before merging their
+            circuits into a single backend call.  Defaults to ``False``.
+
+            When ``False`` (default), circuits are merged in submission-arrival
+            order — the order in which program threads reach the flush barrier.
+            This preserves backward-compatible behaviour.
+
+            Set to ``True`` to merge circuits in a consistent, key-sorted order
+            regardless of thread scheduling.  This ensures that
+            position-dependent seeds (e.g. ``seed + circuit_index`` in
+            :class:`~divi.backends.ParallelSimulator` deterministic mode)
+            map to the same circuit on every run, making seeded experiments
+            fully reproducible.  Only meaningful when ``mode`` is
+            :attr:`BatchMode.MERGED`.
     """
 
     mode: BatchMode = BatchMode.MERGED
     max_batch_size: int | None = None
+    _sort_programs: bool = False
 
     def __post_init__(self):
         if self.max_batch_size is not None and self.max_batch_size < 1:
@@ -70,6 +85,8 @@ class BatchConfig:
             )
         if self.mode is BatchMode.OFF and self.max_batch_size is not None:
             raise ValueError("max_batch_size has no effect when mode is BatchMode.OFF.")
+        if self.mode is BatchMode.OFF and self._sort_programs:
+            raise ValueError("_sort_programs has no effect when mode is BatchMode.OFF.")
 
 
 class _PendingEntry(NamedTuple):
@@ -234,7 +251,13 @@ class _BatchCoordinator:
 
         Must be called with ``self._lock`` held.
         """
-        batch = dict(self._pending)
+
+        pending_items = (
+            sorted(self._pending.items())
+            if self._batch_config._sort_programs
+            else list(self._pending.items())
+        )
+        batch = dict(pending_items)
         self._pending.clear()
 
         color = self._next_color()

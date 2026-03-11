@@ -10,7 +10,7 @@ import pytest
 import scipy.sparse as sps
 
 from divi.backends import ParallelSimulator
-from divi.qprog import PCE, QAOA, ScipyMethod, ScipyOptimizer
+from divi.qprog import PCE, QAOA, BatchConfig, ScipyMethod, ScipyOptimizer
 from divi.qprog.algorithms import GenericLayerAnsatz
 from divi.qprog.variational_quantum_algorithm import SolutionEntry
 from divi.qprog.workflows._qubo_partitioning import (
@@ -449,9 +449,10 @@ class TestQUBOPartitioningQAOA:
             seed=1997,
         )
 
-        # Run the full flow
+        # Run the full flow — _sort_programs=True ensures the merged circuit
+        # order is deterministic across runs when a fixed seed is set.
         batch.create_programs()
-        batch.run(blocking=True)
+        batch.run(blocking=True, batch_config=BatchConfig(_sort_programs=True))
         solution, energy = batch.aggregate_results()
 
         # The known optimal solution for this QUBO is [1, 1, 0, 0]
@@ -490,7 +491,7 @@ class TestQUBOPartitioningQAOA:
         )
 
         batch.create_programs()
-        batch.run(blocking=True)
+        batch.run(blocking=True, batch_config=BatchConfig(_sort_programs=True))
         solution, energy = batch.aggregate_results()
 
         expected_solution = np.array([1, 1, 0, 0])

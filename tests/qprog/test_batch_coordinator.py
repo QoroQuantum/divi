@@ -16,6 +16,7 @@ from divi.backends import CircuitRunner, ExecutionResult
 from divi.qprog._batch_coordinator import (
     _TAG_SEP,
     BatchConfig,
+    BatchMode,
     _Batch,
     _BatchCoordinator,
     _fail_futures,
@@ -24,10 +25,6 @@ from divi.qprog._batch_coordinator import (
     _ProxyBackend,
 )
 from divi.qprog.exceptions import _CancelledError
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 class FakeSyncBackend(CircuitRunner):
@@ -79,11 +76,6 @@ def _make_entry(circuits: dict[str, str], kwargs: dict | None = None) -> _Pendin
     return _PendingEntry(circuits, kwargs or {}, Future())
 
 
-# ---------------------------------------------------------------------------
-# _PendingEntry
-# ---------------------------------------------------------------------------
-
-
 class TestPendingEntry:
     def test_named_access(self):
         entry = _make_entry({"t": "qasm"}, {"ham_ops": "Z"})
@@ -97,11 +89,6 @@ class TestPendingEntry:
         assert circuits == {"t": "qasm"}
         assert kwargs == {}
         assert isinstance(future, Future)
-
-
-# ---------------------------------------------------------------------------
-# _fail_futures
-# ---------------------------------------------------------------------------
 
 
 class TestFailFutures:
@@ -126,11 +113,6 @@ class TestFailFutures:
         assert batch["a"].future.result() == "ok"
 
 
-# ---------------------------------------------------------------------------
-# _FlushGroup
-# ---------------------------------------------------------------------------
-
-
 class TestFlushGroup:
     def test_program_keys_from_futures(self):
         fg = _FlushGroup(
@@ -144,9 +126,28 @@ class TestFlushGroup:
         assert fg.execution_result is None
 
 
-# ---------------------------------------------------------------------------
-# _BatchCoordinator — static helpers
-# ---------------------------------------------------------------------------
+class TestBatchConfig:
+    def test_defaults(self):
+        cfg = BatchConfig()
+        assert cfg.mode is BatchMode.MERGED
+        assert cfg.max_batch_size is None
+        assert cfg._sort_programs is False
+
+    def test_sort_programs_true_is_accepted(self):
+        cfg = BatchConfig(_sort_programs=True)
+        assert cfg._sort_programs is True
+
+    def test_max_batch_size_zero_raises(self):
+        with pytest.raises(ValueError, match="max_batch_size must be >= 1"):
+            BatchConfig(max_batch_size=0)
+
+    def test_mode_off_with_max_batch_size_raises(self):
+        with pytest.raises(ValueError, match="max_batch_size has no effect"):
+            BatchConfig(mode=BatchMode.OFF, max_batch_size=10)
+
+    def test_mode_off_with_sort_true_raises(self):
+        with pytest.raises(ValueError, match="_sort_programs has no effect"):
+            BatchConfig(mode=BatchMode.OFF, _sort_programs=True)
 
 
 class TestMergeCircuitsAndKwargs:
@@ -228,11 +229,6 @@ class TestSplitByHamOps:
         assert _BatchCoordinator._split_by_ham_ops({}) == []
 
 
-# ---------------------------------------------------------------------------
-# _BatchCoordinator — registration & barrier
-# ---------------------------------------------------------------------------
-
-
 class TestRegistrationAndBarrier:
     def test_register_and_deregister(self):
         coord = _BatchCoordinator(FakeSyncBackend())
@@ -259,11 +255,6 @@ class TestRegistrationAndBarrier:
         # Both pending — ready.
         coord._pending["b"] = _make_entry({})
         assert coord._should_flush()
-
-
-# ---------------------------------------------------------------------------
-# _BatchCoordinator — end-to-end flush with sync backend
-# ---------------------------------------------------------------------------
 
 
 class TestFlushWithSyncBackend:
@@ -400,10 +391,77 @@ class TestFlushWithSyncBackend:
                 assert len(round_results) == 1
                 assert round_results[0]["label"] == f"r{i}"
 
+    def test_sort_programs_true_produces_deterministic_circuit_order(self):
+        """With _sort_programs=True the merged batch is always in key-sorted
+        order regardless of which thread reaches the barrier first."""
+        # Run the same two-program flush 20 times and confirm that the circuit
+        # ordering in the merged backend call is always "p1" circuits before
+        # "p2" circuits (sorted keys).
+        for _ in range(20):
+            backend = FakeSyncBackend()
+            coord = _BatchCoordinator(
+                backend, batch_config=BatchConfig(_sort_programs=True)
+            )
+            coord.register_program("p2")  # register in reverse order on purpose
+            coord.register_program("p1")
 
-# ---------------------------------------------------------------------------
-# _BatchCoordinator — ham_ops sub-batch splitting
-# ---------------------------------------------------------------------------
+            barrier = Barrier(2)
+
+            def _submit(key):
+                barrier.wait(timeout=5)
+                coord.submit(key, {f"{key}{_TAG_SEP}c": f"qasm_{key}"})
+
+            threads = [Thread(target=_submit, args=(k,)) for k in ("p2", "p1")]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=10)
+
+            # The merged backend call must always list p1's circuit before p2's.
+            assert len(backend.submitted) == 1
+            merged_keys = list(backend.submitted[0].keys())
+            p1_pos = next(i for i, k in enumerate(merged_keys) if k.startswith("p1"))
+            p2_pos = next(i for i, k in enumerate(merged_keys) if k.startswith("p2"))
+            assert (
+                p1_pos < p2_pos
+            ), f"Expected p1 before p2 (sorted), got order: {merged_keys}"
+
+    def test_sort_programs_false_can_produce_arrival_order(self):
+        """With _sort_programs=False (default) the batch is flushed in arrival
+        order, so a single-threaded submission preserves insertion sequence."""
+        backend = FakeSyncBackend()
+        coord = _BatchCoordinator(
+            backend, batch_config=BatchConfig(_sort_programs=False)
+        )
+        # Register and immediately submit sequentially (no concurrency) so
+        # the insertion order is deterministic: "p2" then "p1".
+        coord.register_program("p2")
+        coord.register_program("p1")
+
+        futures = {}
+        with coord._lock:
+            futures["p2"] = Future()
+            coord._pending["p2"] = _PendingEntry(
+                {f"p2{_TAG_SEP}c": "q2"}, {}, futures["p2"]
+            )
+            futures["p1"] = Future()
+            coord._pending["p1"] = _PendingEntry(
+                {f"p1{_TAG_SEP}c": "q1"}, {}, futures["p1"]
+            )
+            coord._trigger_flush()
+
+        # Collect results so the flush thread can finish.
+        for f in futures.values():
+            f.result(timeout=5)
+
+        assert len(backend.submitted) == 1
+        merged_keys = list(backend.submitted[0].keys())
+        p2_pos = next(i for i, k in enumerate(merged_keys) if k.startswith("p2"))
+        p1_pos = next(i for i, k in enumerate(merged_keys) if k.startswith("p1"))
+        # With _sort_programs=False the insertion order (p2, then p1) is preserved.
+        assert (
+            p2_pos < p1_pos
+        ), f"Expected p2 before p1 (arrival order), got: {merged_keys}"
 
 
 class TestHamOpsSplitting:
@@ -505,11 +563,6 @@ class TestHamOpsSplitting:
         assert "circuit_ham_map" in kw
 
 
-# ---------------------------------------------------------------------------
-# _BatchCoordinator — progress messages
-# ---------------------------------------------------------------------------
-
-
 class TestBatchProgress:
     def test_progress_messages_sent_to_queue(self):
         """Flush sends start and success progress messages."""
@@ -588,11 +641,6 @@ class TestBatchProgress:
         assert "shots" in labels
 
 
-# ---------------------------------------------------------------------------
-# _BatchCoordinator — cancellation
-# ---------------------------------------------------------------------------
-
-
 class TestCancellation:
     def test_cancel_rejects_new_submissions(self):
         coord = _BatchCoordinator(FakeSyncBackend())
@@ -656,11 +704,6 @@ class TestCancellation:
         assert "p1" in error_holder
 
 
-# ---------------------------------------------------------------------------
-# _BatchCoordinator — total_runtime
-# ---------------------------------------------------------------------------
-
-
 class TestTotalRuntime:
     def test_runtime_zero_for_sync_backend(self):
         """Sync backends report no runtime (no polling)."""
@@ -671,11 +714,6 @@ class TestTotalRuntime:
 
         # Sync backend → no runtime tracking.
         assert coord.total_runtime == 0.0
-
-
-# ---------------------------------------------------------------------------
-# _ProxyBackend
-# ---------------------------------------------------------------------------
 
 
 class TestProxyBackend:
@@ -743,11 +781,6 @@ class TestProxyBackend:
         coord = _BatchCoordinator(real)
         proxy = _ProxyBackend(real, coord, "p")
         assert proxy.little_endian_bitstrings is True
-
-
-# ---------------------------------------------------------------------------
-# _BatchCoordinator — max_batch_size
-# ---------------------------------------------------------------------------
 
 
 class TestMaxBatchSize:
