@@ -103,6 +103,15 @@ Partitioning Configuration
    :show-inheritance:
    :no-index:
 
+Time Evolution Trajectory
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: divi.qprog.workflows.TimeEvolutionTrajectory
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+
 QUBO Partitioning QAOA
 ~~~~~~~~~~~~~~~~~~~~~~
 

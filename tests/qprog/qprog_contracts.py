@@ -151,7 +151,8 @@ def verify_basic_program_ensemble_behaviour(mocker, obj: ProgramEnsemble):
     with pytest.raises(RuntimeError, match="Some programs already exist"):
         obj.create_programs()
 
-    mock_program = mocker.MagicMock()
+    mock_program = mocker.MagicMock(spec=VariationalQuantumAlgorithm)
+    mock_program.losses_history = []
 
     obj.programs = {"dummy": mock_program}
 

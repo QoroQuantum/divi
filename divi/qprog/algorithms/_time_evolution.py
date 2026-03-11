@@ -145,6 +145,8 @@ class TimeEvolution(QuantumProgram):
         (raw,) = result.values()
         self.results = raw if self.observable is None else float(raw)
 
+        self.reporter.info(message="Finished successfully!")
+
         return self.total_circuit_count, self.total_run_time
 
     def _build_ops(self, hamiltonian: qml.operation.Operator) -> list:

@@ -23,6 +23,7 @@ from .workflows import (
     GraphPartitioningQAOA,
     PartitioningConfig,
     QUBOPartitioningQAOA,
+    TimeEvolutionTrajectory,
     VQEHyperparameterSweep,
     MoleculeTransformer,
 )

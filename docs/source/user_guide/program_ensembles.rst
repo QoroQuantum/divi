@@ -112,6 +112,35 @@ The most common program ensemble scenario is running VQE across multiple molecul
        alignment_atoms=[0]                   # Align to oxygen atom
    )
 
+Time Evolution Trajectories
+---------------------------
+
+:class:`~divi.qprog.TimeEvolutionTrajectory` runs multiple time-evolution
+programs in parallel — one per time point — and collects expectation values
+into a trajectory:
+
+.. code-block:: python
+
+   import math
+   import numpy as np
+   import pennylane as qml
+   from divi.qprog import TimeEvolutionTrajectory
+   from divi.backends import ParallelSimulator
+
+   trajectory = TimeEvolutionTrajectory(
+       hamiltonian=qml.PauliX(0),
+       time_points=np.linspace(0.01, math.pi, 20).tolist(),
+       observable=qml.PauliZ(0),
+       backend=ParallelSimulator(shots=5000),
+   )
+   trajectory.create_programs()
+   trajectory.run(blocking=True)
+
+   results = trajectory.aggregate_results()   # {t: <O>(t)}
+   trajectory.visualize_results()             # line plot
+
+See :doc:`hamiltonian_time_evolution` for full details.
+
 Problem Decomposition Workflows
 -------------------------------
 

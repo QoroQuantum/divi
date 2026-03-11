@@ -155,9 +155,7 @@ class ProgramEnsemble(ABC):
             )
 
         self._queue = Queue()
-
-        if hasattr(self, "max_iterations"):
-            self._done_event = Event()
+        self._done_event = Event()
 
     def reset(self):
         """
@@ -239,7 +237,7 @@ class ProgramEnsemble(ABC):
                 task_id = self._progress_bar.add_task(
                     "",
                     job_name=f"Program {program.program_id}",
-                    total=self.max_iterations,
+                    total=getattr(self, "max_iterations", 1),
                     completed=0,
                     message="",
                     batch_color="",
@@ -311,7 +309,10 @@ class ProgramEnsemble(ABC):
         self._batch_progress = None
         self._live_display = None
         batching_enabled = batch_config.mode is BatchMode.MERGED
-        if hasattr(self, "max_iterations"):
+        _wants_progress = hasattr(self, "max_iterations") or getattr(
+            self, "_show_progress", False
+        )
+        if _wants_progress:
             if batching_enabled:
                 self._batch_progress, self._progress_bar, self._live_display = (
                     make_batch_display(is_jupyter=self._is_jupyter)
@@ -595,16 +596,41 @@ class ProgramEnsemble(ABC):
         if self._executor is not None:
             self.join()
 
-        # Suppress warnings when checking for empty losses_history for cleanliness sake
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore", category=UserWarning, message=".*losses_history is empty.*"
-            )
-            if any(
-                len(program.losses_history) == 0 for program in self._programs.values()
-            ):
+        for program in self._programs.values():
+            if isinstance(program, VariationalQuantumAlgorithm):
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        category=UserWarning,
+                        message=".*losses_history is empty.*",
+                    )
+                    if len(program.losses_history) == 0:
+                        raise RuntimeError(
+                            "Some/All programs have empty losses. Did you call run()?"
+                        )
+            else:
+                # Non-VQA programs (QuantumProgram subclasses, mocks, etc.)
+                # Check results first; fall back to losses_history for
+                # backward compatibility with test helpers that set it.
+                results = getattr(program, "results", None)
+                if results is not None:
+                    continue
+                losses = getattr(program, "losses_history", None)
+                if losses is not None:
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings(
+                            "ignore",
+                            category=UserWarning,
+                            message=".*losses_history is empty.*",
+                        )
+                        if len(losses) == 0:
+                            raise RuntimeError(
+                                "Some/All programs have empty losses. "
+                                "Did you call run()?"
+                            )
+                    continue
                 raise RuntimeError(
-                    "Some/All programs have empty losses. Did you call run()?"
+                    "Some/All programs have no results. Did you call run()?"
                 )
 
     @abstractmethod
