@@ -58,7 +58,7 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
                 time point.
             backend: Quantum circuit execution backend.
             trotterization_strategy: Strategy for term selection
-                (ExactTrotterization, QDrift). Defaults to ExactTrotterization().
+                (``ExactTrotterization``, ``QDrift``). Defaults to ``ExactTrotterization()``.
                 Deep-copied per program for thread safety.
             n_steps: Number of Trotter steps.
             order: Suzuki-Trotter order (1 or even).

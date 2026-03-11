@@ -31,7 +31,7 @@ class TrotterSpecStage(SpecStage[qml.operation.Operator]):
     """SpecStage that turns a Hamiltonian into a batch of MetaCircuits via a TrotterizationStrategy.
 
     Takes the initial_spec (a Hamiltonian), runs it through the strategy to obtain
-    one or more Hamiltonian samples, and calls meta_circuit_factory(processed_hamiltonian, ham_id)
+    one or more Hamiltonian samples, and calls ``meta_circuit_factory(processed_hamiltonian, ham_id)``
     for each.
     """
 
@@ -50,7 +50,7 @@ class TrotterSpecStage(SpecStage[qml.operation.Operator]):
     ) -> None:
         """
         Args:
-            trotterization_strategy: Strategy for term selection/sampling (e.g. ExactTrotterization, QDrift).
+            trotterization_strategy: Strategy for term selection/sampling (e.g. ``ExactTrotterization``, ``QDrift``).
             meta_circuit_factory: Factory callable ``(hamiltonian, ham_id) -> MetaCircuit``.
         """
         super().__init__(name=type(self).__name__)

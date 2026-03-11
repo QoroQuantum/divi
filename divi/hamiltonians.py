@@ -130,7 +130,7 @@ class TrotterizationStrategy(Protocol):
 
     @property
     def stateful(self) -> bool:
-        """True if the strategy retains state across process_hamiltonian calls.
+        """True if the strategy retains state across ``process_hamiltonian`` calls.
         This should be true for strategies that might re-process the Hamiltonian during execution.
         """
         ...
@@ -241,14 +241,14 @@ class ExactTrotterization(TrotterizationStrategy):
 
 @dataclass(frozen=True)
 class QDrift(TrotterizationStrategy):
-    """QDrift Trotterization strategy."""
+    """``QDrift`` Trotterization strategy."""
 
     keep_fraction: float | None = None
     """Fraction of terms to keep deterministically by coefficient magnitude (largest first). Must be in (0, 1]. If None, all terms go to the sampling pool. Mutually exclusive with keep_top_n."""
     keep_top_n: int | None = None
     """Number of top terms to keep deterministically by coefficient magnitude. Must be >= 1. If None, all terms go to the sampling pool. Mutually exclusive with keep_fraction."""
     sampling_budget: int | None = None
-    """Number of terms to sample from the remaining Hamiltonian per cost evaluation. If None, only kept terms are applied (equivalent to ExactTrotterization)."""
+    """Number of terms to sample from the remaining Hamiltonian per cost evaluation. If None, only kept terms are applied (equivalent to ``ExactTrotterization``)."""
     sampling_strategy: Literal["uniform", "weighted"] = "uniform"
     """How to sample terms: "uniform" (equal probability) or "weighted" (by coefficient magnitude)."""
     seed: int | None = None
@@ -302,9 +302,9 @@ class QDrift(TrotterizationStrategy):
     def process_hamiltonian(
         self, hamiltonian: qml.operation.Operator
     ) -> qml.operation.Operator:
-        """Apply the QDrift randomized channel to a Hamiltonian.
+        """Apply the ``QDrift`` randomized channel to a Hamiltonian.
 
-        Implements the QDrift protocol (Campbell 2019): for H = Σ c_i P_i,
+        Implements the ``QDrift`` protocol (Campbell 2019): for H = Σ c_i P_i,
         randomly sample L terms and rescale their coefficients so that
         E[H_sampled] = H.
 

@@ -21,7 +21,7 @@ class MetaCircuit:
     Logical circuit IR.
 
     MetaCircuit stores circuit intent and symbols. The circuit body QASM is
-    computed once in __post_init__ and remains stable until QEM (e.g. folding)
+    computed once in ``__post_init__`` and remains stable until QEM (e.g. folding)
     modifies it.
     """
 
@@ -33,7 +33,7 @@ class MetaCircuit:
     precision: int = 8
     """Number of decimal places for parameter values in QASM conversion."""
     circuit_body_qasms: tuple[tuple[QASMTag, str], ...] | None = None
-    """OpenQASM 2.0 body. Computed in __post_init__ when None; setters return new instances via replace()."""
+    """OpenQASM 2.0 body. Computed in ``__post_init__`` when ``None``; setters return new instances via ``replace()``."""
     measurement_qasms: tuple[tuple[QASMTag, str], ...] = ()
     """OpenQASM 2.0 measurement QASM. Set by MeasurementStage via set_measurement_bodies()."""
     measurement_groups: tuple[tuple[object, ...], ...] = ()

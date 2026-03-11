@@ -56,7 +56,7 @@ class BatchConfig:
             When set, the coordinator flushes early once the pending circuit
             count reaches this limit instead of waiting for every active
             program to submit.  ``None`` (the default) preserves the
-            wait-for-all barrier behaviour.  Only meaningful when
+            wait-for-all barrier behavior.  Only meaningful when
             ``mode`` is :attr:`BatchMode.MERGED`.
     """
 

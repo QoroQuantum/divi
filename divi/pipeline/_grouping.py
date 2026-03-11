@@ -118,7 +118,7 @@ def compute_measurement_groups(
     """Compute measurement groups, partition indices, and postprocessing function.
 
     Args:
-        measurement: PennyLane MeasurementProcess (e.g. expval(obs) or probs()).
+        measurement: PennyLane MeasurementProcess (e.g. ``expval(obs)`` or ``probs()``).
         strategy: Grouping strategy: "wires", "qwc", "default", "_backend_expval", or None.
 
     Returns:

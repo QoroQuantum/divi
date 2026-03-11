@@ -78,7 +78,7 @@ QAOA evolves the cost Hamiltonian in the ansatz. By default, Divi uses
 circuit. For large Hamiltonians, this can produce deep circuits that are costly or
 infeasible on noisy hardware.
 
-**QDrift** is a randomized Trotterization strategy that approximates the cost
+:class:`~divi.hamiltonians.QDrift` is a randomized Trotterization strategy that approximates the cost
 Hamiltonian by sampling a subset of terms. It yields shallower circuits at the cost
 of more circuits per iteration (multiple Hamiltonian samples are averaged). On noisy
 hardware, lower depth can improve fidelity despite the higher circuit count.
@@ -192,7 +192,7 @@ Divi's QAOA solver can also handle Quadratic Unconstrained Binary Optimization (
 
 In contrast to graph-based QAOA instances, the solution format for QUBO-based QAOA instances is a binary :class:`numpy.ndarray` representing the value for each variable in the original QUBO.
 
-Numpy Array-based Input
+NumPy Array-based Input
 ^^^^^^^^^^^^^^^^^^^^^^^
 
 .. code-block:: python
@@ -382,7 +382,7 @@ For large QUBO problems, use ``QUBOPartitioningQAOA`` with D-Wave's hybrid libra
 You can choose the per-partition engine via ``engine``:
 
 - ``engine="qaoa"`` (default): standard QAOA partitions.
-- ``engine="pce"``: PCE partitions (supports PCE-specific kwargs like ``encoding_type`` and ``alpha``).
+- ``engine="pce"``: ``PCE`` partitions (supports ``PCE``-specific kwargs like ``encoding_type`` and ``alpha``).
 
 QAOA partitions:
 

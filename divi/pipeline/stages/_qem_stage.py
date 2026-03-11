@@ -20,7 +20,7 @@ QEM_AXIS = "qem"
 class QEMStage(BundleStage):
     """BundleStage that computes QEM circuit-body variants per MetaCircuit.
 
-    Operates on circuit_body_qasm from MetaCircuit (computed at creation).
+    Operates on ``circuit_body_qasm`` from ``MetaCircuit`` (computed at creation).
     Stores QEM-transformed body variants via set_circuit_bodies while
     preserving key cardinality (no fan-out).
     """

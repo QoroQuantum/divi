@@ -178,7 +178,7 @@ iteration.  The first one that fires stops the loop.
       EarlyStopping(patience=10, min_delta=1e-4)
 
 2. **Gradient norm** *(optional)* — Stop when the L2 norm of the gradient falls
-   below ``grad_norm_threshold``.  Only effective with gradient-based optimisers
+   below ``grad_norm_threshold``.  Only effective with gradient-based optimizers
    such as ``ScipyOptimizer(method=ScipyMethod.L_BFGS_B)``.
 
    .. code-block:: python

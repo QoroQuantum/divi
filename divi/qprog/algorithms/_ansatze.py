@@ -128,7 +128,7 @@ class GenericLayerAnsatz(Ansatz):
                 self._layout_fn = lambda _: entangling_layout
 
     def n_params_per_layer(self, n_qubits: int, **kwargs) -> int:
-        """Total parameters = sum of gate.num_params per qubit per layer."""
+        """Total parameters = sum of ``gate.num_params`` per qubit per layer."""
         per_qubit = sum(getattr(g, "num_params", 1) for g in self.gate_sequence)
         return _require_trainable_params(per_qubit * n_qubits, self.name)
 
@@ -360,7 +360,7 @@ class HartreeFockAnsatz(Ansatz):
             )
 
         # Reset the BasisState operations after the first layer
-        # for behaviour similar to UCCSD ansatz
+        # for behavior similar to UCCSD ansatz
         for op in operations[len(operations) // 2 :]:
             if hasattr(op, "_hyperparameters") and "hf_state" in op._hyperparameters:
                 op._hyperparameters["hf_state"] = 0

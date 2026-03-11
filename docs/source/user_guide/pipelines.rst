@@ -99,7 +99,7 @@ Divi ships with six stages that cover the most common quantum workflows:
        Used by :class:`VQE`, :class:`CustomVQA`, and other algorithms that receive a pre-built circuit.
    * - :class:`~divi.pipeline.stages.TrotterSpecStage`
      - Spec
-     - Generates Trotterised circuits from a Hamiltonian for time-evolution and
+     - Generates Trotterized circuits from a Hamiltonian for time-evolution and
        :class:`QAOA` workflows.
    * - :class:`~divi.pipeline.stages.MeasurementStage`
      - Bundle
@@ -117,7 +117,7 @@ Divi ships with six stages that cover the most common quantum workflows:
        See :doc:`improving_results_zne` for details.
    * - :class:`~divi.pipeline.stages.PCECostStage`
      - Bundle
-     - Computes the Pauli-coefficient expectation-value cost for PCE-based
+     - Computes the Pauli-coefficient expectation-value cost for ``PCE``-based
        algorithms.
 
 
@@ -153,7 +153,7 @@ probability distribution after optimization to extract the solution.
 Example 1: Custom Algorithm with CustomVQA
 ------------------------------------------
 
-The simplest way to run a custom parameterised circuit through the pipeline is
+The simplest way to run a custom parameterized circuit through the pipeline is
 :class:`~divi.qprog.CustomVQA`.  It wraps a **PennyLane QuantumScript** (or a
 Qiskit ``QuantumCircuit``) and optimizes its parameters end-to-end, reusing all
 the VQA infrastructure.
@@ -175,7 +175,7 @@ field Ising model:
    # 1. Define the Hamiltonian (observable to minimise)
    H = -1.0 * qml.Z(0) @ qml.Z(1) + 0.5 * qml.X(0) + 0.5 * qml.X(1)
 
-   # 2. Build a parameterised ansatz as a QuantumScript
+   # 2. Build a parameterized ansatz as a QuantumScript
    ops = [
        qml.RY(0.0, wires=0),
        qml.RY(0.0, wires=1),

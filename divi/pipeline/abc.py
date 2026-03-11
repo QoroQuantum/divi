@@ -56,7 +56,7 @@ class ExpansionResult:
 
     batch: MetaCircuitBatch
     stage_name: str | None = None
-    """Stage name attached by planner for forward-pass observability."""
+    """Stage name attached by planner for forward-pass traceability."""
 
 
 @dataclass(frozen=True)
@@ -149,7 +149,7 @@ class SpecStage(Stage[InT, MetaCircuitBatch], ABC):
         - ``CircuitSpecStage``: wraps one or more pre-built ``MetaCircuit``
           instances into a batch (by position or by name).
         - ``TrotterSpecStage``: takes a Hamiltonian and decomposes it into one
-          or more ``MetaCircuit`` entries via a trotterisation factory.
+          or more ``MetaCircuit`` entries via a trotterization factory.
     """
 
     @abstractmethod

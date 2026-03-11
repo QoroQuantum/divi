@@ -28,7 +28,7 @@ class TimeEvolution(QuantumProgram):
 
     Simulates the evolution of a quantum state under a Hamiltonian using
     Trotter-Suzuki decomposition. Uses Divi's TrotterizationStrategy
-    (ExactTrotterization, QDrift) for term selection and approximation.
+    (``ExactTrotterization``, ``QDrift``) for term selection and approximation.
     """
 
     def __init__(
@@ -46,7 +46,7 @@ class TimeEvolution(QuantumProgram):
 
         Args:
             hamiltonian: Hamiltonian to evolve under.
-            trotterization_strategy: Strategy for term selection (ExactTrotterization, QDrift).
+            trotterization_strategy: Strategy for term selection (``ExactTrotterization``, ``QDrift``).
                 Defaults to ExactTrotterization().
             time: Evolution time t (e^(-iHt)).
             n_steps: Number of Trotter steps.
@@ -54,7 +54,7 @@ class TimeEvolution(QuantumProgram):
             initial_state: One of ``"Zeros"`` (``|0...0>``), ``"Superposition"``
                 (``|+...+>``), ``"Ones"`` (``|1...1>``), or a per-qubit string
                 of ``'0'``, ``'1'``, ``'+'``, ``'-'`` (e.g. ``"01+-"``).
-            observable: If None, measure qml.probs(); else qml.expval(observable).
+            observable: If None, measure ``qml.probs()``; else ``qml.expval(observable)``.
             **kwargs: Passed to QuantumProgram (backend, seed, progress_queue, etc.).
         """
         super().__init__(**kwargs)

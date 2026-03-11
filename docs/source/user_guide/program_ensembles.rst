@@ -262,7 +262,7 @@ For large QUBO problems, Divi integrates with D-Wave's hybrid solvers:
    solution, energy = qubo_partition.aggregate_results()
    print(f"Final energy: {energy:.6f}")
 
-To use PCE as the per-partition engine, set ``engine="pce"`` and pass PCE-specific
+To use ``PCE`` as the per-partition engine, set ``engine="pce"`` and pass ``PCE``-specific
 arguments (for example ``ansatz``, ``encoding_type``, ``alpha``):
 
 .. code-block:: python
@@ -501,7 +501,7 @@ Circuit Batching
 
 By default, :meth:`~divi.qprog.ProgramEnsemble.run` merges the circuit
 submissions from all programs in the ensemble into **single backend calls**.
-This behaviour is controlled by :class:`~divi.qprog.BatchConfig`.
+This behavior is controlled by :class:`~divi.qprog.BatchConfig`.
 
 **How it works**
 

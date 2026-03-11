@@ -105,13 +105,13 @@ class ExecutionConfig:
         return ExecutionConfig(**current_attrs)
 
     def to_payload(self) -> dict:
-        """Serialise to the JSON body expected by the API.
+        """Serialize to the JSON body expected by the API.
 
         ``None`` fields are omitted; enum values are converted to their
         integer representation.
 
         Returns:
-            dict: JSON-serialisable payload for
+            dict: JSON-serializable payload for
                 ``POST /api/job/<job_id>/execution_config/``.
         """
         payload: dict = {}

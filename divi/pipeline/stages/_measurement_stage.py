@@ -77,7 +77,7 @@ class MeasurementStage(BundleStage):
         """
         Args:
             grouping_strategy: Grouping strategy for expval observables.
-                Ignored for probs() measurements.
+                Ignored for ``probs()`` measurements.
                 Defaults to "qwc" (qubit-wise commuting).
             result_format_override: If set, overrides the auto-detected result
                 format. For example, pass ``ResultFormat.COUNTS`` to get raw
@@ -113,7 +113,7 @@ class MeasurementStage(BundleStage):
     def _expand_probs(
         self, batch: MetaCircuitBatch, env: PipelineEnv
     ) -> tuple[ExpansionResult, StageToken]:
-        """Generate 'measure all qubits' QASM for probs() circuits."""
+        """Generate 'measure all qubits' QASM for ``probs()`` circuits."""
         env.result_format = ResultFormat.PROBS
 
         out: dict[object, MetaCircuit] = {}

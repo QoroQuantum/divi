@@ -26,7 +26,7 @@ class CustomVQA(VariationalQuantumAlgorithm):
     during optimization.
 
     Attributes:
-        qscript (qml.tape.QuantumScript): The parameterized QuantumScript.
+        qscript (``qml.tape.QuantumScript``): The parameterized ``QuantumScript``.
         param_shape (tuple[int, ...]): Shape of a single parameter set.
         n_qubits (int): Number of qubits in the script.
         n_layers (int): Layer count (fixed to 1 for this wrapper).
@@ -58,7 +58,7 @@ class CustomVQA(VariationalQuantumAlgorithm):
                 backend and optimizer.
 
         Raises:
-            TypeError: If qscript is not a supported PennyLane QuantumScript or Qiskit QuantumCircuit.
+            TypeError: If ``qscript`` is not a supported PennyLane ``QuantumScript`` or Qiskit ``QuantumCircuit``.
             ValueError: If the script has an invalid measurement or no trainable parameters.
         """
         super().__init__(**kwargs)

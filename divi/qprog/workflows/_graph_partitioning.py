@@ -789,7 +789,7 @@ class GraphPartitioningQAOA(ProgramEnsemble):
         node_size: int | None = 300,
     ):
         """
-        Draw a NetworkX graph with nodes colored by partition.
+        Draw a ``NetworkX`` graph with nodes colored by partition.
 
         Parameters:
         -----------
