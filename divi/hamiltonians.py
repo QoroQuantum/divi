@@ -261,6 +261,9 @@ class QDrift(TrotterizationStrategy):
     # repeatedly; only the sampling step changes each call.
     _cache: dict = field(default_factory=dict, compare=False, hash=False)
     _rng: np.random.Generator = field(init=False, compare=False, hash=False)
+    _last_sampled_terms: list | None = field(
+        default=None, init=False, compare=False, hash=False
+    )
 
     def __post_init__(self):
         if (
@@ -407,6 +410,16 @@ class QDrift(TrotterizationStrategy):
                 sampled_terms = [
                     (n_terms / self.sampling_budget) * terms_list[i] for i in indices
                 ]
+
+        # Store individual sampled terms for Campbell's faithful protocol.
+        # Each term retains its rescaled coefficient for individual evolution gates.
+        all_individual_terms = list(sampled_terms)
+        if keep_hamiltonian is not None:
+            if _is_multi_term_sum(keep_hamiltonian):
+                all_individual_terms.extend(_get_terms_iterable(keep_hamiltonian))
+            else:
+                all_individual_terms.append(keep_hamiltonian)
+        object.__setattr__(self, "_last_sampled_terms", all_individual_terms)
 
         sampled_sum = qml.ops.Sum(*sampled_terms)
         if keep_hamiltonian is not None:

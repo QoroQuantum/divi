@@ -153,7 +153,24 @@ class TimeEvolution(QuantumProgram):
         """Build circuit ops: initial state, evolution, measurement."""
         ops = build_initial_state_ops(self.initial_state, self._circuit_wires)
 
-        # Evolution: e^(-iHt)
+        # Campbell's faithful QDrift: individual evolution gates per sampled term.
+        # This avoids Trotter error from feeding a resampled Hamiltonian to
+        # TrotterProduct, which is incorrect for non-commuting Hamiltonians.
+        # Each Trotter step repeats the sampled terms with time/n_steps, giving
+        # sampling_budget * n_steps total gates (matching old circuit depth).
+        sampled_terms = getattr(
+            self.trotterization_strategy, "_last_sampled_terms", None
+        )
+        if sampled_terms is not None:
+            step_time = self.time / self.n_steps
+            for _ in range(self.n_steps):
+                ops.extend(
+                    qml.adjoint(qml.evolve(term, coeff=step_time))
+                    for term in sampled_terms
+                )
+            return ops
+
+        # Standard Trotter-Suzuki for ExactTrotterization
         n_terms = len(hamiltonian) if _is_multi_term_sum(hamiltonian) else 1
         if n_terms >= 2:
             evo = qml.adjoint(

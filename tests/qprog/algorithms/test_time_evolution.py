@@ -14,6 +14,9 @@ from divi.qprog import TimeEvolution
 # Tolerance for probability checks (5000 shots: ~0.02 std for p=0.5)
 _PROB_TOL = 0.05
 
+# Tolerance for QDrift expval comparisons (sampling noise + shot noise)
+_QDRIFT_EXPVAL_TOL = 0.15
+
 
 @pytest.fixture
 def two_qubit_hamiltonian():
@@ -416,6 +419,82 @@ class TestTimeEvolutionE2E:
         assert te.total_circuit_count >= 5
         probs = te.results
         assert probs.get("11", 0.0) >= 1.0 - _PROB_TOL
+
+    def test_qdrift_tfim_non_commuting_expval(self):
+        """QDrift TFIM 4q (non-commuting ZZ+X): Campbell's protocol matches exact."""
+        backend = ParallelSimulator(shots=10000, _deterministic_execution=True)
+        hamiltonian = qml.sum(
+            -(qml.PauliZ(0) @ qml.PauliZ(1)),
+            -(qml.PauliZ(1) @ qml.PauliZ(2)),
+            -(qml.PauliZ(2) @ qml.PauliZ(3)),
+            -qml.PauliX(0),
+            -qml.PauliX(1),
+            -qml.PauliX(2),
+            -qml.PauliX(3),
+        )
+
+        te_exact = TimeEvolution(
+            hamiltonian=hamiltonian,
+            time=0.8,
+            n_steps=10,
+            initial_state="Zeros",
+            observable=hamiltonian,
+            trotterization_strategy=ExactTrotterization(),
+            backend=backend,
+        )
+        te_exact.run()
+
+        te_qdrift = TimeEvolution(
+            hamiltonian=hamiltonian,
+            time=0.8,
+            n_steps=1,
+            initial_state="Zeros",
+            observable=hamiltonian,
+            trotterization_strategy=QDrift(
+                sampling_budget=500,
+                seed=42,
+                n_hamiltonians_per_iteration=20,
+                sampling_strategy="weighted",
+            ),
+            backend=backend,
+        )
+        te_qdrift.run()
+
+        assert abs(te_exact.results - te_qdrift.results) < _QDRIFT_EXPVAL_TOL
+
+    def test_qdrift_x_plus_z_non_commuting_expval(self):
+        """QDrift H=X+Z (non-commuting): Campbell's protocol matches exact."""
+        backend = ParallelSimulator(shots=10000, _deterministic_execution=True)
+        hamiltonian = qml.PauliX(0) + qml.PauliZ(0)
+
+        te_exact = TimeEvolution(
+            hamiltonian=hamiltonian,
+            time=0.8,
+            n_steps=10,
+            initial_state="Zeros",
+            observable=hamiltonian,
+            trotterization_strategy=ExactTrotterization(),
+            backend=backend,
+        )
+        te_exact.run()
+
+        te_qdrift = TimeEvolution(
+            hamiltonian=hamiltonian,
+            time=0.8,
+            n_steps=1,
+            initial_state="Zeros",
+            observable=hamiltonian,
+            trotterization_strategy=QDrift(
+                sampling_budget=50,
+                seed=42,
+                n_hamiltonians_per_iteration=20,
+                sampling_strategy="weighted",
+            ),
+            backend=backend,
+        )
+        te_qdrift.run()
+
+        assert abs(te_exact.results - te_qdrift.results) < _QDRIFT_EXPVAL_TOL
 
     def test_qdrift_reduces_circuit_op_count(self):
         """QDrift with sampling_budget < n_terms produces shallower circuits than exact."""
