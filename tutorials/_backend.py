@@ -5,8 +5,9 @@
 """
 Shared backend factory for tutorials.
 
-Parses ``--local`` / ``--maestro`` from the command line and provides a
-backend constructor so each tutorial can remain backend-agnostic.
+Parses ``--local`` / ``--maestro`` / ``--maestro-local`` from the command
+line and provides a backend constructor so each tutorial can remain
+backend-agnostic.
 
 Usage in a tutorial::
 
@@ -18,11 +19,17 @@ Usage in a tutorial::
 import argparse
 import os
 
-from divi.backends import CircuitRunner, JobConfig, ParallelSimulator, QoroService
+from divi.backends import (
+    CircuitRunner,
+    JobConfig,
+    MaestroSimulator,
+    ParallelSimulator,
+    QoroService,
+)
 
 
 def _parse_mode() -> str:
-    """Parse --local / --maestro from sys.argv without interfering with the tutorial."""
+    """Parse --local / --maestro / --maestro-local from sys.argv without interfering with the tutorial."""
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument(
         "--local",
@@ -35,6 +42,12 @@ def _parse_mode() -> str:
         dest="mode",
         action="store_const",
         const="maestro",
+    )
+    parser.add_argument(
+        "--maestro-local",
+        dest="mode",
+        action="store_const",
+        const="maestro-local",
     )
     args, _ = parser.parse_known_args()
 
@@ -51,10 +64,12 @@ def get_backend(
         track_depth: If True, record circuit depth for each submitted batch.
         **kwargs: Extra keyword arguments forwarded to ``ParallelSimulator``
             (e.g. ``n_processes``, ``qiskit_backend``).
-            These are silently ignored when ``--maestro`` is selected.
+            These are silently ignored when ``--maestro`` or
+            ``--maestro-local`` is selected.
 
     Returns:
-        A ``ParallelSimulator`` (``--local``, default) or
+        A ``ParallelSimulator`` (``--local``, default),
+        ``MaestroSimulator`` (``--maestro-local``), or
         ``QoroService`` (``--maestro``) instance.
     """
     ci_max_shots = os.environ.get("DIVI_CI_MAX_SHOTS")
@@ -68,5 +83,8 @@ def get_backend(
         service = QoroService(job_config=config)
         service.track_depth = track_depth
         return service
+
+    if mode == "maestro-local":
+        return MaestroSimulator(shots=shots, track_depth=track_depth)
 
     return ParallelSimulator(shots=shots, track_depth=track_depth, **kwargs)
