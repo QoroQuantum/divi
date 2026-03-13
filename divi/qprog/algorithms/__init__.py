@@ -11,6 +11,7 @@ from ._ansatze import (
     UCCSDAnsatz,
 )
 from ._custom_vqa import CustomVQA
+from ._iterative_qaoa import InterpolationStrategy, IterativeQAOA
 from ._qaoa import QAOA, GraphProblem
 from ._time_evolution import TimeEvolution
 from ._vqe import VQE

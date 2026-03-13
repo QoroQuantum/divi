@@ -49,6 +49,7 @@ python qaoa_max_clique.py --local --force-sampling
 - **`qaoa_max_clique_local.py`** - Basic QAOA for maximum clique problem
 - **`qaoa_graph_partitioning.py`** - Large graph partitioning with QAOA
 - **`qaoa_qdrift_local.py`** - QAOA with QDrift randomized Trotterization
+- **`iterative_qaoa.py`** - Iterative QAOA with parameter interpolation vs standard QAOA
 
 ### Quadratic Programming
 

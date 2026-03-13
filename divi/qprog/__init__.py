@@ -8,6 +8,8 @@ from .ensemble import BatchConfig, BatchMode, ProgramEnsemble
 from .algorithms import (
     QAOA,
     GraphProblem,
+    InterpolationStrategy,
+    IterativeQAOA,
     TimeEvolution,
     VQE,
     PCE,

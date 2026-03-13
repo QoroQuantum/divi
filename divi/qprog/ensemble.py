@@ -234,10 +234,15 @@ class ProgramEnsemble(ABC):
 
         if self._progress_bar is not None:
             with self._pb_lock:
+                total = getattr(
+                    program,
+                    "_expected_total_iterations",
+                    getattr(self, "max_iterations", 1),
+                )
                 task_id = self._progress_bar.add_task(
                     "",
                     job_name=f"Program {program.program_id}",
-                    total=getattr(self, "max_iterations", 1),
+                    total=total,
                     completed=0,
                     message="",
                     batch_color="",

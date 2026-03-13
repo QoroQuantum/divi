@@ -334,6 +334,83 @@ Example
    ``dict[variable_name, int]``.  For QUBO matrices (integer-indexed),
    ``.solution`` remains a NumPy array for backwards compatibility.
 
+Iterative QAOA
+--------------
+
+Standard QAOA uses random initialization at a fixed circuit depth.
+:class:`~divi.qprog.algorithms.IterativeQAOA` improves on this by iteratively
+increasing the depth from 1 to ``max_depth``, warm-starting each depth with
+parameters interpolated from the previous optimum.  This strategy, based on
+`arXiv:2504.01694 <https://arxiv.org/abs/2504.01694>`_, often converges to
+better solutions with the same per-depth budget.
+
+Three interpolation strategies are available via :class:`~divi.qprog.algorithms.InterpolationStrategy`:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 75
+
+   * - Strategy
+     - Description
+   * - ``INTERP``
+     - Linear interpolation (Zhou et al.).  Simple and robust.
+   * - ``FOURIER``
+     - DCT-II Fourier basis.  Fits a smooth frequency representation.
+   * - ``CHEBYSHEV``
+     - Chebyshev polynomial basis at Chebyshev nodes.
+
+Example:
+
+.. code-block:: python
+
+   import networkx as nx
+   from divi.qprog import (
+       GraphProblem,
+       InterpolationStrategy,
+       IterativeQAOA,
+       ScipyMethod,
+       ScipyOptimizer,
+   )
+   from divi.backends import ParallelSimulator
+
+   graph = nx.random_regular_graph(3, 16, seed=42)
+
+   iterative = IterativeQAOA(
+       problem=graph,
+       graph_problem=GraphProblem.MAXCUT,
+       max_depth=5,
+       strategy=InterpolationStrategy.INTERP,
+       max_iterations_per_depth=15,
+       backend=ParallelSimulator(shots=10000),
+       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+   )
+   iterative.run()
+
+   print(f"Best depth: {iterative.best_depth}")
+   print(f"Best loss:  {iterative.best_loss:.6f}")
+   print(f"Solution:   {iterative.solution}")
+
+   # Per-depth optimization history
+   for entry in iterative.depth_history:
+       print(f"  p={entry['depth']}  loss={entry['best_loss']:.6f}")
+
+The ``max_iterations_per_depth`` parameter can also be a callable
+``(depth) -> int`` for adaptive budgets — for example, allocating more
+iterations to deeper circuits:
+
+.. code-block:: python
+
+   iterative = IterativeQAOA(
+       problem=graph,
+       graph_problem=GraphProblem.MAXCUT,
+       max_depth=5,
+       strategy=InterpolationStrategy.FOURIER,
+       max_iterations_per_depth=lambda depth: 10 + 5 * depth,
+       convergence_threshold=1e-4,  # stop early if improvement is negligible
+       backend=backend,
+       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+   )
+
 Graph Partitioning QAOA
 -----------------------
 
@@ -383,6 +460,9 @@ You can choose the per-partition engine via ``engine``:
 
 - ``engine="qaoa"`` (default): standard QAOA partitions.
 - ``engine="pce"``: ``PCE`` partitions (supports ``PCE``-specific kwargs like ``encoding_type`` and ``alpha``).
+- ``engine="iterative_qaoa"``: ``IterativeQAOA`` partitions with warm-started depth progression.
+  Pass ``strategy``, ``max_iterations_per_depth``, and other ``IterativeQAOA``-specific kwargs
+  directly; ``n_layers`` is used as ``max_depth``.
 
 QAOA partitions:
 
@@ -440,6 +520,33 @@ PCE partitions:
        alpha=2.0,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        max_iterations=10,
+       backend=ParallelSimulator(),
+   )
+
+   qubo_partition.create_programs()
+   qubo_partition.run()
+   quantum_solution, quantum_energy = qubo_partition.aggregate_results()
+
+Iterative QAOA partitions:
+
+.. code-block:: python
+
+   import dimod
+   import hybrid
+   from divi.qprog import InterpolationStrategy, QUBOPartitioningQAOA
+   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+   from divi.backends import ParallelSimulator
+
+   large_bqm = dimod.generators.gnp_random_bqm(25, 0.5, vartype="BINARY")
+
+   qubo_partition = QUBOPartitioningQAOA(
+       qubo=large_bqm,
+       decomposer=hybrid.EnergyImpactDecomposer(size=5),
+       engine="iterative_qaoa",
+       n_layers=3,  # used as max_depth
+       strategy=InterpolationStrategy.INTERP,
+       max_iterations_per_depth=10,
+       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        backend=ParallelSimulator(),
    )
 

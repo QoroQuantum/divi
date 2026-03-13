@@ -15,7 +15,7 @@ import scipy.sparse as sps
 from dimod import BinaryQuadraticModel
 
 from divi.backends import CircuitRunner
-from divi.qprog.algorithms import PCE, QAOA
+from divi.qprog.algorithms import PCE, QAOA, IterativeQAOA
 from divi.qprog.ensemble import ProgramEnsemble, _beam_search_aggregate_top_n
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer, copy_optimizer
 from divi.typing import QUBOProblemTypes
@@ -58,7 +58,7 @@ class QUBOPartitioningQAOA(ProgramEnsemble):
         decomposer: hybrid.traits.ProblemDecomposer,
         n_layers: int,
         backend: CircuitRunner,
-        engine: Literal["qaoa", "pce"] = "qaoa",
+        engine: Literal["qaoa", "pce", "iterative_qaoa"] = "qaoa",
         composer: hybrid.traits.SubsamplesComposer = hybrid.SplatComposer(),
         optimizer: Optimizer | None = None,
         max_iterations: int = 10,
@@ -73,8 +73,9 @@ class QUBOPartitioningQAOA(ProgramEnsemble):
             decomposer (hybrid.traits.ProblemDecomposer): The decomposer used to partition the QUBO problem into subproblems.
             n_layers (int): Number of ansatz layers to use for each subproblem.
             backend (CircuitRunner): Backend responsible for running quantum circuits.
-            engine (Literal["qaoa", "pce"], optional): Per-partition quantum engine.
-                Defaults to ``"qaoa"``.
+            engine (Literal["qaoa", "pce", "iterative_qaoa"], optional): Per-partition quantum engine.
+                Defaults to ``"qaoa"``. When ``"iterative_qaoa"`` is selected,
+                ``n_layers`` is used as ``max_depth``.
             composer (hybrid.traits.SubsamplesComposer, optional): Composer to aggregate subsamples from subproblems.
                 Defaults to hybrid.SplatComposer(). Only used when ``beam_width=1`` (greedy).
             optimizer (Optimizer, optional): Optimizer to use for the selected engine.
@@ -107,23 +108,33 @@ class QUBOPartitioningQAOA(ProgramEnsemble):
         engine_name = engine.lower()
         if engine_name == "qaoa":
             self._engine_constructor = QAOA
-            self._problem_kwarg = "problem"
         elif engine_name == "pce":
             self._engine_constructor = PCE
-            self._problem_kwarg = "problem"
+        elif engine_name == "iterative_qaoa":
+            self._engine_constructor = IterativeQAOA
         else:
             raise ValueError(
-                f"Unsupported engine: {engine!r}. Supported values are 'qaoa' and 'pce'."
+                f"Unsupported engine: {engine!r}. "
+                "Supported values are 'qaoa', 'pce', and 'iterative_qaoa'."
             )
 
         self.engine = engine_name
-        self._constructor = partial(
-            self._engine_constructor,
-            max_iterations=self.max_iterations,
-            backend=self.backend,
-            n_layers=n_layers,
-            **kwargs,
-        )
+
+        if engine_name == "iterative_qaoa":
+            self._constructor = partial(
+                self._engine_constructor,
+                max_depth=n_layers,
+                backend=self.backend,
+                **kwargs,
+            )
+        else:
+            self._constructor = partial(
+                self._engine_constructor,
+                max_iterations=self.max_iterations,
+                backend=self.backend,
+                n_layers=n_layers,
+                **kwargs,
+            )
 
     def create_programs(self):
         """
@@ -191,7 +202,7 @@ class QUBOPartitioningQAOA(ProgramEnsemble):
 
             self._programs[prog_id] = self._constructor(
                 program_id=prog_id,
-                **{self._problem_kwarg: coo_mat},
+                problem=coo_mat,
                 optimizer=copy_optimizer(self._optimizer_template),
                 early_stopping=copy.deepcopy(self._early_stopping_template),
                 progress_queue=self._queue,

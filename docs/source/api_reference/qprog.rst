@@ -85,6 +85,22 @@ QAOA Algorithm
 .. autoattribute:: divi.qprog.algorithms.QAOA.mixer_hamiltonian
    :no-index:
 
+Iterative QAOA
+~~~~~~~~~~~~~~
+
+.. autoclass:: divi.qprog.algorithms.IterativeQAOA
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+
+.. autoclass:: divi.qprog.algorithms.InterpolationStrategy
+   :members:
+   :undoc-members:
+   :no-index:
+
+.. autofunction:: divi.qprog.algorithms._iterative_qaoa.interpolate_qaoa_params
+
 Trotterization Strategies
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
