@@ -136,8 +136,9 @@ class ParallelSimulator(CircuitRunner):
         simulation_seed: int | None = None,
         qiskit_backend: Backend | Literal["auto"] | None = None,
         noise_model: NoiseModel | None = None,
-        _deterministic_execution: bool = False,
         track_depth: bool = False,
+        force_sampling: bool = False,
+        _deterministic_execution: bool = False,
     ):
         """
         A parallel wrapper around Qiskit's AerSimulator using Qiskit's built-in parallelism.
@@ -156,8 +157,11 @@ class ParallelSimulator(CircuitRunner):
             noise_model (NoiseModel, optional): Qiskit noise model to use in simulation. Defaults to None.
             track_depth (bool, optional): If True, record circuit depth for each submitted batch.
                 Access via :attr:`depth_history` after execution. Defaults to False.
+            force_sampling (bool, optional): If True, always use shot-based sampling
+                even for expectation value measurements. Defaults to False.
         """
         super().__init__(shots=shots, track_depth=track_depth)
+        self._force_sampling = force_sampling
 
         if qiskit_backend and noise_model:
             warn(
@@ -213,7 +217,7 @@ class ParallelSimulator(CircuitRunner):
         """
         Whether the backend supports expectation value measurements.
         """
-        return False
+        return not self._force_sampling
 
     @property
     def is_async(self) -> bool:
@@ -322,20 +326,120 @@ class ParallelSimulator(CircuitRunner):
 
         aer_simulator.set_options(**options)
 
-    def submit_circuits(self, circuits: Mapping[str, str]) -> ExecutionResult:
-        """
-        Submit multiple circuits for parallel simulation using Qiskit's built-in parallelism.
-
-        Uses Qiskit's native batch transpilation and execution, which handles parallelism
-        internally.
+    @staticmethod
+    def _get_ham_ops_for_circuit(
+        circuit_index: int,
+        ham_ops: str,
+        circuit_ham_map: list[list[int]] | None,
+    ) -> list[str]:
+        """Resolve which Pauli operators apply to a given circuit.
 
         Args:
-            circuits (dict[str, str]): Dictionary mapping circuit labels to OpenQASM
-                string representations.
+            circuit_index: Index of the circuit in the batch.
+            ham_ops: Semicolon-separated Pauli string, optionally with ``|``-delimited
+                groups when ``circuit_ham_map`` is provided.
+            circuit_ham_map: Each entry is ``[start, end)`` mapping a ``|``-group
+                to a contiguous slice of circuits.
 
         Returns:
-            ExecutionResult: Contains results directly (synchronous execution).
-                Results are in the format: [{"label": str, "results": dict}, ...]
+            List of individual Pauli operator strings for this circuit.
+        """
+        if circuit_ham_map is None:
+            return ham_ops.replace("|", ";").split(";")
+
+        groups = ham_ops.split("|")
+        for group_index, (start, end) in enumerate(circuit_ham_map):
+            if start <= circuit_index < end:
+                return groups[group_index].split(";")
+
+        return ham_ops.replace("|", ";").split(";")
+
+    @staticmethod
+    def _prepare_expval_circuit(
+        circuit: QuantumCircuit, pauli_ops: list[str]
+    ) -> QuantumCircuit:
+        """Strip measurements and append ``save_expectation_value`` for each Pauli operator.
+
+        Args:
+            circuit: Qiskit circuit (may contain final measurements).
+            pauli_ops: List of Pauli strings in divi convention (big-endian, q0 leftmost).
+
+        Returns:
+            New circuit with measurements removed and expectation-value save instructions.
+        """
+        from qiskit.quantum_info import Pauli
+
+        qc = circuit.remove_final_measurements(inplace=False)
+        for pauli_str in pauli_ops:
+            # Reverse: divi big-endian (q0 leftmost) → Qiskit little-endian (q0 rightmost)
+            qc.save_expectation_value(
+                Pauli(pauli_str[::-1]), qubits=range(qc.num_qubits), label=pauli_str
+            )
+        return qc
+
+    def _execute_expval(
+        self,
+        circuit_labels: list[str],
+        qiskit_circuits: list[QuantumCircuit],
+        ham_ops: str,
+        circuit_ham_map: list[list[int]] | None,
+    ) -> list[dict]:
+        """Execute circuits in expectation-value mode.
+
+        Uses Qiskit Aer's ``save_expectation_value`` to compute exact expectation
+        values at the statevector level.
+
+        Returns:
+            List of ``{"label": str, "results": {pauli: float}}`` dicts.
+        """
+        prepared = []
+        per_circuit_ops: list[list[str]] = []
+        for i, qc in enumerate(qiskit_circuits):
+            ops = self._get_ham_ops_for_circuit(i, ham_ops, circuit_ham_map)
+            per_circuit_ops.append(ops)
+            prepared.append(self._prepare_expval_circuit(qc, ops))
+
+        # Resolve backend + create simulator (same as sampling path)
+        if self.qiskit_backend == "auto":
+            max_qubits_circ = max(prepared, key=lambda x: x.num_qubits)
+            resolved_backend = self._resolve_backend(max_qubits_circ)
+        else:
+            resolved_backend = self._resolve_backend()
+
+        aer_simulator = self._create_simulator(resolved_backend)
+        self._configure_simulator_parallelism(aer_simulator, len(prepared))
+
+        transpiled = transpile(prepared, aer_simulator, num_processes=self.n_processes)
+
+        job = aer_simulator.run(transpiled)
+        batch_result = job.result()
+
+        results = []
+        for i, label in enumerate(circuit_labels):
+            expvals = {op: float(batch_result.data(i)[op]) for op in per_circuit_ops[i]}
+            results.append({"label": label, "results": expvals})
+        return results
+
+    def submit_circuits(
+        self,
+        circuits: Mapping[str, str],
+        ham_ops: str | None = None,
+        circuit_ham_map: list[list[int]] | None = None,
+        **kwargs,
+    ) -> ExecutionResult:
+        """Submit multiple circuits for parallel simulation using Qiskit's built-in parallelism.
+
+        Args:
+            circuits: Dictionary mapping circuit labels to OpenQASM string representations.
+            ham_ops: Semicolon-separated Pauli string for expectation value estimation,
+                e.g. ``"ZI;IZ;XX"``. Multiple groups can be pipe-delimited when
+                ``circuit_ham_map`` is provided. If None, runs in sampling mode.
+            circuit_ham_map: Each entry is ``[start, end)`` mapping a ``|``-group in
+                ``ham_ops`` to a contiguous slice of circuits.
+            **kwargs: Additional parameters (unused, accepted for interface compatibility).
+
+        Returns:
+            ExecutionResult containing either counts (sampling) or expectation values.
         """
         logger.debug(
             f"Simulating {len(circuits)} circuits with {self.n_processes} processes"
@@ -349,6 +453,13 @@ class ParallelSimulator(CircuitRunner):
 
         if self.track_depth:
             self._depth_history.append([qc.depth() for qc in qiskit_circuits])
+
+        # Expectation value mode
+        if ham_ops is not None:
+            results = self._execute_expval(
+                circuit_labels, qiskit_circuits, ham_ops, circuit_ham_map
+            )
+            return ExecutionResult(results=results)
 
         # 2. Resolve Backend
         if self.qiskit_backend == "auto":

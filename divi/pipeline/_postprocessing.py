@@ -169,6 +169,31 @@ def _counts_to_expvals(
     return out
 
 
+def _expval_dicts_to_indexed(raw: ChildResults, ham_ops: str) -> ChildResults:
+    """Normalise ``{pauli_str: float}`` dicts from expval-native backends.
+
+    Converts each result value into the same format that
+    ``_counts_to_expvals`` produces: ``float`` for single-observable groups
+    and ``{obs_idx: float}`` for multi-observable groups.  The ordering is
+    determined by the semicolon-separated *ham_ops* string.
+
+    Duck-type check: only converts when values are actually Pauli dicts
+    (custom execute_fns may return other dict types like probability dicts).
+    """
+    ops = ham_ops.split(";")
+    sample = next(iter(raw.values()), None)
+    if not isinstance(sample, dict) or ops[0] not in sample:
+        return raw
+
+    out: ChildResults = {}
+    for key, pauli_dict in raw.items():
+        if len(ops) == 1:
+            out[key] = float(pauli_dict[ops[0]])
+        else:
+            out[key] = {i: float(pauli_dict[op]) for i, op in enumerate(ops)}
+    return out
+
+
 def _counts_to_probs(
     raw: ChildResults,
     shots: int,

@@ -274,8 +274,8 @@ class TestExpvalSubmission:
 
         result = sim.submit_circuits(
             {"c0": QASM_DEPTH_2, "c1": QASM_DEPTH_3},
-            ham_ops="ZI;XX",
-            circuit_ham_map=[[0], [1]],
+            ham_ops="ZI|XX",
+            circuit_ham_map=[[0, 1], [1, 2]],
         )
 
         assert result.results[0]["results"] == {"ZI": 0.5}
@@ -288,17 +288,22 @@ class TestExpvalSubmission:
     def test_circuit_ham_map_fallback(self, mocker):
         """Circuits not in any group fall back to full ham_ops string."""
         fake = _make_fake_maestro(mocker)
+        fake.simple_estimate.side_effect = [
+            {"expectation_values": [0.5]},
+            {"expectation_values": [0.5, -0.3]},
+        ]
         sim = _make_simulator(mocker, fake)
 
         sim.submit_circuits(
             {"c0": QASM_DEPTH_2, "c1": QASM_DEPTH_3},
-            ham_ops="ZI;XX",
-            circuit_ham_map=[[0]],
+            ham_ops="ZI|XX",
+            circuit_ham_map=[[0, 1]],
         )
 
         calls = fake.simple_estimate.call_args_list
         assert calls[0][1]["observables"] == "ZI"
-        assert calls[1][1]["observables"] == "ZI;XX"
+        # Circuit 1 not in any group — falls back to full ham_ops
+        assert calls[1][1]["observables"] == "ZI|XX"
 
 
 # ---------------------------------------------------------------------------

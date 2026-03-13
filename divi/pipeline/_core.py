@@ -12,7 +12,11 @@ from rich.tree import Tree
 
 from divi.backends import JobStatus
 from divi.pipeline._compilation import _collapse_to_parent_results, _compile_batch
-from divi.pipeline._postprocessing import _counts_to_expvals, _counts_to_probs
+from divi.pipeline._postprocessing import (
+    _counts_to_expvals,
+    _counts_to_probs,
+    _expval_dicts_to_indexed,
+)
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
@@ -255,7 +259,10 @@ class CircuitPipeline:
             if env.result_format is ResultFormat.PROBS:
                 raw = _counts_to_probs(raw, env.backend.shots)
             elif env.result_format is ResultFormat.EXPVALS:
-                if not env.backend.supports_expval:
+                ham_ops = env.artifacts.get("ham_ops")
+                if ham_ops is not None:
+                    raw = _expval_dicts_to_indexed(raw, ham_ops)
+                else:
                     raw = _counts_to_expvals(raw, plan.final_batch)
 
         return self._reduce(raw, env, plan.stage_tokens)

@@ -34,9 +34,6 @@ class MeasurementToken:
     is_probs: bool = False
     """True when this is a probabilities measurement (no observable grouping)."""
 
-    ham_ops_list: list[str] | None = None
-    """Ordered Pauli operator strings for expval-backend unpacking."""
-
 
 class MeasurementStage(BundleStage):
     """Unified measurement stage for all circuit measurement types.
@@ -139,12 +136,18 @@ class MeasurementStage(BundleStage):
         """Group observables and generate measurement QASM (or ham_ops)."""
         env.result_format = ResultFormat.EXPVALS
 
-        # Auto-select _backend_expval when the backend supports it and the
-        # caller did not explicitly request a different grouping strategy.
-        if env.backend.supports_expval and self._grouping_strategy == "qwc":
-            strategy = "_backend_expval"
-        else:
-            strategy = self._grouping_strategy
+        # Auto-select _backend_expval when the backend supports it and
+        # all circuits share the same observable.  QDrift multi-sample
+        # produces per-circuit observables that are incompatible with
+        # the single ham_ops string, so we fall back to QWC grouping.
+        strategy = self._grouping_strategy
+        if strategy in ("qwc", "_backend_expval") and env.backend.supports_expval:
+            first_obs = next(iter(batch.values())).source_circuit.measurements[0].obs
+            all_same_obs = all(
+                meta.source_circuit.measurements[0].obs is first_obs
+                for meta in batch.values()
+            )
+            strategy = "_backend_expval" if all_same_obs else "qwc"
 
         result: dict[object, MetaCircuit] = {}
         postprocess_fn_by_spec: dict[object, Callable] = {}
@@ -175,18 +178,21 @@ class MeasurementStage(BundleStage):
 
         # For expval-native backends, compute ham_ops from the observable
         # and store it in env.artifacts so _default_execute_fn can use it.
-        ham_ops_list: list[str] | None = None
+        # When falling back to QWC, ensure ham_ops is cleared so a stale
+        # value from a cached forward pass doesn't leak into the next run.
         if strategy == "_backend_expval":
             sample_meta = next(iter(batch.values()))
             observable = sample_meta.source_circuit.measurements[0].obs
             n_qubits = len(sample_meta.source_circuit.wires)
-            ham_ops_str = convert_hamiltonian_to_pauli_string(observable, n_qubits)
+            ham_ops_str = convert_hamiltonian_to_pauli_string(
+                observable, n_qubits, wires=sample_meta.source_circuit.wires
+            )
             env.artifacts["ham_ops"] = ham_ops_str
-            ham_ops_list = ham_ops_str.split(";")
+        else:
+            env.artifacts.pop("ham_ops", None)
 
         token = MeasurementToken(
             postprocess_fn_by_spec=postprocess_fn_by_spec,
-            ham_ops_list=ham_ops_list,
         )
         return ExpansionResult(batch=result), token
 
@@ -230,18 +236,6 @@ class MeasurementStage(BundleStage):
         self, results: ChildResults, token: MeasurementToken
     ) -> ChildResults:
         """Combine expval results across measurement groups."""
-        # For expval backends, unpack {pauli: value} dicts into ordered
-        # per-operator lists before applying the standard postprocessing.
-        # Duck-type check: only unpack when values are actually dicts
-        # (custom execute_fns may return plain numeric values).
-        if token.ham_ops_list is not None:
-            sample_val = next(iter(results.values()), None)
-            if isinstance(sample_val, dict):
-                results = {
-                    key: [float(pauli_dict[op]) for op in token.ham_ops_list]
-                    for key, pauli_dict in results.items()
-                }
-
         grouped = group_by_base_key(results, OBS_GROUP_AXIS, indexed=True)
         postprocess_fn_by_base = {
             base_key: token.postprocess_fn_by_spec[base_key] for base_key in grouped

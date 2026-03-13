@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from collections.abc import Callable, Hashable
+from collections.abc import Callable, Hashable, Sequence
 from dataclasses import dataclass, field
 from functools import reduce
 from itertools import combinations
@@ -428,7 +428,9 @@ class QDrift(TrotterizationStrategy):
 
 
 def convert_hamiltonian_to_pauli_string(
-    hamiltonian: qml.operation.Operator, n_qubits: int
+    hamiltonian: qml.operation.Operator,
+    n_qubits: int,
+    wires: Sequence | None = None,
 ) -> str:
     """
     Convert a PennyLane Operator to a semicolon-separated string of Pauli operators.
@@ -439,6 +441,8 @@ def convert_hamiltonian_to_pauli_string(
     Args:
         hamiltonian (qml.operation.Operator): The PennyLane Operator to convert.
         n_qubits (int): Number of qubits to represent in the string.
+        wires (Sequence | None): Ordered wire labels to map non-integer wire names
+            to qubit indices.  When ``None``, wires are cast to ``int`` directly.
 
     Returns:
         str: The Hamiltonian as a semicolon-separated string of Pauli operators.
@@ -448,6 +452,10 @@ def convert_hamiltonian_to_pauli_string(
     """
     pauli_letters = {"PauliX": "X", "PauliY": "Y", "PauliZ": "Z"}
     identity_row = np.full(n_qubits, "I", dtype="<U1")
+
+    wire_map: dict | None = None
+    if wires is not None:
+        wire_map = {w: i for i, w in enumerate(wires)}
 
     # Handle both single operators and sums of operators (like Hamiltonians)
     terms_to_process = _get_terms_iterable(hamiltonian)
@@ -476,7 +484,8 @@ def convert_hamiltonian_to_pauli_string(
             if not p.wires:
                 raise ValueError(f"Pauli operator {p.name} has no wires")
 
-            wire = int(p.wires[0])
+            raw_wire = p.wires[0]
+            wire = wire_map[raw_wire] if wire_map is not None else int(raw_wire)
             if wire < 0 or wire >= n_qubits:
                 raise ValueError(
                     f"Wire index {wire} out of range for {n_qubits} qubits. "

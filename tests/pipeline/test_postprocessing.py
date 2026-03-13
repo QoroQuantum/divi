@@ -14,6 +14,7 @@ from divi.pipeline._postprocessing import (
     _batched_expectation,
     _counts_to_expvals,
     _counts_to_probs,
+    _expval_dicts_to_indexed,
     _find_batch_key,
 )
 from divi.pipeline.abc import ChildResults
@@ -378,3 +379,31 @@ class TestCountsToProbs:
         result = _counts_to_probs(raw, shots=10)
         assert result[("x",)] == {"01": 0.4, "10": 0.6}
         assert result[("y",)] == {"011": 0.2, "100": 0.8}
+
+
+class TestExpvalDictsToIndexed:
+    """Tests for _expval_dicts_to_indexed."""
+
+    def test_multi_op_returns_indexed_dict(self):
+        """Multiple Pauli ops produce {int: float} dicts."""
+        raw = {("k",): {"XI": 0.5, "IZ": -0.3, "XZ": 0.2}}
+        result = _expval_dicts_to_indexed(raw, "XI;IZ;XZ")
+        assert result[("k",)] == {0: 0.5, 1: -0.3, 2: 0.2}
+
+    def test_single_op_returns_float(self):
+        """Single Pauli op produces a plain float."""
+        raw = {("k",): {"ZI": 0.7}}
+        result = _expval_dicts_to_indexed(raw, "ZI")
+        assert result[("k",)] == pytest.approx(0.7)
+
+    def test_preserves_ham_ops_ordering(self):
+        """Output indices follow ham_ops order, not dict key order."""
+        raw = {("k",): {"IZ": -0.3, "XZ": 0.2, "XI": 0.5}}
+        result = _expval_dicts_to_indexed(raw, "XI;IZ;XZ")
+        assert result[("k",)] == {0: 0.5, 1: -0.3, 2: 0.2}
+
+    def test_non_dict_passthrough(self):
+        """Non-dict values (e.g. already-normalised floats) pass through."""
+        raw = {("k",): 1.5}
+        result = _expval_dicts_to_indexed(raw, "XI;IZ")
+        assert result[("k",)] == 1.5

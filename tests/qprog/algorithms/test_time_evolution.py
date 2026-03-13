@@ -221,24 +221,6 @@ class TestTimeEvolutionQDrift:
         total = sum(probs.values())
         assert abs(total - 1.0) < 0.2
 
-    def test_qdrift_expval_backend_raises(self, two_qubit_hamiltonian, mocker):
-        """Multi-sample QDrift + expval backend is not supported — run() raises."""
-        backend = mocker.Mock()
-        backend.supports_expval = True
-        backend.shots = 100
-        te = TimeEvolution(
-            hamiltonian=two_qubit_hamiltonian,
-            observable=qml.PauliZ(0),
-            trotterization_strategy=QDrift(
-                sampling_budget=2,
-                seed=42,
-                n_hamiltonians_per_iteration=2,
-            ),
-            backend=backend,
-        )
-        with pytest.raises(ValueError, match="Multi-sample QDrift"):
-            te.run()
-
     def test_expval_shot_backend_qdrift_aggregation(self, default_test_simulator):
         """QDrift with observable on shot backend averages expvals across samples."""
         te = TimeEvolution(
@@ -254,6 +236,45 @@ class TestTimeEvolutionQDrift:
         count, _ = te.run()
         assert count >= 2
         assert te.results is not None
+
+    def test_multi_sample_qdrift_expval_vs_sampling(self, default_test_simulator):
+        """Multi-sample QDrift: expval backend and sampling backend agree."""
+        hamiltonian = qml.sum(
+            -(qml.PauliZ(0) @ qml.PauliZ(1)),
+            -qml.PauliX(0),
+            -qml.PauliX(1),
+        )
+        qdrift_kwargs = dict(
+            sampling_budget=50,
+            seed=42,
+            n_hamiltonians_per_iteration=10,
+            sampling_strategy="weighted",
+        )
+        common = dict(
+            hamiltonian=hamiltonian,
+            time=0.8,
+            n_steps=1,
+            initial_state="Zeros",
+            observable=hamiltonian,
+        )
+
+        te_expval = TimeEvolution(
+            **common,
+            trotterization_strategy=QDrift(**qdrift_kwargs),
+            backend=default_test_simulator,
+        )
+        te_expval.run()
+
+        te_sampling = TimeEvolution(
+            **common,
+            trotterization_strategy=QDrift(**qdrift_kwargs),
+            backend=ParallelSimulator(
+                shots=5000, force_sampling=True, _deterministic_execution=True
+            ),
+        )
+        te_sampling.run()
+
+        assert abs(te_expval.results - te_sampling.results) < _QDRIFT_EXPVAL_TOL
 
 
 @pytest.mark.e2e

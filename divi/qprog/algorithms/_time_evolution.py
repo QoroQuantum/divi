@@ -94,6 +94,9 @@ class TimeEvolution(QuantumProgram):
     ) -> MetaCircuit:
         """Factory for TrotterSpecStage: build a MetaCircuit for one Hamiltonian sample."""
         ops = self._build_ops(hamiltonian)
+        # Ensure canonical wire ordering matches the Hamiltonian,
+        # regardless of which subset of terms QDrift sampled.
+        ops = [qml.Identity(w) for w in self._circuit_wires] + ops
         use_probs = self.observable is None
 
         if use_probs:
@@ -117,20 +120,6 @@ class TimeEvolution(QuantumProgram):
         Returns:
             tuple[int, float]: (total_circuit_count, total_run_time).
         """
-        n_samples = getattr(
-            self.trotterization_strategy, "n_hamiltonians_per_iteration", 1
-        )
-
-        if (
-            n_samples > 1
-            and self.observable is not None
-            and self.backend.supports_expval
-        ):
-            raise ValueError(
-                "Multi-sample QDrift with observable and expval backend is not supported. "
-                "Use a shot-based backend or set observable=None for probs."
-            )
-
         env = self._build_pipeline_env()
 
         result = self._pipeline.run(initial_spec=self._hamiltonian, env=env)

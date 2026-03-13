@@ -63,40 +63,31 @@ class TestMeasurementStageExpvalBackendReduce:
 
         assert "ham_ops" in env.artifacts
 
-    def test_reduce_unpacks_pauli_dict_into_ordered_values(self):
-        """_reduce_expval with ham_ops_list unpacks {pauli: float} dicts correctly.
+    def test_reduce_indexed_dicts_from_expval_backend(self):
+        """_reduce_expval handles {int: float} dicts (normalised by _core.py).
 
-        When ham_ops_list is set, _reduce_expval transforms each result value from
-        {pauli: float} dict into an ordered list of floats, then hands them to
-        reduce_postprocess_ordered which calls the postprocess_fn with [[values...]].
+        After _expval_dicts_to_indexed normalises backend results, reduce
+        receives {obs_idx: float} dicts — same format as _counts_to_expvals.
         """
         stage = MeasurementStage()
 
         base_key = (("spec", "circ"),)
-        # Single obs_group with Pauli dict result
+        # Single obs_group with indexed dict (already normalised)
         results: ChildResults = {
-            base_key + ((OBS_GROUP_AXIS, 0),): {"XI": 0.5, "IZ": -0.3, "XZ": 0.2},
+            base_key + ((OBS_GROUP_AXIS, 0),): {0: 0.5, 1: -0.3, 2: 0.2},
         }
 
-        ham_ops = ["XI", "IZ", "XZ"]
-
         def _postprocess(values):
-            """Flatten and sum (simulating coefficient application).
-
-            reduce_postprocess_ordered passes [value_for_obs_0, ...].
-            After ham_ops unpack, each obs_group value is a list of floats.
-            """
             total = 0.0
             for v in values:
-                if isinstance(v, list):
-                    total += sum(v)
+                if isinstance(v, dict):
+                    total += sum(v.values())
                 else:
                     total += v
             return total
 
         token = MeasurementToken(
             postprocess_fn_by_spec={base_key: _postprocess},
-            ham_ops_list=ham_ops,
         )
 
         env = PipelineEnv.__new__(PipelineEnv)
@@ -106,36 +97,6 @@ class TestMeasurementStageExpvalBackendReduce:
         assert base_key in reduced
         # 0.5 + (-0.3) + 0.2 = 0.4
         assert reduced[base_key] == pytest.approx(0.4)
-
-    def test_reduce_preserves_operator_ordering(self):
-        """ham_ops_list ordering determines the order of unpacked values."""
-        stage = MeasurementStage()
-
-        base_key = (("spec", "circ"),)
-        # Pauli dict with keys in a different order than ham_ops_list
-        results: ChildResults = {
-            base_key + ((OBS_GROUP_AXIS, 0),): {"IZ": -0.3, "XZ": 0.2, "XI": 0.5},
-        }
-
-        captured = {}
-
-        def _capture_postprocess(values):
-            """Capture the ordered values passed to postprocess."""
-            captured["values"] = values
-            return 0.0
-
-        # ham_ops_list defines the canonical ordering
-        token = MeasurementToken(
-            postprocess_fn_by_spec={base_key: _capture_postprocess},
-            ham_ops_list=["XI", "IZ", "XZ"],
-        )
-
-        env = PipelineEnv.__new__(PipelineEnv)
-        stage.reduce(results, env, token)
-
-        # The single obs_group result should be the ordered list
-        inner = captured["values"][0]
-        assert inner == [0.5, -0.3, 0.2]
 
     def test_reduce_without_ham_ops_uses_standard_postprocess(
         self, dummy_expval_backend

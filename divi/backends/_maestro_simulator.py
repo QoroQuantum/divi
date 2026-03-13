@@ -112,14 +112,26 @@ class MaestroSimulator(CircuitRunner):
         ham_ops: str,
         circuit_ham_map: list[list[int]] | None,
     ) -> str:
-        """Resolve which observable string applies to a given circuit index."""
+        """Resolve which observable string applies to a given circuit index.
+
+        Args:
+            circuit_index: Index of the circuit in the batch.
+            ham_ops: Semicolon-separated Pauli string, optionally with ``|``-delimited
+                groups when ``circuit_ham_map`` is provided.
+            circuit_ham_map: Each entry is ``[start, end)`` mapping a ``|``-group
+                to a contiguous slice of circuits.  ``None`` means all circuits
+                share the same observables.
+
+        Returns:
+            Semicolon-separated Pauli string for this circuit.
+        """
         if circuit_ham_map is None:
             return ham_ops
 
-        all_ops = ham_ops.split(";")
-        for group_index, circuit_indices in enumerate(circuit_ham_map):
-            if circuit_index in circuit_indices:
-                return all_ops[group_index]
+        groups = ham_ops.split("|")
+        for group_index, (start, end) in enumerate(circuit_ham_map):
+            if start <= circuit_index < end:
+                return groups[group_index]
 
         return ham_ops
 

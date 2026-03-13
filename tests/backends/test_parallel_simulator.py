@@ -134,8 +134,13 @@ class TestParallelSimulatorProperties:
         assert simulator.simulation_seed == 100
 
     def test_supports_expval(self):
-        """Test supports_expval property (line 114)."""
+        """Test supports_expval property."""
         simulator = ParallelSimulator()
+        assert simulator.supports_expval is True
+
+    def test_force_sampling_disables_expval(self):
+        """force_sampling=True makes supports_expval return False."""
+        simulator = ParallelSimulator(force_sampling=True)
         assert simulator.supports_expval is False
 
     def test_is_async(self):
@@ -415,6 +420,143 @@ class TestParallelSimulatorDepthTracker:
         contracts.verify_std_depth_zero_for_single_value(
             simulator, {"c1": contracts.QASM_DEPTH_2}
         )
+
+
+class TestExpvalSubmission:
+    """Tests for ParallelSimulator expectation value estimation."""
+
+    QASM_2Q = (
+        'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[2];\ncreg c[2];\n'
+        "h q[0];\ncx q[0],q[1];\nmeasure q[0] -> c[0];\nmeasure q[1] -> c[1];\n"
+    )
+
+    def test_supports_expval(self):
+        sim = ParallelSimulator()
+        assert sim.supports_expval is True
+
+    def test_expval_basic(self):
+        """Expval mode returns {pauli: float} dicts with correct values."""
+        sim = ParallelSimulator(shots=5000)
+        result = sim.submit_circuits(
+            {"c0": self.QASM_2Q},
+            ham_ops="ZI;IZ",
+        )
+        assert result.results is not None
+        assert len(result.results) == 1
+        assert result.results[0]["label"] == "c0"
+        # Bell state: <ZI> and <IZ> should both be ~0
+        expvals = result.results[0]["results"]
+        assert "ZI" in expvals
+        assert "IZ" in expvals
+        assert isinstance(expvals["ZI"], float)
+        assert isinstance(expvals["IZ"], float)
+
+    def test_expval_known_value(self):
+        """H|0> = |+>, so <Z> = 0 and <X> = 1 on a single qubit."""
+        qasm_1q = (
+            'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[1];\ncreg c[1];\n'
+            "h q[0];\nmeasure q[0] -> c[0];\n"
+        )
+        sim = ParallelSimulator(shots=5000)
+        result = sim.submit_circuits({"c0": qasm_1q}, ham_ops="Z;X")
+        expvals = result.results[0]["results"]
+        assert expvals["Z"] == pytest.approx(0.0, abs=1e-10)
+        assert expvals["X"] == pytest.approx(1.0, abs=1e-10)
+
+    def test_expval_bell_state_zz(self):
+        """Bell state |00>+|11>: <ZZ> = 1, <ZI> = 0."""
+        sim = ParallelSimulator(shots=5000)
+        result = sim.submit_circuits({"c0": self.QASM_2Q}, ham_ops="ZZ;ZI")
+        expvals = result.results[0]["results"]
+        assert expvals["ZZ"] == pytest.approx(1.0, abs=1e-10)
+        assert expvals["ZI"] == pytest.approx(0.0, abs=1e-10)
+
+    def test_sampling_not_affected(self, mocker):
+        """Sampling path unchanged when ham_ops=None."""
+        sim = ParallelSimulator(shots=100)
+
+        mock_aer = mocker.Mock()
+        mock_result = mocker.Mock()
+        mock_result.get_counts.return_value = {"00": 50, "11": 50}
+        mock_result.metadata = {"parallel_experiments": 1, "omp_nested": False}
+        mock_aer.run.return_value.result.return_value = mock_result
+        mocker.patch(
+            "divi.backends._parallel_simulator.AerSimulator",
+            return_value=mock_aer,
+        )
+        mocker.patch(
+            "divi.backends._parallel_simulator.transpile",
+            return_value=[QuantumCircuit(2)],
+        )
+
+        result = sim.submit_circuits({"c0": self.QASM_2Q})
+        assert result.results[0]["results"] == {"00": 50, "11": 50}
+
+    def test_get_ham_ops_no_map(self):
+        """All circuits get all ops when circuit_ham_map is None."""
+        ops = ParallelSimulator._get_ham_ops_for_circuit(0, "ZI;IZ;XX", None)
+        assert ops == ["ZI", "IZ", "XX"]
+
+    def test_get_ham_ops_no_map_pipe_delimited(self):
+        """Pipe-delimited groups are flattened when no map provided."""
+        ops = ParallelSimulator._get_ham_ops_for_circuit(0, "ZI;IZ|XX;YY", None)
+        assert ops == ["ZI", "IZ", "XX", "YY"]
+
+    def test_get_ham_ops_with_map(self):
+        """[start, end) ranges with |‑delimited groups route correctly."""
+        ham_ops = "ZI;IZ|XX;YY"
+        circuit_ham_map = [[0, 3], [3, 5]]
+
+        assert ParallelSimulator._get_ham_ops_for_circuit(
+            0, ham_ops, circuit_ham_map
+        ) == ["ZI", "IZ"]
+        assert ParallelSimulator._get_ham_ops_for_circuit(
+            2, ham_ops, circuit_ham_map
+        ) == ["ZI", "IZ"]
+        assert ParallelSimulator._get_ham_ops_for_circuit(
+            3, ham_ops, circuit_ham_map
+        ) == ["XX", "YY"]
+        assert ParallelSimulator._get_ham_ops_for_circuit(
+            4, ham_ops, circuit_ham_map
+        ) == ["XX", "YY"]
+
+    def test_get_ham_ops_fallback(self):
+        """Circuit index outside all ranges falls back to all ops."""
+        ops = ParallelSimulator._get_ham_ops_for_circuit(10, "ZI|XX", [[0, 2], [2, 4]])
+        assert ops == ["ZI", "XX"]
+
+    def test_expval_with_circuit_ham_map(self):
+        """Different circuits get different observables via circuit_ham_map."""
+        qasm_1q = (
+            'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[1];\ncreg c[1];\n'
+            "h q[0];\nmeasure q[0] -> c[0];\n"
+        )
+        sim = ParallelSimulator(shots=5000)
+        result = sim.submit_circuits(
+            {"c0": qasm_1q, "c1": qasm_1q},
+            ham_ops="Z|X",
+            circuit_ham_map=[[0, 1], [1, 2]],
+        )
+        assert result.results[0]["results"] == {"Z": pytest.approx(0.0, abs=1e-10)}
+        assert result.results[1]["results"] == {"X": pytest.approx(1.0, abs=1e-10)}
+
+    def test_prepare_expval_circuit_strips_measurements(self):
+        """_prepare_expval_circuit removes measurements and adds save instructions."""
+        qc = QuantumCircuit.from_qasm_str(self.QASM_2Q)
+        prepared = ParallelSimulator._prepare_expval_circuit(qc, ["ZI", "IZ"])
+        # No measure gates
+        op_names = [inst.operation.name for inst in prepared.data]
+        assert "measure" not in op_names
+        # Has save_expectation_value instructions
+        assert "save_expval" in op_names or any("save" in name for name in op_names)
+
+    def test_prepare_expval_circuit_preserves_gates(self):
+        """Gate instructions survive measurement stripping."""
+        qc = QuantumCircuit.from_qasm_str(self.QASM_2Q)
+        prepared = ParallelSimulator._prepare_expval_circuit(qc, ["ZZ"])
+        op_names = [inst.operation.name for inst in prepared.data]
+        assert "h" in op_names
+        assert "cx" in op_names
 
 
 class TestParallelSimulatorRuntimeEstimation:
