@@ -7,6 +7,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0](https://github.com/QoroQuantum/divi/compare/v0.9.0...v0.10.0) (2026-03-15)
+
+
+### ✨ Added
+
+* **MaestroSimulator:** add local maestro CircuitRunner interface ([083f313](https://github.com/QoroQuantum/divi/commit/083f31380394d46c96b83dea67639c452f4256ca))
+* **ParallelSimulator:** add exact expectation value support via Qiskit Aer statevector ([860d5d5](https://github.com/QoroQuantum/divi/commit/860d5d58d734e800fd5c51f8ae0ff7c564e31e36))
+* **QAOA:** add IterativeQAOA with warm-started depth progression ([0266192](https://github.com/QoroQuantum/divi/commit/026619242be1a32c22d39646b21abba7c641b9e8))
+
+
+### 🐛 Fixed
+
+* **QDrift:** use Campbell's faithful protocol for non-commuting Hamiltonians ([be2da96](https://github.com/QoroQuantum/divi/commit/be2da96768cee52eef2bc1ef956031463a49948d))
+
+
+### 🔧 Internal
+
+* add more standard pypi publish script ([97e7925](https://github.com/QoroQuantum/divi/commit/97e79258745f0b76f27e176aa685911a74bdc395))
+
 ## [0.9.0](https://github.com/QoroQuantum/divi/compare/v0.8.0...v0.9.0) (2026-03-11)
 
 ### ✨ Added
