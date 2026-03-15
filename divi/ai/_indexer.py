@@ -24,8 +24,6 @@ import json
 import os
 import re
 import subprocess
-
-pass
 from dataclasses import asdict
 from pathlib import Path
 
@@ -62,7 +60,7 @@ SKIP_NAMES = {
     "AGENTS.md",
 }
 SKIP_PREFIXES = ("test_", "conftest")
-INCLUDE_DIRS = {"divi", "docs", "tutorials"}
+INCLUDE_DIRS = {"divi", "docs", "tutorials", "tests"}
 
 
 # Sections to skip — they contain navigation links but no substance
@@ -578,6 +576,114 @@ def _is_method(node: ast.FunctionDef | ast.AsyncFunctionDef, tree: ast.Module) -
 
 
 # ---------------------------------------------------------------------------
+# Chunking — Test files (.py under tests/)
+# ---------------------------------------------------------------------------
+
+MAX_TEST_CHUNK_CHARS = 1500
+
+
+MAX_IMPORT_BLOCK_CHARS = 400
+
+
+def _extract_import_block(lines: list[str]) -> str:
+    """Extract the import block from the top of a Python file.
+
+    Capped at :data:`MAX_IMPORT_BLOCK_CHARS` to avoid bloating chunks
+    with test files that import dozens of symbols.
+    """
+    import_lines: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if (
+            stripped.startswith(("import ", "from "))
+            or stripped.startswith("#")
+            or stripped == ""
+        ):
+            import_lines.append(line)
+        elif stripped.startswith('"""') or stripped.startswith("'''"):
+            # Skip module docstrings
+            continue
+        else:
+            break
+    result = "".join(import_lines).strip()
+    if len(result) > MAX_IMPORT_BLOCK_CHARS:
+        # Keep only the first N chars, ending at a line boundary
+        truncated = result[:MAX_IMPORT_BLOCK_CHARS]
+        last_newline = truncated.rfind("\n")
+        if last_newline > 0:
+            result = truncated[:last_newline]
+    return result
+
+
+def _extract_test_usage(text: str, source_file: str) -> list[ChunkMeta]:
+    """Extract test functions as usage-example chunks.
+
+    Unlike :func:`_extract_python_units`, this extracts **full function
+    bodies** because test functions demonstrate real API usage patterns.
+
+    Parameters
+    ----------
+    text:
+        The full Python file content.
+    source_file:
+        Path string stored in the chunk metadata.
+
+    Returns
+    -------
+    list[ChunkMeta]
+        One chunk per test function (skipping overly long ones).
+    """
+    try:
+        tree = ast.parse(text, filename=source_file)
+    except SyntaxError:
+        return []
+
+    lines = text.splitlines(keepends=True)
+    file_imports = _extract_import_block(lines)
+
+    short_source = source_file
+    if "divi/" in source_file:
+        short_source = source_file.split("divi/", 1)[-1]
+
+    chunks: list[ChunkMeta] = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        if not node.name.startswith("test_"):
+            continue
+
+        start = node.lineno
+        end = node.end_lineno or start
+        func_text = "".join(lines[max(0, start - 1) : end])
+
+        if len(func_text) > MAX_TEST_CHUNK_CHARS:
+            continue
+
+        # Heuristic: skip heavily-mocked tests (not good usage examples)
+        if func_text.count("mocker.patch") + func_text.count("mocker.spy") > 2:
+            continue
+
+        prefix = f"[Test: {short_source}::{node.name}]\n"
+        chunk_text = prefix
+        if file_imports:
+            chunk_text += file_imports + "\n\n"
+        chunk_text += func_text.strip()
+
+        chunks.append(
+            ChunkMeta(
+                text=chunk_text,
+                source_file=source_file,
+                start_line=start,
+                end_line=end,
+                chunk_type="test",
+            )
+        )
+
+    return chunks
+
+
+# ---------------------------------------------------------------------------
 # File scanning
 # ---------------------------------------------------------------------------
 
@@ -586,13 +692,20 @@ def _should_skip(path: Path) -> bool:
     """Return ``True`` if *path* should be excluded from indexing."""
     if path.name in SKIP_NAMES:
         return True
-    if path.stem.startswith(SKIP_PREFIXES):
+    is_test_file = "tests" in path.parts
+    # Only apply SKIP_PREFIXES to non-test files (we want test_*.py)
+    if not is_test_file and path.stem.startswith(SKIP_PREFIXES):
         return True
     # Only index files under allowed top-level directories
     if not any(part in INCLUDE_DIRS for part in path.parts):
         return True
+    # Skip the AI module itself — it's the chatbot, not library documentation
+    if "ai" in path.parts and "divi" in path.parts:
+        idx = list(path.parts).index("divi")
+        if idx + 1 < len(path.parts) and path.parts[idx + 1] == "ai":
+            return True
     # Still skip __pycache__ and build dirs within included dirs
-    if any(part in {"__pycache__", "_build", ".git", "tests"} for part in path.parts):
+    if any(part in {"__pycache__", "_build", ".git"} for part in path.parts):
         return True
     return False
 
@@ -687,11 +800,32 @@ def build_index(
         if not text.strip():
             continue
 
-        if fpath.suffix == ".py":
+        is_test = "tests" in fpath.parts
+        is_tutorial = "tutorial" in str(fpath).lower()
+
+        if fpath.suffix == ".py" and is_test:
+            new_chunks = _extract_test_usage(text, str(fpath))
+            py_count += 1
+        elif fpath.suffix == ".py":
             new_chunks = _extract_python_units(text, str(fpath))
+            # For short tutorials without an [Example:] chunk, add full file
+            if is_tutorial and len(text) < 2500:
+                has_example = any("[Example:" in c.text for c in new_chunks)
+                if not has_example:
+                    new_chunks.append(
+                        ChunkMeta(
+                            text=f"[Example: {str(fpath).split('divi/', 1)[-1]}]\n{text.strip()}",
+                            source_file=str(fpath),
+                            start_line=1,
+                            end_line=len(text.splitlines()),
+                            chunk_type="tutorial",
+                        )
+                    )
             py_count += 1
         else:
             new_chunks = _chunk_text(text, str(fpath))
+            for c in new_chunks:
+                c.chunk_type = "doc"
             doc_count += 1
 
         all_chunks.extend(new_chunks)
@@ -729,7 +863,7 @@ def build_index(
     try:
         vectors = list(
             track(
-                embedder.embed(texts, batch_size=64),
+                embedder.embed(texts, batch_size=16),
                 total=len(texts),
                 description="Embedding …",
             )
