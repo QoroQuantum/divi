@@ -10,6 +10,8 @@ Usage::
     python -m divi.ai build     # Build the FAISS index from the local repo
     python -m divi.ai search    # Search the index interactively
     python -m divi.ai inspect   # Inspect assembled prompts (no LLM)
+    python -m divi.ai eval      # Run eval queries and save results
+    python -m divi.ai compare   # Compare two eval runs side-by-side
 """
 
 import argparse
@@ -19,8 +21,11 @@ from rich.console import Console
 from rich.table import Table
 
 from ._chat import build_prompt
+from ._eval import compare_evals, run_eval
 from ._indexer import DATA_DIR, build_index, build_project_meta, load_search_stack
-from ._retriever import retrieve
+from ._models import AVAILABLE_MODELS, ensure_model, load_preferred_model
+from ._retriever import enrich_chunks, retrieve
+from ._types import short_source
 
 _SAMPLE_QUERIES = [
     "What is a ProgramBatch?",
@@ -131,7 +136,8 @@ def cmd_inspect(args: argparse.Namespace) -> None:
 
     for query in queries:
         relevant = retrieve(query, index, chunks, embedder, top_k=args.top_k)
-        messages = build_prompt(relevant, history=[], user_query=query)
+        relevant = enrich_chunks(relevant)
+        messages = build_prompt(relevant, history=[], user_query=query, llm=None)
         system = messages[0]["content"]
         total_chars = sum(len(m["content"]) for m in messages)
 
@@ -140,9 +146,7 @@ def cmd_inspect(args: argparse.Namespace) -> None:
         # Chunk summary
         console.print("[dim]Retrieved chunks:[/dim]")
         for i, c in enumerate(relevant, 1):
-            src = c.source_file
-            if "Qoro/divi/" in src:
-                src = src.split("Qoro/divi/")[-1]
+            src = short_source(c.source_file)
             console.print(
                 f"  [{i}] score={c.score:.3f}  dense={c.dense_score:.3f}  {src}"
             )
@@ -157,6 +161,24 @@ def cmd_inspect(args: argparse.Namespace) -> None:
             f"\n[dim]chars={total_chars:,}  ~tokens={est_tokens:,}  "
             f"remaining=~{4096 - est_tokens:,}[/dim]\n"
         )
+
+
+def cmd_eval(args: argparse.Namespace) -> None:
+    """Run eval queries against the LLM and save results."""
+    model_size = args.model_size or load_preferred_model() or "1.5b"
+    model_path = ensure_model(model_size)
+    run_eval(
+        args.label,
+        model_path=model_path,
+        top_k=args.top_k,
+        max_tokens=args.max_tokens,
+        debug=args.debug,
+    )
+
+
+def cmd_compare(args: argparse.Namespace) -> None:
+    """Compare two eval runs side-by-side."""
+    compare_evals(args.label_a, args.label_b)
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +225,37 @@ def main() -> None:
         help="Number of chunks to retrieve (default: 5).",
     )
 
+    eval_parser = _add_command(
+        sub, "eval", help="Run eval queries and save results to JSON."
+    )
+    eval_parser.add_argument(
+        "--label",
+        required=True,
+        help="Label for this eval run (e.g. 'baseline', 'step1').",
+    )
+    eval_parser.add_argument(
+        "--model-size",
+        choices=list(AVAILABLE_MODELS),
+        default=None,
+        help="Model size to use (default: saved preference or 1.5b).",
+    )
+    eval_parser.add_argument(
+        "--top-k", type=int, default=8, help="Chunks to retrieve (default: 8)."
+    )
+    eval_parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=1024,
+        help="Max tokens per response (default: 1024).",
+    )
+    eval_parser.add_argument("--debug", action="store_true", help="Show debug output.")
+
+    compare_parser = _add_command(
+        sub, "compare", help="Compare two eval runs side-by-side."
+    )
+    compare_parser.add_argument("label_a", help="First eval label (baseline).")
+    compare_parser.add_argument("label_b", help="Second eval label (improved).")
+
     args = parser.parse_args()
 
     if args.command == "build":
@@ -211,6 +264,10 @@ def main() -> None:
         cmd_search(args)
     elif args.command == "inspect":
         cmd_inspect(args)
+    elif args.command == "eval":
+        cmd_eval(args)
+    elif args.command == "compare":
+        cmd_compare(args)
     else:
         cmd_help(args)
 

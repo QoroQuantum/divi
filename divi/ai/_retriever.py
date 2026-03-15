@@ -4,7 +4,9 @@
 
 """Dense retrieval via FAISS (semantic similarity)."""
 
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
+from pathlib import Path
 
 import faiss
 import numpy as np
@@ -86,3 +88,119 @@ def retrieve(
             top = list(top)
             top[-1] = best_py
     return top
+
+
+# ---------------------------------------------------------------------------
+# Two-stage enrichment — replace docstring-only chunks with full source
+# ---------------------------------------------------------------------------
+
+# Matches chunks that end with a closing docstring and nothing else after it.
+_DOCSTRING_ONLY_RE = re.compile(r'"""\s*$')
+
+
+def _find_repo_root() -> Path | None:
+    """Walk up from this file to find the git repository root."""
+    current = Path(__file__).resolve().parent
+    for parent in (current, *current.parents):
+        if (parent / ".git").exists():
+            return parent
+    return None
+
+
+def _resolve_source_path(source_file: str, repo_root: Path | None) -> Path | None:
+    """Try to resolve a source_file string to an existing Path."""
+    p = Path(source_file)
+    if p.is_file():
+        return p
+    if repo_root is None:
+        return None
+    # Try stripping absolute prefix to get a repo-relative path
+    # e.g. /home/.../divi/divi/qprog/vqe.py → divi/qprog/vqe.py
+    marker = "divi/"
+    idx = source_file.find(marker)
+    if idx >= 0:
+        rel = source_file[idx:]
+        candidate = repo_root / rel
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def enrich_chunks(
+    chunks: list[RetrievedChunk],
+    *,
+    max_enrich: int = 3,
+    max_chars: int = 1500,
+    max_total_chars: int = 16000,
+) -> list[RetrievedChunk]:
+    """Replace docstring-only chunks with full source code from disk.
+
+    For the top *max_enrich* chunks that appear to contain only a
+    function/class signature + docstring (no implementation body),
+    read the actual source file and substitute the full code.
+
+    Parameters
+    ----------
+    chunks:
+        Retrieved chunks, sorted by score (highest first).
+    max_enrich:
+        Maximum number of chunks to attempt enrichment on.
+    max_chars:
+        Maximum character length for an enriched chunk (skip if bigger).
+    max_total_chars:
+        Budget for total context characters — drop lowest-scored
+        chunks if exceeded after enrichment.
+
+    Returns
+    -------
+    list[RetrievedChunk]
+        The (possibly enriched) chunk list.
+    """
+    repo_root = _find_repo_root()
+    result = list(chunks)
+    enriched = 0
+
+    for i, chunk in enumerate(result):
+        if enriched >= max_enrich:
+            break
+        if not chunk.source_file.endswith(".py"):
+            continue
+        # Only enrich docstring-only chunks (signature + docstring, no body)
+        if not _DOCSTRING_ONLY_RE.search(chunk.text):
+            continue
+
+        path = _resolve_source_path(chunk.source_file, repo_root)
+        if path is None:
+            continue
+
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines(
+                keepends=True
+            )
+        except OSError:
+            continue
+
+        start = max(0, chunk.start_line - 1)
+        end = min(len(lines), chunk.end_line)
+        source_text = "".join(lines[start:end]).strip()
+
+        if not source_text or len(source_text) > max_chars:
+            continue
+
+        # Preserve the [Function: ...] / [Class: ...] prefix line
+        prefix_match = re.match(r"^\[(?:Function|Class|Module): [^\]]+\]\n", chunk.text)
+        prefix = prefix_match.group(0) if prefix_match else ""
+
+        result[i] = replace(
+            chunk,
+            text=prefix + source_text,
+        )
+        enriched += 1
+
+    # Budget guard: drop lowest-scored chunks if total is too large
+    total = sum(len(c.text) for c in result)
+    while total > max_total_chars and len(result) > 1:
+        dropped = result.pop()
+        total -= len(dropped.text)
+
+    return result

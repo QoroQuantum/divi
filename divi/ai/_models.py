@@ -8,10 +8,13 @@ Handles downloading quantised GGUF models from HuggingFace Hub and caching
 them locally so they only need to be fetched once.
 """
 
+import io
+from contextlib import redirect_stderr
 from dataclasses import dataclass
 from pathlib import Path
 
 from huggingface_hub import hf_hub_download
+from llama_cpp import Llama
 from rich.console import Console
 from rich.prompt import Prompt
 from rich.table import Table
@@ -38,21 +41,13 @@ class ModelSpec:
 
 
 AVAILABLE_MODELS: dict[str, ModelSpec] = {
-    "0.5b": ModelSpec(
-        label="0.5B",
-        repo_id="Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF",
-        filename="qwen2.5-coder-0.5b-instruct-q4_k_m.gguf",
-        size_gb=0.4,
-        ram_gb=1.0,
-        description="Very fast, basic quality",
-    ),
     "1.5b": ModelSpec(
         label="1.5B",
         repo_id="Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
         filename="qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
         size_gb=1.0,
         ram_gb=2.0,
-        description="Good balance of quality and speed",
+        description="Basic quality, fastest",
     ),
     "3b": ModelSpec(
         label="3B",
@@ -60,45 +55,19 @@ AVAILABLE_MODELS: dict[str, ModelSpec] = {
         filename="qwen2.5-coder-3b-instruct-q4_k_m.gguf",
         size_gb=1.9,
         ram_gb=3.0,
-        description="Better reasoning, moderate speed",
+        description="Balanced quality and speed",
+    ),
+    "7b": ModelSpec(
+        label="7B",
+        repo_id="Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+        filename="qwen2.5-coder-7b-instruct-q4_k_m.gguf",
+        size_gb=4.5,
+        ram_gb=6.0,
+        description="Best quality, needs 6 GB+ RAM",
     ),
 }
 
-DEFAULT_MODEL_SIZE = "1.5b"
-
-_LOCAL_GGUF_SUBPATH = Path("finetune") / "divi-ai-ft" / "merged_gguf"
-
-# ---------------------------------------------------------------------------
-# Local fine-tune detection
-# ---------------------------------------------------------------------------
-
-
-def _find_repo_root() -> Path | None:
-    """Walk up from this file to find the git repository root."""
-    current = Path(__file__).resolve().parent
-    for parent in (current, *current.parents):
-        if (parent / ".git").exists():
-            return parent
-    return None
-
-
-def find_local_gguf() -> Path | None:
-    """Return the path to a locally fine-tuned GGUF, or ``None``.
-
-    Looks for ``*.gguf`` files in ``finetune/divi-ai-ft/merged_gguf/``
-    relative to the repository root.  Only finds models in development
-    installs where the finetune directory exists.
-    """
-    repo_root = _find_repo_root()
-    if repo_root is None:
-        return None
-    gguf_dir = repo_root / _LOCAL_GGUF_SUBPATH
-    if gguf_dir.is_dir():
-        ggufs = sorted(gguf_dir.glob("*.gguf"))
-        if ggufs:
-            return ggufs[0]
-    return None
-
+DEFAULT_MODEL_SIZE = "7b"
 
 # ---------------------------------------------------------------------------
 # Download helpers
@@ -111,7 +80,7 @@ def ensure_model(size: str) -> Path:
     Parameters
     ----------
     size:
-        One of ``"0.5b"``, ``"1.5b"``, ``"3b"``.
+        One of ``"1.5b"``, ``"3b"``, ``"7b"``.
 
     Returns
     -------
@@ -196,3 +165,44 @@ def load_preferred_model() -> str | None:
         if saved in AVAILABLE_MODELS:
             return saved
     return None
+
+
+# ---------------------------------------------------------------------------
+# LLM loading (shared by CLI and eval)
+# ---------------------------------------------------------------------------
+
+_console = Console()
+
+
+def load_llm(model_path: Path, *, debug: bool = False) -> Llama:
+    """Load a GGUF model via llama-cpp-python.
+
+    Parameters
+    ----------
+    model_path:
+        Path to the ``.gguf`` file.
+    debug:
+        If ``True``, print loading messages and keep llama.cpp stderr.
+
+    Returns
+    -------
+    Llama
+        A loaded ``llama_cpp.Llama`` instance ready for inference.
+    """
+    n_ctx = 16384 if "7b" in model_path.stem.lower() else 8192
+
+    if debug:
+        _console.print(f"[dim]Loading model from {model_path} …[/dim]")
+        return Llama(
+            model_path=str(model_path),
+            n_ctx=n_ctx,
+            n_threads=0,
+            verbose=False,
+        )
+    with redirect_stderr(io.StringIO()):
+        return Llama(
+            model_path=str(model_path),
+            n_ctx=n_ctx,
+            n_threads=0,
+            verbose=False,
+        )

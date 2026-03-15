@@ -74,6 +74,9 @@ instance/
 # Sphinx documentation
 docs/_build/
 
+# divi-ai eval results (generated locally)
+divi/ai/_eval_results/
+
 # PyBuilder
 .pybuilder/
 target/

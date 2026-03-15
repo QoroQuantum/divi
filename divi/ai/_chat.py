@@ -15,6 +15,7 @@ from llama_cpp import Llama
 
 from ._indexer import load_project_meta
 from ._retriever import RetrievedChunk
+from ._types import short_source
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -85,25 +86,48 @@ SYSTEM_PROMPT = _build_system_prompt()
 # the lowest valid query ("QAOA max clique") hits 0.59.
 MIN_DENSE_SCORE = 0.55
 
-# Repo-root prefix to strip from absolute paths in context.
-_REPO_MARKER = "Qoro/divi/"
-
-# Keep only the last N conversation turns to avoid exceeding the context window.
-MAX_HISTORY_TURNS = 4
+# Token budget for conversation history.  Keeps prompt size predictable
+# regardless of whether responses are short Q&A or long code blocks.
+MAX_HISTORY_TOKENS = 2048
 
 
 def _trim_history(
-    history: list[dict[str, str]], max_turns: int = MAX_HISTORY_TURNS
+    history: list[dict[str, str]],
+    llm: Llama,
+    max_tokens: int = MAX_HISTORY_TOKENS,
 ) -> list[dict[str, str]]:
-    """Return the last max_turns user/assistant pairs (oldest dropped)."""
-    if len(history) <= max_turns * 2:
-        return history
-    return history[-(max_turns * 2) :]
+    """Keep newest messages that fit within *max_tokens*.
+
+    Walks the history from newest to oldest, accumulating token counts.
+    Stops when adding another message would exceed the budget.  Always
+    keeps messages in pairs (user + assistant) to avoid orphaned turns.
+    """
+    if not history:
+        return []
+
+    # Pre-compute token counts for every message (cheap, no inference).
+    counts = [len(llm.tokenize(m["content"].encode(), add_bos=False)) for m in history]
+
+    # Walk backwards in pairs (assistant, user).
+    total = 0
+    keep_from = len(history)
+    i = len(history) - 1
+    while i >= 1:
+        pair_cost = counts[i] + counts[i - 1]
+        if total + pair_cost > max_tokens:
+            break
+        total += pair_cost
+        keep_from = i - 1
+        i -= 2
+
+    return history[keep_from:]
 
 
-def is_history_trimmed(history: list[dict[str, str]]) -> bool:
-    """True if history has been trimmed (for gentle UX notice)."""
-    return len(history) > MAX_HISTORY_TURNS * 2
+def is_history_trimmed(history: list[dict[str, str]], llm: "Llama") -> bool:
+    """True if history would be trimmed by the token budget."""
+    if not history:
+        return False
+    return len(_trim_history(history, llm)) < len(history)
 
 
 # ---------------------------------------------------------------------------
@@ -151,14 +175,6 @@ def get_hardware_redirect_response(user_query: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _short_source(path: str) -> str:
-    """Strip the repo-root prefix from an absolute source path."""
-    idx = path.find(_REPO_MARKER)
-    if idx >= 0:
-        return path[idx + len(_REPO_MARKER) :]
-    return path
-
-
 def _is_overview_query(query: str) -> bool:
     """True if the user is asking for a high-level list (algorithms, features, etc.)."""
     q = query.lower().strip()
@@ -202,7 +218,7 @@ def _format_context(chunks: list[RetrievedChunk]) -> str:
 
     parts: list[str] = []
     for i, chunk in enumerate(relevant, start=1):
-        source = _short_source(chunk.source_file)
+        source = short_source(chunk.source_file)
         parts.append(f"[{i}] {source}:\n{chunk.text}")
 
     return "\n\n".join(parts)
@@ -212,6 +228,7 @@ def build_prompt(
     chunks: list[RetrievedChunk],
     history: list[dict[str, str]],
     user_query: str,
+    llm: "Llama | None" = None,
 ) -> list[dict[str, str]]:
     """Build a ChatML message list for the LLM.
 
@@ -224,6 +241,8 @@ def build_prompt(
         dicts.
     user_query:
         The current user message.
+    llm:
+        Llama instance used for token-budgeted history trimming.
 
     Returns
     -------
@@ -242,7 +261,8 @@ def build_prompt(
     messages: list[dict[str, str]] = [
         {"role": "system", "content": system_content},
     ]
-    messages.extend(_trim_history(history))
+    if history and llm is not None:
+        messages.extend(_trim_history(history, llm))
     messages.append({"role": "user", "content": user_query})
 
     return messages
@@ -258,6 +278,7 @@ def generate_stream(
     messages: list[dict[str, str]],
     *,
     max_tokens: int = 1024,
+    temperature: float = 0.2,
 ) -> Iterator[str]:
     """Stream tokens from the local LLM.
 
@@ -269,6 +290,8 @@ def generate_stream(
         The ChatML message list from :func:`build_prompt`.
     max_tokens:
         Maximum number of tokens to generate.
+    temperature:
+        Sampling temperature (0.0 = greedy, higher = more creative).
 
     Yields
     ------
@@ -278,7 +301,7 @@ def generate_stream(
     response = llm.create_chat_completion(
         messages=messages,
         max_tokens=max_tokens,
-        temperature=0.2,
+        temperature=temperature,
         top_p=0.9,
         stream=True,
     )
