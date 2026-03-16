@@ -161,7 +161,7 @@ For large optimization problems that exceed quantum hardware limitations, Divi p
 .. code-block:: python
 
    import networkx as nx
-   from divi.qprog import GraphPartitioningQAOA, MaxCutProblem, PartitioningConfig
+   from divi.qprog import GraphPartitioning, MaxCutProblem, PartitioningConfig
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 
    # Create a large graph (too big for single quantum device)
@@ -175,7 +175,7 @@ For large optimization problems that exceed quantum hardware limitations, Divi p
    )
 
    # Create partitioned QAOA solver
-   qaoa_partition = GraphPartitioningQAOA(
+   qaoa_partition = GraphPartitioning(
        problem=MaxCutProblem(large_graph),
        n_layers=3,
        partitioning_config=config,
@@ -232,7 +232,7 @@ For large QUBO problems, Divi integrates with D-Wave's hybrid solvers:
 
    import dimod
    import hybrid
-   from divi.qprog import QUBOPartitioningQAOA
+   from divi.qprog import QUBOPartitioning
 
    # Create large QUBO problem
    large_bqm = dimod.generators.gnp_random_bqm(
@@ -242,7 +242,7 @@ For large QUBO problems, Divi integrates with D-Wave's hybrid solvers:
    )
 
    # Set up hybrid decomposition (QAOA engine, default)
-   qubo_partition = QUBOPartitioningQAOA(
+   qubo_partition = QUBOPartitioning(
        qubo=large_bqm,
        decomposer=hybrid.EnergyImpactDecomposer(size=15),  # Decompose into size-15 chunks
        composer=hybrid.SplatComposer(),                    # Recombine solutions
@@ -269,7 +269,7 @@ arguments (for example ``ansatz``, ``encoding_type``, ``alpha``):
    import pennylane as qml
    from divi.qprog.algorithms import GenericLayerAnsatz
 
-   qubo_partition = QUBOPartitioningQAOA(
+   qubo_partition = QUBOPartitioning(
        qubo=large_bqm,
        decomposer=hybrid.EnergyImpactDecomposer(size=15),
        composer=hybrid.SplatComposer(),
@@ -323,7 +323,7 @@ The ``aggregate_results`` method accepts two parameters:
 Top-N Solutions
 ^^^^^^^^^^^^^^^
 
-Both :class:`~divi.qprog.workflows.GraphPartitioningQAOA` and :class:`~divi.qprog.workflows.QUBOPartitioningQAOA` expose a ``get_top_solutions`` method that returns multiple ranked global solutions using beam search.
+Both :class:`~divi.qprog.workflows.GraphPartitioning` and :class:`~divi.qprog.workflows.QUBOPartitioning` expose a ``get_top_solutions`` method that returns multiple ranked global solutions using beam search.
 
 .. code-block:: python
 

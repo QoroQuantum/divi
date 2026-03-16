@@ -9,7 +9,7 @@ import networkx as nx
 from rich.console import Console
 from rich.table import Table
 
-from divi.qprog import GraphPartitioningQAOA, MaxCutProblem, PartitioningConfig
+from divi.qprog import GraphPartitioning, MaxCutProblem, PartitioningConfig
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from tutorials._backend import get_backend
 
@@ -70,7 +70,7 @@ if __name__ == "__main__":
 
     graph = generate_random_graph(N_NODES, N_EDGES)
 
-    qaoa_batch = GraphPartitioningQAOA(
+    qaoa_batch = GraphPartitioning(
         problem=MaxCutProblem(graph),
         n_layers=1,
         partitioning_config=PartitioningConfig(

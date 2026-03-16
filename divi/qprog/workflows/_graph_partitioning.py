@@ -2,12 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import copy
 import heapq
 import string
 from collections.abc import Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
+from functools import partial
 from typing import Literal
 from warnings import warn
 
@@ -22,7 +22,7 @@ from sklearn.cluster import SpectralClustering
 
 from divi.backends import CircuitRunner
 from divi.hamiltonians import _get_terms_iterable
-from divi.qprog import QAOA, ProgramEnsemble
+from divi.qprog import QAOA, IterativeQAOA
 from divi.qprog.algorithms._initial_state import InitialState
 from divi.qprog.algorithms._problem import (
     EdgePartitioningProblem,
@@ -34,8 +34,10 @@ from divi.qprog.algorithms._problem import (
     _GraphProblemBase,
     draw_graph_solution_nodes,
 )
-from divi.qprog.ensemble import _beam_search_aggregate_top_n
-from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer, copy_optimizer
+from divi.qprog.optimizers import Optimizer
+from divi.qprog.workflows._partitioning_ensemble import (
+    PartitioningProgramEnsemble,
+)
 
 AggregateFn = Callable[
     [list[int], str, nx.Graph | rx.PyGraph, dict[int, int]], list[int]
@@ -463,15 +465,16 @@ def dominance_aggregation(
     return curr_solution
 
 
-class GraphPartitioningQAOA(ProgramEnsemble):
+class GraphPartitioning(PartitioningProgramEnsemble):
     def __init__(
         self,
         problem: Problem,
         n_layers: int,
         backend: CircuitRunner,
         partitioning_config: PartitioningConfig,
+        optimizer: Optimizer,
+        quantum_routine: Literal["qaoa", "iterative_qaoa"] = "qaoa",
         initial_state: InitialState | None = None,
-        optimizer: Optimizer | None = None,
         max_iterations=10,
         **kwargs,
     ):
@@ -485,13 +488,22 @@ class GraphPartitioningQAOA(ProgramEnsemble):
             backend (CircuitRunner): Backend used to run quantum/classical circuits.
             partitioning_config (PartitioningConfig): the configuration of the partitioning as to the algorithm and
             expected output.
+            optimizer (Optimizer): Optimizer to use for each sub-program.
+            quantum_routine (Literal["qaoa", "iterative_qaoa"], optional): Per-partition
+                quantum algorithm.  Defaults to ``"qaoa"``.  When ``"iterative_qaoa"``
+                is selected, ``n_layers`` is used as ``max_depth``.
             initial_state (InitialState | None): Initial state for the QAOA algorithm. Defaults to problem-specific recommendation if None.
-            optimizer (optional): Optimizer to use for QAOA. Defaults to ``MonteCarloOptimizer``.
             max_iterations (int, optional): Maximum number of optimization iterations. Defaults to 10.
             **kwargs: Additional keyword arguments passed to the QAOA constructor.
 
         """
-        super().__init__(backend=backend)
+        super().__init__(
+            backend=backend,
+            quantum_routine=quantum_routine,
+            optimizer=optimizer,
+            max_iterations=max_iterations,
+            **kwargs,
+        )
 
         self._full_problem = problem
         self.main_graph = problem.graph
@@ -504,20 +516,32 @@ class GraphPartitioningQAOA(ProgramEnsemble):
             raise ValueError("Provided graph is not fully connected.")
 
         self.partitioning_config = partitioning_config
-        self.max_iterations = max_iterations
-        self._n_layers = n_layers
-        self._initial_state = initial_state
 
         self.solution = None
 
-        # Store the optimizer template (will be copied for each program)
-        self._optimizer_template = (
-            optimizer if optimizer is not None else MonteCarloOptimizer()
-        )
-
-        # Extract early_stopping so each sub-program gets its own copy
-        self._early_stopping_template = kwargs.pop("early_stopping", None)
-        self._extra_kwargs = kwargs
+        routine = self.quantum_routine.lower()
+        if routine == "qaoa":
+            self._constructor = partial(
+                QAOA,
+                initial_state=initial_state,
+                max_iterations=self.max_iterations,
+                backend=self.backend,
+                n_layers=n_layers,
+                **self._engine_kwargs,
+            )
+        elif routine == "iterative_qaoa":
+            self._constructor = partial(
+                IterativeQAOA,
+                initial_state=initial_state,
+                backend=self.backend,
+                max_depth=n_layers,
+                **self._engine_kwargs,
+            )
+        else:
+            raise ValueError(
+                f"Unsupported quantum_routine for GraphPartitioning: {quantum_routine!r}. "
+                "Supported values are 'qaoa' and 'iterative_qaoa'."
+            )
 
     def _warn_if_partitioning_is_risky(self):
         # Check if the problem factory's class is in the compatibility tiers
@@ -585,17 +609,9 @@ class GraphPartitioningQAOA(ProgramEnsemble):
                 _subgraph = nx.relabel_nodes(subgraph, index_map)
                 p = self._full_problem
                 problem = type(p)(_subgraph, is_constrained=p._is_constrained)
-                self._programs[prog_id] = QAOA(
-                    problem,
-                    program_id=prog_id,
-                    initial_state=self._initial_state,
-                    max_iterations=self.max_iterations,
-                    backend=self.backend,
-                    n_layers=self._n_layers,
-                    optimizer=copy_optimizer(self._optimizer_template),
-                    early_stopping=copy.deepcopy(self._early_stopping_template),
-                    progress_queue=self._queue,
-                    **self._extra_kwargs,
+                self._programs[prog_id] = self._constructor(
+                    problem=problem,
+                    **self._make_program_args(prog_id),
                 )
 
     def _extend_solution(self, current_solution, prog_id, candidate):
@@ -627,7 +643,7 @@ class GraphPartitioningQAOA(ProgramEnsemble):
 
         return extended
 
-    def _evaluate_solution(self, solution):
+    def _evaluate_global_solution(self, solution):
         """Evaluate a global solution against the full-graph cost Hamiltonian.
 
         Classically computes the expectation value of the cost Hamiltonian on
@@ -661,89 +677,16 @@ class GraphPartitioningQAOA(ProgramEnsemble):
 
         return energy
 
-    def aggregate_results(self, beam_width=1, n_partition_candidates=None):
-        """
-        Aggregates the results from all QAOA subprograms to form a global solution.
+    def _initial_solution(self):
+        return [0] * self.main_graph.number_of_nodes()
 
-        Uses beam search across the top candidate bitstrings from each partition.
-        The ``beam_width`` parameter controls the search:
-
-        - ``beam_width=1``: Greedy (takes the best candidate per partition).
-        - ``beam_width > 1``: Standard beam search.
-        - ``beam_width=None``: Exhaustive search over all candidate combinations.
-
-        The final solution is stored in ``self.solution`` as a list of node indices
-        assigned to the selected partition.
-
-        Args:
-            beam_width (int | None): Width of the beam search. Defaults to ``1``
-                (greedy).
-            n_partition_candidates (int | None): Number of candidate bitstrings
-                to extract from each partition. Defaults to ``beam_width``.
-
-        Raises:
-            RuntimeError: If no programs exist, if programs have not been run,
-                or if results are incomplete.
-
-        Returns:
-            list[int]: The list of node indices in the final aggregated solution.
-        """
-        super().aggregate_results()
-
-        if any(len(program.best_probs) == 0 for program in self.programs.values()):
-            raise RuntimeError(
-                "Not all final probabilities computed yet. Please call `run()` first."
-            )
-
-        initial_solution = [0] * self.main_graph.number_of_nodes()
-
-        _, best_solution = _beam_search_aggregate_top_n(
-            programs=self._programs,
-            initial_solution=initial_solution,
-            extend_fn=self._extend_solution,
-            evaluate_fn=self._evaluate_solution,
-            beam_width=beam_width,
-            n_partition_candidates=n_partition_candidates,
-        )[0]
-
-        self._bitstring_solution = best_solution
+    def _finalize_best(self, score, solution):
+        self._bitstring_solution = solution
         self.solution = list(np.where(self._bitstring_solution)[0])
-
         return self.solution
 
-    def get_top_solutions(self, n=10, *, beam_width=1, n_partition_candidates=None):
-        """Get the top-N global solutions as lists of selected node indices.
-
-        Args:
-            n (int): Number of solutions to return. Must be >= 1.
-            beam_width (int | None): Beam width for search.
-            n_partition_candidates (int | None): Candidates per partition.
-
-        Returns:
-            list[list[int]]: Each element is a list of node indices in the
-                selected partition, ordered best-first by cost Hamiltonian energy.
-        """
-        if n < 1:
-            raise ValueError(f"n must be >= 1, got {n}")
-
-        self._check_ready_for_aggregation()
-
-        if any(len(program.best_probs) == 0 for program in self.programs.values()):
-            raise RuntimeError(
-                "Not all final probabilities computed yet. Please call `run()` first."
-            )
-
-        top_results = _beam_search_aggregate_top_n(
-            programs=self._programs,
-            initial_solution=[0] * self.main_graph.number_of_nodes(),
-            extend_fn=self._extend_solution,
-            evaluate_fn=self._evaluate_solution,
-            beam_width=beam_width,
-            n_partition_candidates=n_partition_candidates,
-            top_n=n,
-        )
-
-        return [list(np.where(solution)[0]) for _score, solution in top_results]
+    def _format_top_results(self, results):
+        return [list(np.where(solution)[0]) for _score, solution in results]
 
     def draw_partitions(
         self,

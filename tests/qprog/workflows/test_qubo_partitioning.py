@@ -20,7 +20,7 @@ from divi.qprog import (
 from divi.qprog.algorithms import GenericLayerAnsatz
 from divi.qprog.variational_quantum_algorithm import SolutionEntry
 from divi.qprog.workflows._qubo_partitioning import (
-    QUBOPartitioningQAOA,
+    QUBOPartitioning,
     _sanitize_problem_input,
 )
 from tests.qprog.qprog_contracts import verify_basic_program_ensemble_behaviour
@@ -48,10 +48,10 @@ def basic_ansatz() -> GenericLayerAnsatz:
 
 @pytest.fixture
 def qubo_partitioning_qaoa(sample_qubo_matrix, default_test_simulator):
-    """Provides a default QUBOPartitioningQAOA instance for testing."""
+    """Provides a default QUBOPartitioning instance for testing."""
     # A simple decomposer that splits variables into two groups
     decomposer = hybrid.EnergyImpactDecomposer(size=2)
-    return QUBOPartitioningQAOA(
+    return QUBOPartitioning(
         qubo=sample_qubo_matrix,
         decomposer=decomposer,
         n_layers=1,
@@ -63,13 +63,13 @@ def qubo_partitioning_qaoa(sample_qubo_matrix, default_test_simulator):
 
 @pytest.fixture
 def qubo_partitioning_pce(sample_qubo_matrix, basic_ansatz, default_test_simulator):
-    """Provides a QUBOPartitioningQAOA configured to use PCE partitions."""
+    """Provides a QUBOPartitioning configured to use PCE partitions."""
     decomposer = hybrid.EnergyImpactDecomposer(size=2)
-    return QUBOPartitioningQAOA(
+    return QUBOPartitioning(
         qubo=sample_qubo_matrix,
         decomposer=decomposer,
         n_layers=1,
-        engine="pce",
+        quantum_routine="pce",
         ansatz=basic_ansatz,
         optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
         max_iterations=10,
@@ -115,16 +115,17 @@ class TestSanitizeProblemInput:
 
 
 class TestEvaluateSolution:
-    """Tests for QUBOPartitioningQAOA._evaluate_solution."""
+    """Tests for QUBOPartitioning._evaluate_global_solution."""
 
     @staticmethod
     def _make_qaoa(qubo, backend):
-        """Create a minimal QUBOPartitioningQAOA for unit-testing only."""
+        """Create a minimal QUBOPartitioning for unit-testing only."""
         decomposer = hybrid.EnergyImpactDecomposer(size=2)
-        return QUBOPartitioningQAOA(
+        return QUBOPartitioning(
             qubo=qubo,
             decomposer=decomposer,
             n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=1,
             backend=backend,
         )
@@ -141,7 +142,7 @@ class TestEvaluateSolution:
         }
         bqm = dimod.BinaryQuadraticModel.from_qubo(qubo)
         qaoa = self._make_qaoa(bqm, dummy_simulator)
-        energy = qaoa._evaluate_solution([1, 1, 0, 0])
+        energy = qaoa._evaluate_global_solution([1, 1, 0, 0])
         assert energy == pytest.approx(-1.5)
 
     def test_all_zeros(self, dummy_simulator):
@@ -153,7 +154,7 @@ class TestEvaluateSolution:
         }
         bqm = dimod.BinaryQuadraticModel.from_qubo(qubo)
         qaoa = self._make_qaoa(bqm, dummy_simulator)
-        energy = qaoa._evaluate_solution([0, 0])
+        energy = qaoa._evaluate_global_solution([0, 0])
         assert energy == pytest.approx(0.0)
 
     def test_diagonal_qubo(self, dummy_simulator):
@@ -161,7 +162,7 @@ class TestEvaluateSolution:
         qubo = np.diag([-1.0, 2.0, -3.0])
         qaoa = self._make_qaoa(qubo, dummy_simulator)
         # x = [1,0,1] → energy = -1 + 0 + (-3) = -4
-        energy = qaoa._evaluate_solution([1, 0, 1])
+        energy = qaoa._evaluate_global_solution([1, 0, 1])
         assert energy == pytest.approx(-4.0)
 
     def test_lower_energy_is_better(self, dummy_simulator):
@@ -176,24 +177,24 @@ class TestEvaluateSolution:
         }
         bqm = dimod.BinaryQuadraticModel.from_qubo(qubo)
         qaoa = self._make_qaoa(bqm, dummy_simulator)
-        optimal = qaoa._evaluate_solution([1, 1, 0, 0])
-        suboptimal = qaoa._evaluate_solution([1, 0, 0, 0])
-        all_ones = qaoa._evaluate_solution([1, 1, 1, 1])
+        optimal = qaoa._evaluate_global_solution([1, 1, 0, 0])
+        suboptimal = qaoa._evaluate_global_solution([1, 0, 0, 0])
+        all_ones = qaoa._evaluate_global_solution([1, 1, 1, 1])
         assert optimal < suboptimal
         assert optimal < all_ones
 
 
-# --- Test QUBOPartitioningQAOA Class ---
+# --- Test QUBOPartitioning Class ---
 
 
-class TestQUBOPartitioningQAOA:
+class TestQUBOPartitioning:
     def test_correct_initialization(self, qubo_partitioning_qaoa, sample_qubo_matrix):
         assert np.array_equal(qubo_partitioning_qaoa.main_qubo, sample_qubo_matrix)
         assert isinstance(qubo_partitioning_qaoa._bqm, dimod.BinaryQuadraticModel)
         assert isinstance(qubo_partitioning_qaoa._partitioning, hybrid.Unwind)
         assert isinstance(qubo_partitioning_qaoa._aggregating, hybrid.Runnable)
         assert qubo_partitioning_qaoa.max_iterations == 10
-        assert qubo_partitioning_qaoa.engine == "qaoa"
+        assert qubo_partitioning_qaoa.quantum_routine == "qaoa"
 
     def test_create_programs(self, mocker, qubo_partitioning_qaoa):
         # Mock the QAOA constructor to verify it's called correctly
@@ -228,7 +229,7 @@ class TestQUBOPartitioningQAOA:
         self, qubo_partitioning_pce, sample_qubo_matrix
     ):
         assert np.array_equal(qubo_partitioning_pce.main_qubo, sample_qubo_matrix)
-        assert qubo_partitioning_pce.engine == "pce"
+        assert qubo_partitioning_pce.quantum_routine == "pce"
 
     def test_create_programs_pce_creates_pce_programs(self, qubo_partitioning_pce):
         qubo_partitioning_pce.create_programs()
@@ -240,12 +241,13 @@ class TestQUBOPartitioningQAOA:
 
     def test_invalid_engine_raises(self, sample_qubo_matrix, dummy_simulator):
         decomposer = hybrid.EnergyImpactDecomposer(size=2)
-        with pytest.raises(ValueError, match="Unsupported engine"):
-            QUBOPartitioningQAOA(
+        with pytest.raises(ValueError, match="Unsupported quantum_routine"):
+            QUBOPartitioning(
                 qubo=sample_qubo_matrix,
                 decomposer=decomposer,
                 n_layers=1,
-                engine="invalid",
+                optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+                quantum_routine="invalid",
                 backend=dummy_simulator,
             )
 
@@ -272,10 +274,11 @@ class TestQUBOPartitioningQAOA:
         # Decomposer will split this into two trivial problems of size 2.
         decomposer = hybrid.EnergyImpactDecomposer(size=2)
 
-        batch = QUBOPartitioningQAOA(
+        batch = QUBOPartitioning(
             qubo=trivial_qubo,
             decomposer=decomposer,
             n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             backend=dummy_simulator,
         )
 
@@ -336,10 +339,11 @@ class TestQUBOPartitioningQAOA:
         bqm = dimod.BinaryQuadraticModel.from_qubo(qubo)
         decomposer = hybrid.EnergyImpactDecomposer(size=2)
 
-        batch = QUBOPartitioningQAOA(
+        batch = QUBOPartitioning(
             qubo=bqm,
             decomposer=decomposer,
             n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=1,
             backend=dummy_simulator,
         )
@@ -443,7 +447,9 @@ class TestQUBOPartitioningQAOA:
         # Decomposer to split into two problems of size 2
         decomposer = hybrid.EnergyImpactDecomposer(size=2)
 
-        batch = QUBOPartitioningQAOA(
+        default_test_simulator.set_seed(1997)
+
+        batch = QUBOPartitioning(
             qubo=bqm,
             decomposer=decomposer,
             n_layers=2,
@@ -480,11 +486,13 @@ class TestQUBOPartitioningQAOA:
         bqm = dimod.BinaryQuadraticModel.from_qubo(qubo)
         decomposer = hybrid.EnergyImpactDecomposer(size=2)
 
-        batch = QUBOPartitioningQAOA(
+        default_test_simulator.set_seed(1997)
+
+        batch = QUBOPartitioning(
             qubo=bqm,
             decomposer=decomposer,
             n_layers=2,
-            engine="pce",
+            quantum_routine="pce",
             ansatz=basic_ansatz,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             max_iterations=15,
@@ -504,15 +512,16 @@ class TestQUBOPartitioningQAOA:
 
 
 class TestExtendSolutionQUBO:
-    """Tests for QUBOPartitioningQAOA._extend_solution."""
+    """Tests for QUBOPartitioning._extend_solution."""
 
     @staticmethod
     def _make_instance(qubo, backend):
         decomposer = hybrid.EnergyImpactDecomposer(size=2)
-        return QUBOPartitioningQAOA(
+        return QUBOPartitioning(
             qubo=qubo,
             decomposer=decomposer,
             n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=1,
             backend=backend,
         )
@@ -611,15 +620,16 @@ class TestExtendSolutionQUBO:
 
 
 class TestComposeSolutionQUBO:
-    """Tests for QUBOPartitioningQAOA._compose_solution."""
+    """Tests for QUBOPartitioning._compose_solution."""
 
     @staticmethod
     def _make_instance(qubo, backend):
         decomposer = hybrid.EnergyImpactDecomposer(size=2)
-        return QUBOPartitioningQAOA(
+        return QUBOPartitioning(
             qubo=qubo,
             decomposer=decomposer,
             n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=1,
             backend=backend,
         )
