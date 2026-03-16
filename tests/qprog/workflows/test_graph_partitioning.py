@@ -20,7 +20,7 @@ import pytest
 
 from divi.backends import CircuitRunner
 from divi.qprog import (
-    GraphPartitioningQAOA,
+    GraphPartitioning,
     MaxCliqueProblem,
     MaxCutProblem,
     MaxIndependentSetProblem,
@@ -492,7 +492,7 @@ class TestAggregationFunctions:
 
 
 class TestEvaluateSolution:
-    """Tests for GraphPartitioningQAOA._evaluate_solution.
+    """Tests for GraphPartitioning._evaluate_global_solution.
 
     Uses small graphs with analytically-known MaxCut energies so we can
     verify the Hamiltonian evaluation is correct.
@@ -500,8 +500,8 @@ class TestEvaluateSolution:
 
     @staticmethod
     def _make_qaoa(graph, backend, problem_cls=MaxCutProblem):
-        """Create a minimal GraphPartitioningQAOA for unit-testing only."""
-        return GraphPartitioningQAOA(
+        """Create a minimal GraphPartitioning for unit-testing only."""
+        return GraphPartitioning(
             problem=problem_cls(graph),
             n_layers=1,
             partitioning_config=PartitioningConfig(minimum_n_clusters=1),
@@ -515,28 +515,28 @@ class TestEvaluateSolution:
         graph = nx.cycle_graph(4)
         qaoa = self._make_qaoa(graph, dummy_simulator)
         # [1,0,1,0] cuts all 4 edges
-        energy = qaoa._evaluate_solution([1, 0, 1, 0])
+        energy = qaoa._evaluate_global_solution([1, 0, 1, 0])
         assert energy == pytest.approx(-4.0)
 
     def test_no_cut_all_zeros(self, dummy_simulator):
         """All-zero assignment cuts nothing."""
         graph = nx.cycle_graph(4)
         qaoa = self._make_qaoa(graph, dummy_simulator)
-        energy = qaoa._evaluate_solution([0, 0, 0, 0])
+        energy = qaoa._evaluate_global_solution([0, 0, 0, 0])
         assert energy == pytest.approx(0.0)
 
     def test_no_cut_all_ones(self, dummy_simulator):
         """All-one assignment cuts nothing."""
         graph = nx.cycle_graph(4)
         qaoa = self._make_qaoa(graph, dummy_simulator)
-        energy = qaoa._evaluate_solution([1, 1, 1, 1])
+        energy = qaoa._evaluate_global_solution([1, 1, 1, 1])
         assert energy == pytest.approx(0.0)
 
     def test_partial_cut_on_4_cycle(self, dummy_simulator):
         """[1,1,0,0] on a 4-cycle cuts edges (0,3) and (1,2) = 2 cut edges."""
         graph = nx.cycle_graph(4)
         qaoa = self._make_qaoa(graph, dummy_simulator)
-        energy = qaoa._evaluate_solution([1, 1, 0, 0])
+        energy = qaoa._evaluate_global_solution([1, 1, 0, 0])
         assert energy == pytest.approx(-2.0)
 
     def test_weighted_graph(self, dummy_simulator):
@@ -546,7 +546,7 @@ class TestEvaluateSolution:
         graph.add_edge(1, 2, weight=5.0)
         qaoa = self._make_qaoa(graph, dummy_simulator)
         # [1,0,1] cuts both edges
-        energy = qaoa._evaluate_solution([1, 0, 1])
+        energy = qaoa._evaluate_global_solution([1, 0, 1])
         assert energy == pytest.approx(-2.0)
 
     def test_triangle_graph(self, dummy_simulator):
@@ -554,25 +554,25 @@ class TestEvaluateSolution:
         graph = nx.complete_graph(3)
         qaoa = self._make_qaoa(graph, dummy_simulator)
         # [1,0,0] cuts edges (0,1) and (0,2) = 2 cut edges
-        energy = qaoa._evaluate_solution([1, 0, 0])
+        energy = qaoa._evaluate_global_solution([1, 0, 0])
         assert energy == pytest.approx(-2.0)
 
     def test_lower_energy_means_more_cuts(self, dummy_simulator):
         """Verify that more cuts produce lower (more negative) energy."""
         graph = nx.cycle_graph(4)
         qaoa = self._make_qaoa(graph, dummy_simulator)
-        no_cut = qaoa._evaluate_solution([0, 0, 0, 0])
-        partial_cut = qaoa._evaluate_solution([1, 1, 0, 0])
-        perfect_cut = qaoa._evaluate_solution([1, 0, 1, 0])
+        no_cut = qaoa._evaluate_global_solution([0, 0, 0, 0])
+        partial_cut = qaoa._evaluate_global_solution([1, 1, 0, 0])
+        perfect_cut = qaoa._evaluate_global_solution([1, 0, 1, 0])
         assert no_cut > partial_cut > perfect_cut
 
 
 @pytest.fixture
 def node_partitioning_qaoa(problem_args):
-    return GraphPartitioningQAOA(**problem_args)
+    return GraphPartitioning(**problem_args)
 
 
-class TestGraphPartitioningQAOA:
+class TestGraphPartitioning:
     def test_verify_basic_behaviour(self, mocker, node_partitioning_qaoa):
         verify_basic_program_ensemble_behaviour(mocker, node_partitioning_qaoa)
 
@@ -584,7 +584,7 @@ class TestGraphPartitioningQAOA:
         args["problem"] = MaxCutProblem(disconnected_graph)
 
         with pytest.raises(ValueError, match="Provided graph is not fully connected."):
-            GraphPartitioningQAOA(**args)
+            GraphPartitioning(**args)
 
     def test_warns_with_high_risk_message_for_cycle_based_problem(self, problem_args):
         # MaxWeightCycle requires a weighted directed graph
@@ -599,7 +599,7 @@ class TestGraphPartitioningQAOA:
             UserWarning,
             match="High-risk graph partitioning objective:.*MaxWeightCycleProblem",
         ):
-            GraphPartitioningQAOA(**args)
+            GraphPartitioning(**args)
 
     @pytest.mark.parametrize(
         "problem_cls,expected_name",
@@ -619,12 +619,12 @@ class TestGraphPartitioningQAOA:
             UserWarning,
             match=("Heuristic-risk graph partitioning objective:" f".*{expected_name}"),
         ):
-            GraphPartitioningQAOA(**args)
+            GraphPartitioning(**args)
 
     def test_does_not_warn_for_maxcut_partitioning(self, problem_args):
         with warnings.catch_warnings(record=True) as captured_warnings:
             warnings.simplefilter("always")
-            GraphPartitioningQAOA(**problem_args)
+            GraphPartitioning(**problem_args)
 
         assert len(captured_warnings) == 0
 
@@ -745,7 +745,7 @@ class TestGraphPartitioningQAOA:
 
         # Results should be sorted by energy (lower = more cut edges = better)
         energies = [
-            node_partitioning_qaoa._evaluate_solution(
+            node_partitioning_qaoa._evaluate_global_solution(
                 [1 if i in r else 0 for i in range(n_nodes)]
             )
             for r in results
@@ -838,7 +838,7 @@ class TestGraphPartitioningQAOA:
         graph = nx.path_graph(4)  # Nodes 0, 1, 2, 3
         args = problem_args.copy()
         args["problem"] = MaxCutProblem(graph)
-        qaoa_instance = GraphPartitioningQAOA(**args)
+        qaoa_instance = GraphPartitioning(**args)
 
         # Mock the partitioning to return two specific subgraphs
         partition1 = graph.subgraph([0, 1])
@@ -896,17 +896,18 @@ class TestGraphPartitioningQAOA:
 
 
 class TestExtendSolutionGraph:
-    """Tests for GraphPartitioningQAOA._extend_solution."""
+    """Tests for GraphPartitioning._extend_solution."""
 
     def test_sets_selected_nodes_and_zeroes_others(self, dummy_simulator):
         """Candidate's decoded nodes are set to 1; other partition nodes reset to 0."""
         graph = nx.path_graph(6)  # nodes 0-5
-        qaoa = GraphPartitioningQAOA(
+        qaoa = GraphPartitioning(
             problem=MaxCutProblem(graph),
             n_layers=1,
             partitioning_config=PartitioningConfig(
                 minimum_n_clusters=2, partitioning_algorithm="spectral"
             ),
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             backend=dummy_simulator,
         )
         qaoa.create_programs()
@@ -932,12 +933,13 @@ class TestExtendSolutionGraph:
     def test_resets_partition_positions_before_applying(self, dummy_simulator):
         """Pre-existing 1s in the partition's positions are cleared first."""
         graph = nx.path_graph(6)
-        qaoa = GraphPartitioningQAOA(
+        qaoa = GraphPartitioning(
             problem=MaxCutProblem(graph),
             n_layers=1,
             partitioning_config=PartitioningConfig(
                 minimum_n_clusters=2, partitioning_algorithm="spectral"
             ),
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             backend=dummy_simulator,
         )
         qaoa.create_programs()
@@ -959,12 +961,13 @@ class TestExtendSolutionGraph:
     def test_does_not_mutate_input(self, dummy_simulator):
         """_extend_solution returns a new list, not a mutation of the input."""
         graph = nx.path_graph(4)
-        qaoa = GraphPartitioningQAOA(
+        qaoa = GraphPartitioning(
             problem=MaxCutProblem(graph),
             n_layers=1,
             partitioning_config=PartitioningConfig(
                 minimum_n_clusters=2, partitioning_algorithm="spectral"
             ),
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             backend=dummy_simulator,
         )
         qaoa.create_programs()

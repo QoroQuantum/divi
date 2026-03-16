@@ -405,12 +405,12 @@ iterations to deeper circuits:
 Graph Partitioning QAOA
 -----------------------
 
-For large graphs that exceed quantum hardware limitations, use GraphPartitioningQAOA:
+For large graphs that exceed quantum hardware limitations, use GraphPartitioning:
 
 .. code-block:: python
 
    import networkx as nx
-   from divi.qprog import GraphPartitioningQAOA, MaxCutProblem, PartitioningConfig
+   from divi.qprog import GraphPartitioning, MaxCutProblem, PartitioningConfig
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
@@ -424,7 +424,7 @@ For large graphs that exceed quantum hardware limitations, use GraphPartitioning
        partitioning_algorithm="metis"       # Algorithm: "spectral", "metis", or "kernighan_lin"
    )
 
-   qaoa_partition = GraphPartitioningQAOA(
+   qaoa_partition = GraphPartitioning(
        problem=MaxCutProblem(large_graph),
        n_layers=2,
        partitioning_config=config,
@@ -445,7 +445,7 @@ For large graphs that exceed quantum hardware limitations, use GraphPartitioning
 QUBO Partitioning (QAOA or PCE)
 -------------------------------
 
-For large QUBO problems, use ``QUBOPartitioningQAOA`` with D-Wave's hybrid library.
+For large QUBO problems, use ``QUBOPartitioning`` with D-Wave's hybrid library.
 You can choose the per-partition engine via ``engine``:
 
 - ``engine="qaoa"`` (default): standard QAOA partitions.
@@ -460,14 +460,14 @@ QAOA partitions:
 
    import dimod
    import hybrid
-   from divi.qprog import QUBOPartitioningQAOA
+   from divi.qprog import QUBOPartitioning
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
    # Large QUBO problem
    large_bqm = dimod.generators.gnp_random_bqm(25, 0.5, vartype="BINARY")
 
-   qubo_partition = QUBOPartitioningQAOA(
+   qubo_partition = QUBOPartitioning(
        qubo=large_bqm,
        decomposer=hybrid.EnergyImpactDecomposer(size=5),
        composer=hybrid.SplatComposer(),
@@ -493,14 +493,14 @@ PCE partitions:
    import dimod
    import hybrid
    import pennylane as qml
-   from divi.qprog import QUBOPartitioningQAOA
+   from divi.qprog import QUBOPartitioning
    from divi.qprog.algorithms import GenericLayerAnsatz
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
    large_bqm = dimod.generators.gnp_random_bqm(25, 0.5, vartype="BINARY")
 
-   qubo_partition = QUBOPartitioningQAOA(
+   qubo_partition = QUBOPartitioning(
        qubo=large_bqm,
        decomposer=hybrid.EnergyImpactDecomposer(size=5),
        engine="pce",
@@ -523,13 +523,13 @@ Iterative QAOA partitions:
 
    import dimod
    import hybrid
-   from divi.qprog import InterpolationStrategy, QUBOPartitioningQAOA
+   from divi.qprog import InterpolationStrategy, QUBOPartitioning
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
    large_bqm = dimod.generators.gnp_random_bqm(25, 0.5, vartype="BINARY")
 
-   qubo_partition = QUBOPartitioningQAOA(
+   qubo_partition = QUBOPartitioning(
        qubo=large_bqm,
        decomposer=hybrid.EnergyImpactDecomposer(size=5),
        engine="iterative_qaoa",

@@ -293,7 +293,7 @@ Divi provides workflow classes for managing large-scale quantum computations, in
    :members:
    :undoc-members:
    :show-inheritance:
-   :exclude-members: VQEHyperparameterSweep, MoleculeTransformer, GraphPartitioningQAOA, PartitioningConfig, QUBOPartitioningQAOA
+   :exclude-members: VQEHyperparameterSweep, MoleculeTransformer, GraphPartitioning, PartitioningConfig, QUBOPartitioning
 
 VQE Hyperparameter Sweep
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -315,7 +315,7 @@ VQE Hyperparameter Sweep
 Graph Partitioning QAOA
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-.. autoclass:: divi.qprog.workflows.GraphPartitioningQAOA
+.. autoclass:: divi.qprog.workflows.GraphPartitioning
    :members:
    :undoc-members:
    :show-inheritance:
@@ -332,7 +332,7 @@ Graph Partitioning QAOA
 QUBO Partitioning QAOA
 ~~~~~~~~~~~~~~~~~~~~~~
 
-.. autoclass:: divi.qprog.workflows.QUBOPartitioningQAOA
+.. autoclass:: divi.qprog.workflows.QUBOPartitioning
    :members:
    :undoc-members:
    :show-inheritance:

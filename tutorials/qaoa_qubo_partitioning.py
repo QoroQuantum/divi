@@ -9,7 +9,7 @@ import hybrid
 import numpy as np
 import pennylane as qml
 
-from divi.qprog import EarlyStopping, QUBOPartitioningQAOA
+from divi.qprog import EarlyStopping, QUBOPartitioning
 from divi.qprog.algorithms import GenericLayerAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from tutorials._backend import get_backend
@@ -19,11 +19,11 @@ def _run_partitioning_engine(
     bqm: dimod.BinaryQuadraticModel, engine: str, engine_kwargs: dict
 ) -> dict:
     """Run one partitioning engine and return comparable metrics."""
-    qubo_partition = QUBOPartitioningQAOA(
+    qubo_partition = QUBOPartitioning(
         qubo=bqm,
         decomposer=hybrid.EnergyImpactDecomposer(size=5),
         composer=hybrid.SplatComposer(),
-        engine=engine,
+        quantum_routine=engine,
         n_layers=2,
         optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
         max_iterations=30,
@@ -67,10 +67,12 @@ if __name__ == "__main__":
     )
 
     results_by_engine = {
-        "qaoa": _run_partitioning_engine(bqm=bqm, engine="qaoa", engine_kwargs={}),
+        "qaoa": _run_partitioning_engine(
+            bqm=bqm, quantum_routine="qaoa", engine_kwargs={}
+        ),
         "pce": _run_partitioning_engine(
             bqm=bqm,
-            engine="pce",
+            quantum_routine="pce",
             engine_kwargs={
                 "ansatz": GenericLayerAnsatz([qml.RY, qml.RZ]),
                 "encoding_type": "dense",
