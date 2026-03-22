@@ -96,3 +96,9 @@ When adding new examples:
 2. Add clear docstrings explaining the example's purpose
 3. Include expected output in comments
 4. Update this README with a brief description
+5. **Register in `_ci_runner.py`**: All tutorials are executed in CI to catch regressions — if a code change breaks a tutorial, the pipeline fails. To keep CI fast, tutorials run with reduced parameters (fewer iterations, smaller problems, lower shots). The runner copies tutorials to a temp directory, applies string patches, and runs them in parallel with per-tutorial timeouts.
+
+   Every non-underscore `.py` file must appear in exactly one of these three lists (validated at startup):
+   - `SKIP` — tutorials that cannot run in CI (e.g. need API keys)
+   - `NO_PATCHES` — tutorials that run as-is (shots capped by `DIVI_CI_MAX_SHOTS`)
+   - `TUTORIALS` — tutorials that need source patches (e.g. fewer iterations, smaller problems) and/or custom timeouts

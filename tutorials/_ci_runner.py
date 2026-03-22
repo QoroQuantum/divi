@@ -146,6 +146,14 @@ TUTORIALS: dict[str, dict] = {
             ("max_iterations=15", "max_iterations=5"),
         ],
     },
+    "iterative_qaoa.py": {
+        "timeout_seconds": 180,
+        "patches": [
+            ("MAX_DEPTH = 8", "MAX_DEPTH = 3"),
+            ("ITERS_PER_DEPTH = 15", "ITERS_PER_DEPTH = 5"),
+            ("SHOTS = 10000", "SHOTS = 500"),
+        ],
+    },
 }
 
 # ---------------------------------------------------------------------------
