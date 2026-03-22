@@ -419,16 +419,16 @@ Divi automatically optimizes parallel execution based on your backend and proble
 .. code-block:: python
 
    import os
-   from divi.backends import ParallelSimulator
+   from divi.backends import QiskitSimulator
    # Optimize for local execution
-   backend = ParallelSimulator(
+   backend = QiskitSimulator(
        n_processes=min(8, os.cpu_count()),  # Use available cores
        shots=1000,                          # Balance speed vs accuracy
        simulation_seed=42                   # Reproducible results
    )
 
    # For memory-intensive problems
-   backend = ParallelSimulator(
+   backend = QiskitSimulator(
        n_processes=2,        # Fewer processes to reduce memory usage
        shots=10000,         # More shots for better statistics
        qiskit_backend="statevector_simulator"  # Memory efficient
@@ -523,7 +523,7 @@ call.
 - **Cloud backends** (:class:`~divi.backends.QoroService`): batching reduces
   the number of API calls, authentication round-trips, and polling loops.
   This is the primary use case.
-- **Local simulators** (:class:`~divi.backends.ParallelSimulator`): batching
+- **Local simulators** (:class:`~divi.backends.QiskitSimulator`): batching
   adds synchronization overhead for no network benefit. The simulator already
   parallelizes circuits internally.
 
@@ -571,7 +571,7 @@ Performance Optimization
 .. code-block:: python
 
    # For memory-constrained systems
-   backend = ParallelSimulator(
+   backend = QiskitSimulator(
        n_processes=1,    # Single process to minimize memory
        shots=1000        # Reduce shots to save memory
    )
@@ -596,9 +596,9 @@ Performance Optimization
 .. code-block:: python
 
    import os
-   from divi.backends import ParallelSimulator, QoroService
+   from divi.backends import QiskitSimulator, QoroService
    # Balance speed vs accuracy
-   backend = ParallelSimulator(
+   backend = QiskitSimulator(
        n_processes=max(1, os.cpu_count() // 2),  # Use half available cores
        shots=2000,                               # Good balance of speed/accuracy
        qiskit_backend="qasm_simulator"          # Fastest simulator

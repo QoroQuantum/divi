@@ -23,7 +23,7 @@ from divi.backends import (
     CircuitRunner,
     JobConfig,
     MaestroSimulator,
-    ParallelSimulator,
+    QiskitSimulator,
     QoroService,
 )
 
@@ -72,16 +72,16 @@ def get_backend(
     Args:
         shots: Number of measurement shots (used by both backends).
         track_depth: If True, record circuit depth for each submitted batch.
-        force_sampling: If True, disable expval mode on ``ParallelSimulator``
+        force_sampling: If True, disable expval mode on ``QiskitSimulator``
             and ``QoroService``, forcing shot-based sampling instead.
             Ignored for ``MaestroSimulator``.
-        **kwargs: Extra keyword arguments forwarded to ``ParallelSimulator``
+        **kwargs: Extra keyword arguments forwarded to ``QiskitSimulator``
             (e.g. ``n_processes``, ``qiskit_backend``).
             These are silently ignored when ``--maestro`` or
             ``--maestro-local`` is selected.
 
     Returns:
-        A ``ParallelSimulator`` (``--local``, default),
+        A ``QiskitSimulator`` (``--local``, default),
         ``MaestroSimulator`` (``--maestro-local``), or
         ``QoroService`` (``--maestro``) instance.
     """
@@ -101,6 +101,6 @@ def get_backend(
     if cli.mode == "maestro-local":
         return MaestroSimulator(shots=shots, track_depth=track_depth)
 
-    return ParallelSimulator(
+    return QiskitSimulator(
         shots=shots, track_depth=track_depth, force_sampling=force_sampling, **kwargs
     )

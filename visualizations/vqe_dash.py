@@ -9,7 +9,7 @@ from dash import Dash, Input, Output, callback_context, dcc, html
 from dash.exceptions import PreventUpdate
 from qiskit_ibm_runtime.fake_provider import FakeQuitoV2
 
-from divi.backends import ParallelSimulator
+from divi.backends import QiskitSimulator
 from divi.qprog import (
     HartreeFockAnsatz,
     ScipyMethod,
@@ -92,8 +92,8 @@ OPTIMIZER = ScipyOptimizer(method=ScipyMethod.NELDER_MEAD)
 MAX_ITERATIONS = 5
 
 # backend = QoroService("71ec99c9c94cf37499a2b725244beac1f51b8ee4", shots=500)
-exact_backend = ParallelSimulator(shots=500)
-noisy_backend = ParallelSimulator(shots=500, qiskit_backend="auto")
+exact_backend = QiskitSimulator(shots=500)
+noisy_backend = QiskitSimulator(shots=500, qiskit_backend="auto")
 
 args = dict(
     symbols=["H", "H"],
@@ -200,7 +200,7 @@ def run_vqe(noiseless_clicks, noisy_clicks, zne_clicks):
         )
 
     durations = [
-        ParallelSimulator.estimate_run_time_single_circuit(
+        QiskitSimulator.estimate_run_time_single_circuit(
             circuit, qiskit_backend=FakeQuitoV2()
         )
         for circuit in qasm_circuits
@@ -208,7 +208,7 @@ def run_vqe(noiseless_clicks, noisy_clicks, zne_clicks):
     qpu_range = tuple(range(1, 10))
 
     run_times = [
-        ParallelSimulator.estimate_run_time_batch(
+        QiskitSimulator.estimate_run_time_batch(
             precomputed_duration=durations, n_qpus=i
         )
         for i in qpu_range
@@ -307,7 +307,7 @@ def run_vqe(noiseless_clicks, noisy_clicks, zne_clicks):
 #         )
 #         qasm_circuits = [dumps(circuit) for circuit in zne_vqe_problem.zne_circuits]
 #         qpu_list = [i for i in range(1, 10)]
-#         simulators = [ParallelSimulator(n_processes=2, qpus=i) for i in qpu_list]
+#         simulators = [QiskitSimulator(n_processes=2, qpus=i) for i in qpu_list]
 #         run_times = [
 #             simulator.estimate_run_time_single_circuit(qasm_circuits)
 #             for simulator in simulators

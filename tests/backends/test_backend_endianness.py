@@ -4,14 +4,14 @@
 
 """Cross-backend endianness tests.
 
-Run the same circuits on ParallelSimulator and QoroService and verify result
+Run the same circuits on QiskitSimulator and QoroService and verify result
 bitstrings (and for deterministic circuits, full counts) are equivalent.
-ParallelSimulator is the ground truth.
+QiskitSimulator is the ground truth.
 """
 
 import pytest
 
-from divi.backends import JobConfig, JobStatus, ParallelSimulator, QoroService
+from divi.backends import JobConfig, JobStatus, QiskitSimulator, QoroService
 
 
 def _circuit_deterministic_2q(bitstring: str) -> str:
@@ -66,7 +66,7 @@ def _circuit_superposition_2q() -> str:
 
 
 @pytest.mark.requires_api_key
-def test_qoro_service_and_parallel_simulator_produce_equivalent_bitstrings(api_key):
+def test_qoro_service_and_qiskit_simulator_produce_equivalent_bitstrings(api_key):
     """Run the same circuits on both backends; verify bitstrings and counts match."""
     circuits = {
         "det_01": _circuit_deterministic_2q("01"),
@@ -78,7 +78,7 @@ def test_qoro_service_and_parallel_simulator_produce_equivalent_bitstrings(api_k
     }
     shots = 1000
 
-    sim_result = ParallelSimulator(
+    sim_result = QiskitSimulator(
         shots=shots,
         simulation_seed=42,
         _deterministic_execution=True,
@@ -107,14 +107,14 @@ def test_qoro_service_and_parallel_simulator_produce_equivalent_bitstrings(api_k
         if sim_item["label"] in deterministic_labels:
             assert sim_counts == qoro_counts, (
                 f"Deterministic circuit {sim_item['label']!r}: counts must match exactly. "
-                f"ParallelSimulator {sim_counts} vs QoroService {qoro_counts}"
+                f"QiskitSimulator {sim_counts} vs QoroService {qoro_counts}"
             )
         else:
             sim_bitstrings = set(sim_counts.keys())
             qoro_bitstrings = set(qoro_counts.keys())
             assert sim_bitstrings == qoro_bitstrings, (
                 f"Bitstring sets differ for {sim_item['label']!r}: "
-                f"ParallelSimulator {sim_bitstrings} vs QoroService {qoro_bitstrings}"
+                f"QiskitSimulator {sim_bitstrings} vs QoroService {qoro_bitstrings}"
             )
 
     qoro_service.delete_job(qoro_result)

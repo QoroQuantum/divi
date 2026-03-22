@@ -132,7 +132,7 @@ Backend Options
 ---------------
 
 **Local Development** 💻
-   Use :class:`MaestroSimulator` (shown in all examples above) for fast iteration and testing. For noisy simulation, use :class:`ParallelSimulator` with Qiskit noise models.
+   Use :class:`MaestroSimulator` (shown in all examples above) for fast iteration and testing. For noisy simulation, use :class:`QiskitSimulator` with Qiskit noise models.
 
 **Cloud Simulation & Hardware** ☁️
    Access scalable cloud simulators (statevector, tensor-network, and more) through :class:`QoroService`. Sign up at `dash.qoroquantum.net <https://dash.qoroquantum.net/>`_ to get started with free credits. For real quantum hardware access, `contact us <https://qoroquantum.net>`_:
@@ -182,13 +182,13 @@ Advanced Features
    Available strategies: ``"qwc"``, ``"wires"``, ``"default"``. See the `PennyLane grouping documentation <https://docs.pennylane.ai/en/stable/code/api/pennylane.transforms.split_non_commuting.html>`_ for details.
 
 **Error Mitigation** 🛡️
-   Improve results on noisy backends with Zero Noise Extrapolation — pass a ``qem_protocol`` and use :class:`ParallelSimulator` with a noise model:
+   Improve results on noisy backends with Zero Noise Extrapolation — pass a ``qem_protocol`` and use :class:`QiskitSimulator` with a noise model:
 
    .. code-block:: python
 
       from divi.circuits.qem import ZNE
 
-      vqe = VQE(..., qem_protocol=ZNE(...), backend=ParallelSimulator(qiskit_backend="auto"))
+      vqe = VQE(..., qem_protocol=ZNE(...), backend=QiskitSimulator(qiskit_backend="auto"))
 
    See :doc:`user_guide/improving_results_zne` for a full walkthrough.
 

@@ -35,7 +35,7 @@ Core Backend Classes
    :show-inheritance:
    :special-members: __init__
 
-.. autoclass:: divi.backends.ParallelSimulator
+.. autoclass:: divi.backends.QiskitSimulator
    :members:
    :undoc-members:
    :show-inheritance:
@@ -91,9 +91,11 @@ Systems
    :undoc-members:
    :show-inheritance:
    :special-members: __init__
+   :no-index:
 
 .. autoclass:: divi.backends.SimulatorCluster
    :members:
    :undoc-members:
    :show-inheritance:
    :special-members: __init__
+   :no-index:

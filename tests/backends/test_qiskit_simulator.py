@@ -10,9 +10,9 @@ from qiskit_aer.noise import NoiseModel
 from qiskit_ibm_runtime.fake_provider import FakeQuitoV2
 
 from divi.backends import ExecutionResult
-from divi.backends._parallel_simulator import (
+from divi.backends._qiskit_simulator import (
     FAKE_BACKENDS,
-    ParallelSimulator,
+    QiskitSimulator,
     _default_n_processes,
     _find_best_fake_backend,
 )
@@ -59,8 +59,8 @@ class TestFindBestFakeBackend:
         assert result is None
 
 
-class TestParallelSimulatorInit:
-    """Tests for ParallelSimulator initialization."""
+class TestQiskitSimulatorInit:
+    """Tests for QiskitSimulator initialization."""
 
     def test_init_with_backend_and_noise_model_warns(self):
         """Test that warning is issued when both backend and noise_model are provided (line 88)."""
@@ -69,9 +69,7 @@ class TestParallelSimulatorInit:
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            simulator = ParallelSimulator(
-                qiskit_backend=backend, noise_model=noise_model
-            )
+            simulator = QiskitSimulator(qiskit_backend=backend, noise_model=noise_model)
 
             assert len(w) == 1
             assert issubclass(w[0].category, UserWarning)
@@ -85,7 +83,7 @@ class TestParallelSimulatorInit:
     def test_init_with_backend_only(self):
         """Test initialization with backend only."""
         backend = FakeQuitoV2()
-        simulator = ParallelSimulator(qiskit_backend=backend)
+        simulator = QiskitSimulator(qiskit_backend=backend)
 
         assert simulator.qiskit_backend == backend
         assert simulator.noise_model is None
@@ -93,7 +91,7 @@ class TestParallelSimulatorInit:
     def test_init_with_noise_model_only(self):
         """Test initialization with noise model only."""
         noise_model = NoiseModel()
-        simulator = ParallelSimulator(noise_model=noise_model)
+        simulator = QiskitSimulator(noise_model=noise_model)
 
         assert simulator.qiskit_backend is None
         assert simulator.noise_model == noise_model
@@ -102,29 +100,29 @@ class TestParallelSimulatorInit:
     def test_init_rejects_n_processes_below_one(self, bad_value):
         """Constructor raises ValueError when n_processes < 1."""
         with pytest.raises(ValueError, match="n_processes must be >= 1"):
-            ParallelSimulator(n_processes=bad_value)
+            QiskitSimulator(n_processes=bad_value)
 
     def test_setter_rejects_n_processes_below_one(self):
         """The n_processes setter raises ValueError when value < 1."""
-        sim = ParallelSimulator()
+        sim = QiskitSimulator()
         with pytest.raises(ValueError, match="n_processes must be >= 1"):
             sim.n_processes = 0
 
     def test_init_none_uses_default(self, mocker):
         """When n_processes is None, the default is computed via _default_n_processes."""
         mocker.patch(
-            "divi.backends._parallel_simulator._default_n_processes", return_value=5
+            "divi.backends._qiskit_simulator._default_n_processes", return_value=5
         )
-        sim = ParallelSimulator(n_processes=None)
+        sim = QiskitSimulator(n_processes=None)
         assert sim.n_processes == 5
 
 
-class TestParallelSimulatorProperties:
-    """Tests for ParallelSimulator properties and methods."""
+class TestQiskitSimulatorProperties:
+    """Tests for QiskitSimulator properties and methods."""
 
     def test_set_seed(self):
         """Test set_seed method (line 107)."""
-        simulator = ParallelSimulator()
+        simulator = QiskitSimulator()
         assert simulator.simulation_seed is None
 
         simulator.set_seed(42)
@@ -135,22 +133,22 @@ class TestParallelSimulatorProperties:
 
     def test_supports_expval(self):
         """Test supports_expval property."""
-        simulator = ParallelSimulator()
+        simulator = QiskitSimulator()
         assert simulator.supports_expval is True
 
     def test_force_sampling_disables_expval(self):
         """force_sampling=True makes supports_expval return False."""
-        simulator = ParallelSimulator(force_sampling=True)
+        simulator = QiskitSimulator(force_sampling=True)
         assert simulator.supports_expval is False
 
     def test_is_async(self):
         """Test is_async property (line 121)."""
-        simulator = ParallelSimulator()
+        simulator = QiskitSimulator()
         assert simulator.is_async is False
 
 
-class TestParallelSimulatorSubmitCircuits:
-    """Tests for ParallelSimulator.submit_circuits method."""
+class TestQiskitSimulatorSubmitCircuits:
+    """Tests for QiskitSimulator.submit_circuits method."""
 
     def _create_qasm_circuit(self, n_qubits=2):
         """Helper to create a QASM circuit string."""
@@ -183,14 +181,14 @@ class TestParallelSimulatorSubmitCircuits:
         if use_from_backend:
             return (
                 mocker.patch(
-                    "divi.backends._parallel_simulator.AerSimulator.from_backend",
+                    "divi.backends._qiskit_simulator.AerSimulator.from_backend",
                     return_value=mock_aer,
                 ),
                 mock_aer,
             )
         else:
             mocker.patch(
-                "divi.backends._parallel_simulator.AerSimulator",
+                "divi.backends._qiskit_simulator.AerSimulator",
                 return_value=mock_aer,
             )
             return mock_aer
@@ -199,13 +197,13 @@ class TestParallelSimulatorSubmitCircuits:
         """Helper to set up mock transpile."""
         mock_transpiled = QuantumCircuit(n_qubits)
         mocker.patch(
-            "divi.backends._parallel_simulator.transpile",
+            "divi.backends._qiskit_simulator.transpile",
             return_value=[mock_transpiled] * num_circuits,
         )
 
     def test_submit_circuits_with_auto_backend(self, mocker):
         """Test submit_circuits with 'auto' backend selection (lines 191-192)."""
-        simulator = ParallelSimulator(qiskit_backend="auto", shots=100)
+        simulator = QiskitSimulator(qiskit_backend="auto", shots=100)
 
         qasm = self._create_qasm_circuit(n_qubits=3)
         qasm = qasm.replace("h q[0];", "h q[0];\n        cx q[0], q[1];")
@@ -214,7 +212,7 @@ class TestParallelSimulatorSubmitCircuits:
         # Mock the fake backend to avoid actual backend creation
         mock_backend_class = mocker.Mock()
         mocker.patch(
-            "divi.backends._parallel_simulator._find_best_fake_backend",
+            "divi.backends._qiskit_simulator._find_best_fake_backend",
             return_value=[mock_backend_class],
         )
 
@@ -236,7 +234,7 @@ class TestParallelSimulatorSubmitCircuits:
     def test_submit_circuits_with_explicit_backend(self, mocker):
         """Test submit_circuits with explicit backend provided (line 194)."""
         backend = FakeQuitoV2()
-        simulator = ParallelSimulator(qiskit_backend=backend, shots=100)
+        simulator = QiskitSimulator(qiskit_backend=backend, shots=100)
 
         circuits = {"test_circuit": self._create_qasm_circuit()}
 
@@ -256,7 +254,7 @@ class TestParallelSimulatorSubmitCircuits:
 
     def test_submit_circuits_non_deterministic_batch_execution(self, mocker):
         """Test non-deterministic batch execution path (lines 221-244)."""
-        simulator = ParallelSimulator(shots=100, _deterministic_execution=False)
+        simulator = QiskitSimulator(shots=100, _deterministic_execution=False)
 
         qasm1 = self._create_qasm_circuit()
         qasm2 = self._create_qasm_circuit().replace("h q[0];", "x q[0];")
@@ -284,7 +282,7 @@ class TestParallelSimulatorSubmitCircuits:
 
     def test_submit_circuits_non_deterministic_with_seed_warns(self, mocker):
         """Test that warning is logged when parallel execution detected with seed (lines 230-236)."""
-        simulator = ParallelSimulator(
+        simulator = QiskitSimulator(
             shots=100, simulation_seed=42, _deterministic_execution=False
         )
 
@@ -297,7 +295,7 @@ class TestParallelSimulatorSubmitCircuits:
         )
         self._setup_mock_transpile(mocker, num_circuits=2)
 
-        mock_logger = mocker.patch("divi.backends._parallel_simulator.logger")
+        mock_logger = mocker.patch("divi.backends._qiskit_simulator.logger")
 
         simulator.submit_circuits(circuits)
 
@@ -310,7 +308,7 @@ class TestParallelSimulatorSubmitCircuits:
     def test_submit_circuits_deterministic_with_backend(self, mocker):
         """Test deterministic execution with backend (line 147)."""
         backend = FakeQuitoV2()
-        simulator = ParallelSimulator(
+        simulator = QiskitSimulator(
             qiskit_backend=backend,
             shots=100,
             _deterministic_execution=True,
@@ -337,7 +335,7 @@ class TestParallelSimulatorSubmitCircuits:
     def test_submit_circuits_deterministic_without_backend(self, mocker):
         """Test deterministic execution without backend (noise_model path)."""
         noise_model = NoiseModel()
-        simulator = ParallelSimulator(
+        simulator = QiskitSimulator(
             noise_model=noise_model,
             shots=100,
             _deterministic_execution=True,
@@ -357,8 +355,8 @@ class TestParallelSimulatorSubmitCircuits:
         assert result.results[0]["label"] == "test_circuit"
 
 
-class TestParallelSimulatorDepthTracker:
-    """Tests for ParallelSimulator depth tracking via shared CircuitRunner contracts."""
+class TestQiskitSimulatorDepthTracker:
+    """Tests for QiskitSimulator depth tracking via shared CircuitRunner contracts."""
 
     def _setup_mock_submit(self, mocker, num_circuits=2):
         """Helper to mock AerSimulator and transpile for submit_circuits."""
@@ -368,25 +366,25 @@ class TestParallelSimulatorDepthTracker:
         mock_result.metadata = {"parallel_experiments": 1, "omp_nested": False}
         mock_aer.run.return_value.result.return_value = mock_result
         mocker.patch(
-            "divi.backends._parallel_simulator.AerSimulator",
+            "divi.backends._qiskit_simulator.AerSimulator",
             return_value=mock_aer,
         )
         mocker.patch(
-            "divi.backends._parallel_simulator.transpile",
+            "divi.backends._qiskit_simulator.transpile",
             return_value=[QuantumCircuit.from_qasm_str(contracts.QASM_DEPTH_2)]
             * num_circuits,
         )
 
     def test_depth_tracking_disabled(self, mocker):
         self._setup_mock_submit(mocker)
-        simulator = ParallelSimulator(track_depth=False, shots=10)
+        simulator = QiskitSimulator(track_depth=False, shots=10)
         contracts.verify_depth_tracking_disabled(
             simulator, {"c1": contracts.QASM_DEPTH_2}
         )
 
     def test_depth_tracking_records(self, mocker):
         self._setup_mock_submit(mocker)
-        simulator = ParallelSimulator(track_depth=True, shots=10)
+        simulator = QiskitSimulator(track_depth=True, shots=10)
         contracts.verify_depth_tracking_records(
             simulator,
             {"c1": contracts.QASM_DEPTH_2, "c2": contracts.QASM_DEPTH_3},
@@ -395,7 +393,7 @@ class TestParallelSimulatorDepthTracker:
 
     def test_depth_history_accumulates(self, mocker):
         self._setup_mock_submit(mocker, num_circuits=2)
-        simulator = ParallelSimulator(track_depth=True, shots=10)
+        simulator = QiskitSimulator(track_depth=True, shots=10)
         contracts.verify_depth_history_accumulates(
             simulator,
             {"c1": contracts.QASM_DEPTH_2},
@@ -404,26 +402,26 @@ class TestParallelSimulatorDepthTracker:
 
     def test_clear_depth_history(self, mocker):
         self._setup_mock_submit(mocker)
-        simulator = ParallelSimulator(track_depth=True, shots=10)
+        simulator = QiskitSimulator(track_depth=True, shots=10)
         contracts.verify_clear_depth_history(simulator, {"c1": contracts.QASM_DEPTH_2})
 
     def test_depth_history_returns_copy(self, mocker):
         self._setup_mock_submit(mocker)
-        simulator = ParallelSimulator(track_depth=True, shots=10)
+        simulator = QiskitSimulator(track_depth=True, shots=10)
         contracts.verify_depth_history_returns_copy(
             simulator, {"c1": contracts.QASM_DEPTH_2}
         )
 
     def test_std_depth_zero_for_single_value(self, mocker):
         self._setup_mock_submit(mocker)
-        simulator = ParallelSimulator(track_depth=True, shots=10)
+        simulator = QiskitSimulator(track_depth=True, shots=10)
         contracts.verify_std_depth_zero_for_single_value(
             simulator, {"c1": contracts.QASM_DEPTH_2}
         )
 
 
 class TestExpvalSubmission:
-    """Tests for ParallelSimulator expectation value estimation."""
+    """Tests for QiskitSimulator expectation value estimation."""
 
     QASM_2Q = (
         'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[2];\ncreg c[2];\n'
@@ -431,12 +429,12 @@ class TestExpvalSubmission:
     )
 
     def test_supports_expval(self):
-        sim = ParallelSimulator()
+        sim = QiskitSimulator()
         assert sim.supports_expval is True
 
     def test_expval_basic(self):
         """Expval mode returns {pauli: float} dicts with correct values."""
-        sim = ParallelSimulator(shots=5000)
+        sim = QiskitSimulator(shots=5000)
         result = sim.submit_circuits(
             {"c0": self.QASM_2Q},
             ham_ops="ZI;IZ",
@@ -457,7 +455,7 @@ class TestExpvalSubmission:
             'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[1];\ncreg c[1];\n'
             "h q[0];\nmeasure q[0] -> c[0];\n"
         )
-        sim = ParallelSimulator(shots=5000)
+        sim = QiskitSimulator(shots=5000)
         result = sim.submit_circuits({"c0": qasm_1q}, ham_ops="Z;X")
         expvals = result.results[0]["results"]
         assert expvals["Z"] == pytest.approx(0.0, abs=1e-10)
@@ -465,7 +463,7 @@ class TestExpvalSubmission:
 
     def test_expval_bell_state_zz(self):
         """Bell state |00>+|11>: <ZZ> = 1, <ZI> = 0."""
-        sim = ParallelSimulator(shots=5000)
+        sim = QiskitSimulator(shots=5000)
         result = sim.submit_circuits({"c0": self.QASM_2Q}, ham_ops="ZZ;ZI")
         expvals = result.results[0]["results"]
         assert expvals["ZZ"] == pytest.approx(1.0, abs=1e-10)
@@ -473,7 +471,7 @@ class TestExpvalSubmission:
 
     def test_sampling_not_affected(self, mocker):
         """Sampling path unchanged when ham_ops=None."""
-        sim = ParallelSimulator(shots=100)
+        sim = QiskitSimulator(shots=100)
 
         mock_aer = mocker.Mock()
         mock_result = mocker.Mock()
@@ -481,11 +479,11 @@ class TestExpvalSubmission:
         mock_result.metadata = {"parallel_experiments": 1, "omp_nested": False}
         mock_aer.run.return_value.result.return_value = mock_result
         mocker.patch(
-            "divi.backends._parallel_simulator.AerSimulator",
+            "divi.backends._qiskit_simulator.AerSimulator",
             return_value=mock_aer,
         )
         mocker.patch(
-            "divi.backends._parallel_simulator.transpile",
+            "divi.backends._qiskit_simulator.transpile",
             return_value=[QuantumCircuit(2)],
         )
 
@@ -494,12 +492,12 @@ class TestExpvalSubmission:
 
     def test_get_ham_ops_no_map(self):
         """All circuits get all ops when circuit_ham_map is None."""
-        ops = ParallelSimulator._get_ham_ops_for_circuit(0, "ZI;IZ;XX", None)
+        ops = QiskitSimulator._get_ham_ops_for_circuit(0, "ZI;IZ;XX", None)
         assert ops == ["ZI", "IZ", "XX"]
 
     def test_get_ham_ops_no_map_pipe_delimited(self):
         """Pipe-delimited groups are flattened when no map provided."""
-        ops = ParallelSimulator._get_ham_ops_for_circuit(0, "ZI;IZ|XX;YY", None)
+        ops = QiskitSimulator._get_ham_ops_for_circuit(0, "ZI;IZ|XX;YY", None)
         assert ops == ["ZI", "IZ", "XX", "YY"]
 
     def test_get_ham_ops_with_map(self):
@@ -507,22 +505,22 @@ class TestExpvalSubmission:
         ham_ops = "ZI;IZ|XX;YY"
         circuit_ham_map = [[0, 3], [3, 5]]
 
-        assert ParallelSimulator._get_ham_ops_for_circuit(
+        assert QiskitSimulator._get_ham_ops_for_circuit(
             0, ham_ops, circuit_ham_map
         ) == ["ZI", "IZ"]
-        assert ParallelSimulator._get_ham_ops_for_circuit(
+        assert QiskitSimulator._get_ham_ops_for_circuit(
             2, ham_ops, circuit_ham_map
         ) == ["ZI", "IZ"]
-        assert ParallelSimulator._get_ham_ops_for_circuit(
+        assert QiskitSimulator._get_ham_ops_for_circuit(
             3, ham_ops, circuit_ham_map
         ) == ["XX", "YY"]
-        assert ParallelSimulator._get_ham_ops_for_circuit(
+        assert QiskitSimulator._get_ham_ops_for_circuit(
             4, ham_ops, circuit_ham_map
         ) == ["XX", "YY"]
 
     def test_get_ham_ops_fallback(self):
         """Circuit index outside all ranges falls back to all ops."""
-        ops = ParallelSimulator._get_ham_ops_for_circuit(10, "ZI|XX", [[0, 2], [2, 4]])
+        ops = QiskitSimulator._get_ham_ops_for_circuit(10, "ZI|XX", [[0, 2], [2, 4]])
         assert ops == ["ZI", "XX"]
 
     def test_expval_with_circuit_ham_map(self):
@@ -531,7 +529,7 @@ class TestExpvalSubmission:
             'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[1];\ncreg c[1];\n'
             "h q[0];\nmeasure q[0] -> c[0];\n"
         )
-        sim = ParallelSimulator(shots=5000)
+        sim = QiskitSimulator(shots=5000)
         result = sim.submit_circuits(
             {"c0": qasm_1q, "c1": qasm_1q},
             ham_ops="Z|X",
@@ -543,7 +541,7 @@ class TestExpvalSubmission:
     def test_prepare_expval_circuit_strips_measurements(self):
         """_prepare_expval_circuit removes measurements and adds save instructions."""
         qc = QuantumCircuit.from_qasm_str(self.QASM_2Q)
-        prepared = ParallelSimulator._prepare_expval_circuit(qc, ["ZI", "IZ"])
+        prepared = QiskitSimulator._prepare_expval_circuit(qc, ["ZI", "IZ"])
         # No measure gates
         op_names = [inst.operation.name for inst in prepared.data]
         assert "measure" not in op_names
@@ -553,14 +551,14 @@ class TestExpvalSubmission:
     def test_prepare_expval_circuit_preserves_gates(self):
         """Gate instructions survive measurement stripping."""
         qc = QuantumCircuit.from_qasm_str(self.QASM_2Q)
-        prepared = ParallelSimulator._prepare_expval_circuit(qc, ["ZZ"])
+        prepared = QiskitSimulator._prepare_expval_circuit(qc, ["ZZ"])
         op_names = [inst.operation.name for inst in prepared.data]
         assert "h" in op_names
         assert "cx" in op_names
 
 
-class TestParallelSimulatorRuntimeEstimation:
-    """Tests for ParallelSimulator runtime estimation methods."""
+class TestQiskitSimulatorRuntimeEstimation:
+    """Tests for QiskitSimulator runtime estimation methods."""
 
     def test_estimate_run_time_single_circuit(self, mocker):
         """Test estimate_run_time_single_circuit method."""
@@ -599,19 +597,19 @@ class TestParallelSimulatorRuntimeEstimation:
         # We need a real circuit for circuit_to_dag to work
         transpiled_circuit = QuantumCircuit.from_qasm_str(qasm)
         mocker.patch(
-            "divi.backends._parallel_simulator.transpile",
+            "divi.backends._qiskit_simulator.transpile",
             return_value=transpiled_circuit,
         )
 
         # We also need to mock _find_best_fake_backend if we were using "auto",
         # but here we pass explicit backend
 
-        estimated_time = ParallelSimulator.estimate_run_time_single_circuit(
+        estimated_time = QiskitSimulator.estimate_run_time_single_circuit(
             qasm, qiskit_backend=mock_backend
         )
 
         # Expected time: h(0) + cx(0,1) + max(measure(0), measure(1))?
-        # The logic in ParallelSimulator sums up durations of longest path?
+        # The logic in QiskitSimulator sums up durations of longest path?
         # Code: for node in dag.longest_path(): total += duration
         # Longest path in this circuit:
         # q[0]: h -> cx -> measure
@@ -642,17 +640,17 @@ class TestParallelSimulatorRuntimeEstimation:
         mock_backend_instance.target = mock_target
 
         mocker.patch(
-            "divi.backends._parallel_simulator._find_best_fake_backend",
+            "divi.backends._qiskit_simulator._find_best_fake_backend",
             return_value=[mock_backend_cls],
         )
 
         transpiled_circuit = QuantumCircuit.from_qasm_str(qasm)
         mocker.patch(
-            "divi.backends._parallel_simulator.transpile",
+            "divi.backends._qiskit_simulator.transpile",
             return_value=transpiled_circuit,
         )
 
-        estimated_time = ParallelSimulator.estimate_run_time_single_circuit(
+        estimated_time = QiskitSimulator.estimate_run_time_single_circuit(
             qasm, qiskit_backend="auto"
         )
 
@@ -666,11 +664,11 @@ class TestDefaultNProcesses:
         """Running in a worker thread limits to 2 cores."""
         mock_thread = mocker.Mock()
         mocker.patch(
-            "divi.backends._parallel_simulator.threading.current_thread",
+            "divi.backends._qiskit_simulator.threading.current_thread",
             return_value=mock_thread,
         )
         mocker.patch(
-            "divi.backends._parallel_simulator.threading.main_thread",
+            "divi.backends._qiskit_simulator.threading.main_thread",
             return_value=mocker.Mock(),
         )
         assert _default_n_processes() == 2
@@ -680,7 +678,7 @@ class TestDefaultNProcesses:
         mock_process = mocker.Mock()
         mock_process.name = "SpawnProcess-1"
         mocker.patch(
-            "divi.backends._parallel_simulator.current_process",
+            "divi.backends._qiskit_simulator.current_process",
             return_value=mock_process,
         )
         assert _default_n_processes() == 2
@@ -700,14 +698,12 @@ class TestDefaultNProcesses:
     def test_cpu_count_scaling(self, mocker, cpu_count, expected):
         """Correct scaling: small <= 4, medium <= 16, large > 16."""
         mocker.patch(
-            "divi.backends._parallel_simulator.os.cpu_count", return_value=cpu_count
+            "divi.backends._qiskit_simulator.os.cpu_count", return_value=cpu_count
         )
         assert _default_n_processes() == expected
 
     def test_cpu_count_none_falls_back_to_four(self, mocker):
         """When os.cpu_count() returns None, defaults to cpu_count=4 logic."""
-        mocker.patch(
-            "divi.backends._parallel_simulator.os.cpu_count", return_value=None
-        )
+        mocker.patch("divi.backends._qiskit_simulator.os.cpu_count", return_value=None)
         # cpu_count=4 -> max(2, 4-1) = 3
         assert _default_n_processes() == 3

@@ -68,7 +68,7 @@ class BatchConfig:
             Set to ``True`` to merge circuits in a consistent, key-sorted order
             regardless of thread scheduling.  This ensures that
             position-dependent seeds (e.g. ``seed + circuit_index`` in
-            :class:`~divi.backends.ParallelSimulator` deterministic mode)
+            :class:`~divi.backends.QiskitSimulator` deterministic mode)
             map to the same circuit on every run, making seeded experiments
             fully reproducible.  Only meaningful when ``mode`` is
             :attr:`BatchMode.MERGED`.

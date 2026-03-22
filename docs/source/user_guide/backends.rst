@@ -13,7 +13,7 @@ Understanding ExecutionResult
 
 All backend :meth:`submit_circuits` methods return an :class:`ExecutionResult` object, which provides a unified interface for handling both synchronous and asynchronous execution.
 
-**For Synchronous Backends** (like :class:`MaestroSimulator` and :class:`ParallelSimulator`):
+**For Synchronous Backends** (like :class:`MaestroSimulator` and :class:`QiskitSimulator`):
    Results are available immediately after submission:
 
    .. code-block:: python
@@ -74,7 +74,7 @@ Available Backends
 Divi comes with three primary backends out of the box:
 
 * :class:`MaestroSimulator` — A high-performance local simulator, recommended as the default for development and testing.
-* :class:`ParallelSimulator` — A convenience wrapper around Qiskit's ``AerSimulator`` with simplified noise modeling and thread-count control. Use this when you need noisy simulation.
+* :class:`QiskitSimulator` — A convenience wrapper around Qiskit's ``AerSimulator`` with simplified noise modeling and thread-count control. Use this when you need noisy simulation.
 * :class:`QoroService` — A cloud-based quantum computing service for accessing powerful simulators and real quantum hardware.
 
 Let's dive into each one.
@@ -109,10 +109,10 @@ Getting Started
    )
 
 
-ParallelSimulator
+QiskitSimulator
 ------------------
 
-The :class:`ParallelSimulator` is a convenience wrapper around Qiskit's ``AerSimulator`` with simplified thread-count control and noise configuration. Use it when you need to model realistic hardware noise — for example, when developing error mitigation strategies or benchmarking algorithm robustness.
+The :class:`QiskitSimulator` is a convenience wrapper around Qiskit's ``AerSimulator`` with simplified thread-count control and noise configuration. Use it when you need to model realistic hardware noise — for example, when developing error mitigation strategies or benchmarking algorithm robustness.
 
 
 Examples
@@ -120,10 +120,10 @@ Examples
 
 .. code-block:: python
 
-   from divi.backends import ParallelSimulator
+   from divi.backends import QiskitSimulator
 
    # Reproducible noisy simulation
-   backend = ParallelSimulator(
+   backend = QiskitSimulator(
        shots=10000,
        n_processes=8,
        qiskit_backend="auto", # Auto-select a Qiskit fake backend by qubit count
@@ -132,7 +132,7 @@ Examples
 
    # Noisy simulation to mimic real hardware
    from qiskit_ibm_runtime.fake_provider import FakeManilaV2
-   backend = ParallelSimulator(
+   backend = QiskitSimulator(
        shots=5000,
        qiskit_backend=FakeManilaV2(),  # Use a fake backend with a realistic noise model
        n_processes=2
@@ -272,7 +272,7 @@ Backend Selection Guide
 
 Choosing the right backend depends on what stage of development you're in.
 
-* **For Development and Testing**, use :class:`MaestroSimulator`. For noisy simulation, use :class:`ParallelSimulator` with Qiskit noise models.
+* **For Development and Testing**, use :class:`MaestroSimulator`. For noisy simulation, use :class:`QiskitSimulator` with Qiskit noise models.
 * **For Production Runs**, use :class:`QoroService` for cloud simulation, real quantum hardware, and scalable execution.
 * **For Research**, start with :class:`MaestroSimulator` for prototyping, then use :class:`QoroService` for validation against real hardware.
 
@@ -286,7 +286,7 @@ Backend Comparison
 
    * - Feature
      - MaestroSimulator
-     - ParallelSimulator
+     - QiskitSimulator
      - QoroService
    * - **Use Case**
      - Default local simulation
@@ -319,9 +319,9 @@ Common Issues and Solutions
 ---------------------------
 
 * **Slow MaestroSimulator at >22 qubits**: The auto-MPS threshold handles this automatically. If you need to tune it, set ``mps_qubit_threshold`` or explicitly use ``simulation_type="MatrixProductState"`` with a suitable ``max_bond_dimension``.
-* **Slow ParallelSimulator**: Increase ``n_processes`` or reduce ``shots``.
-* **High memory usage with ParallelSimulator**: Reduce ``n_processes`` or ``shots``.
-* **Non-reproducible results**: :class:`MaestroSimulator` does not yet support seeded sampling. Use :class:`ParallelSimulator` with ``simulation_seed`` when you need exact reproducibility.
+* **Slow QiskitSimulator**: Increase ``n_processes`` or reduce ``shots``.
+* **High memory usage with QiskitSimulator**: Reduce ``n_processes`` or ``shots``.
+* **Non-reproducible results**: :class:`MaestroSimulator` does not yet support seeded sampling. Use :class:`QiskitSimulator` with ``simulation_seed`` when you need exact reproducibility.
 * **Job queue delays on QoroService**: Use local simulation for development; submit cloud jobs during off-peak hours.
 
 Next Steps

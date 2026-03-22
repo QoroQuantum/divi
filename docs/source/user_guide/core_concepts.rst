@@ -328,7 +328,7 @@ Divi's backend system provides a unified interface for different execution envir
 **Available Backends:**
 
 - :class:`MaestroSimulator` 💻 - Local high-performance simulator
-- :class:`ParallelSimulator` 💻 - Convenience wrapper around Qiskit Aer with noise modeling and thread-count control
+- :class:`QiskitSimulator` 💻 - Convenience wrapper around Qiskit Aer with noise modeling and thread-count control
 - :class:`QoroService` ☁️ - Cloud quantum computing service
 
 **Backend Selection:**

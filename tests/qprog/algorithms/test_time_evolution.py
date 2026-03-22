@@ -7,7 +7,7 @@ import math
 import pennylane as qml
 import pytest
 
-from divi.backends import ExecutionResult, ParallelSimulator
+from divi.backends import ExecutionResult, QiskitSimulator
 from divi.hamiltonians import ExactTrotterization, QDrift
 from divi.qprog import TimeEvolution
 
@@ -268,7 +268,7 @@ class TestTimeEvolutionQDrift:
         te_sampling = TimeEvolution(
             **common,
             trotterization_strategy=QDrift(**qdrift_kwargs),
-            backend=ParallelSimulator(
+            backend=QiskitSimulator(
                 shots=5000, force_sampling=True, _deterministic_execution=True
             ),
         )
@@ -443,7 +443,7 @@ class TestTimeEvolutionE2E:
 
     def test_qdrift_tfim_non_commuting_expval(self):
         """QDrift TFIM 4q (non-commuting ZZ+X): Campbell's protocol matches exact."""
-        backend = ParallelSimulator(shots=10000, _deterministic_execution=True)
+        backend = QiskitSimulator(shots=10000, _deterministic_execution=True)
         hamiltonian = qml.sum(
             -(qml.PauliZ(0) @ qml.PauliZ(1)),
             -(qml.PauliZ(1) @ qml.PauliZ(2)),
@@ -485,7 +485,7 @@ class TestTimeEvolutionE2E:
 
     def test_qdrift_x_plus_z_non_commuting_expval(self):
         """QDrift H=X+Z (non-commuting): Campbell's protocol matches exact."""
-        backend = ParallelSimulator(shots=10000, _deterministic_execution=True)
+        backend = QiskitSimulator(shots=10000, _deterministic_execution=True)
         hamiltonian = qml.PauliX(0) + qml.PauliZ(0)
 
         te_exact = TimeEvolution(
@@ -531,7 +531,7 @@ class TestTimeEvolutionE2E:
         )
 
         # Exact: evolves with all 6 terms across 4 Trotter steps
-        backend_exact = ParallelSimulator(
+        backend_exact = QiskitSimulator(
             shots=1000, track_depth=True, _deterministic_execution=True
         )
         te_exact = TimeEvolution(
@@ -545,7 +545,7 @@ class TestTimeEvolutionE2E:
         exact_depth = backend_exact.average_depth()
 
         # QDrift: samples only 2 of the 6 terms
-        backend_qdrift = ParallelSimulator(
+        backend_qdrift = QiskitSimulator(
             shots=1000, track_depth=True, _deterministic_execution=True
         )
         te_qdrift = TimeEvolution(

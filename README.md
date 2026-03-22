@@ -40,7 +40,7 @@ Run a VQE energy minimization in a few lines:
 import numpy as np
 import pennylane as qml
 from divi.qprog import VQE, HartreeFockAnsatz
-from divi.backends import ParallelSimulator
+from divi.backends import QiskitSimulator
 from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
 
 # Define an H₂ molecule
@@ -53,7 +53,7 @@ vqe = VQE(
     molecule=molecule,
     ansatz=HartreeFockAnsatz(),
     n_layers=2,
-    backend=ParallelSimulator(shots=5000),
+    backend=QiskitSimulator(shots=5000),
     optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
     seed=42,
 )
@@ -83,7 +83,7 @@ vqe.run()
 | **VQE & QAOA** | Built-in variational algorithms with pluggable ansätze and optimizers |
 | **Circuit Pipelines** | Expand → execute → reduce pattern for complex circuit workflows |
 | **Program Batching** | Automatic Pauli grouping, circuit packing, and parallel execution |
-| **Dual Backends** | Local `ParallelSimulator` for dev, `QoroService` for cloud production |
+| **Dual Backends** | Local `QiskitSimulator` for dev, `QoroService` for cloud production |
 | **Execution Config** | Control bond dimension, simulator type, and simulation method per job |
 | **Live Reporting** | Real-time dashboards and convergence tracking via callbacks |
 
@@ -92,7 +92,7 @@ vqe.run()
 ```
 divi/
 ├── qprog/        # Quantum programs: VQE, QAOA, base classes, optimizers
-├── backends/     # Execution backends: ParallelSimulator, QoroService
+├── backends/     # Execution backends: QiskitSimulator, QoroService
 ├── circuits/     # MetaCircuit templates and Circuit instances
 ├── pipeline/     # Circuit pipeline stages (expand, execute, reduce)
 ├── hamiltonians  # Molecular Hamiltonian generation

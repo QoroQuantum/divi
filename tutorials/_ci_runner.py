@@ -81,8 +81,8 @@ TUTORIALS: dict[str, dict] = {
         "timeout_seconds": 180,
         "patches": [
             (
-                "ParallelSimulator(n_processes=4",
-                "ParallelSimulator(n_processes=4, shots=500",
+                "QiskitSimulator(n_processes=4",
+                "QiskitSimulator(n_processes=4, shots=500",
             ),
             ("max_iterations=10", "max_iterations=3"),
             ("population_size=10", "population_size=5"),

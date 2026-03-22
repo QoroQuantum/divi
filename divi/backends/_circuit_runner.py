@@ -50,7 +50,7 @@ class CircuitRunner(ABC):
         Returns:
             bool: True if the backend returns a job ID and requires polling
                   for results (e.g., QoroService). False if the backend
-                  returns results immediately (e.g., ParallelSimulator).
+                  returns results immediately (e.g., QiskitSimulator).
         """
         return False
 

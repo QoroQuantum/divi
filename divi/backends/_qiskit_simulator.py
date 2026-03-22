@@ -128,7 +128,7 @@ def _default_n_processes() -> int:
         return min(16, int(cpu_count * 0.75))
 
 
-class ParallelSimulator(CircuitRunner):
+class QiskitSimulator(CircuitRunner):
     def __init__(
         self,
         n_processes: int | None = None,
@@ -580,7 +580,7 @@ class ParallelSimulator(CircuitRunner):
             with Pool() as p:
                 estimated_run_times = p.map(
                     partial(
-                        ParallelSimulator.estimate_run_time_single_circuit,
+                        QiskitSimulator.estimate_run_time_single_circuit,
                         qiskit_backend="auto",
                         **transpilation_kwargs,
                     ),

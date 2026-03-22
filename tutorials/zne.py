@@ -9,7 +9,7 @@ import pennylane as qml
 from mitiq.zne.inference import RichardsonFactory
 from mitiq.zne.scaling import fold_gates_at_random
 
-from divi.backends import ParallelSimulator
+from divi.backends import QiskitSimulator
 from divi.circuits.qem import ZNE
 from divi.qprog import VQE, HartreeFockAnsatz
 from divi.qprog.optimizers import PymooMethod, PymooOptimizer
@@ -29,7 +29,7 @@ if __name__ == "__main__":
 
     # --- Exact (statevector) ---
     vqe_exact = VQE(
-        backend=ParallelSimulator(n_processes=4),
+        backend=QiskitSimulator(n_processes=4),
         optimizer=PymooOptimizer(method=PymooMethod.DE, population_size=10),
         **common,
     )
@@ -37,7 +37,7 @@ if __name__ == "__main__":
 
     # --- Noisy (shot-based with noise model) ---
     vqe_noisy = VQE(
-        backend=ParallelSimulator(n_processes=4, qiskit_backend="auto"),
+        backend=QiskitSimulator(n_processes=4, qiskit_backend="auto"),
         optimizer=PymooOptimizer(method=PymooMethod.DE, population_size=10),
         **common,
     )
@@ -46,7 +46,7 @@ if __name__ == "__main__":
     # --- ZNE-mitigated (shot-based + zero-noise extrapolation) ---
     scale_factors = [1.0, 3.0, 5.0]
     vqe_zne = VQE(
-        backend=ParallelSimulator(n_processes=4, qiskit_backend="auto"),
+        backend=QiskitSimulator(n_processes=4, qiskit_backend="auto"),
         optimizer=PymooOptimizer(method=PymooMethod.DE, population_size=10),
         qem_protocol=ZNE(
             scale_factors,

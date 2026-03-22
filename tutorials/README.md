@@ -17,7 +17,7 @@ Tutorials that use `get_backend()` from `_backend.py` accept these CLI flags:
 
 | Flag | Backend | Description |
 |------|---------|-------------|
-| `--local` (default) | `ParallelSimulator` | Local Qiskit Aer simulation |
+| `--local` (default) | `QiskitSimulator` | Local Qiskit Aer simulation |
 | `--maestro-local` | `MaestroSimulator` | Local Maestro orchestration |
 | `--maestro` | `QoroService` | Qoro cloud backend |
 | `--force-sampling` | — | Disable exact expectation values; use shot-based sampling instead |

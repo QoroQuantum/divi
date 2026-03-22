@@ -82,7 +82,7 @@ Tests are organized in the ``tests/`` directory:
 - ``dummy_simulator``: Fast mock simulator returning random counts (for unit tests)
 - ``dummy_expval_backend``: Mock backend that supports expectation values (for PCE tests)
 - ``dummy_pipeline_env``: ``PipelineEnv`` wrapping the expval backend (for pipeline tests)
-- ``default_test_simulator``: Deterministic ``ParallelSimulator`` (for integration tests)
+- ``default_test_simulator``: Deterministic ``QiskitSimulator`` (for integration tests)
 - ``api_key``: Fixture providing API key for cloud tests (module-scoped)
 
 Writing Tests

@@ -15,7 +15,7 @@ Basic Usage
    from mitiq.zne.scaling import fold_gates_at_random
    from divi.circuits.qem import ZNE
    from divi.qprog import VQE, HartreeFockAnsatz
-   from divi.backends import ParallelSimulator
+   from divi.backends import QiskitSimulator
    import pennylane as qml
    import numpy as np
 
@@ -36,7 +36,7 @@ Basic Usage
    vqe = VQE(
        molecule=h2_molecule,
        qem_protocol=zne_protocol,
-       backend=ParallelSimulator(qiskit_backend="auto")  # Use noisy simulator
+       backend=QiskitSimulator(qiskit_backend="auto")  # Use noisy simulator
    )
 
    vqe.run()

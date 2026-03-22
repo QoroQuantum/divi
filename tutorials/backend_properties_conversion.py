@@ -16,7 +16,7 @@ import qiskit.qasm2
 from qiskit import QuantumCircuit
 
 from divi.backends import (
-    ParallelSimulator,
+    QiskitSimulator,
     create_backend_from_properties,
 )
 
@@ -30,7 +30,7 @@ if __name__ == "__main__":
 
     # Noiseless baseline
     print("Noiseless simulation:")
-    noiseless_sim = ParallelSimulator(shots=10000, n_processes=2, simulation_seed=42)
+    noiseless_sim = QiskitSimulator(shots=10000, n_processes=2, simulation_seed=42)
     noiseless_result = noiseless_sim.submit_circuits({"bell": qasm_str})
     noiseless_counts = noiseless_result.results[0]["results"]
 
@@ -149,7 +149,7 @@ if __name__ == "__main__":
 
     # Run simulation with the converted backend
     print("\nSimulation with converted backend:")
-    custom_sim = ParallelSimulator(
+    custom_sim = QiskitSimulator(
         qiskit_backend=backend,
         shots=10000,
         n_processes=2,
