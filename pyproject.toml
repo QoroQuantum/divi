@@ -11,6 +11,23 @@ authors = [{ name = "Ahmed Darwish", email = "ahmed@qoroquantum.de" }, { name = 
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dynamic = ["dependencies"]  # Dependencies are managed by Poetry via [tool.poetry.dependencies]
+license = "Apache-2.0"
+keywords = ["quantum", "quantum-computing", "qiskit", "simulation", "optimization", "qaoa", "vqe"]
+classifiers = [
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Physics",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+[project.urls]
+Homepage = "https://qoroquantum.net"
+Documentation = "https://docs.qoroquantum.net/divi"
+Repository = "https://github.com/QoroQuantum/divi"
+"Issue Tracker" = "https://github.com/QoroQuantum/divi/issues"
+Changelog = "https://github.com/QoroQuantum/divi/blob/main/CHANGELOG.md"
 
 [tool.poetry]
 packages = [{ include = "divi" }]
@@ -33,7 +50,7 @@ scikit-learn = "^1.7.0"
 # Graph operations and partitioning
 networkx = "^3.5"
 pymetis = {version = "^2025.1.1", markers = "sys_platform != 'win32'"}
-qoro-maestro = {version = "0.2.0", markers = "sys_platform != 'win32'"}
+qoro-maestro = "0.2.5"
 # Optimization algorithms
 pymoo = "^0.6"
 dwave-hybrid = "^0.6.14"
