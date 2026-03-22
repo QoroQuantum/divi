@@ -10,8 +10,11 @@ from qiskit import QuantumCircuit
 
 try:
     import maestro
-except ImportError:
+
+    _maestro_import_error = None
+except ImportError as _err:
     maestro = None
+    _maestro_import_error = _err
 
 from divi.backends._circuit_runner import CircuitRunner
 from divi.backends._execution_result import ExecutionResult
@@ -44,8 +47,6 @@ class MaestroSimulator(CircuitRunner):
     Supports multiple simulation methods (Statevector, MPS, Stabilizer, TensorNetwork,
     PauliPropagator), intelligent auto-routing, GPU acceleration, and native observable
     estimation.
-
-    Available on Linux and macOS only (not Windows).
 
     When ``simulation_type`` is left as ``None``, the simulator automatically
     switches from Statevector to MPS for circuits exceeding
@@ -82,10 +83,8 @@ class MaestroSimulator(CircuitRunner):
     ):
         if maestro is None:
             raise ImportError(
-                "qoro-maestro is required for MaestroSimulator but could not be imported. "
-                "Install it with: pip install qoro-maestro  "
-                "(available on Linux and macOS only, not Windows)."
-            )
+                "qoro-maestro is required for MaestroSimulator but could not be imported."
+            ) from _maestro_import_error
 
         super().__init__(shots=shots, track_depth=track_depth)
 
