@@ -18,7 +18,7 @@ Here's how to set up a basic :class:`VQE` calculation for the H2 molecule:
    import pennylane as qml
    from divi.qprog import VQE, HartreeFockAnsatz
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
 
    # Create H2 molecule
    mol = qml.qchem.Molecule(
@@ -33,7 +33,7 @@ Here's how to set up a basic :class:`VQE` calculation for the H2 molecule:
        n_layers=1,
        optimizer=ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
        max_iterations=50,
-       backend=ParallelSimulator(),
+       backend=MaestroSimulator(),
    )
 
    # Run optimization
@@ -59,7 +59,7 @@ In the case of a Hamiltonian input, the input would be passed to the constructor
    import numpy as np
    import pennylane as qml
    from divi.qprog import VQE, HartreeFockAnsatz
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
 
    mol = qml.qchem.Molecule(
        symbols=["H", "H"],
@@ -74,7 +74,7 @@ In the case of a Hamiltonian input, the input would be passed to the constructor
        n_layers=1,
        optimizer=ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
        max_iterations=50,
-       backend=ParallelSimulator(),
+       backend=MaestroSimulator(),
    )
 
 In the case where the input is a Hamiltonian, the number of electrons present in the given system must be provided when the chosen ansatz is UCCSD or Hartree-Fock.
@@ -158,7 +158,7 @@ Divi uses `Z-matrices <https://en.wikipedia.org/wiki/Z-matrix_(chemistry)>`_ to 
    import pennylane as qml
    import numpy as np
    from divi.qprog import HartreeFockAnsatz, UCCSDAnsatz
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
 
    mol = qml.qchem.Molecule(
        symbols=["H", "H"],
@@ -179,7 +179,7 @@ Divi uses `Z-matrices <https://en.wikipedia.org/wiki/Z-matrix_(chemistry)>`_ to 
        ansatze=[HartreeFockAnsatz(), UCCSDAnsatz()],
        optimizer=mc_optimizer,
        max_iterations=25,
-       backend=ParallelSimulator(shots=2000),
+       backend=MaestroSimulator(shots=2000),
        grouping_strategy="wires"  # PennyLane's wire grouping strategy
    )
 

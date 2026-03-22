@@ -29,6 +29,12 @@ All :meth:`CircuitRunner.submit_circuits` methods return an :class:`ExecutionRes
 Core Backend Classes
 --------------------
 
+.. autoclass:: divi.backends.MaestroSimulator
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+
 .. autoclass:: divi.backends.ParallelSimulator
    :members:
    :undoc-members:
@@ -77,7 +83,17 @@ Execution Configuration
    :members:
    :undoc-members:
 
-.. automodule:: divi.backends
+Systems
+-------
+
+.. autoclass:: divi.backends.QPUSystem
    :members:
    :undoc-members:
    :show-inheritance:
+   :special-members: __init__
+
+.. autoclass:: divi.backends.SimulatorCluster
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__

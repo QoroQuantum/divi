@@ -9,7 +9,6 @@ import pennylane as qml
 import pytest
 import scipy.sparse as sps
 
-from divi.backends import ParallelSimulator
 from divi.qprog import PCE, QAOA, BatchConfig, ScipyMethod, ScipyOptimizer
 from divi.qprog.algorithms import GenericLayerAnsatz
 from divi.qprog.variational_quantum_algorithm import SolutionEntry
@@ -41,7 +40,7 @@ def basic_ansatz() -> GenericLayerAnsatz:
 
 
 @pytest.fixture
-def qubo_partitioning_qaoa(sample_qubo_matrix):
+def qubo_partitioning_qaoa(sample_qubo_matrix, default_test_simulator):
     """Provides a default QUBOPartitioningQAOA instance for testing."""
     # A simple decomposer that splits variables into two groups
     decomposer = hybrid.EnergyImpactDecomposer(size=2)
@@ -51,12 +50,12 @@ def qubo_partitioning_qaoa(sample_qubo_matrix):
         n_layers=1,
         optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
         max_iterations=10,
-        backend=ParallelSimulator(shots=1000),
+        backend=default_test_simulator,
     )
 
 
 @pytest.fixture
-def qubo_partitioning_pce(sample_qubo_matrix, basic_ansatz):
+def qubo_partitioning_pce(sample_qubo_matrix, basic_ansatz, default_test_simulator):
     """Provides a QUBOPartitioningQAOA configured to use PCE partitions."""
     decomposer = hybrid.EnergyImpactDecomposer(size=2)
     return QUBOPartitioningQAOA(
@@ -67,7 +66,7 @@ def qubo_partitioning_pce(sample_qubo_matrix, basic_ansatz):
         ansatz=basic_ansatz,
         optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
         max_iterations=10,
-        backend=ParallelSimulator(shots=1000),
+        backend=default_test_simulator,
     )
 
 
@@ -232,7 +231,7 @@ class TestQUBOPartitioningQAOA:
             for program in qubo_partitioning_pce.programs.values()
         )
 
-    def test_invalid_engine_raises(self, sample_qubo_matrix):
+    def test_invalid_engine_raises(self, sample_qubo_matrix, dummy_simulator):
         decomposer = hybrid.EnergyImpactDecomposer(size=2)
         with pytest.raises(ValueError, match="Unsupported engine"):
             QUBOPartitioningQAOA(
@@ -240,14 +239,14 @@ class TestQUBOPartitioningQAOA:
                 decomposer=decomposer,
                 n_layers=1,
                 engine="invalid",
-                backend=ParallelSimulator(shots=1000),
+                backend=dummy_simulator,
             )
 
     def test_verify_basic_behaviour(self, mocker, qubo_partitioning_qaoa):
         """Verify the class adheres to the ProgramEnsemble contract."""
         verify_basic_program_ensemble_behaviour(mocker, qubo_partitioning_qaoa)
 
-    def test_trivial_subproblem_is_identified_and_skipped(self):
+    def test_trivial_subproblem_is_identified_and_skipped(self, dummy_simulator):
         """
         Tests that a subproblem with no interactions is correctly identified
         as trivial and that a QAOA program is NOT created for it.
@@ -270,7 +269,7 @@ class TestQUBOPartitioningQAOA:
             qubo=trivial_qubo,
             decomposer=decomposer,
             n_layers=1,
-            backend=ParallelSimulator(shots=100),
+            backend=dummy_simulator,
         )
 
         # 2. ACT: Run the program creation process.
@@ -311,7 +310,7 @@ class TestQUBOPartitioningQAOA:
         ):
             qubo_partitioning_qaoa.aggregate_results()
 
-    def test_get_top_solutions_numerical_correctness(self):
+    def test_get_top_solutions_numerical_correctness(self, dummy_simulator):
         """Verify exact solutions and energies for a known QUBO problem.
 
         The QUBO has known optimal [1,1,0,0] with energy -1.5.
@@ -335,7 +334,7 @@ class TestQUBOPartitioningQAOA:
             decomposer=decomposer,
             n_layers=1,
             max_iterations=1,
-            backend=ParallelSimulator(shots=100),
+            backend=dummy_simulator,
         )
         batch.create_programs()
 
@@ -437,8 +436,6 @@ class TestQUBOPartitioningQAOA:
         # Decomposer to split into two problems of size 2
         decomposer = hybrid.EnergyImpactDecomposer(size=2)
 
-        default_test_simulator.set_seed(1997)
-
         batch = QUBOPartitioningQAOA(
             qubo=bqm,
             decomposer=decomposer,
@@ -475,8 +472,6 @@ class TestQUBOPartitioningQAOA:
         }
         bqm = dimod.BinaryQuadraticModel.from_qubo(qubo)
         decomposer = hybrid.EnergyImpactDecomposer(size=2)
-
-        default_test_simulator.set_seed(1997)
 
         batch = QUBOPartitioningQAOA(
             qubo=bqm,

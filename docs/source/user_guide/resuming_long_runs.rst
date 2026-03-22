@@ -34,7 +34,7 @@ To enable checkpointing, pass a :class:`CheckpointConfig` object to the ``run()`
    from pathlib import Path
    from divi.qprog import VQE, HartreeFockAnsatz
    from divi.qprog.checkpointing import CheckpointConfig
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
    import pennylane as qml
 
    # Create a molecule
@@ -49,7 +49,7 @@ To enable checkpointing, pass a :class:`CheckpointConfig` object to the ``run()`
        ansatz=HartreeFockAnsatz(),
        n_layers=1,
        max_iterations=10,
-       backend=ParallelSimulator(),
+       backend=MaestroSimulator(),
    )
 
    # Run with checkpointing enabled
@@ -100,7 +100,7 @@ To resume from a checkpoint, use the ``load_state()`` class method:
    # Load the latest checkpoint
    vqe_resumed = VQE.load_state(
        checkpoint_dir="my_checkpoints",
-       backend=ParallelSimulator(),
+       backend=MaestroSimulator(),
        molecule=mol,  # Must provide original problem configuration
        ansatz=HartreeFockAnsatz(),
        n_layers=1,
@@ -122,7 +122,7 @@ By default, ``load_state()`` loads the latest checkpoint. To load a specific che
    # Load checkpoint from iteration 5
    vqe_resumed = VQE.load_state(
        checkpoint_dir="my_checkpoints",
-       backend=ParallelSimulator(),
+       backend=MaestroSimulator(),
        subdirectory="checkpoint_005",  # Specific checkpoint subdirectory
        molecule=mol,
        ansatz=HartreeFockAnsatz(),
@@ -141,7 +141,7 @@ Here's a complete example showing checkpointing with :class:`QAOA`:
    from divi.qprog import QAOA, GraphProblem
    from divi.qprog.checkpointing import CheckpointConfig
    from divi.qprog.optimizers import PymooOptimizer, PymooMethod
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
 
    # Create problem
    G = nx.bull_graph()
@@ -154,7 +154,7 @@ Here's a complete example showing checkpointing with :class:`QAOA`:
        n_layers=1,
        optimizer=PymooOptimizer(method=PymooMethod.CMAES, population_size=10),
        max_iterations=5,
-       backend=ParallelSimulator(),
+       backend=MaestroSimulator(),
    )
 
    # Run with checkpointing
@@ -163,7 +163,7 @@ Here's a complete example showing checkpointing with :class:`QAOA`:
    # Later: Resume from checkpoint
    qaoa2 = QAOA.load_state(
        checkpoint_dir=checkpoint_dir,
-       backend=ParallelSimulator(),
+       backend=MaestroSimulator(),
        problem=G,  # Must provide original problem
        graph_problem=GraphProblem.MAX_CLIQUE,
        n_layers=1,

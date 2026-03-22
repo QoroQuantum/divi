@@ -170,7 +170,7 @@ field Ising model:
    import pennylane as qml
    from divi.qprog import CustomVQA
    from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
 
    # 1. Define the Hamiltonian (observable to minimise)
    H = -1.0 * qml.Z(0) @ qml.Z(1) + 0.5 * qml.X(0) + 0.5 * qml.X(1)
@@ -194,7 +194,7 @@ field Ising model:
        qscript,
        param_shape=(4,),
        max_iterations=30,
-       backend=ParallelSimulator(),
+       backend=MaestroSimulator(),
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        seed=42,
    )
@@ -244,7 +244,7 @@ Bell-state circuit and measures its probabilities:
        StageToken,
    )
    from divi.pipeline.stages import MeasurementStage
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
 
    class BellSpecStage(SpecStage):
        """Spec stage that produces a Bell-state circuit."""
@@ -282,7 +282,7 @@ Bell-state circuit and measures its probabilities:
    ])
 
    # Run the pipeline
-   backend = ParallelSimulator()
+   backend = MaestroSimulator()
    env = PipelineEnv(backend=backend)
    result = pipeline.run(initial_spec=None, env=env)
 

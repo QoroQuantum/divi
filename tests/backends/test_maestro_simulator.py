@@ -4,7 +4,7 @@
 
 import pytest
 
-from divi.backends._maestro_simulator import MaestroSimulator
+from divi.backends._maestro_simulator import MaestroSimulator, _strip_measurements
 from tests.backends import circuit_runner_contracts as contracts
 from tests.backends.circuit_runner_contracts import QASM_DEPTH_2, QASM_DEPTH_3
 
@@ -19,7 +19,11 @@ def _make_fake_maestro(mocker, counts=None, expvals=None):
 
     # Enum-like objects for config resolution
     maestro.SimulatorType = {"QCSim": "QCSim", "Gpu": "Gpu"}
-    maestro.SimulationType = {"Statevector": "Statevector", "MPS": "MPS"}
+    maestro.SimulationType = {
+        "Statevector": "Statevector",
+        "MPS": "MPS",
+        "MatrixProductState": "MatrixProductState",
+    }
 
     # Sampling
     if counts is None:
@@ -90,6 +94,125 @@ class TestProperties:
         assert sim.max_bond_dimension == 64
         assert sim.singular_value_threshold == 1e-8
         assert sim.use_double_precision is True
+
+
+# ---------------------------------------------------------------------------
+# Automatic MPS threshold
+# ---------------------------------------------------------------------------
+
+# Minimal QASM templates for qubit-count tests (no real gates needed).
+_QASM_SMALL = (
+    'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[10];\ncreg c[10];\n'
+    "h q[0];\nmeasure q[0] -> c[0];\n"
+)
+_QASM_LARGE = (
+    'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[25];\ncreg c[25];\n'
+    "h q[0];\nmeasure q[0] -> c[0];\n"
+)
+
+
+class TestMpsThreshold:
+    """Automatic simulation type selection based on qubit count."""
+
+    def test_default_threshold(self, mocker):
+        sim = _make_simulator(mocker, _make_fake_maestro(mocker))
+        assert sim.mps_qubit_threshold == 22
+
+    def test_custom_threshold(self, mocker):
+        sim = _make_simulator(
+            mocker, _make_fake_maestro(mocker), mps_qubit_threshold=10
+        )
+        assert sim.mps_qubit_threshold == 10
+
+    def test_below_threshold_no_simulation_type(self, mocker):
+        """Circuits below the threshold should not set simulation_type."""
+        fake = _make_fake_maestro(mocker)
+        sim = _make_simulator(mocker, fake)
+
+        sim.submit_circuits({"c0": _QASM_SMALL})
+
+        call_kwargs = fake.simple_execute.call_args[1]
+        assert "simulation_type" not in call_kwargs
+
+    def test_above_threshold_selects_mps(self, mocker):
+        """Circuits above the threshold should auto-select MPS."""
+        fake = _make_fake_maestro(mocker)
+        sim = _make_simulator(mocker, fake)
+
+        sim.submit_circuits({"c0": _QASM_LARGE})
+
+        call_kwargs = fake.simple_execute.call_args[1]
+        assert call_kwargs["simulation_type"] == "MatrixProductState"
+
+    def test_explicit_simulation_type_overrides_threshold(self, mocker):
+        """An explicit simulation_type should not be overridden by the threshold."""
+        fake = _make_fake_maestro(mocker)
+        sim = _make_simulator(mocker, fake, simulation_type="Statevector")
+
+        sim.submit_circuits({"c0": _QASM_LARGE})
+
+        call_kwargs = fake.simple_execute.call_args[1]
+        assert call_kwargs["simulation_type"] == "Statevector"
+
+    def test_threshold_applies_to_expval_mode(self, mocker):
+        """MPS threshold also applies in expectation value mode."""
+        fake = _make_fake_maestro(mocker, expvals=[0.5])
+        sim = _make_simulator(mocker, fake)
+
+        sim.submit_circuits({"c0": _QASM_LARGE}, ham_ops="Z" + "I" * 24)
+
+        call_kwargs = fake.simple_estimate.call_args[1]
+        assert call_kwargs["simulation_type"] == "MatrixProductState"
+
+    def test_custom_threshold_respected(self, mocker):
+        """A custom threshold of 5 should trigger MPS for a 10-qubit circuit."""
+        fake = _make_fake_maestro(mocker)
+        sim = _make_simulator(mocker, fake, mps_qubit_threshold=5)
+
+        sim.submit_circuits({"c0": _QASM_SMALL})
+
+        call_kwargs = fake.simple_execute.call_args[1]
+        assert call_kwargs["simulation_type"] == "MatrixProductState"
+
+    def test_at_threshold_no_mps(self, mocker):
+        """Circuits exactly at the threshold should NOT trigger MPS (> not >=)."""
+        fake = _make_fake_maestro(mocker)
+        sim = _make_simulator(mocker, fake, mps_qubit_threshold=10)
+
+        sim.submit_circuits({"c0": _QASM_SMALL})
+
+        call_kwargs = fake.simple_execute.call_args[1]
+        assert "simulation_type" not in call_kwargs
+
+    def test_auto_mps_sets_default_bond_dimension(self, mocker):
+        """Auto-MPS should set bond dimension to 64 when not explicitly configured."""
+        fake = _make_fake_maestro(mocker)
+        sim = _make_simulator(mocker, fake)
+
+        sim.submit_circuits({"c0": _QASM_LARGE})
+
+        call_kwargs = fake.simple_execute.call_args[1]
+        assert call_kwargs["max_bond_dimension"] == 64
+
+    def test_explicit_bond_dimension_not_overridden(self, mocker):
+        """User-specified bond dimension should not be overridden by auto-MPS."""
+        fake = _make_fake_maestro(mocker)
+        sim = _make_simulator(mocker, fake, max_bond_dimension=128)
+
+        sim.submit_circuits({"c0": _QASM_LARGE})
+
+        call_kwargs = fake.simple_execute.call_args[1]
+        assert call_kwargs["max_bond_dimension"] == 128
+
+    def test_no_auto_bond_dimension_below_threshold(self, mocker):
+        """Below threshold, bond dimension should not be set unless explicit."""
+        fake = _make_fake_maestro(mocker)
+        sim = _make_simulator(mocker, fake)
+
+        sim.submit_circuits({"c0": _QASM_SMALL})
+
+        call_kwargs = fake.simple_execute.call_args[1]
+        assert "max_bond_dimension" not in call_kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +443,7 @@ class TestStripMeasurements:
             "h q[0];\ncx q[0],q[1];\nrz(0.5) q[2];\n"
             "measure q[0] -> c[0];\nmeasure q[1] -> c[1];\nmeasure q[2] -> c[2];\n"
         )
-        result = MaestroSimulator._strip_measurements(qasm)
+        result = _strip_measurements(qasm)
         assert "measure" not in result
         assert "h q[0]" in result
         assert "cx q[0],q[1]" in result
@@ -331,7 +454,7 @@ class TestStripMeasurements:
             'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[2];\ncreg c[2];\n'
             "h q[0];\ncx q[0],q[1];\n"
         )
-        assert MaestroSimulator._strip_measurements(qasm) == qasm
+        assert _strip_measurements(qasm) == qasm
 
     def test_preserves_creg(self):
         """creg declarations must survive even though measurements are stripped."""
@@ -339,7 +462,7 @@ class TestStripMeasurements:
             'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[2];\ncreg c[2];\n'
             "h q[0];\nmeasure q[0] -> c[0];\n"
         )
-        result = MaestroSimulator._strip_measurements(qasm)
+        result = _strip_measurements(qasm)
         assert "creg c[2]" in result
 
 

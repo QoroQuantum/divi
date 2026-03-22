@@ -47,7 +47,7 @@ Here's how a typical :class:`VQE` program flows through this lifecycle:
 .. code-block:: python
 
    from divi.qprog import VQE, HartreeFockAnsatz
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
    from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
 
    # 1. Initialization - Define your quantum problem
@@ -55,7 +55,7 @@ Here's how a typical :class:`VQE` program flows through this lifecycle:
        molecule=molecule,           # Your molecular system
        ansatz=HartreeFockAnsatz(),  # Quantum circuit template
        n_layers=2,                  # Circuit depth
-       backend=ParallelSimulator(), # Where to run circuits
+       backend=MaestroSimulator(),  # Where to run circuits
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),  # Choose optimizer
        seed=42                      # For reproducibility
    )
@@ -100,7 +100,7 @@ Set ``include_decoded=True`` when calling :meth:`get_top_solutions` to include d
    import numpy as np
    from divi.qprog import QAOA
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
 
    # Create a QUBO problem
    bqm = dimod.generators.gnp_random_bqm(10, 0.5, vartype="BINARY", seed=1997)
@@ -111,7 +111,7 @@ Set ``include_decoded=True`` when calling :meth:`get_top_solutions` to include d
        n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        max_iterations=10,
-       backend=ParallelSimulator(shots=10000),
+       backend=MaestroSimulator(shots=10000),
    )
 
    qaoa_problem.run()
@@ -262,7 +262,7 @@ compilation, execution, and optimization:
 
    import pennylane as qml
    from divi.qprog import CustomVQA
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
 
    qscript = qml.tape.QuantumScript(
        ops=[
@@ -276,7 +276,7 @@ compilation, execution, and optimization:
    program = CustomVQA(
        qscript=qscript,
        param_shape=(2,),
-       backend=ParallelSimulator(),
+       backend=MaestroSimulator(),
    )
    program.run(perform_final_computation=False)
 
@@ -327,7 +327,8 @@ Divi's backend system provides a unified interface for different execution envir
 
 **Available Backends:**
 
-- :class:`ParallelSimulator` 💻 - Local high-performance simulator
+- :class:`MaestroSimulator` 💻 - Local high-performance simulator
+- :class:`ParallelSimulator` 💻 - Convenience wrapper around Qiskit Aer with noise modeling and thread-count control
 - :class:`QoroService` ☁️ - Cloud quantum computing service
 
 **Backend Selection:**
@@ -335,9 +336,9 @@ Divi's backend system provides a unified interface for different execution envir
 .. code-block:: python
 
    # For development and testing
-   backend = ParallelSimulator(
+   from divi.backends import MaestroSimulator
+   backend = MaestroSimulator(
        shots=1000,      # Measurement precision
-       n_processes=4    # Parallel execution
    )
 
    # For production and real hardware

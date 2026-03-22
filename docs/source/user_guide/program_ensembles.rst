@@ -38,7 +38,7 @@ The most common program ensemble scenario is running VQE across multiple molecul
    import pennylane as qml
    from divi.qprog import VQEHyperparameterSweep, MoleculeTransformer, HartreeFockAnsatz
    from divi.qprog.optimizers import MonteCarloOptimizer
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
 
    # Define your base molecule
    base_molecule = qml.qchem.Molecule(
@@ -64,7 +64,7 @@ The most common program ensemble scenario is running VQE across multiple molecul
        ansatze=[HartreeFockAnsatz()],  # Single ansatz for simplicity
        optimizer=mc_optimizer,
        max_iterations=25,
-       backend=ParallelSimulator(shots=2000, n_processes=4)
+       backend=MaestroSimulator(shots=2000)
    )
 
    # Execute the entire sweep
@@ -85,7 +85,7 @@ The most common program ensemble scenario is running VQE across multiple molecul
    import pennylane as qml
    from divi.qprog import VQEHyperparameterSweep, MoleculeTransformer, HartreeFockAnsatz, UCCSDAnsatz, GenericLayerAnsatz
    from divi.qprog.optimizers import MonteCarloOptimizer
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
    # Multiple ansätze comparison
    vqe_sweep = VQEHyperparameterSweep(
        molecule_transformer=transformer,
@@ -96,7 +96,7 @@ The most common program ensemble scenario is running VQE across multiple molecul
        ],
        optimizer=MonteCarloOptimizer(population_size=5),
        max_iterations=50,
-       backend=ParallelSimulator(shots=5000)
+       backend=MaestroSimulator(shots=5000)
    )
 
    # Custom molecule transformations
@@ -125,13 +125,13 @@ into a trajectory:
    import numpy as np
    import pennylane as qml
    from divi.qprog import TimeEvolutionTrajectory
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
 
    trajectory = TimeEvolutionTrajectory(
        hamiltonian=qml.PauliX(0),
        time_points=np.linspace(0.01, math.pi, 20).tolist(),
        observable=qml.PauliZ(0),
-       backend=ParallelSimulator(shots=5000),
+       backend=MaestroSimulator(shots=5000),
    )
    trajectory.create_programs()
    trajectory.run(blocking=True)
@@ -182,7 +182,7 @@ For large optimization problems that exceed quantum hardware limitations, Divi p
        partitioning_config=config,
        optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
        max_iterations=20,
-       backend=ParallelSimulator()
+       backend=MaestroSimulator()
    )
 
    # Execute workflow
@@ -251,7 +251,7 @@ For large QUBO problems, Divi integrates with D-Wave's hybrid solvers:
        n_layers=3,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        max_iterations=15,
-       backend=ParallelSimulator()
+       backend=MaestroSimulator()
    )
 
    # Execute partitioned computation
@@ -281,7 +281,7 @@ arguments (for example ``ansatz``, ``encoding_type``, ``alpha``):
        alpha=2.0,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        max_iterations=15,
-       backend=ParallelSimulator(),
+       backend=MaestroSimulator(),
    )
 
 Beam Search Aggregation
@@ -355,7 +355,7 @@ You can create custom program ensemble workflows by inheriting from :class:`~div
 .. code-block:: python
 
    from divi.qprog import ProgramEnsemble, VQE
-   from divi.backends import CircuitRunner, ParallelSimulator
+   from divi.backends import CircuitRunner, MaestroSimulator
    import pennylane as qml
    import numpy as np
 
@@ -401,7 +401,7 @@ You can create custom program ensemble workflows by inheriting from :class:`~div
    parameters = [params1, params2, params3]
 
    # Use a local simulator
-   local_backend = ParallelSimulator(n_processes=8)
+   local_backend = MaestroSimulator()
    sweep = CustomParameterSweep(local_backend, molecules, parameters)
    sweep.create_programs()
    sweep.run(blocking=True)
@@ -467,7 +467,7 @@ Combine local and cloud execution for optimal performance:
    problem_size = 50
    molecule = qml.qchem.Molecule(symbols=["H", "H"], coordinates=np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.74]]))
    if problem_size < 100:
-       backend = ParallelSimulator(n_processes=4)
+       backend = MaestroSimulator()
    else:
        # Use cloud for large problems
        backend = QoroService()

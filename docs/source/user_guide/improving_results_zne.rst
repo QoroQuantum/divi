@@ -117,7 +117,7 @@ and must implement three members:
    vqe = VQE(
        molecule=h2_molecule,
        qem_protocol=WeightedAveraging(),
-       backend=ParallelSimulator(),
+       backend=MaestroSimulator(),
    )
 
 .. note::

@@ -27,7 +27,7 @@ Based on test cases and real applications, here are some proven configurations:
    import numpy as np
    from divi.qprog import QAOA, GraphProblem
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
    # Tested configuration for bull graph max-clique
    G = nx.bull_graph()
 
@@ -38,7 +38,7 @@ Based on test cases and real applications, here are some proven configurations:
        optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
        max_iterations=10,
        is_constrained=True,
-       backend=ParallelSimulator(),
+       backend=MaestroSimulator(),
    )
 
    qaoa_problem.run()
@@ -51,7 +51,7 @@ Based on test cases and real applications, here are some proven configurations:
    import numpy as np
    from divi.qprog import QAOA
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
    # Tested QUBO matrix that should optimize to [1, 0, 1]
    qubo_matrix = np.array([
        [-3.0, 4.0, 0.0],
@@ -64,7 +64,7 @@ Based on test cases and real applications, here are some proven configurations:
        n_layers=1,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        max_iterations=12,
-       backend=ParallelSimulator(),
+       backend=MaestroSimulator(),
    )
 
    qaoa_problem.run()
@@ -97,7 +97,7 @@ Example: QAOA with QDrift:
    import networkx as nx
    from divi.qprog import QAOA, GraphProblem, QDrift
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
 
    G = nx.erdos_renyi_graph(12, 0.3, seed=1997)
    qdrift = QDrift(
@@ -114,7 +114,7 @@ Example: QAOA with QDrift:
        trotterization_strategy=qdrift,
        optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
        max_iterations=5,
-       backend=ParallelSimulator(),
+       backend=MaestroSimulator(),
    )
    qaoa.run()
 
@@ -155,7 +155,7 @@ Example: Finding the max-clique of a graph:
    import networkx as nx
    from divi.qprog import QAOA, GraphProblem
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
 
    # Create a graph
    G = nx.bull_graph()
@@ -167,7 +167,7 @@ Example: Finding the max-clique of a graph:
        optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
        max_iterations=10,
        is_constrained=True,
-       backend=ParallelSimulator(),
+       backend=MaestroSimulator(),
    )
 
    qaoa_problem.run()
@@ -210,7 +210,7 @@ NumPy Array-based Input
        n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
        max_iterations=5,
-       backend=ParallelSimulator(),
+       backend=MaestroSimulator(),
    )
 
    qaoa_problem.run()
@@ -234,7 +234,7 @@ BinaryQuadraticModel Input
    import dimod
    from divi.qprog import QAOA
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
 
    # Create a BinaryQuadraticModel
    bqm = dimod.BinaryQuadraticModel(
@@ -249,7 +249,7 @@ BinaryQuadraticModel Input
        n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        max_iterations=10,
-       backend=ParallelSimulator(),
+       backend=MaestroSimulator(),
    )
 
    qaoa_problem.run(perform_final_computation=True)
@@ -303,7 +303,7 @@ Example
 
    from divi.qprog import QAOA
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
 
    hubo = {
        ("a",): -2.0,
@@ -320,7 +320,7 @@ Example
        n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        max_iterations=30,
-       backend=ParallelSimulator(shots=10000),
+       backend=MaestroSimulator(shots=10000),
    )
 
    qaoa.run()
@@ -371,7 +371,7 @@ Example:
        ScipyMethod,
        ScipyOptimizer,
    )
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
 
    graph = nx.random_regular_graph(3, 16, seed=42)
 
@@ -381,7 +381,7 @@ Example:
        max_depth=5,
        strategy=InterpolationStrategy.INTERP,
        max_iterations_per_depth=15,
-       backend=ParallelSimulator(shots=10000),
+       backend=MaestroSimulator(shots=10000),
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
    )
    iterative.run()
@@ -421,7 +421,7 @@ For large graphs that exceed quantum hardware limitations, use GraphPartitioning
    import networkx as nx
    from divi.qprog import GraphPartitioningQAOA, GraphProblem, PartitioningConfig
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
 
    # Large graph
    large_graph = nx.erdos_renyi_graph(20, 0.3)
@@ -440,7 +440,7 @@ For large graphs that exceed quantum hardware limitations, use GraphPartitioning
        partitioning_config=config,
        optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
        max_iterations=20,
-       backend=ParallelSimulator(),
+       backend=MaestroSimulator(),
    )
 
    # Execute workflow
@@ -472,7 +472,7 @@ QAOA partitions:
    import hybrid
    from divi.qprog import QUBOPartitioningQAOA
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
 
    # Large QUBO problem
    large_bqm = dimod.generators.gnp_random_bqm(25, 0.5, vartype="BINARY")
@@ -484,7 +484,7 @@ QAOA partitions:
        n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        max_iterations=10,
-       backend=ParallelSimulator(),
+       backend=MaestroSimulator(),
    )
 
    qubo_partition.create_programs()
@@ -506,7 +506,7 @@ PCE partitions:
    from divi.qprog import QUBOPartitioningQAOA
    from divi.qprog.algorithms import GenericLayerAnsatz
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
 
    large_bqm = dimod.generators.gnp_random_bqm(25, 0.5, vartype="BINARY")
 
@@ -520,7 +520,7 @@ PCE partitions:
        alpha=2.0,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        max_iterations=10,
-       backend=ParallelSimulator(),
+       backend=MaestroSimulator(),
    )
 
    qubo_partition.create_programs()
@@ -535,7 +535,7 @@ Iterative QAOA partitions:
    import hybrid
    from divi.qprog import InterpolationStrategy, QUBOPartitioningQAOA
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
 
    large_bqm = dimod.generators.gnp_random_bqm(25, 0.5, vartype="BINARY")
 
@@ -547,7 +547,7 @@ Iterative QAOA partitions:
        strategy=InterpolationStrategy.INTERP,
        max_iterations_per_depth=10,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
-       backend=ParallelSimulator(),
+       backend=MaestroSimulator(),
    )
 
    qubo_partition.create_programs()

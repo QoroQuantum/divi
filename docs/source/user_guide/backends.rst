@@ -13,14 +13,14 @@ Understanding ExecutionResult
 
 All backend :meth:`submit_circuits` methods return an :class:`ExecutionResult` object, which provides a unified interface for handling both synchronous and asynchronous execution.
 
-**For Synchronous Backends** (like :class:`ParallelSimulator`):
+**For Synchronous Backends** (like :class:`MaestroSimulator` and :class:`ParallelSimulator`):
    Results are available immediately after submission:
 
    .. code-block:: python
 
-      from divi.backends import ParallelSimulator
+      from divi.backends import MaestroSimulator
 
-      backend = ParallelSimulator()
+      backend = MaestroSimulator()
       result = backend.submit_circuits({"circuit_0": qasm_string})
 
       # Access results directly
@@ -51,7 +51,7 @@ All backend :meth:`submit_circuits` methods return an :class:`ExecutionResult` o
           counts = circuit_result["results"]
           print(f"{label}: {counts}")
 
-**Note:** For most use cases, you don't need to interact with :class:`ExecutionResult` directly. The backends handle the workflow automatically. The examples above show the typical patterns for accessing results from both synchronous and asynchronous backends.
+**Note:** When using high-level algorithms like :class:`VQE` or :class:`QAOA`, you don't interact with :class:`ExecutionResult` directly — the algorithm handles submission and result fetching. The examples above show the patterns for when you call ``submit_circuits`` yourself.
 
 **Result Format:**
    The ``results`` attribute is a list of dictionaries, each containing:
@@ -71,56 +71,63 @@ All backend :meth:`submit_circuits` methods return an :class:`ExecutionResult` o
 Available Backends
 ------------------
 
-Divi comes with two primary backends out of the box:
+Divi comes with three primary backends out of the box:
 
-* **:class:`ParallelSimulator`**: A high-performance local simulator with parallel execution capabilities, perfect for development and testing.
-* **:class:`QoroService`**: A cloud-based quantum computing service for accessing powerful simulators and real quantum hardware.
+* :class:`MaestroSimulator` — A high-performance local simulator, recommended as the default for development and testing.
+* :class:`ParallelSimulator` — A convenience wrapper around Qiskit's ``AerSimulator`` with simplified noise modeling and thread-count control. Use this when you need noisy simulation.
+* :class:`QoroService` — A cloud-based quantum computing service for accessing powerful simulators and real quantum hardware.
 
 Let's dive into each one.
 
-:class:`ParallelSimulator`
---------------------------
+MaestroSimulator
+-----------------
 
-The :class:`ParallelSimulator` is your go-to backend for local development, testing, and research. It's designed for speed and flexibility, allowing you to iterate quickly without needing an internet connection.
+The :class:`MaestroSimulator` is the recommended backend for local development, testing, and research. It is powered by Qoro's C++ quantum simulator (``qoro-maestro``) and provides fast, accurate simulation with automatic Statevector-to-MPS fallback for larger circuits.
 
 **Key Features:**
 
-* **Fast Execution**: Optimized simulation with parallel processing to take full advantage of your local machine.
-* **Noise Modeling**: Simulate realistic noise conditions by integrating with Qiskit's fake backends.
-* **Flexible Configuration**: Easily customize the number of shots, parallel processes, and noise models.
-* **Local Execution**: Runs entirely on your machine, no cloud access required.
+* **High Performance**: Significantly faster than Qiskit Aer across typical circuit sizes (auto-MPS keeps it competitive beyond 22 qubits).
+* **Auto Method Selection**: Automatically switches from Statevector to MPS for circuits exceeding 22 qubits (configurable via ``mps_qubit_threshold``).
+* **Multiple Simulation Methods**: Statevector, MPS, Stabilizer, TensorNetwork, PauliPropagator.
 
-Getting Started with ParallelSimulator
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Using the simulator is straightforward. You can create a default instance or configure it to your specific needs.
+Getting Started
+^^^^^^^^^^^^^^^
+
+.. code-block:: python
+
+   from divi.backends import MaestroSimulator
+
+   # Default — auto-selects Statevector or MPS based on circuit size
+   backend = MaestroSimulator()
+
+   # Explicit MPS for large circuits
+   backend = MaestroSimulator(
+       shots=5000,
+       simulation_type="MatrixProductState",
+       max_bond_dimension=64,
+   )
+
+
+ParallelSimulator
+------------------
+
+The :class:`ParallelSimulator` is a convenience wrapper around Qiskit's ``AerSimulator`` with simplified thread-count control and noise configuration. Use it when you need to model realistic hardware noise — for example, when developing error mitigation strategies or benchmarking algorithm robustness.
+
+
+Examples
+^^^^^^^^
 
 .. code-block:: python
 
    from divi.backends import ParallelSimulator
 
-   # A basic simulator with default settings
-   backend = ParallelSimulator()
-
-   # A configured simulator for better accuracy and speed
+   # Reproducible noisy simulation
    backend = ParallelSimulator(
-       shots=1000,
-       n_processes=4
-   )
-
-Advanced Configuration
-^^^^^^^^^^^^^^^^^^^^^^
-
-You can tune the :class:`ParallelSimulator` for different scenarios, like maximizing performance or simulating a noisy environment.
-
-.. code-block:: python
-
-   # High-performance configuration for production-level simulations
-   backend = ParallelSimulator(
-       shots=10000,           # Increase measurement shots for higher precision
-       n_processes=8,         # Use more parallel processes
-       qiskit_backend="auto", # Let Divi auto-select the best available simulator
-       simulation_seed=42     # Set a random seed for reproducible results
+       shots=10000,
+       n_processes=8,
+       qiskit_backend="auto", # Auto-select a Qiskit fake backend by qubit count
+       simulation_seed=42     # Deterministic results for debugging
    )
 
    # Noisy simulation to mimic real hardware
@@ -131,112 +138,34 @@ You can tune the :class:`ParallelSimulator` for different scenarios, like maximi
        n_processes=2
    )
 
-QoroService (Cloud Backend)
----------------------------
+QoroService
+------------
 
-The :class:`QoroService` provides access to cloud-based quantum computing resources, including advanced simulation services with greater bandwidth and a wider variety of simulation types (such as tensor networks), as well as real quantum hardware. While :class:`ParallelSimulator` is ideal for local prototyping, :class:`QoroService` offers production-grade simulation capabilities and hardware access. The service supports two execution modes: **sampling mode** for measurement histograms (available on both simulation and hardware) and **expectation mode** for expectation values (currently simulation-only).
-
-**Key Features:**
-
-* **Advanced Simulation**: Access production-grade simulation services with greater bandwidth and a variety of simulation types, including tensor networks, beyond what's available in local prototyping.
-* **Real Hardware**: Run your algorithms on actual quantum computers.
-* **Scalable Execution**: The service is designed to handle large queues of jobs efficiently.
-* **Circuit Packing**: Enable circuit packing optimization via :attr:`JobConfig.use_circuit_packing` to improve execution efficiency by combining multiple circuits into optimized batches.
-* **Job Configuration**: Use :class:`JobConfig` to configure job settings including shots, QPU system selection, circuit packing, and tags. Set default configurations at service initialization or override them per job.
-* **Job Management**: Track job status (PENDING, RUNNING, COMPLETED, FAILED, CANCELLED), poll for completion with configurable intervals, retrieve results, and delete jobs.
-
-Getting Started with :class:`QoroService`
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-To use the service, you'll first need to initialize it and test your connection.
-
-.. code-block:: python
-
-   from divi.backends import QoroService, JobType
-
-   # Initialize the service (API keys are loaded from your environment)
-   service = QoroService()
-
-   # Test your connection to the service
-   service.test_connection()
-
-Execution Modes
-^^^^^^^^^^^^^^^
-
-The :class:`QoroService` supports two distinct execution modes:
-
-1. **Sampling Mode** (circuit-only input): Submit circuits without Hamiltonian operators.
-   The service executes the circuits with a specified number of shots and returns
-   measurement histograms (bitstring counts). This mode uses ``JobType.EXECUTE``
-   and works with both simulator clusters and QPU systems.
-
-2. **Expectation Mode** (circuit with Pauli terms): Submit circuits along with
-   Hamiltonian operators specified as semicolon-separated Pauli terms (e.g., ``"XYZ;XXZ;ZIZ"``).
-   The service automatically uses ``JobType.EXPECTATION`` and returns expectation values
-   for each Pauli term. **Note**: Expectation mode is currently only available on simulation
-   backends, not on real hardware.
+The :class:`QoroService` provides access to cloud-based quantum computing resources, including advanced simulation (tensor networks and more) and real quantum hardware. It supports **sampling mode** (measurement counts) and **expectation mode** (Pauli expectation values, simulation-only). Circuit packing (``JobConfig.use_circuit_packing``) can batch circuits for efficiency.
 
 Submitting and Monitoring Jobs
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The workflow for submitting circuits depends on which execution mode you're using.
-
-**Sampling Mode Example:**
-
 .. code-block:: python
 
-   # Prepare your circuits as a dictionary
-   circuits = {
-       "circuit_1": qasm_string_1,
-       "circuit_2": qasm_string_2
-   }
+   from divi.backends import QoroService
 
-   # Submit the job in sampling mode (no ham_ops parameter)
-   execution_result = service.submit_circuits(
-       circuits,
-       job_type=JobType.EXECUTE
-   )
+   service = QoroService()
 
-   # Monitor the execution until completion
-   service.poll_job_status(execution_result, loop_until_complete=True)
+   # Sampling mode — submit circuits, poll, fetch results
+   result = service.submit_circuits({"c0": qasm_string_1, "c1": qasm_string_2})
+   service.poll_job_status(result, loop_until_complete=True)
+   completed = service.get_job_results(result)
+   # [{'label': 'c0', 'results': {'0011': 2000}}, ...]
 
-   # Retrieve your results (returns ExecutionResult with results populated)
-   completed_result = service.get_job_results(execution_result)
-   results = completed_result.results
-   # Example output shape:
-   # [{'label': 'circuit_0', 'results': {'0011': 2000}},
-   #  {'label': 'circuit_1', 'results': {'0011': 2000}}, ...]
+   # Expectation mode — pass ham_ops (semicolon-separated Pauli terms)
+   result = service.submit_circuits({"c0": qasm_string}, ham_ops="XYZ;XXZ;ZIZ")
+   service.poll_job_status(result, loop_until_complete=True)
+   completed = service.get_job_results(result)
+   # [{'label': 'c0', 'results': {'XYZ': 0.5, 'XXZ': -0.3, 'ZIZ': 1.0}}]
 
-**Expectation Mode Example:**
-
-.. code-block:: python
-
-   # Prepare your circuits and Pauli operators
-   circuits = {
-       "circuit_1": qasm_string_1
-   }
-
-   # Define Hamiltonian operators as semicolon-separated Pauli terms
-   # Each term must have the same length and contain only I, X, Y, Z
-   ham_ops = "XYZ;XXZ;ZIZ"
-
-   # Submit the job in expectation mode (ham_ops automatically sets JobType.EXPECTATION)
-   # Note: This mode is only available on simulation backends, not real hardware
-   # The QPU system in your JobConfig should be a simulation system (e.g., "qoro_maestro")
-   execution_result = service.submit_circuits(
-       circuits,
-       ham_ops=ham_ops
-       # job_type is automatically set to JobType.EXPECTATION when ham_ops is provided
-   )
-
-   # Monitor the execution until completion
-   service.poll_job_status(execution_result, loop_until_complete=True)
-
-   # Retrieve your results (returns ExecutionResult with results populated)
-   completed_result = service.get_job_results(execution_result)
-   results = completed_result.results
-   # Example output shape:
-   # [{'label': 'circuit_0', 'results': {'IIII': 1.0, 'XXXX': 0.0, 'YYYY': 0.0, 'ZZZZ': 1.0}}]
+   # Cancel a job
+   service.cancel_job(result)
 
 .. note::
 
@@ -336,107 +265,64 @@ replaces the previous execution configuration for that job.
 
 The ``api_meta`` field accepts a dictionary of runtime pass-through metadata. See the API reference for the full list of allowed keys (e.g. ``optimization_level``, ``resilience_level``, ``max_execution_time``).
 
+.. _Backend Selection Guide:
+
 Backend Selection Guide
 -----------------------
 
 Choosing the right backend depends on what stage of development you're in.
 
-* **For Development and Testing**, use :class:`ParallelSimulator`. It offers fast iteration cycles, easy debugging, and is completely free.
-* **For Production Runs**, use :class:`QoroService`. It provides access to real quantum hardware, scalable execution, and advanced features.
-* **For Research**, it's often best to use both. Start with :class:`ParallelSimulator` for rapid prototyping and then use :class:`QoroService` for final validation and to compare simulated results against real hardware.
+* **For Development and Testing**, use :class:`MaestroSimulator`. For noisy simulation, use :class:`ParallelSimulator` with Qiskit noise models.
+* **For Production Runs**, use :class:`QoroService` for cloud simulation, real quantum hardware, and scalable execution.
+* **For Research**, start with :class:`MaestroSimulator` for prototyping, then use :class:`QoroService` for validation against real hardware.
 
 Backend Comparison
 ------------------
 
-The best choice of backend depends on your specific needs. Here's a summary of the key differences:
-
 .. list-table::
    :header-rows: 1
-   :widths: 25 37 38
+   :widths: 20 27 27 26
    :stub-columns: 1
 
    * - Feature
+     - MaestroSimulator
      - ParallelSimulator
      - QoroService
    * - **Use Case**
-     - Development & Prototyping
-     - Production (Simulation & Real Hardware)
-   * - **Speed**
-     - Fast (Local CPU)
-     - High-throughput (Cloud)
-   * - **Accuracy**
-     - Ideal
-     - Ideal (simulation) / Real-world (hardware)
-   * - **Cost**
-     - Free
-     - Pay-per-use
-   * - **Scalability**
-     - Limited by local hardware
-     - High (Cloud infrastructure)
-   * - **Availability**
-     - Always (Local)
-     - Queue-dependent
-
-Job Cancellation
-----------------
-
-When using :class:`QoroService`, you can cancel running or pending jobs at any time.
-This is useful for long-running computations that you no longer need, or when you
-want to free up queue slots for higher-priority work.
-
-.. code-block:: python
-
-   from divi.backends import QoroService
-
-   service = QoroService()
-   result = service.submit_circuits(circuits)
-
-   # Cancel the job if it's still running
-   service.cancel_job(result)
-
-For variational algorithms like :class:`VQE` and :class:`QAOA` running in a
-:class:`ProgramEnsemble`, pressing ``Ctrl+C`` during execution will gracefully
-cancel all pending programs.  Each :class:`QuantumProgram` also exposes a
-:meth:`cancel_unfinished_job` method that cancels any in-flight job for that
-program.
+     - Default local simulation
+     - Noisy simulation
+     - Production & real hardware
+   * - **Simulation Engine**
+     - Qoro C++ (qoro-maestro)
+     - Qiskit Aer
+     - Cloud (Maestro / Aer / hardware)
+   * - **Noise Support**
+     - No
+     - Qiskit fake backends & noise models
+     - Hardware noise (real QPUs)
+   * - **Seed / Reproducibility**
+     - Not yet supported
+     - ``simulation_seed`` parameter
+     - N/A
 
 Depth Tracking
 --------------
 
-All :class:`CircuitRunner` backends can track the depth of executed circuits.
-Enable tracking with ``track_depth=True`` to collect statistics about your
-circuit depths across a full optimization run.
+All backends support ``track_depth=True`` to record circuit depths across submissions:
 
 .. code-block:: python
 
-   from divi.backends import ParallelSimulator
-
-   backend = ParallelSimulator(track_depth=True)
-
-   # After running your algorithm:
-   print(backend.average_depth())  # Mean depth across tracked circuits
-   print(backend.std_depth())      # Standard deviation of depth
-
-The depth tracker records the depth of every circuit submitted to the backend.
-After a run, use :meth:`average_depth` for the mean and :meth:`std_depth`
-for the standard deviation across all tracked circuits.
-
-Best Practices
---------------
-
-1.  **Start Local**: Always begin your development and testing with the :class:`ParallelSimulator`.
-2.  **Monitor Resources**: Keep an eye on your circuit counts and execution times to avoid unexpected costs.
-3.  **Choose the Right Backend**: Select your backend based on your specific problem requirements.
-4.  **Handle Errors Gracefully**: Implement proper error handling and fallbacks in your code.
-5.  **Optimize Your Configuration**: Tune your backend parameters to get the best performance for your use case.
+   backend = MaestroSimulator(track_depth=True)
+   # After running: backend.average_depth(), backend.std_depth()
 
 Common Issues and Solutions
 ---------------------------
 
-* **Slow Simulation**: Increase ``n_processes``, reduce ``shots`` for testing.
-* **High Memory Usage**: Reduce ``n_processes``, process circuits in smaller batches.
-* **Job Queue Delays**: Submit jobs during off-peak hours or use local simulation for development.
-* **Connection Problems**: Check your internet connection, verify your API credentials, and implement retry logic.
+* **Slow MaestroSimulator at >22 qubits**: The auto-MPS threshold handles this automatically. If you need to tune it, set ``mps_qubit_threshold`` or explicitly use ``simulation_type="MatrixProductState"`` with a suitable ``max_bond_dimension``.
+* **Slow ParallelSimulator**: Increase ``n_processes`` or reduce ``shots``.
+* **High memory usage with ParallelSimulator**: Reduce ``n_processes`` or ``shots``.
+* **Non-reproducible results**: :class:`MaestroSimulator` does not yet support seeded sampling. Use :class:`ParallelSimulator` with ``simulation_seed`` when you need exact reproducibility.
+* **Job queue delays on QoroService**: Use local simulation for development; submit cloud jobs during off-peak hours.
 
 Next Steps
 ----------

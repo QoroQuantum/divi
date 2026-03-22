@@ -17,10 +17,10 @@ Use probability mode when you want a final-state distribution:
 
    import math
    import pennylane as qml
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
    from divi.qprog import TimeEvolution
 
-   backend = ParallelSimulator(shots=5000)
+   backend = MaestroSimulator(shots=5000)
 
    te = TimeEvolution(
        hamiltonian=qml.PauliX(0) + qml.PauliX(1),
@@ -42,10 +42,10 @@ Provide ``observable=...`` to estimate expectation values after evolution:
 .. code-block:: python
 
    import pennylane as qml
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
    from divi.qprog import TimeEvolution
 
-   backend = ParallelSimulator(shots=5000)
+   backend = MaestroSimulator(shots=5000)
 
    te = TimeEvolution(
        hamiltonian=qml.PauliX(0) + qml.PauliZ(0),
@@ -66,10 +66,10 @@ For large Hamiltonians, you can use :class:`~divi.qprog.QDrift` to sample terms 
 .. code-block:: python
 
    import pennylane as qml
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
    from divi.qprog import QDrift, TimeEvolution
 
-   backend = ParallelSimulator(shots=5000)
+   backend = MaestroSimulator(shots=5000)
    qdrift = QDrift(
        keep_fraction=0.5,
        sampling_budget=2,
@@ -106,10 +106,10 @@ collects results into a time-ordered mapping.
    import math
    import numpy as np
    import pennylane as qml
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
    from divi.qprog import TimeEvolutionTrajectory
 
-   backend = ParallelSimulator(shots=5000)
+   backend = MaestroSimulator(shots=5000)
 
    trajectory = TimeEvolutionTrajectory(
        hamiltonian=qml.PauliX(0),

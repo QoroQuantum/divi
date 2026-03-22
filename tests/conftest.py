@@ -21,7 +21,7 @@ _stevedore_logger.setLevel(logging.CRITICAL)
 import pytest
 from dotenv import load_dotenv
 
-from divi.backends import CircuitRunner, ExecutionResult, ParallelSimulator
+from divi.backends import CircuitRunner, ExecutionResult, MaestroSimulator
 from divi.pipeline import PipelineEnv
 
 
@@ -92,7 +92,7 @@ def dummy_pipeline_env(dummy_expval_backend):
 
 @pytest.fixture
 def default_test_simulator():
-    return ParallelSimulator(shots=5000, _deterministic_execution=True)
+    return MaestroSimulator(shots=5000)
 
 
 def is_assertion_error(err, *_) -> bool:

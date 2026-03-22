@@ -27,7 +27,7 @@ Let's solve a quantum chemistry problem - finding the ground state energy of a h
    import pennylane as qml
    from divi.qprog import VQE, HartreeFockAnsatz
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
 
    # Step 1: Define your molecule
    h2_molecule = qml.qchem.Molecule(
@@ -44,7 +44,7 @@ Let's solve a quantum chemistry problem - finding the ground state energy of a h
       n_layers=2,  # Circuit depth
       optimizer=optimizer,
       max_iterations=10,  # Optimization steps
-      backend=ParallelSimulator(shots=1000),  # Local simulator
+      backend=MaestroSimulator(shots=1000),  # Local simulator
    )
 
    # Step 4: Run and get results!
@@ -72,7 +72,7 @@ Divi offers specialized algorithms for different problem types:
           molecule=h2_molecule,
           ansatz=UCCSDAnsatz(),  # More sophisticated than Hartree-Fock
           n_layers=3,
-          backend=ParallelSimulator()
+          backend=MaestroSimulator()
       )
 
 **QAOA – Optimization Problems** 🎯
@@ -90,24 +90,22 @@ Divi offers specialized algorithms for different problem types:
           problem=graph,
           graph_problem=GraphProblem.MAXCUT,
           n_layers=3,
-          backend=ParallelSimulator()
+          backend=MaestroSimulator()
       )
 
 **PCE – QUBO/HUBO with Pauli Correlation Encoding** 📐
-   Use :class:`PCE` for QUBO and higher-order (HUBO) binary optimization with parity-based encoding and configurable cost (e.g. CVaR). Good when you want an alternative to QAOA for binary polynomial problems.
+   Use :class:`PCE` for QUBO and higher-order (HUBO) binary optimization with parity-based encoding. PCE is a VQE variant that maps each variable to a parity of the measured bitstring, scaling logarithmically in qubits (dense encoding) or as O(√N) (poly encoding).
 
    .. code-block:: python
 
       import numpy as np
-      from divi.qprog import PCE, GenericLayerAnsatz
-      from divi.backends import ParallelSimulator
+      from divi.qprog import PCE
+      from divi.backends import MaestroSimulator
 
       qubo_matrix = np.array([[-1.0, 2.0], [0.0, 1.0]])
       pce = PCE(
           problem=qubo_matrix,
-          ansatz=GenericLayerAnsatz(n_layers=2),
-          n_layers=2,
-          backend=ParallelSimulator(),
+          backend=MaestroSimulator(),
       )
       pce.run()
 
@@ -119,13 +117,13 @@ Divi offers specialized algorithms for different problem types:
       import math
       import pennylane as qml
       from divi.qprog import TimeEvolution
-      from divi.backends import ParallelSimulator
+      from divi.backends import MaestroSimulator
 
       te = TimeEvolution(
           hamiltonian=qml.PauliX(0) + qml.PauliX(1),
           time=math.pi / 2,
           initial_state="Zeros",
-          backend=ParallelSimulator(shots=5000),
+          backend=MaestroSimulator(shots=5000),
       )
       te.run()
       print(te.results)  # basis-state probabilities or expectation value
@@ -134,47 +132,20 @@ Backend Options
 ---------------
 
 **Local Development** 💻
-   Use :class:`ParallelSimulator` for fast iteration and testing:
+   Use :class:`MaestroSimulator` (shown in all examples above) for fast iteration and testing. For noisy simulation, use :class:`ParallelSimulator` with Qiskit noise models.
 
-   .. code-block:: python
-
-      backend = ParallelSimulator(
-          shots=1000,           # Measurement precision
-          n_processes=4,        # Parallel execution
-          qiskit_backend="auto" # Automatic noisy backend selection
-      )
-
-**Cloud & Hardware** ☁️
-   Access real quantum computers through :class:`QoroService` (contact us for access):
+**Cloud Simulation & Hardware** ☁️
+   Access scalable cloud simulators (statevector, tensor-network, and more) through :class:`QoroService`. Sign up at `dash.qoroquantum.net <https://dash.qoroquantum.net/>`_ to get started with free credits. For real quantum hardware access, `contact us <https://qoroquantum.net>`_:
 
    .. code-block:: python
 
       from divi.backends import QoroService, JobConfig
 
-      # Initialize cloud service
       service = QoroService()  # Uses QORO_API_KEY from .env file
-
-      qasm_circuit = """OPENQASM 2.0;
-      include "qelib1.inc";
-
-      qreg q[2];
-      creg c[2];
-
-      h q[0];
-      cx q[0], q[1];
-      measure q[0] -> c[0];
-      measure q[1] -> c[1];"""
-
-      # Submit to a simulator cluster
-      circuits_dict = {"my_circuit": qasm_circuit}
-      execution_result = service.submit_circuits(
-          circuits_dict, override_job_config=JobConfig(simulator_cluster="qoro_maestro")
+      result = service.submit_circuits(
+          {"my_circuit": qasm_string},
+          override_job_config=JobConfig(simulator_cluster="qoro_maestro"),
       )
-
-      # Target real quantum hardware (contact us for QPU access)
-      # execution_result = service.submit_circuits(
-      #     circuits_dict, override_job_config=JobConfig(qpu_system="ibm_one")
-      # )
 
 Advanced Features
 -----------------
@@ -185,79 +156,41 @@ Advanced Features
    .. code-block:: python
 
       from divi.qprog.workflows import VQEHyperparameterSweep
-      from divi.qprog import MoleculeTransformer
-      from divi.qprog.optimizers import MonteCarloOptimizer
-      from divi.backends import ParallelSimulator
-      from divi.qprog import HartreeFockAnsatz, UCCSDAnsatz
-      import pennylane as qml
-      import numpy as np
+      from divi.qprog import MoleculeTransformer, HartreeFockAnsatz, UCCSDAnsatz
 
-      h2_molecule = qml.qchem.Molecule(
-         symbols=["H", "H"], coordinates=np.array([[0.0, 0.0, -0.6614], [0.0, 0.0, 0.6614]])
-      )
-
-      # Run hyperparameter sweep
-      # Create molecule transformer for bond length variations
-      transformer = MoleculeTransformer(
-         base_molecule=h2_molecule,
-         bond_modifiers=[-0.2, 0.0, 0.2],  # Bond length changes in Å
-      )
-
+      # Sweep over bond lengths × ansatze in parallel
       sweep = VQEHyperparameterSweep(
-         molecule_transformer=transformer,
+         molecule_transformer=MoleculeTransformer(
+            base_molecule=h2_molecule,
+            bond_modifiers=[-0.2, 0.0, 0.2],
+         ),
          ansatze=[HartreeFockAnsatz(), UCCSDAnsatz()],
-         optimizer=MonteCarloOptimizer(population_size=5, n_best_sets=2),
          max_iterations=10,
-         backend=ParallelSimulator(n_processes=4),
+         backend=MaestroSimulator(),
       )
-
-      sweep.create_programs()  # Generate all VQE instances
-      sweep.run(blocking=True)  # Execute all programs in parallel
-
-      # Get best configuration
+      sweep.create_programs()
+      sweep.run(blocking=True)
       (best_ansatz, best_bond_modifier), best_energy = sweep.aggregate_results()
 
 **Observable Grouping** 🔗
-   Optimize measurements by grouping commuting observables using PennyLane's grouping strategies:
+   Reduce circuit count by grouping commuting measurements — just add ``grouping_strategy`` to any VQE:
 
    .. code-block:: python
 
-      # Create VQE with observable grouping for efficiency
-      vqe = VQE(
-          molecule=h2_molecule,
-          ansatz=HartreeFockAnsatz(),
-          grouping_strategy="qwc",  # PennyLane's qubit-wise commuting strategy
-          backend=ParallelSimulator()
-      )
+      vqe = VQE(..., grouping_strategy="qwc")  # qubit-wise commuting groups
 
-      # Commuting measurements are grouped for fewer circuit executions
-      vqe.run()
-
-   **Note:** Observable grouping is a PennyLane feature. For detailed information about available strategies (`"qwc"`, `"wires"`, `"default"`), see the `PennyLane grouping documentation <https://docs.pennylane.ai/en/stable/code/api/pennylane.transforms.split_non_commuting.html>`_.
+   Available strategies: ``"qwc"``, ``"wires"``, ``"default"``. See the `PennyLane grouping documentation <https://docs.pennylane.ai/en/stable/code/api/pennylane.transforms.split_non_commuting.html>`_ for details.
 
 **Error Mitigation** 🛡️
-   Improve result accuracy with built-in techniques:
+   Improve results on noisy backends with Zero Noise Extrapolation — pass a ``qem_protocol`` and use :class:`ParallelSimulator` with a noise model:
 
    .. code-block:: python
 
       from divi.circuits.qem import ZNE
-      from mitiq.zne.inference import RichardsonFactory
-      from mitiq.zne.scaling import fold_gates_at_random
-      from functools import partial
 
-      # Create ZNE protocol
-      scale_factors = [1.0, 1.5, 2.0]
-      zne_protocol = ZNE(
-          scale_factors=scale_factors,
-          folding_fn=partial(fold_gates_at_random),
-          extrapolation_factory=RichardsonFactory(scale_factors=scale_factors),
-      )
+      vqe = VQE(..., qem_protocol=ZNE(...), backend=ParallelSimulator(qiskit_backend="auto"))
 
-      vqe = VQE(
-          molecule=h2_molecule,
-          qem_protocol=zne_protocol,
-          backend=ParallelSimulator(qiskit_backend="auto"),
-      )
+   See :doc:`user_guide/improving_results_zne` for a full walkthrough.
 
 Next Steps & Getting Help
 -------------------------

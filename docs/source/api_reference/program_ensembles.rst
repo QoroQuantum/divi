@@ -39,7 +39,7 @@ Core Architecture
 
    from divi.qprog.ensemble import ProgramEnsemble
    from divi.qprog import VQE, QAOA, BatchConfig, BatchMode
-   from divi.backends import ParallelSimulator
+   from divi.backends import MaestroSimulator
 
    class MyEnsemble(ProgramEnsemble):
        def create_programs(self):
@@ -57,7 +57,7 @@ Core Architecture
            ...
 
    # Run program ensemble: create programs first, then execute
-   ensemble = MyEnsemble(backend=ParallelSimulator())
+   ensemble = MyEnsemble(backend=MaestroSimulator())
    ensemble.create_programs()
    ensemble.run(blocking=True)
 

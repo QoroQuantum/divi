@@ -19,6 +19,25 @@ from divi.backends._execution_result import ExecutionResult
 logger = logging.getLogger(__name__)
 
 
+def _strip_id_gates(qasm: str) -> str:
+    """Remove ``id`` (identity) gates from QASM.
+
+    Maestro's QASM parser does not recognise the ``id`` gate.
+    Since identity gates are no-ops, stripping them is safe.
+    """
+    return re.sub(r"id\s+q\[\d+\]\s*;\n?", "", qasm)
+
+
+def _strip_measurements(qasm: str) -> str:
+    """Remove measurement instructions from QASM.
+
+    Measurement gates collapse the statevector, which corrupts
+    expectation-value estimation.  They must be stripped before
+    passing circuits to ``simple_estimate``.
+    """
+    return re.sub(r"measure\s+q\[\d+\]\s*->\s*c\[\d+\]\s*;\n?", "", qasm)
+
+
 class MaestroSimulator(CircuitRunner):
     """A CircuitRunner backend powered by qoro-maestro, Qoro's C++ quantum simulator.
 
@@ -28,17 +47,27 @@ class MaestroSimulator(CircuitRunner):
 
     Available on Linux and macOS only (not Windows).
 
+    When ``simulation_type`` is left as ``None``, the simulator automatically
+    switches from Statevector to MPS for circuits exceeding
+    ``mps_qubit_threshold`` qubits (default 22).
+
     Args:
         shots: Number of measurement shots. Defaults to 5000.
         simulator_type: Maestro simulator type, e.g. ``"QCSim"``, ``"Gpu"``.
             ``None`` enables auto-routing.
-        simulation_type: Simulation method, e.g. ``"Statevector"``, ``"MPS"``.
-            ``None`` enables auto-selection.
+        simulation_type: Simulation method, e.g. ``"Statevector"``,
+            ``"MatrixProductState"``. ``None`` enables automatic selection
+            based on qubit count.
         max_bond_dimension: Maximum bond dimension for MPS simulation.
         singular_value_threshold: SVD truncation threshold for MPS simulation.
         use_double_precision: Use double-precision floating point. Defaults to False.
         track_depth: Record circuit depth per submission. Defaults to False.
+        mps_qubit_threshold: Qubit count above which automatic MPS selection
+            kicks in when ``simulation_type`` is ``None``. Defaults to 22.
     """
+
+    _MPS_QUBIT_THRESHOLD_DEFAULT = 22
+    _MPS_AUTO_BOND_DIMENSION = 64
 
     def __init__(
         self,
@@ -49,6 +78,7 @@ class MaestroSimulator(CircuitRunner):
         singular_value_threshold: float | None = None,
         use_double_precision: bool = False,
         track_depth: bool = False,
+        mps_qubit_threshold: int | None = None,
     ):
         if maestro is None:
             raise ImportError(
@@ -64,6 +94,11 @@ class MaestroSimulator(CircuitRunner):
         self.max_bond_dimension = max_bond_dimension
         self.singular_value_threshold = singular_value_threshold
         self.use_double_precision = use_double_precision
+        self.mps_qubit_threshold = (
+            mps_qubit_threshold
+            if mps_qubit_threshold is not None
+            else self._MPS_QUBIT_THRESHOLD_DEFAULT
+        )
 
     @property
     def supports_expval(self) -> bool:
@@ -75,18 +110,47 @@ class MaestroSimulator(CircuitRunner):
         """Maestro executes circuits synchronously."""
         return False
 
-    def _build_config(self) -> dict:
-        """Build kwargs dict from non-None configuration options."""
+    def _resolve_simulation_type(self, n_qubits: int) -> str | None:
+        """Choose simulation type based on qubit count when not explicitly set.
+
+        Returns the user's explicit choice if set, otherwise switches to MPS
+        for circuits exceeding :pyattr:`mps_qubit_threshold`.
+        """
+        if self.simulation_type is not None:
+            return self.simulation_type
+        if n_qubits > self.mps_qubit_threshold:
+            logger.info(
+                "Circuit has %d qubits (> %d threshold), using MPS simulation.",
+                n_qubits,
+                self.mps_qubit_threshold,
+            )
+            return "MatrixProductState"
+        return None
+
+    def _build_config(self, n_qubits: int = 0) -> dict:
+        """Build kwargs dict from non-None configuration options.
+
+        Args:
+            n_qubits: Maximum qubit count in the batch, used for automatic
+                simulation type selection.
+        """
         config = {}
 
         if self.simulator_type is not None:
             config["simulator_type"] = maestro.SimulatorType[self.simulator_type]
 
-        if self.simulation_type is not None:
-            config["simulation_type"] = maestro.SimulationType[self.simulation_type]
+        auto_mps = False
+        simulation_type = self._resolve_simulation_type(n_qubits)
+        if simulation_type is not None:
+            config["simulation_type"] = maestro.SimulationType[simulation_type]
+            auto_mps = (
+                self.simulation_type is None and simulation_type == "MatrixProductState"
+            )
 
         if self.max_bond_dimension is not None:
             config["max_bond_dimension"] = self.max_bond_dimension
+        elif auto_mps:
+            config["max_bond_dimension"] = self._MPS_AUTO_BOND_DIMENSION
 
         if self.singular_value_threshold is not None:
             config["singular_value_threshold"] = self.singular_value_threshold
@@ -96,15 +160,8 @@ class MaestroSimulator(CircuitRunner):
 
         return config
 
-    @staticmethod
-    def _strip_measurements(qasm: str) -> str:
-        """Remove measurement instructions from QASM.
-
-        Measurement gates collapse the statevector, which corrupts
-        expectation-value estimation.  They must be stripped before
-        passing circuits to ``simple_estimate``.
-        """
-        return re.sub(r"measure\s+q\[\d+\]\s*->\s*c\[\d+\]\s*;\n?", "", qasm)
+    def set_seed(self, seed: int) -> None:  # noqa: ARG002
+        """No-op — maestro does not yet expose seeding from C++."""
 
     def _get_ham_ops_for_circuit(
         self,
@@ -165,8 +222,17 @@ class MaestroSimulator(CircuitRunner):
             ]
             self._depth_history.append(depths)
 
-        config = self._build_config()
+        # Determine max qubit count for automatic simulation type selection.
+        max_qubits = max(
+            int(m.group(1))
+            for q in qasm_strings
+            if (m := re.search(r"qreg\s+q\[(\d+)\]", q))
+        )
+        config = self._build_config(n_qubits=max_qubits)
         results = []
+
+        # Pre-process: strip id gates (not supported by maestro's QASM parser).
+        qasm_strings = [_strip_id_gates(q) for q in qasm_strings]
 
         if ham_ops is None:
             # Sampling mode — reverse bitstrings from maestro's big-endian
@@ -183,7 +249,7 @@ class MaestroSimulator(CircuitRunner):
                     i, ham_ops, circuit_ham_map
                 )
                 raw = maestro.simple_estimate(
-                    self._strip_measurements(qasm),
+                    _strip_measurements(qasm),
                     observables=pauli_string,
                     **config,
                 )
