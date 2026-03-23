@@ -16,10 +16,7 @@ from divi.hamiltonians import (
 )
 from divi.pipeline import CircuitPipeline
 from divi.pipeline.stages import MeasurementStage, TrotterSpecStage
-from divi.qprog.algorithms._initial_state import (
-    build_initial_state_ops,
-    validate_initial_state,
-)
+from divi.qprog.algorithms._initial_state import InitialState, ZerosState
 from divi.qprog.quantum_program import QuantumProgram
 
 
@@ -38,7 +35,7 @@ class TimeEvolution(QuantumProgram):
         time: float = 1.0,
         n_steps: int = 1,
         order: int = 1,
-        initial_state: str = "Zeros",
+        initial_state: InitialState | None = None,
         observable: qml.operation.Operator | None = None,
         **kwargs,
     ):
@@ -51,9 +48,9 @@ class TimeEvolution(QuantumProgram):
             time: Evolution time t (e^(-iHt)).
             n_steps: Number of Trotter steps.
             order: Suzuki-Trotter order (1 or even).
-            initial_state: One of ``"Zeros"`` (``|0...0>``), ``"Superposition"``
-                (``|+...+>``), ``"Ones"`` (``|1...1>``), or a per-qubit string
-                of ``'0'``, ``'1'``, ``'+'``, ``'-'`` (e.g. ``"01+-"``).
+            initial_state: Initial state preparation. Pass an :class:`InitialState`
+                instance (e.g. ``ZerosState()``, ``SuperpositionState()``).
+                Defaults to ``ZerosState()`` if None.
             observable: If None, measure ``qml.probs()``; else ``qml.expval(observable)``.
             **kwargs: Passed to QuantumProgram (backend, seed, progress_queue, etc.).
         """
@@ -75,7 +72,12 @@ class TimeEvolution(QuantumProgram):
         self._circuit_wires = tuple(hamiltonian_clean.wires)
         self.n_qubits = len(self._circuit_wires)
 
-        validate_initial_state(initial_state, self.n_qubits)
+        if initial_state is None:
+            initial_state = ZerosState()
+        if not isinstance(initial_state, InitialState):
+            raise TypeError(
+                f"initial_state must be an InitialState instance, got {type(initial_state).__name__}"
+            )
         self.initial_state = initial_state
 
         self.results: dict[str, float] | float | None = None
@@ -140,7 +142,7 @@ class TimeEvolution(QuantumProgram):
 
     def _build_ops(self, hamiltonian: qml.operation.Operator) -> list:
         """Build circuit ops: initial state, evolution, measurement."""
-        ops = build_initial_state_ops(self.initial_state, self._circuit_wires)
+        ops = self.initial_state.build(self._circuit_wires)
 
         # Campbell's faithful QDrift: individual evolution gates per sampled term.
         # This avoids Trotter error from feeding a resampled Hamiltonian to

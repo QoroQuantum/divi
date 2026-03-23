@@ -122,7 +122,6 @@ Divi offers specialized algorithms for different problem types:
       te = TimeEvolution(
           hamiltonian=qml.PauliX(0) + qml.PauliX(1),
           time=math.pi / 2,
-          initial_state="Zeros",
           backend=MaestroSimulator(shots=5000),
       )
       te.run()

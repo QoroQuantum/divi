@@ -26,6 +26,8 @@ from divi.qprog import (
     GraphProblem,
     ScipyMethod,
     ScipyOptimizer,
+    SuperpositionState,
+    ZerosState,
 )
 from divi.qprog.algorithms import _qaoa
 from divi.qprog.checkpointing import CheckpointConfig
@@ -169,7 +171,7 @@ class TestGraphInput:
             )
 
     def test_graph_unsuppported_initial_state(self, dummy_simulator):
-        with pytest.raises(ValueError, match="Bell"):
+        with pytest.raises(TypeError):
             QAOA(
                 problem=nx.bull_graph(),
                 graph_problem=GraphProblem.MAX_CLIQUE,
@@ -192,22 +194,21 @@ class TestGraphInput:
         qaoa_problem = QAOA(
             problem=nx.bull_graph(),
             graph_problem=GraphProblem.MAX_CLIQUE,
-            initial_state="Recommended",
             is_constrained=True,
             backend=dummy_simulator,
         )
 
-        assert qaoa_problem.initial_state == "Zeros"
+        assert isinstance(qaoa_problem.initial_state, ZerosState)
 
     def test_graph_initial_state_superposition(self, dummy_simulator):
         qaoa_problem = QAOA(
             problem=nx.bull_graph(),
             graph_problem=GraphProblem.MAX_CLIQUE,
-            initial_state="Superposition",
+            initial_state=SuperpositionState(),
             backend=dummy_simulator,
         )
 
-        assert qaoa_problem.initial_state == "Superposition"
+        assert isinstance(qaoa_problem.initial_state, SuperpositionState)
         assert (
             sum(
                 isinstance(op, qml.Hadamard)

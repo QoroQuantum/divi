@@ -41,7 +41,6 @@ if __name__ == "__main__":
     te_probs = TimeEvolution(
         hamiltonian=h1,
         time=math.pi / 2,
-        initial_state="Zeros",
         backend=backend,
     )
     te_probs.run()
@@ -60,7 +59,6 @@ if __name__ == "__main__":
         hamiltonian=h2,
         time=t2,
         n_steps=8,
-        initial_state="Zeros",
         observable=observable,
         backend=backend,
     )
@@ -93,7 +91,6 @@ if __name__ == "__main__":
         trotterization_strategy=qdrift,
         time=1.0,
         n_steps=1,
-        initial_state="Zeros",
         backend=backend,
     )
     te_qdrift.run()

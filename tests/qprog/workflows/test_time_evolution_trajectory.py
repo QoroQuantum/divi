@@ -220,7 +220,6 @@ class TestTimeEvolutionTrajectoryE2E:
         traj = TimeEvolutionTrajectory(
             hamiltonian=qml.PauliX(0),
             time_points=[0.01, math.pi / 4, math.pi / 2],
-            initial_state="Zeros",
             backend=default_test_simulator,
         )
         traj.create_programs()
@@ -244,7 +243,6 @@ class TestTimeEvolutionTrajectoryE2E:
         traj = TimeEvolutionTrajectory(
             hamiltonian=0.5 * qml.PauliZ(0) + 0.3 * qml.PauliZ(1),
             time_points=[0.5, 1.0, 2.0],
-            initial_state="Zeros",
             backend=default_test_simulator,
         )
         traj.create_programs()

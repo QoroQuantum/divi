@@ -28,8 +28,12 @@ from divi.hamiltonians import (
 )
 from divi.pipeline.stages import TrotterSpecStage
 from divi.qprog.algorithms._initial_state import (
-    build_initial_state_ops,
-    validate_initial_state,
+    InitialState,
+    OnesState,
+    SuperpositionState,
+    WState,
+    ZerosState,
+    build_block_xy_mixer_graph,
 )
 from divi.qprog.variational_quantum_algorithm import (
     VariationalQuantumAlgorithm,
@@ -79,65 +83,57 @@ def draw_graph_solution_nodes(main_graph: nx.Graph, partition_nodes: Container[A
 class GraphProblem(Enum):
     """Enumeration of supported graph problems for QAOA.
 
-    Each problem type defines:
-    - pl_string: The corresponding PennyLane function name
-    - constrained_initial_state: Recommended initial state for constrained problems
-    - unconstrained_initial_state: Recommended initial state for unconstrained problems
+    Each variant stores its PennyLane function name and the recommended
+    :class:`InitialState` classes for constrained / unconstrained modes.
     """
 
-    MAX_CLIQUE = ("max_clique", "Zeros", "Superposition")
-    MAX_INDEPENDENT_SET = ("max_independent_set", "Zeros", "Superposition")
-    MAX_WEIGHT_CYCLE = ("max_weight_cycle", "Superposition", "Superposition")
-    MAXCUT = ("maxcut", "Superposition", "Superposition")
-    MIN_VERTEX_COVER = ("min_vertex_cover", "Ones", "Superposition")
+    MAX_CLIQUE = ("max_clique", ZerosState, SuperpositionState)
+    MAX_INDEPENDENT_SET = ("max_independent_set", ZerosState, SuperpositionState)
+    MAX_WEIGHT_CYCLE = ("max_weight_cycle", SuperpositionState, SuperpositionState)
+    MAXCUT = ("maxcut", SuperpositionState, SuperpositionState)
+    MIN_VERTEX_COVER = ("min_vertex_cover", OnesState, SuperpositionState)
 
-    # This is an internal problem with no pennylane equivalent
-    EDGE_PARTITIONING = ("", "", "")
+    # Internal problem with no PennyLane equivalent
+    EDGE_PARTITIONING = ("", SuperpositionState, SuperpositionState)
 
     def __init__(
         self,
         pl_string: str,
-        constrained_initial_state: str,
-        unconstrained_initial_state: str,
+        constrained_state_cls: type[InitialState],
+        unconstrained_state_cls: type[InitialState],
     ):
-        """Initialize the GraphProblem enum value.
-
-        Args:
-            pl_string (str): The corresponding PennyLane function name.
-            constrained_initial_state (str): Recommended initial state for constrained problems.
-            unconstrained_initial_state (str): Recommended initial state for unconstrained problems.
-        """
         self.pl_string = pl_string
+        self._constrained_state_cls = constrained_state_cls
+        self._unconstrained_state_cls = unconstrained_state_cls
 
-        # Recommended initial state as per Pennylane's documentation.
-        # Value is duplicated if not applicable to the problem
-        self.constrained_initial_state = constrained_initial_state
-        self.unconstrained_initial_state = unconstrained_initial_state
-
-
-def _resolve_graph_circuit_layers(
-    initial_state: str,
-    problem: GraphProblemTypes,
-    graph_problem: GraphProblem,
-    *,
-    is_constrained: bool,
-) -> tuple[qml.operation.Operator, qml.operation.Operator, dict | None, str]:
-    """Generate graph-problem QAOA cost and mixer Hamiltonians."""
-    if graph_problem == GraphProblem.MAXCUT:
-        params = (problem,)
-    else:
-        params = (problem, is_constrained)
-
-    if initial_state == "Recommended":
-        resolved_initial_state = (
-            graph_problem.constrained_initial_state
+    def default_initial_state(self, *, is_constrained: bool) -> InitialState:
+        """Return the recommended initial state for this problem."""
+        cls = (
+            self._constrained_state_cls
             if is_constrained
-            else graph_problem.unconstrained_initial_state
+            else self._unconstrained_state_cls
         )
-    else:
-        resolved_initial_state = initial_state
+        return cls()
 
-    return *getattr(pqaoa, graph_problem.pl_string)(*params), resolved_initial_state
+    def resolve(
+        self,
+        problem: GraphProblemTypes,
+        *,
+        is_constrained: bool,
+    ) -> tuple[qml.operation.Operator, qml.operation.Operator, dict, InitialState]:
+        """Return (cost_ham, mixer_ham, metadata, initial_state) for a graph problem."""
+        params = (
+            (problem,) if self == GraphProblem.MAXCUT else (problem, is_constrained)
+        )
+        result = getattr(pqaoa, self.pl_string)(*params)
+        cost_ham, mixer_ham = result[0], result[1]
+        metadata = result[2] if len(result) > 2 else {}
+        return (
+            cost_ham,
+            mixer_ham,
+            metadata,
+            self.default_initial_state(is_constrained=is_constrained),
+        )
 
 
 class QAOA(VariationalQuantumAlgorithm):
@@ -175,7 +171,7 @@ class QAOA(VariationalQuantumAlgorithm):
         problem: GraphProblemTypes | QUBOProblemTypes | HUBOProblemTypes,
         *,
         graph_problem: GraphProblem | None = None,
-        initial_state: str = "Recommended",
+        initial_state: InitialState | None = None,
         decode_solution_fn: Callable[[str], Any] | None = None,
         hamiltonian_builder: Literal["native", "quadratized"] = "native",
         quadratization_strength: float = 10.0,
@@ -191,7 +187,13 @@ class QAOA(VariationalQuantumAlgorithm):
                 For graph inputs, the graph problem to solve must be provided
                 through the `graph_problem` variable.
             graph_problem (GraphProblem | None): The graph problem to solve. Defaults to None.
-            initial_state (str): The initial state of the circuit. Defaults to "Recommended".
+            initial_state (InitialState | None): Initial quantum state preparation.
+                Pass an :class:`InitialState` subclass instance (e.g.
+                ``SuperpositionState()``, ``WState(block_size, n_blocks)``).
+                If ``None`` (default), graph problems use the recommended state
+                per problem type; QUBO/HUBO problems default to
+                ``SuperpositionState()``. When ``WState`` is passed, the mixer
+                is automatically set to the XY mixer.
             decode_solution_fn (callable[[str], Any] | None): Optional decoder for bitstrings.
                 If not provided, a default decoder is selected based on problem type.
             hamiltonian_builder: Hamiltonian conversion backend for binary polynomial
@@ -203,6 +205,12 @@ class QAOA(VariationalQuantumAlgorithm):
             n_layers (int): Number of QAOA layers. Defaults to 1.
             **kwargs: Additional keyword arguments passed to the parent class, including `optimizer`.
         """
+        if initial_state is not None and not isinstance(initial_state, InitialState):
+            raise TypeError(
+                f"initial_state must be an InitialState instance or None, "
+                f"got {type(initial_state).__name__}"
+            )
+
         self.graph_problem = graph_problem
         self._ising_encoding: IsingEncoding | None = None
 
@@ -237,29 +245,38 @@ class QAOA(VariationalQuantumAlgorithm):
             (
                 cost_hamiltonian,
                 self._mixer_hamiltonian,
-                *problem_metadata,
-                self.initial_state,
-            ) = _resolve_graph_circuit_layers(
-                initial_state=initial_state,
-                problem=self.problem,
-                graph_problem=self.graph_problem,
+                self.problem_metadata,
+                default_state,
+            ) = self.graph_problem.resolve(
+                self.problem,
                 is_constrained=kwargs.get("is_constrained", True),
             )
+            self.initial_state = (
+                initial_state if initial_state is not None else default_state
+            )
         else:
+            # QUBO / HUBO problems
             if self._ising_encoding is None:
                 raise ValueError(
                     "Missing Ising encoding for binary polynomial problem."
                 )
             cost_hamiltonian = self._ising_encoding.operator
-            self._mixer_hamiltonian = pqaoa.x_mixer(range(self.n_qubits))
-            self.initial_state = "Superposition"
 
-        # Validate the *resolved* initial state ("Recommended" has been
-        # mapped to a concrete value by _resolve_circuit_layers).
-        validate_initial_state(self.initial_state, self.n_qubits)
-        if isinstance(self.problem, GraphProblemTypes):
-            self.problem_metadata = problem_metadata[0] if problem_metadata else {}
-        else:
+            if initial_state is None:
+                initial_state = SuperpositionState()
+            self.initial_state = initial_state
+
+            # Auto-select mixer: XY for WState, X otherwise
+            if isinstance(self.initial_state, WState):
+                graph = build_block_xy_mixer_graph(
+                    self.initial_state.block_size,
+                    self.initial_state.n_blocks,
+                    range(self.n_qubits),
+                )
+                self._mixer_hamiltonian = pqaoa.xy_mixer(graph)
+            else:
+                self._mixer_hamiltonian = pqaoa.x_mixer(range(self.n_qubits))
+        if not isinstance(self.problem, GraphProblemTypes):
             self.problem_metadata = self._ising_encoding.metadata or {}
 
         # Extract and combine constants
@@ -460,7 +477,7 @@ class QAOA(VariationalQuantumAlgorithm):
 
     def _build_qaoa_ops(self, cost_hamiltonian: qml.operation.Operator) -> list:
         """Build QAOA layer ops for a given cost Hamiltonian."""
-        ops = build_initial_state_ops(self.initial_state, self._circuit_wires)
+        ops = self.initial_state.build(self._circuit_wires)
 
         for layer_params in self._sym_params:
             gamma, beta = layer_params

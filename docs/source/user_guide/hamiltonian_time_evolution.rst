@@ -25,7 +25,6 @@ Use probability mode when you want a final-state distribution:
    te = TimeEvolution(
        hamiltonian=qml.PauliX(0) + qml.PauliX(1),
        time=math.pi / 2,
-       initial_state="Zeros",
        backend=backend,
    )
    te.run()
@@ -51,7 +50,6 @@ Provide ``observable=...`` to estimate expectation values after evolution:
        hamiltonian=qml.PauliX(0) + qml.PauliZ(0),
        time=0.6,
        n_steps=8,
-       initial_state="Zeros",
        observable=qml.PauliZ(0),
        backend=backend,
    )
@@ -82,7 +80,7 @@ For large Hamiltonians, you can use :class:`~divi.qprog.QDrift` to sample terms 
        hamiltonian=0.7 * qml.PauliZ(0) + 0.4 * qml.PauliX(0) + 0.2 * qml.PauliZ(1),
        trotterization_strategy=qdrift,
        time=0.8,
-       initial_state="Superposition",
+       initial_state=SuperpositionState(),
        backend=backend,
    )
    te.run()
@@ -115,7 +113,6 @@ collects results into a time-ordered mapping.
        hamiltonian=qml.PauliX(0),
        time_points=np.linspace(0.01, math.pi, 20).tolist(),
        observable=qml.PauliZ(0),
-       initial_state="Zeros",
        backend=backend,
    )
    trajectory.create_programs()

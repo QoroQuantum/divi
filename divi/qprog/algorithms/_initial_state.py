@@ -2,100 +2,112 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared initial-state preparation utilities.
+"""Initial-state preparation and block-mixer utilities.
 
-Provides validation and gate-construction helpers consumed by
-TimeEvolution, QAOA, VQE, and any future algorithm that prepends
-an initial-state preparation layer to its circuit.
+Provides an :class:`InitialState` base class and concrete implementations
+consumed by QAOA, VQE, TimeEvolution, and any future algorithm that
+prepends an initial-state layer to its circuit.
+
+Class-based API (preferred)::
+
+    state = WState(block_size=3, n_blocks=4)
+    ops = state.build(wires=range(12))
+
+Pass instances directly to algorithm constructors (e.g. ``initial_state=WState(3, 4)``).
 """
 
 from __future__ import annotations
 
-from typing import Literal, Sequence, get_args
+from abc import ABC, abstractmethod
+from typing import Sequence
 
+import networkx as nx
+import numpy as np
 import pennylane as qml
 
-_INITIAL_STATE_LITERAL = Literal["Zeros", "Ones", "Superposition"]
-_CUSTOM_CHARS = frozenset("01+-")
+# ---------------------------------------------------------------------------
+# Abstract base class
+# ---------------------------------------------------------------------------
 
 
-def validate_initial_state(
-    initial_state: str,
-    n_qubits: int,
-) -> None:
-    """Validate an initial-state specification.
+class InitialState(ABC):
+    """Abstract base class for initial quantum state preparation.
 
-    Accepted values:
-    * One of the literal keywords: ``"Zeros"``, ``"Ones"``, ``"Superposition"``.
-    * A custom per-qubit string composed of the characters ``0``, ``1``,
-      ``+`` and ``-`` whose length must equal *n_qubits*.
-
-    Args:
-        initial_state: The initial-state specification to validate.
-        n_qubits: Expected number of qubits.
-
-    Raises:
-        ValueError: If *initial_state* is not a recognised literal and is not a
-            valid custom string, or if the custom string length does not match
-            *n_qubits*.
+    Subclasses implement :meth:`build` to return a list of PennyLane
+    operations that prepare the desired state on the given wires.
     """
-    if initial_state in get_args(_INITIAL_STATE_LITERAL):
-        return
 
-    is_valid_custom = bool(initial_state) and all(
-        c in _CUSTOM_CHARS for c in initial_state
-    )
-    if is_valid_custom:
-        if len(initial_state) != n_qubits:
-            raise ValueError(
-                f"initial_state string length ({len(initial_state)}) "
-                f"must match number of qubits ({n_qubits})."
-            )
-        return
+    @abstractmethod
+    def build(self, wires: Sequence[int]) -> list[qml.operation.Operator]:
+        """Return gate operations that prepare this state on *wires*.
 
-    raise ValueError(
-        f"initial_state must be one of {get_args(_INITIAL_STATE_LITERAL)} "
-        f"or a string of '0', '1', '+', '-', got {initial_state!r}"
-    )
+        Args:
+            wires: Ordered sequence of wire labels.
+
+        Returns:
+            List of PennyLane operations.
+        """
+
+    @property
+    def name(self) -> str:
+        """Human-readable name of the initial state."""
+        return self.__class__.__name__
 
 
-def build_initial_state_ops(
-    initial_state: str,
-    wires: Sequence[int],
-) -> list[qml.operation.Operator]:
-    """Return gate operations that prepare *initial_state* on *wires*.
+# ---------------------------------------------------------------------------
+# Concrete implementations
+# ---------------------------------------------------------------------------
 
-    The returned list is meant to be **prepended** to any circuit's
-    operation list.
 
-    Mapping:
-    * ``"Zeros"`` → empty list (computational basis default).
-    * ``"Ones"``  → ``PauliX`` on every wire.
-    * ``"Superposition"`` → ``Hadamard`` on every wire.
-    * Custom string (per-qubit): ``'0'`` → nothing, ``'1'`` → ``PauliX``,
-      ``'+'`` → ``Hadamard``, ``'-'`` → ``PauliX`` then ``Hadamard``.
+class ZerosState(InitialState):
+    """Computational basis state |00…0⟩ (no gates needed)."""
 
-    Args:
-        initial_state: A validated initial-state specification.
-        wires: Ordered sequence of wire labels.
-
-    Returns:
-        List of PennyLane operations.
-    """
-    if initial_state == "Zeros":
+    def build(self, wires: Sequence[int]) -> list[qml.operation.Operator]:
         return []
 
-    ops: list[qml.operation.Operator] = []
 
-    if initial_state == "Ones":
-        for w in wires:
-            ops.append(qml.PauliX(wires=w))
-    elif initial_state == "Superposition":
-        for w in wires:
-            ops.append(qml.Hadamard(wires=w))
-    else:
-        # Custom per-qubit string
-        for w, char in zip(wires, initial_state):
+class OnesState(InitialState):
+    """All-ones state |11…1⟩ via PauliX on every qubit."""
+
+    def build(self, wires: Sequence[int]) -> list[qml.operation.Operator]:
+        return [qml.PauliX(wires=w) for w in wires]
+
+
+class SuperpositionState(InitialState):
+    """Equal superposition via Hadamard on every qubit."""
+
+    def build(self, wires: Sequence[int]) -> list[qml.operation.Operator]:
+        return [qml.Hadamard(wires=w) for w in wires]
+
+
+class CustomPerQubitState(InitialState):
+    """Per-qubit state from a string of ``'0'``, ``'1'``, ``'+'``, ``'-'``.
+
+    Args:
+        state_string: One character per qubit.
+            ``'0'`` → nothing, ``'1'`` → PauliX,
+            ``'+'`` → Hadamard, ``'-'`` → PauliX then Hadamard.
+    """
+
+    _VALID_CHARS = frozenset("01+-")
+
+    def __init__(self, state_string: str):
+        if not state_string or not all(c in self._VALID_CHARS for c in state_string):
+            raise ValueError(
+                f"state_string must be non-empty and contain only '0', '1', '+', '-', "
+                f"got {state_string!r}"
+            )
+        self.state_string = state_string
+
+    def build(self, wires: Sequence[int]) -> list[qml.operation.Operator]:
+        wires = list(wires)
+        if len(wires) != len(self.state_string):
+            raise ValueError(
+                f"state_string length ({len(self.state_string)}) "
+                f"must match wire count ({len(wires)})."
+            )
+        ops: list[qml.operation.Operator] = []
+        for w, char in zip(wires, self.state_string):
             if char == "1":
                 ops.append(qml.PauliX(wires=w))
             elif char == "+":
@@ -103,6 +115,103 @@ def build_initial_state_ops(
             elif char == "-":
                 ops.append(qml.PauliX(wires=w))
                 ops.append(qml.Hadamard(wires=w))
-            # '0' → nothing
+        return ops
 
-    return ops
+
+class WState(InitialState):
+    """Product of W-states on contiguous qubit blocks.
+
+    Prepares a uniform superposition over one-hot basis states within
+    each block::
+
+        |s₀⟩ = |W_{block_size}⟩^{⊗ n_blocks}
+
+    where |W_n⟩ = (|10…0⟩ + |01…0⟩ + … + |00…1⟩) / √n.
+
+    Useful as the initial state for any one-hot encoded problem
+    (routing, assignment, scheduling, graph coloring, etc.).
+
+    Args:
+        block_size: Number of qubits per block (≥ 1).
+        n_blocks: Number of blocks (≥ 1).
+    """
+
+    def __init__(self, block_size: int, n_blocks: int):
+        if block_size < 1:
+            raise ValueError(f"block_size must be ≥ 1, got {block_size}.")
+        if n_blocks < 1:
+            raise ValueError(f"n_blocks must be ≥ 1, got {n_blocks}.")
+        self.block_size = block_size
+        self.n_blocks = n_blocks
+
+    def build(self, wires: Sequence[int]) -> list[qml.operation.Operator]:
+        """Prepare W-states on each block of *wires*.
+
+        Args:
+            wires: Must have length ``block_size * n_blocks``.
+        """
+        wires = list(wires)
+        expected = self.block_size * self.n_blocks
+        if len(wires) != expected:
+            raise ValueError(
+                f"Expected {expected} wires ({self.block_size} × {self.n_blocks}), "
+                f"got {len(wires)}."
+            )
+        ops: list[qml.operation.Operator] = []
+        for b in range(self.n_blocks):
+            start = b * self.block_size
+            ops.extend(self._w_state(wires[start : start + self.block_size]))
+        return ops
+
+    @staticmethod
+    def _w_state(wires: list[int]) -> list[qml.operation.Operator]:
+        """CRY + CNOT ladder for a single W-state on *wires*."""
+        n = len(wires)
+        ops: list[qml.operation.Operator] = [qml.PauliX(wires=wires[0])]
+        for k in range(n - 1):
+            angle = 2 * np.arccos(np.sqrt(1.0 / (n - k)))
+            ops.append(qml.CRY(phi=angle, wires=[wires[k], wires[k + 1]]))
+            ops.append(qml.CNOT(wires=[wires[k + 1], wires[k]]))
+        return ops
+
+
+# ---------------------------------------------------------------------------
+# Block-XY mixer graph (for use with pennylane.qaoa.xy_mixer)
+# ---------------------------------------------------------------------------
+
+
+def build_block_xy_mixer_graph(
+    block_size: int,
+    n_blocks: int,
+    wires: Sequence[int],
+) -> nx.Graph:
+    """Build the connectivity graph for a block-XY mixer.
+
+    Returns a ``networkx.Graph`` with edges between consecutive qubits
+    within each block. Pass to ``pennylane.qaoa.xy_mixer()`` to get
+    the mixer Hamiltonian.
+
+    Args:
+        block_size: Qubits per block (≥ 2 for mixing to occur).
+        n_blocks: Number of blocks.
+        wires: Must have length ``block_size * n_blocks``.
+
+    Returns:
+        ``networkx.Graph`` for ``pennylane.qaoa.xy_mixer()``.
+    """
+    wires = list(wires)
+    expected = block_size * n_blocks
+    if len(wires) != expected:
+        raise ValueError(
+            f"Expected {expected} wires ({block_size} × {n_blocks}), "
+            f"got {len(wires)}."
+        )
+
+    g = nx.Graph()
+    g.add_nodes_from(wires)
+    for b in range(n_blocks):
+        start = b * block_size
+        block_wires = wires[start : start + block_size]
+        for i in range(block_size - 1):
+            g.add_edge(block_wires[i], block_wires[i + 1])
+    return g

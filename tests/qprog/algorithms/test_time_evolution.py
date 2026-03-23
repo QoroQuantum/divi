@@ -9,7 +9,7 @@ import pytest
 
 from divi.backends import ExecutionResult, QiskitSimulator
 from divi.hamiltonians import ExactTrotterization, QDrift
-from divi.qprog import TimeEvolution
+from divi.qprog import OnesState, SuperpositionState, TimeEvolution, ZerosState
 
 # Tolerance for probability checks (5000 shots: ~0.02 std for p=0.5)
 _PROB_TOL = 0.05
@@ -32,7 +32,7 @@ class TestTimeEvolutionInitialization:
         )
         assert te.time == 1.0
         assert te.n_qubits == 2
-        assert te.initial_state == "Zeros"
+        assert isinstance(te.initial_state, ZerosState)
         assert te.observable is None
 
     def test_initialization_requires_backend(self, two_qubit_hamiltonian):
@@ -49,7 +49,7 @@ class TestTimeEvolutionInitialization:
     def test_initialization_invalid_initial_state(
         self, two_qubit_hamiltonian, default_test_simulator
     ):
-        with pytest.raises(ValueError, match="initial_state"):
+        with pytest.raises(TypeError):
             TimeEvolution(
                 hamiltonian=two_qubit_hamiltonian,
                 initial_state="Invalid",
@@ -103,7 +103,6 @@ class TestTimeEvolutionRun:
         te = TimeEvolution(
             hamiltonian=two_qubit_hamiltonian,
             time=0.5,
-            initial_state="Zeros",
             backend=default_test_simulator,
         )
         count, runtime = te.run()
@@ -120,7 +119,7 @@ class TestTimeEvolutionRun:
         te = TimeEvolution(
             hamiltonian=two_qubit_hamiltonian,
             time=0.5,
-            initial_state="Superposition",
+            initial_state=SuperpositionState(),
             backend=default_test_simulator,
         )
         count, _ = te.run()
@@ -133,7 +132,7 @@ class TestTimeEvolutionRun:
         te = TimeEvolution(
             hamiltonian=two_qubit_hamiltonian,
             time=0.5,
-            initial_state="Ones",
+            initial_state=OnesState(),
             backend=default_test_simulator,
         )
         count, _ = te.run()
@@ -254,7 +253,6 @@ class TestTimeEvolutionQDrift:
             hamiltonian=hamiltonian,
             time=0.8,
             n_steps=1,
-            initial_state="Zeros",
             observable=hamiltonian,
         )
 
@@ -286,7 +284,6 @@ class TestTimeEvolutionE2E:
         te = TimeEvolution(
             hamiltonian=qml.PauliX(0) + qml.PauliX(1),
             time=math.pi / 2,
-            initial_state="Zeros",
             backend=default_test_simulator,
         )
         te.run()
@@ -300,7 +297,6 @@ class TestTimeEvolutionE2E:
         te = TimeEvolution(
             hamiltonian=qml.PauliX(0) + qml.PauliZ(0),
             time=math.pi / math.sqrt(2),
-            initial_state="Zeros",
             n_steps=10,
             backend=default_test_simulator,
         )
@@ -314,7 +310,7 @@ class TestTimeEvolutionE2E:
         te = TimeEvolution(
             hamiltonian=qml.PauliX(0) @ qml.PauliX(1) + qml.PauliY(0) @ qml.PauliY(1),
             time=math.pi / 4,
-            initial_state="Superposition",
+            initial_state=SuperpositionState(),
             backend=default_test_simulator,
         )
         te.run()
@@ -333,7 +329,7 @@ class TestTimeEvolutionE2E:
                 + qml.PauliZ(0) @ qml.PauliZ(1)
             ),
             time=math.pi / 4,
-            initial_state="Superposition",
+            initial_state=SuperpositionState(),
             backend=default_test_simulator,
         )
         te.run()
@@ -352,7 +348,7 @@ class TestTimeEvolutionE2E:
                 + qml.PauliZ(0) @ qml.PauliZ(1)
             ),
             time=math.pi / 2,
-            initial_state="Ones",
+            initial_state=OnesState(),
             backend=default_test_simulator,
         )
         te.run()
@@ -366,7 +362,6 @@ class TestTimeEvolutionE2E:
         te = TimeEvolution(
             hamiltonian=0.5 * qml.PauliZ(0) + 0.3 * qml.PauliZ(1),
             time=0.5,
-            initial_state="Zeros",
             trotterization_strategy=QDrift(
                 sampling_budget=2,
                 seed=42,
@@ -384,7 +379,6 @@ class TestTimeEvolutionE2E:
         te = TimeEvolution(
             hamiltonian=qml.PauliX(0) + qml.PauliX(1),
             time=math.pi / 2,
-            initial_state="Zeros",
             trotterization_strategy=QDrift(
                 keep_top_n=1,
                 sampling_budget=1,
@@ -403,7 +397,7 @@ class TestTimeEvolutionE2E:
         te = TimeEvolution(
             hamiltonian=qml.PauliX(0) @ qml.PauliX(1) + qml.PauliY(0) @ qml.PauliY(1),
             time=math.pi / 4,
-            initial_state="Superposition",
+            initial_state=SuperpositionState(),
             trotterization_strategy=QDrift(
                 sampling_budget=2,
                 seed=42,
@@ -428,7 +422,7 @@ class TestTimeEvolutionE2E:
                 + qml.PauliZ(0) @ qml.PauliZ(1)
             ),
             time=math.pi / 2,
-            initial_state="Ones",
+            initial_state=OnesState(),
             trotterization_strategy=QDrift(
                 sampling_budget=3,
                 seed=42,
@@ -458,7 +452,6 @@ class TestTimeEvolutionE2E:
             hamiltonian=hamiltonian,
             time=0.8,
             n_steps=10,
-            initial_state="Zeros",
             observable=hamiltonian,
             trotterization_strategy=ExactTrotterization(),
             backend=backend,
@@ -469,7 +462,6 @@ class TestTimeEvolutionE2E:
             hamiltonian=hamiltonian,
             time=0.8,
             n_steps=1,
-            initial_state="Zeros",
             observable=hamiltonian,
             trotterization_strategy=QDrift(
                 sampling_budget=500,
@@ -492,7 +484,6 @@ class TestTimeEvolutionE2E:
             hamiltonian=hamiltonian,
             time=0.8,
             n_steps=10,
-            initial_state="Zeros",
             observable=hamiltonian,
             trotterization_strategy=ExactTrotterization(),
             backend=backend,
@@ -503,7 +494,6 @@ class TestTimeEvolutionE2E:
             hamiltonian=hamiltonian,
             time=0.8,
             n_steps=1,
-            initial_state="Zeros",
             observable=hamiltonian,
             trotterization_strategy=QDrift(
                 sampling_budget=50,
