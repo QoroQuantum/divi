@@ -35,7 +35,6 @@ if __name__ == "__main__":
         hamiltonian=qml.PauliX(0),
         time_points=time_points,
         observable=qml.PauliZ(0),
-        initial_state="Zeros",
         backend=backend,
     )
     trajectory.create_programs()
@@ -64,7 +63,6 @@ if __name__ == "__main__":
         hamiltonian=qml.PauliZ(0) + qml.PauliZ(1),
         time_points=time_points_2,
         observable=qml.PauliZ(0),
-        initial_state="Zeros",
         backend=backend,
     )
     trajectory2.create_programs()

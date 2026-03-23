@@ -20,6 +20,12 @@ from .algorithms import (
     HardwareEfficientAnsatz,
     HartreeFockAnsatz,
     GenericLayerAnsatz,
+    InitialState,
+    ZerosState,
+    OnesState,
+    SuperpositionState,
+    CustomPerQubitState,
+    WState,
 )
 from .workflows import (
     GraphPartitioningQAOA,

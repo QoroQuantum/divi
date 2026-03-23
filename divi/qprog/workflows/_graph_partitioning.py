@@ -25,6 +25,7 @@ from sklearn.cluster import SpectralClustering
 from divi.backends import CircuitRunner
 from divi.hamiltonians import _clean_hamiltonian, _get_terms_iterable
 from divi.qprog import QAOA, ProgramEnsemble
+from divi.qprog.algorithms._initial_state import InitialState
 from divi.qprog.algorithms._qaoa import (
     GraphProblem,
     GraphProblemTypes,
@@ -478,7 +479,7 @@ class GraphPartitioningQAOA(ProgramEnsemble):
         n_layers: int,
         backend: CircuitRunner,
         partitioning_config: PartitioningConfig,
-        initial_state: str = "Recommended",
+        initial_state: InitialState | None = None,
         optimizer: Optimizer | None = None,
         max_iterations=10,
         **kwargs,
@@ -493,7 +494,7 @@ class GraphPartitioningQAOA(ProgramEnsemble):
             backend (CircuitRunner): Backend used to run quantum/classical circuits.
             partitioning_config (PartitioningConfig): the configuration of the partitioning as to the algorithm and
             expected output.
-            initial_state ("Zeros", "Ones", "Superposition", "Recommended", optional): Initial state for the QAOA algorithm. Defaults to "Recommended".
+            initial_state (InitialState | None): Initial state for the QAOA algorithm. Defaults to problem-specific recommendation if None.
             optimizer (optional): Optimizer to use for QAOA. Defaults to ``MonteCarloOptimizer``.
             max_iterations (int, optional): Maximum number of optimization iterations. Defaults to 10.
             **kwargs: Additional keyword arguments passed to the QAOA constructor.

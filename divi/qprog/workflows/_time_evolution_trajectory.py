@@ -10,7 +10,7 @@ import pennylane as qml
 
 from divi.backends import CircuitRunner
 from divi.hamiltonians import TrotterizationStrategy
-from divi.qprog.algorithms import TimeEvolution
+from divi.qprog.algorithms import InitialState, TimeEvolution
 from divi.qprog.ensemble import ProgramEnsemble
 
 
@@ -46,7 +46,7 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
         trotterization_strategy: TrotterizationStrategy | None = None,
         n_steps: int = 1,
         order: int = 1,
-        initial_state: str = "Zeros",
+        initial_state: InitialState | None = None,
         observable: qml.operation.Operator | None = None,
         seed: int | None = None,
     ):
@@ -62,8 +62,8 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
                 Deep-copied per program for thread safety.
             n_steps: Number of Trotter steps.
             order: Suzuki-Trotter order (1 or even).
-            initial_state: One of ``"Zeros"``, ``"Superposition"``, ``"Ones"``,
-                or a per-qubit string like ``"01+-"``.
+            initial_state: Initial state preparation (:class:`InitialState` instance).
+                Defaults to ``ZerosState()`` if None.
             observable: If None, measure probabilities; else expectation value.
             seed: Random seed for reproducible results.
         """

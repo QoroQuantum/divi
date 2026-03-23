@@ -16,3 +16,11 @@ from ._qaoa import QAOA, GraphProblem
 from ._time_evolution import TimeEvolution
 from ._vqe import VQE
 from ._pce import PCE
+from ._initial_state import (
+    InitialState,
+    ZerosState,
+    OnesState,
+    SuperpositionState,
+    CustomPerQubitState,
+    WState,
+)

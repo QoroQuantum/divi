@@ -10,7 +10,7 @@ Single-Instance QAOA
 
 A `QAOA` constructor expects a problem to be provided. As we will show in the examples, the form of input triggers a different execution pathway under the hood. However, there are some common arguments that one must pay attention to.
 
-A user has the ability to choose the **initial state** of the quantum system before the optimization. By default (when the argument `initial_state = "Recommended"` is passed), a problem-specific initial state would be chosen. Other accepted values are `"Zero"`, `"Ones"`, and `"Superposition"`. In addition, a user can determine how many **layers** of the QAOA ansatz to apply.
+A user has the ability to choose the **initial state** of the quantum system before the optimization by passing an ``InitialState`` instance. Available states include ``ZerosState()``, ``OnesState()``, ``SuperpositionState()``, ``CustomPerQubitState("01+-")``, and ``WState(block_size, n_blocks)`` for one-hot encoded problems. When ``initial_state=None`` (the default), graph problems use a problem-specific recommendation and QUBO/HUBO problems default to ``SuperpositionState()``. When ``WState`` is used, the mixer is automatically set to the XY mixer, which preserves the one-hot subspace. In addition, a user can determine how many **layers** of the QAOA ansatz to apply.
 
 **Initial Parameters**: You can set custom initial parameters for QAOA optimization using the ``initial_params`` constructor argument or the ``curr_params`` property. This is useful for warm-starting from known good parameter regions or continuing from previous runs. For detailed information and examples, see the :doc:`core_concepts` guide on Parameter Management.
 

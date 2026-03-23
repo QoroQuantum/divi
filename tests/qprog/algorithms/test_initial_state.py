@@ -11,87 +11,86 @@ import pytest
 from divi.qprog import QAOA, VQE, TimeEvolution
 from divi.qprog.algorithms._ansatze import QAOAAnsatz
 from divi.qprog.algorithms._initial_state import (
-    build_initial_state_ops,
-    validate_initial_state,
+    CustomPerQubitState,
+    OnesState,
+    SuperpositionState,
+    WState,
+    ZerosState,
 )
 from divi.qprog.algorithms._qaoa import GraphProblem
 
 # ---------------------------------------------------------------------------
-# validate_initial_state
+# InitialState classes
 # ---------------------------------------------------------------------------
 
 
-class TestValidateInitialState:
-    @pytest.mark.parametrize("state", ["Zeros", "Ones", "Superposition"])
-    def test_literals_pass(self, state):
-        validate_initial_state(state, n_qubits=4)  # no error
+class TestZerosState:
+    def test_build_returns_empty(self):
+        assert ZerosState().build([0, 1, 2]) == []
 
-    @pytest.mark.parametrize("custom", ["0000", "1111", "01+-", "+-+-"])
-    def test_valid_custom_strings_pass(self, custom):
-        validate_initial_state(custom, n_qubits=len(custom))
-
-    def test_custom_string_wrong_length_raises(self):
-        with pytest.raises(ValueError, match="length"):
-            validate_initial_state("01", n_qubits=3)
-
-    @pytest.mark.parametrize("bad", ["Invalid", "Bell", "2", "abc", "01x"])
-    def test_invalid_strings_raise(self, bad):
-        with pytest.raises(ValueError, match="initial_state"):
-            validate_initial_state(bad, n_qubits=3)
-
-    def test_empty_string_raises(self):
-        with pytest.raises(ValueError, match="initial_state"):
-            validate_initial_state("", n_qubits=1)
+    def test_name(self):
+        assert ZerosState().name == "ZerosState"
 
 
-# ---------------------------------------------------------------------------
-# build_initial_state_ops
-# ---------------------------------------------------------------------------
-
-
-class TestBuildInitialStateOps:
-    def test_zeros_returns_empty(self):
-        assert build_initial_state_ops("Zeros", [0, 1, 2]) == []
-
-    def test_ones_returns_paulix_all_wires(self):
-        ops = build_initial_state_ops("Ones", [0, 1])
+class TestOnesState:
+    def test_build_returns_paulix(self):
+        ops = OnesState().build([0, 1])
         assert len(ops) == 2
         assert all(isinstance(op, qml.PauliX) for op in ops)
         assert [op.wires.tolist() for op in ops] == [[0], [1]]
 
-    def test_superposition_returns_hadamard_all_wires(self):
-        ops = build_initial_state_ops("Superposition", [0, 1, 2])
+
+class TestSuperpositionState:
+    def test_build_returns_hadamard(self):
+        ops = SuperpositionState().build([0, 1, 2])
         assert len(ops) == 3
         assert all(isinstance(op, qml.Hadamard) for op in ops)
 
-    def test_custom_0_is_no_op(self):
-        ops = build_initial_state_ops("00", [0, 1])
-        assert ops == []
 
-    def test_custom_1_is_paulix(self):
-        ops = build_initial_state_ops("11", [0, 1])
+class TestCustomPerQubitState:
+    def test_zeros_string_is_no_op(self):
+        assert CustomPerQubitState("00").build([0, 1]) == []
+
+    def test_ones_string_is_paulix(self):
+        ops = CustomPerQubitState("11").build([0, 1])
         assert len(ops) == 2
         assert all(isinstance(op, qml.PauliX) for op in ops)
 
-    def test_custom_plus_is_hadamard(self):
-        ops = build_initial_state_ops("++", [0, 1])
-        assert len(ops) == 2
+    def test_plus_is_hadamard(self):
+        ops = CustomPerQubitState("++").build([0, 1])
         assert all(isinstance(op, qml.Hadamard) for op in ops)
 
-    def test_custom_minus_is_paulix_then_hadamard(self):
-        ops = build_initial_state_ops("-", [0])
+    def test_minus_is_paulix_then_hadamard(self):
+        ops = CustomPerQubitState("-").build([0])
         assert len(ops) == 2
         assert isinstance(ops[0], qml.PauliX)
         assert isinstance(ops[1], qml.Hadamard)
 
-    def test_custom_mixed_string(self):
-        ops = build_initial_state_ops("01+-", [0, 1, 2, 3])
-        # '0' → nothing, '1' → PauliX, '+' → Hadamard, '-' → PauliX+Hadamard
+    def test_mixed_string(self):
+        ops = CustomPerQubitState("01+-").build([0, 1, 2, 3])
         assert len(ops) == 4
         assert isinstance(ops[0], qml.PauliX) and ops[0].wires.tolist() == [1]
         assert isinstance(ops[1], qml.Hadamard) and ops[1].wires.tolist() == [2]
         assert isinstance(ops[2], qml.PauliX) and ops[2].wires.tolist() == [3]
         assert isinstance(ops[3], qml.Hadamard) and ops[3].wires.tolist() == [3]
+
+    def test_wrong_length_raises(self):
+        with pytest.raises(ValueError, match="wire count"):
+            CustomPerQubitState("01").build([0, 1, 2])
+
+    def test_invalid_chars_raises(self):
+        with pytest.raises(ValueError, match="state_string"):
+            CustomPerQubitState("xy")
+
+
+class TestWState:
+    def test_invalid_block_size_raises(self):
+        with pytest.raises(ValueError):
+            WState(0, 1)
+
+    def test_wrong_wire_count_raises(self):
+        with pytest.raises(ValueError, match="Expected"):
+            WState(3, 2).build([0, 1, 2])
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +106,7 @@ class TestTimeEvolutionCustomInitialState:
         te = TimeEvolution(
             hamiltonian=qml.PauliZ(0) + qml.PauliZ(1),
             time=0.5,
-            initial_state="10",
+            initial_state=CustomPerQubitState("10"),
             backend=default_test_simulator,
         )
         count, _ = te.run()
@@ -120,7 +119,7 @@ class TestTimeEvolutionCustomInitialState:
         te = TimeEvolution(
             hamiltonian=qml.PauliZ(0) + qml.PauliZ(1),
             time=0.1,
-            initial_state="+-",
+            initial_state=CustomPerQubitState("+-"),
             backend=default_test_simulator,
         )
         count, _ = te.run()
@@ -128,7 +127,7 @@ class TestTimeEvolutionCustomInitialState:
         assert te.results is not None
 
     def test_invalid_custom_string_raises(self, default_test_simulator):
-        with pytest.raises(ValueError, match="initial_state"):
+        with pytest.raises(TypeError):
             TimeEvolution(
                 hamiltonian=qml.PauliZ(0) + qml.PauliZ(1),
                 initial_state="xy",
@@ -145,16 +144,16 @@ class TestQAOACustomInitialState:
     """Test that QAOA accepts custom string initial states."""
 
     def test_custom_string_accepted(self, default_test_simulator):
-        """QAOA with initial_state='00' should behave like 'Zeros'."""
+        """QAOA with initial_state=CustomPerQubitState('00') should behave like ZerosState."""
         graph = nx.Graph([(0, 1)])
         qaoa = QAOA(
             problem=graph,
             graph_problem=GraphProblem.MAXCUT,
-            initial_state="00",
+            initial_state=CustomPerQubitState("00"),
             backend=default_test_simulator,
             max_iterations=1,
         )
-        assert qaoa.initial_state == "00"
+        assert isinstance(qaoa.initial_state, CustomPerQubitState)
 
 
 # ---------------------------------------------------------------------------
@@ -171,13 +170,13 @@ class TestVQEInitialState:
             ansatz=QAOAAnsatz(),
             backend=default_test_simulator,
         )
-        assert vqe.initial_state == "Zeros"
+        assert isinstance(vqe.initial_state, ZerosState)
 
     def test_initial_state_superposition_runs(self, default_test_simulator):
         vqe = VQE(
             hamiltonian=qml.PauliZ(0) + qml.PauliZ(1),
             ansatz=QAOAAnsatz(),
-            initial_state="Superposition",
+            initial_state=SuperpositionState(),
             backend=default_test_simulator,
             max_iterations=1,
         )
@@ -188,7 +187,7 @@ class TestVQEInitialState:
         with pytest.warns(UserWarning, match="chemistry ansatz"):
             VQE(
                 hamiltonian=qml.PauliZ(0) + qml.PauliZ(1),
-                initial_state="Superposition",
+                initial_state=SuperpositionState(),
                 n_electrons=1,
                 backend=default_test_simulator,
             )
