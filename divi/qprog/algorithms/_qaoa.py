@@ -566,14 +566,24 @@ class QAOA(VariationalQuantumAlgorithm):
             best_measurement_probs, key=best_measurement_probs.get
         )
 
-        # Use decode function to get the decoded solution
+        # Decode the best bitstring via the problem-specific decode function
         decoded_solution = self._decode_solution_fn(best_solution_bitstring)
 
-        # Store in appropriate attribute based on problem type
-        if self.graph_problem is None:
-            self._solution_bitstring[:] = decoded_solution
-        elif isinstance(self.problem, GraphProblemTypes):
+        if isinstance(self.problem, GraphProblemTypes):
             self._solution_nodes[:] = decoded_solution
+        elif decoded_solution is not None:
+            try:
+                self._solution_bitstring[:] = decoded_solution
+            except (TypeError, ValueError):
+                # decode returned a non-array type (e.g. tour list) — store raw bitstring
+                self._solution_bitstring = np.array(
+                    [int(b) for b in best_solution_bitstring], dtype=np.int32
+                )
+        else:
+            # decode returned None (infeasible) — store raw bitstring
+            self._solution_bitstring = np.array(
+                [int(b) for b in best_solution_bitstring], dtype=np.int32
+            )
 
         self.reporter.info(message="🏁 Computed Final Solution! 🏁")
 

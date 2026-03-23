@@ -1299,3 +1299,49 @@ class TestQAOAQDriftMultiSample:
         assert runtime >= 0
         assert len(qaoa.losses_history) == 5
         assert qaoa.best_loss < float("inf")
+
+
+# ---------------------------------------------------------------------------
+# Final computation with custom decode functions
+# ---------------------------------------------------------------------------
+
+
+class TestFinalComputationDecode:
+    """Test that _perform_final_computation handles arbitrary decode returns."""
+
+    def test_decode_returns_none(self, default_test_simulator):
+        """When decode_fn returns None, solution should be raw bitstring as int array."""
+        qaoa = QAOA(
+            problem=QUBO_MATRIX,
+            decode_solution_fn=lambda bs: None,
+            backend=default_test_simulator,
+            max_iterations=1,
+        )
+        qaoa.run()
+        sol = qaoa.solution
+        assert isinstance(sol, np.ndarray)
+        assert sol.dtype == np.int32
+        assert all(b in (0, 1) for b in sol)
+
+    def test_decode_returns_custom_type(self, default_test_simulator):
+        """When decode_fn returns a custom type, solution passes it through."""
+        qaoa = QAOA(
+            problem=QUBO_MATRIX,
+            decode_solution_fn=lambda bs: [0, 2, 1, 0],  # e.g. a tour
+            backend=default_test_simulator,
+            max_iterations=1,
+        )
+        qaoa.run()
+        sol = qaoa.solution
+        assert sol == [0, 2, 1, 0]
+
+    def test_default_decode(self, default_test_simulator):
+        """Default QUBO decode returns a binary int array."""
+        qaoa = QAOA(
+            problem=QUBO_MATRIX,
+            backend=default_test_simulator,
+            max_iterations=1,
+        )
+        qaoa.run()
+        sol = qaoa.solution
+        assert all(b in (0, 1) for b in sol)
