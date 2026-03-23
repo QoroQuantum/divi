@@ -7,7 +7,6 @@ from .variational_quantum_algorithm import VariationalQuantumAlgorithm, Solution
 from .ensemble import BatchConfig, BatchMode, ProgramEnsemble
 from .algorithms import (
     QAOA,
-    GraphProblem,
     InterpolationStrategy,
     IterativeQAOA,
     TimeEvolution,
@@ -26,6 +25,16 @@ from .algorithms import (
     SuperpositionState,
     CustomPerQubitState,
     WState,
+    Problem,
+    MaxCutProblem,
+    MaxCliqueProblem,
+    MaxIndependentSetProblem,
+    MinVertexCoverProblem,
+    MaxWeightCycleProblem,
+    BinaryOptimizationProblem,
+    TSPProblem,
+    CVRPProblem,
+    draw_graph_solution_nodes,
 )
 from .workflows import (
     GraphPartitioningQAOA,

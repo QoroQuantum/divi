@@ -11,16 +11,27 @@ from ._ansatze import (
     UCCSDAnsatz,
 )
 from ._custom_vqa import CustomVQA
-from ._iterative_qaoa import InterpolationStrategy, IterativeQAOA
-from ._qaoa import QAOA, GraphProblem
-from ._time_evolution import TimeEvolution
-from ._vqe import VQE
-from ._pce import PCE
 from ._initial_state import (
+    CustomPerQubitState,
     InitialState,
-    ZerosState,
     OnesState,
     SuperpositionState,
-    CustomPerQubitState,
     WState,
+    ZerosState,
 )
+from ._iterative_qaoa import InterpolationStrategy, IterativeQAOA
+from ._pce import PCE
+from ._problem import (
+    MaxCliqueProblem,
+    MaxCutProblem,
+    MaxIndependentSetProblem,
+    MaxWeightCycleProblem,
+    MinVertexCoverProblem,
+    Problem,
+    BinaryOptimizationProblem,
+)
+from ._problem import draw_graph_solution_nodes
+from ._qaoa import QAOA
+from ._routing_problems import CVRPProblem, TSPProblem
+from ._time_evolution import TimeEvolution
+from ._vqe import VQE

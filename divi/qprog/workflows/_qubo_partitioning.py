@@ -16,6 +16,7 @@ from dimod import BinaryQuadraticModel
 
 from divi.backends import CircuitRunner
 from divi.qprog.algorithms import PCE, QAOA, IterativeQAOA
+from divi.qprog.algorithms._problem import BinaryOptimizationProblem
 from divi.qprog.ensemble import ProgramEnsemble, _beam_search_aggregate_top_n
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer, copy_optimizer
 from divi.typing import QUBOProblemTypes
@@ -200,9 +201,16 @@ class QUBOPartitioningQAOA(ProgramEnsemble):
                 shape=(len(ldata), len(ldata)),
             )
 
+            # QAOA and IterativeQAOA expect Problem objects;
+            # PCE takes raw QUBO matrices directly.
+            if self._engine_constructor in (QAOA, IterativeQAOA):
+                problem = BinaryOptimizationProblem(coo_mat)
+            else:
+                problem = coo_mat
+
             self._programs[prog_id] = self._constructor(
                 program_id=prog_id,
-                problem=coo_mat,
+                problem=problem,
                 optimizer=copy_optimizer(self._optimizer_template),
                 early_stopping=copy.deepcopy(self._early_stopping_template),
                 progress_queue=self._queue,

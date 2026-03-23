@@ -98,7 +98,7 @@ Set ``include_decoded=True`` when calling :meth:`get_top_solutions` to include d
 
    import dimod
    import numpy as np
-   from divi.qprog import QAOA
+   from divi.qprog import QAOA, BinaryOptimizationProblem
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
@@ -107,7 +107,7 @@ Set ``include_decoded=True`` when calling :meth:`get_top_solutions` to include d
    qubo_array = bqm.to_numpy_matrix()
 
    qaoa_problem = QAOA(
-       problem=qubo_array,
+       BinaryOptimizationProblem(qubo_array),
        n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        max_iterations=10,
@@ -366,9 +366,9 @@ Divi handles parameter optimization automatically, but you can also set custom i
       print(f"Total parameters: {vqe.n_params * vqe.n_layers}")
 
       # QAOA example
-      from divi.qprog import QAOA, GraphProblem
+      from divi.qprog import QAOA, MaxCutProblem
       import networkx as nx
-      qaoa = QAOA(problem=nx.bull_graph(), graph_problem=GraphProblem.MAXCUT, n_layers=2)
+      qaoa = QAOA(MaxCutProblem(nx.bull_graph()), n_layers=2)
       print(f"QAOA parameters: {qaoa.n_params * qaoa.n_layers}")  # Always 2 params per layer
 
       # Access current parameters (triggers initialization if not set)
@@ -388,7 +388,7 @@ Divi handles parameter optimization automatically, but you can also set custom i
       vqe = VQE(molecule=molecule, initial_params=custom_params, seed=42)
 
       # Method 2: Via property setter (useful for mid-run adjustments)
-      qaoa = QAOA(problem=graph, graph_problem=GraphProblem.MAXCUT)
+      qaoa = QAOA(MaxCutProblem(graph))
       qaoa.curr_params = np.array([[0.5, 0.3]])  # QAOA: (beta, gamma) per layer
 
       # Both methods work for any variational algorithm

@@ -138,7 +138,7 @@ Here's a complete example showing checkpointing with :class:`QAOA`:
 
    import networkx as nx
    from pathlib import Path
-   from divi.qprog import QAOA, GraphProblem
+   from divi.qprog import QAOA, MaxCliqueProblem
    from divi.qprog.checkpointing import CheckpointConfig
    from divi.qprog.optimizers import PymooOptimizer, PymooMethod
    from divi.backends import MaestroSimulator
@@ -149,8 +149,7 @@ Here's a complete example showing checkpointing with :class:`QAOA`:
 
    # Initial run - first half
    qaoa1 = QAOA(
-       problem=G,
-       graph_problem=GraphProblem.MAX_CLIQUE,
+       MaxCliqueProblem(G),
        n_layers=1,
        optimizer=PymooOptimizer(method=PymooMethod.CMAES, population_size=10),
        max_iterations=5,
@@ -164,8 +163,7 @@ Here's a complete example showing checkpointing with :class:`QAOA`:
    qaoa2 = QAOA.load_state(
        checkpoint_dir=checkpoint_dir,
        backend=MaestroSimulator(),
-       problem=G,  # Must provide original problem
-       graph_problem=GraphProblem.MAX_CLIQUE,
+       MaxCliqueProblem(G),  # Must provide original problem
        n_layers=1,
    )
 

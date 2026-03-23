@@ -4,13 +4,8 @@
 
 import logging
 import pickle
-from collections.abc import Callable, Container
-from enum import Enum
 from typing import Any, Literal
-from warnings import warn
 
-import matplotlib.pyplot as plt
-import networkx as nx
 import numpy as np
 import pennylane as qml
 import pennylane.qaoa as pqaoa
@@ -19,121 +14,18 @@ import sympy as sp
 from divi.circuits import MetaCircuit
 from divi.hamiltonians import (
     ExactTrotterization,
-    IsingEncoding,
     TrotterizationStrategy,
-    _clean_hamiltonian,
-    _is_empty_hamiltonian,
-    _resolve_ising_converter,
-    normalize_binary_polynomial_problem,
 )
 from divi.pipeline.stages import TrotterSpecStage
-from divi.qprog.algorithms._initial_state import (
-    InitialState,
-    OnesState,
-    SuperpositionState,
-    WState,
-    ZerosState,
-    build_block_xy_mixer_graph,
-)
+from divi.qprog.algorithms._initial_state import InitialState
+from divi.qprog.algorithms._problem import Problem
 from divi.qprog.variational_quantum_algorithm import (
+    SolutionEntry,
     VariationalQuantumAlgorithm,
     _extract_param_set_idx,
 )
-from divi.typing import (
-    BinaryPolynomialProblem,
-    GraphProblemTypes,
-    HUBOProblemTypes,
-    QUBOProblemTypes,
-)
 
 logger = logging.getLogger(__name__)
-
-
-def draw_graph_solution_nodes(main_graph: nx.Graph, partition_nodes: Container[Any]):
-    """Visualize a graph with solution nodes highlighted.
-
-    Draws the graph with nodes colored to distinguish solution nodes (red) from
-    other nodes (light blue).
-
-    Args:
-        main_graph (nx.Graph): NetworkX graph to visualize.
-        partition_nodes: Collection of node indices that are part of the solution.
-    """
-    # Create a dictionary for node colors
-    node_colors = [
-        "red" if node in partition_nodes else "lightblue" for node in main_graph.nodes()
-    ]
-
-    plt.figure(figsize=(10, 8))
-
-    pos = nx.spring_layout(main_graph)
-
-    nx.draw_networkx_nodes(main_graph, pos, node_color=node_colors, node_size=500)
-    nx.draw_networkx_edges(main_graph, pos)
-    nx.draw_networkx_labels(main_graph, pos, font_size=10, font_weight="bold")
-
-    # Remove axes
-    plt.axis("off")
-
-    # Show the plot
-    plt.tight_layout()
-    plt.show()
-
-
-class GraphProblem(Enum):
-    """Enumeration of supported graph problems for QAOA.
-
-    Each variant stores its PennyLane function name and the recommended
-    :class:`InitialState` classes for constrained / unconstrained modes.
-    """
-
-    MAX_CLIQUE = ("max_clique", ZerosState, SuperpositionState)
-    MAX_INDEPENDENT_SET = ("max_independent_set", ZerosState, SuperpositionState)
-    MAX_WEIGHT_CYCLE = ("max_weight_cycle", SuperpositionState, SuperpositionState)
-    MAXCUT = ("maxcut", SuperpositionState, SuperpositionState)
-    MIN_VERTEX_COVER = ("min_vertex_cover", OnesState, SuperpositionState)
-
-    # Internal problem with no PennyLane equivalent
-    EDGE_PARTITIONING = ("", SuperpositionState, SuperpositionState)
-
-    def __init__(
-        self,
-        pl_string: str,
-        constrained_state_cls: type[InitialState],
-        unconstrained_state_cls: type[InitialState],
-    ):
-        self.pl_string = pl_string
-        self._constrained_state_cls = constrained_state_cls
-        self._unconstrained_state_cls = unconstrained_state_cls
-
-    def default_initial_state(self, *, is_constrained: bool) -> InitialState:
-        """Return the recommended initial state for this problem."""
-        cls = (
-            self._constrained_state_cls
-            if is_constrained
-            else self._unconstrained_state_cls
-        )
-        return cls()
-
-    def resolve(
-        self,
-        problem: GraphProblemTypes,
-        *,
-        is_constrained: bool,
-    ) -> tuple[qml.operation.Operator, qml.operation.Operator, dict, InitialState]:
-        """Return (cost_ham, mixer_ham, metadata, initial_state) for a graph problem."""
-        params = (
-            (problem,) if self == GraphProblem.MAXCUT else (problem, is_constrained)
-        )
-        result = getattr(pqaoa, self.pl_string)(*params)
-        cost_ham, mixer_ham = result[0], result[1]
-        metadata = result[2] if len(result) > 2 else {}
-        return (
-            cost_ham,
-            mixer_ham,
-            metadata,
-            self.default_initial_state(is_constrained=is_constrained),
-        )
 
 
 class QAOA(VariationalQuantumAlgorithm):
@@ -143,67 +35,46 @@ class QAOA(VariationalQuantumAlgorithm):
     optimization problems. It alternates between applying a cost Hamiltonian
     (encoding the problem) and a mixer Hamiltonian (enabling exploration).
 
-    The algorithm can solve:
-    - Graph problems (MaxCut, Max Clique, etc.)
-    - QUBO (Quadratic Unconstrained Binary Optimization) problems
-    - BinaryQuadraticModel from dimod
+    The problem is provided as a :class:`Problem` instance that supplies the
+    cost Hamiltonian, mixer Hamiltonian, initial state, loss constant, and
+    decode function.
 
-    Attributes:
-        problem (GraphProblemTypes | QUBOProblemTypes): The problem instance to solve.
-        graph_problem (GraphProblem | None): The graph problem type (if applicable).
-        n_layers (int): Number of QAOA layers.
-        n_qubits (int): Number of qubits required.
-        cost_hamiltonian (qml.Hamiltonian): The cost Hamiltonian encoding the problem.
-        mixer_hamiltonian (qml.Hamiltonian): The mixer Hamiltonian for exploration.
-        initial_state (str): The initial quantum state.
-        problem_metadata (dict | None): Additional metadata from problem setup.
-        loss_constant (float): Constant term from the problem.
-        optimizer (Optimizer): Classical optimizer for parameter updates.
-        max_iterations (int): Maximum number of optimization iterations.
-        current_iteration (int): Current optimization iteration.
-        _n_params_per_layer (int): Number of parameters per layer (always 2 for QAOA).
-        _solution_nodes (list[int] | None): Solution nodes for graph problems.
-        _solution_bitstring (npt.NDArray[np.int32] | None): Solution bitstring for QUBO problems.
+    Args:
+        problem: A :class:`Problem` instance providing the QAOA ingredients.
+        initial_state: Override the problem's recommended initial state.
+        trotterization_strategy: The trotterization strategy. Defaults to ExactTrotterization.
+        max_iterations: Maximum number of optimization iterations. Defaults to 10.
+        n_layers: Number of QAOA layers. Defaults to 1.
+        **kwargs: Additional keyword arguments passed to
+            :class:`VariationalQuantumAlgorithm`, including ``optimizer``
+            and ``backend``.
     """
 
     def __init__(
         self,
-        problem: GraphProblemTypes | QUBOProblemTypes | HUBOProblemTypes,
+        problem: Problem,
         *,
-        graph_problem: GraphProblem | None = None,
         initial_state: InitialState | None = None,
-        decode_solution_fn: Callable[[str], Any] | None = None,
-        hamiltonian_builder: Literal["native", "quadratized"] = "native",
-        quadratization_strength: float = 10.0,
         trotterization_strategy: TrotterizationStrategy | None = None,
         max_iterations: int = 10,
         n_layers: int = 1,
         **kwargs,
     ):
-        """Initialize the QAOA problem.
+        """Initialize the QAOA algorithm.
 
         Args:
-            problem (GraphProblemTypes | QUBOProblemTypes | HUBOProblemTypes): The problem to solve, can either be a graph or a binary polynomial optimization problem.
-                For graph inputs, the graph problem to solve must be provided
-                through the `graph_problem` variable.
-            graph_problem (GraphProblem | None): The graph problem to solve. Defaults to None.
-            initial_state (InitialState | None): Initial quantum state preparation.
-                Pass an :class:`InitialState` subclass instance (e.g.
-                ``SuperpositionState()``, ``WState(block_size, n_blocks)``).
-                If ``None`` (default), graph problems use the recommended state
-                per problem type; QUBO/HUBO problems default to
-                ``SuperpositionState()``. When ``WState`` is passed, the mixer
-                is automatically set to the XY mixer.
-            decode_solution_fn (callable[[str], Any] | None): Optional decoder for bitstrings.
-                If not provided, a default decoder is selected based on problem type.
-            hamiltonian_builder: Hamiltonian conversion backend for binary polynomial
-                problems. Accepts "native" or "quadratized".
-            quadratization_strength: Penalty strength used when
-                `hamiltonian_builder="quadratized"`.
-            trotterization_strategy (TrotterizationStrategy | None): The trotterization strategy to use. Defaults to ExactTrotterization.
-            max_iterations (int): Maximum number of optimization iterations. Defaults to 10.
-            n_layers (int): Number of QAOA layers. Defaults to 1.
-            **kwargs: Additional keyword arguments passed to the parent class, including `optimizer`.
+            problem: A :class:`Problem` instance that provides cost/mixer
+                Hamiltonians, loss constant, decode function, and
+                recommended initial state.
+            initial_state: Override the problem's recommended initial state.
+                If ``None``, uses ``problem.recommended_initial_state``.
+            trotterization_strategy: Strategy for Hamiltonian evolution.
+                Defaults to :class:`ExactTrotterization`.
+            max_iterations: Maximum number of optimization iterations.
+                Defaults to 10.
+            n_layers: Number of QAOA layers (circuit depth). Defaults to 1.
+            **kwargs: Passed to :class:`VariationalQuantumAlgorithm`,
+                including ``optimizer``, ``backend``, ``shots``, etc.
         """
         if initial_state is not None and not isinstance(initial_state, InitialState):
             raise TypeError(
@@ -211,113 +82,34 @@ class QAOA(VariationalQuantumAlgorithm):
                 f"got {type(initial_state).__name__}"
             )
 
-        self.graph_problem = graph_problem
-        self._ising_encoding: IsingEncoding | None = None
-
-        # Validate and process problem (needed to determine decode function)
-        # This sets n_qubits which is needed before parent init
-        self.problem = self._validate_and_set_problem(
-            problem,
-            graph_problem,
-            hamiltonian_builder=hamiltonian_builder,
-            quadratization_strength=quadratization_strength,
-        )
-
-        if decode_solution_fn is not None:
-            kwargs["decode_solution_fn"] = decode_solution_fn
-
         super().__init__(**kwargs)
 
-        if trotterization_strategy is None:
-            trotterization_strategy = ExactTrotterization()
+        # Problem provides all domain-specific ingredients
+        self.problem = problem
+        self._cost_hamiltonian = problem.cost_hamiltonian
+        self._decode_solution_fn = problem.decode_fn
+        self.loss_constant = problem.loss_constant
+        self.initial_state = initial_state or problem.recommended_initial_state
+        self.problem_metadata = getattr(problem, "metadata", {})
 
-        # Initialize local state
+        # Derived from cost Hamiltonian
+        self.n_qubits = len(self._cost_hamiltonian.wires)
+        self._circuit_wires = tuple(self._cost_hamiltonian.wires)
+
+        # Algorithm parameters
         self.n_layers = n_layers
         self.max_iterations = max_iterations
         self.current_iteration = 0
-        self.trotterization_strategy = trotterization_strategy
+        self.trotterization_strategy = trotterization_strategy or ExactTrotterization()
         self._n_params_per_layer = 2
+        self._decoded_solution = None
 
-        self._solution_nodes = []
-        self._solution_bitstring = []
-        # Resolve hamiltonians and problem metadata
-        if isinstance(self.problem, GraphProblemTypes):
-            (
-                cost_hamiltonian,
-                self._mixer_hamiltonian,
-                self.problem_metadata,
-                default_state,
-            ) = self.graph_problem.resolve(
-                self.problem,
-                is_constrained=kwargs.get("is_constrained", True),
-            )
-            self.initial_state = (
-                initial_state if initial_state is not None else default_state
-            )
-        else:
-            # QUBO / HUBO problems
-            if self._ising_encoding is None:
-                raise ValueError(
-                    "Missing Ising encoding for binary polynomial problem."
-                )
-            cost_hamiltonian = self._ising_encoding.operator
-
-            if initial_state is None:
-                initial_state = SuperpositionState()
-            self.initial_state = initial_state
-
-            # Auto-select mixer: XY for WState, X otherwise
-            if isinstance(self.initial_state, WState):
-                graph = build_block_xy_mixer_graph(
-                    self.initial_state.block_size,
-                    self.initial_state.n_blocks,
-                    range(self.n_qubits),
-                )
-                self._mixer_hamiltonian = pqaoa.xy_mixer(graph)
-            else:
-                self._mixer_hamiltonian = pqaoa.x_mixer(range(self.n_qubits))
-        if not isinstance(self.problem, GraphProblemTypes):
-            self.problem_metadata = self._ising_encoding.metadata or {}
-
-        # Extract and combine constants
-        self._cost_hamiltonian, constant_from_hamiltonian = _clean_hamiltonian(
-            cost_hamiltonian
-        )
-        if _is_empty_hamiltonian(self._cost_hamiltonian):
-            raise ValueError("Hamiltonian contains only constant terms.")
-
-        if self._ising_encoding is not None:
-            self.loss_constant = (
-                self._ising_encoding.constant + constant_from_hamiltonian
-            )
-        else:
-            self.loss_constant = constant_from_hamiltonian
-
-        # Extract wire labels from the cost Hamiltonian to ensure consistency
-        self._circuit_wires = tuple(self._cost_hamiltonian.wires)
-
-        # Cache symbolic parameters for the ansatz (used by meta circuit factory)
+        # Symbolic parameters for the ansatz
         betas = sp.symarray("β", self.n_layers)
         gammas = sp.symarray("γ", self.n_layers)
         self._sym_params = np.vstack((betas, gammas)).transpose()
 
-        # Build pipelines
-
         self._build_pipelines()
-
-        # Set up decode function based on problem type if user didn't provide one
-        if decode_solution_fn is None:
-            if self.graph_problem is None:
-                # Binary polynomial problems decode via the converter's decode_fn.
-                self._decode_solution_fn = self._ising_encoding.decode_fn
-            elif isinstance(self.problem, GraphProblemTypes):
-                # For Graph: map bitstring positions to graph node labels
-                circuit_wires = self._circuit_wires  # Capture for closure
-                self._decode_solution_fn = lambda bitstring: [
-                    circuit_wires[idx]
-                    for idx, bit in enumerate(bitstring)
-                    if bit == "1" and idx < len(circuit_wires)
-                ]
 
     def _build_pipelines(self) -> None:
         self._cost_pipeline = self._build_cost_pipeline(
@@ -332,8 +124,7 @@ class QAOA(VariationalQuantumAlgorithm):
         """Save QAOA-specific runtime state."""
         return {
             "problem_metadata": self.problem_metadata,
-            "solution_nodes": self._solution_nodes,
-            "solution_bitstring": self._solution_bitstring,
+            "decoded_solution": self._decoded_solution,
             "loss_constant": self.loss_constant,
             "trotterization_strategy": pickle.dumps(
                 self.trotterization_strategy, protocol=pickle.HIGHEST_PROTOCOL
@@ -348,8 +139,7 @@ class QAOA(VariationalQuantumAlgorithm):
         """
         required_keys = [
             "problem_metadata",
-            "solution_nodes",  # Key must exist, but value can be None if final computation hasn't run
-            "solution_bitstring",  # Key must exist, but value can be None if final computation hasn't run
+            "decoded_solution",
             "loss_constant",
         ]
         missing_keys = [key for key in required_keys if key not in state]
@@ -359,121 +149,19 @@ class QAOA(VariationalQuantumAlgorithm):
             )
 
         self.problem_metadata = state["problem_metadata"]
-        # solution_nodes and solution_bitstring can be None if final computation hasn't run
-        # Convert None to empty list to match initialization behavior
-        self._solution_nodes = (
-            state["solution_nodes"] if state["solution_nodes"] is not None else []
-        )
-        self._solution_bitstring = (
-            state["solution_bitstring"]
-            if state["solution_bitstring"] is not None
-            else []
-        )
+        self._decoded_solution = state["decoded_solution"]
         self.loss_constant = state["loss_constant"]
         self.trotterization_strategy = pickle.loads(
             bytes.fromhex(state["trotterization_strategy"])
         )
 
-    def _validate_and_set_problem(
-        self,
-        problem: GraphProblemTypes | QUBOProblemTypes | HUBOProblemTypes,
-        graph_problem: GraphProblem | None,
-        *,
-        hamiltonian_builder: Literal["native", "quadratized"],
-        quadratization_strength: float,
-    ) -> GraphProblemTypes | BinaryPolynomialProblem:
-        """Validate and process the problem input, setting n_qubits and graph_problem.
-
-        Args:
-            problem: The problem to solve (graph or binary polynomial optimization).
-            graph_problem: The graph problem type (if applicable).
-
-        Returns:
-            The processed problem instance.
-
-        Raises:
-            ValueError: If problem type or graph_problem is invalid.
-        """
-        if isinstance(problem, GraphProblemTypes):
-            return self._process_graph_problem(problem, graph_problem)
-        else:
-            if graph_problem is not None:
-                warn(
-                    "Ignoring the 'graph_problem' argument as it is not applicable to binary polynomial inputs."
-                )
-
-            self.graph_problem = None
-            return self._process_binary_problem(
-                problem,
-                hamiltonian_builder=hamiltonian_builder,
-                quadratization_strength=quadratization_strength,
-            )
-
-    def _process_binary_problem(
-        self,
-        problem: QUBOProblemTypes | HUBOProblemTypes,
-        *,
-        hamiltonian_builder: Literal["native", "quadratized"],
-        quadratization_strength: float,
-    ) -> BinaryPolynomialProblem:
-        """Normalize binary optimization input and convert to Ising."""
-        canonical_problem = normalize_binary_polynomial_problem(problem)
-        converter = _resolve_ising_converter(
-            hamiltonian_builder, quadratization_strength=quadratization_strength
-        )
-        self._ising_encoding = converter.convert(canonical_problem)
-        self.n_qubits = len(self._ising_encoding.operator.wires)
-
-        return canonical_problem
-
-    def _process_graph_problem(
-        self,
-        problem: GraphProblemTypes,
-        graph_problem: GraphProblem | None,
-    ) -> GraphProblemTypes:
-        """Process graph problem, validating graph_problem and setting n_qubits.
-
-        Args:
-            problem: Graph problem (NetworkX or RustworkX graph).
-            graph_problem: The graph problem type.
-
-        Returns:
-            The graph problem instance.
-
-        Raises:
-            ValueError: If graph_problem is not a valid GraphProblem enum.
-        """
-        if not isinstance(graph_problem, GraphProblem):
-            raise ValueError(
-                f"Unsupported Problem. Got '{graph_problem}'. Must be one of type divi.qprog.GraphProblem."
-            )
-
-        self.graph_problem = graph_problem
-        self.n_qubits = problem.number_of_nodes()
-        return problem
-
-    @property
-    def mixer_hamiltonian(self) -> qml.operation.Operator:
-        """The mixer Hamiltonian for the QAOA problem."""
-        return self._mixer_hamiltonian
-
     @property
     def solution(self):
         """Get the solution found by QAOA optimization.
 
-        Returns:
-            For graph problems, a list of selected node indices.
-            For QUBO problems, a list of binary values.
-            For HUBO problems with non-integer variable names, a dictionary
-            mapping variable names to binary values.
+        The return type depends on the Problem's decode function.
         """
-        if self.graph_problem is not None:
-            return self._solution_nodes
-        if isinstance(self.problem, BinaryPolynomialProblem):
-            vo = self.problem.variable_order
-            if vo != tuple(range(self.problem.n_vars)):
-                return dict(zip(vo, self._solution_bitstring))
-        return self._solution_bitstring
+        return self._decoded_solution
 
     def _build_qaoa_ops(self, cost_hamiltonian: qml.operation.Operator) -> list:
         """Build QAOA layer ops for a given cost Hamiltonian."""
@@ -482,7 +170,7 @@ class QAOA(VariationalQuantumAlgorithm):
         for layer_params in self._sym_params:
             gamma, beta = layer_params
             ops.append(pqaoa.cost_layer(gamma, cost_hamiltonian))
-            ops.append(pqaoa.mixer_layer(beta, self._mixer_hamiltonian))
+            ops.append(pqaoa.mixer_layer(beta, self.problem.mixer_hamiltonian))
 
         return ops
 
@@ -538,77 +226,77 @@ class QAOA(VariationalQuantumAlgorithm):
         }
 
     def _perform_final_computation(self, **kwargs):
-        """Extract the optimal solution from the QAOA optimization process.
-
-        This method performs the following steps:
-        1. Executes measurement circuits with the best parameters (those that achieved the lowest loss).
-        2. Retrieves the bitstring representing the best solution, correcting for endianness.
-        3. Uses the `decode_solution_fn` (configured in constructor based on problem type) to decode
-           the bitstring into the appropriate format:
-           - For QUBO problems: NumPy array of bits (int32).
-           - For graph problems: List of node indices corresponding to '1's in the bitstring.
-        4. Stores the decoded solution in the appropriate attribute.
+        """Run measurement circuits with the best parameters and decode the solution.
 
         Returns:
-            tuple[int, float]: A tuple containing:
-                - int: The total number of circuits executed.
-                - float: The total runtime of the optimization process.
+            tuple[int, float]: Total circuit count and total runtime.
         """
-
         self.reporter.info(message="🏁 Computing Final Solution 🏁", overwrite=True)
 
         self._run_solution_measurement()
-
-        best_measurement_probs = next(iter(self._best_probs.values()))
-
-        # Endianness is corrected in the pipeline's format dispatch
-        best_solution_bitstring = max(
-            best_measurement_probs, key=best_measurement_probs.get
-        )
-
-        # Decode the best bitstring via the problem-specific decode function
-        decoded_solution = self._decode_solution_fn(best_solution_bitstring)
-
-        if isinstance(self.problem, GraphProblemTypes):
-            self._solution_nodes[:] = decoded_solution
-        elif decoded_solution is not None:
-            try:
-                self._solution_bitstring[:] = decoded_solution
-            except (TypeError, ValueError):
-                # decode returned a non-array type (e.g. tour list) — store raw bitstring
-                self._solution_bitstring = np.array(
-                    [int(b) for b in best_solution_bitstring], dtype=np.int32
-                )
-        else:
-            # decode returned None (infeasible) — store raw bitstring
-            self._solution_bitstring = np.array(
-                [int(b) for b in best_solution_bitstring], dtype=np.int32
-            )
+        best_probs = next(iter(self._best_probs.values()))
+        best_bitstring = max(best_probs, key=best_probs.get)
+        self._decoded_solution = self._decode_solution_fn(best_bitstring)
 
         self.reporter.info(message="🏁 Computed Final Solution! 🏁")
-
         return self._total_circuit_count, self._total_run_time
 
-    def draw_solution(self):
-        """Visualize the solution found by QAOA for graph problems.
+    def get_top_solutions(
+        self,
+        n: int = 10,
+        *,
+        min_prob: float = 0.0,
+        include_decoded: bool = False,
+        feasibility: Literal["ignore", "filter", "repair"] = "ignore",
+    ) -> list[SolutionEntry]:
+        """Get top-N solutions with optional feasibility filtering and repair.
 
-        Draws the graph with solution nodes highlighted in red and other nodes
-        in light blue. If the solution hasn't been computed yet, it will be
-        calculated first.
+        Args:
+            n: Number of top solutions to return (0 = all). Defaults to 10.
+            min_prob: Minimum probability threshold. Defaults to 0.0.
+            include_decoded: Include decoded representations. Defaults to False.
+            feasibility: How to handle infeasible solutions:
 
-        Raises:
-            RuntimeError: If called on a QUBO problem instead of a graph problem.
+                - ``"ignore"`` (default): return all solutions, ranked by probability.
+                - ``"filter"``: drop infeasible solutions, rank by energy.
+                - ``"repair"``: repair infeasible solutions via the Problem's
+                  ``repair`` method, rank by energy.
 
-        Note:
-            This method only works for graph problems. For QUBO problems, access
-            the solution directly via the `solution` property.
+        Returns:
+            List of :class:`SolutionEntry`.
         """
-        if self.graph_problem is None:
-            raise RuntimeError(
-                "The problem is not a graph problem. Cannot draw solution."
+        fetch_n = n if n > 0 else 2**self.n_qubits
+
+        # No feasibility handling — just return by probability
+        if feasibility == "ignore":
+            return super().get_top_solutions(
+                n=fetch_n, min_prob=min_prob, include_decoded=include_decoded
             )
 
-        if not self._solution_nodes:
-            self._perform_final_computation()
+        # Retrieve every measured bitstring so we can filter/repair
+        n_measured = len(next(iter(self._best_probs.values())))
+        all_solutions = super().get_top_solutions(
+            n=n_measured, min_prob=min_prob, include_decoded=include_decoded
+        )
 
-        draw_graph_solution_nodes(self.problem, self._solution_nodes)
+        # Walk each solution: keep feasible ones, repair or skip infeasible
+        p = self.problem
+        result: list[SolutionEntry] = []
+        for sol in all_solutions:
+            bs = sol.bitstring
+
+            if p.is_feasible(bs):
+                energy = p.compute_energy(bs)
+                decoded = self._decode_solution_fn(bs) if include_decoded else None
+            elif feasibility == "repair":
+                bs, decoded, energy = p.repair(bs)
+            else:  # "filter" — drop infeasible
+                continue
+
+            result.append(SolutionEntry(bs, sol.prob, decoded, energy))
+
+        # Rank by energy (lower is better), break ties by higher probability
+        result.sort(
+            key=lambda s: (s.energy if s.energy is not None else float("inf"), -s.prob)
+        )
+        return result[:fetch_n]

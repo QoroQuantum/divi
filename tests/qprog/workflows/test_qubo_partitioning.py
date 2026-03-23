@@ -9,7 +9,14 @@ import pennylane as qml
 import pytest
 import scipy.sparse as sps
 
-from divi.qprog import PCE, QAOA, BatchConfig, ScipyMethod, ScipyOptimizer
+from divi.qprog import (
+    PCE,
+    QAOA,
+    BatchConfig,
+    BinaryOptimizationProblem,
+    ScipyMethod,
+    ScipyOptimizer,
+)
 from divi.qprog.algorithms import GenericLayerAnsatz
 from divi.qprog.variational_quantum_algorithm import SolutionEntry
 from divi.qprog.workflows._qubo_partitioning import (
@@ -209,12 +216,12 @@ class TestQUBOPartitioningQAOA:
             qubo_partitioning_qaoa.prog_id_to_bqm_subproblem_states.keys()
         )
 
-        # Verify that the QAOA programs were created with the correct subproblems
+        # Verify that the QAOA programs were created with correct BinaryOptimizationProblem instances
         for call in mock_constructor.call_args_list:
             kwargs = call.kwargs
-            # Check the kwargs that were passed to the partial object
-            assert isinstance(kwargs["problem"], sps.coo_matrix)
-            assert kwargs["problem"].shape == (2, 2)
+            assert isinstance(kwargs["problem"], BinaryOptimizationProblem)
+            assert kwargs["problem"].canonical_problem.n_vars == 2
+            assert len(kwargs["problem"].cost_hamiltonian.wires) == 2
             assert "program_id" in kwargs
 
     def test_correct_initialization_pce(

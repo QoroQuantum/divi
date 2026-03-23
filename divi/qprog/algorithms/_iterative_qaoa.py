@@ -206,8 +206,7 @@ class IterativeQAOA(QAOA):
     Example::
 
         iterative = IterativeQAOA(
-            problem=graph,
-            graph_problem=GraphProblem.MAXCUT,
+            problem=MaxCutProblem(graph),
             max_depth=5,
             strategy=InterpolationStrategy.INTERP,
             max_iterations_per_depth=20,
@@ -219,7 +218,7 @@ class IterativeQAOA(QAOA):
         print(iterative.solution)
 
     Args:
-        problem: The optimization problem (graph, QUBO, or HUBO).
+        problem: A :class:`Problem` instance providing the QAOA ingredients.
         max_depth: Maximum circuit depth to iterate up to. Defaults to 5.
         strategy: Interpolation strategy for warm-starting. Defaults to INTERP.
         n_basis_terms: Number of basis terms for FOURIER/CHEBYSHEV strategies.
@@ -229,8 +228,8 @@ class IterativeQAOA(QAOA):
             ``(depth) -> int`` for adaptive budgets. Defaults to 10.
         convergence_threshold: If set, stop iterating when the absolute
             improvement in loss between consecutive depths is below this value.
-        **kwargs: All remaining QAOA keyword arguments (``graph_problem``,
-            ``backend``, ``optimizer``, ``initial_state``, etc.).
+        **kwargs: All remaining QAOA keyword arguments (``backend``,
+            ``optimizer``, ``initial_state``, etc.).
     """
 
     def __init__(

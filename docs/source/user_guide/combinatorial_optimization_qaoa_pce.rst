@@ -8,7 +8,7 @@ Divi offers two QAOA modes: single-instance mode for individual problems, and gr
 Single-Instance QAOA
 --------------------
 
-A `QAOA` constructor expects a problem to be provided. As we will show in the examples, the form of input triggers a different execution pathway under the hood. However, there are some common arguments that one must pay attention to.
+A `QAOA` constructor expects a ``Problem`` instance that encapsulates the optimization objective. However, there are some common arguments that one must pay attention to.
 
 A user has the ability to choose the **initial state** of the quantum system before the optimization by passing an ``InitialState`` instance. Available states include ``ZerosState()``, ``OnesState()``, ``SuperpositionState()``, ``CustomPerQubitState("01+-")``, and ``WState(block_size, n_blocks)`` for one-hot encoded problems. When ``initial_state=None`` (the default), graph problems use a problem-specific recommendation and QUBO/HUBO problems default to ``SuperpositionState()``. When ``WState`` is used, the mixer is automatically set to the XY mixer, which preserves the one-hot subspace. In addition, a user can determine how many **layers** of the QAOA ansatz to apply.
 
@@ -25,19 +25,17 @@ Based on test cases and real applications, here are some proven configurations:
 
    import networkx as nx
    import numpy as np
-   from divi.qprog import QAOA, GraphProblem
+   from divi.qprog import QAOA, MaxCliqueProblem
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
    # Tested configuration for bull graph max-clique
    G = nx.bull_graph()
 
    qaoa_problem = QAOA(
-       problem=G,
-       graph_problem=GraphProblem.MAX_CLIQUE,
+       MaxCliqueProblem(G, is_constrained=True),
        n_layers=1,
        optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
        max_iterations=10,
-       is_constrained=True,
        backend=MaestroSimulator(),
    )
 
@@ -49,7 +47,7 @@ Based on test cases and real applications, here are some proven configurations:
 .. code-block:: python
 
    import numpy as np
-   from divi.qprog import QAOA
+   from divi.qprog import QAOA, BinaryOptimizationProblem
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
    # Tested QUBO matrix that should optimize to [1, 0, 1]
@@ -60,7 +58,7 @@ Based on test cases and real applications, here are some proven configurations:
    ])
 
    qaoa_problem = QAOA(
-       problem=qubo_matrix,
+       BinaryOptimizationProblem(qubo_matrix),
        n_layers=1,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        max_iterations=12,
@@ -95,7 +93,7 @@ Example: QAOA with QDrift:
 .. code-block:: python
 
    import networkx as nx
-   from divi.qprog import QAOA, GraphProblem, QDrift
+   from divi.qprog import QAOA, MaxCutProblem, QDrift
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
@@ -108,8 +106,7 @@ Example: QAOA with QDrift:
        seed=1997,
    )
    qaoa = QAOA(
-       problem=G,
-       graph_problem=GraphProblem.MAXCUT,
+       MaxCutProblem(G),
        n_layers=1,
        trotterization_strategy=qdrift,
        optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
@@ -128,32 +125,31 @@ Graph Problems
 
 Divi supports several common graph-based optimization problems out of the box,
 including Max-Clique, MaxCut, Max Independent Set, Max Weight Cycle, and
-Min Vertex Cover.  Pass the desired problem type via the :class:`GraphProblem`
-enum:
+Min Vertex Cover.  Each graph problem has a dedicated class:
 
 .. list-table::
    :header-rows: 1
    :widths: 30 70
 
-   * - Problem
+   * - Problem Class
      - Description
-   * - ``MAX_CLIQUE``
-     - Finds the largest complete subgraph where every node is connected to every other.
-   * - ``MAX_INDEPENDENT_SET``
-     - Finds the largest set of vertices with no edges between them.
-   * - ``MAX_WEIGHT_CYCLE``
-     - Identifies a cycle with the maximum total edge weight in a weighted graph.
-   * - ``MAXCUT``
+   * - ``MaxCutProblem(graph)``
      - Divides a graph into two subsets to maximize the sum of edge weights between them.
-   * - ``MIN_VERTEX_COVER``
+   * - ``MaxCliqueProblem(graph)``
+     - Finds the largest complete subgraph where every node is connected to every other.
+   * - ``MaxIndependentSetProblem(graph)``
+     - Finds the largest set of vertices with no edges between them.
+   * - ``MinVertexCoverProblem(graph)``
      - Finds the smallest set of vertices such that every edge is incident to at least one selected vertex.
+   * - ``MaxWeightCycleProblem(graph)``
+     - Identifies a cycle with the maximum total edge weight in a weighted graph.
 
 Example: Finding the max-clique of a graph:
 
 .. code-block:: python
 
    import networkx as nx
-   from divi.qprog import QAOA, GraphProblem
+   from divi.qprog import QAOA, MaxCliqueProblem
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
@@ -161,12 +157,10 @@ Example: Finding the max-clique of a graph:
    G = nx.bull_graph()
 
    qaoa_problem = QAOA(
-       problem=G,
-       graph_problem=GraphProblem.MAX_CLIQUE,
+       MaxCliqueProblem(G, is_constrained=True),
        n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
        max_iterations=10,
-       is_constrained=True,
        backend=MaestroSimulator(),
    )
 
@@ -198,7 +192,7 @@ NumPy Array-based Input
 .. code-block:: python
 
    import dimod
-   from divi.qprog import QAOA
+   from divi.qprog import QAOA, BinaryOptimizationProblem
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 
    # Generate a random QUBO
@@ -206,7 +200,7 @@ NumPy Array-based Input
    qubo_array = bqm.to_numpy_matrix()
 
    qaoa_problem = QAOA(
-       problem=qubo_array,
+       BinaryOptimizationProblem(qubo_array),
        n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
        max_iterations=5,
@@ -232,7 +226,7 @@ BinaryQuadraticModel Input
 .. code-block:: python
 
    import dimod
-   from divi.qprog import QAOA
+   from divi.qprog import QAOA, BinaryOptimizationProblem
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
@@ -245,7 +239,7 @@ BinaryQuadraticModel Input
    )
 
    qaoa_problem = QAOA(
-       problem=bqm,
+       BinaryOptimizationProblem(bqm),
        n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        max_iterations=10,
@@ -281,7 +275,7 @@ Variables can use any hashable labels (strings, integers, etc.).
 Hamiltonian Builders
 ^^^^^^^^^^^^^^^^^^^^
 
-QAOA offers two strategies for converting a HUBO into an Ising Hamiltonian:
+``BinaryOptimizationProblem`` offers two strategies for converting a HUBO into an Ising Hamiltonian:
 
 .. list-table::
    :header-rows: 1
@@ -301,7 +295,7 @@ Example
 
 .. code-block:: python
 
-   from divi.qprog import QAOA
+   from divi.qprog import QAOA, BinaryOptimizationProblem
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
@@ -315,8 +309,7 @@ Example
    }
 
    qaoa = QAOA(
-       problem=hubo,
-       hamiltonian_builder="native",
+       BinaryOptimizationProblem(hubo, hamiltonian_builder="native"),
        n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        max_iterations=30,
@@ -365,9 +358,9 @@ Example:
 
    import networkx as nx
    from divi.qprog import (
-       GraphProblem,
        InterpolationStrategy,
        IterativeQAOA,
+       MaxCutProblem,
        ScipyMethod,
        ScipyOptimizer,
    )
@@ -376,8 +369,7 @@ Example:
    graph = nx.random_regular_graph(3, 16, seed=42)
 
    iterative = IterativeQAOA(
-       problem=graph,
-       graph_problem=GraphProblem.MAXCUT,
+       MaxCutProblem(graph),
        max_depth=5,
        strategy=InterpolationStrategy.INTERP,
        max_iterations_per_depth=15,
@@ -401,8 +393,7 @@ iterations to deeper circuits:
 .. code-block:: python
 
    iterative = IterativeQAOA(
-       problem=graph,
-       graph_problem=GraphProblem.MAXCUT,
+       MaxCutProblem(graph),
        max_depth=5,
        strategy=InterpolationStrategy.FOURIER,
        max_iterations_per_depth=lambda depth: 10 + 5 * depth,
@@ -419,7 +410,7 @@ For large graphs that exceed quantum hardware limitations, use GraphPartitioning
 .. code-block:: python
 
    import networkx as nx
-   from divi.qprog import GraphPartitioningQAOA, GraphProblem, PartitioningConfig
+   from divi.qprog import GraphPartitioningQAOA, MaxCutProblem, PartitioningConfig
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
@@ -434,8 +425,7 @@ For large graphs that exceed quantum hardware limitations, use GraphPartitioning
    )
 
    qaoa_partition = GraphPartitioningQAOA(
-       graph_problem=GraphProblem.MAXCUT,
-       graph=large_graph,
+       problem=MaxCutProblem(large_graph),
        n_layers=2,
        partitioning_config=config,
        optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),

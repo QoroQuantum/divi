@@ -21,7 +21,11 @@ import pytest
 from divi.backends import CircuitRunner
 from divi.qprog import (
     GraphPartitioningQAOA,
-    GraphProblem,
+    MaxCliqueProblem,
+    MaxCutProblem,
+    MaxIndependentSetProblem,
+    MaxWeightCycleProblem,
+    MinVertexCoverProblem,
     PartitioningConfig,
     ScipyMethod,
     ScipyOptimizer,
@@ -38,9 +42,9 @@ from divi.qprog.workflows._graph_partitioning import (
 )
 from tests.qprog.qprog_contracts import verify_basic_program_ensemble_behaviour
 
+_GRAPH = nx.erdos_renyi_graph(15, 0.2, seed=1997)
 _PROBLEM_ARGS = {
-    "graph": nx.erdos_renyi_graph(15, 0.2, seed=1997),
-    "graph_problem": GraphProblem.MAXCUT,
+    "problem": MaxCutProblem(_GRAPH),
     "n_layers": 1,
     "partitioning_config": PartitioningConfig(
         minimum_n_clusters=2, partitioning_algorithm="spectral"
@@ -495,11 +499,10 @@ class TestEvaluateSolution:
     """
 
     @staticmethod
-    def _make_qaoa(graph, backend, graph_problem=GraphProblem.MAXCUT):
+    def _make_qaoa(graph, backend, problem_cls=MaxCutProblem):
         """Create a minimal GraphPartitioningQAOA for unit-testing only."""
         return GraphPartitioningQAOA(
-            graph=graph,
-            graph_problem=graph_problem,
+            problem=problem_cls(graph),
             n_layers=1,
             partitioning_config=PartitioningConfig(minimum_n_clusters=1),
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
@@ -578,40 +581,43 @@ class TestGraphPartitioningQAOA:
         disconnected_graph.add_edges_from([(0, 1), (2, 3)])
 
         args = problem_args.copy()
-        args["graph"] = disconnected_graph
+        args["problem"] = MaxCutProblem(disconnected_graph)
 
         with pytest.raises(ValueError, match="Provided graph is not fully connected."):
             GraphPartitioningQAOA(**args)
 
     def test_warns_with_high_risk_message_for_cycle_based_problem(self, problem_args):
+        # MaxWeightCycle requires a weighted directed graph
+        dg = nx.complete_graph(4, create_using=nx.DiGraph)
+        for u, v in dg.edges():
+            dg[u][v]["weight"] = 1.0
+
         args = problem_args.copy()
-        args["graph_problem"] = GraphProblem.MAX_WEIGHT_CYCLE
+        args["problem"] = MaxWeightCycleProblem(dg)
 
         with pytest.warns(
             UserWarning,
-            match="High-risk graph partitioning objective:.*MAX_WEIGHT_CYCLE",
+            match="High-risk graph partitioning objective:.*MaxWeightCycleProblem",
         ):
             GraphPartitioningQAOA(**args)
 
     @pytest.mark.parametrize(
-        "graph_problem",
+        "problem_cls,expected_name",
         [
-            GraphProblem.MAX_CLIQUE,
-            GraphProblem.MAX_INDEPENDENT_SET,
-            GraphProblem.MIN_VERTEX_COVER,
+            (MaxCliqueProblem, "MaxCliqueProblem"),
+            (MaxIndependentSetProblem, "MaxIndependentSetProblem"),
+            (MinVertexCoverProblem, "MinVertexCoverProblem"),
         ],
     )
     def test_warns_with_heuristic_risk_message_for_partitioning_sensitive_objectives(
-        self, problem_args, graph_problem
+        self, problem_args, problem_cls, expected_name
     ):
         args = problem_args.copy()
-        args["graph_problem"] = graph_problem
+        args["problem"] = problem_cls(_GRAPH)
 
         with pytest.warns(
             UserWarning,
-            match=(
-                "Heuristic-risk graph partitioning objective:" f".*{graph_problem.name}"
-            ),
+            match=("Heuristic-risk graph partitioning objective:" f".*{expected_name}"),
         ):
             GraphPartitioningQAOA(**args)
 
@@ -623,8 +629,8 @@ class TestGraphPartitioningQAOA:
         assert len(captured_warnings) == 0
 
     def test_correct_initialization(self, node_partitioning_qaoa):
-        assert node_partitioning_qaoa.main_graph == _PROBLEM_ARGS["graph"]
-        assert node_partitioning_qaoa.is_edge_problem == False
+        assert node_partitioning_qaoa.main_graph == _GRAPH
+        assert node_partitioning_qaoa.is_edge_problem is False
         assert (
             node_partitioning_qaoa.partitioning_config
             == _PROBLEM_ARGS["partitioning_config"]
@@ -831,7 +837,7 @@ class TestGraphPartitioningQAOA:
         # 1. Setup a predictable scenario
         graph = nx.path_graph(4)  # Nodes 0, 1, 2, 3
         args = problem_args.copy()
-        args["graph"] = graph
+        args["problem"] = MaxCutProblem(graph)
         qaoa_instance = GraphPartitioningQAOA(**args)
 
         # Mock the partitioning to return two specific subgraphs
@@ -896,8 +902,7 @@ class TestExtendSolutionGraph:
         """Candidate's decoded nodes are set to 1; other partition nodes reset to 0."""
         graph = nx.path_graph(6)  # nodes 0-5
         qaoa = GraphPartitioningQAOA(
-            graph=graph,
-            graph_problem=GraphProblem.MAXCUT,
+            problem=MaxCutProblem(graph),
             n_layers=1,
             partitioning_config=PartitioningConfig(
                 minimum_n_clusters=2, partitioning_algorithm="spectral"
@@ -928,8 +933,7 @@ class TestExtendSolutionGraph:
         """Pre-existing 1s in the partition's positions are cleared first."""
         graph = nx.path_graph(6)
         qaoa = GraphPartitioningQAOA(
-            graph=graph,
-            graph_problem=GraphProblem.MAXCUT,
+            problem=MaxCutProblem(graph),
             n_layers=1,
             partitioning_config=PartitioningConfig(
                 minimum_n_clusters=2, partitioning_algorithm="spectral"
@@ -956,8 +960,7 @@ class TestExtendSolutionGraph:
         """_extend_solution returns a new list, not a mutation of the input."""
         graph = nx.path_graph(4)
         qaoa = GraphPartitioningQAOA(
-            graph=graph,
-            graph_problem=GraphProblem.MAXCUT,
+            problem=MaxCutProblem(graph),
             n_layers=1,
             partitioning_config=PartitioningConfig(
                 minimum_n_clusters=2, partitioning_algorithm="spectral"
