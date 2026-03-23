@@ -5,7 +5,6 @@
 from functools import partial
 
 import dimod
-import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pennylane as qml
@@ -23,13 +22,15 @@ from divi.hamiltonians import (
 from divi.pipeline.stages import TrotterSpecStage
 from divi.qprog import (
     QAOA,
-    GraphProblem,
+    BinaryOptimizationProblem,
+    MaxCliqueProblem,
+    MaxCutProblem,
+    MonteCarloOptimizer,
     ScipyMethod,
     ScipyOptimizer,
     SuperpositionState,
     ZerosState,
 )
-from divi.qprog.algorithms import _qaoa
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.typing import BinaryPolynomialProblem
 from tests.qprog.algorithms.problems import (
@@ -65,13 +66,11 @@ class TestGeneralQAOA:
         """
         optimizer = optimizer()  # Create fresh instance
         qaoa_problem = QAOA(
-            problem=nx.bull_graph(),
-            graph_problem=GraphProblem.MAX_CLIQUE,
+            MaxCliqueProblem(nx.bull_graph(), is_constrained=True),
             n_layers=1,
             optimizer=optimizer,
             max_iterations=1,
             backend=default_test_simulator,
-            is_constrained=True,
         )
 
         # Spy on the cost pipeline's run method
@@ -97,13 +96,11 @@ class TestGeneralQAOA:
         """
         optimizer = optimizer()  # Create fresh instance
         qaoa_problem = QAOA(
-            problem=nx.bull_graph(),
-            graph_problem=GraphProblem.MAX_CLIQUE,
+            MaxCliqueProblem(nx.bull_graph(), is_constrained=True),
             n_layers=1,
             optimizer=optimizer,
             max_iterations=1,
             backend=default_test_simulator,
-            is_constrained=True,
         )
         # Set preconditions
         qaoa_problem._final_params = np.array([[0.1, 0.2]])
@@ -123,12 +120,10 @@ class TestGeneralQAOA:
     ):
         optimizer = optimizer()  # Create fresh instance
         qaoa_problem = QAOA(
-            problem=nx.bull_graph(),
-            graph_problem=GraphProblem.MAX_CLIQUE,
+            MaxCliqueProblem(nx.bull_graph(), is_constrained=True),
             n_layers=1,
             optimizer=optimizer,
             max_iterations=1,
-            is_constrained=True,
             backend=dummy_simulator,
         )
 
@@ -142,13 +137,11 @@ class TestGraphInput:
         G = make_bull_graph()
 
         qaoa_problem = QAOA(
-            problem=G,
-            graph_problem=GraphProblem.MAX_CLIQUE,
+            MaxCliqueProblem(G, is_constrained=True),
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=10,
             backend=default_test_simulator,
-            is_constrained=True,
         )
 
         assert isinstance(qaoa_problem.backend, CircuitRunner)
@@ -156,25 +149,16 @@ class TestGraphInput:
         assert isinstance(qaoa_problem.optimizer, ScipyOptimizer)
         assert qaoa_problem.optimizer.method == ScipyMethod.NELDER_MEAD
         assert qaoa_problem.max_iterations == 10
-        assert qaoa_problem.graph_problem == GraphProblem.MAX_CLIQUE
-        assert qaoa_problem.problem == G
+        assert isinstance(qaoa_problem.problem, MaxCliqueProblem)
+        assert qaoa_problem.problem.graph == G
         assert qaoa_problem.n_layers == 1
 
         verify_metacircuit_dict(qaoa_problem, ["cost_circuit", "meas_circuit"])
 
-    def test_graph_unsuppported_problem(self):
-        with pytest.raises(ValueError, match="travelling_salesman"):
-            QAOA(
-                problem=nx.bull_graph(),
-                graph_problem="travelling_salesman",
-                backend=None,
-            )
-
     def test_graph_unsuppported_initial_state(self, dummy_simulator):
         with pytest.raises(TypeError):
             QAOA(
-                problem=nx.bull_graph(),
-                graph_problem=GraphProblem.MAX_CLIQUE,
+                MaxCliqueProblem(nx.bull_graph(), is_constrained=True),
                 initial_state="Bell",
                 backend=dummy_simulator,
             )
@@ -185,16 +169,13 @@ class TestGraphInput:
             ValueError, match="Hamiltonian contains only constant terms"
         ):
             QAOA(
-                problem=nx.empty_graph(1),
-                graph_problem=GraphProblem.MAXCUT,
+                MaxCutProblem(nx.empty_graph(1)),
                 backend=dummy_simulator,
             )
 
     def test_graph_initial_state_recommended(self, dummy_simulator):
         qaoa_problem = QAOA(
-            problem=nx.bull_graph(),
-            graph_problem=GraphProblem.MAX_CLIQUE,
-            is_constrained=True,
+            MaxCliqueProblem(nx.bull_graph(), is_constrained=True),
             backend=dummy_simulator,
         )
 
@@ -202,8 +183,7 @@ class TestGraphInput:
 
     def test_graph_initial_state_superposition(self, dummy_simulator):
         qaoa_problem = QAOA(
-            problem=nx.bull_graph(),
-            graph_problem=GraphProblem.MAX_CLIQUE,
+            MaxCliqueProblem(nx.bull_graph(), is_constrained=True),
             initial_state=SuperpositionState(),
             backend=dummy_simulator,
         )
@@ -224,12 +204,10 @@ class TestGraphInput:
     ):
         G = make_bull_graph()
         qaoa_problem = QAOA(
-            graph_problem=GraphProblem.MAX_CLIQUE,
-            problem=G,
+            MaxCliqueProblem(G, is_constrained=True),
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=1,
-            is_constrained=True,
             backend=dummy_simulator,
         )
 
@@ -244,7 +222,7 @@ class TestGraphInput:
         qaoa_problem._perform_final_computation()
 
         # Should extract bitstring "11001"
-        assert qaoa_problem._solution_nodes == [0, 1, 4]
+        assert qaoa_problem._decoded_solution == [0, 1, 4]
         assert qaoa_problem.solution == [0, 1, 4]
 
     @pytest.mark.e2e
@@ -266,12 +244,10 @@ class TestGraphInput:
         default_test_simulator.set_seed(1997)
 
         qaoa_problem = QAOA(
-            graph_problem=GraphProblem.MAX_CLIQUE,
-            problem=G,
+            MaxCliqueProblem(G, is_constrained=True),
             n_layers=n_layers,
             optimizer=optimizer,
             max_iterations=10,
-            is_constrained=True,
             backend=default_test_simulator,
             seed=1997,
         )
@@ -284,9 +260,7 @@ class TestGraphInput:
             for bitstring in probs_dict.keys()
         )
 
-        assert set(
-            qaoa_problem._solution_nodes
-        ) == nx.algorithms.approximation.max_clique(G)
+        assert set(qaoa_problem.solution) == nx.algorithms.approximation.max_clique(G)
 
     @pytest.mark.e2e
     @pytest.mark.parametrize("optimizer", **CHECKPOINTING_OPTIMIZERS)
@@ -304,14 +278,14 @@ class TestGraphInput:
         checkpoint_dir = tmp_path / "checkpoint_test"
         default_test_simulator.set_seed(1997)
 
+        max_clique_problem = MaxCliqueProblem(G, is_constrained=True)
+
         # First run: iterations 1-3
         qaoa_problem1 = QAOA(
-            graph_problem=GraphProblem.MAX_CLIQUE,
-            problem=G,
+            max_clique_problem,
             n_layers=1,
             optimizer=optimizer,
             max_iterations=3,
-            is_constrained=True,
             backend=default_test_simulator,
             seed=1997,
         )
@@ -333,10 +307,8 @@ class TestGraphInput:
         qaoa_problem2 = QAOA.load_state(
             checkpoint_dir,
             backend=default_test_simulator,
-            problem=G,
-            graph_problem=GraphProblem.MAX_CLIQUE,
+            problem=max_clique_problem,
             n_layers=1,
-            is_constrained=True,
         )
 
         # Verify loaded state matches first run
@@ -354,10 +326,8 @@ class TestGraphInput:
         qaoa_problem3 = QAOA.load_state(
             checkpoint_dir,
             backend=default_test_simulator,
-            problem=G,
-            graph_problem=GraphProblem.MAX_CLIQUE,
+            problem=max_clique_problem,
             n_layers=1,
-            is_constrained=True,
         )
         assert qaoa_problem3.current_iteration == 6
         qaoa_problem3.max_iterations = 10
@@ -370,55 +340,7 @@ class TestGraphInput:
             for probs_dict in qaoa_problem3.best_probs.values()
             for bitstring in probs_dict.keys()
         )
-        assert set(
-            qaoa_problem3._solution_nodes
-        ) == nx.algorithms.approximation.max_clique(G)
-
-    def test_draw_solution_returns_graph_with_expected_properties(
-        self, mocker, dummy_simulator
-    ):
-        G = nx.bull_graph()
-
-        qaoa_problem = QAOA(
-            graph_problem=GraphProblem.MAX_CLIQUE,
-            problem=G,
-            n_layers=1,
-            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
-            max_iterations=2,
-            is_constrained=True,
-            backend=dummy_simulator,
-        )
-
-        qaoa_problem._solution_nodes = [0, 1, 2]
-
-        # 1. Mock the entire 'nx' alias within the _qaoa module in one line
-        mock_nx = mocker.patch.object(_qaoa, "nx")
-
-        # 2. Mock the pyplot 'show' function
-        mocker.patch("matplotlib.pyplot.show")
-
-        # 3. Call the function you want to test
-        qaoa_problem.draw_solution()
-
-        # 4. Verify that the methods on your single mock were called
-        mock_nx.draw_networkx_nodes.assert_called_once()
-        mock_nx.draw_networkx_edges.assert_called_once()
-        mock_nx.draw_networkx_labels.assert_called_once()
-
-        # Get the node_color argument that was passed to draw_networkx_nodes
-        node_colors = mock_nx.draw_networkx_nodes.call_args[1]["node_color"]
-
-        # Solution nodes should have a different color from non-solution nodes
-        solution_colors = {node_colors[i] for i in qaoa_problem._solution_nodes}
-        other_colors = {
-            node_colors[i]
-            for i in range(len(G.nodes()))
-            if i not in qaoa_problem._solution_nodes
-        }
-        assert solution_colors.isdisjoint(other_colors)
-
-        # Clean up the plot
-        plt.close()
+        assert set(qaoa_problem3.solution) == nx.algorithms.approximation.max_clique(G)
 
     def test_string_node_labels_bitstring_length(self, mocker, dummy_simulator):
         """Test that graphs with string node labels produce correct bitstring lengths.
@@ -433,8 +355,7 @@ class TestGraphInput:
         G.add_edges_from([("0", "1"), ("1", "2"), ("2", "3")])
 
         qaoa_problem = QAOA(
-            problem=G,
-            graph_problem=GraphProblem.MAXCUT,
+            MaxCutProblem(G),
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=1,
@@ -483,12 +404,10 @@ class TestGraphInput:
         G.add_edges_from([("a", "b"), ("b", "c")])
 
         qaoa_problem = QAOA(
-            problem=G,
-            graph_problem=GraphProblem.MAXCUT,
+            MaxCutProblem(G),
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=1,
-            is_constrained=True,
             backend=dummy_simulator,
         )
 
@@ -520,8 +439,7 @@ class TestGraphInput:
         G.add_edges_from([("x", "y"), ("y", "z")])
 
         qaoa_problem = QAOA(
-            problem=G,
-            graph_problem=GraphProblem.MAXCUT,
+            MaxCutProblem(G),
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=1,
@@ -546,8 +464,7 @@ class TestGraphInput:
         G.add_edges_from([(0, "1"), ("1", 2), (2, "3")])
 
         qaoa_problem = QAOA(
-            problem=G,
-            graph_problem=GraphProblem.MAXCUT,
+            MaxCutProblem(G),
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=1,
@@ -583,8 +500,7 @@ class TestGraphInput:
         default_test_simulator.set_seed(1997)
 
         qaoa_problem = QAOA(
-            problem=G,
-            graph_problem=GraphProblem.MAXCUT,
+            MaxCutProblem(G),
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             max_iterations=5,
@@ -628,8 +544,9 @@ class TestQUBOInput:
 
     @pytest.mark.parametrize("input_qubo", **QUBO_FORMATS_TO_TEST)
     def test_qubo_basic_initialization(self, input_qubo, default_test_simulator):
+        qubo_problem = BinaryOptimizationProblem(input_qubo)
         qaoa_problem = QAOA(
-            problem=input_qubo,
+            qubo_problem,
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=10,
@@ -641,14 +558,14 @@ class TestQUBOInput:
         assert isinstance(qaoa_problem.optimizer, ScipyOptimizer)
         assert qaoa_problem.optimizer.method == ScipyMethod.NELDER_MEAD
         assert qaoa_problem.max_iterations == 10
-        assert qaoa_problem.graph_problem == None
+        assert isinstance(qaoa_problem.problem, BinaryOptimizationProblem)
         assert qaoa_problem.n_layers == 1
-        assert isinstance(qaoa_problem.problem, BinaryPolynomialProblem)
-        assert qaoa_problem.problem.n_vars == 3
+        assert isinstance(qubo_problem.canonical_problem, BinaryPolynomialProblem)
+        assert qubo_problem.canonical_problem.n_vars == 3
 
         # Hand-computed from QUBO_MATRIX [[-3,4,0],[0,2,0],[0,0,-3]]
-        assert qaoa_problem.problem.variable_order == (0, 1, 2)
-        assert qaoa_problem.problem.terms == {
+        assert qubo_problem.canonical_problem.variable_order == (0, 1, 2)
+        assert qubo_problem.canonical_problem.terms == {
             (0,): -3.0,
             (1,): 2.0,
             (2,): -3.0,
@@ -660,26 +577,13 @@ class TestQUBOInput:
             isinstance(op, (qml.Z, qml.ops.Prod))
             for op in qaoa_problem.cost_hamiltonian.terms()[1]
         )
-        assert len(qaoa_problem.mixer_hamiltonian) == 3
+        assert len(qaoa_problem.problem.mixer_hamiltonian) == 3
         assert all(
-            isinstance(op, qml.X) for op in qaoa_problem.mixer_hamiltonian.terms()[1]
+            isinstance(op, qml.X)
+            for op in qaoa_problem.problem.mixer_hamiltonian.terms()[1]
         )
 
         verify_metacircuit_dict(qaoa_problem, ["cost_circuit", "meas_circuit"])
-
-    def test_redundant_graph_problem_raises_warning(self, dummy_simulator):
-        with pytest.warns(
-            UserWarning,
-            match="Ignoring the 'graph_problem' argument as it is not applicable to binary polynomial inputs.",
-        ):
-            QAOA(
-                problem=QUBO_MATRIX.tolist(),
-                graph_problem="max_clique",
-                n_layers=1,
-                optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
-                max_iterations=10,
-                backend=dummy_simulator,
-            )
 
     def test_hubo_dict_initialization_native_builder(self, dummy_simulator):
         hubo = {
@@ -689,25 +593,29 @@ class TestQUBOInput:
             (): 0.25,
         }
 
+        qubo_problem = BinaryOptimizationProblem(hubo)
         qaoa_problem = QAOA(
-            problem=hubo,
+            qubo_problem,
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=1,
             backend=dummy_simulator,
         )
 
-        assert qaoa_problem.graph_problem is None
+        assert isinstance(qaoa_problem.problem, BinaryOptimizationProblem)
         assert qaoa_problem.n_qubits == 3
-        assert qaoa_problem.problem.n_vars == 3
+        assert qubo_problem.canonical_problem.n_vars == 3
         assert qaoa_problem.problem_metadata["strategy"] == "native"
 
     def test_hubo_dict_quadratized_builder_adds_ancillas(self, dummy_simulator):
         hubo = {("x0", "x1", "x2"): 1.0}
-        qaoa_problem = QAOA(
-            problem=hubo,
+        qubo_problem = BinaryOptimizationProblem(
+            hubo,
             hamiltonian_builder="quadratized",
             quadratization_strength=5.0,
+        )
+        qaoa_problem = QAOA(
+            qubo_problem,
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=1,
@@ -716,28 +624,27 @@ class TestQUBOInput:
 
         assert qaoa_problem.problem_metadata["strategy"] == "quadratized"
         assert qaoa_problem.problem_metadata["ancilla_count"] >= 1
-        assert qaoa_problem.n_qubits >= qaoa_problem.problem.n_vars
+        assert qaoa_problem.n_qubits >= qubo_problem.canonical_problem.n_vars
 
-    def test_invalid_hamiltonian_builder_raises(self, dummy_simulator):
+    def test_invalid_hamiltonian_builder_raises(self):
         with pytest.raises(
             ValueError,
             match="hamiltonian_builder must be either 'native' or 'quadratized'",
         ):
-            QAOA(
-                problem=QUBO_MATRIX.tolist(),
+            BinaryOptimizationProblem(
+                QUBO_MATRIX.tolist(),
                 hamiltonian_builder="custom",  # type: ignore[arg-type]
-                n_layers=1,
-                optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
-                max_iterations=1,
-                backend=dummy_simulator,
             )
 
     def test_quadratized_decode_excludes_ancillas(self, mocker, dummy_simulator):
         hubo = {("x0", "x1", "x2"): 1.0}
-        qaoa_problem = QAOA(
-            problem=hubo,
+        qubo_problem = BinaryOptimizationProblem(
+            hubo,
             hamiltonian_builder="quadratized",
             quadratization_strength=5.0,
+        )
+        qaoa_problem = QAOA(
+            qubo_problem,
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=1,
@@ -754,62 +661,29 @@ class TestQUBOInput:
         # Decoded solution maps original variable names and excludes ancillas.
         sol = qaoa_problem.solution
         assert isinstance(sol, dict)
-        assert set(sol.keys()) == set(qaoa_problem.problem.variable_order)
+        assert set(sol.keys()) == set(qubo_problem.canonical_problem.variable_order)
         assert all(v == 1 for v in sol.values())
 
-    def test_non_square_qubo_fails(self, dummy_simulator):
+    def test_non_square_qubo_fails(self):
         with pytest.raises(
             ValueError,
             match=r"Invalid QUBO matrix\. Got array of shape \(3, 2\)\. Must be a square matrix\.",
         ):
-            QAOA(
-                problem=np.array([[1, 2], [3, 4], [5, 6]]),
-                n_layers=1,
-                optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
-                max_iterations=10,
-                backend=dummy_simulator,
-            )
+            BinaryOptimizationProblem(np.array([[1, 2], [3, 4], [5, 6]]))
 
-    def test_non_symmetrical_qubo_normalizes_problem(self, dummy_simulator):
+    def test_non_symmetrical_qubo_normalizes_problem(self):
         # [[1, 2], [3, 4]] → diagonal: {(0,): 1, (1,): 4}, off-diag summed: {(0,1): 2+3=5}
         test_array = np.array([[1, 2], [3, 4]])
         expected_terms = {(0,): 1.0, (1,): 4.0, (0, 1): 5.0}
 
-        qaoa_problem = QAOA(
-            problem=test_array,
-            n_layers=1,
-            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
-            max_iterations=10,
-            backend=dummy_simulator,
-        )
+        qubo_problem = BinaryOptimizationProblem(test_array)
 
-        assert isinstance(qaoa_problem.problem, BinaryPolynomialProblem)
-        assert qaoa_problem.problem.terms == expected_terms
+        assert isinstance(qubo_problem.canonical_problem, BinaryPolynomialProblem)
+        assert qubo_problem.canonical_problem.terms == expected_terms
 
         # Sparse input produces the same result
-        qaoa_problem_sparse = QAOA(
-            problem=sps.csc_matrix(test_array),
-            n_layers=1,
-            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
-            max_iterations=10,
-            backend=dummy_simulator,
-        )
-        assert qaoa_problem_sparse.problem.terms == expected_terms
-
-    def test_qubo_fails_when_drawing_solution(self, dummy_simulator):
-        qaoa_problem = QAOA(
-            problem=QUBO_MATRIX.tolist(),
-            n_layers=1,
-            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
-            max_iterations=10,
-            backend=dummy_simulator,
-        )
-
-        with pytest.raises(
-            RuntimeError,
-            match="The problem is not a graph problem. Cannot draw solution.",
-        ):
-            qaoa_problem.draw_solution()
+        qubo_problem_sparse = BinaryOptimizationProblem(sps.csc_matrix(test_array))
+        assert qubo_problem_sparse.canonical_problem.terms == expected_terms
 
     @pytest.mark.e2e
     @pytest.mark.parametrize("builder", ["native", "quadratized"])
@@ -818,9 +692,11 @@ class TestQUBOInput:
         _, exact_minima = exact_hubo_minima(HUBO_CUBIC, n_vars=3)
 
         qaoa_problem = QAOA(
-            problem=HUBO_CUBIC,
-            hamiltonian_builder=builder,
-            quadratization_strength=5.0,
+            BinaryOptimizationProblem(
+                HUBO_CUBIC,
+                hamiltonian_builder=builder,
+                quadratization_strength=5.0,
+            ),
             n_layers=2,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             max_iterations=18,
@@ -836,7 +712,7 @@ class TestQUBOInput:
         default_test_simulator.set_seed(1997)
 
         qaoa_problem = QAOA(
-            problem=QUBO_MATRIX,
+            BinaryOptimizationProblem(QUBO_MATRIX),
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             max_iterations=12,
@@ -855,16 +731,16 @@ class TestQUBOInput:
         Tests QUBO problem type handling with checkpointing, not optimizer-specific behavior.
         Full optimizer coverage is tested with Graph problems. Uses MonteCarloOptimizer as representative.
         """
-        from divi.qprog import MonteCarloOptimizer
-
         optimizer = MonteCarloOptimizer(population_size=10, n_best_sets=3)
 
         checkpoint_dir = tmp_path / "checkpoint_test"
         default_test_simulator.set_seed(1997)
 
+        qubo_problem = BinaryOptimizationProblem(QUBO_MATRIX)
+
         # Run first half with checkpointing
         qaoa_problem1 = QAOA(
-            problem=QUBO_MATRIX,
+            qubo_problem,
             n_layers=1,
             optimizer=optimizer,
             max_iterations=6,  # First half
@@ -890,7 +766,7 @@ class TestQUBOInput:
         qaoa_problem2 = QAOA.load_state(
             checkpoint_dir,
             backend=default_test_simulator,
-            problem=QUBO_MATRIX,
+            problem=qubo_problem,
             n_layers=1,
         )
 
@@ -929,7 +805,7 @@ class TestQUBOInput:
         self, binary_quadratic_model, default_test_simulator
     ):
         qaoa_problem = QAOA(
-            problem=binary_quadratic_model,
+            BinaryOptimizationProblem(binary_quadratic_model),
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=10,
@@ -941,21 +817,22 @@ class TestQUBOInput:
         assert isinstance(qaoa_problem.optimizer, ScipyOptimizer)
         assert qaoa_problem.optimizer.method == ScipyMethod.NELDER_MEAD
         assert qaoa_problem.max_iterations == 10
-        assert qaoa_problem.graph_problem == None
+        assert isinstance(qaoa_problem.problem, BinaryOptimizationProblem)
         assert qaoa_problem.n_layers == 1
 
         assert len(qaoa_problem.cost_hamiltonian) == 3
         assert all(
             isinstance(op, qml.Z) for op in qaoa_problem.cost_hamiltonian.terms()[1]
         )
-        assert len(qaoa_problem.mixer_hamiltonian) == 3
+        assert len(qaoa_problem.problem.mixer_hamiltonian) == 3
         assert all(
-            isinstance(op, qml.X) for op in qaoa_problem.mixer_hamiltonian.terms()[1]
+            isinstance(op, qml.X)
+            for op in qaoa_problem.problem.mixer_hamiltonian.terms()[1]
         )
 
         verify_metacircuit_dict(qaoa_problem, ["cost_circuit", "meas_circuit"])
 
-    def test_binary_quadratic_model_with_spin_raises_error(self, dummy_simulator):
+    def test_binary_quadratic_model_with_spin_raises_error(self):
         # Create a BQM with SPIN vartype (non-binary)
         bqm = dimod.BinaryQuadraticModel(
             {"x": -1, "y": -2, "z": 3}, {}, 0.0, dimod.Vartype.SPIN
@@ -965,13 +842,7 @@ class TestQUBOInput:
             ValueError,
             match=r"BinaryQuadraticModel must have vartype='BINARY', got Vartype\.SPIN",
         ):
-            QAOA(
-                problem=bqm,
-                n_layers=1,
-                optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
-                max_iterations=10,
-                backend=dummy_simulator,
-            )
+            BinaryOptimizationProblem(bqm)
 
     @pytest.mark.e2e
     def test_binary_quadratic_model_minimize_correct(
@@ -980,7 +851,7 @@ class TestQUBOInput:
         default_test_simulator.set_seed(1997)
 
         qaoa_problem = QAOA(
-            problem=bqm_minimize,
+            BinaryOptimizationProblem(bqm_minimize),
             n_layers=2,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             max_iterations=15,
@@ -1005,7 +876,7 @@ class TestQUBOInput:
         default_test_simulator.set_seed(1997)
 
         qaoa_problem = QAOA(
-            problem=bqm_maximize,
+            BinaryOptimizationProblem(bqm_maximize),
             n_layers=2,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             max_iterations=15,
@@ -1029,16 +900,16 @@ class TestQUBOInput:
         Tests BinaryQuadraticModel problem type handling with checkpointing, not optimizer-specific behavior.
         Full optimizer coverage is tested with Graph problems. Uses MonteCarloOptimizer as representative.
         """
-        from divi.qprog import MonteCarloOptimizer
-
         optimizer = MonteCarloOptimizer(population_size=10, n_best_sets=3)
 
         checkpoint_dir = tmp_path / "checkpoint_test"
         default_test_simulator.set_seed(1997)
 
+        bqm_problem = BinaryOptimizationProblem(bqm_minimize)
+
         # Run first half with checkpointing
         qaoa_problem1 = QAOA(
-            problem=bqm_minimize,
+            bqm_problem,
             n_layers=2,
             optimizer=optimizer,
             max_iterations=7,  # First half
@@ -1064,7 +935,7 @@ class TestQUBOInput:
         qaoa_problem2 = QAOA.load_state(
             checkpoint_dir,
             backend=default_test_simulator,
-            problem=bqm_minimize,
+            problem=bqm_problem,
             n_layers=2,
         )
 
@@ -1107,8 +978,7 @@ class TestQAOAQDriftMultiSample:
         """With ExactTrotterization, TrotterSpecStage.expand produces a single ham sample."""
         strategy = ExactTrotterization(keep_top_n=3)
         qaoa = QAOA(
-            problem=nx.bull_graph(),
-            graph_problem=GraphProblem.MAXCUT,
+            MaxCutProblem(nx.bull_graph()),
             n_layers=1,
             trotterization_strategy=strategy,
             max_iterations=1,
@@ -1141,8 +1011,7 @@ class TestQAOAQDriftMultiSample:
             seed=42,
         )
         qaoa = QAOA(
-            problem=nx.bull_graph(),
-            graph_problem=GraphProblem.MAXCUT,
+            MaxCutProblem(nx.bull_graph()),
             n_layers=1,
             trotterization_strategy=strategy,
             max_iterations=1,
@@ -1174,8 +1043,7 @@ class TestQAOAQDriftMultiSample:
             seed=123,
         )
         qaoa = QAOA(
-            problem=G,
-            graph_problem=GraphProblem.MAXCUT,
+            MaxCutProblem(G),
             n_layers=1,
             trotterization_strategy=strategy,
             max_iterations=20,
@@ -1222,8 +1090,7 @@ class TestQAOAQDriftMultiSample:
             seed=42,
         )
         qaoa = QAOA(
-            problem=nx.bull_graph(),
-            graph_problem=GraphProblem.MAXCUT,
+            MaxCutProblem(nx.bull_graph()),
             n_layers=1,
             trotterization_strategy=strategy,
             max_iterations=1,
@@ -1245,8 +1112,7 @@ class TestQAOAQDriftMultiSample:
             seed=456,
         )
         qaoa = QAOA(
-            problem=nx.bull_graph(),
-            graph_problem=GraphProblem.MAXCUT,
+            MaxCutProblem(nx.bull_graph()),
             n_layers=1,
             trotterization_strategy=strategy,
             max_iterations=2,
@@ -1282,8 +1148,7 @@ class TestQAOAQDriftMultiSample:
             seed=123,
         )
         qaoa = QAOA(
-            problem=G,
-            graph_problem=GraphProblem.MAXCUT,
+            MaxCutProblem(G),
             n_layers=1,
             trotterization_strategy=strategy,
             qem_protocol=zne_protocol,
@@ -1310,24 +1175,27 @@ class TestFinalComputationDecode:
     """Test that _perform_final_computation handles arbitrary decode returns."""
 
     def test_decode_returns_none(self, default_test_simulator):
-        """When decode_fn returns None, solution should be raw bitstring as int array."""
+        """When decode_fn returns None, solution is None."""
+        qubo_problem = BinaryOptimizationProblem(QUBO_MATRIX)
+        qubo_problem._ising_encoding = qubo_problem._ising_encoding._replace(
+            decode_fn=lambda bs: None
+        )
         qaoa = QAOA(
-            problem=QUBO_MATRIX,
-            decode_solution_fn=lambda bs: None,
+            qubo_problem,
             backend=default_test_simulator,
             max_iterations=1,
         )
         qaoa.run()
-        sol = qaoa.solution
-        assert isinstance(sol, np.ndarray)
-        assert sol.dtype == np.int32
-        assert all(b in (0, 1) for b in sol)
+        assert qaoa.solution is None
 
     def test_decode_returns_custom_type(self, default_test_simulator):
         """When decode_fn returns a custom type, solution passes it through."""
+        qubo_problem = BinaryOptimizationProblem(QUBO_MATRIX)
+        qubo_problem._ising_encoding = qubo_problem._ising_encoding._replace(
+            decode_fn=lambda bs: [0, 2, 1, 0]
+        )
         qaoa = QAOA(
-            problem=QUBO_MATRIX,
-            decode_solution_fn=lambda bs: [0, 2, 1, 0],  # e.g. a tour
+            qubo_problem,
             backend=default_test_simulator,
             max_iterations=1,
         )
@@ -1338,7 +1206,7 @@ class TestFinalComputationDecode:
     def test_default_decode(self, default_test_simulator):
         """Default QUBO decode returns a binary int array."""
         qaoa = QAOA(
-            problem=QUBO_MATRIX,
+            BinaryOptimizationProblem(QUBO_MATRIX),
             backend=default_test_simulator,
             max_iterations=1,
         )

@@ -69,6 +69,60 @@ VQE Algorithm
 .. autoattribute:: divi.qprog.algorithms.VQE.cost_hamiltonian
    :no-index:
 
+Problem Classes
+~~~~~~~~~~~~~~~
+
+QAOA accepts a :class:`Problem` instance that encapsulates the optimisation
+objective, mixer, initial state, and solution decoding.  Divi provides concrete
+classes for common graph and binary optimisation problems.
+
+.. autoclass:: divi.qprog.algorithms.Problem
+   :members:
+   :show-inheritance:
+
+.. autoclass:: divi.qprog.algorithms.MaxCutProblem
+   :show-inheritance:
+   :special-members: __init__
+   :no-index:
+
+.. autoclass:: divi.qprog.algorithms.MaxCliqueProblem
+   :show-inheritance:
+   :special-members: __init__
+   :no-index:
+
+.. autoclass:: divi.qprog.algorithms.MaxIndependentSetProblem
+   :show-inheritance:
+   :special-members: __init__
+   :no-index:
+
+.. autoclass:: divi.qprog.algorithms.MinVertexCoverProblem
+   :show-inheritance:
+   :special-members: __init__
+   :no-index:
+
+.. autoclass:: divi.qprog.algorithms.MaxWeightCycleProblem
+   :show-inheritance:
+   :special-members: __init__
+   :no-index:
+
+.. autoclass:: divi.qprog.algorithms.BinaryOptimizationProblem
+   :members:
+   :show-inheritance:
+   :special-members: __init__
+   :no-index:
+
+.. autoclass:: divi.qprog.algorithms.TSPProblem
+   :members:
+   :show-inheritance:
+   :special-members: __init__
+   :no-index:
+
+.. autoclass:: divi.qprog.algorithms.CVRPProblem
+   :members:
+   :show-inheritance:
+   :special-members: __init__
+   :no-index:
+
 QAOA Algorithm
 ~~~~~~~~~~~~~~
 
@@ -77,12 +131,9 @@ QAOA Algorithm
    :undoc-members:
    :show-inheritance:
    :special-members: __init__
-   :exclude-members: cost_hamiltonian, mixer_hamiltonian
+   :exclude-members: cost_hamiltonian
 
 .. autoattribute:: divi.qprog.algorithms.QAOA.cost_hamiltonian
-   :no-index:
-
-.. autoattribute:: divi.qprog.algorithms.QAOA.mixer_hamiltonian
    :no-index:
 
 Iterative QAOA
@@ -158,14 +209,6 @@ Custom VQA
    :no-index:
 
 .. autoattribute:: divi.qprog.algorithms.CustomVQA.param_shape
-   :no-index:
-
-Graph Problem Types
-~~~~~~~~~~~~~~~~~~~
-
-.. autoclass:: divi.qprog.algorithms.GraphProblem
-   :members:
-   :undoc-members:
    :no-index:
 
 VQE Ansätze

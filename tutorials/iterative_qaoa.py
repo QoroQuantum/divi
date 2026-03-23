@@ -23,9 +23,9 @@ from rich.table import Table
 
 from divi.qprog import (
     QAOA,
-    GraphProblem,
     InterpolationStrategy,
     IterativeQAOA,
+    MaxCutProblem,
     ScipyMethod,
     ScipyOptimizer,
 )
@@ -46,11 +46,12 @@ if __name__ == "__main__":
     # ── 1) Standard QAOA: random init at each depth ───────────────────
     console.rule("[bold]Standard QAOA (random init)")
 
+    problem = MaxCutProblem(graph)
+
     standard_results = []
     for depth in range(1, MAX_DEPTH + 1):
         qaoa = QAOA(
-            problem=graph,
-            graph_problem=GraphProblem.MAXCUT,
+            problem,
             n_layers=depth,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             max_iterations=ITERS_PER_DEPTH,
@@ -82,8 +83,7 @@ if __name__ == "__main__":
         console.rule(f"[bold]Iterative QAOA — {strategy.value}")
 
         iterative = IterativeQAOA(
-            problem=graph,
-            graph_problem=GraphProblem.MAXCUT,
+            problem,
             max_depth=MAX_DEPTH,
             strategy=strategy,
             max_iterations_per_depth=ITERS_PER_DEPTH,

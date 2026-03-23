@@ -161,7 +161,7 @@ For large optimization problems that exceed quantum hardware limitations, Divi p
 .. code-block:: python
 
    import networkx as nx
-   from divi.qprog import GraphPartitioningQAOA, GraphProblem, PartitioningConfig
+   from divi.qprog import GraphPartitioningQAOA, MaxCutProblem, PartitioningConfig
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 
    # Create a large graph (too big for single quantum device)
@@ -176,8 +176,7 @@ For large optimization problems that exceed quantum hardware limitations, Divi p
 
    # Create partitioned QAOA solver
    qaoa_partition = GraphPartitioningQAOA(
-       graph_problem=GraphProblem.MAXCUT,
-       graph=large_graph,
+       problem=MaxCutProblem(large_graph),
        n_layers=3,
        partitioning_config=config,
        optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),

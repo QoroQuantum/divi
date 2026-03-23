@@ -8,7 +8,6 @@ import string
 from collections.abc import Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
-from functools import partial
 from typing import Literal
 from warnings import warn
 
@@ -17,18 +16,22 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pennylane as qml
-import pennylane.qaoa as pqaoa
 import rustworkx as rx
 import scipy.sparse.linalg as spla
 from sklearn.cluster import SpectralClustering
 
 from divi.backends import CircuitRunner
-from divi.hamiltonians import _clean_hamiltonian, _get_terms_iterable
+from divi.hamiltonians import _get_terms_iterable
 from divi.qprog import QAOA, ProgramEnsemble
 from divi.qprog.algorithms._initial_state import InitialState
-from divi.qprog.algorithms._qaoa import (
-    GraphProblem,
-    GraphProblemTypes,
+from divi.qprog.algorithms._problem import (
+    EdgePartitioningProblem,
+    MaxCliqueProblem,
+    MaxIndependentSetProblem,
+    MaxWeightCycleProblem,
+    MinVertexCoverProblem,
+    Problem,
+    _GraphProblemBase,
     draw_graph_solution_nodes,
 )
 from divi.qprog.ensemble import _beam_search_aggregate_top_n
@@ -46,36 +49,25 @@ _MAXIMUM_AVAILABLE_QUBITS = 30
 # For structure-dependent objectives, partitioning can hide/remove cross-partition
 # constraints and therefore requires stronger user guidance.
 _PARTITIONING_COMPATIBILITY_TIERS: dict[
-    GraphProblem, tuple[Literal["high-risk", "heuristic-risk"], str]
+    type[_GraphProblemBase], tuple[Literal["high-risk", "heuristic-risk"], str]
 ] = {
-    GraphProblem.MAX_WEIGHT_CYCLE: (
+    MaxWeightCycleProblem: (
         "high-risk",
         "partitioning can break cycles across cluster boundaries.",
     ),
-    GraphProblem.MAX_CLIQUE: (
+    MaxCliqueProblem: (
         "heuristic-risk",
         "partitioning can hide cross-partition adjacency needed for global cliques.",
     ),
-    GraphProblem.MAX_INDEPENDENT_SET: (
+    MaxIndependentSetProblem: (
         "heuristic-risk",
         "partitioning can hide cross-partition conflicts between selected vertices.",
     ),
-    GraphProblem.MIN_VERTEX_COVER: (
+    MinVertexCoverProblem: (
         "heuristic-risk",
         "partitioning can hide cross-partition edges that must be covered globally.",
     ),
 }
-
-
-def _build_partitioning_warning_message(
-    graph_problem: GraphProblem, risk_level: Literal["high-risk", "heuristic-risk"]
-) -> str:
-    warning_prefix = (
-        "High-risk graph partitioning objective"
-        if risk_level == "high-risk"
-        else "Heuristic-risk graph partitioning objective"
-    )
-    return f"{warning_prefix}: {graph_problem}."
 
 
 @dataclass(frozen=True, eq=True)
@@ -474,8 +466,7 @@ def dominance_aggregation(
 class GraphPartitioningQAOA(ProgramEnsemble):
     def __init__(
         self,
-        graph: GraphProblemTypes,
-        graph_problem: GraphProblem,
+        problem: Problem,
         n_layers: int,
         backend: CircuitRunner,
         partitioning_config: PartitioningConfig,
@@ -488,8 +479,8 @@ class GraphPartitioningQAOA(ProgramEnsemble):
         Initializes the graph partitioning class.
 
         Args:
-            graph (nx.Graph | rx.PyGraph): The input graph to be partitioned.
-            graph_problem (GraphProblem): The type of graph partitioning problem (e.g., EDGE_PARTITIONING).
+            problem: A graph :class:`Problem` instance (e.g., ``MaxCutProblem(graph)``).
+                Must have a ``graph`` attribute.
             n_layers (int): Number of layers for the QAOA circuit.
             backend (CircuitRunner): Backend used to run quantum/classical circuits.
             partitioning_config (PartitioningConfig): the configuration of the partitioning as to the algorithm and
@@ -502,20 +493,20 @@ class GraphPartitioningQAOA(ProgramEnsemble):
         """
         super().__init__(backend=backend)
 
-        self.main_graph = graph
-        self._graph_problem = graph_problem
-        self.is_edge_problem = graph_problem == GraphProblem.EDGE_PARTITIONING
-        self._full_graph_hamiltonian = None  # lazily built by _evaluate_solution
+        self._full_problem = problem
+        self.main_graph = problem.graph
+        self.is_edge_problem = isinstance(problem, EdgePartitioningProblem)
         self._warn_if_partitioning_is_risky()
 
-        check_fn = (
-            nx.is_connected if not self.is_edge_problem else nx.is_weakly_connected
-        )
+        is_directed = isinstance(self.main_graph, (nx.DiGraph, nx.MultiDiGraph))
+        check_fn = nx.is_weakly_connected if is_directed else nx.is_connected
         if not check_fn(self.main_graph):
             raise ValueError("Provided graph is not fully connected.")
 
         self.partitioning_config = partitioning_config
         self.max_iterations = max_iterations
+        self._n_layers = n_layers
+        self._initial_state = initial_state
 
         self.solution = None
 
@@ -526,40 +517,25 @@ class GraphPartitioningQAOA(ProgramEnsemble):
 
         # Extract early_stopping so each sub-program gets its own copy
         self._early_stopping_template = kwargs.pop("early_stopping", None)
-
-        self._constructor = partial(
-            QAOA,
-            initial_state=initial_state,
-            graph_problem=graph_problem,
-            max_iterations=self.max_iterations,
-            backend=self.backend,
-            n_layers=n_layers,
-            **kwargs,
-        )
+        self._extra_kwargs = kwargs
 
     def _warn_if_partitioning_is_risky(self):
-        compatibility = _PARTITIONING_COMPATIBILITY_TIERS.get(self._graph_problem)
+        # Check if the problem factory's class is in the compatibility tiers
+        problem_cls = type(self._full_problem)
+        compatibility = _PARTITIONING_COMPATIBILITY_TIERS.get(problem_cls)
         if compatibility is None:
             return
 
         risk_level, rationale = compatibility
-        warning_message = _build_partitioning_warning_message(
-            self._graph_problem, risk_level
+        prefix = "High-risk" if risk_level == "high-risk" else "Heuristic-risk"
+        detail = (
+            "Aggregation is heuristic and may miss globally valid/high-quality "
+            f"solutions because {rationale}"
+            if risk_level == "high-risk"
+            else f"Results may be sensitive to partition boundaries because {rationale}"
         )
-        if risk_level == "high-risk":
-            warn(
-                f"{warning_message} "
-                "Aggregation is heuristic and may miss globally valid/high-quality "
-                f"solutions because {rationale}",
-                UserWarning,
-                stacklevel=2,
-            )
-            return
-
         warn(
-            f"{warning_message} "
-            "Results may be sensitive to partition boundaries because "
-            f"{rationale}",
+            f"{prefix} graph partitioning objective: {problem_cls.__name__}. {detail}",
             UserWarning,
             stacklevel=2,
         )
@@ -607,12 +583,19 @@ class GraphPartitioningQAOA(ProgramEnsemble):
                 self.reverse_index_maps[prog_id] = {v: k for k, v in index_map.items()}
 
                 _subgraph = nx.relabel_nodes(subgraph, index_map)
-                self._programs[prog_id] = self._constructor(
+                p = self._full_problem
+                problem = type(p)(_subgraph, is_constrained=p._is_constrained)
+                self._programs[prog_id] = QAOA(
+                    problem,
                     program_id=prog_id,
-                    problem=_subgraph,
+                    initial_state=self._initial_state,
+                    max_iterations=self.max_iterations,
+                    backend=self.backend,
+                    n_layers=self._n_layers,
                     optimizer=copy_optimizer(self._optimizer_template),
                     early_stopping=copy.deepcopy(self._early_stopping_template),
                     progress_queue=self._queue,
+                    **self._extra_kwargs,
                 )
 
     def _extend_solution(self, current_solution, prog_id, candidate):
@@ -644,32 +627,13 @@ class GraphPartitioningQAOA(ProgramEnsemble):
 
         return extended
 
-    def _build_full_graph_hamiltonian(self):
-        """Build and cache the cost Hamiltonian for the full (unpartitioned) graph.
-
-        Uses PennyLane's QAOA module to construct the Hamiltonian that encodes
-        the complete problem objective, including all inter-partition edges.
-        Identity terms are separated using :func:`_clean_hamiltonian` so that
-        the cached Hamiltonian contains only Pauli terms.
-        """
-        if self._full_graph_hamiltonian is not None:
-            return
-
-        cost_h, _ = getattr(pqaoa, self._graph_problem.pl_string)(self.main_graph)
-        self._full_graph_hamiltonian, self._hamiltonian_constant = _clean_hamiltonian(
-            cost_h
-        )
-
     def _evaluate_solution(self, solution):
         """Evaluate a global solution against the full-graph cost Hamiltonian.
 
         Classically computes the expectation value of the cost Hamiltonian on
-        the computational-basis state defined by *solution*.  This is generic
-        across all ``GraphProblem`` types and correctly accounts for edges that
-        span different partitions.
-
-        The evaluation assumes the cost Hamiltonian is diagonal (Z-only terms),
-        which holds for all standard QAOA graph encodings.
+        the computational-basis state defined by *solution*.  Assumes the cost
+        Hamiltonian is diagonal (Z-only terms), which holds for all standard
+        QAOA graph encodings.
 
         Args:
             solution (list[int]): Binary solution vector over the graph nodes.
@@ -677,12 +641,10 @@ class GraphPartitioningQAOA(ProgramEnsemble):
         Returns:
             float: Hamiltonian energy of the solution (lower is better).
         """
-        self._build_full_graph_hamiltonian()
-        hamiltonian = self._full_graph_hamiltonian
-
+        hamiltonian = self._full_problem.cost_hamiltonian
         wire_to_bit = {w: solution[w] for w in hamiltonian.wires}
 
-        energy = self._hamiltonian_constant
+        energy = self._full_problem.loss_constant
         for term in _get_terms_iterable(hamiltonian):
             coeff = 1.0
             base_op = term

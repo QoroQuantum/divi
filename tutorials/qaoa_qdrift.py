@@ -22,7 +22,7 @@ import warnings
 import networkx as nx
 
 from divi.hamiltonians import QDrift
-from divi.qprog import QAOA, GraphProblem
+from divi.qprog import QAOA, MaxCutProblem
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from tutorials._backend import get_backend
 
@@ -67,8 +67,7 @@ if __name__ == "__main__":
     backend = get_backend(shots=1000, track_depth=True)
 
     common = dict(
-        problem=G,
-        graph_problem=GraphProblem.MAXCUT,
+        problem=MaxCutProblem(G),
         n_layers=1,
         max_iterations=5,
         backend=backend,

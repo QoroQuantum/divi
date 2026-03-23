@@ -81,14 +81,13 @@ Divi offers specialized algorithms for different problem types:
    .. code-block:: python
 
       import networkx as nx
-      from divi.qprog import QAOA, GraphProblem
+      from divi.qprog import QAOA, MaxCutProblem
 
       # Create your problem graph
       graph = nx.erdos_renyi_graph(10, 0.5)
 
       qaoa = QAOA(
-          problem=graph,
-          graph_problem=GraphProblem.MAXCUT,
+          MaxCutProblem(graph),
           n_layers=3,
           backend=MaestroSimulator()
       )

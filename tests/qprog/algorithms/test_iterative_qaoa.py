@@ -8,9 +8,11 @@ import pytest
 
 from divi.qprog import (
     QAOA,
-    GraphProblem,
+    BinaryOptimizationProblem,
     InterpolationStrategy,
     IterativeQAOA,
+    MaxCliqueProblem,
+    MaxCutProblem,
     MonteCarloOptimizer,
     ScipyMethod,
     ScipyOptimizer,
@@ -150,8 +152,7 @@ class TestIterativeQAOA:
     def test_runs_through_depths(self, default_test_simulator):
         graph = make_bull_graph()
         iterative = IterativeQAOA(
-            problem=graph,
-            graph_problem=GraphProblem.MAXCUT,
+            MaxCutProblem(graph),
             max_depth=3,
             strategy=InterpolationStrategy.INTERP,
             max_iterations_per_depth=3,
@@ -167,8 +168,7 @@ class TestIterativeQAOA:
     def test_depth_history_structure(self, default_test_simulator):
         graph = make_bull_graph()
         iterative = IterativeQAOA(
-            problem=graph,
-            graph_problem=GraphProblem.MAXCUT,
+            MaxCutProblem(graph),
             max_depth=2,
             strategy=InterpolationStrategy.INTERP,
             max_iterations_per_depth=2,
@@ -193,8 +193,7 @@ class TestIterativeQAOA:
     def test_best_depth_matches_lowest_loss(self, default_test_simulator):
         graph = make_bull_graph()
         iterative = IterativeQAOA(
-            problem=graph,
-            graph_problem=GraphProblem.MAXCUT,
+            MaxCutProblem(graph),
             max_depth=3,
             strategy=InterpolationStrategy.INTERP,
             max_iterations_per_depth=3,
@@ -210,8 +209,7 @@ class TestIterativeQAOA:
     def test_convergence_threshold_early_exit(self, default_test_simulator):
         graph = make_bull_graph()
         iterative = IterativeQAOA(
-            problem=graph,
-            graph_problem=GraphProblem.MAXCUT,
+            MaxCutProblem(graph),
             max_depth=10,
             strategy=InterpolationStrategy.INTERP,
             max_iterations_per_depth=3,
@@ -227,8 +225,7 @@ class TestIterativeQAOA:
     def test_max_iterations_per_depth_callable(self, default_test_simulator):
         graph = make_bull_graph()
         iterative = IterativeQAOA(
-            problem=graph,
-            graph_problem=GraphProblem.MAXCUT,
+            MaxCutProblem(graph),
             max_depth=3,
             strategy=InterpolationStrategy.INTERP,
             max_iterations_per_depth=lambda depth: depth + 1,
@@ -254,8 +251,7 @@ class TestIterativeQAOA:
     def test_all_strategies_run(self, strategy, default_test_simulator):
         graph = make_bull_graph()
         iterative = IterativeQAOA(
-            problem=graph,
-            graph_problem=GraphProblem.MAXCUT,
+            MaxCutProblem(graph),
             max_depth=3,
             strategy=strategy,
             max_iterations_per_depth=2,
@@ -268,8 +264,7 @@ class TestIterativeQAOA:
     def test_with_monte_carlo_optimizer(self, default_test_simulator):
         graph = make_bull_graph()
         iterative = IterativeQAOA(
-            problem=graph,
-            graph_problem=GraphProblem.MAXCUT,
+            MaxCutProblem(graph),
             max_depth=2,
             strategy=InterpolationStrategy.INTERP,
             max_iterations_per_depth=2,
@@ -285,8 +280,7 @@ class TestIterativeQAOA:
         """_expected_total_iterations equals max_depth * max_iterations_per_depth."""
         graph = make_bull_graph()
         iterative = IterativeQAOA(
-            problem=graph,
-            graph_problem=GraphProblem.MAXCUT,
+            MaxCutProblem(graph),
             max_depth=4,
             strategy=InterpolationStrategy.INTERP,
             max_iterations_per_depth=5,
@@ -299,8 +293,7 @@ class TestIterativeQAOA:
         """_expected_total_iterations sums per-depth budgets from callable."""
         graph = make_bull_graph()
         iterative = IterativeQAOA(
-            problem=graph,
-            graph_problem=GraphProblem.MAXCUT,
+            MaxCutProblem(graph),
             max_depth=3,
             strategy=InterpolationStrategy.INTERP,
             max_iterations_per_depth=lambda depth: depth + 1,
@@ -314,8 +307,7 @@ class TestIterativeQAOA:
         """Reporter receives depth info messages during run."""
         graph = make_bull_graph()
         iterative = IterativeQAOA(
-            problem=graph,
-            graph_problem=GraphProblem.MAXCUT,
+            MaxCutProblem(graph),
             max_depth=3,
             strategy=InterpolationStrategy.INTERP,
             max_iterations_per_depth=2,
@@ -337,8 +329,7 @@ class TestIterativeQAOA:
         """After run, instance n_layers should match best_depth."""
         graph = make_bull_graph()
         iterative = IterativeQAOA(
-            problem=graph,
-            graph_problem=GraphProblem.MAXCUT,
+            MaxCutProblem(graph),
             max_depth=3,
             strategy=InterpolationStrategy.INTERP,
             max_iterations_per_depth=3,
@@ -362,8 +353,7 @@ class TestIterativeQAOAE2E:
         graph = make_bull_graph()
 
         iterative = IterativeQAOA(
-            problem=graph,
-            graph_problem=GraphProblem.MAX_CLIQUE,
+            MaxCliqueProblem(graph),
             max_depth=3,
             strategy=InterpolationStrategy.INTERP,
             max_iterations_per_depth=15,
@@ -380,7 +370,7 @@ class TestIterativeQAOAE2E:
         default_test_simulator.set_seed(1997)
 
         iterative = IterativeQAOA(
-            problem=QUBO_MATRIX,
+            BinaryOptimizationProblem(QUBO_MATRIX),
             max_depth=3,
             strategy=InterpolationStrategy.INTERP,
             max_iterations_per_depth=15,
@@ -404,8 +394,7 @@ class TestIterativeQAOAE2E:
 
         # Standard QAOA at depth 1
         standard = QAOA(
-            problem=graph,
-            graph_problem=GraphProblem.MAXCUT,
+            MaxCutProblem(graph),
             n_layers=1,
             max_iterations=budget,
             backend=default_test_simulator,
@@ -417,8 +406,7 @@ class TestIterativeQAOAE2E:
         # Iterative QAOA up to depth 3
         default_test_simulator.set_seed(1997)
         iterative = IterativeQAOA(
-            problem=graph,
-            graph_problem=GraphProblem.MAXCUT,
+            MaxCutProblem(graph),
             max_depth=3,
             strategy=InterpolationStrategy.INTERP,
             max_iterations_per_depth=budget,
