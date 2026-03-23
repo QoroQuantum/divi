@@ -18,26 +18,26 @@ repos:
       - id: trailing-whitespace
 
 -   repo: https://github.com/psf/black
-    rev: 25.12.0
+    rev: 26.3.1
     hooks:
       - id: black
         language_version: python3
 
 -   repo: https://github.com/pycqa/isort
-    rev: 7.0.0
+    rev: 8.0.1
     hooks:
       - id: isort
         args: ["--profile", "black"]
         exclude: '(^|/)__init__\.py$'
 
 -   repo: https://github.com/PyCQA/autoflake
-    rev: v2.3.1
+    rev: v2.3.3
     hooks:
       - id: autoflake
         args: ["--remove-all-unused-imports", "--ignore-init-module-imports", "--remove-unused-variables", "--ignore-pass-statements", "--in-place"]
 
 -   repo: https://github.com/Lucas-C/pre-commit-hooks
-    rev: v1.5.5
+    rev: v1.5.6
     hooks:
       - id: forbid-crlf  # Forbid files containing CRLF end-lines to be committed
       - id: remove-crlf  # Replace CRLF end-lines by LF ones before committing
@@ -57,7 +57,7 @@ repos:
           - --no-extra-eol
 
 -   repo: https://github.com/compilerla/conventional-pre-commit
-    rev: v4.3.0
+    rev: v4.4.0
     hooks:
       - id: conventional-pre-commit
         stages: [commit-msg]
