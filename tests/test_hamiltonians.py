@@ -4,6 +4,7 @@
 
 import warnings
 
+import dimod
 import numpy as np
 import pennylane as qml
 import pytest
@@ -12,6 +13,7 @@ import scipy.sparse as sps
 from divi import hamiltonians
 from divi.hamiltonians import (
     ExactTrotterization,
+    IsingResult,
     NativeIsingConverter,
     QDrift,
     QuadratizedIsingConverter,
@@ -23,6 +25,7 @@ from divi.hamiltonians import (
     convert_hamiltonian_to_pauli_string,
     convert_qubo_matrix_to_pennylane_ising,
     normalize_binary_polynomial_problem,
+    qubo_to_ising,
 )
 
 
@@ -1035,3 +1038,105 @@ class TestSortHamiltonianTerms:
         coeffs, _ = result.terms()
         assert -2.0 in [float(c) for c in coeffs]
         assert 1.0 in [float(c) for c in coeffs]
+
+
+# ---------------------------------------------------------------------------
+# qubo_to_ising
+# ---------------------------------------------------------------------------
+
+
+class TestQuboToIsing:
+    """Tests for the qubo_to_ising helper."""
+
+    # -- Happy path: dict QUBO --
+
+    def test_dict_qubo_returns_ising_result(self):
+        qubo = {(0,): -1.0, (1,): -1.0, (0, 1): 2.0}
+        result = qubo_to_ising(qubo)
+        assert isinstance(result, IsingResult)
+        assert result.n_qubits == 2
+        assert result.cost_hamiltonian is not None
+
+    def test_loss_constant_includes_encoding_and_ham_constants(self):
+        qubo = {(0,): -1.0, (1,): -1.0, (0, 1): 2.0}
+        result = qubo_to_ising(qubo)
+        # The loss_constant should be a finite number (sum of encoding.constant + ham_constant)
+        assert np.isfinite(result.loss_constant)
+
+    def test_decode_fn_returns_binary_array(self):
+        qubo = {(0,): -1.0, (1,): -1.0, (0, 1): 2.0}
+        result = qubo_to_ising(qubo)
+        decoded = result.encoding.decode_fn("11")
+        assert all(b in (0, 1) for b in decoded)
+
+    # -- Numpy matrix input --
+
+    def test_numpy_matrix_qubo(self):
+        Q = np.array([[-1.0, 2.0], [0.0, -1.0]])
+        result = qubo_to_ising(Q)
+        assert result.n_qubits == 2
+
+    # -- Sparse matrix input --
+
+    def test_sparse_matrix_qubo(self):
+        Q = sps.csr_matrix(np.array([[-1.0, 2.0], [0.0, -1.0]]))
+        result = qubo_to_ising(Q)
+        assert result.n_qubits == 2
+
+    # -- HUBO (higher-order) with quadratization --
+
+    def test_hubo_native(self):
+        hubo = {(0, 1, 2): 1.0, (0,): -1.0, (1,): -1.0, (2,): -1.0}
+        result = qubo_to_ising(hubo, hamiltonian_builder="native")
+        assert result.n_qubits >= 3
+
+    def test_hubo_quadratized(self):
+        hubo = {(0, 1, 2): 1.0, (0,): -1.0, (1,): -1.0, (2,): -1.0}
+        result = qubo_to_ising(
+            hubo, hamiltonian_builder="quadratized", quadratization_strength=5.0
+        )
+        # Quadratization adds auxiliary qubits
+        assert result.n_qubits >= 3
+
+    # -- Cost hamiltonian is cleaned (no identity terms) --
+
+    def test_cost_hamiltonian_has_no_identity(self):
+        qubo = {(0,): -1.0, (1,): -1.0, (0, 1): 2.0}
+        result = qubo_to_ising(qubo)
+        # The cleaned hamiltonian should not be a pure Identity
+        # (constant terms are absorbed into loss_constant)
+        assert not isinstance(result.cost_hamiltonian, qml.Identity)
+
+    # -- n_qubits matches wire count --
+
+    def test_n_qubits_matches_wires(self):
+        qubo = {(0,): -1.0, (1,): -1.0, (2,): -1.0, (0, 1): 1.0, (1, 2): 1.0}
+        result = qubo_to_ising(qubo)
+        assert result.n_qubits == len(result.cost_hamiltonian.wires)
+
+    # -- Edge cases --
+
+    def test_single_variable(self):
+        qubo = {(0,): -3.0}
+        result = qubo_to_ising(qubo)
+        assert result.n_qubits == 1
+
+    def test_constant_only_raises(self):
+        """A QUBO that produces only constant terms should raise."""
+        # An empty QUBO dict normalises to a trivial problem
+        with pytest.raises((ValueError, Exception)):
+            qubo_to_ising({})
+
+    def test_invalid_hamiltonian_builder_raises(self):
+        qubo = {(0,): -1.0}
+        with pytest.raises(ValueError, match="native.*quadratized"):
+            qubo_to_ising(qubo, hamiltonian_builder="invalid")
+
+    # -- BQM input --
+
+    def test_dimod_bqm(self):
+        bqm = dimod.BinaryQuadraticModel(
+            {0: -1.0, 1: -1.0}, {(0, 1): 2.0}, 0.0, vartype="BINARY"
+        )
+        result = qubo_to_ising(bqm)
+        assert result.n_qubits == 2

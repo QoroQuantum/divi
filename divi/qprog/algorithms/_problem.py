@@ -21,11 +21,10 @@ import pennylane as qml
 import pennylane.qaoa as pqaoa
 
 from divi.hamiltonians import (
-    IsingEncoding,
     _clean_hamiltonian,
     _is_empty_hamiltonian,
-    _resolve_ising_converter,
     normalize_binary_polynomial_problem,
+    qubo_to_ising,
 )
 from divi.qprog.algorithms._initial_state import (
     InitialState,
@@ -361,27 +360,17 @@ class BinaryOptimizationProblem(Problem):
         hamiltonian_builder: Literal["native", "quadratized"] = "native",
         quadratization_strength: float = 10.0,
     ):
-        canonical = normalize_binary_polynomial_problem(problem)
-        self._canonical_problem = canonical
-
-        converter = _resolve_ising_converter(
-            hamiltonian_builder, quadratization_strength=quadratization_strength
+        self._canonical_problem = normalize_binary_polynomial_problem(problem)
+        self._ising = qubo_to_ising(
+            problem,
+            hamiltonian_builder=hamiltonian_builder,
+            quadratization_strength=quadratization_strength,
         )
-        self._ising_encoding: IsingEncoding = converter.convert(canonical)
-
-        raw_ham = self._ising_encoding.operator
-        cleaned, ham_constant = _clean_hamiltonian(raw_ham)
-        if _is_empty_hamiltonian(cleaned):
-            raise ValueError("Hamiltonian contains only constant terms.")
-
-        self._cost_hamiltonian = cleaned
-        self._loss_constant = self._ising_encoding.constant + ham_constant
-        self._n_qubits = len(raw_ham.wires)
-        self._mixer_hamiltonian = pqaoa.x_mixer(range(self._n_qubits))
+        self._mixer_hamiltonian = pqaoa.x_mixer(range(self._ising.n_qubits))
 
     @property
     def cost_hamiltonian(self) -> qml.operation.Operator:
-        return self._cost_hamiltonian
+        return self._ising.cost_hamiltonian
 
     @property
     def mixer_hamiltonian(self) -> qml.operation.Operator:
@@ -389,14 +378,13 @@ class BinaryOptimizationProblem(Problem):
 
     @property
     def loss_constant(self) -> float:
-        return self._loss_constant
+        return self._ising.loss_constant
 
     @property
     def decode_fn(self) -> Callable[[str], Any]:
-        base_decode = self._ising_encoding.decode_fn
+        base_decode = self._ising.encoding.decode_fn
         vo = self._canonical_problem.variable_order
 
-        # If variables have non-integer names, wrap decoded array as a dict
         if vo != tuple(range(self._canonical_problem.n_vars)):
 
             def _decode_with_names(bitstring: str) -> dict:
@@ -410,7 +398,7 @@ class BinaryOptimizationProblem(Problem):
 
     @property
     def metadata(self) -> dict[str, Any]:
-        return self._ising_encoding.metadata or {}
+        return self._ising.encoding.metadata or {}
 
     @property
     def canonical_problem(self):

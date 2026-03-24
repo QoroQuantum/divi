@@ -1176,32 +1176,20 @@ class TestFinalComputationDecode:
 
     def test_decode_returns_none(self, default_test_simulator):
         """When decode_fn returns None, solution is None."""
-        qubo_problem = BinaryOptimizationProblem(QUBO_MATRIX)
-        qubo_problem._ising_encoding = qubo_problem._ising_encoding._replace(
-            decode_fn=lambda bs: None
-        )
-        qaoa = QAOA(
-            qubo_problem,
-            backend=default_test_simulator,
-            max_iterations=1,
-        )
+        problem = BinaryOptimizationProblem(QUBO_MATRIX)
+        qaoa = QAOA(problem, backend=default_test_simulator, max_iterations=1)
+        # Override the decode fn on the QAOA instance after construction
+        qaoa._decode_solution_fn = lambda bs: None
         qaoa.run()
         assert qaoa.solution is None
 
     def test_decode_returns_custom_type(self, default_test_simulator):
         """When decode_fn returns a custom type, solution passes it through."""
-        qubo_problem = BinaryOptimizationProblem(QUBO_MATRIX)
-        qubo_problem._ising_encoding = qubo_problem._ising_encoding._replace(
-            decode_fn=lambda bs: [0, 2, 1, 0]
-        )
-        qaoa = QAOA(
-            qubo_problem,
-            backend=default_test_simulator,
-            max_iterations=1,
-        )
+        problem = BinaryOptimizationProblem(QUBO_MATRIX)
+        qaoa = QAOA(problem, backend=default_test_simulator, max_iterations=1)
+        qaoa._decode_solution_fn = lambda bs: [0, 2, 1, 0]
         qaoa.run()
-        sol = qaoa.solution
-        assert sol == [0, 2, 1, 0]
+        assert qaoa.solution == [0, 2, 1, 0]
 
     def test_default_decode(self, default_test_simulator):
         """Default QUBO decode returns a binary int array."""
