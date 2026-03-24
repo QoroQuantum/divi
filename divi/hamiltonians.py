@@ -797,6 +797,57 @@ def _resolve_ising_converter(
     raise ValueError("hamiltonian_builder must be either 'native' or 'quadratized'.")
 
 
+class IsingResult(NamedTuple):
+    """Result of converting a QUBO/HUBO to a cleaned Ising Hamiltonian."""
+
+    cost_hamiltonian: qml.operation.Operator
+    loss_constant: float
+    n_qubits: int
+    encoding: IsingEncoding
+
+
+def qubo_to_ising(
+    qubo,
+    *,
+    hamiltonian_builder: str = "native",
+    quadratization_strength: float = 10.0,
+) -> IsingResult:
+    """Convert a QUBO/HUBO to a cleaned Ising Hamiltonian.
+
+    Normalises the input, converts via the selected Ising converter,
+    cleans constant terms, and validates the result.
+
+    Args:
+        qubo: QUBO dict, HUBO dict, numpy matrix, BQM, or BinaryPolynomial.
+        hamiltonian_builder: ``"native"`` or ``"quadratized"``.
+        quadratization_strength: Penalty for quadratization.
+
+    Returns:
+        :class:`IsingResult` with cost Hamiltonian, loss constant,
+        qubit count, and full Ising encoding.
+
+    Raises:
+        ValueError: If the Hamiltonian contains only constant terms.
+    """
+    canonical = normalize_binary_polynomial_problem(qubo)
+    converter = _resolve_ising_converter(
+        hamiltonian_builder, quadratization_strength=quadratization_strength
+    )
+    encoding = converter.convert(canonical)
+
+    raw_ham = encoding.operator
+    cleaned, ham_constant = _clean_hamiltonian(raw_ham)
+    if _is_empty_hamiltonian(cleaned):
+        raise ValueError("Hamiltonian contains only constant terms.")
+
+    return IsingResult(
+        cost_hamiltonian=cleaned,
+        loss_constant=encoding.constant + ham_constant,
+        n_qubits=len(raw_ham.wires),
+        encoding=encoding,
+    )
+
+
 def _is_sanitized(
     qubo_matrix: npt.NDArray[np.float64] | sps.spmatrix,
 ) -> npt.NDArray[np.float64] | sps.spmatrix:

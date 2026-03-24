@@ -23,6 +23,11 @@ The ``divi.hamiltonians`` module provides functions for working with Hamiltonian
 
 .. autofunction:: divi.hamiltonians.convert_qubo_matrix_to_pennylane_ising
 
+.. autofunction:: divi.hamiltonians.qubo_to_ising
+
+.. autoclass:: divi.hamiltonians.IsingResult
+   :members:
+
 Expectation Value Computation
 -----------------------------
 
