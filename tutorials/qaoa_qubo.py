@@ -7,7 +7,7 @@ from functools import partial
 import dimod
 import numpy as np
 
-from divi.qprog import QAOA
+from divi.qprog import QAOA, BinaryOptimizationProblem
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from tutorials._backend import get_backend
 
@@ -41,7 +41,7 @@ if __name__ == "__main__":
     qubo_array = _bqm_to_numpy_matrix(bqm)
 
     qaoa_problem = QAOA(
-        problem=qubo_array,
+        BinaryOptimizationProblem(qubo_array),
         n_layers=2,
         optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
         max_iterations=10,

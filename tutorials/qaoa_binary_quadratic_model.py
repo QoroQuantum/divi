@@ -5,7 +5,7 @@
 import dimod
 from dimod import ExactSolver
 
-from divi.qprog import QAOA
+from divi.qprog import QAOA, BinaryOptimizationProblem
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from tutorials._backend import get_backend
 
@@ -26,7 +26,7 @@ if __name__ == "__main__":
     )
 
     qaoa_problem = QAOA(
-        bqm,
+        BinaryOptimizationProblem(bqm),
         n_layers=2,
         optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
         max_iterations=10,

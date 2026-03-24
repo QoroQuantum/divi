@@ -161,6 +161,11 @@ class QiskitSimulator(CircuitRunner):
                 even for expectation value measurements. Defaults to False.
         """
         super().__init__(shots=shots, track_depth=track_depth)
+
+        # Expval mode (save_expval) is incompatible with custom backends /
+        # noise models — automatically fall back to shot-based sampling.
+        if qiskit_backend is not None or noise_model is not None:
+            force_sampling = True
         self._force_sampling = force_sampling
 
         if qiskit_backend and noise_model:
