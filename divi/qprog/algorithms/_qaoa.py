@@ -257,10 +257,18 @@ class QAOA(VariationalQuantumAlgorithm):
             include_decoded: Include decoded representations. Defaults to False.
             feasibility: How to handle infeasible solutions:
 
-                - ``"ignore"`` (default): return all solutions, ranked by probability.
-                - ``"filter"``: drop infeasible solutions, rank by energy.
+                - ``"ignore"`` (default): return all solutions, ranked by
+                  probability.
+                - ``"filter"``: drop infeasible solutions, rank by objective
+                  energy.  This implements the **PHQC** (Polynomial-time
+                  Hybrid Quantum-Classical) post-processing from
+                  `arXiv:2511.14296 <https://arxiv.org/abs/2511.14296>`_
+                  (Algorithm 4): every sampled bitstring is checked for
+                  feasibility and scored by ``compute_energy`` (the true
+                  objective, not the penalty Hamiltonian), then the
+                  lowest-energy feasible solution is returned.
                 - ``"repair"``: repair infeasible solutions via the Problem's
-                  ``repair`` method, rank by energy.
+                  ``repair_infeasible_bitstring`` method, rank by energy.
 
         Returns:
             List of :class:`SolutionEntry`.
@@ -289,7 +297,8 @@ class QAOA(VariationalQuantumAlgorithm):
                 energy = p.compute_energy(bs)
                 decoded = self._decode_solution_fn(bs) if include_decoded else None
             elif feasibility == "repair":
-                bs, decoded, energy = p.repair_infeasible_bitstring(bs)
+                bs, repaired_decoded, energy = p.repair_infeasible_bitstring(bs)
+                decoded = repaired_decoded if include_decoded else None
             else:  # "filter" — drop infeasible
                 continue
 

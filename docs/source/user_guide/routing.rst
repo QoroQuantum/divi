@@ -125,10 +125,11 @@ parameter:
 
    qaoa.run()
 
-   # Only feasible solutions
-   solutions = qaoa.get_top_solutions(n=5, feasibility="feasible")
+   # PHQC mode (arXiv:2511.14296, Algorithm 4): keep only feasible
+   # solutions, rank by objective energy (not probability).
+   solutions = qaoa.get_top_solutions(n=5, feasibility="filter")
 
-   # Repair infeasible solutions before returning
+   # Repair infeasible solutions before ranking by energy.
    solutions = qaoa.get_top_solutions(n=5, feasibility="repair")
 
 Loading Benchmark Instances
