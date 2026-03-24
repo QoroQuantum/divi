@@ -73,14 +73,14 @@ files = [
 
 [[package]]
 name = "anyio"
-version = "4.12.1"
+version = "4.13.0"
 description = "High-level concurrency and networking framework on top of asyncio or Trio"
 optional = false
-python-versions = ">=3.9"
+python-versions = ">=3.10"
 groups = ["docs"]
 files = [
-    {file = "anyio-4.12.1-py3-none-any.whl", hash = "sha256:d405828884fc140aa80a3c667b8beed277f1dfedec42ba031bd6ac3db606ab6c"},
-    {file = "anyio-4.12.1.tar.gz", hash = "sha256:41cfcc3a4c85d3f05c932da7c26d0201ac36f72abd4435ba90d0464a3ffed703"},
+    {file = "anyio-4.13.0-py3-none-any.whl", hash = "sha256:08b310f9e24a9594186fd75b4f73f4a4152069e3853f1ed8bfbf58369f4ad708"},
+    {file = "anyio-4.13.0.tar.gz", hash = "sha256:334b70e641fd2221c1505b3890c69882fe4a2df910cba14d97019b90b24439dc"},
 ]
 
 [package.dependencies]
@@ -88,7 +88,7 @@ idna = ">=2.8"
 typing_extensions = {version = ">=4.5", markers = "python_version < \"3.13\""}
 
 [package.extras]
-trio = ["trio (>=0.31.0) ; python_version < \"3.10\"", "trio (>=0.32.0) ; python_version >= \"3.10\""]
+trio = ["trio (>=0.32.0)"]
 
 [[package]]
 name = "appdirs"
@@ -2771,14 +2771,14 @@ files = [
 
 [[package]]
 name = "narwhals"
-version = "2.18.0"
+version = "2.18.1"
 description = "Extremely lightweight compatibility layer between dataframe libraries"
 optional = false
 python-versions = ">=3.9"
 groups = ["ui"]
 files = [
-    {file = "narwhals-2.18.0-py3-none-any.whl", hash = "sha256:68378155ee706ac9c5b25868ef62ecddd62947b6df7801a0a156bc0a615d2d0d"},
-    {file = "narwhals-2.18.0.tar.gz", hash = "sha256:1de5cee338bc17c338c6278df2c38c0dd4290499fcf70d75e0a51d5f22a6e960"},
+    {file = "narwhals-2.18.1-py3-none-any.whl", hash = "sha256:a0a8bb80205323851338888ba3a12b4f65d352362c8a94be591244faf36504ad"},
+    {file = "narwhals-2.18.1.tar.gz", hash = "sha256:652a1fcc9d432bbf114846688884c215f17eb118aa640b7419295d2f910d2a8b"},
 ]
 
 [package.extras]
@@ -4462,22 +4462,22 @@ visualization = ["plotly (>=5.23.0)"]
 
 [[package]]
 name = "qoro-maestro"
-version = "0.2.5"
+version = "0.2.6"
 description = "Python bindings for Maestro - A unified interface for quantum circuit simulation"
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "qoro_maestro-0.2.5-cp310-cp310-macosx_14_0_arm64.whl", hash = "sha256:36249456a601aeb210a07a7b2897f739602b48fef38347e9512566635049dede"},
-    {file = "qoro_maestro-0.2.5-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:47899ab2eb0fc78a0ee1b3d72f4e1cb4e477cb2aeb2d0c6772163d68d9580dad"},
-    {file = "qoro_maestro-0.2.5-cp310-cp310-win_amd64.whl", hash = "sha256:d28a2195d379e381b94d020b17fbe9fd09feeedf4374b1a0d7fade9e97cb88d2"},
-    {file = "qoro_maestro-0.2.5-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:4dd92933c0c41d21bcd59c1b2b50fb1388ffb5762ccf337c1b8a22a628e342a6"},
-    {file = "qoro_maestro-0.2.5-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:e782732265ce4dfacbf74fdf4543a03d34b8a43a7314a9f2559066972327ab43"},
-    {file = "qoro_maestro-0.2.5-cp311-cp311-win_amd64.whl", hash = "sha256:09ef9140e106df86e469ef2b7f8d01dd37d2a61efaf74a5104ed9d7e832e684a"},
-    {file = "qoro_maestro-0.2.5-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:15d35bf0067f7e940857adb9b4dd6988fec050669bb5f15c42fdfc1910e7e215"},
-    {file = "qoro_maestro-0.2.5-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:2d7a7a015e485c58ad8aed9793e234f2c89d751a6b64f9fce3dd02bc6f88ebe0"},
-    {file = "qoro_maestro-0.2.5-cp312-cp312-win_amd64.whl", hash = "sha256:005b5f77ef4adeb2406079f19064df3695d6bd6381fe70e15d047fcbb32168bd"},
-    {file = "qoro_maestro-0.2.5.tar.gz", hash = "sha256:32bbea35df0a90b6442d577f26dd94cdefd8e9fb39ba893e135144c0aaf57605"},
+    {file = "qoro_maestro-0.2.6-cp310-cp310-macosx_14_0_arm64.whl", hash = "sha256:4b253dbb7622ac5e1c594845736b9abefba007f7612e6a907b9e08f9de59508f"},
+    {file = "qoro_maestro-0.2.6-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:1b9eb7d2f4b350a00e3bb9e23cb72a24fb676886ad0b2f4539d37af885e4c5be"},
+    {file = "qoro_maestro-0.2.6-cp310-cp310-win_amd64.whl", hash = "sha256:a1a379b7c9e51cf56e4b5edf9332eb72638aa2cd7809ccd8ae5dcb856433ad11"},
+    {file = "qoro_maestro-0.2.6-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:fdff430155828eea16098d444792f2a8c0ca81bdfe201396d7c7d4cd1c8622a2"},
+    {file = "qoro_maestro-0.2.6-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:cf547f6452758a0f7cd2c2e3147798e23793d445a455635d685fb95ebcd5197a"},
+    {file = "qoro_maestro-0.2.6-cp311-cp311-win_amd64.whl", hash = "sha256:c29dddbbbd60b7e742a7d4bcbf442578b09308e32fa0ba1d5ef9129d60467771"},
+    {file = "qoro_maestro-0.2.6-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:fddcf3857c4db74ca35a9ae534ea463fb6c7937abadc0a37aa8f38559f5bffc0"},
+    {file = "qoro_maestro-0.2.6-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:80491ecf9e7132f3f85fac260dfc2a216dd33f14761b7dc06af0dcda3c872a44"},
+    {file = "qoro_maestro-0.2.6-cp312-cp312-win_amd64.whl", hash = "sha256:6334177fb4e6b875bca05ba3e29127bb6311825331827b79be49e5d0525e286f"},
+    {file = "qoro_maestro-0.2.6.tar.gz", hash = "sha256:e0d84f21e808a8a34b56814c16475290f56e4b9ba2098cc35cd051f8569a4f50"},
 ]
 
 [[package]]
@@ -5881,14 +5881,14 @@ files = [
 
 [[package]]
 name = "werkzeug"
-version = "3.1.6"
+version = "3.1.7"
 description = "The comprehensive WSGI web application library."
 optional = false
 python-versions = ">=3.9"
 groups = ["main", "ui"]
 files = [
-    {file = "werkzeug-3.1.6-py3-none-any.whl", hash = "sha256:7ddf3357bb9564e407607f988f683d72038551200c704012bb9a4c523d42f131"},
-    {file = "werkzeug-3.1.6.tar.gz", hash = "sha256:210c6bede5a420a913956b4791a7f4d6843a43b6fcee4dfa08a65e93007d0d25"},
+    {file = "werkzeug-3.1.7-py3-none-any.whl", hash = "sha256:4b314d81163a3e1a169b6a0be2a000a0e204e8873c5de6586f453c55688d422f"},
+    {file = "werkzeug-3.1.7.tar.gz", hash = "sha256:fb8c01fe6ab13b9b7cdb46892b99b1d66754e1d7ab8e542e865ec13f526b5351"},
 ]
 
 [package.dependencies]
@@ -6053,4 +6053,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.13"
-content-hash = "1ce5c69187f89c9bf0a33617558ca3241f9435664a86f7ed45159ecd37647a95"
+content-hash = "546a259f0592b098626c804b907f07747f036b3a01c59bd40e86b9b70308cdc8"
