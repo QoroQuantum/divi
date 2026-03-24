@@ -44,5 +44,10 @@ from .workflows import (
     VQEHyperparameterSweep,
     MoleculeTransformer,
 )
-from .optimizers import ScipyOptimizer, ScipyMethod, MonteCarloOptimizer
+from .optimizers import (
+    ScipyOptimizer,
+    ScipyMethod,
+    MonteCarloOptimizer,
+    GridSearchOptimizer,
+)
 from .early_stopping import EarlyStopping

@@ -274,6 +274,16 @@ Monte Carlo Optimizer
    :no-index:
    :special-members: __init__
 
+GridSearchOptimizer
+~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: divi.qprog.optimizers.GridSearchOptimizer
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :no-index:
+   :special-members: __init__
+
 Workflows
 ---------
 

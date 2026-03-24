@@ -98,6 +98,45 @@ Differential Evolution [#storn1997]_ is a method that optimizes a problem by ite
 
    optimizer = PymooOptimizer(method=PymooMethod.DE)
 
+Grid Search
+-----------
+
+The :class:`GridSearchOptimizer` performs an exhaustive evaluation of every
+point on a user-defined parameter grid and returns the best-performing
+combination. It is designed for low-dimensional parameter spaces (1–3
+parameters) where you want full visibility into the loss landscape.
+
+Use Grid Search when:
+
+- You have a small number of variational parameters (e.g. QAOA with 1 layer: γ and β).
+- You want to visualise the loss landscape.
+- You need a deterministic, reproducible sweep.
+- You want to warm-start a variational optimizer from the best grid point.
+
+.. code-block:: python
+
+   from divi.qprog.optimizers import GridSearchOptimizer
+
+   # Auto-generate a 20×20 grid over [0, 2π] × [0, π]
+   optimizer = GridSearchOptimizer(
+       param_ranges=[(0, 2 * 3.14159), (0, 3.14159)],
+       grid_points=20,
+   )
+
+   # Or supply an explicit grid
+   optimizer = GridSearchOptimizer(
+       param_grid=np.array([[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]])
+   )
+
+The grid is evaluated in a single pass regardless of ``max_iterations``.
+A warning is issued if ``max_iterations > 1`` is supplied.
+
+.. note::
+
+   Grid search scales as ``grid_points ** n_params``, so it becomes
+   impractical beyond ~3 parameters. For higher dimensions, use
+   :class:`MonteCarloOptimizer` or CMA-ES instead.
+
 Choosing the Right Optimizer
 ----------------------------
 
@@ -110,6 +149,7 @@ Choosing the Right Optimizer
 
 **For :class:`QAOA`:**
 
+- **Grid Search**: Best for 1–2 layer QAOA where you want full landscape visibility
 - **COBYLA**: Often the best starting point for :class:`QAOA` problems
 - **Nelder-Mead**: Good for noisy landscapes and parameter initialization
 - **Monte Carlo**: Excellent for global exploration and avoiding barren plateaus
