@@ -245,6 +245,81 @@ def repair_tsp_solution(
     return repaired_bitstring, tour, cost
 
 
+def swap_repair_tsp_solution(
+    bitstring: str,
+    n_cities: int,
+    start_city: int,
+    cost_matrix: npt.NDArray[np.floating],
+) -> tuple[str, list[int], float]:
+    """Repair an infeasible bitstring using greedy swap fixing.
+
+    A lightweight alternative to :func:`repair_tsp_solution` (Hungarian,
+    O(n³)) for bitstrings that are close to feasible (low leakage).
+    Runs in O(n²) worst case and O(n) when few swaps are needed.
+
+    Follows the "linear-time swap fixer" approach from the CE-QAOA
+    framework (`arXiv:2511.14296 <https://arxiv.org/abs/2511.14296>`_,
+    Oslo talk slide 34).
+
+    Algorithm:
+        1. Decode each one-hot block to a city index (argmax).
+        2. Identify duplicate and missing cities.
+        3. Greedily assign each missing city to the time slot of a
+           duplicate that is closest in index, preserving as much of
+           the original assignment as possible.
+        4. Re-encode and compute tour cost.
+
+    Args:
+        bitstring: Binary string of length ``(n_cities - 1)²``.
+        n_cities: Total number of cities.
+        start_city: Index of the fixed start/end city.
+        cost_matrix: Distance/cost matrix (used for cost evaluation).
+
+    Returns:
+        Tuple of (repaired_bitstring, tour, cost).
+    """
+    m = n_cities - 1
+    cities = [c for c in range(n_cities) if c != start_city]
+
+    # Decode each time-step block to a city index via argmax
+    bits = np.array([int(b) for b in bitstring], dtype=int).reshape(m, m)
+    assigned = [int(np.argmax(bits[:, t])) for t in range(m)]
+
+    # Find duplicates and missing
+    seen: dict[int, list[int]] = {}
+    for t, city_idx in enumerate(assigned):
+        seen.setdefault(city_idx, []).append(t)
+
+    missing = [c for c in range(m) if c not in seen]
+    duplicates: list[int] = []  # time slots to reassign
+    for city_idx, slots in seen.items():
+        if len(slots) > 1:
+            # Keep the first occurrence, mark the rest as duplicates
+            duplicates.extend(slots[1:])
+
+    # Greedily assign missing cities to duplicate slots
+    for missing_city in missing:
+        # Pick the duplicate slot closest in city index
+        best_slot = min(duplicates, key=lambda t: abs(assigned[t] - missing_city))
+        duplicates.remove(best_slot)
+        assigned[best_slot] = missing_city
+
+    # Re-encode to one-hot bitstring
+    repaired = np.zeros((m, m), dtype=int)
+    for t, city_idx in enumerate(assigned):
+        repaired[city_idx, t] = 1
+    repaired_bitstring = "".join(str(x) for x in repaired.flatten())
+
+    # Decode tour
+    tour_list = [start_city]
+    for t in range(m):
+        tour_list.append(cities[assigned[t]])
+    tour_list.append(start_city)
+
+    cost = tour_cost(tour_list, cost_matrix)
+    return repaired_bitstring, tour_list, cost
+
+
 # --- CVRP utilities (one-hot) ---
 
 
@@ -662,6 +737,45 @@ def binary_block_config(
         n_customers=n_customers,
         n_vehicles=n_vehicles,
         max_steps=max_steps,
+        bits_per_slot=bits_per_slot,
+        n_slots=n_slots,
+        n_qubits=n_qubits,
+    )
+
+
+def enhanced_binary_block_config(
+    n_customers: int,
+    n_vehicles: int,
+) -> BinaryBlockConfig:
+    """Compute the enhanced binary encoding layout.
+
+    Uses the compressed formula from the CE-QAOA framework
+    (`arXiv:2511.14296 <https://arxiv.org/abs/2511.14296>`_, Oslo talk
+    slide 36): one slot per customer, each encoding a (vehicle, position)
+    label. This gives significantly fewer qubits than the standard
+    per-vehicle-timestep layout at larger scales.
+
+    Formula: ``n_customers × ceil(log₂(n_vehicles × n_customers))`` qubits.
+
+    For comparison, the standard layout uses
+    ``n_vehicles × n_customers × ceil(log₂(n_customers + 1))`` qubits.
+
+    Args:
+        n_customers: Number of customers (excluding depot).
+        n_vehicles: Number of vehicles.
+
+    Returns:
+        :class:`BinaryBlockConfig` with the encoding parameters.
+    """
+    n_labels = n_vehicles * n_customers
+    bits_per_slot = math.ceil(math.log2(n_labels)) if n_labels > 1 else 1
+    n_slots = n_customers  # one slot per customer
+    n_qubits = n_slots * bits_per_slot
+
+    return BinaryBlockConfig(
+        n_customers=n_customers,
+        n_vehicles=n_vehicles,
+        max_steps=n_customers,  # not used in the same sense
         bits_per_slot=bits_per_slot,
         n_slots=n_slots,
         n_qubits=n_qubits,
@@ -1354,6 +1468,12 @@ class TSPProblem(_RoutingProblemBase):
         start_city: Index of the fixed start city. Defaults to 0.
         constraint_penalty: Constraint penalty strength. Defaults to 4.0.
         objective_weight: Objective weight. Defaults to 1.0.
+        repair_strategy: Repair method for infeasible bitstrings.
+
+            * ``"hungarian"`` (default) — optimal Hamming-nearest projection
+              via the Hungarian algorithm in O(n³).
+            * ``"swap"`` — greedy swap fixer in O(n²) worst case, faster
+              for low-leakage bitstrings (few constraint violations).
     """
 
     def __init__(
@@ -1363,10 +1483,12 @@ class TSPProblem(_RoutingProblemBase):
         start_city: int = 0,
         constraint_penalty: float = 4.0,
         objective_weight: float = 1.0,
+        repair_strategy: Literal["hungarian", "swap"] = "hungarian",
     ):
         self._cost_matrix = np.asarray(cost_matrix, dtype=np.float64)
         self._start_city = start_city
         self._n_cities = self._cost_matrix.shape[0]
+        self._repair_strategy = repair_strategy
         m = self._n_cities - 1
 
         qubo = create_tsp_qubo(
@@ -1397,9 +1519,12 @@ class TSPProblem(_RoutingProblemBase):
         return is_valid_tsp_tour(bitstring, self._n_cities)
 
     def repair_infeasible_bitstring(self, bitstring: str) -> tuple[str, Any, float]:
-        return repair_tsp_solution(
-            bitstring, self._n_cities, self._start_city, self._cost_matrix
+        repair_fn = (
+            swap_repair_tsp_solution
+            if self._repair_strategy == "swap"
+            else repair_tsp_solution
         )
+        return repair_fn(bitstring, self._n_cities, self._start_city, self._cost_matrix)
 
     def compute_energy(self, bitstring: str) -> float | None:
         t = decode_tsp_solution(bitstring, self._n_cities, self._start_city)
@@ -1412,11 +1537,16 @@ class TSPProblem(_RoutingProblemBase):
 class CVRPProblem(_RoutingProblemBase):
     """Capacitated Vehicle Routing Problem for QAOA.
 
-    Supports two encodings:
+    Supports three encodings:
 
     * ``"one_hot"`` — block one-hot with W-state + XY mixer.
     * ``"binary"`` — compact binary (HUBO) with Hadamard + X mixer,
       reducing qubit count from O(N) to O(log N) per slot.
+    * ``"binary_enhanced"`` — compressed binary layout with one slot
+      per customer encoding a (vehicle, position) label.  Uses the
+      formula from `arXiv:2511.14296 <https://arxiv.org/abs/2511.14296>`_
+      (Oslo talk slide 36) for further qubit reduction.
+      **Not yet implemented** — raises ``NotImplementedError``.
 
     Args:
         cost_matrix: Symmetric distance/cost matrix of shape ``(n, n)``.
@@ -1424,7 +1554,8 @@ class CVRPProblem(_RoutingProblemBase):
         capacity: Vehicle capacity.
         n_vehicles: Number of vehicles.
         depot: Index of the depot node. Defaults to 0.
-        encoding: ``"one_hot"`` or ``"binary"``. Defaults to ``"one_hot"``.
+        encoding: ``"one_hot"``, ``"binary"``, or ``"binary_enhanced"``.
+            Defaults to ``"one_hot"``.
         constraint_penalty: Constraint penalty strength. Defaults to 4.0.
         objective_weight: Objective weight. Defaults to 1.0.
         capacity_penalty: Capacity penalty strength. Defaults to 4.0.
@@ -1438,7 +1569,7 @@ class CVRPProblem(_RoutingProblemBase):
         capacity: float,
         n_vehicles: int,
         depot: int = 0,
-        encoding: Literal["one_hot", "binary"] = "one_hot",
+        encoding: Literal["one_hot", "binary", "binary_enhanced"] = "one_hot",
         constraint_penalty: float = 4.0,
         objective_weight: float = 1.0,
         capacity_penalty: float = 4.0,
@@ -1454,7 +1585,16 @@ class CVRPProblem(_RoutingProblemBase):
 
         n_cust = self._n_cities - 1
 
-        if encoding == "binary":
+        if encoding == "binary_enhanced":
+            self._binary_config = enhanced_binary_block_config(n_cust, n_vehicles)
+            raise NotImplementedError(
+                "binary_enhanced encoding is not yet implemented. "
+                f"Config: {self._binary_config.n_qubits} qubits "
+                f"({self._binary_config.n_slots} slots × "
+                f"{self._binary_config.bits_per_slot} bits). "
+                "Use encoding='binary' or 'one_hot' for now."
+            )
+        elif encoding == "binary":
             hubo, self._binary_config = create_cvrp_hubo_binary(
                 self._cost_matrix,
                 demands=demands,
