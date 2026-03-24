@@ -112,7 +112,7 @@ Both problem classes implement:
 
 - :meth:`~divi.qprog.algorithms._routing.TSPProblem.is_feasible` — check
   whether a bitstring represents a valid tour/route.
-- :meth:`~divi.qprog.algorithms._routing.TSPProblem.repair` — project an
+- :meth:`~divi.qprog.algorithms._routing.TSPProblem.repair_infeasible_bitstring` — project an
   infeasible bitstring to the nearest valid solution using the
   **Hungarian algorithm** (``scipy.optimize.linear_sum_assignment``).
 - :meth:`~divi.qprog.algorithms._routing.TSPProblem.compute_energy` —
