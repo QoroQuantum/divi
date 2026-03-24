@@ -12,12 +12,17 @@ import py_compile
 import re
 import tempfile
 import time
+import webbrowser
 from pathlib import Path
 
 import faiss
+import pyperclip
 from fastembed import TextEmbedding
 from llama_cpp import Llama
+from rich.console import Group
+from rich.markdown import Markdown
 from rich.markup import escape
+from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.containers import Vertical, VerticalScroll
@@ -70,6 +75,13 @@ def _extract_code_blocks(text: str) -> list[str]:
 def _safe_display(text: str) -> str:
     """Escape Rich markup in user/LLM content so it is shown literally."""
     return escape(str(text))
+
+
+def _format_assistant_response(text: str) -> Group:
+    """Render an assistant response as 'Assistant:' label + markdown body."""
+    label = Text.from_markup("[bold #FF93FA]Assistant:[/bold #FF93FA]")
+    body = Markdown(text)
+    return Group(label, body)
 
 
 def _syntax_check(code: str) -> str | None:
@@ -137,20 +149,44 @@ class BrandBar(Static):
     }
     """
 
-    def __init__(self, info: str = "", **kwargs) -> None:
+    def __init__(self, model_name: str = "", disclaimer: str = "", **kwargs) -> None:
         super().__init__(**kwargs)
-        self._info = info
+        self._model_name = model_name
+        self._disclaimer = disclaimer
+        self._context_usage = ""
         self._pulse_index = 0
         self._pulse_timer = None
 
     def on_mount(self) -> None:
         self.start_pulse()
 
-    def _update_bar(self, color: str) -> None:
-        info = f"  [#94A0AA]·  {self._info}[/#94A0AA]" if self._info else ""
-        self.update(
-            f"[bold {color}]Qoro[/bold {color}]  [bold #E9EEF6]divi-ai[/bold #E9EEF6]{info}"
+    def set_context_usage(self, used: int, total: int) -> None:
+        pct = used * 100 // total if total else 0
+        color = "#50fa7b" if pct < 75 else "#FFB86C" if pct < 90 else "#ff5555"
+        self._context_usage = f" [{color}](Context Used: {pct}%)[/{color}]"
+        self._update_bar(
+            _IDLE_COLOR
+            if self._pulse_timer is None
+            else _PULSE_COLORS[self._pulse_index % len(_PULSE_COLORS)]
         )
+
+    def _update_bar(self, color: str) -> None:
+        model = (
+            f"  [#94A0AA]·[/#94A0AA]  [#E9EEF6]{self._model_name}[/#E9EEF6]"
+            if self._model_name
+            else ""
+        )
+        left = f"[bold {color}]Qoro[/bold {color}]  [#94A0AA]·[/#94A0AA]  [bold #E9EEF6]divi-ai[/bold #E9EEF6]{model}{self._context_usage}"
+        disclaimer = (
+            f"[#94A0AA]{self._disclaimer}[/#94A0AA]" if self._disclaimer else ""
+        )
+
+        left_text = Text.from_markup(left)
+        disc_text = Text.from_markup(disclaimer)
+        # Available width minus padding (2 each side)
+        width = self.size.width - 4 if self.size.width > 0 else 120
+        gap = max(4, width - left_text.cell_len - disc_text.cell_len)
+        self.update(f"{left}{' ' * gap}{disclaimer}")
 
     def start_pulse(self) -> None:
         """Start the color pulse animation."""
@@ -183,6 +219,7 @@ class ChatMessage(Static):
 
 _COMMAND_HELP = [
     ("/save <file>", "Save the last code block to a file and syntax-check it."),
+    ("/copy", "Copy the last code block to the clipboard."),
     ("/check", "Syntax-check the last saved file or the latest code blocks."),
     ("/retry", "Generate a new answer for your last request."),
     ("/reset", "Clear the current conversation history."),
@@ -296,21 +333,21 @@ class DiviAIApp(App):
         self.last_response: str = ""
         self.last_saved_path: Path | None = None
         self._generating = False
+        self._cancel_requested = False
         self._thinking_msg: ChatMessage | None = None
         self._thinking_timer = None
         self._thinking_dots = 0
 
     def compose(self) -> ComposeResult:
-        info = self.model_name
+        model_info = self.model_name
         if self.dev_mode:
-            info += f"  |  {len(self.chunks)} chunks"
-        sep = "  ·  " if info else ""
-        info += (
-            f"{sep}Experimental local assistant — responses may be inaccurate. "
+            model_info += f"  |  {len(self.chunks)} chunks"
+        disclaimer = (
+            "Experimental local assistant — responses may be inaccurate. "
             "[@click='app.open_link(\"https://qoroquantum.github.io/divi/\")']"
             "[#FF93FA]Official docs ↗[/#FF93FA][/]"
         )
-        yield BrandBar(info=info, id="brand-bar")
+        yield BrandBar(model_name=model_info, disclaimer=disclaimer, id="brand-bar")
         scroll = VerticalScroll(id="chat-scroll")
         scroll.can_focus = False
         yield scroll
@@ -321,7 +358,25 @@ class DiviAIApp(App):
                 id="chat-input",
             )
 
+    _WELCOME_EXAMPLES = [
+        "How do I create and run a VQE problem?",
+        "What optimizers are available in Divi?",
+        "Show me how to set up QAOA for a QUBO problem",
+        "How do I use checkpointing?",
+    ]
+
     def on_mount(self) -> None:
+        examples = "  ".join(
+            f"[#94A0AA]•[/#94A0AA] [italic #CDD2DA]{q}[/italic #CDD2DA]"
+            for q in self._WELCOME_EXAMPLES
+        )
+        self._append_message(
+            f"[bold #FF93FA]Welcome to divi-ai![/bold #FF93FA]\n\n"
+            f"Ask anything about the Divi quantum computing library. "
+            f"Type [bold #FF93FA]/[/bold #FF93FA] to see available commands.\n\n"
+            f"Try asking:\n{examples}",
+            "system-msg",
+        )
         self.query_one("#chat-input", ChatInput).focus()
 
     # ------------------------------------------------------------------
@@ -364,6 +419,11 @@ class DiviAIApp(App):
     # ------------------------------------------------------------------
     # Input handling
     # ------------------------------------------------------------------
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key == "escape" and self._generating:
+            self._cancel_requested = True
+            event.prevent_default()
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "chat-input":
@@ -413,6 +473,9 @@ class DiviAIApp(App):
             if command == "/save":
                 self._handle_save(args[0])
                 return
+            if command == "/copy":
+                self._handle_copy()
+                return
 
         event.input.value = ""
         self._update_slash_help("")
@@ -435,7 +498,15 @@ class DiviAIApp(App):
     def _parse_slash_command(self, user_input: str) -> tuple[str, list[str]] | str:
         command, remainder = self._split_command_input(user_input)
 
-        if command in {"/quit", "/exit", "/reset", "/clear", "/check", "/retry"}:
+        if command in {
+            "/quit",
+            "/exit",
+            "/reset",
+            "/clear",
+            "/check",
+            "/retry",
+            "/copy",
+        }:
             if remainder:
                 return "Slash commands must be entered on their own."
             return command, []
@@ -516,16 +587,24 @@ class DiviAIApp(App):
         self.last_response = ""
         self._append_system("[#CDD2DA]-- conversation history cleared --[/#CDD2DA]")
 
-    def _handle_save(self, filename: str) -> None:
+    def _get_last_code_block(self) -> str | None:
+        """Extract the last code block from the most recent response.
+
+        Shows a system message and returns ``None`` if no code blocks exist.
+        """
         blocks = _extract_code_blocks(self.last_response)
         if not blocks:
             self._append_system(
                 "[#CDD2DA]No code blocks found in the last response.[/#CDD2DA]"
             )
+            return None
+        return blocks[-1]
+
+    def _handle_save(self, filename: str) -> None:
+        code = self._get_last_code_block()
+        if code is None:
             return
 
-        # Save the last (most complete) code block
-        code = blocks[-1]
         path = Path(filename)
         try:
             path.write_text(code, encoding="utf-8")
@@ -545,6 +624,22 @@ class DiviAIApp(App):
         except OSError as e:
             self._append_message(
                 f"[#ff5555]Failed to save: {_safe_display(str(e))}[/#ff5555]",
+                "error-msg",
+            )
+
+    def _handle_copy(self) -> None:
+        code = self._get_last_code_block()
+        if code is None:
+            return
+
+        try:
+            pyperclip.copy(code)
+            self._append_system(
+                f"[#50fa7b]Copied to clipboard ({len(code)} chars)[/#50fa7b]"
+            )
+        except pyperclip.PyperclipException as e:
+            self._append_message(
+                f"[#ff5555]Clipboard error: {_safe_display(str(e))}[/#ff5555]",
                 "error-msg",
             )
 
@@ -570,7 +665,6 @@ class DiviAIApp(App):
                 "[#CDD2DA]Nothing to check. No code blocks or saved files.[/#CDD2DA]"
             )
             return
-
         for i, block in enumerate(blocks, 1):
             err = _syntax_check(block)
             label = f"Block {i}" if len(blocks) > 1 else "Code"
@@ -611,29 +705,18 @@ class DiviAIApp(App):
     @work(exclusive=True, thread=True)
     def _run_query(self, user_input: str, *, temperature: float = 0.2) -> None:
         self._generating = True
+        self._cancel_requested = False
         try:
             self._run_query_impl(user_input, temperature)
         finally:
             self._generating = False
+            self._cancel_requested = False
 
-    def _run_query_impl(self, user_input: str, temperature: float) -> None:
-        # Hardware redirect (no LLM)
-        redirect = get_hardware_redirect_response(user_input)
-        if redirect is not None:
-            self.call_from_thread(
-                self._append_message,
-                f"[bold #FF93FA]Assistant:[/bold #FF93FA] {_safe_display(redirect)}",
-                "assistant-msg",
-            )
-            self.history.append({"role": "user", "content": user_input})
-            self.history.append({"role": "assistant", "content": redirect})
-            self.last_response = redirect
-            return
+    def _do_retrieval(self, user_input: str) -> list:
+        """Retrieve and enrich context chunks for *user_input*.
 
-        # Show thinking indicator
-        thinking_msg = self.call_from_thread(self._start_thinking_indicator)
-
-        # Augment short follow-ups
+        Augments short follow-ups by prepending the previous user query.
+        """
         last_user = next(
             (m["content"] for m in reversed(self.history) if m["role"] == "user"),
             None,
@@ -644,64 +727,72 @@ class DiviAIApp(App):
             else user_input
         )
 
-        # Retrieve and enrich
         relevant = retrieve(
             search_query, self.index, self.chunks, self.embedder, top_k=self.top_k
         )
-        relevant = enrich_chunks(relevant)
+        return enrich_chunks(relevant)
 
-        if is_history_trimmed(self.history, self.llm):
+    def _stream_response(
+        self,
+        messages: list[dict[str, str]],
+        thinking_msg: ChatMessage,
+        temperature: float,
+    ) -> tuple[str, bool]:
+        """Stream LLM tokens into *thinking_msg*.
+
+        Returns ``(full_text, cancelled)`` — *cancelled* is ``True`` if the
+        user pressed Escape mid-stream.  Raises on LLM errors.
+        """
+        response_parts: list[str] = []
+        cancelled = False
+        for token in generate_stream(
+            self.llm, messages, max_tokens=self.max_tokens, temperature=temperature
+        ):
+            if self._cancel_requested:
+                cancelled = True
+                break
+            if not response_parts:
+                self.call_from_thread(self._stop_thinking_indicator)
+            response_parts.append(token)
+
+            current_text = "".join(response_parts)
             self.call_from_thread(
-                self._append_system,
-                "[#94A0AA]Older messages trimmed. Use /reset to start fresh.[/#94A0AA]",
+                thinking_msg.update,
+                _format_assistant_response(current_text),
             )
 
-        messages = build_prompt(relevant, self.history, user_input, self.llm)
+        return "".join(response_parts), cancelled
 
-        # Stream generation
-        t0 = time.monotonic()
-        response_parts: list[str] = []
-        try:
-            for token in generate_stream(
-                self.llm, messages, max_tokens=self.max_tokens, temperature=temperature
-            ):
-                if not response_parts:
-                    self.call_from_thread(self._stop_thinking_indicator)
-                response_parts.append(token)
+    def _post_response(
+        self,
+        user_input: str,
+        full_response: str,
+        messages: list[dict[str, str]],
+        relevant: list,
+        elapsed: float,
+        thinking_msg: ChatMessage,
+    ) -> None:
+        """Finalize a successful response: history, context bar, syntax check, sources."""
+        tps = len(full_response.split()) / elapsed if elapsed > 0 else 0
 
-                # Update the thinking message with streamed content
-                current_text = "".join(response_parts)
-                self.call_from_thread(
-                    thinking_msg.update,
-                    f"[bold #FF93FA]Assistant:[/bold #FF93FA] {_safe_display(current_text)}",
-                )
-        except Exception as e:
-            msg = str(e).lower()
-            if "exceed" in msg or ("context" in msg and "window" in msg):
-                self.call_from_thread(
-                    self._append_system,
-                    "[#CDD2DA]Context window exceeded. Use /reset to start fresh.[/#CDD2DA]",
-                )
-            else:
-                self.call_from_thread(
-                    self._append_message,
-                    f"[#ff5555]Error: {_safe_display(str(e))}[/#ff5555]",
-                    "error-msg",
-                )
-            # Replace "Thinking..." with nothing so we don't leave a stale placeholder
-            self.call_from_thread(self._stop_thinking_indicator)
-            self.call_from_thread(thinking_msg.update, "")
-            return
-
-        elapsed = time.monotonic() - t0
-        full_response = "".join(response_parts)
-        tps = len(response_parts) / elapsed if elapsed > 0 else 0
-
-        # Replace thinking message with final response
+        # Final markdown render
         self.call_from_thread(self._stop_thinking_indicator)
         self.call_from_thread(
             thinking_msg.update,
-            f"[bold #FF93FA]Assistant:[/bold #FF93FA] {_safe_display(full_response)}",
+            _format_assistant_response(full_response),
+        )
+
+        # Update context usage in header
+        prompt_tokens = sum(
+            len(self.llm.tokenize(m["content"].encode(), add_bos=False))
+            for m in messages
+        )
+        response_tokens = len(self.llm.tokenize(full_response.encode(), add_bos=False))
+        brand_bar = self.query_one("#brand-bar", BrandBar)
+        self.call_from_thread(
+            brand_bar.set_context_usage,
+            prompt_tokens + response_tokens,
+            self.llm.n_ctx(),
         )
 
         # Record in history
@@ -721,7 +812,6 @@ class DiviAIApp(App):
                     "success-msg",
                 )
             else:
-                # Extract just the error line, not the full traceback
                 short_err = err.split("\n")[-1] if "\n" in err else err
                 self.call_from_thread(
                     self._append_message,
@@ -743,13 +833,80 @@ class DiviAIApp(App):
         scroll = self.query_one("#chat-scroll", VerticalScroll)
         self.call_from_thread(scroll.scroll_end, animate=False)
 
+    def _run_query_impl(self, user_input: str, temperature: float) -> None:
+        # Hardware redirect (no LLM)
+        redirect = get_hardware_redirect_response(user_input)
+        if redirect is not None:
+            self.call_from_thread(
+                self._append_message,
+                _format_assistant_response(redirect),
+                "assistant-msg",
+            )
+            self.history.append({"role": "user", "content": user_input})
+            self.history.append({"role": "assistant", "content": redirect})
+            self.last_response = redirect
+            return
+
+        thinking_msg = self.call_from_thread(self._start_thinking_indicator)
+
+        relevant = self._do_retrieval(user_input)
+
+        if is_history_trimmed(self.history, self.llm):
+            self.call_from_thread(
+                self._append_system,
+                "[#94A0AA]Older messages trimmed. Use /reset to start fresh.[/#94A0AA]",
+            )
+
+        messages = build_prompt(relevant, self.history, user_input, self.llm)
+
+        t0 = time.monotonic()
+        try:
+            full_response, cancelled = self._stream_response(
+                messages, thinking_msg, temperature
+            )
+        except Exception as e:
+            msg = str(e).lower()
+            if "exceed" in msg or ("context" in msg and "window" in msg):
+                self.call_from_thread(
+                    self._append_system,
+                    "[#CDD2DA]Context window exceeded. Use /reset to start fresh.[/#CDD2DA]",
+                )
+            else:
+                self.call_from_thread(
+                    self._append_message,
+                    f"[#ff5555]Error: {_safe_display(str(e))}[/#ff5555]",
+                    "error-msg",
+                )
+            self.call_from_thread(self._stop_thinking_indicator)
+            self.call_from_thread(thinking_msg.update, "")
+            return
+        elapsed = time.monotonic() - t0
+
+        if cancelled:
+            self.call_from_thread(self._stop_thinking_indicator)
+            if full_response:
+                # Keep partial response visible
+                self.call_from_thread(
+                    thinking_msg.update,
+                    _format_assistant_response(full_response),
+                )
+            else:
+                self.call_from_thread(thinking_msg.update, "")
+            self.call_from_thread(
+                self._append_system,
+                "[#94A0AA]-- generation cancelled --[/#94A0AA]",
+            )
+            return
+
+        self._post_response(
+            user_input, full_response, messages, relevant, elapsed, thinking_msg
+        )
+
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
 
     def action_open_link(self, url: str) -> None:
-        import webbrowser
-
         webbrowser.open(url)
 
     def action_clear_chat(self) -> None:

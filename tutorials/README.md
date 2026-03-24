@@ -16,7 +16,7 @@ python <example_name>.py
 Tutorials that use `get_backend()` from `_backend.py` accept these CLI flags:
 
 | Flag | Backend | Description |
-|------|---------|-------------|
+| ------ | --------- | ------------- |
 | `--local-qiskit` (default) | `QiskitSimulator` | Local Qiskit Aer simulation |
 | `--local-maestro` | `MaestroSimulator` | Local Maestro orchestration |
 | `--cloud-maestro` | `QoroService` | Qoro cloud backend |

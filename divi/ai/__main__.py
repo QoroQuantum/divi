@@ -15,6 +15,7 @@ Usage::
 """
 
 import argparse
+from collections.abc import Callable
 from pathlib import Path
 
 from rich.console import Console
@@ -187,11 +188,19 @@ def cmd_compare(args: argparse.Namespace) -> None:
 
 
 def _add_command(
-    sub: argparse._SubParsersAction, name: str, *, help: str, **kwargs
+    sub: argparse._SubParsersAction,
+    name: str,
+    *,
+    help: str,
+    func: "Callable[[argparse.Namespace], None] | None" = None,
+    **kwargs,
 ) -> argparse.ArgumentParser:
     """Register a subparser and record it in :data:`_COMMANDS` for ``help``."""
     _COMMANDS[name] = help
-    return sub.add_parser(name, help=help, **kwargs)
+    p = sub.add_parser(name, help=help, **kwargs)
+    if func is not None:
+        p.set_defaults(func=func)
+    return p
 
 
 def main() -> None:
@@ -201,10 +210,16 @@ def main() -> None:
     )
     sub = parser.add_subparsers(dest="command")
 
-    _add_command(sub, "help", help="Show commands and workflow overview.")
-    _add_command(sub, "build", help="Build the FAISS index from the local repo.")
+    _add_command(
+        sub, "help", help="Show commands and workflow overview.", func=cmd_help
+    )
+    _add_command(
+        sub, "build", help="Build the FAISS index from the local repo.", func=cmd_build
+    )
 
-    search_parser = _add_command(sub, "search", help="Search the index interactively.")
+    search_parser = _add_command(
+        sub, "search", help="Search the index interactively.", func=cmd_search
+    )
     search_parser.add_argument(
         "--top-k",
         type=int,
@@ -213,7 +228,10 @@ def main() -> None:
     )
 
     inspect_parser = _add_command(
-        sub, "inspect", help="Inspect assembled prompts without running the LLM."
+        sub,
+        "inspect",
+        help="Inspect assembled prompts without running the LLM.",
+        func=cmd_inspect,
     )
     inspect_parser.add_argument(
         "--query", "-q", help="Single query to inspect (default: sample set)."
@@ -226,7 +244,7 @@ def main() -> None:
     )
 
     eval_parser = _add_command(
-        sub, "eval", help="Run eval queries and save results to JSON."
+        sub, "eval", help="Run eval queries and save results to JSON.", func=cmd_eval
     )
     eval_parser.add_argument(
         "--label",
@@ -251,25 +269,15 @@ def main() -> None:
     eval_parser.add_argument("--debug", action="store_true", help="Show debug output.")
 
     compare_parser = _add_command(
-        sub, "compare", help="Compare two eval runs side-by-side."
+        sub, "compare", help="Compare two eval runs side-by-side.", func=cmd_compare
     )
     compare_parser.add_argument("label_a", help="First eval label (baseline).")
     compare_parser.add_argument("label_b", help="Second eval label (improved).")
 
     args = parser.parse_args()
 
-    if args.command == "build":
-        cmd_build(args)
-    elif args.command == "search":
-        cmd_search(args)
-    elif args.command == "inspect":
-        cmd_inspect(args)
-    elif args.command == "eval":
-        cmd_eval(args)
-    elif args.command == "compare":
-        cmd_compare(args)
-    else:
-        cmd_help(args)
+    func = getattr(args, "func", cmd_help)
+    func(args)
 
 
 if __name__ == "__main__":

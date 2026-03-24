@@ -18,6 +18,7 @@ from rich.table import Table
 
 from ._chat import build_prompt
 from ._indexer import load_search_stack
+from ._models import load_llm
 from ._retriever import enrich_chunks, retrieve
 
 # ---------------------------------------------------------------------------
@@ -163,8 +164,6 @@ def run_eval(
     Path
         The path to the saved results JSON file.
     """
-    from ._models import load_llm
-
     console = Console()
 
     console.print(f"[bold]Eval run:[/bold] {label}")

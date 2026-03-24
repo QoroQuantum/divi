@@ -45,6 +45,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--reselect-model",
+        action="store_true",
+        help="Forget the saved model preference and re-prompt for selection.",
+    )
+    parser.add_argument(
         "--top-k",
         type=int,
         default=8,
@@ -83,7 +88,10 @@ def main(argv: list[str] | None = None) -> None:
         console.print(f"[bold]Model:[/bold] {model_path.name} (custom)")
         display_name = model_path.stem
     else:
-        model_size = args.model_size or load_preferred_model()
+        if args.reselect_model:
+            model_size = None
+        else:
+            model_size = args.model_size or load_preferred_model()
         if model_size is None:
             model_size = select_model_interactive()
         spec = AVAILABLE_MODELS[model_size]

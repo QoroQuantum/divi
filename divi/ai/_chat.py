@@ -86,15 +86,23 @@ SYSTEM_PROMPT = _build_system_prompt()
 # the lowest valid query ("QAOA max clique") hits 0.59.
 MIN_DENSE_SCORE = 0.55
 
-# Token budget for conversation history.  Keeps prompt size predictable
-# regardless of whether responses are short Q&A or long code blocks.
-MAX_HISTORY_TOKENS = 2048
+# Fraction of the model's context window reserved for conversation history.
+# The rest goes to the system prompt + RAG chunks + the current query.
+HISTORY_BUDGET_FRACTION = 0.25
+
+# Absolute floor so tiny context windows still keep at least one exchange.
+MIN_HISTORY_TOKENS = 512
+
+
+def _history_budget(llm: Llama) -> int:
+    """Compute the token budget for conversation history based on model context size."""
+    return max(MIN_HISTORY_TOKENS, int(llm.n_ctx() * HISTORY_BUDGET_FRACTION))
 
 
 def _trim_history(
     history: list[dict[str, str]],
     llm: Llama,
-    max_tokens: int = MAX_HISTORY_TOKENS,
+    max_tokens: int | None = None,
 ) -> list[dict[str, str]]:
     """Keep newest messages that fit within *max_tokens*.
 
@@ -104,6 +112,9 @@ def _trim_history(
     """
     if not history:
         return []
+
+    if max_tokens is None:
+        max_tokens = _history_budget(llm)
 
     # Pre-compute token counts for every message (cheap, no inference).
     counts = [len(llm.tokenize(m["content"].encode(), add_bos=False)) for m in history]
@@ -139,12 +150,9 @@ _HARDWARE_REDIRECT_KEYWORDS = (
     "real hardware",
     "quantum hardware",
     "azure quantum",
-    "azure",
     "aws braket",
-    "aws",
     "ibm quantum",
     "ibm q",
-    "ibm",
     "quantum provider",
     "cloud provider",
     "third-party backend",

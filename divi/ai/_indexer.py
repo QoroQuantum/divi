@@ -185,82 +185,52 @@ def _chunk_rst(text: str, source_file: str, short_source: str) -> list[ChunkMeta
     return chunks
 
 
-def _chunk_markdown(text: str, source_file: str, short_source: str) -> list[ChunkMeta]:
-    """Split Markdown by header lines."""
-    lines = text.splitlines(keepends=True)
-    chunks: list[ChunkMeta] = []
+def _chunk_by_headers(
+    text: str,
+    source_file: str,
+    short_source: str,
+    header_re: re.Pattern[str],
+    title_group: int,
+    *,
+    skip_sections: set[str] | None = None,
+) -> list[ChunkMeta]:
+    """Split text into chunks by matching header lines with *header_re*.
 
-    sections: list[tuple[str | None, int, int]] = []
-    current_title: str | None = None
-    current_start = 0
-
-    for i, line in enumerate(lines):
-        md_match = _MD_HEADER_RE.match(line.strip())
-        if md_match:
-            if i > current_start:
-                sections.append((current_title, current_start, i - 1))
-            current_title = md_match.group(2).strip()
-            current_start = i
-
-    if current_start < len(lines):
-        sections.append((current_title, current_start, len(lines) - 1))
-
-    for section_title, start, end in sections:
-        if section_title and section_title.lower().strip() in SKIP_SECTIONS:
-            continue
-
-        section_lines = lines[start : end + 1]
-        section_text = "".join(section_lines).strip()
-        if not section_text or len(section_text) < MIN_CHUNK_LENGTH:
-            continue
-
-        if section_title:
-            prefix = f"[Source: {short_source} § {section_title}]\n"
-        else:
-            prefix = f"[Source: {short_source}]\n"
-
-        if len(section_text) <= CHUNK_SIZE:
-            chunks.append(
-                ChunkMeta(
-                    text=prefix + section_text,
-                    source_file=source_file,
-                    start_line=start + 1,
-                    end_line=end + 1,
-                )
-            )
-        else:
-            _split_long_section(section_lines, prefix, source_file, start + 1, chunks)
-
-    return chunks
-
-
-def _chunk_toml(text: str, source_file: str, short_source: str) -> list[ChunkMeta]:
-    """Split a TOML file by ``[section]`` headers.
-
-    Each TOML section (e.g. ``[project]``, ``[tool.poetry.dependencies]``)
-    becomes its own chunk, prefixed with ``[Source: <path> § <section>]``.
-    Inline ``# comments`` are kept as-is rather than treated as headers.
+    Parameters
+    ----------
+    header_re:
+        Compiled regex whose match on a stripped line signals a new section.
+    title_group:
+        Which capture group in *header_re* contains the section title.
+    skip_sections:
+        Optional set of lowercased section titles to skip entirely.
     """
     lines = text.splitlines(keepends=True)
     chunks: list[ChunkMeta] = []
 
-    # Collect (section_title, start_line_idx, end_line_idx) ranges
     sections: list[tuple[str | None, int, int]] = []
     current_title: str | None = None
     current_start = 0
 
     for i, line in enumerate(lines):
-        m = _TOML_SECTION_RE.match(line.strip())
+        m = header_re.match(line.strip())
         if m:
             if i > current_start:
                 sections.append((current_title, current_start, i - 1))
-            current_title = m.group(1).strip()
+            current_title = m.group(title_group).strip()
             current_start = i
 
     if current_start < len(lines):
         sections.append((current_title, current_start, len(lines) - 1))
 
     for section_title, start, end in sections:
+        if (
+            skip_sections
+            and section_title
+            and section_title.lower().strip() in skip_sections
+        ):
+            continue
+
         section_lines = lines[start : end + 1]
         section_text = "".join(section_lines).strip()
         if not section_text or len(section_text) < MIN_CHUNK_LENGTH:
@@ -284,6 +254,29 @@ def _chunk_toml(text: str, source_file: str, short_source: str) -> list[ChunkMet
             _split_long_section(section_lines, prefix, source_file, start + 1, chunks)
 
     return chunks
+
+
+def _chunk_markdown(text: str, source_file: str, short_source: str) -> list[ChunkMeta]:
+    """Split Markdown by header lines."""
+    return _chunk_by_headers(
+        text,
+        source_file,
+        short_source,
+        _MD_HEADER_RE,
+        title_group=2,
+        skip_sections=SKIP_SECTIONS,
+    )
+
+
+def _chunk_toml(text: str, source_file: str, short_source: str) -> list[ChunkMeta]:
+    """Split a TOML file by ``[section]`` headers."""
+    return _chunk_by_headers(
+        text,
+        source_file,
+        short_source,
+        _TOML_SECTION_RE,
+        title_group=1,
+    )
 
 
 def _split_long_section(
@@ -700,10 +693,13 @@ def _should_skip(path: Path) -> bool:
     if not any(part in INCLUDE_DIRS for part in path.parts):
         return True
     # Skip the AI module itself — it's the chatbot, not library documentation
-    if "ai" in path.parts and "divi" in path.parts:
-        idx = list(path.parts).index("divi")
-        if idx + 1 < len(path.parts) and path.parts[idx + 1] == "ai":
-            return True
+    parts = path.parts
+    if (
+        "divi" in parts
+        and "ai" in parts
+        and parts.index("ai") == parts.index("divi") + 1
+    ):
+        return True
     # Still skip __pycache__ and build dirs within included dirs
     if any(part in {"__pycache__", "_build", ".git"} for part in path.parts):
         return True
