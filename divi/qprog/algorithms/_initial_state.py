@@ -19,7 +19,7 @@ Pass instances directly to algorithm constructors (e.g. ``initial_state=WState(3
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Sequence
+from typing import Literal, Sequence
 
 import networkx as nx
 import numpy as np
@@ -184,17 +184,29 @@ def build_block_xy_mixer_graph(
     block_size: int,
     n_blocks: int,
     wires: Sequence[int],
+    connectivity: Literal["complete", "path"] = "complete",
 ) -> nx.Graph:
     """Build the connectivity graph for a block-XY mixer.
 
-    Returns a ``networkx.Graph`` with edges between consecutive qubits
-    within each block. Pass to ``pennylane.qaoa.xy_mixer()`` to get
-    the mixer Hamiltonian.
+    Returns a ``networkx.Graph`` whose edges define the XY coupling
+    terms within each qubit block.  Pass the result to
+    ``pennylane.qaoa.xy_mixer()`` to obtain the mixer Hamiltonian.
 
     Args:
         block_size: Qubits per block (≥ 2 for mixing to occur).
         n_blocks: Number of blocks.
         wires: Must have length ``block_size * n_blocks``.
+        connectivity: Intra-block coupling pattern.
+
+            * ``"complete"`` (default) — all-to-all edges within each
+              block.  Matches the CE-QAOA mixer from
+              `arXiv:2511.14296 <https://arxiv.org/abs/2511.14296>`_
+              and provides a constant spectral gap on the
+              one-excitation sector.
+            * ``"path"`` — nearest-neighbour (linear chain) edges
+              within each block.  Uses O(n) terms instead of O(n²),
+              which may be preferable on hardware with limited
+              connectivity, at the cost of a weaker spectral gap.
 
     Returns:
         ``networkx.Graph`` for ``pennylane.qaoa.xy_mixer()``.
@@ -212,6 +224,8 @@ def build_block_xy_mixer_graph(
     for b in range(n_blocks):
         start = b * block_size
         block_wires = wires[start : start + block_size]
-        for i in range(block_size - 1):
-            g.add_edge(block_wires[i], block_wires[i + 1])
+        if connectivity == "complete":
+            g.update(nx.complete_graph(block_wires))
+        else:
+            g.update(nx.path_graph(block_wires))
     return g

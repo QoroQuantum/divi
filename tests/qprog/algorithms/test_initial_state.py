@@ -97,6 +97,19 @@ class TestWState:
 class TestBlockXYMixer:
     def test_graph_structure(self):
         g = build_block_xy_mixer_graph(3, 2, range(6))
+        # All-to-all within each block (complete graph per block)
+        assert set(g.edges()) == {
+            (0, 1),
+            (0, 2),
+            (1, 2),  # block 0
+            (3, 4),
+            (3, 5),
+            (4, 5),  # block 1
+        }
+
+    def test_graph_structure_path(self):
+        g = build_block_xy_mixer_graph(3, 2, range(6), connectivity="path")
+        # Nearest-neighbour within each block (path graph per block)
         assert set(g.edges()) == {(0, 1), (1, 2), (3, 4), (4, 5)}
 
     def test_wrong_wire_count_raises(self):

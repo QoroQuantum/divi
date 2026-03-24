@@ -51,6 +51,11 @@ python qaoa_max_clique.py --local --force-sampling
 - **`qaoa_qdrift_local.py`** - QAOA with QDrift randomized Trotterization
 - **`iterative_qaoa.py`** - Iterative QAOA with parameter interpolation vs standard QAOA
 
+### Optimization (Routing)
+
+- **`ce_qaoa_tsp.py`** - TSP with Constraint-Enhanced QAOA: grid search, parameter transfer, feasibility stats, repair
+- **`ce_qaoa_cvrp.py`** - CVRP with CE-QAOA: one-hot vs binary encoding, qubit projections, VRP file parser
+
 ### Quadratic Programming
 
 - **`qaoa_quadratic_program.py`** - QAOA for quadratic programming

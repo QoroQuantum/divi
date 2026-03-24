@@ -32,6 +32,6 @@ from ._problem import (
 )
 from ._problem import draw_graph_solution_nodes
 from ._qaoa import QAOA
-from ._routing_problems import CVRPProblem, TSPProblem
+from ._routing import CVRPProblem, TSPProblem
 from ._time_evolution import TimeEvolution
 from ._vqe import VQE

@@ -575,5 +575,6 @@ Next Steps
 ----------
 
 - Try the runnable examples in the `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ directory
+- See :doc:`routing` for TSP and CVRP with constraint-preserving quantum optimisation
 - Learn about :doc:`optimizers` for optimization strategies
 - Explore :doc:`backends` for execution options
