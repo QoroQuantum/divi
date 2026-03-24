@@ -5,9 +5,9 @@
 """
 Shared backend factory for tutorials.
 
-Parses ``--local`` / ``--maestro`` / ``--maestro-local`` and ``--force-sampling``
-from the command line and provides a backend constructor so each tutorial can
-remain backend-agnostic.
+Parses ``--local-qiskit`` / ``--local-maestro`` / ``--cloud-maestro`` and
+``--force-sampling`` from the command line and provides a backend constructor
+so each tutorial can remain backend-agnostic.
 
 Usage in a tutorial::
 
@@ -32,22 +32,22 @@ def _parse_args() -> argparse.Namespace:
     """Parse CLI flags from sys.argv without interfering with the tutorial."""
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument(
-        "--local",
+        "--local-qiskit",
         dest="mode",
         action="store_const",
-        const="local",
+        const="local-qiskit",
     )
     parser.add_argument(
-        "--maestro",
+        "--local-maestro",
         dest="mode",
         action="store_const",
-        const="maestro",
+        const="local-maestro",
     )
     parser.add_argument(
-        "--maestro-local",
+        "--cloud-maestro",
         dest="mode",
         action="store_const",
-        const="maestro-local",
+        const="cloud-maestro",
     )
     parser.add_argument(
         "--force-sampling",
@@ -55,7 +55,7 @@ def _parse_args() -> argparse.Namespace:
         default=False,
     )
     args, _ = parser.parse_known_args()
-    args.mode = args.mode or "local"
+    args.mode = args.mode or "local-qiskit"
 
     return args
 
@@ -77,13 +77,13 @@ def get_backend(
             Ignored for ``MaestroSimulator``.
         **kwargs: Extra keyword arguments forwarded to ``QiskitSimulator``
             (e.g. ``n_processes``, ``qiskit_backend``).
-            These are silently ignored when ``--maestro`` or
-            ``--maestro-local`` is selected.
+            These are silently ignored when ``--cloud-maestro`` or
+            ``--local-maestro`` is selected.
 
     Returns:
-        A ``QiskitSimulator`` (``--local``, default),
-        ``MaestroSimulator`` (``--maestro-local``), or
-        ``QoroService`` (``--maestro``) instance.
+        A ``QiskitSimulator`` (``--local-qiskit``, default),
+        ``MaestroSimulator`` (``--local-maestro``), or
+        ``QoroService`` (``--cloud-maestro``) instance.
     """
     ci_max_shots = os.environ.get("DIVI_CI_MAX_SHOTS")
     if ci_max_shots is not None:
@@ -92,13 +92,13 @@ def get_backend(
     cli = _parse_args()
     force_sampling = force_sampling or cli.force_sampling
 
-    if cli.mode == "maestro":
+    if cli.mode == "cloud-maestro":
         config = JobConfig(shots=shots, simulator_cluster="qoro_maestro")
         service = QoroService(job_config=config, force_sampling=force_sampling)
         service.track_depth = track_depth
         return service
 
-    if cli.mode == "maestro-local":
+    if cli.mode == "local-maestro":
         return MaestroSimulator(shots=shots, track_depth=track_depth)
 
     return QiskitSimulator(

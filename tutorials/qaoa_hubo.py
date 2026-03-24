@@ -30,7 +30,7 @@ compares to the exact classical minimum.
 from rich.console import Console
 from rich.table import Table
 
-from divi.qprog import QAOA
+from divi.qprog import QAOA, BinaryOptimizationProblem
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from tutorials._backend import get_backend
 
@@ -71,8 +71,7 @@ if __name__ == "__main__":
 
     # ── Solve with the native builder ────────────────────────────────
     qaoa_native = QAOA(
-        problem=hubo,
-        hamiltonian_builder="native",
+        BinaryOptimizationProblem(hubo, hamiltonian_builder="native"),
         n_layers=2,
         optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
         max_iterations=15,
@@ -86,9 +85,11 @@ if __name__ == "__main__":
     qaoa_quad_runs: list[tuple[float, QAOA]] = []
     for strength in quadratization_strengths:
         qaoa = QAOA(
-            problem=hubo,
-            hamiltonian_builder="quadratized",
-            quadratization_strength=strength,
+            BinaryOptimizationProblem(
+                hubo,
+                hamiltonian_builder="quadratized",
+                quadratization_strength=strength,
+            ),
             n_layers=3,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             max_iterations=15,
