@@ -17,6 +17,7 @@ from divi.qprog.algorithms._routing import (
     decode_binary_cvrp_solution,
     decode_cvrp_solution,
     decode_tsp_solution,
+    enhanced_binary_block_config,
     is_valid_binary_cvrp,
     is_valid_cvrp_solution,
     is_valid_tsp_tour,
@@ -24,6 +25,7 @@ from divi.qprog.algorithms._routing import (
     parse_vrp_solution,
     repair_cvrp_solution,
     repair_tsp_solution,
+    swap_repair_tsp_solution,
     tour_cost,
 )
 from divi.qprog.optimizers import GridSearchOptimizer, MonteCarloOptimizer
@@ -131,6 +133,36 @@ class TestRepairTspSolution:
         )
         repaired_bs, _, _ = repair_tsp_solution("110100010", 4, 0, cost)
         assert is_valid_tsp_tour(repaired_bs, 4)
+
+
+class TestSwapRepair:
+    def test_feasible_unchanged(self):
+        cost = np.array([[0, 10, 15], [10, 0, 20], [15, 20, 0]])
+        # Valid permutation: city 1 at t=0, city 2 at t=1
+        bs = "1001"
+        repaired_bs, tour, cost_val = swap_repair_tsp_solution(bs, 3, 0, cost)
+        assert is_valid_tsp_tour(repaired_bs, 3)
+        assert cost_val > 0
+
+    def test_infeasible_repaired(self):
+        cost = np.array([[0, 10, 15], [10, 0, 20], [15, 20, 0]])
+        repaired_bs, tour, cost_val = swap_repair_tsp_solution("0000", 3, 0, cost)
+        assert is_valid_tsp_tour(repaired_bs, 3)
+        assert cost_val > 0
+
+    def test_duplicate_cities_fixed(self):
+        cost = np.array(
+            [[0, 10, 15, 20], [10, 0, 25, 30], [15, 25, 0, 35], [20, 30, 35, 0]]
+        )
+        # Both time slots 0 and 1 assign city 0 (duplicate), city 2 missing
+        repaired_bs, tour, _ = swap_repair_tsp_solution("110100010", 4, 0, cost)
+        assert is_valid_tsp_tour(repaired_bs, 4)
+
+    def test_tsp_problem_swap_strategy(self, three_city_cost):
+        problem = TSPProblem(three_city_cost, start_city=0, repair_strategy="swap")
+        repaired_bs, _, cost = problem.repair_infeasible_bitstring("0000")
+        assert problem.is_feasible(repaired_bs)
+        assert cost > 0
 
 
 # ---------------------------------------------------------------------------
@@ -327,6 +359,30 @@ class TestBinaryVsOneHotQubitCount:
     def test_paper_claim_133_qubits(self):
         assert binary_block_config(20, 4, max_steps=5).n_qubits == 100
         assert binary_block_config(20, 4, max_steps=7).n_qubits == 140
+
+    def test_enhanced_fewer_qubits_at_scale(self):
+        """Enhanced formula gives fewer qubits for larger instances."""
+        std = binary_block_config(20, 4)
+        enh = enhanced_binary_block_config(20, 4)
+        assert enh.n_qubits < std.n_qubits
+
+    def test_enhanced_config_values(self):
+        cfg = enhanced_binary_block_config(20, 4)
+        # 20 customers, each needs ceil(log2(4 * 20)) = ceil(log2(80)) = 7 bits
+        assert cfg.n_slots == 20
+        assert cfg.bits_per_slot == 7
+        assert cfg.n_qubits == 140
+
+    def test_enhanced_encoding_not_implemented(self):
+        cost = np.array([[0, 10, 15], [10, 0, 20], [15, 20, 0]], dtype=float)
+        with pytest.raises(NotImplementedError, match="binary_enhanced"):
+            CVRPProblem(
+                cost,
+                demands=np.array([0, 3, 4.0]),
+                capacity=10,
+                n_vehicles=2,
+                encoding="binary_enhanced",
+            )
 
 
 # ---------------------------------------------------------------------------

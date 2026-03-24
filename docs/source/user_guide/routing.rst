@@ -105,6 +105,13 @@ This produces a higher-order binary optimisation (HUBO) problem that is
 automatically quadratised.  See the ``binary_block_config`` utility for
 qubit count estimates at various scales.
 
+An **enhanced binary encoding** (``encoding="binary_enhanced"``) further
+compresses the layout by assigning one slot per customer with a combined
+(vehicle, position) label, reducing to
+``N × ⌈log₂(K × N)⌉`` qubits (e.g. 140 vs 400 for 20 customers / 4
+vehicles).  Use ``enhanced_binary_block_config`` for qubit projections.
+The HUBO construction for this encoding is not yet implemented.
+
 Feasibility, Repair, and Energy
 -------------------------------
 
@@ -125,10 +132,11 @@ parameter:
 
    qaoa.run()
 
-   # Only feasible solutions
-   solutions = qaoa.get_top_solutions(n=5, feasibility="feasible")
+   # PHQC mode (arXiv:2511.14296, Algorithm 4): keep only feasible
+   # solutions, rank by objective energy (not probability).
+   solutions = qaoa.get_top_solutions(n=5, feasibility="filter")
 
-   # Repair infeasible solutions before returning
+   # Repair infeasible solutions before ranking by energy.
    solutions = qaoa.get_top_solutions(n=5, feasibility="repair")
 
 Loading Benchmark Instances
@@ -157,28 +165,34 @@ Qubit Scaling
      - One-hot
      - Binary (full)
      - Binary (tight)
+     - Enhanced
    * - 3
      - 2
      - 18
      - 12
      - 12
+     - 9
    * - 10
      - 3
      - 300
      - 120
      - 60
+     - 50
    * - 20
      - 4
      - 1,600
      - 400
      - 120
+     - 140
    * - 50
      - 10
      - 25,000
      - 3,000
      - 360
+     - 450
 
 The "tight" binary column assumes ``max_steps ≈ customers / vehicles + 1``.
+The "enhanced" column uses ``N × ⌈log₂(K × N)⌉``.
 
 Next Steps
 ----------

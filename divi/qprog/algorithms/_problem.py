@@ -389,7 +389,7 @@ class BinaryOptimizationProblem(Problem):
 
         if vo != tuple(range(self._canonical_problem.n_vars)):
 
-            def _decode_with_names(bitstring: str) -> dict:
+            def _decode_with_names(bitstring: str) -> dict | None:
                 decoded = base_decode(bitstring)
                 if decoded is None:
                     return None
