@@ -154,6 +154,20 @@ TUTORIALS: dict[str, dict] = {
             ("SHOTS = 10000", "SHOTS = 500"),
         ],
     },
+    "ce_qaoa_tsp.py": {
+        "patches": [
+            ("grid_points=5", "grid_points=3"),
+            ("max_iterations=5", "max_iterations=1"),
+            ("pop_size = 10", "pop_size = 3"),
+        ],
+    },
+    "ce_qaoa_cvrp.py": {
+        "timeout_seconds": 180,
+        "patches": [
+            ("max_iterations=5", "max_iterations=1"),
+            ("population_size=10", "population_size=3"),
+        ],
+    },
 }
 
 # ---------------------------------------------------------------------------
