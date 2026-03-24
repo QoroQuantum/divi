@@ -88,7 +88,9 @@ class Problem(ABC):
         """
         return True
 
-    def repair(self, bitstring: str) -> tuple[str, Any, float | None]:
+    def repair_infeasible_bitstring(
+        self, bitstring: str
+    ) -> tuple[str, Any, float | None]:
         """Repair an infeasible bitstring into a feasible one.
 
         Returns:

@@ -359,7 +359,7 @@ class TestTSPProblem:
 
     def test_repair(self, three_city_cost):
         problem = TSPProblem(three_city_cost, start_city=0)
-        repaired_bs, _, cost = problem.repair("0000")
+        repaired_bs, _, cost = problem.repair_infeasible_bitstring("0000")
         assert problem.is_feasible(repaired_bs)
         assert cost > 0
 

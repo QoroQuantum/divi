@@ -37,7 +37,7 @@ def create_tsp_qubo(
     constraint_penalty: float = 4.0,
     objective_weight: float = 1.0,
     reduced: bool = True,
-) -> dict[tuple[int, ...], float]:
+) -> npt.NDArray[np.float64]:
     """Generate a QUBO for TSP with a fixed start city.
 
     Uses the standard node-ordering (assignment) encoding where binary
@@ -257,7 +257,7 @@ def create_cvrp_qubo(
     constraint_penalty: float = 4.0,
     objective_weight: float = 1.0,
     capacity_penalty: float = 4.0,
-) -> dict[tuple[int, ...], float]:
+) -> npt.NDArray[np.float64]:
     """Generate a QUBO for CVRP with a fixed depot.
 
     Uses one-hot block encoding where each vehicle *v* has a block of
@@ -1396,7 +1396,7 @@ class TSPProblem(_RoutingProblemBase):
     def is_feasible(self, bitstring: str) -> bool:
         return is_valid_tsp_tour(bitstring, self._n_cities)
 
-    def repair(self, bitstring: str) -> tuple[str, Any, float]:
+    def repair_infeasible_bitstring(self, bitstring: str) -> tuple[str, Any, float]:
         return repair_tsp_solution(
             bitstring, self._n_cities, self._start_city, self._cost_matrix
         )
@@ -1532,7 +1532,10 @@ class CVRPProblem(_RoutingProblemBase):
             depot=self._depot,
         )
 
-    def repair(self, bitstring: str) -> tuple[str, Any, float]:
+    def repair_infeasible_bitstring(self, bitstring: str) -> tuple[str, Any, float]:
+        if self._encoding == "binary":
+            # Binary repair not yet implemented; return unchanged.
+            return bitstring, None, None
         return repair_cvrp_solution(
             bitstring,
             n_customers=self._n_cities - 1,
@@ -1544,13 +1547,18 @@ class CVRPProblem(_RoutingProblemBase):
         )
 
     def compute_energy(self, bitstring: str) -> float | None:
-        routes = decode_cvrp_solution(
-            bitstring,
-            self._n_cities - 1,
-            self._n_vehicles,
-            self._depot,
-            self._n_cities,
-        )
+        if self._encoding == "binary" and self._binary_config is not None:
+            routes = decode_binary_cvrp_solution(
+                bitstring, self._binary_config, self._depot, self._n_cities
+            )
+        else:
+            routes = decode_cvrp_solution(
+                bitstring,
+                self._n_cities - 1,
+                self._n_vehicles,
+                self._depot,
+                self._n_cities,
+            )
         if routes is None:
             return None
         return sum(tour_cost(route, self._cost_matrix) for route in routes)

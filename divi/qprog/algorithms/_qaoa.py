@@ -289,7 +289,7 @@ class QAOA(VariationalQuantumAlgorithm):
                 energy = p.compute_energy(bs)
                 decoded = self._decode_solution_fn(bs) if include_decoded else None
             elif feasibility == "repair":
-                bs, decoded, energy = p.repair(bs)
+                bs, decoded, energy = p.repair_infeasible_bitstring(bs)
             else:  # "filter" — drop infeasible
                 continue
 
