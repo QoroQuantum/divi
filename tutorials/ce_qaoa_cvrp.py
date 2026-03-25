@@ -20,7 +20,7 @@ from rich.console import Console
 from rich.table import Table
 
 from divi.qprog import QAOA, CVRPProblem, MonteCarloOptimizer
-from divi.qprog.algorithms._routing import (
+from divi.qprog.problems import (
     binary_block_config,
     cvrp_block_structure,
     parse_vrp_file,

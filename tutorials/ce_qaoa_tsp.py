@@ -19,7 +19,7 @@ from rich.console import Console
 from rich.table import Table
 
 from divi.qprog import QAOA, GridSearchOptimizer, MonteCarloOptimizer, TSPProblem
-from divi.qprog.algorithms._routing import is_valid_tsp_tour, tour_cost
+from divi.qprog.problems import is_valid_tsp_tour, tour_cost
 from tutorials._backend import get_backend
 
 COST_MATRIX = np.array(

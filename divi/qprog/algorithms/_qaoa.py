@@ -18,7 +18,7 @@ from divi.hamiltonians import (
 )
 from divi.pipeline.stages import TrotterSpecStage
 from divi.qprog.algorithms._initial_state import InitialState
-from divi.qprog.algorithms._problem import Problem
+from divi.qprog.problems import QAOAProblem
 from divi.qprog.variational_quantum_algorithm import (
     SolutionEntry,
     VariationalQuantumAlgorithm,
@@ -35,12 +35,12 @@ class QAOA(VariationalQuantumAlgorithm):
     optimization problems. It alternates between applying a cost Hamiltonian
     (encoding the problem) and a mixer Hamiltonian (enabling exploration).
 
-    The problem is provided as a :class:`Problem` instance that supplies the
+    The problem is provided as a :class:`QAOAProblem` instance that supplies the
     cost Hamiltonian, mixer Hamiltonian, initial state, loss constant, and
     decode function.
 
     Args:
-        problem: A :class:`Problem` instance providing the QAOA ingredients.
+        problem: A :class:`QAOAProblem` instance providing the QAOA ingredients.
         initial_state: Override the problem's recommended initial state.
         trotterization_strategy: The trotterization strategy. Defaults to ExactTrotterization.
         max_iterations: Maximum number of optimization iterations. Defaults to 10.
@@ -52,7 +52,7 @@ class QAOA(VariationalQuantumAlgorithm):
 
     def __init__(
         self,
-        problem: Problem,
+        problem: QAOAProblem,
         *,
         initial_state: InitialState | None = None,
         trotterization_strategy: TrotterizationStrategy | None = None,
@@ -63,7 +63,7 @@ class QAOA(VariationalQuantumAlgorithm):
         """Initialize the QAOA algorithm.
 
         Args:
-            problem: A :class:`Problem` instance that provides cost/mixer
+            problem: A :class:`QAOAProblem` instance that provides cost/mixer
                 Hamiltonians, loss constant, decode function, and
                 recommended initial state.
             initial_state: Override the problem's recommended initial state.

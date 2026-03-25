@@ -140,7 +140,7 @@ files, as used by benchmarks like QOBLIB:
 
 .. code-block:: python
 
-   from divi.qprog.algorithms._routing import parse_vrp_file, parse_vrp_solution
+   from divi.qprog.problems import parse_vrp_file, parse_vrp_solution
 
    inst = parse_vrp_file("XSH-n20-k4-01.vrp")
    # inst.cost_matrix, inst.demands, inst.capacity, inst.n_vehicles, ...

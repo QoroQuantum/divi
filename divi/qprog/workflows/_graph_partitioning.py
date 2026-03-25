@@ -24,17 +24,17 @@ from divi.backends import CircuitRunner
 from divi.hamiltonians import _get_terms_iterable
 from divi.qprog import QAOA, IterativeQAOA
 from divi.qprog.algorithms._initial_state import InitialState
-from divi.qprog.algorithms._problem import (
+from divi.qprog.optimizers import Optimizer
+from divi.qprog.problems import (
     EdgePartitioningProblem,
     MaxCliqueProblem,
     MaxIndependentSetProblem,
     MaxWeightCycleProblem,
     MinVertexCoverProblem,
-    Problem,
-    _GraphProblemBase,
+    QAOAProblem,
     draw_graph_solution_nodes,
 )
-from divi.qprog.optimizers import Optimizer
+from divi.qprog.problems._graphs import _GraphProblemBase
 from divi.qprog.workflows._partitioning_ensemble import (
     PartitioningProgramEnsemble,
 )
@@ -468,7 +468,7 @@ def dominance_aggregation(
 class GraphPartitioning(PartitioningProgramEnsemble):
     def __init__(
         self,
-        problem: Problem,
+        problem: QAOAProblem,
         n_layers: int,
         backend: CircuitRunner,
         partitioning_config: PartitioningConfig,
@@ -482,7 +482,7 @@ class GraphPartitioning(PartitioningProgramEnsemble):
         Initializes the graph partitioning class.
 
         Args:
-            problem: A graph :class:`Problem` instance (e.g., ``MaxCutProblem(graph)``).
+            problem: A graph :class:`QAOAProblem` instance (e.g., ``MaxCutProblem(graph)``).
                 Must have a ``graph`` attribute.
             n_layers (int): Number of layers for the QAOA circuit.
             backend (CircuitRunner): Backend used to run quantum/classical circuits.
