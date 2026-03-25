@@ -13,7 +13,12 @@ import sympy as sp
 from divi.circuits import MetaCircuit
 from divi.hamiltonians import _clean_hamiltonian, _is_empty_hamiltonian
 from divi.pipeline.stages import CircuitSpecStage
-from divi.qprog.algorithms._ansatze import Ansatz, HartreeFockAnsatz, UCCSDAnsatz
+from divi.qprog.algorithms._ansatze import (
+    Ansatz,
+    HartreeFockAnsatz,
+    QCCAnsatz,
+    UCCSDAnsatz,
+)
 from divi.qprog.algorithms._initial_state import InitialState, ZerosState
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 
@@ -90,7 +95,7 @@ class VQE(VariationalQuantumAlgorithm):
         self.initial_state = initial_state
 
         if not isinstance(self.initial_state, ZerosState) and isinstance(
-            self.ansatz, (HartreeFockAnsatz, UCCSDAnsatz)
+            self.ansatz, (HartreeFockAnsatz, QCCAnsatz, UCCSDAnsatz)
         ):
             warn(
                 f"initial_state={self.initial_state!r} supplied with a chemistry "
