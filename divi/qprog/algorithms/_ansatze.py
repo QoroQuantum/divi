@@ -366,3 +366,71 @@ class HartreeFockAnsatz(Ansatz):
                 op._hyperparameters["hf_state"] = 0
 
         return operations
+
+
+class QCCAnsatz(Ansatz):
+    """
+    Qubit Coupled Cluster (QCC) ansatz.
+
+    Prepares the Hartree-Fock reference state and applies single-qubit RY
+    rotations followed by a product of Pauli-word exponentials (``PauliRot``)
+    on adjacent qubit pairs.  The entangler pool uses XX, YY, and ZZ strings
+    on every neighbouring pair ``(i, i+1)``.
+    """
+
+    @staticmethod
+    def n_params_per_layer(n_qubits: int, **kwargs) -> int:
+        """
+        Calculate the number of parameters per layer for the QCC ansatz.
+
+        Each layer has ``n_qubits`` single-qubit RY parameters plus
+        ``3 * (n_qubits - 1)`` entangler parameters (XX, YY, ZZ per pair).
+
+        Args:
+            n_qubits (int): Number of qubits in the circuit.
+            **kwargs: Additional unused arguments.
+
+        Returns:
+            int: Number of parameters per layer.
+        """
+        n_params = n_qubits + 3 * (n_qubits - 1)
+        return _require_trainable_params(n_params, QCCAnsatz.__name__)
+
+    def build(
+        self, params, n_qubits: int, n_layers: int, **kwargs
+    ) -> list[qml.operation.Operator]:
+        """
+        Build the QCC ansatz circuit.
+
+        Args:
+            params: Parameter array for the ansatz.
+            n_qubits (int): Number of qubits.
+            n_layers (int): Number of ansatz layers.
+            **kwargs: Additional arguments:
+                n_electrons (int): Number of electrons in the system (required).
+
+        Returns:
+            list[qml.operation.Operator]: List of operations representing the QCC ansatz.
+        """
+        n_electrons = kwargs.pop("n_electrons")
+        hf_state = qml.qchem.hf_state(n_electrons, n_qubits)
+        wires = list(range(n_qubits))
+        n_singles = n_qubits
+
+        entangler_pool = [
+            (pauli, (i, i + 1))
+            for i in range(n_qubits - 1)
+            for pauli in ("XX", "YY", "ZZ")
+        ]
+
+        operations = [qml.BasisState(hf_state, wires=wires)]
+
+        for layer_params in params.reshape(n_layers, -1):
+            for i in range(n_qubits):
+                operations.append(qml.RY(layer_params[i], wires=wires[i]))
+
+            ent_params = layer_params[n_singles:]
+            for (pauli_string, pair), theta in zip(entangler_pool, ent_params):
+                operations.append(qml.PauliRot(theta, pauli_string, wires=pair))
+
+        return operations

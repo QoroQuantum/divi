@@ -8,6 +8,7 @@ from ._ansatze import (
     HardwareEfficientAnsatz,
     HartreeFockAnsatz,
     QAOAAnsatz,
+    QCCAnsatz,
     UCCSDAnsatz,
 )
 from ._custom_vqa import CustomVQA
