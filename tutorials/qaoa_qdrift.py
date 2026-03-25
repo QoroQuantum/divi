@@ -22,8 +22,9 @@ import warnings
 import networkx as nx
 
 from divi.hamiltonians import QDrift
-from divi.qprog import QAOA, MaxCutProblem
+from divi.qprog import QAOA
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from divi.qprog.problems import MaxCutProblem
 from tutorials._backend import get_backend
 
 

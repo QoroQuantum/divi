@@ -4,8 +4,9 @@
 
 import networkx as nx
 
-from divi.qprog import QAOA, MaxCliqueProblem, draw_graph_solution_nodes
+from divi.qprog import QAOA
 from divi.qprog.optimizers import PymooMethod, PymooOptimizer
+from divi.qprog.problems import MaxCliqueProblem, draw_graph_solution_nodes
 from tutorials._backend import get_backend
 
 if __name__ == "__main__":

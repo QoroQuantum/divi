@@ -98,7 +98,8 @@ Set ``include_decoded=True`` when calling :meth:`get_top_solutions` to include d
 
    import dimod
    import numpy as np
-   from divi.qprog import QAOA, BinaryOptimizationProblem
+   from divi.qprog import QAOA
+   from divi.qprog.problems import BinaryOptimizationProblem
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
@@ -366,7 +367,8 @@ Divi handles parameter optimization automatically, but you can also set custom i
       print(f"Total parameters: {vqe.n_params * vqe.n_layers}")
 
       # QAOA example
-      from divi.qprog import QAOA, MaxCutProblem
+      from divi.qprog import QAOA
+      from divi.qprog.problems import MaxCutProblem
       import networkx as nx
       qaoa = QAOA(MaxCutProblem(nx.bull_graph()), n_layers=2)
       print(f"QAOA parameters: {qaoa.n_params * qaoa.n_layers}")  # Always 2 params per layer

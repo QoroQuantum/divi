@@ -7,8 +7,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from divi.qprog import QAOA, CVRPProblem, TSPProblem
+from divi.qprog import QAOA
 from divi.qprog.optimizers import GridSearchOptimizer, MonteCarloOptimizer
+from divi.qprog.problems import CVRPProblem, TSPProblem
 from divi.qprog.problems._routing import (
     binary_block_config,
     create_cvrp_hubo_binary,

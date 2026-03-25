@@ -33,7 +33,8 @@ exactly once and returning to the start.
 .. code-block:: python
 
    import numpy as np
-   from divi.qprog import QAOA, TSPProblem
+   from divi.qprog import QAOA
+   from divi.qprog.problems import TSPProblem
    from divi.qprog.optimizers import GridSearchOptimizer
    from divi.backends import MaestroSimulator
 
@@ -71,7 +72,7 @@ capacity constraints.
 
 .. code-block:: python
 
-   from divi.qprog import CVRPProblem
+   from divi.qprog.problems import CVRPProblem
 
    problem = CVRPProblem(
        cost_matrix,

@@ -3,11 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import heapq
-import string
 from collections.abc import Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
-from functools import partial
 from typing import Literal
 from warnings import warn
 
@@ -15,65 +13,16 @@ import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
-import pennylane as qml
-import rustworkx as rx
 import scipy.sparse.linalg as spla
 from sklearn.cluster import SpectralClustering
-
-from divi.backends import CircuitRunner
-from divi.hamiltonians import _get_terms_iterable
-from divi.qprog import QAOA, IterativeQAOA
-from divi.qprog.algorithms._initial_state import InitialState
-from divi.qprog.optimizers import Optimizer
-from divi.qprog.problems import (
-    EdgePartitioningProblem,
-    MaxCliqueProblem,
-    MaxIndependentSetProblem,
-    MaxWeightCycleProblem,
-    MinVertexCoverProblem,
-    QAOAProblem,
-    draw_graph_solution_nodes,
-)
-from divi.qprog.problems._graphs import _GraphProblemBase
-from divi.qprog.workflows._partitioning_ensemble import (
-    PartitioningProgramEnsemble,
-)
-
-AggregateFn = Callable[
-    [list[int], str, nx.Graph | rx.PyGraph, dict[int, int]], list[int]
-]
 
 # TODO: Make this dynamic through an interaction with usher
 # once a proper endpoint is exposed
 _MAXIMUM_AVAILABLE_QUBITS = 30
 
-# Partitioning is currently most robust for cut-style objectives (e.g., MAXCUT).
-# For structure-dependent objectives, partitioning can hide/remove cross-partition
-# constraints and therefore requires stronger user guidance.
-_PARTITIONING_COMPATIBILITY_TIERS: dict[
-    type[_GraphProblemBase], tuple[Literal["high-risk", "heuristic-risk"], str]
-] = {
-    MaxWeightCycleProblem: (
-        "high-risk",
-        "partitioning can break cycles across cluster boundaries.",
-    ),
-    MaxCliqueProblem: (
-        "heuristic-risk",
-        "partitioning can hide cross-partition adjacency needed for global cliques.",
-    ),
-    MaxIndependentSetProblem: (
-        "heuristic-risk",
-        "partitioning can hide cross-partition conflicts between selected vertices.",
-    ),
-    MinVertexCoverProblem: (
-        "heuristic-risk",
-        "partitioning can hide cross-partition edges that must be covered globally.",
-    ),
-}
-
 
 @dataclass(frozen=True, eq=True)
-class PartitioningConfig:
+class GraphPartitioningConfig:
     """Configuration for graph partitioning algorithms.
 
     This class defines the parameters and constraints for partitioning large graphs
@@ -96,16 +45,16 @@ class PartitioningConfig:
 
     Examples:
         >>> # Partition into clusters of at most 10 nodes
-        >>> config = PartitioningConfig(max_n_nodes_per_cluster=10)
+        >>> config = GraphPartitioningConfig(max_n_nodes_per_cluster=10)
 
         >>> # Create at least 5 clusters using METIS
-        >>> config = PartitioningConfig(
+        >>> config = GraphPartitioningConfig(
         ...     minimum_n_clusters=5,
         ...     partitioning_algorithm="metis"
         ... )
 
         >>> # Both constraints: clusters of max 8 nodes, min 3 clusters
-        >>> config = PartitioningConfig(
+        >>> config = GraphPartitioningConfig(
         ...     max_n_nodes_per_cluster=8,
         ...     minimum_n_clusters=3
         ... )
@@ -290,7 +239,7 @@ def _apply_split_with_relabel(
 
 
 def _split_graph(
-    graph: nx.Graph, partitioning_config: PartitioningConfig
+    graph: nx.Graph, partitioning_config: GraphPartitioningConfig
 ) -> Sequence[nx.Graph]:
     """
     Splits a graph.
@@ -301,7 +250,7 @@ def _split_graph(
 
     Args:
         graph (nx.Graph): The input graph to be partitioned.
-        partitioning_config (PartitioningConfig): The configuration to follow.
+        partitioning_config (GraphPartitioningConfig): The configuration to follow.
 
     Returns:
         subgraphs: a sequence of the generated partitions.
@@ -324,7 +273,7 @@ def _split_graph(
 def _bisect_with_predicate(
     initial_partitions: Sequence[nx.Graph],
     predicate: Callable[[nx.Graph | None, Sequence[nx.Graph] | None], bool],
-    partitioning_config: PartitioningConfig,
+    partitioning_config: GraphPartitioningConfig,
 ) -> Sequence[nx.Graph]:
     """
     Recursively bisects a list of graph partitions based on a user-defined predicate.
@@ -370,7 +319,7 @@ def _bisect_with_predicate(
 
 
 def _node_partition_graph(
-    graph: nx.Graph, partitioning_config: PartitioningConfig
+    graph: nx.Graph, partitioning_config: GraphPartitioningConfig
 ) -> list[nx.Graph]:
 
     subgraphs = [(-graph.number_of_nodes(), 0, graph)]
@@ -465,316 +414,69 @@ def dominance_aggregation(
     return curr_solution
 
 
-class GraphPartitioning(PartitioningProgramEnsemble):
-    def __init__(
-        self,
-        problem: QAOAProblem,
-        n_layers: int,
-        backend: CircuitRunner,
-        partitioning_config: PartitioningConfig,
-        optimizer: Optimizer,
-        quantum_routine: Literal["qaoa", "iterative_qaoa"] = "qaoa",
-        initial_state: InitialState | None = None,
-        max_iterations=10,
-        **kwargs,
-    ):
-        """
-        Initializes the graph partitioning class.
+def draw_partitions(
+    graph: nx.Graph,
+    reverse_index_maps: dict,
+    pos: dict | None = None,
+    figsize: tuple[int, int] | None = (10, 8),
+    node_size: int | None = 300,
+):
+    """Draw a graph with nodes colored by partition.
 
-        Args:
-            problem: A graph :class:`QAOAProblem` instance (e.g., ``MaxCutProblem(graph)``).
-                Must have a ``graph`` attribute.
-            n_layers (int): Number of layers for the QAOA circuit.
-            backend (CircuitRunner): Backend used to run quantum/classical circuits.
-            partitioning_config (PartitioningConfig): the configuration of the partitioning as to the algorithm and
-            expected output.
-            optimizer (Optimizer): Optimizer to use for each sub-program.
-            quantum_routine (Literal["qaoa", "iterative_qaoa"], optional): Per-partition
-                quantum algorithm.  Defaults to ``"qaoa"``.  When ``"iterative_qaoa"``
-                is selected, ``n_layers`` is used as ``max_depth``.
-            initial_state (InitialState | None): Initial state for the QAOA algorithm. Defaults to problem-specific recommendation if None.
-            max_iterations (int, optional): Maximum number of optimization iterations. Defaults to 10.
-            **kwargs: Additional keyword arguments passed to the QAOA constructor.
+    Args:
+        graph: The full graph.
+        reverse_index_maps: Mapping ``{prog_id: {local_idx: global_node}}``,
+            as built by ``_GraphProblemBase.decompose()``.
+        pos: Node positions.  If *None*, uses spring layout.
+        figsize: Figure size ``(width, height)``.
+        node_size: Size of nodes.
+    """
+    if not reverse_index_maps:
+        raise RuntimeError("There are no partitions to draw. Did you call decompose()?")
 
-        """
-        super().__init__(
-            backend=backend,
-            quantum_routine=quantum_routine,
-            optimizer=optimizer,
-            max_iterations=max_iterations,
-            **kwargs,
+    node_to_partition = {}
+    for (partition_id, _), mapping in reverse_index_maps.items():
+        for node in mapping.values():
+            node_to_partition[node] = partition_id
+
+    unique_partitions = sorted(set(node_to_partition.values()))
+    n_partitions = len(unique_partitions)
+    colors = cm.Set3(np.linspace(0, 1, n_partitions))
+    partition_colors = {pid: colors[i] for i, pid in enumerate(unique_partitions)}
+
+    node_colors = [
+        partition_colors[node_to_partition.get(node, 0)] for node in graph.nodes()
+    ]
+
+    if pos is None:
+        pos = nx.spring_layout(graph, seed=42)
+
+    plt.figure(figsize=figsize)
+    nx.draw(
+        graph,
+        pos,
+        node_color=node_colors,
+        node_size=node_size,
+        with_labels=True,
+        font_size=8,
+        font_weight="bold",
+        edge_color="gray",
+        alpha=0.8,
+    )
+
+    legend_elements = [
+        plt.Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="w",
+            markerfacecolor=partition_colors[pid],
+            markersize=10,
+            label=f"Partition {pid}",
         )
-
-        self._full_problem = problem
-        self.main_graph = problem.graph
-        self.is_edge_problem = isinstance(problem, EdgePartitioningProblem)
-        self._warn_if_partitioning_is_risky()
-
-        is_directed = isinstance(self.main_graph, (nx.DiGraph, nx.MultiDiGraph))
-        check_fn = nx.is_weakly_connected if is_directed else nx.is_connected
-        if not check_fn(self.main_graph):
-            raise ValueError("Provided graph is not fully connected.")
-
-        self.partitioning_config = partitioning_config
-
-        self.solution = None
-
-        routine = self.quantum_routine.lower()
-        if routine == "qaoa":
-            self._constructor = partial(
-                QAOA,
-                initial_state=initial_state,
-                max_iterations=self.max_iterations,
-                backend=self.backend,
-                n_layers=n_layers,
-                **self._engine_kwargs,
-            )
-        elif routine == "iterative_qaoa":
-            self._constructor = partial(
-                IterativeQAOA,
-                initial_state=initial_state,
-                backend=self.backend,
-                max_depth=n_layers,
-                **self._engine_kwargs,
-            )
-        else:
-            raise ValueError(
-                f"Unsupported quantum_routine for GraphPartitioning: {quantum_routine!r}. "
-                "Supported values are 'qaoa' and 'iterative_qaoa'."
-            )
-
-    def _warn_if_partitioning_is_risky(self):
-        # Check if the problem factory's class is in the compatibility tiers
-        problem_cls = type(self._full_problem)
-        compatibility = _PARTITIONING_COMPATIBILITY_TIERS.get(problem_cls)
-        if compatibility is None:
-            return
-
-        risk_level, rationale = compatibility
-        prefix = "High-risk" if risk_level == "high-risk" else "Heuristic-risk"
-        detail = (
-            "Aggregation is heuristic and may miss globally valid/high-quality "
-            f"solutions because {rationale}"
-            if risk_level == "high-risk"
-            else f"Results may be sensitive to partition boundaries because {rationale}"
-        )
-        warn(
-            f"{prefix} graph partitioning objective: {problem_cls.__name__}. {detail}",
-            UserWarning,
-            stacklevel=2,
-        )
-
-    def create_programs(self):
-        """
-        Creates and initializes QAOA programs for each partitioned subgraph.
-
-        The main graph is partitioned into node-based subgraphs
-        according to the specified partitioning configuration. Each subgraph is relabeled with
-        integer node labels for QAOA compatibility, and a reverse index map is stored for later
-        result aggregation.
-
-        Each program is assigned a unique program ID, which is a tuple of:
-            - An uppercase letter (A, B, C, ...) corresponding to the partition index.
-            - The number of nodes in the subgraph.
-
-        Example program ID: ('A', 5) for the first partition with 5 nodes.
-
-        The created QAOA programs are stored in the `self.programs` dictionary, keyed by their program IDs.
-
-        """
-
-        super().create_programs()
-
-        if self.is_edge_problem:
-            subgraphs = _edge_partition_graph(
-                self.main_graph,
-                n_max_nodes_per_cluster=self.partitioning_config.max_n_nodes_per_cluster,
-            )
-            cleaned_subgraphs = list(filter(lambda x: x.size() > 0, subgraphs))
-        else:
-            subgraphs = _node_partition_graph(
-                self.main_graph,
-                partitioning_config=self.partitioning_config,
-            )
-
-            self._bitstring_solution = [0] * self.main_graph.number_of_nodes()
-            self.reverse_index_maps = {}
-
-            for i, subgraph in enumerate(subgraphs):
-                prog_id = (string.ascii_uppercase[i], subgraph.number_of_nodes())
-
-                index_map = {node: idx for idx, node in enumerate(subgraph.nodes())}
-                self.reverse_index_maps[prog_id] = {v: k for k, v in index_map.items()}
-
-                _subgraph = nx.relabel_nodes(subgraph, index_map)
-                p = self._full_problem
-                problem = type(p)(_subgraph, is_constrained=p._is_constrained)
-                self._programs[prog_id] = self._constructor(
-                    problem=problem,
-                    **self._make_program_args(prog_id),
-                )
-
-    def _extend_solution(self, current_solution, prog_id, candidate):
-        """Extend a global solution with a partition candidate's decoded bits.
-
-        Uses ``reverse_index_maps`` to map the candidate's local node indices
-        to global positions in the solution vector.
-
-        Args:
-            current_solution (list[int]): Current global solution vector.
-            prog_id: Program identifier (key into ``reverse_index_maps``).
-            candidate: A ``SolutionEntry`` with ``decoded`` containing a list
-                of local node indices selected by the candidate.
-
-        Returns:
-            list[int]: A new solution vector with the candidate's bits applied.
-        """
-        extended = list(current_solution)
-        reverse_map = self.reverse_index_maps[prog_id]
-
-        # Reset all positions belonging to this partition to 0
-        for global_idx in reverse_map.values():
-            extended[global_idx] = 0
-
-        # Set positions for nodes in the candidate's decoded solution to 1
-        for local_node in candidate.decoded:
-            global_idx = reverse_map[local_node]
-            extended[global_idx] = 1
-
-        return extended
-
-    def _evaluate_global_solution(self, solution):
-        """Evaluate a global solution against the full-graph cost Hamiltonian.
-
-        Classically computes the expectation value of the cost Hamiltonian on
-        the computational-basis state defined by *solution*.  Assumes the cost
-        Hamiltonian is diagonal (Z-only terms), which holds for all standard
-        QAOA graph encodings.
-
-        Args:
-            solution (list[int]): Binary solution vector over the graph nodes.
-
-        Returns:
-            float: Hamiltonian energy of the solution (lower is better).
-        """
-        hamiltonian = self._full_problem.cost_hamiltonian
-        wire_to_bit = {w: solution[w] for w in hamiltonian.wires}
-
-        energy = self._full_problem.loss_constant
-        for term in _get_terms_iterable(hamiltonian):
-            coeff = 1.0
-            base_op = term
-
-            if isinstance(term, qml.ops.SProd):
-                coeff = float(term.scalar)
-                base_op = term.base
-
-            eigenvalue = 1.0
-            for wire in base_op.wires:
-                eigenvalue *= 1 - 2 * wire_to_bit[wire]
-
-            energy += coeff * eigenvalue
-
-        return energy
-
-    def _initial_solution(self):
-        return [0] * self.main_graph.number_of_nodes()
-
-    def _finalize_best(self, score, solution):
-        self._bitstring_solution = solution
-        self.solution = list(np.where(self._bitstring_solution)[0])
-        return self.solution
-
-    def _format_top_results(self, results):
-        return [list(np.where(solution)[0]) for _score, solution in results]
-
-    def draw_partitions(
-        self,
-        pos: dict | None = None,
-        figsize: tuple[int, int] | None = (10, 8),
-        node_size: int | None = 300,
-    ):
-        """
-        Draw a ``NetworkX`` graph with nodes colored by partition.
-
-        Parameters:
-        -----------
-        pos : dict, optional
-            Node positions. If None, uses spring layout
-        figsize : tuple, optional
-            Figure size (width, height)
-        node_size : int, optional
-            Size of nodes
-        """
-
-        if len(self.programs) == 0:
-            raise RuntimeError(
-                "There are no partitions to draw. Did you run create_programs()?"
-            )
-
-        # Convert partitions to node-to-partition mapping
-        node_to_partition = {}
-        for (partition_id, _), mapping in self.reverse_index_maps.items():
-            for node in mapping.values():
-                node_to_partition[node] = partition_id
-
-        # Get unique partition IDs and create color map
-        unique_partitions = sorted(list(set(node_to_partition.values())))
-        n_partitions = len(unique_partitions)
-        colors = cm.Set3(np.linspace(0, 1, n_partitions))
-        partition_colors = {pid: colors[i] for i, pid in enumerate(unique_partitions)}
-
-        # Create node color list
-        node_colors = [
-            partition_colors[node_to_partition.get(node, 0)]
-            for node in self.main_graph.nodes()
-        ]
-
-        # Set positions
-        if pos is None:
-            pos = nx.spring_layout(self.main_graph, seed=42)
-
-        # Draw the graph
-        plt.figure(figsize=figsize)
-        nx.draw(
-            self.main_graph,
-            pos,
-            node_color=node_colors,
-            node_size=node_size,
-            with_labels=True,
-            font_size=8,
-            font_weight="bold",
-            edge_color="gray",
-            alpha=0.8,
-        )
-
-        # Add legend
-        legend_elements = [
-            plt.Line2D(
-                [0],
-                [0],
-                marker="o",
-                color="w",
-                markerfacecolor=partition_colors[pid],
-                markersize=10,
-                label=f"Partition {pid}",
-            )
-            for pid in unique_partitions
-        ]
-        plt.legend(handles=legend_elements, loc="best")
-
-        plt.title("Graph Partitions Visualization")
-        plt.axis("off")
-        plt.show()
-
-    def draw_solution(self):
-        """
-        Visualizes the main graph with nodes highlighted according to the final aggregated solution.
-
-        If the solution has not yet been computed, this method calls `aggregate_results()` to obtain it.
-        """
-
-        if self.solution is None:
-            self.solution = self.aggregate_results()
-
-        draw_graph_solution_nodes(self.main_graph, self.solution)
+        for pid in unique_partitions
+    ]
+    plt.legend(handles=legend_elements, loc="best")
+    plt.title("Graph Partitions Visualization")
+    plt.axis("off")
+    plt.show()

@@ -9,8 +9,9 @@ import networkx as nx
 from rich.console import Console
 from rich.table import Table
 
-from divi.qprog import GraphPartitioning, MaxCutProblem, PartitioningConfig
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from divi.qprog.problems import GraphPartitioningConfig, MaxCutProblem
+from divi.qprog.workflows import PartitioningProgramEnsemble
 from tutorials._backend import get_backend
 
 
@@ -70,13 +71,17 @@ if __name__ == "__main__":
 
     graph = generate_random_graph(N_NODES, N_EDGES)
 
-    qaoa_batch = GraphPartitioning(
-        problem=MaxCutProblem(graph),
-        n_layers=1,
-        partitioning_config=PartitioningConfig(
+    problem = MaxCutProblem(
+        graph,
+        config=GraphPartitioningConfig(
             max_n_nodes_per_cluster=10,
             partitioning_algorithm="metis",
         ),
+    )
+
+    qaoa_batch = PartitioningProgramEnsemble(
+        problem=problem,
+        n_layers=1,
         optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
         max_iterations=20,
         backend=get_backend(),

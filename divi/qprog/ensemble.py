@@ -667,7 +667,7 @@ class ProgramEnsemble(ABC):
         """Get the top-N global solutions from beam search aggregation.
 
         Available on subclasses that use beam-search-based aggregation
-        (e.g., ``GraphPartitioning``, ``QUBOPartitioning``).
+        (e.g., ``PartitioningProgramEnsemble``).
 
         Args:
             n (int): Number of top solutions to return. Must be >= 1.
