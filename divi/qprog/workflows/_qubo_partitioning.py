@@ -14,8 +14,8 @@ from dimod import BinaryQuadraticModel
 
 from divi.backends import CircuitRunner
 from divi.qprog.algorithms import PCE, QAOA, IterativeQAOA
-from divi.qprog.algorithms._problem import BinaryOptimizationProblem
 from divi.qprog.optimizers import Optimizer
+from divi.qprog.problems import BinaryOptimizationProblem
 from divi.qprog.workflows._partitioning_ensemble import (
     PartitioningProgramEnsemble,
 )

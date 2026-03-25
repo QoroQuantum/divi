@@ -22,17 +22,18 @@ from ._initial_state import (
 )
 from ._iterative_qaoa import InterpolationStrategy, IterativeQAOA
 from ._pce import PCE
-from ._problem import (
+from divi.qprog.problems import (
+    BinaryOptimizationProblem,
+    CVRPProblem,
     MaxCliqueProblem,
     MaxCutProblem,
     MaxIndependentSetProblem,
     MaxWeightCycleProblem,
     MinVertexCoverProblem,
-    Problem,
-    BinaryOptimizationProblem,
+    QAOAProblem,
+    TSPProblem,
+    draw_graph_solution_nodes,
 )
-from ._problem import draw_graph_solution_nodes
 from ._qaoa import QAOA
-from ._routing import CVRPProblem, TSPProblem
 from ._time_evolution import TimeEvolution
 from ._vqe import VQE

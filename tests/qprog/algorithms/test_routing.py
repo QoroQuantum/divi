@@ -8,7 +8,8 @@ import numpy as np
 import pytest
 
 from divi.qprog import QAOA, CVRPProblem, TSPProblem
-from divi.qprog.algorithms._routing import (
+from divi.qprog.optimizers import GridSearchOptimizer, MonteCarloOptimizer
+from divi.qprog.problems._routing import (
     binary_block_config,
     create_cvrp_hubo_binary,
     create_cvrp_qubo,
@@ -28,7 +29,6 @@ from divi.qprog.algorithms._routing import (
     swap_repair_tsp_solution,
     tour_cost,
 )
-from divi.qprog.optimizers import GridSearchOptimizer, MonteCarloOptimizer
 
 # ---------------------------------------------------------------------------
 # Fixtures
