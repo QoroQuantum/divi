@@ -6,13 +6,22 @@
 
 from __future__ import annotations
 
+import string
 from collections.abc import Callable
 from typing import Any
+from warnings import warn
 
+import matplotlib.pyplot as plt
+import networkx as nx
+import numpy as np
 import pennylane as qml
 import pennylane.qaoa as pqaoa
 
-from divi.hamiltonians import _clean_hamiltonian, _is_empty_hamiltonian
+from divi.hamiltonians import (
+    _clean_hamiltonian,
+    _get_terms_iterable,
+    _is_empty_hamiltonian,
+)
 from divi.qprog.algorithms._initial_state import (
     InitialState,
     OnesState,
@@ -20,6 +29,11 @@ from divi.qprog.algorithms._initial_state import (
     ZerosState,
 )
 from divi.qprog.problems._base import QAOAProblem
+from divi.qprog.problems._graph_partitioning_utils import (
+    GraphPartitioningConfig,
+    _edge_partition_graph,
+    _node_partition_graph,
+)
 from divi.typing import GraphProblemTypes
 
 
@@ -34,7 +48,13 @@ class _GraphProblemBase(QAOAProblem):
     _constrained_state_cls: type[InitialState]
     _unconstrained_state_cls: type[InitialState]
 
-    def __init__(self, graph: GraphProblemTypes, *, is_constrained: bool = True):
+    def __init__(
+        self,
+        graph: GraphProblemTypes,
+        *,
+        is_constrained: bool = True,
+        config: GraphPartitioningConfig | None = None,
+    ):
         self._graph = graph
         self._is_constrained = is_constrained
 
@@ -54,6 +74,8 @@ class _GraphProblemBase(QAOAProblem):
             if is_constrained
             else self._unconstrained_state_cls
         )()
+        self._config = config
+        self._reverse_index_maps = {}
 
     @classmethod
     def _resolve(cls, graph, is_constrained):
@@ -101,6 +123,113 @@ class _GraphProblemBase(QAOAProblem):
     @property
     def metadata(self) -> dict[str, Any]:
         return self._metadata[0] if self._metadata else {}
+
+    def decompose(self) -> dict[tuple[str, int], QAOAProblem]:
+        if self._config is None:
+            raise ValueError(
+                "Cannot decompose: no config was provided at construction."
+            )
+
+        # Warn if this problem type has known partitioning risks
+        tier = _PARTITIONING_COMPATIBILITY_TIERS.get(type(self))
+        if tier is not None:
+            risk_level, rationale = tier
+            prefix = "High-risk" if risk_level == "high-risk" else "Heuristic-risk"
+            detail = (
+                "Aggregation is heuristic and may miss globally valid/high-quality "
+                f"solutions because {rationale}"
+                if risk_level == "high-risk"
+                else "Results may be sensitive to partition boundaries because "
+                f"{rationale}"
+            )
+            warn(
+                f"{prefix} graph partitioning objective: "
+                f"{type(self).__name__}. {detail}",
+                UserWarning,
+                stacklevel=2,
+            )
+
+        if isinstance(self, EdgePartitioningProblem):
+            subgraphs = _edge_partition_graph(
+                self.graph,
+                n_max_nodes_per_cluster=self._config.max_n_nodes_per_cluster,
+            )
+            subgraphs = [sg for sg in subgraphs if sg.size() > 0]
+        else:
+            subgraphs = _node_partition_graph(
+                self.graph,
+                partitioning_config=self._config,
+            )
+
+        self._reverse_index_maps = {}
+        sub_problems = {}
+
+        for i, subgraph in enumerate(subgraphs):
+            prog_id = (string.ascii_uppercase[i], subgraph.number_of_nodes())
+
+            index_map = {node: idx for idx, node in enumerate(subgraph.nodes())}
+            self._reverse_index_maps[prog_id] = {v: k for k, v in index_map.items()}
+
+            relabeled = nx.relabel_nodes(subgraph, index_map)
+            sub_problems[prog_id] = type(self)(
+                relabeled, is_constrained=self._is_constrained
+            )
+
+        return sub_problems
+
+    def initial_solution_size(self) -> int:
+        return self.graph.number_of_nodes()
+
+    def extend_solution(
+        self,
+        current_solution: list[int],
+        prog_id: tuple[str, int],
+        candidate_decoded: list[int],
+    ) -> list[int]:
+        extended = list(current_solution)
+        reverse_map = self._reverse_index_maps[prog_id]
+
+        # Reset all positions belonging to this partition to 0
+        for global_idx in reverse_map.values():
+            extended[global_idx] = 0
+
+        # Set positions for nodes in the candidate's decoded solution to 1
+        for local_node in candidate_decoded:
+            global_idx = reverse_map[local_node]
+            extended[global_idx] = 1
+
+        return extended
+
+    def evaluate_global_solution(self, solution: list[int]) -> float:
+        hamiltonian = self.cost_hamiltonian
+        wire_to_bit = {w: solution[w] for w in hamiltonian.wires}
+
+        energy = self.loss_constant
+        for term in _get_terms_iterable(hamiltonian):
+            coeff = 1.0
+            base_op = term
+
+            if isinstance(term, qml.ops.SProd):
+                coeff = float(term.scalar)
+                base_op = term.base
+
+            eigenvalue = 1.0
+            for wire in base_op.wires:
+                eigenvalue *= 1 - 2 * wire_to_bit[wire]
+
+            energy += coeff * eigenvalue
+
+        return energy
+
+    def finalize_solution(
+        self, score: float, solution: list[int]
+    ) -> tuple[list[int], float]:
+        return list(np.where(solution)[0]), score
+
+    def format_top_solutions(
+        self, results: list[tuple[float, list[int]]]
+    ) -> list[tuple[list[int], float]]:
+        return [(list(np.where(solution)[0]), score) for score, solution in results]
 
 
 class MaxCutProblem(_GraphProblemBase):
@@ -172,7 +301,7 @@ class EdgePartitioningProblem(_GraphProblemBase):
 
     Edge partitioning operates on directed graphs and uses weak connectivity.
     The Hamiltonian construction is not yet implemented — this class exists
-    so that :class:`GraphPartitioningQAOA` can detect the partitioning mode
+    so that :class:`PartitioningProgramEnsemble` can detect the partitioning mode
     from the Problem type.
 
     .. note:: This is incomplete.  Passing an ``EdgePartitioningProblem``
@@ -214,3 +343,49 @@ class EdgePartitioningProblem(_GraphProblemBase):
         raise NotImplementedError(
             "EdgePartitioningProblem does not yet support decoding."
         )
+
+
+# Partitioning is most robust for cut-style objectives (e.g. MaxCut).
+# Structure-dependent objectives may lose cross-partition constraints.
+_PARTITIONING_COMPATIBILITY_TIERS = {
+    MaxWeightCycleProblem: (
+        "high-risk",
+        "partitioning can break cycles across cluster boundaries.",
+    ),
+    MaxCliqueProblem: (
+        "heuristic-risk",
+        "partitioning can hide cross-partition adjacency needed for global cliques.",
+    ),
+    MaxIndependentSetProblem: (
+        "heuristic-risk",
+        "partitioning can hide cross-partition conflicts between selected vertices.",
+    ),
+    MinVertexCoverProblem: (
+        "heuristic-risk",
+        "partitioning can hide cross-partition edges that must be covered globally.",
+    ),
+}
+
+
+def draw_graph_solution_nodes(main_graph: nx.Graph, partition_nodes):
+    """Visualize a graph with solution nodes highlighted.
+
+    Draws the graph with nodes colored to distinguish solution nodes (red) from
+    other nodes (light blue).
+
+    Args:
+        main_graph (nx.Graph): NetworkX graph to visualize.
+        partition_nodes: Collection of node indices that are part of the solution.
+    """
+    node_colors = [
+        "red" if node in partition_nodes else "lightblue" for node in main_graph.nodes()
+    ]
+
+    plt.figure(figsize=(10, 8))
+    pos = nx.spring_layout(main_graph)
+    nx.draw_networkx_nodes(main_graph, pos, node_color=node_colors, node_size=500)
+    nx.draw_networkx_edges(main_graph, pos)
+    nx.draw_networkx_labels(main_graph, pos, font_size=10, font_weight="bold")
+    plt.axis("off")
+    plt.tight_layout()
+    plt.show()

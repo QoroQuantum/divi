@@ -22,9 +22,6 @@ from divi.hamiltonians import (
 from divi.pipeline.stages import TrotterSpecStage
 from divi.qprog import (
     QAOA,
-    BinaryOptimizationProblem,
-    MaxCliqueProblem,
-    MaxCutProblem,
     MonteCarloOptimizer,
     ScipyMethod,
     ScipyOptimizer,
@@ -32,6 +29,11 @@ from divi.qprog import (
     ZerosState,
 )
 from divi.qprog.checkpointing import CheckpointConfig
+from divi.qprog.problems import (
+    BinaryOptimizationProblem,
+    MaxCliqueProblem,
+    MaxCutProblem,
+)
 from divi.typing import BinaryPolynomialProblem
 from tests.qprog.algorithms.problems import (
     HUBO_CUBIC,

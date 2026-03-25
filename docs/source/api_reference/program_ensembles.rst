@@ -93,19 +93,10 @@ Molecule Transformer
    :show-inheritance:
    :no-index:
 
-Graph Partitioning QAOA
-~~~~~~~~~~~~~~~~~~~~~~~
-
-.. autoclass:: divi.qprog.workflows.GraphPartitioning
-   :members:
-   :undoc-members:
-   :show-inheritance:
-   :special-members: __init__
-
 Partitioning Configuration
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-.. autoclass:: divi.qprog.workflows.PartitioningConfig
+.. autoclass:: divi.qprog.workflows.GraphPartitioningConfig
    :members:
    :undoc-members:
    :show-inheritance:
@@ -115,15 +106,6 @@ Time Evolution Trajectory
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. autoclass:: divi.qprog.workflows.TimeEvolutionTrajectory
-   :members:
-   :undoc-members:
-   :show-inheritance:
-   :special-members: __init__
-
-QUBO Partitioning QAOA
-~~~~~~~~~~~~~~~~~~~~~~
-
-.. autoclass:: divi.qprog.workflows.QUBOPartitioning
    :members:
    :undoc-members:
    :show-inheritance:

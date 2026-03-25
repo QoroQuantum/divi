@@ -5,8 +5,9 @@
 import dimod
 from dimod import ExactSolver
 
-from divi.qprog import QAOA, BinaryOptimizationProblem
+from divi.qprog import QAOA
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from divi.qprog.problems import BinaryOptimizationProblem
 from tutorials._backend import get_backend
 
 if __name__ == "__main__":

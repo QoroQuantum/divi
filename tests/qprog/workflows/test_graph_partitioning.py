@@ -6,8 +6,6 @@ import sys
 import warnings
 from collections.abc import Sequence
 
-import matplotlib.pyplot as plt
-
 try:
     import pymetis
 except ImportError:
@@ -15,63 +13,60 @@ except ImportError:
 
 PYMETIS_AVAILABLE = pymetis is not None
 import networkx as nx
-import numpy as np
 import pytest
 
-from divi.backends import CircuitRunner
-from divi.qprog import (
-    GraphPartitioning,
+from divi.qprog import ScipyMethod, ScipyOptimizer
+from divi.qprog.problems import (
+    GraphPartitioningConfig,
     MaxCliqueProblem,
     MaxCutProblem,
     MaxIndependentSetProblem,
-    MaxWeightCycleProblem,
     MinVertexCoverProblem,
-    PartitioningConfig,
-    ScipyMethod,
-    ScipyOptimizer,
-    SolutionEntry,
+    _graph_partitioning_utils,
 )
-from divi.qprog.workflows import _graph_partitioning
-from divi.qprog.workflows._graph_partitioning import (
+from divi.qprog.problems._graph_partitioning_utils import (
     _apply_split_with_relabel,
     _bisect_with_predicate,
     _node_partition_graph,
     _split_graph,
     dominance_aggregation,
+    draw_partitions,
     linear_aggregation,
 )
+from divi.qprog.workflows import PartitioningProgramEnsemble
 from tests.qprog.qprog_contracts import verify_basic_program_ensemble_behaviour
 
 _GRAPH = nx.erdos_renyi_graph(15, 0.2, seed=1997)
-_PROBLEM_ARGS = {
-    "problem": MaxCutProblem(_GRAPH),
+_PARTITIONING_CONFIG = GraphPartitioningConfig(
+    minimum_n_clusters=2, partitioning_algorithm="spectral"
+)
+_PROBLEM = MaxCutProblem(_GRAPH, config=_PARTITIONING_CONFIG)
+_ENSEMBLE_ARGS = {
+    "problem": _PROBLEM,
     "n_layers": 1,
-    "partitioning_config": PartitioningConfig(
-        minimum_n_clusters=2, partitioning_algorithm="spectral"
-    ),
     "optimizer": ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
     "max_iterations": 10,
 }
 
 
 @pytest.fixture
-def problem_args(dummy_simulator):
-    return {**_PROBLEM_ARGS, "backend": dummy_simulator}
+def ensemble_args(dummy_simulator):
+    return {**_ENSEMBLE_ARGS, "backend": dummy_simulator}
 
 
-class TestPartitioningConfig:
+class TestGraphPartitioningConfig:
     def test_valid_max_nodes_only(self):
-        config = PartitioningConfig(max_n_nodes_per_cluster=10)
+        config = GraphPartitioningConfig(max_n_nodes_per_cluster=10)
         assert config.max_n_nodes_per_cluster == 10
         assert config.minimum_n_clusters is None
 
     def test_valid_min_clusters_only(self):
-        config = PartitioningConfig(minimum_n_clusters=2)
+        config = GraphPartitioningConfig(minimum_n_clusters=2)
         assert config.minimum_n_clusters == 2
         assert config.max_n_nodes_per_cluster is None
 
     def test_valid_both_constraints(self):
-        config = PartitioningConfig(
+        config = GraphPartitioningConfig(
             max_n_nodes_per_cluster=5,
             minimum_n_clusters=3,
             partitioning_algorithm="metis",
@@ -82,46 +77,48 @@ class TestPartitioningConfig:
 
     def test_default_algorithm(self):
         # Introspect the default value from the dataclass field
-        field_info = PartitioningConfig.__dataclass_fields__["partitioning_algorithm"]
+        field_info = GraphPartitioningConfig.__dataclass_fields__[
+            "partitioning_algorithm"
+        ]
         default_value = field_info.default
 
-        config = PartitioningConfig(max_n_nodes_per_cluster=1)
+        config = GraphPartitioningConfig(max_n_nodes_per_cluster=1)
         assert config.partitioning_algorithm == default_value
 
     def test_invalid_no_constraints(self):
         with pytest.raises(
             ValueError, match="At least one constraint must be specified."
         ):
-            PartitioningConfig()
+            GraphPartitioningConfig()
 
     def test_invalid_min_clusters_zero(self):
         with pytest.raises(
             ValueError, match="'minimum_n_clusters' must be a positive integer."
         ):
-            PartitioningConfig(minimum_n_clusters=0)
+            GraphPartitioningConfig(minimum_n_clusters=0)
 
     def test_invalid_max_nodes_zero(self):
         with pytest.raises(
             ValueError, match="'max_n_nodes_per_cluster' must be a positive number."
         ):
-            PartitioningConfig(max_n_nodes_per_cluster=0)
+            GraphPartitioningConfig(max_n_nodes_per_cluster=0)
 
     def test_invalid_algorithm(self):
         with pytest.raises(ValueError, match="Unsupported partitioning algorithm:.*"):
-            PartitioningConfig(
+            GraphPartitioningConfig(
                 max_n_nodes_per_cluster=3, partitioning_algorithm="louvain"
             )
 
     def test_negative_values(self):
         with pytest.raises(ValueError):
-            PartitioningConfig(minimum_n_clusters=-5)
+            GraphPartitioningConfig(minimum_n_clusters=-5)
 
         with pytest.raises(ValueError):
-            PartitioningConfig(max_n_nodes_per_cluster=-1)
+            GraphPartitioningConfig(max_n_nodes_per_cluster=-1)
 
     def test_valid_algorithm_variants(self):
         for algo in ["spectral", "metis", "kernighan_lin"]:
-            config = PartitioningConfig(
+            config = GraphPartitioningConfig(
                 minimum_n_clusters=1, partitioning_algorithm=algo
             )
             assert config.partitioning_algorithm == algo
@@ -152,7 +149,7 @@ class TestPartitioningConfig:
         G = nx.cycle_graph(6)  # nice, symmetric, and simple
 
         mock_spectral_cls = mocker.patch(
-            f"{_graph_partitioning.__name__}.SpectralClustering"
+            f"{_graph_partitioning_utils.__name__}.SpectralClustering"
         )
         instance = mock_spectral_cls.return_value
         # Fake prediction: 0,0,0,1,1,1
@@ -192,7 +189,7 @@ class TestPartitioningConfig:
         real partitioning logic is tested in test_apply_split_with_relabel_*.
         """
         G = nx.path_graph(9)
-        config = PartitioningConfig(
+        config = GraphPartitioningConfig(
             minimum_n_clusters=3, partitioning_algorithm=algorithm
         )
 
@@ -213,7 +210,7 @@ class TestPartitioningConfig:
 
     def test_split_graph_kernighan_lin(self):
         G = nx.path_graph(6)
-        config = PartitioningConfig(
+        config = GraphPartitioningConfig(
             minimum_n_clusters=10, partitioning_algorithm="kernighan_lin"
         )
 
@@ -318,17 +315,17 @@ class TestPartitioningConfig:
 
     def test_node_partition_raises_if_min_clusters_too_high(self):
         G = nx.path_graph(5)
-        config = PartitioningConfig(minimum_n_clusters=6)
+        config = GraphPartitioningConfig(minimum_n_clusters=6)
 
         with pytest.raises(ValueError, match="Number of requested clusters"):
             _node_partition_graph(G, config)
 
     def test_partition_warns_for_oversized_clusters(self, mocker):
         # Mock the maximum available qubits to a smaller number for the test
-        mocker.patch.object(_graph_partitioning, "_MAXIMUM_AVAILABLE_QUBITS", 20)
+        mocker.patch.object(_graph_partitioning_utils, "_MAXIMUM_AVAILABLE_QUBITS", 20)
 
         graph = nx.complete_graph(40)
-        config = PartitioningConfig(minimum_n_clusters=1)  # No splitting
+        config = GraphPartitioningConfig(minimum_n_clusters=1)  # No splitting
 
         with pytest.warns(UserWarning, match="At least one cluster has more nodes"):
             partitions = _node_partition_graph(graph, config)
@@ -348,7 +345,7 @@ class TestPartitioningConfig:
             ],
         )
 
-        config = PartitioningConfig(minimum_n_clusters=2)
+        config = GraphPartitioningConfig(minimum_n_clusters=2)
         result = _node_partition_graph(graph, config)
 
         self._assert_partitions_correct(graph, result, expected_n_clusters=2)
@@ -372,7 +369,7 @@ class TestPartitioningConfig:
     def test_partition_with_min_clusters(self, algorithm):
         G = nx.complete_graph(100)
         n_clusters = 6
-        config = PartitioningConfig(
+        config = GraphPartitioningConfig(
             minimum_n_clusters=n_clusters, partitioning_algorithm=algorithm
         )
         partitions = _node_partition_graph(G, config)
@@ -395,7 +392,7 @@ class TestPartitioningConfig:
     def test_partition_with_max_nodes(self, algorithm):
         G = nx.complete_graph(100)
         max_nodes = 20
-        config = PartitioningConfig(
+        config = GraphPartitioningConfig(
             max_n_nodes_per_cluster=max_nodes, partitioning_algorithm=algorithm
         )
 
@@ -424,7 +421,7 @@ class TestPartitioningConfig:
 
         min_clusters = 3
         max_nodes = 15
-        config = PartitioningConfig(
+        config = GraphPartitioningConfig(
             minimum_n_clusters=min_clusters,
             max_n_nodes_per_cluster=max_nodes,
             partitioning_algorithm=algorithm,
@@ -472,19 +469,6 @@ class TestAggregationFunctions:
         subproblem_solution = [0, 3]
         reverse_map = {i: i for i in range(5)}
 
-        # Iteration 1 (node 0):
-        # counts are (3, 2). main_solution[0] is 0.
-        # Condition (count_0 > count_1 and main_solution[0] == 0) is TRUE.
-        # So, main_solution[0] becomes 1. -> [1, 1, 0, 0, 1]
-        #
-        # Iteration 2 (node 3):
-        # counts are now (2, 3). main_solution[3] is 0.
-        # Condition (count_1 > count_0 and main_solution[3] == 1) is FALSE.
-        # Condition (count_0 == count_1) is FALSE.
-        # The if-block is not entered. main_solution[3] remains 0.
-        #
-        # This logic is complex and order-dependent. The expected result
-        # for this specific order is calculated as follows.
         expected = [1, 1, 0, 0, 1]
 
         result = dominance_aggregation(main_solution, subproblem_solution, reverse_map)
@@ -492,222 +476,145 @@ class TestAggregationFunctions:
 
 
 class TestEvaluateSolution:
-    """Tests for GraphPartitioning._evaluate_global_solution.
+    """Tests for problem.evaluate_global_solution on graph problems.
 
     Uses small graphs with analytically-known MaxCut energies so we can
     verify the Hamiltonian evaluation is correct.
     """
 
     @staticmethod
-    def _make_qaoa(graph, backend, problem_cls=MaxCutProblem):
-        """Create a minimal GraphPartitioning for unit-testing only."""
-        return GraphPartitioning(
-            problem=problem_cls(graph),
-            n_layers=1,
-            partitioning_config=PartitioningConfig(minimum_n_clusters=1),
-            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
-            max_iterations=1,
-            backend=backend,
-        )
+    def _make_problem(graph, problem_cls=MaxCutProblem):
+        """Create a MaxCutProblem with partitioning config for unit-testing."""
+        return problem_cls(graph, config=GraphPartitioningConfig(minimum_n_clusters=1))
 
-    def test_perfect_maxcut_on_4_cycle(self, dummy_simulator):
+    def test_perfect_maxcut_on_4_cycle(self):
         """A bipartite 4-cycle has a perfect cut of 4 edges."""
         graph = nx.cycle_graph(4)
-        qaoa = self._make_qaoa(graph, dummy_simulator)
+        problem = self._make_problem(graph)
         # [1,0,1,0] cuts all 4 edges
-        energy = qaoa._evaluate_global_solution([1, 0, 1, 0])
+        energy = problem.evaluate_global_solution([1, 0, 1, 0])
         assert energy == pytest.approx(-4.0)
 
-    def test_no_cut_all_zeros(self, dummy_simulator):
+    def test_no_cut_all_zeros(self):
         """All-zero assignment cuts nothing."""
         graph = nx.cycle_graph(4)
-        qaoa = self._make_qaoa(graph, dummy_simulator)
-        energy = qaoa._evaluate_global_solution([0, 0, 0, 0])
+        problem = self._make_problem(graph)
+        energy = problem.evaluate_global_solution([0, 0, 0, 0])
         assert energy == pytest.approx(0.0)
 
-    def test_no_cut_all_ones(self, dummy_simulator):
+    def test_no_cut_all_ones(self):
         """All-one assignment cuts nothing."""
         graph = nx.cycle_graph(4)
-        qaoa = self._make_qaoa(graph, dummy_simulator)
-        energy = qaoa._evaluate_global_solution([1, 1, 1, 1])
+        problem = self._make_problem(graph)
+        energy = problem.evaluate_global_solution([1, 1, 1, 1])
         assert energy == pytest.approx(0.0)
 
-    def test_partial_cut_on_4_cycle(self, dummy_simulator):
+    def test_partial_cut_on_4_cycle(self):
         """[1,1,0,0] on a 4-cycle cuts edges (0,3) and (1,2) = 2 cut edges."""
         graph = nx.cycle_graph(4)
-        qaoa = self._make_qaoa(graph, dummy_simulator)
-        energy = qaoa._evaluate_global_solution([1, 1, 0, 0])
+        problem = self._make_problem(graph)
+        energy = problem.evaluate_global_solution([1, 1, 0, 0])
         assert energy == pytest.approx(-2.0)
 
-    def test_weighted_graph(self, dummy_simulator):
+    def test_weighted_graph(self):
         """Weighted edges: MaxCut Hamiltonian counts cut edges."""
         graph = nx.Graph()
         graph.add_edge(0, 1, weight=3.0)
         graph.add_edge(1, 2, weight=5.0)
-        qaoa = self._make_qaoa(graph, dummy_simulator)
+        problem = self._make_problem(graph)
         # [1,0,1] cuts both edges
-        energy = qaoa._evaluate_global_solution([1, 0, 1])
+        energy = problem.evaluate_global_solution([1, 0, 1])
         assert energy == pytest.approx(-2.0)
 
-    def test_triangle_graph(self, dummy_simulator):
+    def test_triangle_graph(self):
         """A triangle (K3): best cut has 2 edges, e.g. [1,0,0]."""
         graph = nx.complete_graph(3)
-        qaoa = self._make_qaoa(graph, dummy_simulator)
+        problem = self._make_problem(graph)
         # [1,0,0] cuts edges (0,1) and (0,2) = 2 cut edges
-        energy = qaoa._evaluate_global_solution([1, 0, 0])
+        energy = problem.evaluate_global_solution([1, 0, 0])
         assert energy == pytest.approx(-2.0)
 
-    def test_lower_energy_means_more_cuts(self, dummy_simulator):
+    def test_lower_energy_means_more_cuts(self):
         """Verify that more cuts produce lower (more negative) energy."""
         graph = nx.cycle_graph(4)
-        qaoa = self._make_qaoa(graph, dummy_simulator)
-        no_cut = qaoa._evaluate_global_solution([0, 0, 0, 0])
-        partial_cut = qaoa._evaluate_global_solution([1, 1, 0, 0])
-        perfect_cut = qaoa._evaluate_global_solution([1, 0, 1, 0])
+        problem = self._make_problem(graph)
+        no_cut = problem.evaluate_global_solution([0, 0, 0, 0])
+        partial_cut = problem.evaluate_global_solution([1, 1, 0, 0])
+        perfect_cut = problem.evaluate_global_solution([1, 0, 1, 0])
         assert no_cut > partial_cut > perfect_cut
 
 
 @pytest.fixture
-def node_partitioning_qaoa(problem_args):
-    return GraphPartitioning(**problem_args)
+def graph_ensemble(ensemble_args):
+    return PartitioningProgramEnsemble(**ensemble_args)
 
 
-class TestGraphPartitioning:
-    def test_verify_basic_behaviour(self, mocker, node_partitioning_qaoa):
-        verify_basic_program_ensemble_behaviour(mocker, node_partitioning_qaoa)
+class TestGraphPartitioningEnsemble:
+    def test_verify_basic_behaviour(self, mocker, graph_ensemble):
+        verify_basic_program_ensemble_behaviour(mocker, graph_ensemble)
 
-    def test_raises_on_disconnected_graph(self, problem_args):
-        disconnected_graph = nx.Graph()
-        disconnected_graph.add_edges_from([(0, 1), (2, 3)])
-
-        args = problem_args.copy()
-        args["problem"] = MaxCutProblem(disconnected_graph)
-
-        with pytest.raises(ValueError, match="Provided graph is not fully connected."):
-            GraphPartitioning(**args)
-
-    def test_warns_with_high_risk_message_for_cycle_based_problem(self, problem_args):
-        # MaxWeightCycle requires a weighted directed graph
-        dg = nx.complete_graph(4, create_using=nx.DiGraph)
-        for u, v in dg.edges():
-            dg[u][v]["weight"] = 1.0
-
-        args = problem_args.copy()
-        args["problem"] = MaxWeightCycleProblem(dg)
-
-        with pytest.warns(
-            UserWarning,
-            match="High-risk graph partitioning objective:.*MaxWeightCycleProblem",
-        ):
-            GraphPartitioning(**args)
-
-    @pytest.mark.parametrize(
-        "problem_cls,expected_name",
-        [
-            (MaxCliqueProblem, "MaxCliqueProblem"),
-            (MaxIndependentSetProblem, "MaxIndependentSetProblem"),
-            (MinVertexCoverProblem, "MinVertexCoverProblem"),
-        ],
-    )
-    def test_warns_with_heuristic_risk_message_for_partitioning_sensitive_objectives(
-        self, problem_args, problem_cls, expected_name
-    ):
-        args = problem_args.copy()
-        args["problem"] = problem_cls(_GRAPH)
-
-        with pytest.warns(
-            UserWarning,
-            match=("Heuristic-risk graph partitioning objective:" f".*{expected_name}"),
-        ):
-            GraphPartitioning(**args)
-
-    def test_does_not_warn_for_maxcut_partitioning(self, problem_args):
-        with warnings.catch_warnings(record=True) as captured_warnings:
-            warnings.simplefilter("always")
-            GraphPartitioning(**problem_args)
-
-        assert len(captured_warnings) == 0
-
-    def test_correct_initialization(self, node_partitioning_qaoa):
-        assert node_partitioning_qaoa.main_graph == _GRAPH
-        assert node_partitioning_qaoa.is_edge_problem is False
-        assert (
-            node_partitioning_qaoa.partitioning_config
-            == _PROBLEM_ARGS["partitioning_config"]
-        )
-
-    def test_correct_number_of_programs_created(self, mocker, node_partitioning_qaoa):
+    def test_correct_number_of_programs_created(self, mocker, graph_ensemble):
         mocker.patch("divi.qprog.QAOA")
 
-        node_partitioning_qaoa.create_programs()
+        graph_ensemble.create_programs()
 
-        assert (
-            len(node_partitioning_qaoa.programs)
-            >= _PROBLEM_ARGS["partitioning_config"].minimum_n_clusters
-        )
+        assert len(graph_ensemble.programs) >= _PARTITIONING_CONFIG.minimum_n_clusters
 
-        # Assert common values propagated to all programs
-        for program in node_partitioning_qaoa.programs.values():
-            assert isinstance(program.optimizer, ScipyOptimizer)
-            assert program.max_iterations == 10
-            assert isinstance(program.backend, CircuitRunner)
-
-    def test_results_aggregated_correctly(self, node_partitioning_qaoa):
+    def test_results_aggregated_correctly(self, graph_ensemble):
         # Create programs and partitions
-        node_partitioning_qaoa.create_programs()
+        graph_ensemble.create_programs()
 
         # Identify two sub-programs to mock
-        prog_keys = list(node_partitioning_qaoa.programs.keys())
+        prog_keys = list(graph_ensemble.programs.keys())
         prog_1_key, prog_2_key = prog_keys[0], prog_keys[1]
 
         # Get the number of nodes (qubits) in each subgraph
-        n_qubits_1 = node_partitioning_qaoa.programs[prog_1_key].n_qubits
-        n_qubits_2 = node_partitioning_qaoa.programs[prog_2_key].n_qubits
+        n_qubits_1 = graph_ensemble.programs[prog_1_key].n_qubits
+        n_qubits_2 = graph_ensemble.programs[prog_2_key].n_qubits
 
         # Mock _best_probs: program 1 has all-zeros (empty solution), program 2 has all-ones
         all_zeros_bitstring = "0" * n_qubits_1
         all_ones_bitstring = "1" * n_qubits_2
 
-        node_partitioning_qaoa.programs[prog_1_key]._best_probs = {
+        graph_ensemble.programs[prog_1_key]._best_probs = {
             "tag": {all_zeros_bitstring: 1.0}
         }
-        node_partitioning_qaoa.programs[prog_2_key]._best_probs = {
+        graph_ensemble.programs[prog_2_key]._best_probs = {
             "tag": {all_ones_bitstring: 1.0}
         }
 
         # For any other programs, mock as all-zeros
         for key in prog_keys[2:]:
-            n_qubits = node_partitioning_qaoa.programs[key].n_qubits
-            node_partitioning_qaoa.programs[key]._best_probs = {
-                "tag": {"0" * n_qubits: 1.0}
-            }
+            n_qubits = graph_ensemble.programs[key].n_qubits
+            graph_ensemble.programs[key]._best_probs = {"tag": {"0" * n_qubits: 1.0}}
 
         # Ensure all programs appear to have been run
-        for program in node_partitioning_qaoa.programs.values():
+        for program in graph_ensemble.programs.values():
             program._losses_history = [{"dummy_loss": 0.0}]
 
         # The expected global solution should contain only the original nodes from the second program
-        expected_nodes = set(
-            node_partitioning_qaoa.reverse_index_maps[prog_2_key].values()
-        )
+        # The problem object stores the reverse_index_maps
+        problem = graph_ensemble._problem
+        expected_nodes = set(problem._reverse_index_maps[prog_2_key].values())
 
         # Aggregate the results
-        solution = node_partitioning_qaoa.aggregate_results()
+        solution, energy = graph_ensemble.aggregate_results()
 
         # Verify that the aggregated solution matches the expected nodes
         assert set(solution) == expected_nodes
+        assert isinstance(energy, float)
 
-    def test_aggregate_results_raises_if_not_run(self, node_partitioning_qaoa):
+    def test_aggregate_results_raises_if_not_run(self, graph_ensemble):
         """
         Tests that a RuntimeError is raised if aggregate_results is called before
         the programs have been run.
         """
-        node_partitioning_qaoa.create_programs()
+        graph_ensemble.create_programs()
         # Do not run the programs
         with pytest.raises(RuntimeError, match="Some/All programs have empty losses"):
-            node_partitioning_qaoa.aggregate_results()
+            graph_ensemble.aggregate_results()
 
-    def test_get_top_solutions_numerical_correctness(self, node_partitioning_qaoa):
+    def test_get_top_solutions_numerical_correctness(self, graph_ensemble):
         """Verify that get_top_solutions returns correctly ranked, distinct solutions.
 
         Uses the standard 15-node fixture. Each partition is given two candidates
@@ -715,213 +622,115 @@ class TestGraphPartitioning:
         The beam search should produce distinct global solutions sorted by
         MaxCut energy (lower is better).
         """
-        node_partitioning_qaoa.create_programs()
-        prog_keys = list(node_partitioning_qaoa.programs.keys())
-        n_nodes = node_partitioning_qaoa.main_graph.number_of_nodes()
+        graph_ensemble.create_programs()
+        prog_keys = list(graph_ensemble.programs.keys())
+        n_nodes = _GRAPH.number_of_nodes()
 
         # Mock two candidates per partition
         for key in prog_keys:
-            n_qubits = node_partitioning_qaoa.programs[key].n_qubits
-            node_partitioning_qaoa.programs[key]._best_probs = {
+            n_qubits = graph_ensemble.programs[key].n_qubits
+            graph_ensemble.programs[key]._best_probs = {
                 "tag": {"0" * n_qubits: 0.3, "1" * n_qubits: 0.7}
             }
-            node_partitioning_qaoa.programs[key]._losses_history = [{"dummy_loss": 0.0}]
+            graph_ensemble.programs[key]._losses_history = [{"dummy_loss": 0.0}]
 
         n_partitions = len(prog_keys)
         # 2 candidates^n_partitions combinations
         n_expected = min(2**n_partitions, 2**n_partitions)
 
-        results = node_partitioning_qaoa.get_top_solutions(
+        results = graph_ensemble.get_top_solutions(
             n=n_expected, beam_width=n_expected, n_partition_candidates=n_expected
         )
 
         assert len(results) == n_expected
-        assert all(isinstance(r, list) for r in results)
+        assert all(isinstance(r, tuple) and len(r) == 2 for r in results)
 
         # All returned nodes must be valid graph nodes
-        graph_nodes = set(node_partitioning_qaoa.main_graph.nodes())
-        for r in results:
-            assert set(r).issubset(graph_nodes)
+        graph_nodes = set(_GRAPH.nodes())
+        for nodes, energy in results:
+            assert isinstance(nodes, list)
+            assert isinstance(energy, float)
+            assert set(nodes).issubset(graph_nodes)
 
         # Results should be sorted by energy (lower = more cut edges = better)
-        energies = [
-            node_partitioning_qaoa._evaluate_global_solution(
-                [1 if i in r else 0 for i in range(n_nodes)]
-            )
-            for r in results
-        ]
+        energies = [energy for _nodes, energy in results]
         assert energies == sorted(energies)
 
         # Solutions should be distinct
-        solution_tuples = [tuple(sorted(r)) for r in results]
+        solution_tuples = [tuple(sorted(nodes)) for nodes, _energy in results]
         assert len(set(solution_tuples)) == len(results)
 
-    def test_get_top_solutions_matches_aggregate_results(self, node_partitioning_qaoa):
+    def test_get_top_solutions_matches_aggregate_results(self, graph_ensemble):
         """The best solution from get_top_solutions matches aggregate_results."""
-        node_partitioning_qaoa.create_programs()
+        graph_ensemble.create_programs()
 
-        prog_keys = list(node_partitioning_qaoa.programs.keys())
+        prog_keys = list(graph_ensemble.programs.keys())
         prog_1_key, prog_2_key = prog_keys[0], prog_keys[1]
 
-        n_qubits_1 = node_partitioning_qaoa.programs[prog_1_key].n_qubits
-        n_qubits_2 = node_partitioning_qaoa.programs[prog_2_key].n_qubits
+        n_qubits_1 = graph_ensemble.programs[prog_1_key].n_qubits
+        n_qubits_2 = graph_ensemble.programs[prog_2_key].n_qubits
 
         # Program 1: all-zeros (no nodes selected), Program 2: all-ones (all nodes selected)
-        node_partitioning_qaoa.programs[prog_1_key]._best_probs = {
+        graph_ensemble.programs[prog_1_key]._best_probs = {
             "tag": {"0" * n_qubits_1: 1.0}
         }
-        node_partitioning_qaoa.programs[prog_2_key]._best_probs = {
+        graph_ensemble.programs[prog_2_key]._best_probs = {
             "tag": {"1" * n_qubits_2: 1.0}
         }
         for key in prog_keys[2:]:
-            n_qubits = node_partitioning_qaoa.programs[key].n_qubits
-            node_partitioning_qaoa.programs[key]._best_probs = {
-                "tag": {"0" * n_qubits: 1.0}
-            }
-        for program in node_partitioning_qaoa.programs.values():
+            n_qubits = graph_ensemble.programs[key].n_qubits
+            graph_ensemble.programs[key]._best_probs = {"tag": {"0" * n_qubits: 1.0}}
+        for program in graph_ensemble.programs.values():
             program._losses_history = [{"dummy_loss": 0.0}]
 
-        expected_nodes = set(
-            node_partitioning_qaoa.reverse_index_maps[prog_2_key].values()
-        )
+        problem = graph_ensemble._problem
+        expected_nodes = set(problem._reverse_index_maps[prog_2_key].values())
 
-        results = node_partitioning_qaoa.get_top_solutions(n=1, beam_width=1)
+        results = graph_ensemble.get_top_solutions(n=1, beam_width=1)
         assert len(results) == 1
-        assert set(results[0]) == expected_nodes
+        solution, energy = results[0]
+        assert set(solution) == expected_nodes
+        assert isinstance(energy, float)
 
-    def test_get_top_solutions_does_not_mutate_solution(self, node_partitioning_qaoa):
-        """get_top_solutions is side-effect-free on self.solution."""
-        node_partitioning_qaoa.create_programs()
-
-        for program in node_partitioning_qaoa.programs.values():
-            n_qubits = program.n_qubits
-            program._best_probs = {"tag": {"0" * n_qubits: 1.0}}
-            program._losses_history = [{"dummy_loss": 0.0}]
-
-        node_partitioning_qaoa.solution = None
-        node_partitioning_qaoa.get_top_solutions(n=2, beam_width=2)
-        assert node_partitioning_qaoa.solution is None
-
-    def test_get_top_solutions_raises_if_not_run(self, node_partitioning_qaoa):
-        node_partitioning_qaoa.create_programs()
+    def test_get_top_solutions_raises_if_not_run(self, graph_ensemble):
+        graph_ensemble.create_programs()
         with pytest.raises(RuntimeError, match="Some/All programs have empty losses"):
-            node_partitioning_qaoa.get_top_solutions()
+            graph_ensemble.get_top_solutions()
 
-    def test_get_top_solutions_raises_on_invalid_n(self, node_partitioning_qaoa):
+    def test_get_top_solutions_raises_on_invalid_n(self, graph_ensemble):
         with pytest.raises(ValueError, match="n must be >= 1"):
-            node_partitioning_qaoa.get_top_solutions(n=0)
-
-    def test_draw_partitions_raises_if_not_created(self, node_partitioning_qaoa):
-        """
-        Tests that a RuntimeError is raised if draw_partitions is called before
-        create_programs.
-        """
-        with pytest.raises(RuntimeError, match="There are no partitions to draw"):
-            node_partitioning_qaoa.draw_partitions()
-
-    def test_draw_solution_calls_aggregate(self, mocker, node_partitioning_qaoa):
-        """
-        Tests that draw_solution calls aggregate_results if no solution exists.
-        """
-        mocker.patch.object(plt, "show")
-        mock_aggregate = mocker.patch.object(
-            node_partitioning_qaoa, "aggregate_results", return_value=[]
-        )
-        # Ensure solution is None
-        node_partitioning_qaoa.solution = None
-
-        node_partitioning_qaoa.draw_solution()
-        mock_aggregate.assert_called_once()
-
-    def test_draw_partitions_logic(self, mocker, problem_args):
-        # 1. Setup a predictable scenario
-        graph = nx.path_graph(4)  # Nodes 0, 1, 2, 3
-        args = problem_args.copy()
-        args["problem"] = MaxCutProblem(graph)
-        qaoa_instance = GraphPartitioning(**args)
-
-        # Mock the partitioning to return two specific subgraphs
-        partition1 = graph.subgraph([0, 1])
-        partition2 = graph.subgraph([2, 3])
-        mocker.patch(
-            f"{_node_partition_graph.__module__}.{_node_partition_graph.__name__}",
-            return_value=[partition1, partition2],
-        )
-
-        qaoa_instance.create_programs()
-
-        # 2. Mock the drawing function to capture its arguments
-        mock_draw = mocker.patch("networkx.draw")
-        mocker.patch.object(plt, "show")  # Also mock show to prevent UI popup
-
-        # 3. Call the function to be tested
-        qaoa_instance.draw_partitions()
-
-        # 4. Assert the logic
-        mock_draw.assert_called_once()
-        # Get the keyword arguments passed to the draw call
-        _, kwargs = mock_draw.call_args
-        node_colors = kwargs.get("node_color")
-
-        # The node order in the main graph is [0, 1, 2, 3]
-        # Nodes 0 and 1 belong to partition 'A'
-        # Nodes 2 and 3 belong to partition 'B'
-
-        # Color for partition 'A'
-        np.testing.assert_array_equal(node_colors[0], node_colors[1])
-        # Color for partition 'B'
-        np.testing.assert_array_equal(node_colors[2], node_colors[3])
-        # Different colors for partitions 'A' and 'B'
-        np.testing.assert_raises(
-            AssertionError,
-            np.testing.assert_array_equal,
-            node_colors[0],
-            node_colors[2],
-        )
-
-    def test_draw_solution_runs_without_error(self, mocker, node_partitioning_qaoa):
-        mock_show = mocker.patch.object(plt, "show")
-
-        # Directly set the solution attribute to test the drawing logic
-        node_partitioning_qaoa.solution = [1, 2, 3]
-
-        # Call the method and assert it doesn't raise an error
-        try:
-            node_partitioning_qaoa.draw_solution()
-        except Exception as e:
-            pytest.fail(f"draw_solution() raised an exception: {e}")
-
-        # Verify that the plot was commanded to be shown
-        mock_show.assert_called_once()
+            graph_ensemble.get_top_solutions(n=0)
 
 
 class TestExtendSolutionGraph:
-    """Tests for GraphPartitioning._extend_solution."""
+    """Tests for problem.extend_solution on graph problems."""
 
     def test_sets_selected_nodes_and_zeroes_others(self, dummy_simulator):
         """Candidate's decoded nodes are set to 1; other partition nodes reset to 0."""
         graph = nx.path_graph(6)  # nodes 0-5
-        qaoa = GraphPartitioning(
-            problem=MaxCutProblem(graph),
-            n_layers=1,
-            partitioning_config=PartitioningConfig(
+        problem = MaxCutProblem(
+            graph,
+            config=GraphPartitioningConfig(
                 minimum_n_clusters=2, partitioning_algorithm="spectral"
             ),
+        )
+        ensemble = PartitioningProgramEnsemble(
+            problem=problem,
+            n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             backend=dummy_simulator,
         )
-        qaoa.create_programs()
+        ensemble.create_programs()
 
         # Pick the first partition
-        prog_id = list(qaoa.reverse_index_maps.keys())[0]
-        reverse_map = qaoa.reverse_index_maps[prog_id]
+        prog_id = list(problem._reverse_index_maps.keys())[0]
+        reverse_map = problem._reverse_index_maps[prog_id]
 
         # Create a candidate that selects only the first local node
         first_local_node = list(reverse_map.keys())[0]
-        candidate = SolutionEntry(bitstring="", prob=1.0, decoded=[first_local_node])
 
         initial = [0] * graph.number_of_nodes()
-        result = qaoa._extend_solution(initial, prog_id, candidate)
+        result = problem.extend_solution(initial, prog_id, [first_local_node])
 
         # The global index for the selected node should be 1
         assert result[reverse_map[first_local_node]] == 1
@@ -933,50 +742,211 @@ class TestExtendSolutionGraph:
     def test_resets_partition_positions_before_applying(self, dummy_simulator):
         """Pre-existing 1s in the partition's positions are cleared first."""
         graph = nx.path_graph(6)
-        qaoa = GraphPartitioning(
-            problem=MaxCutProblem(graph),
-            n_layers=1,
-            partitioning_config=PartitioningConfig(
+        problem = MaxCutProblem(
+            graph,
+            config=GraphPartitioningConfig(
                 minimum_n_clusters=2, partitioning_algorithm="spectral"
             ),
+        )
+        ensemble = PartitioningProgramEnsemble(
+            problem=problem,
+            n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             backend=dummy_simulator,
         )
-        qaoa.create_programs()
+        ensemble.create_programs()
 
-        prog_id = list(qaoa.reverse_index_maps.keys())[0]
-        reverse_map = qaoa.reverse_index_maps[prog_id]
+        prog_id = list(problem._reverse_index_maps.keys())[0]
+        reverse_map = problem._reverse_index_maps[prog_id]
 
-        # Start with all 1s, apply empty decoded → all partition positions become 0
-        candidate_empty = SolutionEntry(bitstring="", prob=1.0, decoded=[])
-
-        result = qaoa._extend_solution(
-            [1] * graph.number_of_nodes(), prog_id, candidate_empty
-        )
+        # Start with all 1s, apply empty decoded -> all partition positions become 0
+        result = problem.extend_solution([1] * graph.number_of_nodes(), prog_id, [])
 
         # All positions for this partition should be 0
         for global_idx in reverse_map.values():
             assert result[global_idx] == 0
 
     def test_does_not_mutate_input(self, dummy_simulator):
-        """_extend_solution returns a new list, not a mutation of the input."""
+        """extend_solution returns a new list, not a mutation of the input."""
         graph = nx.path_graph(4)
-        qaoa = GraphPartitioning(
-            problem=MaxCutProblem(graph),
-            n_layers=1,
-            partitioning_config=PartitioningConfig(
+        problem = MaxCutProblem(
+            graph,
+            config=GraphPartitioningConfig(
                 minimum_n_clusters=2, partitioning_algorithm="spectral"
             ),
+        )
+        ensemble = PartitioningProgramEnsemble(
+            problem=problem,
+            n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             backend=dummy_simulator,
         )
-        qaoa.create_programs()
+        ensemble.create_programs()
 
-        prog_id = list(qaoa.reverse_index_maps.keys())[0]
+        prog_id = list(problem._reverse_index_maps.keys())[0]
         original = [0] * graph.number_of_nodes()
 
-        candidate = SolutionEntry(bitstring="", prob=1.0, decoded=[])
-        result = qaoa._extend_solution(original, prog_id, candidate)
+        result = problem.extend_solution(original, prog_id, [])
 
         assert result is not original
         assert original == [0] * graph.number_of_nodes()
+
+
+class TestDecomposeGraph:
+    def test_decompose_returns_correct_number_of_subproblems(self):
+        graph = nx.cycle_graph(10)
+        problem = MaxCutProblem(
+            graph,
+            config=GraphPartitioningConfig(
+                minimum_n_clusters=2, partitioning_algorithm="kernighan_lin"
+            ),
+        )
+
+        sub_problems = problem.decompose()
+
+        assert len(sub_problems) >= 2
+        for prog_id, sub_problem in sub_problems.items():
+            assert isinstance(sub_problem, MaxCutProblem)
+
+    def test_decompose_populates_reverse_index_maps(self):
+        graph = nx.cycle_graph(10)
+        problem = MaxCutProblem(
+            graph,
+            config=GraphPartitioningConfig(
+                minimum_n_clusters=2, partitioning_algorithm="kernighan_lin"
+            ),
+        )
+
+        sub_problems = problem.decompose()
+
+        assert len(problem._reverse_index_maps) == len(sub_problems)
+        all_original_nodes = set()
+        for prog_id in sub_problems:
+            assert prog_id in problem._reverse_index_maps
+            all_original_nodes |= set(problem._reverse_index_maps[prog_id].values())
+        assert all_original_nodes == set(graph.nodes())
+
+    def test_decompose_raises_without_partitioning_config(self):
+        graph = nx.complete_graph(6)
+        problem = MaxCutProblem(graph)
+
+        with pytest.raises(ValueError, match="Cannot decompose"):
+            problem.decompose()
+
+    def test_decompose_sub_problems_are_same_type(self):
+        graph = nx.cycle_graph(10)
+        problem = MaxCutProblem(
+            graph,
+            config=GraphPartitioningConfig(
+                minimum_n_clusters=2, partitioning_algorithm="kernighan_lin"
+            ),
+        )
+
+        sub_problems = problem.decompose()
+
+        for sub_problem in sub_problems.values():
+            assert type(sub_problem) == MaxCutProblem
+
+
+class TestPartitioningWarnings:
+    def test_warns_for_max_clique(self):
+        graph = nx.cycle_graph(6)
+        problem = MaxCliqueProblem(
+            graph,
+            config=GraphPartitioningConfig(minimum_n_clusters=2),
+        )
+
+        with pytest.warns(UserWarning, match="Heuristic-risk"):
+            problem.decompose()
+
+    def test_warns_for_max_independent_set(self):
+        graph = nx.cycle_graph(6)
+        problem = MaxIndependentSetProblem(
+            graph,
+            config=GraphPartitioningConfig(minimum_n_clusters=2),
+        )
+
+        with pytest.warns(UserWarning, match="Heuristic-risk"):
+            problem.decompose()
+
+    def test_warns_for_min_vertex_cover(self):
+        graph = nx.cycle_graph(6)
+        problem = MinVertexCoverProblem(
+            graph,
+            config=GraphPartitioningConfig(minimum_n_clusters=2),
+        )
+
+        with pytest.warns(UserWarning, match="Heuristic-risk"):
+            problem.decompose()
+
+    def test_no_warning_for_maxcut(self):
+        graph = nx.cycle_graph(6)
+        problem = MaxCutProblem(
+            graph,
+            config=GraphPartitioningConfig(minimum_n_clusters=2),
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            problem.decompose()
+
+
+class TestInitialSolutionSizeGraph:
+    def test_returns_number_of_nodes(self):
+        graph = nx.cycle_graph(7)
+        problem = MaxCutProblem(graph)
+
+        assert problem.initial_solution_size() == graph.number_of_nodes()
+
+
+class TestFinalizeSolutionGraph:
+    def test_returns_node_indices_and_energy(self):
+        graph = nx.path_graph(4)
+        problem = MaxCutProblem(graph)
+
+        nodes, energy = problem.finalize_solution(-5.0, [1, 0, 1, 0])
+
+        assert nodes == [0, 2]
+        assert energy == -5.0
+
+    def test_all_zeros_returns_empty(self):
+        graph = nx.path_graph(3)
+        problem = MaxCutProblem(graph)
+
+        nodes, energy = problem.finalize_solution(0.0, [0, 0, 0])
+
+        assert nodes == []
+        assert energy == 0.0
+
+
+class TestFormatTopSolutionsGraph:
+    def test_formats_multiple_results(self):
+        graph = nx.path_graph(4)
+        problem = MaxCutProblem(graph)
+
+        results = [(-5.0, [1, 0, 1, 0]), (-3.0, [0, 1, 0, 1])]
+        formatted = problem.format_top_solutions(results)
+
+        assert formatted == [([0, 2], -5.0), ([1, 3], -3.0)]
+
+
+class TestDrawPartitions:
+    def test_draw_partitions_calls_plt_show(self, mocker):
+        mock_show = mocker.patch("matplotlib.pyplot.show")
+        mocker.patch("networkx.draw")
+
+        graph = nx.cycle_graph(6)
+        reverse_index_maps = {
+            ("A", 3): {0: 0, 1: 1, 2: 2},
+            ("B", 3): {0: 3, 1: 4, 2: 5},
+        }
+
+        draw_partitions(graph, reverse_index_maps)
+
+        mock_show.assert_called_once()
+
+    def test_draw_partitions_raises_if_no_maps(self):
+        graph = nx.cycle_graph(6)
+
+        with pytest.raises(RuntimeError, match="no partitions to draw"):
+            draw_partitions(graph, {})

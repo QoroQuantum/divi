@@ -7,11 +7,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from typing import Any
 
-import matplotlib.pyplot as plt
-import networkx as nx
 import pennylane as qml
 
 from divi.qprog.algorithms._initial_state import InitialState, SuperpositionState
@@ -87,26 +85,64 @@ class QAOAProblem(ABC):
         """
         return None
 
+    # ------------------------------------------------------------------
+    # Decomposition hooks (override to enable partitioned workflows)
+    # ------------------------------------------------------------------
 
-def draw_graph_solution_nodes(main_graph: nx.Graph, partition_nodes):
-    """Visualize a graph with solution nodes highlighted.
+    def decompose(self) -> dict[Hashable, QAOAProblem]:
+        """Decompose this problem into sub-problems for partitioned solving.
 
-    Draws the graph with nodes colored to distinguish solution nodes (red) from
-    other nodes (light blue).
+        Returns a dict mapping program IDs (any hashable) to sub-Problems.
+        The decomposition strategy should be configured at construction time.
 
-    Args:
-        main_graph (nx.Graph): NetworkX graph to visualize.
-        partition_nodes: Collection of node indices that are part of the solution.
-    """
-    node_colors = [
-        "red" if node in partition_nodes else "lightblue" for node in main_graph.nodes()
-    ]
+        Raises:
+            NotImplementedError: If the subclass does not support decomposition.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support decomposition. "
+            "Override decompose() to enable partitioning workflows."
+        )
 
-    plt.figure(figsize=(10, 8))
-    pos = nx.spring_layout(main_graph)
-    nx.draw_networkx_nodes(main_graph, pos, node_color=node_colors, node_size=500)
-    nx.draw_networkx_edges(main_graph, pos)
-    nx.draw_networkx_labels(main_graph, pos, font_size=10, font_weight="bold")
-    plt.axis("off")
-    plt.tight_layout()
-    plt.show()
+    def initial_solution_size(self) -> int:
+        """Size of the global solution vector (e.g. number of graph nodes)."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement initial_solution_size()."
+        )
+
+    def extend_solution(
+        self,
+        current_solution: list[int],
+        prog_id: Hashable,
+        candidate_decoded: list[int],
+    ) -> list[int]:
+        """Map a sub-solution's decoded bits into the global solution vector.
+
+        Must return a **new** list — do not mutate *current_solution*.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement extend_solution()."
+        )
+
+    def evaluate_global_solution(self, solution: list[int]) -> float:
+        """Score a complete global solution. Lower is better."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement evaluate_global_solution()."
+        )
+
+    def finalize_solution(self, score: float, solution: list[int]) -> tuple[Any, float]:
+        """Post-process the best beam search result.
+
+        Returns:
+            A ``(result, energy)`` tuple.  Default: ``(solution, score)``.
+        """
+        return solution, score
+
+    def format_top_solutions(
+        self, results: list[tuple[float, list[int]]]
+    ) -> list[tuple[Any, float]]:
+        """Format beam search output for get_top_solutions().
+
+        Returns:
+            A list of ``(result, energy)`` tuples.  Default: returns as-is.
+        """
+        return results

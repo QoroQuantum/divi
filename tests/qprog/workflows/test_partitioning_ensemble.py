@@ -17,36 +17,20 @@ from tests.qprog.qprog_contracts import verify_basic_program_ensemble_behaviour
 _DEFAULT_OPTIMIZER = ScipyOptimizer(method=ScipyMethod.NELDER_MEAD)
 
 
-class StubPartitioningEnsemble(PartitioningProgramEnsemble):
-    """Minimal concrete subclass for testing the template methods."""
-
-    def __init__(self, backend, solution_size=4):
-        super().__init__(backend=backend, optimizer=_DEFAULT_OPTIMIZER)
-        self._solution_size = solution_size
-        self.finalized_args = None
-
-    def create_programs(self):
-        super().create_programs()
-
-    def _initial_solution(self):
-        return [0] * self._solution_size
-
-    def _extend_solution(self, current_solution, prog_id, candidate):
-        extended = list(current_solution)
-        for i, val in enumerate(candidate.decoded):
-            if i < len(extended):
-                extended[i] = int(val)
-        return extended
-
-    def _evaluate_global_solution(self, solution):
-        return -sum(solution)
-
-    def _finalize_best(self, score, solution):
-        self.finalized_args = (score, solution)
-        return solution
-
-    def _format_top_results(self, results):
-        return [(list(sol), sc) for sc, sol in results]
+def _make_stub_problem(mocker, solution_size=4):
+    """Create a mock QAOAProblem that supports the decomposition protocol."""
+    problem = mocker.MagicMock()
+    problem.decompose.return_value = {}
+    problem.initial_solution_size.return_value = solution_size
+    problem.extend_solution.side_effect = lambda current, prog_id, decoded: [
+        int(decoded[i]) if i < len(decoded) else current[i] for i in range(len(current))
+    ]
+    problem.evaluate_global_solution.side_effect = lambda sol: -sum(sol)
+    problem.finalize_solution.side_effect = lambda score, sol: sol
+    problem.format_top_solutions.side_effect = lambda results: [
+        (list(sol), sc) for sc, sol in results
+    ]
+    return problem
 
 
 def _make_mock_program(mocker, best_probs, top_solutions):
@@ -60,90 +44,136 @@ def _make_mock_program(mocker, best_probs, top_solutions):
 
 
 class TestPartitioningProgramEnsemble:
-    def test_aggregate_results_calls_hooks(self, mocker, dummy_simulator):
-        stub = StubPartitioningEnsemble(dummy_simulator, solution_size=2)
-        stub.create_programs()
+    def test_aggregate_results_calls_problem_hooks(self, mocker, dummy_simulator):
+        problem = _make_stub_problem(mocker, solution_size=2)
+        ensemble = PartitioningProgramEnsemble(
+            problem=problem,
+            n_layers=1,
+            backend=dummy_simulator,
+            optimizer=_DEFAULT_OPTIMIZER,
+        )
+        ensemble.create_programs()
 
         candidate = SolutionEntry(bitstring="11", prob=0.8, decoded=[1, 1])
         prog = _make_mock_program(
             mocker, best_probs={"11": 0.8}, top_solutions=[candidate]
         )
-        stub._programs["A"] = prog
+        ensemble._programs["A"] = prog
 
-        result = stub.aggregate_results()
+        result = ensemble.aggregate_results()
 
         assert result == [1, 1]
-        assert stub.finalized_args is not None
-        score, solution = stub.finalized_args
-        assert solution == [1, 1]
-        assert score == -2.0
+        problem.evaluate_global_solution.assert_called()
+        problem.finalize_solution.assert_called_once()
 
-    def test_get_top_solutions_calls_hooks(self, mocker, dummy_simulator):
-        stub = StubPartitioningEnsemble(dummy_simulator, solution_size=2)
-        stub.create_programs()
+    def test_get_top_solutions_calls_problem_hooks(self, mocker, dummy_simulator):
+        problem = _make_stub_problem(mocker, solution_size=2)
+        ensemble = PartitioningProgramEnsemble(
+            problem=problem,
+            n_layers=1,
+            backend=dummy_simulator,
+            optimizer=_DEFAULT_OPTIMIZER,
+        )
+        ensemble.create_programs()
 
         candidate = SolutionEntry(bitstring="11", prob=0.8, decoded=[1, 1])
         prog = _make_mock_program(
             mocker, best_probs={"11": 0.8}, top_solutions=[candidate]
         )
-        stub._programs["A"] = prog
+        ensemble._programs["A"] = prog
 
-        results = stub.get_top_solutions(n=1)
+        results = ensemble.get_top_solutions(n=1)
 
         assert len(results) == 1
         assert results[0][0] == [1, 1]
         assert results[0][1] == -2.0
 
-    def test_aggregate_results_raises_if_no_programs(self, dummy_simulator):
-        stub = StubPartitioningEnsemble(dummy_simulator)
+    def test_aggregate_results_raises_if_no_programs(self, mocker, dummy_simulator):
+        problem = _make_stub_problem(mocker)
+        ensemble = PartitioningProgramEnsemble(
+            problem=problem,
+            n_layers=1,
+            backend=dummy_simulator,
+            optimizer=_DEFAULT_OPTIMIZER,
+        )
         with pytest.raises(RuntimeError, match="No programs to aggregate"):
-            stub.aggregate_results()
+            ensemble.aggregate_results()
 
     def test_aggregate_results_raises_if_not_run(self, mocker, dummy_simulator):
-        stub = StubPartitioningEnsemble(dummy_simulator)
-        stub.create_programs()
+        problem = _make_stub_problem(mocker)
+        ensemble = PartitioningProgramEnsemble(
+            problem=problem,
+            n_layers=1,
+            backend=dummy_simulator,
+            optimizer=_DEFAULT_OPTIMIZER,
+        )
+        ensemble.create_programs()
 
         prog = mocker.MagicMock(spec=VariationalQuantumAlgorithm)
         prog.losses_history = []
-        stub._programs["A"] = prog
+        ensemble._programs["A"] = prog
 
         with pytest.raises(RuntimeError, match="Some/All programs have empty losses"):
-            stub.aggregate_results()
+            ensemble.aggregate_results()
 
     def test_aggregate_raises_if_no_best_probs(self, mocker, dummy_simulator):
-        stub = StubPartitioningEnsemble(dummy_simulator)
-        stub.create_programs()
+        problem = _make_stub_problem(mocker)
+        ensemble = PartitioningProgramEnsemble(
+            problem=problem,
+            n_layers=1,
+            backend=dummy_simulator,
+            optimizer=_DEFAULT_OPTIMIZER,
+        )
+        ensemble.create_programs()
 
         prog = mocker.MagicMock(spec=VariationalQuantumAlgorithm)
         prog.losses_history = [1.0]
         prog.results = {"some": "result"}
         prog.best_probs = {}
-        stub._programs["A"] = prog
+        ensemble._programs["A"] = prog
 
         with pytest.raises(
             RuntimeError,
             match="Not all final probabilities computed yet",
         ):
-            stub.aggregate_results()
+            ensemble.aggregate_results()
 
-    def test_get_top_solutions_raises_on_invalid_n(self, dummy_simulator):
-        stub = StubPartitioningEnsemble(dummy_simulator)
-        stub.create_programs()
+    def test_get_top_solutions_raises_on_invalid_n(self, mocker, dummy_simulator):
+        problem = _make_stub_problem(mocker)
+        ensemble = PartitioningProgramEnsemble(
+            problem=problem,
+            n_layers=1,
+            backend=dummy_simulator,
+            optimizer=_DEFAULT_OPTIMIZER,
+        )
+        ensemble.create_programs()
 
         with pytest.raises(ValueError, match="n must be >= 1"):
-            stub.get_top_solutions(n=0)
+            ensemble.get_top_solutions(n=0)
 
     def test_get_top_solutions_raises_if_not_run(self, mocker, dummy_simulator):
-        stub = StubPartitioningEnsemble(dummy_simulator)
-        stub.create_programs()
+        problem = _make_stub_problem(mocker)
+        ensemble = PartitioningProgramEnsemble(
+            problem=problem,
+            n_layers=1,
+            backend=dummy_simulator,
+            optimizer=_DEFAULT_OPTIMIZER,
+        )
+        ensemble.create_programs()
 
         prog = mocker.MagicMock(spec=VariationalQuantumAlgorithm)
         prog.losses_history = []
-        stub._programs["A"] = prog
+        ensemble._programs["A"] = prog
 
         with pytest.raises(RuntimeError, match="Some/All programs have empty losses"):
-            stub.get_top_solutions(n=1)
+            ensemble.get_top_solutions(n=1)
 
     def test_verify_basic_behaviour(self, mocker, dummy_simulator):
-        stub = StubPartitioningEnsemble(dummy_simulator)
-        verify_basic_program_ensemble_behaviour(mocker, stub)
+        problem = _make_stub_problem(mocker)
+        ensemble = PartitioningProgramEnsemble(
+            problem=problem,
+            n_layers=1,
+            backend=dummy_simulator,
+            optimizer=_DEFAULT_OPTIMIZER,
+        )
+        verify_basic_program_ensemble_behaviour(mocker, ensemble)

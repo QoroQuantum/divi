@@ -7,8 +7,9 @@ from functools import partial
 import dimod
 import numpy as np
 
-from divi.qprog import QAOA, BinaryOptimizationProblem
+from divi.qprog import QAOA
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from divi.qprog.problems import BinaryOptimizationProblem
 from tutorials._backend import get_backend
 
 

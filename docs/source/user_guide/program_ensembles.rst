@@ -156,43 +156,46 @@ Graph Partitioning QAOA
 
 For large optimization problems that exceed quantum hardware limitations, Divi provides automatic graph partitioning:
 
-**Basic Graph Partitioning** 🗺️
+**Basic Graph Partitioning**
 
 .. code-block:: python
 
    import networkx as nx
-   from divi.qprog import GraphPartitioning, MaxCutProblem, PartitioningConfig
+   from divi.qprog.problems import MaxCutProblem, GraphPartitioningConfig
+   from divi.qprog.workflows import PartitioningProgramEnsemble
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 
    # Create a large graph (too big for single quantum device)
    large_graph = nx.erdos_renyi_graph(50, 0.3)  # 50 nodes
 
    # Configure partitioning strategy
-   config = PartitioningConfig(
+   config = GraphPartitioningConfig(
        max_n_nodes_per_cluster=10,      # Maximum nodes per quantum partition
        minimum_n_clusters=3,             # Minimum partitions (optional)
        partitioning_algorithm="metis"    # Algorithm: "spectral", "metis", or "kernighan_lin"
    )
 
+   # Create the problem with partitioning config
+   problem = MaxCutProblem(large_graph, config=config)
+
    # Create partitioned QAOA solver
-   qaoa_partition = GraphPartitioning(
-       problem=MaxCutProblem(large_graph),
+   ensemble = PartitioningProgramEnsemble(
+       problem=problem,
        n_layers=3,
-       partitioning_config=config,
        optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
        max_iterations=20,
        backend=MaestroSimulator()
    )
 
    # Execute workflow
-   qaoa_partition.create_programs()    # Partition graph and create sub-problems
-   qaoa_partition.run(blocking=True)   # Solve each partition in parallel
+   ensemble.create_programs()    # Partition graph and create sub-problems
+   ensemble.run(blocking=True)   # Solve each partition in parallel
 
    # Combine results from all partitions
-   final_solution, final_energy = qaoa_partition.aggregate_results()
+   final_solution, final_energy = ensemble.aggregate_results()
 
-   print(f"Final MaxCut value: {final_energy}")
-   print(f"Total circuits: {qaoa_partition.total_circuit_count}")
+   print(f"MaxCut value: {final_energy}")
+   print(f"Total circuits: {ensemble.total_circuit_count}")
 
 **Partitioning Strategies** 🎲
 
@@ -201,21 +204,21 @@ Different partitioning algorithms for different graph structures:
 .. code-block:: python
 
    # For regular graphs (grids, lattices)
-   config_regular = PartitioningConfig(
+   config_regular = GraphPartitioningConfig(
        max_n_nodes_per_cluster=16,
        partitioning_algorithm="spectral",  # Good for regular structures
        minimum_n_clusters=None
    )
 
    # For irregular graphs (social networks, molecules)
-   config_irregular = PartitioningConfig(
+   config_irregular = GraphPartitioningConfig(
        max_n_nodes_per_cluster=12,
        partitioning_algorithm="metis",     # Excellent for irregular graphs
        minimum_n_clusters=4
    )
 
    # For very large graphs with community structure
-   config_communities = PartitioningConfig(
+   config_communities = GraphPartitioningConfig(
        max_n_nodes_per_cluster=20,
        partitioning_algorithm="kernighan_lin",  # Preserves community structure
        minimum_n_clusters=None
@@ -226,13 +229,14 @@ QUBO Partitioning (QAOA or PCE)
 
 For large QUBO problems, Divi integrates with D-Wave's hybrid solvers:
 
-**Large QUBO Problems** 📊
+**Large QUBO Problems**
 
 .. code-block:: python
 
    import dimod
    import hybrid
-   from divi.qprog import QUBOPartitioning
+   from divi.qprog.problems import BinaryOptimizationProblem
+   from divi.qprog.workflows import PartitioningProgramEnsemble
 
    # Create large QUBO problem
    large_bqm = dimod.generators.gnp_random_bqm(
@@ -241,12 +245,16 @@ For large QUBO problems, Divi integrates with D-Wave's hybrid solvers:
        vartype="BINARY"
    )
 
-   # Set up hybrid decomposition (QAOA engine, default)
-   qubo_partition = QUBOPartitioning(
-       qubo=large_bqm,
-       decomposer=hybrid.EnergyImpactDecomposer(size=15),  # Decompose into size-15 chunks
-       composer=hybrid.SplatComposer(),                    # Recombine solutions
-        engine="qaoa",
+   # Create the problem with a decomposer
+   problem = BinaryOptimizationProblem(
+       large_bqm,
+       decomposer=hybrid.EnergyImpactDecomposer(size=15),
+       composer=hybrid.SplatComposer(),
+   )
+
+   # Set up the ensemble
+   ensemble = PartitioningProgramEnsemble(
+       problem=problem,
        n_layers=3,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        max_iterations=15,
@@ -254,26 +262,24 @@ For large QUBO problems, Divi integrates with D-Wave's hybrid solvers:
    )
 
    # Execute partitioned computation
-   qubo_partition.create_programs()
-   qubo_partition.run()
+   ensemble.create_programs()
+   ensemble.run()
 
    # Get final solution
-   solution, energy = qubo_partition.aggregate_results()
+   solution, energy = ensemble.aggregate_results()
    print(f"Final energy: {energy:.6f}")
 
-To use ``PCE`` as the per-partition engine, set ``engine="pce"`` and pass ``PCE``-specific
-arguments (for example ``ansatz``, ``encoding_type``, ``alpha``):
+To use ``PCE`` as the per-partition engine, set ``quantum_routine="pce"`` and pass
+``PCE``-specific arguments (for example ``ansatz``, ``encoding_type``, ``alpha``):
 
 .. code-block:: python
 
    import pennylane as qml
    from divi.qprog.algorithms import GenericLayerAnsatz
 
-   qubo_partition = QUBOPartitioning(
-       qubo=large_bqm,
-       decomposer=hybrid.EnergyImpactDecomposer(size=15),
-       composer=hybrid.SplatComposer(),
-       engine="pce",
+   ensemble = PartitioningProgramEnsemble(
+       problem=problem,
+       quantum_routine="pce",
        ansatz=GenericLayerAnsatz([qml.RY, qml.RZ]),
        n_layers=2,
        encoding_type="dense",
@@ -298,17 +304,17 @@ The ``aggregate_results`` method accepts two parameters:
 .. code-block:: python
 
    # Greedy (default): single best candidate per partition
-   solution = qaoa_partition.aggregate_results(beam_width=1)
+   solution, energy = qaoa_partition.aggregate_results(beam_width=1)
 
    # Beam search: keep top 5 partial solutions, consider 5 candidates per partition
-   solution = qaoa_partition.aggregate_results(beam_width=5)
+   solution, energy = qaoa_partition.aggregate_results(beam_width=5)
 
    # Wider candidate pool with narrow beam: consider 10 candidates per partition
    # but only keep the best 3 partial solutions after each step
-   solution = qaoa_partition.aggregate_results(beam_width=3, n_partition_candidates=10)
+   solution, energy = qaoa_partition.aggregate_results(beam_width=3, n_partition_candidates=10)
 
    # Exhaustive: try all candidate combinations (expensive for many partitions)
-   solution = qaoa_partition.aggregate_results(beam_width=None)
+   solution, energy = qaoa_partition.aggregate_results(beam_width=None)
 
 **When to use beam search** 💡
 
@@ -323,7 +329,7 @@ The ``aggregate_results`` method accepts two parameters:
 Top-N Solutions
 ^^^^^^^^^^^^^^^
 
-Both :class:`~divi.qprog.workflows.GraphPartitioning` and :class:`~divi.qprog.workflows.QUBOPartitioning` expose a ``get_top_solutions`` method that returns multiple ranked global solutions using beam search.
+:class:`~divi.qprog.workflows.PartitioningProgramEnsemble` exposes a ``get_top_solutions`` method that returns multiple ranked global solutions using beam search.
 
 .. code-block:: python
 
