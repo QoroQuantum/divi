@@ -12,6 +12,7 @@ from divi.qprog import (
     HardwareEfficientAnsatz,
     HartreeFockAnsatz,
     QAOAAnsatz,
+    QCCAnsatz,
     UCCSDAnsatz,
 )
 
@@ -272,3 +273,89 @@ class TestHartreeFockAnsatz:
         single_excitations = [op for op in ops if isinstance(op, qml.SingleExcitation)]
         assert len(double_excitations) == 2  # One per layer
         assert len(single_excitations) == 4  # Two per layer
+
+
+# --- Test QCCAnsatz ---
+class TestQCCAnsatz:
+    """Tests for the QCCAnsatz class."""
+
+    def test_n_params_per_layer(self):
+        """Tests parameter count for QCC: n_qubits RY + 3*(n_qubits-1) entanglers."""
+        # 4 qubits: 4 RY + 3*3 = 13
+        assert QCCAnsatz.n_params_per_layer(n_qubits=4) == 13
+        # 2 qubits: 2 RY + 3*1 = 5
+        assert QCCAnsatz.n_params_per_layer(n_qubits=2) == 5
+
+    def test_build(self):
+        """Tests that the build method constructs a valid QCC circuit."""
+        n_electrons, n_qubits, n_layers = 2, 4, 1
+        mock_hf = np.array([1, 1, 0, 0])
+
+        ansatz = QCCAnsatz()
+        n_params = n_layers * ansatz.n_params_per_layer(n_qubits)
+        params = sympy.symarray("p", n_params)
+
+        ops = get_circuit_operations(
+            ansatz, params, n_qubits, n_layers, n_electrons=n_electrons
+        )
+
+        # Expected: 1 BasisState + 4 RY + 9 PauliRot = 14
+        assert len(ops) == 14
+
+        # First operation should be BasisState with HF state
+        assert isinstance(ops[0], qml.BasisState)
+        assert np.all(ops[0].data[0] == mock_hf)
+
+        # Next 4 should be RY on wires 0..3
+        ry_ops = ops[1:5]
+        assert all(isinstance(op, qml.RY) for op in ry_ops)
+        assert [op.wires.tolist() for op in ry_ops] == [[0], [1], [2], [3]]
+
+        # Remaining 9 should be PauliRot (XX, YY, ZZ for each adjacent pair)
+        pauli_ops = ops[5:]
+        assert len(pauli_ops) == 9
+        assert all(isinstance(op, qml.PauliRot) for op in pauli_ops)
+
+        # Check Pauli strings cycle through XX, YY, ZZ for pairs (0,1), (1,2), (2,3)
+        expected = [
+            ("XX", [0, 1]),
+            ("YY", [0, 1]),
+            ("ZZ", [0, 1]),
+            ("XX", [1, 2]),
+            ("YY", [1, 2]),
+            ("ZZ", [1, 2]),
+            ("XX", [2, 3]),
+            ("YY", [2, 3]),
+            ("ZZ", [2, 3]),
+        ]
+        for op, (pauli, wires) in zip(pauli_ops, expected):
+            assert op.hyperparameters["pauli_word"] == pauli
+            assert op.wires.tolist() == wires
+
+    def test_build_multi_layer(self):
+        """Tests that multi-layer QCC has one BasisState and repeated RY+PauliRot blocks."""
+        n_electrons, n_qubits, n_layers = 2, 4, 2
+
+        ansatz = QCCAnsatz()
+        n_params = n_layers * ansatz.n_params_per_layer(n_qubits)
+        params = sympy.symarray("p", n_params)
+
+        ops = get_circuit_operations(
+            ansatz, params, n_qubits, n_layers, n_electrons=n_electrons
+        )
+
+        # Expected: 1 BasisState + 2 * (4 RY + 9 PauliRot) = 1 + 2*13 = 27
+        assert len(ops) == 27
+
+        # Only one BasisState at the start
+        basis_ops = [op for op in ops if isinstance(op, qml.BasisState)]
+        assert len(basis_ops) == 1
+        assert ops[0] is basis_ops[0]
+
+        # 8 RY total (4 per layer)
+        ry_ops = [op for op in ops if isinstance(op, qml.RY)]
+        assert len(ry_ops) == 8
+
+        # 18 PauliRot total (9 per layer)
+        pauli_ops = [op for op in ops if isinstance(op, qml.PauliRot)]
+        assert len(pauli_ops) == 18

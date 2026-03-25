@@ -18,6 +18,7 @@ from .algorithms import (
     QAOAAnsatz,
     HardwareEfficientAnsatz,
     HartreeFockAnsatz,
+    QCCAnsatz,
     GenericLayerAnsatz,
     InitialState,
     ZerosState,

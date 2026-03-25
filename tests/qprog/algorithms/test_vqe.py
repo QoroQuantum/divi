@@ -14,6 +14,7 @@ from divi.qprog.algorithms import (
     HardwareEfficientAnsatz,
     HartreeFockAnsatz,
     QAOAAnsatz,
+    QCCAnsatz,
     UCCSDAnsatz,
 )
 from divi.qprog.checkpointing import CheckpointConfig
@@ -48,10 +49,11 @@ ANSAETZE_TO_TEST = {
     "argvalues": [
         HartreeFockAnsatz(),
         UCCSDAnsatz(),
+        QCCAnsatz(),
         GenericLayerAnsatz([qml.RY, qml.RZ]),
         QAOAAnsatz(),
     ],
-    "ids": ["HartreeFock", "UCCSD", "Generic-RYRZ", "QAOA"],
+    "ids": ["HartreeFock", "UCCSD", "QCC", "Generic-RYRZ", "QAOA"],
 }
 
 
