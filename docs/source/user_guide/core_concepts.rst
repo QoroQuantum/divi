@@ -154,7 +154,6 @@ The most commonly accessed properties for result analysis:
 - ``best_params`` - The parameters that achieved ``best_loss`` (may differ from final parameters)
 - ``final_params`` - The parameters from the last optimization iteration
 - ``min_losses_per_iteration`` - Convenience property returning minimum loss per iteration
-- ``curr_params`` - Current parameters (can be set to customize initial values)
 
 .. note::
    **Understanding ``best_params`` vs ``final_params``**: During optimization, Divi tracks the best
@@ -192,8 +191,12 @@ The most commonly accessed properties for result analysis:
       # Extract best parameters for reuse
       best_params = vqe.best_params  # Shape: (n_params,)
 
-      # Reuse parameters in a new instance with the same optimizer configuration
-      vqe2 = VQE(molecule=molecule, initial_params=best_params.reshape(1, -1))
+      # Reuse parameters in a new run with the same optimizer configuration
+      vqe2 = VQE(molecule=molecule)
+      vqe2.run(
+          initial_params=best_params.reshape(1, -1),
+          perform_final_computation=False,
+      )
 
       # If using a different optimizer, adapt to expected shape
       # For example, MonteCarloOptimizer expects (n_param_sets, n_params)
@@ -202,7 +205,10 @@ The most commonly accessed properties for result analysis:
       expected_shape = vqe3.get_expected_param_shape()  # (10, n_params)
       # Replicate best_params to match optimizer's n_param_sets
       adapted_params = np.tile(best_params, (expected_shape[0], 1))
-      vqe3.curr_params = adapted_params
+      vqe3.run(
+          initial_params=adapted_params,
+          perform_final_computation=False,
+      )
 
       # When you need the solution probabilities, run with final computation:
       vqe.run()  # This will perform final computation with best_params
@@ -354,7 +360,7 @@ Divi's backend system provides a unified interface for different execution envir
 Parameter Management
 --------------------
 
-Divi handles parameter optimization automatically, but you can also set custom initial parameters. This applies to all variational algorithms (:class:`VQE`, :class:`QAOA`, and custom implementations).
+Divi handles parameter optimization automatically, but you can also provide custom initial parameter sets when calling ``run()``. This applies to all variational algorithms (:class:`VQE`, :class:`QAOA`, and custom implementations).
 
 **Automatic Initialization** ⚡
    Parameters are randomly initialized between 0 and 2π when not specified:
@@ -373,36 +379,32 @@ Divi handles parameter optimization automatically, but you can also set custom i
       qaoa = QAOA(MaxCutProblem(nx.bull_graph()), n_layers=2)
       print(f"QAOA parameters: {qaoa.n_params * qaoa.n_layers}")  # Always 2 params per layer
 
-      # Access current parameters (triggers initialization if not set)
-      curr_params = vqe.curr_params
-      print(f"Shape: {curr_params.shape}")  # (n_param_sets, total_params)
+      # Query the expected input shape for run(initial_params=...)
+      expected_shape = vqe.get_expected_param_shape()
+      print(f"Expected shape: {expected_shape}")  # (n_param_sets, total_params)
 
 **Setting Initial Parameters** 🎯
-   You can set initial parameters in two ways: via the constructor or using the property setter.
+   Initial parameters are passed directly to ``run(initial_params=...)``.
    This is useful for warm-starting, pre-training, or using parameters from previous runs:
 
    .. code-block:: python
 
       import numpy as np
 
-      # Method 1: Via constructor (recommended for initial setup)
       custom_params = np.array([[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]])
-      vqe = VQE(molecule=molecule, initial_params=custom_params, seed=42)
+      vqe = VQE(molecule=molecule, seed=42)
+      vqe.run(initial_params=custom_params)
 
-      # Method 2: Via property setter (useful for mid-run adjustments)
       qaoa = QAOA(MaxCutProblem(graph))
-      qaoa.curr_params = np.array([[0.5, 0.3]])  # QAOA: (beta, gamma) per layer
-
-      # Both methods work for any variational algorithm
-      vqe.curr_params = custom_params  # Can also set after initialization
+      qaoa.run(initial_params=np.array([[0.5, 0.3]]))  # QAOA: (beta, gamma) per layer
 
    .. note::
       Use the ``seed`` parameter in the constructor for reproducible parameter initialization
-      when not providing custom initial parameters.
+      when you are not providing ``initial_params`` to ``run()``.
 
 **Parameter Shape Requirements** 📐
    Parameters must match the expected shape based on your algorithm configuration.
-   Use :meth:`get_expected_param_shape()` to validate shapes before setting parameters:
+   Use :meth:`get_expected_param_shape()` to validate shapes before calling ``run(initial_params=...)``:
 
    .. code-block:: python
 
@@ -415,10 +417,10 @@ Divi handles parameter optimization automatically, but you can also set custom i
       # For QAOA with 3 layers (always 2 params per layer):
       # Shape: (n_param_sets, 6)
 
-      # Use this to validate your parameters before setting them
+      # Use this to validate your parameters before running
       custom_params = np.array([[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]])
       if custom_params.shape == expected_shape:
-          vqe.curr_params = custom_params
+          vqe.run(initial_params=custom_params)
       else:
           print(f"Shape mismatch! Expected {expected_shape}, got {custom_params.shape}")
 
@@ -428,7 +430,7 @@ Divi handles parameter optimization automatically, but you can also set custom i
    .. code-block:: python
 
       try:
-          vqe.curr_params = np.array([[1, 2, 3]])  # Wrong shape
+          vqe.run(initial_params=np.array([[1, 2, 3]]))  # Wrong shape
       except ValueError as e:
           print(f"Validation error: {e}")
           # "Initial parameters must have shape (1, 8), got (1, 3)"
@@ -436,7 +438,7 @@ Divi handles parameter optimization automatically, but you can also set custom i
 **Multiple Parameter Sets** 🔄
    Some optimizers (like :class:`MonteCarloOptimizer`) work with multiple parameter sets simultaneously.
    The first dimension represents the number of parameter sets. Always use :meth:`get_expected_param_shape()`
-   to verify the correct shape before setting custom parameters:
+   to verify the correct shape before calling ``run(initial_params=...)``:
 
    .. code-block:: python
 
@@ -454,7 +456,7 @@ Divi handles parameter optimization automatically, but you can also set custom i
       # Note: get_expected_param_shape() automatically uses optimizer.n_param_sets,
       # so you don't need to manually look up the optimizer's population size
       custom_params = np.random.uniform(0, 2*np.pi, expected_shape)
-      vqe.curr_params = custom_params
+      vqe.run(initial_params=custom_params)
 
 Result Processing
 -----------------

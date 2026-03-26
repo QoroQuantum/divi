@@ -284,7 +284,6 @@ class IterativeQAOA(QAOA):
         self._best_params = []
         self._best_loss = float("inf")
         self._best_probs = {}
-        self._curr_params = None
         self.current_iteration = 0
         self.optimize_result = None
         self._stop_reason = None
@@ -317,6 +316,7 @@ class IterativeQAOA(QAOA):
             self._rebuild_for_depth(depth)
             self._reset_optimization_state()
             self.max_iterations = self._get_max_iters(depth)
+            initial_params = None
 
             if depth > 1 and prev_best_params is not None:
                 interpolated = interpolate_qaoa_params(
@@ -325,11 +325,13 @@ class IterativeQAOA(QAOA):
                     self._strategy,
                     self._n_basis_terms,
                 )
-                self._curr_params = np.tile(
-                    interpolated, (self.optimizer.n_param_sets, 1)
-                )
+                initial_params = np.tile(interpolated, (self.optimizer.n_param_sets, 1))
 
-            circuits, time = super().run(perform_final_computation=False, **kwargs)
+            circuits, time = super().run(
+                initial_params=initial_params,
+                perform_final_computation=False,
+                **kwargs,
+            )
             total_circuits += circuits
             total_time += time
 

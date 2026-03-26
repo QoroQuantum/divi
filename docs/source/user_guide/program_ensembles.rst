@@ -125,18 +125,16 @@ You can create custom program ensemble workflows by inheriting from :class:`~div
    import numpy as np
 
    class CustomParameterSweep(ProgramEnsemble):
-       def __init__(self, backend: CircuitRunner, molecules, parameters):
+       def __init__(self, backend: CircuitRunner, molecules):
            super().__init__(backend)
            self.molecules = molecules
-           self.parameters = parameters
 
        def create_programs(self):
-           """Generate VQE programs for all molecule-parameter combinations"""
+           """Generate one VQE program per molecule."""
            super().create_programs()
-           for i, (mol, params) in enumerate(zip(self.molecules, self.parameters)):
+           for i, mol in enumerate(self.molecules):
                vqe = VQE(
                    molecule=mol,
-                   initial_params=params,
                    backend=self.backend
                )
                self._programs[f"sweep_{i}"] = vqe
@@ -160,14 +158,10 @@ You can create custom program ensemble workflows by inheriting from :class:`~div
    mol2 = qml.qchem.Molecule(symbols=["Li", "H"], coordinates=np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.6]]))
    mol3 = qml.qchem.Molecule(symbols=["H", "F"], coordinates=np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.92]]))
    molecules = [mol1, mol2, mol3]
-   params1 = np.random.rand(4)
-   params2 = np.random.rand(8)
-   params3 = np.random.rand(12)
-   parameters = [params1, params2, params3]
 
    # Use a local simulator
    local_backend = MaestroSimulator()
-   sweep = CustomParameterSweep(local_backend, molecules, parameters)
+   sweep = CustomParameterSweep(local_backend, molecules)
    sweep.create_programs()
    sweep.run(blocking=True)
 

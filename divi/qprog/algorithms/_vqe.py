@@ -223,7 +223,7 @@ class VQE(VariationalQuantumAlgorithm):
         """Extract the eigenstate corresponding to the lowest energy found."""
         self.reporter.info(message="🏁 Computing Final Eigenstate 🏁", overwrite=True)
 
-        self._run_solution_measurement()
+        self._run_solution_measurement_for(np.atleast_2d(self._best_params))
 
         if self._best_probs:
             best_measurement_probs = next(iter(self._best_probs.values()))

@@ -91,7 +91,6 @@ class SampleVQAProgram(VariationalQuantumAlgorithm):
 
     def _load_subclass_state(self, state: dict[str, Any]) -> None:
         """Load SampleVQAProgram-specific state."""
-        pass
 
     def _perform_final_computation(self):
         pass
@@ -131,12 +130,10 @@ class TestProgram:
             == np.random.default_rng(seed=1997).bit_generator.state
         )
 
-        program._initialize_params()
-        first_init = program._curr_params[0]
+        first_init = program._initialize_param_sets()[0]
         assert first_init.shape == (program.n_layers * program.n_params_per_layer,)
 
-        program._initialize_params()
-        second_init = program._curr_params[0]
+        second_init = program._initialize_param_sets()[0]
 
         np.testing.assert_raises(
             AssertionError, np.testing.assert_array_equal, first_init, second_init
@@ -207,91 +204,52 @@ class TestParametersBehavior(BaseVariationalQuantumAlgorithmTest):
         program.optimizer = mock_optimizer
         return mock_optimizer
 
-    def test_curr_params_returns_numpy_array_not_none(self, mocker):
-        """Test that curr_params property always returns actual parameters."""
-        program = self._create_program_with_mock_optimizer(mocker, seed=42)
-        curr_params = program.curr_params
-        assert isinstance(curr_params, np.ndarray)
-        assert curr_params.shape == program.get_expected_param_shape()
-
-    def test_curr_params_triggers_lazy_initialization_on_first_access(self, mocker):
-        """Test that accessing curr_params triggers parameter generation."""
-        program = self._create_program_with_mock_optimizer(mocker, seed=42)
-        assert program._curr_params is None
-        curr_params = program.curr_params
-        assert program._curr_params is not None
-        assert isinstance(curr_params, np.ndarray)
-
-    def test_curr_params_setter_stores_custom_parameters(self, mocker):
-        """Test that setting curr_params stores user-provided parameters."""
-        program = self._create_program_with_mock_optimizer(mocker, seed=42)
-        expected_shape = program.get_expected_param_shape()
-        custom_curr_params = np.random.uniform(0, 2 * np.pi, expected_shape)
-        program.curr_params = custom_curr_params
-        assert np.array_equal(program.curr_params, custom_curr_params)
-        assert np.array_equal(program._curr_params, custom_curr_params)
-
     def test_run_validates_parameter_shape(self, mocker, mock_backend):
-        """Test that run() validates parameter shape if curr_params is set manually."""
+        """Test that run() validates explicit initial parameters."""
         invalid_params = np.array([[0.1, 0.2]])  # Wrong shape
         mock_optimizer = self._create_mock_optimizer(mocker, n_param_sets=1)
-        # Validation happens in constructor, so ValueError should be raised
+        program = SampleVQAProgram(
+            circ_count=1,
+            run_time=0.1,
+            optimizer=mock_optimizer,
+            backend=mock_backend,
+        )
+
         with pytest.raises(ValueError, match="Initial parameters must have shape"):
-            SampleVQAProgram(
-                circ_count=1,
-                run_time=0.1,
-                optimizer=mock_optimizer,
-                initial_params=invalid_params,
-                backend=mock_backend,
-            ).run()
+            program.run(initial_params=invalid_params)
 
-    def test_curr_params_returns_copy_not_reference(self, mocker):
-        """Test that curr_params property returns a copy, not a reference."""
-        program = self._create_program_with_mock_optimizer(mocker, seed=42)
-        curr_params1 = program.curr_params
-        curr_params2 = program.curr_params
-        assert not np.shares_memory(curr_params1, curr_params2)
-        assert not np.shares_memory(curr_params1, program._curr_params)
-        assert np.array_equal(curr_params1, curr_params2)
-
-    def test_run_preserves_user_set_curr_params(self, mocker):
-        """Test that run() does not overwrite user-set curr_params."""
+    def test_run_uses_explicit_initial_params(self, mocker):
+        """Test that run() forwards explicit initial_params to the optimizer."""
         program = self._create_program_with_mock_optimizer(mocker, seed=42)
         program.max_iterations = 1
 
-        custom_curr_params = np.array([[1.0, 2.0, 3.0, 4.0]])
-        program.curr_params = custom_curr_params
-
-        mock_init = mocker.patch.object(program, "_initialize_params")
         mocker.patch.object(
-            program, "_run_optimization_circuits", return_value={0: -0.5}
+            program, "_evaluate_cost_param_sets", return_value={0: -0.5}
         )
 
+        custom_initial_params = np.array([[1.0, 2.0, 3.0, 4.0]])
         final_params = np.array([[0.5, 1.0, 1.5, 2.0]])
         mock_optimizer = self._setup_mock_optimizer_single_run(
             mocker, program, final_params
         )
 
-        program.run()
+        program.run(initial_params=custom_initial_params)
 
-        mock_init.assert_not_called()
         assert mock_optimizer.optimize.called
         call_args = mock_optimizer.optimize.call_args
         np.testing.assert_array_equal(
-            call_args.kwargs["initial_params"], custom_curr_params
+            call_args.kwargs["initial_params"], custom_initial_params
         )
 
-    def test_run_initializes_curr_params_when_not_set_by_user(self, mocker):
-        """Test that run() initializes parameters when user hasn't set them."""
+    def test_run_initializes_params_when_not_provided(self, mocker):
+        """Test that run() generates fresh initial parameters when needed."""
         program = self._create_program_with_mock_optimizer(mocker, seed=42)
         program.max_iterations = 1
 
-        assert program._curr_params is None
-
         mocker.patch.object(
-            program, "_run_optimization_circuits", return_value={0: -0.5}
+            program, "_evaluate_cost_param_sets", return_value={0: -0.5}
         )
-        mock_init = mocker.spy(program, "_initialize_params")
+        mock_init = mocker.spy(program, "_initialize_param_sets")
 
         final_params = np.array([[0.5, 1.0, 1.5, 2.0]])
         self._setup_mock_optimizer_single_run(mocker, program, final_params)
@@ -299,12 +257,12 @@ class TestParametersBehavior(BaseVariationalQuantumAlgorithmTest):
         program.run()
 
         mock_init.assert_called_once()
-        assert program._curr_params is not None
         expected_shape = (
             program.optimizer.n_param_sets,
             program.n_layers * program.n_params_per_layer,
         )
-        assert program._curr_params.shape == expected_shape
+        call_args = program.optimizer.optimize.call_args
+        assert call_args.kwargs["initial_params"].shape == expected_shape
 
     @pytest.mark.parametrize(
         "n_param_sets,initial_params_shape",
@@ -313,10 +271,10 @@ class TestParametersBehavior(BaseVariationalQuantumAlgorithmTest):
             (2, (2, 4)),  # Multiple parameter sets
         ],
     )
-    def test_initial_params_constructor_parameter_sets_curr_params(
+    def test_run_accepts_initial_params_for_multiple_shapes(
         self, mocker, mock_backend, n_param_sets, initial_params_shape
     ):
-        """Test that passing initial_params to constructor sets curr_params correctly."""
+        """Test that run() accepts explicit initial_params with the expected shape."""
         custom_params = np.random.uniform(0, 2 * np.pi, initial_params_shape)
         mock_optimizer = self._create_mock_optimizer(mocker, n_param_sets=n_param_sets)
         program = SampleVQAProgram(
@@ -324,38 +282,19 @@ class TestParametersBehavior(BaseVariationalQuantumAlgorithmTest):
             run_time=0.1,
             backend=mock_backend,
             optimizer=mock_optimizer,
-            initial_params=custom_params,
         )
 
-        # Verify curr_params was set correctly
-        np.testing.assert_array_equal(program.curr_params, custom_params)
-        assert program._curr_params is not None
-
-    def test_initial_params_constructor_parameter_used_in_run(
-        self, mocker, mock_backend
-    ):
-        """Test that initial_params passed to constructor are used when running."""
-        custom_params = np.array([[0.1, 0.2, 0.3, 0.4]])
-        mock_optimizer = self._create_mock_optimizer(mocker, n_param_sets=1)
-        program = SampleVQAProgram(
-            circ_count=1,
-            run_time=0.1,
-            backend=mock_backend,
-            optimizer=mock_optimizer,
-            initial_params=custom_params,
-        )
         program.max_iterations = 1
 
         mocker.patch.object(
-            program, "_run_optimization_circuits", return_value={0: -0.5}
+            program, "_evaluate_cost_param_sets", return_value={0: -0.5}
         )
 
         final_params = np.array([[0.5, 1.0, 1.5, 2.0]])
         self._setup_mock_optimizer_single_run(mocker, program, final_params)
 
-        program.run()
+        program.run(initial_params=custom_params)
 
-        # Verify that the optimizer was called with the initial_params from constructor
         call_args = program.optimizer.optimize.call_args
         np.testing.assert_array_equal(call_args.kwargs["initial_params"], custom_params)
 
@@ -381,22 +320,6 @@ class TestOptimizerBehavior(BaseVariationalQuantumAlgorithmTest):
         assert program.optimizer is custom_optimizer
         assert program.optimizer.n_param_sets == 5
 
-    def test_optimizer_is_set_before_super_init(self, mocker, mock_backend):
-        """Test that optimizer is available during __init__ before super().__init__()."""
-        # This test verifies optimizer is set up early enough for initial_params validation
-        custom_params = np.array([[0.1, 0.2, 0.3, 0.4]])
-        mock_optimizer = self._create_mock_optimizer(mocker, n_param_sets=1)
-        program = SampleVQAProgram(
-            circ_count=1,
-            run_time=0.1,
-            backend=mock_backend,
-            optimizer=mock_optimizer,
-            initial_params=custom_params,
-        )
-        # If optimizer wasn't set early, initial_params validation would fail
-        assert program.optimizer is mock_optimizer
-        np.testing.assert_array_equal(program.curr_params, custom_params)
-
 
 class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
     """Test suite for the integration of the run method's components."""
@@ -409,7 +332,7 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         def mock_optimize_logic(cost_fn, initial_params, callback_fn, **kwargs):
             last_result = None
             for params, _ in side_effects:
-                # Call the actual cost function to trigger the patched _run_optimization_circuits
+                # Call the actual cost function to trigger the patched evaluator
                 actual_loss = cost_fn(params)
                 result = OptimizeResult(x=params, fun=actual_loss)
                 callback_fn(result)
@@ -427,7 +350,7 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         program = self._create_program_with_mock_optimizer(mocker, seed=42)
         program.max_iterations = 3
 
-        mock_run_circuits = mocker.patch.object(program, "_run_optimization_circuits")
+        mock_run_circuits = mocker.patch.object(program, "_evaluate_cost_param_sets")
         mock_run_circuits.side_effect = [{0: -0.8}, {0: -0.5}, {0: -0.9}]
 
         curr_params1 = np.array([[0.1, 0.2, 0.3, 0.4]])
@@ -473,7 +396,7 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         program.max_iterations = 1
 
         mocker.patch.object(
-            program, "_run_optimization_circuits", return_value={0: -0.5}
+            program, "_evaluate_cost_param_sets", return_value={0: -0.5}
         )
         mock_final_computation = mocker.spy(program, "_perform_final_computation")
 
@@ -697,8 +620,6 @@ class TestCheckpointing:
 
         assert loaded_program.current_iteration == 5
         assert loaded_program._best_loss == 0.123
-        # Note: _curr_params might be different after loading, so we check best_params instead
-        # which should be preserved
         assert isinstance(loaded_program.optimizer, MonteCarloOptimizer)
 
     def test_save_state_raises_error_before_optimization(
@@ -938,7 +859,7 @@ class TestPropertyWarnings(BaseVariationalQuantumAlgorithmTest):
         program.max_iterations = 1
 
         mocker.patch.object(
-            program, "_run_optimization_circuits", return_value={0: -0.5}
+            program, "_evaluate_cost_param_sets", return_value={0: -0.5}
         )
 
         final_params = np.array([[0.1, 0.2, 0.3, 0.4]])
@@ -1299,7 +1220,7 @@ class TestEarlyStoppingIntegration(BaseVariationalQuantumAlgorithmTest):
         program.max_iterations = 100  # Would run forever without early stopping
 
         mocker.patch.object(
-            program, "_run_optimization_circuits", return_value={0: -0.5}
+            program, "_evaluate_cost_param_sets", return_value={0: -0.5}
         )
         self._setup_optimizer_with_flat_losses(program, mocker, n_iterations=100)
 
@@ -1315,7 +1236,7 @@ class TestEarlyStoppingIntegration(BaseVariationalQuantumAlgorithmTest):
         program.max_iterations = 5
 
         mocker.patch.object(
-            program, "_run_optimization_circuits", return_value={0: -0.5}
+            program, "_evaluate_cost_param_sets", return_value={0: -0.5}
         )
         self._setup_optimizer_with_flat_losses(program, mocker, n_iterations=5)
 
@@ -1339,7 +1260,7 @@ class TestEarlyStoppingIntegration(BaseVariationalQuantumAlgorithmTest):
 
         # Each iteration produces a better loss
         losses = [{0: -0.1 * (i + 1)} for i in range(5)]
-        mocker.patch.object(program, "_run_optimization_circuits", side_effect=losses)
+        mocker.patch.object(program, "_evaluate_cost_param_sets", side_effect=losses)
 
         mock_optimizer = mocker.MagicMock()
         mock_optimizer.n_param_sets = program.optimizer.n_param_sets
@@ -1371,7 +1292,7 @@ class TestEarlyStoppingIntegration(BaseVariationalQuantumAlgorithmTest):
         program.max_iterations = 100
 
         mocker.patch.object(
-            program, "_run_optimization_circuits", return_value={0: -0.5}
+            program, "_evaluate_cost_param_sets", return_value={0: -0.5}
         )
         self._setup_optimizer_with_flat_losses(program, mocker, n_iterations=100)
         mock_final = mocker.spy(program, "_perform_final_computation")
@@ -1472,17 +1393,16 @@ class TestGradientFunction(BaseVariationalQuantumAlgorithmTest):
         )
 
         grad_call_count = [0]
-        pass
 
-        def mock_run(**kwargs):
-            n_sets = program._curr_params.shape[0]
+        def mock_run(param_sets, **kwargs):
+            n_sets = np.atleast_2d(param_sets).shape[0]
             if n_sets == 1:
                 return {0: -0.5}
             else:
                 grad_call_count[0] += 1
                 return {i: mock_values[i] for i in range(n_sets)}
 
-        mocker.patch.object(program, "_run_optimization_circuits", side_effect=mock_run)
+        mocker.patch.object(program, "_evaluate_cost_param_sets", side_effect=mock_run)
         program.run(perform_final_computation=False)
 
         assert grad_call_count[0] >= 1, "grad_fn was never called"
@@ -1493,35 +1413,37 @@ class TestGradientFunction(BaseVariationalQuantumAlgorithmTest):
         """When all shifted evaluations return the same value, gradient is zero."""
         program = self._create_lbfgsb_program(mocker, n_params_per_layer=3)
 
-        def mock_run(**kwargs):
-            n_sets = program._curr_params.shape[0]
+        def mock_run(param_sets, **kwargs):
+            n_sets = np.atleast_2d(param_sets).shape[0]
             return {i: -0.5 for i in range(n_sets)}
 
-        mocker.patch.object(program, "_run_optimization_circuits", side_effect=mock_run)
+        mocker.patch.object(program, "_evaluate_cost_param_sets", side_effect=mock_run)
         program.run(perform_final_computation=False)
 
         # L-BFGS-B converges immediately on a flat landscape (zero gradient)
         np.testing.assert_allclose(program.optimize_result.jac, 0.0, atol=1e-10)
 
     def test_shifted_params_are_mask_plus_input(self, mocker):
-        """During gradient computation, _curr_params equals shift_mask + original_params."""
+        """During gradient computation, shifted param sets equal mask + original params."""
         program = self._create_lbfgsb_program(mocker, n_params_per_layer=3)
         n_params = program.n_layers * program.n_params_per_layer
 
         captured = []
+        initial_params = np.full((1, n_params), 0.25)
 
-        def mock_run(**kwargs):
-            n_sets = program._curr_params.shape[0]
+        def mock_run(param_sets, **kwargs):
+            param_sets = np.atleast_2d(param_sets)
+            n_sets = param_sets.shape[0]
             if n_sets > 1:
-                captured.append(program._curr_params.copy())
+                captured.append(param_sets.copy())
             return {i: float(i) * 0.1 for i in range(n_sets)}
 
-        mocker.patch.object(program, "_run_optimization_circuits", side_effect=mock_run)
+        mocker.patch.object(program, "_evaluate_cost_param_sets", side_effect=mock_run)
 
-        # Record initial params before run (they get initialized lazily)
-        initial_params = program.curr_params.squeeze().copy()
-
-        program.run(perform_final_computation=False)
+        program.run(
+            initial_params=initial_params,
+            perform_final_computation=False,
+        )
 
         assert len(captured) >= 1
         # First gradient call uses the initial params
@@ -1531,7 +1453,7 @@ class TestGradientFunction(BaseVariationalQuantumAlgorithmTest):
         # Each row pair should differ from the initial params by exactly ±π/2
         # in exactly one column (the parameter being shifted)
         for i in range(n_params):
-            diff_pos = shifted[2 * i] - initial_params
+            diff_pos = shifted[2 * i] - initial_params.squeeze()
             nonzero = np.nonzero(np.abs(diff_pos) > 1e-10)[0]
             assert len(nonzero) == 1, f"Row {2*i} shifts {len(nonzero)} params"
             assert nonzero[0] == i
@@ -1561,13 +1483,13 @@ class TestLBFGSBGradientIntegration(BaseVariationalQuantumAlgorithmTest):
 
         grad_calls = []
 
-        def mock_run(**kwargs):
-            n_sets = program._curr_params.shape[0]
+        def mock_run(param_sets, **kwargs):
+            n_sets = np.atleast_2d(param_sets).shape[0]
             if n_sets > 1:
                 grad_calls.append(n_sets)
             return {i: float(i) * 0.1 - 0.5 for i in range(n_sets)}
 
-        mocker.patch.object(program, "_run_optimization_circuits", side_effect=mock_run)
+        mocker.patch.object(program, "_evaluate_cost_param_sets", side_effect=mock_run)
         program.run(perform_final_computation=False)
 
         # L-BFGS-B must have called the gradient function at least once

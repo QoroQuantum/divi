@@ -88,7 +88,7 @@ Setting good initial parameters can significantly improve VQE convergence and pr
 - **Parameter sweeps**: Initialize from known good parameter regions
 - **Restarting failed optimizations**: Use parameters from partial convergence
 
-You can set initial parameters via the constructor ``initial_params`` argument or using the ``curr_params`` property. For detailed information and examples, see the :doc:`core_concepts` guide on Parameter Management.
+You can set initial parameters by passing ``initial_params`` to ``run()``. For detailed information and examples, see the :doc:`core_concepts` guide on Parameter Management.
 
 Available Ansätze
 -----------------

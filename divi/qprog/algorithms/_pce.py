@@ -223,15 +223,17 @@ class PCE(VQE):
         )
         self._measurement_pipeline = self._build_measurement_pipeline()
 
-    def _run_optimization_circuits(self, **kwargs) -> dict[int, float]:
-        """Run cost evaluation via the pipeline."""
+    def _evaluate_cost_param_sets(
+        self, param_sets: np.ndarray, **kwargs
+    ) -> dict[int, float]:
+        """Evaluate the cost pipeline for the provided parameter sets."""
         if not self._use_soft_objective and self.backend.supports_expval:
             raise ValueError(
                 "PCE with alpha >= 5.0 (hard CVaR mode) requires shot histograms and "
                 "cannot use expectation-value backends. Use a sampling backend or set "
                 "force_sampling=True in JobConfig when using QoroService."
             )
-        return super()._run_optimization_circuits(**kwargs)
+        return super()._evaluate_cost_param_sets(param_sets, **kwargs)
 
     def _create_meta_circuit_factories(self) -> dict[str, MetaCircuit]:
         """Create meta-circuit factories, handling the edge case of zero parameters."""

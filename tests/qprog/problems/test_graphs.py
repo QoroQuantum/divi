@@ -436,8 +436,8 @@ class TestGraphInput:
             "0_NoMitigation:0_0": {"11001": 0.1444, "00101": 0.0526}
         }
 
-        # Patch _run_solution_measurement to do nothing (since we set probs manually)
-        mocker.patch.object(qaoa_problem, "_run_solution_measurement")
+        # Patch measurement to do nothing (since we set probs manually)
+        mocker.patch.object(qaoa_problem, "_run_solution_measurement_for")
 
         qaoa_problem._perform_final_computation()
 
@@ -597,8 +597,10 @@ class TestGraphInput:
         mock_probs = {"0_0": {f"{i:0{n_nodes}b}": 0.25 for i in range(4)}}
         mocker.patch.object(
             qaoa_problem,
-            "_run_solution_measurement",
-            side_effect=lambda: setattr(qaoa_problem, "_best_probs", mock_probs),
+            "_run_solution_measurement_for",
+            side_effect=lambda _param_sets: setattr(
+                qaoa_problem, "_best_probs", mock_probs
+            ),
         )
 
         qaoa_problem.run()
@@ -625,7 +627,7 @@ class TestGraphInput:
         )
 
         qaoa_problem._best_probs = {"0_NoMitigation:0_0": {"101": 0.6, "010": 0.4}}
-        mocker.patch.object(qaoa_problem, "_run_solution_measurement")
+        mocker.patch.object(qaoa_problem, "_run_solution_measurement_for")
 
         qaoa_problem._perform_final_computation()
 
@@ -670,7 +672,7 @@ class TestGraphInput:
         assert all(wire in G.nodes() for wire in qaoa_problem._circuit_wires)
 
         qaoa_problem._best_probs = {"0_NoMitigation:0_0": {"1010": 0.5, "0101": 0.5}}
-        mocker.patch.object(qaoa_problem, "_run_solution_measurement")
+        mocker.patch.object(qaoa_problem, "_run_solution_measurement_for")
 
         qaoa_problem._perform_final_computation()
 

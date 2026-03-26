@@ -297,7 +297,7 @@ def test_pce_perform_final_computation_sets_solution(
     )
 
     pce._best_probs = {"0_NoMitigation:0_0": {"01": 1.0}}
-    mocker.patch.object(pce, "_run_solution_measurement")
+    mocker.patch.object(pce, "_run_solution_measurement_for")
 
     pce._perform_final_computation()
 
@@ -647,7 +647,7 @@ def test_pce_custom_decode_parities_fn_perform_final_computation(
     )
 
     pce._best_probs = {"0_NoMitigation:0_0": {"01": 1.0}}
-    mocker.patch.object(pce, "_run_solution_measurement")
+    mocker.patch.object(pce, "_run_solution_measurement_for")
 
     pce._perform_final_computation()
 

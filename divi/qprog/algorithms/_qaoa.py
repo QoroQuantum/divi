@@ -208,10 +208,12 @@ class QAOA(VariationalQuantumAlgorithm):
             ),
         }
 
-    def _run_optimization_circuits(self, **kwargs) -> dict[int, float]:
-        """Run cost evaluation via the pipeline."""
+    def _evaluate_cost_param_sets(
+        self, param_sets: np.ndarray, **kwargs
+    ) -> dict[int, float]:
+        """Evaluate the cost pipeline for the provided parameter sets."""
 
-        env = self._build_pipeline_env()
+        env = self._build_pipeline_env(param_sets=np.atleast_2d(param_sets))
         result = self._cost_pipeline.run(
             initial_spec=self._cost_hamiltonian,
             env=env,
@@ -233,7 +235,7 @@ class QAOA(VariationalQuantumAlgorithm):
         """
         self.reporter.info(message="🏁 Computing Final Solution 🏁", overwrite=True)
 
-        self._run_solution_measurement()
+        self._run_solution_measurement_for(np.atleast_2d(self._best_params))
         best_probs = next(iter(self._best_probs.values()))
         best_bitstring = max(best_probs, key=best_probs.get)
         self._decoded_solution = self._decode_solution_fn(best_bitstring)
