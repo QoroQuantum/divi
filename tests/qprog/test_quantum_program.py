@@ -45,17 +45,30 @@ class TestQuantumProgramBase:
         assert program._seed == 42
         assert program._progress_queue == mock_queue
 
-    def test_initialization_with_kwargs(self, mocker):
-        """Test QuantumProgram initialization with additional kwargs."""
+    def test_initialization_with_program_id(self, mocker):
+        """Test QuantumProgram initialization with explicit program_id."""
         mock_backend = mocker.Mock()
 
         program = ConcreteQuantumProgram(
-            backend=mock_backend, custom_param="test_value", another_param=123
+            backend=mock_backend, program_id="test_program"
         )
 
         assert program.backend == mock_backend
         assert program._seed is None
         assert program._progress_queue is None
+        assert program.program_id == "test_program"
+
+    def test_initialization_with_unexpected_kwargs_raises(self, mocker):
+        """Unexpected constructor kwargs should fail fast."""
+        mock_backend = mocker.Mock()
+
+        with pytest.raises(
+            TypeError,
+            match="Unexpected keyword argument\\(s\\): another_param, custom_param",
+        ):
+            ConcreteQuantumProgram(
+                backend=mock_backend, custom_param="test_value", another_param=123
+            )
 
     def test_abstract_class_behavior(self, mocker):
         """Test abstract class instantiation behavior."""

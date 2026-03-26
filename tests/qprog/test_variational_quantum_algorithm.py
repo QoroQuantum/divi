@@ -320,6 +320,16 @@ class TestOptimizerBehavior(BaseVariationalQuantumAlgorithmTest):
         assert program.optimizer is custom_optimizer
         assert program.optimizer.n_param_sets == 5
 
+    def test_unexpected_constructor_kwargs_raise(self, mocker, mock_backend):
+        """Unknown constructor kwargs should fail fast instead of being ignored."""
+        with pytest.raises(TypeError, match="Unexpected keyword argument\\(s\\): foo"):
+            SampleVQAProgram(
+                circ_count=1,
+                run_time=0.1,
+                backend=mock_backend,
+                foo="bar",
+            )
+
 
 class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
     """Test suite for the integration of the run method's components."""
