@@ -26,8 +26,6 @@ from tests.qprog.qprog_contracts import (
     verify_metacircuit_dict,
 )
 
-pytestmark = pytest.mark.algo
-
 
 @pytest.fixture
 def h2_molecule():

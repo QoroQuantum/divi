@@ -25,10 +25,7 @@ from divi.qprog.problems import (
     MaxCliqueProblem,
     MaxCutProblem,
 )
-from tests.qprog.algorithms.problems import QUBO_MATRIX, QUBO_SOLUTION, make_bull_graph
-
-pytestmark = pytest.mark.algo
-
+from tests.qprog.problems._helpers import QUBO_MATRIX, QUBO_SOLUTION, make_bull_graph
 
 # ---------------------------------------------------------------------------
 # Interpolation function tests
