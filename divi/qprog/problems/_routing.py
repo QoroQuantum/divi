@@ -26,7 +26,7 @@ from divi.qprog.algorithms._initial_state import (
     WState,
     build_block_xy_mixer_graph,
 )
-from divi.qprog.algorithms._problem import Problem
+from divi.qprog.problems._base import QAOAProblem
 
 # --- TSP utilities ---
 
@@ -1297,7 +1297,7 @@ def parse_vrp_solution(
 # --- Routing problem base ---
 
 
-class _RoutingProblemBase(Problem):
+class _RoutingProblemBase(QAOAProblem):
     """Shared base for routing problems.
 
     Stores the :class:`IsingResult` and mixer after subclass constructors

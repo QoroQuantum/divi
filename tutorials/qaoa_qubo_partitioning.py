@@ -9,9 +9,11 @@ import hybrid
 import numpy as np
 import pennylane as qml
 
-from divi.qprog import EarlyStopping, QUBOPartitioningQAOA
+from divi.qprog import EarlyStopping
 from divi.qprog.algorithms import GenericLayerAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from divi.qprog.problems import BinaryOptimizationProblem
+from divi.qprog.workflows import PartitioningProgramEnsemble
 from tutorials._backend import get_backend
 
 
@@ -19,11 +21,15 @@ def _run_partitioning_engine(
     bqm: dimod.BinaryQuadraticModel, engine: str, engine_kwargs: dict
 ) -> dict:
     """Run one partitioning engine and return comparable metrics."""
-    qubo_partition = QUBOPartitioningQAOA(
-        qubo=bqm,
+    problem = BinaryOptimizationProblem(
+        bqm,
         decomposer=hybrid.EnergyImpactDecomposer(size=5),
         composer=hybrid.SplatComposer(),
-        engine=engine,
+    )
+
+    ensemble = PartitioningProgramEnsemble(
+        problem=problem,
+        quantum_routine=engine,
         n_layers=2,
         optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
         max_iterations=30,
@@ -32,18 +38,18 @@ def _run_partitioning_engine(
         **engine_kwargs,
     )
 
-    qubo_partition.create_programs()
-    qubo_partition.run().join()
+    ensemble.create_programs()
+    ensemble.run().join()
 
-    greedy_solution, greedy_energy = qubo_partition.aggregate_results(
+    greedy_solution, greedy_energy = ensemble.aggregate_results(
         beam_width=1, n_partition_candidates=5
     )
-    beam_solution, beam_energy = qubo_partition.aggregate_results(
+    beam_solution, beam_energy = ensemble.aggregate_results(
         beam_width=3, n_partition_candidates=5
     )
 
     # Retrieve multiple ranked solutions via beam search
-    top_solutions = qubo_partition.get_top_solutions(
+    top_solutions = ensemble.get_top_solutions(
         n=5, beam_width=5, n_partition_candidates=5
     )
 
@@ -53,7 +59,7 @@ def _run_partitioning_engine(
         "beam_energy": beam_energy,
         "beam_solution": beam_solution,
         "top_solutions": top_solutions,
-        "total_circuits": qubo_partition.total_circuit_count,
+        "total_circuits": ensemble.total_circuit_count,
     }
 
 

@@ -64,6 +64,14 @@ Core Architecture
    # Disable circuit batching for local simulators
    ensemble.run(blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF))
 
+Partitioning Base
+~~~~~~~~~~~~~~~~~
+
+.. autoclass:: divi.qprog.workflows.PartitioningProgramEnsemble
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Workflows
 ---------
 
@@ -85,19 +93,10 @@ Molecule Transformer
    :show-inheritance:
    :no-index:
 
-Graph Partitioning QAOA
-~~~~~~~~~~~~~~~~~~~~~~~
-
-.. autoclass:: divi.qprog.workflows.GraphPartitioningQAOA
-   :members:
-   :undoc-members:
-   :show-inheritance:
-   :special-members: __init__
-
 Partitioning Configuration
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-.. autoclass:: divi.qprog.workflows.PartitioningConfig
+.. autoclass:: divi.qprog.problems.GraphPartitioningConfig
    :members:
    :undoc-members:
    :show-inheritance:
@@ -107,15 +106,6 @@ Time Evolution Trajectory
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. autoclass:: divi.qprog.workflows.TimeEvolutionTrajectory
-   :members:
-   :undoc-members:
-   :show-inheritance:
-   :special-members: __init__
-
-QUBO Partitioning QAOA
-~~~~~~~~~~~~~~~~~~~~~~
-
-.. autoclass:: divi.qprog.workflows.QUBOPartitioningQAOA
    :members:
    :undoc-members:
    :show-inheritance:

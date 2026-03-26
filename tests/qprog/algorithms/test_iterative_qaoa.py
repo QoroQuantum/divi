@@ -8,11 +8,8 @@ import pytest
 
 from divi.qprog import (
     QAOA,
-    BinaryOptimizationProblem,
     InterpolationStrategy,
     IterativeQAOA,
-    MaxCliqueProblem,
-    MaxCutProblem,
     MonteCarloOptimizer,
     ScipyMethod,
     ScipyOptimizer,
@@ -23,10 +20,12 @@ from divi.qprog.algorithms._iterative_qaoa import (
     _interp,
     interpolate_qaoa_params,
 )
-from tests.qprog.algorithms.problems import QUBO_MATRIX, QUBO_SOLUTION, make_bull_graph
-
-pytestmark = pytest.mark.algo
-
+from divi.qprog.problems import (
+    BinaryOptimizationProblem,
+    MaxCliqueProblem,
+    MaxCutProblem,
+)
+from tests.qprog.problems._helpers import QUBO_MATRIX, QUBO_SOLUTION, make_bull_graph
 
 # ---------------------------------------------------------------------------
 # Interpolation function tests

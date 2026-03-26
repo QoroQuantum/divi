@@ -9,7 +9,7 @@ import pennylane as qml
 import pennylane.qaoa as pqaoa
 import pytest
 
-from divi.qprog import QAOA, VQE, MaxCutProblem, TimeEvolution
+from divi.qprog import QAOA, VQE, TimeEvolution
 from divi.qprog.algorithms._ansatze import QAOAAnsatz
 from divi.qprog.algorithms._initial_state import (
     CustomPerQubitState,
@@ -19,6 +19,7 @@ from divi.qprog.algorithms._initial_state import (
     ZerosState,
     build_block_xy_mixer_graph,
 )
+from divi.qprog.problems import MaxCutProblem
 
 # ---------------------------------------------------------------------------
 # InitialState classes

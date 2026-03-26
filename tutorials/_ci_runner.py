@@ -100,6 +100,15 @@ TUTORIALS: dict[str, dict] = {
             ("get_top_solutions(\n        n=5,", "get_top_solutions(\n        n=3,"),
         ],
     },
+    "qaoa_max_weight_matching.py": {
+        "timeout_seconds": 180,
+        "patches": [
+            ("n_layers=2", "n_layers=1"),
+            ("max_iterations=20", "max_iterations=5"),
+            ("max_iterations=10", "max_iterations=3"),
+            ("gnm_random_graph(16, 30", "gnm_random_graph(8, 12"),
+        ],
+    },
     "qaoa_graph_partitioning.py": {
         "timeout_seconds": 180,
         "patches": [
