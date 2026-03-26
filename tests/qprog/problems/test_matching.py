@@ -171,10 +171,10 @@ class TestIsValidMatching:
 
 class TestBitstringToMatching:
     def test_decodes_correctly(self):
-        """Qubit 0 = rightmost bit."""
+        """Qubit 0 = leftmost bit (left-to-right ordering)."""
         e2q = {(0, 1): 0, (1, 0): 0, (2, 3): 1, (3, 2): 1}
-        # Bitstring "01" → qubit 0 = rightmost '1', qubit 1 = '0'
-        result = _bitstring_to_matching("01", e2q)
+        # Bitstring "10" → qubit 0 = '1' (selected), qubit 1 = '0'
+        result = _bitstring_to_matching("10", e2q)
         assert result == [(0, 1)]
 
     def test_all_ones(self):
@@ -414,10 +414,14 @@ class TestMaxWeightMatchingProblemE2E:
         )
         qaoa.run()
 
-        decoded = qaoa.solution
+        # Use feasibility-filtered ranking (PHQC post-processing) to find
+        # the best valid matching by objective energy, rather than relying
+        # on the single highest-probability bitstring.
+        top = qaoa.get_top_solutions(n=1, feasibility="filter", include_decoded=True)
+        assert len(top) >= 1
+        decoded = top[0].decoded
         assert is_valid_matching(decoded)
 
-        # Should find optimal or near-optimal
         classical = nx.max_weight_matching(G, maxcardinality=False)
         classical_weight = sum(G[u][v]["weight"] for u, v in classical)
         quantum_weight = sum(G[u][v]["weight"] for u, v in decoded)

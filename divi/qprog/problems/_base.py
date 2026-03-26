@@ -42,7 +42,11 @@ class QAOAProblem(ABC):
     @property
     @abstractmethod
     def decode_fn(self) -> Callable[[str], Any]:
-        """Map a measurement bitstring to a domain-level solution."""
+        """Map a measurement bitstring to a domain-level solution.
+
+        Bitstrings use **left-to-right** qubit ordering: the character at
+        index *i* corresponds to qubit *i* of the cost Hamiltonian.
+        """
 
     @property
     def recommended_initial_state(self) -> InitialState:

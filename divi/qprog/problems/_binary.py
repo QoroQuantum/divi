@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import string
 from collections.abc import Callable
 from typing import Any, Literal
 
@@ -43,8 +42,9 @@ def _sanitize_problem_input(qubo):
         return qubo, dimod.BinaryQuadraticModel(qubo, vartype=dimod.Vartype.BINARY)
 
     if isinstance(qubo, sps.spmatrix):
+        coo = qubo.tocoo()
         return qubo, dimod.BinaryQuadraticModel(
-            {(row, col): data for row, col, data in zip(qubo.row, qubo.col, qubo.data)},
+            {(row, col): data for row, col, data in zip(coo.row, coo.col, coo.data)},
             vartype=dimod.Vartype.BINARY,
         )
 
@@ -162,7 +162,7 @@ class BinaryOptimizationProblem(QAOAProblem):
             if i > 0:
                 del partition["problem"]
 
-            prog_id = (string.ascii_uppercase[i], len(partition.subproblem))
+            prog_id = (f"P{i}", len(partition.subproblem))
             self._bqm_subproblem_states[prog_id] = partition
 
             self._variable_maps[prog_id] = [

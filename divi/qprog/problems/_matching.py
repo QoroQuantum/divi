@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import string
 from collections.abc import Callable, Hashable
 from functools import partial
 from typing import Any, Literal
@@ -98,14 +97,14 @@ def _bitstring_to_matching(
 ) -> list[tuple]:
     """Decode a measurement bitstring into a list of matching edges.
 
-    Uses right-to-left indexing (qubit 0 = rightmost bit).
+    Uses left-to-right qubit ordering: ``bitstring[i]`` corresponds to
+    qubit *i* of the cost Hamiltonian.
     """
-    n = len(bitstring)
     matching = []
     for edge, qubit in edge_to_qubit.items():
         if edge[0] > edge[1]:
             continue  # skip reverse entries
-        if bitstring[n - qubit - 1] == "1":
+        if bitstring[qubit] == "1":
             matching.append(edge)
     return _sort_matching(matching)
 
@@ -387,6 +386,22 @@ class MaxWeightMatchingProblem(QAOAProblem):
         """The input graph."""
         return self._graph
 
+    def is_feasible(self, bitstring: str) -> bool:
+        """Check that the decoded matching has no node appearing in more than one edge."""
+        matching = self.decode_fn(bitstring)
+        return is_valid_matching(matching)
+
+    def compute_energy(self, bitstring: str) -> float | None:
+        """Compute matching weight (negated, since lower is better).
+
+        Returns ``None`` for infeasible bitstrings.
+        """
+        matching = self.decode_fn(bitstring)
+        if not is_valid_matching(matching):
+            return None
+        weight = sum(self._graph[u][v].get("weight", 1.0) for u, v in matching)
+        return -weight
+
     # ------------------------------------------------------------------
     # Decomposition hooks
     # ------------------------------------------------------------------
@@ -408,7 +423,7 @@ class MaxWeightMatchingProblem(QAOAProblem):
         sub_problems: dict[tuple[str, int], QAOAProblem] = {}
 
         for i, subgraph in enumerate(subgraphs):
-            prog_id = (string.ascii_uppercase[i], subgraph.size())
+            prog_id = (f"P{i}", subgraph.size())
 
             # Local edge-to-qubit mapping for this partition
             local_edges = [(u, v) if u < v else (v, u) for u, v in subgraph.edges()]
