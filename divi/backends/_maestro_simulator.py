@@ -38,7 +38,7 @@ def _strip_measurements(qasm: str) -> str:
     expectation-value estimation.  They must be stripped before
     passing circuits to ``simple_estimate``.
     """
-    return re.sub(r"measure\s+q\[\d+\]\s*->\s*c\[\d+\]\s*;\n?", "", qasm)
+    return re.sub(r"measure\s+q\[\d+\]\s*->\s*\w+\[\d+\]\s*;\n?", "", qasm)
 
 
 class MaestroSimulator(CircuitRunner):

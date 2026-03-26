@@ -465,6 +465,17 @@ class TestStripMeasurements:
         result = _strip_measurements(qasm)
         assert "creg c[2]" in result
 
+    def test_strips_non_default_creg_name(self):
+        """Measurements targeting a non-``c`` classical register must be stripped."""
+        qasm = (
+            'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[2];\ncreg meas[2];\n'
+            "h q[0];\nmeasure q[0] -> meas[0];\nmeasure q[1] -> meas[1];\n"
+        )
+        result = _strip_measurements(qasm)
+        assert "measure" not in result
+        assert "h q[0]" in result
+        assert "creg meas[2]" in result
+
 
 # ---------------------------------------------------------------------------
 # Depth tracking contracts
