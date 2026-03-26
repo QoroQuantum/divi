@@ -102,11 +102,12 @@ class TestConstructMatchingQubo:
         qubo = _construct_matching_qubo(triangle_graph, e2q, penalty_scale)
 
         expected_penalty = penalty_scale * total_w
-        # Every off-diagonal pair that shares a node should have the penalty
+        # Every off-diagonal pair that shares a node should have half the
+        # penalty per entry (symmetric matrix; effective penalty = sum of both)
         for i in range(3):
             for j in range(i + 1, 3):
                 # In a triangle, every pair of edges shares at least one node
-                assert qubo[i, j] == pytest.approx(expected_penalty)
+                assert qubo[i, j] == pytest.approx(expected_penalty / 2)
 
     def test_no_penalty_for_independent_edges(self):
         """Two disjoint edges: no quadratic penalty between them."""
