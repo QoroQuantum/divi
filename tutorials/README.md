@@ -47,6 +47,7 @@ python qaoa_max_clique.py --local-qiskit --force-sampling
 ### Optimization (Graph Problems)
 
 - **`qaoa_max_clique_local.py`** - Basic QAOA for maximum clique problem
+- **`qaoa_max_weight_matching.py`** - Maximum-weight matching with QAOA (standalone and partitioned)
 - **`qaoa_graph_partitioning.py`** - Large graph partitioning with QAOA
 - **`qaoa_qdrift_local.py`** - QAOA with QDrift randomized Trotterization
 - **`iterative_qaoa.py`** - Iterative QAOA with parameter interpolation vs standard QAOA
