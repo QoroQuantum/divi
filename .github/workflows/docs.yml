@@ -37,7 +37,7 @@ jobs:
       - name: Build Sphinx HTML
         run: |
           cd docs
-          make build SPHINXOPTS="-W"
+          poetry run make build SPHINXOPTS="-W"
         env:
           LC_ALL: C.UTF-8
           LANG: C.UTF-8
