@@ -25,321 +25,32 @@ Program ensembles allow you to run multiple quantum programs simultaneously, aut
 - **Scalable Execution** 📈 - Handles problems from dozens to thousands of circuits
 - **Progress Monitoring** 👀 - Real-time tracking of batch execution progress
 
-VQE Hyperparameter Sweeps
--------------------------
-
-The most common program ensemble scenario is running VQE across multiple molecular configurations:
-
-**Basic Parameter Sweep** 🎯
-
-.. code-block:: python
-
-   import numpy as np
-   import pennylane as qml
-   from divi.qprog import VQEHyperparameterSweep, MoleculeTransformer, HartreeFockAnsatz
-   from divi.qprog.optimizers import MonteCarloOptimizer
-   from divi.backends import MaestroSimulator
-
-   # Define your base molecule
-   base_molecule = qml.qchem.Molecule(
-       symbols=["H", "H"],
-       coordinates=np.array([[0.0, 0.0, -0.6614], [0.0, 0.0, 0.6614]])
-   )
-
-   # Set up molecule transformer for bond length variations
-   transformer = MoleculeTransformer(
-       base_molecule=base_molecule,
-       bond_modifiers=[-0.4, -0.2, 0.0, 0.2, 0.4]  # Bond length changes in Å
-   )
-
-   # Configure Monte Carlo optimizer for robustness
-   mc_optimizer = MonteCarloOptimizer(
-       population_size=10,  # Try 10 parameter combinations per molecule
-       n_best_sets=3       # Keep top 3 for next iteration
-   )
-
-   # Create batch VQE sweep
-   vqe_sweep = VQEHyperparameterSweep(
-       molecule_transformer=transformer,
-       ansatze=[HartreeFockAnsatz()],  # Single ansatz for simplicity
-       optimizer=mc_optimizer,
-       max_iterations=25,
-       backend=MaestroSimulator(shots=2000)
-   )
-
-   # Execute the entire sweep
-   vqe_sweep.create_programs()  # Generate all VQE instances
-   vqe_sweep.run(blocking=True)  # Execute all programs in parallel
-
-   # Analyze results
-   results = vqe_sweep.aggregate_results()
-   vqe_sweep.visualize_results()  # Show energy vs bond length plot
-
-   print(f"Total circuits executed: {vqe_sweep.total_circuit_count}")
-
-**Advanced Sweep Configuration** ⚙️
-
-.. code-block:: python
-
-   import numpy as np
-   import pennylane as qml
-   from divi.qprog import VQEHyperparameterSweep, MoleculeTransformer, HartreeFockAnsatz, UCCSDAnsatz, GenericLayerAnsatz
-   from divi.qprog.optimizers import MonteCarloOptimizer
-   from divi.backends import MaestroSimulator
-   # Multiple ansätze comparison
-   vqe_sweep = VQEHyperparameterSweep(
-       molecule_transformer=transformer,
-       ansatze=[
-           HartreeFockAnsatz(),
-           UCCSDAnsatz(),
-           GenericLayerAnsatz([qml.RY, qml.RZ], entangling_layout="circular")
-       ],
-       optimizer=MonteCarloOptimizer(population_size=5),
-       max_iterations=50,
-       backend=MaestroSimulator(shots=5000)
-   )
-
-   # Custom molecule transformations
-   water_molecule = qml.qchem.Molecule(
-       symbols=["O", "H", "H"],
-       coordinates=np.array([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
-   )
-   transformer = MoleculeTransformer(
-       base_molecule=water_molecule,
-       atom_connectivity=[(0, 1), (0, 2)],  # Define molecular structure
-       bonds_to_transform=[(0, 1)],          # Only modify O-H bonds
-       bond_modifiers=[-0.1, 0.0, 0.1],     # Small perturbations
-       alignment_atoms=[0]                   # Align to oxygen atom
-   )
-
-Time Evolution Trajectories
----------------------------
-
-:class:`~divi.qprog.TimeEvolutionTrajectory` runs multiple time-evolution
-programs in parallel — one per time point — and collects expectation values
-into a trajectory:
-
-.. code-block:: python
-
-   import math
-   import numpy as np
-   import pennylane as qml
-   from divi.qprog import TimeEvolutionTrajectory
-   from divi.backends import MaestroSimulator
-
-   trajectory = TimeEvolutionTrajectory(
-       hamiltonian=qml.PauliX(0),
-       time_points=np.linspace(0.01, math.pi, 20).tolist(),
-       observable=qml.PauliZ(0),
-       backend=MaestroSimulator(shots=5000),
-   )
-   trajectory.create_programs()
-   trajectory.run(blocking=True)
-
-   results = trajectory.aggregate_results()   # {t: <O>(t)}
-   trajectory.visualize_results()             # line plot
-
-See :doc:`hamiltonian_time_evolution` for full details.
-
-Problem Decomposition Workflows
--------------------------------
-
-For problems that are too large to fit on a single quantum device, Divi provides workflows that automatically decompose the problem into smaller subproblems, solve them in parallel, and then combine the results into a final solution. This approach allows you to tackle large-scale optimization challenges that would otherwise be intractable.
-
-Divi offers built-in support for two common decomposition scenarios:
-
-- **Graph Partitioning**: For large graph problems like MaxCut or Minimum Vertex Cover.
-- **QUBO Partitioning**: For large-scale QUBO (Quadratic Unconstrained Binary Optimization) problems.
-
-Graph Partitioning QAOA
-^^^^^^^^^^^^^^^^^^^^^^^
-
-For large optimization problems that exceed quantum hardware limitations, Divi provides automatic graph partitioning:
-
-**Basic Graph Partitioning**
-
-.. code-block:: python
-
-   import networkx as nx
-   from divi.qprog.problems import MaxCutProblem, GraphPartitioningConfig
-   from divi.qprog.workflows import PartitioningProgramEnsemble
-   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-
-   # Create a large graph (too big for single quantum device)
-   large_graph = nx.erdos_renyi_graph(50, 0.3)  # 50 nodes
-
-   # Configure partitioning strategy
-   config = GraphPartitioningConfig(
-       max_n_nodes_per_cluster=10,      # Maximum nodes per quantum partition
-       minimum_n_clusters=3,             # Minimum partitions (optional)
-       partitioning_algorithm="metis"    # Algorithm: "spectral", "metis", or "kernighan_lin"
-   )
-
-   # Create the problem with partitioning config
-   problem = MaxCutProblem(large_graph, config=config)
-
-   # Create partitioned QAOA solver
-   ensemble = PartitioningProgramEnsemble(
-       problem=problem,
-       n_layers=3,
-       optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
-       max_iterations=20,
-       backend=MaestroSimulator()
-   )
-
-   # Execute workflow
-   ensemble.create_programs()    # Partition graph and create sub-problems
-   ensemble.run(blocking=True)   # Solve each partition in parallel
-
-   # Combine results from all partitions
-   final_solution, final_energy = ensemble.aggregate_results()
-
-   print(f"MaxCut value: {final_energy}")
-   print(f"Total circuits: {ensemble.total_circuit_count}")
-
-**Partitioning Strategies** 🎲
-
-Different partitioning algorithms for different graph structures:
-
-.. code-block:: python
-
-   # For regular graphs (grids, lattices)
-   config_regular = GraphPartitioningConfig(
-       max_n_nodes_per_cluster=16,
-       partitioning_algorithm="spectral",  # Good for regular structures
-       minimum_n_clusters=None
-   )
-
-   # For irregular graphs (social networks, molecules)
-   config_irregular = GraphPartitioningConfig(
-       max_n_nodes_per_cluster=12,
-       partitioning_algorithm="metis",     # Excellent for irregular graphs
-       minimum_n_clusters=4
-   )
-
-   # For very large graphs with community structure
-   config_communities = GraphPartitioningConfig(
-       max_n_nodes_per_cluster=20,
-       partitioning_algorithm="kernighan_lin",  # Preserves community structure
-       minimum_n_clusters=None
-   )
-
-QUBO Partitioning (QAOA or PCE)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-For large QUBO problems, Divi integrates with D-Wave's hybrid solvers:
-
-**Large QUBO Problems**
-
-.. code-block:: python
-
-   import dimod
-   import hybrid
-   from divi.qprog.problems import BinaryOptimizationProblem
-   from divi.qprog.workflows import PartitioningProgramEnsemble
-
-   # Create large QUBO problem
-   large_bqm = dimod.generators.gnp_random_bqm(
-       n_variables=100,     # 100 binary variables
-       n_interactions=0.3,  # 30% connectivity
-       vartype="BINARY"
-   )
-
-   # Create the problem with a decomposer
-   problem = BinaryOptimizationProblem(
-       large_bqm,
-       decomposer=hybrid.EnergyImpactDecomposer(size=15),
-       composer=hybrid.SplatComposer(),
-   )
-
-   # Set up the ensemble
-   ensemble = PartitioningProgramEnsemble(
-       problem=problem,
-       n_layers=3,
-       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
-       max_iterations=15,
-       backend=MaestroSimulator()
-   )
-
-   # Execute partitioned computation
-   ensemble.create_programs()
-   ensemble.run()
-
-   # Get final solution
-   solution, energy = ensemble.aggregate_results()
-   print(f"Final energy: {energy:.6f}")
-
-To use ``PCE`` as the per-partition engine, set ``quantum_routine="pce"`` and pass
-``PCE``-specific arguments (for example ``ansatz``, ``encoding_type``, ``alpha``):
-
-.. code-block:: python
-
-   import pennylane as qml
-   from divi.qprog.algorithms import GenericLayerAnsatz
-
-   ensemble = PartitioningProgramEnsemble(
-       problem=problem,
-       quantum_routine="pce",
-       ansatz=GenericLayerAnsatz([qml.RY, qml.RZ]),
-       n_layers=2,
-       encoding_type="dense",
-       alpha=2.0,
-       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
-       max_iterations=15,
-       backend=MaestroSimulator(),
-   )
-
-Matching Partitioning
-^^^^^^^^^^^^^^^^^^^^^
-
-For large weighted matching problems, ``MaxWeightMatchingProblem`` partitions
-the graph by edges and solves each partition independently:
-
-.. code-block:: python
-
-   import networkx as nx
-   from divi.qprog.problems import MaxWeightMatchingProblem
-   from divi.qprog.workflows import PartitioningProgramEnsemble
-   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-   from divi.backends import MaestroSimulator
-
-   G = nx.gnm_random_graph(30, 60, seed=42)
-   for u, v in G.edges():
-       G[u][v]["weight"] = float(u + v)
-
-   problem = MaxWeightMatchingProblem(
-       G,
-       penalty_scale=10.0,
-       max_edges_per_partition=15,
-       partition_algorithm="kernighan_lin",  # or "spectral"
-       use_classical_cleanup=True,
-   )
-
-   ensemble = PartitioningProgramEnsemble(
-       problem=problem,
-       n_layers=2,
-       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
-       max_iterations=10,
-       backend=MaestroSimulator(),
-   )
-
-   ensemble.create_programs()
-   ensemble.run(blocking=True)
-   matching, weight = ensemble.aggregate_results()
-
-   print(f"Matching edges: {matching}")
-   print(f"Total weight: {weight}")
-
-The workflow:
-
-1. Partitions the graph by edges (Kernighan-Lin keeps high-weight edges together).
-2. Constructs a QUBO per partition encoding the matching constraints.
-3. Solves each QUBO with QAOA (or PCE/IterativeQAOA via ``quantum_routine``).
-4. Stitches partition solutions via beam search with conflict-aware scoring.
-5. Repairs any remaining conflicts and fills unmatched nodes via classical matching.
+Built-in Ensemble Workflows
+----------------------------
+
+Divi provides several ready-made ensemble workflows.  Each is covered in
+detail on its own page — this section gives a quick overview and links.
+
+**VQE Hyperparameter Sweeps**
+   :class:`~divi.qprog.VQEHyperparameterSweep` runs VQE across multiple
+   molecular configurations (bond lengths, ansätze) in parallel.
+   See :doc:`ground_state_energy_estimation_vqe` for configuration and examples.
+
+**Time Evolution Trajectories**
+   :class:`~divi.qprog.TimeEvolutionTrajectory` runs one time-evolution
+   program per time point and collects expectation values into a trajectory.
+   See :doc:`hamiltonian_time_evolution` for full details.
+
+**Problem Decomposition (Graph / QUBO / Matching)**
+   :class:`~divi.qprog.workflows.PartitioningProgramEnsemble` decomposes a
+   large :class:`~divi.qprog.problems.QAOAProblem` into sub-problems, solves
+   each partition with QAOA (or PCE / IterativeQAOA), and stitches results
+   via beam search.  Graph partitioning, QUBO partitioning, and matching
+   partitioning are all covered in
+   :doc:`combinatorial_optimization_qaoa_pce`.
 
 Beam Search Aggregation
-^^^^^^^^^^^^^^^^^^^^^^^
+-----------------------
 
 When aggregating partition results, each partition has multiple candidate bitstrings ranked by probability. By default, aggregation picks only the **single best** candidate from each partition (greedy). Beam search explores multiple candidates per partition to find better global combinations.
 
@@ -376,7 +87,7 @@ The ``aggregate_results`` method accepts two parameters:
    Setting ``n_partition_candidates`` higher than ``beam_width`` is useful when you want each partition to propose many alternatives (wider local search) while keeping memory usage controlled (narrow beam).
 
 Top-N Solutions
-^^^^^^^^^^^^^^^
+---------------
 
 :class:`~divi.qprog.workflows.PartitioningProgramEnsemble` exposes a ``get_top_solutions`` method that returns multiple ranked global solutions using beam search.
 

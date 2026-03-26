@@ -96,7 +96,7 @@ Molecule Transformer
 Partitioning Configuration
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-.. autoclass:: divi.qprog.workflows.GraphPartitioningConfig
+.. autoclass:: divi.qprog.problems.GraphPartitioningConfig
    :members:
    :undoc-members:
    :show-inheritance:

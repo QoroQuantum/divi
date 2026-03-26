@@ -3,12 +3,118 @@ Combinatorial Optimization with QAOA and PCE
 
 The Quantum Approximate Optimization Algorithm (QAOA) is designed to solve combinatorial optimization problems on near-term quantum computers.
 
-Divi offers two QAOA modes: single-instance mode for individual problems, and graph partitioning mode for large, intractable problems.
+Divi offers two QAOA modes: single-instance mode for individual problems, and partitioning mode for large, intractable problems.
+
+The QAOAProblem Interface
+-------------------------
+
+Every problem solved with QAOA in Divi is represented as a
+:class:`~divi.qprog.problems.QAOAProblem` subclass.  This base class defines the
+contract between domain-specific problem logic and the QAOA algorithm — QAOA
+never knows about graphs, QUBOs, or routes directly; it only interacts with the
+interface that ``QAOAProblem`` provides.
+
+**Required properties** (every subclass must implement):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Property
+     - Purpose
+   * - ``cost_hamiltonian``
+     - PennyLane operator encoding the optimisation objective.
+   * - ``mixer_hamiltonian``
+     - PennyLane operator enabling exploration of the solution space.
+   * - ``loss_constant``
+     - Constant offset added back to the expectation value (from Ising conversion).
+   * - ``decode_fn``
+     - Callable that maps a measurement bitstring to a domain-level solution.
+
+**Optional overrides** (sensible defaults are provided):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Method
+     - Default
+   * - ``recommended_initial_state``
+     - ``SuperpositionState()`` — override for constrained problems (e.g. ``ZerosState``, ``WState``).
+   * - ``is_feasible(bitstring)``
+     - ``True`` — override to check constraint satisfaction.
+   * - ``repair_infeasible_bitstring(bitstring)``
+     - Returns the bitstring unchanged — override to project infeasible solutions onto the feasible set.
+   * - ``compute_energy(bitstring)``
+     - ``None`` — override to evaluate the true objective (used by ``get_top_solutions`` with feasibility filtering).
+
+**Decomposition hooks** (override to enable partitioned workflows with
+:class:`~divi.qprog.workflows.PartitioningProgramEnsemble`):
+
+- ``decompose()`` — split the problem into a dict of sub-``QAOAProblem`` instances.
+- ``initial_solution_size()`` — size of the global solution vector.
+- ``extend_solution(current, prog_id, candidate)`` — map a sub-solution into global coordinates.
+- ``evaluate_global_solution(solution)`` — score a complete solution (lower is better).
+- ``finalize_solution(score, solution)`` — post-process the best beam-search result.
+- ``format_top_solutions(results)`` — format beam-search output for the user.
+
+Divi ships several concrete subclasses — graph problems, ``BinaryOptimizationProblem``
+(QUBO/HUBO), routing problems (TSP, CVRP), and ``MaxWeightMatchingProblem`` —
+all described in the sections below.
+
+Custom Problems
+^^^^^^^^^^^^^^^
+
+To solve a problem that doesn't fit the built-in classes, subclass
+``QAOAProblem`` and implement the four required properties.  Here is a
+minimal example that encodes a simple 2-qubit Hamiltonian:
+
+.. code-block:: python
+
+   import pennylane as qml
+   from divi.qprog import QAOA, ScipyOptimizer, ScipyMethod
+   from divi.qprog.problems import QAOAProblem
+   from divi.backends import MaestroSimulator
+
+   class MyProblem(QAOAProblem):
+       @property
+       def cost_hamiltonian(self):
+           return -1.0 * qml.Z(0) @ qml.Z(1) + 0.5 * qml.Z(0)
+
+       @property
+       def mixer_hamiltonian(self):
+           return qml.X(0) + qml.X(1)
+
+       @property
+       def loss_constant(self):
+           return 0.0
+
+       @property
+       def decode_fn(self):
+           # Map bitstring to a list of selected qubits
+           return lambda bs: [i for i, b in enumerate(bs) if b == "1"]
+
+   qaoa = QAOA(
+       MyProblem(),
+       n_layers=2,
+       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+       max_iterations=20,
+       backend=MaestroSimulator(),
+   )
+   qaoa.run()
+   print(qaoa.solution)
+
+Override ``is_feasible``, ``compute_energy``, or ``repair_infeasible_bitstring``
+to enable feasibility-aware post-processing via
+:meth:`~divi.qprog.algorithms.QAOA.get_top_solutions`.  Override the
+decomposition hooks to enable partitioned solving via
+:class:`~divi.qprog.workflows.PartitioningProgramEnsemble`.
+See the :class:`API reference <divi.qprog.problems.QAOAProblem>` for full details.
 
 Single-Instance QAOA
 --------------------
 
-A `QAOA` constructor expects a ``Problem`` instance that encapsulates the optimization objective. However, there are some common arguments that one must pay attention to.
+The ``QAOA`` constructor expects a :class:`~divi.qprog.problems.QAOAProblem` instance that encapsulates the optimization objective. However, there are some common arguments that one must pay attention to.
 
 A user has the ability to choose the **initial state** of the quantum system before the optimization by passing an ``InitialState`` instance. Available states include ``ZerosState()``, ``OnesState()``, ``SuperpositionState()``, ``CustomPerQubitState("01+-")``, and ``WState(block_size, n_blocks)`` for one-hot encoded problems. When ``initial_state=None`` (the default), graph problems use a problem-specific recommendation and QUBO/HUBO problems default to ``SuperpositionState()``. When ``WState`` is used, the mixer is automatically set to the XY mixer, which preserves the one-hot subspace. In addition, a user can determine how many **layers** of the QAOA ansatz to apply.
 

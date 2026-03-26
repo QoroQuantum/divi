@@ -76,31 +76,31 @@ QAOA accepts a :class:`Problem` instance that encapsulates the optimisation
 objective, mixer, initial state, and solution decoding.  Divi provides concrete
 classes for common graph and binary optimisation problems.
 
-.. autoclass:: divi.qprog.algorithms.Problem
+.. autoclass:: divi.qprog.problems.QAOAProblem
    :members:
    :show-inheritance:
 
-.. autoclass:: divi.qprog.algorithms.MaxCutProblem
+.. autoclass:: divi.qprog.problems.MaxCutProblem
    :show-inheritance:
    :special-members: __init__
    :no-index:
 
-.. autoclass:: divi.qprog.algorithms.MaxCliqueProblem
+.. autoclass:: divi.qprog.problems.MaxCliqueProblem
    :show-inheritance:
    :special-members: __init__
    :no-index:
 
-.. autoclass:: divi.qprog.algorithms.MaxIndependentSetProblem
+.. autoclass:: divi.qprog.problems.MaxIndependentSetProblem
    :show-inheritance:
    :special-members: __init__
    :no-index:
 
-.. autoclass:: divi.qprog.algorithms.MinVertexCoverProblem
+.. autoclass:: divi.qprog.problems.MinVertexCoverProblem
    :show-inheritance:
    :special-members: __init__
    :no-index:
 
-.. autoclass:: divi.qprog.algorithms.MaxWeightCycleProblem
+.. autoclass:: divi.qprog.problems.MaxWeightCycleProblem
    :show-inheritance:
    :special-members: __init__
    :no-index:
@@ -111,19 +111,19 @@ classes for common graph and binary optimisation problems.
    :special-members: __init__
    :no-index:
 
-.. autoclass:: divi.qprog.algorithms.BinaryOptimizationProblem
+.. autoclass:: divi.qprog.problems.BinaryOptimizationProblem
    :members:
    :show-inheritance:
    :special-members: __init__
    :no-index:
 
-.. autoclass:: divi.qprog.algorithms.TSPProblem
+.. autoclass:: divi.qprog.problems.TSPProblem
    :members:
    :show-inheritance:
    :special-members: __init__
    :no-index:
 
-.. autoclass:: divi.qprog.algorithms.CVRPProblem
+.. autoclass:: divi.qprog.problems.CVRPProblem
    :members:
    :show-inheritance:
    :special-members: __init__
@@ -321,7 +321,7 @@ VQE Hyperparameter Sweep
 Partitioning Configuration
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. autoclass:: divi.qprog.workflows.GraphPartitioningConfig
+.. autoclass:: divi.qprog.problems.GraphPartitioningConfig
    :members:
    :undoc-members:
    :show-inheritance:
