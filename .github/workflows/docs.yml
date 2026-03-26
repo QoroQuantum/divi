@@ -21,25 +21,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Install Poetry
+        run: pipx install poetry==2.2.1
+
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
-        with:
-          version: 2.2.1
-          virtualenvs-create: true
-          virtualenvs-in-project: true
-
-      - name: Cache Poetry dependencies
-        uses: actions/cache@v4
-        with:
-          path: .venv
-          key: poetry-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
-          restore-keys: |
-            poetry-${{ runner.os }}-
+          cache: 'poetry'
 
       - name: Install doc dependencies (Poetry)
         run: |

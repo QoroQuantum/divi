@@ -18,27 +18,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Poetry
+        run: pipx install poetry==2.2.1
+
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
-        with:
-          version: 2.2.1
-          virtualenvs-create: true
-          virtualenvs-in-project: true
-
-      - name: Cache Poetry dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/pypoetry
-            .venv
-          key: poetry-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/poetry.lock') }}
-          restore-keys: |
-            poetry-${{ runner.os }}-${{ matrix.python-version }}-
+          cache: 'poetry'
 
       - name: Install dependencies
         run: poetry install --with testing --without dev,ui,docs
@@ -63,27 +50,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Poetry
+        run: pipx install poetry==2.2.1
+
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
-        with:
-          version: 2.2.1
-          virtualenvs-create: true
-          virtualenvs-in-project: true
-
-      - name: Cache Poetry dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/pypoetry
-            .venv
-          key: poetry-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/poetry.lock') }}
-          restore-keys: |
-            poetry-${{ runner.os }}-${{ matrix.python-version }}-
+          cache: 'poetry'
 
       - name: Install dependencies
         run: poetry install --with testing --without dev,ui,docs
