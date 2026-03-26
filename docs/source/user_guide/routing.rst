@@ -1,12 +1,14 @@
 Routing Problems (TSP & CVRP)
 =============================
 
-Divi provides specialised :class:`~divi.qprog.algorithms.TSPProblem` and
-:class:`~divi.qprog.algorithms.CVRPProblem` classes for solving routing
-problems with QAOA.  These implement the **Constraint-Enhanced QAOA**
-(CE-QAOA) protocol [#onah2025]_, which uses block one-hot encoding with
-W-state initialisation and an XY mixer to keep quantum amplitude
-concentrated on the feasible (permutation) subspace.
+Divi provides specialised :class:`~divi.qprog.problems.TSPProblem` and
+:class:`~divi.qprog.problems.CVRPProblem` classes for solving routing
+problems with QAOA.  Both are :class:`~divi.qprog.problems.QAOAProblem`
+subclasses and work with the same ``QAOA`` constructor described in
+:doc:`combinatorial_optimization_qaoa_pce`.  They implement the
+**Constraint-Enhanced QAOA** (CE-QAOA) protocol [#onah2025]_, which uses
+block one-hot encoding with W-state initialisation and an XY mixer to keep
+quantum amplitude concentrated on the feasible (permutation) subspace.
 
 Why CE-QAOA?
 ------------
@@ -118,12 +120,12 @@ Feasibility, Repair, and Energy
 
 Both problem classes implement:
 
-- :meth:`~divi.qprog.algorithms._routing.TSPProblem.is_feasible` — check
+- :meth:`~divi.qprog.problems._routing.TSPProblem.is_feasible` — check
   whether a bitstring represents a valid tour/route.
-- :meth:`~divi.qprog.algorithms._routing.TSPProblem.repair_infeasible_bitstring` — project an
+- :meth:`~divi.qprog.problems._routing.TSPProblem.repair_infeasible_bitstring` — project an
   infeasible bitstring to the nearest valid solution using the
   **Hungarian algorithm** (``scipy.optimize.linear_sum_assignment``).
-- :meth:`~divi.qprog.algorithms._routing.TSPProblem.compute_energy` —
+- :meth:`~divi.qprog.problems._routing.TSPProblem.compute_energy` —
   evaluate the actual travel cost.
 
 These are used by QAOA's ``get_top_solutions`` with the ``feasibility``
