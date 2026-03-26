@@ -154,7 +154,7 @@ class ProgramState(BaseModel):
     def restore(self, program: "VariationalQuantumAlgorithm") -> None:
         """Apply this state object back to a program instance."""
         # 1. Bulk restore standard attributes
-        for name, field in self.model_fields.items():
+        for name, field in self.__class__.model_fields.items():
             target_attr = field.validation_alias or name
 
             # Skip adapter properties (they are read-only / calculated)
@@ -769,7 +769,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         Args:
             state (dict[str, Any]): Dictionary of subclass-specific state.
         """
-        pass
 
     def _get_optimizer_config(self) -> OptimizerConfig:
         """Extract optimizer configuration for checkpoint reconstruction.
@@ -972,7 +971,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             The default implementation does nothing. Subclasses should override
             this method if they need post-optimization processing.
         """
-        pass
 
     def run(
         self,

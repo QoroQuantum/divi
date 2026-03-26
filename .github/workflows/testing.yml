@@ -28,7 +28,7 @@ jobs:
           cache: 'poetry'
 
       - name: Install dependencies
-        run: poetry install --with testing --without dev,ui,docs
+        run: poetry install --with testing --without dev,docs
 
       - name: Run unit tests
         run: poetry run pytest -n auto -m "not requires_api_key"
@@ -60,7 +60,7 @@ jobs:
           cache: 'poetry'
 
       - name: Install dependencies
-        run: poetry install --with testing --without dev,ui,docs
+        run: poetry install --with testing --without dev,docs
 
       - name: Run tutorial scripts
         shell: bash

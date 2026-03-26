@@ -37,16 +37,16 @@ python = ">=3.11,<3.13"
 # Quantum computing
 pennylane = "^0.43"
 pennylane-qiskit = "^0.43"
-qiskit = ">=2.1,<2.3"
+qiskit = ">=2.1,<2.4"
 qiskit-aer = "*"
 qiskit-ibm-runtime = "^0.41"
-mitiq = "^0.48"
+mitiq = "^1.0"
 cirq-core = "^1.6"
 # Scientific computing and numerical operations
 numpy = "*"
 scipy = "^1.16"
-sympy = "^1.14.0"
-scikit-learn = "^1.7.0"
+sympy = "^1.14"
+scikit-learn = "^1.7"
 # Graph operations and partitioning
 networkx = "^3.5"
 pymetis = {version = "^2025.1.1", markers = "sys_platform != 'win32'"}
@@ -55,14 +55,14 @@ qoro-maestro = "0.2.6"
 pymoo = "^0.6"
 dwave-hybrid = "^0.6.14"
 # Utilities
-requests = "^2.32.4"
-dill = "^0.4.0"
+requests = "^2.32"
+dill = "^0.4"
 python-dotenv = "^1.1.1"
-rich = "^14.0.0"
-matplotlib = "^3.10.3"
+rich = "^14.0"
+matplotlib = "^3.10"
 ply = "^3.11"
 basis-set-exchange = "^0.11"
-pydantic = ">=2.5.0,<2.10"
+pydantic = "^2.10"
 
 
 [tool.poetry.group.dev.dependencies]
@@ -71,10 +71,6 @@ isort = "^8.0"
 pre-commit = "^4.5"
 commitizen = "^4.13"
 
-
-[tool.poetry.group.ui.dependencies]
-dash = "^3.0.4"
-dash-bootstrap-components = "^2.0.3"
 
 
 [tool.poetry.group.testing.dependencies]
