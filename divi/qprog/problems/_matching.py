@@ -70,8 +70,8 @@ def _construct_matching_qubo(
         for i in range(len(qubits)):
             for j in range(i + 1, len(qubits)):
                 qi, qj = qubits[i], qubits[j]
-                qubo[qi, qj] += penalty
-                qubo[qj, qi] += penalty
+                qubo[qi, qj] += penalty / 2
+                qubo[qj, qi] += penalty / 2
 
     return qubo
 
@@ -164,6 +164,10 @@ def _partition_graph_by_edges(
 
     sg_a = graph.subgraph(part_a).copy()
     sg_b = graph.subgraph(part_b).copy()
+
+    # Bail out if bisection made no progress (e.g. degenerate Fiedler vector)
+    if not part_b or sg_a.size() == graph.size():
+        return [graph.copy()]
 
     result = []
     for sg in (sg_a, sg_b):
@@ -465,15 +469,12 @@ class MaxWeightMatchingProblem(QAOAProblem):
         conflicts.
         """
         weight = 0.0
-        node_count: dict = {}
         for idx, bit in enumerate(solution):
             if bit:
                 u, v = self._edges[idx]
                 weight += self._graph[u][v].get("weight", 1.0)
-                node_count[u] = node_count.get(u, 0) + 1
-                node_count[v] = node_count.get(v, 0) + 1
 
-        conflicts = sum(max(0, c - 1) for c in node_count.values())
+        conflicts = _count_conflicts(solution, self._edges)
         avg_weight = sum(
             d.get("weight", 1.0) for _, _, d in self._graph.edges(data=True)
         ) / max(self._graph.number_of_edges(), 1)
