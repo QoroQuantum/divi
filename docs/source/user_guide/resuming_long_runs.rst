@@ -138,7 +138,8 @@ Here's a complete example showing checkpointing with :class:`QAOA`:
 
    import networkx as nx
    from pathlib import Path
-   from divi.qprog import QAOA, MaxCliqueProblem
+   from divi.qprog import QAOA
+   from divi.qprog.problems import MaxCliqueProblem
    from divi.qprog.checkpointing import CheckpointConfig
    from divi.qprog.optimizers import PymooOptimizer, PymooMethod
    from divi.backends import MaestroSimulator

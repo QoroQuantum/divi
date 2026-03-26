@@ -15,20 +15,13 @@ This isolates the effect of parameter interpolation: any improvement must
 come from better initialization, not from more compute.
 """
 
-pass
-
 import networkx as nx
 from rich.console import Console
 from rich.table import Table
 
-from divi.qprog import (
-    QAOA,
-    InterpolationStrategy,
-    IterativeQAOA,
-    MaxCutProblem,
-    ScipyMethod,
-    ScipyOptimizer,
-)
+from divi.qprog import QAOA, InterpolationStrategy, IterativeQAOA
+from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from divi.qprog.problems import MaxCutProblem
 from tutorials._backend import get_backend
 
 MAX_DEPTH = 8

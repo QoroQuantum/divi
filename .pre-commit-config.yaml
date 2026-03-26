@@ -34,7 +34,12 @@ repos:
     rev: v2.3.3
     hooks:
       - id: autoflake
-        args: ["--remove-all-unused-imports", "--ignore-init-module-imports", "--remove-unused-variables", "--ignore-pass-statements", "--in-place"]
+        args: [
+          "--remove-all-unused-imports",
+          "--ignore-init-module-imports",
+          "--remove-unused-variables",
+          "--in-place"
+          ]
 
 -   repo: https://github.com/Lucas-C/pre-commit-hooks
     rev: v1.5.6

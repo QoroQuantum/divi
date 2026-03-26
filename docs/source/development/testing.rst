@@ -43,13 +43,11 @@ Divi uses custom pytest markers to categorize tests:
 .. code-block:: bash
 
    poetry run pytest -m "requires_api_key"  # API-dependent tests only
-   poetry run pytest -m "algo"              # Algorithm tests only
    poetry run pytest -m "e2e"               # End-to-end tests only
    poetry run pytest -m "not e2e"           # Skip slow e2e tests
 
 Available markers:
 - ``requires_api_key``: Tests requiring QORO_API_KEY
-- ``algo``: Algorithm-related tests
 - ``e2e``: Slow end-to-end integration tests
 
 **API Testing**
@@ -69,7 +67,9 @@ Test Structure
 
 Tests are organized in the ``tests/`` directory:
 
-- ``tests/qprog/`` - Tests for quantum programs and algorithms
+- ``tests/qprog/problems/`` - Tests for ``QAOAProblem`` subclasses (one file per problem domain)
+- ``tests/qprog/algorithms/`` - Tests for algorithm-generic behavior (QAOA pipeline, QDrift, VQE, PCE)
+- ``tests/qprog/workflows/`` - Tests for workflow orchestrators (``PartitioningProgramEnsemble``, ``VQEHyperparameterSweep``)
 - ``tests/circuits/`` - Tests for circuit operations and QEM
 - ``tests/backends/`` - Tests for backend implementations
 - ``tests/pipeline/`` - Tests for the circuit pipeline and stages
@@ -82,8 +82,62 @@ Tests are organized in the ``tests/`` directory:
 - ``dummy_simulator``: Fast mock simulator returning random counts (for unit tests)
 - ``dummy_expval_backend``: Mock backend that supports expectation values (for PCE tests)
 - ``dummy_pipeline_env``: ``PipelineEnv`` wrapping the expval backend (for pipeline tests)
-- ``default_test_simulator``: Deterministic ``QiskitSimulator`` (for integration tests)
+- ``default_test_simulator``: Deterministic ``MaestroSimulator`` with 5000 shots (for integration tests)
 - ``api_key``: Fixture providing API key for cloud tests (module-scoped)
+
+Problem Test Structure
+~~~~~~~~~~~~~~~~~~~~~~
+
+Each ``QAOAProblem`` subclass has a dedicated test file under ``tests/qprog/problems/``.
+Tests within each file follow a layered structure, from isolated units to full integration:
+
+1. **Utility functions** — standalone helpers (QUBO construction, validation, decoding, repair)
+2. **Problem class** — construction, properties, input validation, error handling
+3. **QAOAProblem protocol hooks** — ``decompose``, ``extend_solution``, ``evaluate_global_solution``,
+   ``initial_solution_size``, ``finalize_solution``, ``format_top_solutions``
+4. **QAOA integration** — Problem + QAOA together (initialization, e2e runs, checkpointing)
+5. **PartitioningProgramEnsemble integration** — Problem + ensemble (program creation, aggregation, e2e)
+
+Example layout for a new problem:
+
+.. code-block:: python
+
+   # tests/qprog/problems/test_my_problem.py
+
+   # --- 1. Utility functions ---
+   class TestBuildMyQubo:
+       def test_returns_square_matrix(self): ...
+       def test_rejects_invalid_input(self): ...
+
+   # --- 2. Problem class ---
+   class TestMyProblem:
+       def test_cost_hamiltonian(self): ...
+       def test_is_feasible(self): ...
+       def test_compute_energy(self): ...
+       def test_decode_fn(self): ...
+
+   # --- 3. QAOAProblem protocol hooks ---
+   class TestDecomposeMyProblem:
+       def test_decompose_returns_subproblems(self): ...
+       def test_extend_solution(self): ...
+
+   # --- 4. QAOA integration ---
+   class TestMyProblemQAOA:
+       def test_runs_via_qaoa(self, default_test_simulator): ...
+
+       @pytest.mark.e2e
+       def test_e2e_solution(self, default_test_simulator): ...
+
+   # --- 5. Ensemble integration ---
+   class TestMyProblemEnsemble:
+       def test_create_programs(self, dummy_simulator): ...
+
+       @pytest.mark.e2e
+       def test_partitioning_e2e(self, default_test_simulator): ...
+
+Generic ``PartitioningProgramEnsemble`` behavior (error handling, hook delegation) is tested
+once in ``tests/qprog/workflows/test_partitioning_ensemble.py`` using mocked problems — do
+not duplicate those tests in problem-specific files.
 
 Writing Tests
 -------------
@@ -168,7 +222,7 @@ Divi uses `pytest-mock <https://pytest-mock.readthedocs.io/>`_ for clean mocking
 
 Key pytest settings in ``pytest.ini``:
 
-- Custom markers for test categorization (``requires_api_key``, ``algo``, ``e2e``)
+- Custom markers for test categorization (``requires_api_key``, ``e2e``)
 - Deprecation and syntax warning filters for cleaner output
 
 **Coverage Reporting**
