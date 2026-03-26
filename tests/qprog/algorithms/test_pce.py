@@ -19,15 +19,13 @@ from divi.qprog.algorithms._pce import (
     _masks_to_ham_ops,
 )
 from divi.qprog.checkpointing import CheckpointConfig
-from tests.qprog.algorithms.problems import (
+from tests.qprog.problems._helpers import (
     HUBO_CUBIC,
     PCE_QUBO_MATRIX,
     PCE_QUBO_SOLUTION,
     exact_hubo_minima,
 )
 from tests.qprog.qprog_contracts import verify_metacircuit_dict
-
-pytestmark = pytest.mark.algo
 
 
 @pytest.fixture
