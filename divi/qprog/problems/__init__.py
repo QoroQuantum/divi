@@ -15,6 +15,11 @@ from divi.qprog.problems._graphs import (
     MinVertexCoverProblem,
     draw_graph_solution_nodes,
 )
+from divi.qprog.problems._matching import (
+    MaxWeightMatchingProblem,
+    check_matching_matrix,
+    is_valid_matching,
+)
 from divi.qprog.problems._graph_partitioning_utils import (
     GraphPartitioningConfig,
     draw_partitions,

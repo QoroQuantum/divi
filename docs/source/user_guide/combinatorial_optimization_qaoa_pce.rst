@@ -90,6 +90,8 @@ Min Vertex Cover.  Each graph problem has a dedicated class:
      - Finds the smallest set of vertices such that every edge is incident to at least one selected vertex.
    * - ``MaxWeightCycleProblem(graph)``
      - Identifies a cycle with the maximum total edge weight in a weighted graph.
+   * - ``MaxWeightMatchingProblem(graph)``
+     - Finds a set of edges with maximum total weight where no two edges share a node.
 
 Example: Finding the max-clique of a graph:
 
@@ -277,6 +279,68 @@ Example
    When variables have non-integer labels, ``.solution`` returns a
    ``dict[variable_name, int]``.  For QUBO matrices (integer-indexed),
    ``.solution`` remains a NumPy array for backwards compatibility.
+
+Matching Problems
+-----------------
+
+Divi supports maximum-weight matching via ``MaxWeightMatchingProblem``.  Given
+a weighted graph, it finds a set of edges that maximizes total weight while
+ensuring no two selected edges share a node.
+
+For small graphs, use directly with QAOA:
+
+.. code-block:: python
+
+   import networkx as nx
+   from divi.qprog import QAOA
+   from divi.qprog.problems import MaxWeightMatchingProblem
+   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+   from divi.backends import MaestroSimulator
+
+   G = nx.Graph()
+   G.add_weighted_edges_from([(0, 1, 5.0), (1, 2, 1.0), (2, 3, 5.0)])
+
+   problem = MaxWeightMatchingProblem(G, penalty_scale=10.0)
+   qaoa = QAOA(
+       problem,
+       n_layers=2,
+       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+       max_iterations=20,
+       backend=MaestroSimulator(),
+   )
+   qaoa.run()
+   print(f"Matching: {qaoa.solution}")
+
+For large graphs, enable edge-based partitioning with ``max_edges_per_partition``:
+
+.. code-block:: python
+
+   from divi.qprog.workflows import PartitioningProgramEnsemble
+
+   problem = MaxWeightMatchingProblem(
+       G,
+       penalty_scale=10.0,
+       max_edges_per_partition=15,
+       partition_algorithm="kernighan_lin",
+   )
+
+   ensemble = PartitioningProgramEnsemble(
+       problem=problem,
+       n_layers=2,
+       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+       max_iterations=10,
+       backend=MaestroSimulator(),
+   )
+
+   ensemble.create_programs()
+   ensemble.run(blocking=True)
+   matching, weight = ensemble.aggregate_results()
+   print(f"Matching: {matching}, weight: {weight}")
+
+The partitioned workflow splits the graph by edges using Kernighan-Lin or spectral
+bisection, solves each partition independently, stitches results via beam search,
+and optionally fills unmatched residual nodes using classical
+:func:`nx.max_weight_matching`.
 
 Iterative QAOA
 --------------

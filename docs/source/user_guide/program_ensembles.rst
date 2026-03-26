@@ -289,6 +289,55 @@ To use ``PCE`` as the per-partition engine, set ``quantum_routine="pce"`` and pa
        backend=MaestroSimulator(),
    )
 
+Matching Partitioning
+^^^^^^^^^^^^^^^^^^^^^
+
+For large weighted matching problems, ``MaxWeightMatchingProblem`` partitions
+the graph by edges and solves each partition independently:
+
+.. code-block:: python
+
+   import networkx as nx
+   from divi.qprog.problems import MaxWeightMatchingProblem
+   from divi.qprog.workflows import PartitioningProgramEnsemble
+   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+   from divi.backends import MaestroSimulator
+
+   G = nx.gnm_random_graph(30, 60, seed=42)
+   for u, v in G.edges():
+       G[u][v]["weight"] = float(u + v)
+
+   problem = MaxWeightMatchingProblem(
+       G,
+       penalty_scale=10.0,
+       max_edges_per_partition=15,
+       partition_algorithm="kernighan_lin",  # or "spectral"
+       use_classical_cleanup=True,
+   )
+
+   ensemble = PartitioningProgramEnsemble(
+       problem=problem,
+       n_layers=2,
+       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+       max_iterations=10,
+       backend=MaestroSimulator(),
+   )
+
+   ensemble.create_programs()
+   ensemble.run(blocking=True)
+   matching, weight = ensemble.aggregate_results()
+
+   print(f"Matching edges: {matching}")
+   print(f"Total weight: {weight}")
+
+The workflow:
+
+1. Partitions the graph by edges (Kernighan-Lin keeps high-weight edges together).
+2. Constructs a QUBO per partition encoding the matching constraints.
+3. Solves each QUBO with QAOA (or PCE/IterativeQAOA via ``quantum_routine``).
+4. Stitches partition solutions via beam search with conflict-aware scoring.
+5. Repairs any remaining conflicts and fills unmatched nodes via classical matching.
+
 Beam Search Aggregation
 ^^^^^^^^^^^^^^^^^^^^^^^
 
