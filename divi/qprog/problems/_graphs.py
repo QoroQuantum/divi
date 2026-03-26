@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import string
 from collections.abc import Callable
 from typing import Any
 from warnings import warn
@@ -165,7 +164,7 @@ class _GraphProblemBase(QAOAProblem):
         sub_problems = {}
 
         for i, subgraph in enumerate(subgraphs):
-            prog_id = (string.ascii_uppercase[i], subgraph.number_of_nodes())
+            prog_id = (f"P{i}", subgraph.number_of_nodes())
 
             index_map = {node: idx for idx, node in enumerate(subgraph.nodes())}
             self._reverse_index_maps[prog_id] = {v: k for k, v in index_map.items()}

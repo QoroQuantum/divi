@@ -120,8 +120,13 @@ class TestSanitizeProblemInput:
         assert isinstance(bqm, dimod.BinaryQuadraticModel)
         assert len(bqm.variables) == 4
 
-    def test_with_sparse_matrix(self, sample_qubo_matrix):
-        sparse_matrix = sps.coo_matrix(sample_qubo_matrix)
+    @pytest.mark.parametrize(
+        "fmt",
+        [sps.coo_matrix, sps.csr_matrix, sps.csc_matrix, sps.lil_matrix],
+        ids=["COO", "CSR", "CSC", "LIL"],
+    )
+    def test_with_sparse_matrix(self, sample_qubo_matrix, fmt):
+        sparse_matrix = fmt(sample_qubo_matrix)
         orig, bqm = _sanitize_problem_input(sparse_matrix)
         assert orig is sparse_matrix
         assert isinstance(bqm, dimod.BinaryQuadraticModel)
