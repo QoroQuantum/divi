@@ -117,8 +117,10 @@ Divi ships with six stages that cover the most common quantum workflows:
        See :doc:`improving_results_qem` for details.
    * - :class:`~divi.pipeline.stages.PCECostStage`
      - Bundle
-     - Computes the Pauli-coefficient expectation-value cost for ``PCE``-based
-       algorithms.
+     - Computes the custom counts-based objective for ``PCE``-based algorithms.
+       In soft mode it evaluates a smooth surrogate from the measured bitstring
+       distribution; in hard mode it evaluates a discrete CVaR-style objective
+       over sampled energies.
 
 
 Dry Run

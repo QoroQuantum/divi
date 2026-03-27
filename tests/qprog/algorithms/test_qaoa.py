@@ -64,6 +64,25 @@ class TestGeneralQAOA:
         # Cost pipeline should be called once per iteration
         assert spy.call_count >= 1
 
+    def test_qaoa_cost_pipeline_uses_cost_hamiltonian_initial_spec(
+        self, mocker, default_test_simulator
+    ):
+        """QAOA should customize cost evaluation via the initial-spec hook only."""
+        qaoa_problem = QAOA(
+            MaxCliqueProblem(nx.bull_graph(), is_constrained=True),
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=1,
+            backend=default_test_simulator,
+        )
+
+        spy = mocker.spy(qaoa_problem._cost_pipeline, "run")
+        mocker.patch.object(qaoa_problem, "_perform_final_computation")
+
+        qaoa_problem.run()
+
+        assert spy.call_args.kwargs["initial_spec"] is qaoa_problem.cost_hamiltonian
+
     @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
     def test_qaoa_final_computation_runs_measurement_pipeline(
         self, mocker, optimizer, default_test_simulator

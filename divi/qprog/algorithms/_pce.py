@@ -202,12 +202,11 @@ class PCE(VQE):
         super().__init__(hamiltonian=placeholder_hamiltonian, **kwargs)
 
     def _build_pipelines(self) -> None:
-        # Override VQE's cost pipeline: PCECostStage is a standalone
-        # BundleStage (not a MeasurementStage subclass) that emits a single
-        # "measure all qubits" QASM per circuit spec and computes nonlinear
-        # binary-polynomial energy from raw shot histograms.
-        # QEMStage is intentionally excluded — ZNE is not applicable to
-        # counts-based measurements.
+        """Build the PCE-specific cost and measurement pipelines."""
+        # PCECostStage is a standalone BundleStage (not a MeasurementStage
+        # subclass) that emits one "measure all qubits" QASM per circuit
+        # spec and computes the nonlinear binary-polynomial objective from
+        # raw shot histograms. QEMStage is intentionally excluded.
         self._cost_pipeline = CircuitPipeline(
             stages=[
                 CircuitSpecStage(),

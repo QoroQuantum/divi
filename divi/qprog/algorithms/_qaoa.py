@@ -22,7 +22,6 @@ from divi.qprog.problems import QAOAProblem
 from divi.qprog.variational_quantum_algorithm import (
     SolutionEntry,
     VariationalQuantumAlgorithm,
-    _extract_param_set_idx,
 )
 
 logger = logging.getLogger(__name__)
@@ -208,24 +207,9 @@ class QAOA(VariationalQuantumAlgorithm):
             ),
         }
 
-    def _evaluate_cost_param_sets(
-        self, param_sets: np.ndarray, **kwargs
-    ) -> dict[int, float]:
-        """Evaluate the cost pipeline for the provided parameter sets."""
-
-        env = self._build_pipeline_env(param_sets=np.atleast_2d(param_sets))
-        result = self._cost_pipeline.run(
-            initial_spec=self._cost_hamiltonian,
-            env=env,
-        )
-        self._total_circuit_count += env.artifacts.get("circuit_count", 0)
-        self._total_run_time += env.artifacts.get("run_time", 0.0)
-        self._current_execution_result = env.artifacts.get("_current_execution_result")
-
-        return {
-            _extract_param_set_idx(key): value + self.loss_constant
-            for key, value in result.items()
-        }
+    def _get_cost_pipeline_initial_spec(self) -> qml.operation.Operator:
+        """Use the cost Hamiltonian as the input spec for the cost pipeline."""
+        return self._cost_hamiltonian
 
     def _perform_final_computation(self, **kwargs):
         """Run measurement circuits with the best parameters and decode the solution.

@@ -154,6 +154,34 @@ class TestProgram:
         # Verify that the grouping strategy was overridden to "_backend_expval"
         assert program._grouping_strategy == "_backend_expval"
 
+    def test_evaluate_cost_param_sets_uses_initial_spec_hook(self, mocker):
+        """Cost evaluation should delegate to the initial-spec hook."""
+        program = self._create_sample_program(mocker)
+        program._build_pipelines()
+        program.loss_constant = 10.0
+
+        initial_spec_mock = mocker.patch.object(
+            program, "_get_cost_pipeline_initial_spec", return_value="hook_spec"
+        )
+        pipeline_run = mocker.patch.object(
+            program._cost_pipeline,
+            "run",
+            return_value={
+                (("param_set", 1),): 2.0,
+                (("param_set", 0),): 1.0,
+            },
+        )
+
+        param_sets = np.array([[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]])
+        losses = program._evaluate_cost_param_sets(param_sets)
+
+        initial_spec_mock.assert_called_once_with()
+        np.testing.assert_array_equal(
+            pipeline_run.call_args.kwargs["env"].param_sets, param_sets
+        )
+        assert pipeline_run.call_args.kwargs["initial_spec"] == "hook_spec"
+        assert list(losses.items()) == [(0, 11.0), (1, 12.0)]
+
 
 class BaseVariationalQuantumAlgorithmTest:
     """Base test class for VariationalQuantumAlgorithm functionality."""

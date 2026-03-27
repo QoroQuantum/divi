@@ -931,6 +931,10 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             ]
         )
 
+    def _get_cost_pipeline_initial_spec(self) -> Any:
+        """Return the initial spec passed into ``_cost_pipeline``."""
+        return self.meta_circuit_factories["cost_circuit"]
+
     # ------------------------------------------------------------------ #
     # Execution
     # ------------------------------------------------------------------ #
@@ -940,23 +944,25 @@ class VariationalQuantumAlgorithm(QuantumProgram):
     ) -> dict[int, float]:
         """Evaluate the cost pipeline for the provided parameter sets.
 
-        Uses ``_cost_pipeline`` with the ``cost_circuit`` meta-circuit factory.
-        Subclasses that need a different initial spec (e.g. QAOA passes the
-        Hamiltonian directly) should override this method.
+        Subclasses should prefer overriding the initial-spec hook over
+        replacing the full evaluator.
         """
-        env = self._build_pipeline_env(param_sets=np.atleast_2d(param_sets))
+        normalized_param_sets = np.atleast_2d(param_sets)
+
+        env = self._build_pipeline_env(param_sets=normalized_param_sets)
         result = self._cost_pipeline.run(
-            initial_spec=self.meta_circuit_factories["cost_circuit"],
+            initial_spec=self._get_cost_pipeline_initial_spec(),
             env=env,
         )
         self._total_circuit_count += env.artifacts.get("circuit_count", 0)
         self._total_run_time += env.artifacts.get("run_time", 0.0)
         self._current_execution_result = env.artifacts.get("_current_execution_result")
 
-        return {
+        indexed = {
             _extract_param_set_idx(key): value + self.loss_constant
             for key, value in result.items()
         }
+        return dict(sorted(indexed.items()))
 
     def _evaluate_gradient_at(
         self, params: npt.NDArray[np.float64], **kwargs
@@ -964,7 +970,10 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         """Evaluate the parameter-shift gradient at a single parameter vector."""
         shifted_param_sets = self._grad_shift_mask + params
         exp_vals = self._evaluate_cost_param_sets(shifted_param_sets, **kwargs)
-        exp_vals_arr = np.fromiter(exp_vals.values(), dtype=np.float64)
+        exp_vals_arr = np.asarray(
+            [value for _, value in sorted(exp_vals.items())],
+            dtype=np.float64,
+        )
 
         pos_shifts = exp_vals_arr[::2]
         neg_shifts = exp_vals_arr[1::2]
@@ -1043,7 +1052,10 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
             losses = self._evaluate_cost_param_sets(np.atleast_2d(params), **kwargs)
 
-            losses = np.fromiter(losses.values(), dtype=np.float64)
+            losses = np.asarray(
+                [value for _, value in sorted(losses.items())],
+                dtype=np.float64,
+            )
 
             if params.ndim > 1:
                 return losses
@@ -1185,6 +1197,5 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         self._total_run_time += env.artifacts.get("run_time", 0.0)
         self._current_execution_result = env.artifacts.get("_current_execution_result")
 
-        self._best_probs = {
-            _extract_param_set_idx(key): value for key, value in result.items()
-        }
+        indexed = {_extract_param_set_idx(key): value for key, value in result.items()}
+        self._best_probs = dict(sorted(indexed.items()))
