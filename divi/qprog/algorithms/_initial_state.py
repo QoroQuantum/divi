@@ -16,8 +16,6 @@ Class-based API (preferred)::
 Pass instances directly to algorithm constructors (e.g. ``initial_state=WState(3, 4)``).
 """
 
-from __future__ import annotations
-
 from abc import ABC, abstractmethod
 from typing import Literal, Sequence
 

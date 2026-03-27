@@ -4,8 +4,6 @@
 
 """Weighted matching problem for QAOA-based quantum optimization."""
 
-from __future__ import annotations
-
 from collections.abc import Callable, Hashable
 from functools import partial
 from typing import Any, Literal

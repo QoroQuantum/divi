@@ -4,8 +4,6 @@
 
 """Routing problem classes and utilities for QAOA (TSP, CVRP)."""
 
-from __future__ import annotations
-
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field

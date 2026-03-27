@@ -9,8 +9,6 @@ from multiple QuantumProgram instances into single backend calls,
 improving backend utilization.
 """
 
-from __future__ import annotations
-
 import logging
 from collections.abc import Mapping
 from concurrent.futures import Future

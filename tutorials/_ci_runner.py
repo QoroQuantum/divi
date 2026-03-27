@@ -15,8 +15,6 @@ Environment variables:
     DIVI_CI_JOB_TIMEOUT Total job budget in seconds (default 540).
 """
 
-from __future__ import annotations
-
 import argparse
 import os
 import shutil

@@ -4,8 +4,6 @@
 
 """Binary optimization (QUBO / HUBO) problem class for QAOA."""
 
-from __future__ import annotations
-
 from collections.abc import Callable
 from typing import Any, Literal
 

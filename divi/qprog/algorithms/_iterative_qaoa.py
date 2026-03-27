@@ -17,8 +17,6 @@ Three interpolation strategies are provided:
 - **CHEBYSHEV**: Chebyshev polynomial basis representation
 """
 
-from __future__ import annotations
-
 from collections.abc import Callable
 from enum import Enum
 
