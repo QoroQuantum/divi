@@ -23,10 +23,9 @@ from divi.hamiltonians import (
     _is_sanitized,
     _resolve_ising_converter,
     _sort_hamiltonian_terms,
-    _sparse_to_dense,
+    compress_ham_ops,
     convert_hamiltonian_to_pauli_string,
     convert_qubo_matrix_to_pennylane_ising,
-    decode_ham_ops,
     encode_ham_ops,
     normalize_binary_polynomial_problem,
     qubo_to_ising,
@@ -662,45 +661,6 @@ class TestCompressedObservables:
     def test_dense_to_sparse(self, dense, expected):
         assert _dense_to_sparse(dense) == expected
 
-    # -- _sparse_to_dense ------------------------------------------------
-
-    @pytest.mark.parametrize(
-        "sparse, n_qubits, expected",
-        [
-            ("Z0", 4, "ZIII"),
-            ("Z1", 4, "IZII"),
-            ("Z0Z3", 4, "ZIIZ"),
-            ("X0Y1Z2", 3, "XYZ"),
-            ("I", 4, "IIII"),
-            ("I", 1, "I"),
-            ("Z63", 64, "I" * 63 + "Z"),
-            ("Z0Z10", 11, "ZIIIIIIIIIZ"),
-        ],
-    )
-    def test_sparse_to_dense(self, sparse, n_qubits, expected):
-        assert _sparse_to_dense(sparse, n_qubits) == expected
-
-    # -- roundtrip sparse ↔ dense ----------------------------------------
-
-    @pytest.mark.parametrize(
-        "dense",
-        [
-            "ZIII",
-            "IZII",
-            "ZZII",
-            "IIII",
-            "XYZI",
-            "I" * 64,
-            "Z" + "I" * 63,
-            "I" * 63 + "Z",
-            "Z" + "I" * 10 + "X" + "I" * 51 + "Y",
-        ],
-    )
-    def test_sparse_roundtrip(self, dense):
-        sparse = _dense_to_sparse(dense)
-        recovered = _sparse_to_dense(sparse, len(dense))
-        assert recovered == dense
-
     # -- encode_ham_ops --------------------------------------------------
 
     def test_encode_prefix(self):
@@ -712,30 +672,15 @@ class TestCompressedObservables:
         encoded = encode_ham_ops(dense)
         assert encoded.startswith("@gzs64:")
 
-    # -- decode_ham_ops --------------------------------------------------
-
-    def test_decode_plain_passthrough(self):
-        """Plain dense strings pass through unchanged."""
-        plain = "ZZII;IZIZ"
-        assert decode_ham_ops(plain) == plain
-
-    # -- encode → decode roundtrip ---------------------------------------
-
-    @pytest.mark.parametrize(
-        "dense_str",
-        [
-            "Z",
-            "ZI;IZ;ZZ",
-            "ZZII;IZIZ;IIII",
-            "XYZ;ZYX;III",
-            ";".join(["Z" + "I" * 63, "I" * 63 + "Z", "I" * 64]),
-        ],
-        ids=["single_qubit", "2q_three_terms", "4q_three_terms", "xyz_terms", "64q_terms"],
-    )
-    def test_encode_decode_roundtrip(self, dense_str):
-        encoded = encode_ham_ops(dense_str)
-        decoded = decode_ham_ops(encoded)
-        assert decoded == dense_str
+    def test_compress_ham_ops_multi_group(self):
+        """Pipe-delimited groups are each independently compressed."""
+        group_a = "ZZII;IZIZ"
+        group_b = "XXII;IYIZ"
+        compressed = compress_ham_ops(f"{group_a}|{group_b}")
+        parts = compressed.split("|")
+        assert len(parts) == 2
+        assert parts[0] == encode_ham_ops(group_a)
+        assert parts[1] == encode_ham_ops(group_b)
 
     def test_compression_ratio(self):
         """Encoding should produce a string shorter than the dense input for large Hamiltonians."""
@@ -749,21 +694,6 @@ class TestCompressedObservables:
         dense = ";".join(terms)
         encoded = encode_ham_ops(dense)
         assert len(encoded) < len(dense)
-
-    def test_encode_decode_with_pennylane_hamiltonian(self):
-        """End-to-end test: PennyLane Hamiltonian → dense string → encode → decode."""
-        hamiltonian = qml.Hamiltonian(
-            [1.0, 2.0, 3.0],
-            [
-                qml.PauliZ(0) @ qml.PauliZ(1),
-                qml.PauliX(2),
-                qml.PauliY(0) @ qml.PauliZ(3),
-            ],
-        )
-        dense = convert_hamiltonian_to_pauli_string(hamiltonian, n_qubits=4)
-        encoded = encode_ham_ops(dense)
-        decoded = decode_ham_ops(encoded)
-        assert decoded == dense
 
 
 @pytest.fixture
