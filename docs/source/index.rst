@@ -59,6 +59,7 @@ Or pin a specific nightly by date:
 
    user_guide/core_concepts
    user_guide/pipelines
+   user_guide/visualization
    user_guide/ground_state_energy_estimation_vqe
    user_guide/combinatorial_optimization_qaoa_pce
    user_guide/routing

@@ -8,7 +8,7 @@ from abc import abstractmethod
 from datetime import datetime
 from pathlib import Path
 from queue import Queue
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 from warnings import warn
 
 import numpy as np
@@ -46,6 +46,7 @@ from divi.qprog.optimizers import (
     ScipyOptimizer,
 )
 from divi.qprog.quantum_program import QuantumProgram
+from divi.viz import ProgramViz
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,8 @@ def _extract_param_set_idx(key: tuple) -> int:
 
 
 _RUN_INSTRUCTION = "Call run() to execute the optimization."
+
+ParamHistoryMode = Literal["all_evaluated", "best_per_iteration"]
 
 
 class SolutionEntry(NamedTuple):
@@ -106,6 +109,9 @@ class ProgramState(BaseModel):
     current_iteration: int
     max_iterations: int
     losses_history: list[dict[str, float]] = Field(validation_alias="_losses_history")
+    param_history: list[list[list[float]]] = Field(
+        default_factory=list, validation_alias="_param_history"
+    )
     best_loss: float = Field(validation_alias="_best_loss")
     best_probs: dict[str, float] = Field(validation_alias="_best_probs")
     total_circuit_count: int = Field(validation_alias="_total_circuit_count")
@@ -142,6 +148,18 @@ class ProgramState(BaseModel):
     def validate_bytes(cls, v):
         return bytes.fromhex(v) if isinstance(v, str) else v
 
+    @field_validator("param_history", mode="before")
+    @classmethod
+    def normalize_param_history(cls, v):
+        """Accept nested lists or per-iteration ndarray snapshots from disk or program."""
+        if not v:
+            return []
+        rows: list[list[list[float]]] = []
+        for item in v:
+            arr = np.asarray(item, dtype=np.float64)
+            rows.append(arr.tolist())
+        return rows
+
     @field_serializer("best_params", "final_params")
     def serialize_arrays(self, v: npt.NDArray | list | None, _info):
         if isinstance(v, np.ndarray):
@@ -160,8 +178,10 @@ class ProgramState(BaseModel):
 
             val = getattr(self, name)
 
+            if target_attr == "_param_history" and val is not None:
+                val = [np.asarray(block, dtype=np.float64) for block in val]
             # Handle numpy conversion
-            if "params" in target_attr and val is not None:
+            elif "params" in target_attr and val is not None:
                 val = np.array(val)
 
             if hasattr(program, target_attr):
@@ -218,6 +238,8 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
     Attributes:
         _losses_history (list[dict]): History of loss values during optimization.
+        _param_history (list[npt.NDArray]): Raw per-callback parameter batches;
+            use :meth:`param_history` to read copies with optional filtering.
         _final_params (npt.NDArray[np.float64]): Final optimized parameters.
         _best_params (npt.NDArray[np.float64]): Parameters that achieved the best loss.
         _best_loss (float): Best loss achieved during optimization.
@@ -291,6 +313,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         # --- Optimization Results & History ---
         self._losses_history = []
+        self._param_history: list[npt.NDArray[np.float64]] = []
         self._best_params = []
         self._final_params = []
         self._best_loss = float("inf")
@@ -435,6 +458,59 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             )
         return self._losses_history.copy()
 
+    def param_history(
+        self,
+        mode: ParamHistoryMode = "all_evaluated",
+    ) -> list[npt.NDArray[np.float64]]:
+        """Parameter vectors recorded at each optimization callback.
+
+        Args:
+            mode: Which rows to return for each iteration:
+
+                * ``"all_evaluated"`` — full batch from the callback, shape
+                  ``(n_param_sets, n_params)`` per iteration (mirrors
+                  :attr:`losses_history` population layout).
+                * ``"best_per_iteration"`` — single best member by loss for
+                  that iteration, shape ``(1, n_params)`` per iteration.
+
+        Returns:
+            list[npt.NDArray[np.float64]]: One array per completed callback.
+            Use ``numpy.vstack(...)`` for a 2D sample matrix (e.g. PCA).
+
+        Raises:
+            RuntimeError: If internal loss and parameter histories are out of sync.
+        """
+        if not self._has_run_optimization():
+            warn(
+                "Parameter history is unavailable because optimization has not "
+                f"been run yet. {_RUN_INSTRUCTION}",
+                UserWarning,
+                stacklevel=2,
+            )
+            return []
+
+        if mode == "all_evaluated":
+            return [row.copy() for row in self._param_history]
+
+        if len(self._losses_history) != len(self._param_history):
+            raise RuntimeError(
+                "losses_history and _param_history length mismatch; cannot select "
+                "best_per_iteration rows."
+            )
+
+        best_blocks: list[npt.NDArray[np.float64]] = []
+        for loss_dict, block in zip(
+            self._losses_history, self._param_history, strict=True
+        ):
+            arr = np.atleast_2d(np.asarray(block, dtype=np.float64))
+            n_rows = arr.shape[0]
+            best_idx = min(
+                range(n_rows),
+                key=lambda j: float(loss_dict[str(j)]),
+            )
+            best_blocks.append(arr[best_idx : best_idx + 1].copy())
+        return best_blocks
+
     @property
     def min_losses_per_iteration(self) -> list[float]:
         """Get the minimum loss value for each iteration.
@@ -510,6 +586,19 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 "correctly, or all computed losses were infinite."
             )
         return self._best_loss
+
+    @property
+    def viz(self):
+        """Access visualization helpers for this variational program.
+
+        The returned object exposes a thin convenience wrapper over the
+        standalone :mod:`divi.viz` API, so scans can be written either as
+        ``divi.viz.scan_1d(program, ...)`` or ``program.viz.scan_1d(...)``.
+
+        Returns:
+            ProgramViz: Convenience wrapper bound to this program instance.
+        """
+        return ProgramViz(self)
 
     @property
     def best_probs(self) -> dict[str, dict[str, float]]:
@@ -1090,6 +1179,12 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                         intermediate_result.fun,
                     )
                 )
+            )
+
+            self._param_history.append(
+                np.atleast_2d(
+                    np.asarray(intermediate_result.x, dtype=np.float64)
+                ).copy()
             )
 
             current_loss = np.min(intermediate_result.fun)

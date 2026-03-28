@@ -410,7 +410,44 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         assert len(program.losses_history) == 3
         assert program.losses_history[0]["0"] == -0.8
         assert program.losses_history[2]["0"] == -0.9
+        assert len(program.param_history()) == 3
+        np.testing.assert_allclose(program.param_history()[0], curr_params1)
+        np.testing.assert_allclose(program.param_history()[2], curr_params3)
+        best_only = program.param_history(mode="best_per_iteration")
+        assert len(best_only) == 3
+        np.testing.assert_allclose(best_only[0], curr_params1)
+        np.testing.assert_allclose(best_only[2], curr_params3)
         assert mock_run_circuits.call_count == 3
+
+    def test_param_history_best_per_iteration_multi_member(self, mocker):
+        """best_per_iteration picks the population row with minimum loss each step."""
+        program = self._create_program_with_mock_optimizer(mocker, seed=42)
+        program.optimizer.n_param_sets = 2
+        program.max_iterations = 2
+
+        mock_run_circuits = mocker.patch.object(program, "_evaluate_cost_param_sets")
+        mock_run_circuits.side_effect = [
+            {0: 0.0, 1: -1.0},
+            {0: -2.0, 1: 0.0},
+        ]
+
+        row0 = np.array([[0.0, 0.0, 0.0, 0.0], [1.0, 1.0, 1.0, 1.0]])
+        row1 = np.array([[2.0, 2.0, 2.0, 2.0], [3.0, 3.0, 3.0, 3.0]])
+        self.setup_mock_optimizer(
+            program,
+            mocker,
+            [(row0, None), (row1, None)],
+        )
+
+        program.run()
+
+        best = program.param_history(mode="best_per_iteration")
+        assert len(best) == 2
+        np.testing.assert_allclose(best[0], [[1.0, 1.0, 1.0, 1.0]])
+        np.testing.assert_allclose(best[1], [[2.0, 2.0, 2.0, 2.0]])
+        full = program.param_history(mode="all_evaluated")
+        np.testing.assert_allclose(full[0], row0)
+        np.testing.assert_allclose(full[1], row1)
 
     def test_run_method_cancellation_handling(self, mocker):
         """Test run method exits gracefully when a cancellation event is set."""
@@ -659,6 +696,11 @@ class TestCheckpointing:
         assert loaded_program.current_iteration == 5
         assert loaded_program._best_loss == 0.123
         assert isinstance(loaded_program.optimizer, MonteCarloOptimizer)
+        assert len(loaded_program._param_history) == 5
+        np.testing.assert_allclose(
+            loaded_program._param_history[0],
+            [[0.1, 0.2, 0.3, 0.4]],
+        )
 
     def test_save_state_raises_error_before_optimization(
         self, sample_program, tmp_path
@@ -854,6 +896,13 @@ class TestPropertyWarnings(BaseVariationalQuantumAlgorithmTest):
 
         with pytest.warns(UserWarning, match=expected_warning_msg):
             _ = getattr(program, property_name)
+
+    def test_param_history_warn_before_optimization(self, mocker):
+        """param_history() warns when called before optimization runs."""
+        program = self._create_program_with_mock_optimizer(mocker)
+        with pytest.warns(UserWarning, match="Parameter history is unavailable"):
+            assert program.param_history() == []
+            assert program.param_history(mode="best_per_iteration") == []
 
     @pytest.mark.parametrize(
         "property_name,expected_warning_msg",

@@ -205,10 +205,11 @@ Next Steps & Getting Help
 * ⚡ **Scale Up**: Learn about :doc:`user_guide/program_ensembles` for parallel execution
 * 🛠️ **Customize**: Create your own algorithms using the :doc:`api_reference/qprog`
 * 📊 **Monitor Progress**: Explore :doc:`api_reference/reporting` for advanced progress tracking
+* 🔍 **Inspect Landscapes**: Use :doc:`user_guide/visualization` to explore variational loss landscapes with ``divi.viz``
 
 **Documentation & Support:**
 
-* 📖 **User Guide**: Complete guides including :doc:`user_guide/core_concepts`, :doc:`user_guide/ground_state_energy_estimation_vqe`, and :doc:`user_guide/combinatorial_optimization_qaoa_pce`
+* 📖 **User Guide**: Complete guides including :doc:`user_guide/core_concepts`, :doc:`user_guide/visualization`, :doc:`user_guide/ground_state_energy_estimation_vqe`, and :doc:`user_guide/combinatorial_optimization_qaoa_pce`
 * 🔧 **API Reference**: Detailed function documentation in :doc:`api_reference/qprog`, :doc:`api_reference/backends`, and :doc:`api_reference/circuits`
 * 🐛 **Issues**: Report bugs on `GitHub <https://github.com/QoroQuantum/divi>`_
 

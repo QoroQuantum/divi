@@ -33,7 +33,11 @@ from .optimizers import (
     ScipyOptimizer,
 )
 from .quantum_program import QuantumProgram
-from .variational_quantum_algorithm import SolutionEntry, VariationalQuantumAlgorithm
+from .variational_quantum_algorithm import (
+    ParamHistoryMode,
+    SolutionEntry,
+    VariationalQuantumAlgorithm,
+)
 from .workflows import (
     MoleculeTransformer,
     PartitioningProgramEnsemble,

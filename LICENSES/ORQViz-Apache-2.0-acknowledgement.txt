@@ -1,0 +1,21 @@
+Acknowledgement — orqviz (Zapata Engineering, Apache-2.0)
+===========================================================
+
+The divi.viz module implements loss-landscape scans on Divi's program model and
+execution stack. API design and defaults are informed by the orqviz package as
+follows:
+
+* PCA scans (scan_pca): layout aligned with orqviz's PCA workflow—
+  sklearn.decomposition.PCA on sample rows, a rectangular grid in PCA score
+  space, inverse_transform into full parameter space, score-axis limits from the
+  projected sample cloud with configurable offset padding, and optional
+  anchoring away from the sample mean. Upstream reference implementations:
+  src/orqviz/pca/data_structures.py, src/orqviz/pca/scans.py.
+
+* Line and plane scans (scan_1d, scan_2d): default scalar ranges and
+  random-direction behavior follow the same usage patterns as orqviz line and
+  plane scans (coefficients along direction vectors; orthogonal second axis in
+  2D). Upstream reference: src/orqviz/scans/scans_1D.py,
+  src/orqviz/scans/scans_2D.py.
+
+Upstream repository: https://github.com/zapata-engineering/orqviz
