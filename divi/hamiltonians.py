@@ -498,6 +498,125 @@ def convert_hamiltonian_to_pauli_string(
     return ";".join(terms)
 
 
+def _dense_to_sparse(term: str) -> str:
+    """Convert a dense Pauli string to sparse notation.
+
+    Only non-Identity positions are encoded as ``<Pauli><index>`` pairs.
+    An all-Identity term becomes ``I``.
+
+    Example::
+
+        >>> _dense_to_sparse("ZIIZIIII")
+        'Z0Z3'
+        >>> _dense_to_sparse("IIIIIIII")
+        'I'
+    """
+    parts = []
+    for i, ch in enumerate(term):
+        if ch != "I":
+            parts.append(f"{ch}{i}")
+    return "".join(parts) if parts else "I"
+
+
+def _sparse_to_dense(term: str, n_qubits: int) -> str:
+    """Convert a sparse Pauli term back to dense notation.
+
+    Example::
+
+        >>> _sparse_to_dense("Z0Z3", 8)
+        'ZIIZIIII'
+        >>> _sparse_to_dense("I", 8)
+        'IIIIIIII'
+    """
+    if term == "I":
+        return "I" * n_qubits
+
+    paulis = ["I"] * n_qubits
+    i = 0
+    while i < len(term):
+        pauli = term[i]
+        i += 1
+        # Parse the qubit index (one or more digits)
+        j = i
+        while j < len(term) and term[j].isdigit():
+            j += 1
+        qubit = int(term[i:j])
+        paulis[qubit] = pauli
+        i = j
+    return "".join(paulis)
+
+
+def encode_ham_ops(dense_ham_ops: str) -> str:
+    """Compress a semicolon-separated dense Pauli string for transport.
+
+    Applies sparse Pauli encoding (only non-Identity positions) followed by
+    gzip + base64 compression.  The result is prefixed with
+    ``@gzs<n_qubits>:`` so the receiver can detect and decode it.
+
+    Args:
+        dense_ham_ops: Semicolon-separated dense Pauli strings,
+            e.g. ``"ZZII;IZIZ;IIII"``.
+
+    Returns:
+        Encoded string: ``@gzs<n>:<base64_of_gzipped_sparse>``.
+
+    Example::
+
+        >>> encoded = encode_ham_ops("ZZII;IZIZ;IIII")
+        >>> encoded.startswith("@gzs4:")
+        True
+    """
+    import base64
+    import gzip
+
+    terms = dense_ham_ops.split(";")
+    n_qubits = len(terms[0])
+
+    sparse_str = ";".join(_dense_to_sparse(t) for t in terms)
+    compressed = base64.b64encode(
+        gzip.compress(sparse_str.encode("utf-8"))
+    ).decode("ascii")
+
+    return f"@gzs{n_qubits}:{compressed}"
+
+
+def decode_ham_ops(encoded: str) -> str:
+    """Decode a compressed ham_ops string back to dense Pauli notation.
+
+    Handles both encoded (``@gzs<n>:...``) and plain dense strings.
+    This function is standalone and can be copied to the server.
+
+    Args:
+        encoded: Either a ``@gzs<n>:<base64>`` encoded string or a plain
+            semicolon-separated dense Pauli string (returned as-is).
+
+    Returns:
+        Semicolon-separated dense Pauli strings.
+
+    Example::
+
+        >>> decode_ham_ops(encode_ham_ops("ZZII;IZIZ;IIII"))
+        'ZZII;IZIZ;IIII'
+        >>> decode_ham_ops("ZZII;IZIZ")  # plain passthrough
+        'ZZII;IZIZ'
+    """
+    import base64
+    import gzip
+
+    if not encoded.startswith("@gzs"):
+        return encoded
+
+    # Parse header: @gzs<n_qubits>:<base64_payload>
+    header_end = encoded.index(":")
+    n_qubits = int(encoded[4:header_end])
+    payload = encoded[header_end + 1 :]
+
+    sparse_str = gzip.decompress(base64.b64decode(payload)).decode("utf-8")
+    sparse_terms = sparse_str.split(";")
+
+    return ";".join(_sparse_to_dense(t, n_qubits) for t in sparse_terms)
+
+
 class IsingEncoding(NamedTuple):
     """Result of converting a binary polynomial problem to an Ising Hamiltonian."""
 
