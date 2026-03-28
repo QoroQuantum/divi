@@ -6,8 +6,6 @@ import logging
 import re
 from collections.abc import Mapping
 
-from qiskit import QuantumCircuit
-
 try:
     import maestro
 
@@ -15,6 +13,8 @@ try:
 except ImportError as _err:
     maestro = None
     _maestro_import_error = _err
+
+from qiskit import QuantumCircuit
 
 from divi.backends._circuit_runner import CircuitRunner
 from divi.backends._execution_result import ExecutionResult
@@ -51,6 +51,12 @@ class MaestroSimulator(CircuitRunner):
     When ``simulation_type`` is left as ``None``, the simulator automatically
     switches from Statevector to MPS for circuits exceeding
     ``mps_qubit_threshold`` qubits (default 22).
+
+    .. note::
+
+        Maestro's C++ extension must be loaded before other C++ libraries
+        (Qiskit, PennyLane) to avoid initialisation order conflicts.  This
+        is handled automatically by ``divi/__init__.py``.
 
     Args:
         shots: Number of measurement shots. Defaults to 5000.
@@ -227,11 +233,12 @@ class MaestroSimulator(CircuitRunner):
             for q in qasm_strings
             if (m := re.search(r"qreg\s+q\[(\d+)\]", q))
         )
-        config = self._build_config(n_qubits=max_qubits)
-        results = []
 
         # Pre-process: strip id gates (not supported by maestro's QASM parser).
         qasm_strings = [_strip_id_gates(q) for q in qasm_strings]
+
+        config = self._build_config(n_qubits=max_qubits)
+        results = []
 
         if ham_ops is None:
             # Sampling mode — reverse bitstrings from maestro's big-endian
