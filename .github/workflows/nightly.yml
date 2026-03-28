@@ -51,7 +51,11 @@ jobs:
       - name: Set nightly version
         run: |
           BASE_VERSION=$(poetry version -s)
-          NIGHTLY_VERSION="${BASE_VERSION}.dev$(date -u +%Y%m%d)"
+          # Bump minor so nightly sorts AFTER the current stable release on PyPI
+          # e.g. 0.9.0 -> 0.10.0.dev20260328 (which is > 0.9.0 and > 0.9.x per PEP 440)
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
+          NEXT_MINOR="$MAJOR.$((MINOR + 1)).0"
+          NIGHTLY_VERSION="${NEXT_MINOR}.dev$(date -u +%Y%m%d)"
           poetry version "$NIGHTLY_VERSION"
           echo "NIGHTLY_VERSION=$NIGHTLY_VERSION" >> "$GITHUB_ENV"
 

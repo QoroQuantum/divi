@@ -93,8 +93,10 @@ def get_backend(
     force_sampling = force_sampling or cli.force_sampling
 
     if cli.mode == "cloud-maestro":
-        config = JobConfig(shots=shots, simulator_cluster="qoro_maestro")
-        service = QoroService(job_config=config, force_sampling=force_sampling)
+        config = JobConfig(
+            shots=shots, simulator_cluster="qoro_maestro", force_sampling=force_sampling
+        )
+        service = QoroService(job_config=config)
         service.track_depth = track_depth
         return service
 
