@@ -36,6 +36,7 @@ from divi.backends._systems import (
 )
 from divi.circuits import is_valid_qasm, validate_qasm
 from divi.circuits._qasm_validation import _format_validation_error_with_context
+from divi.hamiltonians import compress_ham_ops
 
 API_URL = "https://app.qoroquantum.net/api"
 _MAX_PAYLOAD_SIZE_MB = 0.95
@@ -587,6 +588,7 @@ class QoroService(CircuitRunner):
         # Split circuits and add them to the created job
         circuit_chunks = self._split_circuits(circuits)
         num_chunks = len(circuit_chunks)
+        compressed_ham_ops = compress_ham_ops(ham_ops) if ham_ops is not None else None
 
         for i, chunk in enumerate(circuit_chunks):
             is_last_chunk = i == num_chunks - 1
@@ -597,8 +599,8 @@ class QoroService(CircuitRunner):
             }
 
             # Include shots/ham_ops in add_circuits payload
-            if ham_ops is not None:
-                add_circuits_payload["observables"] = ham_ops
+            if compressed_ham_ops is not None:
+                add_circuits_payload["observables"] = compressed_ham_ops
                 if circuit_ham_map is not None:
                     add_circuits_payload["circuit_ham_map"] = circuit_ham_map
             else:
