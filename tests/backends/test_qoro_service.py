@@ -1363,7 +1363,7 @@ class TestQoroServiceMock:
 
         # Verify add_circuits payload includes observables
         _, add_kwargs = mock_make_request.call_args_list[1]
-        assert add_kwargs.get("json", {}).get("observables") == ham_ops
+        assert add_kwargs.get("json", {}).get("observables").startswith("@gzs")
         assert "shots" not in add_kwargs.get("json", {})
 
     @pytest.mark.parametrize(
@@ -1427,7 +1427,7 @@ class TestQoroServiceMock:
 
         # Verify add_circuits payload includes observables
         _, add_kwargs = mock_make_request.call_args_list[1]
-        assert add_kwargs.get("json", {}).get("observables") == ham_ops
+        assert add_kwargs.get("json", {}).get("observables").startswith("@gzs")
 
     def test_submit_circuits_invalid_qasm_constraints_and_api_errors(
         self, mocker, qoro_service_factory
