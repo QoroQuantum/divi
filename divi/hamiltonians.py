@@ -591,6 +591,21 @@ def encode_ham_ops(dense_ham_ops: str) -> str:
     return f"@gzs{n_qubits}:{compressed}"
 
 
+def compress_ham_ops(ham_ops: str) -> str:
+    """Compress a ham_ops string for transport, handling ``|``-delimited groups.
+
+    Each ``|``-delimited group is independently encoded via :func:`encode_ham_ops`.
+
+    Args:
+        ham_ops: Dense Pauli string, optionally with ``|``-delimited groups.
+
+    Returns:
+        Compressed string with each group prefixed by ``@gzs<n>:``.
+    """
+    groups = ham_ops.split("|")
+    return "|".join(encode_ham_ops(g) for g in groups)
+
+
 def decode_ham_ops(encoded: str) -> str:
     """Decode a compressed ham_ops string back to dense Pauli notation.
 
