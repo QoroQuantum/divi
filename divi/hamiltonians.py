@@ -520,39 +520,6 @@ def _dense_to_sparse(term: str) -> str:
     return "".join(parts) if parts else "I"
 
 
-def _sparse_to_dense(term: str, n_qubits: int) -> str:
-    """Convert a sparse Pauli term back to dense notation.
-
-    Example::
-
-        >>> _sparse_to_dense("Z0Z3", 8)
-        'ZIIZIIII'
-        >>> _sparse_to_dense("I", 8)
-        'IIIIIIII'
-    """
-    if term == "I":
-        return "I" * n_qubits
-
-    paulis = ["I"] * n_qubits
-    i = 0
-    while i < len(term):
-        pauli = term[i]
-        i += 1
-        # Parse the qubit index (one or more digits)
-        j = i
-        while j < len(term) and term[j].isdigit():
-            j += 1
-        qubit = int(term[i:j])
-        if qubit >= n_qubits:
-            raise ValueError(
-                f"Sparse term '{term}' references qubit {qubit}, "
-                f"but n_qubits={n_qubits}"
-            )
-        paulis[qubit] = pauli
-        i = j
-    return "".join(paulis)
-
-
 def encode_ham_ops(dense_ham_ops: str) -> str:
     """Compress a semicolon-separated dense Pauli string for transport.
 
@@ -573,21 +540,21 @@ def encode_ham_ops(dense_ham_ops: str) -> str:
         >>> encoded.startswith("@gzs4:")
         True
     """
+    if not dense_ham_ops:
+        raise ValueError(
+            "dense_ham_ops must be a non-empty semicolon-separated Pauli string"
+        )
     terms = dense_ham_ops.split(";")
-    if not dense_ham_ops or not terms[0]:
-        raise ValueError("dense_ham_ops must be a non-empty semicolon-separated Pauli string")
     n_qubits = len(terms[0])
     lengths = {len(t) for t in terms}
     if len(lengths) > 1:
         raise ValueError(
             f"All Pauli terms must have the same length; got lengths {lengths}"
         )
-
     sparse_str = ";".join(_dense_to_sparse(t) for t in terms)
-    compressed = base64.b64encode(
-        gzip.compress(sparse_str.encode("utf-8"))
-    ).decode("ascii")
-
+    compressed = base64.b64encode(gzip.compress(sparse_str.encode("utf-8"))).decode(
+        "ascii"
+    )
     return f"@gzs{n_qubits}:{compressed}"
 
 
@@ -604,40 +571,6 @@ def compress_ham_ops(ham_ops: str) -> str:
     """
     groups = ham_ops.split("|")
     return "|".join(encode_ham_ops(g) for g in groups)
-
-
-def decode_ham_ops(encoded: str) -> str:
-    """Decode a compressed ham_ops string back to dense Pauli notation.
-
-    Handles both encoded (``@gzs<n>:...``) and plain dense strings.
-    This function is standalone and can be copied to the server.
-
-    Args:
-        encoded: Either a ``@gzs<n>:<base64>`` encoded string or a plain
-            semicolon-separated dense Pauli string (returned as-is).
-
-    Returns:
-        Semicolon-separated dense Pauli strings.
-
-    Example::
-
-        >>> decode_ham_ops(encode_ham_ops("ZZII;IZIZ;IIII"))
-        'ZZII;IZIZ;IIII'
-        >>> decode_ham_ops("ZZII;IZIZ")  # plain passthrough
-        'ZZII;IZIZ'
-    """
-    if not encoded.startswith("@gzs"):
-        return encoded
-
-    # Parse header: @gzs<n_qubits>:<base64_payload>
-    header_end = encoded.index(":")
-    n_qubits = int(encoded[4:header_end])
-    payload = encoded[header_end + 1 :]
-
-    sparse_str = gzip.decompress(base64.b64decode(payload)).decode("utf-8")
-    sparse_terms = sparse_str.split(";")
-
-    return ";".join(_sparse_to_dense(t, n_qubits) for t in sparse_terms)
 
 
 class IsingEncoding(NamedTuple):
