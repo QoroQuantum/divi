@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import base64
+import gzip
 from collections.abc import Callable, Hashable, Sequence
 from dataclasses import dataclass, field
 from functools import reduce
@@ -541,6 +543,11 @@ def _sparse_to_dense(term: str, n_qubits: int) -> str:
         while j < len(term) and term[j].isdigit():
             j += 1
         qubit = int(term[i:j])
+        if qubit >= n_qubits:
+            raise ValueError(
+                f"Sparse term '{term}' references qubit {qubit}, "
+                f"but n_qubits={n_qubits}"
+            )
         paulis[qubit] = pauli
         i = j
     return "".join(paulis)
@@ -566,11 +573,15 @@ def encode_ham_ops(dense_ham_ops: str) -> str:
         >>> encoded.startswith("@gzs4:")
         True
     """
-    import base64
-    import gzip
-
     terms = dense_ham_ops.split(";")
+    if not dense_ham_ops or not terms[0]:
+        raise ValueError("dense_ham_ops must be a non-empty semicolon-separated Pauli string")
     n_qubits = len(terms[0])
+    lengths = {len(t) for t in terms}
+    if len(lengths) > 1:
+        raise ValueError(
+            f"All Pauli terms must have the same length; got lengths {lengths}"
+        )
 
     sparse_str = ";".join(_dense_to_sparse(t) for t in terms)
     compressed = base64.b64encode(
@@ -600,9 +611,6 @@ def decode_ham_ops(encoded: str) -> str:
         >>> decode_ham_ops("ZZII;IZIZ")  # plain passthrough
         'ZZII;IZIZ'
     """
-    import base64
-    import gzip
-
     if not encoded.startswith("@gzs"):
         return encoded
 
