@@ -264,4 +264,3 @@ class MaestroSimulator(CircuitRunner):
                 results.append({"label": label, "results": expvals})
 
         return ExecutionResult(results=results)
-
