@@ -73,16 +73,14 @@ class QuantumProgram(ABC):
             self.reporter = LoggingProgressReporter()
 
     @abstractmethod
-    def run(self, **kwargs) -> tuple[int, float]:
+    def run(self, **kwargs) -> "QuantumProgram":
         """Execute the quantum algorithm.
 
         Args:
             **kwargs: Additional keyword arguments for subclasses.
 
         Returns:
-            tuple[int, float]: A tuple containing:
-                - int: Total number of circuits executed
-                - float: Total runtime in seconds
+            QuantumProgram: Returns ``self`` for method chaining.
         """
 
     def _set_cancellation_event(self, event: Event):

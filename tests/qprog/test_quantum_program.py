@@ -24,9 +24,11 @@ class ConcreteQuantumProgram(QuantumProgram):
     def _build_pipelines(self) -> None:
         pass
 
-    def run(self) -> tuple[int, float]:
+    def run(self):
         """Concrete implementation of run method."""
-        return (5, 1.5)
+        self._total_circuit_count = 5
+        self._total_run_time = 1.5
+        return self
 
 
 class TestQuantumProgramBase:

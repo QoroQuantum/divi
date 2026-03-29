@@ -1090,10 +1090,12 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         perform_final_computation: bool = True,
         checkpoint_config: CheckpointConfig | None = None,
         **kwargs,
-    ) -> tuple[int, float]:
+    ) -> "VariationalQuantumAlgorithm":
         """Run the variational quantum algorithm.
 
-        The outputs are stored in the algorithm object.
+        The outputs are stored in the algorithm object and can be accessed via
+        properties such as ``total_circuit_count``, ``total_run_time``,
+        ``losses_history``, and ``best_params``.
 
         Args:
             initial_params (npt.NDArray[np.float64] | None): Optional initial parameter
@@ -1109,7 +1111,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             **kwargs: Additional keyword arguments for subclasses.
 
         Returns:
-            tuple[int, float]: A tuple containing (total_circuit_count, total_run_time).
+            VariationalQuantumAlgorithm: Returns ``self`` for method chaining.
         """
         # Initialize checkpointing
         if checkpoint_config is None:
@@ -1261,7 +1263,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             )
 
             if isinstance(exc, _CancelledError):
-                return self._total_circuit_count, self._total_run_time
+                return self
         else:
             self.optimize_result.success = True
             self.optimize_result.message = "Optimization converged."
@@ -1277,7 +1279,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         self.reporter.info(message="Finished successfully!")
 
-        return self.total_circuit_count, self.total_run_time
+        return self
 
     def _run_solution_measurement_for(
         self, param_sets: npt.NDArray[np.float64]

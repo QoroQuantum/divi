@@ -175,8 +175,8 @@ class TestTimeEvolutionCustomInitialState:
             initial_state=CustomPerQubitState("10"),
             backend=default_test_simulator,
         )
-        count, _ = te.run()
-        assert count >= 1
+        te.run()
+        assert te.total_circuit_count >= 1
         probs = te.results
         assert probs.get("10", 0.0) >= 0.95
 
@@ -188,8 +188,8 @@ class TestTimeEvolutionCustomInitialState:
             initial_state=CustomPerQubitState("+-"),
             backend=default_test_simulator,
         )
-        count, _ = te.run()
-        assert count >= 1
+        te.run()
+        assert te.total_circuit_count >= 1
         assert te.results is not None
 
     def test_invalid_custom_string_raises(self, default_test_simulator):
@@ -245,8 +245,8 @@ class TestVQEInitialState:
             backend=default_test_simulator,
             max_iterations=1,
         )
-        count, _ = vqe.run()
-        assert count >= 1
+        vqe.run()
+        assert vqe.total_circuit_count >= 1
 
     def test_chemistry_ansatz_warns(self, default_test_simulator):
         with pytest.warns(UserWarning, match="chemistry ansatz"):

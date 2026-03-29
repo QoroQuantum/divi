@@ -37,7 +37,7 @@ from divi.reporting import (
 
 
 def _default_task_function(program: QuantumProgram):
-    return program.run()
+    program.run()
 
 
 class ProgramEnsemble(ABC):
@@ -413,21 +413,6 @@ class ProgramEnsemble(ABC):
         """
         return all(future.done() for future in self.futures)
 
-    def _collect_completed_results(self, completed_futures: list):
-        """
-        Collects results from any futures that have completed successfully.
-        Appends (circuit_count, run_time) tuples to the completed_futures list.
-
-        Args:
-            completed_futures: List to append results to
-        """
-        for future in self.futures:
-            if future.done() and not future.cancelled():
-                try:
-                    completed_futures.append(future.result())
-                except Exception:
-                    pass  # Skip failed futures
-
     def _handle_cancellation(self):
         """Handle cancellation gracefully with accurate progress feedback.
 
@@ -515,12 +500,11 @@ class ProgramEnsemble(ABC):
         if self._executor is None:
             return
 
-        completed_futures = []
         try:
             # The as_completed iterator will yield futures as they finish.
             # If a task fails, future.result() will raise the exception immediately.
             for future in as_completed(self.futures):
-                completed_futures.append(future.result())
+                future.result()
 
         except KeyboardInterrupt:
             if self._progress_bar is not None:
@@ -529,9 +513,6 @@ class ProgramEnsemble(ABC):
                     "to finish current iteration...[/bold yellow]"
                 )
             self._handle_cancellation()
-
-            # Collect results from any futures that completed before/during cancellation
-            self._collect_completed_results(completed_futures)
 
             return False
 
@@ -544,17 +525,15 @@ class ProgramEnsemble(ABC):
             for f in self.futures:
                 f.cancel()
 
-            # Collect results from any futures that completed before the failure
-            self._collect_completed_results(completed_futures)
-
             # Re-raise a new error to indicate the batch failed.
             raise RuntimeError("Batch execution failed and was cancelled.") from e
 
         finally:
-            # Aggregate results from completed futures
-            if completed_futures:
+            # Aggregate totals from program instances (threads share memory)
+            programs = list(self._programs.values())
+            if programs:
                 self._total_circuit_count += sum(
-                    result[0] for result in completed_futures
+                    p.total_circuit_count for p in programs
                 )
                 # For async backends the individual programs don't track runtime
                 # (the proxy returns sync results). Use the coordinator's total
@@ -565,9 +544,7 @@ class ProgramEnsemble(ABC):
                 ):
                     self._total_run_time += self._coordinator.total_runtime
                 else:
-                    self._total_run_time += sum(
-                        result[1] for result in completed_futures
-                    )
+                    self._total_run_time += sum(p.total_run_time for p in programs)
                 self.futures.clear()
 
             # Shutdown coordinator

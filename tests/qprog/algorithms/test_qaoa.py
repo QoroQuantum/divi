@@ -227,10 +227,10 @@ class TestQAOAQDriftMultiSample:
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             seed=1997,
         )
-        count, runtime = qaoa.run()
+        qaoa.run()
 
-        assert count > 0
-        assert runtime >= 0
+        assert qaoa.total_circuit_count > 0
+        assert qaoa.total_run_time >= 0
         assert len(qaoa.losses_history) == 20
         assert qaoa.best_loss < float("inf")
 
@@ -334,10 +334,10 @@ class TestQAOAQDriftMultiSample:
             seed=1997,
         )
 
-        count, runtime = qaoa.run()
+        qaoa.run()
 
-        assert count > 0
-        assert runtime >= 0
+        assert qaoa.total_circuit_count > 0
+        assert qaoa.total_run_time >= 0
         assert len(qaoa.losses_history) == 5
         assert qaoa.best_loss < float("inf")
 

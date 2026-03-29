@@ -301,8 +301,7 @@ class IterativeQAOA(QAOA):
             **kwargs: Additional keyword arguments passed to the parent ``run()``.
 
         Returns:
-            tuple[int, float]: Total circuit count and total run time
-            across all depths.
+            IterativeQAOA: Returns ``self`` for method chaining.
         """
         depth_history: list[dict] = []
         prev_best_params: npt.NDArray[np.float64] | None = None
@@ -325,13 +324,13 @@ class IterativeQAOA(QAOA):
                 )
                 initial_params = np.tile(interpolated, (self.optimizer.n_param_sets, 1))
 
-            circuits, time = super().run(
+            super().run(
                 initial_params=initial_params,
                 perform_final_computation=False,
                 **kwargs,
             )
-            total_circuits += circuits
-            total_time += time
+            total_circuits += self._total_circuit_count
+            total_time += self._total_run_time
 
             depth_history.append(
                 {
@@ -366,7 +365,7 @@ class IterativeQAOA(QAOA):
 
         self._total_circuit_count = total_circuits
         self._total_run_time = total_time
-        return total_circuits, total_time
+        return self
 
     @property
     def best_depth(self) -> int:

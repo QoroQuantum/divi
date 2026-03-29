@@ -460,10 +460,11 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
             "Cancellation requested"
         )
 
-        circ_count, run_time = program.run()
+        result = program.run()
 
-        assert circ_count == program._total_circuit_count
-        assert run_time == program._total_run_time
+        assert result is program
+        assert program.total_circuit_count == program._total_circuit_count
+        assert program.total_run_time == program._total_run_time
 
     def _setup_program_for_final_computation_test(self, mocker):
         """Helper to set up program with mocks for final computation tests."""

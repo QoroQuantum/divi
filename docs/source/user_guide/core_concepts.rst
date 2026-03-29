@@ -292,8 +292,8 @@ replaces trainable slots with internal symbols and optimizes them.
 ``param_shape`` defines the shape of one parameter set and must match the number
 of trainable parameters in ``qscript`` (here: 2).
 
-``run()`` returns ``(total_circuit_count, total_run_time)``. optimization outputs
-are read from the program object:
+``run()`` returns ``self`` for method chaining. Execution metrics and optimization
+outputs are read from the program object:
 
 .. code-block:: python
 

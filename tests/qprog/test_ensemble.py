@@ -33,9 +33,11 @@ class SimpleTestProgram(QuantumProgram):
     def _build_pipelines(self) -> None:
         pass
 
-    def run(self) -> tuple[int, float]:
-        """A mock run that just returns the preset values."""
-        return self.circ_count, self.run_time
+    def run(self):
+        """A mock run that sets the preset values on the instance."""
+        self._total_circuit_count = self.circ_count
+        self._total_run_time = self.run_time
+        return self
 
     def _generate_circuits(self, **kwargs):
         """Dummy implementation for the abstract method."""
@@ -43,7 +45,6 @@ class SimpleTestProgram(QuantumProgram):
 
     def _post_process_results(self, results: dict):
         """Dummy implementation for the abstract method."""
-        pass
 
 
 class SampleProgramEnsemble(ProgramEnsemble):
@@ -565,15 +566,11 @@ class TestProgramEnsemble:
         mock_handle_cancellation = mocker.patch.object(
             program_ensemble, "_handle_cancellation"
         )
-        mock_collect_results = mocker.patch.object(
-            program_ensemble, "_collect_completed_results"
-        )
 
         result = program_ensemble.join()
 
         assert result is False
         mock_handle_cancellation.assert_called_once()
-        mock_collect_results.assert_called_once()
 
     def test_atexit_unregister_failure(self, program_ensemble, mocker):
         """Test atexit unregister handles TypeError."""

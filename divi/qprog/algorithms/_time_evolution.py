@@ -136,11 +136,11 @@ class TimeEvolution(QuantumProgram):
             symbols=np.array([], dtype=object),
         )
 
-    def run(self, **kwargs) -> tuple[int, float]:
+    def run(self, **kwargs) -> "TimeEvolution":
         """Execute time evolution.
 
         Returns:
-            tuple[int, float]: (total_circuit_count, total_run_time).
+            TimeEvolution: Returns ``self`` for method chaining.
         """
         env = self._build_pipeline_env()
 
@@ -158,7 +158,7 @@ class TimeEvolution(QuantumProgram):
 
         self.reporter.info(message="Finished successfully!")
 
-        return self.total_circuit_count, self.total_run_time
+        return self
 
     def _build_ops(self, hamiltonian: qml.operation.Operator) -> list:
         """Build circuit ops: initial state, evolution, measurement."""

@@ -388,8 +388,8 @@ class TestTSPProblem:
             n_layers=1,
             optimizer=MonteCarloOptimizer(population_size=3, n_best_sets=1),
         )
-        circuit_count, _ = qaoa.run()
-        assert circuit_count > 0
+        qaoa.run()
+        assert qaoa.total_circuit_count > 0
 
     def test_with_grid_search(self, three_city_cost, default_test_simulator):
         qaoa = QAOA(
@@ -401,7 +401,8 @@ class TestTSPProblem:
                 param_ranges=[(0, 2 * np.pi), (0, np.pi)], grid_points=3
             ),
         )
-        assert qaoa.run()[0] > 0
+        qaoa.run()
+        assert qaoa.total_circuit_count > 0
 
     def test_optimal_has_lowest_energy(self):
         """Verify the QUBO assigns lower energy to the optimal tour."""
@@ -599,8 +600,8 @@ class TestCVRPProblem:
             n_layers=1,
             optimizer=MonteCarloOptimizer(population_size=3, n_best_sets=1),
         )
-        circuit_count, _ = qaoa.run()
-        assert circuit_count > 0
+        qaoa.run()
+        assert qaoa.total_circuit_count > 0
 
 
 # ---------------------------------------------------------------------------

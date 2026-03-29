@@ -277,10 +277,8 @@ class TestParameterHandling:
             backend=dummy_simulator,
         )
 
-        result = program.run(
-            initial_params=initial_params, perform_final_computation=False
-        )
-        assert result[0] >= 0
+        program.run(initial_params=initial_params, perform_final_computation=False)
+        assert program.total_circuit_count >= 0
 
     def test_param_shape_inference(self, simple_quantum_script, dummy_simulator):
         """Test that param_shape is inferred when None."""
