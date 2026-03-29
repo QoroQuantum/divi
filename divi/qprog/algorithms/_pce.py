@@ -15,31 +15,20 @@ from divi.circuits import MetaCircuit
 from divi.hamiltonians import normalize_binary_polynomial_problem
 from divi.pipeline import CircuitPipeline
 from divi.pipeline.stages import CircuitSpecStage, ParameterBindingStage, PCECostStage
+from divi.pipeline.stages._numba_kernels import compile_problem
 from divi.pipeline.stages._pce_cost_stage import _evaluate_binary_polynomial
+from divi.qprog.algorithms._numba_kernels import _popcount_parity_jit
 from divi.qprog.algorithms._vqe import VQE
 from divi.qprog.variational_quantum_algorithm import SolutionEntry
 from divi.typing import BinaryPolynomialProblem, HUBOProblemTypes, QUBOProblemTypes
-
-# Pre-computed 8-bit popcount table for O(1) lookups
-_POPCOUNT_TABLE_8BIT = np.array([bin(i).count("1") for i in range(256)], dtype=np.uint8)
 
 
 def _fast_popcount_parity(arr_input: npt.NDArray[np.integer]) -> npt.NDArray[np.uint8]:
     """
     Vectorized calculation of (popcount % 2) for an array of integers.
-    Uses numpy view casting for extreme speed over large arrays.
+    Uses a Numba JIT kernel with XOR-fold bit manipulation.
     """
-    # 1. Ensure array is uint64
-    arr_u64 = arr_input.astype(np.uint64)
-
-    # 2. View as bytes to use 8-bit lookup table
-    arr_bytes = arr_u64.view(np.uint8).reshape(arr_input.shape + (8,))
-
-    # 3. Lookup and sum bits
-    total_bits = _POPCOUNT_TABLE_8BIT[arr_bytes].sum(axis=-1)
-
-    # 4. Return Parity (0 or 1)
-    return total_bits % 2
+    return _popcount_parity_jit(arr_input.astype(np.uint64))
 
 
 def _aggregate_param_group(
@@ -184,6 +173,7 @@ class PCE(VQE):
         self._use_soft_objective = self.alpha < 5.0
         self._final_vector: npt.NDArray[np.integer] | None = None
         self._decode_parities_fn = decode_parities_fn or _decode_parities
+        self._compiled_problem = compile_problem(self.problem)
 
         if kwargs.get("qem_protocol") is not None:
             raise ValueError("PCE does not currently support qem_protocol.")
@@ -381,7 +371,9 @@ class PCE(VQE):
             energy = (
                 float(
                     _evaluate_binary_polynomial(
-                        decoded_solution.astype(float), self.problem
+                        decoded_solution.astype(float),
+                        self.problem,
+                        _compiled=self._compiled_problem,
                     )
                 )
                 if compute_energy

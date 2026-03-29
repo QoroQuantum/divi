@@ -20,7 +20,7 @@ from divi.circuits import MetaCircuit
 from divi.pipeline.abc import ChildResults
 
 # ---------------------------------------------------------------------------
-# Expectation-value computation helpers (moved from qprog._expectation)
+# Expectation-value computation helpers
 # ---------------------------------------------------------------------------
 
 
