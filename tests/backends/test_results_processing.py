@@ -2,14 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import numpy as np
 import pytest
 
+from divi.backends._numba_kernels import _decompress_histogram_jit, _uleb128_decode_jit
 from divi.backends._results_processing import (
     _decode_qh1_b64,
     _decompress_histogram,
-    _int_to_bitstr,
-    _rle_bool_decode,
-    _uleb128_decode,
     convert_counts_to_probs,
     reverse_dict_endianness,
 )
@@ -131,44 +130,47 @@ class TestQoroServiceUtilities:
         with pytest.raises(ValueError, match="corrupt stream: unique mismatch"):
             _decompress_histogram(invalid_payload)
 
-    # --- Low-level Utility Function Tests ---
+    # --- JIT Kernel Tests ---
 
-    def test_uleb128_decode(self):
-        """Tests ULEB128 decoding for single-byte, multi-byte, and truncated inputs."""
+    def test_uleb128_decode_jit(self):
+        """Tests JIT ULEB128 decoding for single-byte, multi-byte, and offset."""
         # Single-byte value
-        val, pos = _uleb128_decode(b"\x05", 0)
+        val, pos = _uleb128_decode_jit(np.array([0x05], dtype=np.uint8), 0)
         assert val == 5 and pos == 1
 
         # Multi-byte value (128)
-        val, pos = _uleb128_decode(b"\x80\x01", 0)
+        val, pos = _uleb128_decode_jit(np.array([0x80, 0x01], dtype=np.uint8), 0)
         assert val == 128 and pos == 2
 
         # Decoding with an offset
-        val, pos = _uleb128_decode(b"\x00\x05", 1)
+        val, pos = _uleb128_decode_jit(np.array([0x00, 0x05], dtype=np.uint8), 1)
         assert val == 5 and pos == 2
 
-        # Truncated varint raises an error
-        with pytest.raises(ValueError, match="truncated varint"):
-            _uleb128_decode(b"\x80")
+    def test_decompress_histogram_jit_matches_wrapper(self):
+        """Tests that the JIT kernel output matches the Python wrapper."""
+        valid_payload = (
+            b"QH1"
+            b"\x03"  # n_bits = 3
+            b"\x03"  # unique = 3
+            b"\x05"  # total_shots = 5
+            b"\x03"  # num_gaps = 3
+            b"\x01\x04\x02"  # gaps
+            b"\x05"  # RLE data length
+            b"\x03\x01\x01\x01"  # RLE data
+            b"\x01"  # extras_len = 1
+            b"\x01" + b"\x01"  # extras
+        )
+        data = np.frombuffer(valid_payload, dtype=np.uint8)
+        indices, counts, n_bits, unique, total_shots, n_decoded = (
+            _decompress_histogram_jit(data)
+        )
 
-    def test_rle_bool_decode(self):
-        """Tests RLE boolean decoding for zero, single, and multiple runs."""
-        # Zero runs
-        result, pos = _rle_bool_decode(b"\x00")
-        assert result == [] and pos == 1
-
-        # Multiple runs: decodes to [True, False, False]
-        # num_runs=2, first_val=True, len1=1, len2=2
-        data = b"\x02\x01\x01\x02"
-        result, pos = _rle_bool_decode(data)
-        assert result == [True, False, False]
-        assert pos == 4
-
-    def test_int_to_bitstr(self):
-        """Tests integer to bitstring conversion with zero-padding."""
-        assert _int_to_bitstr(5, 4) == "0101"
-        assert _int_to_bitstr(1, 2) == "01"
-        assert _int_to_bitstr(7, 3) == "111"
+        assert n_bits == 3
+        assert unique == 3
+        assert total_shots == 5
+        assert n_decoded == 3
+        np.testing.assert_array_equal(indices, [1, 5, 7])
+        np.testing.assert_array_equal(counts, [1, 3, 1])
 
 
 class TestReverseDictEndianness:
