@@ -9,71 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.10.0](https://github.com/QoroQuantum/divi/compare/v0.9.0...v0.10.0) (2026-03-29)
 
-
 ### ✨ Added
 
-* add GridSearchOptimizer for exhaustive parameter sweeps ([a61a3b6](https://github.com/QoroQuantum/divi/commit/a61a3b6bce0d9b6b5d61eadb82ba8cd6737a70e6))
-* add MaxWeightMatchingProblem with edge-based partitioning ([5a9a630](https://github.com/QoroQuantum/divi/commit/5a9a630045460ff37967238c41436565803c11bb))
+* **QAOA:** extract domain logic into `QAOAProblem` class hierarchy ([8784ad7](https://github.com/QoroQuantum/divi/commit/8784ad7bfea78d5aa3dba5d83c35f2a5f13f1480), [67311bb](https://github.com/QoroQuantum/divi/commit/67311bba814f020e13258088fa4e69d860f67351), [d162be4](https://github.com/QoroQuantum/divi/commit/d162be4909f9805d636333b2a5c0070b241b401f))
+* **MaestroSimulator:** add local `CircuitRunner` interface ([083f313](https://github.com/QoroQuantum/divi/commit/083f31380394d46c96b83dea67639c452f4256ca), [8b71588](https://github.com/QoroQuantum/divi/commit/8b7158854e49346ef9ac44ef8449e85fbf066546), [3d04c11](https://github.com/QoroQuantum/divi/commit/3d04c1182b961473131eafd96ed64787aaa917bb), [def239c](https://github.com/QoroQuantum/divi/commit/def239c0f71b52f150d952f7bd015fc0f98391d8))
+* **QiskitSimulator:** add exact expectation value support via Qiskit Aer statevector ([860d5d5](https://github.com/QoroQuantum/divi/commit/860d5d58d734e800fd5c51f8ae0ff7c564e31e36))
 * add Numba JIT compilation for hot-path functions ([fe654e5](https://github.com/QoroQuantum/divi/commit/fe654e5898889ab1c22959382398b2bb16a8dc30))
-* add routing problem support (TSP, CVRP) with CE-QAOA encoding ([c563c73](https://github.com/QoroQuantum/divi/commit/c563c739acaf8058b0112c9f23b9549455a54721))
-* add swap fixer, enhanced binary config, and PHQC docs for routing ([eed8593](https://github.com/QoroQuantum/divi/commit/eed8593855db1f5fcc0edffbf16b072843af6529))
-* implement Hamiltonian observable compression ([ee5697f](https://github.com/QoroQuantum/divi/commit/ee5697f46ea59d67e962449aab4f6c7fddc129c7))
-* implement Hamiltonian observable compression ([7ecdc45](https://github.com/QoroQuantum/divi/commit/7ecdc4529cda7bae79d9cc796eaf65e610761203))
-* integrate QCC ansatz into divi's Ansatz framework ([7390862](https://github.com/QoroQuantum/divi/commit/739086288b27957a55435a5dd27300433511adc6))
-* **MaestroSimulator:** add local maestro CircuitRunner interface ([083f313](https://github.com/QoroQuantum/divi/commit/083f31380394d46c96b83dea67639c452f4256ca))
-* **ParallelSimulator:** add exact expectation value support via Qiskit Aer statevector ([860d5d5](https://github.com/QoroQuantum/divi/commit/860d5d58d734e800fd5c51f8ae0ff7c564e31e36))
-* **QAOA:** add IterativeQAOA with warm-started depth progression ([0266192](https://github.com/QoroQuantum/divi/commit/026619242be1a32c22d39646b21abba7c641b9e8))
-* **QAOA:** extract domain logic into Problem class hierarchy ([8784ad7](https://github.com/QoroQuantum/divi/commit/8784ad7bfea78d5aa3dba5d83c35f2a5f13f1480))
-* replace ParallelSimulator with MaestroSimulator for non-noisy simulation ([1a48f31](https://github.com/QoroQuantum/divi/commit/1a48f311bcb196f89b657f975093d31b8c5ab4c9))
-
+* implement Hamiltonian observable compression ([ee5697f](https://github.com/QoroQuantum/divi/commit/ee5697f46ea59d67e962449aab4f6c7fddc129c7), [7ecdc45](https://github.com/QoroQuantum/divi/commit/7ecdc4529cda7bae79d9cc796eaf65e610761203), [627de8d](https://github.com/QoroQuantum/divi/commit/627de8d37bb887350e48439071c36dad96daf04c), [d9bb311](https://github.com/QoroQuantum/divi/commit/d9bb311ef8868efa7381763951ee652d4f45cd88))
+* **QAOA:** add `IterativeQAOA` with warm-started depth progression ([0266192](https://github.com/QoroQuantum/divi/commit/026619242be1a32c22d39646b21abba7c641b9e8))
+* integrate QCC ansatz into divi's `Ansatz` framework ([7390862](https://github.com/QoroQuantum/divi/commit/739086288b27957a55435a5dd27300433511adc6), [b7e8ad2](https://github.com/QoroQuantum/divi/commit/b7e8ad242a04e6f61dd68f79c6fa293ea9c031ae))
+* add routing problem support (TSP, CVRP) with CE-QAOA encoding, swap fixer, and enhanced binary config ([c563c73](https://github.com/QoroQuantum/divi/commit/c563c739acaf8058b0112c9f23b9549455a54721), [eed8593](https://github.com/QoroQuantum/divi/commit/eed8593855db1f5fcc0edffbf16b072843af6529), [909dd96](https://github.com/QoroQuantum/divi/commit/909dd96e036093aca364410671615737c3ea1f0e))
+* `MaxWeightMatchingProblem`: new problem class with edge-based partitioning ([5a9a630](https://github.com/QoroQuantum/divi/commit/5a9a630045460ff37967238c41436565803c11bb), [b30a744](https://github.com/QoroQuantum/divi/commit/b30a744618fefc7057b5d2a1a614d2c35eeb4708), [3614330](https://github.com/QoroQuantum/divi/commit/36143300c260c9a6d78db9902eb4da10e1e21538))
+* `GridSearchOptimizer`: new optimizer for exhaustive parameter sweeps ([a61a3b6](https://github.com/QoroQuantum/divi/commit/a61a3b6bce0d9b6b5d61eadb82ba8cd6737a70e6))
 
 ### 🐛 Fixed
 
-* address PR review comments on routing module ([909dd96](https://github.com/QoroQuantum/divi/commit/909dd96e036093aca364410671615737c3ea1f0e))
-* Ensure grouping is maintained ([d9bb311](https://github.com/QoroQuantum/divi/commit/d9bb311ef8868efa7381763951ee652d4f45cd88))
-* Fixing Maestro on MacOS ([3d04c11](https://github.com/QoroQuantum/divi/commit/3d04c1182b961473131eafd96ed64787aaa917bb))
-* Fixing Maestro on MacOS ([def239c](https://github.com/QoroQuantum/divi/commit/def239c0f71b52f150d952f7bd015fc0f98391d8))
-* **MaestroSimulator:** correct measurement stripping regex ([8b71588](https://github.com/QoroQuantum/divi/commit/8b7158854e49346ef9ac44ef8449e85fbf066546))
-* **matching:** correct bitstring decoding and add feasibility hooks ([b30a744](https://github.com/QoroQuantum/divi/commit/b30a744618fefc7057b5d2a1a614d2c35eeb4708))
-* **matching:** fix double-counting bug ([3614330](https://github.com/QoroQuantum/divi/commit/36143300c260c9a6d78db9902eb4da10e1e21538))
-* **QAOA:** handle arbitrary decode_solution_fn return types in QAOA final computation ([68a2dcb](https://github.com/QoroQuantum/divi/commit/68a2dcb231f29cc94f207dce62c5b95c29660aba))
+* **QAOA:** handle arbitrary `decode_solution_fn` return types in final computation ([68a2dcb](https://github.com/QoroQuantum/divi/commit/68a2dcb231f29cc94f207dce62c5b95c29660aba))
 * **QDrift:** use Campbell's faithful protocol for non-commuting Hamiltonians ([be2da96](https://github.com/QoroQuantum/divi/commit/be2da96768cee52eef2bc1ef956031463a49948d))
-* Test case for compressed observables ([627de8d](https://github.com/QoroQuantum/divi/commit/627de8d37bb887350e48439071c36dad96daf04c))
-
 
 ### 🔄 Changed
 
-* better error for MaestroSimulator ([04be83b](https://github.com/QoroQuantum/divi/commit/04be83bc96496f29b620df8bd7e7bdfa80f9c60a))
-* Code clean ups and additional checks ([753b597](https://github.com/QoroQuantum/divi/commit/753b5975a630a2bb9dd97cb4d2f8a1b81ce5c4d1))
-* extract qubo_to_ising helper in hamiltonians module ([c085f00](https://github.com/QoroQuantum/divi/commit/c085f008f85b16a5a9434df3f38ad83702acfd97))
-* **ProgramEnsemble:** extract shared state into PartitioningProgramEnsemble base class ([574a594](https://github.com/QoroQuantum/divi/commit/574a594953d9d6380d538cc6e55e9bdd1287bc3f))
-* remove unused decode-side sparse representation ([64bf945](https://github.com/QoroQuantum/divi/commit/64bf945c4deff9ef789d1041797414758b61b704))
-* rename ParallelSimulator to QiskitSimulator for accuracy ([28b391d](https://github.com/QoroQuantum/divi/commit/28b391d36929a61b7da88f261273ac864556aae8))
-* rename Problem to QAOAProblem and extract problems package ([67311bb](https://github.com/QoroQuantum/divi/commit/67311bba814f020e13258088fa4e69d860f67351))
-* replace string-based initial_state API with InitialState class hierarchy ([5f7c970](https://github.com/QoroQuantum/divi/commit/5f7c9709efa6c875f472514e7945fdee17d5b5e4))
-* **tests:** reorganize tests by QAOAProblem class hierarchy ([ba03a59](https://github.com/QoroQuantum/divi/commit/ba03a5945285f9c516c9ce2711e83d6b40335931))
-* **workflows:** composition-based partitioning via QAOAProblem hooks ([d162be4](https://github.com/QoroQuantum/divi/commit/d162be4909f9805d636333b2a5c0070b241b401f))
-
+* **MaestroSimulator:** replaces `ParallelSimulator` as the default non-noisy simulation backend; `ParallelSimulator` has been renamed to `QiskitSimulator` ([1a48f31](https://github.com/QoroQuantum/divi/commit/1a48f311bcb196f89b657f975093d31b8c5ab4c9), [28b391d](https://github.com/QoroQuantum/divi/commit/28b391d36929a61b7da88f261273ac864556aae8), [04be83b](https://github.com/QoroQuantum/divi/commit/04be83bc96496f29b620df8bd7e7bdfa80f9c60a))
+* **ProgramEnsemble:** extract shared state into `PartitioningProgramEnsemble` base class ([574a594](https://github.com/QoroQuantum/divi/commit/574a594953d9d6380d538cc6e55e9bdd1287bc3f), [2feeda1](https://github.com/QoroQuantum/divi/commit/2feeda1280cd4a3644a85228333900d086519402))
+* replace string-based `initial_state` API with `InitialState` class hierarchy ([5f7c970](https://github.com/QoroQuantum/divi/commit/5f7c9709efa6c875f472514e7945fdee17d5b5e4))
 
 ### 🔧 Internal
 
-* add missing tutorial entry in ci script ([07f5b73](https://github.com/QoroQuantum/divi/commit/07f5b73756ceba6e12451e4d28f5ebb48b89df97))
-* add more standard pypi publish script ([97e7925](https://github.com/QoroQuantum/divi/commit/97e79258745f0b76f27e176aa685911a74bdc395))
-* correct nightly build versioning ([ef30e36](https://github.com/QoroQuantum/divi/commit/ef30e3607a7b778d45b0ea166ca30222007e2b3e))
-* fix broken tutorials ([1fe3d06](https://github.com/QoroQuantum/divi/commit/1fe3d060c3941583c95fec5e45bb7a90131a5848))
-* fix docs workflow ([89f79fb](https://github.com/QoroQuantum/divi/commit/89f79fb91751699aca45be05e38094d8eabd5a54))
-* fix wrong autoflake config ([18b05c3](https://github.com/QoroQuantum/divi/commit/18b05c3b4421e19c752a7a8a24438ba172ae2f20))
-* Merge pull request [#36](https://github.com/QoroQuantum/divi/issues/36) from Smitsavaliya49/QCC_Ansatz ([b7e8ad2](https://github.com/QoroQuantum/divi/commit/b7e8ad242a04e6f61dd68f79c6fa293ea9c031ae))
-* Merge pull request [#65](https://github.com/QoroQuantum/divi/issues/65) from QoroQuantum/graph-qubo-wf ([2feeda1](https://github.com/QoroQuantum/divi/commit/2feeda1280cd4a3644a85228333900d086519402))
-* Merge pull request [#66](https://github.com/QoroQuantum/divi/issues/66) from QoroQuantum/fix/maestro-on-mac ([3d04c11](https://github.com/QoroQuantum/divi/commit/3d04c1182b961473131eafd96ed64787aaa917bb))
-* Merge pull request [#67](https://github.com/QoroQuantum/divi/issues/67) from QoroQuantum/feat/compressed-observables ([ee5697f](https://github.com/QoroQuantum/divi/commit/ee5697f46ea59d67e962449aab4f6c7fddc129c7))
-* remove spurious blank line ([23e11e5](https://github.com/QoroQuantum/divi/commit/23e11e51d322cc428fe5af6298792123e6b0e1f1))
-* up dev deps versions ([3b7aae5](https://github.com/QoroQuantum/divi/commit/3b7aae540e166782ed89a1a21b01ba60c42dd995))
-* up maestro ([f850889](https://github.com/QoroQuantum/divi/commit/f850889d759c3ae3644410ae5ea86a2abe92154c))
-* up maestro ([385de04](https://github.com/QoroQuantum/divi/commit/385de04e2e4c6bdd42b29505750d4a0c700cb8d1))
-* update pydantic, mitiq constraints and fix deprecation warning ([6c7c151](https://github.com/QoroQuantum/divi/commit/6c7c15158a8404ed21dddd4199610809f74c6473))
-* use official poetry routine and fix nightly script ([c368a08](https://github.com/QoroQuantum/divi/commit/c368a08cd59322e0e3660484230e4fc0899f07ea))
-
+* CI, build, and tooling fixes (nightly versioning, PyPI publish script, Poetry routine, docs workflow, autoflake config) ([07f5b73](https://github.com/QoroQuantum/divi/commit/07f5b73756ceba6e12451e4d28f5ebb48b89df97), [97e7925](https://github.com/QoroQuantum/divi/commit/97e79258745f0b76f27e176aa685911a74bdc395), [ef30e36](https://github.com/QoroQuantum/divi/commit/ef30e3607a7b778d45b0ea166ca30222007e2b3e), [c368a08](https://github.com/QoroQuantum/divi/commit/c368a08cd59322e0e3660484230e4fc0899f07ea), [89f79fb](https://github.com/QoroQuantum/divi/commit/89f79fb91751699aca45be05e38094d8eabd5a54), [18b05c3](https://github.com/QoroQuantum/divi/commit/18b05c3b4421e19c752a7a8a24438ba172ae2f20))
+* update dependencies (Maestro, pydantic, mitiq, dev deps) ([3b7aae5](https://github.com/QoroQuantum/divi/commit/3b7aae540e166782ed89a1a21b01ba60c42dd995), [f850889](https://github.com/QoroQuantum/divi/commit/f850889d759c3ae3644410ae5ea86a2abe92154c), [385de04](https://github.com/QoroQuantum/divi/commit/385de04e2e4c6bdd42b29505750d4a0c700cb8d1), [6c7c151](https://github.com/QoroQuantum/divi/commit/6c7c15158a8404ed21dddd4199610809f74c6473))
+* code and test cleanup (`qubo_to_ising` extraction, sparse representation removal, test reorganization) ([753b597](https://github.com/QoroQuantum/divi/commit/753b5975a630a2bb9dd97cb4d2f8a1b81ce5c4d1), [23e11e5](https://github.com/QoroQuantum/divi/commit/23e11e51d322cc428fe5af6298792123e6b0e1f1), [64bf945](https://github.com/QoroQuantum/divi/commit/64bf945c4deff9ef789d1041797414758b61b704), [c085f00](https://github.com/QoroQuantum/divi/commit/c085f008f85b16a5a9434df3f38ad83702acfd97), [1fe3d06](https://github.com/QoroQuantum/divi/commit/1fe3d060c3941583c95fec5e45bb7a90131a5848), [ba03a59](https://github.com/QoroQuantum/divi/commit/ba03a5945285f9c516c9ce2711e83d6b40335931))
 
 ### 📝 Documentation
 
