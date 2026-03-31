@@ -229,4 +229,4 @@ Next Steps
 
 - Try the runnable examples in the `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ directory
 - Learn about :doc:`optimizers` for optimization strategies
-- Explore :doc:`improving_results_zne` for improving results
+- Explore :doc:`improving_results_qem` for improving results

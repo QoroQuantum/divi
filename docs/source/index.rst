@@ -65,7 +65,7 @@ Or pin a specific nightly by date:
    user_guide/hamiltonian_time_evolution
    user_guide/backends
    user_guide/program_ensembles
-   user_guide/improving_results_zne
+   user_guide/improving_results_qem
    user_guide/optimizers
    user_guide/resuming_long_runs
 

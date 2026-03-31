@@ -114,7 +114,7 @@ Divi ships with six stages that cover the most common quantum workflows:
      - Bundle
      - Applies a :class:`~divi.circuits.qem.QEMProtocol` (e.g. ZNE) in the
        expand pass and reduces the scaled results in the reduce pass.
-       See :doc:`improving_results_zne` for details.
+       See :doc:`improving_results_qem` for details.
    * - :class:`~divi.pipeline.stages.PCECostStage`
      - Bundle
      - Computes the Pauli-coefficient expectation-value cost for ``PCE``-based
@@ -298,6 +298,6 @@ What's Next
 -----------
 
 - 📕 **API Reference**: Full class documentation in :doc:`../api_reference/pipeline`
-- 🎛️ **Error Mitigation**: Add a :class:`~divi.circuits.qem.QEMProtocol` to your pipeline in :doc:`improving_results_zne`
+- 🎛️ **Error Mitigation**: Add a :class:`~divi.circuits.qem.QEMProtocol` to your pipeline in :doc:`improving_results_qem`
 - ⚡ **Custom Circuits**: Wrap any ``QuantumScript`` with :class:`~divi.qprog.CustomVQA` from :doc:`../api_reference/qprog`
 - 📊 **Program Ensembles**: Scale pipelines across parameter sweeps in :doc:`program_ensembles`

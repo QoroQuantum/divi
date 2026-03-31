@@ -4,9 +4,14 @@
 
 import pennylane as qml
 import pytest
+import sympy as sp
 from sympy import Symbol
 
-from divi.circuits._qasm_conversion import _ops_to_qasm, to_openqasm
+from divi.circuits._qasm_conversion import (
+    _ops_to_qasm,
+    inject_input_declarations,
+    to_openqasm,
+)
 
 
 class TestOpsToQasm:
@@ -343,3 +348,53 @@ class TestToOpenqasm:
 
         except Exception as e:
             pytest.fail(f"to_openqasm failed with a sympy parameter: {e}")
+
+
+class TestInjectInputDeclarations:
+    """Tests for inject_input_declarations."""
+
+    QASM_TEMPLATE = (
+        'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[1];\nrx(theta) q[0];\n'
+    )
+
+    def test_single_symbol_inserted_after_include(self):
+        """A single symbol gets an 'input angle[32]' declaration after the include line."""
+        theta = sp.Symbol("theta")
+        result = inject_input_declarations(self.QASM_TEMPLATE, [theta])
+        assert "input angle[32] theta;" in result
+        assert result.index("input angle[32] theta;") < result.index("qreg")
+
+    def test_multiple_symbols(self):
+        """Multiple symbols each get their own declaration."""
+        alpha, beta = sp.Symbol("alpha"), sp.Symbol("beta")
+        result = inject_input_declarations(self.QASM_TEMPLATE, [alpha, beta])
+        assert "input angle[32] alpha;" in result
+        assert "input angle[32] beta;" in result
+
+    def test_numpy_array_of_symbols_flattened(self):
+        """A numpy array of symbols is flattened before injection."""
+        arr = sp.symarray("x", (2, 2))
+        result = inject_input_declarations(self.QASM_TEMPLATE, [arr])
+        for sym in arr.flatten():
+            assert f"input angle[32] {sym};" in result
+
+    def test_empty_symbols_returns_unchanged(self):
+        """An empty symbol list returns the QASM body unchanged."""
+        result = inject_input_declarations(self.QASM_TEMPLATE, [])
+        assert result == self.QASM_TEMPLATE
+
+    def test_missing_include_marker_returns_unchanged(self):
+        """If the include line is missing, the body is returned unchanged."""
+        qasm_no_include = "OPENQASM 2.0;\nqreg q[1];\n"
+        theta = sp.Symbol("theta")
+        result = inject_input_declarations(qasm_no_include, [theta])
+        assert result == qasm_no_include
+
+    def test_mixed_symbols_and_arrays(self):
+        """A mix of bare symbols and numpy arrays are all injected."""
+        alpha = sp.Symbol("alpha")
+        betas = sp.symarray("beta", 2)
+        result = inject_input_declarations(self.QASM_TEMPLATE, [alpha, betas])
+        assert "input angle[32] alpha;" in result
+        assert "input angle[32] beta_0;" in result
+        assert "input angle[32] beta_1;" in result

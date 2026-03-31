@@ -77,7 +77,7 @@ TUTORIALS: dict[str, dict] = {
             ("population_size=10", "population_size=5"),
         ],
     },
-    "zne.py": {
+    "error_mitigation.py": {
         "timeout_seconds": 180,
         "patches": [
             (

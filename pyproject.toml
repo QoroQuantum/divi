@@ -64,6 +64,8 @@ ply = "^3.11"
 basis-set-exchange = "^0.11"
 pydantic = "^2.10"
 numba = "^0.64.0"
+stim = "^1.15.0"
+stimcirq = "^1.15.0"
 
 
 [tool.poetry.group.dev.dependencies]

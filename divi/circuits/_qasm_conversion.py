@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import re
 from collections.abc import Sequence
 from functools import partial
 from itertools import product
@@ -43,17 +44,42 @@ OPENQASM_GATES = {
     "PhaseShift": "u1",
 }
 
+_INCLUDE_LINE = 'include "qelib1.inc";\n'
+_CIRQ_COMMENTS = re.compile(r"^//.*\n?", re.MULTILINE)
+_BLANK_LINES = re.compile(r"\n{2,}")
+_QREG = re.compile(r"qreg q\[(\d+)\];")
 
-def _cirq_circuit_from_qasm(qasm: str) -> cirq.Circuit:
-    """Parses an OpenQASM string to `cirq.Circuit`.
 
-    Args:
-        qasm: The OpenQASM string
+def inject_input_declarations(qasm_body: str, symbols: Sequence) -> str:
+    """Insert ``input angle[32]`` declarations after the include line."""
+    flat = [
+        sym
+        for s in symbols
+        for sym in (s.flatten() if isinstance(s, np.ndarray) else [s])
+    ]
+    if not flat or _INCLUDE_LINE not in qasm_body:
+        return qasm_body
+    decls = "".join(f"input angle[32] {s};\n" for s in flat)
+    return qasm_body.replace(_INCLUDE_LINE, _INCLUDE_LINE + decls, 1)
 
-    Returns:
-        The parsed circuit
+
+def normalize_qasm_after_cirq(qasm_str: str) -> str:
+    """Normalize QASM produced by Cirq: strip comments, collapse blank lines, add creg."""
+    qasm_str = _CIRQ_COMMENTS.sub("", qasm_str)
+    qasm_str = _BLANK_LINES.sub("\n", qasm_str)
+    if "creg" not in qasm_str:
+        qasm_str = _QREG.sub(r"qreg q[\1];\ncreg c[\1];", qasm_str, count=1)
+    return qasm_str
+
+
+def _cirq_circuit_from_qasm(qasm: str, symbols: Sequence | None = None) -> cirq.Circuit:
+    """Parse an OpenQASM string to ``cirq.Circuit``.
+
+    When *symbols* are provided, ``input angle[32]`` declarations are
+    injected so the parser recognises symbolic parameter names.
     """
-
+    if symbols is not None and len(symbols):
+        qasm = inject_input_declarations(qasm, symbols)
     return QasmParser().parse(qasm).circuit
 
 
