@@ -2,8 +2,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from typing import Any
+
+import cirq
+
 from divi.circuits import MetaCircuit
-from divi.circuits.qem import QEMProtocol, _NoMitigation, apply_protocol_to_qasm
+from divi.circuits._qasm_conversion import (
+    _cirq_circuit_from_qasm,
+    normalize_qasm_after_cirq,
+)
+from divi.circuits.qem import QEMContext, QEMProtocol, _NoMitigation
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
@@ -12,17 +20,17 @@ from divi.pipeline.abc import (
     PipelineEnv,
     StageToken,
 )
-from divi.pipeline.transformations import group_by_base_key, reduce_postprocess_ordered
+from divi.pipeline.transformations import group_by_base_key
 
 QEM_AXIS = "qem"
 
 
 class QEMStage(BundleStage):
-    """BundleStage that computes QEM circuit-body variants per MetaCircuit.
+    """BundleStage that applies a QEM protocol to each circuit body.
 
-    Operates on ``circuit_body_qasm`` from ``MetaCircuit`` (computed at creation).
-    Stores QEM-transformed body variants via set_circuit_bodies while
-    preserving key cardinality (no fan-out).
+    Threads :class:`QEMContext` objects through the ``StageToken`` so that
+    ``reduce`` can pass them back to the protocol together with the quantum
+    results.
     """
 
     @property
@@ -37,66 +45,81 @@ class QEMStage(BundleStage):
         super().__init__(name=type(self).__name__)
         self._protocol = protocol if protocol is not None else _NoMitigation()
 
+    def _expand_bodies(
+        self, meta: MetaCircuit
+    ) -> tuple[tuple[tuple, ...], list[QEMContext]]:
+        """Apply the protocol to each body QASM and return tagged results + contexts."""
+        mp = meta.source_circuit.measurements[0] if meta.source_circuit else None
+        observable = getattr(mp, "obs", None) if mp else None
+        ctxs: list[QEMContext] = []
+        bodies: list[tuple] = []
+
+        for tag, body in meta.circuit_body_qasms:
+            circuits, ctx = self._protocol.expand(
+                _cirq_circuit_from_qasm(body, meta.symbols), observable
+            )
+            ctxs.append(ctx)
+            bodies.extend(
+                ((*tag, (self.axis_name, i)), normalize_qasm_after_cirq(cirq.qasm(c)))
+                for i, c in enumerate(circuits)
+            )
+
+        return tuple(bodies), ctxs
+
     def expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
     ) -> tuple[ExpansionResult, StageToken]:
         out: dict[object, MetaCircuit] = {}
+        contexts: dict[object, list[QEMContext]] = {}
 
         for parent_key, meta in batch.items():
-            updated_bodies = apply_protocol_to_qasm(
-                meta.circuit_body_qasms,
-                self._protocol,
-                axis_name=self.axis_name,
-                symbols=meta.symbols,
-            )
+            bodies, ctxs = self._expand_bodies(meta)
+            contexts[parent_key] = ctxs
             symbol_names = tuple(str(s) for s in meta.symbols)
-            out[parent_key] = meta.set_circuit_bodies(
-                updated_bodies, symbol_names=symbol_names
-            )
+            out[parent_key] = meta.set_circuit_bodies(bodies, symbol_names=symbol_names)
 
-        return ExpansionResult(batch=out), None
+        return ExpansionResult(batch=out), contexts
+
+    def _detect_per_obs(self, grouped: dict) -> bool:
+        """Check whether results are per-observable dicts or scalars."""
+        sample = next((v for g in grouped.values() for v in g.values()), None)
+        if not isinstance(sample, dict):
+            return False
+        if isinstance(next(iter(sample)), str):
+            if not isinstance(self._protocol, _NoMitigation):
+                raise TypeError(
+                    f"QEMStage expects scalar expectation values, "
+                    f"but received probability dicts. "
+                    f"{type(self._protocol).__name__} is not supported "
+                    f"for probability-based measurements."
+                )
+            return False
+        return True
+
+    def _reduce_grouped(
+        self,
+        grouped: dict[tuple, dict[int, Any]],
+        contexts: dict[object, list[QEMContext]] | None,
+        per_obs: bool,
+    ) -> ChildResults:
+        reduced: ChildResults = {}
+        for base_key, values_by_idx in grouped.items():
+            ordered = [v for _, v in sorted(values_by_idx.items())]
+            ctx = QEMContext() if contexts is None else contexts[base_key][0]
+
+            if per_obs:
+                reduced[base_key] = {
+                    obs_idx: self._protocol.reduce([d[obs_idx] for d in ordered], ctx)
+                    for obs_idx in sorted(ordered[0].keys())
+                }
+            else:
+                reduced[base_key] = self._protocol.reduce(ordered, ctx)
+        return reduced
 
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken
     ) -> ChildResults:
+        contexts: dict[object, list[QEMContext]] | None = token
         grouped = group_by_base_key(results, self.axis_name, indexed=True)
-
-        sample_val = next((v for g in grouped.values() for v in g.values()), None)
-
-        if isinstance(sample_val, dict):
-            # Multi-obs expval dicts ({int: float}) from _counts_to_expvals
-            # are fine — apply ZNE per observable index.
-            # Probability dicts ({str: float}) are not supported.
-            sample_key = next(iter(sample_val))
-            if isinstance(sample_key, str):
-                if not isinstance(self._protocol, _NoMitigation):
-                    raise TypeError(
-                        "QEMStage.reduce expects scalar expectation values, "
-                        f"but received dict results. {self._protocol.__class__.__name__} "
-                        "is not supported for probability-based measurements."
-                    )
-            else:
-                return self._reduce_per_obs(grouped)
-
-        return reduce_postprocess_ordered(grouped, self._protocol.postprocess_results)
-
-    def _reduce_per_obs(
-        self, grouped: dict[tuple, dict[int, dict[int, float]]]
-    ) -> ChildResults:
-        """Apply QEM postprocessing to each observable index independently.
-
-        When ``_counts_to_expvals`` returns ``{obs_idx: float}`` dicts (for
-        multi-observable measurement groups), the ZNE extrapolation must be
-        applied per observable, not on the whole dict.
-        """
-        reduced: ChildResults = {}
-        for base_key, values_by_scale in grouped.items():
-            ordered = [v for _, v in sorted(values_by_scale.items())]
-            obs_keys = sorted(ordered[0].keys())
-            reduced[base_key] = {
-                obs_idx: self._protocol.postprocess_results(
-                    [scale_dict[obs_idx] for scale_dict in ordered]
-                )
-                for obs_idx in obs_keys
-            }
-        return reduced
+        per_obs = self._detect_per_obs(grouped)
+        return self._reduce_grouped(grouped, contexts, per_obs=per_obs)

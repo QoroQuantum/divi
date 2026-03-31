@@ -20,11 +20,13 @@ from scipy.optimize import OptimizeResult
 from divi.backends import CircuitRunner
 from divi.circuits import MetaCircuit
 from divi.circuits.qem import _NoMitigation
+from divi.circuits.quepp import QuEPP
 from divi.pipeline import CircuitPipeline
 from divi.pipeline.stages import (
     CircuitSpecStage,
     MeasurementStage,
     ParameterBindingStage,
+    PauliTwirlStage,
     QEMStage,
 )
 from divi.qprog.checkpointing import (
@@ -905,14 +907,15 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 cost Hamiltonian (e.g. TrotterSpecStage).
         """
 
-        return CircuitPipeline(
-            stages=[
-                spec_stage,
-                MeasurementStage(grouping_strategy=self._grouping_strategy),
-                ParameterBindingStage(),
-                QEMStage(protocol=self._qem_protocol),
-            ]
-        )
+        stages = [
+            spec_stage,
+            MeasurementStage(grouping_strategy=self._grouping_strategy),
+            ParameterBindingStage(),
+            QEMStage(protocol=self._qem_protocol),
+        ]
+        if isinstance(self._qem_protocol, QuEPP) and self._qem_protocol.n_twirls > 0:
+            stages.append(PauliTwirlStage(num_twirls=self._qem_protocol.n_twirls))
+        return CircuitPipeline(stages=stages)
 
     def _build_measurement_pipeline(self) -> "CircuitPipeline":
         """Build the measurement pipeline for solution extraction.

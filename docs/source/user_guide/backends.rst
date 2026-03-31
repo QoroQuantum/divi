@@ -328,4 +328,4 @@ Next Steps
 ----------
 
 * Try the runnable examples in the `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ directory.
-* Learn about :doc:`improving_results_zne` for improving your results on noisy hardware.
+* Learn about :doc:`improving_results_qem` for improving your results on noisy hardware.
