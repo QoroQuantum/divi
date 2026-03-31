@@ -141,6 +141,17 @@ class Stage(ABC, Generic[InT, OutT]):
         """Transform results in the backward pass using the forward-pass token."""
         ...
 
+    def introspect(
+        self, batch: MetaCircuitBatch, env: PipelineEnv, token: StageToken
+    ) -> dict[str, Any]:
+        """Return stage-specific metadata for dry-run reporting.
+
+        Override in subclasses to provide richer introspection data.
+        Called by the dry-run tool after ``expand`` with the post-expand
+        batch, the pipeline env, and the stage's token.
+        """
+        return {}
+
 
 class SpecStage(Stage[InT, MetaCircuitBatch], ABC):
     """First stage in every pipeline: converts an arbitrary spec into a keyed MetaCircuit batch.

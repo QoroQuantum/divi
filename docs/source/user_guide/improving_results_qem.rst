@@ -167,6 +167,31 @@ ZNE vs QuEPP
      - No
      - Yes (used for classical simulation)
 
+Estimating Circuit Cost with Dry Run
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Error mitigation can multiply the number of circuits significantly.  Use
+:meth:`~divi.qprog.QuantumProgram.dry_run` to preview the per-stage expansion
+before committing to a full run:
+
+.. code-block:: python
+
+   vqe = VQE(
+       molecule=h2_molecule,
+       qem_protocol=QuEPP(truncation_order=2, n_twirls=10),
+       backend=QiskitSimulator(qiskit_backend="auto"),
+   )
+
+   # Prints a tree showing the fan-out at each stage
+   vqe.dry_run()
+
+The output shows the multiplicative cost of each pipeline stage — including
+how many Pauli paths QuEPP generates, the Clifford simulation count, and the
+twirl fan-out — so you can tune ``truncation_order``, ``coefficient_threshold``,
+and ``n_twirls`` before spending any shots.
+
+See :doc:`pipelines` for full documentation of the dry-run tool.
+
 Performance Considerations
 --------------------------
 

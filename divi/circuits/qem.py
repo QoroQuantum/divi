@@ -102,6 +102,8 @@ class _NoMitigation(QEMProtocol):
         return (cirq_circuit,), QEMContext()
 
     def reduce(self, quantum_results: Sequence[float], context: QEMContext) -> float:
+        if len(quantum_results) == 0:
+            raise RuntimeError("NoMitigation received an empty results sequence.")
         if len(quantum_results) > 1:
             raise RuntimeError("NoMitigation class received multiple partial results.")
         return quantum_results[0]
@@ -158,7 +160,7 @@ class ZNE(QEMProtocol):
             )
 
         if not isinstance(extrapolation_factory, Factory):
-            raise ValueError("extrapolation_fn is expected to be of Factory.")
+            raise ValueError("extrapolation_factory is expected to be of type Factory.")
 
         self._scale_factors = scale_factors
         self._folding_fn = folding_fn

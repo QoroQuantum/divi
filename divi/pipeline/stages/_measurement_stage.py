@@ -4,6 +4,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from divi.circuits import MetaCircuit
 from divi.circuits._qasm_conversion import _measurements_to_qasm
@@ -197,6 +198,28 @@ class MeasurementStage(BundleStage):
         return ExpansionResult(batch=result), token
 
     # ------------------------------------------------------------------ #
+    def introspect(
+        self,
+        batch: MetaCircuitBatch,
+        env: PipelineEnv,
+        token: StageToken,
+    ) -> dict[str, Any]:
+        meta = next(iter(batch.values()), None)
+        info: dict[str, Any] = {"strategy": self._grouping_strategy}
+        if meta is None:
+            return info
+        groups = meta.measurement_groups
+        info["n_groups"] = len(groups)
+        n_terms = sum(len(g) for g in groups)
+        info["n_terms"] = n_terms
+        # Largest group by term count
+        if groups:
+            largest = max(groups, key=len)
+            info["largest_group"] = ", ".join(str(op) for op in largest[:5])
+            if len(largest) > 5:
+                info["largest_group"] += f" ... ({len(largest)} terms)"
+        return info
+
     # Reduce
     # ------------------------------------------------------------------ #
 

@@ -9,10 +9,12 @@ gate (CNOT, CZ) so that coherent errors are converted into stochastic
 Pauli noise.  The ideal circuit is unchanged; only the noise channel is
 affected.
 
-During *expand*, each circuit body is replaced by ``num_twirls`` randomised
+During *expand*, each circuit body is replaced by ``n_twirls`` randomised
 copies.  During *reduce*, the expectation values from all copies are
 averaged to produce a single result per original circuit.
 """
+
+from typing import Any
 
 import cirq
 from mitiq.pt import generate_pauli_twirl_variants
@@ -39,7 +41,7 @@ class PauliTwirlStage(BundleStage):
     """Fan out each circuit body into Pauli-twirled copies and average on reduce.
 
     Args:
-        num_twirls: Number of randomised copies per circuit body.
+        n_twirls: Number of randomised copies per circuit body.
     """
 
     @property
@@ -50,9 +52,9 @@ class PauliTwirlStage(BundleStage):
     def stateful(self) -> bool:
         return False
 
-    def __init__(self, num_twirls: int = 100) -> None:
+    def __init__(self, n_twirls: int = 100) -> None:
         super().__init__(name=type(self).__name__)
-        self._num_twirls = num_twirls
+        self._n_twirls = n_twirls
 
     def expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
@@ -65,7 +67,7 @@ class PauliTwirlStage(BundleStage):
             for tag, body in meta.circuit_body_qasms:
                 cirq_circuit = _cirq_circuit_from_qasm(body, meta.symbols)
                 variants = generate_pauli_twirl_variants(
-                    cirq_circuit, num_circuits=self._num_twirls
+                    cirq_circuit, num_circuits=self._n_twirls
                 )
                 for twirl_idx, variant in enumerate(variants):
                     twirl_tag = (*tag, (self.axis_name, twirl_idx))
@@ -78,6 +80,11 @@ class PauliTwirlStage(BundleStage):
             )
 
         return ExpansionResult(batch=out), None
+
+    def introspect(
+        self, batch: MetaCircuitBatch, env: PipelineEnv, token: StageToken
+    ) -> dict[str, Any]:
+        return {"n_twirls": self._n_twirls}
 
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken

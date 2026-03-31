@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from typing import Any
+
 import numpy as np
 
 from divi.circuits import MetaCircuit
@@ -92,6 +94,14 @@ class ParameterBindingStage(BundleStage):
             out[key] = node.set_circuit_bodies(tuple(bound_bodies))
 
         return ExpansionResult(batch=out), None
+
+    def introspect(
+        self, batch: MetaCircuitBatch, env: PipelineEnv, token: StageToken
+    ) -> dict[str, Any]:
+        param_sets = np.asarray(env.param_sets, dtype=float)
+        meta = next(iter(batch.values()), None)
+        n_params = len(meta.symbols) if meta else 0
+        return {"n_param_sets": len(param_sets), "n_params": n_params}
 
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken

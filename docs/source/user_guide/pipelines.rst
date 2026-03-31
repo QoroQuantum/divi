@@ -121,6 +121,64 @@ Divi ships with six stages that cover the most common quantum workflows:
        algorithms.
 
 
+Dry Run
+-------
+
+Before executing any circuits you can inspect the pipeline to understand the
+total circuit count and how each stage contributes to it.  Call
+:meth:`~divi.qprog.QuantumProgram.dry_run` on any quantum program:
+
+.. code-block:: python
+
+   vqe = VQE(
+       molecule=h2_molecule,
+       qem_protocol=QuEPP(truncation_order=1, n_twirls=10),
+       backend=QiskitSimulator(qiskit_backend="auto"),
+   )
+
+   # Runs the forward pass without executing circuits
+   vqe.dry_run()
+
+This prints a tree for each pipeline showing the fan-out factor and metadata
+per stage:
+
+.. code-block:: text
+
+   cost
+   ├── CircuitSpecStage [circuit] → 1
+   │   ├── n_qubits: 4
+   │   ├── n_gates: 4
+   │   └── n_2q_gates: 2
+   ├── MeasurementStage [obs_group] → ×5
+   │   ├── strategy: qwc
+   │   ├── n_groups: 5
+   │   └── n_terms: 14
+   ├── ParameterBindingStage [param_set] → 1
+   │   └── n_params: 3
+   ├── QEMStage [qem_quepp] → ×10
+   │   ├── protocol: quepp
+   │   ├── n_paths: 9
+   │   └── n_clifford_sims: 9
+   ├── PauliTwirlStage [twirl] → ×10
+   │   └── n_twirls: 10
+   └── Total: 5 × 10 × 10 = 500 circuits
+
+The report shows the multiplicative expansion at each stage.  Use this to
+estimate cloud costs, tune ``truncation_order`` or ``n_twirls``, and verify
+that measurement grouping behaves as expected — all before spending a single
+shot.
+
+``dry_run()`` returns a ``dict[str, DryRunReport]`` keyed by pipeline name
+(e.g. ``"cost"``, ``"measurement"``), so you can also inspect the report
+programmatically:
+
+.. code-block:: python
+
+   reports = vqe.dry_run()
+   print(reports["cost"].total_circuits)   # 500
+   print(reports["cost"].stages[3].metadata)  # QEM stage metadata dict
+
+
 How Existing Algorithms Build Pipelines
 ---------------------------------------
 
