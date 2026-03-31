@@ -27,6 +27,7 @@ import numpy as np
 import stim
 import stimcirq
 from cirq.circuits.circuit import Circuit
+from pennylane.exceptions import TermsUndefinedError as _TermsUndefinedError
 
 from divi.circuits.qem import QEMContext, QEMProtocol
 
@@ -42,7 +43,7 @@ def _obs_to_stim_terms(
     """Convert a PennyLane observable to weighted stim PauliStrings."""
     try:
         coeffs, ops = observable.terms()
-    except Exception:
+    except (AttributeError, TypeError, _TermsUndefinedError):
         coeffs, ops = [1.0], [observable]
 
     terms = []
@@ -130,7 +131,12 @@ class _PauliPath:
 
 
 def _is_pauli_rotation(gate: cirq.Gate) -> tuple[str, float] | None:
-    """Return (axis, angle) if *gate* is an explicit Rx/Ry/Rz rotation, else None."""
+    """Return (axis, angle) if *gate* is an explicit Rx/Ry/Rz rotation, else None.
+
+    Uses ``_rads`` (set by Cirq's Rx/Ry/Rz constructors) to preserve the
+    exact input radians.  The public ``exponent`` property divides by π,
+    which introduces floating-point drift on the round-trip.
+    """
     if isinstance(gate, cirq.Rx):
         return ("x", gate._rads)
     if isinstance(gate, cirq.Ry):
@@ -356,15 +362,18 @@ def _sample_paths_montecarlo(
     seen: dict[tuple[int, ...], _PauliPath] = {}
     sample_weight = 1.0 / n_samples
 
+    # Pre-compute term sampling probabilities (constant across samples)
+    if len(observable_terms) > 1:
+        abs_coeffs = np.array([abs(c) for c, _ in observable_terms])
+        term_probs = abs_coeffs / abs_coeffs.sum()
+
     for _ in range(n_samples):
         # Pick a random observable term proportional to |coeff|
-        obs_coeff, obs_pauli = observable_terms[0]  # single-term simplification
-        if len(observable_terms) > 1:
-            abs_coeffs = np.array([abs(c) for c, _ in observable_terms])
-            term_idx = rng.choice(
-                len(observable_terms), p=abs_coeffs / abs_coeffs.sum()
-            )
-            obs_coeff, obs_pauli = observable_terms[term_idx]
+        if len(observable_terms) == 1:
+            _, obs_pauli = observable_terms[0]
+        else:
+            term_idx = rng.choice(len(observable_terms), p=term_probs)
+            _, obs_pauli = observable_terms[term_idx]
 
         pauli = tableaus[K].inverse()(obs_pauli)
         branches: list[int] = []
@@ -374,18 +383,20 @@ def _sample_paths_montecarlo(
             gen = _GENERATOR[rot.axis]
 
             if _commutes_at_qubit(pauli, rot.qubit_idx, gen):
-                branches.insert(0, 0)
+                branches.append(0)
                 pauli = tableaus[idx].inverse()(pauli)
             else:
                 cos_p = abs(np.cos(rot.angle))
                 sin_p = abs(np.sin(rot.angle))
                 if rng.random() < cos_p / (cos_p + sin_p):
-                    branches.insert(0, 0)
+                    branches.append(0)
                     pauli = tableaus[idx].inverse()(pauli)
                 else:
-                    branches.insert(0, 1)
+                    branches.append(1)
                     pauli = _apply_rp_conjugation(pauli, rot.qubit_idx, rot.axis)
                     pauli = tableaus[idx].inverse()(pauli)
+
+        branches.reverse()
 
         # Check diagonal — pauli already propagated through all layers
         if not _is_diagonal(pauli):
@@ -540,11 +551,13 @@ class QuEPP(QEMProtocol):
                 f"eta_mode must be 'per_group' or 'global', got {eta_mode!r}"
             )
         self._K_T = truncation_order
-        self._coeff_threshold = coefficient_threshold or 0.0
+        self._coeff_threshold = (
+            0.0 if coefficient_threshold is None else coefficient_threshold
+        )
         self._sampling = sampling
         self._n_samples = n_samples
         self._rng = np.random.default_rng(seed)
-        self.eta_mode = eta_mode
+        self._eta_mode = eta_mode
         self.n_twirls = n_twirls
 
     @property

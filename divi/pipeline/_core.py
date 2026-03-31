@@ -204,6 +204,11 @@ class CircuitPipeline:
         self._stages = list(stages)
         self._forward_cache: dict[tuple[int, tuple[int, ...]], PipelineTrace] = {}
 
+    @property
+    def stages(self) -> tuple[Stage, ...]:
+        """Read-only view of the pipeline stages."""
+        return tuple(self._stages)
+
     def run(
         self,
         initial_spec: Any,

@@ -27,6 +27,9 @@ if __name__ == "__main__":
         backend=get_backend(),
     )
 
+    # --- Dry run: inspect pipeline fan-out before executing ---
+    vqe_problem.dry_run()
+
     t1 = time.time()
 
     vqe_problem.run()

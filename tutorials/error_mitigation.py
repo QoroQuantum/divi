@@ -75,6 +75,10 @@ if __name__ == "__main__":
         qem_protocol=QuEPP(truncation_order=1, n_twirls=10),
         **common,
     )
+
+    # Dry run shows the per-stage circuit fan-out including QEM + twirling
+    vqe_quepp.dry_run()
+
     vqe_quepp.run()
 
     # --- Print comparison table ---

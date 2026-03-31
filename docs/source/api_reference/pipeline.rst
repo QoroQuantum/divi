@@ -89,6 +89,23 @@ Built-in Stages
    :show-inheritance:
    :special-members: __init__
 
+Dry Run
+-------
+
+.. autoclass:: divi.pipeline.DryRunReport
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. autoclass:: divi.pipeline.StageInfo
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. autofunction:: divi.pipeline.dry_run_pipeline
+
+.. autofunction:: divi.pipeline.format_dry_run
+
 Utility Functions
 -----------------
 

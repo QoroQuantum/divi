@@ -193,7 +193,7 @@ class TestZNE:
     def test_initialization_invalid_factory(self, mock_folding_fn):
         """Test ZNE initialization with an invalid extrapolation_factory."""
         with pytest.raises(
-            ValueError, match="extrapolation_fn is expected to be of Factory"
+            ValueError, match="extrapolation_factory is expected to be of type Factory"
         ):
             ZNE(
                 scale_factors=[1.0, 2.0],

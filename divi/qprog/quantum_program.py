@@ -11,7 +11,7 @@ from warnings import warn
 import requests
 
 from divi.backends import CircuitRunner
-from divi.pipeline import PipelineEnv
+from divi.pipeline import DryRunReport, PipelineEnv, dry_run_pipeline, format_dry_run
 from divi.reporting import LoggingProgressReporter, QueueProgressReporter
 
 
@@ -55,6 +55,7 @@ class QuantumProgram(ABC):
         self._total_run_time = 0.0
         self._curr_circuits = []
         self._current_execution_result = None
+        self._cancellation_event = None
 
         # --- Progress Reporting ---
         self.program_id = kwargs.get("program_id", None)
@@ -75,7 +76,6 @@ class QuantumProgram(ABC):
                 - int: Total number of circuits executed
                 - float: Total runtime in seconds
         """
-        pass
 
     def _set_cancellation_event(self, event: Event):
         """Set a cancellation event for graceful program termination.
@@ -160,6 +160,36 @@ class QuantumProgram(ABC):
         """
         ...
 
+    def dry_run(self) -> dict[str, DryRunReport]:
+        """Run forward pass on all pipelines and print fan-out analysis.
+
+        Traverses each pipeline stage without executing circuits,
+        reporting the fan-out factor and metadata per stage and the
+        total circuit count per pass.
+        """
+        self._build_pipelines()
+        pipelines = self._get_dry_run_pipelines()
+        reports = {}
+        for name, (pipeline, initial_spec) in pipelines.items():
+            env = self._build_pipeline_env()
+            trace = pipeline.run_forward_pass(
+                initial_spec, env, force_forward_sweep=True
+            )
+            reports[name] = dry_run_pipeline(name, trace, pipeline.stages, env)
+        format_dry_run(reports)
+        return reports
+
+    def _get_dry_run_pipelines(self) -> dict[str, tuple]:
+        """Return ``{name: (pipeline, initial_spec)}`` for dry-run inspection.
+
+        Subclasses must override to provide their pipeline(s) and the
+        corresponding initial spec for each.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement _get_dry_run_pipelines() "
+            f"to support dry_run()."
+        )
+
     def _build_pipeline_env(self, **overrides) -> PipelineEnv:
         """Construct a :class:`PipelineEnv` from the current program state.
 
@@ -168,7 +198,7 @@ class QuantumProgram(ABC):
         """
         return PipelineEnv(
             backend=self.backend,
-            reporter=getattr(self, "reporter", None),
-            cancellation_event=getattr(self, "_cancellation_event", None),
+            reporter=self.reporter,
+            cancellation_event=self._cancellation_event,
             **overrides,
         )

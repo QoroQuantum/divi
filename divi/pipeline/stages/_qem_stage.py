@@ -5,6 +5,7 @@
 from typing import Any
 
 import cirq
+import numpy as np
 
 from divi.circuits import MetaCircuit
 from divi.circuits._qasm_conversion import (
@@ -86,7 +87,7 @@ class QEMStage(BundleStage):
         if not isinstance(sample, dict):
             return False
         if isinstance(next(iter(sample)), str):
-            if not isinstance(self._protocol, _NoMitigation):
+            if self._protocol.name != "NoMitigation":
                 raise TypeError(
                     f"QEMStage expects scalar expectation values, "
                     f"but received probability dicts. "
@@ -115,6 +116,34 @@ class QEMStage(BundleStage):
             else:
                 reduced[base_key] = self._protocol.reduce(ordered, ctx)
         return reduced
+
+    def introspect(
+        self, batch: MetaCircuitBatch, env: PipelineEnv, token: StageToken
+    ) -> dict[str, Any]:
+        info: dict[str, Any] = {"protocol": self._protocol.name}
+        contexts: dict | None = token
+        if not contexts:
+            return info
+        ctx_list = next(iter(contexts.values()), [])
+        if not ctx_list:
+            return info
+        data = ctx_list[0].data
+        for key in ("n_rotations", "n_paths"):
+            if key in data:
+                info[key] = data[key]
+        if "n_paths" in data:
+            info["n_clifford_sims"] = data["n_paths"]
+        weights = data.get("weights")
+        if weights is not None and len(weights) > 0:
+            info["weight_sum"] = round(float(np.sum(weights)), 4)
+            info["weight_range"] = [
+                round(float(np.min(weights)), 4),
+                round(float(np.max(weights)), 4),
+            ]
+        classical = data.get("classical_values")
+        if classical is not None and weights is not None and len(weights) > 0:
+            info["classical_estimate"] = round(float(weights @ classical), 6)
+        return info
 
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken
