@@ -81,13 +81,19 @@ def _exact_expval(circuit: cirq.Circuit, observable, n_qubits: int) -> float:
 
 class TestIsPauliRotation:
     def test_rx_detected(self):
-        assert _is_pauli_rotation(cirq.rx(0.5)) == ("x", 0.5)
+        result = _is_pauli_rotation(cirq.rx(0.5))
+        assert result[0] == "x"
+        assert result[1] == pytest.approx(0.5)
 
     def test_ry_detected(self):
-        assert _is_pauli_rotation(cirq.ry(1.2)) == ("y", 1.2)
+        result = _is_pauli_rotation(cirq.ry(1.2))
+        assert result[0] == "y"
+        assert result[1] == pytest.approx(1.2)
 
     def test_rz_detected(self):
-        assert _is_pauli_rotation(cirq.rz(0.8)) == ("z", 0.8)
+        result = _is_pauli_rotation(cirq.rz(0.8))
+        assert result[0] == "z"
+        assert result[1] == pytest.approx(0.8)
 
     def test_clifford_gate_returns_none(self):
         assert _is_pauli_rotation(cirq.H) is None
@@ -131,7 +137,7 @@ class TestCPTExpansion:
         c = _rx_circuit(angle)
         protocol = QuEPP(sampling="exhaustive", truncation_order=5)
         _, ctx = protocol.expand(c, observable=qml.Z(0))
-        cpt = float(ctx.data["weights"] @ ctx.data["classical_values"])
+        cpt = float(ctx["weights"] @ ctx["classical_values"])
         assert cpt == pytest.approx(np.cos(angle), abs=1e-6)
 
     def test_h_rx_h_ry(self):
@@ -140,7 +146,7 @@ class TestCPTExpansion:
         c = cirq.Circuit(cirq.H(q), cirq.rx(0.3)(q), cirq.H(q), cirq.ry(0.5)(q))
         protocol = QuEPP(sampling="exhaustive", truncation_order=5)
         _, ctx = protocol.expand(c, observable=qml.Z(0))
-        cpt = float(ctx.data["weights"] @ ctx.data["classical_values"])
+        cpt = float(ctx["weights"] @ ctx["classical_values"])
         assert cpt == pytest.approx(_exact_expval(c, qml.Z(0), 1), abs=1e-4)
 
     def test_two_qubit_circuit(self, mixed_circuit):
@@ -148,7 +154,7 @@ class TestCPTExpansion:
         obs = qml.Z(0) @ qml.Z(1)
         protocol = QuEPP(sampling="exhaustive", truncation_order=5)
         _, ctx = protocol.expand(mixed_circuit, observable=obs)
-        cpt = float(ctx.data["weights"] @ ctx.data["classical_values"])
+        cpt = float(ctx["weights"] @ ctx["classical_values"])
         assert cpt == pytest.approx(_exact_expval(mixed_circuit, obs, 2), abs=1e-4)
 
     def test_commuting_gate_no_branch(self):
@@ -163,11 +169,9 @@ class TestCPTExpansion:
         protocol = QuEPP(sampling="exhaustive", truncation_order=5)
         circuits, ctx = protocol.expand(c, observable=qml.X(0))
         # No surviving paths (X is not diagonal on |0⟩)
-        assert ctx.data["n_paths"] == 0
+        assert ctx["n_paths"] == 0
         # CPT sum = 0, matching exact ⟨0|X|0⟩ = 0
-        assert float(
-            ctx.data["weights"] @ ctx.data["classical_values"]
-        ) == pytest.approx(0.0)
+        assert float(ctx["weights"] @ ctx["classical_values"]) == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -265,22 +269,22 @@ class TestQuEPPProtocol:
         )
         assert len(circuits) >= 2
         assert isinstance(ctx, QEMContext)
-        assert ctx.data["target_idx"] == 0
-        assert ctx.data["ensemble_start"] == 1
+        assert ctx["target_idx"] == 0
+        assert ctx["ensemble_start"] == 1
 
     def test_expand_clifford_circuit(self, bell_circuit):
         circuits, ctx = QuEPP(truncation_order=5).expand(
             bell_circuit, observable=qml.Z(0) @ qml.Z(1)
         )
         assert len(circuits) == 2  # target + 1 path
-        assert ctx.data["n_rotations"] == 0
+        assert ctx["n_rotations"] == 0
 
     def test_reduce_clifford_circuit_exact(self, bell_circuit):
         _, ctx = QuEPP(truncation_order=5).expand(
             bell_circuit, observable=qml.Z(0) @ qml.Z(1)
         )
         qr = [1.0]  # target
-        qr.extend(ctx.data["classical_values"])
+        qr.extend(ctx["classical_values"])
         assert QuEPP().reduce(qr, ctx) == pytest.approx(1.0)
 
     def test_full_round_trip_single_qubit(self):
@@ -291,7 +295,7 @@ class TestQuEPPProtocol:
         protocol = QuEPP(sampling="exhaustive", truncation_order=10)
         _, ctx = protocol.expand(c, observable=qml.Z(0))
         qr = [exact]
-        qr.extend(ctx.data["classical_values"])
+        qr.extend(ctx["classical_values"])
         assert protocol.reduce(qr, ctx) == pytest.approx(exact, abs=1e-6)
 
     def test_noise_correction(self):
@@ -303,7 +307,7 @@ class TestQuEPPProtocol:
         _, ctx = protocol.expand(c, observable=qml.Z(0))
         noise_factor = 0.9
         qr = [exact * noise_factor]
-        qr.extend(ctx.data["classical_values"] * noise_factor)
+        qr.extend(ctx["classical_values"] * noise_factor)
         assert protocol.reduce(qr, ctx) == pytest.approx(exact, abs=1e-4)
 
     def test_montecarlo_expand(self, mixed_circuit):
@@ -394,16 +398,14 @@ class TestQuEPPSignalDestruction:
     def _make_context(self, classical_values, weights=None):
         cv = np.array(classical_values)
         w = np.array(weights) if weights is not None else np.ones(len(cv)) / len(cv)
-        return QEMContext(
-            data={
-                "classical_values": cv,
-                "weights": w,
-                "target_idx": 0,
-                "ensemble_start": 1,
-                "n_rotations": len(cv),
-                "n_paths": len(cv),
-            }
-        )
+        return {
+            "classical_values": cv,
+            "weights": w,
+            "target_idx": 0,
+            "ensemble_start": 1,
+            "n_rotations": len(cv),
+            "n_paths": len(cv),
+        }
 
     def test_signal_destroyed_flag_set_when_eta_below_threshold(self):
         """reduce() flags _signal_destroyed when eta < min_eta."""
@@ -411,7 +413,7 @@ class TestQuEPPSignalDestruction:
         # Ensemble noisy near zero → eta ≈ 0.02/0.5 ≈ 0.04 < 0.1
         quantum_results = [0.5, 0.01, 0.01]
         QuEPP(truncation_order=1, n_twirls=0).reduce(quantum_results, ctx)
-        assert ctx.data.get("_signal_destroyed") is True
+        assert ctx.get("_signal_destroyed") is True
 
     def test_signal_destroyed_flag_not_set_when_eta_valid(self):
         """reduce() does NOT flag when eta is above threshold."""
@@ -419,19 +421,19 @@ class TestQuEPPSignalDestruction:
         # Ensemble noisy close to classical → eta ≈ 1.0
         quantum_results = [0.5, 0.48, 0.29]
         QuEPP(truncation_order=1, n_twirls=0).reduce(quantum_results, ctx)
-        assert "_signal_destroyed" not in ctx.data
+        assert "_signal_destroyed" not in ctx
 
     def test_signal_destroyed_flag_not_set_for_near_zero_classical(self):
         """reduce() does NOT flag when classical values are all near zero."""
         ctx = self._make_context([1e-15, 1e-15])
         quantum_results = [0.5, 0.01, 0.01]
         QuEPP(truncation_order=1, n_twirls=0).reduce(quantum_results, ctx)
-        assert "_signal_destroyed" not in ctx.data
+        assert "_signal_destroyed" not in ctx
 
     def test_post_reduce_warns_on_destroyed_signal(self):
         """post_reduce() emits a UserWarning when contexts have destroyed signals."""
-        destroyed = QEMContext(data={"_signal_destroyed": True})
-        healthy = QEMContext(data={})
+        destroyed = {"_signal_destroyed": True}
+        healthy = {}
         protocol = QuEPP(truncation_order=1, n_twirls=0)
 
         with pytest.warns(UserWarning, match=r"signal destroyed for 1/2"):
@@ -439,8 +441,8 @@ class TestQuEPPSignalDestruction:
 
     def test_post_reduce_silent_when_no_destruction(self):
         """post_reduce() does not warn when all groups are healthy."""
-        healthy1 = QEMContext(data={})
-        healthy2 = QEMContext(data={})
+        healthy1 = {}
+        healthy2 = {}
         protocol = QuEPP(truncation_order=1, n_twirls=0)
 
         with warnings.catch_warnings():
@@ -449,7 +451,7 @@ class TestQuEPPSignalDestruction:
 
     def test_post_reduce_default_noop_on_base_class(self):
         """QEMProtocol.post_reduce() is a no-op that does not raise."""
-        ctx = QEMContext(data={"_signal_destroyed": True})
+        ctx = {"_signal_destroyed": True}
         _NoMitigation().post_reduce([ctx])  # should not raise
 
     def test_qem_stage_calls_post_reduce(self, mocker):
@@ -458,9 +460,9 @@ class TestQuEPPSignalDestruction:
         spy = mocker.spy(protocol, "post_reduce")
         stage = QEMStage(protocol=protocol)
 
-        ctx1 = QEMContext(data={"_signal_destroyed": True})
-        ctx2 = QEMContext(data={})
-        token = {"key1": [ctx1], "key2": [ctx2]}
+        ctx1 = {"_signal_destroyed": True}
+        ctx2 = {}
+        token = {"key1": ctx1, "key2": ctx2}
 
         mocker.patch.object(stage, "_reduce_grouped", return_value={})
         mocker.patch.object(stage, "_detect_per_obs", return_value=False)
@@ -473,4 +475,4 @@ class TestQuEPPSignalDestruction:
         spy.assert_called_once()
         contexts_passed = spy.call_args[0][0]
         assert len(contexts_passed) == 2
-        assert any(c.data.get("_signal_destroyed") for c in contexts_passed)
+        assert any(c.get("_signal_destroyed") for c in contexts_passed)

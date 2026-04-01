@@ -51,14 +51,16 @@ if __name__ == "__main__":
 
     # --- 2. Noisy (FakeTorino — IBM Heron-class noise) ---
     common["optimizer"].reset()
-    vqe_noisy = VQE(backend=QiskitSimulator(qiskit_backend=noisy_backend), **common)
+    vqe_noisy = VQE(
+        backend=QiskitSimulator(n_processes=8, qiskit_backend=noisy_backend), **common
+    )
     vqe_noisy.run()
 
     # --- 3. ZNE-mitigated ---
     common["optimizer"].reset()
     scale_factors = [1.0, 3.0, 5.0]
     vqe_zne = VQE(
-        backend=QiskitSimulator(qiskit_backend=noisy_backend),
+        backend=QiskitSimulator(n_processes=8, qiskit_backend=noisy_backend),
         qem_protocol=ZNE(
             scale_factors,
             partial(fold_gates_at_random),
@@ -71,7 +73,7 @@ if __name__ == "__main__":
     # --- 4. QuEPP-mitigated (with Pauli twirling) ---
     common["optimizer"].reset()
     vqe_quepp = VQE(
-        backend=QiskitSimulator(qiskit_backend=noisy_backend),
+        backend=QiskitSimulator(n_processes=8, qiskit_backend=noisy_backend),
         qem_protocol=QuEPP(truncation_order=1, n_twirls=10),
         **common,
     )

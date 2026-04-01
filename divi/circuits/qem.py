@@ -4,7 +4,6 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
 from functools import partial
 from typing import Any
 
@@ -12,23 +11,9 @@ from cirq.circuits.circuit import Circuit
 from mitiq.zne import combine_results, construct_circuits
 from mitiq.zne.inference import Factory
 
-
-@dataclass(frozen=True)
-class QEMContext:
-    """Opaque reduce-time data produced by :meth:`QEMProtocol.expand`.
-
-    Carries protocol-specific side-channel information from the expand
-    phase to the reduce phase.  Simple protocols (e.g. ZNE) leave this
-    empty; hybrid protocols (e.g. QuEPP) store whatever they need.
-
-    .. note::
-       Circuits are **not** stored here — they are returned separately by
-       ``expand`` and converted to QASM by :class:`QEMStage`.  Only data
-       needed during ``reduce`` belongs in this object.
-    """
-
-    data: dict[str, Any] = field(default_factory=dict)
-    """Protocol-specific opaque payload."""
+#: Type alias for QEM context data passed between expand and reduce.
+#: A plain dict carrying protocol-specific side-channel information.
+QEMContext = dict
 
 
 class QEMProtocol(ABC):
@@ -111,7 +96,7 @@ class _NoMitigation(QEMProtocol):
     def expand(
         self, cirq_circuit: Circuit, observable: Any | None = None
     ) -> tuple[tuple[Circuit, ...], QEMContext]:
-        return (cirq_circuit,), QEMContext()
+        return (cirq_circuit,), {}
 
     def reduce(self, quantum_results: Sequence[float], context: QEMContext) -> float:
         if len(quantum_results) == 0:
@@ -202,7 +187,7 @@ class ZNE(QEMProtocol):
             scale_factors=self._scale_factors,
             scale_method=self._folding_fn,
         )
-        return tuple(circuits), QEMContext()
+        return tuple(circuits), {}
 
     def reduce(self, quantum_results: Sequence[float], context: QEMContext) -> float:
         return combine_results(

@@ -392,6 +392,49 @@ class CircuitPipeline:
         return reduced
 
 
+def _scope_token(
+    token: StageToken,
+    foreign_key: tuple,
+    foreign_axes: set[str],
+) -> StageToken:
+    """Scope a dict token to match a specific foreign-key group.
+
+    When a stage token is a dict keyed by pipeline label tuples (e.g.
+    QEMStage contexts), entries whose foreign-axis components are a
+    subset of *foreign_key* are retained with those axes stripped from
+    the keys.  Non-dict tokens are returned as-is.
+
+    Subset matching is needed because a stage's token may not contain
+    axes from other body-level sources (e.g. QEMStage tokens carry
+    circuit-body axes like ``param_set`` but not measurement-body axes
+    like ``obs_group``).
+    """
+    if not isinstance(token, dict):
+        return token
+
+    scoped: dict = {}
+    foreign_set = set(foreign_key)
+    for key, value in token.items():
+        if not isinstance(key, tuple):
+            return token  # not a label-keyed dict — return unchanged
+
+        kf = tuple(ax for ax in key if isinstance(ax, tuple) and ax[0] in foreign_axes)
+        if set(kf) <= foreign_set:
+            ko = tuple(
+                ax
+                for ax in key
+                if not (isinstance(ax, tuple) and ax[0] in foreign_axes)
+            )
+            scoped[ko] = value
+
+    if not scoped:
+        raise KeyError(
+            f"_scope_token: no token entries matched foreign_key={foreign_key!r}. "
+            f"Token keys: {list(token.keys())!r}, foreign_axes: {foreign_axes!r}"
+        )
+    return scoped
+
+
 def _reduce_with_isolated_axes(
     stage: Stage,
     results: ChildResults,
@@ -414,7 +457,8 @@ def _reduce_with_isolated_axes(
 
     out: ChildResults = {}
     for foreign_key, group_results in groups.items():
-        group_reduced = stage.reduce(group_results, env, token)
+        scoped_token = _scope_token(token, foreign_key, foreign_axes)
+        group_reduced = stage.reduce(group_results, env, scoped_token)
         for own_key, value in group_reduced.items():
             out[own_key + foreign_key] = value
 

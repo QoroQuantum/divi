@@ -71,11 +71,12 @@ class QEMStage(BundleStage):
         self, batch: MetaCircuitBatch, env: PipelineEnv
     ) -> tuple[ExpansionResult, StageToken]:
         out: dict[object, MetaCircuit] = {}
-        contexts: dict[object, list[QEMContext]] = {}
+        contexts: dict[tuple, QEMContext] = {}
 
         for parent_key, meta in batch.items():
             bodies, ctxs = self._expand_bodies(meta)
-            contexts[parent_key] = ctxs
+            for (tag, _), ctx in zip(meta.circuit_body_qasms, ctxs):
+                contexts[parent_key + tag] = ctx
             symbol_names = tuple(str(s) for s in meta.symbols)
             out[parent_key] = meta.set_circuit_bodies(bodies, symbol_names=symbol_names)
 
@@ -100,13 +101,13 @@ class QEMStage(BundleStage):
     def _reduce_grouped(
         self,
         grouped: dict[tuple, dict[int, Any]],
-        contexts: dict[object, list[QEMContext]] | None,
+        contexts: dict[tuple, QEMContext] | None,
         per_obs: bool,
     ) -> ChildResults:
         reduced: ChildResults = {}
         for base_key, values_by_idx in grouped.items():
             ordered = [v for _, v in sorted(values_by_idx.items())]
-            ctx = QEMContext() if contexts is None else contexts[base_key][0]
+            ctx = {} if contexts is None else contexts[base_key]
 
             if per_obs:
                 reduced[base_key] = {
@@ -124,10 +125,10 @@ class QEMStage(BundleStage):
         contexts: dict | None = token
         if not contexts:
             return info
-        ctx_list = next(iter(contexts.values()), [])
-        if not ctx_list:
+        ctx = next(iter(contexts.values()), None)
+        if ctx is None:
             return info
-        data = ctx_list[0].data
+        data = ctx
         for key in ("n_rotations", "n_paths"):
             if key in data:
                 info[key] = data[key]
@@ -148,13 +149,13 @@ class QEMStage(BundleStage):
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken
     ) -> ChildResults:
-        contexts: dict[object, list[QEMContext]] | None = token
+        contexts: dict[tuple, QEMContext] | None = token
         grouped = group_by_base_key(results, self.axis_name, indexed=True)
         per_obs = self._detect_per_obs(grouped)
         reduced = self._reduce_grouped(grouped, contexts, per_obs=per_obs)
 
         if contexts is not None:
-            all_ctxs = [c for ctx_list in contexts.values() for c in ctx_list]
+            all_ctxs = list(contexts.values())
             self._protocol.post_reduce(all_ctxs)
 
         return reduced
