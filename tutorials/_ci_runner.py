@@ -8,7 +8,7 @@ Replaces the old sed + GNU parallel approach with validated patching,
 line-buffered output, and budget-aware timeouts.
 
 Usage:
-    poetry run python -m tutorials._ci_runner [--verify-only] [--max-workers N]
+    poetry run python -m tutorials._ci_runner [--dry-run] [--max-workers N]
 
 Environment variables:
     DIVI_CI_MAX_SHOTS   Cap shots for get_backend() (read by _backend.py).
@@ -80,12 +80,7 @@ TUTORIALS: dict[str, dict] = {
     "error_mitigation.py": {
         "timeout_seconds": 180,
         "patches": [
-            (
-                "QiskitSimulator(n_processes=4",
-                "QiskitSimulator(n_processes=4, shots=500",
-            ),
             ("max_iterations=10", "max_iterations=3"),
-            ("population_size=10", "population_size=5"),
         ],
     },
     "qaoa_qubo_partitioning.py": {
@@ -281,7 +276,7 @@ def run_tutorial(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run tutorials for CI.")
     parser.add_argument(
-        "--verify-only",
+        "--dry-run",
         action="store_true",
         help="Validate config and patches without running tutorials.",
     )
@@ -337,10 +332,10 @@ def main() -> None:
 
         print("All patches validated and applied.\n")
 
-        if args.verify_only:
+        if args.dry_run:
             print(
                 f"Verification passed. {len(to_run)} tutorial(s) "
-                "would be run (--verify-only)."
+                "would be run (--dry-run)."
             )
             return
 
