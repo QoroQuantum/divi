@@ -6,6 +6,7 @@
 
 from collections.abc import Sequence
 from functools import partial
+from typing import Any
 
 import pennylane as qml
 import pytest
@@ -15,7 +16,7 @@ from mitiq.zne.inference import ExpFactory
 from mitiq.zne.scaling import fold_global
 
 from divi.circuits import MetaCircuit
-from divi.circuits.qem import ZNE, QEMProtocol, _NoMitigation
+from divi.circuits.qem import ZNE, QEMContext, QEMProtocol, _NoMitigation
 from divi.pipeline import CircuitPipeline
 from divi.pipeline.stages import MeasurementStage, QEMStage
 from tests.pipeline.helpers import DummySpecStage, ones_execute_fn, two_group_meta
@@ -28,11 +29,13 @@ class _DummyQEMProtocol(QEMProtocol):
     def name(self) -> str:
         return "dummy-qem"
 
-    def modify_circuit(self, cirq_circuit: Circuit) -> Sequence[Circuit]:
-        return [cirq_circuit]
+    def expand(
+        self, cirq_circuit: Circuit, observable: Any | None = None
+    ) -> tuple[tuple[Circuit, ...], QEMContext]:
+        return (cirq_circuit,), QEMContext()
 
-    def postprocess_results(self, results: Sequence[float]) -> float:
-        return float(sum(results))
+    def reduce(self, quantum_results: Sequence[float], context: QEMContext) -> float:
+        return float(sum(quantum_results))
 
 
 @pytest.fixture
@@ -67,8 +70,10 @@ class TestQEMStage:
             def __init__(self, scale_factors: tuple[float, ...]) -> None:
                 self.scale_factors = scale_factors
 
-            def modify_circuit(self, cirq_circuit: Circuit) -> Sequence[Circuit]:
-                return [cirq_circuit for _ in self.scale_factors]
+            def expand(
+                self, cirq_circuit: Circuit, observable: Any | None = None
+            ) -> tuple[tuple[Circuit, ...], QEMContext]:
+                return tuple(cirq_circuit for _ in self.scale_factors), QEMContext()
 
         protocol = _ScaleFactorProtocol((1.0, 2.0, 3.0))
         meta = two_group_meta()
@@ -121,13 +126,7 @@ class TestQEMStage:
             )
 
     def test_reduce_handles_multi_obs_expval_dicts(self, dummy_pipeline_env):
-        """QEM reduce applies postprocessing per observable when values are {int: float} dicts.
-
-        This mirrors what _counts_to_expvals produces for multi-observable
-        measurement groups: each branch key maps to {obs_idx: float} instead
-        of a scalar.  Calls reduce() directly to validate the per-observable
-        logic in isolation.
-        """
+        """QEM reduce applies postprocessing per observable when values are {int: float} dicts."""
 
         class _ScaleFactorProtocol(_DummyQEMProtocol):
             """Produces 3 body variants (like 3 scale factors) and sums during reduce."""
@@ -135,8 +134,10 @@ class TestQEMStage:
             def __init__(self) -> None:
                 self.scale_factors = (1.0, 2.0, 3.0)
 
-            def modify_circuit(self, cirq_circuit):
-                return [cirq_circuit for _ in self.scale_factors]
+            def expand(
+                self, cirq_circuit: Circuit, observable: Any | None = None
+            ) -> tuple[tuple[Circuit, ...], QEMContext]:
+                return tuple(cirq_circuit for _ in self.scale_factors), QEMContext()
 
         protocol = _ScaleFactorProtocol()
         stage = QEMStage(protocol=protocol)
@@ -161,7 +162,7 @@ class TestQEMStage:
 
         reduced = stage.reduce(results, dummy_pipeline_env, token=None)
 
-        # _DummyQEMProtocol.postprocess_results sums values across scale factors.
+        # _DummyQEMProtocol.reduce sums values across scale factors.
         # obs 0: sum(1.0, 2.0, 3.0) = 6.0
         # obs 1: sum(10.0, 11.0, 12.0) = 33.0
         assert len(reduced) == 1

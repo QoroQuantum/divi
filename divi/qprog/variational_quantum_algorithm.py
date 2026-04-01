@@ -19,12 +19,12 @@ from scipy.optimize import OptimizeResult
 
 from divi.backends import CircuitRunner
 from divi.circuits import MetaCircuit
-from divi.circuits.qem import _NoMitigation
-from divi.pipeline import CircuitPipeline
+from divi.pipeline import CircuitPipeline, PipelineEnv, Stage
 from divi.pipeline.stages import (
     CircuitSpecStage,
     MeasurementStage,
     ParameterBindingStage,
+    PauliTwirlStage,
     QEMStage,
 )
 from divi.qprog.checkpointing import (
@@ -275,7 +275,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 Defaults to None.
             grouping_strategy (str): Strategy for grouping operations in Pennylane transforms.
                 Options: "default", "wires", "qwc". Defaults to "qwc".
-            qem_protocol (QEMProtocol | None): Quantum error mitigation protocol to apply. Defaults to None.
             precision (int): Number of decimal places for parameter values in QASM conversion.
                 Defaults to 8.
 
@@ -348,7 +347,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 grouping_strategy if grouping_strategy is not _UNSET else "qwc"
             )
 
-        self._qem_protocol = kwargs.pop("qem_protocol", None) or _NoMitigation()
         self._precision = kwargs.pop("precision", 8)
 
         # --- Solution Decoding ---
@@ -890,12 +888,28 @@ class VariationalQuantumAlgorithm(QuantumProgram):
     # Pipeline builders
     # ------------------------------------------------------------------ #
 
-    def _build_pipeline_env(self, **overrides) -> "PipelineEnv":
+    def dry_run(self) -> dict:
+        """Run forward pass on all pipelines and print fan-out analysis."""
+        if self._curr_params is None:
+            self._initialize_params()
+        return super().dry_run()
+
+    def _get_dry_run_pipelines(self) -> dict[str, tuple]:
+        factories = self.meta_circuit_factories
+        result = {"cost": (self._cost_pipeline, factories["cost_circuit"])}
+        if hasattr(self, "_measurement_pipeline") and self._measurement_pipeline:
+            result["measurement"] = (
+                self._measurement_pipeline,
+                factories.get("meas_circuit", factories["cost_circuit"]),
+            )
+        return result
+
+    def _build_pipeline_env(self, **overrides) -> PipelineEnv:
         """Construct a PipelineEnv, injecting the current parameter sets."""
         overrides.setdefault("param_sets", self._curr_params)
         return super()._build_pipeline_env(**overrides)
 
-    def _build_cost_pipeline(self, spec_stage: "Stage") -> "CircuitPipeline":
+    def _build_cost_pipeline(self, spec_stage: Stage) -> CircuitPipeline:
         """Build the cost-evaluation pipeline.
 
         Stages: spec_stage → Measurement → ParameterBinding → QEM.
@@ -905,16 +919,18 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 cost Hamiltonian (e.g. TrotterSpecStage).
         """
 
-        return CircuitPipeline(
-            stages=[
-                spec_stage,
-                MeasurementStage(grouping_strategy=self._grouping_strategy),
-                ParameterBindingStage(),
-                QEMStage(protocol=self._qem_protocol),
-            ]
-        )
+        stages = [
+            spec_stage,
+            MeasurementStage(grouping_strategy=self._grouping_strategy),
+            ParameterBindingStage(),
+            QEMStage(protocol=self._qem_protocol),
+        ]
+        n_twirls = getattr(self._qem_protocol, "n_twirls", 0)
+        if n_twirls > 0:
+            stages.append(PauliTwirlStage(n_twirls=n_twirls))
+        return CircuitPipeline(stages=stages)
 
-    def _build_measurement_pipeline(self) -> "CircuitPipeline":
+    def _build_measurement_pipeline(self) -> CircuitPipeline:
         """Build the measurement pipeline for solution extraction.
 
         Stages: SingleCircuitSpec → Measurement → ParameterBinding.

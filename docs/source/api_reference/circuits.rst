@@ -68,6 +68,22 @@ Zero Noise Extrapolation (ZNE)
    :special-members: __init__
    :no-index:
 
+Quantum Enhanced Pauli Propagation (QuEPP)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: divi.circuits.quepp
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :no-index:
+
+.. autoclass:: divi.circuits.quepp.QuEPP
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+   :no-index:
+
 No Mitigation Protocol
 ~~~~~~~~~~~~~~~~~~~~~~
 

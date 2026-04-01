@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -107,6 +107,9 @@ def test_disable_logging(caplog, root_logger):
     finally:
         # Always restore propagation to its original state after the test
         root_logger.propagate = initial_propagate
+        # Reset the module-level flag so other tests in the same worker
+        # are not affected by this test's disable_logging() call.
+        enable_logging()
 
 
 def test_enable_logging_idempotency(caplog, root_logger):

@@ -189,7 +189,7 @@ Advanced Features
 
       vqe = VQE(..., qem_protocol=ZNE(...), backend=QiskitSimulator(qiskit_backend="auto"))
 
-   See :doc:`user_guide/improving_results_zne` for a full walkthrough.
+   See :doc:`user_guide/improving_results_qem` for a full walkthrough.
 
 Next Steps & Getting Help
 -------------------------

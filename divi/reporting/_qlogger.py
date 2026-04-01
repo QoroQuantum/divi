@@ -7,6 +7,10 @@ import sys
 
 from rich.logging import RichHandler
 
+# Module-level flag set by disable_logging() so that reporters
+# created *after* the call also suppress Rich progress output.
+_logging_disabled: bool = False
+
 
 def _ensure_unbuffered_stdout() -> None:
     """Ensure stdout flushes after every write so Rich progress bars display correctly.
@@ -50,6 +54,8 @@ def enable_logging(level=logging.INFO):
         This function clears any existing handlers and sets up a new handler
         with custom formatting.
     """
+    global _logging_disabled
+    _logging_disabled = False
     _ensure_unbuffered_stdout()
     root_logger = logging.getLogger(__name__.split(".")[0])
 
@@ -73,12 +79,13 @@ def enable_logging(level=logging.INFO):
 
 def disable_logging():
     """
-    Disable all logging for the divi package.
+    Disable all logging and progress output for the divi package.
 
-    Removes all handlers and sets the logging level to above CRITICAL,
-    effectively suppressing all log messages. This is useful when using
-    progress bars that provide visual feedback.
+    Removes all handlers, sets the logging level to above CRITICAL, and
+    signals reporters to suppress Rich progress spinners.
     """
+    global _logging_disabled
+    _logging_disabled = True
     root_logger = logging.getLogger(__name__.split(".")[0])
     root_logger.handlers.clear()
     root_logger.setLevel(logging.CRITICAL + 1)
