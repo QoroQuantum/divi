@@ -88,6 +88,18 @@ class QEMProtocol(ABC):
             The mitigated expectation value.
         """
 
+    def post_reduce(self, contexts: Sequence[QEMContext]) -> None:
+        """Hook called after all per-group ``reduce`` calls in an evaluation.
+
+        Protocols can override this to inspect the collected contexts and
+        emit summary diagnostics (e.g. signal-destruction warnings).
+        The default implementation is a no-op.
+
+        Args:
+            contexts: All :class:`QEMContext` objects from the current
+                evaluation batch.
+        """
+
 
 class _NoMitigation(QEMProtocol):
     """A dummy default mitigation protocol."""

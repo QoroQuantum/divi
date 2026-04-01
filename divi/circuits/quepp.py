@@ -18,6 +18,7 @@ current observable contribute weight 1 (no branching), which can
 dramatically reduce path count.
 """
 
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -654,6 +655,19 @@ class QuEPP(QEMProtocol):
 
         eta = self.compute_eta(classical_values, ensemble_noisy)
         if eta is None:
+            valid = np.abs(classical_values) > 1e-12
+            if np.any(valid):
+                context.data["_signal_destroyed"] = True
             return float(target_noisy)
 
         return classical_est + (target_noisy - noisy_est) / eta
+
+    def post_reduce(self, contexts: Sequence[QEMContext]) -> None:
+        destroyed = sum(1 for c in contexts if c.data.get("_signal_destroyed"))
+        if destroyed:
+            warnings.warn(
+                f"QuEPP: signal destroyed for {destroyed}/{len(contexts)} "
+                f"observable group(s) — mitigation fell back to noisy values. "
+                f"Consider increasing shots or reducing noise.",
+                stacklevel=3,
+            )

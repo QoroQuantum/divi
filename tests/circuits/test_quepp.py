@@ -390,3 +390,106 @@ class TestQuEPPProtocol:
             f"QuEPP error ({quepp_err:.4f}) should be less than half "
             f"of noisy error ({noisy_err:.4f})"
         )
+
+
+class TestQuEPPSignalDestruction:
+    """Tests for signal-destruction detection and post_reduce warning."""
+
+    def _make_context(self, classical_values, weights=None):
+        cv = np.array(classical_values)
+        w = np.array(weights) if weights is not None else np.ones(len(cv)) / len(cv)
+        return QEMContext(
+            data={
+                "classical_values": cv,
+                "weights": w,
+                "target_idx": 0,
+                "ensemble_start": 1,
+                "n_rotations": len(cv),
+                "n_paths": len(cv),
+            }
+        )
+
+    def test_signal_destroyed_flag_set_when_eta_below_threshold(self):
+        """reduce() flags _signal_destroyed when eta < min_eta."""
+        ctx = self._make_context([0.5, 0.3])
+        # Ensemble noisy near zero → eta ≈ 0.02/0.5 ≈ 0.04 < 0.1
+        quantum_results = [0.5, 0.01, 0.01]
+        QuEPP(truncation_order=1, n_twirls=0).reduce(quantum_results, ctx)
+        assert ctx.data.get("_signal_destroyed") is True
+
+    def test_signal_destroyed_flag_not_set_when_eta_valid(self):
+        """reduce() does NOT flag when eta is above threshold."""
+        ctx = self._make_context([0.5, 0.3])
+        # Ensemble noisy close to classical → eta ≈ 1.0
+        quantum_results = [0.5, 0.48, 0.29]
+        QuEPP(truncation_order=1, n_twirls=0).reduce(quantum_results, ctx)
+        assert "_signal_destroyed" not in ctx.data
+
+    def test_signal_destroyed_flag_not_set_for_near_zero_classical(self):
+        """reduce() does NOT flag when classical values are all near zero."""
+        ctx = self._make_context([1e-15, 1e-15])
+        quantum_results = [0.5, 0.01, 0.01]
+        QuEPP(truncation_order=1, n_twirls=0).reduce(quantum_results, ctx)
+        assert "_signal_destroyed" not in ctx.data
+
+    def test_post_reduce_warns_on_destroyed_signal(self):
+        """post_reduce() emits a UserWarning when contexts have destroyed signals."""
+        destroyed = QEMContext(data={"_signal_destroyed": True})
+        healthy = QEMContext(data={})
+        protocol = QuEPP(truncation_order=1, n_twirls=0)
+
+        with pytest.warns(UserWarning, match=r"signal destroyed for 1/2"):
+            protocol.post_reduce([destroyed, healthy])
+
+    def test_post_reduce_silent_when_no_destruction(self):
+        """post_reduce() does not warn when all groups are healthy."""
+        healthy1 = QEMContext(data={})
+        healthy2 = QEMContext(data={})
+        protocol = QuEPP(truncation_order=1, n_twirls=0)
+
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            protocol.post_reduce([healthy1, healthy2])
+
+    def test_post_reduce_default_noop_on_base_class(self):
+        """QEMProtocol.post_reduce() is a no-op that does not raise."""
+        from divi.circuits.qem import _NoMitigation
+
+        ctx = QEMContext(data={"_signal_destroyed": True})
+        _NoMitigation().post_reduce([ctx])  # should not raise
+
+    def test_signal_destruction_warning_through_pipeline(self):
+        """QEMStage calls post_reduce, so the warning propagates end-to-end."""
+        from divi.backends import QiskitSimulator
+        from divi.circuits import MetaCircuit
+        from divi.pipeline import CircuitPipeline, PipelineEnv
+        from divi.pipeline.stages import CircuitSpecStage, MeasurementStage, QEMStage
+
+        # Build a circuit + observable
+        qscript = qml.tape.QuantumScript(
+            ops=[qml.RX(0.5, wires=0)],
+            measurements=[qml.expval(qml.Z(0))],
+        )
+        meta = MetaCircuit(source_circuit=qscript, symbols=np.array([], dtype=object))
+
+        # Use very few shots + heavy noise → force signal destruction
+        from qiskit_aer.noise import NoiseModel
+
+        noise = NoiseModel()
+        noise.add_all_qubit_readout_error([[0.5, 0.5], [0.5, 0.5]])
+
+        backend = QiskitSimulator(
+            noise_model=noise, shots=100, _deterministic_execution=True
+        )
+        pipeline = CircuitPipeline(
+            stages=[
+                CircuitSpecStage(),
+                MeasurementStage(),
+                QEMStage(protocol=QuEPP(truncation_order=1, n_twirls=0)),
+            ]
+        )
+
+        with pytest.warns(UserWarning, match="signal destroyed"):
+            pipeline.run(meta, PipelineEnv(backend=backend))

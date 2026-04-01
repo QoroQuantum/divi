@@ -151,4 +151,10 @@ class QEMStage(BundleStage):
         contexts: dict[object, list[QEMContext]] | None = token
         grouped = group_by_base_key(results, self.axis_name, indexed=True)
         per_obs = self._detect_per_obs(grouped)
-        return self._reduce_grouped(grouped, contexts, per_obs=per_obs)
+        reduced = self._reduce_grouped(grouped, contexts, per_obs=per_obs)
+
+        if contexts is not None:
+            all_ctxs = [c for ctx_list in contexts.values() for c in ctx_list]
+            self._protocol.post_reduce(all_ctxs)
+
+        return reduced
