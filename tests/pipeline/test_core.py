@@ -19,7 +19,11 @@ from divi.pipeline._compilation import (
     _collapse_to_parent_results,
     _compile_batch,
 )
-from divi.pipeline._core import _validate_stage_order, _wait_for_async_result
+from divi.pipeline._core import (
+    _scope_token,
+    _validate_stage_order,
+    _wait_for_async_result,
+)
 from divi.pipeline.stages import MeasurementStage
 from divi.qprog.exceptions import _CancelledError
 
@@ -31,6 +35,77 @@ from .helpers import (
     two_group_meta,
     two_group_pipeline_stages,
 )
+
+
+class TestScopeToken:
+    """Spec: _scope_token filters dict tokens by foreign-key group for axis isolation."""
+
+    def test_non_dict_token_returned_unchanged(self):
+        assert _scope_token(None, (("obs", 0),), {"obs"}) is None
+        assert _scope_token("hello", (("obs", 0),), {"obs"}) == "hello"
+
+    def test_dict_with_non_tuple_keys_returned_unchanged(self):
+        token = {"a": 1, "b": 2}
+        assert _scope_token(token, (("obs", 0),), {"obs"}) is token
+
+    def test_exact_foreign_match_strips_axes(self):
+        token = {
+            (("circuit", 0), ("obs_group", 0)): "ctx0",
+            (("circuit", 0), ("obs_group", 1)): "ctx1",
+        }
+        scoped = _scope_token(token, (("obs_group", 0),), {"obs_group"})
+        assert scoped == {(("circuit", 0),): "ctx0"}
+
+    def test_subset_match_when_token_has_fewer_foreign_axes(self):
+        """Token has param_set but not obs_group; should still match."""
+        token = {
+            (("circuit", 0), ("param_set", 0)): "ctx_p0",
+            (("circuit", 0), ("param_set", 1)): "ctx_p1",
+        }
+        foreign_key = (("param_set", 0), ("obs_group", 0))
+        scoped = _scope_token(token, foreign_key, {"param_set", "obs_group"})
+        assert scoped == {(("circuit", 0),): "ctx_p0"}
+
+    def test_subset_match_does_not_cross_values(self):
+        """param_set=1 entry should not match foreign_key with param_set=0."""
+        token = {
+            (("circuit", 0), ("param_set", 0)): "ctx_p0",
+            (("circuit", 0), ("param_set", 1)): "ctx_p1",
+        }
+        foreign_key = (("param_set", 0), ("obs_group", 0))
+        scoped = _scope_token(token, foreign_key, {"param_set", "obs_group"})
+        assert (("circuit", 0),) in scoped
+        assert scoped[(("circuit", 0),)] == "ctx_p0"
+
+    def test_no_foreign_axes_in_token_matches_all(self):
+        """Token keys with no foreign axes match any foreign_key (vacuously)."""
+        token = {(("circuit", 0),): "ctx"}
+        scoped = _scope_token(token, (("obs_group", 0),), {"obs_group"})
+        assert scoped == {(("circuit", 0),): "ctx"}
+
+    def test_empty_token_raises(self):
+        with pytest.raises(KeyError, match="no token entries matched"):
+            _scope_token({}, (("obs", 0),), {"obs"})
+
+    def test_no_match_raises(self):
+        """When no entry matches the foreign_key, raise a descriptive KeyError."""
+        token = {(("circuit", 0), ("param_set", 5)): "ctx"}
+        with pytest.raises(KeyError, match="no token entries matched"):
+            _scope_token(token, (("param_set", 0),), {"param_set"})
+
+    def test_multi_foreign_axes(self):
+        """Both param_set and obs_group in token key, both foreign."""
+        token = {
+            (("circuit", 0), ("obs_group", 0), ("param_set", 0)): "ctx_00",
+            (("circuit", 0), ("obs_group", 0), ("param_set", 1)): "ctx_01",
+            (("circuit", 0), ("obs_group", 1), ("param_set", 0)): "ctx_10",
+        }
+        scoped = _scope_token(
+            token,
+            (("obs_group", 0), ("param_set", 1)),
+            {"obs_group", "param_set"},
+        )
+        assert scoped == {(("circuit", 0),): "ctx_01"}
 
 
 class TestValidateStageOrder:

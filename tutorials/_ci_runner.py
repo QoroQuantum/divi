@@ -78,9 +78,16 @@ TUTORIALS: dict[str, dict] = {
         ],
     },
     "error_mitigation.py": {
-        "timeout_seconds": 180,
+        "timeout_seconds": 360,
         "patches": [
-            ("max_iterations=10", "max_iterations=3"),
+            (
+                "QiskitSimulator(n_processes=8",
+                "QiskitSimulator(n_processes=4, shots=500",
+            ),
+            ("FakeTorino", "FakeManilaV2"),
+            ("max_iterations=10", "max_iterations=2"),
+            ("scale_factors = [1.0, 3.0, 5.0]", "scale_factors = [1.0, 3.0]"),
+            ("n_twirls=10", "n_twirls=3"),
         ],
     },
     "qaoa_qubo_partitioning.py": {

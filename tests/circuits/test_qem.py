@@ -42,26 +42,6 @@ class TestQEMProtocol:
         assert isinstance(zne, QEMProtocol)
 
 
-class TestQEMContext:
-    """Test suite for the QEMContext dataclass."""
-
-    def test_basic_construction(self):
-        """QEMContext can be created with no arguments (opaque data bag)."""
-        ctx = QEMContext()
-        assert ctx.data == {}
-
-    def test_with_data(self):
-        """QEMContext stores arbitrary protocol data."""
-        ctx = QEMContext(data={"key": 42, "arr": [1, 2, 3]})
-        assert ctx.data["key"] == 42
-
-    def test_frozen(self):
-        """QEMContext is immutable."""
-        ctx = QEMContext()
-        with pytest.raises(AttributeError):
-            ctx.data = {}
-
-
 class TestNoMitigation:
     """Test suite for the _NoMitigation protocol."""
 

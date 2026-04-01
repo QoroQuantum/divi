@@ -51,10 +51,10 @@ def _obs_to_stim_terms(
     for coeff, op in zip(coeffs, ops):
         chars = ["I"] * n_qubits
         if op.pauli_rep is not None:
-            for pw, c in op.pauli_rep.items():
+            for pw, pw_coeff in op.pauli_rep.items():
                 for w, p in pw.items():
                     chars[w] = p
-                coeff = float(np.real(coeff * c))
+                coeff = float(np.real(coeff * pw_coeff))
         terms.append((float(np.real(coeff)), stim.PauliString("+" + "".join(chars))))
     return terms
 
@@ -132,18 +132,13 @@ class _PauliPath:
 
 
 def _is_pauli_rotation(gate: cirq.Gate) -> tuple[str, float] | None:
-    """Return (axis, angle) if *gate* is an explicit Rx/Ry/Rz rotation, else None.
-
-    Uses ``_rads`` (set by Cirq's Rx/Ry/Rz constructors) to preserve the
-    exact input radians.  The public ``exponent`` property divides by π,
-    which introduces floating-point drift on the round-trip.
-    """
+    """Return (axis, angle) if *gate* is an explicit Rx/Ry/Rz rotation, else None."""
     if isinstance(gate, cirq.Rx):
-        return ("x", gate._rads)
+        return ("x", float(gate.exponent * np.pi))
     if isinstance(gate, cirq.Ry):
-        return ("y", gate._rads)
+        return ("y", float(gate.exponent * np.pi))
     if isinstance(gate, cirq.Rz):
-        return ("z", gate._rads)
+        return ("z", float(gate.exponent * np.pi))
     return None
 
 
@@ -361,20 +356,23 @@ def _sample_paths_montecarlo(
         return [_PauliPath(branches=(), weight=1.0, order=0)]
 
     seen: dict[tuple[int, ...], _PauliPath] = {}
-    sample_weight = 1.0 / n_samples
 
-    # Pre-compute term sampling probabilities (constant across samples)
+    # Pre-compute for importance-sampling correction
+    abs_coeffs = np.array([abs(c) for c, _ in observable_terms])
+    coeff_sum = abs_coeffs.sum()
     if len(observable_terms) > 1:
-        abs_coeffs = np.array([abs(c) for c, _ in observable_terms])
-        term_probs = abs_coeffs / abs_coeffs.sum()
+        term_probs = abs_coeffs / coeff_sum
 
     for _ in range(n_samples):
         # Pick a random observable term proportional to |coeff|
         if len(observable_terms) == 1:
-            _, obs_pauli = observable_terms[0]
+            obs_coeff, obs_pauli = observable_terms[0]
         else:
             term_idx = rng.choice(len(observable_terms), p=term_probs)
-            _, obs_pauli = observable_terms[term_idx]
+            obs_coeff, obs_pauli = observable_terms[term_idx]
+
+        # IS correction for term selection: coeff / sampling_probability
+        is_weight = np.sign(obs_coeff) * coeff_sum
 
         pauli = tableaus[K].inverse()(obs_pauli)
         branches: list[int] = []
@@ -387,21 +385,28 @@ def _sample_paths_montecarlo(
                 branches.append(0)
                 pauli = tableaus[idx].inverse()(pauli)
             else:
-                cos_p = abs(np.cos(rot.angle))
-                sin_p = abs(np.sin(rot.angle))
-                if rng.random() < cos_p / (cos_p + sin_p):
+                cos_val = np.cos(rot.angle)
+                sin_val = np.sin(rot.angle)
+                cos_p = abs(cos_val)
+                sin_p = abs(sin_val)
+                normalizer = cos_p + sin_p
+                if rng.random() < cos_p / normalizer:
                     branches.append(0)
+                    is_weight *= np.sign(cos_val) * normalizer
                     pauli = tableaus[idx].inverse()(pauli)
                 else:
                     branches.append(1)
+                    is_weight *= np.sign(sin_val) * normalizer
                     pauli = _apply_rp_conjugation(pauli, rot.qubit_idx, rot.axis)
                     pauli = tableaus[idx].inverse()(pauli)
 
         branches.reverse()
 
-        # Check diagonal — pauli already propagated through all layers
         if not _is_diagonal(pauli):
             continue
+
+        sign = float(pauli.sign.real)
+        sample_weight = is_weight * sign / n_samples
 
         key = tuple(branches)
         if key in seen:
@@ -515,6 +520,11 @@ class QuEPP(QEMProtocol):
                observable and does not discuss multi-term Hamiltonians.
                This parameter is a divi extension.
 
+        n_twirls: Number of Pauli twirling samples.  When non-zero, the
+            pipeline builder appends a ``PauliTwirlStage`` that generates
+            *n_twirls* randomised copies of each circuit before submission.
+            Set to ``0`` to disable twirling.  Default ``10``.
+
     Example::
 
         # Default (Monte Carlo, 200 samples)
@@ -609,16 +619,14 @@ class QuEPP(QEMProtocol):
 
         all_circuits = (cirq_circuit,) + tuple(path_circuits)
 
-        context = QEMContext(
-            data={
-                "classical_values": classical_values,
-                "weights": weights,
-                "target_idx": 0,
-                "ensemble_start": 1,
-                "n_rotations": len(rotations),
-                "n_paths": len(paths),
-            },
-        )
+        context = {
+            "classical_values": classical_values,
+            "weights": weights,
+            "target_idx": 0,
+            "ensemble_start": 1,
+            "n_rotations": len(rotations),
+            "n_paths": len(paths),
+        }
         return all_circuits, context
 
     @staticmethod
@@ -644,7 +652,7 @@ class QuEPP(QEMProtocol):
         quantum_results: Sequence[float],
         context: QEMContext,
     ) -> float:
-        d = context.data
+        d = context
         target_noisy = quantum_results[d["target_idx"]]
         ensemble_noisy = np.array(quantum_results[d["ensemble_start"] :], dtype=float)
         classical_values = d["classical_values"]
@@ -660,13 +668,13 @@ class QuEPP(QEMProtocol):
         if eta is None:
             valid = np.abs(classical_values) > 1e-12
             if np.any(valid):
-                context.data["_signal_destroyed"] = True
+                context["_signal_destroyed"] = True
             return float(target_noisy)
 
         return classical_est + (target_noisy - noisy_est) / eta
 
     def post_reduce(self, contexts: Sequence[QEMContext]) -> None:
-        destroyed = sum(1 for c in contexts if c.data.get("_signal_destroyed"))
+        destroyed = sum(1 for c in contexts if c.get("_signal_destroyed"))
         if destroyed:
             warnings.warn(
                 f"QuEPP: signal destroyed for {destroyed}/{len(contexts)} "

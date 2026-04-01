@@ -121,10 +121,11 @@ on the ensemble circuits.
 - ``coefficient_threshold`` *(float, optional)* — Prune paths whose
   weight falls below this threshold during DFS enumeration.  Provides
   early termination for large circuits.
-- ``sampling`` — Path selection strategy: ``"exhaustive"`` (default,
-  DFS with pruning) or ``"montecarlo"`` (fixed budget via random
-  sampling).  Use Monte Carlo for circuits with many non-Clifford gates
-  where exhaustive enumeration is intractable.
+- ``sampling`` — Path selection strategy: ``"montecarlo"`` *(default,*
+  *fixed budget via random sampling)* or ``"exhaustive"`` (DFS
+  enumeration up to *truncation_order*; deterministic but grows as
+  O(n^K_T)).  Use exhaustive for small circuits where you want
+  reproducible, exact path sums.
 - ``n_samples`` *(int)* — Number of Monte Carlo samples.  Required
   when ``sampling="montecarlo"``.
 - ``seed`` *(int, optional)* — RNG seed for Monte Carlo reproducibility.
@@ -258,7 +259,7 @@ and must implement three members:
            use it for classical pre-computation.
            """
            # Run the same circuit twice (e.g. with different readout strategies)
-           return (cirq_circuit, cirq_circuit), QEMContext()
+           return (cirq_circuit, cirq_circuit), {}
 
        def reduce(self, quantum_results: Sequence[float], context: QEMContext) -> float:
            """Combine the quantum results into a single mitigated value.
