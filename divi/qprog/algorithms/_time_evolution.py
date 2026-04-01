@@ -6,6 +6,7 @@ import numpy as np
 import pennylane as qml
 
 from divi.circuits import MetaCircuit
+from divi.circuits.qem import _NoMitigation
 from divi.hamiltonians import (
     ExactTrotterization,
     TrotterizationStrategy,
@@ -15,7 +16,12 @@ from divi.hamiltonians import (
     _is_multi_term_sum,
 )
 from divi.pipeline import CircuitPipeline
-from divi.pipeline.stages import MeasurementStage, TrotterSpecStage
+from divi.pipeline.stages import (
+    MeasurementStage,
+    PauliTwirlStage,
+    QEMStage,
+    TrotterSpecStage,
+)
 from divi.qprog.algorithms._initial_state import InitialState, ZerosState
 from divi.qprog.quantum_program import QuantumProgram
 
@@ -53,6 +59,8 @@ class TimeEvolution(QuantumProgram):
                 Defaults to ``ZerosState()`` if None.
             observable: If None, measure ``qml.probs()``; else ``qml.expval(observable)``.
             **kwargs: Passed to QuantumProgram (backend, seed, progress_queue, etc.).
+                Accepts ``qem_protocol`` for quantum error mitigation (requires
+                ``observable`` to be set, since QEM operates on expectation values).
         """
         super().__init__(**kwargs)
 
@@ -89,7 +97,18 @@ class TimeEvolution(QuantumProgram):
             trotterization_strategy=self.trotterization_strategy,
             meta_circuit_factory=self._meta_circuit_factory,
         )
-        self._pipeline = CircuitPipeline(stages=[trotter, MeasurementStage()])
+        stages: list = [trotter, MeasurementStage()]
+
+        if not isinstance(self._qem_protocol, _NoMitigation):
+            stages.append(QEMStage(protocol=self._qem_protocol))
+            n_twirls = getattr(self._qem_protocol, "n_twirls", 0)
+            if n_twirls > 0:
+                stages.append(PauliTwirlStage(n_twirls=n_twirls))
+
+        self._pipeline = CircuitPipeline(stages=stages)
+
+    def _get_dry_run_pipelines(self) -> dict[str, tuple]:
+        return {"evolution": (self._pipeline, self._hamiltonian)}
 
     def _meta_circuit_factory(
         self, hamiltonian: qml.operation.Operator, ham_id: int

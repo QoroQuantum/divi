@@ -5,6 +5,7 @@
 """Spec stage that wraps pre-built MetaCircuit(s) into a pipeline batch."""
 
 from collections.abc import Mapping, Sequence
+from typing import Any
 
 from divi.circuits import MetaCircuit
 from divi.pipeline.abc import (
@@ -59,6 +60,23 @@ class CircuitSpecStage(SpecStage[CircuitSpec]):
                 f"got {type(items).__name__}"
             )
         return batch, fmt
+
+    def introspect(
+        self, batch: MetaCircuitBatch, env: PipelineEnv, token: StageToken
+    ) -> dict[str, Any]:
+        meta = next(iter(batch.values()), None)
+        if meta is None or meta.source_circuit is None:
+            return {}
+        sc = meta.source_circuit
+        ops = sc.operations
+        n_1q = sum(1 for op in ops if len(op.wires) == 1)
+        n_2q = sum(1 for op in ops if len(op.wires) == 2)
+        return {
+            "n_qubits": len(sc.wires),
+            "n_gates": len(ops),
+            "n_1q_gates": n_1q,
+            "n_2q_gates": n_2q,
+        }
 
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken
