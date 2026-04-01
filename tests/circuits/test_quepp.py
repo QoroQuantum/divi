@@ -4,12 +4,17 @@
 
 """Tests for the QuEPP error mitigation protocol."""
 
+import warnings
+
 import cirq
 import numpy as np
 import pennylane as qml
 import pytest
+from qiskit_aer.noise import NoiseModel
 
-from divi.circuits.qem import QEMContext, QEMProtocol
+from divi.backends import QiskitSimulator
+from divi.circuits import MetaCircuit
+from divi.circuits.qem import QEMContext, QEMProtocol, _NoMitigation
 from divi.circuits.quepp import (
     QuEPP,
     _build_clifford_tableaus,
@@ -20,6 +25,9 @@ from divi.circuits.quepp import (
     _sample_paths_montecarlo,
     _simulate_clifford_ensemble,
 )
+from divi.pipeline import CircuitPipeline, PipelineEnv
+from divi.pipeline.stages import CircuitSpecStage, MeasurementStage, QEMStage
+from tests.pipeline.helpers import DummySpecStage
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -121,7 +129,7 @@ class TestCPTExpansion:
         """Rx(θ) with Z observable → cos(θ)."""
         angle = 0.8
         c = _rx_circuit(angle)
-        protocol = QuEPP(truncation_order=5)
+        protocol = QuEPP(sampling="exhaustive", truncation_order=5)
         _, ctx = protocol.expand(c, observable=qml.Z(0))
         cpt = float(ctx.data["weights"] @ ctx.data["classical_values"])
         assert cpt == pytest.approx(np.cos(angle), abs=1e-6)
@@ -130,7 +138,7 @@ class TestCPTExpansion:
         """Multi-gate single-qubit circuit."""
         q = cirq.LineQubit(0)
         c = cirq.Circuit(cirq.H(q), cirq.rx(0.3)(q), cirq.H(q), cirq.ry(0.5)(q))
-        protocol = QuEPP(truncation_order=5)
+        protocol = QuEPP(sampling="exhaustive", truncation_order=5)
         _, ctx = protocol.expand(c, observable=qml.Z(0))
         cpt = float(ctx.data["weights"] @ ctx.data["classical_values"])
         assert cpt == pytest.approx(_exact_expval(c, qml.Z(0), 1), abs=1e-4)
@@ -138,7 +146,7 @@ class TestCPTExpansion:
     def test_two_qubit_circuit(self, mixed_circuit):
         """Two-qubit circuit with ZZ observable."""
         obs = qml.Z(0) @ qml.Z(1)
-        protocol = QuEPP(truncation_order=5)
+        protocol = QuEPP(sampling="exhaustive", truncation_order=5)
         _, ctx = protocol.expand(mixed_circuit, observable=obs)
         cpt = float(ctx.data["weights"] @ ctx.data["classical_values"])
         assert cpt == pytest.approx(_exact_expval(mixed_circuit, obs, 2), abs=1e-4)
@@ -152,7 +160,7 @@ class TestCPTExpansion:
         """
         q = cirq.LineQubit(0)
         c = cirq.Circuit(cirq.rx(0.5)(q))
-        protocol = QuEPP(truncation_order=5)
+        protocol = QuEPP(sampling="exhaustive", truncation_order=5)
         circuits, ctx = protocol.expand(c, observable=qml.X(0))
         # No surviving paths (X is not diagonal on |0⟩)
         assert ctx.data["n_paths"] == 0
@@ -243,9 +251,9 @@ class TestQuEPPProtocol:
         with pytest.raises(ValueError, match="sampling"):
             QuEPP(sampling="bogus")
 
-    def test_montecarlo_requires_n_samples(self):
+    def test_montecarlo_requires_positive_n_samples(self):
         with pytest.raises(ValueError, match="n_samples"):
-            QuEPP(sampling="montecarlo")
+            QuEPP(sampling="montecarlo", n_samples=0)
 
     def test_expand_requires_observable(self, simple_circuit):
         with pytest.raises(ValueError, match="requires an observable"):
@@ -280,7 +288,7 @@ class TestQuEPPProtocol:
         angle = 0.8
         c = _rx_circuit(angle)
         exact = np.cos(angle)
-        protocol = QuEPP(truncation_order=10)
+        protocol = QuEPP(sampling="exhaustive", truncation_order=10)
         _, ctx = protocol.expand(c, observable=qml.Z(0))
         qr = [exact]
         qr.extend(ctx.data["classical_values"])
@@ -291,7 +299,7 @@ class TestQuEPPProtocol:
         angle = 0.8
         c = _rx_circuit(angle)
         exact = np.cos(angle)
-        protocol = QuEPP(truncation_order=10)
+        protocol = QuEPP(sampling="exhaustive", truncation_order=10)
         _, ctx = protocol.expand(c, observable=qml.Z(0))
         noise_factor = 0.9
         qr = [exact * noise_factor]
@@ -305,11 +313,6 @@ class TestQuEPPProtocol:
 
     def test_pipeline_integration(self, dummy_pipeline_env):
         """QuEPP integrates correctly with QEMStage in a pipeline."""
-        from divi.circuits import MetaCircuit
-        from divi.pipeline import CircuitPipeline
-        from divi.pipeline.stages import MeasurementStage, QEMStage
-        from tests.pipeline.helpers import DummySpecStage
-
         qscript = qml.tape.QuantumScript(
             ops=[qml.RX(0.5, wires=0)],
             measurements=[qml.expval(qml.Z(0))],
@@ -329,13 +332,6 @@ class TestQuEPPProtocol:
 
     def test_effectiveness_with_readout_noise(self):
         """QuEPP mitigates uniform readout noise on a real backend."""
-        from qiskit_aer.noise import NoiseModel
-
-        from divi.backends import QiskitSimulator
-        from divi.circuits import MetaCircuit
-        from divi.pipeline import CircuitPipeline, PipelineEnv
-        from divi.pipeline.stages import CircuitSpecStage, MeasurementStage, QEMStage
-
         qscript = qml.tape.QuantumScript(
             ops=[
                 qml.Hadamard(0),
@@ -447,49 +443,34 @@ class TestQuEPPSignalDestruction:
         healthy2 = QEMContext(data={})
         protocol = QuEPP(truncation_order=1, n_twirls=0)
 
-        import warnings
-
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             protocol.post_reduce([healthy1, healthy2])
 
     def test_post_reduce_default_noop_on_base_class(self):
         """QEMProtocol.post_reduce() is a no-op that does not raise."""
-        from divi.circuits.qem import _NoMitigation
-
         ctx = QEMContext(data={"_signal_destroyed": True})
         _NoMitigation().post_reduce([ctx])  # should not raise
 
-    def test_signal_destruction_warning_through_pipeline(self):
-        """QEMStage calls post_reduce, so the warning propagates end-to-end."""
-        from divi.backends import QiskitSimulator
-        from divi.circuits import MetaCircuit
-        from divi.pipeline import CircuitPipeline, PipelineEnv
-        from divi.pipeline.stages import CircuitSpecStage, MeasurementStage, QEMStage
+    def test_qem_stage_calls_post_reduce(self, mocker):
+        """QEMStage.reduce() calls protocol.post_reduce() with all contexts."""
+        protocol = QuEPP(truncation_order=1, n_twirls=0)
+        spy = mocker.spy(protocol, "post_reduce")
+        stage = QEMStage(protocol=protocol)
 
-        # Build a circuit + observable
-        qscript = qml.tape.QuantumScript(
-            ops=[qml.RX(0.5, wires=0)],
-            measurements=[qml.expval(qml.Z(0))],
-        )
-        meta = MetaCircuit(source_circuit=qscript, symbols=np.array([], dtype=object))
+        ctx1 = QEMContext(data={"_signal_destroyed": True})
+        ctx2 = QEMContext(data={})
+        token = {"key1": [ctx1], "key2": [ctx2]}
 
-        # Use very few shots + heavy noise → force signal destruction
-        from qiskit_aer.noise import NoiseModel
-
-        noise = NoiseModel()
-        noise.add_all_qubit_readout_error([[0.5, 0.5], [0.5, 0.5]])
-
-        backend = QiskitSimulator(
-            noise_model=noise, shots=100, _deterministic_execution=True
-        )
-        pipeline = CircuitPipeline(
-            stages=[
-                CircuitSpecStage(),
-                MeasurementStage(),
-                QEMStage(protocol=QuEPP(truncation_order=1, n_twirls=0)),
-            ]
+        mocker.patch.object(stage, "_reduce_grouped", return_value={})
+        mocker.patch.object(stage, "_detect_per_obs", return_value=False)
+        mocker.patch(
+            "divi.pipeline.stages._qem_stage.group_by_base_key", return_value={}
         )
 
-        with pytest.warns(UserWarning, match="signal destroyed"):
-            pipeline.run(meta, PipelineEnv(backend=backend))
+        stage.reduce({}, PipelineEnv(backend=mocker.MagicMock()), token)
+
+        spy.assert_called_once()
+        contexts_passed = spy.call_args[0][0]
+        assert len(contexts_passed) == 2
+        assert any(c.data.get("_signal_destroyed") for c in contexts_passed)

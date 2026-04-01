@@ -492,14 +492,14 @@ class QuEPP(QEMProtocol):
             never explored.  Only used with ``sampling="exhaustive"``.
         sampling: Path selection strategy.
 
-            * ``"exhaustive"`` *(default)* — DFS enumeration of all paths
-              up to *truncation_order*, pruned by *coefficient_threshold*.
-              Deterministic; cost grows as O(n^K_T).
-            * ``"montecarlo"`` — draw *n_samples* random paths by
-              sampling branches at each anti-commuting gate.  Fixed
+            * ``"montecarlo"`` *(default)* — draw *n_samples* random paths
+              by sampling branches at each anti-commuting gate.  Fixed
               budget regardless of circuit size.
-        n_samples: Number of Monte Carlo path samples.  Required when
-            ``sampling="montecarlo"``.
+            * ``"exhaustive"`` — DFS enumeration of all paths up to
+              *truncation_order*, pruned by *coefficient_threshold*.
+              Deterministic; cost grows as O(n^K_T).
+        n_samples: Number of Monte Carlo path samples (default 200).
+            Required when ``sampling="montecarlo"``.
         seed: RNG seed for Monte Carlo reproducibility.
         eta_mode: Documents the intended rescaling strategy when the
             observable is a multi-term Hamiltonian.
@@ -517,22 +517,25 @@ class QuEPP(QEMProtocol):
 
     Example::
 
-        # Exhaustive (small circuits)
+        # Default (Monte Carlo, 200 samples)
         QuEPP(truncation_order=2)
 
-        # Exhaustive with aggressive pruning (medium circuits)
-        QuEPP(truncation_order=3, coefficient_threshold=0.01)
+        # More samples for higher accuracy
+        QuEPP(n_samples=500, seed=42)
 
-        # Monte Carlo (large circuits)
-        QuEPP(sampling="montecarlo", n_samples=200, seed=42)
+        # Exhaustive for small circuits (deterministic)
+        QuEPP(sampling="exhaustive", truncation_order=2)
+
+        # Exhaustive with aggressive pruning (medium circuits)
+        QuEPP(sampling="exhaustive", truncation_order=3, coefficient_threshold=0.01)
     """
 
     def __init__(
         self,
         truncation_order: int = 2,
         coefficient_threshold: float | None = None,
-        sampling: str = "exhaustive",
-        n_samples: int | None = None,
+        sampling: str = "montecarlo",
+        n_samples: int = 200,
         seed: int | None = None,
         eta_mode: str = "per_group",
         n_twirls: int = 10,
