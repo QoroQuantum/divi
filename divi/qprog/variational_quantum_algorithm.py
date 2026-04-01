@@ -19,7 +19,6 @@ from scipy.optimize import OptimizeResult
 
 from divi.backends import CircuitRunner
 from divi.circuits import MetaCircuit
-from divi.circuits.qem import _NoMitigation
 from divi.pipeline import CircuitPipeline, PipelineEnv, Stage
 from divi.pipeline.stages import (
     CircuitSpecStage,
@@ -276,7 +275,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 Defaults to None.
             grouping_strategy (str): Strategy for grouping operations in Pennylane transforms.
                 Options: "default", "wires", "qwc". Defaults to "qwc".
-            qem_protocol (QEMProtocol | None): Quantum error mitigation protocol to apply. Defaults to None.
             precision (int): Number of decimal places for parameter values in QASM conversion.
                 Defaults to 8.
 
@@ -349,8 +347,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 grouping_strategy if grouping_strategy is not _UNSET else "qwc"
             )
 
-        qem_protocol = kwargs.pop("qem_protocol", None)
-        self._qem_protocol = _NoMitigation() if qem_protocol is None else qem_protocol
         self._precision = kwargs.pop("precision", 8)
 
         # --- Solution Decoding ---
