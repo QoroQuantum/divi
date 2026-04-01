@@ -6,6 +6,7 @@ from queue import Queue
 
 import pytest
 
+import divi.reporting._qlogger as _qlogger
 from divi.reporting._reporter import (
     LoggingProgressReporter,
     ProgressReporter,
@@ -296,25 +297,31 @@ class TestLoggingProgressReporter:
 class TestDisableProgress:
     """Tests for DIVI_DISABLE_PROGRESS env var behaviour."""
 
+    @pytest.fixture(autouse=True)
+    def _reset_logging_flag(self, monkeypatch):
+        """Ensure the module-level _logging_disabled flag is clean for each test."""
+
+        monkeypatch.setattr(_qlogger, "_logging_disabled", False)
+
     @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on", " True "])
     def test_truthy_values_disable_progress(self, monkeypatch, value):
         """Truthy env var values disable the progress spinner."""
         monkeypatch.setenv("DIVI_DISABLE_PROGRESS", value)
         reporter = LoggingProgressReporter()
-        assert reporter._disable_progress is True
+        assert reporter._should_disable_progress() is True
 
     @pytest.mark.parametrize("value", ["0", "false", "no", "off", "", "random"])
     def test_falsy_values_keep_progress_enabled(self, monkeypatch, value):
         """Non-truthy env var values leave progress enabled."""
         monkeypatch.setenv("DIVI_DISABLE_PROGRESS", value)
         reporter = LoggingProgressReporter()
-        assert reporter._disable_progress is False
+        assert reporter._should_disable_progress() is False
 
     def test_unset_env_var_keeps_progress_enabled(self, monkeypatch):
         """When the env var is not set at all, progress is enabled."""
         monkeypatch.delenv("DIVI_DISABLE_PROGRESS", raising=False)
         reporter = LoggingProgressReporter()
-        assert reporter._disable_progress is False
+        assert reporter._should_disable_progress() is False
 
     def test_disabled_info_logs_instead_of_spinner(self, monkeypatch, caplog):
         """When progress is disabled, info() logs the message without creating a spinner."""
@@ -324,3 +331,26 @@ class TestDisableProgress:
             reporter.info("test message")
         assert "test message" in caplog.text
         assert reporter._status is None
+
+    def test_disable_logging_suppresses_progress(self, monkeypatch):
+        """disable_logging() suppresses Rich progress spinners via the module flag."""
+
+        monkeypatch.delenv("DIVI_DISABLE_PROGRESS", raising=False)
+
+        # Before: flag is off, progress is enabled
+        monkeypatch.setattr(_qlogger, "_logging_disabled", False)
+        reporter = LoggingProgressReporter()
+        assert reporter._should_disable_progress() is False
+
+        # After: flag is on, progress is disabled (even for existing reporters)
+        monkeypatch.setattr(_qlogger, "_logging_disabled", True)
+        assert reporter._should_disable_progress() is True
+
+        # New reporters also pick it up
+        reporter2 = LoggingProgressReporter()
+        assert reporter2._should_disable_progress() is True
+
+        # Resetting the flag restores progress
+        monkeypatch.setattr(_qlogger, "_logging_disabled", False)
+        assert reporter._should_disable_progress() is False
+        assert reporter2._should_disable_progress() is False
