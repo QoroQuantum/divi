@@ -11,6 +11,7 @@ from warnings import warn
 import requests
 
 from divi.backends import CircuitRunner
+from divi.circuits.qem import _NoMitigation
 from divi.pipeline import DryRunReport, PipelineEnv, dry_run_pipeline, format_dry_run
 from divi.reporting import LoggingProgressReporter, QueueProgressReporter
 
@@ -41,6 +42,8 @@ class QuantumProgram(ABC):
             seed (int | None): Random seed for reproducible results. Defaults to None.
             progress_queue (Queue | None): Queue for progress reporting. Defaults to None.
             **kwargs: Additional keyword arguments for subclasses.
+                qem_protocol (QEMProtocol | None): Quantum error mitigation protocol
+                    to apply during circuit execution. Defaults to None (no mitigation).
                 program_id (str | None): Program identifier for progress reporting in batch
                 operations. If provided along with progress_queue, enables queue-based
                 progress reporting.
@@ -51,6 +54,10 @@ class QuantumProgram(ABC):
         self.backend = backend
         self._seed = seed
         self._progress_queue = progress_queue
+
+        qem_protocol = kwargs.pop("qem_protocol", None)
+        self._qem_protocol = _NoMitigation() if qem_protocol is None else qem_protocol
+
         self._total_circuit_count = 0
         self._total_run_time = 0.0
         self._curr_circuits = []

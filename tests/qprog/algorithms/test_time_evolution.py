@@ -3,11 +3,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import math
+from functools import partial
 
 import pennylane as qml
 import pytest
+from mitiq.zne.inference import RichardsonFactory
+from mitiq.zne.scaling import fold_gates_at_random
 
 from divi.backends import ExecutionResult, QiskitSimulator
+from divi.circuits.qem import ZNE
+from divi.circuits.quepp import QuEPP
 from divi.hamiltonians import ExactTrotterization, QDrift
 from divi.qprog import OnesState, SuperpositionState, TimeEvolution, ZerosState
 
@@ -552,3 +557,101 @@ class TestTimeEvolutionE2E:
             f"QDrift circuit depth ({qdrift_depth}) should be less "
             f"than exact ({exact_depth}) when sampling_budget < n_terms"
         )
+
+
+class TestTimeEvolutionQEM:
+    """Tests for QEM integration in TimeEvolution."""
+
+    def test_no_qem_protocol_unchanged(self, default_test_simulator):
+        """Without qem_protocol, TimeEvolution pipeline has no QEM stages."""
+        te = TimeEvolution(
+            hamiltonian=qml.PauliX(0) + qml.PauliZ(0),
+            observable=qml.PauliZ(0),
+            backend=default_test_simulator,
+        )
+        stage_names = [type(s).__name__ for s in te._pipeline.stages]
+        assert "QEMStage" not in stage_names
+        assert "PauliTwirlStage" not in stage_names
+
+    def test_quepp_adds_qem_stage(self, default_test_simulator):
+        """QuEPP with n_twirls=0 adds QEMStage only."""
+        te = TimeEvolution(
+            hamiltonian=qml.PauliX(0) + qml.PauliZ(0),
+            observable=qml.PauliZ(0),
+            backend=default_test_simulator,
+            qem_protocol=QuEPP(truncation_order=1, n_twirls=0),
+        )
+        stage_names = [type(s).__name__ for s in te._pipeline.stages]
+        assert "QEMStage" in stage_names
+        assert "PauliTwirlStage" not in stage_names
+
+    def test_quepp_adds_twirl_stage(self, default_test_simulator):
+        """QuEPP with n_twirls>0 adds both QEMStage and PauliTwirlStage."""
+        te = TimeEvolution(
+            hamiltonian=qml.PauliX(0) + qml.PauliZ(0),
+            observable=qml.PauliZ(0),
+            backend=default_test_simulator,
+            qem_protocol=QuEPP(truncation_order=1, n_twirls=5),
+        )
+        stage_names = [type(s).__name__ for s in te._pipeline.stages]
+        assert "QEMStage" in stage_names
+        assert "PauliTwirlStage" in stage_names
+
+    def test_zne_adds_qem_stage(self, default_test_simulator):
+        """ZNE protocol adds QEMStage without PauliTwirlStage."""
+        scale_factors = [1.0, 3.0, 5.0]
+        te = TimeEvolution(
+            hamiltonian=qml.PauliX(0) + qml.PauliZ(0),
+            observable=qml.PauliZ(0),
+            backend=default_test_simulator,
+            qem_protocol=ZNE(
+                scale_factors,
+                partial(fold_gates_at_random),
+                RichardsonFactory(scale_factors=scale_factors),
+            ),
+        )
+        stage_names = [type(s).__name__ for s in te._pipeline.stages]
+        assert "QEMStage" in stage_names
+        assert "PauliTwirlStage" not in stage_names
+
+    def test_quepp_run_produces_mitigated_result(self):
+        """QuEPP on TimeEvolution produces a scalar result."""
+        backend = QiskitSimulator(shots=5000, _deterministic_execution=True)
+        hamiltonian = qml.PauliX(0) + qml.PauliZ(0)
+
+        te = TimeEvolution(
+            hamiltonian=hamiltonian,
+            time=0.5,
+            observable=qml.PauliZ(0),
+            backend=backend,
+            qem_protocol=QuEPP(truncation_order=1, n_twirls=0),
+        )
+        count, runtime = te.run()
+        assert count >= 1
+        assert runtime >= 0
+        assert isinstance(te.results, float)
+        assert -1.1 <= te.results <= 1.1
+
+    def test_dry_run_with_qem(self, default_test_simulator):
+        """TimeEvolution.dry_run works and reports QEM stages."""
+        te = TimeEvolution(
+            hamiltonian=qml.PauliX(0) + qml.PauliZ(0),
+            observable=qml.PauliZ(0),
+            backend=default_test_simulator,
+            qem_protocol=QuEPP(truncation_order=1, n_twirls=5),
+        )
+        reports = te.dry_run()
+        assert "evolution" in reports
+        report = reports["evolution"]
+        stage_names = [s.name for s in report.stages]
+        assert any("QEM" in name or "qem" in name.lower() for name in stage_names)
+
+    def test_dry_run_without_qem(self, default_test_simulator):
+        """TimeEvolution.dry_run works even without QEM."""
+        te = TimeEvolution(
+            hamiltonian=qml.PauliX(0) + qml.PauliZ(0),
+            observable=qml.PauliZ(0),
+            backend=default_test_simulator,
+        )
+        reports = te.dry_run()
+        assert "evolution" in reports
