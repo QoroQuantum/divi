@@ -41,12 +41,13 @@ class QuantumProgram(ABC):
             backend (CircuitRunner): Quantum circuit execution backend.
             seed (int | None): Random seed for reproducible results. Defaults to None.
             progress_queue (Queue | None): Queue for progress reporting. Defaults to None.
-            **kwargs: Additional keyword arguments for subclasses.
-                qem_protocol (QEMProtocol | None): Quantum error mitigation protocol
-                    to apply during circuit execution. Defaults to None (no mitigation).
-                program_id (str | None): Program identifier for progress reporting in batch
-                operations. If provided along with progress_queue, enables queue-based
-                progress reporting.
+
+        Keyword Args:
+            qem_protocol (QEMProtocol | None): Quantum error mitigation protocol
+                to apply during circuit execution. Defaults to None (no mitigation).
+            program_id (str | None): Program identifier for progress reporting in
+                batch operations. If provided along with progress_queue, enables
+                queue-based progress reporting.
         """
         if backend is None:
             raise ValueError("QuantumProgram requires a backend.")

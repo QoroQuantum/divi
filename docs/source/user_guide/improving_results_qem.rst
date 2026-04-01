@@ -192,6 +192,33 @@ and ``n_twirls`` before spending any shots.
 
 See :doc:`pipelines` for full documentation of the dry-run tool.
 
+Signal Destruction and Automatic Fallback
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+QuEPP corrects the noisy quantum result by dividing by the empirical rescaling
+factor η.  When noise is so severe that η drops below a safety threshold
+(``min_eta=0.1``), the ``1/η`` correction would amplify noise rather than
+suppress it.  In this case QuEPP **falls back to the raw noisy value** for that
+observable group and emits a summary warning after the evaluation:
+
+.. code-block:: text
+
+   UserWarning: QuEPP: signal destroyed for 3/5 observable group(s) —
+   mitigation fell back to noisy values. Consider increasing shots or
+   reducing noise.
+
+This is distinct from observable groups whose classical Pauli-path values are
+near zero — those carry negligible weight in the Hamiltonian and do not trigger
+the warning.
+
+If you see this warning frequently, consider:
+
+- **Increasing the number of shots** to reduce statistical noise in η.
+- **Enabling Pauli twirling** (``n_twirls > 0``) to convert coherent noise into
+  stochastic noise that QuEPP handles more gracefully.
+- **Lowering the noise level** (e.g. using a less noisy backend or reducing
+  circuit depth).
+
 Performance Considerations
 --------------------------
 
@@ -258,6 +285,10 @@ and must implement three members:
 - ``reduce(quantum_results, context)`` — Combine a ``Sequence[float]`` of
   per-circuit expectation values with the :class:`~divi.circuits.qem.QEMContext`
   into a single ``float``.
+- ``post_reduce(contexts)`` *(optional)* — Called once after all per-group
+  ``reduce`` calls in an evaluation.  Override to inspect the collected contexts
+  and emit summary diagnostics (e.g. QuEPP's signal-destruction warning).
+  The default implementation is a no-op.
 
 .. note::
    When a ``qem_protocol`` is provided, the :doc:`circuit pipeline <pipelines>`
