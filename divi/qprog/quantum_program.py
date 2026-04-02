@@ -33,6 +33,7 @@ class QuantumProgram(ABC):
         backend: CircuitRunner,
         seed: int | None = None,
         progress_queue: Queue | None = None,
+        program_id: str | None = None,
         **kwargs,
     ):
         """Initialize the QuantumProgram.
@@ -41,10 +42,6 @@ class QuantumProgram(ABC):
             backend (CircuitRunner): Quantum circuit execution backend.
             seed (int | None): Random seed for reproducible results. Defaults to None.
             progress_queue (Queue | None): Queue for progress reporting. Defaults to None.
-
-        Keyword Args:
-            qem_protocol (QEMProtocol | None): Quantum error mitigation protocol
-                to apply during circuit execution. Defaults to None (no mitigation).
             program_id (str | None): Program identifier for progress reporting in
                 batch operations. If provided along with progress_queue, enables
                 queue-based progress reporting.
@@ -59,6 +56,10 @@ class QuantumProgram(ABC):
         qem_protocol = kwargs.pop("qem_protocol", None)
         self._qem_protocol = _NoMitigation() if qem_protocol is None else qem_protocol
 
+        if kwargs:
+            unexpected = ", ".join(sorted(kwargs))
+            raise TypeError(f"Unexpected keyword argument(s): {unexpected}")
+
         self._total_circuit_count = 0
         self._total_run_time = 0.0
         self._curr_circuits = []
@@ -66,7 +67,7 @@ class QuantumProgram(ABC):
         self._cancellation_event = None
 
         # --- Progress Reporting ---
-        self.program_id = kwargs.get("program_id", None)
+        self.program_id = program_id
         if progress_queue and self.program_id is not None:
             self.reporter = QueueProgressReporter(self.program_id, progress_queue)
         else:

@@ -627,9 +627,9 @@ class TestTimeEvolutionQEM:
             backend=backend,
             qem_protocol=QuEPP(truncation_order=1, n_twirls=0),
         )
-        count, runtime = te.run()
-        assert count >= 1
-        assert runtime >= 0
+        te.run()
+        assert te.total_circuit_count >= 1
+        assert te.total_run_time >= 0
         assert isinstance(te.results, float)
         assert -1.1 <= te.results <= 1.1
 

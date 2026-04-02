@@ -307,8 +307,21 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 `lambda bitstring: bitstring` (identity function).
         """
 
+        program_id = kwargs.pop("program_id", None)
+
+        _UNSET = object()
+        grouping_strategy = kwargs.pop("grouping_strategy", _UNSET)
+        precision = kwargs.pop("precision", 8)
+        decode_solution_fn = kwargs.pop(
+            "decode_solution_fn", lambda bitstring: bitstring
+        )
+
         super().__init__(
-            backend=backend, seed=seed, progress_queue=progress_queue, **kwargs
+            backend=backend,
+            seed=seed,
+            progress_queue=progress_queue,
+            program_id=program_id,
+            **kwargs,
         )
 
         # --- Optimization Results & History ---
@@ -341,8 +354,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         self._stop_reason: StopReason | None = None
 
         # --- Backend & Circuit Configuration ---
-        _UNSET = object()
-        grouping_strategy = kwargs.pop("grouping_strategy", _UNSET)
         if self.backend.supports_expval and grouping_strategy not in (
             None,
             "_backend_expval",
@@ -361,12 +372,10 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 grouping_strategy if grouping_strategy is not _UNSET else "qwc"
             )
 
-        self._precision = kwargs.pop("precision", 8)
+        self._precision = precision
 
         # --- Solution Decoding ---
-        self._decode_solution_fn = kwargs.pop(
-            "decode_solution_fn", lambda bitstring: bitstring
-        )
+        self._decode_solution_fn = decode_solution_fn
 
         # --- Circuit Factory & Templates ---
         self._meta_circuit_factories = None
@@ -956,12 +965,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
     # Pipeline builders
     # ------------------------------------------------------------------ #
 
-    def dry_run(self) -> dict:
-        """Run forward pass on all pipelines and print fan-out analysis."""
-        if self._curr_params is None:
-            self._initialize_params()
-        return super().dry_run()
-
     def _get_dry_run_pipelines(self) -> dict[str, tuple]:
         factories = self.meta_circuit_factories
         result = {"cost": (self._cost_pipeline, factories["cost_circuit"])}
@@ -973,8 +976,8 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         return result
 
     def _build_pipeline_env(self, **overrides) -> PipelineEnv:
-        """Construct a PipelineEnv, injecting the current parameter sets."""
-        overrides.setdefault("param_sets", self._curr_params)
+        """Construct a PipelineEnv for the provided parameter sets."""
+        overrides.setdefault("param_sets", self._initialize_param_sets())
         return super()._build_pipeline_env(**overrides)
 
     def _build_cost_pipeline(self, spec_stage: Stage) -> CircuitPipeline:
