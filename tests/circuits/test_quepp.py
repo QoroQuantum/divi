@@ -21,6 +21,8 @@ from divi.circuits.quepp import (
     _enumerate_paths_dfs,
     _extract_rotation_gates,
     _is_pauli_rotation,
+    _normalize_angle,
+    _normalize_circuit,
     _obs_to_stim_terms,
     _sample_paths_montecarlo,
     _simulate_clifford_ensemble,
@@ -103,6 +105,79 @@ class TestIsPauliRotation:
     def test_clifford_rotation_still_detected(self):
         """Rx(π/2) is detected to ensure consistent path count across bindings."""
         assert _is_pauli_rotation(cirq.rx(np.pi / 2)) is not None
+
+
+class TestNormalizeAngle:
+    def test_small_angle_unchanged(self):
+        n, tp = _normalize_angle(0.3)
+        assert n == 0
+        assert tp == pytest.approx(0.3)
+
+    def test_pi_over_2(self):
+        n, tp = _normalize_angle(np.pi / 2)
+        assert n == 1
+        assert abs(tp) < 1e-14
+
+    def test_large_angle_normalized(self):
+        n, tp = _normalize_angle(1.2)
+        assert n == 1  # round(1.2 / (pi/2)) = round(0.764) = 1
+        assert abs(tp) <= np.pi / 4 + 1e-14
+        assert tp == pytest.approx(1.2 - np.pi / 2)
+
+    def test_negative_angle(self):
+        n, tp = _normalize_angle(-1.0)
+        assert n == -1
+        assert abs(tp) <= np.pi / 4 + 1e-14
+
+
+class TestNormalizeCircuit:
+    def test_small_angles_unchanged(self):
+        q = cirq.LineQubit(0)
+        c = cirq.Circuit(cirq.rx(0.3)(q))
+        nc = _normalize_circuit(c)
+        qubits = sorted(nc.all_qubits())
+        rots = _extract_rotation_gates(nc, qubits)
+        assert len(rots) == 1
+        assert rots[0].angle == pytest.approx(0.3)
+
+    def test_pi_over_2_becomes_clifford(self):
+        """Rx(π/2) becomes a Clifford PowGate with no residual rotation."""
+        q = cirq.LineQubit(0)
+        c = cirq.Circuit(cirq.rx(np.pi / 2)(q))
+        nc = _normalize_circuit(c)
+        qubits = sorted(nc.all_qubits())
+        rots = _extract_rotation_gates(nc, qubits)
+        assert len(rots) == 0  # no non-Clifford rotations left
+
+    def test_large_angle_decomposed(self):
+        """Rx(1.2) becomes Clifford + Rx(1.2 - π/2)."""
+        q = cirq.LineQubit(0)
+        c = cirq.Circuit(cirq.rx(1.2)(q))
+        nc = _normalize_circuit(c)
+        qubits = sorted(nc.all_qubits())
+        rots = _extract_rotation_gates(nc, qubits)
+        assert len(rots) == 1
+        assert abs(rots[0].angle) <= np.pi / 4 + 1e-14
+
+    def test_normalized_circuit_equivalent(self):
+        """Normalization preserves the unitary (up to global phase)."""
+        q = cirq.LineQubit(0)
+        c = cirq.Circuit(cirq.rx(1.2)(q))
+        nc = _normalize_circuit(c)
+        u_orig = cirq.unitary(c)
+        u_norm = cirq.unitary(nc)
+        # Equal up to global phase
+        ratio = u_orig.flatten()[0] / u_norm.flatten()[0]
+        np.testing.assert_allclose(u_orig, ratio * u_norm, atol=1e-12)
+
+    def test_cpt_accuracy_with_normalization(self):
+        """CPT expansion on normalized circuit still recovers exact value."""
+        angle = 1.2  # > π/4, so normalization kicks in
+        c = cirq.Circuit(cirq.rx(angle)(cirq.LineQubit(0)))
+        protocol = QuEPP(sampling="exhaustive", truncation_order=5)
+        _, ctx = protocol.expand(c, observable=qml.Z(0))
+        cpt = float(ctx["weights"] @ ctx["classical_values"])
+        assert cpt == pytest.approx(np.cos(angle), abs=1e-6)
 
 
 class TestExtractRotationGates:
@@ -210,6 +285,27 @@ class TestSamplePathsMonteCarlo:
         p1 = _sample_paths_montecarlo(rots, tabs, terms, 50, np.random.default_rng(0))
         p2 = _sample_paths_montecarlo(rots, tabs, terms, 50, np.random.default_rng(0))
         assert len(p1) == len(p2)
+
+    def test_mc_weights_are_cpt_coefficients(self):
+        """MC IS-weighted paths converge to the correct CPT estimate."""
+        angle = 0.5
+        c = cirq.Circuit(cirq.rx(angle)(cirq.LineQubit(0)))
+        nc = _normalize_circuit(c)
+        qubits = sorted(nc.all_qubits())
+        rots = _extract_rotation_gates(nc, qubits)
+        tabs = _build_clifford_tableaus(nc, rots, qubits)
+        terms = _obs_to_stim_terms(qml.Z(0), 1)
+        paths = _sample_paths_montecarlo(
+            rots, tabs, terms, 1000, np.random.default_rng(42)
+        )
+        # IS weights × stim values should approximate the exact value
+        from divi.circuits.quepp import _build_path_circuit, _simulate_clifford_ensemble
+
+        weights = np.array([p.weight for p in paths])
+        path_circuits = [_build_path_circuit(nc, rots, p.branches) for p in paths]
+        cv = _simulate_clifford_ensemble(path_circuits, qml.Z(0), 1)
+        mc_estimate = float(weights @ cv)
+        assert mc_estimate == pytest.approx(np.cos(angle), abs=0.05)
 
 
 # ---------------------------------------------------------------------------
