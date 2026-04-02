@@ -104,6 +104,20 @@ _CLIFFORD_ROTATION = {
     "z": lambda q: cirq.S(q),
 }
 
+# Clifford power gates for angle normalization: R_P(n·π/2) as PowGate
+_CLIFFORD_POWER = {
+    "x": cirq.X,
+    "y": cirq.Y,
+    "z": cirq.Z,
+}
+
+# Rotation constructors keyed by axis
+_ROTATION_CTOR = {
+    "x": cirq.rx,
+    "y": cirq.ry,
+    "z": cirq.rz,
+}
+
 
 @dataclass(frozen=True)
 class _RotationGate:
@@ -130,15 +144,94 @@ class _PauliPath:
 # Circuit parsing
 # ---------------------------------------------------------------------------
 
+_HALF_PI = np.pi / 2
+
+
+def _normalize_angle(theta: float) -> tuple[int, float]:
+    """Decompose θ = n·(π/2) + θ' with |θ'| ≤ π/4.
+
+    Returns ``(n, theta_prime)``.
+    """
+    n = int(round(theta / _HALF_PI))
+    theta_prime = theta - n * _HALF_PI
+    return n, theta_prime
+
+
+def _normalize_circuit(circuit: Circuit) -> Circuit:
+    """Factor out Clifford components from rotations so residual |θ| ≤ π/4.
+
+    For each R_P(θ) with |θ| > π/4, decomposes into R_P(n·π/2) · R_P(θ')
+    where R_P(n·π/2) is Clifford and |θ'| ≤ π/4.  Clifford parts use
+    PowGate representation (``X**0.5``, ``Y**0.5``, ``S``, etc.) so they
+    are NOT detected as Pauli rotations by ``_is_pauli_rotation``.
+    """
+    new_moments: list[cirq.Moment] = []
+    for moment in circuit:
+        clifford_ops: list[cirq.Operation] = []
+        main_ops: list[cirq.Operation] = []
+        needs_split = False
+
+        for op in moment.operations:
+            if len(op.qubits) != 1:
+                main_ops.append(op)
+                continue
+            rot = _is_pauli_rotation(op.gate)
+            if rot is None:
+                main_ops.append(op)
+                continue
+
+            axis, angle = rot
+            n, theta_prime = _normalize_angle(angle)
+            n_mod = n % 4
+            q = op.qubits[0]
+
+            # If nothing changes, keep original
+            if n_mod == 0 and abs(angle - theta_prime) < 1e-15:
+                main_ops.append(op)
+                continue
+
+            # Clifford part: R_P(n·π/2) as PowGate (invisible to rotation detection)
+            if n_mod != 0:
+                clifford_ops.append((_CLIFFORD_POWER[axis] ** (n_mod * 0.5))(q))
+                needs_split = True
+
+            # Residual rotation with |θ'| ≤ π/4
+            if abs(theta_prime) > 1e-15:
+                main_ops.append(_ROTATION_CTOR[axis](theta_prime)(q))
+
+        # Clifford parts must precede residual rotations on the same qubit
+        if needs_split and clifford_ops:
+            new_moments.append(cirq.Moment(clifford_ops))
+            if main_ops:
+                new_moments.append(cirq.Moment(main_ops))
+        else:
+            all_ops = main_ops + clifford_ops
+            if all_ops:
+                new_moments.append(cirq.Moment(all_ops))
+
+    result = Circuit(new_moments)
+    # Ensure all original qubits are present
+    missing = circuit.all_qubits() - result.all_qubits()
+    if missing:
+        result = Circuit(
+            [cirq.Moment(cirq.I(q) for q in missing)] + list(result.moments)
+        )
+    return result
+
 
 def _is_pauli_rotation(gate: cirq.Gate) -> tuple[str, float] | None:
-    """Return (axis, angle) if *gate* is an explicit Rx/Ry/Rz rotation, else None."""
+    """Return (axis, angle) if *gate* is an explicit Rx/Ry/Rz rotation, else None.
+
+    Uses ``_rads`` (set by Cirq's Rx/Ry/Rz constructors) to preserve the
+    exact input radians.  The public ``exponent`` property divides by π,
+    which introduces floating-point drift on the round-trip.
+    """
     if isinstance(gate, cirq.Rx):
-        return ("x", float(gate.exponent * np.pi))
+        return ("x", gate._rads)
     if isinstance(gate, cirq.Ry):
-        return ("y", float(gate.exponent * np.pi))
+        return ("y", gate._rads)
     if isinstance(gate, cirq.Rz):
-        return ("z", float(gate.exponent * np.pi))
+        return ("z", gate._rads)
     return None
 
 
@@ -288,11 +381,10 @@ def _enumerate_paths_dfs(
             if idx < 0:
                 # Pauli has already been propagated through all layers
                 if _is_diagonal(pauli):
-                    sign = float(pauli.sign.real)
                     all_paths.append(
                         _PauliPath(
                             branches=tuple(branches),
-                            weight=weight * sign,
+                            weight=weight,
                             order=order,
                         )
                     )
@@ -405,8 +497,10 @@ def _sample_paths_montecarlo(
         if not _is_diagonal(pauli):
             continue
 
-        sign = float(pauli.sign.real)
-        sample_weight = is_weight * sign / n_samples
+        # NOTE: the back-propagated Pauli sign is NOT multiplied in here
+        # because the stim simulation (or quantum measurement) already
+        # captures it.  Including it would double-count the ±1 factor.
+        sample_weight = is_weight / n_samples
 
         key = tuple(branches)
         if key in seen:
@@ -590,8 +684,14 @@ class QuEPP(QEMProtocol):
 
         qubits = sorted(cirq_circuit.all_qubits())
         n_qubits = len(qubits)
-        rotations = _extract_rotation_gates(cirq_circuit, qubits)
-        tableaus = _build_clifford_tableaus(cirq_circuit, rotations, qubits)
+
+        # Normalize rotations so residual |θ| ≤ π/4 (paper Sec. II–III).
+        # The normalized circuit is used for CPT decomposition; the
+        # *original* circuit is the target sent to the quantum backend.
+        normalized = _normalize_circuit(cirq_circuit)
+
+        rotations = _extract_rotation_gates(normalized, qubits)
+        tableaus = _build_clifford_tableaus(normalized, rotations, qubits)
         obs_terms = _obs_to_stim_terms(observable, n_qubits)
 
         # Select Pauli paths
@@ -608,9 +708,9 @@ class QuEPP(QEMProtocol):
                 coefficient_threshold=self._coeff_threshold,
             )
 
-        # Build Clifford circuits and simulate classically
+        # Build Clifford circuits from the *normalized* circuit
         path_circuits = [
-            _build_path_circuit(cirq_circuit, rotations, p.branches) for p in paths
+            _build_path_circuit(normalized, rotations, p.branches) for p in paths
         ]
         classical_values = _simulate_clifford_ensemble(
             path_circuits, observable, n_qubits
