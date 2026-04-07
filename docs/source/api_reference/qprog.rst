@@ -32,6 +32,11 @@ Core Classes
    :show-inheritance:
    :special-members: __init__
 
+.. autoclass:: divi.qprog.SolutionEntry
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Early Stopping
 ~~~~~~~~~~~~~~
 
@@ -128,6 +133,35 @@ classes for common graph and binary optimisation problems.
    :show-inheritance:
    :special-members: __init__
    :no-index:
+
+.. autoclass:: divi.qprog.problems.EdgePartitioningProblem
+   :members:
+   :show-inheritance:
+   :special-members: __init__
+   :no-index:
+
+Problem Utilities
+~~~~~~~~~~~~~~~~~
+
+.. autofunction:: divi.qprog.problems.draw_graph_solution_nodes
+
+.. autofunction:: divi.qprog.problems.draw_partitions
+
+.. autofunction:: divi.qprog.problems.check_matching_matrix
+
+.. autofunction:: divi.qprog.problems.is_valid_matching
+
+.. autofunction:: divi.qprog.problems.binary_block_config
+
+.. autofunction:: divi.qprog.problems.cvrp_block_structure
+
+.. autofunction:: divi.qprog.problems.is_valid_tsp_tour
+
+.. autofunction:: divi.qprog.problems.tour_cost
+
+.. autofunction:: divi.qprog.problems.parse_vrp_file
+
+.. autofunction:: divi.qprog.problems.parse_vrp_solution
 
 QAOA Algorithm
 ~~~~~~~~~~~~~~
@@ -249,6 +283,43 @@ VQE Ansätze
    :members:
    :undoc-members:
    :show-inheritance:
+
+Initial States
+~~~~~~~~~~~~~~
+
+.. autoclass:: divi.qprog.algorithms.InitialState
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. autoclass:: divi.qprog.algorithms.ZerosState
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. autoclass:: divi.qprog.algorithms.OnesState
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. autoclass:: divi.qprog.algorithms.SuperpositionState
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. autoclass:: divi.qprog.algorithms.CustomPerQubitState
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+
+.. autoclass:: divi.qprog.algorithms.WState
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+
+.. autofunction:: divi.qprog.algorithms._initial_state.build_block_xy_mixer_graph
 
 Optimizers
 ----------

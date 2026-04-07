@@ -78,8 +78,27 @@ Thread-safe progress reporter that sends updates through a queue for external mo
    :show-inheritance:
    :no-index:
 
+.. autoclass:: divi.reporting.ProgressReporter
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :no-index:
+
+Batch Display Utilities
+~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autofunction:: divi.reporting.handle_batch_message
+
+.. autofunction:: divi.reporting.make_batch_display
+
+.. autofunction:: divi.reporting.make_progress_display
+
+.. autofunction:: divi.reporting.queue_listener
+
+.. autodata:: divi.reporting.BATCH_COLORS
+
 .. automodule:: divi.reporting
    :members:
    :undoc-members:
    :show-inheritance:
-   :exclude-members: LoggingProgressReporter, QueueProgressReporter
+   :exclude-members: LoggingProgressReporter, QueueProgressReporter, ProgressReporter, handle_batch_message, make_batch_display, make_progress_display, queue_listener, BATCH_COLORS
