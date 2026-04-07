@@ -600,20 +600,6 @@ class QuEPP(QEMProtocol):
         n_samples: Number of Monte Carlo path samples (default 200).
             Required when ``sampling="montecarlo"``.
         seed: RNG seed for Monte Carlo reproducibility.
-        eta_mode: Documents the intended rescaling strategy when the
-            observable is a multi-term Hamiltonian.
-
-            * ``"per_group"`` *(default)* — η is computed independently
-              for each measurement group (Pauli term).
-            * ``"global"`` — a single η is used for the full Hamiltonian.
-              This happens automatically when the backend supports native
-              expectation values (``ham_ops`` path).
-
-            .. note::
-               The QuEPP paper (arXiv:2603.14485) defines η for a single
-               observable and does not discuss multi-term Hamiltonians.
-               This parameter is a divi extension.
-
         n_twirls: Number of Pauli twirling samples.  When non-zero, the
             pipeline builder appends a ``PauliTwirlStage`` that generates
             *n_twirls* randomised copies of each circuit before submission.
@@ -641,7 +627,6 @@ class QuEPP(QEMProtocol):
         sampling: str = "montecarlo",
         n_samples: int = 200,
         seed: int | None = None,
-        eta_mode: str = "per_group",
         n_twirls: int = 10,
     ) -> None:
         if truncation_order < 0:
@@ -654,10 +639,6 @@ class QuEPP(QEMProtocol):
             raise ValueError(
                 "n_samples must be a positive integer for montecarlo sampling."
             )
-        if eta_mode not in ("per_group", "global"):
-            raise ValueError(
-                f"eta_mode must be 'per_group' or 'global', got {eta_mode!r}"
-            )
         self._K_T = truncation_order
         self._coeff_threshold = (
             0.0 if coefficient_threshold is None else coefficient_threshold
@@ -665,7 +646,6 @@ class QuEPP(QEMProtocol):
         self._sampling = sampling
         self._n_samples = n_samples
         self._rng = np.random.default_rng(seed)
-        self._eta_mode = eta_mode
         self.n_twirls = n_twirls
 
     @property
@@ -708,6 +688,22 @@ class QuEPP(QEMProtocol):
                 coefficient_threshold=self._coeff_threshold,
             )
 
+        # Warn when the truncation order is large relative to the number
+        # of non-Clifford rotations.  The CPT expansion treats each
+        # replaced rotation as a small perturbation; when K_T/n_rotations
+        # is high, path circuits differ too much from the target for the
+        # uniform-η assumption to hold (arXiv:2603.14485, Sec. IV).
+        n_rotations = len(rotations)
+        if n_rotations > 0 and self._K_T / n_rotations > 0.33:
+            warnings.warn(
+                f"QuEPP: truncation order K={self._K_T} replaces a large "
+                f"fraction of the {n_rotations} non-Clifford rotations "
+                f"({self._K_T / n_rotations:.0%}). Mitigation quality may "
+                f"degrade on shallow circuits — consider reducing "
+                f"truncation_order or using a deeper circuit.",
+                stacklevel=2,
+            )
+
         # Build Clifford circuits from the *normalized* circuit
         path_circuits = [
             _build_path_circuit(normalized, rotations, p.branches) for p in paths
@@ -724,7 +720,7 @@ class QuEPP(QEMProtocol):
             "weights": weights,
             "target_idx": 0,
             "ensemble_start": 1,
-            "n_rotations": len(rotations),
+            "n_rotations": n_rotations,
             "n_paths": len(paths),
         }
         return all_circuits, context
@@ -777,8 +773,8 @@ class QuEPP(QEMProtocol):
         destroyed = sum(1 for c in contexts if c.get("_signal_destroyed"))
         if destroyed:
             warnings.warn(
-                f"QuEPP: signal destroyed for {destroyed}/{len(contexts)} "
-                f"observable group(s) — mitigation fell back to noisy values. "
-                f"Consider increasing shots or reducing noise.",
+                "QuEPP: signal destroyed — η fell below the safety threshold "
+                "and mitigation fell back to the raw noisy value. "
+                "Consider increasing shots or reducing noise.",
                 stacklevel=3,
             )
