@@ -129,18 +129,6 @@ on the ensemble circuits.
 - ``n_samples`` *(int)* — Number of Monte Carlo samples.  Required
   when ``sampling="montecarlo"``.
 - ``seed`` *(int, optional)* — RNG seed for Monte Carlo reproducibility.
-- ``eta_mode`` — How the rescaling factor η is computed for
-  multi-term Hamiltonians:
-
-  - ``"per_group"`` *(default)* — η is computed independently for each
-    measurement group (Pauli term).  Allows different terms to have
-    different noise sensitivities.  Use for **structured gate noise**.
-  - ``"global"`` — η is pooled across all measurement groups into a
-    single value.  More statistically robust when noise is **uniform**
-    (e.g. readout error, global depolarizing).
-
-  This parameter is a divi extension; the QuEPP paper defines η for a
-  single observable and does not discuss multi-term Hamiltonians.
 
 ZNE vs QuEPP
 ~~~~~~~~~~~~~
@@ -204,9 +192,9 @@ observable group and emits a summary warning after the evaluation:
 
 .. code-block:: text
 
-   UserWarning: QuEPP: signal destroyed for 3/5 observable group(s) —
-   mitigation fell back to noisy values. Consider increasing shots or
-   reducing noise.
+   UserWarning: QuEPP: signal destroyed — η fell below the safety threshold
+   and mitigation fell back to the raw noisy value. Consider increasing shots
+   or reducing noise.
 
 This is distinct from observable groups whose classical Pauli-path values are
 near zero — those carry negligible weight in the Hamiltonian and do not trigger
@@ -219,6 +207,31 @@ If you see this warning frequently, consider:
   stochastic noise that QuEPP handles more gracefully.
 - **Lowering the noise level** (e.g. using a less noisy backend or reducing
   circuit depth).
+
+Shallow Circuit Warning
+~~~~~~~~~~~~~~~~~~~~~~~
+
+QuEPP's correction relies on the CPT expansion being a small perturbation of the
+target circuit.  When the truncation order K replaces a large fraction of the
+non-Clifford rotations, path circuits differ too much from the target for
+reliable η estimation.  QuEPP emits a warning when ``K / n_rotations > 33%``:
+
+.. code-block:: text
+
+   UserWarning: QuEPP: truncation order K=2 replaces a large fraction of the
+   4 non-Clifford rotations (50%). Mitigation quality may degrade on shallow
+   circuits — consider reducing truncation_order or using a deeper circuit.
+
+This typically occurs on small circuits (< 10 qubits) where the number of
+non-Clifford rotations is comparable to K.  The paper validates QuEPP on
+49-qubit circuits with hundreds of rotations.
+
+If you see this warning:
+
+- **Reduce truncation_order** to ``K=1`` or use ``sampling="montecarlo"`` which
+  does not enumerate all branches.
+- **Use a deeper circuit** (more qubits or Trotter steps).
+- **Use ZNE instead** for shallow circuits where QuEPP is unreliable.
 
 Performance Considerations
 --------------------------

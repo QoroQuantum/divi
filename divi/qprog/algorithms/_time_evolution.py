@@ -97,7 +97,7 @@ class TimeEvolution(QuantumProgram):
             trotterization_strategy=self.trotterization_strategy,
             meta_circuit_factory=self._meta_circuit_factory,
         )
-        stages: list = [trotter, MeasurementStage()]
+        stages: list = [trotter]
 
         if not isinstance(self._qem_protocol, _NoMitigation):
             stages.append(QEMStage(protocol=self._qem_protocol))
@@ -105,6 +105,7 @@ class TimeEvolution(QuantumProgram):
             if n_twirls > 0:
                 stages.append(PauliTwirlStage(n_twirls=n_twirls))
 
+        stages.append(MeasurementStage())
         self._pipeline = CircuitPipeline(stages=stages)
 
     def _get_dry_run_pipelines(self) -> dict[str, tuple]:
