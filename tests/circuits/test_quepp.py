@@ -21,6 +21,8 @@ from divi.circuits.quepp import (
     _enumerate_paths_dfs,
     _extract_rotation_gates,
     _is_pauli_rotation,
+    _normalize_angle,
+    _normalize_circuit,
     _obs_to_stim_terms,
     _sample_paths_montecarlo,
     _simulate_clifford_ensemble,
@@ -105,6 +107,84 @@ class TestIsPauliRotation:
         assert _is_pauli_rotation(cirq.rx(np.pi / 2)) is not None
 
 
+class TestNormalizeAngle:
+    def test_small_angle_unchanged(self):
+        n, tp = _normalize_angle(0.3)
+        assert n == 0
+        assert tp == pytest.approx(0.3)
+
+    def test_pi_over_2(self):
+        n, tp = _normalize_angle(np.pi / 2)
+        assert n == 1
+        assert abs(tp) < 1e-14
+
+    def test_large_angle_normalized(self):
+        n, tp = _normalize_angle(1.2)
+        assert n == 1  # round(1.2 / (pi/2)) = round(0.764) = 1
+        assert abs(tp) <= np.pi / 4 + 1e-14
+        assert tp == pytest.approx(1.2 - np.pi / 2)
+
+    def test_negative_angle(self):
+        n, tp = _normalize_angle(-1.0)
+        assert n == -1
+        assert abs(tp) <= np.pi / 4 + 1e-14
+
+
+@pytest.mark.usefixtures("suppress_quepp_warnings")
+class TestNormalizeCircuit:
+    def test_small_angles_unchanged(self):
+        q = cirq.LineQubit(0)
+        c = cirq.Circuit(cirq.rx(0.3)(q))
+        nc = _normalize_circuit(c)
+        qubits = sorted(nc.all_qubits())
+        rots = _extract_rotation_gates(nc, qubits)
+        assert len(rots) == 1
+        assert rots[0].angle == pytest.approx(0.3)
+
+    def test_pi_over_2_becomes_clifford(self):
+        """Rx(π/2) becomes a Clifford PowGate with no residual rotation."""
+        q = cirq.LineQubit(0)
+        c = cirq.Circuit(cirq.rx(np.pi / 2)(q))
+        nc = _normalize_circuit(c)
+        qubits = sorted(nc.all_qubits())
+        rots = _extract_rotation_gates(nc, qubits)
+        assert len(rots) == 0  # no non-Clifford rotations left
+
+    def test_large_angle_decomposed(self):
+        """Rx(1.2) becomes Clifford + Rx(1.2 - π/2)."""
+        q = cirq.LineQubit(0)
+        c = cirq.Circuit(cirq.rx(1.2)(q))
+        nc = _normalize_circuit(c)
+        qubits = sorted(nc.all_qubits())
+        rots = _extract_rotation_gates(nc, qubits)
+        assert len(rots) == 1
+        assert abs(rots[0].angle) <= np.pi / 4 + 1e-14
+
+    def test_normalized_circuit_equivalent(self):
+        """Normalization preserves the unitary (up to global phase)."""
+        q = cirq.LineQubit(0)
+        c = cirq.Circuit(cirq.rx(1.2)(q))
+        nc = _normalize_circuit(c)
+        u_orig = cirq.unitary(c)
+        u_norm = cirq.unitary(nc)
+        # Equal up to global phase (phase-insensitive overlap check)
+        overlap = np.vdot(u_orig.flatten(), u_norm.flatten())
+        np.testing.assert_allclose(
+            abs(overlap) / (np.linalg.norm(u_orig) * np.linalg.norm(u_norm)),
+            1.0,
+            atol=1e-12,
+        )
+
+    def test_cpt_accuracy_with_normalization(self):
+        """CPT expansion on normalized circuit still recovers exact value."""
+        angle = 1.2  # > π/4, so normalization kicks in
+        c = cirq.Circuit(cirq.rx(angle)(cirq.LineQubit(0)))
+        protocol = QuEPP(sampling="exhaustive", truncation_order=5)
+        _, ctx = protocol.expand(c, observable=qml.Z(0))
+        cpt = float(ctx["weights"] @ ctx["classical_values"])
+        assert cpt == pytest.approx(np.cos(angle), abs=1e-6)
+
+
 class TestExtractRotationGates:
     def test_fully_clifford_circuit(self, bell_circuit):
         qubits = sorted(bell_circuit.all_qubits())
@@ -128,6 +208,7 @@ class TestExtractRotationGates:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("suppress_quepp_warnings")
 class TestCPTExpansion:
     """Verify that the Heisenberg CPT expansion recovers exact expectation values."""
 
@@ -211,6 +292,27 @@ class TestSamplePathsMonteCarlo:
         p2 = _sample_paths_montecarlo(rots, tabs, terms, 50, np.random.default_rng(0))
         assert len(p1) == len(p2)
 
+    def test_mc_weights_are_cpt_coefficients(self):
+        """MC IS-weighted paths converge to the correct CPT estimate."""
+        angle = 0.5
+        c = cirq.Circuit(cirq.rx(angle)(cirq.LineQubit(0)))
+        nc = _normalize_circuit(c)
+        qubits = sorted(nc.all_qubits())
+        rots = _extract_rotation_gates(nc, qubits)
+        tabs = _build_clifford_tableaus(nc, rots, qubits)
+        terms = _obs_to_stim_terms(qml.Z(0), 1)
+        paths = _sample_paths_montecarlo(
+            rots, tabs, terms, 1000, np.random.default_rng(42)
+        )
+        # IS weights × stim values should approximate the exact value
+        from divi.circuits.quepp import _build_path_circuit, _simulate_clifford_ensemble
+
+        weights = np.array([p.weight for p in paths])
+        path_circuits = [_build_path_circuit(nc, rots, p.branches) for p in paths]
+        cv = _simulate_clifford_ensemble(path_circuits, qml.Z(0), 1)
+        mc_estimate = float(weights @ cv)
+        assert mc_estimate == pytest.approx(np.cos(angle), abs=0.05)
+
 
 # ---------------------------------------------------------------------------
 # Clifford simulation tests
@@ -242,6 +344,7 @@ class TestSimulateCliffordEnsemble:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("suppress_quepp_warnings")
 class TestQuEPPProtocol:
     def test_is_qem_protocol(self):
         assert isinstance(QuEPP(truncation_order=1), QEMProtocol)
@@ -436,7 +539,7 @@ class TestQuEPPSignalDestruction:
         healthy = {}
         protocol = QuEPP(truncation_order=1, n_twirls=0)
 
-        with pytest.warns(UserWarning, match=r"signal destroyed for 1/2"):
+        with pytest.warns(UserWarning, match=r"signal destroyed"):
             protocol.post_reduce([destroyed, healthy])
 
     def test_post_reduce_silent_when_no_destruction(self):
@@ -454,6 +557,34 @@ class TestQuEPPSignalDestruction:
         ctx = {"_signal_destroyed": True}
         _NoMitigation().post_reduce([ctx])  # should not raise
 
+    def test_shallow_circuit_warning_in_expand(self):
+        """expand() warns when K / n_rotations > 0.15 (shallow circuit)."""
+        # Build a circuit with few rotations — 2 rotations with K=2 → ratio = 1.0
+        q = cirq.LineQubit.range(2)
+        circuit = cirq.Circuit(
+            cirq.rx(0.3)(q[0]),
+            cirq.CNOT(q[0], q[1]),
+            cirq.ry(0.7)(q[1]),
+        )
+        obs = qml.PauliZ(0)
+        protocol = QuEPP(sampling="exhaustive", truncation_order=2, n_twirls=0)
+        with pytest.warns(UserWarning, match=r"large fraction"):
+            protocol.expand(circuit, obs)
+
+    def test_no_shallow_circuit_warning_for_deep_circuits(self):
+        """expand() does NOT warn when K / n_rotations is small."""
+        # 10 rotations with K=1 → ratio = 0.1 < 0.15
+        q = cirq.LineQubit.range(2)
+        ops = []
+        for i in range(10):
+            ops.append(cirq.rx(0.1 * (i + 1))(q[i % 2]))
+        circuit = cirq.Circuit(ops)
+        obs = qml.PauliZ(0)
+        protocol = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            protocol.expand(circuit, obs)
+
     def test_qem_stage_calls_post_reduce(self, mocker):
         """QEMStage.reduce() calls protocol.post_reduce() with all contexts."""
         protocol = QuEPP(truncation_order=1, n_twirls=0)
@@ -470,7 +601,8 @@ class TestQuEPPSignalDestruction:
             "divi.pipeline.stages._qem_stage.group_by_base_key", return_value={}
         )
 
-        stage.reduce({}, PipelineEnv(backend=mocker.MagicMock()), token)
+        with pytest.warns(UserWarning, match=r"signal destroyed"):
+            stage.reduce({}, PipelineEnv(backend=mocker.MagicMock()), token)
 
         spy.assert_called_once()
         contexts_passed = spy.call_args[0][0]

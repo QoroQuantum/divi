@@ -18,11 +18,26 @@ matplotlib.use("Agg")
 _stevedore_logger = logging.getLogger("stevedore.extension")
 _stevedore_logger.setLevel(logging.CRITICAL)
 
+import warnings
+
 import pytest
 from dotenv import load_dotenv
 
 from divi.backends import CircuitRunner, ExecutionResult, MaestroSimulator
 from divi.pipeline import PipelineEnv
+
+
+@pytest.fixture
+def suppress_quepp_warnings():
+    """Suppress QuEPP shallow-circuit and signal-destroyed warnings.
+
+    Use on tests that exercise QuEPP with intentionally small circuits
+    where the warnings are expected but not under test.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r"QuEPP:.*shallow circuits")
+        warnings.filterwarnings("ignore", message=r"QuEPP:.*signal destroyed")
+        yield
 
 
 class DummySimulator(CircuitRunner):
