@@ -32,6 +32,9 @@ Changelog = "https://github.com/QoroQuantum/divi/blob/main/CHANGELOG.md"
 [tool.poetry]
 packages = [{ include = "divi" }]
 
+[[tool.poetry.include]]
+path = "divi/ai/_data/*"
+
 [tool.poetry.dependencies]
 python = ">=3.11,<3.13"
 # Quantum computing
@@ -97,8 +100,25 @@ sphinxcontrib-spelling = "^8.0.1"
 ipywidgets = "^8.1.7"
 ipykernel = "^7.1.0"
 
+
+[tool.poetry.group.ai.dependencies]
+llama-cpp-python = "^0.3.16"
+fastembed = "^0.8.0"
+faiss-cpu = "^1.13.2"
+textual = "^8.1.1"
+pyperclip = "^1.11.0"
+psutil = "^7.0"
+platformdirs = "^4.0"
+huggingface-hub = ">=1.0"
+docutils = ">=0.18"
+
+
+[tool.poetry.scripts]
+divi-ai = "divi.ai._cli:main"
+
 [tool.isort]
 profile = "black"
+skip = ["unsloth_compiled_cache"]
 skip_glob = ["**/__init__.py"]
 
 [tool.commitizen]

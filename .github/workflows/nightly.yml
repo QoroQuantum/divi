@@ -46,7 +46,16 @@ jobs:
           cache: 'poetry'
 
       - name: Install dependencies
-        run: poetry install --only=main --no-interaction --no-ansi
+        run: poetry install --only=main,ai --no-interaction --no-ansi
+
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/fastembed
+          key: fastembed-jina-v2-base-code
+
+      - name: Build divi-ai search index
+        run: poetry run python -m divi.ai build
 
       - name: Set nightly version
         run: |
