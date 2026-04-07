@@ -33,7 +33,6 @@ extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.napoleon",  # Supports Google-style and NumPy-style docstrings
     "sphinx.ext.viewcode",
-    "sphinx.ext.githubpages",
     "sphinx.ext.intersphinx",
     "sphinx.ext.autosummary",
     "sphinx.ext.autosectionlabel",
@@ -150,8 +149,12 @@ html_theme_options = {
     },
 }
 
-# GitHub Pages specific configuration
-html_baseurl = f"https://{project_name.replace('-', '')}.github.io/divi/"
+# Canonical URL: use RTD's env var when building there, empty otherwise
+html_baseurl = os.environ.get("READTHEDOCS_CANONICAL_URL", "")
+
+# GitHub Pages extension (creates .nojekyll / CNAME — not needed on RTD)
+if not os.environ.get("READTHEDOCS"):
+    extensions.append("sphinx.ext.githubpages")
 html_extra_path = []
 html_copy_source = False
 html_show_sourcelink = False

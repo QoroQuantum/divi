@@ -1,4 +1,4 @@
-name: Build & Deploy Docs to Pages
+name: Build Docs
 
 on:
   push:
@@ -11,8 +11,6 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 jobs:
   build-docs:
@@ -41,21 +39,3 @@ jobs:
         env:
           LC_ALL: C.UTF-8
           LANG: C.UTF-8
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: docs/build/html
-
-  deploy-docs:
-    if: github.ref == 'refs/heads/main'
-    needs: build-docs
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
