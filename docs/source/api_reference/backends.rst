@@ -83,6 +83,11 @@ Execution Configuration
    :members:
    :undoc-members:
 
+Backend Factory
+---------------
+
+.. autofunction:: divi.backends.create_backend_from_properties
+
 Systems
 -------
 

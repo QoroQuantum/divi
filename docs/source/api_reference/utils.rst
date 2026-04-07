@@ -28,6 +28,15 @@ The ``divi.hamiltonians`` module provides functions for working with Hamiltonian
 .. autoclass:: divi.hamiltonians.IsingResult
    :members:
 
+Hamiltonian Encoding
+~~~~~~~~~~~~~~~~~~~~
+
+.. autofunction:: divi.hamiltonians.encode_ham_ops
+
+.. autofunction:: divi.hamiltonians.compress_ham_ops
+
+.. autofunction:: divi.hamiltonians.normalize_binary_polynomial_problem
+
 Expectation Value Computation
 -----------------------------
 

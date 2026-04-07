@@ -15,6 +15,18 @@ Core Circuit Classes
    :show-inheritance:
    :special-members: __init__
 
+QASM Templates
+--------------
+
+.. autoclass:: divi.circuits.QASMTemplate
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. autofunction:: divi.circuits.build_template
+
+.. autofunction:: divi.circuits.render_template
+
 QASM Integration
 ----------------
 

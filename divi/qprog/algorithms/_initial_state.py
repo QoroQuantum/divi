@@ -60,14 +60,14 @@ class InitialState(ABC):
 
 
 class ZerosState(InitialState):
-    """Computational basis state |00…0⟩ (no gates needed)."""
+    r"""Computational basis state \|00…0⟩ (no gates needed)."""
 
     def build(self, wires: Sequence[int]) -> list[qml.operation.Operator]:
         return []
 
 
 class OnesState(InitialState):
-    """All-ones state |11…1⟩ via PauliX on every qubit."""
+    r"""All-ones state \|11…1⟩ via PauliX on every qubit."""
 
     def build(self, wires: Sequence[int]) -> list[qml.operation.Operator]:
         return [qml.PauliX(wires=w) for w in wires]
@@ -119,14 +119,14 @@ class CustomPerQubitState(InitialState):
 
 
 class WState(InitialState):
-    """Product of W-states on contiguous qubit blocks.
+    r"""Product of W-states on contiguous qubit blocks.
 
     Prepares a uniform superposition over one-hot basis states within
     each block::
 
         |s₀⟩ = |W_{block_size}⟩^{⊗ n_blocks}
 
-    where |W_n⟩ = (|10…0⟩ + |01…0⟩ + … + |00…1⟩) / √n.
+    where \|W_n⟩ = (\|10…0⟩ + \|01…0⟩ + … + \|00…1⟩) / √n.
 
     Useful as the initial state for any one-hot encoded problem
     (routing, assignment, scheduling, graph coloring, etc.).

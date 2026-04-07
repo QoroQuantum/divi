@@ -89,6 +89,12 @@ Built-in Stages
    :show-inheritance:
    :special-members: __init__
 
+.. autoclass:: divi.pipeline.stages.PauliTwirlStage
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+
 Dry Run
 -------
 
