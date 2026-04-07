@@ -2315,11 +2315,14 @@ class TestQoroServiceWithApiKey:
 
     def test_retry_get_job_status(self, qoro_service, circuits):
         """Tests the retry mechanism for polling job status."""
-        result = qoro_service.submit_circuits(circuits)
-
+        # Create the temp service BEFORE submitting so its constructor overhead
+        # (fetch_qpu_systems, fetch_simulator_clusters) doesn't give the job
+        # time to complete on the server.
         qoro_service_temp = QoroService(
-            qoro_service.auth_token.split(" ")[1], max_retries=5, polling_interval=0.05
+            qoro_service.auth_token.split(" ")[1], max_retries=2, polling_interval=0.01
         )
+
+        result = qoro_service.submit_circuits(circuits)
 
         with pytest.raises(MaxRetriesReachedError):
             qoro_service_temp.poll_job_status(result, loop_until_complete=True)
