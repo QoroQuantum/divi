@@ -88,14 +88,14 @@ def _syntax_check(code: str) -> str | None:
     """Return None if code compiles, else the error message."""
     with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
         f.write(code)
-        f.flush()
-        try:
-            py_compile.compile(f.name, doraise=True)
-            return None
-        except py_compile.PyCompileError as e:
-            return str(e)
-        finally:
-            Path(f.name).unlink(missing_ok=True)
+        tmp_path = Path(f.name)
+    try:
+        py_compile.compile(str(tmp_path), doraise=True)
+        return None
+    except py_compile.PyCompileError as e:
+        return str(e)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------

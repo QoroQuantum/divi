@@ -24,6 +24,7 @@ import json
 import os
 import re
 import subprocess
+import tomllib
 from dataclasses import asdict
 from pathlib import Path
 
@@ -1028,21 +1029,21 @@ def _scan_init_imports(package_dir: Path) -> dict[str, list[str]]:
 
 def _read_pyproject(repo_root: Path) -> dict[str, str]:
     """Extract key metadata from ``pyproject.toml``."""
-    meta: dict[str, str] = {}
     pyproject = repo_root / "pyproject.toml"
     if not pyproject.is_file():
-        return meta
+        return {}
 
-    text = pyproject.read_text(encoding="utf-8")
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("requires-python"):
-            meta["python"] = stripped.split("=", 1)[1].strip().strip('"')
-        elif stripped.startswith("version") and "version" not in meta:
-            meta["version"] = stripped.split("=", 1)[1].strip().strip('"')
-        elif stripped.startswith("name") and "name" not in meta:
-            meta["name"] = stripped.split("=", 1)[1].strip().strip('"')
+    with open(pyproject, "rb") as f:
+        data = tomllib.load(f)
 
+    project = data.get("project", {})
+    meta: dict[str, str] = {}
+    if "name" in project:
+        meta["name"] = project["name"]
+    if "version" in project:
+        meta["version"] = project["version"]
+    if "requires-python" in project:
+        meta["python"] = project["requires-python"]
     return meta
 
 

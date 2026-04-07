@@ -110,6 +110,7 @@ pyperclip = "^1.11.0"
 psutil = "^7.0"
 platformdirs = "^4.0"
 huggingface-hub = ">=1.0"
+docutils = ">=0.18"
 
 
 [tool.poetry.scripts]
