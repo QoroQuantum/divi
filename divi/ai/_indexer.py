@@ -859,13 +859,22 @@ def build_index(
     texts = [_strip_embed_prefix(c.text) for c in all_chunks]
 
     try:
-        vectors = list(
-            track(
-                embedder.embed(texts, batch_size=batch_size),
-                total=len(texts),
-                description="Embedding …",
+        is_tty = Console().is_terminal
+        if is_tty:
+            vectors = list(
+                track(
+                    embedder.embed(texts, batch_size=batch_size),
+                    total=len(texts),
+                    description="Embedding …",
+                )
             )
-        )
+        else:
+            vectors = []
+            total = len(texts)
+            for i, vec in enumerate(embedder.embed(texts, batch_size=batch_size), 1):
+                vectors.append(vec)
+                if i % 100 == 0 or i == total:
+                    print(f"  Embedded {i}/{total} chunks", flush=True)
     except KeyboardInterrupt:
         print("\nInterrupted — index not saved.")
         raise SystemExit(1)

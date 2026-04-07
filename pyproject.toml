@@ -34,6 +34,7 @@ packages = [{ include = "divi" }]
 
 [[tool.poetry.include]]
 path = "divi/ai/_data/*"
+format = ["sdist", "wheel"]
 
 [tool.poetry.dependencies]
 python = ">=3.11,<3.13"
