@@ -24,12 +24,17 @@ from rich.table import Table
 from ._chat import build_prompt
 from ._eval import compare_evals, run_eval
 from ._indexer import DATA_DIR, build_index, build_project_meta, load_search_stack
-from ._models import AVAILABLE_MODELS, ensure_model, load_preferred_model
+from ._models import (
+    AVAILABLE_MODELS,
+    DEFAULT_MODEL_SIZE,
+    ensure_model,
+    load_preferred_model,
+)
 from ._retriever import enrich_chunks, retrieve
 from ._types import short_source
 
 _SAMPLE_QUERIES = [
-    "What is a ProgramBatch?",
+    "What is a ProgramEnsemble?",
     "How to use QoroService?",
     "How do I run VQE?",
     "How to cancel a running job?",
@@ -77,7 +82,9 @@ def cmd_build(args: argparse.Namespace) -> None:
     console.print(f"[bold]Repo root:[/bold]  {REPO_ROOT}")
     console.print(f"[bold]Output dir:[/bold] {DATA_DIR}\n")
 
-    index, chunks = build_index([REPO_ROOT], output_dir=DATA_DIR)
+    index, chunks = build_index(
+        [REPO_ROOT], output_dir=DATA_DIR, batch_size=args.batch_size
+    )
     build_project_meta(REPO_ROOT, output_dir=DATA_DIR)
 
     console.print(
@@ -166,11 +173,13 @@ def cmd_inspect(args: argparse.Namespace) -> None:
 
 def cmd_eval(args: argparse.Namespace) -> None:
     """Run eval queries against the LLM and save results."""
-    model_size = args.model_size or load_preferred_model() or "1.5b"
+    model_size = load_preferred_model() or DEFAULT_MODEL_SIZE
+    spec = AVAILABLE_MODELS[model_size]
     model_path = ensure_model(model_size)
     run_eval(
         args.label,
         model_path=model_path,
+        n_ctx=spec.n_ctx,
         top_k=args.top_k,
         max_tokens=args.max_tokens,
         debug=args.debug,
@@ -213,8 +222,14 @@ def main() -> None:
     _add_command(
         sub, "help", help="Show commands and workflow overview.", func=cmd_help
     )
-    _add_command(
+    build_parser = _add_command(
         sub, "build", help="Build the FAISS index from the local repo.", func=cmd_build
+    )
+    build_parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=16,
+        help="Embedding batch size; lower to reduce memory usage (default: 16).",
     )
 
     search_parser = _add_command(
@@ -250,12 +265,6 @@ def main() -> None:
         "--label",
         required=True,
         help="Label for this eval run (e.g. 'baseline', 'step1').",
-    )
-    eval_parser.add_argument(
-        "--model-size",
-        choices=list(AVAILABLE_MODELS),
-        default=None,
-        help="Model size to use (default: saved preference or 1.5b).",
     )
     eval_parser.add_argument(
         "--top-k", type=int, default=8, help="Chunks to retrieve (default: 8)."

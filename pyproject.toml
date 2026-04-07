@@ -103,10 +103,13 @@ ipykernel = "^7.1.0"
 
 [tool.poetry.group.ai.dependencies]
 llama-cpp-python = "^0.3.16"
-fastembed = "^0.7.4"
+fastembed = "^0.8.0"
 faiss-cpu = "^1.13.2"
 textual = "^8.1.1"
 pyperclip = "^1.11.0"
+psutil = "^7.0"
+platformdirs = "^4.0"
+huggingface-hub = ">=1.0"
 
 
 [tool.poetry.scripts]

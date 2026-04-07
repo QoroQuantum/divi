@@ -18,7 +18,7 @@ from rich.table import Table
 
 from ._chat import build_prompt
 from ._indexer import load_search_stack
-from ._models import load_llm
+from ._models import CACHE_DIR, load_llm
 from ._retriever import enrich_chunks, retrieve
 
 # ---------------------------------------------------------------------------
@@ -114,7 +114,7 @@ MULTI_TURN_SEQUENCES: list[dict] = [
 # Result storage
 # ---------------------------------------------------------------------------
 
-RESULTS_DIR = Path(__file__).resolve().parent / "_eval_results"
+RESULTS_DIR = CACHE_DIR / "eval_results"
 
 
 def _results_path(label: str) -> Path:
@@ -140,6 +140,7 @@ def run_eval(
     label: str,
     *,
     model_path: Path,
+    n_ctx: int = 8192,
     top_k: int = 8,
     max_tokens: int = 1024,
     debug: bool = False,
@@ -152,6 +153,8 @@ def run_eval(
         A short name for this eval run (e.g. ``"baseline"``, ``"step1"``).
     model_path:
         Path to the GGUF model file.
+    n_ctx:
+        Context window size in tokens.
     top_k:
         Number of chunks to retrieve per query.
     max_tokens:
@@ -175,7 +178,7 @@ def run_eval(
     console.print(f"[dim]Index: {len(chunks)} chunks[/dim]")
 
     console.print("[dim]Loading LLM...[/dim]")
-    llm = load_llm(model_path, debug=debug)
+    llm = load_llm(model_path, n_ctx=n_ctx, debug=debug)
 
     results: list[dict] = []
 

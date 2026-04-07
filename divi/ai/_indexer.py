@@ -763,6 +763,7 @@ def _collect_files(source_dirs: list[Path]) -> list[Path]:
 def build_index(
     source_dirs: list[Path],
     output_dir: Path,
+    batch_size: int = 16,
 ) -> tuple[faiss.IndexFlatIP, list[ChunkMeta]]:
     """Build a FAISS index from source files and write it to *output_dir*.
 
@@ -859,7 +860,7 @@ def build_index(
     try:
         vectors = list(
             track(
-                embedder.embed(texts, batch_size=16),
+                embedder.embed(texts, batch_size=batch_size),
                 total=len(texts),
                 description="Embedding …",
             )
@@ -899,11 +900,40 @@ DATA_DIR = Path(__file__).resolve().parent / "_data"
 # Index loading (end-user)
 # ---------------------------------------------------------------------------
 
-_INDEX_MISSING_MSG = (
-    "[red]Index not found.[/red]\n"
-    "  • Development install: run [bold]python -m divi.ai build[/bold]\n"
-    "  • Package install: reinstall with [bold]pip install qoro-divi[/bold]"
+_DEV_INDEX_MISSING_MSG = (
+    "[red bold]Search index not found.[/red bold]\n\n"
+    "  Run [bold]python -m divi.ai build[/bold] to generate it.\n\n"
+    "  [dim]Troubleshooting:[/dim]\n"
+    "    • [bold]OOM:[/bold] python -m divi.ai build --batch-size 4\n"
+    "    • [bold]Missing deps:[/bold] poetry install --with ai\n"
 )
+
+_PKG_INDEX_MISSING_MSG = (
+    "[red bold]Search index not found.[/red bold]\n\n"
+    "  The installed package is missing its search index.\n"
+    "  Reinstall with [bold]pip install qoro-divi[ai][/bold]\n"
+)
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _check_index_staleness() -> None:
+    """Warn if the built index version doesn't match the project version."""
+    meta_file = DATA_DIR / _META_FILE
+    if not meta_file.exists() or not (_REPO_ROOT / ".git").exists():
+        return
+    try:
+        meta = json.loads(meta_file.read_text(encoding="utf-8"))
+        index_version = meta.get("project", {}).get("version")
+        current_version = _read_pyproject(_REPO_ROOT).get("version")
+        if index_version and current_version and index_version != current_version:
+            Console().print(
+                f"[yellow]Search index was built for v{index_version} "
+                f"but the project is v{current_version}.[/yellow]\n"
+                "  Run [bold]python -m divi.ai build[/bold] to update it.\n"
+            )
+    except (json.JSONDecodeError, OSError):
+        pass
 
 
 def load_index(index_dir: Path) -> tuple[faiss.IndexFlatIP, list[ChunkMeta]]:
@@ -941,9 +971,15 @@ def load_search_stack() -> tuple[faiss.IndexFlatIP, list[ChunkMeta], "TextEmbedd
         If the index files are missing from :data:`DATA_DIR`.
     """
     if not (DATA_DIR / "vectors.faiss").exists():
-        Console().print(_INDEX_MISSING_MSG)
+        msg = (
+            _DEV_INDEX_MISSING_MSG
+            if (_REPO_ROOT / ".git").exists()
+            else _PKG_INDEX_MISSING_MSG
+        )
+        Console().print(msg)
         raise SystemExit(1)
 
+    _check_index_staleness()
     index, chunks = load_index(DATA_DIR)
     embedder = TextEmbedding(model_name=EMBEDDING_MODEL)
     return index, chunks, embedder

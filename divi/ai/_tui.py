@@ -344,7 +344,7 @@ class DiviAIApp(App):
             model_info += f"  |  {len(self.chunks)} chunks"
         disclaimer = (
             "Experimental local assistant — responses may be inaccurate. "
-            "[@click='app.open_link(\"https://qoroquantum.github.io/divi/\")']"
+            "[@click='app.open_link(\"https://divi.readthedocs.io/\")']"
             "[#FF93FA]Official docs ↗[/#FF93FA][/]"
         )
         yield BrandBar(model_name=model_info, disclaimer=disclaimer, id="brand-bar")
@@ -370,11 +370,17 @@ class DiviAIApp(App):
             f"[#94A0AA]•[/#94A0AA] [italic #CDD2DA]{q}[/italic #CDD2DA]"
             for q in self._WELCOME_EXAMPLES
         )
+        tips = (
+            "[#94A0AA]•[/#94A0AA] [#CDD2DA]Use [bold #FF93FA]/reset[/bold #FF93FA] before switching topics to free up context[/#CDD2DA]\n"
+            "[#94A0AA]•[/#94A0AA] [#CDD2DA]Keep questions specific — focused prompts get better answers[/#CDD2DA]\n"
+            "[#94A0AA]•[/#94A0AA] [#CDD2DA]Use [bold #FF93FA]/retry[/bold #FF93FA] if the answer seems off[/#CDD2DA]"
+        )
         self._append_message(
-            f"[bold #FF93FA]Welcome to divi-ai![/bold #FF93FA]\n\n"
+            f"\n[bold #FF93FA]Welcome to divi-ai![/bold #FF93FA]\n\n"
             f"Ask anything about the Divi quantum computing library. "
             f"Type [bold #FF93FA]/[/bold #FF93FA] to see available commands.\n\n"
-            f"Try asking:\n{examples}",
+            f"[bold #E9EEF6]Tips:[/bold #E9EEF6]\n{tips}\n\n"
+            f"[bold #E9EEF6]Try asking:[/bold #E9EEF6]\n{examples}",
             "system-msg",
         )
         self.query_one("#chat-input", ChatInput).focus()
@@ -773,7 +779,8 @@ class DiviAIApp(App):
         thinking_msg: ChatMessage,
     ) -> None:
         """Finalize a successful response: history, context bar, syntax check, sources."""
-        tps = len(full_response.split()) / elapsed if elapsed > 0 else 0
+        n_tokens = len(self.llm.tokenize(full_response.encode(), add_bos=False))
+        tps = n_tokens / elapsed if elapsed > 0 else 0
 
         # Final markdown render
         self.call_from_thread(self._stop_thinking_indicator)
