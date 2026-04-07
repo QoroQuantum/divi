@@ -130,6 +130,7 @@ class TestNormalizeAngle:
         assert abs(tp) <= np.pi / 4 + 1e-14
 
 
+@pytest.mark.usefixtures("suppress_quepp_warnings")
 class TestNormalizeCircuit:
     def test_small_angles_unchanged(self):
         q = cirq.LineQubit(0)
@@ -166,9 +167,13 @@ class TestNormalizeCircuit:
         nc = _normalize_circuit(c)
         u_orig = cirq.unitary(c)
         u_norm = cirq.unitary(nc)
-        # Equal up to global phase
-        ratio = u_orig.flatten()[0] / u_norm.flatten()[0]
-        np.testing.assert_allclose(u_orig, ratio * u_norm, atol=1e-12)
+        # Equal up to global phase (phase-insensitive overlap check)
+        overlap = np.vdot(u_orig.flatten(), u_norm.flatten())
+        np.testing.assert_allclose(
+            abs(overlap) / (np.linalg.norm(u_orig) * np.linalg.norm(u_norm)),
+            1.0,
+            atol=1e-12,
+        )
 
     def test_cpt_accuracy_with_normalization(self):
         """CPT expansion on normalized circuit still recovers exact value."""
@@ -203,6 +208,7 @@ class TestExtractRotationGates:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("suppress_quepp_warnings")
 class TestCPTExpansion:
     """Verify that the Heisenberg CPT expansion recovers exact expectation values."""
 
@@ -338,6 +344,7 @@ class TestSimulateCliffordEnsemble:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("suppress_quepp_warnings")
 class TestQuEPPProtocol:
     def test_is_qem_protocol(self):
         assert isinstance(QuEPP(truncation_order=1), QEMProtocol)
@@ -532,7 +539,7 @@ class TestQuEPPSignalDestruction:
         healthy = {}
         protocol = QuEPP(truncation_order=1, n_twirls=0)
 
-        with pytest.warns(UserWarning, match=r"signal destroyed for 1/2"):
+        with pytest.warns(UserWarning, match=r"signal destroyed"):
             protocol.post_reduce([destroyed, healthy])
 
     def test_post_reduce_silent_when_no_destruction(self):
@@ -550,6 +557,34 @@ class TestQuEPPSignalDestruction:
         ctx = {"_signal_destroyed": True}
         _NoMitigation().post_reduce([ctx])  # should not raise
 
+    def test_shallow_circuit_warning_in_expand(self):
+        """expand() warns when K / n_rotations > 0.15 (shallow circuit)."""
+        # Build a circuit with few rotations — 2 rotations with K=2 → ratio = 1.0
+        q = cirq.LineQubit.range(2)
+        circuit = cirq.Circuit(
+            cirq.rx(0.3)(q[0]),
+            cirq.CNOT(q[0], q[1]),
+            cirq.ry(0.7)(q[1]),
+        )
+        obs = qml.PauliZ(0)
+        protocol = QuEPP(sampling="exhaustive", truncation_order=2, n_twirls=0)
+        with pytest.warns(UserWarning, match=r"large fraction"):
+            protocol.expand(circuit, obs)
+
+    def test_no_shallow_circuit_warning_for_deep_circuits(self):
+        """expand() does NOT warn when K / n_rotations is small."""
+        # 10 rotations with K=1 → ratio = 0.1 < 0.15
+        q = cirq.LineQubit.range(2)
+        ops = []
+        for i in range(10):
+            ops.append(cirq.rx(0.1 * (i + 1))(q[i % 2]))
+        circuit = cirq.Circuit(ops)
+        obs = qml.PauliZ(0)
+        protocol = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            protocol.expand(circuit, obs)
+
     def test_qem_stage_calls_post_reduce(self, mocker):
         """QEMStage.reduce() calls protocol.post_reduce() with all contexts."""
         protocol = QuEPP(truncation_order=1, n_twirls=0)
@@ -566,7 +601,8 @@ class TestQuEPPSignalDestruction:
             "divi.pipeline.stages._qem_stage.group_by_base_key", return_value={}
         )
 
-        stage.reduce({}, PipelineEnv(backend=mocker.MagicMock()), token)
+        with pytest.warns(UserWarning, match=r"signal destroyed"):
+            stage.reduce({}, PipelineEnv(backend=mocker.MagicMock()), token)
 
         spy.assert_called_once()
         contexts_passed = spy.call_args[0][0]

@@ -559,6 +559,7 @@ class TestTimeEvolutionE2E:
         )
 
 
+@pytest.mark.usefixtures("suppress_quepp_warnings")
 class TestTimeEvolutionQEM:
     """Tests for QEM integration in TimeEvolution."""
 

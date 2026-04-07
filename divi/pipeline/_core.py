@@ -347,8 +347,8 @@ class CircuitPipeline:
             stage_expansions=tuple([*prefix_expansions, *rerun_expansions]),
             stage_tokens=tuple([*prefix_tokens, *rerun_tokens]),
             # Carry forward result_format and env_artifacts from the cached
-            # trace — the pre-stateful stages (including MeasurementStage)
-            # didn't re-run, so their env side-effects aren't on this env.
+            # trace — pre-stateful stages didn't re-run, so their env
+            # side-effects aren't on this env.
             result_format=cached.result_format,
             env_artifacts={**cached.env_artifacts, **env.artifacts},
         )

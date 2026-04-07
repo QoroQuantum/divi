@@ -84,10 +84,8 @@ TUTORIALS: dict[str, dict] = {
                 "QiskitSimulator(n_processes=8",
                 "QiskitSimulator(n_processes=4, shots=500",
             ),
-            ("FakeTorino", "FakeManilaV2"),
-            ("max_iterations=10", "max_iterations=2"),
+            ("max_iterations=20", "max_iterations=5"),
             ("scale_factors = [1.0, 3.0, 5.0]", "scale_factors = [1.0, 3.0]"),
-            ("n_twirls=10", "n_twirls=3"),
         ],
     },
     "qaoa_qubo_partitioning.py": {
