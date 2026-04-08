@@ -17,6 +17,7 @@ cancelled
 CANCELLED
 cancelling
 ceil
+chatbot
 checkpointing
 Checkpointing
 cirq
@@ -47,11 +48,13 @@ entanglers
 env
 excitations
 executables
+FAISS
 expval
 fallbacks
 Fiedler
 FieldInfo
 figsize
+GGUF
 Fock
 formatters
 Fortran
@@ -79,6 +82,8 @@ Kernighan
 lexicographically
 lifecycle
 lin
+LLM
+LLMs
 Makefile
 maxiter
 metis
@@ -88,6 +93,7 @@ nd
 NDArray
 Nelder
 NetworkX
+offline
 Nocedal
 np
 npt
@@ -112,6 +118,7 @@ pre
 Pre
 precomputed
 pydantic
+quantised
 Pydantic
 pymoo
 Pymoo
@@ -126,6 +133,7 @@ quadratized
 qubit
 qubits
 qwc
+RAG
 reproducibility
 Rescaling
 rng
@@ -152,6 +160,7 @@ symmetrized
 Sympy
 tanh
 transpilation
+TUI
 transpile
 trotterization
 Trotterization
