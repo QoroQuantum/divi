@@ -35,7 +35,7 @@ from ._chat import (
     is_history_trimmed,
 )
 from ._retriever import enrich_chunks, retrieve
-from ._types import ChunkMeta, short_source
+from ._types import ChunkMeta, display_path
 
 
 class ChatInput(Input):
@@ -828,7 +828,7 @@ class DiviAIApp(App):
 
         # Show sources (dev mode only)
         if self.dev_mode:
-            sources = [short_source(c.source_file) for c in relevant[:4]]
+            sources = [display_path(c.source_file) for c in relevant[:4]]
             source_line = "  ".join(sources)
             self.call_from_thread(
                 self._append_message,

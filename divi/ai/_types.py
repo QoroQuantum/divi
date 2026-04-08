@@ -6,15 +6,15 @@
 
 from dataclasses import dataclass
 
-# Repo-root prefix used to shorten absolute paths for display.
-REPO_MARKER = "Qoro/divi/"
 
+def display_path(path: str) -> str:
+    """Derive a short display path from a full source file path.
 
-def short_source(path: str) -> str:
-    """Strip the repo-root prefix from an absolute source path."""
-    idx = path.find(REPO_MARKER)
-    if idx >= 0:
-        return path[idx + len(REPO_MARKER) :]
+    Splits on the first ``"divi/"`` occurrence, so works regardless of
+    where the repository is cloned.
+    """
+    if "divi/" in path:
+        return path.split("divi/", 1)[-1]
     return path
 
 

@@ -31,7 +31,7 @@ from ._models import (
     load_preferred_model,
 )
 from ._retriever import enrich_chunks, retrieve
-from ._types import short_source
+from ._types import display_path
 
 _SAMPLE_QUERIES = [
     "What is a ProgramEnsemble?",
@@ -154,7 +154,7 @@ def cmd_inspect(args: argparse.Namespace) -> None:
         # Chunk summary
         console.print("[dim]Retrieved chunks:[/dim]")
         for i, c in enumerate(relevant, 1):
-            src = short_source(c.source_file)
+            src = display_path(c.source_file)
             console.print(
                 f"  [{i}] score={c.score:.3f}  dense={c.dense_score:.3f}  {src}"
             )
