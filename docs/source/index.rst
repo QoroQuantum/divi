@@ -71,6 +71,12 @@ Or pin a specific nightly by date:
 
 .. toctree::
    :maxdepth: 1
+   :caption: Tools
+
+   tools/divi_ai
+
+.. toctree::
+   :maxdepth: 1
    :caption: API Reference
 
    api_reference/qprog

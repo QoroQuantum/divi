@@ -56,6 +56,11 @@ Let's solve a quantum chemistry problem - finding the ground state energy of a h
 
 That's it! You just ran a variational quantum algorithm. The energy should be close to -1.137 Hartree (H₂'s true ground state energy).
 
+.. tip::
+
+   **Stuck?** Try :doc:`divi-ai <tools/divi_ai>` — ask questions, get code examples, and explore
+   APIs right in your terminal: ``pip install qoro-divi[ai] && divi-ai``
+
 Choosing the Right Algorithm
 -----------------------------
 
