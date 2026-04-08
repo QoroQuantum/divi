@@ -157,6 +157,71 @@ def _normalize_angle(theta: float) -> tuple[int, float]:
     return n, theta_prime
 
 
+def _decompose_controlled_rotations(circuit: Circuit) -> Circuit:
+    """Decompose controlled Pauli rotations into CNOT + single-qubit form.
+
+    Handles ``ControlledGate(Rx/Ry/Rz)`` with a single control qubit.
+    After decomposition, all two-qubit gates are CNOTs (Clifford) and all
+    rotations are single-qubit — compatible with the rest of the QuEPP
+    pipeline.
+
+    Decompositions:
+    - CRY(θ) → Ry(θ/2), CNOT, Ry(-θ/2), CNOT
+    - CRZ(θ) → Rz(θ/2), CNOT, Rz(-θ/2), CNOT
+    - CRX(θ) → H, Rz(θ/2), CNOT, Rz(-θ/2), CNOT, H
+    """
+    new_moments: list[cirq.Moment] = []
+    for moment in circuit:
+        decomposed_ops: list[list[cirq.Operation]] = []
+        needs_decomposition = False
+
+        for op in moment.operations:
+            gate = op.gate
+            if (
+                isinstance(gate, cirq.ControlledGate)
+                and gate.num_controls() == 1
+                and _is_pauli_rotation(gate.sub_gate) is not None
+            ):
+                ctrl, target = op.qubits
+                axis, theta = _is_pauli_rotation(gate.sub_gate)
+
+                if axis == "x":
+                    # CRX(θ) = H · CRZ(θ) · H on target
+                    decomposed_ops.append(
+                        [
+                            cirq.H(target),
+                            cirq.rz(theta / 2)(target),
+                            cirq.CNOT(ctrl, target),
+                            cirq.rz(-theta / 2)(target),
+                            cirq.CNOT(ctrl, target),
+                            cirq.H(target),
+                        ]
+                    )
+                else:
+                    # CRY(θ) or CRZ(θ)
+                    rot_ctor = _ROTATION_CTOR[axis]
+                    decomposed_ops.append(
+                        [
+                            rot_ctor(theta / 2)(target),
+                            cirq.CNOT(ctrl, target),
+                            rot_ctor(-theta / 2)(target),
+                            cirq.CNOT(ctrl, target),
+                        ]
+                    )
+                needs_decomposition = True
+            else:
+                decomposed_ops.append([op])
+
+        if needs_decomposition:
+            for ops in decomposed_ops:
+                for single_op in ops:
+                    new_moments.append(cirq.Moment([single_op]))
+        else:
+            new_moments.append(moment)
+
+    return Circuit(new_moments)
+
+
 def _normalize_circuit(circuit: Circuit) -> Circuit:
     """Factor out Clifford components from rotations so residual |θ| ≤ π/4.
 
@@ -665,10 +730,14 @@ class QuEPP(QEMProtocol):
         qubits = sorted(cirq_circuit.all_qubits())
         n_qubits = len(qubits)
 
+        # Decompose controlled rotations (e.g. CRY, CRZ) into CNOT +
+        # single-qubit form so the CPT pipeline can handle them.
+        decomposed = _decompose_controlled_rotations(cirq_circuit)
+
         # Normalize rotations so residual |θ| ≤ π/4 (paper Sec. II–III).
         # The normalized circuit is used for CPT decomposition; the
         # *original* circuit is the target sent to the quantum backend.
-        normalized = _normalize_circuit(cirq_circuit)
+        normalized = _normalize_circuit(decomposed)
 
         rotations = _extract_rotation_gates(normalized, qubits)
         tableaus = _build_clifford_tableaus(normalized, rotations, qubits)

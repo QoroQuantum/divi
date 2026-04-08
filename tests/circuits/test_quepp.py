@@ -18,6 +18,7 @@ from divi.circuits.qem import QEMContext, QEMProtocol, _NoMitigation
 from divi.circuits.quepp import (
     QuEPP,
     _build_clifford_tableaus,
+    _decompose_controlled_rotations,
     _enumerate_paths_dfs,
     _extract_rotation_gates,
     _is_pauli_rotation,
@@ -183,6 +184,72 @@ class TestNormalizeCircuit:
         _, ctx = protocol.expand(c, observable=qml.Z(0))
         cpt = float(ctx["weights"] @ ctx["classical_values"])
         assert cpt == pytest.approx(np.cos(angle), abs=1e-6)
+
+
+@pytest.mark.usefixtures("suppress_quepp_warnings")
+class TestDecomposeControlledRotations:
+    """Verify decomposition of controlled Pauli rotations into CNOT + 1q form."""
+
+    def test_cry_unitary_preserved(self):
+        q0, q1 = cirq.LineQubit.range(2)
+        theta = 0.7
+        c = cirq.Circuit(cirq.ControlledGate(cirq.Ry(rads=theta))(q0, q1))
+        dc = _decompose_controlled_rotations(c)
+        np.testing.assert_allclose(cirq.unitary(dc), cirq.unitary(c), atol=1e-12)
+
+    def test_crx_unitary_preserved(self):
+        q0, q1 = cirq.LineQubit.range(2)
+        theta = 1.3
+        c = cirq.Circuit(cirq.ControlledGate(cirq.Rx(rads=theta))(q0, q1))
+        dc = _decompose_controlled_rotations(c)
+        np.testing.assert_allclose(cirq.unitary(dc), cirq.unitary(c), atol=1e-12)
+
+    def test_crz_unitary_preserved(self):
+        q0, q1 = cirq.LineQubit.range(2)
+        theta = -0.4
+        c = cirq.Circuit(cirq.ControlledGate(cirq.Rz(rads=theta))(q0, q1))
+        dc = _decompose_controlled_rotations(c)
+        np.testing.assert_allclose(cirq.unitary(dc), cirq.unitary(c), atol=1e-12)
+
+    def test_clifford_cry_produces_no_rotations(self):
+        """CRY(π) is Clifford — after decomposition and normalization, no rotations."""
+        q0, q1 = cirq.LineQubit.range(2)
+        c = cirq.Circuit(cirq.ControlledGate(cirq.Ry(rads=np.pi))(q0, q1))
+        dc = _decompose_controlled_rotations(c)
+        nc = _normalize_circuit(dc)
+        rots = _extract_rotation_gates(nc, sorted(nc.all_qubits()))
+        assert len(rots) == 0
+
+    def test_non_clifford_cry_produces_rotations(self):
+        """CRY(0.7) decomposes into two Ry rotations (θ/2 and -θ/2)."""
+        q0, q1 = cirq.LineQubit.range(2)
+        c = cirq.Circuit(cirq.ControlledGate(cirq.Ry(rads=0.7))(q0, q1))
+        dc = _decompose_controlled_rotations(c)
+        rots = _extract_rotation_gates(dc, sorted(dc.all_qubits()))
+        assert len(rots) == 2
+        assert rots[0].axis == "y"
+        assert rots[1].axis == "y"
+
+    def test_non_controlled_gates_unchanged(self):
+        """Regular gates pass through unmodified."""
+        q0, q1 = cirq.LineQubit.range(2)
+        c = cirq.Circuit(cirq.H(q0), cirq.CNOT(q0, q1), cirq.ry(0.5)(q1))
+        dc = _decompose_controlled_rotations(c)
+        assert len(dc) == len(c)
+
+    def test_quepp_expand_with_controlled_rotation(self):
+        """Full QuEPP expand works on a circuit with controlled rotations."""
+        q0, q1 = cirq.LineQubit.range(2)
+        c = cirq.Circuit(
+            cirq.H(q0),
+            cirq.ControlledGate(cirq.Ry(rads=0.5))(q0, q1),
+            cirq.ry(0.3)(q1),
+        )
+        protocol = QuEPP(sampling="exhaustive", truncation_order=5)
+        circuits, ctx = protocol.expand(c, observable=qml.Z(0) @ qml.Z(1))
+        cpt = float(ctx["weights"] @ ctx["classical_values"])
+        exact = _exact_expval(c, qml.Z(0) @ qml.Z(1), 2)
+        assert cpt == pytest.approx(exact, abs=1e-4)
 
 
 class TestExtractRotationGates:
