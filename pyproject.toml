@@ -1,6 +1,6 @@
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 
 [project]
@@ -10,7 +10,6 @@ description = "A Python library to automate generating, parallelizing, and execu
 authors = [{ name = "Ahmed Darwish", email = "ahmed@qoroquantum.de" }, { name = "Stephen DiAdamo", email = "stephen@qoroquantum.de" }]
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
-dynamic = ["dependencies"]  # Dependencies are managed by Poetry via [tool.poetry.dependencies]
 license = "Apache-2.0"
 keywords = ["quantum", "quantum-computing", "qiskit", "simulation", "optimization", "qaoa", "vqe"]
 classifiers = [
@@ -21,6 +20,40 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
+dependencies = [
+    # Quantum computing
+    "pennylane>=0.43,<0.44",
+    "pennylane-qiskit>=0.43,<0.44",
+    "qiskit>=2.1,<2.4",
+    "qiskit-aer",
+    "qiskit-ibm-runtime>=0.41,<0.42",
+    "mitiq>=1.0,<2.0",
+    "cirq-core>=1.6,<2.0",
+    # Scientific computing and numerical operations
+    "numpy",
+    "scipy>=1.16,<2.0",
+    "sympy>=1.14,<2.0",
+    "scikit-learn>=1.7,<2.0",
+    # Graph operations and partitioning
+    "networkx>=3.5,<4.0",
+    "pymetis>=2025.1.1,<2026.0.0; sys_platform != 'win32'",
+    "qoro-maestro==0.2.6",
+    # Optimization algorithms
+    "pymoo>=0.6,<0.7",
+    "dwave-hybrid>=0.6.14,<0.7.0",
+    # Utilities
+    "requests>=2.32,<3.0",
+    "dill>=0.4,<0.5",
+    "python-dotenv>=1.1.1,<2.0",
+    "rich>=14.0,<15.0",
+    "matplotlib>=3.10,<4.0",
+    "ply>=3.11,<4.0",
+    "basis-set-exchange>=0.11,<0.12",
+    "pydantic>=2.10,<3.0",
+    "numba>=0.64.0,<0.65.0",
+    "stim>=1.15.0,<2.0",
+    "stimcirq>=1.15.0,<2.0",
+]
 
 [project.urls]
 Homepage = "https://qoroquantum.net"
@@ -29,93 +62,60 @@ Repository = "https://github.com/QoroQuantum/divi"
 "Issue Tracker" = "https://github.com/QoroQuantum/divi/issues"
 Changelog = "https://github.com/QoroQuantum/divi/blob/main/CHANGELOG.md"
 
-[tool.poetry]
-packages = [{ include = "divi" }]
-
-[[tool.poetry.include]]
-path = "divi/ai/_data/*"
-format = ["sdist", "wheel"]
-
-[tool.poetry.dependencies]
-python = ">=3.11,<3.13"
-# Quantum computing
-pennylane = "^0.43"
-pennylane-qiskit = "^0.43"
-qiskit = ">=2.1,<2.4"
-qiskit-aer = "*"
-qiskit-ibm-runtime = "^0.41"
-mitiq = "^1.0"
-cirq-core = "^1.6"
-# Scientific computing and numerical operations
-numpy = "*"
-scipy = "^1.16"
-sympy = "^1.14"
-scikit-learn = "^1.7"
-# Graph operations and partitioning
-networkx = "^3.5"
-pymetis = {version = "^2025.1.1", markers = "sys_platform != 'win32'"}
-qoro-maestro = "0.2.6"
-# Optimization algorithms
-pymoo = "^0.6"
-dwave-hybrid = "^0.6.14"
-# Utilities
-requests = "^2.32"
-dill = "^0.4"
-python-dotenv = "^1.1.1"
-rich = "^14.0"
-matplotlib = "^3.10"
-ply = "^3.11"
-basis-set-exchange = "^0.11"
-pydantic = "^2.10"
-numba = "^0.64.0"
-stim = "^1.15.0"
-stimcirq = "^1.15.0"
-
-
-[tool.poetry.group.dev.dependencies]
-black = "^26.3"
-isort = "^8.0"
-pre-commit = "^4.5"
-commitizen = "^4.13"
-
-
-
-[tool.poetry.group.testing.dependencies]
-pytest = "^8.4"
-pytest-mock = "^3.14"
-pytest-xdist = "^3.8"
-pytest-cov = "^7.0"
-
-
-[tool.poetry.group.docs.dependencies]
-sphinx = ">=1.8,<8.2"
-nbsphinx = "^0.9.7"
-furo = ">=2024.8"
-sphinx-autodoc-typehints = "^3.0"
-sphinx-autobuild = "^2025.8.25"
-sphinxcontrib-mermaid = "^2.0"
-sphinxcontrib-spelling = "^8.0.1"
-
-
-[tool.poetry.group.jupyter.dependencies]
-ipywidgets = "^8.1.7"
-ipykernel = "^7.1.0"
-
-
-[tool.poetry.group.ai.dependencies]
-llama-cpp-python = "^0.3.16"
-fastembed = "^0.8.0"
-faiss-cpu = "^1.13.2"
-textual = "^8.1.1"
-pyperclip = "^1.11.0"
-psutil = "^7.0"
-platformdirs = "^4.0"
-huggingface-hub = ">=1.0"
-docutils = ">=0.18"
-
-
-[tool.poetry.scripts]
+[project.scripts]
 divi-ai = "divi.ai._cli:main"
+
+[project.optional-dependencies]
+jupyter = [
+    "ipywidgets>=8.1.7,<9.0.0",
+    "ipykernel>=7.1.0,<8.0.0",
+]
+ai = [
+    "llama-cpp-python>=0.3.16,<0.4.0",
+    "fastembed>=0.8.0,<0.9.0",
+    "faiss-cpu>=1.13.2,<2.0.0",
+    "textual>=8.1.1,<9.0.0",
+    "pyperclip>=1.11.0,<2.0.0",
+    "psutil>=7.0,<8.0",
+    "platformdirs>=4.0,<5.0",
+    "huggingface-hub>=1.0",
+    "docutils>=0.18",
+]
+
+
+[dependency-groups]
+dev = [
+    "black>=26.3,<27.0",
+    "isort>=8.0,<9.0",
+    "pre-commit>=4.5,<5.0",
+    "commitizen>=4.13,<5.0",
+]
+testing = [
+    "pytest>=8.4,<9.0",
+    "pytest-mock>=3.14,<4.0",
+    "pytest-xdist>=3.8,<4.0",
+    "pytest-cov>=7.0,<8.0",
+]
+docs = [
+    "sphinx>=1.8,<8.2",
+    "nbsphinx>=0.9.7,<0.10.0",
+    "furo>=2024.8",
+    "sphinx-autodoc-typehints>=3.0,<4.0",
+    "sphinx-autobuild>=2025.8.25,<2026.0.0",
+    "sphinxcontrib-mermaid>=2.0,<3.0",
+    "sphinxcontrib-spelling>=8.0.1,<9.0.0",
+]
+
+
+[tool.uv]
+default-groups = ["dev", "testing", "docs"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["divi"]
+artifacts = ["divi/ai/_data/*"]
+
+[tool.hatch.build.targets.sdist]
+artifacts = ["divi/ai/_data/*"]
 
 [tool.isort]
 profile = "black"

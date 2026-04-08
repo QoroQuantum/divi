@@ -18,13 +18,13 @@ Getting Started
 
    .. code-block:: bash
 
-      poetry install --with dev,testing,docs
+      uv sync --group dev --group testing --group docs
 
 4. **Set up pre-commit hooks** (recommended):
 
    .. code-block:: bash
 
-      poetry run pre-commit install
+      uv run pre-commit install
 
 5. **Create a new branch** for your changes:
 
@@ -35,7 +35,7 @@ Getting Started
 Development Environment
 -----------------------
 
-Divi uses Poetry for dependency management with several groups:
+Divi uses `uv <https://docs.astral.sh/uv/>`_ for dependency management with several groups:
 
 - **dev**: Core development tools (`Black <https://github.com/psf/black>`_, `isort <https://github.com/pycqa/isort>`_, `pre-commit <https://pre-commit.com/>`_)
 - **testing**: Testing framework and utilities (`pytest <https://pytest.org/>`_, `pytest-mock <https://pytest-mock.readthedocs.io/>`_)
@@ -46,8 +46,8 @@ Install specific groups as needed:
 
 .. code-block:: bash
 
-   poetry install --with dev,testing  # For core development
-   poetry install --with docs         # For documentation work
+   uv sync --group dev --group testing  # For core development
+   uv sync --group docs                # For documentation work
 
 Code Quality & Style
 --------------------
@@ -72,9 +72,9 @@ If you prefer manual control:
 
    .. code-block:: bash
 
-      poetry run black .
-      poetry run isort .
-      poetry run pytest
+      uv run black .
+      uv run isort .
+      uv run pytest
 
 License Compliance
 ------------------
@@ -93,7 +93,7 @@ Pull Request Process
 1. **Write tests** for your changes (see :doc:`testing`)
 2. **Update documentation** if needed (see :doc:`building_docs`)
 3. **Ensure pre-commit hooks pass** (or run quality checks manually)
-4. **Run the test suite**: ``poetry run pytest``
+4. **Run the test suite**: ``uv run pytest``
 5. **Submit a pull request** with a clear description
 
 **Pro Tips:**

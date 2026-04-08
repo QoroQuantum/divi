@@ -11,17 +11,15 @@
 - Python: `>=3.11,<3.13` (see `pyproject.toml`).
 - Always use the virtual environment in `.venv/` or `venv/` when running commands.
 - If neither exists, do not run any Python code until the human specifies which Python executable to use.
-- Poetry is the primary workflow:
-  - Install: `poetry install`
-  - Shell: `poetry shell`
-- Alternative editable install for dev: `pip install -e .[dev]`
+- uv is the primary workflow:
+  - Install: `uv sync`
 
 ## Code style and formatting
 
 - Use `black` and `isort` for formatting; `isort` must use the Black profile; `autoflake` is used to remove unused imports.
 - Recommended checks:
-  - `poetry run black .`
-  - `poetry run isort .` (uses Black profile, see `pyproject.toml`)
+  - `uv run black .`
+  - `uv run isort .` (uses Black profile, see `pyproject.toml`)
   - `pre-commit run -a`
 - New/updated `.py` files (outside `docs/`) should include the license header from `LICENSES/.license-header` (pre-commit enforces this).
 - Hook configuration lives in `/.pre-commit-config.yaml`; keep any new files compatible with these hooks.
@@ -29,9 +27,9 @@
 
 ## Testing
 
-- Run full suite: `poetry run pytest`
-- Coverage: `poetry run pytest --cov=divi`
-- Parallel (CI/large suites): `poetry run pytest -n auto`
+- Run full suite: `uv run pytest`
+- Coverage: `uv run pytest --cov=divi`
+- Parallel (CI/large suites): `uv run pytest -n auto`
 - Write spec-driven tests first (behavior-focused) before adding critical low-level mocking.
 - Use pytest ecosystem tools (e.g., `pytest-mock`) only; avoid `unittest` unless no alternative exists and the human agrees.
 - Markers:
@@ -39,8 +37,8 @@
   - `algo` for algorithm tests
   - `e2e` for slow integration tests (avoid during development; run only when explicitly requested)
 - API tests require a Qoro API key:
-  - `QORO_API_KEY=... poetry run pytest --run-api-tests`
-  - or `poetry run pytest --run-api-tests --api-key your-key-here`
+  - `QORO_API_KEY=... uv run pytest --run-api-tests`
+  - or `uv run pytest --run-api-tests --api-key your-key-here`
 - Never inline imports nor classes in test functions. If you are facing errors due to circular imports, ask for approval before inlining imports to fix it.
 - Use simulator fixtures from `tests/conftest.py`: `dummy_simulator` when a real backend is not needed (returns fake counts), `default_test_simulator` for actual circuit execution (QASM→shots), `dummy_expval_backend` for expval-mode tests. Do not create new `QiskitSimulator` instances in tests.
 
@@ -48,7 +46,7 @@
 
 - **Always use the Makefile** in `docs/` for documentation tasks; do not invoke `sphinx-build` or other Sphinx commands directly.
 - From the repo root: `cd docs` then run the desired target (e.g. `make build`, `make dev`).
-- Install doc deps: `make install` (from `docs/`) or `poetry install --with docs`
+- Install doc deps: `make install` (from `docs/`) or `uv sync --group docs`
 - Build: `cd docs` then `make build`
 - Live reload: `cd docs` then `make dev`
 - Serve built docs: `cd docs` then `make serve`

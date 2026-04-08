@@ -19,23 +19,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Poetry
-        run: pipx install poetry==2.2.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
 
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-          cache: 'poetry'
 
-      - name: Install doc dependencies (Poetry)
-        run: |
-          poetry install --with docs --no-root --no-interaction
+      - name: Install doc dependencies
+        run: uv sync --no-default-groups --group docs --no-install-project
 
       - name: Build Sphinx HTML
         run: |
           cd docs
-          poetry run make build SPHINXOPTS="-W"
+          uv run make build SPHINXOPTS="-W"
         env:
           LC_ALL: C.UTF-8
           LANG: C.UTF-8

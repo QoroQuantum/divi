@@ -100,7 +100,7 @@ goto end
 
 :install
 @echo Installing documentation dependencies...
-poetry install --with docs
+uv sync --group docs
 @echo Dependencies installed!
 goto end
 

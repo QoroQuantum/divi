@@ -18,24 +18,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Poetry
-        run: pipx install poetry==2.2.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
 
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-          cache: 'poetry'
 
       - name: Install dependencies
-        run: poetry install --with testing --without dev,docs
+        run: uv sync --no-default-groups --group testing --extra ai
 
       - name: Run unit tests
-        run: poetry run pytest -n auto -m "not requires_api_key"
+        run: uv run pytest -n auto -m "not requires_api_key"
 
       - name: Run API tests
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: poetry run pytest --run-api-tests -m "requires_api_key"
+        run: uv run pytest --run-api-tests -m "requires_api_key"
         env:
           QORO_API_KEY: ${{ secrets.QORO_API_KEY }}
           LOCKED_ACCOUNT_KEY: ${{ secrets.LOCKED_ACCOUNT_KEY }}
@@ -50,17 +49,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Poetry
-        run: pipx install poetry==2.2.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
 
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-          cache: 'poetry'
 
       - name: Install dependencies
-        run: poetry install --with testing --without dev,docs
+        run: uv sync --no-default-groups --group testing --extra ai
 
       - name: Run tutorial scripts
         shell: bash
