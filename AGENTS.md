@@ -13,7 +13,6 @@
 - If neither exists, do not run any Python code until the human specifies which Python executable to use.
 - uv is the primary workflow:
   - Install: `uv sync`
-- Alternative editable install for dev: `pip install -e .[dev]`
 
 ## Code style and formatting
 

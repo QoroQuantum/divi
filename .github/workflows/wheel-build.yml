@@ -21,7 +21,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: uv sync --no-default-groups --group ai
+        run: uv sync --no-default-groups --extra ai
 
       - name: Cache embedding model
         uses: actions/cache@v4

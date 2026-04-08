@@ -26,21 +26,29 @@ git clone https://github.com/your-username/divi.git
 cd divi
 ```
 
-### 2. Install Dependencies
+### 2. Install uv
+
+Divi uses [uv](https://docs.astral.sh/uv/) for dependency management:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .[dev]
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-Or if using `uv` (recommended):
+### 3. Install Dependencies
+
+This installs the `dev`, `testing`, and `docs` groups by default:
 
 ```bash
 uv sync
 ```
 
-### 3. Set Up Pre-Commit Hooks
+For AI work, add the extra:
+
+```bash
+uv sync --extra ai            # divi-ai dependencies
+```
+
+### 4. Set Up Pre-Commit Hooks
 
 We use pre-commit hooks to enforce formatting and license headers automatically:
 
@@ -54,7 +62,7 @@ You can run all hooks manually with:
 pre-commit run -a
 ```
 
-### 4. Workflow
+### 5. Workflow
 
 1. Create a new branch with a descriptive name, e.g. `git checkout -b feature/implementation-of-qaoa`
 2. Make your changes

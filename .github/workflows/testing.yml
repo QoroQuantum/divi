@@ -27,7 +27,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --no-default-groups --group testing --group ai
+        run: uv sync --no-default-groups --group testing --extra ai
 
       - name: Run unit tests
         run: uv run pytest -n auto -m "not requires_api_key"
@@ -58,7 +58,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --no-default-groups --group testing --group ai
+        run: uv sync --no-default-groups --group testing --extra ai
 
       - name: Run tutorial scripts
         shell: bash

@@ -2771,7 +2771,7 @@ dependencies = [
     { name = "sympy" },
 ]
 
-[package.dev-dependencies]
+[package.optional-dependencies]
 ai = [
     { name = "docutils" },
     { name = "faiss-cpu" },
@@ -2783,6 +2783,12 @@ ai = [
     { name = "pyperclip" },
     { name = "textual" },
 ]
+jupyter = [
+    { name = "ipykernel" },
+    { name = "ipywidgets" },
+]
+
+[package.dev-dependencies]
 dev = [
     { name = "black" },
     { name = "commitizen" },
@@ -2798,10 +2804,6 @@ docs = [
     { name = "sphinxcontrib-mermaid" },
     { name = "sphinxcontrib-spelling" },
 ]
-jupyter = [
-    { name = "ipykernel" },
-    { name = "ipywidgets" },
-]
 testing = [
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -2814,7 +2816,14 @@ requires-dist = [
     { name = "basis-set-exchange", specifier = ">=0.11,<0.12" },
     { name = "cirq-core", specifier = ">=1.6,<2.0" },
     { name = "dill", specifier = ">=0.4,<0.5" },
+    { name = "docutils", marker = "extra == 'ai'", specifier = ">=0.18" },
     { name = "dwave-hybrid", specifier = ">=0.6.14,<0.7.0" },
+    { name = "faiss-cpu", marker = "extra == 'ai'", specifier = ">=1.13.2,<2.0.0" },
+    { name = "fastembed", marker = "extra == 'ai'", specifier = ">=0.8.0,<0.9.0" },
+    { name = "huggingface-hub", marker = "extra == 'ai'", specifier = ">=1.0" },
+    { name = "ipykernel", marker = "extra == 'jupyter'", specifier = ">=7.1.0,<8.0.0" },
+    { name = "ipywidgets", marker = "extra == 'jupyter'", specifier = ">=8.1.7,<9.0.0" },
+    { name = "llama-cpp-python", marker = "extra == 'ai'", specifier = ">=0.3.16,<0.4.0" },
     { name = "matplotlib", specifier = ">=3.10,<4.0" },
     { name = "mitiq", specifier = ">=1.0,<2.0" },
     { name = "networkx", specifier = ">=3.5,<4.0" },
@@ -2822,10 +2831,13 @@ requires-dist = [
     { name = "numpy" },
     { name = "pennylane", specifier = ">=0.43,<0.44" },
     { name = "pennylane-qiskit", specifier = ">=0.43,<0.44" },
+    { name = "platformdirs", marker = "extra == 'ai'", specifier = ">=4.0,<5.0" },
     { name = "ply", specifier = ">=3.11,<4.0" },
+    { name = "psutil", marker = "extra == 'ai'", specifier = ">=7.0,<8.0" },
     { name = "pydantic", specifier = ">=2.10,<3.0" },
     { name = "pymetis", marker = "sys_platform != 'win32'", specifier = ">=2025.1.1,<2026.0.0" },
     { name = "pymoo", specifier = ">=0.6,<0.7" },
+    { name = "pyperclip", marker = "extra == 'ai'", specifier = ">=1.11.0,<2.0.0" },
     { name = "python-dotenv", specifier = ">=1.1.1,<2.0" },
     { name = "qiskit", specifier = ">=2.1,<2.4" },
     { name = "qiskit-aer" },
@@ -2838,20 +2850,11 @@ requires-dist = [
     { name = "stim", specifier = ">=1.15.0,<2.0" },
     { name = "stimcirq", specifier = ">=1.15.0,<2.0" },
     { name = "sympy", specifier = ">=1.14,<2.0" },
+    { name = "textual", marker = "extra == 'ai'", specifier = ">=8.1.1,<9.0.0" },
 ]
+provides-extras = ["jupyter", "ai"]
 
 [package.metadata.requires-dev]
-ai = [
-    { name = "docutils", specifier = ">=0.18" },
-    { name = "faiss-cpu", specifier = ">=1.13.2,<2.0.0" },
-    { name = "fastembed", specifier = ">=0.8.0,<0.9.0" },
-    { name = "huggingface-hub", specifier = ">=1.0" },
-    { name = "llama-cpp-python", specifier = ">=0.3.16,<0.4.0" },
-    { name = "platformdirs", specifier = ">=4.0,<5.0" },
-    { name = "psutil", specifier = ">=7.0,<8.0" },
-    { name = "pyperclip", specifier = ">=1.11.0,<2.0.0" },
-    { name = "textual", specifier = ">=8.1.1,<9.0.0" },
-]
 dev = [
     { name = "black", specifier = ">=26.3,<27.0" },
     { name = "commitizen", specifier = ">=4.13,<5.0" },
@@ -2866,10 +2869,6 @@ docs = [
     { name = "sphinx-autodoc-typehints", specifier = ">=3.0,<4.0" },
     { name = "sphinxcontrib-mermaid", specifier = ">=2.0,<3.0" },
     { name = "sphinxcontrib-spelling", specifier = ">=8.0.1,<9.0.0" },
-]
-jupyter = [
-    { name = "ipykernel", specifier = ">=7.1.0,<8.0.0" },
-    { name = "ipywidgets", specifier = ">=8.1.7,<9.0.0" },
 ]
 testing = [
     { name = "pytest", specifier = ">=8.4,<9.0" },
