@@ -11,6 +11,7 @@ auto syntax-checking of code blocks, and slash commands (/save, /check).
 import py_compile
 import re
 import tempfile
+import textwrap
 import time
 import webbrowser
 from pathlib import Path
@@ -86,6 +87,7 @@ def _format_assistant_response(text: str) -> Group:
 
 def _syntax_check(code: str) -> str | None:
     """Return None if code compiles, else the error message."""
+    code = textwrap.dedent(code)
     with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
         f.write(code)
         tmp_path = Path(f.name)
