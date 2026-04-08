@@ -30,7 +30,7 @@ from pathlib import Path
 
 import faiss
 import numpy as np
-from docutils.frontend import OptionParser
+from docutils.frontend import get_default_settings
 from docutils.nodes import section, system_message, title
 from docutils.parsers.rst import Parser as RstParser
 from docutils.utils import new_document
@@ -38,7 +38,7 @@ from fastembed import TextEmbedding
 from rich.console import Console
 from rich.progress import track
 
-from ._types import ChunkMeta
+from ._types import ChunkMeta, display_path
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -59,6 +59,7 @@ SKIP_NAMES = {
     "README.md",
     "CONTRIBUTING.md",
     "AGENTS.md",
+    "divi_ai.rst",
 }
 SKIP_PREFIXES = ("test_", "conftest")
 INCLUDE_DIRS = {"divi", "docs", "tutorials", "tests"}
@@ -106,21 +107,18 @@ def _chunk_text(text: str, source_file: str) -> list[ChunkMeta]:
 
     Each chunk is prefixed with ``[Source: <path> § <section>]``.
     """
-    short_source = source_file
-    if "divi/" in source_file:
-        short_source = source_file.split("divi/", 1)[-1]
-
     if source_file.endswith(".rst"):
-        return _chunk_rst(text, source_file, short_source)
+        return _chunk_rst(text, source_file)
     if source_file.endswith(".toml"):
-        return _chunk_toml(text, source_file, short_source)
-    return _chunk_markdown(text, source_file, short_source)
+        return _chunk_toml(text, source_file)
+    return _chunk_markdown(text, source_file)
 
 
-def _chunk_rst(text: str, source_file: str, short_source: str) -> list[ChunkMeta]:
+def _chunk_rst(text: str, source_file: str) -> list[ChunkMeta]:
     """Parse RST with docutils and extract sections as chunks."""
+    short_path = display_path(source_file)
     parser = RstParser()
-    settings = OptionParser(components=(RstParser,)).get_default_values()
+    settings = get_default_settings(RstParser)
     settings.report_level = 4  # SEVERE — suppress Sphinx-role warnings
     settings.halt_level = 5
     doc = new_document(source_file, settings)
@@ -129,7 +127,7 @@ def _chunk_rst(text: str, source_file: str, short_source: str) -> list[ChunkMeta
     chunks: list[ChunkMeta] = []
     lines = text.splitlines(keepends=True)
 
-    for node in doc.traverse(section):
+    for node in doc.findall(section):
         title_node = node.next_node(title)
         section_title = title_node.astext() if title_node else None
 
@@ -151,9 +149,9 @@ def _chunk_rst(text: str, source_file: str, short_source: str) -> list[ChunkMeta
         end_line = min(start_line + section_text.count("\n") + 5, len(lines))
 
         if section_title:
-            prefix = f"[Source: {short_source} § {section_title}]\n"
+            prefix = f"[Source: {short_path} § {section_title}]\n"
         else:
-            prefix = f"[Source: {short_source}]\n"
+            prefix = f"[Source: {short_path}]\n"
 
         if len(section_text) <= CHUNK_SIZE:
             chunks.append(
@@ -170,7 +168,7 @@ def _chunk_rst(text: str, source_file: str, short_source: str) -> list[ChunkMeta
 
     # Fallback: no sections found → chunk whole file
     if not chunks:
-        prefix = f"[Source: {short_source}]\n"
+        prefix = f"[Source: {short_path}]\n"
         if len(text) <= CHUNK_SIZE:
             chunks.append(
                 ChunkMeta(
@@ -189,7 +187,6 @@ def _chunk_rst(text: str, source_file: str, short_source: str) -> list[ChunkMeta
 def _chunk_by_headers(
     text: str,
     source_file: str,
-    short_source: str,
     header_re: re.Pattern[str],
     title_group: int,
     *,
@@ -206,6 +203,7 @@ def _chunk_by_headers(
     skip_sections:
         Optional set of lowercased section titles to skip entirely.
     """
+    short_path = display_path(source_file)
     lines = text.splitlines(keepends=True)
     chunks: list[ChunkMeta] = []
 
@@ -238,9 +236,9 @@ def _chunk_by_headers(
             continue
 
         if section_title:
-            prefix = f"[Source: {short_source} § {section_title}]\n"
+            prefix = f"[Source: {short_path} § {section_title}]\n"
         else:
-            prefix = f"[Source: {short_source}]\n"
+            prefix = f"[Source: {short_path}]\n"
 
         if len(section_text) <= CHUNK_SIZE:
             chunks.append(
@@ -257,24 +255,22 @@ def _chunk_by_headers(
     return chunks
 
 
-def _chunk_markdown(text: str, source_file: str, short_source: str) -> list[ChunkMeta]:
+def _chunk_markdown(text: str, source_file: str) -> list[ChunkMeta]:
     """Split Markdown by header lines."""
     return _chunk_by_headers(
         text,
         source_file,
-        short_source,
         _MD_HEADER_RE,
         title_group=2,
         skip_sections=SKIP_SECTIONS,
     )
 
 
-def _chunk_toml(text: str, source_file: str, short_source: str) -> list[ChunkMeta]:
+def _chunk_toml(text: str, source_file: str) -> list[ChunkMeta]:
     """Split a TOML file by ``[section]`` headers."""
     return _chunk_by_headers(
         text,
         source_file,
-        short_source,
         _TOML_SECTION_RE,
         title_group=1,
     )
@@ -357,10 +353,8 @@ def _extract_python_units(text: str, source_file: str) -> list[ChunkMeta]:
         return []
 
     # Derive a module-style path: divi/pipeline/_core.py → divi.pipeline._core
-    short_source = source_file
-    if "divi/" in source_file:
-        short_source = source_file.split("divi/", 1)[-1]
-    module_path = short_source.replace("/", ".").removesuffix(".py")
+    short_path = display_path(source_file)
+    module_path = short_path.replace("/", ".").removesuffix(".py")
 
     chunks: list[ChunkMeta] = []
 
@@ -422,7 +416,7 @@ def _extract_python_units(text: str, source_file: str) -> list[ChunkMeta]:
                 label = "Example" if is_tutorial else "Module"
                 chunks.append(
                     ChunkMeta(
-                        text=f"[{label}: {short_source}]\n{block_text}",
+                        text=f"[{label}: {short_path}]\n{block_text}",
                         source_file=source_file,
                         start_line=start,
                         end_line=end,
@@ -510,6 +504,8 @@ def _get_signature(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     # *args
     if args.vararg:
         parts.append(f"*{_annotated_arg(args.vararg)}")
+    elif args.kwonlyargs:
+        parts.append("*")
 
     # keyword-only args
     for arg in args.kwonlyargs:
@@ -586,17 +582,31 @@ def _extract_import_block(lines: list[str]) -> str:
     with test files that import dozens of symbols.
     """
     import_lines: list[str] = []
+    in_docstring: str | None = None
     for line in lines:
         stripped = line.strip()
+
+        # Track multi-line docstrings so we skip all their lines.
+        if in_docstring is not None:
+            if in_docstring in stripped:
+                in_docstring = None
+            continue
+
+        if stripped.startswith(('"""', "'''")):
+            marker = stripped[:3]
+            # Single-line docstring: """text""" — skip this line only.
+            if stripped.count(marker) >= 2:
+                continue
+            # Opening of a multi-line docstring.
+            in_docstring = marker
+            continue
+
         if (
             stripped.startswith(("import ", "from "))
             or stripped.startswith("#")
             or stripped == ""
         ):
             import_lines.append(line)
-        elif stripped.startswith('"""') or stripped.startswith("'''"):
-            # Skip module docstrings
-            continue
         else:
             break
     result = "".join(import_lines).strip()
@@ -635,9 +645,7 @@ def _extract_test_usage(text: str, source_file: str) -> list[ChunkMeta]:
     lines = text.splitlines(keepends=True)
     file_imports = _extract_import_block(lines)
 
-    short_source = source_file
-    if "divi/" in source_file:
-        short_source = source_file.split("divi/", 1)[-1]
+    short_path = display_path(source_file)
 
     chunks: list[ChunkMeta] = []
 
@@ -658,7 +666,7 @@ def _extract_test_usage(text: str, source_file: str) -> list[ChunkMeta]:
         if func_text.count("mocker.patch") + func_text.count("mocker.spy") > 2:
             continue
 
-        prefix = f"[Test: {short_source}::{node.name}]\n"
+        prefix = f"[Test: {short_path}::{node.name}]\n"
         chunk_text = prefix
         if file_imports:
             chunk_text += file_imports + "\n\n"

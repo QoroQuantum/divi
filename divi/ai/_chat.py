@@ -15,7 +15,7 @@ from llama_cpp import Llama
 
 from ._indexer import load_project_meta
 from ._retriever import RetrievedChunk
-from ._types import short_source
+from ._types import display_path
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -201,18 +201,16 @@ def _is_overview_query(query: str) -> bool:
 
 
 def _filter_chunks_for_overview(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
-    """For overview queries, keep only user-guide/quickstart chunks; drop API ref and .py."""
-    overview_dirs = ("user_guide", "quickstart", "core_concepts", "tutorials")
-    exclude = ("api_reference",)
+    """For overview queries, drop API ref and source code; keep all other docs."""
+    exclude_dirs = ("api_reference",)
     result = []
     for c in chunks:
         path_lower = c.source_file.lower()
-        if any(x in path_lower for x in exclude):
+        if any(x in path_lower for x in exclude_dirs):
             continue
         if path_lower.endswith(".py"):
             continue
-        if any(x in path_lower for x in overview_dirs):
-            result.append(c)
+        result.append(c)
     return result
 
 
@@ -226,7 +224,7 @@ def _format_context(chunks: list[RetrievedChunk]) -> str:
 
     parts: list[str] = []
     for i, chunk in enumerate(relevant, start=1):
-        source = short_source(chunk.source_file)
+        source = display_path(chunk.source_file)
         parts.append(f"[{i}] {source}:\n{chunk.text}")
 
     return "\n\n".join(parts)
