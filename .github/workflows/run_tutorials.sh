@@ -18,4 +18,4 @@ export DIVI_CI_MAX_SHOTS=500
 # Total job budget in seconds (10min GitHub timeout minus 60s buffer).
 export DIVI_CI_JOB_TIMEOUT=540
 
-poetry run python -m tutorials._ci_runner "$@"
+uv run python -m tutorials._ci_runner "$@"

@@ -198,7 +198,7 @@ For Contributors
 ----------------
 
 These commands are for Divi contributors rebuilding or evaluating the
-search index. Install the AI dependencies first: ``poetry install --with ai``
+search index. Install the AI dependencies first: ``uv sync --group ai``
 
 .. code-block:: bash
 

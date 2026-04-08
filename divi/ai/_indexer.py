@@ -923,7 +923,7 @@ _DEV_INDEX_MISSING_MSG = (
     "  Run [bold]python -m divi.ai build[/bold] to generate it.\n\n"
     "  [dim]Troubleshooting:[/dim]\n"
     "    • [bold]OOM:[/bold] python -m divi.ai build --batch-size 4\n"
-    "    • [bold]Missing deps:[/bold] poetry install --with ai\n"
+    "    • [bold]Missing deps:[/bold] uv sync --group ai\n"
 )
 
 _PKG_INDEX_MISSING_MSG = (

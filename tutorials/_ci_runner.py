@@ -8,7 +8,7 @@ Replaces the old sed + GNU parallel approach with validated patching,
 line-buffered output, and budget-aware timeouts.
 
 Usage:
-    poetry run python -m tutorials._ci_runner [--dry-run] [--max-workers N]
+    uv run python -m tutorials._ci_runner [--dry-run] [--max-workers N]
 
 Environment variables:
     DIVI_CI_MAX_SHOTS   Cap shots for get_backend() (read by _backend.py).

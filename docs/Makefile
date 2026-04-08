@@ -115,7 +115,7 @@ test: spelling coverage linkcheck
 
 install:
 	@echo "Installing documentation dependencies..."
-	@poetry install --with docs
+	@uv sync --group docs
 	@echo "Dependencies installed!"
 
 # Catch-all for other Sphinx commands

@@ -36,17 +36,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Poetry
-        run: pipx install poetry==2.2.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
 
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-          cache: 'poetry'
 
       - name: Install dependencies
-        run: poetry install --only=main,ai --no-interaction --no-ansi
+        run: uv sync --no-default-groups --group ai
 
       - name: Cache embedding model
         uses: actions/cache@v4
@@ -55,21 +54,21 @@ jobs:
           key: fastembed-jina-v2-base-code
 
       - name: Build divi-ai search index
-        run: poetry run python -m divi.ai build --batch-size 8
+        run: uv run python -m divi.ai build --batch-size 8
 
       - name: Set nightly version
         run: |
-          BASE_VERSION=$(poetry version -s)
+          BASE_VERSION=$(uv version --short)
           # Bump minor so nightly sorts AFTER the current stable release on PyPI
           # e.g. 0.9.0 -> 0.10.0.dev20260328 (which is > 0.9.0 and > 0.9.x per PEP 440)
           IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
           NEXT_MINOR="$MAJOR.$((MINOR + 1)).0"
           NIGHTLY_VERSION="${NEXT_MINOR}.dev$(date -u +%Y%m%d)"
-          poetry version "$NIGHTLY_VERSION"
+          uv version "$NIGHTLY_VERSION" --no-sync
           echo "NIGHTLY_VERSION=$NIGHTLY_VERSION" >> "$GITHUB_ENV"
 
       - name: Build package
-        run: poetry build
+        run: uv build
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

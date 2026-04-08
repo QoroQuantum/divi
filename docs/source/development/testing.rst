@@ -12,19 +12,19 @@ To run all tests:
 
 .. code-block:: bash
 
-   poetry run pytest
+   uv run pytest
 
 To run tests with coverage:
 
 .. code-block:: bash
 
-   poetry run pytest --cov=divi
+   uv run pytest --cov=divi
 
 To run specific test files:
 
 .. code-block:: bash
 
-   poetry run pytest tests/test_hamiltonians.py
+   uv run pytest tests/test_hamiltonians.py
 
 **Parallel Testing** (Recommended for CI/Large Test Suites)
 
@@ -32,9 +32,9 @@ Divi supports parallel test execution using `pytest-xdist <https://pytest-xdist.
 
 .. code-block:: bash
 
-   poetry run pytest -n auto    # Auto-detect CPU cores
-   poetry run pytest -n 4       # Use 4 workers
-   poetry run pytest -n 0       # Disable parallel execution
+   uv run pytest -n auto    # Auto-detect CPU cores
+   uv run pytest -n 4       # Use 4 workers
+   uv run pytest -n 0       # Disable parallel execution
 
 **Test Markers**
 
@@ -42,9 +42,9 @@ Divi uses custom pytest markers to categorize tests:
 
 .. code-block:: bash
 
-   poetry run pytest -m "requires_api_key"  # API-dependent tests only
-   poetry run pytest -m "e2e"               # End-to-end tests only
-   poetry run pytest -m "not e2e"           # Skip slow e2e tests
+   uv run pytest -m "requires_api_key"  # API-dependent tests only
+   uv run pytest -m "e2e"               # End-to-end tests only
+   uv run pytest -m "not e2e"           # Skip slow e2e tests
 
 Available markers:
 - ``requires_api_key``: Tests requiring QORO_API_KEY
@@ -57,10 +57,10 @@ Tests requiring cloud API access are conditionally executed:
 .. code-block:: bash
 
    # Run API tests (requires QORO_API_KEY environment variable)
-   poetry run pytest --run-api-tests
+   uv run pytest --run-api-tests
 
    # Run API tests with specific key
-   poetry run pytest --run-api-tests --api-key your-key-here
+   uv run pytest --run-api-tests --api-key your-key-here
 
 Test Structure
 --------------
@@ -231,7 +231,7 @@ Generate detailed coverage reports:
 
 .. code-block:: bash
 
-   poetry run pytest --cov=divi --cov-report=html --cov-report=term-missing
+   uv run pytest --cov=divi --cov-report=html --cov-report=term-missing
 
 This generates:
 - Terminal output with missing line numbers

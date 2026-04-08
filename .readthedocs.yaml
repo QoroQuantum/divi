@@ -11,8 +11,8 @@ build:
     - libenchant-2-dev
   jobs:
     post_install:
-      - pip install poetry
-      - VIRTUAL_ENV=$READTHEDOCS_VIRTUALENV_PATH poetry install --with docs --no-interaction
+      - pip install uv
+      - VIRTUAL_ENV=$READTHEDOCS_VIRTUALENV_PATH uv sync --no-default-groups --group docs --no-install-project
 
 sphinx:
   configuration: docs/source/conf.py

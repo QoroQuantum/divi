@@ -6,13 +6,13 @@ Welcome to the Divi documentation! Divi is a Python library to automate generati
 Installation
 ============
 
-Divi can be installed using Poetry (recommended) or pip.
+Divi can be installed using uv (recommended) or pip.
 
-If you have Poetry installed:
+If you have uv installed:
 
 .. code-block:: bash
 
-   poetry add qoro-divi
+   uv add qoro-divi
 
 Or if you want to install from source:
 
@@ -20,7 +20,7 @@ Or if you want to install from source:
 
    git clone https://github.com/QoroQuantum/divi.git
    cd divi
-   poetry install
+   uv sync
 
 Alternatively, you can install using pip:
 

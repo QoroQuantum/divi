@@ -34,11 +34,10 @@ source .venv/bin/activate
 pip install -e .[dev]
 ```
 
-Or if using `poetry` (recommended):
+Or if using `uv` (recommended):
 
 ```bash
-poetry install
-poetry shell
+uv sync
 ```
 
 ### 3. Set Up Pre-Commit Hooks
@@ -75,8 +74,8 @@ We use the following tools for formatting:
 Run all formatters before committing:
 
 ```bash
-poetry run black .
-poetry run isort .
+uv run black .
+uv run isort .
 ```
 
 ### License Headers
@@ -88,7 +87,7 @@ All new or updated `.py` files (outside `docs/`) must include the license header
 Run the full test suite with:
 
 ```bash
-poetry run pytest
+uv run pytest
 ```
 
 ### Parallel Execution
@@ -96,7 +95,7 @@ poetry run pytest
 For faster runs:
 
 ```bash
-poetry run pytest -n auto
+uv run pytest -n auto
 ```
 
 ### Test Markers
@@ -112,15 +111,15 @@ poetry run pytest -n auto
 API tests require a Qoro API key. Set the `QORO_API_KEY` environment variable or use the `--api-key` option:
 
 ```bash
-QORO_API_KEY=your-key poetry run pytest --run-api-tests
+QORO_API_KEY=your-key uv run pytest --run-api-tests
 # or
-poetry run pytest --run-api-tests --api-key your-key
+uv run pytest --run-api-tests --api-key your-key
 ```
 
 ### Coverage
 
 ```bash
-poetry run pytest --cov=divi
+uv run pytest --cov=divi
 ```
 
 ## Documentation
@@ -128,7 +127,7 @@ poetry run pytest --cov=divi
 ### Install Doc Dependencies
 
 ```bash
-poetry install --with docs
+uv sync --group docs
 ```
 
 ### Build Docs

@@ -10,7 +10,7 @@ Make sure you have the documentation dependencies installed:
 
 .. code-block:: bash
 
-   poetry install --with docs
+   uv sync --group docs
 
 Building the Documentation
 --------------------------
