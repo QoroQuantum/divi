@@ -14,8 +14,12 @@ from divi.circuits._binary_qasm import (
     Instruction,
     Measurement,
     decode,
+    decode_columnar,
+    decode_delta_columnar,
     decode_to_ir,
     encode,
+    encode_columnar,
+    encode_delta_columnar,
     encode_ir,
     ir_to_qasm,
     parse_qasm,
@@ -315,3 +319,134 @@ class TestBinaryFormat:
         bad_instruction = struct.pack(">BB", 0xBB, 0)
         with pytest.raises(ValueError, match="Unknown opcode"):
             decode(header + bad_instruction)
+
+
+# ---------------------------------------------------------------------------
+# Test columnar encoder round-trip
+# ---------------------------------------------------------------------------
+
+class TestColumnarRoundTrip:
+    """Test the columnar (v2) encoder with byte-shuffled floats."""
+
+    def _round_trip(self, ir: CircuitIR, shuffle: bool = True):
+        binary = encode_columnar(ir, shuffle_floats=shuffle)
+        ir_back = decode_columnar(binary)
+        _assert_ir_equal(ir, ir_back)
+
+    def test_bell_state(self):
+        qasm = (
+            'OPENQASM 2.0;\ninclude "qelib1.inc";\n'
+            "qreg q[2];\ncreg c[2];\n"
+            "h q[0];\ncx q[0],q[1];\n"
+            "measure q[0] -> c[0];\nmeasure q[1] -> c[1];\n"
+        )
+        self._round_trip(parse_qasm(qasm))
+
+    def test_parameterized_circuit(self):
+        qasm = (
+            'OPENQASM 2.0;\ninclude "qelib1.inc";\n'
+            "qreg q[4];\ncreg c[4];\n"
+            "ry(0.12345678) q[0];\nrz(2.71828183) q[1];\n"
+            "cx q[0],q[1];\nrx(1.57079633) q[2];\n"
+            "u3(1.0,2.0,3.0) q[3];\n"
+            "measure q[0] -> c[0];\nmeasure q[1] -> c[1];\n"
+            "measure q[2] -> c[2];\nmeasure q[3] -> c[3];\n"
+        )
+        self._round_trip(parse_qasm(qasm))
+
+    def test_no_shuffle(self):
+        qasm = (
+            'OPENQASM 2.0;\ninclude "qelib1.inc";\n'
+            "qreg q[2];\ncreg c[2];\n"
+            "ry(1.5) q[0];\ncx q[0],q[1];\n"
+        )
+        self._round_trip(parse_qasm(qasm), shuffle=False)
+
+    def test_empty_circuit(self):
+        ir = CircuitIR(2, 2, [], [])
+        self._round_trip(ir)
+
+    def test_wide_indices(self):
+        ir = CircuitIR(
+            n_qubits=300, n_clbits=300,
+            instructions=[Instruction("h", [0]), Instruction("cx", [0, 299])],
+            measurements=[Measurement(0, 0), Measurement(299, 299)],
+        )
+        self._round_trip(ir)
+
+    def test_partial_measurement(self):
+        ir = CircuitIR(
+            n_qubits=4, n_clbits=4,
+            instructions=[Instruction("h", [0])],
+            measurements=[Measurement(0, 2), Measurement(3, 1)],
+        )
+        self._round_trip(ir)
+
+    def test_all_gate_types(self):
+        ir = CircuitIR(
+            n_qubits=3, n_clbits=3,
+            instructions=[
+                Instruction("h", [0]),
+                Instruction("rx", [0], [1.5]),
+                Instruction("u2", [1], [0.5, 1.0]),
+                Instruction("u3", [2], [1.0, 2.0, 3.0]),
+                Instruction("cx", [0, 1]),
+                Instruction("crx", [1, 2], [0.7]),
+                Instruction("cu3", [0, 1], [1.0, 2.0, 3.0]),
+                Instruction("ccx", [0, 1, 2]),
+            ],
+            measurements=[Measurement(i, i) for i in range(3)],
+        )
+        self._round_trip(ir)
+
+
+class TestDeltaColumnarRoundTrip:
+    """Test the delta-columnar (v3) encoder."""
+
+    def _round_trip(self, ir: CircuitIR, shuffle: bool = True):
+        binary = encode_delta_columnar(ir, shuffle_floats=shuffle)
+        ir_back = decode_delta_columnar(binary)
+        _assert_ir_equal(ir, ir_back)
+
+    def test_bell_state(self):
+        qasm = (
+            'OPENQASM 2.0;\ninclude "qelib1.inc";\n'
+            "qreg q[2];\ncreg c[2];\n"
+            "h q[0];\ncx q[0],q[1];\n"
+            "measure q[0] -> c[0];\nmeasure q[1] -> c[1];\n"
+        )
+        self._round_trip(parse_qasm(qasm))
+
+    def test_parameterized_large(self):
+        """Test with a larger circuit to exercise delta encoding."""
+        instructions = []
+        for i in range(50):
+            instructions.append(Instruction("ry", [i % 10], [float(i) * 0.1]))
+            if i > 0:
+                instructions.append(Instruction("cx", [i % 10, (i + 1) % 10]))
+        ir = CircuitIR(
+            n_qubits=10, n_clbits=10,
+            instructions=instructions,
+            measurements=[Measurement(i, i) for i in range(10)],
+        )
+        self._round_trip(ir)
+
+    def test_wide_indices(self):
+        ir = CircuitIR(
+            n_qubits=300, n_clbits=300,
+            instructions=[Instruction("h", [0]), Instruction("cx", [0, 299])],
+            measurements=[Measurement(0, 0), Measurement(299, 299)],
+        )
+        self._round_trip(ir)
+
+    def test_empty(self):
+        ir = CircuitIR(2, 2, [], [])
+        self._round_trip(ir)
+
+    def test_no_shuffle(self):
+        ir = CircuitIR(
+            n_qubits=2, n_clbits=2,
+            instructions=[Instruction("ry", [0], [1.5]), Instruction("cx", [0, 1])],
+            measurements=[],
+        )
+        self._round_trip(ir, shuffle=False)

@@ -44,6 +44,8 @@ from divi.circuits._binary_qasm import (
     Measurement,
     _gate_arity,
     _gate_n_params,
+    encode_columnar,
+    encode_delta_columnar,
     encode_ir,
     ir_to_qasm,
     parse_qasm,
@@ -256,6 +258,14 @@ COMPRESSORS = [
     Compressor("brotli", brotli.compress, brotli.decompress),
 ]
 
+# Focused set for v2 benchmark — only the top performers
+COMPRESSORS_FOCUSED = [
+    Compressor("zstd", _zstd_compress, _zstd_decompress),
+    Compressor("brotli", brotli.compress, brotli.decompress),
+    Compressor("zlib", lambda d: __import__("zlib").compress(d), lambda d: __import__("zlib").decompress(d)),
+    Compressor("lz4", lz4.frame.compress, lz4.frame.decompress),
+]
+
 
 # ---------------------------------------------------------------------------
 # Benchmark harness
@@ -302,7 +312,7 @@ def benchmark_circuit(
     # 1. Raw QASM text
     formats.append(("qasm_text", qasm_bytes, lambda d: d))
 
-    # 2. struct-based binary
+    # 2. struct-based binary (v1 — interleaved)
     struct_binary = encode_ir(ir)
     formats.append(("struct_binary", struct_binary, lambda d: d))
 
@@ -310,12 +320,24 @@ def benchmark_circuit(
     construct_binary = encode_construct(ir)
     formats.append(("construct_binary", construct_binary, lambda d: d))
 
-    # 4. msgpack
+    # 4. columnar binary (v2 — separated streams, byte-shuffled floats)
+    columnar_binary = encode_columnar(ir, shuffle_floats=True)
+    formats.append(("columnar_shuf", columnar_binary, lambda d: d))
+
+    # 5. columnar binary without byte shuffle (to measure shuffle impact)
+    columnar_noshuf = encode_columnar(ir, shuffle_floats=False)
+    formats.append(("columnar_plain", columnar_noshuf, lambda d: d))
+
+    # 6. delta-columnar binary (v3 — delta+zigzag qubit indices + shuffled)
+    delta_col = encode_delta_columnar(ir, shuffle_floats=True)
+    formats.append(("delta_col_shuf", delta_col, lambda d: d))
+
+    # 7. msgpack
     ir_dict = _ir_to_dict(ir)
     msgpack_data = msgpack.packb(ir_dict, use_bin_type=True)
     formats.append(("msgpack", msgpack_data, lambda d: d))
 
-    # 5. cbor2
+    # 8. cbor2
     cbor_data = cbor2.dumps(ir_dict)
     formats.append(("cbor", cbor_data, lambda d: d))
 
@@ -342,7 +364,7 @@ def benchmark_circuit(
     )
 
     for fmt_name, raw_data, _verify in formats:
-        for comp in COMPRESSORS:
+        for comp in COMPRESSORS_FOCUSED:
             compressed, compress_ms = _time_fn(
                 lambda _d=raw_data, _c=comp: _c.compress(_d), n_iters
             )
@@ -500,8 +522,8 @@ CIRCUIT_CONFIGS = [
 def main():
     console = Console()
     console.print("[bold]Binary QASM Benchmark[/bold]")
-    console.print(f"Formats: qasm_text, struct_binary, construct_binary, msgpack, cbor")
-    console.print(f"Compressors: {', '.join(c.name for c in COMPRESSORS)}")
+    console.print(f"Formats: qasm_text, struct_binary, construct_binary, columnar_shuf, columnar_plain, delta_col_shuf, msgpack, cbor")
+    console.print(f"Compressors: {', '.join(c.name for c in COMPRESSORS_FOCUSED)}")
     console.print()
 
     all_results: list[BenchResult] = []
@@ -512,6 +534,8 @@ def main():
         qasm_text = ir_to_qasm(ir)
         console.print(f"  QASM text size: {len(qasm_text.encode('utf-8')):,} bytes")
         console.print(f"  struct binary size: {len(encode_ir(ir)):,} bytes")
+        console.print(f"  columnar+shuf size: {len(encode_columnar(ir)):,} bytes")
+        console.print(f"  delta_col+shuf size: {len(encode_delta_columnar(ir)):,} bytes")
 
         results = benchmark_circuit(label, ir, n_iters=50)
         all_results.extend(results)

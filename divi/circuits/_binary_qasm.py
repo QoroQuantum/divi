@@ -19,6 +19,8 @@ import re
 import struct
 from dataclasses import dataclass, field
 
+import numpy as np
+
 # ---------------------------------------------------------------------------
 # Gate opcode table
 # ---------------------------------------------------------------------------
@@ -436,5 +438,399 @@ def decode_to_ir(data: bytes) -> CircuitIR:
                 (clbit,) = struct.unpack_from(idx_fmt, data, offset)
                 offset += idx_size
                 measurements.append(Measurement(qubit, clbit))
+
+    return CircuitIR(n_qubits, n_clbits, instructions, measurements)
+
+
+# ---------------------------------------------------------------------------
+# Columnar encoder (v2) — splits data into homogeneous streams
+# ---------------------------------------------------------------------------
+# Instead of interleaving [opcode, qubits, params] per gate, we separate
+# the circuit into three arrays:
+#   1. opcode stream   — uint8 array (very low alphabet → compresses well)
+#   2. qubit idx stream — uint8/uint16 array (small ints)
+#   3. param stream     — float32 array (IEEE 754 floats)
+#
+# Each stream is internally homogeneous, which lets general-purpose
+# compressors exploit patterns within each data type far more effectively.
+
+_MAGIC_COL = b"BX"
+_VERSION_COL = 0x02
+
+# Flag bits for columnar format
+_COL_FLAG_HAS_MEAS = 0x01
+_COL_FLAG_MEAS_ALL = 0x02
+_COL_FLAG_WIDE_IDX = 0x04
+_COL_FLAG_SHUFFLED = 0x08  # float byte-shuffle enabled
+
+
+def _zigzag_encode(values: list[int]) -> list[int]:
+    """Zigzag-encode signed integers to unsigned (protobuf-style)."""
+    return [(v << 1) ^ (v >> 31) for v in values]
+
+
+def _zigzag_decode(values: list[int]) -> list[int]:
+    """Reverse zigzag encoding."""
+    return [(v >> 1) ^ -(v & 1) for v in values]
+
+
+def _byte_shuffle(data: bytes, element_size: int) -> bytes:
+    """Transpose byte order within fixed-size elements.
+
+    For N elements of *element_size* bytes, rearrange so that all byte-0s
+    come first, then all byte-1s, etc.  This clusters similar-valued bytes
+    together (e.g. IEEE 754 exponent bytes) and dramatically improves
+    compression ratios.
+
+    This is the same technique used by HDF5/blosc for numeric arrays.
+    """
+    n = len(data) // element_size
+    if n == 0:
+        return data
+    arr = np.frombuffer(data, dtype=np.uint8).reshape(n, element_size)
+    return arr.T.tobytes()
+
+
+def _byte_unshuffle(data: bytes, element_size: int, n_elements: int) -> bytes:
+    """Reverse :func:`_byte_shuffle`."""
+    if n_elements == 0:
+        return data
+    arr = np.frombuffer(data, dtype=np.uint8).reshape(element_size, n_elements)
+    return arr.T.tobytes()
+
+
+def encode_columnar(ir: CircuitIR, shuffle_floats: bool = True) -> bytes:
+    """Columnar binary encoder — separates opcodes, indices, and params.
+
+    Parameters
+    ----------
+    ir : CircuitIR
+        The circuit to encode.
+    shuffle_floats : bool
+        If True, apply byte-shuffling to the float parameter stream.
+        This reorders bytes so that the exponent bytes (low entropy) are
+        grouped together, dramatically improving compression.
+
+    Returns
+    -------
+    bytes
+        Raw columnar binary (apply a compressor on top).
+    """
+    measure_all = (
+        len(ir.measurements) == ir.n_qubits
+        and all(m.qubit == m.clbit for m in ir.measurements)
+        and len(set(m.qubit for m in ir.measurements)) == ir.n_qubits
+    )
+    has_meas = len(ir.measurements) > 0
+    wide = ir.n_qubits > 255 or ir.n_clbits > 255
+
+    flags = 0
+    if has_meas:
+        flags |= _COL_FLAG_HAS_MEAS
+    if measure_all:
+        flags |= _COL_FLAG_MEAS_ALL
+    if wide:
+        flags |= _COL_FLAG_WIDE_IDX
+    if shuffle_floats:
+        flags |= _COL_FLAG_SHUFFLED
+
+    # Build separate streams
+    opcodes = bytearray()
+    qubit_indices: list[int] = []
+    params: list[float] = []
+
+    for inst in ir.instructions:
+        opc = GATE_OPCODES.get(inst.gate)
+        if opc is None:
+            raise ValueError(f"Unsupported gate: {inst.gate!r}")
+        opcodes.append(opc)
+        qubit_indices.extend(inst.qubits)
+        params.extend(inst.params)
+
+    # Pack qubit indices as numpy array for speed
+    idx_dtype = np.uint16 if wide else np.uint8
+    qubit_arr = np.array(qubit_indices, dtype=idx_dtype)
+    qubit_bytes = qubit_arr.tobytes()
+
+    # Pack parameters as float32 numpy array
+    param_arr = np.array(params, dtype=np.float32)
+    param_bytes = param_arr.tobytes()
+
+    # Apply byte shuffling to float stream
+    if shuffle_floats and len(params) > 0:
+        param_bytes = _byte_shuffle(param_bytes, 4)
+
+    # Header: magic(2) + version(1) + flags(1) + n_qubits(2) + n_clbits(2)
+    #       + n_gates(4) + n_qubit_indices(4) + n_params(4) = 20 bytes
+    header = struct.pack(
+        ">2sBBHHIII",
+        _MAGIC_COL,
+        _VERSION_COL,
+        flags,
+        ir.n_qubits,
+        ir.n_clbits,
+        len(ir.instructions),
+        len(qubit_indices),
+        len(params),
+    )
+
+    parts = [header, bytes(opcodes), qubit_bytes, param_bytes]
+
+    # Measurement stream (only if not measure_all)
+    if has_meas and not measure_all:
+        meas_qubits = np.array([m.qubit for m in ir.measurements], dtype=idx_dtype)
+        meas_clbits = np.array([m.clbit for m in ir.measurements], dtype=idx_dtype)
+        parts.append(struct.pack(">H", len(ir.measurements)))
+        parts.append(meas_qubits.tobytes())
+        parts.append(meas_clbits.tobytes())
+
+    return b"".join(parts)
+
+
+def decode_columnar(data: bytes) -> CircuitIR:
+    """Decode columnar binary back into a :class:`CircuitIR`."""
+    off = 0
+
+    # Header
+    magic, version, flags, n_qubits, n_clbits, n_gates, n_qidx, n_params = (
+        struct.unpack_from(">2sBBHHIII", data, off)
+    )
+    off += struct.calcsize(">2sBBHHIII")
+
+    if magic != _MAGIC_COL:
+        raise ValueError(f"Invalid magic: {magic!r}")
+    if version != _VERSION_COL:
+        raise ValueError(f"Unsupported version: {version}")
+
+    has_meas = bool(flags & _COL_FLAG_HAS_MEAS)
+    measure_all = bool(flags & _COL_FLAG_MEAS_ALL)
+    wide = bool(flags & _COL_FLAG_WIDE_IDX)
+    shuffled = bool(flags & _COL_FLAG_SHUFFLED)
+
+    idx_dtype = np.uint16 if wide else np.uint8
+    idx_size = 2 if wide else 1
+
+    # Opcode stream
+    opcodes = data[off : off + n_gates]
+    off += n_gates
+
+    # Qubit index stream
+    qubit_arr = np.frombuffer(data[off : off + n_qidx * idx_size], dtype=idx_dtype)
+    off += n_qidx * idx_size
+
+    # Param stream
+    param_raw = data[off : off + n_params * 4]
+    off += n_params * 4
+    if shuffled and n_params > 0:
+        param_raw = _byte_unshuffle(param_raw, 4, n_params)
+    param_arr = np.frombuffer(param_raw, dtype=np.float32)
+
+    # Reconstruct instructions
+    qi = 0  # qubit index cursor
+    pi = 0  # param cursor
+    instructions: list[Instruction] = []
+    for i in range(n_gates):
+        opc = opcodes[i]
+        gate_name = OPCODE_TO_GATE.get(opc)
+        if gate_name is None:
+            raise ValueError(f"Unknown opcode: 0x{opc:02X}")
+        arity = _gate_arity(opc)
+        n_p = _gate_n_params(opc)
+
+        qubits = qubit_arr[qi : qi + arity].tolist()
+        qi += arity
+
+        params = param_arr[pi : pi + n_p].tolist() if n_p > 0 else []
+        pi += n_p
+
+        instructions.append(Instruction(gate_name, qubits, params))
+
+    # Measurements
+    measurements: list[Measurement] = []
+    if has_meas:
+        if measure_all:
+            measurements = [Measurement(i, i) for i in range(n_qubits)]
+        else:
+            (n_meas,) = struct.unpack_from(">H", data, off)
+            off += 2
+            mq = np.frombuffer(data[off : off + n_meas * idx_size], dtype=idx_dtype)
+            off += n_meas * idx_size
+            mc = np.frombuffer(data[off : off + n_meas * idx_size], dtype=idx_dtype)
+            off += n_meas * idx_size
+            measurements = [
+                Measurement(int(mq[i]), int(mc[i])) for i in range(n_meas)
+            ]
+
+    return CircuitIR(n_qubits, n_clbits, instructions, measurements)
+
+
+# ---------------------------------------------------------------------------
+# Delta-columnar encoder (v3) — columnar + delta on qubit indices
+# ---------------------------------------------------------------------------
+
+_MAGIC_DCOL = b"BD"
+_VERSION_DCOL = 0x03
+
+
+def encode_delta_columnar(ir: CircuitIR, shuffle_floats: bool = True) -> bytes:
+    """Columnar encoder with delta + zigzag encoding on qubit indices.
+
+    Qubit index deltas tend to be small in structured circuits (e.g., VQE
+    ansätze operate on adjacent qubits). Zigzag encoding maps signed deltas
+    to small unsigned values, further reducing byte entropy.
+    """
+    measure_all = (
+        len(ir.measurements) == ir.n_qubits
+        and all(m.qubit == m.clbit for m in ir.measurements)
+        and len(set(m.qubit for m in ir.measurements)) == ir.n_qubits
+    )
+    has_meas = len(ir.measurements) > 0
+    wide = ir.n_qubits > 255 or ir.n_clbits > 255
+
+    flags = 0
+    if has_meas:
+        flags |= _COL_FLAG_HAS_MEAS
+    if measure_all:
+        flags |= _COL_FLAG_MEAS_ALL
+    if wide:
+        flags |= _COL_FLAG_WIDE_IDX
+    if shuffle_floats:
+        flags |= _COL_FLAG_SHUFFLED
+
+    # Build streams
+    opcodes = bytearray()
+    qubit_indices: list[int] = []
+    params: list[float] = []
+
+    for inst in ir.instructions:
+        opc = GATE_OPCODES.get(inst.gate)
+        if opc is None:
+            raise ValueError(f"Unsupported gate: {inst.gate!r}")
+        opcodes.append(opc)
+        qubit_indices.extend(inst.qubits)
+        params.extend(inst.params)
+
+    # Delta + zigzag encode qubit indices
+    if qubit_indices:
+        deltas = [qubit_indices[0]]
+        for i in range(1, len(qubit_indices)):
+            deltas.append(qubit_indices[i] - qubit_indices[i - 1])
+        zz = _zigzag_encode(deltas)
+    else:
+        zz = []
+
+    # Pack — use uint16 for zigzag values if wide or if deltas are large
+    # For safety, always use uint16 since zigzag-encoded deltas can exceed 255
+    zz_arr = np.array(zz, dtype=np.uint16) if zz else np.array([], dtype=np.uint16)
+    qubit_bytes = zz_arr.tobytes()
+
+    # Float params
+    param_arr = np.array(params, dtype=np.float32)
+    param_bytes = param_arr.tobytes()
+    if shuffle_floats and len(params) > 0:
+        param_bytes = _byte_shuffle(param_bytes, 4)
+
+    header = struct.pack(
+        ">2sBBHHIII",
+        _MAGIC_DCOL,
+        _VERSION_DCOL,
+        flags,
+        ir.n_qubits,
+        ir.n_clbits,
+        len(ir.instructions),
+        len(qubit_indices),
+        len(params),
+    )
+
+    parts = [header, bytes(opcodes), qubit_bytes, param_bytes]
+
+    if has_meas and not measure_all:
+        idx_dtype = np.uint16 if wide else np.uint8
+        mq = np.array([m.qubit for m in ir.measurements], dtype=idx_dtype)
+        mc = np.array([m.clbit for m in ir.measurements], dtype=idx_dtype)
+        parts.append(struct.pack(">H", len(ir.measurements)))
+        parts.append(mq.tobytes())
+        parts.append(mc.tobytes())
+
+    return b"".join(parts)
+
+
+def decode_delta_columnar(data: bytes) -> CircuitIR:
+    """Decode delta-columnar binary."""
+    off = 0
+    magic, version, flags, n_qubits, n_clbits, n_gates, n_qidx, n_params = (
+        struct.unpack_from(">2sBBHHIII", data, off)
+    )
+    off += struct.calcsize(">2sBBHHIII")
+
+    if magic != _MAGIC_DCOL:
+        raise ValueError(f"Invalid magic: {magic!r}")
+
+    has_meas = bool(flags & _COL_FLAG_HAS_MEAS)
+    measure_all = bool(flags & _COL_FLAG_MEAS_ALL)
+    wide = bool(flags & _COL_FLAG_WIDE_IDX)
+    shuffled = bool(flags & _COL_FLAG_SHUFFLED)
+
+    idx_dtype_meas = np.uint16 if wide else np.uint8
+    idx_size_meas = 2 if wide else 1
+
+    # Opcodes
+    opcodes = data[off : off + n_gates]
+    off += n_gates
+
+    # Qubit indices (delta + zigzag encoded, always uint16)
+    zz_arr = np.frombuffer(data[off : off + n_qidx * 2], dtype=np.uint16)
+    off += n_qidx * 2
+    zz = zz_arr.tolist()
+    deltas = _zigzag_decode(zz)
+    # Prefix sum to recover absolute indices
+    qubit_indices: list[int] = []
+    if deltas:
+        qubit_indices.append(deltas[0])
+        for i in range(1, len(deltas)):
+            qubit_indices.append(qubit_indices[-1] + deltas[i])
+
+    # Params
+    param_raw = data[off : off + n_params * 4]
+    off += n_params * 4
+    if shuffled and n_params > 0:
+        param_raw = _byte_unshuffle(param_raw, 4, n_params)
+    param_arr = np.frombuffer(param_raw, dtype=np.float32)
+
+    # Reconstruct
+    qi = 0
+    pi = 0
+    instructions: list[Instruction] = []
+    for i in range(n_gates):
+        opc = opcodes[i]
+        gate_name = OPCODE_TO_GATE.get(opc)
+        if gate_name is None:
+            raise ValueError(f"Unknown opcode: 0x{opc:02X}")
+        arity = _gate_arity(opc)
+        n_p = _gate_n_params(opc)
+        qubits = qubit_indices[qi : qi + arity]
+        qi += arity
+        params = param_arr[pi : pi + n_p].tolist() if n_p > 0 else []
+        pi += n_p
+        instructions.append(Instruction(gate_name, qubits, params))
+
+    measurements: list[Measurement] = []
+    if has_meas:
+        if measure_all:
+            measurements = [Measurement(i, i) for i in range(n_qubits)]
+        else:
+            (n_meas,) = struct.unpack_from(">H", data, off)
+            off += 2
+            mq = np.frombuffer(
+                data[off : off + n_meas * idx_size_meas], dtype=idx_dtype_meas
+            )
+            off += n_meas * idx_size_meas
+            mc = np.frombuffer(
+                data[off : off + n_meas * idx_size_meas], dtype=idx_dtype_meas
+            )
+            off += n_meas * idx_size_meas
+            measurements = [
+                Measurement(int(mq[i]), int(mc[i])) for i in range(n_meas)
+            ]
 
     return CircuitIR(n_qubits, n_clbits, instructions, measurements)
