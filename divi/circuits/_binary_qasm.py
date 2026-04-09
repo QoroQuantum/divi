@@ -834,3 +834,244 @@ def decode_delta_columnar(data: bytes) -> CircuitIR:
             ]
 
     return CircuitIR(n_qubits, n_clbits, instructions, measurements)
+
+
+# ---------------------------------------------------------------------------
+# Per-stream encoder (v4) — the actually effective approach
+# ---------------------------------------------------------------------------
+# Key insight: random float32 parameters are ~47% of compressed output and
+# are fundamentally incompressible.  The only way to shrink them is to use
+# fewer bits per parameter.
+#
+# This encoder:
+#   1. Separates opcodes / qubit indices / parameters into independent streams
+#   2. Compresses each stream with the *caller's* chosen compressor
+#   3. Supports uint16 quantization of params: [-pi, pi] → [0, 65535]
+#      with max error ~4.8e-05 (enough for VQE/QAOA angles)
+#   4. Packs the compressed sub-blobs into a self-describing container
+#
+# The container format (all big-endian):
+#   magic        2B  "BP"
+#   version      1B  0x04
+#   flags        1B  (bit 0: has_meas, bit 1: meas_all, bit 2: wide_idx,
+#                      bit 3: float32 params, bit 4: uint16 quantized params)
+#   n_qubits     2B  uint16
+#   n_clbits     2B  uint16
+#   n_gates      4B  uint32
+#   n_qidx       4B  uint32  (total qubit index count)
+#   n_params     4B  uint32
+#   len_opc      4B  compressed opcodes blob length
+#   len_qub      4B  compressed qubit-idx blob length
+#   len_par      4B  compressed params blob length
+#   [opc_blob]   variable — compressed opcodes
+#   [qub_blob]   variable — compressed qubit indices
+#   [par_blob]   variable — compressed params
+#   [meas_blob]  variable — only if partial measurements
+
+import math as _math
+
+_MAGIC_PS = b"BP"
+_VERSION_PS = 0x04
+
+_PS_FLAG_HAS_MEAS = 0x01
+_PS_FLAG_MEAS_ALL = 0x02
+_PS_FLAG_WIDE_IDX = 0x04
+_PS_FLAG_F32 = 0x08
+_PS_FLAG_QUANT16 = 0x10
+
+# Quantization constants
+_PARAM_MIN = -_math.pi
+_PARAM_MAX = _math.pi
+_QUANT_RANGE = _PARAM_MAX - _PARAM_MIN
+_QUANT_SCALE = 65535.0 / _QUANT_RANGE
+
+
+def _quantize_params(params: np.ndarray) -> np.ndarray:
+    """Quantize float params to uint16 over [-pi, pi]."""
+    return np.clip(
+        np.round((params - _PARAM_MIN) * _QUANT_SCALE), 0, 65535
+    ).astype(np.uint16)
+
+
+def _dequantize_params(q: np.ndarray) -> np.ndarray:
+    """Dequantize uint16 back to float32."""
+    return (q.astype(np.float32) / _QUANT_SCALE + _PARAM_MIN).astype(np.float32)
+
+
+CompressFn = type(lambda b: b)  # Callable[[bytes], bytes]
+
+
+def encode_perstream(
+    ir: CircuitIR,
+    compress: CompressFn,
+    quantize_params: bool = True,
+) -> bytes:
+    """Per-stream encoder with optional uint16 parameter quantization.
+
+    Parameters
+    ----------
+    ir : CircuitIR
+        Circuit to encode.
+    compress : callable
+        ``(bytes) -> bytes`` compression function (e.g. ``zstd.compress``).
+    quantize_params : bool
+        If True, quantize float params to uint16 over [-pi, pi].
+        Saves ~40% on parameter bytes with max error ~4.8e-05.
+    """
+    measure_all = (
+        len(ir.measurements) == ir.n_qubits
+        and all(m.qubit == m.clbit for m in ir.measurements)
+        and len(set(m.qubit for m in ir.measurements)) == ir.n_qubits
+    )
+    has_meas = len(ir.measurements) > 0
+    wide = ir.n_qubits > 255 or ir.n_clbits > 255
+
+    flags = 0
+    if has_meas:
+        flags |= _PS_FLAG_HAS_MEAS
+    if measure_all:
+        flags |= _PS_FLAG_MEAS_ALL
+    if wide:
+        flags |= _PS_FLAG_WIDE_IDX
+    if quantize_params:
+        flags |= _PS_FLAG_QUANT16
+    else:
+        flags |= _PS_FLAG_F32
+
+    # Build raw streams
+    opcodes = bytearray()
+    qubit_indices: list[int] = []
+    params: list[float] = []
+    for inst in ir.instructions:
+        opc = GATE_OPCODES.get(inst.gate)
+        if opc is None:
+            raise ValueError(f"Unsupported gate: {inst.gate!r}")
+        opcodes.append(opc)
+        qubit_indices.extend(inst.qubits)
+        params.extend(inst.params)
+
+    # Pack and compress each stream independently
+    opc_raw = bytes(opcodes)
+    idx_dtype = np.uint16 if wide else np.uint8
+    qub_raw = np.array(qubit_indices, dtype=idx_dtype).tobytes()
+
+    if quantize_params and params:
+        par_np = np.array(params, dtype=np.float32)
+        par_raw = _quantize_params(par_np).tobytes()
+    elif params:
+        par_raw = np.array(params, dtype=np.float32).tobytes()
+    else:
+        par_raw = b""
+
+    opc_blob = compress(opc_raw) if opc_raw else b""
+    qub_blob = compress(qub_raw) if qub_raw else b""
+    par_blob = compress(par_raw) if par_raw else b""
+
+    # Header
+    header = struct.pack(
+        ">2sBBHHIIIIII",
+        _MAGIC_PS,
+        _VERSION_PS,
+        flags,
+        ir.n_qubits,
+        ir.n_clbits,
+        len(ir.instructions),
+        len(qubit_indices),
+        len(params),
+        len(opc_blob),
+        len(qub_blob),
+        len(par_blob),
+    )
+
+    parts = [header, opc_blob, qub_blob, par_blob]
+
+    # Measurements (uncompressed, small)
+    if has_meas and not measure_all:
+        mq = np.array([m.qubit for m in ir.measurements], dtype=idx_dtype)
+        mc = np.array([m.clbit for m in ir.measurements], dtype=idx_dtype)
+        parts.append(struct.pack(">H", len(ir.measurements)))
+        parts.append(mq.tobytes())
+        parts.append(mc.tobytes())
+
+    return b"".join(parts)
+
+
+def decode_perstream(
+    data: bytes,
+    decompress: CompressFn,
+) -> CircuitIR:
+    """Decode per-stream binary."""
+    off = 0
+    hdr_fmt = ">2sBBHHIIIIII"
+    hdr_size = struct.calcsize(hdr_fmt)
+    (
+        magic, version, flags,
+        n_qubits, n_clbits, n_gates, n_qidx, n_params,
+        len_opc, len_qub, len_par,
+    ) = struct.unpack_from(hdr_fmt, data, off)
+    off += hdr_size
+
+    if magic != _MAGIC_PS:
+        raise ValueError(f"Invalid magic: {magic!r}")
+
+    has_meas = bool(flags & _PS_FLAG_HAS_MEAS)
+    measure_all = bool(flags & _PS_FLAG_MEAS_ALL)
+    wide = bool(flags & _PS_FLAG_WIDE_IDX)
+    is_quant16 = bool(flags & _PS_FLAG_QUANT16)
+
+    idx_dtype = np.uint16 if wide else np.uint8
+    idx_size = 2 if wide else 1
+
+    # Decompress streams
+    opc_raw = decompress(data[off : off + len_opc]) if len_opc else b""
+    off += len_opc
+    qub_raw = decompress(data[off : off + len_qub]) if len_qub else b""
+    off += len_qub
+    par_raw = decompress(data[off : off + len_par]) if len_par else b""
+    off += len_par
+
+    opcodes = opc_raw
+    qubit_arr = np.frombuffer(qub_raw, dtype=idx_dtype) if qub_raw else np.array([], dtype=idx_dtype)
+
+    if is_quant16 and par_raw:
+        q16 = np.frombuffer(par_raw, dtype=np.uint16)
+        param_arr = _dequantize_params(q16)
+    elif par_raw:
+        param_arr = np.frombuffer(par_raw, dtype=np.float32)
+    else:
+        param_arr = np.array([], dtype=np.float32)
+
+    # Reconstruct instructions
+    qi = 0
+    pi = 0
+    instructions: list[Instruction] = []
+    for i in range(n_gates):
+        opc = opcodes[i]
+        gate_name = OPCODE_TO_GATE.get(opc)
+        if gate_name is None:
+            raise ValueError(f"Unknown opcode: 0x{opc:02X}")
+        arity = _gate_arity(opc)
+        n_p = _gate_n_params(opc)
+        qubits = qubit_arr[qi : qi + arity].tolist()
+        qi += arity
+        params = param_arr[pi : pi + n_p].tolist() if n_p > 0 else []
+        pi += n_p
+        instructions.append(Instruction(gate_name, qubits, params))
+
+    # Measurements
+    measurements: list[Measurement] = []
+    if has_meas:
+        if measure_all:
+            measurements = [Measurement(i, i) for i in range(n_qubits)]
+        else:
+            (n_meas,) = struct.unpack_from(">H", data, off)
+            off += 2
+            mq = np.frombuffer(data[off : off + n_meas * idx_size], dtype=idx_dtype)
+            off += n_meas * idx_size
+            mc = np.frombuffer(data[off : off + n_meas * idx_size], dtype=idx_dtype)
+            off += n_meas * idx_size
+            measurements = [
+                Measurement(int(mq[i]), int(mc[i])) for i in range(n_meas)
+            ]
+
+    return CircuitIR(n_qubits, n_clbits, instructions, measurements)

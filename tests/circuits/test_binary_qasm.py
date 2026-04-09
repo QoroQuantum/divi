@@ -16,11 +16,13 @@ from divi.circuits._binary_qasm import (
     decode,
     decode_columnar,
     decode_delta_columnar,
+    decode_perstream,
     decode_to_ir,
     encode,
     encode_columnar,
     encode_delta_columnar,
     encode_ir,
+    encode_perstream,
     ir_to_qasm,
     parse_qasm,
 )
@@ -450,3 +452,103 @@ class TestDeltaColumnarRoundTrip:
             measurements=[],
         )
         self._round_trip(ir, shuffle=False)
+
+
+# ---------------------------------------------------------------------------
+# Test per-stream encoder (v4)
+# ---------------------------------------------------------------------------
+
+import zlib
+
+def _zlib_c(d: bytes) -> bytes:
+    return zlib.compress(d)
+
+def _zlib_d(d: bytes) -> bytes:
+    return zlib.decompress(d)
+
+
+class TestPerstreamRoundTrip:
+    """Test the per-stream (v4) encoder with quantized params."""
+
+    def _round_trip(self, ir: CircuitIR, quantize: bool = True, param_tol: float = 5e-5):
+        binary = encode_perstream(ir, compress=_zlib_c, quantize_params=quantize)
+        ir_back = decode_perstream(binary, decompress=_zlib_d)
+        _assert_ir_equal(ir, ir_back, param_tol=param_tol)
+
+    def test_bell_state(self):
+        qasm = (
+            'OPENQASM 2.0;\ninclude "qelib1.inc";\n'
+            "qreg q[2];\ncreg c[2];\n"
+            "h q[0];\ncx q[0],q[1];\n"
+            "measure q[0] -> c[0];\nmeasure q[1] -> c[1];\n"
+        )
+        self._round_trip(parse_qasm(qasm))
+
+    def test_parameterized_circuit(self):
+        qasm = (
+            'OPENQASM 2.0;\ninclude "qelib1.inc";\n'
+            "qreg q[4];\ncreg c[4];\n"
+            "ry(0.12345678) q[0];\nrz(2.71828183) q[1];\n"
+            "cx q[0],q[1];\nrx(1.57079633) q[2];\n"
+            "measure q[0] -> c[0];\nmeasure q[1] -> c[1];\n"
+            "measure q[2] -> c[2];\nmeasure q[3] -> c[3];\n"
+        )
+        self._round_trip(parse_qasm(qasm))
+
+    def test_no_quantize(self):
+        """float32 mode should be lossless."""
+        ir = CircuitIR(
+            n_qubits=2, n_clbits=2,
+            instructions=[
+                Instruction("ry", [0], [1.2345678]),
+                Instruction("cx", [0, 1]),
+            ],
+            measurements=[Measurement(0, 0), Measurement(1, 1)],
+        )
+        self._round_trip(ir, quantize=False, param_tol=1e-6)
+
+    def test_empty_circuit(self):
+        ir = CircuitIR(2, 2, [], [])
+        self._round_trip(ir)
+
+    def test_wide_indices(self):
+        ir = CircuitIR(
+            n_qubits=300, n_clbits=300,
+            instructions=[Instruction("h", [0]), Instruction("cx", [0, 299])],
+            measurements=[Measurement(0, 0), Measurement(299, 299)],
+        )
+        self._round_trip(ir)
+
+    def test_partial_measurement(self):
+        ir = CircuitIR(
+            n_qubits=4, n_clbits=4,
+            instructions=[Instruction("h", [0])],
+            measurements=[Measurement(0, 2), Measurement(3, 1)],
+        )
+        self._round_trip(ir)
+
+    def test_quantization_precision(self):
+        """uint16 quantization should have max error < 5e-5."""
+        import math
+        params = [math.pi, -math.pi, 0.0, math.pi/4, -math.pi/2, 1e-4, 3.0]
+        ir = CircuitIR(
+            n_qubits=1, n_clbits=1,
+            instructions=[Instruction("ry", [0], [p]) for p in params],
+            measurements=[],
+        )
+        binary = encode_perstream(ir, compress=_zlib_c, quantize_params=True)
+        ir_back = decode_perstream(binary, decompress=_zlib_d)
+        for orig, decoded in zip(ir.instructions, ir_back.instructions):
+            assert abs(orig.params[0] - decoded.params[0]) < 5e-5, (
+                f"param {orig.params[0]}: error {abs(orig.params[0] - decoded.params[0])}"
+            )
+
+    def test_large_circuit(self):
+        """Stress test with many gates."""
+        import math
+        instructions = []
+        for i in range(500):
+            instructions.append(Instruction("ry", [i % 20], [math.pi * (i / 500)]))
+            instructions.append(Instruction("cx", [i % 20, (i + 1) % 20]))
+        ir = CircuitIR(20, 20, instructions, [Measurement(i, i) for i in range(20)])
+        self._round_trip(ir)
