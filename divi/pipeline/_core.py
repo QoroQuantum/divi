@@ -180,6 +180,16 @@ def _validate_stage_order(stages: Sequence[Stage]) -> None:
             "(a stage with handles_measurement=True)"
         )
 
+    meas_stages = [
+        s for s in stages if isinstance(s, BundleStage) and s.handles_measurement
+    ]
+    if len(meas_stages) > 1:
+        names = [s.name for s in meas_stages]
+        raise ValueError(
+            f"Multiple measurement-handling stages: {names}. "
+            "Use exactly one measurement-handling stage."
+        )
+
     axis_counts = Counter(stage.axis_name for stage in stages)
     duplicates = sorted(name for name, count in axis_counts.items() if count > 1)
     if duplicates:
@@ -201,6 +211,8 @@ class CircuitPipeline:
                 SpecStage first, then zero or more BundleStages.
         """
         _validate_stage_order(stages)
+        for i, stage in enumerate(stages):
+            stage.validate(before=tuple(stages[:i]), after=tuple(stages[i + 1 :]))
         self._stages = list(stages)
         self._forward_cache: dict[tuple[int, tuple[int, ...]], PipelineTrace] = {}
 

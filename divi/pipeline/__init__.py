@@ -12,6 +12,7 @@ from divi.pipeline._core import (
     Stage,
     format_pipeline_tree,
 )
+from divi.pipeline.abc import ContractViolation
 from divi.pipeline._dry_run import (
     DryRunReport,
     StageInfo,

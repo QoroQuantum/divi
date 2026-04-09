@@ -11,11 +11,14 @@ from divi.circuits._qasm_template import render_template
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
+    ContractViolation,
     ExpansionResult,
     MetaCircuitBatch,
     PipelineEnv,
+    Stage,
     StageToken,
 )
+from divi.pipeline.stages._qem_stage import QEMStage
 
 PARAM_SET_AXIS = "param_set"
 
@@ -43,6 +46,14 @@ class ParameterBindingStage(BundleStage):
 
     def __init__(self) -> None:
         super().__init__(name=type(self).__name__)
+
+    def validate(self, before: tuple[Stage, ...], after: tuple[Stage, ...]) -> None:
+        if any(isinstance(s, QEMStage) for s in before):
+            raise ContractViolation(
+                "ParameterBindingStage must come before QEMStage. "
+                "QEM transforms circuit bodies in a way that destroys "
+                "parameter templates needed for binding."
+            )
 
     def expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv

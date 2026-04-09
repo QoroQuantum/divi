@@ -10,8 +10,8 @@ import pytest
 import sympy
 
 from divi.circuits import MetaCircuit
-from divi.pipeline import CircuitPipeline, PipelineEnv
-from divi.pipeline.stages import MeasurementStage, ParameterBindingStage
+from divi.pipeline import CircuitPipeline, ContractViolation, PipelineEnv
+from divi.pipeline.stages import MeasurementStage, ParameterBindingStage, QEMStage
 from divi.pipeline.stages._parameter_binding_stage import _format_param
 from tests.pipeline.helpers import DummySpecStage, two_group_meta
 
@@ -172,3 +172,31 @@ class TestFormatParam:
     def test_very_small_rounds_to_zero(self):
         """A value that rounds to 0.000...0 at the given precision becomes '0'."""
         assert _format_param(1e-20, 10) == "0"
+
+
+class TestParameterBindingStageValidate:
+    """Spec: ParameterBindingStage must come before QEMStage."""
+
+    def test_param_binding_before_qem_passes(self):
+        CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=two_group_meta()),
+                ParameterBindingStage(),
+                QEMStage(),
+                MeasurementStage(),
+            ]
+        )
+
+    def test_param_binding_after_qem_raises(self):
+        with pytest.raises(
+            ContractViolation,
+            match="ParameterBindingStage must come before QEMStage",
+        ):
+            CircuitPipeline(
+                stages=[
+                    DummySpecStage(meta=two_group_meta()),
+                    QEMStage(),
+                    ParameterBindingStage(),
+                    MeasurementStage(),
+                ]
+            )

@@ -13,14 +13,18 @@ from divi.circuits._qasm_conversion import (
     normalize_qasm_after_cirq,
 )
 from divi.circuits.qem import QEMContext, QEMProtocol, _NoMitigation
+from divi.circuits.quepp import QuEPP
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
+    ContractViolation,
     ExpansionResult,
     MetaCircuitBatch,
     PipelineEnv,
+    Stage,
     StageToken,
 )
+from divi.pipeline.stages._pauli_twirl_stage import PauliTwirlStage
 from divi.pipeline.transformations import group_by_base_key
 
 QEM_AXIS = "qem"
@@ -36,7 +40,7 @@ class QEMStage(BundleStage):
 
     @property
     def axis_name(self) -> str | None:
-        return f"{QEM_AXIS}_{self._protocol.name}"
+        return f"{QEM_AXIS}_{self.protocol.name}"
 
     @property
     def stateful(self) -> bool:
@@ -44,7 +48,30 @@ class QEMStage(BundleStage):
 
     def __init__(self, protocol: QEMProtocol | None = None) -> None:
         super().__init__(name=type(self).__name__)
-        self._protocol = protocol if protocol is not None else _NoMitigation()
+        self.protocol = protocol if protocol is not None else _NoMitigation()
+
+    def validate(self, before: tuple[Stage, ...], after: tuple[Stage, ...]) -> None:
+        if isinstance(self.protocol, _NoMitigation):
+            return
+
+        # QuEPP's reduce uses classical simulation tied to the full
+        # Hamiltonian, so observable groups must be recombined first.
+        if isinstance(self.protocol, QuEPP):
+            if not any(
+                isinstance(s, BundleStage) and s.handles_measurement for s in after
+            ):
+                raise ContractViolation(
+                    "QEMStage with QuEPP requires a measurement-handling "
+                    "stage after it so that observable groups are "
+                    "recombined before QEM reduction."
+                )
+
+        if isinstance(self.protocol, QuEPP) and self.protocol.n_twirls > 0:
+            if not any(isinstance(s, PauliTwirlStage) for s in after):
+                raise ContractViolation(
+                    f"QEMStage with n_twirls={self.protocol.n_twirls} "
+                    "requires a PauliTwirlStage after it in the pipeline."
+                )
 
     def _expand_bodies(
         self, meta: MetaCircuit
@@ -56,7 +83,7 @@ class QEMStage(BundleStage):
         bodies: list[tuple] = []
 
         for tag, body in meta.circuit_body_qasms:
-            circuits, ctx = self._protocol.expand(
+            circuits, ctx = self.protocol.expand(
                 _cirq_circuit_from_qasm(body, meta.symbols), observable
             )
             ctxs.append(ctx)
@@ -88,11 +115,11 @@ class QEMStage(BundleStage):
         if not isinstance(sample, dict):
             return False
         if isinstance(next(iter(sample)), str):
-            if self._protocol.name != "NoMitigation":
+            if self.protocol.name != "NoMitigation":
                 raise TypeError(
                     f"QEMStage expects scalar expectation values, "
                     f"but received probability dicts. "
-                    f"{type(self._protocol).__name__} is not supported "
+                    f"{type(self.protocol).__name__} is not supported "
                     f"for probability-based measurements."
                 )
             return False
@@ -111,17 +138,17 @@ class QEMStage(BundleStage):
 
             if per_obs:
                 reduced[base_key] = {
-                    obs_idx: self._protocol.reduce([d[obs_idx] for d in ordered], ctx)
+                    obs_idx: self.protocol.reduce([d[obs_idx] for d in ordered], ctx)
                     for obs_idx in sorted(ordered[0].keys())
                 }
             else:
-                reduced[base_key] = self._protocol.reduce(ordered, ctx)
+                reduced[base_key] = self.protocol.reduce(ordered, ctx)
         return reduced
 
     def introspect(
         self, batch: MetaCircuitBatch, env: PipelineEnv, token: StageToken
     ) -> dict[str, Any]:
-        info: dict[str, Any] = {"protocol": self._protocol.name}
+        info: dict[str, Any] = {"protocol": self.protocol.name}
         contexts: dict | None = token
         if not contexts:
             return info
@@ -156,6 +183,6 @@ class QEMStage(BundleStage):
 
         if contexts is not None:
             all_ctxs = list(contexts.values())
-            self._protocol.post_reduce(all_ctxs)
+            self.protocol.post_reduce(all_ctxs)
 
         return reduced

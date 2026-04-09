@@ -495,8 +495,8 @@ class TestQuEPPProtocol:
         pipeline = CircuitPipeline(
             stages=[
                 DummySpecStage(meta=meta),
+                QEMStage(protocol=QuEPP(truncation_order=1, n_twirls=0)),
                 MeasurementStage(),
-                QEMStage(protocol=QuEPP(truncation_order=1)),
             ],
         )
         trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env)
@@ -544,8 +544,8 @@ class TestQuEPPProtocol:
             CircuitPipeline(
                 stages=[
                     CircuitSpecStage(),
+                    QEMStage(protocol=QuEPP(truncation_order=2, n_twirls=0)),
                     MeasurementStage(),
-                    QEMStage(protocol=QuEPP(truncation_order=2)),
                 ]
             )
             .run(

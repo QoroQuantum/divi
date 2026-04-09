@@ -352,6 +352,37 @@ spec stage and the measurement stage to add parameter binding, error mitigation,
 or any custom transformation.
 
 
+Stage Validation
+----------------
+
+The pipeline validates stage ordering at construction time.  Built-in stages
+declare their own constraints — for example, :class:`~divi.pipeline.stages.QEMStage`
+with QuEPP requires a measurement-handling stage after it, and
+:class:`~divi.pipeline.stages.ParameterBindingStage` must come before
+:class:`~divi.pipeline.stages.QEMStage`.
+
+Custom stages can participate in this by overriding the ``validate`` method:
+
+.. code-block:: python
+
+   from divi.pipeline.abc import ContractViolation
+
+   class MyStage(BundleStage):
+       def validate(self, before, after):
+           if not any(isinstance(s, MeasurementStage) for s in after):
+               raise ContractViolation(
+                   "MyStage requires a MeasurementStage after it."
+               )
+
+The ``before`` and ``after`` arguments are tuples of stage instances, so you can
+inspect any property (``handles_measurement``, ``axis_name``, protocol
+attributes, etc.) to decide whether the pipeline is valid.  Violations raise
+:class:`~divi.pipeline.abc.ContractViolation` with an actionable error message.
+
+Stages that don't override ``validate`` impose no constraints — the default is a
+no-op.
+
+
 What's Next
 -----------
 

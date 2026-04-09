@@ -109,6 +109,10 @@ class PipelineEnv:
     """Threading event signalling cancellation (set by ProgramEnsemble)."""
 
 
+class ContractViolation(ValueError):
+    """Raised when a stage's positional requirements are not met."""
+
+
 class Stage(ABC, Generic[InT, OutT]):
     """Abstract base for pipeline stages."""
 
@@ -128,6 +132,18 @@ class Stage(ABC, Generic[InT, OutT]):
     def stateful(self) -> bool:
         """Whether this stage invalidates forward-pass reuse from this point."""
         return False
+
+    def validate(self, before: tuple[Stage, ...], after: tuple[Stage, ...]) -> None:
+        """Check this stage's position in the pipeline.
+
+        Called by :class:`CircuitPipeline` at construction time, after
+        structural validation.  Override to inspect neighboring stages
+        and raise :class:`ContractViolation` if preconditions are not met.
+
+        Args:
+            before: Stages before this one in expand order.
+            after: Stages after this one in expand order.
+        """
 
     @abstractmethod
     def expand(self, items: InT, env: PipelineEnv) -> tuple[OutT, StageToken]:

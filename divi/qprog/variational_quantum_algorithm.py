@@ -912,27 +912,22 @@ class VariationalQuantumAlgorithm(QuantumProgram):
     def _build_cost_pipeline(self, spec_stage: Stage) -> CircuitPipeline:
         """Build the cost-evaluation pipeline.
 
-        Stages: spec_stage → ParameterBinding → QEM → Measurement.
-
-        QEM must come before Measurement so that reduce sees full-H
-        scalars (after MeasurementStage recombines observable groups)
-        rather than per-group values that don't match the classical
-        simulation context.
+        Stages: spec_stage → ParameterBinding → QEM (→ PauliTwirl) → Measurement.
 
         Args:
             spec_stage: A SpecStage producing MetaCircuit(s) from the
                 cost Hamiltonian (e.g. TrotterSpecStage).
         """
 
-        stages = [
+        stages: list[Stage] = [
             spec_stage,
             ParameterBindingStage(),
             QEMStage(protocol=self._qem_protocol),
-            MeasurementStage(grouping_strategy=self._grouping_strategy),
         ]
         n_twirls = getattr(self._qem_protocol, "n_twirls", 0)
         if n_twirls > 0:
             stages.append(PauliTwirlStage(n_twirls=n_twirls))
+        stages.append(MeasurementStage(grouping_strategy=self._grouping_strategy))
         return CircuitPipeline(stages=stages)
 
     def _build_measurement_pipeline(self) -> CircuitPipeline:
