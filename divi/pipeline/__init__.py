@@ -7,6 +7,7 @@ from divi.pipeline._core import (
     CircuitPipeline,
     ExpansionResult,
     PipelineEnv,
+    PipelineResult,
     PipelineTrace,
     SpecStage,
     Stage,

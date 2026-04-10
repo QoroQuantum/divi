@@ -22,12 +22,14 @@ from divi.pipeline.abc import (
     ChildResults,
     ExpansionResult,
     PipelineEnv,
+    PipelineResult,
     PipelineTrace,
     ResultFormat,
     SpecStage,
     Stage,
     StageToken,
 )
+from divi.pipeline.transformations import FOREIGN_KEY_ATTR
 
 logger = logging.getLogger(__name__)
 
@@ -230,7 +232,7 @@ class CircuitPipeline:
         execute_fn: Callable[
             [PipelineTrace, PipelineEnv], ChildResults
         ] = _default_execute_fn,
-    ) -> Any:
+    ) -> PipelineResult:
         """
         Run the pipeline: spec expand → bundle expand → (substitute params, generate QASM) → execute → reduce.
 
@@ -250,7 +252,9 @@ class CircuitPipeline:
                 backend execution.
 
         Returns:
-            Reduced result for a single batch.
+            A :class:`PipelineResult` dict keyed by :data:`NodeKey` tuples.
+            For single-circuit pipelines, use ``result.value`` to get the
+            result directly.
         """
 
         plan = self.run_forward_pass(
@@ -282,7 +286,7 @@ class CircuitPipeline:
                 else:
                     raw = _counts_to_expvals(raw, plan.final_batch)
 
-        return self._reduce(raw, env, plan.stage_tokens)
+        return PipelineResult(self._reduce(raw, env, plan.stage_tokens))
 
     def run_forward_pass(
         self, initial_spec: Any, env: PipelineEnv, *, force_forward_sweep: bool = False
@@ -470,6 +474,10 @@ def _reduce_with_isolated_axes(
     out: ChildResults = {}
     for foreign_key, group_results in groups.items():
         scoped_token = _scope_token(token, foreign_key, foreign_axes)
+        if isinstance(scoped_token, dict):
+            # Inject the foreign_key so the stage can identify which
+            # foreign-axis group (e.g. param_set index) is being reduced.
+            scoped_token = {**scoped_token, FOREIGN_KEY_ATTR: foreign_key}
         group_reduced = stage.reduce(group_results, env, scoped_token)
         for own_key, value in group_reduced.items():
             out[own_key + foreign_key] = value

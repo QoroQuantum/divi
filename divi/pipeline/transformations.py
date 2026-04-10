@@ -17,6 +17,10 @@ from typing import Any
 
 from divi.pipeline.abc import ChildResults
 
+#: Key injected into scoped tokens by :func:`_reduce_with_isolated_axes`
+#: so that stages can identify which foreign-axis group is being reduced.
+FOREIGN_KEY_ATTR = "_foreign_key"
+
 
 def strip_axis_from_label(
     child_label: tuple[Any, ...], axis_name: str

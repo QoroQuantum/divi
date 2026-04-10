@@ -25,7 +25,7 @@ from divi.pipeline.abc import (
     StageToken,
 )
 from divi.pipeline.stages._pauli_twirl_stage import PauliTwirlStage
-from divi.pipeline.transformations import group_by_base_key
+from divi.pipeline.transformations import FOREIGN_KEY_ATTR, group_by_base_key
 
 QEM_AXIS = "qem"
 
@@ -87,10 +87,17 @@ class QEMStage(BundleStage):
                 _cirq_circuit_from_qasm(body, meta.symbols), observable
             )
             ctxs.append(ctx)
-            bodies.extend(
-                ((*tag, (self.axis_name, i)), normalize_qasm_after_cirq(cirq.qasm(c)))
-                for i, c in enumerate(circuits)
-            )
+
+            for i, c in enumerate(circuits):
+                # Symbolic target (index 0): reuse original QASM body
+                # to avoid a lossy sympy→Cirq→QASM round-trip.
+                # Everything else (Clifford path circuits): export normally.
+                qasm = (
+                    body
+                    if i == 0 and ctx.get("symbolic")
+                    else normalize_qasm_after_cirq(cirq.qasm(c))
+                )
+                bodies.append(((*tag, (self.axis_name, i)), qasm))
 
         return tuple(bodies), ctxs
 
@@ -161,6 +168,12 @@ class QEMStage(BundleStage):
                 info[key] = data[key]
         if "n_paths" in data:
             info["n_clifford_sims"] = data["n_paths"]
+
+        # Skip float-dependent stats for symbolic weights (not yet bound).
+        if data.get("symbolic"):
+            info["symbolic"] = True
+            return info
+
         weights = data.get("weights")
         if weights is not None and len(weights) > 0:
             info["weight_sum"] = round(float(np.sum(weights)), 4)
@@ -173,10 +186,41 @@ class QEMStage(BundleStage):
             info["classical_estimate"] = round(float(weights @ classical), 6)
         return info
 
+    def _bind_symbolic_weights(
+        self,
+        contexts: dict[tuple, QEMContext],
+        foreign_key: tuple,
+        env: PipelineEnv,
+    ) -> None:
+        """Evaluate symbolic QuEPP weights using bound parameter values.
+
+        When QuEPP runs before ParameterBindingStage, weights are stored
+        as sympy expressions.  This method substitutes the concrete
+        parameter values for the current param_set group.
+        """
+        param_idx = next((v for k, v in foreign_key if k == "param_set"), None)
+        if param_idx is None:
+            return
+        param_values = np.asarray(env.param_sets, dtype=float)[param_idx]
+
+        for key, ctx in list(contexts.items()):
+            if not isinstance(ctx, dict) or not ctx.get("symbolic"):
+                continue
+            # Shallow-copy to avoid mutating the shared context across
+            # different param_set groups.
+            ctx = dict(ctx)
+            contexts[key] = ctx
+            symbols = ctx.get("weight_symbols", [])
+            QuEPP.evaluate_symbolic_weights(ctx, symbols, param_values)
+
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken
     ) -> ChildResults:
         contexts: dict[tuple, QEMContext] | None = token
+        if isinstance(contexts, dict):
+            foreign_key = contexts.pop(FOREIGN_KEY_ATTR, ())
+            self._bind_symbolic_weights(contexts, foreign_key, env)
+
         grouped = group_by_base_key(results, self.axis_name, indexed=True)
         per_obs = self._detect_per_obs(grouped)
         reduced = self._reduce_grouped(grouped, contexts, per_obs=per_obs)

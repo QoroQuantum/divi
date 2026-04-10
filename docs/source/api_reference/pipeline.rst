@@ -59,6 +59,18 @@ Built-in Stages
    :show-inheritance:
    :special-members: __init__
 
+.. autoclass:: divi.pipeline.stages.PennyLaneSpecStage
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+
+.. autoclass:: divi.pipeline.stages.QiskitSpecStage
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :special-members: __init__
+
 .. autoclass:: divi.pipeline.stages.TrotterSpecStage
    :members:
    :undoc-members:

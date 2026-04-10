@@ -97,6 +97,14 @@ Divi ships with six stages that cover the most common quantum workflows:
      - Spec
      - Passes a single :class:`~divi.circuits.MetaCircuit` through as a one-element batch.
        Used by :class:`VQE`, :class:`CustomVQA`, and other algorithms that receive a pre-built circuit.
+   * - :class:`~divi.pipeline.stages.PennyLaneSpecStage`
+     - Spec
+     - Converts PennyLane ``QuantumScript`` or ``QNode`` objects into MetaCircuits.
+       Supports scalar and array parameters, and ``probs()``, ``expval()``, ``counts()`` measurements.
+   * - :class:`~divi.pipeline.stages.QiskitSpecStage`
+     - Spec
+     - Converts Qiskit ``QuantumCircuit`` objects into MetaCircuits.
+       ``ParameterExpression`` objects (e.g. ``2 * theta``) are preserved as sympy expressions.
    * - :class:`~divi.pipeline.stages.TrotterSpecStage`
      - Spec
      - Generates Trotterized circuits from a Hamiltonian for time-evolution and
@@ -149,19 +157,19 @@ per stage:
    │   ├── n_qubits: 4
    │   ├── n_gates: 4
    │   └── n_2q_gates: 2
-   ├── MeasurementStage [obs_group] → ×5
-   │   ├── strategy: qwc
-   │   ├── n_groups: 5
-   │   └── n_terms: 14
-   ├── ParameterBindingStage [param_set] → 1
-   │   └── n_params: 3
    ├── QEMStage [qem_quepp] → ×10
    │   ├── protocol: quepp
    │   ├── n_paths: 9
    │   └── n_clifford_sims: 9
    ├── PauliTwirlStage [twirl] → ×10
    │   └── n_twirls: 10
-   └── Total: 5 × 10 × 10 = 500 circuits
+   ├── MeasurementStage [obs_group] → ×5
+   │   ├── strategy: qwc
+   │   ├── n_groups: 5
+   │   └── n_terms: 14
+   ├── ParameterBindingStage [param_set] → 1
+   │   └── n_params: 3
+   └── Total: 10 × 10 × 5 = 500 circuits
 
 The report shows the multiplicative expansion at each stage.  Use this to
 estimate cloud costs, tune ``truncation_order`` or ``n_twirls``, and verify
@@ -191,9 +199,9 @@ example, :class:`~divi.qprog.VQE` builds two pipelines:
    def _build_cost_pipeline(self, spec_stage):
        return CircuitPipeline(stages=[
            spec_stage,              # SpecStage  →  MetaCircuit batch
-           MeasurementStage(...),   # Split observables into groups
-           ParameterBindingStage(), # Bind symbolic params → numeric
            QEMStage(protocol=...),  # Apply error mitigation variants
+           MeasurementStage(...),   # Split observables into groups
+           ParameterBindingStage(), # Bind symbolic params → numeric (last!)
        ])
 
    def _build_measurement_pipeline(self):
@@ -206,6 +214,14 @@ example, :class:`~divi.qprog.VQE` builds two pipelines:
 The **cost pipeline** evaluates expectation values during optimization (with
 optional error mitigation), while the **measurement pipeline** samples the
 probability distribution after optimization to extract the solution.
+
+By default, ``ParameterBindingStage`` runs last — structural stages process the
+symbolic circuit once instead of repeating work per parameter set.  When using
+:class:`~divi.circuits.quepp.QuEPP`, this means QuEPP cannot normalise rotation
+angles, which may produce more Pauli paths.  If this is a concern (check with
+``dry_run()``), set ``QuEPP(bind_before_mitigation=True)`` to bind parameters
+first — fewer paths per circuit, but more total mitigation work across parameter
+sets.
 
 
 Example 1: Custom Algorithm with CustomVQA
@@ -273,7 +289,62 @@ You receive all VQA features (loss history, best parameters, checkpointing)
 without writing any pipeline or stage code.
 
 
-Example 2: Writing a Custom SpecStage
+Example 2: Standalone Pipelines with PennyLane and Qiskit
+----------------------------------------------------------
+
+You can run PennyLane or Qiskit circuits directly through a pipeline using the
+converter spec stages — no ``QuantumProgram`` required.
+
+**PennyLane QuantumScript:**
+
+.. code-block:: python
+
+   import pennylane as qml
+   from divi.pipeline import CircuitPipeline, PipelineEnv
+   from divi.pipeline.stages import PennyLaneSpecStage, MeasurementStage
+   from divi.backends import MaestroSimulator
+
+   qscript = qml.tape.QuantumScript(
+       ops=[qml.Hadamard(0), qml.CNOT(wires=[0, 1])],
+       measurements=[qml.probs()],
+   )
+
+   pipeline = CircuitPipeline(stages=[
+       PennyLaneSpecStage(),
+       MeasurementStage(),
+   ])
+
+   env = PipelineEnv(backend=MaestroSimulator())
+   result = pipeline.run(initial_spec=qscript, env=env)
+   print(result.value)  # {"00": ~0.5, "11": ~0.5}
+
+**Qiskit QuantumCircuit:**
+
+.. code-block:: python
+
+   from qiskit import QuantumCircuit
+   from divi.pipeline import CircuitPipeline, PipelineEnv
+   from divi.pipeline.stages import QiskitSpecStage, MeasurementStage
+   from divi.backends import MaestroSimulator
+
+   qc = QuantumCircuit(2, 2)
+   qc.h(0)
+   qc.cx(0, 1)
+   qc.measure([0, 1], [0, 1])
+
+   pipeline = CircuitPipeline(stages=[
+       QiskitSpecStage(),
+       MeasurementStage(),
+   ])
+
+   env = PipelineEnv(backend=MaestroSimulator())
+   result = pipeline.run(initial_spec=qc, env=env)
+   print(result.value)  # {"00": ~0.5, "11": ~0.5}
+
+Both stages accept single circuits, sequences, or mappings as input.
+
+
+Example 3: Writing a Custom SpecStage
 --------------------------------------
 
 For full control you can write a custom :class:`~divi.pipeline.SpecStage` and
@@ -357,9 +428,7 @@ Stage Validation
 
 The pipeline validates stage ordering at construction time.  Built-in stages
 declare their own constraints — for example, :class:`~divi.pipeline.stages.QEMStage`
-with QuEPP requires a measurement-handling stage after it, and
-:class:`~divi.pipeline.stages.ParameterBindingStage` must come before
-:class:`~divi.pipeline.stages.QEMStage`.
+with QuEPP requires a measurement-handling stage after it.
 
 Custom stages can participate in this by overriding the ``validate`` method:
 

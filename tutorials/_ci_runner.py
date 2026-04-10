@@ -54,6 +54,7 @@ NO_PATCHES = [
     "backend_properties_conversion.py",
     "custom_vqa.py",
     "qaoa_binary_quadratic_model.py",
+    "standalone_pipeline.py",
     "time_evolution.py",
     "time_evolution_trajectory.py",
     "vqe_h2_with_grouping.py",
