@@ -30,7 +30,6 @@ from divi.qprog.algorithms._initial_state import (
 from divi.qprog.problems._base import QAOAProblem
 from divi.qprog.problems._graph_partitioning_utils import (
     GraphPartitioningConfig,
-    _edge_partition_graph,
     _node_partition_graph,
 )
 from divi.typing import GraphProblemTypes
@@ -148,17 +147,10 @@ class _GraphProblemBase(QAOAProblem):
                 stacklevel=2,
             )
 
-        if isinstance(self, EdgePartitioningProblem):
-            subgraphs = _edge_partition_graph(
-                self.graph,
-                n_max_nodes_per_cluster=self._config.max_n_nodes_per_cluster,
-            )
-            subgraphs = [sg for sg in subgraphs if sg.size() > 0]
-        else:
-            subgraphs = _node_partition_graph(
-                self.graph,
-                partitioning_config=self._config,
-            )
+        subgraphs = _node_partition_graph(
+            self.graph,
+            partitioning_config=self._config,
+        )
 
         self._reverse_index_maps = {}
         sub_problems = {}
@@ -293,55 +285,6 @@ class MaxWeightCycleProblem(_GraphProblemBase):
     _pl_func_name = "max_weight_cycle"
     _constrained_state_cls = SuperpositionState
     _unconstrained_state_cls = SuperpositionState
-
-
-class EdgePartitioningProblem(_GraphProblemBase):
-    """Placeholder for edge-partitioning problems.
-
-    Edge partitioning operates on directed graphs and uses weak connectivity.
-    The Hamiltonian construction is not yet implemented — this class exists
-    so that :class:`PartitioningProgramEnsemble` can detect the partitioning mode
-    from the Problem type.
-
-    .. note:: This is incomplete.  Passing an ``EdgePartitioningProblem``
-       to :class:`QAOA` directly will raise ``AttributeError`` because
-       ``_pl_func_name`` is not set.
-    """
-
-    _constrained_state_cls = SuperpositionState
-    _unconstrained_state_cls = SuperpositionState
-
-    #: Signals that the graph is directed and needs weak-connectivity checks.
-    is_edge_problem: bool = True
-
-    def __init__(self, graph: GraphProblemTypes):
-        # Skip _GraphProblemBase.__init__ — no PennyLane function to call.
-        self._graph = graph
-        self._is_constrained = True
-
-    @property
-    def cost_hamiltonian(self):
-        raise NotImplementedError(
-            "EdgePartitioningProblem does not yet support Hamiltonian construction."
-        )
-
-    @property
-    def mixer_hamiltonian(self):
-        raise NotImplementedError(
-            "EdgePartitioningProblem does not yet support Hamiltonian construction."
-        )
-
-    @property
-    def loss_constant(self):
-        raise NotImplementedError(
-            "EdgePartitioningProblem does not yet support Hamiltonian construction."
-        )
-
-    @property
-    def decode_fn(self):
-        raise NotImplementedError(
-            "EdgePartitioningProblem does not yet support decoding."
-        )
 
 
 # Partitioning is most robust for cut-style objectives (e.g. MaxCut).

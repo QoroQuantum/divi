@@ -43,7 +43,6 @@ class SimpleTestProgram(QuantumProgram):
 
     def _post_process_results(self, results: dict):
         """Dummy implementation for the abstract method."""
-        pass
 
 
 class SampleProgramEnsemble(ProgramEnsemble):
@@ -283,23 +282,20 @@ class TestProgramEnsemble:
         assert program_ensemble.check_all_done()
 
     def test_join_handles_task_exceptions(self, program_ensemble, mocker):
-        """Ensures join() catches exceptions from futures and still cleans up."""
+        """Ensures join() catches exceptions from futures, collects partial results, and cleans up."""
         program_ensemble.create_programs()
-        program_ensemble.run(blocking=False)  # Start a non-blocking run
+        program_ensemble.run(blocking=False)
 
-        # Mock the futures to simulate one failing task
         failing_future = Future()
         failing_future.set_exception(ValueError("Task failed"))
         successful_future = Future()
         successful_future.set_result((5, 5.0))
         program_ensemble.futures = [failing_future, successful_future]
 
-        # Mock as_completed to yield the failing future first
         mocker.patch(
             "divi.qprog.ensemble.as_completed",
             return_value=[failing_future, successful_future],
         )
-        # Mock executor shutdown to confirm it's called during cleanup
         mock_shutdown = mocker.spy(program_ensemble._executor, "shutdown")
 
         with pytest.raises(RuntimeError, match="Batch execution failed"):
@@ -307,6 +303,9 @@ class TestProgramEnsemble:
 
         mock_shutdown.assert_called_once_with(wait=True)
         assert program_ensemble._executor is None
+        # The successful future's results should still be collected in the finally block
+        assert program_ensemble.total_circuit_count == 5
+        assert program_ensemble.total_run_time == 5.0
 
     def test_aggregate_results_calls_join_and_aggregates(self, program_ensemble):
         """
@@ -574,6 +573,74 @@ class TestProgramEnsemble:
         assert result is False
         mock_handle_cancellation.assert_called_once()
         mock_collect_results.assert_called_once()
+
+    def test_join_keyboard_interrupt_no_double_count(self, program_ensemble, mocker):
+        """Results collected before KeyboardInterrupt are not double-counted."""
+        program_ensemble.create_programs()
+        program_ensemble.run(blocking=False)
+
+        # Create two pre-resolved futures with known results
+        f1 = Future()
+        f1.set_result((10, 5.0))
+        f2 = Future()
+        f2.set_result((7, 3.0))
+        program_ensemble.futures = [f1, f2]
+
+        # as_completed yields f1 then raises, simulating an interrupt
+        # after one future was already collected by the loop.
+        def _partial_as_completed(futures):
+            yield f1
+            raise KeyboardInterrupt()
+
+        mocker.patch(
+            "divi.qprog.ensemble.as_completed", side_effect=_partial_as_completed
+        )
+        mocker.patch.object(program_ensemble, "_handle_cancellation")
+
+        program_ensemble.join()
+
+        # Both futures completed (10 + 7 = 17), each counted exactly once
+        assert program_ensemble.total_circuit_count == 17
+        assert program_ensemble.total_run_time == 8.0
+
+    def test_join_exception_no_double_count(self, program_ensemble, mocker):
+        """All completed futures are counted exactly once after a task exception."""
+        program_ensemble.create_programs()
+        program_ensemble.run(blocking=False)
+
+        f1 = Future()
+        f1.set_result((10, 5.0))
+        f2 = Future()
+        f2.set_result((7, 3.0))
+        f_bad = Future()
+        f_bad.set_exception(ValueError("boom"))
+        program_ensemble.futures = [f1, f2, f_bad]
+
+        # as_completed yields f1 successfully, then the failing future
+        # which causes the loop to raise into the except Exception branch.
+        def _partial_as_completed(futures):
+            yield f1
+            yield f_bad
+
+        mocker.patch(
+            "divi.qprog.ensemble.as_completed", side_effect=_partial_as_completed
+        )
+
+        with pytest.raises(RuntimeError, match="Batch execution failed"):
+            program_ensemble.join()
+
+        # f1 (10) and f2 (7) both completed, each counted exactly once
+        assert program_ensemble.total_circuit_count == 17
+        assert program_ensemble.total_run_time == 8.0
+
+    def test_run_rejects_duplicate_program_instances(self, program_ensemble):
+        """run() raises when the same program instance is assigned to multiple keys."""
+        program_ensemble.create_programs()
+        shared = program_ensemble.programs["prog1"]
+        program_ensemble.programs = {"a": shared, "b": shared}
+
+        with pytest.raises(RuntimeError, match="Duplicate program instances"):
+            program_ensemble.run()
 
     def test_atexit_unregister_failure(self, program_ensemble, mocker):
         """Test atexit unregister handles TypeError."""

@@ -7,7 +7,6 @@
 from divi.qprog.problems._base import QAOAProblem
 from divi.qprog.problems._binary import BinaryOptimizationProblem
 from divi.qprog.problems._graphs import (
-    EdgePartitioningProblem,
     MaxCliqueProblem,
     MaxCutProblem,
     MaxIndependentSetProblem,

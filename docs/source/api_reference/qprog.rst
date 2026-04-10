@@ -134,11 +134,7 @@ classes for common graph and binary optimisation problems.
    :special-members: __init__
    :no-index:
 
-.. autoclass:: divi.qprog.problems.EdgePartitioningProblem
-   :members:
-   :show-inheritance:
-   :special-members: __init__
-   :no-index:
+
 
 Problem Utilities
 ~~~~~~~~~~~~~~~~~

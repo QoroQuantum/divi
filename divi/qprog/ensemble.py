@@ -530,7 +530,9 @@ class ProgramEnsemble(ABC):
                 )
             self._handle_cancellation()
 
-            # Collect results from any futures that completed before/during cancellation
+            # Re-collect all completed results from scratch to avoid duplicates
+            # from the as_completed loop above.
+            completed_futures.clear()
             self._collect_completed_results(completed_futures)
 
             return False
@@ -544,7 +546,9 @@ class ProgramEnsemble(ABC):
             for f in self.futures:
                 f.cancel()
 
-            # Collect results from any futures that completed before the failure
+            # Re-collect all completed results from scratch to avoid duplicates
+            # from the as_completed loop above.
+            completed_futures.clear()
             self._collect_completed_results(completed_futures)
 
             # Re-raise a new error to indicate the batch failed.
