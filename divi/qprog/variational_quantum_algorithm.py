@@ -912,27 +912,37 @@ class VariationalQuantumAlgorithm(QuantumProgram):
     def _build_cost_pipeline(self, spec_stage: Stage) -> CircuitPipeline:
         """Build the cost-evaluation pipeline.
 
-        Stages: spec_stage → ParameterBinding → QEM → Measurement.
+        Default ordering: spec → QEM (→ PauliTwirl) → Measurement → ParamBinding.
 
-        QEM must come before Measurement so that reduce sees full-H
-        scalars (after MeasurementStage recombines observable groups)
-        rather than per-group values that don't match the classical
-        simulation context.
+        ParameterBinding is placed last because it is a cheap string-template
+        operation, whereas QEM/PauliTwirl/Measurement are expensive structural
+        transforms that are independent of parameter values.  Binding last
+        avoids redundantly repeating structural work for each parameter set.
+
+        When ``QuEPP(bind_before_mitigation=True)`` is set, binding moves
+        before QEM so that QuEPP receives concrete angles and can normalise
+        rotations — producing fewer Pauli paths at the cost of repeating
+        structural work per parameter set.
 
         Args:
             spec_stage: A SpecStage producing MetaCircuit(s) from the
                 cost Hamiltonian (e.g. TrotterSpecStage).
         """
+        bind_early = getattr(self._qem_protocol, "bind_before_mitigation", False)
 
-        stages = [
-            spec_stage,
-            ParameterBindingStage(),
-            QEMStage(protocol=self._qem_protocol),
-            MeasurementStage(grouping_strategy=self._grouping_strategy),
-        ]
+        stages: list[Stage] = [spec_stage]
+        if bind_early:
+            stages.append(ParameterBindingStage())
+
+        stages.append(QEMStage(protocol=self._qem_protocol))
         n_twirls = getattr(self._qem_protocol, "n_twirls", 0)
         if n_twirls > 0:
             stages.append(PauliTwirlStage(n_twirls=n_twirls))
+        stages.append(MeasurementStage(grouping_strategy=self._grouping_strategy))
+
+        if not bind_early:
+            stages.append(ParameterBindingStage())
+
         return CircuitPipeline(stages=stages)
 
     def _build_measurement_pipeline(self) -> CircuitPipeline:

@@ -7,11 +7,13 @@ from divi.pipeline._core import (
     CircuitPipeline,
     ExpansionResult,
     PipelineEnv,
+    PipelineResult,
     PipelineTrace,
     SpecStage,
     Stage,
     format_pipeline_tree,
 )
+from divi.pipeline.abc import ContractViolation
 from divi.pipeline._dry_run import (
     DryRunReport,
     StageInfo,

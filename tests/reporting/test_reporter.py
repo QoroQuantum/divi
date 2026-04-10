@@ -138,6 +138,11 @@ class TestLoggingProgressReporter:
     Tests for the LoggingProgressReporter class.
     """
 
+    @pytest.fixture(autouse=True)
+    def _reset_logging_flag(self, monkeypatch):
+        """Ensure the module-level _logging_disabled flag is clean for each test."""
+        monkeypatch.setattr(_qlogger, "_logging_disabled", False)
+
     def test_update(self, mocker):
         """
         Test the update method.

@@ -69,6 +69,10 @@ python qaoa_max_clique.py --local-qiskit --force-sampling
 
 - **`time_evolution_local.py`** - Hamiltonian time evolution with probs, observables, and QDrift
 
+### Standalone Pipelines
+
+- **`standalone_pipeline.py`** - Using PennyLane and Qiskit circuits directly in pipelines
+
 ### Custom Workflows
 
 - **`custom_vqa.py`** - CustomVQA with QuantumScript and Qiskit inputs

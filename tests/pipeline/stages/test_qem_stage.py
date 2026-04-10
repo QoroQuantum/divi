@@ -17,8 +17,9 @@ from mitiq.zne.scaling import fold_global
 
 from divi.circuits import MetaCircuit
 from divi.circuits.qem import ZNE, QEMContext, QEMProtocol, _NoMitigation
-from divi.pipeline import CircuitPipeline
-from divi.pipeline.stages import MeasurementStage, QEMStage
+from divi.circuits.quepp import QuEPP
+from divi.pipeline import CircuitPipeline, ContractViolation
+from divi.pipeline.stages import MeasurementStage, PauliTwirlStage, QEMStage
 from tests.pipeline.helpers import DummySpecStage, ones_execute_fn, two_group_meta
 
 
@@ -81,8 +82,8 @@ class TestQEMStage:
         pipeline = CircuitPipeline(
             stages=[
                 DummySpecStage(meta=meta),
-                MeasurementStage(),
                 QEMStage(protocol=protocol),
+                MeasurementStage(),
             ],
         )
 
@@ -97,33 +98,6 @@ class TestQEMStage:
         )
         assert len(reduced) == 1
         assert list(reduced.values())[0] == pytest.approx(3.9)
-
-    def test_reduce_raises_on_dict_valued_results(self, dummy_pipeline_env):
-        """QEM reduce must reject probability dicts — only scalars are valid."""
-        protocol = _DummyQEMProtocol()
-        meta = two_group_meta()
-
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=meta),
-                MeasurementStage(),
-                QEMStage(protocol=protocol),
-            ],
-        )
-
-        def probs_execute_fn(trace, env):
-            """Return probability dicts instead of scalars."""
-            from divi.pipeline._compilation import _compile_batch
-
-            _, lineage = _compile_batch(trace.final_batch)
-            return {bk: {"00": 0.5, "11": 0.5} for bk in lineage.values()}
-
-        with pytest.raises(TypeError, match="scalar expectation values"):
-            pipeline.run(
-                initial_spec="ignored",
-                env=dummy_pipeline_env,
-                execute_fn=probs_execute_fn,
-            )
 
     def test_reduce_handles_multi_obs_expval_dicts(self, dummy_pipeline_env):
         """QEM reduce applies postprocessing per observable when values are {int: float} dicts."""
@@ -184,8 +158,8 @@ class TestPipelineOutputMetaCircuitWithQEM:
         pipeline = CircuitPipeline(
             stages=[
                 DummySpecStage(meta=meta_circuit),
-                MeasurementStage(),
                 QEMStage(protocol=default_zne_protocol),
+                MeasurementStage(),
             ],
         )
         trace = pipeline.run_forward_pass(42, dummy_pipeline_env)
@@ -212,3 +186,104 @@ class TestPipelineOutputMetaCircuitWithQEM:
         for key, meta in trace.final_batch.items():
             assert len(meta.circuit_body_qasms) == 1
             assert meta.measurement_qasms
+
+
+class TestQEMStageValidate:
+    """Spec: QEMStage.validate enforces QuEPP-before-measurement and twirl-after constraints."""
+
+    def test_quepp_before_measurement_passes(self):
+        CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=two_group_meta()),
+                QEMStage(protocol=QuEPP(truncation_order=1, n_twirls=0)),
+                MeasurementStage(),
+            ]
+        )
+
+    def test_quepp_after_measurement_raises(self):
+        with pytest.raises(
+            ContractViolation,
+            match="requires a measurement-handling stage after it",
+        ):
+            CircuitPipeline(
+                stages=[
+                    DummySpecStage(meta=two_group_meta()),
+                    MeasurementStage(),
+                    QEMStage(protocol=QuEPP(truncation_order=1, n_twirls=0)),
+                ]
+            )
+
+    def test_non_quepp_after_measurement_passes(self):
+        """Non-QuEPP protocols (like ZNE) work in any position."""
+        CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=two_group_meta()),
+                MeasurementStage(),
+                QEMStage(protocol=_DummyQEMProtocol()),
+            ]
+        )
+
+    def test_no_mitigation_after_measurement_passes(self):
+        CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=two_group_meta()),
+                MeasurementStage(),
+                QEMStage(protocol=_NoMitigation()),
+            ]
+        )
+
+    def test_twirls_with_twirl_stage_after_passes(self):
+        CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=two_group_meta()),
+                QEMStage(protocol=QuEPP(truncation_order=1, n_twirls=10)),
+                PauliTwirlStage(n_twirls=10),
+                MeasurementStage(),
+            ]
+        )
+
+    def test_twirls_missing_twirl_stage_raises(self):
+        with pytest.raises(
+            ContractViolation,
+            match=r"n_twirls=10 requires a PauliTwirlStage after it",
+        ):
+            CircuitPipeline(
+                stages=[
+                    DummySpecStage(meta=two_group_meta()),
+                    QEMStage(protocol=QuEPP(truncation_order=1, n_twirls=10)),
+                    MeasurementStage(),
+                ]
+            )
+
+    def test_twirls_twirl_before_qem_raises(self):
+        with pytest.raises(
+            ContractViolation,
+            match=r"n_twirls=10 requires a PauliTwirlStage after it",
+        ):
+            CircuitPipeline(
+                stages=[
+                    DummySpecStage(meta=two_group_meta()),
+                    PauliTwirlStage(n_twirls=10),
+                    QEMStage(protocol=QuEPP(truncation_order=1, n_twirls=10)),
+                    MeasurementStage(),
+                ]
+            )
+
+    def test_quepp_with_twirls_full_pipeline_passes(self):
+        CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=two_group_meta()),
+                QEMStage(protocol=QuEPP(truncation_order=1, n_twirls=10)),
+                PauliTwirlStage(n_twirls=10),
+                MeasurementStage(),
+            ]
+        )
+
+    def test_no_twirls_no_twirl_stage_passes(self):
+        CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=two_group_meta()),
+                QEMStage(protocol=QuEPP(truncation_order=1, n_twirls=0)),
+                MeasurementStage(),
+            ]
+        )

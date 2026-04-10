@@ -27,6 +27,7 @@ import cirq
 import numpy as np
 import stim
 import stimcirq
+import sympy as sp
 from cirq.circuits.circuit import Circuit
 from pennylane.exceptions import TermsUndefinedError as _TermsUndefinedError
 
@@ -128,7 +129,7 @@ class _RotationGate:
     qubit: cirq.Qid
     qubit_idx: int  # index in the sorted qubit list
     axis: str  # "x", "y", or "z"
-    angle: float  # rotation angle θ (in radians)
+    angle: float | sp.Expr  # rotation angle θ (in radians)
 
 
 @dataclass(frozen=True)
@@ -136,7 +137,7 @@ class _PauliPath:
     """One term in the CPT expansion."""
 
     branches: tuple[int, ...]  # 0=cos/skip, 1=sin per rotation gate
-    weight: float
+    weight: float | sp.Expr
     order: int  # number of sine branches taken
 
 
@@ -246,6 +247,12 @@ def _normalize_circuit(circuit: Circuit) -> Circuit:
                 continue
 
             axis, angle = rot
+
+            # Symbolic angles cannot be normalized — keep as-is.
+            if isinstance(angle, sp.Basic):
+                main_ops.append(op)
+                continue
+
             n, theta_prime = _normalize_angle(angle)
             n_mod = n % 4
             q = op.qubits[0]
@@ -284,7 +291,19 @@ def _normalize_circuit(circuit: Circuit) -> Circuit:
     return result
 
 
-def _is_pauli_rotation(gate: cirq.Gate) -> tuple[str, float] | None:
+def _has_symbolic_angles(circuit: Circuit) -> bool:
+    """Return True if any Rx/Ry/Rz gate has a sympy expression as its angle."""
+    for moment in circuit:
+        for op in moment.operations:
+            if len(op.qubits) != 1:
+                continue
+            if isinstance(op.gate, (cirq.Rx, cirq.Ry, cirq.Rz)):
+                if isinstance(op.gate._rads, sp.Basic):
+                    return True
+    return False
+
+
+def _is_pauli_rotation(gate: cirq.Gate) -> tuple[str, float | sp.Expr] | None:
     """Return (axis, angle) if *gate* is an explicit Rx/Ry/Rz rotation, else None.
 
     Uses ``_rads`` (set by Cirq's Rx/Ry/Rz constructors) to preserve the
@@ -465,17 +484,25 @@ def _enumerate_paths_dfs(
                 stack.append((idx - 1, prop_pauli, [0] + branches, weight, order))
             else:
                 # s=1: anti-commutes — branch with cos(θ)/sin(θ)
+                symbolic = isinstance(rot.angle, sp.Basic)
+
+                if symbolic:
+                    cos_w = weight * sp.cos(rot.angle)
+                    sin_w = weight * sp.sin(rot.angle)
+                else:
+                    cos_w = weight * np.cos(rot.angle)
+                    sin_w = weight * np.sin(rot.angle)
 
                 # Cos branch: gate → identity, pauli unchanged
-                cos_w = weight * np.cos(rot.angle)
-                if abs(cos_w) >= coefficient_threshold:
+                if symbolic or abs(cos_w) >= coefficient_threshold:
                     prop_cos = tableaus[idx].inverse()(pauli)
                     stack.append((idx - 1, prop_cos, [0] + branches, cos_w, order))
 
                 # Sin branch: gate → R_P(π/2), pauli transforms
-                sin_w = weight * np.sin(rot.angle)
                 sin_order = order + 1
-                if sin_order <= max_order and abs(sin_w) >= coefficient_threshold:
+                if sin_order <= max_order and (
+                    symbolic or abs(sin_w) >= coefficient_threshold
+                ):
                     sin_pauli = _apply_rp_conjugation(pauli, rot.qubit_idx, rot.axis)
                     prop_sin = tableaus[idx].inverse()(sin_pauli)
                     stack.append((idx - 1, prop_sin, [1] + branches, sin_w, sin_order))
@@ -669,6 +696,19 @@ class QuEPP(QEMProtocol):
             pipeline builder appends a ``PauliTwirlStage`` that generates
             *n_twirls* randomised copies of each circuit before submission.
             Set to ``0`` to disable twirling.  Default ``10``.
+        bind_before_mitigation: When ``False`` (default), the pipeline
+            binds parameter values *after* QuEPP, processing the symbolic
+            circuit once instead of repeating structural work per parameter
+            set.  This may generate more Pauli paths because QuEPP cannot
+            factor out near-Clifford rotations from symbolic angles.
+
+            Set to ``True`` if your circuit has many rotations near
+            Clifford angles (multiples of π/2) and QuEPP reports a high
+            path count.  Parameters are then bound first, and QuEPP
+            processes each concrete circuit — fewer paths per circuit,
+            but more total mitigation work across parameter sets.
+
+            Use ``dry_run()`` to compare circuit counts in both modes.
 
     Example::
 
@@ -693,6 +733,7 @@ class QuEPP(QEMProtocol):
         n_samples: int = 200,
         seed: int | None = None,
         n_twirls: int = 10,
+        bind_before_mitigation: bool = False,
     ) -> None:
         if truncation_order < 0:
             raise ValueError("truncation_order must be non-negative.")
@@ -712,6 +753,7 @@ class QuEPP(QEMProtocol):
         self._n_samples = n_samples
         self._rng = np.random.default_rng(seed)
         self.n_twirls = n_twirls
+        self.bind_before_mitigation = bind_before_mitigation
 
     @property
     def name(self) -> str:
@@ -734,17 +776,35 @@ class QuEPP(QEMProtocol):
         # single-qubit form so the CPT pipeline can handle them.
         decomposed = _decompose_controlled_rotations(cirq_circuit)
 
-        # Normalize rotations so residual |θ| ≤ π/4 (paper Sec. II–III).
-        # The normalized circuit is used for CPT decomposition; the
-        # *original* circuit is the target sent to the quantum backend.
-        normalized = _normalize_circuit(decomposed)
+        symbolic = _has_symbolic_angles(decomposed)
 
-        rotations = _extract_rotation_gates(normalized, qubits)
-        tableaus = _build_clifford_tableaus(normalized, rotations, qubits)
+        # Normalize concrete rotations so residual |θ| ≤ π/4 (paper
+        # Sec. II–III).  Symbolic rotations are left untouched — their
+        # Clifford components cannot be factored without concrete values.
+        working = _normalize_circuit(decomposed)
+
+        rotations = _extract_rotation_gates(working, qubits)
+        tableaus = _build_clifford_tableaus(working, rotations, qubits)
         obs_terms = _obs_to_stim_terms(observable, n_qubits)
 
         # Select Pauli paths
-        if self._sampling == "montecarlo":
+        if self._sampling == "montecarlo" and symbolic:
+            warnings.warn(
+                "QuEPP: Monte Carlo sampling requires concrete angles. "
+                "Falling back to exhaustive enumeration for symbolic circuit.",
+                stacklevel=2,
+            )
+
+        coeff_threshold = self._coeff_threshold
+        if symbolic and coeff_threshold > 0:
+            warnings.warn(
+                "QuEPP: coefficient_threshold pruning disabled for symbolic "
+                "circuit (angle magnitudes unknown).",
+                stacklevel=2,
+            )
+            coeff_threshold = 0.0
+
+        if self._sampling == "montecarlo" and not symbolic:
             paths = _sample_paths_montecarlo(
                 rotations, tableaus, obs_terms, self._n_samples, self._rng
             )
@@ -754,7 +814,7 @@ class QuEPP(QEMProtocol):
                 tableaus,
                 obs_terms,
                 max_order=self._K_T,
-                coefficient_threshold=self._coeff_threshold,
+                coefficient_threshold=coeff_threshold,
             )
 
         # Warn when the truncation order is large relative to the number
@@ -773,25 +833,37 @@ class QuEPP(QEMProtocol):
                 stacklevel=2,
             )
 
-        # Build Clifford circuits from the *normalized* circuit
+        # Build Clifford circuits from the working circuit
         path_circuits = [
-            _build_path_circuit(normalized, rotations, p.branches) for p in paths
+            _build_path_circuit(working, rotations, p.branches) for p in paths
         ]
         classical_values = _simulate_clifford_ensemble(
             path_circuits, observable, n_qubits
         )
-        weights = np.array([p.weight for p in paths])
+        weights = [p.weight for p in paths]
 
         all_circuits = (cirq_circuit,) + tuple(path_circuits)
 
-        context = {
+        context: QEMContext = {
             "classical_values": classical_values,
-            "weights": weights,
+            "weights": (
+                np.array(weights, dtype=object) if symbolic else np.array(weights)
+            ),
             "target_idx": 0,
             "ensemble_start": 1,
             "n_rotations": n_rotations,
             "n_paths": len(paths),
         }
+        if symbolic:
+            # Collect base symbols from rotation angle expressions so
+            # reduce() can substitute concrete values later.
+            all_symbols: set[sp.Symbol] = set()
+            for rot in rotations:
+                if isinstance(rot.angle, sp.Basic):
+                    all_symbols |= rot.angle.free_symbols
+            context["symbolic"] = True
+            context["weight_symbols"] = sorted(all_symbols, key=str)
+
         return all_circuits, context
 
     @staticmethod
@@ -812,12 +884,45 @@ class QuEPP(QEMProtocol):
         eta = float(np.median(ensemble_noisy[valid] / classical_values[valid]))
         return eta if eta > min_eta else None
 
+    @staticmethod
+    def evaluate_symbolic_weights(
+        context: QEMContext,
+        symbols: Sequence[sp.Symbol],
+        param_values: np.ndarray,
+    ) -> None:
+        """Substitute concrete parameter values into symbolic weight expressions.
+
+        Mutates *context* in-place: replaces the sympy weight expressions
+        in ``context["weights"]`` with concrete floats and sets
+        ``context["symbolic"]`` to ``False``.
+
+        Args:
+            context: QEM context dict containing symbolic ``"weights"``.
+            symbols: The actual sympy Symbol objects used in weight
+                expressions (must match the objects, not just names).
+            param_values: Concrete parameter values, one per symbol.
+        """
+        subs = {sym: float(val) for sym, val in zip(symbols, param_values)}
+        context["weights"] = np.array(
+            [
+                float(w.evalf(subs=subs)) if isinstance(w, sp.Basic) else float(w)
+                for w in context["weights"]
+            ]
+        )
+        context["symbolic"] = False
+
     def reduce(
         self,
         quantum_results: Sequence[float],
         context: QEMContext,
     ) -> float:
         d = context
+        if d.get("symbolic"):
+            raise ValueError(
+                "QuEPP weights are still symbolic — parameter values were "
+                "never substituted. Add ParameterBindingStage to the "
+                "pipeline or use QuEPP(bind_before_mitigation=True)."
+            )
         target_noisy = quantum_results[d["target_idx"]]
         ensemble_noisy = np.array(quantum_results[d["ensemble_start"] :], dtype=float)
         classical_values = d["classical_values"]
