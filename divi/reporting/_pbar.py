@@ -102,8 +102,10 @@ class PhaseStatusColumn(ProgressColumn):
 
         # Early return for final statuses
         if final_status in self._STATUS_MESSAGES:
-            message, style = self._STATUS_MESSAGES[final_status]
-            return Text(f"{message}{loss_str}", style=style)
+            status_text, style = self._STATUS_MESSAGES[final_status]
+            detail = task.fields.get("message", "")
+            suffix = f" ({detail})" if detail else ""
+            return Text(f"{status_text}{suffix}{loss_str}", style=style)
 
         # Build message with polling information
         message = task.fields.get("message")
