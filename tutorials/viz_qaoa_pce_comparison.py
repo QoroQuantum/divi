@@ -2,7 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tutorial: compare QAOA and PCE loss landscapes for the same QUBO."""
+"""Tutorial: compare QAOA and PCE loss landscapes for the same QUBO.
+
+Demonstrates 1D scans, 2D scans, and PCA scans with periodic trajectory
+wrapping and trajectory overlay.
+"""
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -11,7 +15,6 @@ import pennylane as qml
 from divi.qprog import PCE, QAOA, GenericLayerAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import BinaryOptimizationProblem
-from divi.viz import scan_1d, scan_pca
 from tutorials._backend import get_backend
 
 if __name__ == "__main__":
@@ -47,21 +50,19 @@ if __name__ == "__main__":
     )
     pce.run()
 
-    qaoa_line = scan_1d(
-        qaoa,
-        center=qaoa.best_params,
+    # 1D scans via program.viz:
+    qaoa_line = qaoa.viz.scan_1d(
         direction=np.array([1.0, -1.0]),
         n_points=31,
         span=(-1.0, 1.0),
     )
-    pce_line = scan_1d(
-        pce,
-        center=pce.best_params,
+    pce_line = pce.viz.scan_1d(
         direction=np.ones_like(pce.best_params),
         n_points=31,
         span=(-0.6, 0.6),
     )
 
+    # 2D scans:
     qaoa_plane = qaoa.viz.scan_2d(
         grid_shape=(15, 15),
         span_x=(-0.8, 0.8),
@@ -75,20 +76,17 @@ if __name__ == "__main__":
         rng=1,
     )
 
-    # PCA plane from the best member each callback (see param_history modes).
-    qaoa_pca_samples = np.vstack(qaoa.param_history(mode="best_per_iteration"))
-    pce_pca_samples = np.vstack(pce.param_history(mode="best_per_iteration"))
-
-    qaoa_pca = scan_pca(
-        qaoa,
-        samples=qaoa_pca_samples,
+    # PCA scans using the fluent .viz wrapper with auto-collected samples.
+    # wrap_periodic=True ensures continuity across 2*pi boundaries for PCA.
+    qaoa_pca = qaoa.viz.scan_pca(
+        wrap_periodic=True,
         center=qaoa.best_params,
         grid_shape=(15, 15),
         span_x=(-0.8, 0.8),
         span_y=(-0.8, 0.8),
     )
     pce_pca = pce.viz.scan_pca(
-        samples=pce_pca_samples,
+        wrap_periodic=True,
         center=pce.best_params,
         grid_shape=(15, 15),
         span_x=(-0.5, 0.5),
@@ -111,8 +109,9 @@ if __name__ == "__main__":
     pce_line.plot(ax=axes[0, 1], color="tab:orange")
     qaoa_plane.plot(ax=axes[1, 0], cmap="viridis")
     pce_plane.plot(ax=axes[1, 1], cmap="magma")
-    qaoa_pca.plot(ax=axes[2, 0], cmap="cividis")
-    pce_pca.plot(ax=axes[2, 1], cmap="plasma")
+    # PCA scans with trajectory overlay showing the optimization path.
+    qaoa_pca.plot(ax=axes[2, 0], cmap="cividis", show_trajectory=True)
+    pce_pca.plot(ax=axes[2, 1], cmap="plasma", show_trajectory=True)
     fig.suptitle("QAOA vs PCE Loss-Landscape Comparison")
 
     plt.show()

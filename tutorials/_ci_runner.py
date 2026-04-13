@@ -54,6 +54,7 @@ NO_PATCHES = [
     "qaoa_binary_quadratic_model.py",
     "time_evolution.py",
     "time_evolution_trajectory.py",
+    "viz_advanced_analysis.py",
     "viz_qaoa_pce_comparison.py",
     "vqe_h2_with_grouping.py",
     "vqe_h2_molecule.py",

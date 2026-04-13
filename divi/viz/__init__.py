@@ -13,15 +13,45 @@ Attribution for orqviz-aligned geometry is recorded in
 ``LICENSES/ORQViz-Apache-2.0-acknowledgement.txt``.
 """
 
-from ._api import ProgramViz, scan_1d, scan_2d, scan_pca
-from ._results import PCAScanResult, Scan1DResult, Scan2DResult
+from ._api import (
+    ProgramViz,
+    compute_hessian,
+    fourier_analysis_2d,
+    run_neb,
+    scan_1d,
+    scan_2d,
+    scan_interp_1d,
+    scan_interp_2d,
+    scan_pca,
+)
+from ._gradients import GradientMethod
+from ._periodic import periodic_trajectory_wrap, periodic_wrap
+from ._results import (
+    Fourier2DResult,
+    HessianResult,
+    NEBResult,
+    PCAScanResult,
+    Scan1DResult,
+    Scan2DResult,
+)
 
 __all__ = [
-    "ProgramViz",
+    "Fourier2DResult",
+    "GradientMethod",
+    "HessianResult",
+    "NEBResult",
     "PCAScanResult",
+    "ProgramViz",
     "Scan1DResult",
     "Scan2DResult",
+    "compute_hessian",
+    "fourier_analysis_2d",
+    "periodic_trajectory_wrap",
+    "periodic_wrap",
+    "run_neb",
     "scan_1d",
     "scan_2d",
+    "scan_interp_1d",
+    "scan_interp_2d",
     "scan_pca",
 ]

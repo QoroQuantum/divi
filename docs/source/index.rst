@@ -86,6 +86,7 @@ Or pin a specific nightly by date:
    api_reference/circuits
    api_reference/pipeline
    api_reference/reporting
+   api_reference/visualization
    api_reference/utils
 
 .. toctree::

@@ -307,7 +307,7 @@ class QDrift(TrotterizationStrategy):
     def process_hamiltonian(
         self, hamiltonian: qml.operation.Operator
     ) -> qml.operation.Operator:
-        """Apply the ``QDrift`` randomized channel to a Hamiltonian.
+        r"""Apply the ``QDrift`` randomized channel to a Hamiltonian.
 
         Implements the ``QDrift`` protocol (Campbell 2019): for H = Σ c_i P_i,
         randomly sample L terms and rescale their coefficients so that
