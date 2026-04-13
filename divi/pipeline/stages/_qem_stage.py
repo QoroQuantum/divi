@@ -13,15 +13,19 @@ from divi.circuits._qasm_conversion import (
     normalize_qasm_after_cirq,
 )
 from divi.circuits.qem import QEMContext, QEMProtocol, _NoMitigation
+from divi.circuits.quepp import QuEPP
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
+    ContractViolation,
     ExpansionResult,
     MetaCircuitBatch,
     PipelineEnv,
+    Stage,
     StageToken,
 )
-from divi.pipeline.transformations import group_by_base_key
+from divi.pipeline.stages._pauli_twirl_stage import PauliTwirlStage
+from divi.pipeline.transformations import FOREIGN_KEY_ATTR, group_by_base_key
 
 QEM_AXIS = "qem"
 
@@ -36,7 +40,7 @@ class QEMStage(BundleStage):
 
     @property
     def axis_name(self) -> str | None:
-        return f"{QEM_AXIS}_{self._protocol.name}"
+        return f"{QEM_AXIS}_{self.protocol.name}"
 
     @property
     def stateful(self) -> bool:
@@ -44,7 +48,30 @@ class QEMStage(BundleStage):
 
     def __init__(self, protocol: QEMProtocol | None = None) -> None:
         super().__init__(name=type(self).__name__)
-        self._protocol = protocol if protocol is not None else _NoMitigation()
+        self.protocol = protocol if protocol is not None else _NoMitigation()
+
+    def validate(self, before: tuple[Stage, ...], after: tuple[Stage, ...]) -> None:
+        if isinstance(self.protocol, _NoMitigation):
+            return
+
+        # QuEPP's reduce uses classical simulation tied to the full
+        # Hamiltonian, so observable groups must be recombined first.
+        if isinstance(self.protocol, QuEPP):
+            if not any(
+                isinstance(s, BundleStage) and s.handles_measurement for s in after
+            ):
+                raise ContractViolation(
+                    "QEMStage with QuEPP requires a measurement-handling "
+                    "stage after it so that observable groups are "
+                    "recombined before QEM reduction."
+                )
+
+        if isinstance(self.protocol, QuEPP) and self.protocol.n_twirls > 0:
+            if not any(isinstance(s, PauliTwirlStage) for s in after):
+                raise ContractViolation(
+                    f"QEMStage with n_twirls={self.protocol.n_twirls} "
+                    "requires a PauliTwirlStage after it in the pipeline."
+                )
 
     def _expand_bodies(
         self, meta: MetaCircuit
@@ -56,14 +83,21 @@ class QEMStage(BundleStage):
         bodies: list[tuple] = []
 
         for tag, body in meta.circuit_body_qasms:
-            circuits, ctx = self._protocol.expand(
+            circuits, ctx = self.protocol.expand(
                 _cirq_circuit_from_qasm(body, meta.symbols), observable
             )
             ctxs.append(ctx)
-            bodies.extend(
-                ((*tag, (self.axis_name, i)), normalize_qasm_after_cirq(cirq.qasm(c)))
-                for i, c in enumerate(circuits)
-            )
+
+            for i, c in enumerate(circuits):
+                # Symbolic target (index 0): reuse original QASM body
+                # to avoid a lossy sympy→Cirq→QASM round-trip.
+                # Everything else (Clifford path circuits): export normally.
+                qasm = (
+                    body
+                    if i == 0 and ctx.get("symbolic")
+                    else normalize_qasm_after_cirq(cirq.qasm(c))
+                )
+                bodies.append(((*tag, (self.axis_name, i)), qasm))
 
         return tuple(bodies), ctxs
 
@@ -88,11 +122,11 @@ class QEMStage(BundleStage):
         if not isinstance(sample, dict):
             return False
         if isinstance(next(iter(sample)), str):
-            if self._protocol.name != "NoMitigation":
+            if self.protocol.name != "NoMitigation":
                 raise TypeError(
                     f"QEMStage expects scalar expectation values, "
                     f"but received probability dicts. "
-                    f"{type(self._protocol).__name__} is not supported "
+                    f"{type(self.protocol).__name__} is not supported "
                     f"for probability-based measurements."
                 )
             return False
@@ -111,17 +145,17 @@ class QEMStage(BundleStage):
 
             if per_obs:
                 reduced[base_key] = {
-                    obs_idx: self._protocol.reduce([d[obs_idx] for d in ordered], ctx)
+                    obs_idx: self.protocol.reduce([d[obs_idx] for d in ordered], ctx)
                     for obs_idx in sorted(ordered[0].keys())
                 }
             else:
-                reduced[base_key] = self._protocol.reduce(ordered, ctx)
+                reduced[base_key] = self.protocol.reduce(ordered, ctx)
         return reduced
 
     def introspect(
         self, batch: MetaCircuitBatch, env: PipelineEnv, token: StageToken
     ) -> dict[str, Any]:
-        info: dict[str, Any] = {"protocol": self._protocol.name}
+        info: dict[str, Any] = {"protocol": self.protocol.name}
         contexts: dict | None = token
         if not contexts:
             return info
@@ -134,6 +168,12 @@ class QEMStage(BundleStage):
                 info[key] = data[key]
         if "n_paths" in data:
             info["n_clifford_sims"] = data["n_paths"]
+
+        # Skip float-dependent stats for symbolic weights (not yet bound).
+        if data.get("symbolic"):
+            info["symbolic"] = True
+            return info
+
         weights = data.get("weights")
         if weights is not None and len(weights) > 0:
             info["weight_sum"] = round(float(np.sum(weights)), 4)
@@ -146,16 +186,47 @@ class QEMStage(BundleStage):
             info["classical_estimate"] = round(float(weights @ classical), 6)
         return info
 
+    def _bind_symbolic_weights(
+        self,
+        contexts: dict[tuple, QEMContext],
+        foreign_key: tuple,
+        env: PipelineEnv,
+    ) -> None:
+        """Evaluate symbolic QuEPP weights using bound parameter values.
+
+        When QuEPP runs before ParameterBindingStage, weights are stored
+        as sympy expressions.  This method substitutes the concrete
+        parameter values for the current param_set group.
+        """
+        param_idx = next((v for k, v in foreign_key if k == "param_set"), None)
+        if param_idx is None:
+            return
+        param_values = np.asarray(env.param_sets, dtype=float)[param_idx]
+
+        for key, ctx in list(contexts.items()):
+            if not isinstance(ctx, dict) or not ctx.get("symbolic"):
+                continue
+            # Shallow-copy to avoid mutating the shared context across
+            # different param_set groups.
+            ctx = dict(ctx)
+            contexts[key] = ctx
+            symbols = ctx.get("weight_symbols", [])
+            QuEPP.evaluate_symbolic_weights(ctx, symbols, param_values)
+
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken
     ) -> ChildResults:
         contexts: dict[tuple, QEMContext] | None = token
+        if isinstance(contexts, dict):
+            foreign_key = contexts.pop(FOREIGN_KEY_ATTR, ())
+            self._bind_symbolic_weights(contexts, foreign_key, env)
+
         grouped = group_by_base_key(results, self.axis_name, indexed=True)
         per_obs = self._detect_per_obs(grouped)
         reduced = self._reduce_grouped(grouped, contexts, per_obs=per_obs)
 
         if contexts is not None:
             all_ctxs = list(contexts.values())
-            self._protocol.post_reduce(all_ctxs)
+            self.protocol.post_reduce(all_ctxs)
 
         return reduced

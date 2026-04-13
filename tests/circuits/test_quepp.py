@@ -10,6 +10,7 @@ import cirq
 import numpy as np
 import pennylane as qml
 import pytest
+import sympy as sp
 from qiskit_aer.noise import NoiseModel
 
 from divi.backends import QiskitSimulator
@@ -21,6 +22,7 @@ from divi.circuits.quepp import (
     _decompose_controlled_rotations,
     _enumerate_paths_dfs,
     _extract_rotation_gates,
+    _has_symbolic_angles,
     _is_pauli_rotation,
     _normalize_angle,
     _normalize_circuit,
@@ -29,7 +31,12 @@ from divi.circuits.quepp import (
     _simulate_clifford_ensemble,
 )
 from divi.pipeline import CircuitPipeline, PipelineEnv
-from divi.pipeline.stages import CircuitSpecStage, MeasurementStage, QEMStage
+from divi.pipeline.stages import (
+    CircuitSpecStage,
+    MeasurementStage,
+    ParameterBindingStage,
+    QEMStage,
+)
 from tests.pipeline.helpers import DummySpecStage
 
 # ---------------------------------------------------------------------------
@@ -495,8 +502,8 @@ class TestQuEPPProtocol:
         pipeline = CircuitPipeline(
             stages=[
                 DummySpecStage(meta=meta),
+                QEMStage(protocol=QuEPP(truncation_order=1, n_twirls=0)),
                 MeasurementStage(),
-                QEMStage(protocol=QuEPP(truncation_order=1)),
             ],
         )
         trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env)
@@ -544,8 +551,8 @@ class TestQuEPPProtocol:
             CircuitPipeline(
                 stages=[
                     CircuitSpecStage(),
+                    QEMStage(protocol=QuEPP(truncation_order=2, n_twirls=0)),
                     MeasurementStage(),
-                    QEMStage(protocol=QuEPP(truncation_order=2)),
                 ]
             )
             .run(
@@ -675,3 +682,242 @@ class TestQuEPPSignalDestruction:
         contexts_passed = spy.call_args[0][0]
         assert len(contexts_passed) == 2
         assert any(c.get("_signal_destroyed") for c in contexts_passed)
+
+
+# ---------------------------------------------------------------------------
+# Symbolic angle support
+# ---------------------------------------------------------------------------
+
+
+def _symbolic_rx_circuit(symbol: sp.Symbol) -> cirq.Circuit:
+    """Single-qubit Rx circuit with a sympy symbol as the angle."""
+    q = cirq.LineQubit(0)
+    return cirq.Circuit(cirq.rx(symbol)(q))
+
+
+class TestHasSymbolicAngles:
+    def test_concrete_angles(self):
+        q = cirq.LineQubit(0)
+        c = cirq.Circuit(cirq.rx(0.5)(q))
+        assert _has_symbolic_angles(c) is False
+
+    def test_symbolic_angle(self):
+        theta = sp.Symbol("theta")
+        c = _symbolic_rx_circuit(theta)
+        assert _has_symbolic_angles(c) is True
+
+    def test_mixed_symbolic_and_concrete(self):
+        theta = sp.Symbol("theta")
+        q = cirq.LineQubit.range(2)
+        c = cirq.Circuit(cirq.rx(0.5)(q[0]), cirq.ry(theta)(q[1]))
+        assert _has_symbolic_angles(c) is True
+
+    def test_non_rotation_gates_ignored(self):
+        q = cirq.LineQubit.range(2)
+        c = cirq.Circuit(cirq.H(q[0]), cirq.CNOT(q[0], q[1]))
+        assert _has_symbolic_angles(c) is False
+
+
+@pytest.mark.usefixtures("suppress_quepp_warnings")
+class TestSymbolicExpand:
+    """QuEPP.expand() produces valid context and circuits for symbolic angles."""
+
+    def test_expand_marks_symbolic(self):
+        theta = sp.Symbol("theta")
+        c = _symbolic_rx_circuit(theta)
+        obs = qml.PauliZ(0)
+        protocol = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
+        circuits, ctx = protocol.expand(c, obs)
+
+        assert ctx["symbolic"] is True
+        assert theta in ctx["weight_symbols"]
+        assert len(circuits) > 1  # target + at least 1 path circuit
+
+    def test_hybrid_normalization(self):
+        """Concrete rotations are normalized; symbolic ones are kept as-is."""
+        theta = sp.Symbol("theta")
+        q = cirq.LineQubit(0)
+        # Rx(π/2) is concrete Clifford → normalized away; Rx(theta) is symbolic → kept
+        c = cirq.Circuit(cirq.rx(np.pi / 2)(q), cirq.rx(theta)(q))
+        obs = qml.PauliZ(0)
+        protocol = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
+        _, ctx = protocol.expand(c, obs)
+
+        # Only the symbolic rotation should remain (concrete one normalized to Clifford)
+        assert ctx["n_rotations"] == 1
+
+    def test_expand_falls_back_from_montecarlo(self):
+        theta = sp.Symbol("theta")
+        c = _symbolic_rx_circuit(theta)
+        obs = qml.PauliZ(0)
+        protocol = QuEPP(
+            sampling="montecarlo", n_samples=10, truncation_order=1, n_twirls=0
+        )
+        with pytest.warns(UserWarning, match="Monte Carlo"):
+            _, ctx = protocol.expand(c, obs)
+
+        assert ctx["symbolic"] is True
+
+    def test_weights_are_sympy_expressions(self):
+        theta = sp.Symbol("theta")
+        c = _symbolic_rx_circuit(theta)
+        obs = qml.PauliZ(0)
+        protocol = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
+        _, ctx = protocol.expand(c, obs)
+
+        has_symbolic = any(isinstance(w, sp.Basic) for w in ctx["weights"])
+        assert has_symbolic
+
+
+class TestEvaluateSymbolicWeights:
+    """QuEPP.evaluate_symbolic_weights substitutes concrete values correctly."""
+
+    def test_basic_substitution(self):
+        theta = sp.Symbol("theta")
+        ctx = {
+            "weights": np.array([sp.cos(theta), sp.sin(theta)], dtype=object),
+            "symbolic": True,
+        }
+        QuEPP.evaluate_symbolic_weights(ctx, [theta], np.array([0.5]))
+
+        assert ctx["symbolic"] is False
+        assert ctx["weights"][0] == pytest.approx(np.cos(0.5))
+        assert ctx["weights"][1] == pytest.approx(np.sin(0.5))
+
+    def test_multi_symbol(self):
+        theta, phi = sp.Symbol("theta"), sp.Symbol("phi")
+        ctx = {
+            "weights": np.array(
+                [sp.cos(theta) * sp.sin(phi), sp.sin(theta)], dtype=object
+            ),
+            "symbolic": True,
+        }
+        QuEPP.evaluate_symbolic_weights(ctx, [phi, theta], np.array([1.0, 0.5]))
+
+        assert ctx["symbolic"] is False
+        assert ctx["weights"][0] == pytest.approx(np.cos(0.5) * np.sin(1.0))
+        assert ctx["weights"][1] == pytest.approx(np.sin(0.5))
+
+    def test_mixed_symbolic_and_float(self):
+        theta = sp.Symbol("theta")
+        ctx = {
+            "weights": np.array([1.0, sp.cos(theta)], dtype=object),
+            "symbolic": True,
+        }
+        QuEPP.evaluate_symbolic_weights(ctx, [theta], np.array([0.3]))
+
+        assert ctx["weights"][0] == pytest.approx(1.0)
+        assert ctx["weights"][1] == pytest.approx(np.cos(0.3))
+
+
+@pytest.mark.usefixtures("suppress_quepp_warnings")
+class TestSymbolicQuEPPPipeline:
+    """Integration: symbolic QuEPP through full pipeline with ParameterBindingStage."""
+
+    def _parametric_meta(self, angle_value: float) -> tuple[MetaCircuit, np.ndarray]:
+        """Build a parametric MetaCircuit with Rx(theta) and Z observable."""
+        theta = sp.Symbol("theta")
+        qscript = qml.tape.QuantumScript(
+            ops=[qml.RX(theta, wires=0)],
+            measurements=[qml.expval(qml.Z(0))],
+        )
+        symbols = np.array([theta], dtype=object)
+        meta = MetaCircuit(source_circuit=qscript, symbols=symbols)
+        param_sets = np.array([[angle_value]])
+        return meta, param_sets
+
+    def test_symbolic_pipeline_matches_concrete(self, default_test_simulator):
+        """QuEPP with symbolic angles (bind-last) matches concrete (bind-first)."""
+        angle = 0.5
+        meta, param_sets = self._parametric_meta(angle)
+
+        protocol = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
+
+        # Symbolic ordering: Spec → QEM → Meas → ParamBind
+        symbolic_pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=meta),
+                QEMStage(protocol=protocol),
+                MeasurementStage(),
+                ParameterBindingStage(),
+            ]
+        )
+        env = PipelineEnv(backend=default_test_simulator, param_sets=param_sets)
+        symbolic_result = symbolic_pipeline.run("x", env)
+
+        # Concrete ordering: Spec → ParamBind → QEM → Meas
+        concrete_pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=meta),
+                ParameterBindingStage(),
+                QEMStage(protocol=protocol),
+                MeasurementStage(),
+            ]
+        )
+        concrete_result = concrete_pipeline.run("x", env)
+
+        # Both orderings should produce the same corrected value
+        sym_val = next(iter(symbolic_result.values()))
+        con_val = next(iter(concrete_result.values()))
+        assert sym_val == pytest.approx(con_val, abs=0.1)
+
+
+class TestBindBeforeMitigation:
+    """QuEPP.bind_before_mitigation flag controls pipeline stage ordering."""
+
+    def test_default_is_false(self):
+        protocol = QuEPP()
+        assert protocol.bind_before_mitigation is False
+
+    def test_stored_when_true(self):
+        protocol = QuEPP(bind_before_mitigation=True)
+        assert protocol.bind_before_mitigation is True
+
+    def test_reorders_pipeline(self):
+        """bind_before_mitigation=True puts ParameterBindingStage before QEMStage."""
+        from divi.pipeline.stages import ParameterBindingStage
+
+        meta = _parametric_meta_for_pipeline()
+        protocol_late = QuEPP(truncation_order=1, n_twirls=0)
+        protocol_early = QuEPP(
+            truncation_order=1, n_twirls=0, bind_before_mitigation=True
+        )
+
+        late_pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=meta),
+                QEMStage(protocol=protocol_late),
+                MeasurementStage(),
+                ParameterBindingStage(),
+            ]
+        )
+        early_pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=meta),
+                ParameterBindingStage(),
+                QEMStage(protocol=protocol_early),
+                MeasurementStage(),
+            ]
+        )
+
+        # Both pipelines should construct without error
+        late_names = [type(s).__name__ for s in late_pipeline.stages]
+        early_names = [type(s).__name__ for s in early_pipeline.stages]
+
+        late_bind_idx = late_names.index("ParameterBindingStage")
+        late_qem_idx = late_names.index("QEMStage")
+        assert late_bind_idx > late_qem_idx
+
+        early_bind_idx = early_names.index("ParameterBindingStage")
+        early_qem_idx = early_names.index("QEMStage")
+        assert early_bind_idx < early_qem_idx
+
+
+def _parametric_meta_for_pipeline() -> MetaCircuit:
+    """Build a parametric MetaCircuit with Rx(theta) and Z observable."""
+    theta = sp.Symbol("theta")
+    qscript = qml.tape.QuantumScript(
+        ops=[qml.RX(theta, wires=0)],
+        measurements=[qml.expval(qml.Z(0))],
+    )
+    return MetaCircuit(source_circuit=qscript, symbols=np.array([theta], dtype=object))

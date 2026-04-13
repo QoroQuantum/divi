@@ -26,6 +26,33 @@ ChildResults = dict[Any, Any]
 
 StageToken = Any
 
+
+class PipelineResult(dict):
+    """Pipeline result dict with convenience access for single-result pipelines.
+
+    Behaves exactly like a regular ``dict`` keyed by :data:`NodeKey` tuples.
+    For the common single-circuit case, use the :attr:`value` property
+    instead of ``result[()]``.
+    """
+
+    @property
+    def value(self):
+        """Return the single result value.
+
+        Equivalent to ``result[()]`` for single-circuit pipelines.
+
+        Raises:
+            ValueError: If the result contains more than one key.
+        """
+        if len(self) != 1:
+            raise ValueError(
+                f".value requires exactly one result key, got {len(self)}. "
+                f"Keys: {list(self.keys())}. "
+                f"Use result[key] to access specific results."
+            )
+        return next(iter(self.values()))
+
+
 InT = TypeVar("InT")  # Generic input type consumed by Stage.expand.
 
 OutT = TypeVar("OutT")  # Generic output type produced by Stage.expand.
@@ -107,6 +134,10 @@ class PipelineEnv:
     """Threading event signalling cancellation (set by ProgramEnsemble)."""
 
 
+class ContractViolation(ValueError):
+    """Raised when a stage's positional requirements are not met."""
+
+
 class Stage(ABC, Generic[InT, OutT]):
     """Abstract base for pipeline stages."""
 
@@ -126,6 +157,18 @@ class Stage(ABC, Generic[InT, OutT]):
     def stateful(self) -> bool:
         """Whether this stage invalidates forward-pass reuse from this point."""
         return False
+
+    def validate(self, before: tuple["Stage", ...], after: tuple["Stage", ...]) -> None:
+        """Check this stage's position in the pipeline.
+
+        Called by :class:`CircuitPipeline` at construction time, after
+        structural validation.  Override to inspect neighboring stages
+        and raise :class:`ContractViolation` if preconditions are not met.
+
+        Args:
+            before: Stages before this one in expand order.
+            after: Stages after this one in expand order.
+        """
 
     @abstractmethod
     def expand(self, items: InT, env: PipelineEnv) -> tuple[OutT, StageToken]:

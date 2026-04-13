@@ -19,6 +19,14 @@ from divi.reporting import queue_listener
 from tests.qprog.qprog_contracts import verify_basic_program_ensemble_behaviour
 
 
+class _FakeRunResult:
+    """Mimics a program instance returned by run() for mocked futures."""
+
+    def __init__(self, circuit_count: int, run_time: float):
+        self._total_circuit_count = circuit_count
+        self._total_run_time = run_time
+
+
 class SimpleTestProgram(QuantumProgram):
     """A simple mock program for testing ProgramEnsemble execution."""
 
@@ -188,7 +196,7 @@ class TestProgramEnsemble:
         program_ensemble.run()
 
         # Subsequent run should raise an exception
-        with pytest.raises(RuntimeError, match="A batch is already being run."):
+        with pytest.raises(RuntimeError, match="An ensemble is already being run."):
             program_ensemble.run()
 
     def test_run_submits_correct_tasks(self, program_ensemble, mocker):
@@ -284,30 +292,41 @@ class TestProgramEnsemble:
         assert program_ensemble.check_all_done()
 
     def test_join_handles_task_exceptions(self, program_ensemble, mocker):
-        """Ensures join() catches exceptions from futures and still cleans up."""
+        """Ensures join() catches exceptions from futures, collects partial results, and cleans up."""
         program_ensemble.create_programs()
-        program_ensemble.run(blocking=False)  # Start a non-blocking run
+        program_ensemble.run(blocking=False)
 
-        # Mock the futures to simulate one failing task
         failing_future = Future()
         failing_future.set_exception(ValueError("Task failed"))
         successful_future = Future()
-        successful_future.set_result((5, 5.0))
+        successful_future.set_result(_FakeRunResult(5, 5.0))
         program_ensemble.futures = [failing_future, successful_future]
+        progs = list(program_ensemble.programs.values())
+        program_ensemble._future_to_program = {
+            failing_future: progs[0],
+            successful_future: progs[1],
+        }
 
-        # Mock as_completed to yield the failing future first
+        # as_completed is called twice: once in the join() loop (yields the
+        # failing future), once in _stop_remaining_programs (no unstoppable
+        # futures because both are already done).
         mocker.patch(
             "divi.qprog.ensemble.as_completed",
-            return_value=[failing_future, successful_future],
+            side_effect=[
+                iter([failing_future, successful_future]),
+                iter([]),
+            ],
         )
-        # Mock executor shutdown to confirm it's called during cleanup
         mock_shutdown = mocker.spy(program_ensemble._executor, "shutdown")
 
-        with pytest.raises(RuntimeError, match="Batch execution failed"):
+        with pytest.raises(RuntimeError, match="Ensemble execution failed"):
             program_ensemble.join()
 
         mock_shutdown.assert_called_once_with(wait=True)
         assert program_ensemble._executor is None
+        # The successful future's results should still be collected in the finally block
+        assert program_ensemble.total_circuit_count == 5
+        assert program_ensemble.total_run_time == 5.0
 
     def test_aggregate_results_calls_join_and_aggregates(self, program_ensemble):
         """
@@ -428,7 +447,7 @@ class TestProgramEnsemble:
         program_ensemble._cancellation_event = mocker.MagicMock()
 
         future1, future2, future3 = Future(), Future(), Future()
-        future3.set_result((5, 2.0))  # already done
+        future3.set_result(_FakeRunResult(5, 2.0))  # already done
         mocker.patch.object(
             future1, "cancel", return_value=True
         )  # pending, can be cancelled
@@ -457,7 +476,7 @@ class TestProgramEnsemble:
         messages = [call[1].get("message", "") for call in update_calls]
         assert "Cancelled by user" in messages
         assert "Finishing... ⏳" in messages
-        assert "Completed during cancellation" in messages
+        assert "Stopped after current iteration" in messages
 
     def test_handle_cancellation_unstoppable_futures(self, program_ensemble, mocker):
         """Test cancellation handling with unstoppable futures."""
@@ -549,6 +568,183 @@ class TestProgramEnsemble:
         # Verify cancel_job was called on the backend
         mock_backend.cancel_job.assert_called_once_with(execution_result)
 
+    def test_handle_failure_sets_cancellation_event(self, program_ensemble, mocker):
+        """Failure path should set _cancellation_event to stop VQA loops."""
+        program_ensemble.create_programs()
+        program_ensemble.run(blocking=False)
+
+        f_bad = Future()
+        f_bad.set_exception(RuntimeError("Job xyz has failed."))
+        f_good = Future()
+        f_good.set_result(_FakeRunResult(10, 5.0))
+        program_ensemble.futures = [f_bad, f_good]
+        progs = list(program_ensemble.programs.values())
+        program_ensemble._future_to_program = {
+            f_bad: progs[0],
+            f_good: progs[1],
+        }
+
+        mocker.patch(
+            "divi.qprog.ensemble.as_completed",
+            side_effect=[iter([f_bad]), iter([])],
+        )
+
+        with pytest.raises(RuntimeError, match="Ensemble execution failed"):
+            program_ensemble.join()
+
+        assert program_ensemble._cancellation_event.is_set()
+
+    def test_handle_failure_updates_progress_bars(self, program_ensemble, mocker):
+        """Failure path should update progress bars with failure status."""
+        program_ensemble.create_programs()
+        program_ensemble.run(blocking=False)
+
+        mock_progress_bar = mocker.MagicMock()
+        program_ensemble._progress_bar = mock_progress_bar
+        program_ensemble._pb_task_map = {"prog1": 1, "prog2": 2}
+
+        f_bad = Future()
+        f_bad.set_exception(RuntimeError("Job xyz has failed."))
+        f_good = Future()
+        f_good.set_result(_FakeRunResult(10, 5.0))
+        program_ensemble.futures = [f_bad, f_good]
+        progs = list(program_ensemble.programs.values())
+        program_ensemble._future_to_program = {
+            f_bad: progs[0],
+            f_good: progs[1],
+        }
+
+        mocker.patch(
+            "divi.qprog.ensemble.as_completed",
+            side_effect=[iter([f_bad]), iter([])],
+        )
+
+        with pytest.raises(RuntimeError):
+            program_ensemble.join()
+
+        update_calls = mock_progress_bar.update.call_args_list
+        final_statuses = [
+            call[1].get("final_status")
+            for call in update_calls
+            if "final_status" in call[1]
+        ]
+        assert "Failed" in final_statuses
+
+    def test_handle_failure_non_batched_cancels_jobs(self, program_ensemble, mocker):
+        """Without coordinator, failure should call cancel_unfinished_job on running programs."""
+        program_ensemble.create_programs()
+        program_ensemble.run(blocking=False)
+        program_ensemble._coordinator = None
+
+        mock_progress_bar = mocker.MagicMock()
+        program_ensemble._progress_bar = mock_progress_bar
+        program_ensemble._pb_task_map = {"prog1": 1, "prog2": 2}
+
+        f_bad = Future()
+        f_bad.set_exception(RuntimeError("Job xyz has failed."))
+        # Simulate a still-running future that cannot be cancelled.
+        # done() returns False during _stop_remaining_programs (so the
+        # cancel path is taken) and True afterwards (for result collection).
+        f_running = Future()
+        mocker.patch.object(f_running, "cancel", return_value=False)
+        done_returns = iter([False, False, True, True, True])
+        mocker.patch.object(f_running, "done", side_effect=lambda: next(done_returns))
+
+        program_ensemble.futures = [f_bad, f_running]
+        prog1, prog2 = list(program_ensemble.programs.values())
+        program_ensemble._future_to_program = {
+            f_bad: prog1,
+            f_running: prog2,
+        }
+
+        mock_cancel = mocker.patch.object(prog2, "cancel_unfinished_job")
+
+        # Resolve f_running so _collect_completed_results can pick it up
+        # once done() starts returning True.
+        f_running.set_result(_FakeRunResult(3, 1.0))
+
+        # First call: join() loop yields the failing future.
+        # Second call: _stop_remaining_programs waits for unstoppable futures.
+        mocker.patch(
+            "divi.qprog.ensemble.as_completed",
+            side_effect=[iter([f_bad]), iter([f_running])],
+        )
+
+        with pytest.raises(RuntimeError, match="Ensemble execution failed"):
+            program_ensemble.join()
+
+        mock_cancel.assert_called_once()
+        # Verify that the running program's results were still collected
+        assert program_ensemble.total_circuit_count == 3
+        assert program_ensemble.total_run_time == 1.0
+
+    def test_stop_remaining_programs_called_on_failure(self, program_ensemble, mocker):
+        """_stop_remaining_programs should be called from the failure path."""
+        program_ensemble.create_programs()
+        program_ensemble.run(blocking=False)
+
+        f_bad = Future()
+        f_bad.set_exception(RuntimeError("boom"))
+        program_ensemble.futures = [f_bad]
+        progs = list(program_ensemble.programs.values())
+        program_ensemble._future_to_program = {f_bad: progs[0]}
+
+        spy = mocker.spy(program_ensemble, "_stop_remaining_programs")
+        mocker.patch(
+            "divi.qprog.ensemble.as_completed",
+            side_effect=[iter([f_bad]), iter([])],
+        )
+
+        with pytest.raises(RuntimeError):
+            program_ensemble.join()
+
+        spy.assert_called_once()
+        call_kwargs = spy.call_args[1]
+        assert call_kwargs["pending_status"] == "Cancelled"
+        assert "failure" in call_kwargs["pending_message"].lower()
+
+    def test_handle_failure_all_futures_failed(self, program_ensemble, mocker):
+        """When batch coordinator fails all futures, every program should be marked Failed."""
+        program_ensemble.create_programs()
+        program_ensemble.run(blocking=False)
+
+        mock_progress_bar = mocker.MagicMock()
+        program_ensemble._progress_bar = mock_progress_bar
+        program_ensemble._pb_task_map = {"prog1": 1, "prog2": 2}
+
+        # Simulate _fail_futures setting the same exception on all futures
+        shared_exc = RuntimeError("Merged batch job xyz has failed.")
+        f1 = Future()
+        f1.set_exception(shared_exc)
+        f2 = Future()
+        f2.set_exception(shared_exc)
+
+        program_ensemble.futures = [f1, f2]
+        progs = list(program_ensemble.programs.values())
+        program_ensemble._future_to_program = {
+            f1: progs[0],
+            f2: progs[1],
+        }
+
+        # First call: join() loop yields f1 (raises). Second call:
+        # _stop_remaining_programs finds no unstoppable futures (all done).
+        mocker.patch(
+            "divi.qprog.ensemble.as_completed",
+            side_effect=[iter([f1]), iter([])],
+        )
+
+        with pytest.raises(RuntimeError, match="Ensemble execution failed"):
+            program_ensemble.join()
+
+        # Both programs should have a "Failed" final_status
+        update_calls = mock_progress_bar.update.call_args_list
+        failed_task_ids = {
+            call[0][0]
+            for call in update_calls
+            if call[1].get("final_status") == "Failed"
+        }
+        assert failed_task_ids == {1, 2}
+
     def test_join_early_return_no_executor(self, program_ensemble):
         """Test join returns early when no executor."""
         program_ensemble._executor = None
@@ -571,6 +767,85 @@ class TestProgramEnsemble:
 
         assert result is False
         mock_handle_cancellation.assert_called_once()
+
+    def test_join_keyboard_interrupt_no_double_count(self, program_ensemble, mocker):
+        """Results collected before KeyboardInterrupt are not double-counted."""
+        program_ensemble.create_programs()
+        program_ensemble.run(blocking=False)
+
+        # Create two pre-resolved futures with known results
+        f1 = Future()
+        f1.set_result(_FakeRunResult(10, 5.0))
+        f2 = Future()
+        f2.set_result(_FakeRunResult(7, 3.0))
+        program_ensemble.futures = [f1, f2]
+
+        # as_completed yields f1 then raises, simulating an interrupt
+        # after one future was already collected by the loop.
+        def _partial_as_completed(futures):
+            yield f1
+            raise KeyboardInterrupt()
+
+        mocker.patch(
+            "divi.qprog.ensemble.as_completed", side_effect=_partial_as_completed
+        )
+        mocker.patch.object(program_ensemble, "_handle_cancellation")
+
+        program_ensemble.join()
+
+        # Both futures completed (10 + 7 = 17), each counted exactly once
+        assert program_ensemble.total_circuit_count == 17
+        assert program_ensemble.total_run_time == 8.0
+
+    def test_join_exception_no_double_count(self, program_ensemble, mocker):
+        """All completed futures are counted exactly once after a task exception."""
+        program_ensemble.create_programs()
+        program_ensemble.run(blocking=False)
+
+        f1 = Future()
+        f1.set_result(_FakeRunResult(10, 5.0))
+        f2 = Future()
+        f2.set_result(_FakeRunResult(7, 3.0))
+        f_bad = Future()
+        f_bad.set_exception(ValueError("boom"))
+        program_ensemble.futures = [f1, f2, f_bad]
+        progs = list(program_ensemble.programs.values())
+        program_ensemble._future_to_program = {
+            f1: progs[0],
+            f2: progs[1],
+            f_bad: mocker.Mock(program_id="prog_bad"),
+        }
+
+        call_count = [0]
+
+        # as_completed is called twice: once in the join() loop (yields f1
+        # then f_bad which raises), once in _stop_remaining_programs (no
+        # unstoppable futures since all are already done).
+        def _mock_as_completed(futures):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                yield f1
+                yield f_bad
+            else:
+                yield from futures
+
+        mocker.patch("divi.qprog.ensemble.as_completed", side_effect=_mock_as_completed)
+
+        with pytest.raises(RuntimeError, match="Ensemble execution failed"):
+            program_ensemble.join()
+
+        # f1 (10) and f2 (7) both completed, each counted exactly once
+        assert program_ensemble.total_circuit_count == 17
+        assert program_ensemble.total_run_time == 8.0
+
+    def test_run_rejects_duplicate_program_instances(self, program_ensemble):
+        """run() raises when the same program instance is assigned to multiple keys."""
+        program_ensemble.create_programs()
+        shared = program_ensemble.programs["prog1"]
+        program_ensemble.programs = {"a": shared, "b": shared}
+
+        with pytest.raises(RuntimeError, match="Duplicate program instances"):
+            program_ensemble.run()
 
     def test_atexit_unregister_failure(self, program_ensemble, mocker):
         """Test atexit unregister handles TypeError."""

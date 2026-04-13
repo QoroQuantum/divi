@@ -3,8 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import heapq
-from collections.abc import Callable, Mapping, Sequence
-from collections.abc import Set as AbstractSet
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 from warnings import warn
@@ -13,7 +12,6 @@ import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
-import scipy.sparse.linalg as spla
 from sklearn.cluster import SpectralClustering
 
 # TODO: Make this dynamic through an interaction with usher
@@ -84,115 +82,6 @@ class GraphPartitioningConfig:
             )
 
 
-def _divide_edges(
-    graph: nx.DiGraph, edge_selection_predicate: Callable
-) -> tuple[nx.DiGraph, nx.DiGraph]:
-    """
-    Divides a graph into two subgraphs based on the provided edge selection criteria.
-
-    Args:
-        graph (nx.DiGraph): The input graph to be divided.
-        edge_selection_predicate (Callable): A function which decides if an edge should be
-                                            included in the selected subgraph.
-
-    Returns:
-        tuple[nx.DiGraph, nx.DiGraph]: A tuple containing two DiGraphs: the selected subgraph
-                                        and the rest of the graph.
-    """
-    selected_edges = [
-        (u, v)
-        for u, v in graph.edges(data=False)
-        if edge_selection_predicate(graph, u, v)
-    ]
-    rest_edges = [
-        (u, v) for u, v in graph.edges(data=False) if (u, v) not in selected_edges
-    ]
-
-    selected_subgraph = graph.edge_subgraph(selected_edges).copy()
-    rest_of_graph = graph.edge_subgraph(rest_edges).copy()
-
-    rest_of_graph.remove_edges_from(selected_edges)  # to avoid overlap
-
-    return selected_subgraph, rest_of_graph
-
-
-def _fielder_laplacian_predicate(
-    growing_graph: nx.DiGraph, src: int, dest: int
-) -> bool:
-    """
-    Determines if an edge should be included in the selected subgraph based on spectral partitioning.
-
-    This function uses the Fiedler vector of the graph's Laplacian matrix to divide
-    the nodes into two partitions. An edge is included in the selected subgraph
-    if both its source and destination nodes belong to the same partition.
-
-    Args:
-        growing_graph (nx.DiGraph): The graph containing the currently selected edges.
-        src (int): The source node of the edge.
-        dest (int): The destination node of the edge.
-
-    Returns:
-        bool: True if the edge should be included in the selected subgraph, False otherwise.
-    """
-    if growing_graph.number_of_edges() == 0:
-        return True
-
-    L = nx.laplacian_matrix(growing_graph).astype(float)
-
-    # Create an initial random guess for the eigenvectors
-    n = L.shape[0]
-    X = np.random.rand(n, 2)
-    X, _ = np.linalg.qr(X)  # Orthonormalize initial guess
-
-    # Use LOBPCG to compute the two smallest eigenvalues and corresponding eigenvectors
-    _, eigenvectors = spla.lobpcg(L, X, largest=False)
-
-    fiedler_vector = eigenvectors[:, 1].real
-    partition = set(i for i, v in enumerate(fiedler_vector) if v > 0)
-
-    return (src in partition) == (dest in partition)
-
-
-def _edge_partition_graph(
-    graph: nx.DiGraph, n_max_nodes_per_cluster: int
-) -> list[nx.DiGraph]:
-    """
-    Partitions a directed graph into smaller subgraphs using recursive bipartite spectral partitioning.
-
-    The function repeatedly divides the input graph into two subgraphs based on the
-    Fiedler vector of the graph's Laplacian matrix. This process is repeated
-    until each of the subgraphs' no. of edges does not exceed the no. of qubits.
-
-    Args:
-        graph (nx.DiGraph): The input directed graph to be partitioned.
-        n_max_nodes_per_cluster (int, optional): The maximum number of nodes per subgraph.
-                                                Defaults to 8.
-
-    Returns:
-        list[nx.DiGraph]: A list of subgraphs resulting from the partitioning process.
-    """
-    subgraphs = [graph]
-
-    while any(g.number_of_edges() > n_max_nodes_per_cluster for g in subgraphs):
-        large_subgraphs = [
-            g for g in subgraphs if g.number_of_edges() > n_max_nodes_per_cluster
-        ]
-        subgraphs = [
-            g for g in subgraphs if g.number_of_edges() <= n_max_nodes_per_cluster
-        ]
-
-        if not large_subgraphs:
-            break
-
-        for large_subgraph in large_subgraphs:
-            selected_subgraph, rest_of_graph = _divide_edges(
-                large_subgraph, _fielder_laplacian_predicate
-            )
-            subgraphs.extend([selected_subgraph, rest_of_graph])
-
-    return subgraphs
-
-
 def _apply_split_with_relabel(
     graph: nx.Graph, algorithm: Literal["spectral", "metis"], n_clusters: int
 ) -> tuple[nx.Graph, nx.Graph]:
@@ -235,7 +124,7 @@ def _apply_split_with_relabel(
         orig_label = int_graph.nodes[idx]["orig_label"]
         clusters[part].append(orig_label)
 
-    return tuple(graph.subgraph(clstr) for clstr in clusters)
+    return tuple(graph.subgraph(clstr).copy() for clstr in clusters)
 
 
 def _split_graph(
@@ -267,7 +156,12 @@ def _split_graph(
         )
     elif partitioning_config.partitioning_algorithm == "kernighan_lin":
         part_1, part_2 = nx.algorithms.community.kernighan_lin_bisection(graph)
-        return graph.subgraph(part_1), graph.subgraph(part_2)
+        return graph.subgraph(part_1).copy(), graph.subgraph(part_2).copy()
+    else:
+        raise ValueError(
+            f"Unsupported partitioning algorithm: "
+            f"{partitioning_config.partitioning_algorithm!r}."
+        )
 
 
 def _bisect_with_predicate(
@@ -358,60 +252,6 @@ def _node_partition_graph(
 
     # Clean up on aisle 3
     return tuple(graph for (_, _, graph) in subgraphs)
-
-
-def linear_aggregation(
-    curr_solution: Sequence[Literal[0] | Literal[1]],
-    subproblem_solution: AbstractSet[int],
-    subproblem_reverse_index_map: Mapping[int, int],
-):
-    """Linearly combines a subproblem's solution into the main solution vector.
-
-    This function iterates through each node of subproblem's solution. For each node,
-    it uses the reverse index map to find its original index in the main graph,
-    setting it to 1 in the current global solution, potentially overwriting any
-    previous states.
-
-    Args:
-        curr_solution (Sequence[Literal[0] | Literal[1]]): The main solution
-            vector being aggregated, represented as a sequence of 0s and 1s.
-        subproblem_solution (Set[int]): A set containing the original indices of
-            the nodes that form the solution for the subproblem.
-        subproblem_reverse_index_map (dict[int, int]): A mapping from the
-            subgraph's internal node labels back to their original indices in
-            the main solution vector.
-
-    Returns:
-        The updated main solution vector.
-    """
-    for node in subproblem_solution:
-        curr_solution[subproblem_reverse_index_map[node]] = 1
-
-    return curr_solution
-
-
-def dominance_aggregation(
-    curr_solution: Sequence[Literal[0] | Literal[1]],
-    subproblem_solution: AbstractSet[int],
-    subproblem_reverse_index_map: Mapping[int, int],
-):
-    for node in subproblem_solution:
-        original_index = subproblem_reverse_index_map[node]
-
-        # Use existing assignment if dominant in previous solutions
-        # (e.g., more 0s than 1s or vice versa)
-        count_0 = curr_solution.count(0)
-        count_1 = curr_solution.count(1)
-
-        if (
-            (count_0 > count_1 and curr_solution[original_index] == 0)
-            or (count_1 > count_0 and curr_solution[original_index] == 1)
-            or (count_0 == count_1)
-        ):
-            # Assign based on QAOA if tie
-            curr_solution[original_index] = 1
-
-    return curr_solution
 
 
 def draw_partitions(

@@ -557,7 +557,12 @@ class _BatchCoordinator:
     # ------------------------------------------------------------------
 
     def cancel(self) -> None:
-        """Cancel all pending and in-flight operations."""
+        """Cancel all pending and in-flight operations.
+
+        Safe to call multiple times — subsequent calls are no-ops.
+        """
+        if self._cancelled.is_set():
+            return
         self._cancelled.set()
 
         # Cancel in-flight backend jobs

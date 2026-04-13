@@ -22,12 +22,14 @@ from divi.pipeline.abc import (
     ChildResults,
     ExpansionResult,
     PipelineEnv,
+    PipelineResult,
     PipelineTrace,
     ResultFormat,
     SpecStage,
     Stage,
     StageToken,
 )
+from divi.pipeline.transformations import FOREIGN_KEY_ATTR
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +182,16 @@ def _validate_stage_order(stages: Sequence[Stage]) -> None:
             "(a stage with handles_measurement=True)"
         )
 
+    meas_stages = [
+        s for s in stages if isinstance(s, BundleStage) and s.handles_measurement
+    ]
+    if len(meas_stages) > 1:
+        names = [s.name for s in meas_stages]
+        raise ValueError(
+            f"Multiple measurement-handling stages: {names}. "
+            "Use exactly one measurement-handling stage."
+        )
+
     axis_counts = Counter(stage.axis_name for stage in stages)
     duplicates = sorted(name for name, count in axis_counts.items() if count > 1)
     if duplicates:
@@ -201,6 +213,8 @@ class CircuitPipeline:
                 SpecStage first, then zero or more BundleStages.
         """
         _validate_stage_order(stages)
+        for i, stage in enumerate(stages):
+            stage.validate(before=tuple(stages[:i]), after=tuple(stages[i + 1 :]))
         self._stages = list(stages)
         self._forward_cache: dict[tuple[int, tuple[int, ...]], PipelineTrace] = {}
 
@@ -218,7 +232,7 @@ class CircuitPipeline:
         execute_fn: Callable[
             [PipelineTrace, PipelineEnv], ChildResults
         ] = _default_execute_fn,
-    ) -> Any:
+    ) -> PipelineResult:
         """
         Run the pipeline: spec expand → bundle expand → (substitute params, generate QASM) → execute → reduce.
 
@@ -238,7 +252,9 @@ class CircuitPipeline:
                 backend execution.
 
         Returns:
-            Reduced result for a single batch.
+            A :class:`PipelineResult` dict keyed by :data:`NodeKey` tuples.
+            For single-circuit pipelines, use ``result.value`` to get the
+            result directly.
         """
 
         plan = self.run_forward_pass(
@@ -270,7 +286,7 @@ class CircuitPipeline:
                 else:
                     raw = _counts_to_expvals(raw, plan.final_batch)
 
-        return self._reduce(raw, env, plan.stage_tokens)
+        return PipelineResult(self._reduce(raw, env, plan.stage_tokens))
 
     def run_forward_pass(
         self, initial_spec: Any, env: PipelineEnv, *, force_forward_sweep: bool = False
@@ -458,6 +474,10 @@ def _reduce_with_isolated_axes(
     out: ChildResults = {}
     for foreign_key, group_results in groups.items():
         scoped_token = _scope_token(token, foreign_key, foreign_axes)
+        if isinstance(scoped_token, dict):
+            # Inject the foreign_key so the stage can identify which
+            # foreign-axis group (e.g. param_set index) is being reduced.
+            scoped_token = {**scoped_token, FOREIGN_KEY_ATTR: foreign_key}
         group_reduced = stage.reduce(group_results, env, scoped_token)
         for own_key, value in group_reduced.items():
             out[own_key + foreign_key] = value

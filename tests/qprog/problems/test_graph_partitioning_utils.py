@@ -26,9 +26,7 @@ from divi.qprog.problems._graph_partitioning_utils import (
     _bisect_with_predicate,
     _node_partition_graph,
     _split_graph,
-    dominance_aggregation,
     draw_partitions,
-    linear_aggregation,
 )
 
 # ---------------------------------------------------------------------------
@@ -198,6 +196,45 @@ class TestGraphPartitioningConfig:
         assert isinstance(result, Sequence)
         assert len(result) == 2
         assert set(result[0].nodes) | set(result[1].nodes) == set(G.nodes)
+
+    def test_split_graph_kernighan_lin_returns_copies(self):
+        """Subgraphs returned by _split_graph are independent copies, not views."""
+        G = nx.path_graph(6)
+        config = GraphPartitioningConfig(
+            minimum_n_clusters=2, partitioning_algorithm="kernighan_lin"
+        )
+
+        sg1, sg2 = _split_graph(G, config)
+        original_node_count = G.number_of_nodes()
+
+        # Mutating a partition must not affect the parent graph
+        sg1.add_node(999)
+        assert G.number_of_nodes() == original_node_count
+
+    def test_apply_split_with_relabel_returns_copies(self, mocker):
+        """Subgraphs returned by _apply_split_with_relabel are independent copies."""
+        G = nx.cycle_graph(6)
+
+        mock_spectral_cls = mocker.patch(
+            f"{_graph_partitioning_utils.__name__}.SpectralClustering"
+        )
+        mock_spectral_cls.return_value.fit_predict.return_value = [0, 0, 0, 1, 1, 1]
+
+        clusters = _apply_split_with_relabel(G, algorithm="spectral", n_clusters=2)
+        original_node_count = G.number_of_nodes()
+
+        clusters[0].add_node(999)
+        assert G.number_of_nodes() == original_node_count
+
+    def test_split_graph_unsupported_algorithm_raises(self):
+        """_split_graph raises ValueError for unsupported algorithms."""
+        G = nx.path_graph(4)
+        config = GraphPartitioningConfig(minimum_n_clusters=2)
+        # Bypass __post_init__ validation by setting the attribute directly
+        object.__setattr__(config, "partitioning_algorithm", "bogus")
+
+        with pytest.raises(ValueError, match="Unsupported partitioning algorithm"):
+            _split_graph(G, config)
 
     def test_predicate_receives_correct_arguments(self):
         G = nx.path_graph(4)
@@ -397,48 +434,6 @@ class TestGraphPartitioningConfig:
             assert partition.number_of_nodes() <= max_nodes
 
         self._assert_partitions_correct(G, partitions)
-
-
-# ---------------------------------------------------------------------------
-# Aggregation functions
-# ---------------------------------------------------------------------------
-
-
-class TestAggregationFunctions:
-    def test_linear_aggregation(self):
-        # Initial solution is all zeros
-        main_solution = [0, 0, 0, 0, 0]
-        # Subproblem solution identifies nodes 1 and 3 (in its own context)
-        subproblem_solution = {1, 3}
-        # Map subproblem nodes back to original main graph indices (1->2, 3->4)
-        reverse_map = {0: 0, 1: 2, 2: 1, 3: 4, 4: 3}
-
-        # Expected result: nodes at original indices 2 and 4 should be set to 1
-        expected = [0, 0, 1, 0, 1]
-
-        result = linear_aggregation(main_solution, subproblem_solution, reverse_map)
-        assert result == expected
-
-    def test_dominance_aggregation(self):
-        """
-        Tests dominance aggregation.
-        Note: The current implementation of dominance_aggregation has a potential
-        bug where the counts of 0s and 1s are re-calculated inside the loop.
-        This makes the function's output dependent on the iteration order of the
-        subproblem_solution set, which is non-deterministic. This test assumes
-        a specific iteration order to pass but highlights this fragility.
-        """
-        # 0s are dominant (3 vs 2)
-        main_solution = [0, 1, 0, 0, 1]
-        # Subproblem solution for original nodes 0 and 3
-        # We use a list to control iteration order for this test
-        subproblem_solution = [0, 3]
-        reverse_map = {i: i for i in range(5)}
-
-        expected = [1, 1, 0, 0, 1]
-
-        result = dominance_aggregation(main_solution, subproblem_solution, reverse_map)
-        assert result == expected
 
 
 # ---------------------------------------------------------------------------

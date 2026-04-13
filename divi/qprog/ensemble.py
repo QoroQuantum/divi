@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import atexit
-import traceback
 import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
@@ -14,6 +13,7 @@ from typing import Any
 from warnings import warn
 
 from rich.console import Console
+from rich.panel import Panel
 from rich.progress import TaskID
 
 from divi.backends import CircuitRunner
@@ -37,7 +37,7 @@ from divi.reporting import (
 
 
 def _default_task_function(program: QuantumProgram):
-    program.run()
+    return program.run()
 
 
 class ProgramEnsemble(ABC):
@@ -79,7 +79,7 @@ class ProgramEnsemble(ABC):
     @property
     def total_circuit_count(self):
         """
-        Get the total number of circuits executed across all programs in the batch.
+        Get the total number of circuits executed across all programs in the ensemble.
 
         Returns:
             int: Cumulative count of circuits submitted by all programs.
@@ -89,7 +89,7 @@ class ProgramEnsemble(ABC):
     @property
     def total_run_time(self):
         """
-        Get the total runtime across all programs in the batch.
+        Get the total runtime across all programs in the ensemble.
 
         Returns:
             float: Cumulative execution time in seconds across all programs.
@@ -115,10 +115,10 @@ class ProgramEnsemble(ABC):
 
     @abstractmethod
     def create_programs(self):
-        """Generate and populate the programs dictionary for batch execution.
+        """Generate and populate the programs dictionary for ensemble execution.
 
         This method must be implemented by subclasses to create the quantum programs
-        that will be executed as part of the batch. The method operates via side effects:
+        that will be executed as part of the ensemble. The method operates via side effects:
         it populates `self._programs` (or `self.programs`) with a dictionary mapping
         program identifiers to `QuantumProgram` instances.
 
@@ -151,7 +151,7 @@ class ProgramEnsemble(ABC):
         if len(self._programs) > 0:
             raise RuntimeError(
                 "Some programs already exist. "
-                "Clear the program dictionary before creating new ones by using batch.reset()."
+                "Clear the program dictionary before creating new ones by using ensemble.reset()."
             )
 
         self._queue = Queue()
@@ -159,10 +159,10 @@ class ProgramEnsemble(ABC):
 
     def reset(self):
         """
-        Reset the batch to its initial state.
+        Reset the ensemble to its initial state.
 
         Clears all programs, stops any running executors, terminates listener threads,
-        and stops progress bars. This allows the batch to be reused for a new set of
+        and stops progress bars. This allows the ensemble to be reused for a new set of
         programs.
 
         Note:
@@ -276,7 +276,7 @@ class ProgramEnsemble(ABC):
         batch_config: BatchConfig = BatchConfig(),
     ):
         """
-        Execute all programs in the batch.
+        Execute all programs in the ensemble.
 
         Starts all quantum programs in parallel using a thread pool. Can run in
         blocking or non-blocking mode.
@@ -297,7 +297,7 @@ class ProgramEnsemble(ABC):
             ProgramEnsemble: Returns self for method chaining.
 
         Raises:
-            RuntimeError: If a batch is already running or if no programs have been
+            RuntimeError: If an ensemble is already running or if no programs have been
                 created.
 
         Note:
@@ -305,7 +305,7 @@ class ProgramEnsemble(ABC):
             collect results.
         """
         if self._executor is not None:
-            raise RuntimeError("A batch is already being run.")
+            raise RuntimeError("An ensemble is already being run.")
 
         if len(self._programs) == 0:
             raise RuntimeError("No programs to run.")
@@ -331,7 +331,7 @@ class ProgramEnsemble(ABC):
         program_instances = list(self._programs.values())
         if len(set(program_instances)) != len(program_instances):
             raise RuntimeError(
-                "Duplicate program instances detected in batch. "
+                "Duplicate program instances detected in ensemble. "
                 "QuantumProgram instances are stateful and NOT thread-safe. "
                 "You must provide a unique instance for each program ID."
             )
@@ -405,7 +405,7 @@ class ProgramEnsemble(ABC):
 
     def check_all_done(self) -> bool:
         """
-        Check if all programs in the batch have completed execution.
+        Check if all programs in the ensemble have completed execution.
 
         Returns:
             bool: True if all programs are finished (successfully or with errors),
@@ -413,21 +413,45 @@ class ProgramEnsemble(ABC):
         """
         return all(future.done() for future in self.futures)
 
-    def _handle_cancellation(self):
-        """Handle cancellation gracefully with accurate progress feedback.
+    def _collect_completed_results(self, completed_futures: list):
+        """Collect completed program instances from futures.
 
-        With the batch coordinator active, cancellation works as follows:
-        1. ``coordinator.cancel()`` sets the cancelled flag, cancels any
-           in-flight backend jobs, and resolves pending futures with
-           ``_CancelledError``.
-        2. The program threads see the ``_CancelledError`` (or the
-           ``_cancellation_event``) and exit.
-        3. We wait for all still-running futures and mark them in the
-           progress bar.
+        Args:
+            completed_futures: List to append program instances to.
+        """
+        for future in self.futures:
+            if future.done() and not future.cancelled():
+                try:
+                    completed_futures.append(future.result())
+                except Exception:
+                    pass  # Skip failed futures
 
-        Without the coordinator the legacy path applies: we try
-        ``future.cancel()`` for pending tasks and ``cancel_unfinished_job()``
-        for running ones.
+    def _stop_remaining_programs(
+        self,
+        *,
+        pending_status: str,
+        pending_message: str,
+        running_status: str,
+        running_message: str,
+        failed_status: str = "Failed",
+        failed_message: str = "Job failed",
+    ) -> None:
+        """Signal all remaining programs to stop and wait for them to finish.
+
+        Shared mechanical core used by both the cancellation path
+        (``KeyboardInterrupt``) and the failure path (program exception).
+
+        Args:
+            pending_status: Progress bar ``final_status`` for futures that
+                were successfully cancelled before they started.
+            pending_message: Progress bar ``message`` for those futures.
+            running_status: Progress bar ``final_status`` for futures that
+                were already running and had to be waited on.
+            running_message: Progress bar ``message`` for those futures.
+            failed_status: Progress bar ``final_status`` for futures that
+                already finished with an exception (e.g. batch coordinator
+                failed all waiting programs).
+            failed_message: Progress bar ``message`` for those futures.
         """
         self._cancellation_event.set()
 
@@ -441,6 +465,21 @@ class ProgramEnsemble(ABC):
 
         for future, program in self._future_to_program.items():
             if future.done():
+                # Mark already-failed futures so their progress bars don't
+                # freeze.  Futures that completed successfully are fine.
+                if self._progress_bar and not future.cancelled():
+                    try:
+                        exc = future.exception()
+                    except Exception:
+                        exc = True  # defensive; treat as failed
+                    if exc is not None:
+                        task_id = self._pb_task_map.get(program.program_id)
+                        if task_id is not None:
+                            self._progress_bar.update(
+                                task_id,
+                                final_status=failed_status,
+                                message=failed_message,
+                            )
                 continue
 
             cancel_result = future.cancel()
@@ -463,8 +502,8 @@ class ProgramEnsemble(ABC):
             if self._progress_bar and task_id is not None:
                 self._progress_bar.update(
                     task_id,
-                    final_status="Cancelled",
-                    message="Cancelled by user",
+                    final_status=pending_status,
+                    message=pending_message,
                 )
 
         # Wait for running tasks to finish
@@ -474,13 +513,65 @@ class ProgramEnsemble(ABC):
             if self._progress_bar and task_id is not None:
                 self._progress_bar.update(
                     task_id,
-                    final_status="Aborted",
-                    message="Completed during cancellation",
+                    final_status=running_status,
+                    message=running_message,
                 )
+
+    def _handle_cancellation(self):
+        """Handle cancellation gracefully with accurate progress feedback.
+
+        With the batch coordinator active, cancellation works as follows:
+        1. ``coordinator.cancel()`` sets the cancelled flag, cancels any
+           in-flight backend jobs, and resolves pending futures with
+           ``_CancelledError``.
+        2. The program threads see the ``_CancelledError`` (or the
+           ``_cancellation_event``) and exit.
+        3. We wait for all still-running futures and mark them in the
+           progress bar.
+
+        Without the coordinator the legacy path applies: we try
+        ``future.cancel()`` for pending tasks and ``cancel_unfinished_job()``
+        for running ones.
+        """
+        self._stop_remaining_programs(
+            pending_status="Cancelled",
+            pending_message="Cancelled by user",
+            running_status="Aborted",
+            running_message="Stopped after current iteration",
+        )
+
+    def _handle_failure(self, failed_future: Future | None) -> None:
+        """Handle a program failure by stopping remaining programs.
+
+        Marks the failed program's progress bar as failed, then stops
+        all other running programs using the same mechanism as
+        cancellation.
+
+        Args:
+            failed_future: The future that raised the exception, or
+                ``None`` if it could not be identified.
+        """
+        if failed_future is not None:
+            failed_program = self._future_to_program.get(failed_future)
+            if failed_program is not None:
+                task_id = self._pb_task_map.get(failed_program.program_id)
+                if self._progress_bar and task_id is not None:
+                    self._progress_bar.update(
+                        task_id,
+                        final_status="Failed",
+                        message="Job failed",
+                    )
+
+        self._stop_remaining_programs(
+            pending_status="Cancelled",
+            pending_message="Cancelled due to failure",
+            running_status="Aborted",
+            running_message="Aborted due to failure",
+        )
 
     def join(self):
         """
-        Wait for all programs in the batch to complete and collect results.
+        Wait for all programs in the ensemble to complete and collect results.
 
         Blocks until all programs finish execution, aggregating their circuit counts
         and run times. Handles keyboard interrupts gracefully by attempting to cancel
@@ -500,11 +591,12 @@ class ProgramEnsemble(ABC):
         if self._executor is None:
             return
 
+        completed_futures = []
         try:
             # The as_completed iterator will yield futures as they finish.
             # If a task fails, future.result() will raise the exception immediately.
             for future in as_completed(self.futures):
-                future.result()
+                completed_futures.append(future.result())
 
         except KeyboardInterrupt:
             if self._progress_bar is not None:
@@ -514,26 +606,74 @@ class ProgramEnsemble(ABC):
                 )
             self._handle_cancellation()
 
+            # Re-collect all completed results from scratch to avoid duplicates
+            # from the as_completed loop above.
+            completed_futures.clear()
+            self._collect_completed_results(completed_futures)
+
             return False
 
         except Exception as e:
-            # A task has failed. Cancel the coordinator and remaining futures.
-            traceback.print_exception(type(e), e, e.__traceback__)
-
-            if self._coordinator is not None:
-                self._coordinator.cancel()
+            # A task has failed. Identify the culprit and stop everything.
+            failed_future = None
+            # Count programs that finished successfully *before* we stop
+            # anything — programs interrupted by the cancellation event
+            # should not count as "completed".
+            n_already_done = 0
             for f in self.futures:
-                f.cancel()
+                if f.done() and not f.cancelled():
+                    try:
+                        exc = f.exception()
+                    except Exception:
+                        exc = True
+                    if exc is not None:
+                        if failed_future is None:
+                            failed_future = f
+                    else:
+                        n_already_done += 1
 
-            # Re-raise a new error to indicate the batch failed.
-            raise RuntimeError("Batch execution failed and was cancelled.") from e
+            # Show a condensed error in a Rich panel so the user gets
+            # immediate feedback.  The full traceback is preserved in the
+            # chained RuntimeError that propagates afterwards.
+            failed_program_label = ""
+            if failed_future is not None:
+                fp = self._future_to_program.get(failed_future)
+                if fp is not None:
+                    failed_program_label = f" (Program {fp.program_id})"
+
+            console = (
+                self._progress_bar.console
+                if self._progress_bar is not None
+                else Console(stderr=True)
+            )
+            console.print(
+                Panel(
+                    f"[bold]{type(e).__name__}[/bold]: {e}",
+                    title=f"[bold red]Program Failure{failed_program_label}[/bold red]",
+                    subtitle="[dim]Full traceback follows below[/dim]",
+                    border_style="red",
+                )
+            )
+
+            self._handle_failure(failed_future)
+
+            # Re-collect all completed results from scratch to avoid duplicates
+            # from the as_completed loop above.
+            completed_futures.clear()
+            self._collect_completed_results(completed_futures)
+
+            n_total = len(self._programs)
+            raise RuntimeError(
+                f"Ensemble execution failed: {n_already_done}/{n_total} programs "
+                f"completed before failure."
+            ) from e
 
         finally:
-            # Aggregate totals from program instances (threads share memory)
-            programs = list(self._programs.values())
-            if programs:
+            # Aggregate results from completed program instances.
+            # run() returns self, so completed_futures contains programs.
+            if completed_futures:
                 self._total_circuit_count += sum(
-                    p.total_circuit_count for p in programs
+                    p._total_circuit_count for p in completed_futures
                 )
                 # For async backends the individual programs don't track runtime
                 # (the proxy returns sync results). Use the coordinator's total
@@ -544,7 +684,9 @@ class ProgramEnsemble(ABC):
                 ):
                     self._total_run_time += self._coordinator.total_runtime
                 else:
-                    self._total_run_time += sum(p.total_run_time for p in programs)
+                    self._total_run_time += sum(
+                        p._total_run_time for p in completed_futures
+                    )
                 self.futures.clear()
 
             # Shutdown coordinator
@@ -618,7 +760,7 @@ class ProgramEnsemble(ABC):
     @abstractmethod
     def aggregate_results(self):
         """
-        Aggregate results from all programs in the batch after execution.
+        Aggregate results from all programs in the ensemble after execution.
 
         This is an abstract method that must be implemented by subclasses. The base
         implementation performs validation checks:

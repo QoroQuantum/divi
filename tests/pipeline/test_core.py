@@ -150,7 +150,7 @@ class TestValidateStageOrder:
             )
 
     def test_duplicate_axis_names_raise(self):
-        """Duplicate stage axis_name (e.g. two MeasurementStages) raises."""
+        """Duplicate stage axis_name (e.g. two FanoutAndSumStages) raises."""
         meta = two_group_meta()
         with pytest.raises(
             ValueError,
@@ -159,7 +159,8 @@ class TestValidateStageOrder:
             CircuitPipeline(
                 stages=[
                     DummySpecStage(meta=meta),
-                    MeasurementStage(),
+                    FanoutAndSumStage("x", 2),
+                    FanoutAndSumStage("x", 3),
                     MeasurementStage(),
                 ]
             )
