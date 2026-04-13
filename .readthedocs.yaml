@@ -12,7 +12,7 @@ build:
   jobs:
     post_install:
       - pip install uv
-      - VIRTUAL_ENV=$READTHEDOCS_VIRTUALENV_PATH uv sync --no-default-groups --group docs --no-install-project
+      - VIRTUAL_ENV=$READTHEDOCS_VIRTUALENV_PATH uv sync --active --no-default-groups --group docs --no-install-project
 
 sphinx:
   configuration: docs/source/conf.py

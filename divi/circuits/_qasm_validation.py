@@ -230,9 +230,10 @@ class Parser:
     def header(self):
         self.match("OPENQASM")
         v = self.match("NUMBER")
-        if v.value not in ("2.0", "2", "3.0", "3"):
+        if v.value not in ("2.0", "2"):
             raise SyntaxError(
-                f"Unsupported OPENQASM version '{v.value}' at {v.line}:{v.col}"
+                f"Unsupported OPENQASM version '{v.value}' at {v.line}:{v.col}; "
+                f"only OPENQASM 2.0 is supported"
             )
         self.match("SEMI")
 

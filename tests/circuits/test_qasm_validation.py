@@ -223,6 +223,18 @@ INVALID_QASM = {
     qreg q[1];
     h q[0];
     """,
+        # QASM 3.0 header alone is rejected (QoroService accepts only QASM 2.0)
+        """OPENQASM 3.0;
+    include "stdgates.inc";
+    qubit[1] q;
+    h q[0];
+    """,
+        # QASM 3.0 with QASM3-only constructs (input parameter)
+        """OPENQASM 3.0;
+    input angle[32] theta;
+    qubit[1] q;
+    ry(theta) q[0];
+    """,
         # Statement not ending in semicolon
         """OPENQASM 2.0;
     qreg q[2]
@@ -307,6 +319,8 @@ INVALID_QASM = {
         "RedefineBuiltinGate",
         "IllegalChar",
         "UnsupportedVersion",
+        "UnsupportedVersionQASM3Header",
+        "UnsupportedVersionQASM3Input",
         "MissingStmtSemicolon",
         "FloatAsInt",
         "IfValTooLarge",
