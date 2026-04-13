@@ -557,12 +557,15 @@ class Fourier2DResult:
         defaults: dict = {"cmap": "inferno", "aspect": "auto", "origin": "lower"}
         if log_scale and "norm" not in imshow_kwargs:
             floor = float(np.max(self.power_spectrum)) * 1e-10
-            vmin = max(
-                float(np.min(self.power_spectrum[self.power_spectrum > 0])), floor
-            )
-            defaults["norm"] = LogNorm(
-                vmin=vmin, vmax=float(np.max(self.power_spectrum))
-            )
+            positive_vals = self.power_spectrum[self.power_spectrum > 0]
+            if positive_vals.size == 0:
+                # Degenerate (all-zero) spectrum — fall back to linear scale.
+                pass
+            else:
+                vmin = max(float(np.min(positive_vals)), floor)
+                defaults["norm"] = LogNorm(
+                    vmin=vmin, vmax=float(np.max(self.power_spectrum))
+                )
         defaults.update(imshow_kwargs)
         data = self.power_spectrum.copy()
         if log_scale and "norm" not in imshow_kwargs:

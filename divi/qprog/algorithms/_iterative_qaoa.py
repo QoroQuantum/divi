@@ -279,6 +279,7 @@ class IterativeQAOA(QAOA):
     def _reset_optimization_state(self) -> None:
         """Reset VQA optimization tracking state for a fresh run."""
         self._losses_history = []
+        self._param_history = []
         self._best_params = []
         self._best_loss = float("inf")
         self._best_probs = {}

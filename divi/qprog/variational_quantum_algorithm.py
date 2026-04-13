@@ -977,7 +977,8 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
     def _build_pipeline_env(self, **overrides) -> PipelineEnv:
         """Construct a PipelineEnv for the provided parameter sets."""
-        overrides.setdefault("param_sets", self._initialize_param_sets())
+        if "param_sets" not in overrides:
+            overrides["param_sets"] = self._initialize_param_sets()
         return super()._build_pipeline_env(**overrides)
 
     def _build_cost_pipeline(self, spec_stage: Stage) -> CircuitPipeline:
@@ -1073,7 +1074,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         shifted_param_sets = self._grad_shift_mask + params
         exp_vals = self._evaluate_cost_param_sets(shifted_param_sets, **kwargs)
         exp_vals_arr = np.asarray(
-            [value for _, value in sorted(exp_vals.items())],
+            [value for value in exp_vals.values()],
             dtype=np.float64,
         )
 
@@ -1157,7 +1158,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             losses = self._evaluate_cost_param_sets(np.atleast_2d(params), **kwargs)
 
             losses = np.asarray(
-                [value for _, value in sorted(losses.items())],
+                [value for value in losses.values()],
                 dtype=np.float64,
             )
 
