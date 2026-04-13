@@ -66,14 +66,13 @@ if __name__ == "__main__":
         ansatz=HartreeFockAnsatz(),
         optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
         max_iterations=1,
-        initial_params=optimal_params,
     )
 
     # --- 2. Noisy (0.5% depolarizing) ---
     vqe_noisy = VQE(
         backend=QiskitSimulator(n_processes=8, noise_model=noise_model), **common
     )
-    vqe_noisy.run()
+    vqe_noisy.run(initial_params=optimal_params)
 
     # --- 3. ZNE-mitigated ---
     scale_factors = [1.0, 3.0, 5.0]
@@ -86,7 +85,7 @@ if __name__ == "__main__":
         ),
         **common,
     )
-    vqe_zne.run()
+    vqe_zne.run(initial_params=optimal_params)
 
     # --- 4. QuEPP-mitigated (with Pauli twirling) ---
     vqe_quepp = VQE(
@@ -98,7 +97,7 @@ if __name__ == "__main__":
     # Dry run shows the per-stage circuit fan-out including QEM + twirling
     vqe_quepp.dry_run()
 
-    vqe_quepp.run()
+    vqe_quepp.run(initial_params=optimal_params)
 
     # --- Print comparison table ---
     table = Table(title="Error Mitigation Comparison (H₂ ground state)")
