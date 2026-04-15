@@ -43,7 +43,12 @@ jobs:
 
       - name: Build Sphinx HTML
         # ``nitpicky = True`` is set in docs/source/conf.py; ``-W`` turns every
-        # nitpick warning into a build failure.
+        # nitpick warning into a build failure.  Only run on 3.12 (the Python
+        # version RTD builds against) — on 3.11 the uv resolver picks an older
+        # ``sphinx-autodoc-typehints`` that emits spurious warnings for
+        # PEP 604 unions in Google-style docstrings.  Snippet tests still run
+        # on both versions to catch Python-version-sensitive runtime issues.
+        if: matrix.python-version == '3.12'
         run: |
           cd docs
           uv run make build SPHINXOPTS="-W"

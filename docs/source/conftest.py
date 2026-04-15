@@ -79,6 +79,11 @@ SNIPPET_PATCHES: list[tuple[str, str]] = [
     ("population_size=10", "population_size=3"),
     # ZNE: fewer scale factors → fewer circuits per iteration.
     ("scale_factors = [1.0, 1.5, 2.0]", "scale_factors = [1.0, 1.5]"),
+    # TimeEvolutionTrajectory: 20 parallel time points → 3.
+    (
+        "np.linspace(0.01, math.pi, 20)",
+        "np.linspace(0.01, math.pi, 3)",
+    ),
     # Circuit depth.
     ("n_layers=2", "n_layers=1"),
 ]

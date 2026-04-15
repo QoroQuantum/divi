@@ -116,7 +116,8 @@ You can create custom program ensemble workflows by inheriting from :class:`~div
            for i, mol in enumerate(self.molecules):
                vqe = VQE(
                    molecule=mol,
-                   backend=self.backend
+                   backend=self.backend,
+                   max_iterations=10,
                )
                self._programs[f"sweep_{i}"] = vqe
 
