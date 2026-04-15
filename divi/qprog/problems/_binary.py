@@ -4,8 +4,6 @@
 
 """Binary optimization (QUBO / HUBO) problem class for QAOA."""
 
-from __future__ import annotations
-
 from collections.abc import Callable
 from typing import Any, Literal
 
@@ -54,7 +52,7 @@ def _sanitize_problem_input(qubo):
 class BinaryOptimizationProblem(QAOAProblem):
     """Generic QUBO or HUBO problem.
 
-    Normalises the input, converts to an Ising Hamiltonian, and provides
+    Normalizes the input, converts to an Ising Hamiltonian, and provides
     a standard X-mixer with equal superposition initial state.
 
     Args:
@@ -132,7 +130,7 @@ class BinaryOptimizationProblem(QAOAProblem):
 
     @property
     def canonical_problem(self):
-        """The normalised ``BinaryPolynomialProblem``."""
+        """The normalized ``BinaryPolynomialProblem``."""
         return self._canonical_problem
 
     @property

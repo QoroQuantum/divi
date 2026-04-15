@@ -1,110 +1,41 @@
 Circuits
 ========
 
-The ``divi.circuits`` module provides circuit abstractions for quantum program generation, execution, and error mitigation.
-
-Core Circuit Classes
---------------------
+The ``divi.circuits`` module provides circuit abstractions for quantum program
+generation, execution, and error mitigation.
 
 .. warning::
-   **Developer-Facing Classes**: The core circuit class ``MetaCircuit`` is intended for advanced users and developers. Most users should interact with circuits through higher-level APIs in the ``divi.qprog`` module.
+   **Developer-Facing Classes**: The core circuit class ``MetaCircuit`` is
+   intended for advanced users and developers. Most users should interact with
+   circuits through higher-level APIs in the ``divi.qprog`` module.
 
-.. autoclass:: divi.circuits.MetaCircuit
-   :members:
-   :undoc-members:
-   :show-inheritance:
-   :special-members: __init__
+Core
+----
 
-QASM Templates
---------------
-
-.. autoclass:: divi.circuits.QASMTemplate
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. autofunction:: divi.circuits.build_template
-
-.. autofunction:: divi.circuits.render_template
-
-QASM Integration
-----------------
-
-QASM Generation Function
-~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. autofunction:: divi.circuits.to_openqasm
-   :no-index:
-
-QASM Validation Functions
-~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. autofunction:: divi.circuits.validate_qasm
-   :no-index:
-
-.. autofunction:: divi.circuits.validate_qasm_count_qubits
-   :no-index:
-
-.. autofunction:: divi.circuits.is_valid_qasm
-   :no-index:
+.. automodapi:: divi.circuits
+   :no-heading:
+   :no-inheritance-diagram:
+   :no-inherited-members:
+   :include-all-objects:
 
 Error Mitigation Protocols
 --------------------------
 
-Divi provides quantum error mitigation (QEM) capabilities to improve the accuracy of quantum computations in the presence of noise.
+Divi provides quantum error mitigation (QEM) capabilities to improve the
+accuracy of quantum computations in the presence of noise. All protocols
+inherit from :class:`~divi.circuits.qem.QEMProtocol`.
 
-.. automodule:: divi.circuits.qem
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-QEM Protocol Architecture
-~~~~~~~~~~~~~~~~~~~~~~~~~
-
-All error mitigation protocols in Divi inherit from the :class:`QEMProtocol` base class, providing a consistent interface for different mitigation techniques.
-
-.. autoclass:: divi.circuits.qem.QEMProtocol
-   :members:
-   :undoc-members:
-   :show-inheritance:
-   :no-index:
-   :special-members: __init__
-
-Zero Noise Extrapolation (ZNE)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. autoclass:: divi.circuits.qem.ZNE
-   :members:
-   :undoc-members:
-   :show-inheritance:
-   :special-members: __init__
-   :no-index:
+.. automodapi:: divi.circuits.qem
+   :no-heading:
+   :no-inheritance-diagram:
+   :no-inherited-members:
+   :include-all-objects:
 
 Quantum Enhanced Pauli Propagation (QuEPP)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. automodule:: divi.circuits.quepp
-   :members:
-   :undoc-members:
-   :show-inheritance:
-   :no-index:
-
-.. autoclass:: divi.circuits.quepp.QuEPP
-   :members:
-   :undoc-members:
-   :show-inheritance:
-   :special-members: __init__
-   :no-index:
-
-No Mitigation Protocol
-~~~~~~~~~~~~~~~~~~~~~~
-
-.. autoclass:: divi.circuits.qem._NoMitigation
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. automodule:: divi.circuits
-   :members:
-   :undoc-members:
-   :show-inheritance:
+.. automodapi:: divi.circuits.quepp
+   :no-heading:
+   :no-inheritance-diagram:
+   :no-inherited-members:
+   :include-all-objects:

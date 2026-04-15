@@ -15,6 +15,10 @@ permissions:
 jobs:
   build-docs:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -25,12 +29,26 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
-      - name: Install doc dependencies
-        run: uv sync --no-default-groups --group docs --no-install-project
+      - name: Install dependencies
+        run: uv sync --no-default-groups --group docs --group testing
+
+      - name: Test documentation code snippets
+        run: |
+          cd docs
+          make test-snippets
+        env:
+          MPLBACKEND: Agg
 
       - name: Build Sphinx HTML
+        # ``nitpicky = True`` is set in docs/source/conf.py; ``-W`` turns every
+        # nitpick warning into a build failure.  Only run on 3.12 (the Python
+        # version RTD builds against) — on 3.11 the uv resolver picks an older
+        # ``sphinx-autodoc-typehints`` that emits spurious warnings for
+        # PEP 604 unions in Google-style docstrings.  Snippet tests still run
+        # on both versions to catch Python-version-sensitive runtime issues.
+        if: matrix.python-version == '3.12'
         run: |
           cd docs
           uv run make build SPHINXOPTS="-W"

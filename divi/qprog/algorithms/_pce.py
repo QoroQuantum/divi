@@ -202,12 +202,11 @@ class PCE(VQE):
         super().__init__(hamiltonian=placeholder_hamiltonian, **kwargs)
 
     def _build_pipelines(self) -> None:
-        # Override VQE's cost pipeline: PCECostStage is a standalone
-        # BundleStage (not a MeasurementStage subclass) that emits a single
-        # "measure all qubits" QASM per circuit spec and computes nonlinear
-        # binary-polynomial energy from raw shot histograms.
-        # QEMStage is intentionally excluded — ZNE is not applicable to
-        # counts-based measurements.
+        """Build the PCE-specific cost and measurement pipelines."""
+        # PCECostStage is a standalone BundleStage (not a MeasurementStage
+        # subclass) that emits one "measure all qubits" QASM per circuit
+        # spec and computes the nonlinear binary-polynomial objective from
+        # raw shot histograms. QEMStage is intentionally excluded.
         self._cost_pipeline = CircuitPipeline(
             stages=[
                 CircuitSpecStage(),
@@ -223,15 +222,17 @@ class PCE(VQE):
         )
         self._measurement_pipeline = self._build_measurement_pipeline()
 
-    def _run_optimization_circuits(self, **kwargs) -> dict[int, float]:
-        """Run cost evaluation via the pipeline."""
+    def _evaluate_cost_param_sets(
+        self, param_sets: np.ndarray, **kwargs
+    ) -> dict[int, float]:
+        """Evaluate the cost pipeline for the provided parameter sets."""
         if not self._use_soft_objective and self.backend.supports_expval:
             raise ValueError(
                 "PCE with alpha >= 5.0 (hard CVaR mode) requires shot histograms and "
                 "cannot use expectation-value backends. Use a sampling backend or set "
                 "force_sampling=True in JobConfig when using QoroService."
             )
-        return super()._run_optimization_circuits(**kwargs)
+        return super()._evaluate_cost_param_sets(param_sets, **kwargs)
 
     def _create_meta_circuit_factories(self) -> dict[str, MetaCircuit]:
         """Create meta-circuit factories, handling the edge case of zero parameters."""
@@ -415,7 +416,7 @@ class PCE(VQE):
             names to binary values.
 
         Raises:
-            RuntimeError: If :meth:`run` has not been called yet.
+            RuntimeError: If ``run()`` has not been called yet.
         """
         if self._final_vector is None:
             raise RuntimeError("Run the VQE optimization first.")

@@ -17,8 +17,6 @@ Three interpolation strategies are provided:
 - **CHEBYSHEV**: Chebyshev polynomial basis representation
 """
 
-from __future__ import annotations
-
 from collections.abc import Callable
 from enum import Enum
 
@@ -218,7 +216,7 @@ class IterativeQAOA(QAOA):
         print(iterative.solution)
 
     Args:
-        problem: A :class:`QAOAProblem` instance providing the QAOA ingredients.
+        problem: A :class:`~divi.qprog.problems.QAOAProblem` instance providing the QAOA ingredients.
         max_depth: Maximum circuit depth to iterate up to. Defaults to 5.
         strategy: Interpolation strategy for warm-starting. Defaults to INTERP.
         n_basis_terms: Number of basis terms for FOURIER/CHEBYSHEV strategies.
@@ -281,10 +279,10 @@ class IterativeQAOA(QAOA):
     def _reset_optimization_state(self) -> None:
         """Reset VQA optimization tracking state for a fresh run."""
         self._losses_history = []
+        self._param_history = []
         self._best_params = []
         self._best_loss = float("inf")
         self._best_probs = {}
-        self._curr_params = None
         self.current_iteration = 0
         self.optimize_result = None
         self._stop_reason = None
@@ -304,8 +302,7 @@ class IterativeQAOA(QAOA):
             **kwargs: Additional keyword arguments passed to the parent ``run()``.
 
         Returns:
-            tuple[int, float]: Total circuit count and total run time
-            across all depths.
+            IterativeQAOA: Returns ``self`` for method chaining.
         """
         depth_history: list[dict] = []
         prev_best_params: npt.NDArray[np.float64] | None = None
@@ -317,6 +314,7 @@ class IterativeQAOA(QAOA):
             self._rebuild_for_depth(depth)
             self._reset_optimization_state()
             self.max_iterations = self._get_max_iters(depth)
+            initial_params = None
 
             if depth > 1 and prev_best_params is not None:
                 interpolated = interpolate_qaoa_params(
@@ -325,13 +323,15 @@ class IterativeQAOA(QAOA):
                     self._strategy,
                     self._n_basis_terms,
                 )
-                self._curr_params = np.tile(
-                    interpolated, (self.optimizer.n_param_sets, 1)
-                )
+                initial_params = np.tile(interpolated, (self.optimizer.n_param_sets, 1))
 
-            circuits, time = super().run(perform_final_computation=False, **kwargs)
-            total_circuits += circuits
-            total_time += time
+            super().run(
+                initial_params=initial_params,
+                perform_final_computation=False,
+                **kwargs,
+            )
+            total_circuits += self._total_circuit_count
+            total_time += self._total_run_time
 
             depth_history.append(
                 {
@@ -366,7 +366,7 @@ class IterativeQAOA(QAOA):
 
         self._total_circuit_count = total_circuits
         self._total_run_time = total_time
-        return total_circuits, total_time
+        return self
 
     @property
     def best_depth(self) -> int:

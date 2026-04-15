@@ -30,12 +30,12 @@ class CustomVQA(VariationalQuantumAlgorithm):
 
     Attributes:
         qscript (``qml.tape.QuantumScript``): The parameterized ``QuantumScript``.
-        param_shape (tuple[int, ...]): Shape of a single parameter set.
+        param_shape: Shape of a single parameter set.
         n_qubits (int): Number of qubits in the script.
         n_layers (int): Layer count (fixed to 1 for this wrapper).
-        cost_hamiltonian (qml.operation.Operator): Observable being minimized.
+        cost_hamiltonian: Observable being minimized.
         loss_constant (float): Constant term extracted from the observable.
-        optimizer (Optimizer): Classical optimizer for parameter updates.
+        optimizer: Classical optimizer for parameter updates.
         max_iterations (int): Maximum number of optimization iterations.
         current_iteration (int): Current optimization iteration.
     """
@@ -54,7 +54,7 @@ class CustomVQA(VariationalQuantumAlgorithm):
             qscript (qml.tape.QuantumScript | QuantumCircuit): A parameterized QuantumScript with a
                 single expectation-value measurement, or a Qiskit QuantumCircuit with
                 computational basis measurements.
-            param_shape (tuple[int, ...] | int | None): Shape of a single parameter
+            param_shape: Shape of a single parameter
                 set. If None, uses a flat shape inferred from trainable parameters.
             max_iterations (int): Maximum number of optimization iterations.
             **kwargs: Additional keyword arguments passed to the parent class, including
@@ -146,7 +146,7 @@ class CustomVQA(VariationalQuantumAlgorithm):
         """Validate and normalize the parameter shape.
 
         Args:
-            param_shape (tuple[int, ...] | int | None): User-provided parameter shape.
+            param_shape: User-provided parameter shape.
             n_params (int): Number of trainable parameters in the script.
 
         Returns:

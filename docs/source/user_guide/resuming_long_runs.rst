@@ -1,25 +1,25 @@
 Resuming Long-Running or Interrupted Runs
 =========================================
 
-Checkpointing allows you to save the state of your quantum algorithm optimization at any point and resume from that exact state later. This is essential for long-running optimizations, debugging, and resuming interrupted computations.
+Checkpointing saves :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm` run state to disk via :class:`~divi.qprog.checkpointing.CheckpointConfig` so you can resume after interruptions, inspect intermediate progress, or raise ``max_iterations`` after a reload.
 
 Overview
 --------
 
-Divi's checkpointing system saves both the program state (parameters, losses, iteration count) and optimizer state (internal optimizer data) to disk. This allows you to:
+On each checkpoint, Divi writes **program** state (parameters, losses, iteration count, RNG state) and **optimizer** state (anything the optimizer needs to continue). That enables you to:
 
-- **Resume interrupted runs** - Continue optimization from where it stopped
-- **Debug optimization** - Inspect intermediate states and parameters
-- **Manage long runs** - Break up very long optimizations into manageable chunks
-- **Adjust iteration targets** - Change `max_iterations` after loading to continue beyond the original target
+- **Resume interrupted runs** — continue from the last saved iteration
+- **Debug** — inspect intermediate parameters and losses on disk
+- **Chunk long jobs** — stop and restart without re-running from scratch
+- **Raise iteration caps** — increase ``max_iterations`` after :meth:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm.load_state`
 
-Checkpointing is supported for all :class:`VariationalQuantumAlgorithm` subclasses (:class:`VQE`, :class:`QAOA`) and works with checkpointing-capable optimizers:
+Checkpointing is supported for all :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm` subclasses (:class:`~divi.qprog.algorithms.VQE`, :class:`~divi.qprog.algorithms.QAOA`) and works with checkpointing-capable optimizers:
 
-- :class:`MonteCarloOptimizer`
-- :class:`PymooOptimizer` (CMAES and DE methods)
+- :class:`~divi.qprog.optimizers.MonteCarloOptimizer`
+- :class:`~divi.qprog.optimizers.PymooOptimizer` (CMAES and DE methods)
 
 .. note::
-   :class:`ScipyOptimizer` does not support checkpointing due to limitations in the underlying scipy optimization methods.
+   :class:`~divi.qprog.optimizers.ScipyOptimizer` does not support checkpointing due to limitations in the underlying scipy optimization methods.
 
 Basic Usage
 -----------
@@ -27,10 +27,11 @@ Basic Usage
 Saving Checkpoints
 ^^^^^^^^^^^^^^^^^^
 
-To enable checkpointing, pass a :class:`CheckpointConfig` object to the ``run()`` method:
+To enable checkpointing, pass a :class:`~divi.qprog.checkpointing.CheckpointConfig` object to the ``run()`` method:
 
 .. code-block:: python
 
+   import numpy as np
    from pathlib import Path
    from divi.qprog import VQE, HartreeFockAnsatz
    from divi.qprog.checkpointing import CheckpointConfig
@@ -47,7 +48,7 @@ To enable checkpointing, pass a :class:`CheckpointConfig` object to the ``run()`
    vqe = VQE(
        molecule=mol,
        ansatz=HartreeFockAnsatz(),
-       n_layers=1,
+       n_layers=2,
        max_iterations=10,
        backend=MaestroSimulator(),
    )
@@ -62,6 +63,11 @@ Checkpoint Interval
 ^^^^^^^^^^^^^^^^^^^
 
 To save checkpoints less frequently, set the ``checkpoint_interval`` parameter:
+
+.. invisible-code-block: python
+
+   vqe = VQE(molecule=mol, ansatz=HartreeFockAnsatz(), n_layers=2,
+             max_iterations=10, backend=MaestroSimulator())
 
 .. code-block:: python
 
@@ -78,13 +84,26 @@ Auto-Generated Checkpoint Directories
 
 You can automatically generate a timestamped checkpoint directory:
 
+.. invisible-code-block: python
+
+   vqe = VQE(molecule=mol, ansatz=HartreeFockAnsatz(), n_layers=2,
+             max_iterations=10, backend=MaestroSimulator())
+
 .. code-block:: python
 
    # Creates a directory like "checkpoint_20250115_143022"
    config = CheckpointConfig.with_timestamped_dir()
    vqe.run(checkpoint_config=config)
 
-   # Or with a checkpoint interval
+Or with a checkpoint interval:
+
+.. invisible-code-block: python
+
+   vqe = VQE(molecule=mol, ansatz=HartreeFockAnsatz(), n_layers=2,
+             max_iterations=10, backend=MaestroSimulator())
+
+.. code-block:: python
+
    config = CheckpointConfig.with_timestamped_dir(checkpoint_interval=5)
    vqe.run(checkpoint_config=config)
 
@@ -103,7 +122,7 @@ To resume from a checkpoint, use the ``load_state()`` class method:
        backend=MaestroSimulator(),
        molecule=mol,  # Must provide original problem configuration
        ansatz=HartreeFockAnsatz(),
-       n_layers=1,
+       n_layers=2,
    )
 
    # Continue optimization
@@ -117,6 +136,8 @@ Loading Specific Checkpoints
 
 By default, ``load_state()`` loads the latest checkpoint. To load a specific checkpoint:
 
+.. skip: next
+
 .. code-block:: python
 
    # Load checkpoint from iteration 5
@@ -126,13 +147,13 @@ By default, ``load_state()`` loads the latest checkpoint. To load a specific che
        subdirectory="checkpoint_005",  # Specific checkpoint subdirectory
        molecule=mol,
        ansatz=HartreeFockAnsatz(),
-       n_layers=1,
+       n_layers=2,
    )
 
-Complete Example: :class:`QAOA` with Checkpointing
---------------------------------------------------
+Complete Example: :class:`~divi.qprog.algorithms.QAOA` with Checkpointing
+--------------------------------------------------------------------------
 
-Here's a complete example showing checkpointing with :class:`QAOA`:
+Here's a complete example showing checkpointing with :class:`~divi.qprog.algorithms.QAOA`:
 
 .. code-block:: python
 
@@ -151,9 +172,9 @@ Here's a complete example showing checkpointing with :class:`QAOA`:
    # Initial run - first half
    qaoa1 = QAOA(
        MaxCliqueProblem(G),
-       n_layers=1,
+       n_layers=2,
        optimizer=PymooOptimizer(method=PymooMethod.CMAES, population_size=10),
-       max_iterations=5,
+       max_iterations=10,
        backend=MaestroSimulator(),
    )
 
@@ -164,8 +185,8 @@ Here's a complete example showing checkpointing with :class:`QAOA`:
    qaoa2 = QAOA.load_state(
        checkpoint_dir=checkpoint_dir,
        backend=MaestroSimulator(),
-       MaxCliqueProblem(G),  # Must provide original problem
-       n_layers=1,
+       problem=MaxCliqueProblem(G),  # Must provide original problem
+       n_layers=2,
    )
 
    # Continue optimization
@@ -184,6 +205,8 @@ Listing Checkpoints
 
 You can list all checkpoints in a directory:
 
+.. skip: next
+
 .. code-block:: python
 
    from divi.qprog.checkpointing import list_checkpoints
@@ -198,6 +221,8 @@ Getting Checkpoint Information
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Get detailed information about a specific checkpoint:
+
+.. skip: next
 
 .. code-block:: python
 
@@ -214,6 +239,8 @@ Finding the Latest Checkpoint
 
 Get the path to the latest checkpoint:
 
+.. skip: next
+
 .. code-block:: python
 
    from divi.qprog.checkpointing import get_latest_checkpoint
@@ -226,6 +253,8 @@ Cleaning Up Old Checkpoints
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Remove old checkpoints, keeping only the most recent N:
+
+.. skip: next
 
 .. code-block:: python
 
@@ -257,7 +286,7 @@ The ``program_state.json`` file contains:
 - Best parameters found so far
 - Current parameters
 - Random number generator state
-- Algorithm-specific state (e.g., eigenstate for :class:`VQE`, solution nodes for :class:`QAOA`)
+- Algorithm-specific state (e.g., eigenstate for :class:`~divi.qprog.algorithms.VQE`, solution nodes for :class:`~divi.qprog.algorithms.QAOA`)
 
 The ``optimizer_state.json`` file contains optimizer-specific data:
 
@@ -279,22 +308,34 @@ Error Handling
 
 Checkpointing operations can raise several exceptions:
 
-- :class:`CheckpointNotFoundError` - Checkpoint directory or file not found
-- :class:`CheckpointCorruptedError` - Checkpoint file is invalid or corrupted
-- :class:`RuntimeError` - Attempting to save checkpoint before any iterations complete
-- :class:`ValueError` - Invalid checkpoint configuration
+- :class:`~divi.qprog.checkpointing.CheckpointNotFoundError` - Checkpoint directory or file not found
+- :class:`~divi.qprog.checkpointing.CheckpointCorruptedError` - Checkpoint file is invalid or corrupted
+- :exc:`RuntimeError` — saving a checkpoint before any iteration has completed
+- :exc:`ValueError` — invalid :class:`~divi.qprog.checkpointing.CheckpointConfig` or incompatible resume state
 
-Always handle these exceptions appropriately:
+Handle load failures explicitly when you build tooling or CLIs:
+
+.. skip: next
 
 .. code-block:: python
 
+   from pathlib import Path
+
+   from divi.qprog import VQE, HartreeFockAnsatz
    from divi.qprog.checkpointing import (
-       CheckpointNotFoundError,
        CheckpointCorruptedError,
+       CheckpointNotFoundError,
    )
+   from divi.backends import MaestroSimulator
 
    try:
-       vqe = VQE.load_state(checkpoint_dir, backend=backend, molecule=mol)
+       vqe = VQE.load_state(
+           Path("my_checkpoints"),
+           backend=MaestroSimulator(),
+           molecule=mol,
+           ansatz=HartreeFockAnsatz(),
+           n_layers=2,
+       )
    except CheckpointNotFoundError as e:
        print(f"Checkpoint not found: {e}")
    except CheckpointCorruptedError as e:
@@ -303,7 +344,15 @@ Always handle these exceptions appropriately:
 Limitations
 -----------
 
-- **:class:`ScipyOptimizer`** does not support checkpointing
+- **:class:`~divi.qprog.optimizers.ScipyOptimizer`** does not support checkpointing
 - Checkpoints are **not portable** across different Python versions or library versions
 - Problem configuration must be **manually provided** when loading (not stored in checkpoint)
 - Checkpoint files can be **large** for population-based optimizers (MonteCarlo, Pymoo)
+
+Next Steps
+----------
+
+- :doc:`core_concepts` — parameters, ``best_params`` vs ``final_params``, and warm-starting
+- :doc:`optimizers` — which optimizers support resume and how ``run()`` interacts with checkpoints
+- :doc:`visualization` — trajectories using ``losses_history`` / ``param_history`` after long runs
+- :doc:`../api_reference/qprog/checkpointing` — ``CheckpointConfig``, ``list_checkpoints``, and exceptions

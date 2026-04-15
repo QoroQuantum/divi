@@ -3,7 +3,7 @@ Optimizers
 
 Divi provides built-in support for optimizing quantum programs using three distinct methods, each suited to different problem types and user requirements.
 
-All optimizers can be accessed through the ``divi.qprog.optimizers`` module. Scipy-based optimizers rely on the :class:`ScipyMethod` enum to specify the optimizer used.
+All optimizers can be accessed through the ``divi.qprog.optimizers`` module. Scipy-based optimizers rely on the :class:`~divi.qprog.optimizers.ScipyMethod` enum to specify the optimizer used.
 
 Monte Carlo Optimization
 -------------------------
@@ -16,12 +16,12 @@ The Monte Carlo [#kalos2008]_ method in Divi is a stochastic global optimization
 
 Monte Carlo optimization can help identify promising regions in high-dimensional parameter spaces before applying more refined methods.
 
-In Divi, one can configure the optimizer; providing the size of the population ``n_param_sets``, and the number of well-performing parameter sets to carry on to the subsequent iteration ``n_best_sets``. For :class:`MonteCarloOptimizer`, pass ``population_size`` (and optionally ``n_best_sets``) in the constructor; the read-only property ``n_param_sets`` then reflects the population size.
+In Divi, one can configure the optimizer; providing the size of the population ``n_param_sets``, and the number of well-performing parameter sets to carry on to the subsequent iteration ``n_best_sets``. For :class:`~divi.qprog.optimizers.MonteCarloOptimizer`, pass ``population_size`` (and optionally ``n_best_sets``) in the constructor; the read-only property ``n_param_sets`` then reflects the population size.
 
 SciPy Optimizers
 ----------------
 
-Divi provides several SciPy-based optimizers through the :class:`ScipyOptimizer` class:
+Divi provides several SciPy-based optimizers through the :class:`~divi.qprog.optimizers.ScipyOptimizer` class:
 
 Nelder-Mead
 -----------
@@ -67,7 +67,7 @@ Use COBYLA when:
 - Gradients are inaccessible or too noisy.
 - You seek a reliable optimizer for low to moderate-dimensional spaces.
 
-COBYLA is also a good choice of optimizer when trying out :class:`QAOA` for a new problem/experimenting, but your mileage may vary.
+COBYLA is also a good choice of optimizer when trying out :class:`~divi.qprog.algorithms.QAOA` for a new problem/experimenting, but your mileage may vary.
 
 .. code-block:: python
 
@@ -101,7 +101,7 @@ Differential Evolution [#storn1997]_ is a method that optimizes a problem by ite
 Grid Search
 -----------
 
-The :class:`GridSearchOptimizer` performs an exhaustive evaluation of every
+The :class:`~divi.qprog.optimizers.GridSearchOptimizer` performs an exhaustive evaluation of every
 point on a user-defined parameter grid and returns the best-performing
 combination. It is designed for low-dimensional parameter spaces (1–3
 parameters) where you want full visibility into the loss landscape.
@@ -114,6 +114,8 @@ Use Grid Search when:
 - You want to warm-start a variational optimizer from the best grid point.
 
 .. code-block:: python
+
+   import numpy as np
 
    from divi.qprog.optimizers import GridSearchOptimizer
 
@@ -135,30 +137,30 @@ A warning is issued if ``max_iterations > 1`` is supplied.
 
    Grid search scales as ``grid_points ** n_params``, so it becomes
    impractical beyond ~3 parameters. For higher dimensions, use
-   :class:`MonteCarloOptimizer` or CMA-ES instead.
+   :class:`~divi.qprog.optimizers.MonteCarloOptimizer` or CMA-ES instead.
 
 Choosing the Right Optimizer
 ----------------------------
 
-**For :class:`VQE`:**
+**For :class:`~divi.qprog.algorithms.VQE`:**
 
 - **L-BFGS-B**: Best for smooth, differentiable landscapes with good initial parameters
 - **Monte Carlo**: Excellent for exploration and avoiding local minima
 - **COBYLA**: Good for constrained problems or when gradients are unreliable
 - **Nelder-Mead**: Robust choice for noisy or discontinuous landscapes
 
-**For :class:`QAOA`:**
+**For :class:`~divi.qprog.algorithms.QAOA`:**
 
 - **Grid Search**: Best for 1–2 layer QAOA where you want full landscape visibility
-- **COBYLA**: Often the best starting point for :class:`QAOA` problems
+- **COBYLA**: Often the best starting point for :class:`~divi.qprog.algorithms.QAOA` problems
 - **Nelder-Mead**: Good for noisy landscapes and parameter initialization
 - **Monte Carlo**: Excellent for global exploration and avoiding barren plateaus
 - **L-BFGS-B**: Use when you have good initial parameters and smooth landscapes
 
 **For PyMOO Optimizers:**
 
-- **CMA-ES**: Excellent for high-dimensional parameter spaces and when you need robust global optimization. Particularly effective for :class:`VQE` with many parameters.
-- **Differential Evolution**: Good for multimodal optimization landscapes and when you need to escape local minima. Works well for :class:`QAOA` parameter optimization.
+- **CMA-ES**: Excellent for high-dimensional parameter spaces and when you need robust global optimization. Particularly effective for :class:`~divi.qprog.algorithms.VQE` with many parameters.
+- **Differential Evolution**: Good for multimodal optimization landscapes and when you need to escape local minima. Works well for :class:`~divi.qprog.algorithms.QAOA` parameter optimization.
 
 **For Hyperparameter Sweeps:**
 
@@ -169,16 +171,16 @@ Choosing the Right Optimizer
 
 **Quantum-Specific Considerations:**
 
-- **Barren Plateaus**: Use :class:`MonteCarloOptimizer` or CMA-ES to avoid getting trapped in flat regions
+- **Barren Plateaus**: Use :class:`~divi.qprog.optimizers.MonteCarloOptimizer` or CMA-ES to avoid getting trapped in flat regions
 - **Parameter Initialization**: Start with small random values (typically [-0.1, 0.1]) for better convergence
-- **Circuit Depth**: Deeper circuits benefit from more robust optimizers like CMA-ES or :class:`MonteCarloOptimizer`
+- **Circuit Depth**: Deeper circuits benefit from more robust optimizers like CMA-ES or :class:`~divi.qprog.optimizers.MonteCarloOptimizer`
 - **Noise Resilience**: Nelder-Mead and COBYLA are more robust to quantum noise than gradient-based methods
 
 Early Stopping
 --------------
 
 Long-running optimizations can waste resources once convergence has effectively
-stalled.  Divi's :class:`~divi.qprog.EarlyStopping` controller lets you
+stalled.  Divi's :class:`~divi.qprog.early_stopping.EarlyStopping` controller lets you
 terminate the loop automatically based on configurable criteria.
 
 Pass an ``EarlyStopping`` instance to any variational algorithm:
@@ -251,7 +253,7 @@ to determine *why* optimization ended:
 - ``"gradient_below_threshold"`` — gradient vanished
 - ``"cost_variance_settled"`` — cost variance settled
 
-The :attr:`~divi.qprog.VariationalQuantumAlgorithm.optimize_result` attribute
+The ``optimize_result`` attribute
 is always populated and its ``message`` field includes the stop reason.
 
 Inspecting Optimizer Results
@@ -259,7 +261,7 @@ Inspecting Optimizer Results
 
 After running a variational algorithm, you can inspect the raw result object
 returned by the underlying optimizer via the
-:attr:`~divi.qprog.VariationalQuantumAlgorithm.optimize_result` property.
+``optimize_result`` property.
 This exposes optimizer-specific diagnostics such as:
 
 - ``nfev`` – number of cost-function evaluations
@@ -267,6 +269,8 @@ This exposes optimizer-specific diagnostics such as:
 - ``nit`` – number of iterations completed
 - ``success`` – whether the optimizer converged
 - ``message`` – convergence or termination message
+
+.. skip: next
 
 .. code-block:: python
 
@@ -279,7 +283,7 @@ This exposes optimizer-specific diagnostics such as:
 
 .. note::
 
-   ``optimize_result`` is always populated after :meth:`run` completes.
+   ``optimize_result`` is always populated after :meth:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm.run` completes.
    When optimization converges normally, ``success`` is ``True``.
    When early stopping or cancellation terminates the run, ``success`` is
    ``False`` and the ``message`` field describes the reason.  The available
@@ -289,9 +293,9 @@ This exposes optimizer-specific diagnostics such as:
 Next Steps
 ----------
 
-- 🔬 **Tutorials**: Try the runnable examples in the `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ directory.
-- ⚡ **Algorithm Guides**: Learn about :doc:`ground_state_energy_estimation_vqe` and :doc:`combinatorial_optimization_qaoa_pce` for algorithm-specific guidance.
-- ⚡ **Batching and Sweeps**: See how to use optimizers in large-scale computations in the :doc:`program_ensembles` guide.
+- `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ — runnable examples
+- :doc:`ground_state_energy_estimation_vqe` and :doc:`combinatorial_optimization_qaoa_pce` — algorithm-specific guidance
+- :doc:`program_ensembles` — optimizers in large-scale sweeps and ensembles
 
 References
 ----------

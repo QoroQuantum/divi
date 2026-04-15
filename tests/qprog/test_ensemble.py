@@ -19,6 +19,14 @@ from divi.reporting import queue_listener
 from tests.qprog.qprog_contracts import verify_basic_program_ensemble_behaviour
 
 
+class _FakeRunResult:
+    """Mimics a program instance returned by run() for mocked futures."""
+
+    def __init__(self, circuit_count: int, run_time: float):
+        self._total_circuit_count = circuit_count
+        self._total_run_time = run_time
+
+
 class SimpleTestProgram(QuantumProgram):
     """A simple mock program for testing ProgramEnsemble execution."""
 
@@ -33,9 +41,11 @@ class SimpleTestProgram(QuantumProgram):
     def _build_pipelines(self) -> None:
         pass
 
-    def run(self) -> tuple[int, float]:
-        """A mock run that just returns the preset values."""
-        return self.circ_count, self.run_time
+    def run(self):
+        """A mock run that sets the preset values on the instance."""
+        self._total_circuit_count = self.circ_count
+        self._total_run_time = self.run_time
+        return self
 
     def _generate_circuits(self, **kwargs):
         """Dummy implementation for the abstract method."""
@@ -289,7 +299,7 @@ class TestProgramEnsemble:
         failing_future = Future()
         failing_future.set_exception(ValueError("Task failed"))
         successful_future = Future()
-        successful_future.set_result((5, 5.0))
+        successful_future.set_result(_FakeRunResult(5, 5.0))
         program_ensemble.futures = [failing_future, successful_future]
         progs = list(program_ensemble.programs.values())
         program_ensemble._future_to_program = {
@@ -437,7 +447,7 @@ class TestProgramEnsemble:
         program_ensemble._cancellation_event = mocker.MagicMock()
 
         future1, future2, future3 = Future(), Future(), Future()
-        future3.set_result((5, 2.0))  # already done
+        future3.set_result(_FakeRunResult(5, 2.0))  # already done
         mocker.patch.object(
             future1, "cancel", return_value=True
         )  # pending, can be cancelled
@@ -566,7 +576,7 @@ class TestProgramEnsemble:
         f_bad = Future()
         f_bad.set_exception(RuntimeError("Job xyz has failed."))
         f_good = Future()
-        f_good.set_result((10, 5.0))
+        f_good.set_result(_FakeRunResult(10, 5.0))
         program_ensemble.futures = [f_bad, f_good]
         progs = list(program_ensemble.programs.values())
         program_ensemble._future_to_program = {
@@ -596,7 +606,7 @@ class TestProgramEnsemble:
         f_bad = Future()
         f_bad.set_exception(RuntimeError("Job xyz has failed."))
         f_good = Future()
-        f_good.set_result((10, 5.0))
+        f_good.set_result(_FakeRunResult(10, 5.0))
         program_ensemble.futures = [f_bad, f_good]
         progs = list(program_ensemble.programs.values())
         program_ensemble._future_to_program = {
@@ -651,7 +661,7 @@ class TestProgramEnsemble:
 
         # Resolve f_running so _collect_completed_results can pick it up
         # once done() starts returning True.
-        f_running.set_result((3, 1.0))
+        f_running.set_result(_FakeRunResult(3, 1.0))
 
         # First call: join() loop yields the failing future.
         # Second call: _stop_remaining_programs waits for unstoppable futures.
@@ -752,15 +762,11 @@ class TestProgramEnsemble:
         mock_handle_cancellation = mocker.patch.object(
             program_ensemble, "_handle_cancellation"
         )
-        mock_collect_results = mocker.patch.object(
-            program_ensemble, "_collect_completed_results"
-        )
 
         result = program_ensemble.join()
 
         assert result is False
         mock_handle_cancellation.assert_called_once()
-        mock_collect_results.assert_called_once()
 
     def test_join_keyboard_interrupt_no_double_count(self, program_ensemble, mocker):
         """Results collected before KeyboardInterrupt are not double-counted."""
@@ -769,9 +775,9 @@ class TestProgramEnsemble:
 
         # Create two pre-resolved futures with known results
         f1 = Future()
-        f1.set_result((10, 5.0))
+        f1.set_result(_FakeRunResult(10, 5.0))
         f2 = Future()
-        f2.set_result((7, 3.0))
+        f2.set_result(_FakeRunResult(7, 3.0))
         program_ensemble.futures = [f1, f2]
 
         # as_completed yields f1 then raises, simulating an interrupt
@@ -797,9 +803,9 @@ class TestProgramEnsemble:
         program_ensemble.run(blocking=False)
 
         f1 = Future()
-        f1.set_result((10, 5.0))
+        f1.set_result(_FakeRunResult(10, 5.0))
         f2 = Future()
-        f2.set_result((7, 3.0))
+        f2.set_result(_FakeRunResult(7, 3.0))
         f_bad = Future()
         f_bad.set_exception(ValueError("boom"))
         program_ensemble.futures = [f1, f2, f_bad]

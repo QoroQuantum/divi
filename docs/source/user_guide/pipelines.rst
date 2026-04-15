@@ -11,7 +11,7 @@ with Divi, and shows two practical examples of extending Divi with custom
 algorithms.
 
 .. note::
-   If you are using built-in algorithms like :class:`VQE`, :class:`QAOA`, or :class:`TimeEvolution` you
+   If you are using built-in algorithms like :class:`~divi.qprog.algorithms.VQE`, :class:`~divi.qprog.algorithms.QAOA`, or :class:`~divi.qprog.algorithms.TimeEvolution` you
    **don't need to interact with the pipeline directly** — each algorithm
    constructs its own pipeline internally.  This guide is for users who want to
    understand the internals or extend Divi with new algorithms and stages.
@@ -32,7 +32,7 @@ Execution has three phases:
    binding parameter values, or applying error-mitigation circuit variants.
 
 2. **Execute** — The final batch is compiled to OpenQASM and submitted to the
-   configured backend (:class:`CircuitRunner`).  This step is handled automatically.
+   configured backend (:class:`~divi.backends.CircuitRunner`).  This step is handled automatically.
 
 3. **Reduce** (backward pass) — Stages are visited in *reverse* order and each
    one collapses or aggregates the raw results using a token it saved during the
@@ -66,10 +66,12 @@ Pipeline data model
 Batches and results are keyed by **node keys** so that multi-stage expansion
 and reduction stay consistent:
 
-- **NodeKey** (from :mod:`divi.pipeline.abc`): A tuple of ``(axis_name, value)``
-  pairs, e.g. ``(("circuit", 0),)`` for a single circuit or ``(("bell", 0),)``
-  for a custom spec. Keys are preserved from the spec stage's ``expand`` through
-  execute and into each stage's ``reduce``.
+- **NodeKey** (from :mod:`divi.pipeline`): A tuple of ``(axis_name, value)``
+  pairs.  A single-circuit batch has a key like ``(("circuit", 0),)``.  As
+  stages fan out the batch, axes are appended — e.g.
+  ``(("circuit", 0), ("obs_group", 2))`` after measurement grouping.  Keys are
+  preserved from the spec stage's ``expand`` through execute and into each
+  stage's ``reduce``.
 
 - **MetaCircuitBatch**: A ``dict[NodeKey, MetaCircuit]``. The spec stage produces
   this; bundle stages consume and produce batches (or expansion results) keyed
@@ -84,7 +86,7 @@ and reduction stay consistent:
 Built-in Stages
 ---------------
 
-Divi ships with six stages that cover the most common quantum workflows:
+Divi ships with the following built-in stages:
 
 .. list-table::
    :header-rows: 1
@@ -96,7 +98,7 @@ Divi ships with six stages that cover the most common quantum workflows:
    * - :class:`~divi.pipeline.stages.CircuitSpecStage`
      - Spec
      - Passes a single :class:`~divi.circuits.MetaCircuit` through as a one-element batch.
-       Used by :class:`VQE`, :class:`CustomVQA`, and other algorithms that receive a pre-built circuit.
+       Used by :class:`~divi.qprog.algorithms.VQE`, :class:`~divi.qprog.algorithms.CustomVQA`, and other algorithms that receive a pre-built circuit.
    * - :class:`~divi.pipeline.stages.PennyLaneSpecStage`
      - Spec
      - Converts PennyLane ``QuantumScript`` or ``QNode`` objects into MetaCircuits.
@@ -108,7 +110,7 @@ Divi ships with six stages that cover the most common quantum workflows:
    * - :class:`~divi.pipeline.stages.TrotterSpecStage`
      - Spec
      - Generates Trotterized circuits from a Hamiltonian for time-evolution and
-       :class:`QAOA` workflows.
+       :class:`~divi.qprog.algorithms.QAOA` workflows.
    * - :class:`~divi.pipeline.stages.MeasurementStage`
      - Bundle
      - Splits multi-observable Hamiltonians into compatible measurement groups
@@ -123,10 +125,17 @@ Divi ships with six stages that cover the most common quantum workflows:
      - Applies a :class:`~divi.circuits.qem.QEMProtocol` (e.g. ZNE) in the
        expand pass and reduces the scaled results in the reduce pass.
        See :doc:`improving_results_qem` for details.
+   * - :class:`~divi.pipeline.stages.PauliTwirlStage`
+     - Bundle
+     - Generates randomized Pauli-twirl variants of each circuit.
+       Used alongside :class:`~divi.pipeline.stages.QEMStage` when the QEM
+       protocol requests twirls (e.g. ``QuEPP(n_twirls=10)``).
    * - :class:`~divi.pipeline.stages.PCECostStage`
      - Bundle
-     - Computes the Pauli-coefficient expectation-value cost for ``PCE``-based
-       algorithms.
+     - Computes the custom counts-based objective for ``PCE``-based algorithms.
+       In soft mode it evaluates a smooth surrogate from the measured bitstring
+       distribution; in hard mode it evaluates a discrete CVaR-style objective
+       over sampled energies.
 
 
 Dry Run
@@ -135,6 +144,8 @@ Dry Run
 Before executing any circuits you can inspect the pipeline to understand the
 total circuit count and how each stage contributes to it.  Call
 :meth:`~divi.qprog.QuantumProgram.dry_run` on any quantum program:
+
+.. skip: next
 
 .. code-block:: python
 
@@ -180,6 +191,8 @@ shot.
 (e.g. ``"cost"``, ``"measurement"``), so you can also inspect the report
 programmatically:
 
+.. skip: next
+
 .. code-block:: python
 
    reports = vqe.dry_run()
@@ -191,7 +204,7 @@ How Existing Algorithms Build Pipelines
 ---------------------------------------
 
 Every algorithm constructs its pipelines in a ``_build_pipelines`` method.  For
-example, :class:`~divi.qprog.VQE` builds two pipelines:
+example, :class:`~divi.qprog.algorithms.VQE` builds two pipelines:
 
 .. code-block:: python
 
@@ -200,6 +213,7 @@ example, :class:`~divi.qprog.VQE` builds two pipelines:
        return CircuitPipeline(stages=[
            spec_stage,              # SpecStage  →  MetaCircuit batch
            QEMStage(protocol=...),  # Apply error mitigation variants
+           PauliTwirlStage(...),    # Randomised Pauli twirls (if requested)
            MeasurementStage(...),   # Split observables into groups
            ParameterBindingStage(), # Bind symbolic params → numeric (last!)
        ])
@@ -215,8 +229,14 @@ The **cost pipeline** evaluates expectation values during optimization (with
 optional error mitigation), while the **measurement pipeline** samples the
 probability distribution after optimization to extract the solution.
 
-By default, ``ParameterBindingStage`` runs last — structural stages process the
-symbolic circuit once instead of repeating work per parameter set.  When using
+**Stage ordering affects performance.**  Because each stage in the expand pass
+fans out the batch it receives, any work-multiplying stage placed early forces
+every downstream stage to repeat its logic across a larger batch.  Conversely,
+placing a fan-out stage late keeps the batch small for as long as possible.
+
+The most concrete example is ``ParameterBindingStage``.  By default it runs
+last — structural stages process the symbolic circuit once instead of repeating
+work per parameter set.  When using
 :class:`~divi.circuits.quepp.QuEPP`, this means QuEPP cannot normalise rotation
 angles, which may produce more Pauli paths.  If this is a concern (check with
 ``dry_run()``), set ``QuEPP(bind_before_mitigation=True)`` to bind parameters
@@ -228,7 +248,7 @@ Example 1: Custom Algorithm with CustomVQA
 ------------------------------------------
 
 The simplest way to run a custom parameterized circuit through the pipeline is
-:class:`~divi.qprog.CustomVQA`.  It wraps a **PennyLane QuantumScript** (or a
+:class:`~divi.qprog.algorithms.CustomVQA`.  It wraps a **PennyLane QuantumScript** (or a
 Qiskit ``QuantumCircuit``) and optimizes its parameters end-to-end, reusing all
 the VQA infrastructure.
 
@@ -267,7 +287,7 @@ field Ising model:
    program = CustomVQA(
        qscript,
        param_shape=(4,),
-       max_iterations=30,
+       max_iterations=10,
        backend=MaestroSimulator(),
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        seed=42,
@@ -279,11 +299,11 @@ field Ising model:
    print(f"Ground-state energy: {program.best_loss:.4f}")
    print(f"Optimal parameters: {program.best_params}")
 
-Under the hood, :class:`CustomVQA` builds a cost pipeline identical to :class:`VQE`'s:
+Under the hood, :class:`~divi.qprog.algorithms.CustomVQA` builds a cost pipeline identical to :class:`~divi.qprog.algorithms.VQE`'s:
 
 .. code-block:: text
 
-   CircuitSpecStage → MeasurementStage → ParameterBindingStage → QEMStage
+   CircuitSpecStage → QEMStage → MeasurementStage → ParameterBindingStage
 
 You receive all VQA features (loss history, best parameters, checkpointing)
 without writing any pipeline or stage code.
@@ -378,6 +398,9 @@ Bell-state circuit and measures its probabilities:
    class BellSpecStage(SpecStage):
        """Spec stage that produces a Bell-state circuit."""
 
+       def __init__(self):
+           super().__init__(name="bell")
+
        @property
        def axis_name(self):
            return None          # No fan-out axis
@@ -432,6 +455,8 @@ with QuEPP requires a measurement-handling stage after it.
 
 Custom stages can participate in this by overriding the ``validate`` method:
 
+.. skip: next
+
 .. code-block:: python
 
    from divi.pipeline.abc import ContractViolation
@@ -455,7 +480,7 @@ no-op.
 What's Next
 -----------
 
-- 📕 **API Reference**: Full class documentation in :doc:`../api_reference/pipeline`
-- 🎛️ **Error Mitigation**: Add a :class:`~divi.circuits.qem.QEMProtocol` to your pipeline in :doc:`improving_results_qem`
-- ⚡ **Custom Circuits**: Wrap any ``QuantumScript`` with :class:`~divi.qprog.CustomVQA` from :doc:`../api_reference/qprog`
-- 📊 **Program Ensembles**: Scale pipelines across parameter sweeps in :doc:`program_ensembles`
+- :doc:`../api_reference/pipeline` — pipeline and stage classes
+- :doc:`improving_results_qem` — :class:`~divi.circuits.qem.QEMProtocol` and error mitigation
+- :doc:`../api_reference/qprog/algorithms` — :class:`~divi.qprog.algorithms.CustomVQA` and custom circuits
+- :doc:`program_ensembles` — parameter sweeps and orchestration

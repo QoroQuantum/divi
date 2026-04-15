@@ -4,8 +4,6 @@
 
 """Routing problem classes and utilities for QAOA (TSP, CVRP)."""
 
-from __future__ import annotations
-
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -48,7 +46,7 @@ def create_tsp_qubo(
     (`arXiv:2511.14296 <https://arxiv.org/abs/2511.14296>`_, Eq. 13) is
     used: row constraints (each time step has exactly one city) are
     **omitted** because they are enforced structurally by the W-state
-    initialisation and XY mixer.  Only column constraints and the
+    initialization and XY mixer.  Only column constraints and the
     objective remain.
 
     Args:
@@ -400,9 +398,9 @@ def cvrp_block_structure(
         n_vehicles: Number of vehicles.
 
     Returns:
-        Tuple of (block_size, n_blocks) where:
-        - block_size = n_customers (one qubit per customer per time step)
-        - n_blocks = n_vehicles * n_customers (one block per vehicle × time step)
+        tuple[int, int]: Pair ``(block_size, n_blocks)`` where
+        ``block_size = n_customers`` (one qubit per customer per time step) and
+        ``n_blocks = n_vehicles * n_customers`` (one block per vehicle × time step).
     """
     max_steps = n_customers
     return n_customers, n_vehicles * max_steps
@@ -648,7 +646,7 @@ def binary_block_config(
             (worst case: all customers on one vehicle).
 
     Returns:
-        :class:`BinaryBlockConfig` with the encoding parameters.
+        :class:`~divi.qprog.problems.BinaryBlockConfig` with the encoding parameters.
     """
     if max_steps is None:
         max_steps = n_customers
@@ -1130,7 +1128,7 @@ def parse_vrp_file(path: str | Path) -> VRPInstance:
         path: Path to the `.vrp` or `.tsp` file.
 
     Returns:
-        Parsed :class:`VRPInstance`.
+        Parsed :class:`~divi.qprog.problems.VRPInstance`.
 
     Raises:
         ValueError: If the file format is unsupported or malformed.
@@ -1346,7 +1344,7 @@ class TSPProblem(_RoutingProblemBase):
     """Traveling Salesman Problem for QAOA.
 
     Generates a QUBO from the cost matrix, converts to an Ising
-    Hamiltonian, and uses block W-state initialisation with an XY mixer
+    Hamiltonian, and uses block W-state initialization with an XY mixer
     that preserves the one-hot constraint within each time-step block.
 
     Args:
@@ -1386,7 +1384,7 @@ class TSPProblem(_RoutingProblemBase):
 
     @property
     def feasible_dimension(self) -> int:
-        """Size of the feasible subspace: (n-1)!"""
+        """Size of the feasible subspace, equal to ``(n-1)!``."""
         m = self._n_cities - 1
         result = 1
         for i in range(1, m + 1):

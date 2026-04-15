@@ -35,6 +35,8 @@ from divi.reporting import (
     queue_listener,
 )
 
+__all__ = ["BatchConfig", "BatchMode", "ProgramEnsemble"]
+
 
 def _default_task_function(program: QuantumProgram):
     return program.run()
@@ -414,12 +416,10 @@ class ProgramEnsemble(ABC):
         return all(future.done() for future in self.futures)
 
     def _collect_completed_results(self, completed_futures: list):
-        """
-        Collects results from any futures that have completed successfully.
-        Appends (circuit_count, run_time) tuples to the completed_futures list.
+        """Collect completed program instances from futures.
 
         Args:
-            completed_futures: List to append results to
+            completed_futures: List to append program instances to.
         """
         for future in self.futures:
             if future.done() and not future.cancelled():
@@ -671,10 +671,11 @@ class ProgramEnsemble(ABC):
             ) from e
 
         finally:
-            # Aggregate results from completed futures
+            # Aggregate results from completed program instances.
+            # run() returns self, so completed_futures contains programs.
             if completed_futures:
                 self._total_circuit_count += sum(
-                    result[0] for result in completed_futures
+                    p._total_circuit_count for p in completed_futures
                 )
                 # For async backends the individual programs don't track runtime
                 # (the proxy returns sync results). Use the coordinator's total
@@ -686,7 +687,7 @@ class ProgramEnsemble(ABC):
                     self._total_run_time += self._coordinator.total_runtime
                 else:
                     self._total_run_time += sum(
-                        result[1] for result in completed_futures
+                        p._total_run_time for p in completed_futures
                     )
                 self.futures.clear()
 
@@ -791,9 +792,9 @@ class ProgramEnsemble(ABC):
 
         Args:
             n (int): Number of top solutions to return. Must be >= 1.
-            beam_width (int | None): Beam search width. Internally bumped
+            beam_width: Beam search width. Internally bumped
                 to at least ``n`` so the beam retains enough candidates.
-            n_partition_candidates (int | None): Candidates per partition.
+            n_partition_candidates: Candidates per partition.
                 Defaults to ``beam_width``.
 
         Returns:

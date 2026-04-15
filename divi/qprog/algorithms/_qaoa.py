@@ -22,7 +22,6 @@ from divi.qprog.problems import QAOAProblem
 from divi.qprog.variational_quantum_algorithm import (
     SolutionEntry,
     VariationalQuantumAlgorithm,
-    _extract_param_set_idx,
 )
 
 logger = logging.getLogger(__name__)
@@ -35,18 +34,18 @@ class QAOA(VariationalQuantumAlgorithm):
     optimization problems. It alternates between applying a cost Hamiltonian
     (encoding the problem) and a mixer Hamiltonian (enabling exploration).
 
-    The problem is provided as a :class:`QAOAProblem` instance that supplies the
+    The problem is provided as a :class:`~divi.qprog.problems.QAOAProblem` instance that supplies the
     cost Hamiltonian, mixer Hamiltonian, initial state, loss constant, and
     decode function.
 
     Args:
-        problem: A :class:`QAOAProblem` instance providing the QAOA ingredients.
+        problem: A :class:`~divi.qprog.problems.QAOAProblem` instance providing the QAOA ingredients.
         initial_state: Override the problem's recommended initial state.
         trotterization_strategy: The trotterization strategy. Defaults to ExactTrotterization.
         max_iterations: Maximum number of optimization iterations. Defaults to 10.
         n_layers: Number of QAOA layers. Defaults to 1.
         **kwargs: Additional keyword arguments passed to
-            :class:`VariationalQuantumAlgorithm`, including ``optimizer``
+            :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm`, including ``optimizer``
             and ``backend``.
     """
 
@@ -63,17 +62,17 @@ class QAOA(VariationalQuantumAlgorithm):
         """Initialize the QAOA algorithm.
 
         Args:
-            problem: A :class:`QAOAProblem` instance that provides cost/mixer
+            problem: A :class:`~divi.qprog.problems.QAOAProblem` instance that provides cost/mixer
                 Hamiltonians, loss constant, decode function, and
                 recommended initial state.
             initial_state: Override the problem's recommended initial state.
                 If ``None``, uses ``problem.recommended_initial_state``.
             trotterization_strategy: Strategy for Hamiltonian evolution.
-                Defaults to :class:`ExactTrotterization`.
+                Defaults to :class:`~divi.hamiltonians.ExactTrotterization`.
             max_iterations: Maximum number of optimization iterations.
                 Defaults to 10.
             n_layers: Number of QAOA layers (circuit depth). Defaults to 1.
-            **kwargs: Passed to :class:`VariationalQuantumAlgorithm`,
+            **kwargs: Passed to :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm`,
                 including ``optimizer``, ``backend``, ``shots``, etc.
         """
         if initial_state is not None and not isinstance(initial_state, InitialState):
@@ -208,22 +207,9 @@ class QAOA(VariationalQuantumAlgorithm):
             ),
         }
 
-    def _run_optimization_circuits(self, **kwargs) -> dict[int, float]:
-        """Run cost evaluation via the pipeline."""
-
-        env = self._build_pipeline_env()
-        result = self._cost_pipeline.run(
-            initial_spec=self._cost_hamiltonian,
-            env=env,
-        )
-        self._total_circuit_count += env.artifacts.get("circuit_count", 0)
-        self._total_run_time += env.artifacts.get("run_time", 0.0)
-        self._current_execution_result = env.artifacts.get("_current_execution_result")
-
-        return {
-            _extract_param_set_idx(key): value + self.loss_constant
-            for key, value in result.items()
-        }
+    def _get_cost_pipeline_initial_spec(self) -> qml.operation.Operator:
+        """Use the cost Hamiltonian as the input spec for the cost pipeline."""
+        return self._cost_hamiltonian
 
     def _perform_final_computation(self, **kwargs):
         """Run measurement circuits with the best parameters and decode the solution.
@@ -233,7 +219,7 @@ class QAOA(VariationalQuantumAlgorithm):
         """
         self.reporter.info(message="🏁 Computing Final Solution 🏁", overwrite=True)
 
-        self._run_solution_measurement()
+        self._run_solution_measurement_for(np.atleast_2d(self._best_params))
         best_probs = next(iter(self._best_probs.values()))
         best_bitstring = max(best_probs, key=best_probs.get)
         self._decoded_solution = self._decode_solution_fn(best_bitstring)
@@ -271,7 +257,7 @@ class QAOA(VariationalQuantumAlgorithm):
                   ``repair_infeasible_bitstring`` method, rank by energy.
 
         Returns:
-            List of :class:`SolutionEntry`.
+            List of :class:`~divi.qprog.SolutionEntry`.
         """
         fetch_n = n if n > 0 else 2**self.n_qubits
 

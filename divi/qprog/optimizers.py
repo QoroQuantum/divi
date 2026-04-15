@@ -33,6 +33,19 @@ from divi.qprog.checkpointing import (
     _load_and_validate_pydantic_model,
 )
 
+__all__ = [
+    "GridSearchOptimizer",
+    "MonteCarloOptimizer",
+    "MonteCarloState",
+    "Optimizer",
+    "PymooMethod",
+    "PymooOptimizer",
+    "PymooState",
+    "ScipyMethod",
+    "ScipyOptimizer",
+    "copy_optimizer",
+]
+
 
 class MonteCarloState(BaseModel):
     """Pydantic model for Monte Carlo optimizer state."""
@@ -664,7 +677,6 @@ class ScipyOptimizer(Optimizer):
         ScipyOptimizer does not maintain internal state between optimization runs,
         so this method is a no-op.
         """
-        pass
 
     def get_config(self) -> dict[str, Any]:
         """Get optimizer configuration for checkpoint reconstruction.
@@ -1117,7 +1129,7 @@ class GridSearchOptimizer(Optimizer):
     ) -> OptimizeResult:
         """Evaluate all grid points and return the best parameters.
 
-        The *initial_params* argument is ignored in favour of the grid.
+        The *initial_params* argument is ignored in favor of the grid.
         The optimizer always runs for exactly 1 iteration regardless of
         *max_iterations*.
 

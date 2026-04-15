@@ -25,6 +25,25 @@ from divi.typing import (
     qubo_to_matrix,
 )
 
+__all__ = [
+    "BinaryToIsingConverter",
+    "ExactTrotterization",
+    "IsingEncoding",
+    "IsingResult",
+    "NativeIsingConverter",
+    "QDrift",
+    "QuadratizedIsingConverter",
+    "TrotterizationStrategy",
+    "compress_ham_ops",
+    "convert_hamiltonian_to_pauli_string",
+    "convert_qubo_matrix_to_pennylane_ising",
+    "encode_ham_ops",
+    "hubo_to_binary_polynomial",
+    "normalize_binary_polynomial_problem",
+    "qubo_to_binary_polynomial",
+    "qubo_to_ising",
+]
+
 
 def _is_multi_term_sum(op: qml.operation.Operator) -> bool:
     """True if op is a multi-term Sum or Hamiltonian (has operands and len)."""
@@ -252,7 +271,7 @@ class QDrift(TrotterizationStrategy):
     sampling_budget: int | None = None
     """Number of terms to sample from the remaining Hamiltonian per cost evaluation. If None, only kept terms are applied (equivalent to ``ExactTrotterization``)."""
     sampling_strategy: Literal["uniform", "weighted"] = "uniform"
-    """How to sample terms: "uniform" (equal probability) or "weighted" (by coefficient magnitude)."""
+    """How to sample terms — ``"uniform"`` (equal probability) or ``"weighted"`` (by coefficient magnitude)."""
     seed: int | None = None
     """Random seed for reproducible sampling. If None, sampling is non-deterministic."""
     n_hamiltonians_per_iteration: int = 10
@@ -307,7 +326,7 @@ class QDrift(TrotterizationStrategy):
     def process_hamiltonian(
         self, hamiltonian: qml.operation.Operator
     ) -> qml.operation.Operator:
-        """Apply the ``QDrift`` randomized channel to a Hamiltonian.
+        r"""Apply the ``QDrift`` randomized channel to a Hamiltonian.
 
         Implements the ``QDrift`` protocol (Campbell 2019): for H = Σ c_i P_i,
         randomly sample L terms and rescale their coefficients so that
@@ -471,6 +490,8 @@ def convert_hamiltonian_to_pauli_string(
 
         paulis = identity_row.copy()
         for p in ops:
+            while isinstance(p, qml.ops.SProd):
+                p = p.base
             if isinstance(p, qml.Identity):
                 continue
             # Better fallback logic with validation
@@ -532,7 +553,7 @@ def encode_ham_ops(dense_ham_ops: str) -> str:
             e.g. ``"ZZII;IZIZ;IIII"``.
 
     Returns:
-        Encoded string: ``@gzs<n>:<base64_of_gzipped_sparse>``.
+        str: Encoded string of the form ``@gzs<n>:<base64_of_gzipped_sparse>``.
 
     Example::
 
@@ -889,7 +910,7 @@ def qubo_to_ising(
 ) -> IsingResult:
     """Convert a QUBO/HUBO to a cleaned Ising Hamiltonian.
 
-    Normalises the input, converts via the selected Ising converter,
+    Normalizes the input, converts via the selected Ising converter,
     cleans constant terms, and validates the result.
 
     Args:

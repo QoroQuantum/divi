@@ -54,7 +54,7 @@ class TimeEvolution(QuantumProgram):
             time: Evolution time t (e^(-iHt)).
             n_steps: Number of Trotter steps.
             order: Suzuki-Trotter order (1 or even).
-            initial_state: Initial state preparation. Pass an :class:`InitialState`
+            initial_state: Initial state preparation. Pass an :class:`~divi.qprog.algorithms.InitialState`
                 instance (e.g. ``ZerosState()``, ``SuperpositionState()``).
                 Defaults to ``ZerosState()`` if None.
             observable: If None, measure ``qml.probs()``; else ``qml.expval(observable)``.
@@ -136,11 +136,11 @@ class TimeEvolution(QuantumProgram):
             symbols=np.array([], dtype=object),
         )
 
-    def run(self, **kwargs) -> tuple[int, float]:
+    def run(self, **kwargs) -> "TimeEvolution":
         """Execute time evolution.
 
         Returns:
-            tuple[int, float]: (total_circuit_count, total_run_time).
+            TimeEvolution: Returns ``self`` for method chaining.
         """
         env = self._build_pipeline_env()
 
@@ -158,7 +158,7 @@ class TimeEvolution(QuantumProgram):
 
         self.reporter.info(message="Finished successfully!")
 
-        return self.total_circuit_count, self.total_run_time
+        return self
 
     def _build_ops(self, hamiltonian: qml.operation.Operator) -> list:
         """Build circuit ops: initial state, evolution, measurement."""

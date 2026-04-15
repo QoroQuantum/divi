@@ -27,7 +27,7 @@ class QAOAProblem(ABC):
     @property
     @abstractmethod
     def cost_hamiltonian(self) -> qml.operation.Operator:
-        """The cost Hamiltonian encoding the optimisation objective."""
+        """The cost Hamiltonian encoding the optimization objective."""
 
     @property
     @abstractmethod
@@ -52,7 +52,7 @@ class QAOAProblem(ABC):
     def recommended_initial_state(self) -> InitialState:
         """Recommended initial quantum state for this problem.
 
-        Defaults to :class:`SuperpositionState` (ground state of the
+        Defaults to :class:`~divi.qprog.algorithms.SuperpositionState` (ground state of the
         standard X mixer).
         """
         return SuperpositionState()

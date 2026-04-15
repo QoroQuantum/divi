@@ -23,9 +23,9 @@ class QuantumProgram(ABC):
         - run(): Execute the quantum algorithm
 
     Attributes:
-        backend (CircuitRunner): The quantum circuit execution backend.
-        _seed (int | None): Random seed for reproducible results.
-        _progress_queue (Queue | None): Queue for progress reporting.
+        backend: The quantum circuit execution backend.
+        _seed: Random seed for reproducible results.
+        _progress_queue: Queue for progress reporting.
     """
 
     def __init__(
@@ -33,6 +33,7 @@ class QuantumProgram(ABC):
         backend: CircuitRunner,
         seed: int | None = None,
         progress_queue: Queue | None = None,
+        program_id: str | None = None,
         **kwargs,
     ):
         """Initialize the QuantumProgram.
@@ -41,10 +42,6 @@ class QuantumProgram(ABC):
             backend (CircuitRunner): Quantum circuit execution backend.
             seed (int | None): Random seed for reproducible results. Defaults to None.
             progress_queue (Queue | None): Queue for progress reporting. Defaults to None.
-
-        Keyword Args:
-            qem_protocol (QEMProtocol | None): Quantum error mitigation protocol
-                to apply during circuit execution. Defaults to None (no mitigation).
             program_id (str | None): Program identifier for progress reporting in
                 batch operations. If provided along with progress_queue, enables
                 queue-based progress reporting.
@@ -59,6 +56,10 @@ class QuantumProgram(ABC):
         qem_protocol = kwargs.pop("qem_protocol", None)
         self._qem_protocol = _NoMitigation() if qem_protocol is None else qem_protocol
 
+        if kwargs:
+            unexpected = ", ".join(sorted(kwargs))
+            raise TypeError(f"Unexpected keyword argument(s): {unexpected}")
+
         self._total_circuit_count = 0
         self._total_run_time = 0.0
         self._curr_circuits = []
@@ -66,23 +67,21 @@ class QuantumProgram(ABC):
         self._cancellation_event = None
 
         # --- Progress Reporting ---
-        self.program_id = kwargs.get("program_id", None)
+        self.program_id = program_id
         if progress_queue and self.program_id is not None:
             self.reporter = QueueProgressReporter(self.program_id, progress_queue)
         else:
             self.reporter = LoggingProgressReporter()
 
     @abstractmethod
-    def run(self, **kwargs) -> tuple[int, float]:
+    def run(self, **kwargs) -> "QuantumProgram":
         """Execute the quantum algorithm.
 
         Args:
             **kwargs: Additional keyword arguments for subclasses.
 
         Returns:
-            tuple[int, float]: A tuple containing:
-                - int: Total number of circuits executed
-                - float: Total runtime in seconds
+            QuantumProgram: Returns ``self`` for method chaining.
         """
 
     def _set_cancellation_event(self, event: Event):
@@ -161,7 +160,7 @@ class QuantumProgram(ABC):
 
     @abstractmethod
     def _build_pipelines(self) -> None:
-        """Construct all :class:`CircuitPipeline` instances for this program.
+        """Construct all :class:`~divi.pipeline.CircuitPipeline` instances for this program.
 
         Every subclass must implement this to set up its pipeline attributes
         (e.g. ``self._pipeline``, ``self._cost_pipeline``).
@@ -202,7 +201,7 @@ class QuantumProgram(ABC):
         """Construct a :class:`PipelineEnv` from the current program state.
 
         Subclasses may override to inject additional fields (e.g. ``param_sets``
-        in :class:`VariationalQuantumAlgorithm`).
+        in :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm`).
         """
         return PipelineEnv(
             backend=self.backend,

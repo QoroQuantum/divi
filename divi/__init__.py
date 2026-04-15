@@ -1,8 +1,8 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Import maestro early (if available) to prevent C++ library initialisation
+# Import maestro early (if available) to prevent C++ library initialization
 # order conflicts with Qiskit / PennyLane that trigger segfaults in
 # maestro.simple_estimate.  See internal docs for details.
 try:

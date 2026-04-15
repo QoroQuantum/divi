@@ -77,6 +77,11 @@ python qaoa_max_clique.py --local-qiskit --force-sampling
 
 - **`custom_vqa.py`** - CustomVQA with QuantumScript and Qiskit inputs
 
+### Visualization
+
+- **`viz_qaoa_pce_comparison.py`** - Compare QAOA and PCE loss landscapes: 1D scans, 2D scans, PCA scans with trajectory overlay
+- **`viz_advanced_analysis.py`** - Interpolation scans, Hessian eigenvalue analysis (parameter-shift vs finite-difference), Fourier power spectra, gradient overlays, 3D surface plots, NEB minimum-energy paths
+
 ### Checkpointing
 
 - **`checkpointing.py`** - Save and resume optimization runs with checkpointing

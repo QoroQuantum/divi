@@ -5,68 +5,33 @@ The Quantum Approximate Optimization Algorithm (QAOA) is designed to solve combi
 
 Divi offers two QAOA modes: single-instance mode for individual problems, and partitioning mode for large, intractable problems.
 
-The QAOAProblem Interface
--------------------------
+The :class:`~divi.qprog.problems.QAOAProblem` interface
+-------------------------------------------------------
 
 Every problem solved with QAOA in Divi is represented as a
 :class:`~divi.qprog.problems.QAOAProblem` subclass.  This base class defines the
 contract between domain-specific problem logic and the QAOA algorithm — QAOA
 never knows about graphs, QUBOs, or routes directly; it only interacts with the
-interface that ``QAOAProblem`` provides.
+interface that :class:`~divi.qprog.problems.QAOAProblem` provides.
 
-**Required properties** (every subclass must implement):
+A subclass must implement four required properties — ``cost_hamiltonian``,
+``mixer_hamiltonian``, ``loss_constant``, and ``decode_fn`` — and may
+optionally override methods for initial state, feasibility checking, solution
+repair, and graph-partitioning decomposition.  See
+:class:`~divi.qprog.problems.QAOAProblem` for the full interface specification.
 
-.. list-table::
-   :header-rows: 1
-   :widths: 30 70
-
-   * - Property
-     - Purpose
-   * - ``cost_hamiltonian``
-     - PennyLane operator encoding the optimisation objective.
-   * - ``mixer_hamiltonian``
-     - PennyLane operator enabling exploration of the solution space.
-   * - ``loss_constant``
-     - Constant offset added back to the expectation value (from Ising conversion).
-   * - ``decode_fn``
-     - Callable that maps a measurement bitstring to a domain-level solution.
-
-**Optional overrides** (sensible defaults are provided):
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 70
-
-   * - Method
-     - Default
-   * - ``recommended_initial_state``
-     - ``SuperpositionState()`` — override for constrained problems (e.g. ``ZerosState``, ``WState``).
-   * - ``is_feasible(bitstring)``
-     - ``True`` — override to check constraint satisfaction.
-   * - ``repair_infeasible_bitstring(bitstring)``
-     - Returns the bitstring unchanged — override to project infeasible solutions onto the feasible set.
-   * - ``compute_energy(bitstring)``
-     - ``None`` — override to evaluate the true objective (used by ``get_top_solutions`` with feasibility filtering).
-
-**Decomposition hooks** (override to enable partitioned workflows with
-:class:`~divi.qprog.workflows.PartitioningProgramEnsemble`):
-
-- ``decompose()`` — split the problem into a dict of sub-``QAOAProblem`` instances.
-- ``initial_solution_size()`` — size of the global solution vector.
-- ``extend_solution(current, prog_id, candidate)`` — map a sub-solution into global coordinates.
-- ``evaluate_global_solution(solution)`` — score a complete solution (lower is better).
-- ``finalize_solution(score, solution)`` — post-process the best beam-search result.
-- ``format_top_solutions(results)`` — format beam-search output for the user.
-
-Divi ships several concrete subclasses — graph problems, ``BinaryOptimizationProblem``
-(QUBO/HUBO), routing problems (TSP, CVRP), and ``MaxWeightMatchingProblem`` —
-all described in the sections below.
+Divi ships several concrete subclasses — graph problems,
+:class:`~divi.qprog.problems.BinaryOptimizationProblem` (QUBO/HUBO), routing
+problems (:class:`~divi.qprog.problems.TSPProblem`,
+:class:`~divi.qprog.problems.CVRPProblem`), and
+:class:`~divi.qprog.problems.MaxWeightMatchingProblem` — all described in the
+sections below.
 
 Custom Problems
 ^^^^^^^^^^^^^^^
 
 To solve a problem that doesn't fit the built-in classes, subclass
-``QAOAProblem`` and implement the four required properties.  Here is a
+:class:`~divi.qprog.problems.QAOAProblem` and implement the four required properties.  Here is a
 minimal example that encodes a simple 2-qubit Hamiltonian:
 
 .. code-block:: python
@@ -98,7 +63,7 @@ minimal example that encodes a simple 2-qubit Hamiltonian:
        MyProblem(),
        n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
-       max_iterations=20,
+       max_iterations=10,
        backend=MaestroSimulator(),
    )
    qaoa.run()
@@ -109,22 +74,33 @@ to enable feasibility-aware post-processing via
 :meth:`~divi.qprog.algorithms.QAOA.get_top_solutions`.  Override the
 decomposition hooks to enable partitioned solving via
 :class:`~divi.qprog.workflows.PartitioningProgramEnsemble`.
-See the :class:`API reference <divi.qprog.problems.QAOAProblem>` for full details.
+See :class:`~divi.qprog.problems.QAOAProblem` for the full interface.
 
 Single-Instance QAOA
 --------------------
 
-The ``QAOA`` constructor expects a :class:`~divi.qprog.problems.QAOAProblem` instance that encapsulates the optimization objective. However, there are some common arguments that one must pay attention to.
+The :class:`~divi.qprog.algorithms.QAOA` constructor expects a
+:class:`~divi.qprog.problems.QAOAProblem` instance that encapsulates the optimization
+objective. Two knobs matter in almost every run: the **initial state** and **circuit depth**
+(``n_layers``).
 
-A user has the ability to choose the **initial state** of the quantum system before the optimization by passing an ``InitialState`` instance. Available states include ``ZerosState()``, ``OnesState()``, ``SuperpositionState()``, ``CustomPerQubitState("01+-")``, and ``WState(block_size, n_blocks)`` for one-hot encoded problems. When ``initial_state=None`` (the default), graph problems use a problem-specific recommendation and QUBO/HUBO problems default to ``SuperpositionState()``. When ``WState`` is used, the mixer is automatically set to the XY mixer, which preserves the one-hot subspace. In addition, a user can determine how many **layers** of the QAOA ansatz to apply.
+Pass an :class:`~divi.qprog.algorithms.InitialState` subclass for ``initial_state``.
+Built-in options include :class:`~divi.qprog.algorithms.ZerosState`,
+:class:`~divi.qprog.algorithms.OnesState`, :class:`~divi.qprog.algorithms.SuperpositionState`,
+:class:`~divi.qprog.algorithms.CustomPerQubitState`\ ``("01+-")``, and
+:class:`~divi.qprog.algorithms.WState`\ ``(block_size, n_blocks)`` (one-hot encodings).
+When ``initial_state`` is omitted, graph problems use a problem-specific default and
+QUBO/HUBO problems default to :class:`~divi.qprog.algorithms.SuperpositionState`.
+Using :class:`~divi.qprog.algorithms.WState` selects the XY mixer automatically so the
+state stays in the one-hot subspace.
 
-**Initial Parameters**: You can set custom initial parameters for QAOA optimization using the ``initial_params`` constructor argument or the ``curr_params`` property. This is useful for warm-starting from known good parameter regions or continuing from previous runs. For detailed information and examples, see the :doc:`core_concepts` guide on Parameter Management.
+**Initial Parameters**: You can set custom initial parameters for QAOA optimization by passing ``initial_params`` to ``run()``. This is useful for warm-starting from known good parameter regions or continuing from previous runs. For detailed information and examples, see the :doc:`core_concepts` guide on Parameter Management.
 
 Trotterization Strategies
 -------------------------
 
 QAOA evolves the cost Hamiltonian in the ansatz. By default, Divi uses
-:class:`~divi.qprog.ExactTrotterization`, which applies all Hamiltonian terms in each
+:class:`~divi.hamiltonians.ExactTrotterization`, which applies all Hamiltonian terms in each
 circuit. For large Hamiltonians, this can produce deep circuits that are costly or
 infeasible on noisy hardware.
 
@@ -145,7 +121,8 @@ Example: QAOA with QDrift:
 .. code-block:: python
 
    import networkx as nx
-   from divi.qprog import QAOA, QDrift
+   from divi.qprog import QAOA
+   from divi.hamiltonians import QDrift
    from divi.qprog.problems import MaxCutProblem
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
@@ -160,17 +137,17 @@ Example: QAOA with QDrift:
    )
    qaoa = QAOA(
        MaxCutProblem(G),
-       n_layers=1,
+       n_layers=2,
        trotterization_strategy=qdrift,
        optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
-       max_iterations=5,
+       max_iterations=10,
        backend=MaestroSimulator(),
    )
    qaoa.run()
 
 For a full comparison of Exact Trotterization vs QDrift (including circuit depth and
-count), see the `qaoa_qdrift_local.py
-<https://github.com/QoroQuantum/divi/blob/main/tutorials/qaoa_qdrift_local.py>`_
+count), see the `qaoa_qdrift.py
+<https://github.com/QoroQuantum/divi/blob/main/tutorials/qaoa_qdrift.py>`_
 tutorial.
 
 Graph Problems
@@ -184,19 +161,19 @@ Min Vertex Cover.  Each graph problem has a dedicated class:
    :header-rows: 1
    :widths: 30 70
 
-   * - Problem Class
+   * - Problem class
      - Description
-   * - ``MaxCutProblem(graph)``
+   * - :class:`~divi.qprog.problems.MaxCutProblem`\ ``(graph)``
      - Divides a graph into two subsets to maximize the sum of edge weights between them.
-   * - ``MaxCliqueProblem(graph)``
+   * - :class:`~divi.qprog.problems.MaxCliqueProblem`\ ``(graph)``
      - Finds the largest complete subgraph where every node is connected to every other.
-   * - ``MaxIndependentSetProblem(graph)``
+   * - :class:`~divi.qprog.problems.MaxIndependentSetProblem`\ ``(graph)``
      - Finds the largest set of vertices with no edges between them.
-   * - ``MinVertexCoverProblem(graph)``
+   * - :class:`~divi.qprog.problems.MinVertexCoverProblem`\ ``(graph)``
      - Finds the smallest set of vertices such that every edge is incident to at least one selected vertex.
-   * - ``MaxWeightCycleProblem(graph)``
+   * - :class:`~divi.qprog.problems.MaxWeightCycleProblem`\ ``(graph)``
      - Identifies a cycle with the maximum total edge weight in a weighted graph.
-   * - ``MaxWeightMatchingProblem(graph)``
+   * - :class:`~divi.qprog.problems.MaxWeightMatchingProblem`\ ``(graph)``
      - Finds a set of edges with maximum total weight where no two edges share a node.
 
 Example: Finding the max-clique of a graph:
@@ -234,11 +211,11 @@ Example: Finding the max-clique of a graph:
 QUBO Problems
 -------------
 
-Divi's QAOA solver can also handle Quadratic Unconstrained Binary Optimization (QUBO) problems. Divi currently supports three methods of formulating the QUBO problem:
+Divi's QAOA solver can also handle Quadratic Unconstrained Binary Optimization (QUBO) problems. Divi currently supports three ways to build a :class:`~divi.qprog.problems.BinaryOptimizationProblem`:
 
-1. **NumPy Array Input**: Pass a :class:`numpy.ndarray` or a :class:`scipy.sparse` array directly
-2. **BinaryQuadraticModel**: Use the `dimod` library to create :class:`dimod.BinaryQuadraticModel` objects
-3. **List Input**: Pass a Python list (converted to NumPy array internally)
+1. **NumPy array** — pass a :class:`numpy.ndarray` or a :mod:`scipy.sparse` matrix directly
+2. **Dimod BQM** — use ``dimod`` to construct a :class:`dimod.BinaryQuadraticModel`
+3. **Nested list** — pass a Python list (converted to a NumPy array internally)
 
 In contrast to graph-based QAOA instances, the solution format for QUBO-based QAOA instances is a binary :class:`numpy.ndarray` representing the value for each variable in the original QUBO.
 
@@ -247,6 +224,7 @@ NumPy Array-based Input
 
 .. code-block:: python
 
+   import numpy as np
    import dimod
    from divi.qprog import QAOA
    from divi.qprog.problems import BinaryOptimizationProblem
@@ -260,7 +238,7 @@ NumPy Array-based Input
        BinaryOptimizationProblem(qubo_array),
        n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
-       max_iterations=5,
+       max_iterations=10,
        backend=MaestroSimulator(),
    )
 
@@ -290,10 +268,10 @@ BinaryQuadraticModel Input
 
    # Create a BinaryQuadraticModel
    bqm = dimod.BinaryQuadraticModel(
-       linear={"w": 10, "x": -3, "y": 2},
-       quadratic={("w", "x"): -1, ("x", "y"): 1},
+       {"w": 10, "x": -3, "y": 2},
+       {("w", "x"): -1, ("x", "y"): 1},
        offset=0.0,
-       vartype=dimod.Vartype.BINARY
+       vartype=dimod.Vartype.BINARY,
    )
 
    qaoa_problem = QAOA(
@@ -333,7 +311,7 @@ Variables can use any hashable labels (strings, integers, etc.).
 Hamiltonian Builders
 ^^^^^^^^^^^^^^^^^^^^
 
-``BinaryOptimizationProblem`` offers two strategies for converting a HUBO into an Ising Hamiltonian:
+:class:`~divi.qprog.problems.BinaryOptimizationProblem` offers two strategies for converting a HUBO into an Ising Hamiltonian:
 
 .. list-table::
    :header-rows: 1
@@ -371,8 +349,8 @@ Example
        BinaryOptimizationProblem(hubo, hamiltonian_builder="native"),
        n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
-       max_iterations=30,
-       backend=MaestroSimulator(shots=10000),
+       max_iterations=10,
+       backend=MaestroSimulator(shots=5000),
    )
 
    qaoa.run()
@@ -389,7 +367,7 @@ Example
 Matching Problems
 -----------------
 
-Divi supports maximum-weight matching via ``MaxWeightMatchingProblem``.  Given
+Divi supports maximum-weight matching via :class:`~divi.qprog.problems.MaxWeightMatchingProblem`.  Given
 a weighted graph, it finds a set of edges that maximizes total weight while
 ensuring no two selected edges share a node.
 
@@ -411,7 +389,7 @@ For small graphs, use directly with QAOA:
        problem,
        n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
-       max_iterations=20,
+       max_iterations=10,
        backend=MaestroSimulator(),
    )
    qaoa.run()
@@ -446,7 +424,7 @@ For large graphs, enable edge-based partitioning with ``max_edges_per_partition`
 The partitioned workflow splits the graph by edges using Kernighan-Lin or spectral
 bisection, solves each partition independently, stitches results via beam search,
 and optionally fills unmatched residual nodes using classical
-:func:`nx.max_weight_matching`.
+:func:`~networkx.algorithms.matching.max_weight_matching`.
 
 Iterative QAOA
 --------------
@@ -466,11 +444,11 @@ Three interpolation strategies are available via :class:`~divi.qprog.algorithms.
 
    * - Strategy
      - Description
-   * - ``INTERP``
+   * - :attr:`~divi.qprog.algorithms.InterpolationStrategy.INTERP`
      - Linear interpolation (Zhou et al.).  Simple and robust.
-   * - ``FOURIER``
+   * - :attr:`~divi.qprog.algorithms.InterpolationStrategy.FOURIER`
      - DCT-II Fourier basis.  Fits a smooth frequency representation.
-   * - ``CHEBYSHEV``
+   * - :attr:`~divi.qprog.algorithms.InterpolationStrategy.CHEBYSHEV`
      - Chebyshev polynomial basis at Chebyshev nodes.
 
 Example:
@@ -489,8 +467,8 @@ Example:
        MaxCutProblem(graph),
        max_depth=5,
        strategy=InterpolationStrategy.INTERP,
-       max_iterations_per_depth=15,
-       backend=MaestroSimulator(shots=10000),
+       max_iterations_per_depth=10,
+       backend=MaestroSimulator(shots=5000),
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
    )
    iterative.run()
@@ -515,15 +493,17 @@ iterations to deeper circuits:
        strategy=InterpolationStrategy.FOURIER,
        max_iterations_per_depth=lambda depth: 10 + 5 * depth,
        convergence_threshold=1e-4,  # stop early if improvement is negligible
-       backend=backend,
+       backend=MaestroSimulator(shots=5000),
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
    )
 
 Graph Partitioning QAOA
 -----------------------
 
-For large graphs that exceed quantum hardware limitations, use ``PartitioningProgramEnsemble``
-with a graph problem configured for partitioning:
+For large graphs that exceed quantum hardware limitations, use
+:class:`~divi.qprog.workflows.PartitioningProgramEnsemble`
+with a graph problem configured for partitioning via
+:class:`~divi.qprog.problems.GraphPartitioningConfig`:
 
 .. code-block:: python
 
@@ -550,7 +530,7 @@ with a graph problem configured for partitioning:
        problem=problem,
        n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
-       max_iterations=20,
+       max_iterations=10,
        backend=MaestroSimulator(),
    )
 
@@ -567,73 +547,59 @@ with a graph problem configured for partitioning:
 QUBO Partitioning (QAOA or PCE)
 -------------------------------
 
-For large QUBO problems, use ``PartitioningProgramEnsemble`` with a
-``BinaryOptimizationProblem`` configured with D-Wave's hybrid decomposer/composer.
+For large QUBO problems, use :class:`~divi.qprog.workflows.PartitioningProgramEnsemble` with a
+:class:`~divi.qprog.problems.BinaryOptimizationProblem` configured with D-Wave's hybrid decomposer/composer.
 You can choose the per-partition engine via ``quantum_routine``:
 
-- ``quantum_routine="qaoa"`` (default): standard QAOA partitions.
-- ``quantum_routine="pce"``: ``PCE`` partitions (supports ``PCE``-specific kwargs like ``encoding_type`` and ``alpha``).
-- ``quantum_routine="iterative_qaoa"``: ``IterativeQAOA`` partitions with warm-started depth progression.
-  Pass ``strategy``, ``max_iterations_per_depth``, and other ``IterativeQAOA``-specific kwargs
+- ``quantum_routine="qaoa"`` (default): standard :class:`~divi.qprog.algorithms.QAOA` partitions.
+- ``quantum_routine="pce"``: :class:`~divi.qprog.algorithms.PCE` partitions (supports PCE-specific kwargs such as ``encoding_type`` and ``alpha``).
+- ``quantum_routine="iterative_qaoa"``: :class:`~divi.qprog.algorithms.IterativeQAOA` partitions with warm-started depth progression.
+  Pass ``strategy``, ``max_iterations_per_depth``, and other IterativeQAOA-specific kwargs
   directly; ``n_layers`` is used as ``max_depth``.
 
-QAOA partitions:
-
-.. code-block:: python
-
-   import dimod
-   import hybrid
-   from divi.qprog.problems import BinaryOptimizationProblem
-   from divi.qprog.workflows import PartitioningProgramEnsemble
-   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-   from divi.backends import MaestroSimulator
-
-   # Large QUBO problem
-   large_bqm = dimod.generators.gnp_random_bqm(25, 0.5, vartype="BINARY")
-
-   problem = BinaryOptimizationProblem(
-       large_bqm,
-       decomposer=hybrid.EnergyImpactDecomposer(size=5),
-       composer=hybrid.SplatComposer(),
-   )
-
-   ensemble = PartitioningProgramEnsemble(
-       problem=problem,
-       n_layers=2,
-       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
-       max_iterations=10,
-       backend=MaestroSimulator(),
-   )
-
-   ensemble.create_programs()
-   ensemble.run()
-
-   # Get aggregated solution
-   quantum_solution, quantum_energy = ensemble.aggregate_results()
-
-   print(f"Quantum solution: {quantum_solution}")
-   print(f"Quantum energy: {quantum_energy:.6f}")
-
-PCE partitions:
+One QUBO, one set of imports, and one helper for ``create_programs`` → ``run`` →
+``aggregate_results``. Only ``BinaryOptimizationProblem`` and
+``PartitioningProgramEnsemble`` change between ``quantum_routine`` choices:
 
 .. code-block:: python
 
    import dimod
    import hybrid
    import pennylane as qml
+   from divi.qprog import InterpolationStrategy
    from divi.qprog.problems import BinaryOptimizationProblem
    from divi.qprog.workflows import PartitioningProgramEnsemble
    from divi.qprog.algorithms import GenericLayerAnsatz
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
-   large_bqm = dimod.generators.gnp_random_bqm(25, 0.5, vartype="BINARY")
+   def run_partitioned(ensemble):
+       ensemble.create_programs()
+       ensemble.run()
+       return ensemble.aggregate_results()
 
+   large_bqm = dimod.generators.gnp_random_bqm(25, 0.5, vartype="BINARY")
+   decomposer = hybrid.EnergyImpactDecomposer(size=5)
+   optimizer = ScipyOptimizer(method=ScipyMethod.COBYLA)
+   backend = MaestroSimulator()
+
+   # --- QAOA partitions (default ``quantum_routine``): add a composer ---
    problem = BinaryOptimizationProblem(
        large_bqm,
-       decomposer=hybrid.EnergyImpactDecomposer(size=5),
+       decomposer=decomposer,
+       composer=hybrid.SplatComposer(),
    )
+   ensemble = PartitioningProgramEnsemble(
+       problem=problem,
+       n_layers=2,
+       optimizer=optimizer,
+       max_iterations=10,
+       backend=backend,
+   )
+   sol_qaoa, energy_qaoa = run_partitioned(ensemble)
 
+   # --- PCE partitions ---
+   problem = BinaryOptimizationProblem(large_bqm, decomposer=decomposer)
    ensemble = PartitioningProgramEnsemble(
        problem=problem,
        quantum_routine="pce",
@@ -641,65 +607,30 @@ PCE partitions:
        n_layers=2,
        encoding_type="dense",
        alpha=2.0,
-       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+       optimizer=optimizer,
        max_iterations=10,
-       backend=MaestroSimulator(),
+       backend=backend,
    )
+   sol_pce, energy_pce = run_partitioned(ensemble)
 
-   ensemble.create_programs()
-   ensemble.run()
-   quantum_solution, quantum_energy = ensemble.aggregate_results()
-
-Iterative QAOA partitions:
-
-.. code-block:: python
-
-   import dimod
-   import hybrid
-   from divi.qprog import InterpolationStrategy
-   from divi.qprog.problems import BinaryOptimizationProblem
-   from divi.qprog.workflows import PartitioningProgramEnsemble
-   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-   from divi.backends import MaestroSimulator
-
-   large_bqm = dimod.generators.gnp_random_bqm(25, 0.5, vartype="BINARY")
-
-   problem = BinaryOptimizationProblem(
-       large_bqm,
-       decomposer=hybrid.EnergyImpactDecomposer(size=5),
-   )
-
+   # --- Iterative QAOA partitions ---
+   problem = BinaryOptimizationProblem(large_bqm, decomposer=decomposer)
    ensemble = PartitioningProgramEnsemble(
        problem=problem,
        quantum_routine="iterative_qaoa",
-       n_layers=3,  # used as max_depth
+       n_layers=2,  # used as max_depth
        strategy=InterpolationStrategy.INTERP,
        max_iterations_per_depth=10,
-       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
-       backend=MaestroSimulator(),
+       optimizer=optimizer,
+       backend=backend,
    )
+   sol_iter, energy_iter = run_partitioned(ensemble)
 
-   ensemble.create_programs()
-   ensemble.run()
-   quantum_solution, quantum_energy = ensemble.aggregate_results()
-
-What's Happening?
-^^^^^^^^^^^^^^^^^
-
-.. list-table::
-   :header-rows: 1
-   :widths: 40 60
-
-   * - Step
-     - Description
-   * - ``decomposer=...``
-     - The QUBO is partitioned into smaller subproblems using an energy impact decomposer.
-   * - ``create_programs()``
-     - Initializes a batch of QAOA programs, each solving a subproblem of the original QUBO.
-   * - ``run()``
-     - Executes all generated circuits—possibly in parallel across multiple quantum backends.
-   * - ``aggregate_results()``
-     - The final QUBO solution is formed by combining the results from each subproblem.
+The hybrid ``decomposer`` and optional ``composer`` are configured on
+:class:`~divi.qprog.problems.BinaryOptimizationProblem` (how the large BQM is split
+and, for the default QAOA path, stitched back together). The helper only groups
+the usual ensemble calls; for progress output, circuit batching, and Ctrl+C
+behavior, see :doc:`program_ensembles`.
 
 Why Partition?
 --------------
@@ -713,7 +644,8 @@ Quantum hardware is limited in the number of qubits and circuit depth. For large
 Next Steps
 ----------
 
-- Try the runnable examples in the `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ directory
-- See :doc:`routing` for TSP and CVRP with constraint-preserving quantum optimisation
-- Learn about :doc:`optimizers` for optimization strategies
-- Explore :doc:`backends` for execution options
+- `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ — QAOA/PCE/partitioning examples (``qaoa_*.py``, ``pce_*.py``, ``ce_qaoa_*.py``, ``iterative_qaoa.py``)
+- :doc:`routing` — TSP and CVRP with constraint-preserving encodings
+- :doc:`optimizers` — optimizer choice and ``run(initial_params=...)``
+- :doc:`backends` — simulators and services
+- :doc:`../api_reference/qprog/problems` — full :class:`~divi.qprog.problems.QAOAProblem` API

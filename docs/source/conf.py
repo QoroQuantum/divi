@@ -10,6 +10,7 @@ import enum
 import os
 import sys
 import tomllib
+from datetime import datetime
 
 # Load pyproject.toml to extract metadata
 with open("../../pyproject.toml", "rb") as f:
@@ -19,7 +20,7 @@ project_name = project_config["name"]
 
 
 project = project_name.replace("qoro-", "").capitalize()
-copyright = "2025, Qoro Quantum Ltd."
+copyright = f"{datetime.now().year}, Qoro Quantum Ltd."
 author = "Qoro Quantum Ltd."
 release = project_config["version"]
 
@@ -35,44 +36,57 @@ extensions = [
     "sphinx.ext.viewcode",
     "sphinx.ext.intersphinx",
     "sphinx.ext.autosummary",
-    "sphinx.ext.autosectionlabel",
     "sphinx.ext.coverage",  # Documentation coverage
     "sphinx_autodoc_typehints",
-    "nbsphinx",
+    "sphinx_automodapi.automodapi",  # Generates API pages with proper canonical resolution
+    "sphinx_automodapi.smart_resolver",  # Resolves re-exported symbols to their public path
+    "sphinx_copybutton",  # "Copy" button on code blocks
     "sphinxcontrib.mermaid",
-    "sphinxcontrib.spelling",  # Spelling checker
 ]
 
-templates_path = ["_templates"]
-exclude_patterns = ["**.ipynb_checkpoints", "examples/qaoa.ipynb"]
+# sphinxcontrib.spelling requires libenchant-2-dev at the system level.
+# Only load it when explicitly requested (``make spelling`` sets SPELLING=1)
+# so that ``make build`` works on machines without enchant installed.
+if os.environ.get("SPELLING"):
+    extensions.append("sphinxcontrib.spelling")
 
-# Prevent execution of notebooks during the build (set to 'always' to run them)
-nbsphinx_execute = "never"
+templates_path = []
+exclude_patterns = []
+
+# Enable nitpick mode by default so broken cross-references surface locally,
+# in CI, and on Read the Docs without needing the ``-n`` command-line flag.
+nitpicky = True
 
 # -- Autodoc configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/extensions/autodoc.html
 
-# Automatically generate stub files for autosummary
-autosummary_generate = True
-
-# Set the master document (Sphinx 4.0+ uses root_doc instead of master_doc)
 root_doc = "index"
-
-# Include both class and __init__ docstrings
 autoclass_content = "both"
+autodoc_default_options = {"member-order": "bysource", "exclude-members": "__weakref__"}
 
-# Order members by source order
-autodoc_member_order = "bysource"
 
-# Include private members (methods starting with _)
-autodoc_default_options = {
-    "members": True,
-    "member-order": "bysource",
-    "special-members": "__init__",
-    "undoc-members": True,
-    "exclude-members": "__weakref__",
-    "no-index": False,
-}
+# -- sphinx-automodapi configuration -----------------------------------------
+# https://sphinx-automodapi.readthedocs.io/
+#
+automodapi_toctreedirnm = "api_reference/generated"
+automodapi_inheritance_diagram = False  # divi doesn't pull in graphviz
+# ``False`` avoids documenting inherited methods in each subclass page, which
+# would otherwise duplicate method registrations (e.g. ``update``/``info``
+# from ``ProgressReporter`` appearing in both parent and child stub pages).
+automodsumm_inherited_members = False
+
+# -- sphinx-copybutton configuration -----------------------------------------
+# https://sphinx-copybutton.readthedocs.io/
+#
+# Strip REPL prompts, shell prompts, and Jupyter ``In [...]`` markers from
+# copied code blocks. Matches the pattern used by PennyLane's docs.
+copybutton_prompt_text = r">>> |\.\.\. |\$ |In \[\d*\]: | {2,5}\.\.\.: | {5,8}: "
+copybutton_prompt_is_regexp = True
+
+# Render unions as ``X | Y`` instead of emitting a ``:py:data:`typing.Union```
+# cross-ref. Avoids the domain mismatch where Python's intersphinx registers
+# ``typing.Union`` as ``py:class`` but the extension emits ``py:data`` on < 3.14.
+always_use_bars_union = True
 
 # -- Napoleon configuration --------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/extensions/napoleon.html
@@ -85,11 +99,17 @@ napoleon_include_special_with_doc = True
 napoleon_use_admonition_for_examples = False
 napoleon_use_admonition_for_notes = False
 napoleon_use_admonition_for_references = False
-napoleon_use_ivar = False
+napoleon_use_ivar = True
 napoleon_use_param = True
 napoleon_use_rtype = True
-napoleon_preprocess_types = False
-napoleon_type_aliases = None
+napoleon_preprocess_types = True
+napoleon_type_aliases = {
+    "optional": ":obj:`optional`",
+    "array-like": ":term:`array-like`",
+    "array_like": ":term:`array-like`",
+    "callable": ":py:func:`callable`",
+    "OptimizeResult": ":class:`~scipy.optimize.OptimizeResult`",
+}
 napoleon_attr_annotations = True
 
 # -- Intersphinx configuration -----------------------------------------------
@@ -101,10 +121,48 @@ intersphinx_mapping = {
     "scipy": ("https://docs.scipy.org/doc/scipy/", None),
     "pennylane": ("https://docs.pennylane.ai/en/stable/", None),
     "qiskit": ("https://quantum.cloud.ibm.com/docs/api/qiskit/", None),
+    "qiskit_aer": ("https://qiskit.github.io/qiskit-aer/", None),
     "mitiq": ("https://mitiq.readthedocs.io/en/stable/", None),
     "matplotlib": ("https://matplotlib.org/stable/", None),
     "networkx": ("https://networkx.org/documentation/stable/", None),
+    "sympy": ("https://docs.sympy.org/latest/", None),
+    "rich": ("https://rich.readthedocs.io/en/latest/", None),
+    "pydantic": ("https://docs.pydantic.dev/latest/", None),
+    "requests": ("https://requests.readthedocs.io/en/latest/", None),
+    "sklearn": ("https://scikit-learn.org/stable/", None),
+    "rustworkx": ("https://www.rustworkx.org/", None),
 }
+
+# -- Nitpick: suppress cross-reference warnings ---------------------------------
+# https://www.sphinx-doc.org/en/master/usage/configuration.html#confval-nitpick_ignore_regex
+#
+# Keep this list minimal. Before adding a new entry, first try to resolve the
+# underlying issue: ``__all__`` in submodules, intersphinx mapping for the
+# library, or a fully-qualified cross-reference. Every entry here is debt.
+nitpick_ignore_regex = [
+    # cirq uses Google-style docs (no objects.inv).
+    (r"py:class", r"cirq\..*"),
+    # dimod's inventory lives under the Ocean umbrella.
+    (r"py:class", r"dimod\..*"),
+    # TypeVars in ``Generic[InT, OutT]`` — not documentable by Sphinx.
+    (r"py:obj", r"divi\.pipeline\.abc\.(InT|OutT)"),
+    # ``numpy.float64`` is ``py:attribute`` in numpy's inventory, but
+    # ``sphinx-autodoc-typehints`` emits ``py:class``. Domain mismatch.
+    (r"py:class", r"numpy\.(float|int|uint)\d+"),
+    # Short aliases emitted by ``sphinx-autodoc-typehints`` from runtime
+    # type annotations (``np`` = ``numpy``, ``npt`` = ``numpy.typing``).
+    # These appear in automodapi-generated stub headings at ``:2`` where
+    # the source type hint used the alias form.
+    (r"py:class", r"np\..*"),
+    (r"py:class", r"npt\..*"),
+    # ``scipy.optimize.OptimizeResult`` — bare name from autodoc-typehints.
+    (r"py:class", r"^OptimizeResult$"),
+]
+
+# ``sphinx-autodoc-typehints`` emits its own warning category for unresolved
+# forward references (e.g. cirq's ``OP_TREE`` that is only defined under
+# ``TYPE_CHECKING``). It is a third-party library limitation, not a nitpick.
+suppress_warnings = ["sphinx_autodoc_typehints.forward_reference"]
 
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
@@ -159,28 +217,11 @@ html_extra_path = []
 html_copy_source = False
 html_show_sourcelink = False
 
-# -- Additional configuration for better module discovery ---------------------
-
-# Add modules to be documented
 add_module_names = False
 pygments_style = "sphinx"
 pygments_dark_style = "monokai"
 
-# Configure autosectionlabel
-autosectionlabel_prefix_document = True
-autosectionlabel_maxdepth = 2
-
-# Enable search functionality
-html_use_search = True
-
-# -- Search configuration ------------------------------------------------------
-# https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
-
 html_search_language = "en"
-html_search_options = {
-    "dict": "/usr/share/dict/words",
-    "type": "default",
-}
 
 # -- Coverage extension configuration -------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/extensions/coverage.html
@@ -238,7 +279,7 @@ spelling_filters = [
 
 
 def autodoc_process_signature(
-    app, what, name, obj, options, signature, return_annotation
+    _app, what, _name, obj, _options, signature, return_annotation
 ):
     """Hide enum constructor signature."""
     if what == "class":

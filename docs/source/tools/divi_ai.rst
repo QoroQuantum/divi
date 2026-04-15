@@ -6,7 +6,7 @@ divi-ai: AI Coding Assistant
    divi-ai is **experimental**. It runs on CPU with small local models, so
    answers may be inaccurate and knowledge is limited to what was indexed at
    build time. Always verify code against the
-   `official documentation <https://divi.readthedocs.io>`_.
+   `official documentation <https://divi.readthedocs.io/en/latest/>`_.
 
 **divi-ai** is a coding assistant for Divi that runs directly in your terminal.
 It answers questions, generates code examples, and explains APIs — all using a
@@ -71,7 +71,7 @@ before launching so you know what to expect:
      - ~5.5 GB
      - 8K
 
-The **Qwen Coder** models are code-specialised and generally give better
+The **Qwen Coder** models are code-specialized and generally give better
 results for code generation. The **Gemma** models are general-purpose
 alternatives that work well for explanations and conceptual questions.
 Larger models produce better answers but need more RAM and run slower.

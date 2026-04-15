@@ -16,12 +16,12 @@ from divi.qprog.problems import BinaryOptimizationProblem, QAOAProblem
 class PartitioningProgramEnsemble(ProgramEnsemble):
     """Generic orchestrator for partition-solve-aggregate quantum optimization.
 
-    Delegates all domain-specific logic to the :class:`QAOAProblem` instance:
+    Delegates all domain-specific logic to the :class:`~divi.qprog.problems.QAOAProblem` instance:
     decomposition, solution extension, evaluation, and result formatting.
     The ensemble handles program creation, execution, and beam search.
 
     Args:
-        problem: A :class:`QAOAProblem` configured for decomposition
+        problem: A :class:`~divi.qprog.problems.QAOAProblem` configured for decomposition
             (e.g. ``MaxCutProblem(graph, partitioning_config=...)``).
         n_layers: Number of ansatz layers per sub-program.
         backend: Backend for circuit execution.
@@ -119,9 +119,9 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
         """Aggregate partition results into a global solution via beam search.
 
         Args:
-            beam_width (int | None): Width of the beam search. ``1`` is
+            beam_width: Width of the beam search. ``1`` is
                 greedy, ``None`` is exhaustive.
-            n_partition_candidates (int | None): Candidates to fetch per
+            n_partition_candidates: Candidates to fetch per
                 partition. Defaults to *beam_width*.
 
         Returns:
@@ -149,8 +149,8 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
 
         Args:
             n (int): Number of top solutions to return. Must be >= 1.
-            beam_width (int | None): Beam search width.
-            n_partition_candidates (int | None): Candidates per partition.
+            beam_width: Beam search width.
+            n_partition_candidates: Candidates per partition.
 
         Returns:
             Problem-specific format (see ``QAOAProblem.format_top_solutions``).

@@ -12,9 +12,14 @@ build:
   jobs:
     post_install:
       - pip install uv
-      - VIRTUAL_ENV=$READTHEDOCS_VIRTUALENV_PATH uv sync --active --no-default-groups --group docs --no-install-project
+      # ``uv sync`` manages its own project env and does NOT respect
+      # ``VIRTUAL_ENV``; use ``UV_PROJECT_ENVIRONMENT`` to point it at RTD's venv.
+      - UV_PROJECT_ENVIRONMENT=$READTHEDOCS_VIRTUALENV_PATH uv sync --no-default-groups --group docs --no-install-project
 
 sphinx:
   configuration: docs/source/conf.py
+  # ``nitpicky = True`` is set in conf.py; fail the build on any nitpick
+  # (or other) warning to match the GitHub Actions ``-W`` behaviour.
+  fail_on_warning: true
 
 formats: []

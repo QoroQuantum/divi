@@ -1,21 +1,14 @@
 Reporting
 =========
 
-The ``divi.reporting`` module provides comprehensive logging, progress reporting, and visualization functionality for quantum program execution.
+The ``divi.reporting`` module provides logging, progress reporting, and
+visualization functionality for quantum program execution.
 
-Logging System
---------------
+Usage
+-----
 
-.. autofunction:: divi.reporting.enable_logging
-
-.. autofunction:: divi.reporting.disable_logging
-
-Global Logging Configuration
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Configures logging for the entire Divi package with appropriate levels and formatters:
-
-**Usage:**
+Logging is enabled automatically on import; call
+:func:`~divi.reporting.disable_logging` to silence it.
 
 .. code-block:: python
 
@@ -31,74 +24,24 @@ Advanced Features
 -----------------
 
 .. warning::
-   **Developer-Facing Features**: The progress bar and progress reporting systems are intended for advanced users and developers who need custom logging and progress reporting. Most users will not need to interact with these features directly.
+   **Developer-Facing Features**: The progress bar and progress reporting systems are
+   intended for advanced users and developers who need custom logging and progress
+   reporting. Most users will not need to interact with these features directly.
 
-Progress Bar System
-~~~~~~~~~~~~~~~~~~~
+:func:`~divi.reporting.make_progress_bar` creates a customized Rich progress bar
+designed for quantum program execution tracking, with custom columns (job name,
+progress bar, status, elapsed time), a conditional spinner, emoji status
+indicators, Jupyter adaptation, and job-polling support for service-based
+backends.
 
-Rich Progress Bar Creation
-^^^^^^^^^^^^^^^^^^^^^^^^^^
+Divi also includes a progress reporting system for real-time feedback during
+long-running quantum computations. The system supports both console logging
+(:class:`~divi.reporting.LoggingProgressReporter`) and queue-based progress
+updates (:class:`~divi.reporting.QueueProgressReporter`) for integration with
+external monitoring systems.
 
-The ``make_progress_bar`` function creates a customized Rich progress bar specifically designed for quantum program execution tracking:
-
-.. autofunction:: divi.reporting.make_progress_bar
-
-**Features:**
-
-- **Custom Columns**: Job name, progress bar, completion status, elapsed time
-- **Spinner Animation**: Conditional spinner that stops when job completes
-- **Status Indicators**: Visual status with emojis (Success ✅, Failed ❌, etc.)
-- **Jupyter Support**: Automatically adapts refresh behavior for notebook environments
-- **Job Polling**: Shows polling attempts and job status for service-based backends
-
-Progress Reporting System
-^^^^^^^^^^^^^^^^^^^^^^^^^
-
-Divi includes a sophisticated progress reporting system that provides real-time feedback during long-running quantum computations. The system supports both console logging and queue-based progress updates for integration with external monitoring systems.
-
-Logging Progress Reporter
-~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Console-based progress reporter that provides formatted output during quantum program execution:
-
-.. autoclass:: divi.reporting.LoggingProgressReporter
-   :members:
-   :undoc-members:
-   :show-inheritance:
-   :no-index:
-
-Queue Progress Reporter
-~~~~~~~~~~~~~~~~~~~~~~~
-
-Thread-safe progress reporter that sends updates through a queue for external monitoring:
-
-.. autoclass:: divi.reporting.QueueProgressReporter
-   :members:
-   :undoc-members:
-   :show-inheritance:
-   :no-index:
-
-.. autoclass:: divi.reporting.ProgressReporter
-   :members:
-   :undoc-members:
-   :show-inheritance:
-   :no-index:
-
-Batch Display Utilities
-~~~~~~~~~~~~~~~~~~~~~~~
-
-.. autofunction:: divi.reporting.handle_batch_message
-
-.. autofunction:: divi.reporting.make_batch_display
-
-.. autofunction:: divi.reporting.make_progress_display
-
-.. autofunction:: divi.reporting.queue_listener
-
-.. autodata:: divi.reporting.BATCH_COLORS
-
-.. automodule:: divi.reporting
-   :members:
-   :undoc-members:
-   :show-inheritance:
-   :exclude-members: LoggingProgressReporter, QueueProgressReporter, ProgressReporter, handle_batch_message, make_batch_display, make_progress_display, queue_listener, BATCH_COLORS
+.. automodapi:: divi.reporting
+   :no-heading:
+   :no-inheritance-diagram:
+   :no-inherited-members:
+   :include-all-objects:

@@ -4,6 +4,8 @@
 
 """Quantum Enhanced Pauli Propagation (QuEPP) error mitigation protocol.
 
+.. automodapi note: only ``QuEPP`` is public; internal helpers are excluded via ``__all__``.
+
 Implements the hybrid classical-quantum error mitigation scheme from
 Majumder et al. (arXiv:2603.14485).  QuEPP decomposes a quantum circuit
 into alternating Clifford layers and non-Clifford Pauli rotations via
@@ -32,6 +34,8 @@ from cirq.circuits.circuit import Circuit
 from pennylane.exceptions import TermsUndefinedError as _TermsUndefinedError
 
 from divi.circuits.qem import QEMContext, QEMProtocol
+
+__all__ = ["QuEPP"]
 
 # ---------------------------------------------------------------------------
 # Clifford simulation via stim
@@ -694,7 +698,7 @@ class QuEPP(QEMProtocol):
         seed: RNG seed for Monte Carlo reproducibility.
         n_twirls: Number of Pauli twirling samples.  When non-zero, the
             pipeline builder appends a ``PauliTwirlStage`` that generates
-            *n_twirls* randomised copies of each circuit before submission.
+            *n_twirls* randomized copies of each circuit before submission.
             Set to ``0`` to disable twirling.  Default ``10``.
         bind_before_mitigation: When ``False`` (default), the pipeline
             binds parameter values *after* QuEPP, processing the symbolic

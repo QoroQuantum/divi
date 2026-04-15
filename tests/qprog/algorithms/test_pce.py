@@ -6,6 +6,7 @@ import numpy as np
 import pennylane as qml
 import pytest
 
+from divi.pipeline.stages import CircuitSpecStage, ParameterBindingStage, PCECostStage
 from divi.pipeline.stages._pce_cost_stage import (
     _compute_hard_cvar_energy,
     _compute_soft_energy,
@@ -72,6 +73,22 @@ def test_pce_hubo_basic_initialization(dummy_simulator, basic_ansatz):
     assert pce.n_vars == 3
     assert pce.problem.constant == pytest.approx(0.25)
     verify_metacircuit_dict(pce, ["cost_circuit", "meas_circuit"])
+
+
+def test_pce_cost_pipeline_uses_custom_stage_stack(dummy_simulator, basic_ansatz):
+    """PCE should own its counts-based cost pipeline explicitly."""
+    pce = PCE(
+        problem=np.array([[1.0, 0.2], [0.2, 2.0]]),
+        ansatz=basic_ansatz,
+        n_layers=1,
+        backend=dummy_simulator,
+    )
+
+    assert [type(stage) for stage in pce._cost_pipeline._stages] == [
+        CircuitSpecStage,
+        PCECostStage,
+        ParameterBindingStage,
+    ]
 
 
 def test_pce_hubo_quadratized_objective_helpers(dummy_simulator, basic_ansatz):
@@ -297,7 +314,7 @@ def test_pce_perform_final_computation_sets_solution(
     )
 
     pce._best_probs = {"0_NoMitigation:0_0": {"01": 1.0}}
-    mocker.patch.object(pce, "_run_solution_measurement")
+    mocker.patch.object(pce, "_run_solution_measurement_for")
 
     pce._perform_final_computation()
 
@@ -647,7 +664,7 @@ def test_pce_custom_decode_parities_fn_perform_final_computation(
     )
 
     pce._best_probs = {"0_NoMitigation:0_0": {"01": 1.0}}
-    mocker.patch.object(pce, "_run_solution_measurement")
+    mocker.patch.object(pce, "_run_solution_measurement_for")
 
     pce._perform_final_computation()
 

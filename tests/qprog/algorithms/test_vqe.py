@@ -18,7 +18,6 @@ from divi.qprog.algorithms import (
     UCCSDAnsatz,
 )
 from divi.qprog.checkpointing import CheckpointConfig
-from divi.qprog.optimizers import PymooMethod, PymooOptimizer
 from tests.qprog.qprog_contracts import (
     CHECKPOINTING_OPTIMIZERS,
     OPTIMIZERS_TO_TEST,
@@ -182,38 +181,6 @@ def test_meta_circuit_qasm(ansatz_obj, n_layers, h2_molecule, dummy_simulator):
     assert len(set(matches)) // n_layers == ansatz_obj.n_params_per_layer(
         vqe_problem.n_qubits, n_electrons=vqe_problem.n_electrons
     )
-
-
-def test_vqe_initialization_with_initial_params(default_test_simulator, h2_molecule):
-    """Test VQE initialization with user-provided initial parameters."""
-
-    optimizer = PymooOptimizer(method=PymooMethod.DE, population_size=1)
-    ansatz = UCCSDAnsatz()
-    n_layers = 1
-
-    temp_n_qubits, temp_n_electrons = 4, 2
-
-    expected_n_params_per_layer = ansatz.n_params_per_layer(
-        temp_n_qubits, n_electrons=temp_n_electrons
-    )
-
-    expected_shape = (
-        optimizer.n_param_sets,
-        expected_n_params_per_layer * n_layers,
-    )
-
-    dummy_params = np.random.rand(*expected_shape)
-
-    vqe_problem = VQE(
-        molecule=h2_molecule,
-        ansatz=ansatz,
-        n_layers=n_layers,
-        optimizer=optimizer,
-        initial_params=dummy_params,
-        backend=default_test_simulator,
-    )
-
-    np.testing.assert_array_equal(vqe_problem.curr_params, dummy_params)
 
 
 def test_vqe_fail_with_hw_efficient_ansatz(h2_molecule, dummy_simulator):

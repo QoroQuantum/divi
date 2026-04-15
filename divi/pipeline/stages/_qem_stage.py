@@ -33,7 +33,7 @@ QEM_AXIS = "qem"
 class QEMStage(BundleStage):
     """BundleStage that applies a QEM protocol to each circuit body.
 
-    Threads :class:`QEMContext` objects through the ``StageToken`` so that
+    Threads ``QEMContext`` objects through the ``StageToken`` so that
     ``reduce`` can pass them back to the protocol together with the quantum
     results.
     """

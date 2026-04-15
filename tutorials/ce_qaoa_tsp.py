@@ -112,9 +112,8 @@ if __name__ == "__main__":
         backend=backend,
         optimizer=MonteCarloOptimizer(population_size=pop_size, n_best_sets=3),
         max_iterations=5,
-        initial_params=warm_start,
     )
-    ce_mc.run()
+    ce_mc.run(initial_params=warm_start)
 
     console.print(f"Best loss after refinement: {ce_mc.best_loss:.4f}")
 

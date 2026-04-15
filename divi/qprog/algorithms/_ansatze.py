@@ -375,7 +375,7 @@ class QCCAnsatz(Ansatz):
     Prepares the Hartree-Fock reference state and applies single-qubit RY
     rotations followed by a product of Pauli-word exponentials (``PauliRot``)
     on adjacent qubit pairs.  The entangler pool uses XX, YY, and ZZ strings
-    on every neighbouring pair ``(i, i+1)``.
+    on every neighboring pair ``(i, i+1)``.
     """
 
     @staticmethod

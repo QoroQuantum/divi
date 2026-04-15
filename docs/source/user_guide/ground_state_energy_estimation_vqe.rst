@@ -1,16 +1,18 @@
 Ground-State Energy Estimation with VQE
-========================================
+=======================================
 
 The Variational Quantum Eigensolver (VQE) is a quantum algorithm for finding the ground state energy of quantum systems, particularly useful for quantum chemistry applications.
 
-For our :class:`VQE` implementation, we integrate tightly with PennyLane's `qchem <https://docs.pennylane.ai/en/stable/code/qml_qchem.html>`_ module and their Hamiltonian objects. As such, the :class:`VQE` constructor accepts either a `Molecule <https://docs.pennylane.ai/en/stable/code/api/pennylane.qchem.Molecule.html>`_ object, out of which the molecular Hamiltonian is generated, or the Hamiltonian itself.
+For our :class:`~divi.qprog.algorithms.VQE` implementation, we integrate tightly with PennyLane's `qchem <https://docs.pennylane.ai/en/stable/code/qml_qchem.html>`_ module and their Hamiltonian objects. As such, the :class:`~divi.qprog.algorithms.VQE` constructor accepts either a `Molecule <https://docs.pennylane.ai/en/stable/code/api/pennylane.qchem.Molecule.html>`_ object, out of which the molecular Hamiltonian is generated, or the Hamiltonian itself.
 
-Divi offers two :class:`VQE` modes: standard single-instance ground-state energy estimation, and hyperparameter sweep mode for large-scale simulations.
+This page covers single-instance ground-state energy estimation with
+:class:`~divi.qprog.algorithms.VQE` and large-scale sweeps with
+:class:`~divi.qprog.workflows.VQEHyperparameterSweep`.
 
-Basic :class:`VQE` Usage
---------------------------------
+Basic :class:`~divi.qprog.algorithms.VQE` Usage
+-----------------------------------------------
 
-Here's how to set up a basic :class:`VQE` calculation for the H2 molecule:
+Here's how to set up a basic :class:`~divi.qprog.algorithms.VQE` calculation for the H2 molecule:
 
 .. code-block:: python
 
@@ -30,9 +32,9 @@ Here's how to set up a basic :class:`VQE` calculation for the H2 molecule:
    vqe_problem = VQE(
        molecule=mol,
        ansatz=HartreeFockAnsatz(),
-       n_layers=1,
+       n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
-       max_iterations=50,
+       max_iterations=10,
        backend=MaestroSimulator(),
    )
 
@@ -59,6 +61,7 @@ In the case of a Hamiltonian input, the input would be passed to the constructor
    import numpy as np
    import pennylane as qml
    from divi.qprog import VQE, HartreeFockAnsatz
+   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
    mol = qml.qchem.Molecule(
@@ -71,9 +74,9 @@ In the case of a Hamiltonian input, the input would be passed to the constructor
        hamiltonian=ham,
        n_electrons=mol.n_electrons,
        ansatz=HartreeFockAnsatz(),
-       n_layers=1,
+       n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
-       max_iterations=50,
+       max_iterations=10,
        backend=MaestroSimulator(),
    )
 
@@ -88,17 +91,19 @@ Setting good initial parameters can significantly improve VQE convergence and pr
 - **Parameter sweeps**: Initialize from known good parameter regions
 - **Restarting failed optimizations**: Use parameters from partial convergence
 
-You can set initial parameters via the constructor ``initial_params`` argument or using the ``curr_params`` property. For detailed information and examples, see the :doc:`core_concepts` guide on Parameter Management.
+You can set initial parameters by passing ``initial_params`` to ``run()``. For detailed information and examples, see the :doc:`core_concepts` guide on Parameter Management.
 
 Available Ansätze
 -----------------
 
-Divi provides several built-in ansätze for VQE calculations. For detailed documentation of each ansatz class, see the :ref:`user_guide/ground_state_energy_estimation_vqe:Available Ansätze` section in the API reference.
+Divi provides several built-in ansätze for VQE calculations. For detailed documentation of each ansatz class, see the :doc:`/api_reference/qprog/algorithms` page.
 
 Custom Ansätze
 ^^^^^^^^^^^^^^
 
-One can easily implement their own Ansatz that would be immediately compatible with Divi's execution routine by inheriting the abstract `Ansatz` class and implementing two main methods:
+One can easily implement their own ansatz that would be immediately compatible with Divi's execution routine by inheriting the abstract :class:`~divi.qprog.algorithms.Ansatz` class and implementing two main methods:
+
+.. skip: next
 
 .. code-block:: python
 
@@ -129,10 +134,12 @@ One can easily implement their own Ansatz that would be immediately compatible w
            """
            raise NotImplementedError
 
-The `build` function should contain PennyLane quantum operations for it to work properly. Refer to the definition of the other ansätze in our repository whenever in doubt.
+The ``build`` method must return a list of PennyLane operations
+(``list[qml.operation.Operator]``). Refer to the built-in ansätze in the
+repository for concrete examples.
 
 VQE Hyperparameter Sweep
--------------------------
+------------------------
 
 By sweeping over physical parameters like bond length and varying the ansatz, this mode enables large-scale quantum chemistry simulations — efficiently distributing the workload across cloud or hybrid backends.
 
@@ -141,13 +148,13 @@ This mode is particularly useful for the study **molecular behavior** and **reac
 Configuring the Molecular Transformations
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Divi uses `Z-matrices <https://en.wikipedia.org/wiki/Z-matrix_(chemistry)>`_ to correctly and accurately modify molecules according to the users needs. These modifications can be declared and configured using the `MoleculeTransformer` class, which takes as input the base molecule onto which the transformations are applied. Additionally, these arguments are used to define the specifics of the modifications:
+Divi uses `Z-matrices <https://en.wikipedia.org/wiki/Z-matrix_(chemistry)>`_ to correctly and accurately modify molecules according to the users needs. These modifications can be declared and configured using the :class:`~divi.qprog.workflows.MoleculeTransformer` class, which takes as input the base molecule onto which the transformations are applied. Additionally, these arguments are used to define the specifics of the modifications:
 
-- **atom_connectivity**: The connectivity structure of the molecule, provided as a list of tuples of indices of the atoms that have a bond between them. When not provided, the molecule would be assumed to have a chain structure (i.e. the connectivity would look like `[(0, 1), (1, 2), ...]`).
+- **atom_connectivity**: The connectivity structure of the molecule, provided as a list of tuples of indices of the atoms that have a bond between them. When not provided, the molecule would be assumed to have a chain structure (i.e. the connectivity would look like ``[(0, 1), (1, 2), ...]``).
 
-- **bonds_to_transform**: A subset of the bonds listed in `atom_connectivity` to be modified. If this argument is not provided, all bonds will be affected.
+- **bonds_to_transform**: A subset of the bonds listed in ``atom_connectivity`` to be modified. If this argument is not provided, all bonds will be affected.
 
-- **bond_modifiers**: A list of actual numeric changes to apply to the chosen bonds. This has two modes: `scale` and `delta`. If the provided list contains only strictly positive values, `scale` mode will be activated, where the values represent a multiplier to apply to the original bond length. Otherwise, the `delta` mode is enabled, where the provided values act as additives to the original bond length. One can trivially provide `1` and `0` for the `scale` and `delta` modes respectively to include the base molecule as an experiment.
+- **bond_modifiers**: A list of actual numeric changes to apply to the chosen bonds. This has two modes: ``scale`` and ``delta``. If the provided list contains only strictly positive values, ``scale`` mode will be activated, where the values represent a multiplier to apply to the original bond length. Otherwise, the ``delta`` mode is enabled, where the provided values act as additives to the original bond length. One can trivially provide ``1`` and ``0`` for the ``scale`` and ``delta`` modes respectively to include the base molecule as an experiment.
 
 - **alignment_atoms**: For debugging purposes, the output molecules can be aligned using `Kabsch algorithm <https://en.wikipedia.org/wiki/Kabsch_algorithm>`_, where users provide a list of indices of reference atoms that act as the "spine" of the whole molecule. An example of such would be the carbon chain of an alkane group.
 
@@ -178,9 +185,8 @@ Divi uses `Z-matrices <https://en.wikipedia.org/wiki/Z-matrix_(chemistry)>`_ to 
        molecule_transformer=transformer,
        ansatze=[HartreeFockAnsatz(), UCCSDAnsatz()],
        optimizer=mc_optimizer,
-       max_iterations=25,
-       backend=MaestroSimulator(shots=2000),
-       grouping_strategy="wires"  # PennyLane's wire grouping strategy
+       max_iterations=10,
+       backend=MaestroSimulator(shots=5000),
    )
 
    # Execute sweep
@@ -217,16 +223,20 @@ What's Happening?
    * - ``visualize_results()``
      - Displays a graph of energy vs. bond length for each ansatz.
 
-Why Parallelize VQE?
---------------------
+.. tip::
 
-- VQE is an iterative algorithm requiring multiple circuit evaluations per step.
-- Sweeping over bond lengths and ansätze creates hundreds of circuits.
-- Parallelizing execution reduces total compute time and helps saturate available QPU/GPU/CPU resources.
+   When using a sampling backend (e.g. ``QiskitSimulator`` or ``QoroService``
+   without native expval), pass ``grouping_strategy="qwc"`` (the default) or
+   ``"wires"`` to control how multi-term Hamiltonians are split into
+   compatible measurement groups.  Backends like ``MaestroSimulator`` compute
+   expectation values directly from the state representation, so measurement
+   grouping has no effect and is overridden with a warning.
 
 Next Steps
 ----------
 
-- Try the runnable examples in the `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ directory
+- Try the runnable tutorials in the `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ directory
 - Learn about :doc:`optimizers` for optimization strategies
-- Explore :doc:`improving_results_qem` for improving results
+- Explore :doc:`improving_results_qem` for error mitigation
+- Save and resume long runs with :doc:`resuming_long_runs`
+- Visualize the loss landscape with :doc:`visualization`

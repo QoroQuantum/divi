@@ -72,14 +72,13 @@ class CircuitRunner(ABC):
                 For asynchronous backends, contains a job_id that can be used to
                 fetch results later.
         """
-        pass
 
     @property
     def depth_history(self) -> list[list[int]]:
-        """Circuit depth per batch when :attr:`track_depth` is True.
+        """Circuit depth per batch when ``track_depth`` is True.
 
         Each element is a list of depths (one per circuit) for that submission.
-        Empty when track_depth is False or before any circuits have been run.
+        Empty when ``track_depth`` is False or before any circuits have been run.
         """
         return self._depth_history.copy()
 

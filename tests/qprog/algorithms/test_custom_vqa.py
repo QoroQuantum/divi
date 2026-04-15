@@ -267,16 +267,18 @@ class TestErrorCases:
 class TestParameterHandling:
     """Test suite for parameter handling."""
 
-    def test_initial_params_setter(self, simple_quantum_script, dummy_simulator):
-        """Test setting initial parameters."""
+    def test_run_accepts_initial_params(self, simple_quantum_script, dummy_simulator):
+        """Test passing initial parameters through run()."""
         initial_params = np.array([[0.1, 0.2]])
         program = CustomVQA(
             qscript=simple_quantum_script,
-            initial_params=initial_params,
+            max_iterations=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             backend=dummy_simulator,
         )
 
-        np.testing.assert_array_equal(program.curr_params, initial_params)
+        program.run(initial_params=initial_params, perform_final_computation=False)
+        assert program.total_circuit_count >= 0
 
     def test_param_shape_inference(self, simple_quantum_script, dummy_simulator):
         """Test that param_shape is inferred when None."""

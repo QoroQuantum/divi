@@ -15,8 +15,6 @@ Environment variables:
     DIVI_CI_JOB_TIMEOUT Total job budget in seconds (default 540).
 """
 
-from __future__ import annotations
-
 import argparse
 import os
 import shutil
@@ -57,6 +55,7 @@ NO_PATCHES = [
     "standalone_pipeline.py",
     "time_evolution.py",
     "time_evolution_trajectory.py",
+    "viz_qaoa_pce_comparison.py",
     "vqe_h2_with_grouping.py",
     "vqe_h2_molecule.py",
 ]
@@ -176,6 +175,15 @@ TUTORIALS: dict[str, dict] = {
         "patches": [
             ("max_iterations=5", "max_iterations=1"),
             ("population_size=10", "population_size=3"),
+        ],
+    },
+    "viz_advanced_analysis.py": {
+        "patches": [
+            ("grid_shape=(31, 31)", "grid_shape=(9, 9)"),
+            ("grid_shape=(15, 15)", "grid_shape=(5, 5)"),
+            ("n_steps=20", "n_steps=5"),
+            ("n_pivots=8", "n_pivots=4"),
+            ("max_iterations=10", "max_iterations=3"),
         ],
     },
 }

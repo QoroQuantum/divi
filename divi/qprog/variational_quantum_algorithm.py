@@ -8,7 +8,7 @@ from abc import abstractmethod
 from datetime import datetime
 from pathlib import Path
 from queue import Queue
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 from warnings import warn
 
 import numpy as np
@@ -46,6 +46,7 @@ from divi.qprog.optimizers import (
     ScipyOptimizer,
 )
 from divi.qprog.quantum_program import QuantumProgram
+from divi.viz import ProgramViz
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,8 @@ def _extract_param_set_idx(key: tuple) -> int:
 
 
 _RUN_INSTRUCTION = "Call run() to execute the optimization."
+
+ParamHistoryMode = Literal["all_evaluated", "best_per_iteration"]
 
 
 class SolutionEntry(NamedTuple):
@@ -106,6 +109,9 @@ class ProgramState(BaseModel):
     current_iteration: int
     max_iterations: int
     losses_history: list[dict[str, float]] = Field(validation_alias="_losses_history")
+    param_history: list[list[list[float]]] = Field(
+        default_factory=list, validation_alias="_param_history"
+    )
     best_loss: float = Field(validation_alias="_best_loss")
     best_probs: dict[str, float] = Field(validation_alias="_best_probs")
     total_circuit_count: int = Field(validation_alias="_total_circuit_count")
@@ -117,9 +123,6 @@ class ProgramState(BaseModel):
     grouping_strategy: str | None = Field(validation_alias="_grouping_strategy")
 
     # Arrays
-    curr_params: list[list[float]] | None = Field(
-        default=None, validation_alias="_curr_params"
-    )
     best_params: list[float] | None = Field(
         default=None, validation_alias="_best_params"
     )
@@ -145,7 +148,19 @@ class ProgramState(BaseModel):
     def validate_bytes(cls, v):
         return bytes.fromhex(v) if isinstance(v, str) else v
 
-    @field_serializer("curr_params", "best_params", "final_params")
+    @field_validator("param_history", mode="before")
+    @classmethod
+    def normalize_param_history(cls, v):
+        """Accept nested lists or per-iteration ndarray snapshots from disk or program."""
+        if not v:
+            return []
+        rows: list[list[list[float]]] = []
+        for item in v:
+            arr = np.asarray(item, dtype=np.float64)
+            rows.append(arr.tolist())
+        return rows
+
+    @field_serializer("best_params", "final_params")
     def serialize_arrays(self, v: npt.NDArray | list | None, _info):
         if isinstance(v, np.ndarray):
             return v.tolist()
@@ -163,8 +178,10 @@ class ProgramState(BaseModel):
 
             val = getattr(self, name)
 
+            if target_attr == "_param_history" and val is not None:
+                val = [np.asarray(block, dtype=np.float64) for block in val]
             # Handle numpy conversion
-            if "params" in target_attr and val is not None:
+            elif "params" in target_attr and val is not None:
                 val = np.array(val)
 
             if hasattr(program, target_attr):
@@ -220,20 +237,21 @@ class VariationalQuantumAlgorithm(QuantumProgram):
     5. Iterating until convergence
 
     Attributes:
-        _losses_history (list[dict]): History of loss values during optimization.
-        _final_params (npt.NDArray[np.float64]): Final optimized parameters.
-        _best_params (npt.NDArray[np.float64]): Parameters that achieved the best loss.
+        _losses_history: History of loss values during optimization.
+        _param_history: Raw per-callback parameter batches;
+            use :meth:`param_history` to read copies with optional filtering.
+        _final_params: Final optimized parameters.
+        _best_params: Parameters that achieved the best loss.
         _best_loss (float): Best loss achieved during optimization.
-        _circuits (list[Circuit]): Generated quantum circuits.
+        _circuits: Generated quantum circuits.
         _total_circuit_count (int): Total number of circuits executed.
         _total_run_time (float): Total execution time in seconds.
-        _curr_params (npt.NDArray[np.float64]): Current parameter values.
-        _seed (int | None): Random seed for parameter initialization.
-        _rng (np.random.Generator): Random number generator.
+        _seed: Random seed for parameter initialization.
+        _rng: Random number generator.
 
-        _grouping_strategy (str): Strategy for grouping quantum operations.
-        _qem_protocol (QEMProtocol): Quantum error mitigation protocol.
-        _cancellation_event (Event | None): Event for graceful termination.
+        _grouping_strategy: Strategy for grouping quantum operations.
+        _qem_protocol: Quantum error mitigation protocol.
+        _cancellation_event: Event for graceful termination.
         _meta_circuit_factories (dict): Lazily-built mapping of circuit names to MetaCircuit factories.
     """
 
@@ -255,7 +273,8 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         - `n_params_per_layer` is the number of parameters per layer.
 
         For exotic variational algorithms where these variables may not be applicable,
-        the `_initialize_params` method should be overridden to set the parameters.
+        the `_initialize_param_sets` method should be overridden to generate the
+        starting parameters for a fresh optimization run.
 
         Args:
             backend (CircuitRunner): Quantum circuit execution backend.
@@ -269,10 +288,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 below threshold, cost variance settled). Defaults to None.
 
         Keyword Args:
-            initial_params (npt.NDArray[np.float64] | None): Initial parameters with shape
-                (n_param_sets, n_layers * n_params_per_layer). If provided, these will be set as
-                the current parameters via the `curr_params` setter (which includes validation).
-                Defaults to None.
             grouping_strategy (str): Strategy for grouping operations in Pennylane transforms.
                 Options: "default", "wires", "qwc". Defaults to "qwc".
             precision (int): Number of decimal places for parameter values in QASM conversion.
@@ -284,7 +299,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 QASM sizes manageable. Consider reducing precision if you need to minimize
                 data transfer overhead, or increase it only if you require higher numerical
                 precision in your circuit parameters.
-            decode_solution_fn (callable[[str], Any] | None): Function to decode bitstrings
+            decode_solution_fn: Function to decode bitstrings
                 into problem-specific solution representations. Called during final computation
                 and when `get_top_solutions(include_decoded=True)` is used. The function should
                 take a binary string (e.g., "0101") and return a decoded representation
@@ -292,12 +307,26 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 `lambda bitstring: bitstring` (identity function).
         """
 
+        program_id = kwargs.pop("program_id", None)
+
+        _UNSET = object()
+        grouping_strategy = kwargs.pop("grouping_strategy", _UNSET)
+        precision = kwargs.pop("precision", 8)
+        decode_solution_fn = kwargs.pop(
+            "decode_solution_fn", lambda bitstring: bitstring
+        )
+
         super().__init__(
-            backend=backend, seed=seed, progress_queue=progress_queue, **kwargs
+            backend=backend,
+            seed=seed,
+            progress_queue=progress_queue,
+            program_id=program_id,
+            **kwargs,
         )
 
         # --- Optimization Results & History ---
         self._losses_history = []
+        self._param_history: list[npt.NDArray[np.float64]] = []
         self._best_params = []
         self._final_params = []
         self._best_loss = float("inf")
@@ -313,8 +342,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         See :class:`scipy.optimize.OptimizeResult` for the full specification.
         """
-        self._curr_params = kwargs.pop("initial_params", None)
-
         # --- Random Number Generation ---
         self._seed = seed
         self._rng = np.random.default_rng(self._seed)
@@ -327,8 +354,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         self._stop_reason: StopReason | None = None
 
         # --- Backend & Circuit Configuration ---
-        _UNSET = object()
-        grouping_strategy = kwargs.pop("grouping_strategy", _UNSET)
         if self.backend.supports_expval and grouping_strategy not in (
             None,
             "_backend_expval",
@@ -347,12 +372,10 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 grouping_strategy if grouping_strategy is not _UNSET else "qwc"
             )
 
-        self._precision = kwargs.pop("precision", 8)
+        self._precision = precision
 
         # --- Solution Decoding ---
-        self._decode_solution_fn = kwargs.pop(
-            "decode_solution_fn", lambda bitstring: bitstring
-        )
+        self._decode_solution_fn = decode_solution_fn
 
         # --- Circuit Factory & Templates ---
         self._meta_circuit_factories = None
@@ -444,6 +467,59 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             )
         return self._losses_history.copy()
 
+    def param_history(
+        self,
+        mode: ParamHistoryMode = "all_evaluated",
+    ) -> list[npt.NDArray[np.float64]]:
+        """Parameter vectors recorded at each optimization callback.
+
+        Args:
+            mode: Which rows to return for each iteration:
+
+                * ``"all_evaluated"`` — full batch from the callback, shape
+                  ``(n_param_sets, n_params)`` per iteration (mirrors
+                  :attr:`losses_history` population layout).
+                * ``"best_per_iteration"`` — single best member by loss for
+                  that iteration, shape ``(1, n_params)`` per iteration.
+
+        Returns:
+            list[npt.NDArray[np.float64]]: One array per completed callback.
+            Use ``numpy.vstack(...)`` for a 2D sample matrix (e.g. PCA).
+
+        Raises:
+            RuntimeError: If internal loss and parameter histories are out of sync.
+        """
+        if not self._has_run_optimization():
+            warn(
+                "Parameter history is unavailable because optimization has not "
+                f"been run yet. {_RUN_INSTRUCTION}",
+                UserWarning,
+                stacklevel=2,
+            )
+            return []
+
+        if mode == "all_evaluated":
+            return [row.copy() for row in self._param_history]
+
+        if len(self._losses_history) != len(self._param_history):
+            raise RuntimeError(
+                "losses_history and _param_history length mismatch; cannot select "
+                "best_per_iteration rows."
+            )
+
+        best_blocks: list[npt.NDArray[np.float64]] = []
+        for loss_dict, block in zip(
+            self._losses_history, self._param_history, strict=True
+        ):
+            arr = np.atleast_2d(np.asarray(block, dtype=np.float64))
+            n_rows = arr.shape[0]
+            best_idx = min(
+                range(n_rows),
+                key=lambda j: float(loss_dict[str(j)]),
+            )
+            best_blocks.append(arr[best_idx : best_idx + 1].copy())
+        return best_blocks
+
     @property
     def min_losses_per_iteration(self) -> list[float]:
         """Get the minimum loss value for each iteration.
@@ -519,6 +595,19 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 "correctly, or all computed losses were infinite."
             )
         return self._best_loss
+
+    @property
+    def viz(self):
+        """Access visualization helpers for this variational program.
+
+        The returned object exposes a thin convenience wrapper over the
+        standalone :mod:`divi.viz` API, so scans can be written either as
+        ``divi.viz.scan_1d(program, ...)`` or ``program.viz.scan_1d(...)``.
+
+        Returns:
+            ProgramViz: Convenience wrapper bound to this program instance.
+        """
+        return ProgramViz(self)
 
     @property
     def best_probs(self) -> dict[str, dict[str, float]]:
@@ -669,41 +758,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             )
             for bitstring, prob in top_items
         ]
-
-    @property
-    def curr_params(self) -> npt.NDArray[np.float64]:
-        """Get the current parameters.
-
-        These are the parameters used for optimization. They can be accessed
-        and modified at any time, including during optimization.
-
-        Returns:
-            npt.NDArray[np.float64]: Current parameters. If not yet initialized,
-                they will be generated automatically.
-        """
-        if self._curr_params is None:
-            self._initialize_params()
-        return self._curr_params.copy()
-
-    @curr_params.setter
-    def curr_params(self, value: npt.NDArray[np.float64] | None):
-        """
-        Set the current parameters.
-
-        Args:
-            value (npt.NDArray[np.float64] | None): Parameters with shape
-                (n_param_sets, n_layers * n_params_per_layer), or None to reset
-                to uninitialized state.
-
-        Raises:
-            ValueError: If parameters have incorrect shape.
-        """
-        if value is not None:
-            self._validate_initial_params(value)
-            self._curr_params = value.copy()
-        else:
-            # Reset to uninitialized state
-            self._curr_params = None
 
     # --- Serialization Adapters (For Pydantic) ---
     @property
@@ -872,27 +926,44 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 f"got {params.shape}"
             )
 
-    def _initialize_params(self):
-        """
-        Initialize the circuit parameters randomly.
-
-        Generates random parameters with values uniformly distributed between
-        0 and 2π. The number of parameter sets depends on the optimizer being used.
-        """
+    def _initialize_param_sets(self) -> npt.NDArray[np.float64]:
+        """Generate fresh parameter sets for a new optimization run."""
         total_params = self.n_layers * self.n_params_per_layer
-        self._curr_params = self._rng.uniform(
+        return self._rng.uniform(
             0, 2 * np.pi, (self.optimizer.n_param_sets, total_params)
         )
+
+    def _optimizer_has_resume_state(self) -> bool:
+        """Return True when the optimizer already carries resumable state."""
+        if isinstance(self.optimizer, MonteCarloOptimizer):
+            return self.optimizer._curr_population is not None
+        if isinstance(self.optimizer, PymooOptimizer):
+            return self.optimizer._curr_algorithm_obj is not None
+        return False
+
+    def _resolve_initial_param_sets(
+        self, initial_params: npt.NDArray[np.float64] | None
+    ) -> npt.NDArray[np.float64] | None:
+        """Resolve the initial parameter sets for a fresh or resumed run."""
+        if initial_params is not None and self._optimizer_has_resume_state():
+            raise ValueError(
+                "initial_params cannot be provided when resuming from optimizer state. "
+                "Load a fresh program instance or reset the optimizer first."
+            )
+
+        if initial_params is not None:
+            validated = np.atleast_2d(initial_params)
+            self._validate_initial_params(validated)
+            return validated.copy()
+
+        if self._optimizer_has_resume_state():
+            return None
+
+        return self._initialize_param_sets()
 
     # ------------------------------------------------------------------ #
     # Pipeline builders
     # ------------------------------------------------------------------ #
-
-    def dry_run(self) -> dict:
-        """Run forward pass on all pipelines and print fan-out analysis."""
-        if self._curr_params is None:
-            self._initialize_params()
-        return super().dry_run()
 
     def _get_dry_run_pipelines(self) -> dict[str, tuple]:
         factories = self.meta_circuit_factories
@@ -905,8 +976,9 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         return result
 
     def _build_pipeline_env(self, **overrides) -> PipelineEnv:
-        """Construct a PipelineEnv, injecting the current parameter sets."""
-        overrides.setdefault("param_sets", self._curr_params)
+        """Construct a PipelineEnv for the provided parameter sets."""
+        if "param_sets" not in overrides:
+            overrides["param_sets"] = self._initialize_param_sets()
         return super()._build_pipeline_env(**overrides)
 
     def _build_cost_pipeline(self, spec_stage: Stage) -> CircuitPipeline:
@@ -962,30 +1034,53 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             ]
         )
 
+    def _get_cost_pipeline_initial_spec(self) -> Any:
+        """Return the initial spec passed into ``_cost_pipeline``."""
+        return self.meta_circuit_factories["cost_circuit"]
+
     # ------------------------------------------------------------------ #
     # Execution
     # ------------------------------------------------------------------ #
 
-    def _run_optimization_circuits(self, **kwargs) -> dict[int, float]:
-        """Run cost evaluation via the pipeline.
+    def _evaluate_cost_param_sets(
+        self, param_sets: npt.NDArray[np.float64], **kwargs
+    ) -> dict[int, float]:
+        """Evaluate the cost pipeline for the provided parameter sets.
 
-        Uses ``_cost_pipeline`` with the ``cost_circuit`` meta-circuit factory.
-        Subclasses that need a different initial spec (e.g. QAOA passes the
-        Hamiltonian directly) should override this method.
+        Subclasses should prefer overriding the initial-spec hook over
+        replacing the full evaluator.
         """
-        env = self._build_pipeline_env()
+        normalized_param_sets = np.atleast_2d(param_sets)
+
+        env = self._build_pipeline_env(param_sets=normalized_param_sets)
         result = self._cost_pipeline.run(
-            initial_spec=self.meta_circuit_factories["cost_circuit"],
+            initial_spec=self._get_cost_pipeline_initial_spec(),
             env=env,
         )
         self._total_circuit_count += env.artifacts.get("circuit_count", 0)
         self._total_run_time += env.artifacts.get("run_time", 0.0)
         self._current_execution_result = env.artifacts.get("_current_execution_result")
 
-        return {
+        indexed = {
             _extract_param_set_idx(key): value + self.loss_constant
             for key, value in result.items()
         }
+        return dict(sorted(indexed.items()))
+
+    def _evaluate_gradient_at(
+        self, params: npt.NDArray[np.float64], **kwargs
+    ) -> npt.NDArray[np.float64]:
+        """Evaluate the parameter-shift gradient at a single parameter vector."""
+        shifted_param_sets = self._grad_shift_mask + params
+        exp_vals = self._evaluate_cost_param_sets(shifted_param_sets, **kwargs)
+        exp_vals_arr = np.asarray(
+            [value for value in exp_vals.values()],
+            dtype=np.float64,
+        )
+
+        pos_shifts = exp_vals_arr[::2]
+        neg_shifts = exp_vals_arr[1::2]
+        return 0.5 * (pos_shifts - neg_shifts)
 
     def _perform_final_computation(self, **kwargs) -> None:
         """
@@ -1005,15 +1100,22 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
     def run(
         self,
+        initial_params: npt.NDArray[np.float64] | None = None,
         perform_final_computation: bool = True,
         checkpoint_config: CheckpointConfig | None = None,
         **kwargs,
-    ) -> tuple[int, float]:
+    ) -> "VariationalQuantumAlgorithm":
         """Run the variational quantum algorithm.
 
-        The outputs are stored in the algorithm object.
+        The outputs are stored in the algorithm object and can be accessed via
+        properties such as ``total_circuit_count``, ``total_run_time``,
+        ``losses_history``, and ``best_params``.
 
         Args:
+            initial_params (npt.NDArray[np.float64] | None): Optional initial parameter
+                sets for a fresh optimization run. Must have shape
+                ``(n_param_sets, n_layers * n_params_per_layer)``. Cannot be
+                combined with a checkpoint-resumed optimizer state.
             perform_final_computation (bool): Whether to perform final computation after optimization completes.
                 Typically, this step involves sampling with the best found parameters to extract
                 solution probability distributions. Set this to False in warm-starting or pre-training
@@ -1023,7 +1125,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             **kwargs: Additional keyword arguments for subclasses.
 
         Returns:
-            tuple[int, float]: A tuple containing (total_circuit_count, total_run_time).
+            VariationalQuantumAlgorithm: Returns ``self`` for method chaining.
         """
         # Initialize checkpointing
         if checkpoint_config is None:
@@ -1039,12 +1141,12 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         if max_iterations != self.max_iterations:
             self.max_iterations = max_iterations
 
-        # Warn if max_iterations is less than current_iteration (regardless of how it was set)
-        if self.max_iterations < self.current_iteration:
+        if self.max_iterations <= self.current_iteration:
             warn(
-                f"max_iterations ({self.max_iterations}) is less than current_iteration "
-                f"({self.current_iteration}). The optimization will not run additional "
-                f"iterations since the maximum has already been reached.",
+                f"max_iterations ({self.max_iterations}) is less than or equal to "
+                f"current_iteration ({self.current_iteration}). The optimization will "
+                f"not run additional iterations since the maximum has already been "
+                f"reached.",
                 UserWarning,
             )
 
@@ -1053,11 +1155,12 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 message="💸 Computing Cost 💸", iteration=self.current_iteration
             )
 
-            self._curr_params = np.atleast_2d(params)
+            losses = self._evaluate_cost_param_sets(np.atleast_2d(params), **kwargs)
 
-            losses = self._run_optimization_circuits(**kwargs)
-
-            losses = np.fromiter(losses.values(), dtype=np.float64)
+            losses = np.asarray(
+                [value for value in losses.values()],
+                dtype=np.float64,
+            )
 
             if params.ndim > 1:
                 return losses
@@ -1077,14 +1180,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 message="📈 Computing Gradients 📈", iteration=self.current_iteration
             )
 
-            self._curr_params = self._grad_shift_mask + params
-
-            exp_vals = self._run_optimization_circuits(**kwargs)
-            exp_vals_arr = np.fromiter(exp_vals.values(), dtype=np.float64)
-
-            pos_shifts = exp_vals_arr[::2]
-            neg_shifts = exp_vals_arr[1::2]
-            grads = 0.5 * (pos_shifts - neg_shifts)
+            grads = self._evaluate_gradient_at(params, **kwargs)
 
             last_grad_norm = float(np.linalg.norm(grads))
 
@@ -1099,6 +1195,12 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                         intermediate_result.fun,
                     )
                 )
+            )
+
+            self._param_history.append(
+                np.atleast_2d(
+                    np.asarray(intermediate_result.x, dtype=np.float64)
+                ).copy()
             )
 
             current_loss = np.min(intermediate_result.fun)
@@ -1148,15 +1250,12 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         self.reporter.info(message="Finished Setup")
 
-        if self._curr_params is None:
-            self._initialize_params()
-        else:
-            self._validate_initial_params(self._curr_params)
+        resolved_initial_params = self._resolve_initial_param_sets(initial_params)
 
         try:
             self.optimize_result = self.optimizer.optimize(
                 cost_fn=cost_fn,
-                initial_params=self._curr_params,
+                initial_params=resolved_initial_params,
                 callback_fn=_iteration_counter,
                 jac=grad_fn,
                 max_iterations=self.max_iterations,
@@ -1178,7 +1277,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             )
 
             if isinstance(exc, _CancelledError):
-                return self._total_circuit_count, self._total_run_time
+                return self
         else:
             self.optimize_result.success = True
             self.optimize_result.message = "Optimization converged."
@@ -1194,12 +1293,13 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         self.reporter.info(message="Finished successfully!")
 
-        return self.total_circuit_count, self.total_run_time
+        return self
 
-    def _run_solution_measurement(self) -> None:
-        """Execute measurement circuits via the pipeline to obtain probabilities."""
-        self._curr_params = np.atleast_2d(self._best_params)
-        env = self._build_pipeline_env()
+    def _run_solution_measurement_for(
+        self, param_sets: npt.NDArray[np.float64]
+    ) -> None:
+        """Execute measurement circuits via the pipeline for the provided parameter sets."""
+        env = self._build_pipeline_env(param_sets=np.atleast_2d(param_sets))
         result = self._measurement_pipeline.run(
             initial_spec=self.meta_circuit_factories["meas_circuit"],
             env=env,
@@ -1208,6 +1308,5 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         self._total_run_time += env.artifacts.get("run_time", 0.0)
         self._current_execution_result = env.artifacts.get("_current_execution_result")
 
-        self._best_probs = {
-            _extract_param_set_idx(key): value for key, value in result.items()
-        }
+        indexed = {_extract_param_set_idx(key): value for key, value in result.items()}
+        self._best_probs = dict(sorted(indexed.items()))

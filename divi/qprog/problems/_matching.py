@@ -4,8 +4,6 @@
 
 """Weighted matching problem for QAOA-based quantum optimization."""
 
-from __future__ import annotations
-
 from collections.abc import Callable, Hashable
 from functools import partial
 from typing import Any, Literal
@@ -237,7 +235,7 @@ def _classical_cleanup(
     """Fill unmatched nodes using exact classical matching on the residual graph.
 
     Identifies nodes not covered by the quantum solution, builds the
-    residual subgraph, and runs :func:`nx.max_weight_matching` on it.
+    residual subgraph, and runs :func:`~networkx.algorithms.matching.max_weight_matching` on it.
     """
     matched_nodes: set = set()
     for idx, bit in enumerate(solution):
@@ -307,7 +305,7 @@ class MaxWeightMatchingProblem(QAOAProblem):
         partition_algorithm: Edge partitioning strategy.
             ``"kernighan_lin"`` (default, weight-aware) or ``"spectral"``.
         use_classical_cleanup: If ``True`` (default), fill unmatched
-            residual nodes via :func:`nx.max_weight_matching` during
+            residual nodes via :func:`~networkx.algorithms.matching.max_weight_matching` during
             :meth:`finalize_solution`.
         seed: Random seed for partitioning reproducibility.
 

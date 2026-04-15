@@ -2,7 +2,7 @@ Improving Results with Error Mitigation
 ========================================
 
 Divi provides built-in quantum error mitigation (QEM) to improve results from
-noisy quantum hardware.  Two protocols are included out of the box:
+noisy quantum hardware. Two built-in protocols ship with the library:
 
 - **Zero Noise Extrapolation (ZNE)** — runs circuits at artificially increased
   noise levels and extrapolates to the zero-noise limit.
@@ -10,8 +10,10 @@ noisy quantum hardware.  Two protocols are included out of the box:
   Clifford Pauli paths, simulates them classically, and corrects the noisy
   quantum result with an empirical rescaling factor.
 
-Both protocols plug into any quantum program via the ``qem_protocol``
-argument.
+Pass either protocol into variational programs (for example :class:`~divi.qprog.algorithms.VQE`
+or :class:`~divi.qprog.algorithms.QAOA`) with the ``qem_protocol`` argument. You can also
+subclass :class:`~divi.circuits.qem.QEMProtocol` for custom mitigation; see
+`Custom Error Mitigation Protocols`_ below.
 
 Zero Noise Extrapolation (ZNE)
 ------------------------------
@@ -27,7 +29,7 @@ circuits and extrapolate.
    from mitiq.zne.inference import RichardsonFactory
    from mitiq.zne.scaling import fold_gates_at_random
    from divi.circuits.qem import ZNE
-   from divi.qprog import VQE, HartreeFockAnsatz
+   from divi.qprog import VQE
    from divi.backends import QiskitSimulator
    import pennylane as qml
    import numpy as np
@@ -50,12 +52,13 @@ circuits and extrapolate.
        molecule=h2_molecule,
        qem_protocol=zne_protocol,
        backend=QiskitSimulator(qiskit_backend="auto"),
+       max_iterations=10,
    )
 
    vqe.run()
    print(f"Mitigated energy: {vqe.best_loss:.6f}")
 
-**Configuration Options:**
+**Configuration Options** (same imports as in **Basic Usage** above):
 
 .. code-block:: python
 
@@ -90,10 +93,12 @@ on the ensemble circuits.
 
 **Basic Usage:**
 
+.. skip: next
+
 .. code-block:: python
 
    from divi.circuits.quepp import QuEPP
-   from divi.qprog import VQE, HartreeFockAnsatz
+   from divi.qprog import VQE
    from divi.backends import QiskitSimulator
    import pennylane as qml
    import numpy as np
@@ -107,6 +112,7 @@ on the ensemble circuits.
        molecule=h2_molecule,
        qem_protocol=QuEPP(truncation_order=2),
        backend=QiskitSimulator(qiskit_backend="auto"),
+       max_iterations=10,
    )
 
    vqe.run()
@@ -114,21 +120,24 @@ on the ensemble circuits.
 
 **Parameters:**
 
-- ``truncation_order`` *(int, default 2)* — Maximum CPT expansion order.
-  Higher values include more Pauli paths, reducing bias at the cost of
-  additional auxiliary circuits.  For circuits with *n* non-Clifford gates,
-  the number of paths at order *k* grows as C(n, k).
-- ``coefficient_threshold`` *(float, optional)* — Prune paths whose
-  weight falls below this threshold during DFS enumeration.  Provides
-  early termination for large circuits.
-- ``sampling`` — Path selection strategy: ``"montecarlo"`` *(default,*
-  *fixed budget via random sampling)* or ``"exhaustive"`` (DFS
-  enumeration up to *truncation_order*; deterministic but grows as
-  O(n^K_T)).  Use exhaustive for small circuits where you want
-  reproducible, exact path sums.
-- ``n_samples`` *(int)* — Number of Monte Carlo samples.  Required
-  when ``sampling="montecarlo"``.
+- ``truncation_order`` *(int, default 2)* — Maximum CPT expansion order *K*.
+  For ``sampling="exhaustive"``, higher *K* includes more Pauli paths (cost
+  grows combinatorially with the number of non-Clifford gates). For the default
+  ``sampling="montecarlo"``, paths are drawn with a fixed budget instead; order
+  still affects diagnostics such as the shallow-circuit warning, but path count
+  is controlled primarily by ``n_samples``.
+- ``coefficient_threshold`` *(float, optional)* — Prune paths whose absolute
+  weight falls below this threshold during DFS enumeration (``sampling="exhaustive"``
+  only; see the QuEPP class docstring for symbolic-circuit behavior).
+- ``sampling`` — ``"montecarlo"`` *(default)* uses ``n_samples`` random paths;
+  ``"exhaustive"`` enumerates paths up to ``truncation_order`` (deterministic;
+  cost grows with order and circuit size).
+- ``n_samples`` *(int, default 200)* — Monte Carlo path budget when
+  ``sampling="montecarlo"``.
 - ``seed`` *(int, optional)* — RNG seed for Monte Carlo reproducibility.
+- ``n_twirls`` *(int, default 10)* — Pauli twirl count; ``0`` disables twirling.
+  The parameter ``bind_before_mitigation`` on :class:`~divi.circuits.quepp.QuEPP`
+  trades repeated structural work against path count when angles are symbolic.
 
 ZNE vs QuEPP
 ~~~~~~~~~~~~~
@@ -162,6 +171,8 @@ Estimating Circuit Cost with Dry Run
 Error mitigation can multiply the number of circuits significantly.  Use
 :meth:`~divi.qprog.QuantumProgram.dry_run` to preview the per-stage expansion
 before committing to a full run:
+
+.. skip: next
 
 .. code-block:: python
 
@@ -236,11 +247,14 @@ If you see this warning:
 Performance Considerations
 --------------------------
 
-- **ZNE overhead**: Typically 2-5x more circuit evaluations (one per scale factor).
-- **QuEPP overhead**: Scales with the number of non-Clifford gates and truncation
-  order.  The classical Clifford simulation is fast (polynomial in qubit count).
-- **Tip**: Use fewer shots (500-1000) with mitigation since results are averaged
-  across noise levels or ensembles.
+- **ZNE**: Expect roughly one backend evaluation per scale factor per
+  unmitigated evaluation (plus extrapolation overhead on the classical side).
+- **QuEPP**: Cost grows with path count (Monte Carlo budget or exhaustive
+  enumeration), twirls, and circuit size. Classical Clifford simulation of
+  paths is comparatively cheap next to quantum shots.
+- **Budget**: Mitigation increases total shots or circuit evaluations; use
+  :meth:`~divi.qprog.QuantumProgram.dry_run` to preview expansion before a long
+  run.
 
 Custom Error Mitigation Protocols
 ---------------------------------
@@ -293,11 +307,11 @@ and must implement three members:
 
 - ``name`` *(property)* — Unique protocol name used as the pipeline axis identifier
 - ``expand(cirq_circuit, observable)`` — Generate one or more Cirq circuits to
-  execute on the quantum backend and a :class:`~divi.circuits.qem.QEMContext`
+  execute on the quantum backend and a ``QEMContext``
   carrying any classical side-channel data for the reduce phase.
   Return a ``tuple[tuple[Circuit, ...], QEMContext]``.
 - ``reduce(quantum_results, context)`` — Combine a ``Sequence[float]`` of
-  per-circuit expectation values with the :class:`~divi.circuits.qem.QEMContext`
+  per-circuit expectation values with the ``QEMContext``
   into a single ``float``.
 - ``post_reduce(contexts)`` *(optional)* — Called once after all per-group
   ``reduce`` calls in an evaluation.  Override to inspect the collected contexts
@@ -314,6 +328,6 @@ and must implement three members:
 Next Steps
 ----------
 
-- 🛠️ **API Reference**: Learn about protocol classes in :doc:`../api_reference/circuits`
-- 📊 **Program Ensembles**: Apply mitigation to large computations in :doc:`program_ensembles`
-- 🔧 **Pipelines**: Understand how stages compose in :doc:`pipelines`
+- :doc:`../api_reference/circuits` — ``QEMProtocol``, ``ZNE``, and QuEPP
+- :doc:`program_ensembles` — running many mitigated programs together
+- :doc:`pipelines` — how QEM fits into the circuit pipeline

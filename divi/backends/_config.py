@@ -56,14 +56,6 @@ class ExecutionConfig:
     All fields are optional. When set on a job via
     :meth:`QoroService.set_execution_config`, unset (``None``) fields are
     omitted from the request so the server keeps its own defaults.
-
-    Attributes:
-        bond_dimension: MPS bond dimension. Subject to tier-based caps.
-        truncation_threshold: MPS truncation threshold
-            (only meaningful for ``SimulationMethod.MatrixProductState``).
-        simulator: Simulator backend to use.
-        simulation_method: Simulation method to use.
-        api_meta: Runtime pass-through metadata (e.g. ``optimization_level``).
     """
 
     bond_dimension: int | None = None

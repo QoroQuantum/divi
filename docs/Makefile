@@ -21,8 +21,10 @@ help:
 	@echo "    clean      - Remove all build files"
 	@echo ""
 	@echo "  Quality Checks:"
-	@echo "    test       - Run all quality checks (linkcheck, spelling, coverage)"
-	@echo "    linkcheck  - Check for broken links"
+	@echo "    test           - Run all quality checks (linkcheck, spelling, coverage)"
+	@echo "    test-snippets      - Test Python code blocks in RST documentation (all failures)"
+	@echo "    test-snippets-fast - Test snippets; stop at first failure (-x)"
+	@echo "    linkcheck      - Check for broken links"
 	@echo "    spelling   - Check for spelling errors"
 	@echo "    coverage   - Run a documentation coverage check"
 	@echo ""
@@ -38,9 +40,9 @@ help:
 	@echo "  make dev PORT=8080       - Start the dev server on port 8080"
 	@echo "  make test                - Run all quality checks"
 
-.PHONY: help Makefile build clean serve dev open linkcheck coverage spelling test install
+.PHONY: help Makefile build clean serve dev open linkcheck coverage spelling test test-snippets test-snippets-fast install
 
-KNOWN_TARGETS := help dev serve build clean test linkcheck spelling coverage install open
+KNOWN_TARGETS := help dev serve build clean test test-snippets test-snippets-fast linkcheck spelling coverage install open
 
 # ==============================================================================
 # Development
@@ -58,7 +60,9 @@ build:
 clean:
 	@echo "Cleaning build directory..."
 	@rm -rf "$(BUILDDIR)"
-	@echo "Build directory cleaned."
+	@echo "Cleaning auto-generated automodapi stubs..."
+	@rm -rf "$(SOURCEDIR)/api_reference/generated"
+	@echo "Clean complete."
 
 serve: build
 	@echo "Serving documentation at http://localhost:$(PORT)"
@@ -103,8 +107,23 @@ coverage:
 
 spelling:
 	@echo "Running spell checker..."
-	@$(SPHINXBUILD) -b spelling "$(SOURCEDIR)" "$(BUILDDIR)/spelling" $(SPHINXOPTS) $(O)
+	@SPELLING=1 $(SPHINXBUILD) -b spelling "$(SOURCEDIR)" "$(BUILDDIR)/spelling" $(SPHINXOPTS) $(O)
 	@echo "Spell check complete. See $(BUILDDIR)/spelling/output.txt for results."
+
+test-snippets:
+	@echo "Testing documentation code snippets..."
+	# NOTE: do NOT add ``-n auto`` here — Sybil snippets within a file share
+	# state via ``.. invisible-code-block:`` setup and must run in order on
+	# a single worker. ``-v`` + ``PYTHONUNBUFFERED`` give per-test progress
+	# in CI (unbuffered stdout, one line per test).
+	@PYTHONUNBUFFERED=1 MPLBACKEND=Agg uv run pytest "$(SOURCEDIR)" --tb=short -v
+	@echo "Documentation snippet tests complete!"
+
+# Stop at first snippet failure (local convenience). CI uses test-snippets.
+test-snippets-fast:
+	@echo "Testing documentation code snippets (fail-fast)..."
+	@PYTHONUNBUFFERED=1 MPLBACKEND=Agg uv run pytest "$(SOURCEDIR)" -x --tb=short -v
+	@echo "Documentation snippet tests complete!"
 
 test: spelling coverage linkcheck
 	@echo "All quality checks completed!"

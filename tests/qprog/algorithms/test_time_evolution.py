@@ -110,9 +110,9 @@ class TestTimeEvolutionRun:
             time=0.5,
             backend=default_test_simulator,
         )
-        count, runtime = te.run()
-        assert count >= 1
-        assert runtime >= 0
+        te.run()
+        assert te.total_circuit_count >= 1
+        assert te.total_run_time >= 0
         probs = te.results
         assert isinstance(probs, dict)
         total = sum(probs.values())
@@ -127,8 +127,8 @@ class TestTimeEvolutionRun:
             initial_state=SuperpositionState(),
             backend=default_test_simulator,
         )
-        count, _ = te.run()
-        assert count >= 1
+        te.run()
+        assert te.total_circuit_count >= 1
         assert te.results is not None
 
     def test_run_initial_state_ones(
@@ -140,8 +140,8 @@ class TestTimeEvolutionRun:
             initial_state=OnesState(),
             backend=default_test_simulator,
         )
-        count, _ = te.run()
-        assert count >= 1
+        te.run()
+        assert te.total_circuit_count >= 1
 
     def test_single_term_hamiltonian_fallback(self, default_test_simulator):
         """ExactTrotterization with keep_top_n=1 yields single-term; use evolve not TrotterProduct."""
@@ -152,8 +152,8 @@ class TestTimeEvolutionRun:
             time=0.5,
             backend=default_test_simulator,
         )
-        count, _ = te.run()
-        assert count >= 1
+        te.run()
+        assert te.total_circuit_count >= 1
         assert te.results is not None
 
 
@@ -167,8 +167,8 @@ class TestTimeEvolutionObservable:
             observable=qml.PauliZ(0),
             backend=default_test_simulator,
         )
-        count, _ = te.run()
-        assert count >= 1
+        te.run()
+        assert te.total_circuit_count >= 1
         assert te.results is not None
         assert -1.1 <= te.results <= 1.1
 
@@ -198,8 +198,8 @@ class TestTimeEvolutionObservable:
             observable=qml.PauliZ(0) + qml.PauliZ(1),
             backend=dummy_expval_backend,
         )
-        count, _ = te.run()
-        assert count >= 1
+        te.run()
+        assert te.total_circuit_count >= 1
         assert te.results is not None
         assert te.results == pytest.approx(2.0)
 
@@ -218,8 +218,8 @@ class TestTimeEvolutionQDrift:
             time=0.5,
             backend=default_test_simulator,
         )
-        count, _ = te.run()
-        assert count >= 3
+        te.run()
+        assert te.total_circuit_count >= 3
         assert te.results is not None
         probs = te.results
         total = sum(probs.values())
@@ -237,8 +237,8 @@ class TestTimeEvolutionQDrift:
             ),
             backend=default_test_simulator,
         )
-        count, _ = te.run()
-        assert count >= 2
+        te.run()
+        assert te.total_circuit_count == 2
         assert te.results is not None
 
     def test_multi_sample_qdrift_expval_vs_sampling(self, default_test_simulator):
@@ -627,9 +627,9 @@ class TestTimeEvolutionQEM:
             backend=backend,
             qem_protocol=QuEPP(truncation_order=1, n_twirls=0),
         )
-        count, runtime = te.run()
-        assert count >= 1
-        assert runtime >= 0
+        te.run()
+        assert te.total_circuit_count >= 1
+        assert te.total_run_time >= 0
         assert isinstance(te.results, float)
         assert -1.1 <= te.results <= 1.1
 

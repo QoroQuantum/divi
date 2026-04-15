@@ -4,8 +4,6 @@
 
 """Unit tests for _BatchCoordinator, _ProxyBackend, and related helpers."""
 
-from __future__ import annotations
-
 from concurrent.futures import Future
 from queue import Queue
 from threading import Barrier, Event, Thread

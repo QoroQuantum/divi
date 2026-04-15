@@ -50,6 +50,31 @@
 - Build: `cd docs` then `make build`
 - Live reload: `cd docs` then `make dev`
 - Serve built docs: `cd docs` then `make serve`
+- Always `make clean` before `make build` — stale generated stubs and build state can hide or spuriously produce warnings.
+- Nitpick mode is always on (`nitpicky = True` in `conf.py`). No need to pass `-n`.
+
+### API reference pages
+
+API pages use `sphinx-automodapi` — one `.. automodapi::` directive per submodule, not hand-rolled `autoclass`/`autofunction` blocks. Every submodule that automodapi documents must have an `__all__` list controlling which names are public (otherwise stdlib imports leak into the generated stubs).
+
+### Cross-reference conventions (avoid nitpick warnings)
+
+- **Use the submodule path, not the top-level re-export.** Write `:class:\`~divi.qprog.algorithms.VQE\`` (resolves), not `:class:\`~divi.qprog.VQE\`` (doesn't). The `~` prefix still renders just `VQE` in the output.
+- **Don't put types in `Attributes:` / `Args:` docstring sections.** `sphinx-autodoc-typehints` reads types from the Python signature; duplicating them in the docstring causes Napoleon to emit unresolvable cross-references. Write `cost_history: Optimization cost history.` not `cost_history (list[dict]): ...`.
+- **Napoleon parses colons in attribute docstrings as type annotations.** `"How to sample: uniform or weighted."` makes Sphinx treat `uniform or weighted` as a type. Reword or use em-dashes.
+- **Continuation lines in Google-style `Args:` blocks must be indented** relative to the argument name. Otherwise Napoleon parses each wrapped line as a new argument.
+- **Parameterized generics (`list[str]`, `Sequence[float]`) don't resolve** — only the outer class does. These are covered by a catch-all in `nitpick_ignore_regex`.
+
+### When editing `nitpick_ignore_regex`
+
+- Add an entry only after confirming the target really cannot be resolved any other way (intersphinx, `__all__`, fully-qualified cross-reference).
+- Comment *why* the rule exists — not just *what* it matches.
+- The current list has ~8 entries, each justified. Keep it small.
+
+### RST code snippets
+
+- Run `cd docs && make test-snippets` after changing user-guide examples; CI runs this in the docs workflow.
+- Conventions for RST snippets and Sybil: `docs/source/development/building_docs.rst` (section *Documentation code snippets (Sybil)*).
 
 ## Commit conventions
 

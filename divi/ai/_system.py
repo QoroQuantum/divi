@@ -14,7 +14,7 @@ import psutil
 
 
 def detect_arch() -> str:
-    """Return a normalised CPU architecture string.
+    """Return a normalized CPU architecture string.
 
     Returns
     -------
