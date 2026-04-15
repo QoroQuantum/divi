@@ -34,18 +34,18 @@ class QAOA(VariationalQuantumAlgorithm):
     optimization problems. It alternates between applying a cost Hamiltonian
     (encoding the problem) and a mixer Hamiltonian (enabling exploration).
 
-    The problem is provided as a :class:`QAOAProblem` instance that supplies the
+    The problem is provided as a :class:`~divi.qprog.problems.QAOAProblem` instance that supplies the
     cost Hamiltonian, mixer Hamiltonian, initial state, loss constant, and
     decode function.
 
     Args:
-        problem: A :class:`QAOAProblem` instance providing the QAOA ingredients.
+        problem: A :class:`~divi.qprog.problems.QAOAProblem` instance providing the QAOA ingredients.
         initial_state: Override the problem's recommended initial state.
         trotterization_strategy: The trotterization strategy. Defaults to ExactTrotterization.
         max_iterations: Maximum number of optimization iterations. Defaults to 10.
         n_layers: Number of QAOA layers. Defaults to 1.
         **kwargs: Additional keyword arguments passed to
-            :class:`VariationalQuantumAlgorithm`, including ``optimizer``
+            :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm`, including ``optimizer``
             and ``backend``.
     """
 
@@ -62,17 +62,17 @@ class QAOA(VariationalQuantumAlgorithm):
         """Initialize the QAOA algorithm.
 
         Args:
-            problem: A :class:`QAOAProblem` instance that provides cost/mixer
+            problem: A :class:`~divi.qprog.problems.QAOAProblem` instance that provides cost/mixer
                 Hamiltonians, loss constant, decode function, and
                 recommended initial state.
             initial_state: Override the problem's recommended initial state.
                 If ``None``, uses ``problem.recommended_initial_state``.
             trotterization_strategy: Strategy for Hamiltonian evolution.
-                Defaults to :class:`ExactTrotterization`.
+                Defaults to :class:`~divi.hamiltonians.ExactTrotterization`.
             max_iterations: Maximum number of optimization iterations.
                 Defaults to 10.
             n_layers: Number of QAOA layers (circuit depth). Defaults to 1.
-            **kwargs: Passed to :class:`VariationalQuantumAlgorithm`,
+            **kwargs: Passed to :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm`,
                 including ``optimizer``, ``backend``, ``shots``, etc.
         """
         if initial_state is not None and not isinstance(initial_state, InitialState):
@@ -257,7 +257,7 @@ class QAOA(VariationalQuantumAlgorithm):
                   ``repair_infeasible_bitstring`` method, rank by energy.
 
         Returns:
-            List of :class:`SolutionEntry`.
+            List of :class:`~divi.qprog.SolutionEntry`.
         """
         fetch_n = n if n > 0 else 2**self.n_qubits
 

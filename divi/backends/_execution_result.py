@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Qoro Quantum Ltd <divi@qoroquantum.de>
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -13,15 +13,8 @@ class ExecutionResult:
     methods. For synchronous backends, it contains the results directly. For
     asynchronous backends, it contains the job_id that can be used to fetch results later.
 
-    The class is frozen (immutable) to ensure data integrity. Use the `with_results()`
+    The class is frozen (immutable) to ensure data integrity. Use the ``with_results()``
     method to create a new instance with results populated from an async ExecutionResult.
-
-    Attributes:
-        results (list[dict] | None): For sync backends or after fetching: List of result
-            dictionaries, each containing 'label' and 'results' keys. Format:
-            [{"label": str, "results": dict}, ...]
-        job_id (str | None): For async backends: Job identifier that can be used
-            to poll and retrieve results from the backend.
 
     Examples:
         >>> # Synchronous backend
@@ -40,7 +33,8 @@ class ExecutionResult:
     """
 
     results: list[dict] | None = None
-    """Results for synchronous backends: [{"label": str, "results": dict}, ...]"""
+    """Results for synchronous backends, as a list of dicts each containing
+    ``"label"`` (str) and ``"results"`` (dict) keys."""
 
     job_id: str | None = None
     """Job identifier for asynchronous backends."""

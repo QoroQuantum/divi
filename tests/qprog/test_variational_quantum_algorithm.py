@@ -820,7 +820,7 @@ class TestCheckpointing:
         # Should warn and not run additional iterations since already completed
         with pytest.warns(
             UserWarning,
-            match="max_iterations \\(2\\) is less than current_iteration \\(3\\)",
+            match="max_iterations \\(2\\) is less than or equal to current_iteration \\(3\\)",
         ):
             loaded_program.run()
 

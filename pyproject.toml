@@ -95,15 +95,17 @@ testing = [
     "pytest-mock>=3.14,<4.0",
     "pytest-xdist>=3.8,<4.0",
     "pytest-cov>=7.0,<8.0",
+    "sybil>=9.0",
 ]
 docs = [
-    "sphinx>=1.8,<8.2",
-    "nbsphinx>=0.9.7,<0.10.0",
+    "sphinx>=9.0.0",
     "furo>=2024.8",
     "sphinx-autodoc-typehints>=3.0,<4.0",
     "sphinx-autobuild>=2025.8.25,<2026.0.0",
     "sphinxcontrib-mermaid>=2.0,<3.0",
     "sphinxcontrib-spelling>=8.0.1,<9.0.0",
+    "sphinx-automodapi>=0.18",
+    "sphinx-copybutton>=0.5.2",
 ]
 
 

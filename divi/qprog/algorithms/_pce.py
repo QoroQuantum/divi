@@ -416,7 +416,7 @@ class PCE(VQE):
             names to binary values.
 
         Raises:
-            RuntimeError: If :meth:`run` has not been called yet.
+            RuntimeError: If ``run()`` has not been called yet.
         """
         if self._final_vector is None:
             raise RuntimeError("Run the VQE optimization first.")

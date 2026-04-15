@@ -1,112 +1,43 @@
 Program Ensembles
 ==================
 
-The ``divi.qprog.ensemble`` module provides powerful program ensemble capabilities for running multiple quantum programs in parallel, managing large-scale hyperparameter sweeps, and handling complex workflows.
-
-Overview
---------
-
-Program ensembles in Divi enable you to:
-
-- **Parallel Execution**: Run multiple quantum programs simultaneously
-- **Hyperparameter Sweeps**: Systematically explore parameter spaces
-- **Large Problem Decomposition**: Break down complex problems into manageable subproblems
-- **Progress Monitoring**: Track execution across multiple programs with rich progress bars
+The ``divi.qprog.ensemble`` module coordinates parallel execution of multiple
+quantum programs with automatic circuit batching and progress tracking.
 
 Core Architecture
 -----------------
 
-.. autoclass:: divi.qprog.ensemble.ProgramEnsemble
-   :members:
-   :undoc-members:
-   :show-inheritance:
-   :special-members: __init__
+:class:`~divi.qprog.ensemble.ProgramEnsemble` is the abstract base shared by every
+workflow class. :class:`~divi.qprog.ensemble.BatchConfig` and
+:class:`~divi.qprog.ensemble.BatchMode` configure how circuits are grouped for
+execution.
 
-.. autoclass:: divi.qprog.ensemble.BatchMode
-   :members:
-   :undoc-members:
-   :no-index:
-
-.. autoclass:: divi.qprog.ensemble.BatchConfig
-   :members:
-   :undoc-members:
-   :show-inheritance:
-   :no-index:
-
-**Usage:**
-
-.. code-block:: python
-
-   from divi.qprog.ensemble import ProgramEnsemble
-   from divi.qprog import VQE, QAOA, BatchConfig, BatchMode
-   from divi.backends import MaestroSimulator
-
-   class MyEnsemble(ProgramEnsemble):
-       def create_programs(self):
-           super().create_programs()  # Required: initializes internal state
-           # Create multiple quantum programs
-           self._programs = {
-               "program_1": VQE(...),
-               "program_2": QAOA(...),
-               "program_3": VQE(...),
-           }
-
-       def aggregate_results(self):
-           super().aggregate_results()
-           # Collect results from all programs
-           ...
-
-   # Run program ensemble: create programs first, then execute
-   ensemble = MyEnsemble(backend=MaestroSimulator())
-   ensemble.create_programs()
-   ensemble.run(blocking=True)
-
-   # Disable circuit batching for local simulators
-   ensemble.run(blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF))
-
-Partitioning Base
-~~~~~~~~~~~~~~~~~
-
-.. autoclass:: divi.qprog.workflows.PartitioningProgramEnsemble
-   :members:
-   :undoc-members:
-   :show-inheritance:
+.. automodapi:: divi.qprog.ensemble
+   :no-heading:
+   :no-inheritance-diagram:
+   :no-inherited-members:
+   :include-all-objects:
 
 Workflows
 ---------
 
-VQE Hyperparameter Sweeps
-~~~~~~~~~~~~~~~~~~~~~~~~~~
+Concrete workflow classes build on :class:`~divi.qprog.ensemble.ProgramEnsemble`.
+:class:`~divi.qprog.workflows.VQEHyperparameterSweep` orchestrates parameterized VQE
+runs over a grid of inputs; :class:`~divi.qprog.workflows.PartitioningProgramEnsemble`
+decomposes a large graph problem into solvable sub-problems;
+:class:`~divi.qprog.workflows.TimeEvolutionTrajectory` runs a sequence of time-evolution
+steps to build a trajectory.
 
-.. autoclass:: divi.qprog.workflows.VQEHyperparameterSweep
-   :members:
-   :undoc-members:
-   :show-inheritance:
-   :special-members: __init__
-
-Molecule Transformer
-^^^^^^^^^^^^^^^^^^^^
-
-.. autoclass:: divi.qprog.workflows.MoleculeTransformer
-   :members:
-   :undoc-members:
-   :show-inheritance:
-   :no-index:
+.. automodapi:: divi.qprog.workflows
+   :no-heading:
+   :no-inheritance-diagram:
+   :no-inherited-members:
+   :include-all-objects:
 
 Partitioning Configuration
-^^^^^^^^^^^^^^^^^^^^^^^^^^
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. autoclass:: divi.qprog.problems.GraphPartitioningConfig
-   :members:
-   :undoc-members:
-   :show-inheritance:
-   :no-index:
-
-Time Evolution Trajectory
-~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. autoclass:: divi.qprog.workflows.TimeEvolutionTrajectory
-   :members:
-   :undoc-members:
-   :show-inheritance:
-   :special-members: __init__
+:class:`~divi.qprog.problems.GraphPartitioningConfig` parameterizes how
+:class:`~divi.qprog.workflows.PartitioningProgramEnsemble` splits a graph; it lives in
+``divi.qprog.problems`` and is documented on the
+:doc:`qprog/problems` reference page.

@@ -1,13 +1,13 @@
 Routing Problems (TSP & CVRP)
 =============================
 
-Divi provides specialised :class:`~divi.qprog.problems.TSPProblem` and
+Divi provides specialized :class:`~divi.qprog.problems.TSPProblem` and
 :class:`~divi.qprog.problems.CVRPProblem` classes for solving routing
 problems with QAOA.  Both are :class:`~divi.qprog.problems.QAOAProblem`
 subclasses and work with the same ``QAOA`` constructor described in
 :doc:`combinatorial_optimization_qaoa_pce`.  They implement the
 **Constraint-Enhanced QAOA** (CE-QAOA) protocol [#onah2025]_, which uses
-block one-hot encoding with W-state initialisation and an XY mixer to keep
+block one-hot encoding with W-state initialization and an XY mixer to keep
 quantum amplitude concentrated on the feasible (permutation) subspace.
 
 Why CE-QAOA?
@@ -18,7 +18,7 @@ bitstrings — the feasible set (e.g. permutations) is an exponentially
 small fraction of the full Hilbert space.  CE-QAOA avoids this by
 co-designing the encoding, initial state, and mixer:
 
-- **W-state initialisation**: starts each qubit block in a uniform
+- **W-state initialization**: starts each qubit block in a uniform
   superposition over one-hot basis states (exactly one city per slot).
 - **XY mixer**: all-to-all XY coupling within each block swaps
   excitations without creating or destroying them, preserving the
@@ -26,8 +26,8 @@ co-designing the encoding, initial state, and mixer:
 - **Reduced phase operator**: row constraints are enforced structurally,
   so only column and capacity penalties appear in the cost Hamiltonian.
 
-Travelling Salesman Problem (TSP)
----------------------------------
+Traveling Salesman Problem (TSP)
+--------------------------------
 
 Given a symmetric cost matrix, find the shortest tour visiting every city
 exactly once and returning to the start.
@@ -76,15 +76,23 @@ capacity constraints.
 
    from divi.qprog.problems import CVRPProblem
 
+   cost_matrix = np.array([
+       [0, 10, 15, 20],
+       [10, 0, 35, 25],
+       [15, 35, 0, 30],
+       [20, 25, 30, 0],
+   ])
+   demands = np.array([0, 3, 4, 2])  # depot demand = 0
+
    problem = CVRPProblem(
        cost_matrix,
-       demands=np.array([0, 3, 4, 2, 5]),  # depot demand = 0
+       demands=demands,
        capacity=10.0,
        n_vehicles=2,
        depot=0,
    )
 
-   qaoa = QAOA(problem, backend=backend, max_iterations=5)
+   qaoa = QAOA(problem, backend=backend, max_iterations=10)
    qaoa.run()
 
 Binary Encoding
@@ -99,13 +107,13 @@ qubit count from O(N) to O(log N) per routing slot:
    problem = CVRPProblem(
        cost_matrix,
        demands=demands,
-       capacity=100,
-       n_vehicles=4,
+       capacity=10.0,
+       n_vehicles=2,
        encoding="binary",   # compact binary encoding
    )
 
-This produces a higher-order binary optimisation (HUBO) problem that is
-automatically quadratised.  See the ``binary_block_config`` utility for
+This produces a higher-order binary optimization (HUBO) problem that is
+automatically quadratized.  See the ``binary_block_config`` utility for
 qubit count estimates at various scales.
 
 Feasibility, Repair, and Energy
@@ -126,8 +134,6 @@ parameter:
 
 .. code-block:: python
 
-   qaoa.run()
-
    # PHQC mode (arXiv:2511.14296, Algorithm 4): keep only feasible
    # solutions, rank by objective energy (not probability).
    solutions = qaoa.get_top_solutions(n=5, feasibility="filter")
@@ -140,6 +146,8 @@ Loading Benchmark Instances
 
 The ``parse_vrp_file`` utility reads standard TSPLIB/CVRPLIB ``.vrp``
 files, as used by benchmarks like QOBLIB:
+
+.. skip: next
 
 .. code-block:: python
 

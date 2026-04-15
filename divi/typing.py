@@ -11,6 +11,17 @@ import numpy as np
 import rustworkx as rx
 import scipy.sparse as sps
 
+__all__ = [
+    "AxisLabel",
+    "BinaryPolynomialProblem",
+    "GraphProblemTypes",
+    "HUBOProblemTypes",
+    "HUBOTerm",
+    "QASMTag",
+    "QUBOProblemTypes",
+    "qubo_to_matrix",
+]
+
 # ── Pipeline type aliases ────────────────────────────────────────────
 
 AxisLabel = tuple[

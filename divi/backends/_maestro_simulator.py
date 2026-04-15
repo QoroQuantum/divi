@@ -55,7 +55,7 @@ class MaestroSimulator(CircuitRunner):
     .. note::
 
         Maestro's C++ extension must be loaded before other C++ libraries
-        (Qiskit, PennyLane) to avoid initialisation order conflicts.  This
+        (Qiskit, PennyLane) to avoid initialization order conflicts.  This
         is handled automatically by ``divi/__init__.py``.
 
     Args:

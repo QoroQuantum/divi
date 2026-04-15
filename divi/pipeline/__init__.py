@@ -13,7 +13,7 @@ from divi.pipeline._core import (
     Stage,
     format_pipeline_tree,
 )
-from divi.pipeline.abc import ContractViolation
+from divi.pipeline.abc import ContractViolation, NodeKey, ResultFormat
 from divi.pipeline._dry_run import (
     DryRunReport,
     StageInfo,
@@ -23,3 +23,23 @@ from divi.pipeline._dry_run import (
 from divi.pipeline.transformations import (
     reduce_merge_histograms,
 )
+
+__all__ = [
+    "BundleStage",
+    "CircuitPipeline",
+    "ContractViolation",
+    "DryRunReport",
+    "ExpansionResult",
+    "PipelineEnv",
+    "PipelineResult",
+    "PipelineTrace",
+    "SpecStage",
+    "Stage",
+    "StageInfo",
+    "dry_run_pipeline",
+    "format_dry_run",
+    "format_pipeline_tree",
+    "NodeKey",
+    "ResultFormat",
+    "reduce_merge_histograms",
+]

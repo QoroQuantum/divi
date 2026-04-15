@@ -100,6 +100,8 @@ Tests within each file follow a layered structure, from isolated units to full i
 
 Example layout for a new problem:
 
+.. skip: next
+
 .. code-block:: python
 
    # tests/qprog/problems/test_my_problem.py

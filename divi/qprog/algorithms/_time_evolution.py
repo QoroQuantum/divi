@@ -54,7 +54,7 @@ class TimeEvolution(QuantumProgram):
             time: Evolution time t (e^(-iHt)).
             n_steps: Number of Trotter steps.
             order: Suzuki-Trotter order (1 or even).
-            initial_state: Initial state preparation. Pass an :class:`InitialState`
+            initial_state: Initial state preparation. Pass an :class:`~divi.qprog.algorithms.InitialState`
                 instance (e.g. ``ZerosState()``, ``SuperpositionState()``).
                 Defaults to ``ZerosState()`` if None.
             observable: If None, measure ``qml.probs()``; else ``qml.expval(observable)``.

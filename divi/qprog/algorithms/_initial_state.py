@@ -4,7 +4,7 @@
 
 """Initial-state preparation and block-mixer utilities.
 
-Provides an :class:`InitialState` base class and concrete implementations
+Provides an :class:`~divi.qprog.algorithms.InitialState` base class and concrete implementations
 consumed by QAOA, VQE, TimeEvolution, and any future algorithm that
 prepends an initial-state layer to its circuit.
 

@@ -1,19 +1,34 @@
 Backends Guide
 ==============
 
-Divi provides a flexible backend system that allows you to run quantum programs on different execution environments, from local simulators to cloud-based quantum hardware. This guide will walk you through the available backends and how to choose the right one for your needs.
+Divi's execution layer is built around :class:`~divi.backends.CircuitRunner`: every backend exposes the same submission API so programs can swap simulators or the cloud service without changing algorithm code. This guide covers the bundled runners, :class:`~divi.backends.ExecutionResult`, and Qoro job configuration.
 
 Backend Architecture
 --------------------
 
-All backends in Divi implement the :class:`CircuitRunner` interface, providing a consistent API regardless of the underlying execution environment. This powerful abstraction allows you to develop your quantum programs locally and then switch to a different backend—like cloud hardware—with a single line of code.
+All backends in Divi implement the :class:`~divi.backends.CircuitRunner` interface, providing a consistent API regardless of the underlying execution environment. This powerful abstraction allows you to develop your quantum programs locally and then switch to a different backend, like cloud hardware, with a single line of code.
 
 Understanding ExecutionResult
 ------------------------------
 
-All backend :meth:`submit_circuits` methods return an :class:`ExecutionResult` object, which provides a unified interface for handling both synchronous and asynchronous execution.
+All backend :meth:`~divi.backends.CircuitRunner.submit_circuits` methods return an :class:`~divi.backends.ExecutionResult` object, which provides a unified interface for handling both synchronous and asynchronous execution.
 
-**For Synchronous Backends** (like :class:`MaestroSimulator` and :class:`QiskitSimulator`):
+**Result Format:**
+   The ``results`` attribute is a list of dictionaries, each containing:
+
+   - ``label`` (str): The circuit label from your input dictionary
+   - ``results`` (dict): The execution results (bitstring counts for sampling mode, or expectation values for expectation mode)
+
+   Example:
+
+   .. code-block:: python
+
+      [
+          {"label": "circuit_0", "results": {"00": 500, "11": 500}},
+          {"label": "circuit_1", "results": {"01": 1000}}
+      ]
+
+**For Synchronous Backends** (like :class:`~divi.backends.MaestroSimulator` and :class:`~divi.backends.QiskitSimulator`):
    Results are available immediately after submission:
 
    .. code-block:: python
@@ -29,7 +44,7 @@ All backend :meth:`submit_circuits` methods return an :class:`ExecutionResult` o
           counts = circuit_result["results"]
           print(f"{label}: {counts}")
 
-**For Asynchronous Backends** (like :class:`QoroService`):
+**For Asynchronous Backends** (like :class:`~divi.backends.QoroService`):
    For cloud-based backends, you need to wait for the job to complete and then fetch the results:
 
    .. code-block:: python
@@ -51,38 +66,23 @@ All backend :meth:`submit_circuits` methods return an :class:`ExecutionResult` o
           counts = circuit_result["results"]
           print(f"{label}: {counts}")
 
-**Note:** When using high-level algorithms like :class:`VQE` or :class:`QAOA`, you don't interact with :class:`ExecutionResult` directly — the algorithm handles submission and result fetching. The examples above show the patterns for when you call ``submit_circuits`` yourself.
-
-**Result Format:**
-   The ``results`` attribute is a list of dictionaries, each containing:
-
-   - ``label`` (str): The circuit label from your input dictionary
-   - ``results`` (dict): The execution results (bitstring counts for sampling mode, or expectation values for expectation mode)
-
-   Example:
-
-   .. code-block:: python
-
-      [
-          {"label": "circuit_0", "results": {"00": 500, "11": 500}},
-          {"label": "circuit_1", "results": {"01": 1000}}
-      ]
+**Note:** When using high-level algorithms such as :class:`~divi.qprog.algorithms.VQE` or :class:`~divi.qprog.algorithms.QAOA`, you do not handle :class:`~divi.backends.ExecutionResult` yourself; the :doc:`circuit pipeline <pipelines>` submits circuits and collects results. The examples above are for direct :meth:`~divi.backends.CircuitRunner.submit_circuits` use.
 
 Available Backends
 ------------------
 
-Divi comes with three primary backends out of the box:
+Divi ships three :class:`~divi.backends.CircuitRunner` implementations:
 
-* :class:`MaestroSimulator` — A high-performance local simulator, recommended as the default for development and testing.
-* :class:`QiskitSimulator` — A convenience wrapper around Qiskit's ``AerSimulator`` with simplified noise modeling and thread-count control. Use this when you need noisy simulation.
-* :class:`QoroService` — A cloud-based quantum computing service for accessing powerful simulators and real quantum hardware.
+* :class:`~divi.backends.MaestroSimulator` — A high-performance local simulator, recommended as the default for development and testing.
+* :class:`~divi.backends.QiskitSimulator` — A convenience wrapper around Qiskit's ``AerSimulator`` with simplified noise modeling and thread-count control. Use this when you need noisy simulation.
+* :class:`~divi.backends.QoroService` — A cloud-based quantum computing service for accessing powerful simulators and real quantum hardware.
 
 Let's dive into each one.
 
 MaestroSimulator
 -----------------
 
-The :class:`MaestroSimulator` is the recommended backend for local development, testing, and research. It is powered by Qoro's C++ quantum simulator (``qoro-maestro``) and provides fast, accurate simulation with automatic Statevector-to-MPS fallback for larger circuits.
+:class:`~divi.backends.MaestroSimulator` is the recommended runner for local development, testing, and research. It is powered by Qoro's C++ quantum simulator (``qoro-maestro``) and provides fast, accurate simulation with automatic Statevector-to-MPS fallback for larger circuits.
 
 **Key Features:**
 
@@ -112,7 +112,7 @@ Getting Started
 QiskitSimulator
 ------------------
 
-The :class:`QiskitSimulator` is a convenience wrapper around Qiskit's ``AerSimulator`` with simplified thread-count control and noise configuration. Use it when you need to model realistic hardware noise — for example, when developing error mitigation strategies or benchmarking algorithm robustness.
+:class:`~divi.backends.QiskitSimulator` wraps Qiskit's ``AerSimulator`` with simplified thread-count control and noise configuration. Use it when you need to model realistic hardware noise - for example, when developing error mitigation strategies or benchmarking algorithm robustness.
 
 
 Examples
@@ -141,7 +141,7 @@ Examples
 QoroService
 ------------
 
-The :class:`QoroService` provides access to cloud-based quantum computing resources, including advanced simulation (tensor networks and more) and real quantum hardware. It supports **sampling mode** (measurement counts) and **expectation mode** (Pauli expectation values, simulation-only). Circuit packing (``JobConfig.use_circuit_packing``) can batch circuits for efficiency.
+:class:`~divi.backends.QoroService` talks to the Qoro cloud API: advanced simulators, tensor-network options, and real QPUs. It supports **sampling mode** (measurement counts) and **expectation mode** (Pauli expectation values, simulation-only). Circuit packing (:attr:`~divi.backends.JobConfig.use_circuit_packing`) can batch circuits for efficiency.
 
 Submitting and Monitoring Jobs
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -169,14 +169,14 @@ Submitting and Monitoring Jobs
 
 .. note::
 
-   **Bitstring Ordering**: :class:`QoroService` returns bitstrings in **Little Endian** ordering (least significant bit first, rightmost bit is qubit 0), but Hamiltonian operators passed via the ``ham_ops`` parameter should follow **Big Endian** ordering (most significant bit first, leftmost bit is qubit 0). For example, a 4-qubit system with qubits labeled 0-3: the bitstring ``"0011"`` in results represents qubit 0=1, qubit 1=1, qubit 2=0, qubit 3=0 (reading right to left), while the Hamiltonian operator ``"ZIZI"`` applies Z to qubit 0, I to qubit 1, Z to qubit 2, and I to qubit 3 (reading left to right).
+   **Bitstring Ordering**: :class:`~divi.backends.QoroService` returns bitstrings in **Little Endian** ordering (least significant bit first, rightmost bit is qubit 0), but Hamiltonian operators passed via the ``ham_ops`` parameter should follow **Big Endian** ordering (most significant bit first, leftmost bit is qubit 0). For example, a 4-qubit system with qubits labeled 0-3: the bitstring ``"0011"`` in results represents qubit 0=1, qubit 1=1, qubit 2=0, qubit 3=0 (reading right to left), while the Hamiltonian operator ``"ZIZI"`` applies Z to qubit 0, I to qubit 1, Z to qubit 2, and I to qubit 3 (reading left to right).
 
-Configuring Jobs with :class:`JobConfig`
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Configuring Jobs with JobConfig
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The :class:`QoroService` uses a :class:`JobConfig` object to manage settings for job submissions. You can configure it in two ways:
+The :class:`~divi.backends.QoroService` uses a :class:`~divi.backends.JobConfig` object to manage settings for job submissions. You can configure it in two ways:
 
-1.  **Default Configuration**: Set a default :class:`JobConfig` when you initialize the service. This configuration will apply to all jobs unless you override it.
+1.  **Default Configuration**: Set a default :class:`~divi.backends.JobConfig` when you initialize the service. This configuration will apply to all jobs unless you override it.
 2.  **Override Configuration**: For a specific job, you can provide an ``override_job_config`` to the ``submit_circuits`` method.
 
 .. code-block:: python
@@ -203,6 +203,8 @@ You can also update the service's default configuration after construction:
 
 .. code-block:: python
 
+   from divi.backends import ExecutionConfig, JobConfig
+
    # Update the service's default job configuration
    service.job_config = JobConfig(shots=2000, simulator_cluster="qoro_maestro")
 
@@ -217,10 +219,10 @@ Execution Configuration
 ^^^^^^^^^^^^^^^^^^^^^^^
 
 Control the simulator backend, simulation method, bond dimension, and runtime
-metadata for your jobs using :class:`ExecutionConfig`. Like :class:`JobConfig`,
+metadata for your jobs using :class:`~divi.backends.ExecutionConfig`. Like :class:`~divi.backends.JobConfig`,
 you can configure it in two ways:
 
-1.  **Default Configuration**: Set a default :class:`ExecutionConfig` when you initialize the service. This configuration will apply to all jobs unless you override it.
+1.  **Default Configuration**: Set a default :class:`~divi.backends.ExecutionConfig` when you initialize the service. This configuration will apply to all jobs unless you override it.
 2.  **Per-submission Override**: Pass an ``execution_config`` to ``submit_circuits`` to override the default for a single job. Non-None fields in the override take precedence.
 
 .. code-block:: python
@@ -263,7 +265,7 @@ replaces the previous execution configuration for that job.
 
    The ``bond_dimension`` field is subject to tier-based caps. Free-tier users are limited to a maximum of 32. Exceeding the cap returns a ``403 Forbidden`` error.
 
-The ``api_meta`` field accepts a dictionary of runtime pass-through metadata. See the API reference for the full list of allowed keys (e.g. ``optimization_level``, ``resilience_level``, ``max_execution_time``).
+The ``api_meta`` field accepts runtime pass-through metadata. Allowed keys are documented on :class:`~divi.backends.ExecutionConfig` in :doc:`../api_reference/backends` (e.g. ``optimization_level``, ``resilience_level``, ``max_execution_time``).
 
 .. _Backend Selection Guide:
 
@@ -272,9 +274,9 @@ Backend Selection Guide
 
 Choosing the right backend depends on what stage of development you're in.
 
-* **For Development and Testing**, use :class:`MaestroSimulator`. For noisy simulation, use :class:`QiskitSimulator` with Qiskit noise models.
-* **For Production Runs**, use :class:`QoroService` for cloud simulation, real quantum hardware, and scalable execution.
-* **For Research**, start with :class:`MaestroSimulator` for prototyping, then use :class:`QoroService` for validation against real hardware.
+* **For Development and Testing**, use :class:`~divi.backends.MaestroSimulator` for exact noiseless simulation. For device noise models, use :class:`~divi.backends.QiskitSimulator` with Qiskit noise models.
+* **For Production Runs**, use :class:`~divi.backends.QoroService` for cloud simulation, real quantum hardware, and scalable execution.
+* **For Research**, start with :class:`~divi.backends.MaestroSimulator` for prototyping, then use :class:`~divi.backends.QoroService` for validation against real hardware.
 
 Backend Comparison
 ------------------
@@ -285,9 +287,9 @@ Backend Comparison
    :stub-columns: 1
 
    * - Feature
-     - MaestroSimulator
-     - QiskitSimulator
-     - QoroService
+     - :class:`~divi.backends.MaestroSimulator`
+     - :class:`~divi.backends.QiskitSimulator`
+     - :class:`~divi.backends.QoroService`
    * - **Use Case**
      - Default local simulation
      - Noisy simulation
@@ -308,24 +310,24 @@ Backend Comparison
 Depth Tracking
 --------------
 
-All backends support ``track_depth=True`` to record circuit depths across submissions:
+All backends accept ``track_depth=True`` on construction to record per-batch depths on :class:`~divi.backends.CircuitRunner`. After submissions, use :meth:`~divi.backends.CircuitRunner.average_depth`, :meth:`~divi.backends.CircuitRunner.std_depth`, and :meth:`~divi.backends.CircuitRunner.clear_depth_history` as needed.
 
 .. code-block:: python
 
    backend = MaestroSimulator(track_depth=True)
-   # After running: backend.average_depth(), backend.std_depth()
 
-Common Issues and Solutions
----------------------------
+Operational notes
+-----------------
 
-* **Slow MaestroSimulator at >22 qubits**: The auto-MPS threshold handles this automatically. If you need to tune it, set ``mps_qubit_threshold`` or explicitly use ``simulation_type="MatrixProductState"`` with a suitable ``max_bond_dimension``.
-* **Slow QiskitSimulator**: Increase ``n_processes`` or reduce ``shots``.
-* **High memory usage with QiskitSimulator**: Reduce ``n_processes`` or ``shots``.
-* **Non-reproducible results**: :class:`MaestroSimulator` does not yet support seeded sampling. Use :class:`QiskitSimulator` with ``simulation_seed`` when you need exact reproducibility.
-* **Job queue delays on QoroService**: Use local simulation for development; submit cloud jobs during off-peak hours.
+* **MaestroSimulator and many qubits**: With ``simulation_type=None``, circuits wider than ``mps_qubit_threshold`` (default 22) switch to **MatrixProductState** so a full statevector is not stored. That changes memory and runtime scaling; it is not a generic “make it faster” switch. Override with ``mps_qubit_threshold``, ``simulation_type``, or ``max_bond_dimension`` as needed.
+* **QiskitSimulator**: ``n_processes`` and ``shots`` trade throughput, memory, and statistical noise; there is no single knob—balance them for your machine and accuracy needs.
+* **Shot reproducibility**: :meth:`~divi.backends.MaestroSimulator.set_seed` is currently a no-op (the C++ engine does not expose sampling seeds yet). For reproducible shots through Aer, use :class:`~divi.backends.QiskitSimulator` with ``simulation_seed``.
+* **QoroService latency**: Client-side wait time is dominated by how you poll; tune ``polling_interval`` and ``max_retries`` on :class:`~divi.backends.QoroService`. For fast inner loops, use a local simulator; cloud queue time is outside the client library.
 
 Next Steps
 ----------
 
-* Try the runnable examples in the `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ directory.
-* Learn about :doc:`improving_results_qem` for improving your results on noisy hardware.
+* `tutorials/qasm_thru_service.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/qasm_thru_service.py>`_ and `tutorials/backend_properties_conversion.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/backend_properties_conversion.py>`_ — Qoro submission and backend-from-metadata workflows
+* :doc:`../api_reference/backends` — full ``CircuitRunner``, ``JobConfig``, and ``ExecutionConfig`` reference
+* :doc:`pipelines` — how programs drive backends through the pipeline
+* :doc:`improving_results_qem` — error mitigation on noisy hardware

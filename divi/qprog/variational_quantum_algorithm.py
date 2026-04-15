@@ -237,21 +237,21 @@ class VariationalQuantumAlgorithm(QuantumProgram):
     5. Iterating until convergence
 
     Attributes:
-        _losses_history (list[dict]): History of loss values during optimization.
-        _param_history (list[npt.NDArray]): Raw per-callback parameter batches;
+        _losses_history: History of loss values during optimization.
+        _param_history: Raw per-callback parameter batches;
             use :meth:`param_history` to read copies with optional filtering.
-        _final_params (npt.NDArray[np.float64]): Final optimized parameters.
-        _best_params (npt.NDArray[np.float64]): Parameters that achieved the best loss.
+        _final_params: Final optimized parameters.
+        _best_params: Parameters that achieved the best loss.
         _best_loss (float): Best loss achieved during optimization.
-        _circuits (list[Circuit]): Generated quantum circuits.
+        _circuits: Generated quantum circuits.
         _total_circuit_count (int): Total number of circuits executed.
         _total_run_time (float): Total execution time in seconds.
-        _seed (int | None): Random seed for parameter initialization.
-        _rng (np.random.Generator): Random number generator.
+        _seed: Random seed for parameter initialization.
+        _rng: Random number generator.
 
-        _grouping_strategy (str): Strategy for grouping quantum operations.
-        _qem_protocol (QEMProtocol): Quantum error mitigation protocol.
-        _cancellation_event (Event | None): Event for graceful termination.
+        _grouping_strategy: Strategy for grouping quantum operations.
+        _qem_protocol: Quantum error mitigation protocol.
+        _cancellation_event: Event for graceful termination.
         _meta_circuit_factories (dict): Lazily-built mapping of circuit names to MetaCircuit factories.
     """
 
@@ -299,7 +299,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 QASM sizes manageable. Consider reducing precision if you need to minimize
                 data transfer overhead, or increase it only if you require higher numerical
                 precision in your circuit parameters.
-            decode_solution_fn (callable[[str], Any] | None): Function to decode bitstrings
+            decode_solution_fn: Function to decode bitstrings
                 into problem-specific solution representations. Called during final computation
                 and when `get_top_solutions(include_decoded=True)` is used. The function should
                 take a binary string (e.g., "0101") and return a decoded representation
@@ -1141,12 +1141,12 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         if max_iterations != self.max_iterations:
             self.max_iterations = max_iterations
 
-        # Warn if max_iterations is less than current_iteration (regardless of how it was set)
-        if self.max_iterations < self.current_iteration:
+        if self.max_iterations <= self.current_iteration:
             warn(
-                f"max_iterations ({self.max_iterations}) is less than current_iteration "
-                f"({self.current_iteration}). The optimization will not run additional "
-                f"iterations since the maximum has already been reached.",
+                f"max_iterations ({self.max_iterations}) is less than or equal to "
+                f"current_iteration ({self.current_iteration}). The optimization will "
+                f"not run additional iterations since the maximum has already been "
+                f"reached.",
                 UserWarning,
             )
 

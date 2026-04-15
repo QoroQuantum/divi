@@ -399,7 +399,7 @@ def scan_1d(
     The scan is constructed by taking a center point in parameter space and a
     direction vector, then evaluating the program's cost function at evenly
     spaced offsets along that line. Internally, the scan uses
-    :meth:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm._evaluate_cost_param_sets`
+    :meth:`~divi.qprog.VariationalQuantumAlgorithm._evaluate_cost_param_sets`
     directly, so it reuses the program's normal batched evaluation path instead
     of going through ``run()``.
 
@@ -427,7 +427,7 @@ def scan_1d(
             uses ``program.reporter`` if present, otherwise
             :class:`~divi.reporting.LoggingProgressReporter`. Start/finish messages
             are emitted around the single batched evaluation (same pattern as
-            :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm.run`).
+            :class:`~divi.qprog.VariationalQuantumAlgorithm.run`).
     Returns:
         Scan1DResult: Object containing offsets, sampled loss values, the
         concrete parameter sets that were evaluated, and plotting helpers.
@@ -820,7 +820,7 @@ def scan_interp_2d(
 ) -> Scan2DResult:
     """Two-dimensional interpolation scan between two parameter vectors.
 
-    The x-direction is the vector ``theta_2 - theta_1`` (un-normalized), so
+    The x-direction is the unnormalized vector ``theta_2 - theta_1``, so
     offset ``t = 0`` corresponds to *theta_1* and ``t = 1`` to *theta_2*.  The
     y-direction is orthogonal to the interpolation vector and may be supplied or
     generated randomly.  This is the orqviz ``perform_2D_interpolation`` pattern.

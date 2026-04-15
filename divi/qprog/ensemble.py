@@ -35,6 +35,8 @@ from divi.reporting import (
     queue_listener,
 )
 
+__all__ = ["BatchConfig", "BatchMode", "ProgramEnsemble"]
+
 
 def _default_task_function(program: QuantumProgram):
     return program.run()
@@ -790,9 +792,9 @@ class ProgramEnsemble(ABC):
 
         Args:
             n (int): Number of top solutions to return. Must be >= 1.
-            beam_width (int | None): Beam search width. Internally bumped
+            beam_width: Beam search width. Internally bumped
                 to at least ``n`` so the beam retains enough candidates.
-            n_partition_candidates (int | None): Candidates per partition.
+            n_partition_candidates: Candidates per partition.
                 Defaults to ``beam_width``.
 
         Returns:

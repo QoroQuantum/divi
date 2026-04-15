@@ -3,38 +3,48 @@ Core Concepts
 
 This guide explains the fundamental concepts and architecture that make Divi work. Understanding these concepts will help you use Divi more effectively and build custom quantum algorithms.
 
-The :class:`QuantumProgram` Base Class
---------------------------------------
+.. note::
+   For complete API documentation of all properties and methods, see :doc:`../api_reference/qprog/index`.
 
-All quantum algorithms in Divi inherit from the abstract base class :class:`QuantumProgram`, which provides a streamlined interface for all quantum programs. Its primary role is to establish a common structure for executing circuits and managing backend communication.
+The :class:`~divi.qprog.QuantumProgram` Base Class
+--------------------------------------------------
+
+All quantum algorithms in Divi inherit from the abstract base class
+:class:`~divi.qprog.QuantumProgram`, which provides the common runtime model for
+program execution. In practice, this means coordinating a circuit pipeline
+(*expand → execute → reduce*) and handling backend communication through one
+consistent interface.
 
 **Core Features:**
 
-- **Backend Integration** 🔗 - Unified interface for simulators and hardware
-- **Execution Lifecycle** 🔄 - Standardized methods for running programs
-- **Result Handling** 📊 - A common structure for processing backend results
-- **Error Handling** 🛡️ - Graceful handling of execution failures
+- **Pipeline-Oriented Execution** — Structured *expand → execute → reduce* flow
+- **Backend Integration** — Unified interface for simulators and hardware
+- **Result Handling** — A common structure for aggregating and processing results
+- **Error Handling** — Graceful handling of execution failures
 
 **Key Properties:**
 
 - ``total_circuit_count`` - Total circuits executed so far
 - ``total_run_time`` - Cumulative execution time in seconds
 
-The :class:`VariationalQuantumAlgorithm` Class
-----------------------------------------------
+The :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm` Class
+----------------------------------------------------------------------------------------
 
-For algorithms that rely on optimizing parameters, Divi provides the :class:`VariationalQuantumAlgorithm` class. This is the base class for algorithms like :class:`VQE` and :class:`QAOA`, and it extends :class:`QuantumProgram` with advanced features for optimization and result tracking.
-
-.. note::
-   For complete API documentation of all properties and methods, see :doc:`../api_reference/qprog`.
+For algorithms that rely on optimizing parameters, Divi provides the
+:class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm`
+class. This is the base class for algorithms like
+:class:`~divi.qprog.algorithms.VQE` and :class:`~divi.qprog.algorithms.QAOA`,
+and it extends :class:`~divi.qprog.QuantumProgram` with optimization logic,
+history tracking, and convergence-aware execution on top of the same pipeline
+foundation.
 
 Every variational quantum program in Divi follows a consistent lifecycle:
 
-1. **Initialization** 🎯 - Set up your problem and algorithm parameters
-2. **Circuit Generation** ⚡ - Create quantum circuits from your problem specification
-3. **Optimization** 🔄 - Iteratively improve parameters to minimize cost functions
-4. **Execution** 🚀 - Run circuits on quantum backends
-5. **Result Processing** 📊 - Extract and analyze final results
+1. **Initialization** — Set up your problem, ansatz, optimizer, and backend
+2. **Expansion** — Generate circuit/evaluation work from the current parameters
+3. **Execution** — Run expanded work on the selected backend
+4. **Reduction** — Aggregate backend outputs into objective values and metrics
+5. **Optimization Loop** — Update parameters and repeat until stopping criteria are met
 
 .. note::
    Internally, steps 2–5 are orchestrated by a **circuit pipeline** that uses an
@@ -42,15 +52,21 @@ Every variational quantum program in Divi follows a consistent lifecycle:
    directly when using built-in algorithms, but understanding it enables powerful
    customization. See :doc:`pipelines` for a deep dive.
 
-Here's how a typical :class:`VQE` program flows through this lifecycle:
+Here's how a typical :class:`~divi.qprog.algorithms.VQE` program flows through this lifecycle:
 
 .. code-block:: python
 
+   import numpy as np
+   import pennylane as qml
    from divi.qprog import VQE, HartreeFockAnsatz
    from divi.backends import MaestroSimulator
    from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
 
    # 1. Initialization - Define your quantum problem
+   molecule = qml.qchem.Molecule(
+       symbols=["H", "H"],
+       coordinates=np.array([[0.0, 0.0, -0.6614], [0.0, 0.0, 0.6614]]),
+   )
    vqe = VQE(
        molecule=molecule,           # Your molecular system
        ansatz=HartreeFockAnsatz(),  # Quantum circuit template
@@ -60,37 +76,151 @@ Here's how a typical :class:`VQE` program flows through this lifecycle:
        seed=42                      # For reproducibility
    )
 
-   # 2. Circuit Generation - Automatically creates circuits
-   # (happens internally during run())
+   # 2-5. Expansion, execution, reduction, and parameter update
+   # happen inside run() on each optimization iteration.
+   vqe.run()
 
-   # 3. Optimization - Iteratively improve parameters
-   vqe.run()  # This handles steps 2-5 automatically!
-
-   # 4. Execution & 5. Result Processing - All done!
    print(f"Ground state energy: {vqe.best_loss:.6f}")
+
+**Key Features:**
+
+- **Parameter Handling** — Initializes parameter sets and enforces optimizer-specific shapes
+- **Optimizer Integration** — Drives :class:`~divi.qprog.optimizers.Optimizer` instances through a consistent callback loop
+- **History Surfaces** — Exposes ``losses_history``, ``param_history(...)``, and ``min_losses_per_iteration`` for analysis and visualization
+- **Best-vs-Final Tracking** — Separately stores ``best_params`` / ``best_loss`` and ``final_params`` for robust post-run inspection
+- **Early-Stopping Controllers** — Accepts :class:`~divi.qprog.early_stopping.EarlyStopping` and reports :class:`~divi.qprog.early_stopping.StopReason`
+- **Checkpoint/Resume Support** — Supports :class:`~divi.qprog.checkpointing.CheckpointConfig` in ``run(...)`` and state recovery via ``load_state(...)`` (see :doc:`resuming_long_runs` and :doc:`../api_reference/qprog/checkpointing`)
+
+**Key Properties:**
+
+The most commonly accessed properties for result analysis:
+
+- ``best_loss`` - The best (lowest) loss value found during optimization
+- ``best_params`` - The parameters that achieved ``best_loss`` (may differ from final parameters)
+- ``final_params`` - The parameters from the last optimization iteration
+- ``min_losses_per_iteration`` - Convenience property returning minimum loss per iteration
+
+.. note::
+   **Understanding best vs final parameters:**
+   Compare
+   :attr:`~divi.qprog.VariationalQuantumAlgorithm.best_params`
+   and
+   :attr:`~divi.qprog.VariationalQuantumAlgorithm.final_params`.
+   During optimization, Divi tracks the best loss value found across all
+   iterations.
+   :attr:`~divi.qprog.VariationalQuantumAlgorithm.best_params` contains the
+   parameters that achieved this best loss, while
+   :attr:`~divi.qprog.VariationalQuantumAlgorithm.final_params` contains the
+   parameters from the final iteration.
+   These may differ if the optimizer explores away from the best solution.
+   For full property details, see
+   :class:`~divi.qprog.VariationalQuantumAlgorithm`.
+
+Variational Run Controls and Outputs
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For deeper variational workflow details, use these focused guides:
+
+- :doc:`optimizers` for optimizer behavior, early stopping, and
+  ``run(initial_params=...)`` usage
+- :doc:`resuming_long_runs` for checkpointing and state restore patterns
+- :doc:`visualization` for visualizing optimization trajectories, loss
+  landscapes, and related diagnostics based on ``losses_history`` and
+  ``param_history(...)``
+- :doc:`program_ensembles` for multi-run orchestration and sweep-style workflows
+
+**Inspecting Run State:**
+
+.. code-block:: python
+
+   # Access execution statistics
+   print(f"Circuits executed: {vqe.total_circuit_count}")
+   print(f"Total runtime: {vqe.total_run_time:.2f}s")
+
+   # Examine optimization history
+   for i, best_loss in enumerate(vqe.min_losses_per_iteration):
+       print(f"Iteration {i}: {best_loss:.6f}")
+
+   # Get the best parameters found during optimization
+   best_params = vqe.best_params
+
+**Warm-Starting and Pre-Training**
+   For warm-starting or pre-training routines where you don't need final solution extraction,
+   you can skip the final computation step:
+
+   .. invisible-code-block: python
+
+      vqe = VQE(molecule=molecule, ansatz=HartreeFockAnsatz(), n_layers=2,
+                backend=MaestroSimulator(), optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA), seed=42)
+
+   .. code-block:: python
+
+      import numpy as np
+      from divi.qprog.optimizers import MonteCarloOptimizer
+
+      # Run optimization without final probability computation
+      vqe.run(perform_final_computation=False)
+
+      # Extract best parameters for reuse
+      best_params = vqe.best_params  # Shape: (n_params,)
+
+      # Reuse parameters in a new run with the same optimizer configuration
+      vqe2 = VQE(molecule=molecule, n_layers=2, backend=MaestroSimulator(),
+                 optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA))
+      vqe2.run(
+          initial_params=best_params.reshape(1, -1),
+          perform_final_computation=False,
+      )
+
+      # If using a different optimizer, adapt to expected shape
+      # For example, MonteCarloOptimizer expects (n_param_sets, n_params)
+      optimizer = MonteCarloOptimizer(population_size=10)
+      vqe3 = VQE(molecule=molecule, optimizer=optimizer, n_layers=2, backend=MaestroSimulator())
+      expected_shape = vqe3.get_expected_param_shape()  # (10, n_params)
+      # Replicate best_params to match optimizer's n_param_sets
+      adapted_params = np.tile(best_params, (expected_shape[0], 1))
+      vqe3.run(
+          initial_params=adapted_params,
+          perform_final_computation=False,
+      )
+
+      # When you need the solution probabilities, run with final computation:
+      vqe4 = VQE(molecule=molecule, n_layers=2, backend=MaestroSimulator(),
+                 optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA))
+      vqe4.run(initial_params=best_params.reshape(1, -1))
 
 Analyzing Solution Distributions
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-After running optimization with any variational quantum algorithm, you can analyze the probability distribution of solutions using the :meth:`get_top_solutions` method. This is particularly useful for understanding solution quality and exploring alternative solutions beyond the single best one.
+After running optimization with any variational quantum algorithm, you can
+analyze the probability distribution of solutions using the
+:meth:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm.get_top_solutions`
+method. This is particularly useful for understanding solution quality and
+exploring alternative solutions beyond the single best one.
 
-The method returns a list of :class:`SolutionEntry` objects, each containing:
+The method returns a list of :class:`~divi.qprog.SolutionEntry` objects, each
+containing:
 - ``bitstring``: The solution bitstring (raw measurement result)
 - ``prob``: The probability of measuring this solution
 - ``decoded``: The decoded solution (if ``include_decoded=True``)
 
-Solutions are sorted by probability (descending), with lexicographic tie-breaking for deterministic ordering.
+Solutions are sorted by probability (descending), with lexicographic
+tie-breaking for deterministic ordering.
 
 **Decoding Solutions**
 
-By default, solutions are returned as raw bitstrings. However, many algorithms provide a ``decode_solution_fn`` parameter that converts bitstrings into problem-specific formats:
+By default, solutions are returned as raw bitstrings. However, many algorithms
+provide a ``decode_solution_fn`` parameter that converts bitstrings into
+problem-specific formats:
 
-- :class:`QAOA` with QUBO problems: Bitstrings are automatically decoded to NumPy arrays
-- :class:`QAOA` with graph problems: Bitstrings are decoded to lists of node indices
-- :class:`VQE`: Bitstrings represent eigenstates (typically used as-is)
+- :class:`~divi.qprog.algorithms.QAOA` with QUBO problems: Bitstrings are automatically decoded to NumPy arrays
+- :class:`~divi.qprog.algorithms.QAOA` with graph problems: Bitstrings are decoded to lists of node indices
+- :class:`~divi.qprog.algorithms.VQE`: Bitstrings represent eigenstates (typically used as-is)
 - **Custom decoders**: You can provide your own decoding function when creating the algorithm
 
-Set ``include_decoded=True`` when calling :meth:`get_top_solutions` to include decoded solutions in the results.
+Set ``include_decoded=True`` when calling
+:meth:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm.get_top_solutions`
+to include decoded solutions in the results.
 
 **Example**
 
@@ -104,7 +234,7 @@ Set ``include_decoded=True`` when calling :meth:`get_top_solutions` to include d
    from divi.backends import MaestroSimulator
 
    # Create a QUBO problem
-   bqm = dimod.generators.gnp_random_bqm(10, 0.5, vartype="BINARY", seed=1997)
+   bqm = dimod.generators.gnp_random_bqm(10, 0.5, vartype="BINARY", random_state=1997)
    qubo_array = bqm.to_numpy_matrix()
 
    qaoa_problem = QAOA(
@@ -112,7 +242,7 @@ Set ``include_decoded=True`` when calling :meth:`get_top_solutions` to include d
        n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        max_iterations=10,
-       backend=MaestroSimulator(shots=10000),
+       backend=MaestroSimulator(shots=5000),
    )
 
    qaoa_problem.run()
@@ -138,87 +268,12 @@ Set ``include_decoded=True`` when calling :meth:`get_top_solutions` to include d
    for sol in decoded_solutions:
        print(f"Bitstring: {sol.bitstring}, Decoded: {sol.decoded}")
 
-**Key Features:**
-
-- **Parameter Management** ⚙️ - Automatic initialization and validation of parameters
-- **Optimization Loop** 🔄 - Built-in integration with classical optimizers
-- **Loss Tracking** 📈 - Detailed history of loss values during optimization
-- **Best Result Storage** 💾 - Automatic tracking of the best parameters and loss value found
-- **Early Stopping** 🛑 - Configurable criteria to terminate optimization when convergence stalls (see :doc:`optimizers`)
-
-**Key Properties:**
-
-The most commonly accessed properties for result analysis:
-
-- ``best_loss`` - The best (lowest) loss value found during optimization
-- ``best_params`` - The parameters that achieved ``best_loss`` (may differ from final parameters)
-- ``final_params`` - The parameters from the last optimization iteration
-- ``min_losses_per_iteration`` - Convenience property returning minimum loss per iteration
-
-.. note::
-   **Understanding ``best_params`` vs ``final_params``**: During optimization, Divi tracks the best
-   loss value found across all iterations. ``best_params`` contains the parameters that achieved
-   this best loss, while ``final_params`` contains the parameters from the final iteration.
-   These may differ if the optimizer explores away from the best solution.
-
-**Advanced Usage:**
-
-.. code-block:: python
-
-   # Access execution statistics
-   print(f"Circuits executed: {vqe.total_circuit_count}")
-   print(f"Total runtime: {vqe.total_run_time:.2f}s")
-
-   # Examine optimization history
-   for i, best_loss in enumerate(vqe.min_losses_per_iteration):
-       print(f"Iteration {i}: {best_loss:.6f}")
-
-   # Get the best parameters found during optimization
-   best_params = vqe.best_params
-
-**Warm-Starting and Pre-Training** 🔄
-   For warm-starting or pre-training routines where you don't need final solution extraction,
-   you can skip the final computation step:
-
-   .. code-block:: python
-
-      import numpy as np
-      from divi.qprog.optimizers import MonteCarloOptimizer
-
-      # Run optimization without final probability computation
-      vqe.run(perform_final_computation=False)
-
-      # Extract best parameters for reuse
-      best_params = vqe.best_params  # Shape: (n_params,)
-
-      # Reuse parameters in a new run with the same optimizer configuration
-      vqe2 = VQE(molecule=molecule)
-      vqe2.run(
-          initial_params=best_params.reshape(1, -1),
-          perform_final_computation=False,
-      )
-
-      # If using a different optimizer, adapt to expected shape
-      # For example, MonteCarloOptimizer expects (n_param_sets, n_params)
-      optimizer = MonteCarloOptimizer(population_size=10)
-      vqe3 = VQE(molecule=molecule, optimizer=optimizer)
-      expected_shape = vqe3.get_expected_param_shape()  # (10, n_params)
-      # Replicate best_params to match optimizer's n_param_sets
-      adapted_params = np.tile(best_params, (expected_shape[0], 1))
-      vqe3.run(
-          initial_params=adapted_params,
-          perform_final_computation=False,
-      )
-
-      # When you need the solution probabilities, run with final computation:
-      vqe.run()  # This will perform final computation with best_params
-
 Circuit Architecture
 --------------------
 
 Divi uses a two-tier circuit system for maximum efficiency:
 
-:class:`MetaCircuit` 🏗️
+:class:`~divi.circuits.MetaCircuit`
    Symbolic circuit templates with parameters. You provide a PennyLane
    :class:`~pennylane.tape.QuantumScript` (one measurement) and an array of
    sympy symbols; the circuit body is converted to OpenQASM once and reused:
@@ -244,12 +299,12 @@ Divi uses a two-tier circuit system for maximum efficiency:
       # Create the logical circuit template (QASM is computed in __post_init__)
       meta_circuit = MetaCircuit(source_circuit=tape, symbols=symbols)
 
-   When you run algorithms like :class:`VQE` or :class:`QAOA`, the pipeline creates
-   :class:`MetaCircuit`\ s and binds parameter values to produce concrete OpenQASM
+   When you run algorithms like :class:`~divi.qprog.algorithms.VQE` or :class:`~divi.qprog.algorithms.QAOA`, the pipeline creates
+   :class:`~divi.circuits.MetaCircuit`\ s and binds parameter values to produce concrete OpenQASM
    circuits that are submitted to the backend.
 
-Concrete circuits ⚡
-   The pipeline turns :class:`MetaCircuit` batches into keyed OpenQASM strings (label
+Concrete circuits
+   The pipeline turns :class:`~divi.circuits.MetaCircuit` batches into keyed OpenQASM strings (label
    → QASM) and passes them to the backend. Parameter binding, measurement grouping,
    and optional error-mitigation stages happen inside the pipeline; see :doc:`pipelines`
    for details.
@@ -257,13 +312,21 @@ Concrete circuits ⚡
 Creating Custom Quantum Circuits
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-In Divi, built-in algorithms like :class:`VQE`, :class:`QAOA`, and
-:class:`TimeEvolution` generate quantum circuits automatically — you don't need to
+In Divi, built-in algorithms like :class:`~divi.qprog.algorithms.VQE`, :class:`~divi.qprog.algorithms.QAOA`, and
+:class:`~divi.qprog.algorithms.TimeEvolution` generate quantum circuits automatically - you don't need to
 create circuits manually for most use cases.
 
-If you need a **custom ansatz or circuit**, use :class:`CustomVQA`. It lets you
+If you need a **custom ansatz or circuit**, use :class:`~divi.qprog.algorithms.CustomVQA`. It lets you
 define your own PennyLane circuit template and Hamiltonian while Divi handles
 compilation, execution, and optimization:
+
+Under the hood, this behavior is the same pipeline-stage machinery used
+throughout Divi. Circuit specs are converted by spec stages such as
+:class:`~divi.pipeline.stages.PennyLaneSpecStage` and
+:class:`~divi.pipeline.stages.QiskitSpecStage`, then flow through the remaining
+pipeline stages for binding, execution, and reduction. See :doc:`pipelines` for
+the full stage-by-stage view. For a complete runnable example, see
+`standalone_pipeline.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/standalone_pipeline.py>`_.
 
 .. code-block:: python
 
@@ -280,6 +343,9 @@ compilation, execution, and optimization:
        measurements=[qml.expval(qml.Z(0) @ qml.Z(1) + 0.5 * qml.X(0))],
    )
 
+   # Freeze the Hamiltonian coefficient so only gate parameters are trainable
+   qscript.trainable_params = [0, 1]
+
    program = CustomVQA(
        qscript=qscript,
        param_shape=(2,),
@@ -292,15 +358,6 @@ replaces trainable slots with internal symbols and optimizes them.
 ``param_shape`` defines the shape of one parameter set and must match the number
 of trainable parameters in ``qscript`` (here: 2).
 
-``run()`` returns ``self`` for method chaining. Execution metrics and optimization
-outputs are read from the program object:
-
-.. code-block:: python
-
-   print(program.best_loss)       # Best objective value
-   print(program.best_params)     # Flat array of optimized parameters
-   print(program.best_params.reshape(program.param_shape))  # Reshaped to param_shape
-
 For the full tutorial, see `custom_vqa.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/custom_vqa.py>`_.
 
 Backend Abstraction
@@ -308,15 +365,17 @@ Backend Abstraction
 
 Divi's backend system provides a unified interface for different execution environments:
 
-:class:`CircuitRunner` interface 🎯
+:class:`~divi.backends.CircuitRunner` interface
    All backends implement this common interface:
+
+   .. skip: next
 
    .. code-block:: python
 
       from divi.backends import ExecutionResult
 
       class MyCustomBackend(CircuitRunner):
-          def submit_circuits(self, circuits: dict[str, str]) -> ExecutionResult:
+          def submit_circuits(self, circuits: Mapping[str, str], **kwargs) -> ExecutionResult:
               # Your custom execution logic here
               # Return ExecutionResult(results=...) for sync backends
               # or ExecutionResult(job_id=...) for async backends
@@ -325,197 +384,38 @@ Divi's backend system provides a unified interface for different execution envir
    .. note::
       Built-in programs never call ``submit_circuits`` directly — the
       :doc:`circuit pipeline <pipelines>` handles circuit submission and result
-      collection automatically. The :class:`CircuitRunner` interface is still the
+      collection automatically. The :class:`~divi.backends.CircuitRunner` interface is still the
       extension point if you need to add a new execution backend.
 
    .. note::
-      The :class:`ExecutionResult` class provides a unified return type for all backends.
+      The :class:`~divi.backends.ExecutionResult` class provides a unified return type for all backends.
       See :doc:`backends` for detailed information on working with execution results.
 
 **Available Backends:**
 
-- :class:`MaestroSimulator` 💻 - Local high-performance simulator
-- :class:`QiskitSimulator` 💻 - Convenience wrapper around Qiskit Aer with noise modeling and thread-count control
-- :class:`QoroService` ☁️ - Cloud quantum computing service
+- :class:`~divi.backends.MaestroSimulator` — Local high-performance simulator
+- :class:`~divi.backends.QiskitSimulator` — Convenience wrapper around Qiskit Aer with noise modeling and thread-count control
+- :class:`~divi.backends.QoroService` — Cloud quantum computing service
 
 **Backend Selection:**
 
+.. skip: next
+
 .. code-block:: python
 
-   # For development and testing
-   from divi.backends import MaestroSimulator
-   backend = MaestroSimulator(
-       shots=1000,      # Measurement precision
-   )
+   from divi.qprog import VQE
+   from divi.backends import MaestroSimulator, QoroService
 
-   # For production and real hardware
-   backend = QoroService(
-       auth_token="your-api-key",  # From environment or .env
-       shots=1000
-   )
+   local_backend = MaestroSimulator(shots=1000)  # Development/testing
+   cloud_backend = QoroService(auth_token="your-api-key")  # Production/cloud
 
-   # Use the same quantum program with either backend!
+   backend = local_backend  # Swap to cloud_backend without changing program code
    vqe = VQE(molecule=molecule, backend=backend)
-
-Parameter Management
---------------------
-
-Divi handles parameter optimization automatically, but you can also provide custom initial parameter sets when calling ``run()``. This applies to all variational algorithms (:class:`VQE`, :class:`QAOA`, and custom implementations).
-
-**Automatic Initialization** ⚡
-   Parameters are randomly initialized between 0 and 2π when not specified:
-
-   .. code-block:: python
-
-      # VQE example
-      vqe = VQE(molecule=molecule, n_layers=2)
-      print(f"Parameters per layer: {vqe.n_params}")
-      print(f"Total parameters: {vqe.n_params * vqe.n_layers}")
-
-      # QAOA example
-      from divi.qprog import QAOA
-      from divi.qprog.problems import MaxCutProblem
-      import networkx as nx
-      qaoa = QAOA(MaxCutProblem(nx.bull_graph()), n_layers=2)
-      print(f"QAOA parameters: {qaoa.n_params * qaoa.n_layers}")  # Always 2 params per layer
-
-      # Query the expected input shape for run(initial_params=...)
-      expected_shape = vqe.get_expected_param_shape()
-      print(f"Expected shape: {expected_shape}")  # (n_param_sets, total_params)
-
-**Setting Initial Parameters** 🎯
-   Initial parameters are passed directly to ``run(initial_params=...)``.
-   This is useful for warm-starting, pre-training, or using parameters from previous runs:
-
-   .. code-block:: python
-
-      import numpy as np
-
-      custom_params = np.array([[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]])
-      vqe = VQE(molecule=molecule, seed=42)
-      vqe.run(initial_params=custom_params)
-
-      qaoa = QAOA(MaxCutProblem(graph))
-      qaoa.run(initial_params=np.array([[0.5, 0.3]]))  # QAOA: (beta, gamma) per layer
-
-   .. note::
-      Use the ``seed`` parameter in the constructor for reproducible parameter initialization
-      when you are not providing ``initial_params`` to ``run()``.
-
-**Parameter Shape Requirements** 📐
-   Parameters must match the expected shape based on your algorithm configuration.
-   Use :meth:`get_expected_param_shape()` to validate shapes before calling ``run(initial_params=...)``:
-
-   .. code-block:: python
-
-      # Verify the expected shape before setting parameters
-      expected_shape = vqe.get_expected_param_shape()
-      print(f"Expected shape: {expected_shape}")  # (n_param_sets, n_layers * n_params)
-
-      # For VQE with 2 layers and 4 params per layer:
-      # Shape: (n_param_sets, 8)
-      # For QAOA with 3 layers (always 2 params per layer):
-      # Shape: (n_param_sets, 6)
-
-      # Use this to validate your parameters before running
-      custom_params = np.array([[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]])
-      if custom_params.shape == expected_shape:
-          vqe.run(initial_params=custom_params)
-      else:
-          print(f"Shape mismatch! Expected {expected_shape}, got {custom_params.shape}")
-
-**Parameter Validation** ✅
-   Divi validates parameter shapes automatically and provides clear error messages:
-
-   .. code-block:: python
-
-      try:
-          vqe.run(initial_params=np.array([[1, 2, 3]]))  # Wrong shape
-      except ValueError as e:
-          print(f"Validation error: {e}")
-          # "Initial parameters must have shape (1, 8), got (1, 3)"
-
-**Multiple Parameter Sets** 🔄
-   Some optimizers (like :class:`MonteCarloOptimizer`) work with multiple parameter sets simultaneously.
-   The first dimension represents the number of parameter sets. Always use :meth:`get_expected_param_shape()`
-   to verify the correct shape before calling ``run(initial_params=...)``:
-
-   .. code-block:: python
-
-      from divi.qprog.optimizers import MonteCarloOptimizer
-
-      # Monte Carlo optimizer with 10 parameter sets
-      optimizer = MonteCarloOptimizer(population_size=10)
-      vqe = VQE(molecule=molecule, optimizer=optimizer, n_layers=2)
-
-      # Get the expected shape (includes n_param_sets from optimizer)
-      expected_shape = vqe.get_expected_param_shape()
-      print(f"Expected shape: {expected_shape}")  # (10, 8) for 10 sets, 8 params
-
-      # Parameters must match this shape exactly
-      # Note: get_expected_param_shape() automatically uses optimizer.n_param_sets,
-      # so you don't need to manually look up the optimizer's population size
-      custom_params = np.random.uniform(0, 2*np.pi, expected_shape)
-      vqe.run(initial_params=custom_params)
-
-Result Processing
------------------
-
-After execution, Divi provides rich result analysis capabilities:
-
-**Loss History** 📈
-   Track optimization progress over time. The ``losses_history`` property stores a list of
-   dictionaries, where each dictionary maps parameter set indices to their loss values for that iteration.
-   Use ``min_losses_per_iteration`` for a simplified view:
-
-   .. code-block:: python
-
-      # Plot convergence
-      import matplotlib.pyplot as plt
-
-      losses = vqe.min_losses_per_iteration
-      plt.plot(losses)
-      plt.xlabel('Iteration')
-      plt.ylabel('Energy (Hartree)')
-      plt.title('VQE Convergence')
-      plt.show()
-
-      # Access detailed loss history (useful for multi-parameter-set optimizers)
-      # losses_history is a list[dict[int, float]] where each dict maps param_set_idx -> loss
-      for iteration, loss_dict in enumerate(vqe.losses_history):
-          print(f"Iteration {iteration}: {loss_dict}")
-
-**Solution Probabilities** 🎲
-   After optimization completes, access probability distributions for the best solution.
-   For :class:`VQE` and :class:`QAOA`, the ``best_probs`` property contains a dictionary mapping bitstrings to their measurement
-   probabilities (essentially a shots histogram from the final measurement). If you implement a custom
-   variational algorithm, you are free to adjust this structure to suit your needs:
-
-   .. code-block:: python
-
-      # Get probability distribution for best parameters
-      probs = vqe.best_probs
-      if probs:  # Check if probabilities were computed
-          most_likely_bitstring = max(probs, key=probs.get)
-          probability = probs[most_likely_bitstring]
-          print(f"Most likely solution: {most_likely_bitstring}")
-          print(f"Probability: {probability:.4f}")
-
-**Performance Metrics** ⚡
-   Monitor execution efficiency:
-
-   .. code-block:: python
-
-      print(f"Total circuits: {vqe.total_circuit_count}")
-      print(f"Total runtime: {vqe.total_run_time:.2f}s")
-      print(f"Average time per circuit: {vqe.total_run_time / vqe.total_circuit_count:.3f}s")
 
 Next Steps
 ----------
 
-- 📖 **Algorithms**: Learn about specific algorithms in :doc:`ground_state_energy_estimation_vqe` and :doc:`combinatorial_optimization_qaoa_pce`
-- ⚡ **Backends**: Explore execution options in :doc:`backends`
-- 🛠️ **Customization**: Create custom algorithms using the :doc:`../api_reference/qprog`
-- 💡 **Examples**: See practical applications in the Tutorials section
-
-Understanding these core concepts will help you leverage Divi's full power for your quantum computing projects!
+- :doc:`ground_state_energy_estimation_vqe` and :doc:`combinatorial_optimization_qaoa_pce` — algorithm-specific guides
+- :doc:`backends` — execution environments and results
+- :doc:`../api_reference/qprog/index` — custom algorithms and the full API
+- `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ — runnable walkthroughs

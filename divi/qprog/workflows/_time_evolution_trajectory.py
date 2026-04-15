@@ -18,7 +18,7 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
     """Run TimeEvolution across multiple time points in parallel.
 
     Creates one :class:`~divi.qprog.algorithms.TimeEvolution` program per
-    time point, executes them via :class:`ProgramEnsemble` (with optional
+    time point, executes them via :class:`~divi.qprog.ensemble.ProgramEnsemble` (with optional
     batch-merged circuit submission), and aggregates results into a
     time-ordered mapping.
 
@@ -62,7 +62,7 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
                 Deep-copied per program for thread safety.
             n_steps: Number of Trotter steps.
             order: Suzuki-Trotter order (1 or even).
-            initial_state: Initial state preparation (:class:`InitialState` instance).
+            initial_state: Initial state preparation (:class:`~divi.qprog.algorithms.InitialState` instance).
                 Defaults to ``ZerosState()`` if None.
             observable: If None, measure probabilities; else expectation value.
             seed: Random seed for reproducible results.

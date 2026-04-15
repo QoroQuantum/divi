@@ -252,7 +252,7 @@ class CircuitPipeline:
                 backend execution.
 
         Returns:
-            A :class:`PipelineResult` dict keyed by :data:`NodeKey` tuples.
+            A ``PipelineResult`` dict keyed by ``NodeKey`` tuples.
             For single-circuit pipelines, use ``result.value`` to get the
             result directly.
         """

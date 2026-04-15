@@ -1,7 +1,7 @@
 Hamiltonian Time Evolution
 ==========================
 
-The :class:`~divi.qprog.TimeEvolution` program performs Hamiltonian time evolution simulation — simulating real-time quantum dynamics under a given Hamiltonian. Divi supports multiple Trotterization techniques out of the box: :class:`~divi.hamiltonians.ExactTrotterization` (full Trotter-Suzuki decomposition) and :class:`~divi.hamiltonians.QDrift` (randomized term sampling for shallower circuits on large Hamiltonians).
+The :class:`~divi.qprog.algorithms.TimeEvolution` program performs Hamiltonian time evolution simulation — simulating real-time quantum dynamics under a given Hamiltonian. Divi supports multiple Trotterization techniques out of the box: :class:`~divi.hamiltonians.ExactTrotterization` (full Trotter-Suzuki decomposition) and :class:`~divi.hamiltonians.QDrift` (randomized term sampling for shallower circuits on large Hamiltonians).
 
 It supports two output modes:
 
@@ -59,13 +59,14 @@ Provide ``observable=...`` to estimate expectation values after evolution:
 QDrift Trotterization
 ---------------------
 
-For large Hamiltonians, you can use :class:`~divi.qprog.QDrift` to sample terms and average over multiple Hamiltonian samples:
+For large Hamiltonians, you can use :class:`~divi.hamiltonians.QDrift` to sample terms and average over multiple Hamiltonian samples:
 
 .. code-block:: python
 
    import pennylane as qml
    from divi.backends import MaestroSimulator
-   from divi.qprog import QDrift, TimeEvolution
+   from divi.hamiltonians import QDrift
+   from divi.qprog import SuperpositionState, TimeEvolution
 
    backend = MaestroSimulator(shots=5000)
    qdrift = QDrift(
@@ -93,10 +94,10 @@ For large Hamiltonians, you can use :class:`~divi.qprog.QDrift` to sample terms 
 Time Evolution Trajectory
 -------------------------
 
-Use :class:`~divi.qprog.TimeEvolutionTrajectory` to simulate dynamics at
+Use :class:`~divi.qprog.workflows.TimeEvolutionTrajectory` to simulate dynamics at
 multiple time points in parallel.  It creates one ``TimeEvolution`` program
 per time point, runs them via
-:class:`~divi.qprog.ProgramEnsemble` (with optional circuit batching), and
+:class:`~divi.qprog.ensemble.ProgramEnsemble` (with optional circuit batching), and
 collects results into a time-ordered mapping.
 
 .. code-block:: python
@@ -127,6 +128,8 @@ The trajectory supports all the same options as ``TimeEvolution``
 (``trotterization_strategy``, ``n_steps``, ``order``, ``initial_state``).
 When running on a cloud backend, enable circuit batching (the default) to
 merge circuit submissions into fewer API calls:
+
+.. skip: next
 
 .. code-block:: python
 

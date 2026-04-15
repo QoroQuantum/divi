@@ -40,10 +40,10 @@ class VQE(VariationalQuantumAlgorithm):
         n_layers (int): Number of ansatz layers.
         n_qubits (int): Number of qubits in the system.
         n_electrons (int): Number of electrons (for molecular systems).
-        cost_hamiltonian (qml.operation.Operator): The Hamiltonian to minimize.
+        cost_hamiltonian: The Hamiltonian to minimize.
         loss_constant (float): Constant term extracted from the Hamiltonian.
-        molecule (qml.qchem.Molecule): The molecule object (if applicable).
-        optimizer (Optimizer): Classical optimizer for parameter updates.
+        molecule: The molecule object (if applicable).
+        optimizer: Classical optimizer for parameter updates.
         max_iterations (int): Maximum number of optimization iterations.
         current_iteration (int): Current optimization iteration.
     """
@@ -70,7 +70,7 @@ class VQE(VariationalQuantumAlgorithm):
             ansatz (Ansatz | None): The ansatz to use for the VQE problem.
                 Defaults to HartreeFockAnsatz.
             initial_state (InitialState | None): Initial state preparation.
-                Pass an :class:`InitialState` instance (e.g. ``ZerosState()``,
+                Pass an :class:`~divi.qprog.algorithms.InitialState` instance (e.g. ``ZerosState()``,
                 ``SuperpositionState()``). Defaults to ``ZerosState()`` if None.
             max_iterations (int): Maximum number of optimization iterations. Defaults to 10.
             **kwargs: Additional keyword arguments passed to the parent class.

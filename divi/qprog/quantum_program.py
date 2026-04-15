@@ -23,9 +23,9 @@ class QuantumProgram(ABC):
         - run(): Execute the quantum algorithm
 
     Attributes:
-        backend (CircuitRunner): The quantum circuit execution backend.
-        _seed (int | None): Random seed for reproducible results.
-        _progress_queue (Queue | None): Queue for progress reporting.
+        backend: The quantum circuit execution backend.
+        _seed: Random seed for reproducible results.
+        _progress_queue: Queue for progress reporting.
     """
 
     def __init__(
@@ -160,7 +160,7 @@ class QuantumProgram(ABC):
 
     @abstractmethod
     def _build_pipelines(self) -> None:
-        """Construct all :class:`CircuitPipeline` instances for this program.
+        """Construct all :class:`~divi.pipeline.CircuitPipeline` instances for this program.
 
         Every subclass must implement this to set up its pipeline attributes
         (e.g. ``self._pipeline``, ``self._cost_pipeline``).
@@ -201,7 +201,7 @@ class QuantumProgram(ABC):
         """Construct a :class:`PipelineEnv` from the current program state.
 
         Subclasses may override to inject additional fields (e.g. ``param_sets``
-        in :class:`VariationalQuantumAlgorithm`).
+        in :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm`).
         """
         return PipelineEnv(
             backend=self.backend,

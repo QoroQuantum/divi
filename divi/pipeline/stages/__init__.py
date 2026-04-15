@@ -11,3 +11,15 @@ from ._pennylane_spec_stage import PennyLaneSpecStage
 from ._qem_stage import QEMStage
 from ._qiskit_spec_stage import QiskitSpecStage
 from ._trotter_spec_stage import TrotterSpecStage
+
+__all__ = [
+    "CircuitSpecStage",
+    "MeasurementStage",
+    "ParameterBindingStage",
+    "PauliTwirlStage",
+    "PCECostStage",
+    "PennyLaneSpecStage",
+    "QEMStage",
+    "QiskitSpecStage",
+    "TrotterSpecStage",
+]

@@ -378,7 +378,7 @@ class PCAScanResult:
             show_trajectory: Whether to draw a connected line through
                 ``projected_samples`` in order. The samples must have been
                 supplied in temporal order (e.g. from
-                :meth:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm.param_history`).
+                :meth:`~divi.qprog.VariationalQuantumAlgorithm.param_history`).
             trajectory_kwargs: Optional keyword arguments forwarded to
                 ``ax.plot`` for the trajectory line. Defaults to a thin white
                 line with start/end markers.
@@ -588,7 +588,7 @@ class NEBResult:
 
     Contains the final relaxed chain (``path``, shape ``(n_pivots, n_params)``
     including fixed endpoints), objective values at each pivot (``energies``),
-    normalised cumulative distances (``path_distances``, ``[0, 1]``), a
+    normalized cumulative distances (``path_distances``, ``[0, 1]``), a
     history of all chains across iterations (``all_paths``), and the program
     class name (``program_type``).
     """

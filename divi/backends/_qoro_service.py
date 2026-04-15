@@ -153,7 +153,7 @@ class QoroService(CircuitRunner):
                 The maximum number of retries for polling. Defaults to 5000.
             track_depth (bool, optional):
                 If True, record circuit depth for each submitted batch.
-                Access via :attr:`depth_history` after execution. Defaults to False.
+                Access via :attr:`~divi.backends.CircuitRunner.depth_history` after execution. Defaults to False.
         """
 
         # Set up auth_token first (needed for API calls like fetch_simulator_clusters)

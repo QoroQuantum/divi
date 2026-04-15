@@ -68,10 +68,10 @@ The standalone API is useful when you want to make the scan call explicit:
    vqe = VQE(
        hamiltonian=hamiltonian,
        ansatz=GenericLayerAnsatz([qml.RY, qml.RZ]),
-       n_layers=1,
+       n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
-       max_iterations=5,
-       backend=MaestroSimulator(shots=2000),
+       max_iterations=12,
+       backend=MaestroSimulator(shots=5000),
    )
    vqe.run()
 
@@ -80,6 +80,20 @@ The standalone API is useful when you want to make the scan call explicit:
 
    line.plot(show=True)    # line chart of objective vs offset
    plane.plot(show=True)   # filled contour plot
+
+``line.plot`` opens a matplotlib figure with the scanned offset on the x-axis and
+the objective value on the y-axis — useful for spotting barren plateaus or local
+minima along a single direction. ``plane.plot`` renders a filled contour plot
+over the two scan axes with the optimum at the center, giving a 2-D picture of
+the local loss landscape. Both return the underlying :class:`matplotlib.figure.Figure`
+and :class:`matplotlib.axes.Axes` so you can customize the rendering.
+
+.. invisible-code-block: python
+
+   program = vqe
+   theta_1 = np.asarray(vqe.best_params, dtype=float)
+   theta_2 = theta_1 + 0.05
+   other_params = theta_2
 
 If ``center`` is omitted, the scan is centered on ``program.best_params`` from a
 previous optimization run.
@@ -104,7 +118,7 @@ convenience wrapper:
 
 .. code-block:: python
 
-   scan = qaoa.viz.scan_2d(grid_shape=(25, 25), rng=0)
+   scan = vqe.viz.scan_2d(grid_shape=(25, 25), rng=0)
    fig, ax = scan.plot(show=True)
 
 The wrapper exposes ``scan_1d``, ``scan_2d``, ``scan_pca``, ``scan_interp_1d``,
@@ -120,7 +134,10 @@ A random-direction scan shows a slice of the landscape that may miss the
 structure the optimizer navigated. PCA scans address this: they build scan
 directions from the principal components of the optimization trajectory, showing
 the landscape along the directions that captured the most variance during
-optimization.
+optimization. With few iterations, best-so-far points can lie almost on a line
+in parameter space (common with COBYLA early on), so give the run enough steps
+that the trajectory spans two independent directions — as in
+`tutorials/viz_qaoa_pce_comparison.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/viz_qaoa_pce_comparison.py>`_.
 
 Use :func:`~divi.viz.scan_pca` with parameter vectors from the optimization
 history:
@@ -129,9 +146,7 @@ history:
 
    from divi.viz import scan_pca
 
-   # Collect samples from the optimization trajectory.
    samples = np.vstack(vqe.param_history(mode="best_per_iteration"))
-
    pca_scan = scan_pca(
        vqe,
        samples=samples,
@@ -164,10 +179,9 @@ before feeding samples to :func:`~divi.viz.scan_pca`:
 
    from divi.viz import periodic_trajectory_wrap, scan_pca
 
-   raw_samples = np.vstack(qaoa.param_history(mode="best_per_iteration"))
+   raw_samples = np.vstack(vqe.param_history(mode="best_per_iteration"))
    samples = periodic_trajectory_wrap(raw_samples)
-
-   pca_scan = scan_pca(qaoa, samples=samples, center=qaoa.best_params)
+   pca_scan = scan_pca(vqe, samples=samples, center=vqe.best_params)
 
 The function iterates forward through the rows, wrapping each row relative to
 its predecessor so that no single-step jump exceeds half a period.
@@ -341,4 +355,3 @@ Limitations:
 
 - ``IterativeQAOA`` is excluded because its parameter space is not fixed across iterations.
 - ``PCE`` preserves the same backend rules as ordinary cost evaluation. In particular, hard CVaR mode still requires a sampling backend.
-- ``CustomVQA`` is supported only when its objective can be evaluated through the normal variational cost path.

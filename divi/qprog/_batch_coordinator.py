@@ -49,19 +49,19 @@ class BatchConfig:
 
     Attributes:
         mode: Whether to merge circuit submissions across programs.
-            Defaults to :attr:`BatchMode.MERGED`.
+            Defaults to :attr:`~divi.qprog.ensemble.BatchMode.MERGED`.
         max_batch_size: Maximum number of circuits per merged backend call.
             When set, the coordinator flushes early once the pending circuit
             count reaches this limit instead of waiting for every active
             program to submit.  ``None`` (the default) preserves the
             wait-for-all barrier behavior.  Only meaningful when
-            ``mode`` is :attr:`BatchMode.MERGED`.
+            ``mode`` is :attr:`~divi.qprog.ensemble.BatchMode.MERGED`.
         _sort_programs: Whether to sort programs by key before merging their
             circuits into a single backend call.  Defaults to ``False``.
 
             When ``False`` (default), circuits are merged in submission-arrival
             order — the order in which program threads reach the flush barrier.
-            This preserves backward-compatible behaviour.
+            This preserves backward-compatible behavior.
 
             Set to ``True`` to merge circuits in a consistent, key-sorted order
             regardless of thread scheduling.  This ensures that
@@ -69,7 +69,7 @@ class BatchConfig:
             :class:`~divi.backends.QiskitSimulator` deterministic mode)
             map to the same circuit on every run, making seeded experiments
             fully reproducible.  Only meaningful when ``mode`` is
-            :attr:`BatchMode.MERGED`.
+            :attr:`~divi.qprog.ensemble.BatchMode.MERGED`.
     """
 
     mode: BatchMode = BatchMode.MERGED

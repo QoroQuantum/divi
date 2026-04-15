@@ -11,6 +11,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+__all__ = [
+    "CheckpointConfig",
+    "CheckpointCorruptedError",
+    "CheckpointError",
+    "CheckpointInfo",
+    "CheckpointNotFoundError",
+    "cleanup_old_checkpoints",
+    "get_checkpoint_info",
+    "get_latest_checkpoint",
+    "list_checkpoints",
+    "resolve_checkpoint_path",
+]
+
 # Constants for checkpoint file and directory naming
 PROGRAM_STATE_FILE = "program_state.json"
 OPTIMIZER_STATE_FILE = "optimizer_state.json"
@@ -160,8 +173,6 @@ def resolve_checkpoint_path(
 
 class CheckpointError(Exception):
     """Base exception for checkpoint-related errors."""
-
-    pass
 
 
 class CheckpointNotFoundError(CheckpointError):
@@ -320,10 +331,10 @@ class CheckpointConfig:
     """Configuration for checkpointing during optimization.
 
     Attributes:
-        checkpoint_dir (Path | None): Directory path for saving checkpoints.
+        checkpoint_dir: Directory path for saving checkpoints.
             - If None: No checkpointing.
             - If Path: Uses that directory.
-        checkpoint_interval (int | None): Save checkpoint every N iterations.
+        checkpoint_interval: Save checkpoint every N iterations.
             If None, saves every iteration (if checkpoint_dir is set).
     """
 
@@ -372,11 +383,11 @@ class CheckpointInfo:
     """Information about a checkpoint.
 
     Attributes:
-        path (Path): Path to the checkpoint subdirectory.
-        iteration (int): Iteration number of this checkpoint.
-        timestamp (datetime): Modification time of the checkpoint directory.
-        size_bytes (int): Total size of the checkpoint in bytes.
-        is_valid (bool): Whether the checkpoint is valid (has required files).
+        path: Path to the checkpoint subdirectory.
+        iteration: Iteration number of this checkpoint.
+        timestamp: Modification time of the checkpoint directory.
+        size_bytes: Total size of the checkpoint in bytes.
+        is_valid: Whether the checkpoint is valid (has required files).
     """
 
     path: Path

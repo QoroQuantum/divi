@@ -152,11 +152,11 @@ class QiskitSimulator(CircuitRunner):
             shots (int, optional): Number of shots to perform. Defaults to 5000.
             simulation_seed (int, optional): Seed for the random number generator to ensure reproducibility. Defaults to None.
             qiskit_backend (Backend | Literal["auto"] | None, optional): A Qiskit backend to initiate the simulator from.
-            If "auto" is passed, the best-fit most recent fake backend will be chosen for the given circuit.
-            Defaults to None, resulting in noiseless simulation.
+                If ``"auto"`` is passed, the best-fit most recent fake backend will be chosen for the given circuit.
+                Defaults to None, resulting in noiseless simulation.
             noise_model (NoiseModel, optional): Qiskit noise model to use in simulation. Defaults to None.
             track_depth (bool, optional): If True, record circuit depth for each submitted batch.
-                Access via :attr:`depth_history` after execution. Defaults to False.
+                Access via :attr:`~divi.backends.CircuitRunner.depth_history` after execution. Defaults to False.
             force_sampling (bool, optional): If True, always use shot-based sampling
                 even for expectation value measurements. Defaults to False.
         """

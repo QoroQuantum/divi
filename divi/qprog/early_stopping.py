@@ -9,6 +9,8 @@ from enum import Enum
 
 import numpy as np
 
+__all__ = ["EarlyStopping", "StopReason"]
+
 
 class StopReason(str, Enum):
     """Reason why early stopping was triggered.

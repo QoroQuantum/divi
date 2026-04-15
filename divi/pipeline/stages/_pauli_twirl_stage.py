@@ -9,7 +9,7 @@ gate (CNOT, CZ) so that coherent errors are converted into stochastic
 Pauli noise.  The ideal circuit is unchanged; only the noise channel is
 affected.
 
-During *expand*, each circuit body is replaced by ``n_twirls`` randomised
+During *expand*, each circuit body is replaced by ``n_twirls`` randomized
 copies.  During *reduce*, the expectation values from all copies are
 averaged to produce a single result per original circuit.
 """
@@ -41,7 +41,7 @@ class PauliTwirlStage(BundleStage):
     """Fan out each circuit body into Pauli-twirled copies and average on reduce.
 
     Args:
-        n_twirls: Number of randomised copies per circuit body.
+        n_twirls: Number of randomized copies per circuit body.
     """
 
     @property

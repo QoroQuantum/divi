@@ -216,7 +216,7 @@ class IterativeQAOA(QAOA):
         print(iterative.solution)
 
     Args:
-        problem: A :class:`QAOAProblem` instance providing the QAOA ingredients.
+        problem: A :class:`~divi.qprog.problems.QAOAProblem` instance providing the QAOA ingredients.
         max_depth: Maximum circuit depth to iterate up to. Defaults to 5.
         strategy: Interpolation strategy for warm-starting. Defaults to INTERP.
         n_basis_terms: Number of basis terms for FOURIER/CHEBYSHEV strategies.

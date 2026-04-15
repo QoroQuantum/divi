@@ -11,6 +11,8 @@ from cirq.circuits.circuit import Circuit
 from mitiq.zne import combine_results, construct_circuits
 from mitiq.zne.inference import Factory
 
+__all__ = ["QEMProtocol", "ZNE"]
+
 #: Type alias for QEM context data passed between expand and reduce.
 #: A plain dict carrying protocol-specific side-channel information.
 QEMContext = dict
@@ -24,7 +26,7 @@ class QEMProtocol(ABC):
 
     * ``expand`` — given a Cirq circuit (and optionally the observable being
       measured), return the circuits to execute on quantum hardware and a
-      :class:`QEMContext` carrying any classically-computed side-channel
+      ``QEMContext`` carrying any classically-computed side-channel
       data needed during postprocessing.
     * ``reduce`` — given the context from ``expand`` and the quantum results,
       produce a single mitigated expectation value.
@@ -52,7 +54,7 @@ class QEMProtocol(ABC):
         Returns:
             A tuple of ``(circuits, context)`` where *circuits* are the Cirq
             circuits to execute on the quantum backend, and *context* is a
-            :class:`QEMContext` with optional classical side-channel data
+            ``QEMContext`` with optional classical side-channel data
             for the reduce phase.
         """
 
@@ -67,7 +69,7 @@ class QEMProtocol(ABC):
         Args:
             quantum_results: Expectation values from executing the circuits
                 returned by ``expand``, in the same order.
-            context: The :class:`QEMContext` produced by ``expand``.
+            context: The ``QEMContext`` produced by ``expand``.
 
         Returns:
             The mitigated expectation value.
@@ -81,7 +83,7 @@ class QEMProtocol(ABC):
         The default implementation is a no-op.
 
         Args:
-            contexts: All :class:`QEMContext` objects from the current
+            contexts: All ``QEMContext`` objects from the current
                 evaluation batch.
         """
 

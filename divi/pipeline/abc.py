@@ -17,6 +17,19 @@ from divi.circuits import MetaCircuit
 from divi.reporting import ProgressReporter
 from divi.typing import AxisLabel
 
+__all__ = [
+    "BundleStage",
+    "ContractViolation",
+    "ExpansionResult",
+    "NodeKey",
+    "PipelineEnv",
+    "PipelineResult",
+    "PipelineTrace",
+    "ResultFormat",
+    "SpecStage",
+    "Stage",
+]
+
 NodeKey = tuple[AxisLabel, ...]  # Batch key: sequence of (axis_name, value) pairs.
 
 MetaCircuitBatch = dict[NodeKey, MetaCircuit]
@@ -30,7 +43,7 @@ StageToken = Any
 class PipelineResult(dict):
     """Pipeline result dict with convenience access for single-result pipelines.
 
-    Behaves exactly like a regular ``dict`` keyed by :data:`NodeKey` tuples.
+    Behaves exactly like a regular ``dict`` keyed by ``NodeKey`` tuples.
     For the common single-circuit case, use the :attr:`value` property
     instead of ``result[()]``.
     """
@@ -69,10 +82,10 @@ class ResultFormat(Enum):
     """Raw shot counts — no conversion. Used by PCE (nonlinear reduce)."""
 
     PROBS = "probs"
-    """Probability distributions: ``{bitstring: probability}``."""
+    """Probability distributions (``{bitstring: probability}``)."""
 
     EXPVALS = "expvals"
-    """Expectation values: ``{observable_key: float}`` mapping per branch key."""
+    """Expectation values (``{observable_key: float}`` mapping per branch key)."""
 
 
 @dataclass(frozen=True)
@@ -119,7 +132,7 @@ class PipelineEnv:
     """Backend used to run circuits (e.g. simulator or cloud service)."""
 
     param_sets: Sequence[Sequence[float]] | npt.NDArray[np.floating] = ()
-    """Parameter sets for binding: strictly 2D (list-of-lists or 2D ndarray)."""
+    """Parameter sets for binding — strictly 2D (list-of-lists or 2D ndarray)."""
 
     artifacts: dict = field(default_factory=dict)
     """Mutable output dict populated during execution (e.g. ``circuit_count``)."""
@@ -161,9 +174,9 @@ class Stage(ABC, Generic[InT, OutT]):
     def validate(self, before: tuple["Stage", ...], after: tuple["Stage", ...]) -> None:
         """Check this stage's position in the pipeline.
 
-        Called by :class:`CircuitPipeline` at construction time, after
+        Called by :class:`~divi.pipeline.CircuitPipeline` at construction time, after
         structural validation.  Override to inspect neighboring stages
-        and raise :class:`ContractViolation` if preconditions are not met.
+        and raise :class:`~divi.pipeline.abc.ContractViolation` if preconditions are not met.
 
         Args:
             before: Stages before this one in expand order.
