@@ -35,6 +35,15 @@ class MeasurementToken:
     is_probs: bool = False
     """True when this is a probabilities measurement (no observable grouping)."""
 
+    effective_strategy: str | None = None
+    """Strategy actually used (may differ from user-configured when auto-promoted
+    to ``_backend_expval``). ``None`` for the probs path."""
+
+    n_observable_terms: int | None = None
+    """Number of single-Pauli terms in the source observable (only set for
+    the ``_backend_expval`` path, where ``measurement_groups`` is a sentinel
+    empty group)."""
+
 
 class MeasurementStage(BundleStage):
     """Unified measurement stage for all circuit measurement types.
@@ -152,6 +161,7 @@ class MeasurementStage(BundleStage):
 
         result: dict[object, MetaCircuit] = {}
         postprocess_fn_by_spec: dict[object, Callable] = {}
+        n_observable_terms: int | None = None
 
         for key, meta in batch.items():
             if len(meta.source_circuit.measurements) != 1:
@@ -161,9 +171,13 @@ class MeasurementStage(BundleStage):
                 )
 
             measurement = meta.source_circuit.measurements[0]
-            measurement_groups, _, postprocessing_fn = compute_measurement_groups(
-                measurement, strategy
+            measurement_groups, partition_indices, postprocessing_fn = (
+                compute_measurement_groups(measurement, strategy)
             )
+            if strategy == "_backend_expval" and n_observable_terms is None:
+                # For backend-native expval, measurement_groups is a sentinel
+                # empty group; capture the real term count from partition_indices.
+                n_observable_terms = sum(len(p) for p in partition_indices)
             measurement_qasms = _measurements_to_qasm(
                 meta.source_circuit, measurement_groups, precision=meta.precision
             )
@@ -194,6 +208,8 @@ class MeasurementStage(BundleStage):
 
         token = MeasurementToken(
             postprocess_fn_by_spec=postprocess_fn_by_spec,
+            effective_strategy=strategy,
+            n_observable_terms=n_observable_terms,
         )
         return ExpansionResult(batch=result), token
 
@@ -205,9 +221,27 @@ class MeasurementStage(BundleStage):
         token: StageToken,
     ) -> dict[str, Any]:
         meta = next(iter(batch.values()), None)
-        info: dict[str, Any] = {"strategy": self._grouping_strategy}
+        effective_strategy = getattr(token, "effective_strategy", None)
+        info: dict[str, Any] = {
+            "strategy": effective_strategy or self._grouping_strategy
+        }
         if meta is None:
             return info
+
+        # Backend-native expval: measurement_groups is a sentinel empty group
+        # because the backend evaluates the full observable directly. Surface
+        # the source observable instead of the empty placeholder.
+        if effective_strategy == "_backend_expval":
+            info["n_groups"] = 1
+            if getattr(token, "n_observable_terms", None) is not None:
+                info["n_terms"] = token.n_observable_terms
+            measurement = meta.source_circuit.measurements[0]
+            obs_str = str(getattr(measurement, "obs", measurement))
+            if len(obs_str) > 80:
+                obs_str = obs_str[:77] + "..."
+            info["observable"] = obs_str
+            return info
+
         groups = meta.measurement_groups
         info["n_groups"] = len(groups)
         n_terms = sum(len(g) for g in groups)

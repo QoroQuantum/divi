@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections.abc import Callable
+from typing import Any
 
 import pennylane as qml
 
@@ -11,6 +12,7 @@ from divi.hamiltonians import (
     ExactTrotterization,
     TrotterizationStrategy,
     _clean_hamiltonian,
+    _hamiltonian_term_count,
     _is_empty_hamiltonian,
 )
 from divi.pipeline.abc import (
@@ -88,7 +90,20 @@ class TrotterSpecStage(SpecStage[qml.operation.Operator]):
             meta = self._meta_circuit_factory(processed, ham_id)
             metas[(("ham", ham_id),)] = meta
 
-        return metas, None
+        token = {
+            "strategy": type(strategy).__name__,
+            "n_terms": _hamiltonian_term_count(hamiltonian_clean),
+            "n_qubits": len(hamiltonian_clean.wires),
+            "n_samples": n_samples,
+        }
+        return metas, token
+
+    def introspect(
+        self, batch: MetaCircuitBatch, env: PipelineEnv, token: StageToken
+    ) -> dict[str, Any]:
+        if not isinstance(token, dict):
+            return {}
+        return dict(token)
 
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken
