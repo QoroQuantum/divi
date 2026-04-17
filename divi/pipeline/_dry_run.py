@@ -44,7 +44,7 @@ class DryRunReport(NamedTuple):
 def _count_qasms(batch: MetaCircuitBatch) -> tuple[int, int, int]:
     """Return (n_meta_circuits, total_bodies, total_measurements)."""
     n_mc = len(batch)
-    total_bodies = sum(len(mc.circuit_body_qasms or ()) for mc in batch.values())
+    total_bodies = sum(len(mc.circuit_bodies or ()) for mc in batch.values())
     total_meas = sum(len(mc.measurement_qasms or ()) for mc in batch.values())
     return n_mc, total_bodies, total_meas
 
@@ -107,7 +107,7 @@ def dry_run_pipeline(
         prev_bodies, prev_meas = cur_bodies, cur_meas
 
     total = sum(
-        len(mc.circuit_body_qasms or ()) * max(len(mc.measurement_qasms or ()), 1)
+        len(mc.circuit_bodies or ()) * max(len(mc.measurement_qasms or ()), 1)
         for mc in trace.final_batch.values()
     )
 

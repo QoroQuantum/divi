@@ -170,11 +170,9 @@ def test_meta_circuit_qasm(ansatz_obj, n_layers, h2_molecule, dummy_simulator):
     )
 
     meta_circuit_obj = vqe_problem.meta_circuit_factories["cost_circuit"]
-    # circuit_body_qasms is a tuple of (tag, qasm_str) pairs
-    _, meta_circuit_qasm = meta_circuit_obj.circuit_body_qasms[0]
-
-    pattern = r"w_(\d+)_(\d+)"
-    matches = re.findall(pattern, meta_circuit_qasm)
+    # Parameters are stored as Qiskit ParameterVector elements named "w_i[j]".
+    pattern = r"w_(\d+)\[(\d+)\]"
+    matches = [re.match(pattern, p.name).groups() for p in meta_circuit_obj.parameters]
 
     total_params = vqe_problem.n_layers * vqe_problem.n_params_per_layer
     assert len(set(matches)) == total_params

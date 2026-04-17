@@ -10,22 +10,18 @@ mitigation quality from optimizer convergence:
 
   1. Exact (statevector, noiseless)
   2. Noisy (shot-based with depolarizing noise)
-  3. ZNE-mitigated (noise folding + Richardson extrapolation)
+  3. ZNE-mitigated (global folding + Richardson extrapolation)
   4. QuEPP-mitigated (CPT + Pauli twirling + rescaling)
 """
 
-from functools import partial
-
 import numpy as np
 import pennylane as qml
-from mitiq.zne.inference import RichardsonFactory
-from mitiq.zne.scaling import fold_gates_at_random
 from qiskit_aer.noise import NoiseModel, depolarizing_error
 from rich.console import Console
 from rich.table import Table
 
 from divi.backends import QiskitSimulator
-from divi.circuits.qem import ZNE
+from divi.circuits.qem import ZNE, RichardsonExtrapolator
 from divi.circuits.quepp import QuEPP
 from divi.qprog import VQE, HartreeFockAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
@@ -75,13 +71,13 @@ if __name__ == "__main__":
     vqe_noisy.run(initial_params=optimal_params)
 
     # --- 3. ZNE-mitigated ---
+    # GlobalFoldPass supports odd integer scale factors only (1, 3, 5, ...).
     scale_factors = [1.0, 3.0, 5.0]
     vqe_zne = VQE(
         backend=QiskitSimulator(n_processes=8, noise_model=noise_model),
         qem_protocol=ZNE(
-            scale_factors,
-            partial(fold_gates_at_random),
-            RichardsonFactory(scale_factors=scale_factors),
+            scale_factors=scale_factors,
+            extrapolator=RichardsonExtrapolator(),
         ),
         **common,
     )

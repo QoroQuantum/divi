@@ -2,10 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import numpy as np
 import pennylane as qml
 
-from divi.circuits import MetaCircuit
+from divi.circuits import MetaCircuit, qscript_to_meta
 from divi.circuits.qem import _NoMitigation
 from divi.hamiltonians import (
     ExactTrotterization,
@@ -22,7 +21,7 @@ from divi.pipeline.stages import (
     QEMStage,
     TrotterSpecStage,
 )
-from divi.qprog.algorithms._initial_state import InitialState, ZerosState
+from divi.qprog.algorithms import InitialState, ZerosState
 from divi.qprog.quantum_program import QuantumProgram
 
 
@@ -121,19 +120,9 @@ class TimeEvolution(QuantumProgram):
         ops = [qml.Identity(w) for w in self._circuit_wires] + ops
         use_probs = self.observable is None
 
-        if use_probs:
-            measurement = qml.probs()
-            return MetaCircuit(
-                source_circuit=qml.tape.QuantumScript(
-                    ops=ops, measurements=[measurement]
-                ),
-                symbols=np.array([], dtype=object),
-            )
-
-        measurement = qml.expval(self.observable)
-        return MetaCircuit(
-            source_circuit=qml.tape.QuantumScript(ops=ops, measurements=[measurement]),
-            symbols=np.array([], dtype=object),
+        measurement = qml.probs() if use_probs else qml.expval(self.observable)
+        return qscript_to_meta(
+            qml.tape.QuantumScript(ops=ops, measurements=[measurement]),
         )
 
     def run(self, **kwargs) -> "TimeEvolution":

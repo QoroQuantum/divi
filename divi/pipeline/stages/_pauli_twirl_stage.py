@@ -2,28 +2,24 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pipeline stage that applies Pauli twirling to circuit bodies.
+"""Pipeline stage that applies Pauli twirling to DAG circuit bodies.
 
 Pauli twirling inserts random Pauli gates around each two-qubit Clifford
 gate (CNOT, CZ) so that coherent errors are converted into stochastic
-Pauli noise.  The ideal circuit is unchanged; only the noise channel is
-affected.
+Pauli noise.  The ideal circuit is unchanged up to a measurement-invariant
+global phase; only the noise channel is affected.
 
-During *expand*, each circuit body is replaced by ``n_twirls`` randomized
+During *expand*, each DAG body is replaced by ``n_twirls`` randomized
 copies.  During *reduce*, the expectation values from all copies are
 averaged to produce a single result per original circuit.
 """
 
+import copy
+import random
 from typing import Any
 
-import cirq
-from mitiq.pt import generate_pauli_twirl_variants
-
 from divi.circuits import MetaCircuit
-from divi.circuits._qasm_conversion import (
-    _cirq_circuit_from_qasm,
-    normalize_qasm_after_cirq,
-)
+from divi.circuits._qem_passes import _TWIRL_DAG_TABLES, PauliTwirlPass
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
@@ -38,10 +34,11 @@ TWIRL_AXIS = "twirl"
 
 
 class PauliTwirlStage(BundleStage):
-    """Fan out each circuit body into Pauli-twirled copies and average on reduce.
+    """Fan out each DAG body into Pauli-twirled copies and average on reduce.
 
     Args:
         n_twirls: Number of randomized copies per circuit body.
+        seed: Optional seed for deterministic twirl sampling (useful in tests).
     """
 
     @property
@@ -52,9 +49,10 @@ class PauliTwirlStage(BundleStage):
     def stateful(self) -> bool:
         return False
 
-    def __init__(self, n_twirls: int = 100) -> None:
+    def __init__(self, n_twirls: int = 100, seed: int | None = None) -> None:
         super().__init__(name=type(self).__name__)
         self._n_twirls = n_twirls
+        self._seed = seed
 
     def expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
@@ -64,20 +62,34 @@ class PauliTwirlStage(BundleStage):
         for parent_key, meta in batch.items():
             updated_bodies: list[tuple] = []
 
-            for tag, body in meta.circuit_body_qasms:
-                cirq_circuit = _cirq_circuit_from_qasm(body, meta.symbols)
-                variants = generate_pauli_twirl_variants(
-                    cirq_circuit, num_circuits=self._n_twirls
-                )
-                for twirl_idx, variant in enumerate(variants):
-                    twirl_tag = (*tag, (self.axis_name, twirl_idx))
-                    twirl_body = normalize_qasm_after_cirq(cirq.qasm(variant))
-                    updated_bodies.append((twirl_tag, twirl_body))
+            for tag, dag in meta.circuit_bodies:
+                # Pre-identify twirl-eligible node IDs once and map each
+                # to its gate's sub-DAG table.  deepcopy preserves node
+                # IDs, so the substitution loop can skip name lookups
+                # and gate-table indexing on every copy.
+                twirl_id_to_table = {
+                    n._node_id: _TWIRL_DAG_TABLES[n.op.name]
+                    for n in dag.op_nodes()
+                    if n.op.name in _TWIRL_DAG_TABLES
+                }
 
-            symbol_names = tuple(str(s) for s in meta.symbols)
-            out[parent_key] = meta.set_circuit_bodies(
-                tuple(updated_bodies), symbol_names=symbol_names
-            )
+                for twirl_idx in range(self._n_twirls):
+                    rng = (
+                        random.Random(self._seed + twirl_idx)
+                        if self._seed is not None
+                        else None
+                    )
+                    dag_copy = copy.deepcopy(dag)
+                    twirl_specs = [
+                        (n, twirl_id_to_table[n._node_id])
+                        for n in dag_copy.op_nodes()
+                        if n._node_id in twirl_id_to_table
+                    ]
+                    twirled_dag = PauliTwirlPass(rng=rng)._apply(dag_copy, twirl_specs)
+                    twirl_tag = (*tag, (self.axis_name, twirl_idx))
+                    updated_bodies.append((twirl_tag, twirled_dag))
+
+            out[parent_key] = meta.set_circuit_bodies(tuple(updated_bodies))
 
         return ExpansionResult(batch=out), None
 
@@ -93,7 +105,7 @@ class PauliTwirlStage(BundleStage):
         reduced: ChildResults = {}
         for base_key, values in grouped.items():
             if isinstance(values[0], dict):
-                # Per-obs expval dicts — average each observable independently
+                # Per-obs expval dicts — average each observable independently.
                 obs_keys = values[0].keys()
                 reduced[base_key] = {
                     k: sum(v[k] for v in values) / len(values) for k in obs_keys

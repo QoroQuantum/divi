@@ -250,7 +250,7 @@ class TestCompileBatch:
         # Manually remove measurement_qasms to simulate the error
         batch = trace.final_batch
         node = next(iter(batch.values()))
-        assert hasattr(node, "circuit_body_qasms") and node.circuit_body_qasms
+        assert hasattr(node, "circuit_bodies") and node.circuit_bodies
 
     def test_produces_lineage_and_circuits_for_grouped_batch(self, dummy_pipeline_env):
         pipeline = CircuitPipeline(

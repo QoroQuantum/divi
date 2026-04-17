@@ -41,43 +41,48 @@ class TestPennyLaneSpecStageExpand:
         stage = PennyLaneSpecStage()
         qs = _bell_script()
 
-        batch, token = stage.expand(qs, dummy_pipeline_env)
+        batch, _ = stage.expand(qs, dummy_pipeline_env)
 
         assert len(batch) == 1
         key = next(iter(batch))
         assert key == (("circuit", 0),)
         meta = batch[key]
-        assert len(meta.symbols) == 0
-        assert meta.source_circuit is qs
+        assert meta.parameters == ()
+        # Bell uses qml.probs() over all wires → measured_wires = (0, 1).
+        assert meta.measured_wires == (0, 1)
+        assert meta.observable is None
 
     def test_single_parametric(self, dummy_pipeline_env):
         stage = PennyLaneSpecStage()
         qs = _parametric_script()
 
-        batch, token = stage.expand(qs, dummy_pipeline_env)
+        batch, _ = stage.expand(qs, dummy_pipeline_env)
 
         meta = batch[(("circuit", 0),)]
-        assert len(meta.symbols) == 2
-        symbol_names = {str(s) for s in meta.symbols}
-        assert symbol_names == {"theta", "phi"}
+        assert len(meta.parameters) == 2
+        param_names = {p.name for p in meta.parameters}
+        assert param_names == {"theta", "phi"}
+        # expval(Z(0)) → observable set, no measured_wires.
+        assert meta.observable is not None
+        assert meta.measured_wires is None
 
     def test_sequence(self, dummy_pipeline_env):
         stage = PennyLaneSpecStage()
         scripts = [_bell_script(), _parametric_script()]
 
-        batch, token = stage.expand(scripts, dummy_pipeline_env)
+        batch, _ = stage.expand(scripts, dummy_pipeline_env)
 
         assert len(batch) == 2
         assert (("circuit", 0),) in batch
         assert (("circuit", 1),) in batch
-        assert len(batch[(("circuit", 0),)].symbols) == 0
-        assert len(batch[(("circuit", 1),)].symbols) == 2
+        assert len(batch[(("circuit", 0),)].parameters) == 0
+        assert len(batch[(("circuit", 1),)].parameters) == 2
 
     def test_mapping(self, dummy_pipeline_env):
         stage = PennyLaneSpecStage()
         scripts = {"bell": _bell_script(), "param": _parametric_script()}
 
-        batch, token = stage.expand(scripts, dummy_pipeline_env)
+        batch, _ = stage.expand(scripts, dummy_pipeline_env)
 
         assert len(batch) == 2
         assert (("circuit", "bell"),) in batch
@@ -104,11 +109,11 @@ class TestPennyLaneSpecStageQNode:
 
         stage = PennyLaneSpecStage()
 
-        batch, token = stage.expand(bell, dummy_pipeline_env)
+        batch, _ = stage.expand(bell, dummy_pipeline_env)
 
         assert len(batch) == 1
         meta = batch[(("circuit", 0),)]
-        assert len(meta.symbols) == 0
+        assert meta.parameters == ()
 
     def test_parametric_qnode(self, dummy_pipeline_env):
         dev = qml.device("default.qubit", wires=1)
@@ -121,12 +126,12 @@ class TestPennyLaneSpecStageQNode:
 
         stage = PennyLaneSpecStage()
 
-        batch, token = stage.expand(circuit, dummy_pipeline_env)
+        batch, _ = stage.expand(circuit, dummy_pipeline_env)
 
         meta = batch[(("circuit", 0),)]
-        assert len(meta.symbols) == 2
-        symbol_names = {str(s) for s in meta.symbols}
-        assert symbol_names == {"p0", "p1"}
+        assert len(meta.parameters) == 2
+        param_names = {p.name for p in meta.parameters}
+        assert param_names == {"p0", "p1"}
 
     def test_sequence_mixed_qnode_and_script(self, dummy_pipeline_env):
         dev = qml.device("default.qubit", wires=1)
@@ -139,7 +144,7 @@ class TestPennyLaneSpecStageQNode:
         qs = _bell_script()
         stage = PennyLaneSpecStage()
 
-        batch, token = stage.expand([qs, qnode_circuit], dummy_pipeline_env)
+        batch, _ = stage.expand([qs, qnode_circuit], dummy_pipeline_env)
 
         assert len(batch) == 2
         assert (("circuit", 0),) in batch
@@ -156,11 +161,11 @@ class TestPennyLaneSpecStageQNode:
 
         stage = PennyLaneSpecStage()
 
-        batch, token = stage.expand(single_param, dummy_pipeline_env)
+        batch, _ = stage.expand(single_param, dummy_pipeline_env)
 
         meta = batch[(("circuit", 0),)]
-        assert len(meta.symbols) == 1
-        assert str(meta.symbols[0]) == "p0"
+        assert len(meta.parameters) == 1
+        assert meta.parameters[0].name == "p0"
 
 
 class TestPennyLaneSpecStageQNodeArray:
@@ -177,10 +182,10 @@ class TestPennyLaneSpecStageQNodeArray:
 
         stage = PennyLaneSpecStage()
 
-        batch, token = stage.expand(circuit, dummy_pipeline_env)
+        batch, _ = stage.expand(circuit, dummy_pipeline_env)
 
         meta = batch[(("circuit", 0),)]
-        assert len(meta.symbols) == 2
+        assert len(meta.parameters) == 2
 
     def test_qnode_array_with_fixed_constants(self, dummy_pipeline_env):
         """Only array-derived parameters become symbols; fixed constants stay numeric."""
@@ -194,11 +199,11 @@ class TestPennyLaneSpecStageQNodeArray:
 
         stage = PennyLaneSpecStage()
 
-        batch, token = stage.expand(circuit, dummy_pipeline_env)
+        batch, _ = stage.expand(circuit, dummy_pipeline_env)
 
         meta = batch[(("circuit", 0),)]
-        # Only the array-derived parameter is a symbol
-        assert len(meta.symbols) == 1
+        # Only the array-derived parameter is parametric on the DAG.
+        assert len(meta.parameters) == 1
 
     def test_qnode_multi_array_param_raises(self, dummy_pipeline_env):
         dev = qml.device("default.qubit", wires=2)

@@ -7,8 +7,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from divi.circuits import MetaCircuit
-from divi.circuits._qasm_conversion import _measurements_to_qasm
-from divi.hamiltonians import convert_hamiltonian_to_pauli_string
+from divi.circuits._conversions import (
+    measurement_qasms_from_groups,
+    sparse_pauli_op_to_ham_string,
+)
 from divi.pipeline._grouping import GroupingStrategy, compute_measurement_groups
 from divi.pipeline.abc import (
     BundleStage,
@@ -98,15 +100,18 @@ class MeasurementStage(BundleStage):
         self, batch: MetaCircuitBatch, env: PipelineEnv
     ) -> tuple[ExpansionResult, StageToken]:
         """Set up measurements and declare the result format on env."""
-        # Auto-detect from the first MetaCircuit's measurement type.
         sample_meta = next(iter(batch.values()))
-        measurement = sample_meta.source_circuit.measurements[0]
-        is_probs = not hasattr(measurement, "obs") or measurement.obs is None
-
-        if is_probs:
+        # Probs/counts circuits carry measured_wires; expval circuits carry
+        # observable.  Exactly one is expected to be set.
+        if sample_meta.observable is not None:
+            result = self._expand_expval(batch, env)
+        elif sample_meta.measured_wires is not None:
             result = self._expand_probs(batch, env)
         else:
-            result = self._expand_expval(batch, env)
+            raise ValueError(
+                "MeasurementStage: MetaCircuit has neither an observable "
+                "nor measured_wires set. Did the spec stage run?"
+            )
 
         if self._result_format_override is not None:
             env.result_format = self._result_format_override
@@ -120,16 +125,21 @@ class MeasurementStage(BundleStage):
     def _expand_probs(
         self, batch: MetaCircuitBatch, env: PipelineEnv
     ) -> tuple[ExpansionResult, StageToken]:
-        """Generate 'measure all qubits' QASM for ``probs()`` circuits."""
+        """Generate measurement QASM for ``probs()`` / ``counts()`` circuits."""
         env.result_format = ResultFormat.PROBS
 
         out: dict[object, MetaCircuit] = {}
 
         for key, meta in batch.items():
-            n_qubits = len(meta.source_circuit.wires)
-            measure_qasm = "".join(
-                f"measure q[{i}] -> c[{i}];\n" for i in range(n_qubits)
-            )
+            wires = meta.measured_wires
+            if wires is None:
+                # Defensive: expand() already dispatched based on observable
+                # vs measured_wires, but the batch might be heterogeneous.
+                raise ValueError(
+                    f"MeasurementStage (probs path): key '{key}' has no "
+                    "measured_wires set."
+                )
+            measure_qasm = "".join(f"measure q[{q}] -> c[{q}];\n" for q in wires)
             tagged_measurement_qasms = ((((PROBS_MEAS_AXIS, 0),), measure_qasm),)
             out[key] = meta.set_measurement_bodies(tagged_measurement_qasms)
 
@@ -146,17 +156,10 @@ class MeasurementStage(BundleStage):
         """Group observables and generate measurement QASM (or ham_ops)."""
         env.result_format = ResultFormat.EXPVALS
 
-        # Auto-select _backend_expval when the backend supports it and
-        # all circuits share the same observable.  QDrift multi-sample
-        # produces per-circuit observables that are incompatible with
-        # the single ham_ops string, so we fall back to QWC grouping.
         strategy = self._grouping_strategy
         if strategy in ("qwc", "_backend_expval") and env.backend.supports_expval:
-            first_obs = next(iter(batch.values())).source_circuit.measurements[0].obs
-            all_same_obs = all(
-                meta.source_circuit.measurements[0].obs is first_obs
-                for meta in batch.values()
-            )
+            first_obs = next(iter(batch.values())).observable
+            all_same_obs = all(meta.observable == first_obs for meta in batch.values())
             strategy = "_backend_expval" if all_same_obs else "qwc"
 
         result: dict[object, MetaCircuit] = {}
@@ -164,22 +167,20 @@ class MeasurementStage(BundleStage):
         n_observable_terms: int | None = None
 
         for key, meta in batch.items():
-            if len(meta.source_circuit.measurements) != 1:
+            if meta.observable is None:
                 raise ValueError(
-                    f"MeasurementStage expects MetaCircuits with exactly one measurement, "
-                    f"got {len(meta.source_circuit.measurements)}."
+                    f"MeasurementStage (expval path): key '{key}' has no "
+                    "observable set."
                 )
 
-            measurement = meta.source_circuit.measurements[0]
             measurement_groups, partition_indices, postprocessing_fn = (
-                compute_measurement_groups(measurement, strategy)
+                compute_measurement_groups(meta.observable, strategy, meta.n_qubits)
             )
             if strategy == "_backend_expval" and n_observable_terms is None:
-                # For backend-native expval, measurement_groups is a sentinel
-                # empty group; capture the real term count from partition_indices.
                 n_observable_terms = sum(len(p) for p in partition_indices)
-            measurement_qasms = _measurements_to_qasm(
-                meta.source_circuit, measurement_groups, precision=meta.precision
+
+            measurement_qasms = measurement_qasms_from_groups(
+                measurement_groups, meta.n_qubits
             )
             tagged_measurement_qasms = tuple(
                 (((OBS_GROUP_AXIS, idx),), meas_qasm)
@@ -191,18 +192,13 @@ class MeasurementStage(BundleStage):
             ).set_measurement_groups(measurement_groups)
             postprocess_fn_by_spec[key] = postprocessing_fn
 
-        # For expval-native backends, compute ham_ops from the observable
+        # For expval-native backends, compute ham_ops from the SparsePauliOp
         # and store it in env.artifacts so _default_execute_fn can use it.
-        # When falling back to QWC, ensure ham_ops is cleared so a stale
-        # value from a cached forward pass doesn't leak into the next run.
         if strategy == "_backend_expval":
             sample_meta = next(iter(batch.values()))
-            observable = sample_meta.source_circuit.measurements[0].obs
-            n_qubits = len(sample_meta.source_circuit.wires)
-            ham_ops_str = convert_hamiltonian_to_pauli_string(
-                observable, n_qubits, wires=sample_meta.source_circuit.wires
+            env.artifacts["ham_ops"] = sparse_pauli_op_to_ham_string(
+                sample_meta.observable
             )
-            env.artifacts["ham_ops"] = ham_ops_str
         else:
             env.artifacts.pop("ham_ops", None)
 
@@ -235,8 +231,7 @@ class MeasurementStage(BundleStage):
             info["n_groups"] = 1
             if getattr(token, "n_observable_terms", None) is not None:
                 info["n_terms"] = token.n_observable_terms
-            measurement = meta.source_circuit.measurements[0]
-            obs_str = str(getattr(measurement, "obs", measurement))
+            obs_str = str(meta.observable) if meta.observable is not None else ""
             if len(obs_str) > 80:
                 obs_str = obs_str[:77] + "..."
             info["observable"] = obs_str

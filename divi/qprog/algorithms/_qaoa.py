@@ -9,9 +9,9 @@ from typing import Any, Literal
 import numpy as np
 import pennylane as qml
 import pennylane.qaoa as pqaoa
-import sympy as sp
+from qiskit.circuit import ParameterVector
 
-from divi.circuits import MetaCircuit
+from divi.circuits import MetaCircuit, qscript_to_meta
 from divi.hamiltonians import (
     ExactTrotterization,
     TrotterizationStrategy,
@@ -103,10 +103,10 @@ class QAOA(VariationalQuantumAlgorithm):
         self._n_params_per_layer = 2
         self._decoded_solution = None
 
-        # Symbolic parameters for the ansatz
-        betas = sp.symarray("β", self.n_layers)
-        gammas = sp.symarray("γ", self.n_layers)
-        self._sym_params = np.vstack((betas, gammas)).transpose()
+        # Circuit parameters — Qiskit ParameterVector, no sympy.
+        betas = ParameterVector("β", self.n_layers)
+        gammas = ParameterVector("γ", self.n_layers)
+        self._params = np.array([[b, g] for b, g in zip(betas, gammas)], dtype=object)
 
         self._build_pipelines()
 
@@ -166,7 +166,7 @@ class QAOA(VariationalQuantumAlgorithm):
         """Build QAOA layer ops for a given cost Hamiltonian."""
         ops = self.initial_state.build(self._circuit_wires)
 
-        for layer_params in self._sym_params:
+        for layer_params in self._params:
             gamma, beta = layer_params
             ops.append(pqaoa.cost_layer(gamma, cost_hamiltonian))
             ops.append(pqaoa.mixer_layer(beta, self.problem.mixer_hamiltonian))
@@ -177,33 +177,33 @@ class QAOA(VariationalQuantumAlgorithm):
         self, processed_ham: qml.operation.Operator, ham_id: int
     ) -> MetaCircuit:
         """Build a cost MetaCircuit for a given (possibly QDrift-sampled) Hamiltonian."""
-        return MetaCircuit(
-            source_circuit=qml.tape.QuantumScript(
-                ops=self._build_qaoa_ops(processed_ham),
-                measurements=[qml.expval(processed_ham)],
-            ),
-            symbols=self._sym_params.flatten(),
+        tape = qml.tape.QuantumScript(
+            ops=self._build_qaoa_ops(processed_ham),
+            measurements=[qml.expval(processed_ham)],
+        )
+        return qscript_to_meta(
+            tape,
             precision=self._precision,
+            parameter_order=tuple(self._params.flatten()),
         )
 
     def _create_meta_circuit_factories(self) -> dict[str, MetaCircuit]:
         """Generate meta-circuit factories for the QAOA problem."""
         ops = self._build_qaoa_ops(self._cost_hamiltonian)
+        flat_params = tuple(self._params.flatten())
 
         return {
-            "cost_circuit": MetaCircuit(
-                source_circuit=qml.tape.QuantumScript(
+            "cost_circuit": qscript_to_meta(
+                qml.tape.QuantumScript(
                     ops=ops, measurements=[qml.expval(self._cost_hamiltonian)]
                 ),
-                symbols=self._sym_params.flatten(),
                 precision=self._precision,
+                parameter_order=flat_params,
             ),
-            "meas_circuit": MetaCircuit(
-                source_circuit=qml.tape.QuantumScript(
-                    ops=ops, measurements=[qml.probs()]
-                ),
-                symbols=self._sym_params.flatten(),
+            "meas_circuit": qscript_to_meta(
+                qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()]),
                 precision=self._precision,
+                parameter_order=flat_params,
             ),
         }
 

@@ -8,9 +8,9 @@ from warnings import warn
 import numpy as np
 import numpy.typing as npt
 import pennylane as qml
-import sympy as sp
+from qiskit.circuit import ParameterVector
 
-from divi.circuits import MetaCircuit
+from divi.circuits import MetaCircuit, qscript_to_meta
 from divi.hamiltonians import _clean_hamiltonian, _is_empty_hamiltonian
 from divi.pipeline.stages import CircuitSpecStage
 from divi.qprog.algorithms._ansatze import (
@@ -183,39 +183,35 @@ class VQE(VariationalQuantumAlgorithm):
         Returns:
             dict[str, MetaCircuit]: Dictionary containing cost and measurement circuit templates.
         """
-        weights_syms = sp.symarray(
-            "w",
-            (
-                self.n_layers,
-                self.ansatz.n_params_per_layer(
-                    self.n_qubits, n_electrons=self.n_electrons
-                ),
-            ),
+        n_params = self.ansatz.n_params_per_layer(
+            self.n_qubits, n_electrons=self.n_electrons
+        )
+        weights = np.array(
+            [ParameterVector(f"w_{i}", n_params) for i in range(self.n_layers)],
+            dtype=object,
         )
 
         ops = self.initial_state.build(list(range(self.n_qubits)))
         ops += self.ansatz.build(
-            weights_syms,
+            weights,
             n_qubits=self.n_qubits,
             n_layers=self.n_layers,
             n_electrons=self.n_electrons,
         )
 
-        symbols = weights_syms.flatten()
+        flat_params = tuple(weights.flatten())
         return {
-            "cost_circuit": MetaCircuit(
-                source_circuit=qml.tape.QuantumScript(
+            "cost_circuit": qscript_to_meta(
+                qml.tape.QuantumScript(
                     ops=ops, measurements=[qml.expval(self._cost_hamiltonian)]
                 ),
-                symbols=symbols,
                 precision=self._precision,
+                parameter_order=flat_params,
             ),
-            "meas_circuit": MetaCircuit(
-                source_circuit=qml.tape.QuantumScript(
-                    ops=ops, measurements=[qml.probs()]
-                ),
-                symbols=symbols,
+            "meas_circuit": qscript_to_meta(
+                qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()]),
                 precision=self._precision,
+                parameter_order=flat_params,
             ),
         }
 

@@ -22,13 +22,11 @@ classifiers = [
 ]
 dependencies = [
     # Quantum computing
-    "pennylane>=0.43,<0.44",
-    "pennylane-qiskit>=0.43,<0.44",
-    "qiskit>=2.1,<2.4",
+    "pennylane>=0.44,<0.45",
+    "pennylane-qiskit>=0.44,<0.45",
+    "qiskit>=2.3,<2.4",
     "qiskit-aer",
-    "qiskit-ibm-runtime>=0.41,<0.42",
-    "mitiq>=1.0,<2.0",
-    "cirq-core>=1.6,<2.0",
+    "qiskit-ibm-runtime>=0.45,<0.46",
     # Scientific computing and numerical operations
     "numpy",
     "scipy>=1.16,<2.0",
@@ -52,7 +50,6 @@ dependencies = [
     "pydantic>=2.10,<3.0",
     "numba>=0.64.0,<0.65.0",
     "stim>=1.15.0,<2.0",
-    "stimcirq>=1.15.0,<2.0",
 ]
 
 [project.urls]

@@ -5,10 +5,9 @@
 """Tests for divi.pipeline.stages._qiskit_spec_stage."""
 
 import numpy as np
-import pennylane as qml
 import pytest
 from qiskit import QuantumCircuit
-from qiskit.circuit import Parameter
+from qiskit.circuit import Parameter, ParameterExpression
 
 from divi.pipeline import CircuitPipeline, PipelineEnv
 from divi.pipeline.stages import (
@@ -16,7 +15,6 @@ from divi.pipeline.stages import (
     ParameterBindingStage,
     QiskitSpecStage,
 )
-from divi.pipeline.stages._qiskit_spec_stage import qiskit_to_pennylane
 
 
 def _bell_qiskit():
@@ -47,40 +45,6 @@ def _no_measure_qiskit():
     return qc
 
 
-class TestQiskitToPennylane:
-    """Unit tests for the shared qiskit_to_pennylane utility."""
-
-    def test_converts_with_probs(self):
-        qc = _bell_qiskit()
-        qs = qiskit_to_pennylane(qc, lambda wires: qml.probs(wires=wires))
-
-        assert len(qs.measurements) == 1
-        assert isinstance(qs.measurements[0], qml.measurements.ProbabilityMP)
-
-    def test_converts_with_expval(self):
-        qc = _bell_qiskit()
-        qs = qiskit_to_pennylane(qc, lambda wires: qml.expval(qml.Z(wires[0])))
-
-        assert len(qs.measurements) == 1
-        assert isinstance(qs.measurements[0], qml.measurements.ExpectationMP)
-
-    def test_no_measurements_warns(self):
-        qc = _no_measure_qiskit()
-        with pytest.warns(UserWarning, match="no measurement operations"):
-            qs = qiskit_to_pennylane(qc, lambda wires: qml.probs(wires=wires))
-
-        assert len(qs.measurements) == 1
-
-    def test_circuit_with_classical_registers(self):
-        """Circuits with classical registers (e.g. for c_if) don't crash."""
-        qc = QuantumCircuit(1, 1)
-        qc.h(0)
-        qc.measure(0, 0)
-        qs = qiskit_to_pennylane(qc, lambda wires: qml.probs(wires=wires))
-
-        assert len(qs.measurements) == 1
-
-
 class TestQiskitSpecStageExpand:
     """Expand: QuantumCircuit(s) are converted to MetaCircuit batches."""
 
@@ -88,60 +52,61 @@ class TestQiskitSpecStageExpand:
         stage = QiskitSpecStage()
         qc = _bell_qiskit()
 
-        batch, token = stage.expand(qc, dummy_pipeline_env)
+        batch, _ = stage.expand(qc, dummy_pipeline_env)
 
         assert len(batch) == 1
         key = next(iter(batch))
         assert key == (("circuit", 0),)
         meta = batch[key]
-        assert len(meta.symbols) == 0
-        # The converted circuit should have a probs measurement
-        assert isinstance(
-            meta.source_circuit.measurements[0],
-            qml.measurements.ProbabilityMP,
-        )
+        assert meta.parameters == ()
+        # Bell state measures both qubits.
+        assert meta.measured_wires == (0, 1)
+        # DAG has the two gates, no measurements.
+        _, dag = meta.circuit_bodies[0]
+        assert dag.num_qubits() == 2
+        op_names = {node.op.name for node in dag.op_nodes()}
+        assert op_names == {"h", "cx"}
 
     def test_single_parametric(self, dummy_pipeline_env):
         stage = QiskitSpecStage()
         qc = _parametric_qiskit()
 
-        batch, token = stage.expand(qc, dummy_pipeline_env)
+        batch, _ = stage.expand(qc, dummy_pipeline_env)
 
         meta = batch[(("circuit", 0),)]
-        assert len(meta.symbols) == 2
-        symbol_names = {str(s) for s in meta.symbols}
-        assert symbol_names == {"theta", "phi"}
+        assert len(meta.parameters) == 2
+        # QuantumCircuit.parameters orders alphabetically.
+        param_names = {p.name for p in meta.parameters}
+        assert param_names == {"theta", "phi"}
+        assert meta.measured_wires == (0,)
 
     def test_no_measurements_warns_and_defaults(self, dummy_pipeline_env):
         stage = QiskitSpecStage()
         qc = _no_measure_qiskit()
 
         with pytest.warns(UserWarning, match="no measurement operations"):
-            batch, token = stage.expand(qc, dummy_pipeline_env)
+            batch, _ = stage.expand(qc, dummy_pipeline_env)
 
         meta = batch[(("circuit", 0),)]
-        assert isinstance(
-            meta.source_circuit.measurements[0],
-            qml.measurements.ProbabilityMP,
-        )
+        assert meta.measured_wires == (0, 1)
 
     def test_sequence(self, dummy_pipeline_env):
         stage = QiskitSpecStage()
         circuits = [_bell_qiskit(), _parametric_qiskit()]
 
-        batch, token = stage.expand(circuits, dummy_pipeline_env)
+        batch, _ = stage.expand(circuits, dummy_pipeline_env)
 
         assert len(batch) == 2
         assert (("circuit", 0),) in batch
         assert (("circuit", 1),) in batch
-        assert len(batch[(("circuit", 0),)].symbols) == 0
-        assert len(batch[(("circuit", 1),)].symbols) == 2
+        assert len(batch[(("circuit", 0),)].parameters) == 0
+        assert len(batch[(("circuit", 1),)].parameters) == 2
 
     def test_mapping(self, dummy_pipeline_env):
         stage = QiskitSpecStage()
         circuits = {"bell": _bell_qiskit(), "param": _parametric_qiskit()}
 
-        batch, token = stage.expand(circuits, dummy_pipeline_env)
+        batch, _ = stage.expand(circuits, dummy_pipeline_env)
 
         assert len(batch) == 2
         assert (("circuit", "bell"),) in batch
@@ -155,10 +120,10 @@ class TestQiskitSpecStageExpand:
 
 
 class TestQiskitParameterExpressions:
-    """ParameterExpressions (e.g. 2*theta) are preserved as sympy expressions."""
+    """ParameterExpressions (e.g. 2*theta) flow through as Qiskit-native."""
 
     def test_parameter_expression_preserved(self, dummy_pipeline_env):
-        """rx(2*theta) should produce QASM with '2*theta', not just 'theta'."""
+        """rx(2*theta) — the DAG op carries a ParameterExpression, not a float."""
         theta = Parameter("theta")
         qc = QuantumCircuit(1, 1)
         qc.rx(2 * theta, 0)
@@ -168,15 +133,19 @@ class TestQiskitParameterExpressions:
         batch, _ = stage.expand(qc, dummy_pipeline_env)
 
         meta = batch[(("circuit", 0),)]
-        # Base symbol is just 'theta'
-        assert len(meta.symbols) == 1
-        assert str(meta.symbols[0]) == "theta"
-        # QASM body should contain the expression '2*theta'
-        for _tag, body in meta.circuit_body_qasms:
-            assert "2*theta" in body
+        assert len(meta.parameters) == 1
+        assert meta.parameters[0].name == "theta"
+        # Exactly one rx gate; its param is a composite ParameterExpression.
+        _, dag = meta.circuit_bodies[0]
+        rx_nodes = [n for n in dag.op_nodes() if n.op.name == "rx"]
+        assert len(rx_nodes) == 1
+        (param,) = rx_nodes[0].op.params
+        assert isinstance(param, ParameterExpression)
+        # Binding theta=0.5 gives 1.0.
+        assert float(param.bind({meta.parameters[0]: 0.5})) == pytest.approx(1.0)
 
     def test_sum_expression_preserved(self, dummy_pipeline_env):
-        """rx(theta + phi) should produce QASM with the sum expression."""
+        """rx(theta + phi) — DAG carries a two-parameter expression."""
         theta = Parameter("theta")
         phi = Parameter("phi")
         qc = QuantumCircuit(1, 1)
@@ -187,21 +156,21 @@ class TestQiskitParameterExpressions:
         batch, _ = stage.expand(qc, dummy_pipeline_env)
 
         meta = batch[(("circuit", 0),)]
-        assert len(meta.symbols) == 2
-        symbol_names = {str(s) for s in meta.symbols}
-        assert symbol_names == {"theta", "phi"}
-        # QASM should contain both symbols in an expression
-        for _tag, body in meta.circuit_body_qasms:
-            assert "phi" in body
-            assert "theta" in body
+        assert {p.name for p in meta.parameters} == {"theta", "phi"}
+        _, dag = meta.circuit_bodies[0]
+        (rx_param,) = next(n for n in dag.op_nodes() if n.op.name == "rx").op.params
+        assert isinstance(rx_param, ParameterExpression)
+        pmap = {p.name: p for p in meta.parameters}
+        bound = float(rx_param.bind({pmap["theta"]: 0.3, pmap["phi"]: 0.7}))
+        assert bound == pytest.approx(1.0)
 
     def test_mixed_params_and_constants(self, dummy_pipeline_env):
-        """Float constants are preserved; only ParameterExpressions become sympy."""
+        """Float constants remain floats on the DAG; parameters stay parametric."""
         theta = Parameter("theta")
         phi = Parameter("phi")
         qc = QuantumCircuit(2, 2)
         qc.rx(theta, 0)
-        qc.rz(3.14, 0)  # fixed constant — must stay in QASM as-is
+        qc.rz(3.14, 0)
         qc.ry(phi, 1)
         qc.measure([0, 1], [0, 1])
 
@@ -209,26 +178,13 @@ class TestQiskitParameterExpressions:
         batch, _ = stage.expand(qc, dummy_pipeline_env)
 
         meta = batch[(("circuit", 0),)]
-        # Only theta and phi are base symbols (not 3.14)
-        assert len(meta.symbols) == 2
-        symbol_names = {str(s) for s in meta.symbols}
-        assert symbol_names == {"theta", "phi"}
-        # QASM should contain both symbols and the constant
-        for _tag, body in meta.circuit_body_qasms:
-            assert "theta" in body
-            assert "phi" in body
-            assert "3.14" in body
-
-    def test_bare_parameter_still_works(self, dummy_pipeline_env):
-        """Simple Parameter (no expression) continues to work as before."""
-        qc = _parametric_qiskit()
-        stage = QiskitSpecStage()
-        batch, _ = stage.expand(qc, dummy_pipeline_env)
-
-        meta = batch[(("circuit", 0),)]
-        assert len(meta.symbols) == 2
-        symbol_names = {str(s) for s in meta.symbols}
-        assert symbol_names == {"theta", "phi"}
+        assert {p.name for p in meta.parameters} == {"theta", "phi"}
+        _, dag = meta.circuit_bodies[0]
+        # rz(3.14) stays numeric.
+        rz_node = next(n for n in dag.op_nodes() if n.op.name == "rz")
+        (rz_param,) = rz_node.op.params
+        assert isinstance(rz_param, float)
+        assert rz_param == pytest.approx(3.14)
 
 
 class TestQiskitSpecStageProperties:
@@ -287,7 +243,6 @@ class TestQiskitSpecStagePipeline:
                 ParameterBindingStage(),
             ]
         )
-        # theta=π/2 → rx(π) → |1⟩
         param_sets = np.array([[np.pi / 2]])
         env = PipelineEnv(backend=default_test_simulator, param_sets=param_sets)
         result = pipeline.run(initial_spec=qc, env=env)

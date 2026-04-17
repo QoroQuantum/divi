@@ -9,9 +9,9 @@ from warnings import warn
 import numpy as np
 import numpy.typing as npt
 import pennylane as qml
-import sympy as sp
+from qiskit.circuit import ParameterVector
 
-from divi.circuits import MetaCircuit
+from divi.circuits import MetaCircuit, qscript_to_meta
 from divi.hamiltonians import normalize_binary_polynomial_problem
 from divi.pipeline import CircuitPipeline
 from divi.pipeline.stages import CircuitSpecStage, ParameterBindingStage, PCECostStage
@@ -240,29 +240,31 @@ class PCE(VQE):
             self.n_qubits, n_electrons=self.n_electrons
         )
 
-        weights_syms = sp.symarray("w", (self.n_layers, n_params))
+        weights = np.array(
+            [ParameterVector(f"w_{i}", n_params) for i in range(self.n_layers)],
+            dtype=object,
+        )
 
         ops = self.ansatz.build(
-            weights_syms,
+            weights,
             n_qubits=self.n_qubits,
             n_layers=self.n_layers,
             n_electrons=self.n_electrons,
         )
 
+        flat_params = tuple(weights.flatten())
         return {
-            "cost_circuit": MetaCircuit(
-                source_circuit=qml.tape.QuantumScript(
+            "cost_circuit": qscript_to_meta(
+                qml.tape.QuantumScript(
                     ops=ops, measurements=[qml.expval(self._cost_hamiltonian)]
                 ),
-                symbols=weights_syms.flatten(),
                 precision=self._precision,
+                parameter_order=flat_params,
             ),
-            "meas_circuit": MetaCircuit(
-                source_circuit=qml.tape.QuantumScript(
-                    ops=ops, measurements=[qml.probs()]
-                ),
-                symbols=weights_syms.flatten(),
+            "meas_circuit": qscript_to_meta(
+                qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()]),
                 precision=self._precision,
+                parameter_order=flat_params,
             ),
         }
 

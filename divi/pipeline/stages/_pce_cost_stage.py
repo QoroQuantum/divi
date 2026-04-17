@@ -217,9 +217,8 @@ class PCECostStage(BundleStage):
 
         out = {}
         for key, meta in batch.items():
-            n_qubits = len(meta.source_circuit.wires)
             measure_qasm = "".join(
-                f"measure q[{i}] -> c[{i}];\n" for i in range(n_qubits)
+                f"measure q[{i}] -> c[{i}];\n" for i in range(meta.n_qubits)
             )
             tagged = ((((PCE_MEAS_AXIS, 0),), measure_qasm),)
             out[key] = meta.set_measurement_bodies(tagged)

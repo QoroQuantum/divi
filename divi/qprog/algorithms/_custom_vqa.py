@@ -2,19 +2,100 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from collections.abc import Callable
+from warnings import warn
+
 import numpy as np
 import pennylane as qml
-import sympy as sp
 from qiskit import QuantumCircuit
+from qiskit.circuit import ParameterExpression, ParameterVector
 
-from divi.circuits import MetaCircuit
+from divi.circuits import MetaCircuit, qscript_to_meta
 from divi.hamiltonians import _clean_hamiltonian, _is_empty_hamiltonian
 from divi.pipeline.stages import CircuitSpecStage
-from divi.pipeline.stages._qiskit_spec_stage import (
-    _bind_qiskit_expressions,
-    qiskit_to_pennylane,
-)
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
+
+# ---------------------------------------------------------------------------
+# Qiskit → PennyLane bridges used by the Qiskit-QC input path below.
+#
+# CustomVQA is the only remaining consumer of these converters — the pipeline
+# spec stages now ingest Qiskit circuits directly into DAGs via
+# :func:`divi.circuits._conversions._qscript_to_dag`.  Once CustomVQA's
+# ansatz construction is rewritten to operate on ``QuantumCircuit`` objects
+# natively, these helpers can go away.
+# ---------------------------------------------------------------------------
+
+
+def _qiskit_to_pennylane(
+    qc: QuantumCircuit,
+    measurement_fn: Callable[[list[int]], qml.measurements.MeasurementProcess],
+) -> qml.tape.QuantumScript:
+    """Convert a Qiskit QuantumCircuit to a PennyLane QuantumScript."""
+    measured_wires = sorted(
+        {
+            qc.qubits.index(qubit)
+            for instruction in qc.data
+            if instruction.operation.name == "measure"
+            for qubit in instruction.qubits
+        }
+    )
+    if not measured_wires:
+        warn(
+            "Provided QuantumCircuit has no measurement operations. "
+            "Defaulting to all wires.",
+            UserWarning,
+            stacklevel=2,
+        )
+        measured_wires = list(range(len(qc.qubits)))
+
+    qc_no_measure = QuantumCircuit(*qc.qregs, *qc.cregs)
+    for instruction in qc.data:
+        if instruction.operation.name != "measure":
+            qc_no_measure.append(
+                instruction.operation, instruction.qubits, instruction.clbits
+            )
+
+    qfunc = qml.from_qiskit(qc_no_measure)
+    params = [qml.numpy.array(0.0, requires_grad=True) for _ in qc.parameters]
+
+    def qfunc_with_measurement(*p):
+        qfunc(*p)
+        return measurement_fn(measured_wires)
+
+    return qml.tape.make_qscript(qfunc_with_measurement)(*params)
+
+
+def _bind_qiskit_expressions(
+    qscript: qml.tape.QuantumScript,
+    qc: QuantumCircuit,
+) -> tuple[qml.tape.QuantumScript, np.ndarray]:
+    """Bind Qiskit parameter expressions from gate params into a QuantumScript."""
+    base_params = np.array(list(qc.parameters), dtype=object)
+    if len(base_params) == 0:
+        return qscript, base_params
+
+    gate_exprs: list[ParameterExpression] = []
+    expr_indices: list[int] = []
+    total_params = 0
+    for instruction in qc.data:
+        if instruction.operation.name == "measure":
+            continue
+        for param in instruction.operation.params:
+            if isinstance(param, ParameterExpression):
+                gate_exprs.append(param)
+                expr_indices.append(total_params)
+            total_params += 1
+
+    qs_param_count = len(qscript.get_parameters())
+    if total_params != qs_param_count:
+        raise RuntimeError(
+            f"Gate parameter count mismatch: Qiskit circuit has "
+            f"{total_params} gate parameters but the converted "
+            f"QuantumScript has {qs_param_count}."
+        )
+
+    bound = qscript.bind_new_parameters(gate_exprs, expr_indices)
+    return bound, base_params
 
 
 class CustomVQA(VariationalQuantumAlgorithm):
@@ -23,10 +104,10 @@ class CustomVQA(VariationalQuantumAlgorithm):
     This implementation wraps a PennyLane QuantumScript (or converts a Qiskit
     QuantumCircuit into one) and optimizes its trainable parameters to minimize
     a single expectation-value measurement. Qiskit measurements are converted
-    into a PauliZ expectation on the measured wires. Parameters are bound to sympy
-    symbols to enable QASM substitution and reuse of MetaCircuit templates
-    during optimization.  Qiskit ``ParameterExpression`` objects
-    (e.g. ``2 * theta``) are preserved as sympy expressions.
+    into a PauliZ expectation on the measured wires. Parameters are represented
+    as Qiskit ``Parameter`` objects for QASM substitution and MetaCircuit
+    template reuse during optimization. Qiskit ``ParameterExpression`` objects
+    (e.g. ``2 * theta``) are preserved natively.
 
     Attributes:
         qscript (``qml.tape.QuantumScript``): The parameterized ``QuantumScript``.
@@ -94,37 +175,34 @@ class CustomVQA(VariationalQuantumAlgorithm):
         self.current_iteration = 0
 
         if self._qiskit_param_names is not None:
-            # Qiskit path: symbols already bound by _bind_qiskit_expressions
-            # in _coerce_to_quantum_script — no rebinding needed.
-            n_trainable = len(self._qiskit_param_names)
-            if n_trainable == 0:
-                raise ValueError(
-                    "QuantumScript does not contain any trainable parameters."
-                )
-            self._param_shape = self._resolve_param_shape(param_shape, n_trainable)
-            self._param_symbols = self._qiskit_base_symbols.reshape(self._param_shape)
-            self._trainable_param_indices = list(range(n_trainable))
-            self._qscript = self.qscript
+            # Qiskit path: ParameterExpressions already bound by
+            # _bind_qiskit_expressions in _coerce_to_quantum_script.
+            base_params = self._qiskit_base_params
+            trainable_indices = list(range(len(base_params)))
+            bound_qscript = self.qscript
         else:
-            # PennyLane path: create symbols and bind them.
-            trainable_param_indices = (
+            # PennyLane path: create Parameters and bind them.
+            trainable_indices = (
                 list(self.qscript.trainable_params)
                 if self.qscript.trainable_params
                 else list(range(len(self.qscript.get_parameters())))
             )
-            if not trainable_param_indices:
-                raise ValueError(
-                    "QuantumScript does not contain any trainable parameters."
-                )
-            self._trainable_param_indices = trainable_param_indices
-            self._param_shape = self._resolve_param_shape(
-                param_shape, len(trainable_param_indices)
+            base_params = np.array(
+                ParameterVector("p", len(trainable_indices)), dtype=object
             )
-            self._param_symbols = sp.symarray("p", self._param_shape)
-            flat_symbols = self._param_symbols.flatten().tolist()
-            self._qscript = self.qscript.bind_new_parameters(
-                flat_symbols, trainable_param_indices
+            bound_qscript = self.qscript.bind_new_parameters(
+                base_params.tolist(), trainable_indices
             )
+
+        if not len(trainable_indices):
+            raise ValueError("QuantumScript does not contain any trainable parameters.")
+
+        self._param_shape = self._resolve_param_shape(
+            param_shape, len(trainable_indices)
+        )
+        self._param_symbols = base_params.reshape(self._param_shape)
+        self._trainable_param_indices = trainable_indices
+        self._qscript = bound_qscript
 
         self._n_params_per_layer = int(np.prod(self._param_shape))
 
@@ -201,8 +279,8 @@ class CustomVQA(VariationalQuantumAlgorithm):
                 )
                 return qml.expval(obs)
 
-            qs = qiskit_to_pennylane(qscript, _expval_measurement)
-            bound, self._qiskit_base_symbols = _bind_qiskit_expressions(qs, qscript)
+            qs = _qiskit_to_pennylane(qscript, _expval_measurement)
+            bound, self._qiskit_base_params = _bind_qiskit_expressions(qs, qscript)
             return bound
 
         raise TypeError(
@@ -210,15 +288,10 @@ class CustomVQA(VariationalQuantumAlgorithm):
         )
 
     def _create_meta_circuit_factories(self) -> dict[str, MetaCircuit]:
-        """Create the meta-circuit factories for CustomVQA.
-
-        Returns:
-            dict[str, MetaCircuit]: Dictionary containing the cost circuit factory.
-        """
+        """Create the meta-circuit factories for CustomVQA."""
         return {
-            "cost_circuit": MetaCircuit(
-                source_circuit=self._qscript,
-                symbols=self._param_symbols.flatten(),
+            "cost_circuit": qscript_to_meta(
+                self._qscript,
                 precision=self._precision,
             )
         }

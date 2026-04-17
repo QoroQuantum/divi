@@ -65,15 +65,16 @@ class CircuitSpecStage(SpecStage[CircuitSpec]):
         self, batch: MetaCircuitBatch, env: PipelineEnv, token: StageToken
     ) -> dict[str, Any]:
         meta = next(iter(batch.values()), None)
-        if meta is None or meta.source_circuit is None:
+        if meta is None or not meta.circuit_bodies:
             return {}
-        sc = meta.source_circuit
-        ops = sc.operations
-        n_1q = sum(1 for op in ops if len(op.wires) == 1)
-        n_2q = sum(1 for op in ops if len(op.wires) == 2)
+        # Use the first body variant — QEM/twirl expansions share qubit
+        # layout and gate count with the original.
+        _, dag = meta.circuit_bodies[0]
+        n_1q = sum(1 for node in dag.op_nodes() if len(node.qargs) == 1)
+        n_2q = sum(1 for node in dag.op_nodes() if len(node.qargs) == 2)
         return {
-            "n_qubits": len(sc.wires),
-            "n_gates": len(ops),
+            "n_qubits": meta.n_qubits,
+            "n_gates": dag.size(),
             "n_1q_gates": n_1q,
             "n_2q_gates": n_2q,
         }

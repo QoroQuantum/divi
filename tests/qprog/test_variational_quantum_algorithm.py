@@ -10,7 +10,8 @@ import pytest
 import sympy as sp
 from scipy.optimize import OptimizeResult
 
-from divi.circuits import MetaCircuit
+from divi.circuits import dag_to_qasm_body, qscript_to_meta
+from divi.circuits._conversions import _qscript_to_dag
 from divi.pipeline.stages import CircuitSpecStage
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.early_stopping import EarlyStopping, StopReason
@@ -59,20 +60,16 @@ class SampleVQAProgram(VariationalQuantumAlgorithm):
         return self._cost_hamiltonian
 
     def _create_meta_circuit_factories(self):
-        symbols = [sp.Symbol("beta"), sp.symarray("theta", 3)]
+        symbols = [sp.Symbol("beta"), *sp.symarray("theta", 3)]
         ops = [
             qml.RX(symbols[0], wires=0),
-            qml.U3(*symbols[1], wires=1),
+            qml.U3(*symbols[1:], wires=1),
             qml.CNOT(wires=[0, 1]),
         ]
-        source_circuit = qml.tape.QuantumScript(
+        tape = qml.tape.QuantumScript(
             ops=ops, measurements=[qml.expval(self.cost_hamiltonian)]
         )
-        meta_circuit = MetaCircuit(
-            source_circuit=source_circuit,
-            symbols=symbols,
-            precision=self._precision,
-        )
+        meta_circuit = qscript_to_meta(tape, precision=self._precision)
         return {"cost_circuit": meta_circuit}
 
     def run(
@@ -242,6 +239,9 @@ class TestParametersBehavior(BaseVariationalQuantumAlgorithmTest):
             optimizer=mock_optimizer,
             backend=mock_backend,
         )
+        # max_iterations=0 would emit a max_iterations-exhausted warning
+        # before the shape check; bump it so the validation path runs first.
+        program.max_iterations = 1
 
         with pytest.raises(ValueError, match="Initial parameters must have shape"):
             program.run(initial_params=invalid_params)
@@ -577,6 +577,10 @@ class TestCheckpointing:
     def sample_program(self, mock_backend):
         """Create a sample program for testing."""
         program = SampleVQAProgram(circ_count=0, run_time=0.0, backend=mock_backend)
+        # The mock optimizer controls iteration count; set max_iterations high
+        # enough that ``run()``'s default check doesn't short-circuit with a
+        # "max_iterations <= current_iteration" warning.
+        program.max_iterations = 10
         return program
 
     def _setup_optimizer_state(self, program, iteration: int = 1):
@@ -844,22 +848,19 @@ class TestPrecisionFunctionality(BaseVariationalQuantumAlgorithmTest):
         )
         assert program._precision == 12
 
-    def test_precision_used_in_qasm_conversion(self, mocker, mock_backend):
-        """Test that precision is used when creating QASM circuits."""
-        mock_body_to_qasm = mocker.patch("divi.circuits._core._circuit_body_to_qasm")
-        mock_body_to_qasm.return_value = "OPENQASM 2.0;"
-
-        program = SampleVQAProgram(
-            circ_count=1, run_time=0.1, backend=mock_backend, precision=5
+    def test_precision_used_in_qasm_conversion(self):
+        """Precision controls decimal digits in dag_to_qasm_body output."""
+        # Circuit with a known numeric constant (not symbolic).
+        qscript = qml.tape.QuantumScript(
+            ops=[qml.RZ(0.123456789, 0)],
+            measurements=[qml.expval(qml.Z(0))],
         )
+        dag, _, _ = _qscript_to_dag(qscript)
 
-        # Access meta_circuit_factories to trigger creation and QASM conversion
-        _ = program.meta_circuit_factories
-
-        # Verify circuit_body_to_qasm was called with precision=5
-        assert mock_body_to_qasm.called
-        call_kwargs = mock_body_to_qasm.call_args[1]
-        assert call_kwargs["precision"] == 5
+        body5 = dag_to_qasm_body(dag, precision=5)
+        body3 = dag_to_qasm_body(dag, precision=3)
+        assert "0.12346" in body5  # 5 digits, rounded
+        assert "0.123" in body3  # 3 digits, truncated
 
     def test_different_precision_values(self, mock_backend):
         """Test that different precision values work correctly."""

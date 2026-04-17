@@ -4,9 +4,9 @@
 
 """Tests for CircuitSpecStage: single, sequence, and mapping inputs."""
 
-import numpy as np
-import pennylane as qml
 import pytest
+from qiskit import QuantumCircuit
+from qiskit.converters import circuit_to_dag
 
 from divi.circuits import MetaCircuit
 from divi.pipeline.abc import PipelineEnv
@@ -15,11 +15,10 @@ from divi.pipeline.stages import CircuitSpecStage
 
 def _make_meta(n_wires: int = 1) -> MetaCircuit:
     """Create a minimal MetaCircuit for testing."""
-    qscript = qml.tape.QuantumScript(
-        ops=[qml.Hadamard(i) for i in range(n_wires)],
-        measurements=[qml.expval(qml.Z(0))],
-    )
-    return MetaCircuit(source_circuit=qscript, symbols=np.array([], dtype=object))
+    qc = QuantumCircuit(n_wires)
+    for i in range(n_wires):
+        qc.h(i)
+    return MetaCircuit(circuit_bodies=(((), circuit_to_dag(qc)),))
 
 
 class TestCircuitSpecStageExpand:

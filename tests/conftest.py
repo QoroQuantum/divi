@@ -37,6 +37,7 @@ def suppress_quepp_warnings():
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r"QuEPP:.*shallow circuits")
         warnings.filterwarnings("ignore", message=r"QuEPP:.*signal destroyed")
+        warnings.filterwarnings("ignore", message=r"QuEPP Monte Carlo:.*non-diagonal")
         yield
 
 

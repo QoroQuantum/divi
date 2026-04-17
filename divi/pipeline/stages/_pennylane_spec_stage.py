@@ -13,7 +13,7 @@ import sympy as sp
 from pennylane.measurements import CountsMP, ExpectationMP, ProbabilityMP
 from pennylane.workflow.qnode import QNode
 
-from divi.circuits import MetaCircuit
+from divi.circuits import MetaCircuit, qscript_to_meta
 from divi.pipeline.abc import MetaCircuitBatch, PipelineEnv, StageToken
 from divi.pipeline.stages._circuit_spec_stage import CircuitSpecStage
 
@@ -129,9 +129,7 @@ class PennyLaneSpecStage(CircuitSpecStage):
         if isinstance(item, QNode):
             item = PennyLaneSpecStage._qnode_to_qscript(item)
         PennyLaneSpecStage._validate_measurements(item)
-        params = item.get_parameters()
-        symbols = np.array([p for p in params if isinstance(p, sp.Basic)], dtype=object)
-        return MetaCircuit(source_circuit=item, symbols=symbols)
+        return qscript_to_meta(item)
 
     @staticmethod
     def _convert(

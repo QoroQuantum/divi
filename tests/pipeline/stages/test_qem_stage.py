@@ -5,18 +5,22 @@
 """Tests for divi.pipeline.stages._qem_stage."""
 
 from collections.abc import Sequence
-from functools import partial
 from typing import Any
 
-import pennylane as qml
 import pytest
-import sympy as sp
-from cirq.circuits.circuit import Circuit
-from mitiq.zne.inference import ExpFactory
-from mitiq.zne.scaling import fold_global
+from qiskit import QuantumCircuit
+from qiskit.circuit import Parameter
+from qiskit.converters import circuit_to_dag
+from qiskit.dagcircuit import DAGCircuit
 
 from divi.circuits import MetaCircuit
-from divi.circuits.qem import ZNE, QEMContext, QEMProtocol, _NoMitigation
+from divi.circuits.qem import (
+    ZNE,
+    LinearExtrapolator,
+    QEMContext,
+    QEMProtocol,
+    _NoMitigation,
+)
 from divi.circuits.quepp import QuEPP
 from divi.pipeline import CircuitPipeline, ContractViolation
 from divi.pipeline.stages import MeasurementStage, PauliTwirlStage, QEMStage
@@ -31,9 +35,9 @@ class _DummyQEMProtocol(QEMProtocol):
         return "dummy-qem"
 
     def expand(
-        self, cirq_circuit: Circuit, observable: Any | None = None
-    ) -> tuple[tuple[Circuit, ...], QEMContext]:
-        return (cirq_circuit,), QEMContext()
+        self, dag: DAGCircuit, observable: Any | None = None
+    ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
+        return (dag,), QEMContext()
 
     def reduce(self, quantum_results: Sequence[float], context: QEMContext) -> float:
         return float(sum(quantum_results))
@@ -41,26 +45,26 @@ class _DummyQEMProtocol(QEMProtocol):
 
 @pytest.fixture
 def default_zne_protocol():
-    scale_factors = [1, 3, 5]
-    return ZNE(
-        folding_fn=partial(fold_global),
-        scale_factors=scale_factors,
-        extrapolation_factory=ExpFactory(scale_factors=scale_factors),
+    # Odd-integer scales only (GlobalFoldPass constraint).  Linear extrapolator
+    # is deterministic (doesn't need scipy fits) and matches the old ExpFactory
+    # contract closely enough for structural assertions.
+    return ZNE(scale_factors=[1, 3, 5], extrapolator=LinearExtrapolator())
+
+
+@pytest.fixture
+def parametric_meta() -> MetaCircuit:
+    """A 4-qubit parametric MetaCircuit (proxy for the old sample_circuit)."""
+    params = tuple(Parameter(f"w_{i}") for i in range(4))
+    qc = QuantumCircuit(4)
+    for i, p in enumerate(params):
+        qc.ry(p, i)
+    for i, p in enumerate(params):
+        qc.rx(p, i)
+    return MetaCircuit(
+        circuit_bodies=(((), circuit_to_dag(qc)),),
+        parameters=params,
+        measured_wires=(0, 1, 2, 3),
     )
-
-
-@pytest.fixture
-def weights_syms():
-    return sp.symarray("w", 4)
-
-
-@pytest.fixture
-def sample_circuit(weights_syms):
-    ops = [
-        qml.AngleEmbedding(weights_syms, wires=range(4), rotation="Y"),
-        qml.AngleEmbedding(weights_syms, wires=range(4), rotation="X"),
-    ]
-    return qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()])
 
 
 class TestQEMStage:
@@ -72,9 +76,9 @@ class TestQEMStage:
                 self.scale_factors = scale_factors
 
             def expand(
-                self, cirq_circuit: Circuit, observable: Any | None = None
-            ) -> tuple[tuple[Circuit, ...], QEMContext]:
-                return tuple(cirq_circuit for _ in self.scale_factors), QEMContext()
+                self, dag: DAGCircuit, observable: Any | None = None
+            ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
+                return tuple(dag for _ in self.scale_factors), QEMContext()
 
         protocol = _ScaleFactorProtocol((1.0, 2.0, 3.0))
         meta = two_group_meta()
@@ -109,9 +113,9 @@ class TestQEMStage:
                 self.scale_factors = (1.0, 2.0, 3.0)
 
             def expand(
-                self, cirq_circuit: Circuit, observable: Any | None = None
-            ) -> tuple[tuple[Circuit, ...], QEMContext]:
-                return tuple(cirq_circuit for _ in self.scale_factors), QEMContext()
+                self, dag: DAGCircuit, observable: Any | None = None
+            ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
+                return tuple(dag for _ in self.scale_factors), QEMContext()
 
         protocol = _ScaleFactorProtocol()
         stage = QEMStage(protocol=protocol)
@@ -149,15 +153,11 @@ class TestPipelineOutputMetaCircuitWithQEM:
     """Spec: Pipeline with ObservableGroupingStage + QEMStage produces MetaCircuits with correct structure."""
 
     def test_zne_fanout_produces_expected_structure(
-        self, sample_circuit, weights_syms, dummy_pipeline_env, default_zne_protocol
+        self, parametric_meta, dummy_pipeline_env, default_zne_protocol
     ):
-        meta_circuit = MetaCircuit(
-            source_circuit=sample_circuit,
-            symbols=weights_syms,
-        )
         pipeline = CircuitPipeline(
             stages=[
-                DummySpecStage(meta=meta_circuit),
+                DummySpecStage(meta=parametric_meta),
                 QEMStage(protocol=default_zne_protocol),
                 MeasurementStage(),
             ],
@@ -165,26 +165,23 @@ class TestPipelineOutputMetaCircuitWithQEM:
         trace = pipeline.run_forward_pass(42, dummy_pipeline_env)
         assert len(trace.final_batch) == 1
         meta = next(iter(trace.final_batch.values()))
-        assert hasattr(meta, "circuit_body_qasms") and meta.circuit_body_qasms
-        assert len(meta.circuit_body_qasms) >= len(default_zne_protocol.scale_factors)
+        assert meta.circuit_bodies
+        # One DAG body per scale factor.
+        assert len(meta.circuit_bodies) >= len(default_zne_protocol.scale_factors)
 
     def test_no_mitigation_single_body_per_key(
-        self, sample_circuit, weights_syms, dummy_pipeline_env
+        self, parametric_meta, dummy_pipeline_env
     ):
-        meta_circuit = MetaCircuit(
-            source_circuit=sample_circuit,
-            symbols=weights_syms,
-        )
         pipeline = CircuitPipeline(
             stages=[
-                DummySpecStage(meta=meta_circuit),
+                DummySpecStage(meta=parametric_meta),
                 MeasurementStage(),
                 QEMStage(protocol=_NoMitigation()),
             ],
         )
         trace = pipeline.run_forward_pass(42, dummy_pipeline_env)
         for key, meta in trace.final_batch.items():
-            assert len(meta.circuit_body_qasms) == 1
+            assert len(meta.circuit_bodies) == 1
             assert meta.measurement_qasms
 
 
