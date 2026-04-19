@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+import warnings
 from collections import Counter, defaultdict
 from collections.abc import Callable, Sequence
 from typing import Any
@@ -20,6 +21,7 @@ from divi.pipeline._postprocessing import (
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
+    DiviPerformanceWarning,
     ExpansionResult,
     PipelineEnv,
     PipelineResult,
@@ -206,15 +208,27 @@ class CircuitPipeline:
     All stages pass keyed MetaCircuit batches.
     """
 
-    def __init__(self, stages: Sequence[Stage]) -> None:
+    def __init__(
+        self,
+        stages: Sequence[Stage],
+        *,
+        suppress_performance_warnings: bool = False,
+    ) -> None:
         """
         Args:
             stages: Ordered sequence of stages (non-empty). Must contain exactly one
                 SpecStage first, then zero or more BundleStages.
+            suppress_performance_warnings: When True, silence any
+                :class:`~divi.pipeline.DiviPerformanceWarning` emitted by
+                individual stages' ``validate`` hooks during pipeline
+                construction. Hard validation errors still raise.
         """
         _validate_stage_order(stages)
-        for i, stage in enumerate(stages):
-            stage.validate(before=tuple(stages[:i]), after=tuple(stages[i + 1 :]))
+        with warnings.catch_warnings():
+            if suppress_performance_warnings:
+                warnings.simplefilter("ignore", DiviPerformanceWarning)
+            for i, stage in enumerate(stages):
+                stage.validate(before=tuple(stages[:i]), after=tuple(stages[i + 1 :]))
         self._stages = list(stages)
         self._forward_cache: dict[tuple[int, tuple[int, ...]], PipelineTrace] = {}
 

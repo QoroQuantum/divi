@@ -24,7 +24,7 @@ import pytest
 from dotenv import load_dotenv
 
 from divi.backends import CircuitRunner, ExecutionResult, MaestroSimulator
-from divi.pipeline import PipelineEnv
+from divi.pipeline import DiviPerformanceWarning, PipelineEnv
 
 
 @pytest.fixture
@@ -38,6 +38,19 @@ def suppress_quepp_warnings():
         warnings.filterwarnings("ignore", message=r"QuEPP:.*shallow circuits")
         warnings.filterwarnings("ignore", message=r"QuEPP:.*signal destroyed")
         warnings.filterwarnings("ignore", message=r"QuEPP Monte Carlo:.*non-diagonal")
+        yield
+
+
+@pytest.fixture
+def suppress_pipeline_perf_warnings():
+    """Suppress :class:`~divi.pipeline.DiviPerformanceWarning` during a test.
+
+    Use when constructing a pipeline that intentionally exercises a
+    legal-but-slow configuration (e.g. exhaustive QuEPP sampling or
+    ParameterBindingStage placed before QEMStage).
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DiviPerformanceWarning)
         yield
 
 

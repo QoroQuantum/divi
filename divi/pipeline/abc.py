@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -20,6 +21,7 @@ from divi.typing import AxisLabel
 __all__ = [
     "BundleStage",
     "ContractViolation",
+    "DiviPerformanceWarning",
     "ExpansionResult",
     "NodeKey",
     "PipelineEnv",
@@ -151,6 +153,17 @@ class ContractViolation(ValueError):
     """Raised when a stage's positional requirements are not met."""
 
 
+class DiviPerformanceWarning(UserWarning):
+    """Emitted when a pipeline configuration is known to be slow.
+
+    Raised from :class:`~divi.pipeline.CircuitPipeline` at construction
+    time for configurations that are legal but suboptimal (e.g. exhaustive
+    QuEPP sampling, ParameterBindingStage placed before QEMStage).
+    Suppress by passing ``suppress_performance_warnings=True`` to the
+    pipeline constructor, or by filtering on this class at module level.
+    """
+
+
 class Stage(ABC, Generic[InT, OutT]):
     """Abstract base for pipeline stages."""
 
@@ -174,9 +187,16 @@ class Stage(ABC, Generic[InT, OutT]):
     def validate(self, before: tuple["Stage", ...], after: tuple["Stage", ...]) -> None:
         """Check this stage's position in the pipeline.
 
-        Called by :class:`~divi.pipeline.CircuitPipeline` at construction time, after
-        structural validation.  Override to inspect neighboring stages
-        and raise :class:`~divi.pipeline.abc.ContractViolation` if preconditions are not met.
+        Called by :class:`~divi.pipeline.CircuitPipeline` at construction
+        time after structural validation.  Override to inspect neighboring
+        stages and either:
+
+        * raise :class:`~divi.pipeline.abc.ContractViolation` if
+          preconditions are not met, or
+        * emit :class:`~divi.pipeline.DiviPerformanceWarning` for
+          legal-but-slow configurations (e.g. expensive internal options,
+          known-bad neighboring stages).  Suppressed at the pipeline level
+          via ``CircuitPipeline(..., suppress_performance_warnings=True)``.
 
         Args:
             before: Stages before this one in expand order.
@@ -232,7 +252,35 @@ class SpecStage(Stage[InT, MetaCircuitBatch], ABC):
 
 
 class BundleStage(Stage[MetaCircuitBatch, ExpansionResult], ABC):
-    """Abstract stage that transforms a keyed MetaCircuit batch."""
+    """Abstract stage that transforms a keyed MetaCircuit batch.
+
+    Subclasses declare two orthogonal contracts via class properties:
+
+    - :attr:`handles_measurement` — this stage emits measurement QASMs and
+      sets :attr:`~divi.pipeline.abc.PipelineEnv.result_format`.
+    - :attr:`consumes_dag_bodies` — this stage reads (and typically mutates)
+      ``meta.circuit_bodies`` during ``expand``.
+
+    The pipeline is transformative by design: every ``BundleStage`` is
+    expected to either handle measurement or consume body DAGs (or both).
+    Declaring neither is almost always a misuse of the abstraction —
+    metadata-only or logging passes belong outside the ``Stage`` ABC —
+    so constructing such a stage emits a ``UserWarning`` at instantiation
+    time.
+    """
+
+    def __init__(self, name: str) -> None:
+        super().__init__(name=name)
+        if not self.handles_measurement and not self.consumes_dag_bodies:
+            warnings.warn(
+                f"BundleStage {type(self).__name__!r} declares neither "
+                "measurement handling nor DAG consumption; it is a no-op "
+                "in the pipeline. If this is intentional, set one of "
+                "handles_measurement / consumes_dag_bodies to True; "
+                "otherwise use a non-Stage mechanism (hook, middleware).",
+                UserWarning,
+                stacklevel=3,
+            )
 
     @property
     def handles_measurement(self) -> bool:
@@ -241,6 +289,20 @@ class BundleStage(Stage[MetaCircuitBatch, ExpansionResult], ABC):
         Pipelines must contain at least one stage with this property True.
         """
         return False
+
+    @property
+    def consumes_dag_bodies(self) -> bool:
+        """Whether this stage reads ``meta.circuit_bodies`` during ``expand``.
+
+        Default ``True`` — the safe assumption. Override with ``False`` on
+        stages that only inspect measurement/observable metadata
+        (e.g. :class:`~divi.pipeline.stages.MeasurementStage`,
+        :class:`~divi.pipeline.stages.PCECostStage`).
+        Used by
+        :class:`~divi.pipeline.stages.ParameterBindingStage` to decide
+        whether it can stay on the fast QASM-template render path.
+        """
+        return True
 
     @abstractmethod
     def expand(

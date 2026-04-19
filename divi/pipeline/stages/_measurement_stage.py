@@ -75,6 +75,12 @@ class MeasurementStage(BundleStage):
         return True
 
     @property
+    def consumes_dag_bodies(self) -> bool:
+        # Reads only ``meta.observable`` / ``meta.measured_wires`` /
+        # ``meta.n_qubits`` — never touches body DAG contents.
+        return False
+
+    @property
     def stateful(self) -> bool:
         return False
 

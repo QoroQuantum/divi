@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import warnings
 from typing import Any
 
 import numpy as np
@@ -13,6 +14,7 @@ from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
     ContractViolation,
+    DiviPerformanceWarning,
     ExpansionResult,
     MetaCircuitBatch,
     PipelineEnv,
@@ -67,6 +69,16 @@ class QEMStage(BundleStage):
                     f"QEMStage with n_twirls={self.protocol.n_twirls} "
                     "requires a PauliTwirlStage after it in the pipeline."
                 )
+
+        if isinstance(self.protocol, QuEPP) and self.protocol._sampling == "exhaustive":
+            warnings.warn(
+                "QuEPP with sampling='exhaustive' enumerates all Pauli "
+                "paths and scales poorly with truncation_order and circuit "
+                "depth. Consider sampling='montecarlo' unless you "
+                "specifically need deterministic enumeration.",
+                DiviPerformanceWarning,
+                stacklevel=3,
+            )
 
     def _expand_bodies(
         self, meta: MetaCircuit

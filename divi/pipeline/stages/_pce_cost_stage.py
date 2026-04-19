@@ -205,6 +205,12 @@ class PCECostStage(BundleStage):
     def handles_measurement(self) -> bool:
         return True
 
+    @property
+    def consumes_dag_bodies(self) -> bool:
+        # Reads only ``meta.n_qubits`` to build the Z-basis measurement
+        # QASM — never inspects body gate content.
+        return False
+
     def expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
     ) -> tuple[ExpansionResult, StageToken]:

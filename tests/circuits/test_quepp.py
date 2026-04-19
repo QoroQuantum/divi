@@ -811,7 +811,8 @@ class TestQuEPPPipelineIntegration:
                         )
                     ),
                     MeasurementStage(),
-                ]
+                ],
+                suppress_performance_warnings=True,
             )
             .run(
                 meta,
