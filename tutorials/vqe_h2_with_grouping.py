@@ -14,9 +14,11 @@ if __name__ == "__main__":
         symbols=["H", "H"], coordinates=np.array([(0, 0, 0), (0, 0, 0.5)])
     )
 
-    # Create backend with deterministic execution enabled for debugging
     backend = get_backend(
-        simulation_seed=1997, shots=500, _deterministic_execution=True
+        simulation_seed=1997,
+        shots=500,
+        force_sampling=True,
+        _deterministic_execution=True,
     )
 
     vqe_input = dict(
@@ -42,9 +44,13 @@ if __name__ == "__main__":
         grouping_strategy="qwc",
     )
 
-    vqe_problem_no_grouping.run()
-    vqe_problem_wire_grouping.run()
-    vqe_problem_qwc_grouping.run()
+    for problem in [
+        vqe_problem_no_grouping,
+        vqe_problem_wire_grouping,
+        vqe_problem_qwc_grouping,
+    ]:
+        backend.set_seed(1997)
+        problem.run()
 
     no_grouping_measurement_groups = vqe_problem_no_grouping.meta_circuit_factories[
         "cost_circuit"

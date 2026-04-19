@@ -52,6 +52,13 @@ def _param_bind_output(trace: PipelineTrace) -> MetaCircuit:
     return next(iter(pb_expansion.batch.values()))
 
 
+def _stage_output(trace: PipelineTrace, stage_name: str) -> MetaCircuit:
+    expansion = next(
+        exp for exp in trace.stage_expansions if exp.stage_name == stage_name
+    )
+    return next(iter(expansion.batch.values()))
+
+
 @pytest.fixture
 def meta() -> MetaCircuit:
     return _two_qubit_parametric_meta()
@@ -231,3 +238,47 @@ class TestFastSlowEquivalence:
             fast_qc = qasm2.loads(qreg_header + fast_body)
             slow_qc = dag_to_circuit(slow_dag)
             assert Operator(fast_qc).equiv(Operator(slow_qc))
+
+    def test_pauli_twirl_fast_and_structural_outputs_match(
+        self, dummy_pipeline_env, meta, param_sets
+    ):
+        twirl_seed = 9
+        n_twirls = 3
+
+        fast_pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=meta),
+                ParameterBindingStage(),
+                PauliTwirlStage(n_twirls=n_twirls, seed=twirl_seed),
+                MeasurementStage(),
+            ]
+        )
+        structural_pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=meta),
+                ParameterBindingStage(),
+                PauliTwirlStage(n_twirls=n_twirls, seed=twirl_seed),
+                QEMStage(),
+                MeasurementStage(),
+            ]
+        )
+        env = PipelineEnv(backend=dummy_pipeline_env.backend, param_sets=param_sets)
+
+        fast_trace = fast_pipeline.run_forward_pass("x", env)
+        structural_trace = structural_pipeline.run_forward_pass("x", env)
+        fast_twirl_meta = _stage_output(fast_trace, "PauliTwirlStage")
+        structural_twirl_meta = _stage_output(structural_trace, "PauliTwirlStage")
+
+        qreg_header = 'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[2];\ncreg c[2];\n'
+        fast_ops = {
+            tag: Operator(qasm2.loads(qreg_header + body))
+            for tag, body in fast_twirl_meta.bound_circuit_bodies
+        }
+        structural_ops = {
+            tag: Operator(dag_to_circuit(dag))
+            for tag, dag in structural_twirl_meta.circuit_bodies
+        }
+
+        assert set(fast_ops.keys()) == set(structural_ops.keys())
+        for tag in fast_ops:
+            assert fast_ops[tag].equiv(structural_ops[tag])

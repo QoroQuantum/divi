@@ -2,16 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Error mitigation comparison: ZNE vs QuEPP.
+"""Single-run error-mitigation comparison: ZNE vs QuEPP.
 
-First optimizes H₂ ground-state energy on a noiseless backend, then
-evaluates the optimal parameters under four configurations to isolate
-mitigation quality from optimizer convergence:
+The script runs four VQE configurations with the same optimization budget
+and fixed seeds:
 
-  1. Exact (statevector, noiseless)
+  1. Noiseless baseline
   2. Noisy (shot-based with depolarizing noise)
   3. ZNE-mitigated (global folding + Richardson extrapolation)
   4. QuEPP-mitigated (CPT + Pauli twirling + rescaling)
+
+All values come from one deterministic run per method.
 """
 
 import numpy as np
@@ -38,78 +39,83 @@ if __name__ == "__main__":
     )
     noise_model.add_all_qubit_quantum_error(depolarizing_error(0.01, 2), ["cx", "ecr"])
 
-    # --- 1. Optimize on the noiseless backend to find ground-state params ---
-    vqe_exact = VQE(
-        molecule=mol,
-        n_layers=1,
-        ansatz=HartreeFockAnsatz(),
-        optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
-        max_iterations=20,
-        seed=1997,
-        backend=QiskitSimulator(),
-    )
-    vqe_exact.run()
-    optimal_params = vqe_exact.best_params.reshape(1, -1)
-    exact_energy = vqe_exact.best_loss
-    print(f"Exact ground-state energy: {exact_energy:.6f}")
+    optimizer_seed = 1997
+    noiseless_simulator_seed = 4242
+    noisy_simulator_seed = 4343
+    zne_simulator_seed = 4444
+    quepp_simulator_seed = 4545
+    max_iterations = 20
 
-    # --- Evaluate at the same optimal params under different noise/mitigation ---
-    # max_iterations=1 so the optimizer returns after a single cost evaluation
-    # at the supplied initial_params (no further optimization steps).
+    # --- Shared VQE settings across methods ---
     common = dict(
         molecule=mol,
         n_layers=1,
         ansatz=HartreeFockAnsatz(),
         optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
-        max_iterations=1,
+        max_iterations=max_iterations,
+        seed=optimizer_seed,
     )
 
-    # --- 2. Noisy (0.5% depolarizing) ---
+    vqe_noiseless = VQE(
+        backend=QiskitSimulator(
+            n_processes=1,
+            simulation_seed=noiseless_simulator_seed,
+        ),
+        **common,
+    )
     vqe_noisy = VQE(
-        backend=QiskitSimulator(n_processes=8, noise_model=noise_model), **common
+        backend=QiskitSimulator(
+            n_processes=1,
+            simulation_seed=noisy_simulator_seed,
+            noise_model=noise_model,
+        ),
+        **common,
     )
-    vqe_noisy.run(initial_params=optimal_params)
-
-    # --- 3. ZNE-mitigated ---
-    # GlobalFoldPass supports odd integer scale factors only (1, 3, 5, ...).
-    scale_factors = [1.0, 3.0, 5.0]
     vqe_zne = VQE(
-        backend=QiskitSimulator(n_processes=8, noise_model=noise_model),
+        backend=QiskitSimulator(
+            n_processes=1,
+            simulation_seed=zne_simulator_seed,
+            noise_model=noise_model,
+        ),
         qem_protocol=ZNE(
-            scale_factors=scale_factors,
+            # GlobalFoldPass supports odd integer factors.
+            scale_factors=[1.0, 3.0, 5.0],
             extrapolator=RichardsonExtrapolator(),
         ),
         **common,
     )
-    vqe_zne.run(initial_params=optimal_params)
-
-    # --- 4. QuEPP-mitigated (with Pauli twirling) ---
     vqe_quepp = VQE(
-        backend=QiskitSimulator(n_processes=8, noise_model=noise_model),
+        backend=QiskitSimulator(
+            n_processes=1,
+            simulation_seed=quepp_simulator_seed,
+            noise_model=noise_model,
+        ),
         qem_protocol=QuEPP(truncation_order=1, n_twirls=3),
         **common,
     )
 
-    # Dry run shows the per-stage circuit fan-out including QEM + twirling
-    vqe_quepp.dry_run()
+    runs = [
+        ("Noiseless baseline", vqe_noiseless),
+        ("Noisy (no mitigation)", vqe_noisy),
+        ("ZNE-mitigated", vqe_zne),
+        ("QuEPP-mitigated", vqe_quepp),
+    ]
+    for _, vqe in runs:
+        vqe.run()
 
-    vqe_quepp.run(initial_params=optimal_params)
+    reference_energy = vqe_noiseless.best_loss
+    print(f"Noiseless baseline energy: {reference_energy:.6f}")
 
     # --- Print comparison table ---
-    table = Table(title="Error Mitigation Comparison (H₂ ground state)")
+    table = Table(title="Error Mitigation Comparison (single deterministic runs)")
     table.add_column("Method", style="bold")
     table.add_column("Energy", justify="right")
-    table.add_column("Error", justify="right")
+    table.add_column("|Error vs baseline|", justify="right")
     table.add_column("# Circuits", justify="right")
 
-    for name, vqe in [
-        ("Exact (statevector)", vqe_exact),
-        ("Noisy (no mitigation)", vqe_noisy),
-        ("ZNE-Mitigated", vqe_zne),
-        ("QuEPP-Mitigated", vqe_quepp),
-    ]:
+    for name, vqe in runs:
         energy = vqe.best_loss
-        error = abs(energy - exact_energy)
+        error = abs(energy - reference_energy)
         table.add_row(
             name,
             f"{energy:.6f}",

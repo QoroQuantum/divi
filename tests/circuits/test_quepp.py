@@ -12,7 +12,7 @@ import pytest
 import stim
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter, ParameterExpression
-from qiskit.converters import circuit_to_dag
+from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit.quantum_info import Operator, SparsePauliOp, Statevector
 from qiskit_aer.noise import NoiseModel
 
@@ -253,6 +253,61 @@ class TestEnumeratePathsDFS:
             rots, tabs, obs_terms, max_order=2, coefficient_threshold=0.5
         )
         assert len(paths_pruned) <= len(paths_all)
+
+
+class TestPathDagConstruction:
+    def test_rotation_indices_align_with_working_dag_topology(self):
+        qc = QuantumCircuit(2)
+        qc.h(0)
+        qc.rx(0.2, 0)
+        qc.cx(0, 1)
+        qc.rz(-0.4, 1)
+
+        obs = SparsePauliOp.from_list([("ZZ", 1.0)])
+        prep = QuEPP._preprocess(circuit_to_dag(qc), obs)
+        working_dag = circuit_to_dag(prep.working)
+        topo_nodes = list(working_dag.topological_op_nodes())
+
+        for rot in prep.rotations:
+            node = topo_nodes[rot.inst_idx]
+            assert node.op.name == f"r{rot.axis}"
+            assert working_dag.find_bit(node.qargs[0]).index == rot.qubit_idx
+
+    def test_single_rotation_branch_semantics(self):
+        qc = QuantumCircuit(1)
+        qc.rx(0.3, 0)
+        working_dag = circuit_to_dag(qc)
+        rotations = _extract_rotation_gates(qc)
+        rotation_positions = [(rot.inst_idx, rot) for rot in rotations]
+
+        skip_dag = _build_path_dag(working_dag, rotation_positions, (0,))
+        replace_dag = _build_path_dag(working_dag, rotation_positions, (1,))
+
+        identity_qc = QuantumCircuit(1)
+        clifford_qc = QuantumCircuit(1)
+        clifford_qc.rx(np.pi / 2, 0)
+
+        assert Operator(dag_to_circuit(skip_dag)).equiv(Operator(identity_qc))
+        assert Operator(dag_to_circuit(replace_dag)).equiv(Operator(clifford_qc))
+
+    def test_branch_tuple_order_matches_rotation_order(self):
+        qc = QuantumCircuit(1)
+        qc.rx(0.3, 0)
+        qc.rz(0.4, 0)
+        working_dag = circuit_to_dag(qc)
+        rotations = _extract_rotation_gates(qc)
+        rotation_positions = [(rot.inst_idx, rot) for rot in rotations]
+
+        first_only = _build_path_dag(working_dag, rotation_positions, (1, 0))
+        second_only = _build_path_dag(working_dag, rotation_positions, (0, 1))
+
+        first_expected = QuantumCircuit(1)
+        first_expected.rx(np.pi / 2, 0)
+        second_expected = QuantumCircuit(1)
+        second_expected.rz(np.pi / 2, 0)
+
+        assert Operator(dag_to_circuit(first_only)).equiv(Operator(first_expected))
+        assert Operator(dag_to_circuit(second_only)).equiv(Operator(second_expected))
 
 
 class TestSamplePathsMonteCarlo:
@@ -680,6 +735,24 @@ class TestQuEPPSignalDestructionExtended:
         """QEMProtocol.post_reduce() is a no-op that does not raise."""
         ctx = {"_signal_destroyed": True}
         _NoMitigation().post_reduce([ctx])  # should not raise
+
+
+class TestComputeEta:
+    def test_uses_median_ratio_with_valid_mask(self):
+        classical = np.array([1.0, 0.0, -2.0, 4.0])
+        noisy = np.array([0.8, 999.0, -1.0, 2.4])
+        eta = QuEPP.compute_eta(classical, noisy, min_eta=0.1)
+        assert eta == pytest.approx(0.6)
+
+    def test_returns_none_when_all_classical_values_are_near_zero(self):
+        classical = np.array([0.0, 1e-14, -1e-15])
+        noisy = np.array([0.5, 0.2, -0.1])
+        assert QuEPP.compute_eta(classical, noisy, min_eta=0.1) is None
+
+    def test_returns_none_when_eta_is_below_threshold(self):
+        classical = np.array([1.0, -2.0, 4.0])
+        noisy = np.array([0.09, -0.18, 0.36])
+        assert QuEPP.compute_eta(classical, noisy, min_eta=0.1) is None
 
 
 # ---------------------------------------------------------------------------
