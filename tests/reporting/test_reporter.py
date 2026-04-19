@@ -132,6 +132,32 @@ class TestQueueProgressReporter:
         }
         mock_queue.put.assert_called_once_with(expected_payload)
 
+    def test_info_with_pipeline_stage(self, mock_queue):
+        """Classical-pipeline stage progress is forwarded as a structured key."""
+        reporter = QueueProgressReporter(job_id="test_job", progress_queue=mock_queue)
+        reporter.info("", pipeline_stage="TrotterSpecStage")
+        expected_payload = {
+            "job_id": "test_job",
+            "progress": 0,
+            "message": "",
+            "poll_attempt": 0,
+            "pipeline_stage": "TrotterSpecStage",
+        }
+        mock_queue.put.assert_called_once_with(expected_payload)
+
+    def test_info_with_pipeline_stage_none_clears(self, mock_queue):
+        """``pipeline_stage=None`` is still forwarded so downstream consumers can clear."""
+        reporter = QueueProgressReporter(job_id="test_job", progress_queue=mock_queue)
+        reporter.info("", pipeline_stage=None)
+        expected_payload = {
+            "job_id": "test_job",
+            "progress": 0,
+            "message": "",
+            "poll_attempt": 0,
+            "pipeline_stage": None,
+        }
+        mock_queue.put.assert_called_once_with(expected_payload)
+
 
 class TestLoggingProgressReporter:
     """
@@ -259,6 +285,78 @@ class TestLoggingProgressReporter:
         mock_status.update.assert_called_once()
         update_msg = mock_status.update.call_args[0][0]
         assert "Doing something else" in update_msg
+
+    def test_info_with_pipeline_stage_concatenates_with_iteration(self, mocker):
+        """Pipeline-stage progress appears alongside the current iteration context."""
+        mock_console_class = mocker.patch("divi.reporting._reporter.Console")
+        mock_console = mock_console_class.return_value
+        mock_status = mocker.MagicMock()
+        mock_console.status.return_value = mock_status
+
+        reporter = LoggingProgressReporter()
+        reporter.info("Computing Cost", iteration=0)
+        reporter.info("", pipeline_stage="TrotterSpecStage")
+
+        assert mock_status.update.call_count >= 1
+        update_msg = mock_status.update.call_args[0][0]
+        assert "Iteration #1" in update_msg
+        assert "Computing Cost" in update_msg
+        assert "Pipeline: TrotterSpecStage" in update_msg
+        assert " - " in update_msg
+
+    def test_info_pipeline_stage_updates_across_stages(self, mocker):
+        """Successive pipeline-stage messages overwrite the same spinner slot."""
+        mock_console_class = mocker.patch("divi.reporting._reporter.Console")
+        mock_console = mock_console_class.return_value
+        mock_status = mocker.MagicMock()
+        mock_console.status.return_value = mock_status
+
+        reporter = LoggingProgressReporter()
+        reporter.info("Computing Cost", iteration=0)
+        reporter.info("", pipeline_stage="TrotterSpecStage")
+        reporter.info("", pipeline_stage="MeasurementStage")
+
+        update_msg = mock_status.update.call_args[0][0]
+        assert "Pipeline: MeasurementStage" in update_msg
+        assert "Pipeline: TrotterSpecStage" not in update_msg
+
+    def test_info_pipeline_stage_cleared_by_polling(self, mocker):
+        """Polling events clear the pipeline-stage slot since execution has started."""
+        mock_console_class = mocker.patch("divi.reporting._reporter.Console")
+        mock_console = mock_console_class.return_value
+        mock_status = mocker.MagicMock()
+        mock_console.status.return_value = mock_status
+
+        reporter = LoggingProgressReporter()
+        reporter.info("Computing Cost", iteration=0)
+        reporter.info("", pipeline_stage="MeasurementStage")
+
+        reporter.info(
+            "",
+            poll_attempt=1,
+            max_retries=10,
+            service_job_id="abc-123",
+            job_status="RUNNING",
+        )
+        update_msg = mock_status.update.call_args[0][0]
+        assert "Pipeline:" not in update_msg
+        assert "Polling attempt" in update_msg
+
+    def test_info_pipeline_stage_none_clears(self, mocker):
+        """Passing ``pipeline_stage=None`` removes the slot from the spinner."""
+        mock_console_class = mocker.patch("divi.reporting._reporter.Console")
+        mock_console = mock_console_class.return_value
+        mock_status = mocker.MagicMock()
+        mock_console.status.return_value = mock_status
+
+        reporter = LoggingProgressReporter()
+        reporter.info("Computing Cost", iteration=0)
+        reporter.info("", pipeline_stage="MeasurementStage")
+        reporter.info("", pipeline_stage=None)
+
+        update_msg = mock_status.update.call_args[0][0]
+        assert "Pipeline:" not in update_msg
+        assert "Computing Cost" in update_msg
 
     def test_info_iteration_and_polling_concatenation(self, mocker):
         """

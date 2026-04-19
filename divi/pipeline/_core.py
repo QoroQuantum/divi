@@ -75,6 +75,17 @@ def format_pipeline_tree(trace: PipelineTrace) -> None:
     Console(no_color=True).print(root)
 
 
+def _report_pipeline_stage(env: "PipelineEnv", stage_name: str | None) -> None:
+    """Emit a classical-pipeline progress message, if a reporter is attached.
+
+    Passing ``None`` clears any lingering pipeline-stage indicator once
+    the forward pass is complete and execution is about to begin.
+    """
+    if env.reporter is None:
+        return
+    env.reporter.info(message="", pipeline_stage=stage_name)
+
+
 def _wait_for_async_result(backend, execution_result, env):
     """Poll an async backend until job completes, then fetch results.
 
@@ -284,6 +295,10 @@ class CircuitPipeline:
 
         env.artifacts.update(plan.env_artifacts)
 
+        # Forward pass is done — clear the classical-pipeline indicator so
+        # the spinner shows only execution/polling state from here on.
+        _report_pipeline_stage(env, None)
+
         raw = execute_fn(plan, env)
 
         # Convert raw backend results into the canonical format declared
@@ -314,6 +329,7 @@ class CircuitPipeline:
             expansions: list[ExpansionResult] = []
 
             for stage in bundle_stages:
+                _report_pipeline_stage(env, stage.name)
                 expansion_result, token = stage.expand(data, env)
                 data = expansion_result.batch
                 tokens.append(token)
@@ -339,6 +355,7 @@ class CircuitPipeline:
 
         if cached is None or first_stateful_idx == 0:
             spec_stage = self._stages[0]
+            _report_pipeline_stage(env, spec_stage.name)
             data, spec_token = spec_stage.expand(initial_spec, env)
 
             initial_batch_snapshot = data

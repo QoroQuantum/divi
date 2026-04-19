@@ -63,6 +63,9 @@ class QueueProgressReporter(ProgressReporter):
             # For any other message, explicitly reset the polling attempt counter.
             payload["poll_attempt"] = 0
 
+        if "pipeline_stage" in kwargs:
+            payload["pipeline_stage"] = kwargs["pipeline_stage"]
+
         self._queue.put(payload)
 
 
@@ -82,6 +85,7 @@ class LoggingProgressReporter(ProgressReporter):
         self._console = Console(file=None)  # file=None uses stdout, same as RichHandler
         self._status = None  # Track active status for overwriting messages
         self._current_msg = None  # Track current main message
+        self._pipeline_msg = None  # Track current classical-pipeline stage message
         self._polling_msg = None  # Track current polling message
 
     def _ensure_atexit_hook(self):
@@ -106,13 +110,16 @@ class LoggingProgressReporter(ProgressReporter):
             self._status.__exit__(None, None, None)
             self._status = None
         self._current_msg = None
+        self._pipeline_msg = None
         self._polling_msg = None
 
     def _build_status_msg(self) -> str:
-        """Build combined status message from current message and polling info."""
+        """Build combined status message from current message, pipeline stage, and polling info."""
         parts = []
         if self._current_msg:
             parts.append(self._current_msg)
+        if self._pipeline_msg:
+            parts.append(self._pipeline_msg)
         if self._polling_msg:
             parts.append(self._polling_msg)
         return " - ".join(parts) if parts else ""
@@ -149,12 +156,25 @@ class LoggingProgressReporter(ProgressReporter):
             return
         # A special check for iteration updates to use Rich's status for overwriting
         if "poll_attempt" in kwargs:
+            # Execution has begun — classical-pipeline stages are done,
+            # clear that slot so only the polling context remains.
+            self._pipeline_msg = None
             self._polling_msg = (
                 f"Job [cyan]{kwargs['service_job_id'].split('-')[0]}[/cyan] is "
                 f"{kwargs['job_status']}. Polling attempt {kwargs['poll_attempt']} / "
                 f"{kwargs['max_retries']}"
             )
             self._update_or_create_status()
+            return
+
+        # Classical-pipeline progress — runs before execution.  Concatenated
+        # with the current iteration message so the user sees both the
+        # surrounding activity and the specific stage being generated.
+        if "pipeline_stage" in kwargs:
+            stage = kwargs["pipeline_stage"]
+            self._pipeline_msg = f"Pipeline: {stage}" if stage else None
+            if self._build_status_msg():
+                self._update_or_create_status()
             return
 
         # Use Rich's status for iteration messages to enable overwriting
