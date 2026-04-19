@@ -45,8 +45,8 @@ class ParameterBindingStage(BundleStage):
       ``consumes_dag_bodies=False``). Each body DAG is serialised once to
       a parametric QASM string, wrapped in a
       :class:`~divi.circuits.QASMTemplate`, and rendered per parameter
-      set into ``meta.bound_circuit_bodies``.
-      :mod:`~divi.pipeline._compilation` reads the strings directly.
+      set into ``meta.bound_circuit_bodies``.  The pipeline's compilation
+      pass then reads the bound strings directly.
     * **Slow path** — when any downstream stage consumes body DAGs (e.g.
       ``PauliTwirlStage`` or ``QEMStage``). For each body variant and
       parameter set, :meth:`qiskit.circuit.QuantumCircuit.assign_parameters`

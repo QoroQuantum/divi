@@ -32,10 +32,10 @@ class QEMProtocol(ABC):
     Subclasses implement two methods that mirror the pipeline's
     expand/reduce lifecycle:
 
-    * ``expand`` — given a Qiskit :class:`DAGCircuit` (and optionally the
-      observable being measured), return the DAGs to execute on quantum
-      hardware and a ``QEMContext`` carrying any classically-computed
-      side-channel data needed during postprocessing.
+    * ``expand`` — given a Qiskit :class:`~qiskit.dagcircuit.DAGCircuit`
+      (and optionally the observable being measured), return the DAGs to
+      execute on quantum hardware and a ``QEMContext`` carrying any
+      classically-computed side-channel data needed during postprocessing.
     * ``reduce`` — given the context from ``expand`` and the quantum
       results, produce a single mitigated expectation value.
     """
@@ -198,10 +198,10 @@ class ZNE(QEMProtocol):
             The default ``folding_fn`` requires odd integers; custom
             folding functions may accept arbitrary floats.
         folding_fn: ``(DAGCircuit, scale) → DAGCircuit``.
-            Defaults to global unitary folding via
-            :class:`~divi.circuits._qem_passes.GlobalFoldPass`.  Pass a
-            custom callable for local folding, random gate folding, or
-            any other noise-scaling strategy.
+            Defaults to global unitary folding via an internal
+            ``GlobalFoldPass`` transformation.  Pass a custom callable
+            for local folding, random gate folding, or any other
+            noise-scaling strategy.
         extrapolator: Any object with an
             ``extrapolate(scale_factors, results) -> float`` method.
             No subclassing required — just implement the method.

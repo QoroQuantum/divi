@@ -257,7 +257,7 @@ class BundleStage(Stage[MetaCircuitBatch, ExpansionResult], ABC):
     Subclasses declare two orthogonal contracts via class properties:
 
     - :attr:`handles_measurement` — this stage emits measurement QASMs and
-      sets :attr:`~divi.pipeline.abc.PipelineEnv.result_format`.
+      sets :attr:`~divi.pipeline.PipelineEnv.result_format`.
     - :attr:`consumes_dag_bodies` — this stage reads (and typically mutates)
       ``meta.circuit_bodies`` during ``expand``.
 

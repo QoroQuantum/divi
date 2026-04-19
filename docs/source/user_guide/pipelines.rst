@@ -383,15 +383,12 @@ Bell-state circuit and measures its probabilities:
 
 .. code-block:: python
 
-   import numpy as np
-   import pennylane as qml
+   from qiskit import QuantumCircuit
+   from qiskit.converters import circuit_to_dag
+
    from divi.circuits import MetaCircuit
    from divi.pipeline import CircuitPipeline, PipelineEnv, SpecStage
-   from divi.pipeline.abc import (
-       ChildResults,
-       MetaCircuitBatch,
-       StageToken,
-   )
+   from divi.pipeline.abc import MetaCircuitBatch
    from divi.pipeline.stages import MeasurementStage
    from divi.backends import MaestroSimulator
 
@@ -410,13 +407,17 @@ Bell-state circuit and measures its probabilities:
            return False         # Deterministic — safe to cache
 
        def expand(self, spec, env):
-           qscript = qml.tape.QuantumScript(
-               ops=[qml.Hadamard(0), qml.CNOT(wires=[0, 1])],
-               measurements=[qml.probs()],
-           )
+           # Build the Bell-state circuit as a Qiskit QuantumCircuit and
+           # lower it to a DAG — MetaCircuit stores tagged DAGs as its
+           # working IR. The empty tuple ``()`` is this body's tag
+           # (``QASMTag``); downstream stages extend the tag as they
+           # rewrite the body.
+           qc = QuantumCircuit(2)
+           qc.h(0)
+           qc.cx(0, 1)
            meta = MetaCircuit(
-               source_circuit=qscript,
-               symbols=np.array([], dtype=object),
+               circuit_bodies=(((), circuit_to_dag(qc)),),
+               measured_wires=(0, 1),   # probs() over both qubits
            )
 
            # NodeKey: tuple of (axis_name, value); one entry for a single circuit

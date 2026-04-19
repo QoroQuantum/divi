@@ -17,10 +17,11 @@ from divi.typing import QASMTag
 class MetaCircuit:
     """Logical circuit IR.
 
-    Stores one or more tagged :class:`DAGCircuit` bodies together with the
-    parameters that appear in them, optional observable / measured-wire
-    metadata, and the (already-serialised) measurement QASM strings
-    produced by :class:`~divi.pipeline.stages.MeasurementStage`.
+    Stores one or more tagged :class:`~qiskit.dagcircuit.DAGCircuit`
+    bodies together with the parameters that appear in them, optional
+    observable / measured-wire metadata, and the (already-serialised)
+    measurement QASM strings produced by
+    :class:`~divi.pipeline.stages.MeasurementStage`.
 
     The DAGCircuit bodies are the long-lived working IR for all stages that
     mutate circuits at the gate level (QEM folding, Pauli twirling, QuEPP
@@ -53,11 +54,12 @@ class MetaCircuit:
     bound_circuit_bodies: tuple[tuple[QASMTag, str], ...] = ()
     """Bound (parameter-free) OpenQASM 2.0 body strings produced by
     :class:`~divi.pipeline.stages.ParameterBindingStage`.  When non-empty,
-    :mod:`~divi.pipeline._compilation` consumes these instead of
-    re-serialising ``circuit_bodies`` per submission."""
+    the pipeline's compilation pass consumes these instead of re-serialising
+    ``circuit_bodies`` per submission."""
 
     measurement_groups: tuple[tuple[object, ...], ...] = ()
-    """Cached grouped observables set by :class:`MeasurementStage`."""
+    """Cached grouped observables set by
+    :class:`~divi.pipeline.stages.MeasurementStage`."""
 
     precision: int = 8
     """Number of decimal places for numeric parameter values in QASM conversion."""

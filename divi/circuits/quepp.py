@@ -823,9 +823,10 @@ class QuEPP(QEMProtocol):
             pipeline builder appends a ``PauliTwirlStage``.  Default ``10``.
         bind_before_mitigation: When ``False`` (default), QuEPP runs on the
             parametric circuit and produces symbolically-weighted paths
-            (using Qiskit :class:`ParameterExpression` arithmetic) that
-            are later bound by the parameter-binding stage.  Set to ``True``
-            to bind parameters first and mitigate per-parameter-set.
+            (using Qiskit :class:`~qiskit.circuit.ParameterExpression`
+            arithmetic) that are later bound by the parameter-binding
+            stage.  Set to ``True`` to bind parameters first and mitigate
+            per-parameter-set.
     """
 
     def __init__(
@@ -1027,9 +1028,9 @@ class QuEPP(QEMProtocol):
     ) -> None:
         """Substitute concrete parameter values into symbolic weight expressions.
 
-        *symbols* are the Qiskit :class:`Parameter` objects referenced by
-        the weight expressions.  *param_values* are the corresponding
-        numeric values (same positional order).
+        *symbols* are the Qiskit :class:`~qiskit.circuit.Parameter`
+        objects referenced by the weight expressions.  *param_values* are
+        the corresponding numeric values (same positional order).
         """
         binding = {p: float(v) for p, v in zip(symbols, param_values)}
         context["weights"] = np.array(

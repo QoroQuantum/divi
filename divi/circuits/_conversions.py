@@ -218,19 +218,19 @@ def dag_to_qasm_body(dag: DAGCircuit, precision: int = 8) -> str:
 
     No preamble, no ``qreg``/``creg`` declarations — just gate instructions,
     one per line.  Parametric gate parameters are rendered via their
-    :class:`ParameterExpression` ``str()`` form, producing identifier
-    placeholders that :class:`~divi.circuits._qasm_template.QASMTemplate`
-    substitutes at bind time.  Numeric parameters are formatted to
-    *precision* decimal places.
+    :class:`~qiskit.circuit.ParameterExpression` ``str()`` form, producing
+    identifier placeholders that
+    :class:`~divi.circuits.QASMTemplate` substitutes at bind time.  Numeric
+    parameters are formatted to *precision* decimal places.
 
     Args:
-        dag: Qiskit DAG containing only gates from
-            :data:`_QISKIT_TO_QASM2` (single quantum register assumed).
+        dag: Qiskit DAG containing only gates from the internal
+            ``_QISKIT_TO_QASM2`` whitelist (single quantum register assumed).
         precision: Decimal places used for numeric gate parameters.
 
     Raises:
-        ValueError: if *dag* contains an instruction outside
-            :data:`_QISKIT_TO_QASM2`.
+        ValueError: if *dag* contains an instruction outside the
+            ``_QISKIT_TO_QASM2`` whitelist.
     """
     qubit_index = {q: i for i, q in enumerate(dag.qubits)}
     parts: list[str] = []
@@ -358,9 +358,10 @@ def qscript_to_meta(
     """Shared helper: convert a PennyLane ``QuantumScript`` to a ``MetaCircuit``.
 
     Used by :class:`~divi.pipeline.stages.PennyLaneSpecStage` and by the
-    program-layer factories in :mod:`divi.qprog.algorithms`.  The helper
-    uses :func:`_qscript_to_dag` for the circuit body and
-    :func:`observable_to_sparse_pauli_op` for the measurement observable.
+    program-layer factories in ``divi.qprog.algorithms``.  Builds the
+    circuit body from the qscript and derives the measurement observable
+    (:class:`~qiskit.quantum_info.SparsePauliOp`) or measured-wire tuple
+    from the qscript's single measurement.
 
     Args:
         qscript: PennyLane ``QuantumScript`` with exactly one measurement

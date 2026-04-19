@@ -274,40 +274,47 @@ Circuit Architecture
 Divi uses a two-tier circuit system for maximum efficiency:
 
 :class:`~divi.circuits.MetaCircuit`
-   Symbolic circuit templates with parameters. You provide a PennyLane
-   :class:`~pennylane.tape.QuantumScript` (one measurement) and an array of
-   sympy symbols; the circuit body is converted to OpenQASM once and reused:
+   Divi's logical circuit IR. A :class:`~divi.circuits.MetaCircuit` holds
+   one or more tagged Qiskit :class:`~qiskit.dagcircuit.DAGCircuit` bodies,
+   the ordered :class:`~qiskit.circuit.Parameter` objects referenced inside
+   them, and optional measurement metadata (a
+   :class:`~qiskit.quantum_info.SparsePauliOp` observable for
+   expectation-value mode, or a tuple of measured qubit indices for
+   probabilities/counts).
 
-   .. code-block:: python
+   The DAG is the long-lived working IR: gate-level stages such as QEM
+   folding, Pauli twirling, and QuEPP path enumeration rewrite DAGs in
+   place. OpenQASM 2.0 text is produced lazily — only once per parametric
+   body (inside :class:`~divi.pipeline.stages.ParameterBindingStage` when it
+   builds a :class:`~divi.circuits.QASMTemplate`) and once at compilation
+   time when bound bodies are concatenated with pre-serialised measurement
+   QASMs.
 
-      from divi.circuits import MetaCircuit
-      import pennylane as qml
-      import sympy as sp
+   You rarely construct a :class:`~divi.circuits.MetaCircuit` by hand. In
+   practice, every pipeline starts with a :class:`~divi.pipeline.SpecStage`
+   that produces the batch for you:
 
-      # Define symbolic parameters
-      symbols = sp.symarray("theta", 3)
+   - :class:`~divi.pipeline.stages.PennyLaneSpecStage` — PennyLane
+     ``QuantumScript`` / ``QNode`` → MetaCircuit
+   - :class:`~divi.pipeline.stages.QiskitSpecStage` — Qiskit
+     ``QuantumCircuit`` → MetaCircuit
+   - :class:`~divi.pipeline.stages.TrotterSpecStage` — Hamiltonian →
+     MetaCircuit batch via a Trotterization strategy
+   - :class:`~divi.pipeline.stages.CircuitSpecStage` — pass an existing
+     :class:`~divi.circuits.MetaCircuit` (or batch) straight through
 
-      # Create parameterized circuit (exactly one measurement required)
-      ops = [
-          qml.RY(symbols[0], wires=0),
-          qml.RX(symbols[1], wires=1),
-          qml.CNOT(wires=[0, 1]),
-          qml.RY(symbols[2], wires=0),
-      ]
-      tape = qml.tape.QuantumScript(ops=ops, measurements=[qml.expval(qml.PauliZ(0))])
-
-      # Create the logical circuit template (QASM is computed in __post_init__)
-      meta_circuit = MetaCircuit(source_circuit=tape, symbols=symbols)
-
-   When you run algorithms like :class:`~divi.qprog.algorithms.VQE` or :class:`~divi.qprog.algorithms.QAOA`, the pipeline creates
-   :class:`~divi.circuits.MetaCircuit`\ s and binds parameter values to produce concrete OpenQASM
-   circuits that are submitted to the backend.
+   For a runnable walkthrough, see
+   `standalone_pipeline.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/standalone_pipeline.py>`_.
+   If you need to assemble a :class:`~divi.circuits.MetaCircuit` directly
+   (e.g. to write a custom :class:`~divi.pipeline.SpecStage`), see
+   :doc:`pipelines`.
 
 Concrete circuits
-   The pipeline turns :class:`~divi.circuits.MetaCircuit` batches into keyed OpenQASM strings (label
-   → QASM) and passes them to the backend. Parameter binding, measurement grouping,
-   and optional error-mitigation stages happen inside the pipeline; see :doc:`pipelines`
-   for details.
+   When the pipeline submits work to the backend, each
+   :class:`~divi.circuits.MetaCircuit` in the batch is lowered to keyed
+   OpenQASM strings (label → QASM). Parameter binding, measurement
+   grouping, and optional error-mitigation stages happen inside the
+   pipeline; see :doc:`pipelines` for details.
 
 Creating Custom Quantum Circuits
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

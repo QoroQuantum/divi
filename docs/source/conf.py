@@ -155,6 +155,13 @@ nitpick_ignore_regex = [
     # the source type hint used the alias form.
     (r"py:class", r"np\..*"),
     (r"py:class", r"npt\..*"),
+    # ``numpy.typing.NDArray`` and friends are implemented as
+    # ``TypeAliasType`` instances living in the private ``numpy._typing``
+    # subpackage, which is not in numpy's objects.inv.  When
+    # ``sphinx-autodoc-typehints`` resolves these annotations it follows
+    # the chain and emits a cross-reference to the private class — a
+    # third-party ecosystem limitation with no source-side fix.
+    (r"py:class", r"numpy\._typing\..*"),
     # ``scipy.optimize.OptimizeResult`` — bare name from autodoc-typehints.
     (r"py:class", r"^OptimizeResult$"),
 ]
