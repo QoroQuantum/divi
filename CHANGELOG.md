@@ -9,74 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.11.0](https://github.com/QoroQuantum/divi/compare/v0.10.0...v0.11.0) (2026-04-20)
 
-
 ### ✨ Added
 
-* add pipeline dry-run introspection and clean up QEM coupling ([d65d54e](https://github.com/QoroQuantum/divi/commit/d65d54e099de5c7b42d9f8c189b7580e98c39b9b))
-* add QuEPP error mitigation protocol and redesign QEM interface ([6fab751](https://github.com/QoroQuantum/divi/commit/6fab7515efc7cc8d10bd4884f2a709d85b5f5a83))
-* **circuits:** add LocalFoldPass and fractional ZNE folding ([e8fc658](https://github.com/QoroQuantum/divi/commit/e8fc658780ed9b3837656e671a11ddb6e3685914))
-* DAG IR ([#76](https://github.com/QoroQuantum/divi/issues/76)) ([229ec28](https://github.com/QoroQuantum/divi/commit/229ec2841b53482ecae3a4747dda224b14210ab1))
-* **divi-ai:** add RAG-based documentation assistant ([#71](https://github.com/QoroQuantum/divi/issues/71)) ([b051ff2](https://github.com/QoroQuantum/divi/commit/b051ff28c1e9330d78d434b09e5261dc058cb003))
-* **pipeline:** add design-by-contract stage validation ([087e775](https://github.com/QoroQuantum/divi/commit/087e7755d84d8c130bf731eeb8fe857aff9fe2f1))
-* **pipeline:** add PennyLane/Qiskit spec stages, optimize stage ordering, and support symbolic QuEPP ([c8498ee](https://github.com/QoroQuantum/divi/commit/c8498eee597291276ae0d43166f1cdeec6159a18))
-* **QuEPP:** generate proper warnings when the signal gets destroyed by too much noise ([5d13847](https://github.com/QoroQuantum/divi/commit/5d13847bf23451688d8cce37ee6683f7dfa3147e))
-* **quepp:** switch default sampling to Monte Carlo ([287a7d3](https://github.com/QoroQuantum/divi/commit/287a7d34e75bcc114d1df2bdf8a08904845e774f))
-* **viz:** add loss-landscape scans and param history for PCA workflows ([cbd3f4a](https://github.com/QoroQuantum/divi/commit/cbd3f4ace8e9440eeb563da0d7f14500abd4f0d8))
-* **viz:** extend landscape toolkit with analysis, NEB, and gradient methods ([c967efe](https://github.com/QoroQuantum/divi/commit/c967efea1de60aa8cca44918b9a7bd6ad1c9ff7b))
-
+* **quepp:** introduce QuEPP (Quantum Enhanced Pauli Propagation) error mitigation protocol, faithful to the original paper, with Monte Carlo sampling, noise-destruction warnings, controlled-rotation decomposition, and symbolic pipeline support; error mitigation is now available on `QuantumProgram` in addition to ensemble workflows ([6fab751](https://github.com/QoroQuantum/divi/commit/6fab7515efc7cc8d10bd4884f2a709d85b5f5a83), [287a7d3](https://github.com/QoroQuantum/divi/commit/287a7d34e75bcc114d1df2bdf8a08904845e774f), [5d13847](https://github.com/QoroQuantum/divi/commit/5d13847bf23451688d8cce37ee6683f7dfa3147e), [efb3003](https://github.com/QoroQuantum/divi/commit/efb30036f69a330c479be03ad2af7c0bd74c9637), [c8498ee](https://github.com/QoroQuantum/divi/commit/c8498eee597291276ae0d43166f1cdeec6159a18), [a41b90e](https://github.com/QoroQuantum/divi/commit/a41b90e755cd25fa4e2e2de2dccdfa63eaabaa89), [08c991d](https://github.com/QoroQuantum/divi/commit/08c991d4641be079e2976e95d5be40dcdc7537c2), [d91713d](https://github.com/QoroQuantum/divi/commit/d91713d2aae53875940eba4110a129cb5da28441), [b19856c](https://github.com/QoroQuantum/divi/commit/b19856c4f94e42444337fb2e5e5c91431a1492b2), [75dfb3a](https://github.com/QoroQuantum/divi/commit/75dfb3ae10f9a52323693be8fade240bbc29e6d0), [cdc0bfa](https://github.com/QoroQuantum/divi/commit/cdc0bfad79eb35650e2b0755dbc665f05b46bd00))
+* **pipeline:** add dry-run introspection, upfront stage validation that catches misconfigurations before execution instead of mid-run, PennyLane/Qiskit spec stages, and optimized stage ordering ([d65d54e](https://github.com/QoroQuantum/divi/commit/d65d54e099de5c7b42d9f8c189b7580e98c39b9b), [087e775](https://github.com/QoroQuantum/divi/commit/087e7755d84d8c130bf731eeb8fe857aff9fe2f1), [c8498ee](https://github.com/QoroQuantum/divi/commit/c8498eee597291276ae0d43166f1cdeec6159a18), [9a5eea3](https://github.com/QoroQuantum/divi/commit/9a5eea34ce078345e5022ff12d316032e37851a2))
+* **circuits:** add `LocalFoldPass` and fractional ZNE folding for fine-grained noise amplification control ([e8fc658](https://github.com/QoroQuantum/divi/commit/e8fc658780ed9b3837656e671a11ddb6e3685914))
+* **circuits:** introduce DAG IR as the internal circuit representation ([#76](https://github.com/QoroQuantum/divi/issues/76), [229ec28](https://github.com/QoroQuantum/divi/commit/229ec2841b53482ecae3a4747dda224b14210ab1))
+* **divi-ai:** add RAG-based documentation assistant ([#71](https://github.com/QoroQuantum/divi/issues/71), [b051ff2](https://github.com/QoroQuantum/divi/commit/b051ff28c1e9330d78d434b09e5261dc058cb003), [9db0bac](https://github.com/QoroQuantum/divi/commit/9db0bac7b44b41a5c3a0681e21bf4ab5a3817a10), [2b86702](https://github.com/QoroQuantum/divi/commit/2b867026cd07316ee8022883f8d31777aa11e93c))
+* **viz:** add a loss-landscape toolkit with 1D/2D/PCA param-history scans, Nudged Elastic Band (NEB) path finding, and gradient-based analysis methods ([cbd3f4a](https://github.com/QoroQuantum/divi/commit/cbd3f4ace8e9440eeb563da0d7f14500abd4f0d8), [c967efe](https://github.com/QoroQuantum/divi/commit/c967efea1de60aa8cca44918b9a7bd6ad1c9ff7b))
 
 ### 🐛 Fixed
 
-* address code review findings ([cdc0bfa](https://github.com/QoroQuantum/divi/commit/cdc0bfad79eb35650e2b0755dbc665f05b46bd00))
-* **backends:** handle &gt;64-qubit histograms in QH1 decoder ([37be427](https://github.com/QoroQuantum/divi/commit/37be427782ada673386d138a7758353bd08eda11))
-* **circuits:** reject QASM3 headers in validation parser ([3c1d93f](https://github.com/QoroQuantum/divi/commit/3c1d93f59816911387370b5dc6313a1f361f13eb))
-* disable_logging() now suppresses Rich progress spinners ([0fd84d8](https://github.com/QoroQuantum/divi/commit/0fd84d8e5264f9be30c3e93d82d2ed3e1603f7e0))
-* **divi-ai:** fix indentation issue ([9db0bac](https://github.com/QoroQuantum/divi/commit/9db0bac7b44b41a5c3a0681e21bf4ab5a3817a10))
-* dry run minor print bug ([9a5eea3](https://github.com/QoroQuantum/divi/commit/9a5eea34ce078345e5022ff12d316032e37851a2))
-* **ensemble:** handle FAILED job status with robust shutdown ([5de823c](https://github.com/QoroQuantum/divi/commit/5de823c378d1a82e21db146389e42e77d8ec9cd1))
-* expand error mitigation suppor to QuantumProgram ([efb3003](https://github.com/QoroQuantum/divi/commit/efb30036f69a330c479be03ad2af7c0bd74c9637))
-* fix failing QoroService test ([3fcf04e](https://github.com/QoroQuantum/divi/commit/3fcf04ec4aceeedcc6928f8c8ce6c8e200d7b662))
-* Fixing a sign error and adding a normalization aspect aligned wi… ([08c991d](https://github.com/QoroQuantum/divi/commit/08c991d4641be079e2976e95d5be40dcdc7537c2))
-* Fixing a sign error and adding a normalization aspect aligned with the original paper. ([a41b90e](https://github.com/QoroQuantum/divi/commit/a41b90e755cd25fa4e2e2de2dccdfa63eaabaa89))
-* **quepp:** add missing controlled rotation decomposition ([d91713d](https://github.com/QoroQuantum/divi/commit/d91713d2aae53875940eba4110a129cb5da28441))
-* **quepp:** address code review findings across QEM pipeline ([75dfb3a](https://github.com/QoroQuantum/divi/commit/75dfb3ae10f9a52323693be8fade240bbc29e6d0))
-* **quepp:** reorder pipeline stages so η estimation uses matching observables ([b19856c](https://github.com/QoroQuantum/divi/commit/b19856c4f94e42444337fb2e5e5c91431a1492b2))
-* **tutorials:** move initial_params from constructor to run() ([c9d0ab8](https://github.com/QoroQuantum/divi/commit/c9d0ab8286e3b07c122745039c4e45592ac2ea38))
-
+* **backends:** handle >64-qubit histograms in the QH1 decoder ([37be427](https://github.com/QoroQuantum/divi/commit/37be427782ada673386d138a7758353bd08eda11))
+* **circuits:** reject QASM3 headers in the validation parser ([3c1d93f](https://github.com/QoroQuantum/divi/commit/3c1d93f59816911387370b5dc6313a1f361f13eb))
+* **ensemble:** handle `FAILED` job status with a clean shutdown instead of hanging ([5de823c](https://github.com/QoroQuantum/divi/commit/5de823c378d1a82e21db146389e42e77d8ec9cd1))
+* `disable_logging()` now suppresses Rich progress spinners in addition to log output ([0fd84d8](https://github.com/QoroQuantum/divi/commit/0fd84d8e5264f9be30c3e93d82d2ed3e1603f7e0))
 
 ### 🔄 Changed
 
-* **problems:** remove dead code, fix ensemble double-count bug, harden graph partitioning ([022eef2](https://github.com/QoroQuantum/divi/commit/022eef27a804c4a18f34492a03d3eb8c9dbf2472))
-* **qprog:** change run() to return self instead of (count, time) tuple ([e03a6b1](https://github.com/QoroQuantum/divi/commit/e03a6b1e216c9db49d81e6f28ff1bfa2e757d55a))
-* **qprog:** validate constructor kwargs strictly ([d7532af](https://github.com/QoroQuantum/divi/commit/d7532afbb893e6bc72079e57f70d9737478c106d))
-* **qprog:** validate constructor kwargs strictly ([6975d44](https://github.com/QoroQuantum/divi/commit/6975d447d8b4968bed0c25a86565bbadfcac0030))
-* **vqa:** clarify algorithm override boundaries ([c0e8ef2](https://github.com/QoroQuantum/divi/commit/c0e8ef24e5f43eef47240623532fae265edf3a3a))
-* **vqa:** remove mutable current parameter state ([abd0bee](https://github.com/QoroQuantum/divi/commit/abd0bee8ee04e3c970547fabf2a22bbd8aea3733))
-
+* **qprog:** `run()` now returns `self` instead of a `(count, time)` tuple, enabling method chaining; constructor kwargs are now validated strictly and unknown arguments raise an error ([e03a6b1](https://github.com/QoroQuantum/divi/commit/e03a6b1e216c9db49d81e6f28ff1bfa2e757d55a), [d7532af](https://github.com/QoroQuantum/divi/commit/d7532afbb893e6bc72079e57f70d9737478c106d), [6975d44](https://github.com/QoroQuantum/divi/commit/6975d447d8b4968bed0c25a86565bbadfcac0030))
+* **problems:** remove dead code, fix ensemble solution double-counting, and harden graph partitioning edge cases ([022eef2](https://github.com/QoroQuantum/divi/commit/022eef27a804c4a18f34492a03d3eb8c9dbf2472))
+* **vqa:** remove mutable `curr_params` property in favor of explicit `run(initial_params=...)`; clarify algorithm override boundaries ([abd0bee](https://github.com/QoroQuantum/divi/commit/abd0bee8ee04e3c970547fabf2a22bbd8aea3733), [c0e8ef2](https://github.com/QoroQuantum/divi/commit/c0e8ef24e5f43eef47240623532fae265edf3a3a))
 
 ### 🔧 Internal
 
-* add manual dry-run wheel build workflow [skip ci] ([4ccf7e4](https://github.com/QoroQuantum/divi/commit/4ccf7e42175101595ebc341404887065da301001))
-* add pre-commit hook for tutorials CI runner dry-run ([f99ab61](https://github.com/QoroQuantum/divi/commit/f99ab617ce24c4ee40ff26f4f7b003f57a2b8c13))
-* add Python 3.13 to testing matrix ([d8966ab](https://github.com/QoroQuantum/divi/commit/d8966ab8e22f2831c09e257a5ed7ec00e3282835))
-* add RTD configuration ([ca2a876](https://github.com/QoroQuantum/divi/commit/ca2a8764a8b02d947c5a1df734c62350fca81c6f))
-* **divi-ai:** add unit tests and fix source bugs ([076a857](https://github.com/QoroQuantum/divi/commit/076a857e63ee180e4d9205be529b45552c70ffb7))
-* merge main into orqviz ([9be6396](https://github.com/QoroQuantum/divi/commit/9be63967d3f64892dbf86b80cac08b4707c01e73))
-* Merge pull request [#68](https://github.com/QoroQuantum/divi/issues/68) from QoroQuantum/quepp ([31c5453](https://github.com/QoroQuantum/divi/commit/31c5453dfcea128a5a6ff7e9de8192d31f4c0dc3))
-* Merge pull request [#70](https://github.com/QoroQuantum/divi/issues/70) from QoroQuantum/fix/quepp-paper-alignment ([08c991d](https://github.com/QoroQuantum/divi/commit/08c991d4641be079e2976e95d5be40dcdc7537c2))
-* Merge pull request [#73](https://github.com/QoroQuantum/divi/issues/73) from QoroQuantum/pipeline-dbc ([39871a2](https://github.com/QoroQuantum/divi/commit/39871a283066e3ad18dcf0caf36dcf7713917bf8))
-* Merge pull request [#75](https://github.com/QoroQuantum/divi/issues/75) from QoroQuantum/orqviz ([3d396b6](https://github.com/QoroQuantum/divi/commit/3d396b6d26d36ef24df672c57db07bd95d86a149))
-* Migrate Dep Manager to uv ([#72](https://github.com/QoroQuantum/divi/issues/72)) ([74aa03e](https://github.com/QoroQuantum/divi/commit/74aa03e61929bb624af08c7c54b543e0c176afbf))
+* migrate dependency manager from Poetry to uv ([#72](https://github.com/QoroQuantum/divi/issues/72), [74aa03e](https://github.com/QoroQuantum/divi/commit/74aa03e61929bb624af08c7c54b543e0c176afbf))
+* add Python 3.13 to the testing matrix ([d8966ab](https://github.com/QoroQuantum/divi/commit/d8966ab8e22f2831c09e257a5ed7ec00e3282835))
+* add Read the Docs configuration and manual dry-run wheel build workflow ([ca2a876](https://github.com/QoroQuantum/divi/commit/ca2a8764a8b02d947c5a1df734c62350fca81c6f), [4ccf7e4](https://github.com/QoroQuantum/divi/commit/4ccf7e42175101595ebc341404887065da301001))
+* **divi-ai:** add unit tests and pre-commit hook for tutorials CI dry-run ([076a857](https://github.com/QoroQuantum/divi/commit/076a857e63ee180e4d9205be529b45552c70ffb7), [f99ab61](https://github.com/QoroQuantum/divi/commit/f99ab617ce24c4ee40ff26f4f7b003f57a2b8c13))
 * remove unnecessary postponed-annotation imports ([b52a550](https://github.com/QoroQuantum/divi/commit/b52a550869ce6a9335c108961614a006835386a0))
-
 
 ### 📝 Documentation
 
-* add missing docs ([a7165f5](https://github.com/QoroQuantum/divi/commit/a7165f52e464e043acffd8a29a6f351502450891))
-* audit docs, tutorials, and public docstrings ([c9ea962](https://github.com/QoroQuantum/divi/commit/c9ea962d44dafd1fd8d9c4779ec4060820348634))
-* **divi-ai:** add documentation and fix stale references ([2b86702](https://github.com/QoroQuantum/divi/commit/2b867026cd07316ee8022883f8d31777aa11e93c))
-* overhaul user guide, restructure API reference, add snippet testing ([4ef988a](https://github.com/QoroQuantum/divi/commit/4ef988a072c94309aebd79d0c5e9319d7adbf1ce))
-* speed up ensemble and trajectory snippet tests ([8106560](https://github.com/QoroQuantum/divi/commit/8106560de60c4aa6c2f0eb239c924feb8999bed9))
+* overhaul user guide, restructure API reference, audit public docstrings, and add snippet testing ([4ef988a](https://github.com/QoroQuantum/divi/commit/4ef988a072c94309aebd79d0c5e9319d7adbf1ce), [c9ea962](https://github.com/QoroQuantum/divi/commit/c9ea962d44dafd1fd8d9c4779ec4060820348634), [a7165f5](https://github.com/QoroQuantum/divi/commit/a7165f52e464e043acffd8a29a6f351502450891), [8106560](https://github.com/QoroQuantum/divi/commit/8106560de60c4aa6c2f0eb239c924feb8999bed9))
 
 ## [0.10.0](https://github.com/QoroQuantum/divi/compare/v0.9.0...v0.10.0) (2026-03-29)
 
