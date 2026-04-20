@@ -16,7 +16,7 @@ The Monte Carlo [#kalos2008]_ method in Divi is a stochastic global optimization
 
 Monte Carlo optimization can help identify promising regions in high-dimensional parameter spaces before applying more refined methods.
 
-In Divi, one can configure the optimizer; providing the size of the population ``n_param_sets``, and the number of well-performing parameter sets to carry on to the subsequent iteration ``n_best_sets``. For :class:`~divi.qprog.optimizers.MonteCarloOptimizer`, pass ``population_size`` (and optionally ``n_best_sets``) in the constructor; the read-only property ``n_param_sets`` then reflects the population size.
+Configure :class:`~divi.qprog.optimizers.MonteCarloOptimizer` by passing ``population_size`` (the number of parameter sets evaluated per iteration) and optionally ``n_best_sets`` (how many top-performing sets are carried to the next iteration) to its constructor. The read-only ``n_param_sets`` property then reflects the configured population size.
 
 SciPy Optimizers
 ----------------
@@ -109,7 +109,7 @@ parameters) where you want full visibility into the loss landscape.
 Use Grid Search when:
 
 - You have a small number of variational parameters (e.g. QAOA with 1 layer: γ and β).
-- You want to visualise the loss landscape.
+- You want to visualize the loss landscape.
 - You need a deterministic, reproducible sweep.
 - You want to warm-start a variational optimizer from the best grid point.
 
@@ -283,7 +283,7 @@ This exposes optimizer-specific diagnostics such as:
 
 .. note::
 
-   ``optimize_result`` is always populated after :meth:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm.run` completes.
+   ``optimize_result`` is always populated after :meth:`~divi.qprog.VariationalQuantumAlgorithm.run` completes.
    When optimization converges normally, ``success`` is ``True``.
    When early stopping or cancellation terminates the run, ``success`` is
    ``False`` and the ``message`` field describes the reason.  The available

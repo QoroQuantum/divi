@@ -198,7 +198,7 @@ def ensure_model(size: str) -> Path:
     Raises
     ------
     KeyError
-        If *size* is not a recognised model key.
+        If *size* is not a recognized model key.
     """
     spec = AVAILABLE_MODELS[size]
     local_dir = MODELS_DIR / size

@@ -43,7 +43,7 @@ class EarlyStopping:
             as an improvement.  Must be ≥ 0.
         grad_norm_threshold: If not ``None``, stop when the L2 norm of the
             gradient drops below this value.  Only effective when the
-            optimiser exposes gradient information (e.g.
+            optimizer exposes gradient information (e.g.
             ``ScipyOptimizer`` with ``L_BFGS_B``).
         variance_window: Number of recent cost values used to compute the
             rolling variance.  Must be ≥ 2.

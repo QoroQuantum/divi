@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 def _strip_id_gates(qasm: str) -> str:
     """Remove ``id`` (identity) gates from QASM.
 
-    Maestro's QASM parser does not recognise the ``id`` gate.
+    Maestro's QASM parser does not recognize the ``id`` gate.
     Since identity gates are no-ops, stripping them is safe.
     """
     return re.sub(r"id\s+q\[\d+\]\s*;\n?", "", qasm)

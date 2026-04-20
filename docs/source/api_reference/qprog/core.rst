@@ -2,7 +2,7 @@ Core Architecture
 =================
 
 :class:`~divi.qprog.QuantumProgram` is the abstract base shared by every quantum
-algorithm in Divi. :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm` extends it
+algorithm in Divi. :class:`~divi.qprog.VariationalQuantumAlgorithm` extends it
 with the variational-parameter machinery used by VQE, QAOA, PCE, and
 :class:`~divi.qprog.algorithms.CustomVQA`. :class:`~divi.qprog.SolutionEntry` is the
 uniform return type for decoded solutions.
@@ -27,6 +27,6 @@ Type Aliases
    :no-value:
 
    Accepted values for
-   :meth:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm.param_history`:
+   :meth:`~divi.qprog.VariationalQuantumAlgorithm.param_history`:
    ``"all_evaluated"`` returns every parameter vector seen during optimization;
    ``"best_per_iteration"`` returns only the best vector from each iteration.

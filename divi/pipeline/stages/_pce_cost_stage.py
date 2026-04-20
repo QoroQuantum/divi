@@ -52,8 +52,8 @@ def _evaluate_binary_polynomial(
     """Evaluate binary polynomial energy for one or many assignments.
 
     Degree-1 terms are evaluated as ``c * x_i²`` rather than ``c * x_i`` to
-    undo the linearisation (``x_i² → x_i``) applied during polynomial
-    normalisation.  This is a no-op for binary values (``x² = x``) but
+    undo the linearization (``x_i² → x_i``) applied during polynomial
+    normalization.  This is a no-op for binary values (``x² = x``) but
     produces correct energies for continuous soft-relaxed values.
 
     Args:

@@ -32,7 +32,7 @@ python qaoa_max_clique.py --local-qiskit --force-sampling
 
 ### Chemistry
 
-- **`vqe_h2_molecule_local.py`** - Basic VQE calculation for H2 molecule
+- **`vqe_h2_molecule.py`** - Basic VQE calculation for H2 molecule
 - **`vqe_h2_with_grouping.py`** - VQE with wire grouping for efficiency
 - **`vqe_hyperparameter_sweep.py`** - Hyperparameter sweeps across multiple molecules
 
@@ -46,10 +46,10 @@ python qaoa_max_clique.py --local-qiskit --force-sampling
 
 ### Optimization (Graph Problems)
 
-- **`qaoa_max_clique_local.py`** - Basic QAOA for maximum clique problem
+- **`qaoa_max_clique.py`** - Basic QAOA for maximum clique problem
 - **`qaoa_max_weight_matching.py`** - Maximum-weight matching with QAOA (standalone and partitioned)
 - **`qaoa_graph_partitioning.py`** - Large graph partitioning with QAOA
-- **`qaoa_qdrift_local.py`** - QAOA with QDrift randomized Trotterization
+- **`qaoa_qdrift.py`** - QAOA with QDrift randomized Trotterization
 - **`iterative_qaoa.py`** - Iterative QAOA with parameter interpolation vs standard QAOA
 
 ### Optimization (Routing)
@@ -57,25 +57,19 @@ python qaoa_max_clique.py --local-qiskit --force-sampling
 - **`ce_qaoa_tsp.py`** - TSP with Constraint-Enhanced QAOA: grid search, parameter transfer, feasibility stats, repair
 - **`ce_qaoa_cvrp.py`** - CVRP with CE-QAOA: one-hot vs binary encoding, qubit projections, VRP file parser
 
-### Quadratic Programming
-
-- **`qaoa_quadratic_program.py`** - QAOA for quadratic programming
-
 ### Error Mitigation
 
-- **`zne_local.py`** - VQE with Zero Noise Extrapolation error mitigation
+- **`error_mitigation.py`** - VQE with Zero Noise Extrapolation (ZNE) and probabilistic error amplification
 
 ### Dynamics
 
-- **`time_evolution_local.py`** - Hamiltonian time evolution with probs, observables, and QDrift
+- **`time_evolution.py`** - Hamiltonian time evolution with probs, observables, and QDrift
+- **`time_evolution_trajectory.py`** - Time-evolution trajectories over multiple time points
 
-### Standalone Pipelines
+### Bring Your Own Circuit
 
-- **`standalone_pipeline.py`** - Using PennyLane and Qiskit circuits directly in pipelines
-
-### Custom Workflows
-
-- **`custom_vqa.py`** - CustomVQA with QuantumScript and Qiskit inputs
+- **`standalone_pipeline.py`** - One-shot execution of PennyLane / Qiskit circuits through `CircuitPipeline` directly (no `QuantumProgram` wrapper, no optimization loop)
+- **`custom_vqa.py`** - Full variational optimization over a user-supplied parametric PennyLane / Qiskit circuit via `CustomVQA`
 
 ### Visualization
 

@@ -933,7 +933,7 @@ class QuEPP(QEMProtocol):
 
     @staticmethod
     def _preprocess(dag: DAGCircuit, observable: SparsePauliOp) -> "_PreprocResult":
-        """Decompose, normalise, extract rotations + tableaus + obs terms."""
+        """Decompose, normalize, extract rotations + tableaus + obs terms."""
         target_qc = dag_to_circuit(dag)
         n_qubits = target_qc.num_qubits
         decomposed = _decompose_controlled_rotations(target_qc)

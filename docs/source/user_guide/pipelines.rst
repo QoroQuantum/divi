@@ -237,7 +237,7 @@ placing a fan-out stage late keeps the batch small for as long as possible.
 The most concrete example is ``ParameterBindingStage``.  By default it runs
 last — structural stages process the symbolic circuit once instead of repeating
 work per parameter set.  When using
-:class:`~divi.circuits.quepp.QuEPP`, this means QuEPP cannot normalise rotation
+:class:`~divi.circuits.quepp.QuEPP`, this means QuEPP cannot normalize rotation
 angles, which may produce more Pauli paths.  If this is a concern (check with
 ``dry_run()``), set ``QuEPP(bind_before_mitigation=True)`` to bind parameters
 first — fewer paths per circuit, but more total mitigation work across parameter
@@ -266,7 +266,7 @@ field Ising model:
    from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
    from divi.backends import MaestroSimulator
 
-   # 1. Define the Hamiltonian (observable to minimise)
+   # 1. Define the Hamiltonian (observable to minimize)
    H = -1.0 * qml.Z(0) @ qml.Z(1) + 0.5 * qml.X(0) + 0.5 * qml.X(1)
 
    # 2. Build a parameterized ansatz as a QuantumScript

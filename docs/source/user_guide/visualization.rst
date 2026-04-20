@@ -12,7 +12,7 @@ Divi's scan API is inspired by `orqviz <https://github.com/zapata-engineering/or
 Divi's program model, batching, and pipeline execution. Beyond orqviz-compatible
 scan geometry, ``divi.viz`` adds Hessian eigenvalue analysis, Fourier power
 spectra, gradient overlays, 3D rendering, trajectory overlays on PCA scans,
-and the Nudged Elastic Band algorithm -- all evaluated through Divi's batched
+and the Nudged Elastic Band algorithm — all evaluated through Divi's batched
 cost pipeline.
 
 Choosing a Scan Type
@@ -203,7 +203,7 @@ Interpolation Scans
 -------------------
 
 Use :func:`~divi.viz.scan_interp_1d` to evaluate the objective along the
-straight line between two parameter vectors -- for example, to check if there is
+straight line between two parameter vectors — for example, to check if there is
 a barrier between two local minima:
 
 .. code-block:: python
@@ -293,7 +293,7 @@ Nudged Elastic Band (NEB)
    NEB is **experimental**. Convergence is sensitive to hyperparameters.
 
 Use NEB when you have two candidate solutions and want to characterize the
-energy barrier between them -- a low barrier suggests the solutions are
+energy barrier between them — a low barrier suggests the solutions are
 connected, while a high barrier suggests distinct basins.
 
 :func:`~divi.viz.run_neb` finds a minimum-energy path by relaxing a chain of

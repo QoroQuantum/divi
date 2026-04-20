@@ -22,8 +22,11 @@ from rich.text import Text
 
 from divi.reporting._qlogger import _ensure_unbuffered_stdout
 
-# Colors assigned to flush groups to visually associate
-# batch status rows with their participating programs.
+#: Color cycle assigned to flush groups in ensemble progress displays.
+#:
+#: Each running flush group is tinted with the next color in this tuple so
+#: that progress rows can be visually associated with their participating
+#: programs.
 BATCH_COLORS = ("green", "cyan", "magenta", "yellow", "red", "blue")
 
 

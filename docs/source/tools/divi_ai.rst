@@ -198,7 +198,10 @@ For Contributors
 ----------------
 
 These commands are for Divi contributors rebuilding or evaluating the
-search index. Install the AI dependencies first: ``uv sync --extra ai``
+search index. Install the AI dependencies first with ``uv sync --extra ai``
+to pull in only the AI stack, or ``uv sync --all-extras`` if you are also
+working on docs, tests, or other areas that need the full development
+environment.
 
 .. code-block:: bash
 

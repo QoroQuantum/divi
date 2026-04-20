@@ -534,7 +534,7 @@ class Fourier2DResult:
         Args:
             ax: Optional matplotlib axes. When omitted, a new figure is created.
             show: Whether to call ``matplotlib.pyplot.show()`` after drawing.
-            log_scale: Use logarithmic colour scale (default ``True``). This
+            log_scale: Use logarithmic color scale (default ``True``). This
                 makes non-DC frequency components visible when the DC component
                 dominates. Pass ``False`` for a linear scale.
             **imshow_kwargs: Additional keyword arguments forwarded to

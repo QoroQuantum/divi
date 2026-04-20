@@ -101,7 +101,7 @@ Divi provides several built-in ansätze for VQE calculations. For detailed docum
 Custom Ansätze
 ^^^^^^^^^^^^^^
 
-One can easily implement their own ansatz that would be immediately compatible with Divi's execution routine by inheriting the abstract :class:`~divi.qprog.algorithms.Ansatz` class and implementing two main methods:
+Implement a custom ansatz by subclassing the abstract :class:`~divi.qprog.algorithms.Ansatz` class and providing two methods — it will then plug directly into Divi's execution routine:
 
 .. skip: next
 
@@ -154,7 +154,7 @@ Divi uses `Z-matrices <https://en.wikipedia.org/wiki/Z-matrix_(chemistry)>`_ to 
 
 - **bonds_to_transform**: A subset of the bonds listed in ``atom_connectivity`` to be modified. If this argument is not provided, all bonds will be affected.
 
-- **bond_modifiers**: A list of actual numeric changes to apply to the chosen bonds. This has two modes: ``scale`` and ``delta``. If the provided list contains only strictly positive values, ``scale`` mode will be activated, where the values represent a multiplier to apply to the original bond length. Otherwise, the ``delta`` mode is enabled, where the provided values act as additives to the original bond length. One can trivially provide ``1`` and ``0`` for the ``scale`` and ``delta`` modes respectively to include the base molecule as an experiment.
+- **bond_modifiers**: A list of actual numeric changes to apply to the chosen bonds. This has two modes: ``scale`` and ``delta``. If the provided list contains only strictly positive values, ``scale`` mode will be activated, where the values represent a multiplier to apply to the original bond length. Otherwise, the ``delta`` mode is enabled, where the provided values act as additives to the original bond length. Include the base molecule in the sweep by providing ``1`` in ``scale`` mode or ``0`` in ``delta`` mode.
 
 - **alignment_atoms**: For debugging purposes, the output molecules can be aligned using `Kabsch algorithm <https://en.wikipedia.org/wiki/Kabsch_algorithm>`_, where users provide a list of indices of reference atoms that act as the "spine" of the whole molecule. An example of such would be the carbon chain of an alkane group.
 
@@ -199,29 +199,18 @@ Divi uses `Z-matrices <https://en.wikipedia.org/wiki/Z-matrix_(chemistry)>`_ to 
 
    print(f"Total circuits executed: {vqe_sweep.total_circuit_count}")
 
-What's Happening?
-~~~~~~~~~~~~~~~~~
+A few details worth calling out:
 
-.. list-table::
-   :header-rows: 1
-   :widths: 40 60
-
-   * - Step
-     - Description
-   * - ``VQEHyperparameterSweep(...)``
-     - Initializes a batch of VQE programs over a range of bond lengths and ansatz strategies.
-   * - ``molecule_transformer=...``
-     - The transformer declaring the changes to apply to the molecule. In this instance, we are contracting all bonds by -0.4, -0.25 Å and stretching them by 0.25 and 0.4 Å, in addition to the base molecule.
-   * - ``ansatze=[HartreeFockAnsatz(), UCCSDAnsatz()]``
-     - Runs two different quantum circuit models for comparison.
-   * - ``create_programs()``
-     - Constructs all circuits for each (bond modifier, ansatz) pair.
-   * - ``run(blocking=True)``
-     - Executes all VQE circuits — possibly in parallel. Block the script until all programs finish executing.
-   * - ``aggregate_results()``
-     - Collects and merges the final energy values for plotting.
-   * - ``visualize_results()``
-     - Displays a graph of energy vs. bond length for each ansatz.
+- **Bond modifiers** — with the values above the sweep contracts all bonds by
+  -0.4 Å and -0.25 Å, stretches them by 0.25 Å and 0.4 Å, and also runs the
+  base molecule unchanged (the ``0`` entry).
+- **Ansatz comparison** — passing two ansätze runs every bond-modifier point
+  under both :class:`~divi.qprog.algorithms.HartreeFockAnsatz` and
+  :class:`~divi.qprog.algorithms.UCCSDAnsatz`, so you can compare accuracy
+  head-to-head across the full curve.
+- **Execution model** — ``run(blocking=True)`` dispatches all VQE programs,
+  potentially in parallel, and blocks the script until every one of them
+  finishes before returning.
 
 .. tip::
 

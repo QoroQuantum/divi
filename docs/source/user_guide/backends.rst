@@ -77,18 +77,16 @@ Divi ships three :class:`~divi.backends.CircuitRunner` implementations:
 * :class:`~divi.backends.QiskitSimulator` — A convenience wrapper around Qiskit's ``AerSimulator`` with simplified noise modeling and thread-count control. Use this when you need noisy simulation.
 * :class:`~divi.backends.QoroService` — A cloud-based quantum computing service for accessing powerful simulators and real quantum hardware.
 
-Let's dive into each one.
-
 MaestroSimulator
 -----------------
 
-:class:`~divi.backends.MaestroSimulator` is the recommended runner for local development, testing, and research. It is powered by Qoro's C++ quantum simulator (``qoro-maestro``) and provides fast, accurate simulation with automatic Statevector-to-MPS fallback for larger circuits.
+:class:`~divi.backends.MaestroSimulator` is the recommended runner for local development, testing, and research. It is powered by Qoro's C++ quantum simulator (``qoro-maestro``) and automatically selects between Statevector and MatrixProductState methods based on circuit width.
 
 **Key Features:**
 
-* **High Performance**: Significantly faster than Qiskit Aer across typical circuit sizes (auto-MPS keeps it competitive beyond 22 qubits).
-* **Auto Method Selection**: Automatically switches from Statevector to MPS for circuits exceeding 22 qubits (configurable via ``mps_qubit_threshold``).
-* **Multiple Simulation Methods**: Statevector, MPS, Stabilizer, TensorNetwork, PauliPropagator.
+* **Native C++ Core**: Backed by ``qoro-maestro``, a compiled simulator designed for low per-circuit overhead.
+* **Auto Method Selection**: Switches from Statevector to MatrixProductState for circuits exceeding 22 qubits (configurable via ``mps_qubit_threshold``), so a single backend handles both narrow and wide registers.
+* **Multiple Simulation Methods**: Statevector, MatrixProductState, Stabilizer, TensorNetwork, PauliPropagator.
 
 
 Getting Started
@@ -141,7 +139,9 @@ Examples
 QoroService
 ------------
 
-:class:`~divi.backends.QoroService` talks to the Qoro cloud API: advanced simulators, tensor-network options, and real QPUs. It supports **sampling mode** (measurement counts) and **expectation mode** (Pauli expectation values, simulation-only). Circuit packing (:attr:`~divi.backends.JobConfig.use_circuit_packing`) can batch circuits for efficiency.
+:class:`~divi.backends.QoroService` talks to the Qoro cloud API, giving programs access to advanced simulators, tensor-network backends, and real QPUs. It supports two execution modes: **sampling mode** (measurement counts) and **expectation mode** (Pauli expectation values, simulation-only).
+
+Use circuit packing (:attr:`~divi.backends.JobConfig.use_circuit_packing`) to batch circuits into a single job for efficiency.
 
 Submitting and Monitoring Jobs
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -303,9 +303,13 @@ Backend Comparison
      - Qiskit fake backends & noise models
      - Hardware noise (real QPUs)
    * - **Seed / Reproducibility**
-     - Not yet supported
+     - No (``set_seed`` is a no-op)
      - ``simulation_seed`` parameter
      - N/A
+   * - **Depth Tracking**
+     - ``track_depth=True``
+     - ``track_depth=True``
+     - ``track_depth=True``
 
 Depth Tracking
 --------------

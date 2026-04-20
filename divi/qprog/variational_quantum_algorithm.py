@@ -992,7 +992,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         avoids redundantly repeating structural work for each parameter set.
 
         When ``QuEPP(bind_before_mitigation=True)`` is set, binding moves
-        before QEM so that QuEPP receives concrete angles and can normalise
+        before QEM so that QuEPP receives concrete angles and can normalize
         rotations — producing fewer Pauli paths at the cost of repeating
         structural work per parameter set.
 

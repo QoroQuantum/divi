@@ -103,7 +103,7 @@ Divi offers specialized algorithms for different problem types:
       )
 
 **PCE – QUBO/HUBO with Pauli Correlation Encoding**
-   Use :class:`~divi.qprog.algorithms.PCE` for QUBO and higher-order (HUBO) binary optimization with parity-based encoding. PCE is a VQE variant that maps each variable to a parity of the measured bitstring, scaling logarithmically in qubits (dense encoding) or as O(√N) (poly encoding).
+   Use :class:`~divi.qprog.algorithms.PCE` for QUBO and higher-order (HUBO) binary optimization with parity-based encoding. PCE is a VQE variant that uses far fewer qubits than standard QAOA for the same problem size — see :doc:`/user_guide/combinatorial_optimization_qaoa_pce` for the encoding details and scaling trade-offs.
 
    .. code-block:: python
 

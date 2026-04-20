@@ -315,6 +315,7 @@ pipeline uses — and must implement three members:
 
 .. code-block:: python
 
+   import copy
    from collections.abc import Sequence
    from qiskit.dagcircuit import DAGCircuit
    from divi.backends import MaestroSimulator
@@ -330,15 +331,19 @@ pipeline uses — and must implement three members:
        def expand(self, dag: DAGCircuit, observable=None):
            """Return circuits to execute and a reduce-time context.
 
-           For noise-scaling techniques the tuple contains multiple circuit
-           variants; for simple protocols it may return the original circuit
-           unchanged.  The optional ``observable`` argument carries the
-           observable being measured (as a Qiskit
+           ``expand`` *consumes* the input ``dag`` — implementations may
+           mutate it, and downstream stages may mutate the returned DAGs
+           in place.  When you need multiple distinct variants, deep-copy
+           the dag explicitly (as shown below); reusing the same reference
+           would cause later edits to affect every slot it appears in.
+           The optional ``observable`` argument carries the observable being
+           measured (as a Qiskit
            :class:`~qiskit.quantum_info.SparsePauliOp`) — hybrid protocols
            like QuEPP use it for classical pre-computation.
            """
-           # Run the same circuit twice (e.g. with different readout strategies)
-           return (dag, dag), {}
+           # Run the circuit twice as two independent DAG copies so later
+           # pipeline stages can mutate each one without interference.
+           return (copy.deepcopy(dag), dag), {}
 
        def reduce(self, quantum_results: Sequence[float], context: QEMContext) -> float:
            """Combine the quantum results into a single mitigated value.

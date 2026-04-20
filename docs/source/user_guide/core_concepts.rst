@@ -27,11 +27,11 @@ consistent interface.
 - ``total_circuit_count`` - Total circuits executed so far
 - ``total_run_time`` - Cumulative execution time in seconds
 
-The :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm` Class
+The :class:`~divi.qprog.VariationalQuantumAlgorithm` Class
 ----------------------------------------------------------------------------------------
 
 For algorithms that rely on optimizing parameters, Divi provides the
-:class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm`
+:class:`~divi.qprog.VariationalQuantumAlgorithm`
 class. This is the base class for algorithms like
 :class:`~divi.qprog.algorithms.VQE` and :class:`~divi.qprog.algorithms.QAOA`,
 and it extends :class:`~divi.qprog.QuantumProgram` with optimization logic,
@@ -194,7 +194,7 @@ Analyzing Solution Distributions
 
 After running optimization with any variational quantum algorithm, you can
 analyze the probability distribution of solutions using the
-:meth:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm.get_top_solutions`
+:meth:`~divi.qprog.VariationalQuantumAlgorithm.get_top_solutions`
 method. This is particularly useful for understanding solution quality and
 exploring alternative solutions beyond the single best one.
 
@@ -219,7 +219,7 @@ problem-specific formats:
 - **Custom decoders**: You can provide your own decoding function when creating the algorithm
 
 Set ``include_decoded=True`` when calling
-:meth:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm.get_top_solutions`
+:meth:`~divi.qprog.VariationalQuantumAlgorithm.get_top_solutions`
 to include decoded solutions in the results.
 
 **Example**
@@ -287,7 +287,7 @@ Divi uses a two-tier circuit system for maximum efficiency:
    place. OpenQASM 2.0 text is produced lazily — only once per parametric
    body (inside :class:`~divi.pipeline.stages.ParameterBindingStage` when it
    builds a :class:`~divi.circuits.QASMTemplate`) and once at compilation
-   time when bound bodies are concatenated with pre-serialised measurement
+   time when bound bodies are concatenated with pre-serialized measurement
    QASMs.
 
    You rarely construct a :class:`~divi.circuits.MetaCircuit` by hand. In

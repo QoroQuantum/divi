@@ -7,7 +7,7 @@
 End-to-end walkthrough of CE-QAOA (arXiv:2511.14296) on a 3-city TSP:
 
 1. Brute-force reference solution.
-2. Grid search over (gamma, beta) with loss landscape visualisation.
+2. Grid search over (gamma, beta) with loss landscape visualization.
 3. Parameter transfer: best grid angles → variational refinement.
 4. Feasibility statistics and Hungarian-algorithm repair.
 """

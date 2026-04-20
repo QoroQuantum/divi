@@ -168,7 +168,7 @@ def _resolve_1d_direction(
     rng: np.random.Generator,
     normalize_directions: bool,
 ) -> npt.NDArray[np.float64]:
-    """Validate or generate a 1D scan direction, optionally unit-normalising."""
+    """Validate or generate a 1D scan direction, optionally unit-normalizing."""
     if direction is None:
         direction_arr = _random_gaussian_direction(n_params, rng)
     else:
