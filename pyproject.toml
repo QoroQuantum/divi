@@ -9,7 +9,7 @@ version = "0.10.0"
 description = "A Python library to automate generating, parallelizing, and executing quantum programs."
 authors = [{ name = "Ahmed Darwish", email = "ahmed@qoroquantum.de" }, { name = "Stephen DiAdamo", email = "stephen@qoroquantum.de" }]
 readme = "README.md"
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.11,<3.14"
 license = "Apache-2.0"
 keywords = ["quantum", "quantum-computing", "qiskit", "simulation", "optimization", "qaoa", "vqe"]
 classifiers = [
@@ -19,6 +19,7 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
     # Quantum computing
@@ -35,7 +36,7 @@ dependencies = [
     # Graph operations and partitioning
     "networkx>=3.5,<4.0",
     "pymetis>=2025.1.1,<2026.0.0; sys_platform != 'win32'",
-    "qoro-maestro==0.2.6",
+    "qoro-maestro==0.2.11",
     # Optimization algorithms
     "pymoo>=0.6,<0.7",
     "dwave-hybrid>=0.6.14,<0.7.0",
