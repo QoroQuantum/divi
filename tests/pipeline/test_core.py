@@ -250,7 +250,7 @@ class TestCompileBatch:
         # Manually remove measurement_qasms to simulate the error
         batch = trace.final_batch
         node = next(iter(batch.values()))
-        assert hasattr(node, "circuit_body_qasms") and node.circuit_body_qasms
+        assert hasattr(node, "circuit_bodies") and node.circuit_bodies
 
     def test_produces_lineage_and_circuits_for_grouped_batch(self, dummy_pipeline_env):
         pipeline = CircuitPipeline(
@@ -336,6 +336,70 @@ def test_custom_execute_fn_returning_per_key_values_reduces_correctly(
     assert len(reduced) == 1
     assert list(reduced.values())[0] == pytest.approx(7.8)
     assert next(iter(reduced)) == (("spec", "circ"),)
+
+
+class TestPipelineReporterHooks:
+    """Spec: CircuitPipeline emits ``pipeline_stage`` progress events per stage."""
+
+    def _collect_stage_events(self, reporter_mock) -> list[str | None]:
+        events: list[str | None] = []
+        for call in reporter_mock.info.call_args_list:
+            kwargs = call.kwargs
+            if "pipeline_stage" in kwargs:
+                events.append(kwargs["pipeline_stage"])
+        return events
+
+    def test_reports_spec_stage_name_on_forward_pass(self, dummy_pipeline_env, mocker):
+        reporter = mocker.MagicMock()
+        dummy_pipeline_env.reporter = reporter
+
+        pipeline = CircuitPipeline(stages=two_group_pipeline_stages())
+        pipeline.run_forward_pass("x", dummy_pipeline_env)
+
+        events = self._collect_stage_events(reporter)
+        assert events == ["DummySpecStage", "MeasurementStage"]
+
+    def test_reports_each_bundle_stage_in_order(self, dummy_pipeline_env, mocker):
+        reporter = mocker.MagicMock()
+        dummy_pipeline_env.reporter = reporter
+
+        pipeline = CircuitPipeline(
+            stages=two_group_pipeline_stages(fanout=("fold", 2)),
+        )
+        pipeline.run_forward_pass("x", dummy_pipeline_env)
+
+        events = self._collect_stage_events(reporter)
+        assert events == [
+            "DummySpecStage",
+            "MeasurementStage",
+            "FanoutAndSumStage:fold",
+        ]
+
+    def test_run_clears_pipeline_stage_before_execution(
+        self, dummy_pipeline_env, mocker
+    ):
+        """``run()`` clears the pipeline-stage indicator before execute_fn."""
+        reporter = mocker.MagicMock()
+        dummy_pipeline_env.reporter = reporter
+
+        pipeline = CircuitPipeline(stages=two_group_pipeline_stages())
+        pipeline.run(
+            initial_spec="x", env=dummy_pipeline_env, execute_fn=ones_execute_fn
+        )
+
+        events = self._collect_stage_events(reporter)
+        # Last event must be a clear (None) so the spinner drops "Pipeline: ..."
+        # before submission/polling takes over.
+        assert events[-1] is None
+        assert events[:-1] == ["DummySpecStage", "MeasurementStage"]
+
+    def test_missing_reporter_does_not_break_forward_pass(self, dummy_pipeline_env):
+        """Pipelines must work identically when ``env.reporter`` is None."""
+        assert dummy_pipeline_env.reporter is None
+
+        pipeline = CircuitPipeline(stages=two_group_pipeline_stages())
+        trace = pipeline.run_forward_pass("x", dummy_pipeline_env)
+        assert trace.final_batch  # forward pass succeeded
 
 
 def test_run_with_default_execute_fn_and_shots_backend_auto_converts_counts(

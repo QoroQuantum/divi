@@ -2,15 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from functools import partial
 
 import networkx as nx
 import numpy as np
 import pytest
-from mitiq.zne.inference import LinearFactory
-from mitiq.zne.scaling import fold_global
 
-from divi.circuits.qem import ZNE
+from divi.circuits.qem import ZNE, LinearExtrapolator
 from divi.hamiltonians import (
     ExactTrotterization,
     QDrift,
@@ -311,11 +308,10 @@ class TestQAOAQDriftMultiSample:
         G = make_bull_graph()
         default_test_simulator.set_seed(1997)
 
-        scale_factors = [1.0, 2.0]
+        scale_factors = [1.0, 3.0]  # odd integers for GlobalFoldPass
         zne_protocol = ZNE(
-            folding_fn=partial(fold_global),
             scale_factors=scale_factors,
-            extrapolation_factory=LinearFactory(scale_factors=scale_factors),
+            extrapolator=LinearExtrapolator(),
         )
         strategy = QDrift(
             keep_fraction=0.5,

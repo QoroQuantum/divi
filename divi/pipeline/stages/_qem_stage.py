@@ -2,22 +2,19 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import warnings
 from typing import Any
 
-import cirq
 import numpy as np
 
 from divi.circuits import MetaCircuit
-from divi.circuits._qasm_conversion import (
-    _cirq_circuit_from_qasm,
-    normalize_qasm_after_cirq,
-)
 from divi.circuits.qem import QEMContext, QEMProtocol, _NoMitigation
 from divi.circuits.quepp import QuEPP
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
     ContractViolation,
+    DiviPerformanceWarning,
     ExpansionResult,
     MetaCircuitBatch,
     PipelineEnv,
@@ -73,31 +70,33 @@ class QEMStage(BundleStage):
                     "requires a PauliTwirlStage after it in the pipeline."
                 )
 
+        if isinstance(self.protocol, QuEPP) and self.protocol._sampling == "exhaustive":
+            warnings.warn(
+                "QuEPP with sampling='exhaustive' enumerates all Pauli "
+                "paths and scales poorly with truncation_order and circuit "
+                "depth. Consider sampling='montecarlo' unless you "
+                "specifically need deterministic enumeration. "
+                "To suppress this warning, pass "
+                "suppress_performance_warnings=True to CircuitPipeline, or "
+                "filter DiviPerformanceWarning via warnings.filterwarnings "
+                "(import it from divi.pipeline).",
+                DiviPerformanceWarning,
+                stacklevel=3,
+            )
+
     def _expand_bodies(
         self, meta: MetaCircuit
     ) -> tuple[tuple[tuple, ...], list[QEMContext]]:
-        """Apply the protocol to each body QASM and return tagged results + contexts."""
-        mp = meta.source_circuit.measurements[0] if meta.source_circuit else None
-        observable = getattr(mp, "obs", None) if mp else None
+        """Apply the protocol to each body DAG and return tagged results + contexts."""
+        observable = meta.observable
         ctxs: list[QEMContext] = []
         bodies: list[tuple] = []
 
-        for tag, body in meta.circuit_body_qasms:
-            circuits, ctx = self.protocol.expand(
-                _cirq_circuit_from_qasm(body, meta.symbols), observable
-            )
+        for tag, dag in meta.circuit_bodies:
+            expanded_dags, ctx = self.protocol.expand(dag, observable)
             ctxs.append(ctx)
-
-            for i, c in enumerate(circuits):
-                # Symbolic target (index 0): reuse original QASM body
-                # to avoid a lossy sympy→Cirq→QASM round-trip.
-                # Everything else (Clifford path circuits): export normally.
-                qasm = (
-                    body
-                    if i == 0 and ctx.get("symbolic")
-                    else normalize_qasm_after_cirq(cirq.qasm(c))
-                )
-                bodies.append(((*tag, (self.axis_name, i)), qasm))
+            for i, expanded in enumerate(expanded_dags):
+                bodies.append(((*tag, (self.axis_name, i)), expanded))
 
         return tuple(bodies), ctxs
 
@@ -109,10 +108,9 @@ class QEMStage(BundleStage):
 
         for parent_key, meta in batch.items():
             bodies, ctxs = self._expand_bodies(meta)
-            for (tag, _), ctx in zip(meta.circuit_body_qasms, ctxs):
+            for (tag, _), ctx in zip(meta.circuit_bodies, ctxs):
                 contexts[parent_key + tag] = ctx
-            symbol_names = tuple(str(s) for s in meta.symbols)
-            out[parent_key] = meta.set_circuit_bodies(bodies, symbol_names=symbol_names)
+            out[parent_key] = meta.set_circuit_bodies(bodies)
 
         return ExpansionResult(batch=out), contexts
 

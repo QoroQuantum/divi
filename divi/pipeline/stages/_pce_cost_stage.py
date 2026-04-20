@@ -205,6 +205,12 @@ class PCECostStage(BundleStage):
     def handles_measurement(self) -> bool:
         return True
 
+    @property
+    def consumes_dag_bodies(self) -> bool:
+        # Reads only ``meta.n_qubits`` to build the Z-basis measurement
+        # QASM — never inspects body gate content.
+        return False
+
     def expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
     ) -> tuple[ExpansionResult, StageToken]:
@@ -217,9 +223,8 @@ class PCECostStage(BundleStage):
 
         out = {}
         for key, meta in batch.items():
-            n_qubits = len(meta.source_circuit.wires)
             measure_qasm = "".join(
-                f"measure q[{i}] -> c[{i}];\n" for i in range(n_qubits)
+                f"measure q[{i}] -> c[{i}];\n" for i in range(meta.n_qubits)
             )
             tagged = ((((PCE_MEAS_AXIS, 0),), measure_qasm),)
             out[key] = meta.set_measurement_bodies(tagged)

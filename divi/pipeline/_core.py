@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+import warnings
 from collections import Counter, defaultdict
 from collections.abc import Callable, Sequence
 from typing import Any
@@ -20,6 +21,7 @@ from divi.pipeline._postprocessing import (
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
+    DiviPerformanceWarning,
     ExpansionResult,
     PipelineEnv,
     PipelineResult,
@@ -71,6 +73,17 @@ def format_pipeline_tree(trace: PipelineTrace) -> None:
         add(root if len(roots) == 1 else root.add(s(r)), r)
 
     Console(no_color=True).print(root)
+
+
+def _report_pipeline_stage(env: "PipelineEnv", stage_name: str | None) -> None:
+    """Emit a classical-pipeline progress message, if a reporter is attached.
+
+    Passing ``None`` clears any lingering pipeline-stage indicator once
+    the forward pass is complete and execution is about to begin.
+    """
+    if env.reporter is None:
+        return
+    env.reporter.info(message="", pipeline_stage=stage_name)
 
 
 def _wait_for_async_result(backend, execution_result, env):
@@ -206,15 +219,27 @@ class CircuitPipeline:
     All stages pass keyed MetaCircuit batches.
     """
 
-    def __init__(self, stages: Sequence[Stage]) -> None:
+    def __init__(
+        self,
+        stages: Sequence[Stage],
+        *,
+        suppress_performance_warnings: bool = False,
+    ) -> None:
         """
         Args:
             stages: Ordered sequence of stages (non-empty). Must contain exactly one
                 SpecStage first, then zero or more BundleStages.
+            suppress_performance_warnings: When True, silence any
+                :class:`~divi.pipeline.DiviPerformanceWarning` emitted by
+                individual stages' ``validate`` hooks during pipeline
+                construction. Hard validation errors still raise.
         """
         _validate_stage_order(stages)
-        for i, stage in enumerate(stages):
-            stage.validate(before=tuple(stages[:i]), after=tuple(stages[i + 1 :]))
+        with warnings.catch_warnings():
+            if suppress_performance_warnings:
+                warnings.simplefilter("ignore", DiviPerformanceWarning)
+            for i, stage in enumerate(stages):
+                stage.validate(before=tuple(stages[:i]), after=tuple(stages[i + 1 :]))
         self._stages = list(stages)
         self._forward_cache: dict[tuple[int, tuple[int, ...]], PipelineTrace] = {}
 
@@ -270,6 +295,10 @@ class CircuitPipeline:
 
         env.artifacts.update(plan.env_artifacts)
 
+        # Forward pass is done — clear the classical-pipeline indicator so
+        # the spinner shows only execution/polling state from here on.
+        _report_pipeline_stage(env, None)
+
         raw = execute_fn(plan, env)
 
         # Convert raw backend results into the canonical format declared
@@ -300,6 +329,7 @@ class CircuitPipeline:
             expansions: list[ExpansionResult] = []
 
             for stage in bundle_stages:
+                _report_pipeline_stage(env, stage.name)
                 expansion_result, token = stage.expand(data, env)
                 data = expansion_result.batch
                 tokens.append(token)
@@ -325,6 +355,7 @@ class CircuitPipeline:
 
         if cached is None or first_stateful_idx == 0:
             spec_stage = self._stages[0]
+            _report_pipeline_stage(env, spec_stage.name)
             data, spec_token = spec_stage.expand(initial_spec, env)
 
             initial_batch_snapshot = data

@@ -18,28 +18,31 @@ subclass :class:`~divi.circuits.qem.QEMProtocol` for custom mitigation; see
 Zero Noise Extrapolation (ZNE)
 ------------------------------
 
-ZNE uses `Mitiq <https://mitiq.readthedocs.io/>`_ to construct noise-scaled
-circuits and extrapolate.
+Divi's ZNE runs the target circuit at several amplified noise levels and
+extrapolates the per-scale expectation values back to the zero-noise limit.
+Folding and extrapolation are both built-in — :class:`~divi.circuits.qem.ZNE`
+ships with global-unitary folding by default and uses
+:class:`~divi.circuits.qem.RichardsonExtrapolator` unless a custom
+extrapolator is provided.
 
 **Basic Usage:**
 
 .. code-block:: python
 
-   from functools import partial
-   from mitiq.zne.inference import RichardsonFactory
-   from mitiq.zne.scaling import fold_gates_at_random
-   from divi.circuits.qem import ZNE
+   from divi.circuits.qem import ZNE, RichardsonExtrapolator
    from divi.qprog import VQE
    from divi.backends import QiskitSimulator
    import pennylane as qml
    import numpy as np
 
-   # Create ZNE protocol
-   scale_factors = [1.0, 1.5, 2.0]
+   # Create a ZNE protocol with three noise scale factors.  The default
+   # folding function is global unitary folding and requires odd-integer
+   # scales; see the ZNE docstring for writing a custom folding callable
+   # that accepts arbitrary floats.
+   scale_factors = [1, 3, 5]
    zne_protocol = ZNE(
        scale_factors=scale_factors,
-       folding_fn=partial(fold_gates_at_random),
-       extrapolation_factory=RichardsonFactory(scale_factors=scale_factors),
+       extrapolator=RichardsonExtrapolator(),
    )
 
    # Apply to VQE
@@ -64,18 +67,14 @@ circuits and extrapolate.
 
    # Light mitigation (faster, 2 scale factors)
    light_zne = ZNE(
-       scale_factors=[1.0, 1.5],
-       folding_fn=partial(fold_gates_at_random),
-       extrapolation_factory=RichardsonFactory(scale_factors=[1.0, 1.5]),
+       scale_factors=[1, 3],
+       extrapolator=RichardsonExtrapolator(),
    )
 
    # Heavy mitigation (more accurate, 5 scale factors)
    heavy_zne = ZNE(
-       scale_factors=[1.0, 1.5, 2.0, 2.5, 3.0],
-       folding_fn=partial(fold_gates_at_random),
-       extrapolation_factory=RichardsonFactory(
-           scale_factors=[1.0, 1.5, 2.0, 2.5, 3.0]
-       ),
+       scale_factors=[1, 3, 5, 7, 9],
+       extrapolator=RichardsonExtrapolator(),
    )
 
 Quantum Enhanced Pauli Propagation (QuEPP)
@@ -260,13 +259,15 @@ Custom Error Mitigation Protocols
 ---------------------------------
 
 You can implement custom error mitigation strategies by inheriting from
-:class:`~divi.circuits.qem.QEMProtocol`.  The protocol operates on **Cirq** circuits
-and must implement three members:
+:class:`~divi.circuits.qem.QEMProtocol`.  The protocol operates on Qiskit
+:class:`~qiskit.dagcircuit.DAGCircuit` bodies — the same IR the rest of the
+pipeline uses — and must implement three members:
 
 .. code-block:: python
 
    from collections.abc import Sequence
-   from cirq.circuits.circuit import Circuit
+   from qiskit.dagcircuit import DAGCircuit
+   from divi.backends import MaestroSimulator
    from divi.circuits.qem import QEMContext, QEMProtocol
 
    class WeightedAveraging(QEMProtocol):
@@ -276,17 +277,18 @@ and must implement three members:
        def name(self) -> str:
            return "weighted_avg"
 
-       def expand(self, cirq_circuit: Circuit, observable=None):
+       def expand(self, dag: DAGCircuit, observable=None):
            """Return circuits to execute and a reduce-time context.
 
            For noise-scaling techniques the tuple contains multiple circuit
            variants; for simple protocols it may return the original circuit
            unchanged.  The optional ``observable`` argument carries the
-           PennyLane observable being measured — hybrid protocols like QuEPP
-           use it for classical pre-computation.
+           observable being measured (as a Qiskit
+           :class:`~qiskit.quantum_info.SparsePauliOp`) — hybrid protocols
+           like QuEPP use it for classical pre-computation.
            """
            # Run the same circuit twice (e.g. with different readout strategies)
-           return (cirq_circuit, cirq_circuit), {}
+           return (dag, dag), {}
 
        def reduce(self, quantum_results: Sequence[float], context: QEMContext) -> float:
            """Combine the quantum results into a single mitigated value.
@@ -306,10 +308,10 @@ and must implement three members:
 **Key Members to Implement:**
 
 - ``name`` *(property)* — Unique protocol name used as the pipeline axis identifier
-- ``expand(cirq_circuit, observable)`` — Generate one or more Cirq circuits to
-  execute on the quantum backend and a ``QEMContext``
-  carrying any classical side-channel data for the reduce phase.
-  Return a ``tuple[tuple[Circuit, ...], QEMContext]``.
+- ``expand(dag, observable)`` — Generate one or more Qiskit
+  :class:`~qiskit.dagcircuit.DAGCircuit` bodies to execute on the quantum
+  backend and a ``QEMContext`` carrying any classical side-channel data for
+  the reduce phase.  Return a ``tuple[tuple[DAGCircuit, ...], QEMContext]``.
 - ``reduce(quantum_results, context)`` — Combine a ``Sequence[float]`` of
   per-circuit expectation values with the ``QEMContext``
   into a single ``float``.

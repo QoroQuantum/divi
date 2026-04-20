@@ -12,8 +12,10 @@ values or comparative assertions.
 """
 
 import numpy as np
-import pennylane as qml
 import pytest
+from qiskit import QuantumCircuit
+from qiskit.converters import circuit_to_dag
+from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits._core import MetaCircuit
 from divi.hamiltonians import normalize_binary_polynomial_problem
@@ -61,12 +63,18 @@ def _meas_key(param_idx: int):
 
 def _make_z_hamiltonian_batch(n_qubits: int) -> dict[int, MetaCircuit]:
     """Build a single-entry MetaCircuit batch with expval(Z0+Z1+...+Zn)."""
-    H = qml.Hamiltonian([1.0] * n_qubits, [qml.PauliZ(i) for i in range(n_qubits)])
-    tape = qml.tape.QuantumScript(
-        [qml.RY(0.5, wires=i) for i in range(n_qubits)],
-        [qml.expval(H)],
+    qc = QuantumCircuit(n_qubits)
+    for i in range(n_qubits):
+        qc.ry(0.5, i)
+    obs = SparsePauliOp.from_list(
+        [("I" * (n_qubits - 1 - i) + "Z" + "I" * i, 1.0) for i in range(n_qubits)]
     )
-    return {0: MetaCircuit(source_circuit=tape, symbols=np.array([]))}
+    return {
+        0: MetaCircuit(
+            circuit_bodies=(((), circuit_to_dag(qc)),),
+            observable=obs,
+        )
+    }
 
 
 def _make_expval_backend():

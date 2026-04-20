@@ -5,28 +5,30 @@
 """Tests for divi.pipeline.stages._parameter_binding_stage."""
 
 import numpy as np
-import pennylane as qml
 import pytest
-import sympy
+from qiskit import QuantumCircuit
+from qiskit.circuit import Parameter
+from qiskit.converters import circuit_to_dag
+from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
+from divi.circuits._conversions import _format_bound_param as _format_param
 from divi.pipeline import CircuitPipeline, PipelineEnv
 from divi.pipeline.stages import MeasurementStage, ParameterBindingStage, QEMStage
-from divi.pipeline.stages._parameter_binding_stage import _format_param
 from tests.pipeline.helpers import DummySpecStage, two_group_meta
 
 
 def _parametric_meta(symbol_names: tuple[str, ...] = ("theta", "phi")) -> MetaCircuit:
-    """Build a MetaCircuit whose QASM body contains symbolic parameter names."""
-    symbols = np.array([sympy.Symbol(s) for s in symbol_names], dtype=object)
-    qscript = qml.tape.QuantumScript(
-        ops=[
-            qml.RX(sympy.Symbol(symbol_names[0]), 0),
-            qml.RZ(sympy.Symbol(symbol_names[1]), 0),
-        ],
-        measurements=[qml.expval(qml.Z(0))],
+    """Build a MetaCircuit whose DAG bodies reference Qiskit Parameters."""
+    params = tuple(Parameter(name) for name in symbol_names)
+    qc = QuantumCircuit(1)
+    qc.rx(params[0], 0)
+    qc.rz(params[1], 0)
+    return MetaCircuit(
+        circuit_bodies=(((), circuit_to_dag(qc)),),
+        parameters=params,
+        observable=SparsePauliOp.from_list([("Z", 1.0)]),
     )
-    return MetaCircuit(source_circuit=qscript, symbols=symbols)
 
 
 class TestParameterBindingStage:
@@ -60,10 +62,11 @@ class TestParameterBindingStage:
         )
         trace = pipeline.run_forward_pass("x", env)
         for node in trace.final_batch.values():
-            assert node.circuit_body_qasms
+            # Non-parametric pass-through still serialises each DAG body once.
+            assert node.bound_circuit_bodies
 
     def test_binds_parameters_into_qasm(self, dummy_pipeline_env):
-        """Core spec: symbolic names in QASM are replaced by formatted parameter values."""
+        """Core spec: parameter names in the template are replaced by formatted values."""
         meta = _parametric_meta()
         pipeline = CircuitPipeline(
             stages=[
@@ -78,9 +81,9 @@ class TestParameterBindingStage:
         )
         trace = pipeline.run_forward_pass("x", env)
 
-        # All bound bodies should contain the formatted values, not the symbol names
+        # All bound bodies should contain the formatted values, not the param names.
         for node in trace.final_batch.values():
-            for _tag, body in node.circuit_body_qasms:
+            for _tag, body in node.bound_circuit_bodies:
                 assert "theta" not in body
                 assert "phi" not in body
                 assert "1.5" in body
@@ -103,10 +106,10 @@ class TestParameterBindingStage:
         )
         trace = pipeline.run_forward_pass("x", env)
 
-        # The param_set axis appears on the QASM tags inside each MetaCircuit node
+        # The param_set axis appears on the bound-body tags.
         for node in trace.final_batch.values():
             param_set_indices = set()
-            for tag, _body in node.circuit_body_qasms:
+            for tag, _body in node.bound_circuit_bodies:
                 for axis_name, axis_value in tag:
                     if axis_name == "param_set":
                         param_set_indices.add(axis_value)

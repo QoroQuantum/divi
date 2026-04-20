@@ -4,9 +4,10 @@
 
 """Tests for divi.pipeline.stages._measurement_stage."""
 
-import numpy as np
-import pennylane as qml
 import pytest
+from qiskit import QuantumCircuit
+from qiskit.converters import circuit_to_dag
+from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
 from divi.pipeline import CircuitPipeline, PipelineEnv
@@ -18,6 +19,16 @@ from tests.pipeline.helpers import (
     ones_execute_fn,
     two_group_pipeline_stages,
 )
+
+
+def _two_term_meta() -> MetaCircuit:
+    """Hadamard circuit with 0.5*Z + -0.3*X observable."""
+    qc = QuantumCircuit(1)
+    qc.h(0)
+    return MetaCircuit(
+        circuit_bodies=(((), circuit_to_dag(qc)),),
+        observable=SparsePauliOp.from_list([("Z", 0.5), ("X", -0.3)]),
+    )
 
 
 class TestMeasurementStage:
@@ -47,12 +58,7 @@ class TestMeasurementStageExpvalBackendReduce:
 
     def test_expval_backend_pipeline_sets_ham_ops(self, dummy_expval_backend):
         """Full pipeline with expval-native backend sets ham_ops in env.artifacts."""
-        hamiltonian = 0.5 * qml.Z(0) + (-0.3) * qml.X(0)
-        qscript = qml.tape.QuantumScript(
-            ops=[qml.Hadamard(0)],
-            measurements=[qml.expval(hamiltonian)],
-        )
-        meta = MetaCircuit(source_circuit=qscript, symbols=np.array([], dtype=object))
+        meta = _two_term_meta()
 
         env = PipelineEnv(backend=dummy_expval_backend)
         pipeline = CircuitPipeline(
@@ -102,14 +108,11 @@ class TestMeasurementStageExpvalBackendReduce:
         self, dummy_expval_backend
     ):
         """When ham_ops_list is None, standard postprocessing is applied."""
-        hamiltonian = 0.9 * qml.Z(0) + 0.4 * qml.X(0)
-        qscript = qml.tape.QuantumScript(
-            ops=[qml.Hadamard(0)],
-            measurements=[qml.expval(hamiltonian)],
-        )
+        qc = QuantumCircuit(1)
+        qc.h(0)
         meta = MetaCircuit(
-            source_circuit=qscript,
-            symbols=np.array([], dtype=object),
+            circuit_bodies=(((), circuit_to_dag(qc)),),
+            observable=SparsePauliOp.from_list([("Z", 0.9), ("X", 0.4)]),
         )
         env = PipelineEnv(backend=dummy_expval_backend)
         pipeline = CircuitPipeline(
@@ -133,12 +136,7 @@ class TestMeasurementStageResultFormatOverride:
 
     def test_expand_applies_result_format_override(self, dummy_expval_backend):
         """When result_format_override is set, expand overrides env.result_format."""
-        hamiltonian = 0.5 * qml.Z(0) + (-0.3) * qml.X(0)
-        qscript = qml.tape.QuantumScript(
-            ops=[qml.Hadamard(0)],
-            measurements=[qml.expval(hamiltonian)],
-        )
-        meta = MetaCircuit(source_circuit=qscript, symbols=np.array([], dtype=object))
+        meta = _two_term_meta()
 
         stage = MeasurementStage(result_format_override=ResultFormat.COUNTS)
         env = PipelineEnv(backend=dummy_expval_backend)

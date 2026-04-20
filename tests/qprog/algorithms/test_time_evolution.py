@@ -3,15 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import math
-from functools import partial
 
 import pennylane as qml
 import pytest
-from mitiq.zne.inference import RichardsonFactory
-from mitiq.zne.scaling import fold_gates_at_random
 
 from divi.backends import ExecutionResult, QiskitSimulator
-from divi.circuits.qem import ZNE
+from divi.circuits.qem import ZNE, RichardsonExtrapolator
 from divi.circuits.quepp import QuEPP
 from divi.hamiltonians import ExactTrotterization, QDrift
 from divi.qprog import OnesState, SuperpositionState, TimeEvolution, ZerosState
@@ -606,9 +603,8 @@ class TestTimeEvolutionQEM:
             observable=qml.PauliZ(0),
             backend=default_test_simulator,
             qem_protocol=ZNE(
-                scale_factors,
-                partial(fold_gates_at_random),
-                RichardsonFactory(scale_factors=scale_factors),
+                scale_factors=scale_factors,
+                extrapolator=RichardsonExtrapolator(),
             ),
         )
         stage_names = [type(s).__name__ for s in te._pipeline.stages]

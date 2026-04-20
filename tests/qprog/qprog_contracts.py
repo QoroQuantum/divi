@@ -72,13 +72,11 @@ def _get_n_obs_groups(meta: MetaCircuit, supports_expval: bool) -> int:
     correctness test. If the production logic has a bug, this helper has
     the same bug.
     """
-    measurement = meta.source_circuit.measurements[0]
-    is_probs = not hasattr(measurement, "obs") or measurement.obs is None
-    if is_probs:
+    if meta.observable is None:
         return 1
 
     strategy = "_backend_expval" if supports_expval else "qwc"
-    groups, _, _ = compute_measurement_groups(measurement, strategy)
+    groups, _, _ = compute_measurement_groups(meta.observable, strategy, meta.n_qubits)
     return max(len(groups), 1)
 
 

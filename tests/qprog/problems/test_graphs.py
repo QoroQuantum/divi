@@ -6,7 +6,6 @@ import warnings
 
 import networkx as nx
 import numpy as np
-import pennylane as qml
 import pytest
 
 from divi.backends import CircuitRunner
@@ -409,15 +408,10 @@ class TestGraphInput:
         )
 
         assert isinstance(qaoa_problem.initial_state, SuperpositionState)
-        assert (
-            sum(
-                isinstance(op, qml.Hadamard)
-                for op in qaoa_problem.meta_circuit_factories[
-                    "cost_circuit"
-                ].source_circuit.operations
-            )
-            == nx.bull_graph().number_of_nodes()
-        )
+        # SuperpositionState seeds each qubit with a Hadamard; verify via DAG.
+        _, dag = qaoa_problem.meta_circuit_factories["cost_circuit"].circuit_bodies[0]
+        n_hadamards = sum(1 for n in dag.op_nodes() if n.op.name == "h")
+        assert n_hadamards >= nx.bull_graph().number_of_nodes()
 
     def test_perform_final_computation_extracts_correct_solution(
         self, mocker, dummy_simulator

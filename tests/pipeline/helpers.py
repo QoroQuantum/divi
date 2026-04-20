@@ -6,8 +6,9 @@
 
 from typing import cast
 
-import numpy as np
-import pennylane as qml
+from qiskit import QuantumCircuit
+from qiskit.converters import circuit_to_dag
+from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
 from divi.pipeline import PipelineEnv, PipelineTrace
@@ -85,11 +86,13 @@ class StatefulFanoutStage(FanoutAndSumStage):
 
 def two_group_meta() -> MetaCircuit:
     """MetaCircuit with 0.9*Z + 0.4*X for MeasurementStage to produce 2 groups."""
-    qscript = qml.tape.QuantumScript(
-        ops=[qml.Hadamard(0)],
-        measurements=[qml.expval(0.9 * qml.Z(0) + 0.4 * qml.X(0))],
+    qc = QuantumCircuit(1)
+    qc.h(0)
+    observable = SparsePauliOp.from_list([("Z", 0.9), ("X", 0.4)])
+    return MetaCircuit(
+        circuit_bodies=(((), circuit_to_dag(qc)),),
+        observable=observable,
     )
-    return MetaCircuit(source_circuit=qscript, symbols=np.array([], dtype=object))
 
 
 def two_group_pipeline_stages(

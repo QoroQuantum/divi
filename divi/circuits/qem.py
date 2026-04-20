@@ -4,14 +4,22 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
-from functools import partial
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
-from cirq.circuits.circuit import Circuit
-from mitiq.zne import combine_results, construct_circuits
-from mitiq.zne.inference import Factory
+import numpy as np
+from qiskit.converters import circuit_to_dag, dag_to_circuit
+from qiskit.dagcircuit import DAGCircuit
+from qiskit.transpiler import PassManager
 
-__all__ = ["QEMProtocol", "ZNE"]
+from divi.circuits._qem_passes import GlobalFoldPass
+
+__all__ = [
+    "QEMProtocol",
+    "ZNE",
+    "ZNEExtrapolator",
+    "LinearExtrapolator",
+    "RichardsonExtrapolator",
+]
 
 #: Type alias for QEM context data passed between expand and reduce.
 #: A plain dict carrying protocol-specific side-channel information.
@@ -24,12 +32,12 @@ class QEMProtocol(ABC):
     Subclasses implement two methods that mirror the pipeline's
     expand/reduce lifecycle:
 
-    * ``expand`` — given a Cirq circuit (and optionally the observable being
-      measured), return the circuits to execute on quantum hardware and a
-      ``QEMContext`` carrying any classically-computed side-channel
-      data needed during postprocessing.
-    * ``reduce`` — given the context from ``expand`` and the quantum results,
-      produce a single mitigated expectation value.
+    * ``expand`` — given a Qiskit :class:`~qiskit.dagcircuit.DAGCircuit`
+      (and optionally the observable being measured), return the DAGs to
+      execute on quantum hardware and a ``QEMContext`` carrying any
+      classically-computed side-channel data needed during postprocessing.
+    * ``reduce`` — given the context from ``expand`` and the quantum
+      results, produce a single mitigated expectation value.
     """
 
     @property
@@ -40,23 +48,10 @@ class QEMProtocol(ABC):
     @abstractmethod
     def expand(
         self,
-        cirq_circuit: Circuit,
+        dag: DAGCircuit,
         observable: Any | None = None,
-    ) -> tuple[tuple[Circuit, ...], QEMContext]:
-        """Generate circuits and classical context for error mitigation.
-
-        Args:
-            cirq_circuit: The bound quantum circuit to mitigate.
-            observable: The observable being measured (e.g. a PennyLane
-                operator). Protocols that require observable information
-                (like QuEPP) should raise if this is ``None``.
-
-        Returns:
-            A tuple of ``(circuits, context)`` where *circuits* are the Cirq
-            circuits to execute on the quantum backend, and *context* is a
-            ``QEMContext`` with optional classical side-channel data
-            for the reduce phase.
-        """
+    ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
+        """Generate DAGs and classical context for error mitigation."""
 
     @abstractmethod
     def reduce(
@@ -64,41 +59,27 @@ class QEMProtocol(ABC):
         quantum_results: Sequence[float],
         context: QEMContext,
     ) -> float:
-        """Combine quantum results with classical context into a mitigated value.
-
-        Args:
-            quantum_results: Expectation values from executing the circuits
-                returned by ``expand``, in the same order.
-            context: The ``QEMContext`` produced by ``expand``.
-
-        Returns:
-            The mitigated expectation value.
-        """
+        """Combine quantum results with classical context into a mitigated value."""
 
     def post_reduce(self, contexts: Sequence[QEMContext]) -> None:
         """Hook called after all per-group ``reduce`` calls in an evaluation.
 
         Protocols can override this to inspect the collected contexts and
         emit summary diagnostics (e.g. signal-destruction warnings).
-        The default implementation is a no-op.
-
-        Args:
-            contexts: All ``QEMContext`` objects from the current
-                evaluation batch.
         """
 
 
 class _NoMitigation(QEMProtocol):
-    """A dummy default mitigation protocol."""
+    """A dummy default mitigation protocol — pass the circuit through."""
 
     @property
     def name(self) -> str:
         return "NoMitigation"
 
     def expand(
-        self, cirq_circuit: Circuit, observable: Any | None = None
-    ) -> tuple[tuple[Circuit, ...], QEMContext]:
-        return (cirq_circuit,), {}
+        self, dag: DAGCircuit, observable: Any | None = None
+    ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
+        return (dag,), {}
 
     def reduce(self, quantum_results: Sequence[float], context: QEMContext) -> float:
         if len(quantum_results) == 0:
@@ -108,62 +89,164 @@ class _NoMitigation(QEMProtocol):
         return quantum_results[0]
 
 
-class ZNE(QEMProtocol):
-    """Zero Noise Extrapolation (ZNE) quantum error mitigation protocol.
+# ---------------------------------------------------------------------------
+# Zero-noise extrapolation
+# ---------------------------------------------------------------------------
+@runtime_checkable
+class ZNEExtrapolator(Protocol):
+    """Structural type for zero-noise extrapolation.
 
-    Uses Mitiq to construct noise-scaled circuits and extrapolate to the
-    zero-noise limit.
+    Any object with an ``extrapolate(scale_factors, results) -> float``
+    method satisfies this protocol — no subclassing required.
+    """
+
+    def extrapolate(
+        self,
+        scale_factors: Sequence[float],
+        results: Sequence[float],
+    ) -> float: ...
+
+
+def _validate_extrapolation_inputs(
+    name: str, scale_factors: np.ndarray, results: np.ndarray
+) -> None:
+    """Guard against non-finite inputs that would silently corrupt extrapolation."""
+    if not np.all(np.isfinite(scale_factors)):
+        raise ValueError(f"{name}: scale_factors contains NaN or Inf values.")
+    if not np.all(np.isfinite(results)):
+        raise ValueError(f"{name}: results contains NaN or Inf values.")
+
+
+class LinearExtrapolator:
+    """Fit a line ``y = a + b·s`` and return ``a`` (the intercept at s=0)."""
+
+    def extrapolate(
+        self, scale_factors: Sequence[float], results: Sequence[float]
+    ) -> float:
+        if len(scale_factors) != len(results):
+            raise ValueError(
+                f"LinearExtrapolator: scale_factors and results lengths disagree "
+                f"({len(scale_factors)} vs {len(results)})."
+            )
+        if len(scale_factors) < 2:
+            raise ValueError("LinearExtrapolator requires at least 2 data points.")
+        sfs = np.asarray(scale_factors, dtype=float)
+        res = np.asarray(results, dtype=float)
+        _validate_extrapolation_inputs("LinearExtrapolator", sfs, res)
+        _, intercept = np.polyfit(sfs, res, deg=1)
+        return float(intercept)
+
+
+class RichardsonExtrapolator:
+    """Richardson (Lagrange) extrapolation through all ``N`` points to s=0.
+
+    Given ``(s_i, y_i)`` pairs, fits the unique polynomial of degree N-1
+    passing through them and evaluates at ``s=0`` via Lagrange weights:
+
+    ``P(0) = Σ_i y_i · Π_{j≠i} (-s_j) / (s_i - s_j)``
+    """
+
+    def extrapolate(
+        self, scale_factors: Sequence[float], results: Sequence[float]
+    ) -> float:
+        if len(scale_factors) != len(results):
+            raise ValueError(
+                f"RichardsonExtrapolator: scale_factors and results lengths "
+                f"disagree ({len(scale_factors)} vs {len(results)})."
+            )
+        if len(scale_factors) < 1:
+            raise ValueError("RichardsonExtrapolator requires at least 1 data point.")
+        sfs = np.asarray(scale_factors, dtype=float)
+        if len(sfs) != len(np.unique(sfs)):
+            raise ValueError(
+                "RichardsonExtrapolator requires unique scale factors; "
+                f"got duplicates in {list(scale_factors)}."
+            )
+        res = np.asarray(results, dtype=float)
+        _validate_extrapolation_inputs("RichardsonExtrapolator", sfs, res)
+        # Lagrange weights for evaluation at s=0.  When len(sfs)==1 the
+        # inner product is empty → np.prod([]) = 1.0 → returns results[0].
+        weights = np.array(
+            [
+                np.prod([-s_j / (s_i - s_j) for j, s_j in enumerate(sfs) if j != i])
+                for i, s_i in enumerate(sfs)
+            ]
+        )
+        return float(np.dot(weights, res))
+
+
+# Type for the folding callable: (DAGCircuit, scale_factor) → DAGCircuit.
+FoldingFn = Callable[[DAGCircuit, float], DAGCircuit]
+
+
+def _default_fold(dag: DAGCircuit, scale: float) -> DAGCircuit:
+    """Default folding: global unitary folding via :class:`GlobalFoldPass`."""
+    qc = dag_to_circuit(dag)
+    folded = PassManager([GlobalFoldPass(scale)]).run(qc)
+    return circuit_to_dag(folded)
+
+
+class ZNE(QEMProtocol):
+    """Zero Noise Extrapolation.
+
+    For each scale factor, applies a folding function to produce a
+    noise-scaled circuit, then extrapolates the per-scale expectation
+    values to ``s=0`` with the provided extrapolator.
+
+    Args:
+        scale_factors: Noise scale factors (≥ 1; e.g. ``[1, 3, 5]``).
+            The default ``folding_fn`` requires odd integers; custom
+            folding functions may accept arbitrary floats.
+        folding_fn: ``(DAGCircuit, scale) → DAGCircuit``.
+            Defaults to global unitary folding via an internal
+            ``GlobalFoldPass`` transformation.  Pass a custom callable
+            for local folding, random gate folding, or any other
+            noise-scaling strategy.
+        extrapolator: Any object with an
+            ``extrapolate(scale_factors, results) -> float`` method.
+            No subclassing required — just implement the method.
+            Defaults to :class:`RichardsonExtrapolator`.
+
+    Example — custom folding + custom extrapolator::
+
+        def my_local_fold(dag, scale):
+            ...  # your per-gate folding logic
+            return folded_dag
+
+        class MyExtrapolator:
+            def extrapolate(self, scale_factors, results):
+                ...  # your curve-fitting logic
+                return zero_noise_value
+
+        zne = ZNE(
+            scale_factors=[1.0, 1.5, 2.0],
+            folding_fn=my_local_fold,
+            extrapolator=MyExtrapolator(),
+        )
     """
 
     def __init__(
         self,
         scale_factors: Sequence[float],
-        folding_fn: Callable,
-        extrapolation_factory: Factory,
+        folding_fn: FoldingFn | None = None,
+        extrapolator: ZNEExtrapolator | None = None,
     ):
-        """
-        Initializes a ZNE protocol instance.
-
-        Args:
-            scale_factors (Sequence[float]): A sequence of noise scale factors
-                                             to be applied to the circuits. These
-                                             factors typically range from 1.0 upwards.
-            folding_fn (Callable): A callable (e.g., a `functools.partial` object)
-                                   that defines how the circuit should be "folded"
-                                   to increase noise. This function must accept
-                                   a `cirq.Circuit` and a `float` (scale factor)
-                                   as its first two arguments.
-            extrapolation_factory (mitiq.zne.inference.Factory): An instance of
-                                                                `Mitiq`'s `Factory`
-                                                                class, which provides
-                                                                the extrapolation method.
-
-        Raises:
-            ValueError: If `scale_factors` is not a sequence of numbers,
-                        `folding_fn` is not callable, or `extrapolation_factory`
-                        is not an instance of `mitiq.zne.inference.Factory`.
-        """
-        if (
-            not isinstance(scale_factors, Sequence)
-            or not all(isinstance(elem, (int, float)) for elem in scale_factors)
-            or not all(elem >= 1.0 for elem in scale_factors)
+        if not isinstance(scale_factors, Sequence) or not all(
+            isinstance(e, (int, float)) for e in scale_factors
         ):
-            raise ValueError(
-                "scale_factors is expected to be a sequence of real numbers >=1."
-            )
+            raise ValueError("scale_factors must be a sequence of real numbers.")
+        if not all(e >= 1.0 for e in scale_factors):
+            raise ValueError("All scale factors must be ≥ 1.0.")
 
-        if not isinstance(folding_fn, partial):
+        if extrapolator is not None and not isinstance(extrapolator, ZNEExtrapolator):
             raise ValueError(
-                "folding_fn is expected to be of type partial with all parameters "
-                "except for the circuit object and the scale factor already set."
+                f"extrapolator must be a ZNEExtrapolator, got "
+                f"{type(extrapolator).__name__}."
             )
-
-        if not isinstance(extrapolation_factory, Factory):
-            raise ValueError("extrapolation_factory is expected to be of type Factory.")
 
         self._scale_factors = scale_factors
-        self._folding_fn = folding_fn
-        self._extrapolation_factory = extrapolation_factory
+        self._folding_fn = folding_fn or _default_fold
+        self._extrapolator = extrapolator or RichardsonExtrapolator()
 
     @property
     def name(self) -> str:
@@ -174,26 +257,20 @@ class ZNE(QEMProtocol):
         return self._scale_factors
 
     @property
-    def folding_fn(self):
-        return self._folding_fn
+    def extrapolator(self) -> ZNEExtrapolator:
+        return self._extrapolator
 
     @property
-    def extrapolation_factory(self):
-        return self._extrapolation_factory
+    def folding_fn(self) -> FoldingFn:
+        return self._folding_fn
 
     def expand(
-        self, cirq_circuit: Circuit, observable: Any | None = None
-    ) -> tuple[tuple[Circuit, ...], QEMContext]:
-        circuits = construct_circuits(
-            cirq_circuit,
-            scale_factors=self._scale_factors,
-            scale_method=self._folding_fn,
-        )
-        return tuple(circuits), {}
+        self, dag: DAGCircuit, observable: Any | None = None
+    ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
+        folded = tuple(self._folding_fn(dag, s) for s in self._scale_factors)
+        return folded, {}
 
     def reduce(self, quantum_results: Sequence[float], context: QEMContext) -> float:
-        return combine_results(
-            scale_factors=self._scale_factors,
-            results=list(quantum_results),
-            extrapolation_method=self._extrapolation_factory.extrapolate,
+        return self._extrapolator.extrapolate(
+            self._scale_factors, list(quantum_results)
         )

@@ -2,230 +2,111 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import re
-
-import numpy as np
-import pennylane as qml
 import pytest
-import sympy as sp
+from qiskit import QuantumCircuit
+from qiskit.circuit import Parameter
+from qiskit.converters import circuit_to_dag
+from qiskit.quantum_info import SparsePauliOp
 
-from divi.circuits import (
-    MetaCircuit,
-)
-from divi.circuits._qasm_conversion import _measurements_to_qasm
+from divi.circuits import MetaCircuit
+
+
+@pytest.fixture
+def plain_dag():
+    qc = QuantumCircuit(2)
+    qc.h(0)
+    qc.cx(0, 1)
+    return circuit_to_dag(qc)
+
+
+@pytest.fixture
+def parametric_dag():
+    theta = Parameter("theta")
+    phi = Parameter("phi")
+    qc = QuantumCircuit(2)
+    qc.rx(theta, 0)
+    qc.ry(phi, 1)
+    qc.cx(0, 1)
+    return circuit_to_dag(qc), (theta, phi)
 
 
 class TestMetaCircuit:
-    """Tests for MetaCircuit (source_circuit, symbols, precision, circuit_body_qasms, setters)."""
+    """Construction, defaults, and setters for the reshaped MetaCircuit."""
 
-    @pytest.fixture
-    def weights_syms(self):
-        return sp.symarray("w", 4)
-
-    @pytest.fixture
-    def sample_circuit(self, weights_syms):
-        ops = [
-            qml.AngleEmbedding(weights_syms, wires=range(4), rotation="Y"),
-            qml.AngleEmbedding(weights_syms, wires=range(4), rotation="X"),
-        ]
-        return qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()])
-
-    @pytest.fixture
-    def expval_circuit(self, weights_syms):
-        ops = [
-            qml.AngleEmbedding(weights_syms, wires=range(4), rotation="Y"),
-        ]
-        return qml.tape.QuantumScript(ops=ops, measurements=[qml.expval(qml.PauliZ(0))])
-
-    @pytest.fixture
-    def no_measurement_circuit(self, weights_syms):
-        ops = [
-            qml.AngleEmbedding(weights_syms, wires=range(4), rotation="Y"),
-        ]
-        return qml.tape.QuantumScript(ops=ops, measurements=[])
-
-    def test_metacircuit_valid_measurement(self, expval_circuit, weights_syms):
-        """MetaCircuit initializes correctly with a valid expval measurement."""
-        meta = MetaCircuit(source_circuit=expval_circuit, symbols=weights_syms)
-        assert meta.source_circuit is expval_circuit
-        assert len(meta.circuit_body_qasms) == 1
-        assert meta.circuit_body_qasms[0][0] == ()
-        assert "OPENQASM 2.0" in meta.circuit_body_qasms[0][1]
-
-    def test_metacircuit_templates_populated(self, expval_circuit, weights_syms):
-        """__post_init__ builds circuit_body_templates alongside circuit_body_qasms."""
-        meta = MetaCircuit(source_circuit=expval_circuit, symbols=weights_syms)
-        assert meta.circuit_body_templates is not None
-        assert len(meta.circuit_body_templates) == len(meta.circuit_body_qasms)
-        tag, template = meta.circuit_body_templates[0]
-        assert tag == ()
-        assert len(template.fragments) == len(template.slot_indices) + 1
-        assert len(template.slot_indices) > 0
-
-    def test_metacircuit_raises_on_no_measurements(
-        self, no_measurement_circuit, weights_syms
-    ):
-        """MetaCircuit raises ValueError for a circuit with no measurements."""
-        with pytest.raises(
-            ValueError,
-            match="MetaCircuit requires a circuit with exactly one measurement, but 0 were found.",
-        ):
-            MetaCircuit(source_circuit=no_measurement_circuit, symbols=weights_syms)
-
-    def test_metacircuit_post_init_sets_circuit_body_qasms_and_measurement_groups(
-        self, sample_circuit, weights_syms
-    ):
-        """__post_init__ sets circuit_body_qasms (body contains symbol names) and measurement_groups."""
-        meta = MetaCircuit(source_circuit=sample_circuit, symbols=weights_syms)
+    def test_minimal_construction(self, plain_dag):
+        meta = MetaCircuit(circuit_bodies=(((), plain_dag),))
+        assert meta.circuit_bodies == (((), plain_dag),)
+        assert meta.parameters == ()
+        assert meta.observable is None
+        assert meta.measured_wires is None
+        assert meta.measurement_qasms == ()
         assert meta.measurement_groups == ()
-        assert len(meta.circuit_body_qasms) == 1
-        body = meta.circuit_body_qasms[0][1]
-        assert "OPENQASM 2.0" in body
-        # Symbol names appear in body (e.g. w_0, w_1)
-        sym_pattern = r"w_(\d+)"
-        found = re.findall(sym_pattern, body)
-        assert len(set(found)) == 4
-        assert len(found) == 8  # two AngleEmbeddings × 4 params
-
-    def test_metacircuit_precision_default(self, expval_circuit, weights_syms):
-        """MetaCircuit defaults to precision=8 when not specified."""
-        meta = MetaCircuit(
-            source_circuit=expval_circuit,
-            symbols=weights_syms,
-        )
         assert meta.precision == 8
 
-    def test_metacircuit_precision_custom(self, expval_circuit, weights_syms):
-        """MetaCircuit accepts a custom precision value."""
+    def test_with_parameters(self, parametric_dag):
+        dag, params = parametric_dag
+        meta = MetaCircuit(circuit_bodies=(((), dag),), parameters=params)
+        assert meta.parameters == params
+
+    def test_with_observable(self, plain_dag):
+        obs = SparsePauliOp.from_list([("IZ", 1.0), ("ZI", -1.0)])
+        meta = MetaCircuit(circuit_bodies=(((), plain_dag),), observable=obs)
+        assert meta.observable is obs
+
+    def test_with_measured_wires(self, plain_dag):
         meta = MetaCircuit(
-            source_circuit=expval_circuit,
-            symbols=weights_syms,
-            precision=12,
+            circuit_bodies=(((), plain_dag),),
+            measured_wires=(0, 1),
         )
+        assert meta.measured_wires == (0, 1)
+
+    def test_custom_precision(self, plain_dag):
+        meta = MetaCircuit(circuit_bodies=(((), plain_dag),), precision=12)
         assert meta.precision == 12
 
-    def test_metacircuit_precision_passed_to_circuit_body_to_qasm(
-        self, mocker, expval_circuit, weights_syms
-    ):
-        """MetaCircuit __post_init__ calls circuit_body_to_qasm with precision."""
-        mock_body = mocker.patch("divi.circuits._core._circuit_body_to_qasm")
-        mock_body.return_value = 'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[4];creg c[4];\nry(w_0) q[0];\n'
-
-        meta = MetaCircuit(
-            source_circuit=expval_circuit,
-            symbols=weights_syms,
-            precision=6,
+    def test_multi_body_tags(self, plain_dag, parametric_dag):
+        dag2, _ = parametric_dag
+        bodies = (
+            ((("qem", 0),), plain_dag),
+            ((("qem", 1),), dag2),
         )
+        meta = MetaCircuit(circuit_bodies=bodies)
+        assert len(meta.circuit_bodies) == 2
+        assert meta.circuit_bodies[1][0] == (("qem", 1),)
 
-        assert mock_body.called
-        assert mock_body.call_args[1]["precision"] == 6
+    def test_empty_bodies_raises(self):
+        with pytest.raises(ValueError, match="at least one circuit body"):
+            MetaCircuit(circuit_bodies=())
 
-    def test_set_circuit_bodies_returns_new_instance(
-        self, expval_circuit, weights_syms
-    ):
-        """set_circuit_bodies returns a new MetaCircuit; the original is unchanged."""
-        meta = MetaCircuit(source_circuit=expval_circuit, symbols=weights_syms)
-        original_bodies = meta.circuit_body_qasms
-        new_bodies = (((("qem", 0),), "custom_body_qasm"),)
-        out = meta.set_circuit_bodies(new_bodies)
+    def test_set_circuit_bodies_returns_new_instance(self, plain_dag, parametric_dag):
+        orig = MetaCircuit(circuit_bodies=(((), plain_dag),))
+        new_dag, params = parametric_dag
+        out = orig.set_circuit_bodies(
+            ((("qem", 0),), new_dag),
+        )
+        assert out is not orig
+        # Original untouched.
+        assert orig.circuit_bodies == (((), plain_dag),)
+        # set_circuit_bodies doesn't mutate parameters — caller re-wraps if needed.
+        assert orig.parameters == ()
+
+    def test_set_measurement_bodies_returns_new_instance(self, plain_dag):
+        meta = MetaCircuit(circuit_bodies=(((), plain_dag),))
+        meas = (((("meas", 0),), "measure q[0] -> c[0];\n"),)
+        out = meta.set_measurement_bodies(meas)
         assert out is not meta
-        assert out.circuit_body_qasms == new_bodies
-        assert meta.circuit_body_qasms == original_bodies
-
-    def test_set_measurement_bodies_returns_new_instance(
-        self, expval_circuit, weights_syms
-    ):
-        """set_measurement_bodies returns a new MetaCircuit; the original is unchanged."""
-        meta = MetaCircuit(source_circuit=expval_circuit, symbols=weights_syms)
-        meas_bodies = (((("obs_group", 0),), "measure q[0] -> c[0];\n"),)
-        out = meta.set_measurement_bodies(meas_bodies)
-        assert out is not meta
-        assert out.measurement_qasms == meas_bodies
+        assert out.measurement_qasms == meas
         assert meta.measurement_qasms == ()
 
-    def test_set_measurement_groups_returns_new_instance(
-        self, expval_circuit, weights_syms
-    ):
-        """set_measurement_groups returns a new MetaCircuit; the original is unchanged."""
-        meta = MetaCircuit(source_circuit=expval_circuit, symbols=weights_syms)
-        groups = ((qml.PauliZ(0),),)
+    def test_set_measurement_groups_returns_new_instance(self, plain_dag):
+        meta = MetaCircuit(circuit_bodies=(((), plain_dag),))
+        groups: tuple[tuple[object, ...], ...] = ((object(),),)
         out = meta.set_measurement_groups(groups)
         assert out is not meta
         assert out.measurement_groups == groups
         assert meta.measurement_groups == ()
 
-    def test_2d_symbol_array_is_flattened(self):
-        """A 2D numpy array of symbols is flattened to 1D by __post_init__."""
-
-        symbols_2d = sp.symarray("x", (2, 3))  # shape (2, 3)
-        assert symbols_2d.shape == (2, 3)
-
-        # Build a circuit that uses all 6 symbols
-        ops = [qml.RX(symbols_2d[i, j], wires=0) for i in range(2) for j in range(3)]
-        circuit = qml.tape.QuantumScript(ops=ops, measurements=[qml.expval(qml.Z(0))])
-
-        meta = MetaCircuit(source_circuit=circuit, symbols=symbols_2d)
-
-        assert meta.symbols.ndim == 1
-        assert len(meta.symbols) == 6
-        # All original symbols are present
-        for sym in symbols_2d.flatten():
-            assert sym in meta.symbols
-
-    def test_1d_symbol_array_unchanged(self, sample_circuit, weights_syms):
-        """A 1D symbol array passes through __post_init__ unchanged."""
-        meta = MetaCircuit(source_circuit=sample_circuit, symbols=weights_syms)
-        assert meta.symbols.ndim == 1
-        assert len(meta.symbols) == len(weights_syms)
-        np.testing.assert_array_equal(meta.symbols, weights_syms)
-
-    def test_list_of_symbols_converted_to_array(self, sample_circuit, weights_syms):
-        """A plain Python list of symbols is normalized to a numpy array."""
-        meta = MetaCircuit(source_circuit=sample_circuit, symbols=list(weights_syms))
-        assert isinstance(meta.symbols, np.ndarray)
-        assert meta.symbols.ndim == 1
-        assert len(meta.symbols) == len(weights_syms)
-
-
-class TestParameterFreeMetaCircuit:
-    """Tests for parameter-free MetaCircuit with set_measurement_bodies."""
-
-    def test_meta_with_measurement_bodies_produces_valid_full_qasm(self):
-        """MetaCircuit with set_measurement_bodies yields valid body+meas QASM."""
-        ops = [qml.Hadamard(0), qml.CNOT(wires=[0, 1])]
-        circuit = qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()])
-        symbols = np.array([], dtype=object)
-
-        meta = MetaCircuit(source_circuit=circuit, symbols=symbols)
-        meas_qasms = _measurements_to_qasm(
-            meta.source_circuit, [()], precision=meta.precision
-        )
-        meta = meta.set_measurement_bodies((((), meas_qasms[0]),))
-
-        body = meta.circuit_body_qasms[0][1]
-        meas = meta.measurement_qasms[0][1]
-        full_qasm = body + meas
-
-        assert "OPENQASM" in full_qasm
-        assert "qreg" in full_qasm
-        assert "h " in full_qasm or "h(" in full_qasm
-        assert "cx " in full_qasm or "cx(" in full_qasm
-        assert "measure" in full_qasm
-
-    def test_parameter_free_qasm_not_corrupted(self):
-        """Parameter-free QASM must not be corrupted by empty regex substitution."""
-        ops = [qml.Hadamard(0), qml.RZ(0.5, wires=0)]
-        circuit = qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()])
-        symbols = np.array([], dtype=object)
-
-        meta = MetaCircuit(source_circuit=circuit, symbols=symbols)
-        meas_qasms = _measurements_to_qasm(
-            meta.source_circuit, [()], precision=meta.precision
-        )
-        meta = meta.set_measurement_bodies((((), meas_qasms[0]),))
-
-        full_qasm = meta.circuit_body_qasms[0][1] + meta.measurement_qasms[0][1]
-
-        assert full_qasm.count("h ") + full_qasm.count("h(") >= 1
-        assert "rz(0.5" in full_qasm or "rz(0.50000000" in full_qasm
-        assert len(full_qasm) < 500
+    def test_frozen_dataclass_disallows_direct_field_assignment(self, plain_dag):
+        meta = MetaCircuit(circuit_bodies=(((), plain_dag),))
+        with pytest.raises((AttributeError, Exception)):
+            meta.precision = 4  # type: ignore[misc]

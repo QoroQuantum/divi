@@ -2,230 +2,175 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from functools import partial
+"""Tests for divi.circuits.qem (DAG-native QEM protocols)."""
 
-import cirq
 import pytest
-from mitiq.zne.inference import Factory
+from qiskit import QuantumCircuit
+from qiskit.converters import circuit_to_dag, dag_to_circuit
+from qiskit.quantum_info import Operator
 
-from divi.circuits import qem
-from divi.circuits.qem import ZNE, QEMContext, QEMProtocol, _NoMitigation
+from divi.circuits.qem import (
+    ZNE,
+    LinearExtrapolator,
+    QEMProtocol,
+    RichardsonExtrapolator,
+    _NoMitigation,
+)
+
+
+@pytest.fixture
+def bell_dag():
+    qc = QuantumCircuit(2)
+    qc.h(0)
+    qc.cx(0, 1)
+    return circuit_to_dag(qc)
 
 
 class TestQEMProtocol:
-    """Test suite for the abstract QEMProtocol base class."""
-
     def test_abstract_class_cannot_be_instantiated(self):
-        """Test that the abstract QEMProtocol class cannot be instantiated directly."""
         with pytest.raises(TypeError, match="Can't instantiate abstract class"):
             QEMProtocol()
 
-    def test_concrete_implementations_can_be_instantiated(self, mocker):
-        """Test that concrete implementations of QEMProtocol can be instantiated."""
-        # Test _NoMitigation
-        no_mitigation = _NoMitigation()
-        assert isinstance(no_mitigation, QEMProtocol)
-
-        # Test ZNE (with valid parameters)
-        mock_factory = mocker.Mock(spec=Factory)
-
-        def dummy_folding(circuit, scale_factor):
-            return circuit
-
-        folding_fn = partial(dummy_folding)
-
-        zne = ZNE(
-            scale_factors=[1.0, 2.0],
-            folding_fn=folding_fn,
-            extrapolation_factory=mock_factory,
-        )
-        assert isinstance(zne, QEMProtocol)
+    def test_concrete_implementations_can_be_instantiated(self):
+        assert isinstance(_NoMitigation(), QEMProtocol)
+        assert isinstance(ZNE([1.0, 3.0]), QEMProtocol)
 
 
 class TestNoMitigation:
-    """Test suite for the _NoMitigation protocol."""
+    def test_name(self):
+        assert _NoMitigation().name == "NoMitigation"
 
-    @pytest.fixture
-    def protocol(self):
-        """Returns an instance of _NoMitigation."""
-        return _NoMitigation()
+    def test_expand_is_identity(self, bell_dag):
+        dags, ctx = _NoMitigation().expand(bell_dag)
+        assert len(dags) == 1
+        assert dags[0] is bell_dag
+        assert ctx == {}
 
-    @pytest.fixture
-    def circuit(self):
-        """Returns a simple Cirq circuit."""
-        return cirq.Circuit(cirq.X(cirq.LineQubit(0)))
+    def test_reduce_returns_single_value(self, bell_dag):
+        p = _NoMitigation()
+        assert p.reduce([1.23], {}) == 1.23
+        assert p.reduce([-0.5], {}) == -0.5
 
-    def test_name_property(self, protocol):
-        """Test that the name property is correct."""
-        assert protocol.name == "NoMitigation"
+    def test_reduce_raises_on_multi_results(self, bell_dag):
+        with pytest.raises(RuntimeError, match="multiple partial results"):
+            _NoMitigation().reduce([0.1, 0.2], {})
 
-    def test_expand_is_identity(self, protocol, circuit):
-        """Test that expand returns the original circuit and empty context."""
-        circuits, ctx = protocol.expand(circuit)
-        assert len(circuits) == 1
-        assert circuits[0] is circuit
-        assert isinstance(ctx, QEMContext)
-
-    def test_reduce_returns_single_value(self, protocol, circuit):
-        """Test reduce correctly returns the single result."""
-        _, ctx = protocol.expand(circuit)
-        assert protocol.reduce([1.23], ctx) == 1.23
-        assert protocol.reduce([-0.5], ctx) == -0.5
-
-    def test_reduce_raises_error_for_multiple_values(self, protocol, circuit):
-        """Test reduce raises RuntimeError for more than one result."""
-        _, ctx = protocol.expand(circuit)
-        with pytest.raises(
-            RuntimeError, match="NoMitigation class received multiple partial results."
-        ):
-            protocol.reduce([1.0, 2.0], ctx)
+    def test_reduce_raises_on_empty_results(self, bell_dag):
+        with pytest.raises(RuntimeError, match="empty results sequence"):
+            _NoMitigation().reduce([], {})
 
 
 class TestZNE:
-    """Test suite for the ZNE (Zero Noise Extrapolation) class."""
-
-    @pytest.fixture
-    def mock_factory(self, mocker):
-        """Create a mock Factory instance with a mock extrapolate method."""
-        factory = mocker.Mock(spec=Factory)
-        factory.extrapolate = mocker.Mock(return_value=0.85)
-        return factory
-
-    @pytest.fixture
-    def mock_folding_fn(self):
-        """Create a mock folding function as a partial."""
-
-        def dummy_folding(circuit, scale_factor, some_param=None):
-            return circuit
-
-        return partial(dummy_folding, some_param="test")
-
-    def test_initialization_valid(self, mock_folding_fn, mock_factory):
-        """Test valid ZNE initialization."""
-        zne_instance = ZNE(
-            scale_factors=[1.0, 2.0, 3.0],
-            folding_fn=mock_folding_fn,
-            extrapolation_factory=mock_factory,
-        )
-        assert isinstance(zne_instance, ZNE)
-        # Test with empty but valid scale factors
-        ZNE(
-            scale_factors=[],
-            folding_fn=mock_folding_fn,
-            extrapolation_factory=mock_factory,
-        )
-
-    def test_properties(self, mock_folding_fn, mock_factory):
-        """Test that ZNE properties return the correct values."""
-        scale_factors = [1.0, 3.0]
-        zne = ZNE(
-            scale_factors=scale_factors,
-            folding_fn=mock_folding_fn,
-            extrapolation_factory=mock_factory,
-        )
+    def test_valid_initialization(self):
+        zne = ZNE(scale_factors=[1.0, 3.0, 5.0])
         assert zne.name == "zne"
-        assert zne.scale_factors == scale_factors
-        assert zne.folding_fn == mock_folding_fn
-        assert zne.extrapolation_factory == mock_factory
+        assert list(zne.scale_factors) == [1.0, 3.0, 5.0]
+        assert isinstance(zne.extrapolator, RichardsonExtrapolator)
+
+    def test_accepts_explicit_extrapolator(self):
+        extrapolator = LinearExtrapolator()
+        zne = ZNE(scale_factors=[1.0, 3.0], extrapolator=extrapolator)
+        assert zne.extrapolator is extrapolator
 
     @pytest.mark.parametrize(
-        "invalid_factors",
+        "bad_scale",
         [
-            pytest.param(1.0, id="not_a_sequence"),
-            pytest.param([1.0, "two", 3.0], id="contains_non_numeric"),
-            pytest.param([1.0, -2.0, 3.0], id="contains_negative_value"),
-            pytest.param([1.0, 0.5, 2.0], id="contains_value_less_than_1"),
+            "not_a_sequence",
+            [1.0, "foo"],  # non-numeric
         ],
     )
-    def test_initialization_invalid_scale_factors(
-        self, invalid_factors, mock_folding_fn, mock_factory
-    ):
-        """Test ZNE initialization with various invalid scale_factors."""
-        with pytest.raises(
-            ValueError,
-            match="scale_factors is expected to be a sequence of real numbers >=1",
-        ):
-            ZNE(
-                scale_factors=invalid_factors,
-                folding_fn=mock_folding_fn,
-                extrapolation_factory=mock_factory,
-            )
+    def test_rejects_invalid_scale_factor_types(self, bad_scale):
+        with pytest.raises(ValueError, match="sequence of real numbers"):
+            ZNE(scale_factors=bad_scale)
 
-    @pytest.mark.parametrize(
-        "invalid_fn",
-        [
-            pytest.param(lambda: None, id="not_a_partial"),
-            pytest.param(None, id="is_None"),
-            pytest.param("not_callable", id="is_string"),
-        ],
-    )
-    def test_initialization_invalid_folding_fn(self, invalid_fn, mock_factory):
-        """Test ZNE initialization with an invalid folding_fn."""
-        with pytest.raises(
-            ValueError, match="folding_fn is expected to be of type partial"
-        ):
-            ZNE(
-                scale_factors=[1.0, 2.0],
-                folding_fn=invalid_fn,
-                extrapolation_factory=mock_factory,
-            )
+    def test_rejects_scale_factor_below_one(self):
+        with pytest.raises(ValueError, match="≥ 1"):
+            ZNE(scale_factors=[0.5, 1.0])
 
-    def test_initialization_invalid_factory(self, mock_folding_fn):
-        """Test ZNE initialization with an invalid extrapolation_factory."""
-        with pytest.raises(
-            ValueError, match="extrapolation_factory is expected to be of type Factory"
-        ):
-            ZNE(
-                scale_factors=[1.0, 2.0],
-                folding_fn=mock_folding_fn,
-                extrapolation_factory="not_a_factory_object",
-            )
+    def test_rejects_non_extrapolator(self):
+        with pytest.raises(ValueError, match="ZNEExtrapolator"):
+            ZNE(scale_factors=[1.0, 3.0], extrapolator="not an extrapolator")
 
-    def test_expand_calls_mitiq_construct_circuits(
-        self, mocker, mock_folding_fn, mock_factory
-    ):
-        """expand delegates to mitiq with the configured parameters."""
-        mock_construct = mocker.patch(f"{qem.__name__}.construct_circuits")
-        mock_construct.return_value = [cirq.Circuit()]
-        circuit = cirq.Circuit()
-        scale_factors = [1.0, 2.0, 3.0]
+    def test_expand_returns_one_dag_per_scale(self, bell_dag):
+        zne = ZNE(scale_factors=[1.0, 3.0, 5.0])
+        dags, ctx = zne.expand(bell_dag)
+        assert len(dags) == 3
+        assert ctx == {}
 
-        zne = ZNE(
-            scale_factors=scale_factors,
-            folding_fn=mock_folding_fn,
-            extrapolation_factory=mock_factory,
-        )
-        circuits, ctx = zne.expand(circuit)
+    def test_expand_preserves_unitary(self, bell_dag):
+        zne = ZNE(scale_factors=[1.0, 3.0, 5.0])
+        dags, _ = zne.expand(bell_dag)
+        u_orig = Operator(dag_to_circuit(bell_dag))
+        for d in dags:
+            assert Operator(dag_to_circuit(d)).equiv(u_orig)
 
-        mock_construct.assert_called_once_with(
-            circuit,
-            scale_factors=scale_factors,
-            scale_method=mock_folding_fn,
-        )
-        assert len(circuits) == 1
-        assert isinstance(ctx, QEMContext)
+    def test_expand_scales_gate_count(self, bell_dag):
+        zne = ZNE(scale_factors=[1.0, 3.0, 5.0])
+        dags, _ = zne.expand(bell_dag)
+        base = bell_dag.size()
+        assert [d.size() for d in dags] == [base, 3 * base, 5 * base]
 
-    def test_reduce_calls_mitiq_combine_results(
-        self, mocker, mock_folding_fn, mock_factory
-    ):
-        """reduce delegates to mitiq with the configured parameters."""
-        mock_combine = mocker.patch(f"{qem.__name__}.combine_results")
-        mock_combine.return_value = 0.95
+    def test_reduce_extrapolates_to_zero(self, bell_dag):
+        # y = 2 - s → intercept at s=0 is 2.
+        zne = ZNE(scale_factors=[1.0, 3.0, 5.0], extrapolator=LinearExtrapolator())
+        extrapolated = zne.reduce([1.0, -1.0, -3.0], {})
+        assert extrapolated == pytest.approx(2.0)
 
-        scale_factors = [1.0, 2.0, 3.0]
-        results = [0.9, 0.8, 0.7]
 
-        zne = ZNE(
-            scale_factors=scale_factors,
-            folding_fn=mock_folding_fn,
-            extrapolation_factory=mock_factory,
-        )
-        ctx = QEMContext()
-        final_result = zne.reduce(results, ctx)
+class TestLinearExtrapolator:
+    def test_fits_line_through_two_points(self):
+        e = LinearExtrapolator()
+        # y = 1 + 2*s → intercept = 1.
+        assert e.extrapolate([1.0, 3.0], [3.0, 7.0]) == pytest.approx(1.0)
 
-        mock_combine.assert_called_once_with(
-            scale_factors=scale_factors,
-            results=results,
-            extrapolation_method=mock_factory.extrapolate,
-        )
-        assert final_result == 0.95
+    def test_intercept_from_three_points(self):
+        e = LinearExtrapolator()
+        # Noisy y = 5 - 0.5*s; best linear fit intercept close to 5.
+        sfs = [1.0, 3.0, 5.0]
+        ys = [4.5, 3.5, 2.5]
+        assert e.extrapolate(sfs, ys) == pytest.approx(5.0)
+
+    def test_rejects_mismatched_lengths(self):
+        with pytest.raises(ValueError, match="lengths disagree"):
+            LinearExtrapolator().extrapolate([1.0, 3.0], [1.0])
+
+    def test_rejects_single_point(self):
+        with pytest.raises(ValueError, match="at least 2"):
+            LinearExtrapolator().extrapolate([1.0], [2.0])
+
+    def test_rejects_nan_input(self):
+        with pytest.raises(ValueError, match="NaN or Inf"):
+            LinearExtrapolator().extrapolate([1.0, 3.0], [float("nan"), 1.0])
+
+    def test_rejects_inf_input(self):
+        with pytest.raises(ValueError, match="NaN or Inf"):
+            LinearExtrapolator().extrapolate([1.0, float("inf")], [1.0, 2.0])
+
+
+class TestRichardsonExtrapolator:
+    def test_interpolates_polynomial_exactly(self):
+        e = RichardsonExtrapolator()
+        # y = 2 + 3*s - s**2 evaluated at s=1,2,3 → y=4,4,2. At s=0, y=2.
+        sfs = [1.0, 2.0, 3.0]
+        ys = [4.0, 4.0, 2.0]
+        assert e.extrapolate(sfs, ys) == pytest.approx(2.0)
+
+    def test_linear_through_two_points_matches_linear(self):
+        # For N=2 points, Richardson reduces to linear extrapolation.
+        sfs = [1.0, 3.0]
+        ys = [0.5, -0.5]
+        richardson = RichardsonExtrapolator().extrapolate(sfs, ys)
+        linear = LinearExtrapolator().extrapolate(sfs, ys)
+        assert richardson == pytest.approx(linear)
+
+    def test_rejects_mismatched_lengths(self):
+        with pytest.raises(ValueError, match="lengths disagree"):
+            RichardsonExtrapolator().extrapolate([1.0, 3.0], [1.0])
+
+    def test_rejects_duplicate_scale_factors(self):
+        with pytest.raises(ValueError, match="duplicates"):
+            RichardsonExtrapolator().extrapolate([1.0, 3.0, 3.0], [0.5, 0.3, 0.3])
+
+    def test_rejects_nan_input(self):
+        with pytest.raises(ValueError, match="NaN or Inf"):
+            RichardsonExtrapolator().extrapolate([1.0, 3.0], [float("nan"), 1.0])
