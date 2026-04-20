@@ -2389,6 +2389,78 @@ class TestQoroServiceWithApiKey:
             isinstance(val, (float, int)) for val in exp_values.values()
         ), "Expectation values should be numeric"
 
+    def test_get_job_results_wide_register(self, qoro_service):
+        """Regression test: circuits with >64 qubits must return properly
+        decoded bitstrings.
+
+        An earlier version of the QH1 decoder used a signed ``int64``
+        accumulator, so any histogram index ``>= 2**63`` overflowed and
+        rendered either with a ``-`` prefix (length ``n_qubits + 1``) or
+        silently-truncated content.  This end-to-end test pushes a
+        70-qubit job through the live backend and verifies the client
+        decode path produces well-formed bitstrings.
+
+        The circuit X's qubits 5 and 64, which are symmetric around the
+        70-qubit register's midpoint, so the integer value of each
+        returned bitstring is ``2**64 + 2**5`` regardless of the
+        backend's bit endianness — guaranteeing that the wide-register
+        decode path is actually exercised.
+        """
+        n_qubits = 70
+        qasm_lines = [
+            "OPENQASM 2.0;",
+            'include "qelib1.inc";',
+            f"qreg q[{n_qubits}];",
+            f"creg c[{n_qubits}];",
+            "h q[0];",  # give the histogram more than one outcome
+            "x q[5];",
+            "x q[64];",
+        ]
+        qasm_lines.extend(f"measure q[{i}] -> c[{i}];" for i in range(n_qubits))
+        qasm = "\n".join(qasm_lines) + "\n"
+
+        config = ExecutionConfig(
+            simulator=Simulator.QCSim,
+            simulation_method=SimulationMethod.MatrixProductState,
+            bond_dimension=16,
+        )
+        result = qoro_service.submit_circuits(
+            {"wide_register_circuit": qasm},
+            override_execution_config=config,
+        )
+
+        status = qoro_service.poll_job_status(result, loop_until_complete=True)
+        assert status == JobStatus.COMPLETED
+
+        completed = qoro_service.get_job_results(result)
+        assert isinstance(completed, ExecutionResult)
+        assert completed.results is not None
+        results = completed.results
+        assert len(results) == 1
+
+        hist = results[0]["results"]
+        assert isinstance(hist, dict)
+        assert len(hist) >= 1, "Expected at least one bitstring outcome"
+
+        for key, count in hist.items():
+            assert isinstance(key, str)
+            assert (
+                len(key) == n_qubits
+            ), f"Bitstring width mismatch: got {len(key)}, expected {n_qubits}"
+            assert set(key) <= {
+                "0",
+                "1",
+            }, f"Bitstring contains non-binary chars: {key!r}"
+            assert isinstance(count, int) and count > 0
+
+        # Confirm the wide-decoder path was actually exercised: at least
+        # one returned index must exceed ``2**63``.
+        max_index = max(int(key, 2) for key in hist)
+        assert max_index >= (1 << 63), (
+            f"Expected max index >= 2**63 to exercise the wide-decoder path, "
+            f"got {max_index}"
+        )
+
     def test_set_and_get_execution_config(self, qoro_service, circuits):
         """Tests setting and retrieving execution config on a PENDING job."""
         single_circuit = {"circuit_1": circuits["circuit_0"]}

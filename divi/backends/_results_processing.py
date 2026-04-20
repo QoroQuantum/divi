@@ -37,8 +37,8 @@ def _decompress_histogram(buf: bytes) -> dict[str, int]:
         raise ValueError("bad magic")
 
     data = np.frombuffer(buf, dtype=np.uint8)
-    indices, counts, n_bits, unique, total_shots, n_decoded = _decompress_histogram_jit(
-        data
+    indices, counts, n_bits, L, unique, total_shots, n_decoded = (
+        _decompress_histogram_jit(data)
     )
 
     # Integrity checks (order matches original: shot sum first, unique second)
@@ -48,8 +48,19 @@ def _decompress_histogram(buf: bytes) -> dict[str, int]:
         raise ValueError("corrupt stream: unique mismatch")
 
     return {
-        format(int(indices[i]), f"0{n_bits}b"): int(counts[i]) for i in range(n_decoded)
+        _limbs_to_bitstring(indices[i], n_bits, L): int(counts[i])
+        for i in range(n_decoded)
     }
+
+
+def _limbs_to_bitstring(limbs: np.ndarray, n_bits: int, L: int) -> str:
+    """Render a little-endian uint64 limb array as an ``n_bits``-wide binary string."""
+    if n_bits == 0:
+        # Guard against Python's ``s[-0:] == s`` slice quirk, which would
+        # otherwise return the full 64-char limb.
+        return ""
+    full = "".join(format(int(limbs[k]), "064b") for k in range(L - 1, -1, -1))
+    return full[-n_bits:]
 
 
 def reverse_dict_endianness(
