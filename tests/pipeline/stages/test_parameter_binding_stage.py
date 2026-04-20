@@ -12,9 +12,9 @@ from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
+from divi.circuits._conversions import _format_bound_param as _format_param
 from divi.pipeline import CircuitPipeline, PipelineEnv
 from divi.pipeline.stages import MeasurementStage, ParameterBindingStage, QEMStage
-from divi.pipeline.stages._parameter_binding_stage import _format_param
 from tests.pipeline.helpers import DummySpecStage, two_group_meta
 
 

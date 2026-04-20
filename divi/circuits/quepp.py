@@ -641,6 +641,37 @@ def _enumerate_paths_dfs(
     return _merge_paths_by_branch(all_paths)
 
 
+def _all_cos_path_weight(
+    rotations: list[_RotationGate],
+    inv_tableaus: list[stim.Tableau],
+    observable_terms: list[tuple[float, stim.PauliString]],
+) -> float:
+    """Weight of the all-zero-branch (all-cos) CPT path.
+
+    Walks each observable term backward through *rotations*, always taking
+    the cos branch at non-commuting rotations (and passing through
+    commuting ones with no factor).  A term contributes
+    ``obs_coeff * Π cos(θ_i)`` when the fully back-propagated Pauli is
+    diagonal, and zero otherwise.  Mirrors the ``branches=(0,)*K`` path
+    of the exhaustive DFS exactly, and is used as a deterministic fallback
+    when every Monte Carlo sample is discarded.
+    """
+    K = len(rotations)
+    total = 0.0
+    for obs_coeff, obs_pauli in observable_terms:
+        pauli = inv_tableaus[K](obs_pauli)
+        weight = obs_coeff
+        for idx in range(K - 1, -1, -1):
+            rot = rotations[idx]
+            p = pauli[rot.qubit_idx]
+            if p != _PAULI_I and p != _GENERATOR[rot.axis]:
+                weight *= np.cos(rot.angle)
+            pauli = inv_tableaus[idx](pauli)
+        if _is_diagonal(pauli):
+            total += weight
+    return total
+
+
 def _sample_paths_montecarlo(
     rotations: list[_RotationGate],
     tableaus: list[stim.Tableau],
@@ -723,15 +754,28 @@ def _sample_paths_montecarlo(
         )
 
     if not samples:
+        fallback_weight = _all_cos_path_weight(
+            rotations, inv_tableaus, observable_terms
+        )
+        if fallback_weight == 0.0:
+            warnings.warn(
+                f"QuEPP Monte Carlo: all {n_samples} samples produced "
+                f"non-diagonal Pauli strings, and the deterministic "
+                f"all-cos fallback path has zero diagonal contribution.  "
+                f"Returning an empty path list (zero estimate).  Consider "
+                f"increasing n_samples or using exhaustive enumeration.",
+                stacklevel=2,
+            )
+            return []
         warnings.warn(
             f"QuEPP Monte Carlo: all {n_samples} samples produced "
-            f"non-diagonal Pauli strings and were discarded.  Falling "
-            f"back to the all-identity path (all rotations removed, "
-            f"weight=1).  Results may be inaccurate — consider "
-            f"increasing n_samples or using exhaustive enumeration.",
+            f"non-diagonal Pauli strings.  Falling back to the "
+            f"deterministic all-cos path with weight "
+            f"{fallback_weight:.4e}.  Consider increasing n_samples or "
+            f"using exhaustive enumeration.",
             stacklevel=2,
         )
-        return [_PauliPath(branches=(0,) * K, weight=1.0, order=0)]
+        return [_PauliPath(branches=(0,) * K, weight=fallback_weight, order=0)]
     return _merge_paths_by_branch(samples)
 
 

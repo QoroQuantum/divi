@@ -21,6 +21,7 @@ from divi.circuits import qscript_to_meta
 from divi.circuits.qem import _NoMitigation
 from divi.circuits.quepp import (
     QuEPP,
+    _all_cos_path_weight,
     _build_clifford_tableaus,
     _build_path_dag,
     _decompose_controlled_rotations,
@@ -327,6 +328,80 @@ class TestSamplePathsMonteCarlo:
         assert sorted(p.branches for p in paths1) == sorted(p.branches for p in paths2)
 
 
+class TestAllCosPathWeight:
+    """Spec: ``_all_cos_path_weight`` returns the CPT weight of the branches=(0,)*K path."""
+
+    def test_matches_exhaustive_dfs_all_zero_branch(self):
+        """Deterministic fallback weight matches the DFS-enumerated all-zero path."""
+        angle = 0.7
+        qc = _rx_qc(angle)  # Rx(θ) on qubit 0
+        nc = _normalize_circuit(qc)
+        obs = SparsePauliOp.from_list([("Z", 1.0)])
+        rots = _extract_rotation_gates(nc)
+        tabs = _build_clifford_tableaus(nc, rots)
+        inv_tabs = [t.inverse() for t in tabs]
+        obs_terms = _obs_to_stim_terms(obs, 1)
+
+        fallback_w = _all_cos_path_weight(rots, inv_tabs, obs_terms)
+
+        # Cross-check with the exhaustive enumeration's all-zero branch.
+        dfs_paths = _enumerate_paths_dfs(rots, tabs, obs_terms, max_order=10)
+        zero_branch = next(p for p in dfs_paths if all(b == 0 for b in p.branches))
+        assert fallback_w == pytest.approx(zero_branch.weight, rel=1e-12)
+        assert fallback_w == pytest.approx(np.cos(angle), abs=1e-12)
+
+    def test_returns_zero_when_no_term_diagonal(self):
+        """Observable that never propagates to a diagonal Pauli gives 0."""
+        qc = _rx_qc(0.4)
+        nc = _normalize_circuit(qc)
+        obs = SparsePauliOp.from_list([("X", 1.0)])  # X commutes with Rx
+        rots = _extract_rotation_gates(nc)
+        tabs = _build_clifford_tableaus(nc, rots)
+        inv_tabs = [t.inverse() for t in tabs]
+        obs_terms = _obs_to_stim_terms(obs, 1)
+
+        # X commutes with Rx so no cos factor accumulates, but the final
+        # Pauli is still X — non-diagonal — so the term contributes 0.
+        assert _all_cos_path_weight(rots, inv_tabs, obs_terms) == 0.0
+
+    def test_multi_term_observable_sums_over_diagonal_contributions(self):
+        """Mixed observable: only the Z term contributes, weighted by its coeff."""
+        angle = 0.5
+        qc = _rx_qc(angle)
+        nc = _normalize_circuit(qc)
+        obs = SparsePauliOp.from_list([("Z", 0.8), ("X", 0.2)])  # X term → 0
+        rots = _extract_rotation_gates(nc)
+        tabs = _build_clifford_tableaus(nc, rots)
+        inv_tabs = [t.inverse() for t in tabs]
+        obs_terms = _obs_to_stim_terms(obs, 1)
+
+        assert _all_cos_path_weight(rots, inv_tabs, obs_terms) == pytest.approx(
+            0.8 * np.cos(angle), abs=1e-12
+        )
+
+    def test_mc_fallback_returns_computed_weight(self, mixed_qc):
+        """When every MC sample is discarded, the returned path carries the all-cos weight."""
+        obs = SparsePauliOp.from_list([("IZ", 1.0)])
+        rots = _extract_rotation_gates(mixed_qc)
+        tabs = _build_clifford_tableaus(mixed_qc, rots)
+        inv_tabs = [t.inverse() for t in tabs]
+        obs_terms = _obs_to_stim_terms(obs, 2)
+        expected = _all_cos_path_weight(rots, inv_tabs, obs_terms)
+
+        with pytest.warns(UserWarning, match="non-diagonal Pauli strings"):
+            paths = _sample_paths_montecarlo(
+                rots, tabs, obs_terms, 100, np.random.default_rng(42)
+            )
+
+        if expected == 0.0:
+            # Fallback correctly declines to fabricate a path with bogus weight.
+            assert paths == []
+        else:
+            assert len(paths) == 1
+            assert paths[0].branches == (0,) * len(rots)
+            assert paths[0].weight == pytest.approx(expected, rel=1e-12)
+
+
 class TestSimulateCliffordEnsemble:
     def test_bell_state_zz(self, bell_qc):
         obs = SparsePauliOp.from_list([("ZZ", 1.0)])
@@ -405,10 +480,25 @@ class TestQuEPPProtocol:
             p.expand(circuit_to_dag(bell_qc), "not an observable")
 
     def test_montecarlo_expand(self, mixed_qc, suppress_quepp_warnings):
-        obs = SparsePauliOp.from_list([("IZ", 1.0)])
+        # ZZ (rather than IZ) picks an observable that propagates to a
+        # diagonal Pauli under mixed_qc, so MC sampling returns real
+        # diagonal paths and does not fall back.
+        obs = SparsePauliOp.from_list([("ZZ", 1.0)])
         p = QuEPP(sampling="montecarlo", n_samples=100, seed=42, n_twirls=0)
         _, ctx = p.expand(circuit_to_dag(mixed_qc), obs)
         assert ctx["n_paths"] >= 1
+
+    def test_montecarlo_all_discarded_returns_empty_when_fallback_is_zero(
+        self, mixed_qc
+    ):
+        """When all MC samples are non-diagonal *and* the all-cos fallback has
+        no diagonal contribution, the protocol correctly produces zero paths
+        rather than fabricating one with bogus weight."""
+        obs = SparsePauliOp.from_list([("IZ", 1.0)])
+        p = QuEPP(sampling="montecarlo", n_samples=100, seed=42, n_twirls=0)
+        with pytest.warns(UserWarning, match="non-diagonal Pauli strings"):
+            _, ctx = p.expand(circuit_to_dag(mixed_qc), obs)
+        assert ctx["n_paths"] == 0
 
 
 class TestQuEPPSignalDestruction:

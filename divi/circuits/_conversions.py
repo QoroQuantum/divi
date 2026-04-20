@@ -213,6 +213,16 @@ def _format_gate_param(
     return f"{float(param):.{precision}f}"
 
 
+def _format_bound_param(value: float, precision: int) -> str:
+    """Format a bound numeric parameter for QASM template substitution.
+
+    Formats to *precision* decimal places, strips trailing zeros and dots,
+    and normalises negative zero to ``"0"``.
+    """
+    s = f"{float(value):.{precision}f}".rstrip("0").rstrip(".")
+    return "0" if s in {"-0", ""} else s
+
+
 def dag_to_qasm_body(dag: DAGCircuit, precision: int = 8) -> str:
     """Emit a body-only parametric OpenQASM 2.0 string from a DAG.
 
@@ -335,6 +345,10 @@ def sparse_pauli_op_to_pl_observable(
         c = float(np.real(coeff))
         terms.append(c * term if c != 1.0 else term)
 
+    if not terms:
+        raise ValueError(
+            "sparse_pauli_op_to_pl_observable: SparsePauliOp has no terms."
+        )
     return terms[0] if len(terms) == 1 else qml.sum(*terms)
 
 

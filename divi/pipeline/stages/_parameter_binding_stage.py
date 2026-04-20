@@ -9,6 +9,7 @@ import numpy as np
 from qiskit.converters import circuit_to_dag, dag_to_circuit
 
 from divi.circuits import MetaCircuit, build_template, dag_to_qasm_body, render_template
+from divi.circuits._conversions import _format_bound_param
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
@@ -22,16 +23,6 @@ from divi.pipeline.abc import (
 from divi.pipeline.stages._qem_stage import QEMStage
 
 PARAM_SET_AXIS = "param_set"
-
-
-def _format_param(value: float, precision: int) -> str:
-    """Format a numeric parameter for QASM insertion.
-
-    Formats to *precision* decimal places, strips trailing zeros and dots,
-    and normalises negative zero to ``"0"``.
-    """
-    s = f"{float(value):.{precision}f}".rstrip("0").rstrip(".")
-    return "0" if s in {"-0", ""} else s
 
 
 class ParameterBindingStage(BundleStage):
@@ -146,7 +137,7 @@ class ParameterBindingStage(BundleStage):
                         f"{param_set_idx}."
                     )
                 formatted_values = tuple(
-                    _format_param(v, precision) for v in param_values
+                    _format_bound_param(v, precision) for v in param_values
                 )
                 param_set_tag = (PARAM_SET_AXIS, param_set_idx)
                 for qasm_tag, template in templates:

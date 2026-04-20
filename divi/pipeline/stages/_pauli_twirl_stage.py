@@ -42,6 +42,7 @@ from qiskit.circuit import Parameter
 from qiskit.dagcircuit import DAGCircuit
 
 from divi.circuits import MetaCircuit, build_template, dag_to_qasm_body, render_template
+from divi.circuits._conversions import _format_bound_param
 from divi.circuits._qem_passes import (
     _TWIRL_DAG_TABLES,
     _TWO_QUBIT_PAULI_LABELS,
@@ -67,12 +68,6 @@ _TWIRL_DAG_ARRAY_TABLES = {
     gate_name: tuple(sub_table[label] for label in _TWO_QUBIT_PAULI_LABELS)
     for gate_name, sub_table in _TWIRL_DAG_TABLES.items()
 }
-
-
-def _format_param(value: float, precision: int) -> str:
-    """Format a numeric parameter for QASM insertion (mirrors ParameterBindingStage)."""
-    s = f"{float(value):.{precision}f}".rstrip("0").rstrip(".")
-    return "0" if s in {"-0", ""} else s
 
 
 def _parametrise_rotations(
@@ -116,7 +111,7 @@ def _extract_rotation_values(dag: DAGCircuit) -> tuple[float, ...]:
 def _discover_twirl_plan(
     dag: DAGCircuit,
 ) -> tuple[tuple[int, ...], tuple[str, ...]]:
-    """Return ``(positions, gate_names)`` for twirl-eligible nodes in topological order."""
+    """Return ``(positions, gate_names)`` for twirl-eligible nodes in op_nodes order."""
     positions: list[int] = []
     gate_names: list[str] = []
     for i, node in enumerate(dag.op_nodes()):
@@ -368,7 +363,7 @@ class PauliTwirlStage(BundleStage):
                         f"disagree on rotation count ({len(param_names)} vs "
                         f"{len(values)}). Tag: {variant_tag!r}."
                     )
-                formatted = tuple(_format_param(v, precision) for v in values)
+                formatted = tuple(_format_bound_param(v, precision) for v in values)
                 for twirl_idx, unique_idx in enumerate(twirl_to_unique):
                     template = templates_per_unique[unique_idx]
                     bound_tag = (*variant_tag, (self.axis_name, twirl_idx))
