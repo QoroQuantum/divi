@@ -49,9 +49,9 @@ class _DummyQEMProtocol(QEMProtocol):
 
 @pytest.fixture
 def default_zne_protocol():
-    # Odd-integer scales only (GlobalFoldPass constraint).  Linear extrapolator
-    # is deterministic (doesn't need scipy fits) and matches the old ExpFactory
-    # contract closely enough for structural assertions.
+    # Linear extrapolator is deterministic (doesn't need scipy fits) and
+    # matches the old ExpFactory contract closely enough for structural
+    # assertions.
     return ZNE(scale_factors=[1, 3, 5], extrapolator=LinearExtrapolator())
 
 

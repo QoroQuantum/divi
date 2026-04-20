@@ -95,7 +95,8 @@ class TestZNE:
         zne = ZNE(scale_factors=[1.0, 3.0, 5.0])
         dags, ctx = zne.expand(bell_dag)
         assert len(dags) == 3
-        assert ctx == {}
+        # Effective scales are reported in the context for extrapolation.
+        assert ctx["effective_scales"] == (1.0, 3.0, 5.0)
 
     def test_expand_preserves_unitary(self, bell_dag):
         zne = ZNE(scale_factors=[1.0, 3.0, 5.0])
@@ -106,15 +107,36 @@ class TestZNE:
 
     def test_expand_scales_gate_count(self, bell_dag):
         zne = ZNE(scale_factors=[1.0, 3.0, 5.0])
+        base = bell_dag.size()  # capture before expand (which consumes the input)
         dags, _ = zne.expand(bell_dag)
-        base = bell_dag.size()
         assert [d.size() for d in dags] == [base, 3 * base, 5 * base]
 
     def test_reduce_extrapolates_to_zero(self, bell_dag):
         # y = 2 - s → intercept at s=0 is 2.
         zne = ZNE(scale_factors=[1.0, 3.0, 5.0], extrapolator=LinearExtrapolator())
-        extrapolated = zne.reduce([1.0, -1.0, -3.0], {})
+        extrapolated = zne.reduce(
+            [1.0, -1.0, -3.0], {"effective_scales": (1.0, 3.0, 5.0)}
+        )
         assert extrapolated == pytest.approx(2.0)
+
+    def test_reduce_falls_back_to_requested_scales_without_context(self, bell_dag):
+        """If a legacy context lacks effective_scales, reduce uses the requested values."""
+        zne = ZNE(scale_factors=[1.0, 3.0, 5.0], extrapolator=LinearExtrapolator())
+        assert zne.reduce([1.0, -1.0, -3.0], {}) == pytest.approx(2.0)
+
+    def test_expand_forwards_effective_scales_to_reduce(self, bell_dag):
+        """Effective scales survive the expand→reduce roundtrip unbiased."""
+        zne = ZNE(scale_factors=[1.0, 3.0, 5.0], extrapolator=LinearExtrapolator())
+        _, ctx = zne.expand(bell_dag)
+        # y = 2 - s evaluated at effective scales (1, 3, 5).
+        assert zne.reduce([1.0, -1.0, -3.0], ctx) == pytest.approx(2.0)
+
+    def test_expand_warns_when_scales_collapse(self, bell_dag):
+        """Small-d circuits can snap distinct requested scales to the same effective value."""
+        # bell_dag has d=2; requested 1.5 → eff=1.0, 2.5 → eff=3.0, 3.0 → eff=3.0.
+        zne = ZNE(scale_factors=[1.5, 2.5, 3.0])
+        with pytest.warns(UserWarning, match="collapse to effective scales"):
+            zne.expand(bell_dag)
 
 
 class TestLinearExtrapolator:

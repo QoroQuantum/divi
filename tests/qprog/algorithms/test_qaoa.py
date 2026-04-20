@@ -308,7 +308,7 @@ class TestQAOAQDriftMultiSample:
         G = make_bull_graph()
         default_test_simulator.set_seed(1997)
 
-        scale_factors = [1.0, 3.0]  # odd integers for GlobalFoldPass
+        scale_factors = [1.0, 3.0]
         zne_protocol = ZNE(
             scale_factors=scale_factors,
             extrapolator=LinearExtrapolator(),

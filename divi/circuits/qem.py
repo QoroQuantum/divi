@@ -2,16 +2,21 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import copy
+import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
-from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit.dagcircuit import DAGCircuit
-from qiskit.transpiler import PassManager
 
-from divi.circuits._qem_passes import GlobalFoldPass
+from divi.circuits._qem_passes import (
+    GlobalFoldPass,
+    LocalFoldPass,
+    _compute_effective_scale,
+    _count_foldable_gates,
+)
 
 __all__ = [
     "QEMProtocol",
@@ -19,6 +24,11 @@ __all__ = [
     "ZNEExtrapolator",
     "LinearExtrapolator",
     "RichardsonExtrapolator",
+    "GlobalFoldPass",
+    "LocalFoldPass",
+    "FoldingFn",
+    "global_fold",
+    "local_fold",
 ]
 
 #: Type alias for QEM context data passed between expand and reduce.
@@ -51,7 +61,14 @@ class QEMProtocol(ABC):
         dag: DAGCircuit,
         observable: Any | None = None,
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
-        """Generate DAGs and classical context for error mitigation."""
+        """Generate DAGs and classical context for error mitigation.
+
+        The input ``dag`` is consumed by this method: implementations may
+        mutate it, and callers must not retain it expecting the original
+        state.  This matches the broader pipeline convention for
+        ``consumes_dag_bodies`` stages (see
+        :class:`~divi.pipeline.abc.BundleStage`).
+        """
 
     @abstractmethod
     def reduce(
@@ -175,15 +192,54 @@ class RichardsonExtrapolator:
         return float(np.dot(weights, res))
 
 
-# Type for the folding callable: (DAGCircuit, scale_factor) → DAGCircuit.
-FoldingFn = Callable[[DAGCircuit, float], DAGCircuit]
+#: Type for the folding callable — given a ``DAGCircuit`` and a requested
+#: ``scale_factor``, return ``(folded_dag, effective_scale)``.  The second
+#: value is the scale actually realised (it may differ from the request
+#: when the gate count is too small for the fractional part to round
+#: cleanly) and is forwarded to the extrapolator.
+#:
+#: Contract for implementers:
+#:
+#: * Callables **consume** their input ``DAGCircuit`` — callers pass a
+#:   DAG they no longer need, and the fold is free to mutate it.
+#: * By convention ``folding_fn(dag, 1.0)`` returns the DAG unmodified
+#:   with ``effective_scale=1.0`` — both built-in folds honor this.
+FoldingFn = Callable[[DAGCircuit, float], tuple[DAGCircuit, float]]
 
 
-def _default_fold(dag: DAGCircuit, scale: float) -> DAGCircuit:
-    """Default folding: global unitary folding via :class:`GlobalFoldPass`."""
-    qc = dag_to_circuit(dag)
-    folded = PassManager([GlobalFoldPass(scale)]).run(qc)
-    return circuit_to_dag(folded)
+def global_fold(dag: DAGCircuit, scale: float) -> tuple[DAGCircuit, float]:
+    """Apply :class:`GlobalFoldPass` and return ``(folded_dag, effective_scale)``.
+
+    Mutates ``dag`` in place (deepcopy first if the original is needed).
+    """
+    effective = _compute_effective_scale(_count_foldable_gates(dag), scale)
+    return GlobalFoldPass(scale).run(dag), effective
+
+
+def local_fold(
+    dag: DAGCircuit,
+    scale: float,
+    *,
+    selection: str = "random",
+    exclude: set[str] | None = None,
+    rng=None,
+) -> tuple[DAGCircuit, float]:
+    """Apply :class:`LocalFoldPass` and return ``(folded_dag, effective_scale)``.
+
+    For use with :class:`ZNE` via ``functools.partial`` when customising
+    ``selection`` / ``exclude`` / ``rng``::
+
+        from functools import partial
+        zne = ZNE(
+            scale_factors=[1.0, 1.5, 2.0],
+            folding_fn=partial(local_fold, selection="from_left"),
+        )
+
+    Mutates ``dag`` in place (deepcopy first if the original is needed).
+    """
+    pass_ = LocalFoldPass(scale, selection=selection, exclude=exclude, rng=rng)
+    effective = pass_.effective_scale(dag)
+    return pass_.run(dag), effective
 
 
 class ZNE(QEMProtocol):
@@ -193,34 +249,66 @@ class ZNE(QEMProtocol):
     noise-scaled circuit, then extrapolates the per-scale expectation
     values to ``s=0`` with the provided extrapolator.
 
+    **Choosing a folding strategy**
+
+    * :func:`global_fold` (default) — applies ``(U†·U)^k`` + partial tail
+      fold at the *circuit* level.  Deterministic, good first choice for
+      widely-spaced scales (e.g. ``[1, 3, 5]``).
+    * :func:`local_fold` — per-gate folding with fractional-scale
+      support.  Use when you need scales close to 1 (``[1.0, 1.25, 1.5]``)
+      on deep circuits where global folding would explode the gate count,
+      or when you want to skip specific gates during folding
+      (``exclude={"cx"}``).  ``global_fold`` has no equivalent exclude
+      mechanism — it folds the whole unitary.
+
+    **Effective vs requested scales**
+
+    The achievable scale factors form a discrete grid of granularity
+    ``2/d`` (``d`` = foldable gate count).  For small ``d`` a requested
+    non-integer scale may snap to a different value.  ``expand`` reports
+    the *effective* scale factors via the context and :meth:`reduce`
+    forwards them to the extrapolator, so extrapolation stays unbiased.
+    A warning is emitted if two requested scales collapse to the same
+    effective value.
+
     Args:
-        scale_factors: Noise scale factors (≥ 1; e.g. ``[1, 3, 5]``).
-            The default ``folding_fn`` requires odd integers; custom
-            folding functions may accept arbitrary floats.
-        folding_fn: ``(DAGCircuit, scale) → DAGCircuit``.
-            Defaults to global unitary folding via an internal
-            ``GlobalFoldPass`` transformation.  Pass a custom callable
-            for local folding, random gate folding, or any other
-            noise-scaling strategy.
+        scale_factors: Noise scale factors (≥ 1; e.g. ``[1, 3, 5]`` or
+            ``[1.0, 1.5, 2.0]``).  Arbitrary real values ≥ 1 are
+            supported by both default folds.
+        folding_fn: ``(DAGCircuit, scale) → (DAGCircuit, effective_scale)``.
+            Defaults to :func:`global_fold`.  Pass :func:`local_fold` (or
+            ``functools.partial(local_fold, selection=...)``) for local
+            folding, or any custom callable.  See
+            :data:`~divi.circuits.qem.FoldingFn` for the input-mutation
+            contract and the ``scale=1.0`` pass-through convention.
         extrapolator: Any object with an
             ``extrapolate(scale_factors, results) -> float`` method.
             No subclassing required — just implement the method.
             Defaults to :class:`RichardsonExtrapolator`.
 
+    Example — switch to local folding::
+
+        from divi.circuits.qem import ZNE, local_fold
+
+        zne = ZNE(
+            scale_factors=[1.0, 1.5, 2.0, 2.5, 3.0],
+            folding_fn=local_fold,
+        )
+
     Example — custom folding + custom extrapolator::
 
-        def my_local_fold(dag, scale):
-            ...  # your per-gate folding logic
-            return folded_dag
+        def my_fold(dag, scale):
+            ...  # your folding logic
+            return folded_dag, effective_scale  # both required
 
         class MyExtrapolator:
             def extrapolate(self, scale_factors, results):
-                ...  # your curve-fitting logic
+                ...
                 return zero_noise_value
 
         zne = ZNE(
             scale_factors=[1.0, 1.5, 2.0],
-            folding_fn=my_local_fold,
+            folding_fn=my_fold,
             extrapolator=MyExtrapolator(),
         )
     """
@@ -245,7 +333,7 @@ class ZNE(QEMProtocol):
             )
 
         self._scale_factors = scale_factors
-        self._folding_fn = folding_fn or _default_fold
+        self._folding_fn = folding_fn or global_fold
         self._extrapolator = extrapolator or RichardsonExtrapolator()
 
     @property
@@ -267,10 +355,31 @@ class ZNE(QEMProtocol):
     def expand(
         self, dag: DAGCircuit, observable: Any | None = None
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
-        folded = tuple(self._folding_fn(dag, s) for s in self._scale_factors)
-        return folded, {}
+        # Expand takes ownership of `dag` (see QEMProtocol.expand).  For
+        # S scale factors we need S distinct folded outputs; the input
+        # can absorb one of them, so we deepcopy S-1 times instead of S.
+        # (Deepcopy of a Rust-backed DAGCircuit is the fastest clone
+        # primitive available — see PauliTwirlStage._apply_twirl_substitute
+        # for the benchmarking rationale.)
+        scales = self._scale_factors
+        folded_pairs = [self._folding_fn(copy.deepcopy(dag), s) for s in scales[:-1]]
+        folded_pairs.append(self._folding_fn(dag, scales[-1]))
+        folded_dags = tuple(pair[0] for pair in folded_pairs)
+        effective_scales = tuple(float(pair[1]) for pair in folded_pairs)
+
+        if len(set(effective_scales)) < len(effective_scales):
+            warnings.warn(
+                f"ZNE: requested scale factors {list(self._scale_factors)} "
+                f"collapse to effective scales {list(effective_scales)} — "
+                f"the foldable gate count is too small for the requested "
+                f"granularity.  Extrapolation may fail or be biased; "
+                f"consider fewer scale factors, integer scales only, or a "
+                f"circuit with more foldable gates.",
+                stacklevel=2,
+            )
+
+        return folded_dags, {"effective_scales": effective_scales}
 
     def reduce(self, quantum_results: Sequence[float], context: QEMContext) -> float:
-        return self._extrapolator.extrapolate(
-            self._scale_factors, list(quantum_results)
-        )
+        scales = context.get("effective_scales", self._scale_factors)
+        return self._extrapolator.extrapolate(scales, list(quantum_results))

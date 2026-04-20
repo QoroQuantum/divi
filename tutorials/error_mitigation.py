@@ -78,7 +78,6 @@ if __name__ == "__main__":
             noise_model=noise_model,
         ),
         qem_protocol=ZNE(
-            # GlobalFoldPass supports odd integer factors.
             scale_factors=[1.0, 3.0, 5.0],
             extrapolator=RichardsonExtrapolator(),
         ),

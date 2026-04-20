@@ -21,9 +21,11 @@ Zero Noise Extrapolation (ZNE)
 Divi's ZNE runs the target circuit at several amplified noise levels and
 extrapolates the per-scale expectation values back to the zero-noise limit.
 Folding and extrapolation are both built-in — :class:`~divi.circuits.qem.ZNE`
-ships with global-unitary folding by default and uses
-:class:`~divi.circuits.qem.RichardsonExtrapolator` unless a custom
-extrapolator is provided.
+ships with global-unitary folding (:func:`~divi.circuits.qem.global_fold`)
+by default and uses :class:`~divi.circuits.qem.RichardsonExtrapolator`
+unless a custom extrapolator is provided.  Both integer and fractional
+scale factors are supported; for per-gate folding on deep circuits or
+scales close to 1, switch to :func:`~divi.circuits.qem.local_fold`.
 
 **Basic Usage:**
 
@@ -36,9 +38,9 @@ extrapolator is provided.
    import numpy as np
 
    # Create a ZNE protocol with three noise scale factors.  The default
-   # folding function is global unitary folding and requires odd-integer
-   # scales; see the ZNE docstring for writing a custom folding callable
-   # that accepts arbitrary floats.
+   # folding function is global unitary folding, which supports both
+   # integer (e.g. [1, 3, 5]) and fractional (e.g. [1.0, 1.5, 2.0])
+   # scale factors.
    scale_factors = [1, 3, 5]
    zne_protocol = ZNE(
        scale_factors=scale_factors,
@@ -76,6 +78,54 @@ extrapolator is provided.
        scale_factors=[1, 3, 5, 7, 9],
        extrapolator=RichardsonExtrapolator(),
    )
+
+**Choosing a folding strategy.**  The default
+:func:`~divi.circuits.qem.global_fold` folds the entire circuit
+(``U · (U†·U)^k · L†·L``, with the tail ``L`` handling fractional
+remainders); it is deterministic and a sensible first choice when scale
+factors are widely spaced.  For deep circuits, scales close to 1, or
+finer-grained noise scaling, swap in
+:func:`~divi.circuits.qem.local_fold`, which folds each gate
+independently (``G · (G†·G)^k``) and distributes fractional remainders
+across a random subset of gates:
+
+.. skip: next
+
+.. code-block:: python
+
+   from divi.circuits.qem import ZNE, local_fold
+
+   # Per-gate folding with fractional scale factors
+   zne_local = ZNE(
+       scale_factors=[1.0, 1.25, 1.5, 1.75, 2.0],
+       folding_fn=local_fold,
+   )
+
+``local_fold`` accepts keyword arguments via ``functools.partial`` for
+deterministic output (``selection="from_left"`` / ``"from_right"``) or
+to skip gates during folding — for example, excluding 2-qubit gates to
+isolate single-qubit noise, or excluding everything except ``cx`` to
+target 2-qubit gate errors specifically:
+
+.. skip: next
+
+.. code-block:: python
+
+   from functools import partial
+   from divi.circuits.qem import ZNE, local_fold
+
+   zne_selective = ZNE(
+       scale_factors=[1.0, 1.5, 2.0],
+       folding_fn=partial(local_fold, selection="from_left", exclude={"cx"}),
+   )
+
+.. note::
+   The achievable scale factors form a discrete grid of granularity
+   ``2/d`` where ``d`` is the number of foldable gates.  For very small
+   ``d`` a requested non-integer scale may snap to a different value;
+   ZNE forwards the *effective* scale to the extrapolator so
+   extrapolation stays unbiased, and warns if two requested scales
+   collapse to the same effective value.
 
 Quantum Enhanced Pauli Propagation (QuEPP)
 ------------------------------------------
