@@ -5,7 +5,7 @@
 """Tests for the shared initial-state utility and its integration into algorithms."""
 
 import networkx as nx
-import pennylane as qml
+import pennylane as qp
 import pennylane.qaoa as pqaoa
 import pytest
 
@@ -38,7 +38,7 @@ class TestOnesState:
     def test_build_returns_paulix(self):
         ops = OnesState().build([0, 1])
         assert len(ops) == 2
-        assert all(isinstance(op, qml.PauliX) for op in ops)
+        assert all(isinstance(op, qp.PauliX) for op in ops)
         assert [op.wires.tolist() for op in ops] == [[0], [1]]
 
 
@@ -46,7 +46,7 @@ class TestSuperpositionState:
     def test_build_returns_hadamard(self):
         ops = SuperpositionState().build([0, 1, 2])
         assert len(ops) == 3
-        assert all(isinstance(op, qml.Hadamard) for op in ops)
+        assert all(isinstance(op, qp.Hadamard) for op in ops)
 
 
 class TestCustomPerQubitState:
@@ -56,25 +56,25 @@ class TestCustomPerQubitState:
     def test_ones_string_is_paulix(self):
         ops = CustomPerQubitState("11").build([0, 1])
         assert len(ops) == 2
-        assert all(isinstance(op, qml.PauliX) for op in ops)
+        assert all(isinstance(op, qp.PauliX) for op in ops)
 
     def test_plus_is_hadamard(self):
         ops = CustomPerQubitState("++").build([0, 1])
-        assert all(isinstance(op, qml.Hadamard) for op in ops)
+        assert all(isinstance(op, qp.Hadamard) for op in ops)
 
     def test_minus_is_paulix_then_hadamard(self):
         ops = CustomPerQubitState("-").build([0])
         assert len(ops) == 2
-        assert isinstance(ops[0], qml.PauliX)
-        assert isinstance(ops[1], qml.Hadamard)
+        assert isinstance(ops[0], qp.PauliX)
+        assert isinstance(ops[1], qp.Hadamard)
 
     def test_mixed_string(self):
         ops = CustomPerQubitState("01+-").build([0, 1, 2, 3])
         assert len(ops) == 4
-        assert isinstance(ops[0], qml.PauliX) and ops[0].wires.tolist() == [1]
-        assert isinstance(ops[1], qml.Hadamard) and ops[1].wires.tolist() == [2]
-        assert isinstance(ops[2], qml.PauliX) and ops[2].wires.tolist() == [3]
-        assert isinstance(ops[3], qml.Hadamard) and ops[3].wires.tolist() == [3]
+        assert isinstance(ops[0], qp.PauliX) and ops[0].wires.tolist() == [1]
+        assert isinstance(ops[1], qp.Hadamard) and ops[1].wires.tolist() == [2]
+        assert isinstance(ops[2], qp.PauliX) and ops[2].wires.tolist() == [3]
+        assert isinstance(ops[3], qp.Hadamard) and ops[3].wires.tolist() == [3]
 
     def test_wrong_length_raises(self):
         with pytest.raises(ValueError, match="wire count"):
@@ -125,11 +125,11 @@ class TestBlockXYMixer:
         xy_graph = build_block_xy_mixer_graph(n, 1, wires)
         mixer_op = pqaoa.mixer_layer(1.5, pqaoa.xy_mixer(xy_graph))
 
-        tape = qml.tape.QuantumScript(
-            ops=init_ops + [mixer_op], measurements=[qml.probs()]
+        tape = qp.tape.QuantumScript(
+            ops=init_ops + [mixer_op], measurements=[qp.probs()]
         )
-        dev = qml.device("default.qubit", wires=n)
-        result = qml.execute([tape], dev)[0]
+        dev = qp.device("default.qubit", wires=n)
+        result = qp.execute([tape], dev)[0]
 
         total_one_hot = sum(result[i] for i in [1, 2, 4])
         assert total_one_hot == pytest.approx(1.0, abs=1e-10)
@@ -141,11 +141,11 @@ class TestBlockXYMixer:
         xy_graph = build_block_xy_mixer_graph(block_size, n_blocks, wires)
         mixer_op = pqaoa.mixer_layer(2.0, pqaoa.xy_mixer(xy_graph))
 
-        tape = qml.tape.QuantumScript(
-            ops=init_ops + [mixer_op], measurements=[qml.probs()]
+        tape = qp.tape.QuantumScript(
+            ops=init_ops + [mixer_op], measurements=[qp.probs()]
         )
-        dev = qml.device("default.qubit", wires=len(wires))
-        result = qml.execute([tape], dev)[0]
+        dev = qp.device("default.qubit", wires=len(wires))
+        result = qp.execute([tape], dev)[0]
 
         total_valid = 0.0
         for idx in range(2 ** len(wires)):
@@ -170,7 +170,7 @@ class TestTimeEvolutionCustomInitialState:
     def test_custom_string_10_behaves_like_swapped_ones(self, default_test_simulator):
         """H=Z₀+Z₁ with initial_state='10' is an eigenstate, so P(10)≈1."""
         te = TimeEvolution(
-            hamiltonian=qml.PauliZ(0) + qml.PauliZ(1),
+            hamiltonian=qp.PauliZ(0) + qp.PauliZ(1),
             time=0.5,
             initial_state=CustomPerQubitState("10"),
             backend=default_test_simulator,
@@ -183,7 +183,7 @@ class TestTimeEvolutionCustomInitialState:
     def test_custom_string_plus_minus(self, default_test_simulator):
         """Smoke test: '+-' creates |+⟩|−⟩ and runs successfully."""
         te = TimeEvolution(
-            hamiltonian=qml.PauliZ(0) + qml.PauliZ(1),
+            hamiltonian=qp.PauliZ(0) + qp.PauliZ(1),
             time=0.1,
             initial_state=CustomPerQubitState("+-"),
             backend=default_test_simulator,
@@ -195,7 +195,7 @@ class TestTimeEvolutionCustomInitialState:
     def test_invalid_custom_string_raises(self, default_test_simulator):
         with pytest.raises(TypeError):
             TimeEvolution(
-                hamiltonian=qml.PauliZ(0) + qml.PauliZ(1),
+                hamiltonian=qp.PauliZ(0) + qp.PauliZ(1),
                 initial_state="xy",
                 backend=default_test_simulator,
             )
@@ -231,7 +231,7 @@ class TestVQEInitialState:
 
     def test_initial_state_default_is_zeros(self, default_test_simulator):
         vqe = VQE(
-            hamiltonian=qml.PauliZ(0) + qml.PauliZ(1),
+            hamiltonian=qp.PauliZ(0) + qp.PauliZ(1),
             ansatz=QAOAAnsatz(),
             backend=default_test_simulator,
         )
@@ -239,7 +239,7 @@ class TestVQEInitialState:
 
     def test_initial_state_superposition_runs(self, default_test_simulator):
         vqe = VQE(
-            hamiltonian=qml.PauliZ(0) + qml.PauliZ(1),
+            hamiltonian=qp.PauliZ(0) + qp.PauliZ(1),
             ansatz=QAOAAnsatz(),
             initial_state=SuperpositionState(),
             backend=default_test_simulator,
@@ -251,7 +251,7 @@ class TestVQEInitialState:
     def test_chemistry_ansatz_warns(self, default_test_simulator):
         with pytest.warns(UserWarning, match="chemistry ansatz"):
             VQE(
-                hamiltonian=qml.PauliZ(0) + qml.PauliZ(1),
+                hamiltonian=qp.PauliZ(0) + qp.PauliZ(1),
                 initial_state=SuperpositionState(),
                 n_electrons=1,
                 backend=default_test_simulator,

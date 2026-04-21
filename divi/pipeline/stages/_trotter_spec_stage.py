@@ -5,7 +5,7 @@
 from collections.abc import Callable
 from typing import Any
 
-import pennylane as qml
+import pennylane as qp
 
 from divi.circuits import MetaCircuit
 from divi.hamiltonians import (
@@ -29,7 +29,7 @@ from divi.pipeline.transformations import (
 )
 
 
-class TrotterSpecStage(SpecStage[qml.operation.Operator]):
+class TrotterSpecStage(SpecStage[qp.operation.Operator]):
     """SpecStage that turns a Hamiltonian into a batch of MetaCircuits via a TrotterizationStrategy.
 
     Takes the initial_spec (a Hamiltonian), runs it through the strategy to obtain
@@ -65,12 +65,12 @@ class TrotterSpecStage(SpecStage[qml.operation.Operator]):
         self._meta_circuit_factory = meta_circuit_factory
 
     def expand(
-        self, items: qml.operation.Operator, env: PipelineEnv
+        self, items: qp.operation.Operator, env: PipelineEnv
     ) -> tuple[MetaCircuitBatch, StageToken]:
         """Transform Hamiltonian into a keyed batch of MetaCircuits (one per strategy output)."""
         hamiltonian = items
 
-        if not isinstance(hamiltonian, qml.operation.Operator):
+        if not isinstance(hamiltonian, qp.operation.Operator):
             raise TypeError(
                 f"TrotterSpecStage expects a PennyLane Operator (Hamiltonian), got {type(hamiltonian).__name__}"
             )

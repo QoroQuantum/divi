@@ -29,7 +29,7 @@ from divi.backends._systems import (
     update_qpu_systems_cache,
     update_simulator_clusters_cache,
 )
-from divi.circuits import validate_qasm
+from divi.qasm import validate_qasm
 from tests.backends import circuit_runner_contracts as contracts
 
 # --- Test Fixtures ---
@@ -1409,6 +1409,19 @@ class TestQoroServiceMock:
         ):
             qoro_service_mock.submit_circuits(
                 {"c1": "qasm"}, ham_ops="XII", job_type=JobType.EXECUTE
+            )
+
+    def test_submit_circuits_ham_ops_with_shot_groups_raises(
+        self, mocker, qoro_service_factory
+    ):
+        """ham_ops + shot_groups must be rejected at the API boundary."""
+        qoro_service_mock = qoro_service_factory()
+        mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=True)
+        with pytest.raises(ValueError, match="incompatible with ham_ops"):
+            qoro_service_mock.submit_circuits(
+                {"c1": "qasm"},
+                ham_ops="XII",
+                shot_groups=[[0, 1, 100]],
             )
 
     def test_submit_circuits_ham_ops_auto_infers_expectation_job_type(

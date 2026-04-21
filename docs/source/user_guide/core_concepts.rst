@@ -57,13 +57,13 @@ Here's how a typical :class:`~divi.qprog.algorithms.VQE` program flows through t
 .. code-block:: python
 
    import numpy as np
-   import pennylane as qml
+   import pennylane as qp
    from divi.qprog import VQE, HartreeFockAnsatz
    from divi.backends import MaestroSimulator
    from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
 
    # 1. Initialization - Define your quantum problem
-   molecule = qml.qchem.Molecule(
+   molecule = qp.qchem.Molecule(
        symbols=["H", "H"],
        coordinates=np.array([[0.0, 0.0, -0.6614], [0.0, 0.0, 0.6614]]),
    )
@@ -337,17 +337,17 @@ the full stage-by-stage view. For a complete runnable example, see
 
 .. code-block:: python
 
-   import pennylane as qml
+   import pennylane as qp
    from divi.qprog import CustomVQA
    from divi.backends import MaestroSimulator
 
-   qscript = qml.tape.QuantumScript(
+   qscript = qp.tape.QuantumScript(
        ops=[
-           qml.RY(0.0, wires=0),
-           qml.RX(0.0, wires=1),
-           qml.CNOT(wires=[0, 1]),
+           qp.RY(0.0, wires=0),
+           qp.RX(0.0, wires=1),
+           qp.CNOT(wires=[0, 1]),
        ],
-       measurements=[qml.expval(qml.Z(0) @ qml.Z(1) + 0.5 * qml.X(0))],
+       measurements=[qp.expval(qp.Z(0) @ qp.Z(1) + 0.5 * qp.X(0))],
    )
 
    # Freeze the Hamiltonian coefficient so only gate parameters are trainable

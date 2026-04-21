@@ -5,7 +5,7 @@
 import re
 
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 import pytest
 
 from divi.qprog import VQE
@@ -31,13 +31,13 @@ def h2_molecule():
     """Fixture for a simple H2 molecule."""
     symbols = ["H", "H"]
     coordinates = np.array([[0.0, 0.0, -0.6614], [0.0, 0.0, 0.6614]])
-    return qml.qchem.Molecule(symbols, coordinates)
+    return qp.qchem.Molecule(symbols, coordinates)
 
 
 @pytest.fixture
 def h2_hamiltonian(h2_molecule):
     """Fixture for the H2 Hamiltonian."""
-    H, _ = qml.qchem.molecular_hamiltonian(h2_molecule)
+    H, _ = qp.qchem.molecular_hamiltonian(h2_molecule)
     return H
 
 
@@ -47,7 +47,7 @@ ANSAETZE_TO_TEST = {
         HartreeFockAnsatz(),
         UCCSDAnsatz(),
         QCCAnsatz(),
-        GenericLayerAnsatz([qml.RY, qml.RZ]),
+        GenericLayerAnsatz([qp.RY, qp.RZ]),
         QAOAAnsatz(),
     ],
     "ids": ["HartreeFock", "UCCSD", "QCC", "Generic-RYRZ", "QAOA"],
@@ -69,7 +69,7 @@ def test_vqe_basic_initialization_with_molecule(default_test_simulator, h2_molec
     assert vqe_problem.n_electrons == 2
     assert vqe_problem.n_qubits == 4
 
-    assert isinstance(vqe_problem.cost_hamiltonian, qml.operation.Operator)
+    assert isinstance(vqe_problem.cost_hamiltonian, qp.operation.Operator)
     verify_metacircuit_dict(vqe_problem, ["cost_circuit", "meas_circuit"])
 
 
@@ -90,14 +90,14 @@ def test_vqe_basic_initialization_with_hamiltonian(
     assert vqe_problem.n_electrons == 2
     assert vqe_problem.n_qubits == 4
 
-    assert isinstance(vqe_problem.cost_hamiltonian, qml.operation.Operator)
+    assert isinstance(vqe_problem.cost_hamiltonian, qp.operation.Operator)
     verify_metacircuit_dict(vqe_problem, ["cost_circuit", "meas_circuit"])
 
 
 def test_vqe_clean_hamiltonian_logic(h2_hamiltonian, dummy_simulator):
     """Test that the Hamiltonian is cleaned correctly, separating the constant."""
     constant_value = 5.0
-    hamiltonian_with_constant = h2_hamiltonian + qml.Identity(0) * constant_value
+    hamiltonian_with_constant = h2_hamiltonian + qp.Identity(0) * constant_value
 
     vqe_problem = VQE(
         hamiltonian=hamiltonian_with_constant,
@@ -107,19 +107,19 @@ def test_vqe_clean_hamiltonian_logic(h2_hamiltonian, dummy_simulator):
     )
 
     coeffs, ops = h2_hamiltonian.terms()
-    original_constant = coeffs[ops.index(qml.Identity(0))]
+    original_constant = coeffs[ops.index(qp.Identity(0))]
     expected_total_constant = original_constant + constant_value
     assert np.isclose(vqe_problem.loss_constant, expected_total_constant)
 
     has_identity = any(
-        isinstance(op, qml.Identity) for op in vqe_problem.cost_hamiltonian.terms()[1]
+        isinstance(op, qp.Identity) for op in vqe_problem.cost_hamiltonian.terms()[1]
     )
     assert not has_identity, "Identity operator should have been removed"
 
 
 def test_vqe_fail_with_constant_only_hamiltonian(dummy_simulator):
     """Test VQE initialization fails with a constant-only Hamiltonian."""
-    hamiltonian = qml.Identity(0) * 5.0
+    hamiltonian = qp.Identity(0) * 5.0
     with pytest.raises(ValueError, match="Hamiltonian contains only constant terms."):
         VQE(
             hamiltonian=hamiltonian,
@@ -142,7 +142,7 @@ def test_vqe_fail_with_neither_hamiltonian_nor_molecule(dummy_simulator):
 
 @pytest.mark.parametrize(
     "hamiltonian",
-    [0.5 * qml.Z(0), qml.Z(0)],
+    [0.5 * qp.Z(0), qp.Z(0)],
     ids=["sprod", "bare_pauli"],
 )
 def test_vqe_single_term_hamiltonian_succeeds(dummy_simulator, hamiltonian):

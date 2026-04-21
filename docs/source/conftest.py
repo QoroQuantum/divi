@@ -24,7 +24,7 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402 — after matplotlib.use
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 import pytest
 from sybil import Sybil
 from sybil.parsers.rest import PythonCodeBlockParser, SkipParser
@@ -221,7 +221,7 @@ def setup(namespace):
     namespace["qasm_string_1"] = _QASM_STRING
     namespace["qasm_string_2"] = _QASM_STRING
     namespace["circuits"] = {"c0": _QASM_STRING}
-    namespace["molecule"] = qml.qchem.Molecule(
+    namespace["molecule"] = qp.qchem.Molecule(
         symbols=["H", "H"],
         coordinates=np.array([[0.0, 0.0, -0.6614], [0.0, 0.0, 0.6614]]),
     )

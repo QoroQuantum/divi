@@ -10,20 +10,21 @@ wrapping and trajectory overlay.
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 
 from divi.qprog import PCE, QAOA, GenericLayerAnsatz
-from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from divi.qprog.optimizers import PymooMethod, PymooOptimizer
 from divi.qprog.problems import BinaryOptimizationProblem
 from tutorials._backend import get_backend
 
 if __name__ == "__main__":
     problem = np.array([[-1.0, 2.0], [0.0, 1.0]])
-    optimizer = ScipyOptimizer(method=ScipyMethod.COBYLA)
+    # CMAES is population-based, so every iteration records a full generation
+    # in ``param_history`` — ``scan_pca`` always has a rank-2 sample cloud
+    # to fit. Scipy optimizers (COBYLA / Nelder-Mead) only record one accepted
+    # iterate per step and collapse to a single point on flat landscapes.
+    optimizer = PymooOptimizer(method=PymooMethod.CMAES, population_size=8)
     backend = get_backend(shots=4000)
-    # PCA fits the plane from the best-so-far iterate each iteration (not the full
-    # population). Still need enough steps that those points span two directions;
-    # COBYLA often repeats the same iterate, so keep max_iterations > 3.
     n_opt_iters = 12
 
     qaoa = QAOA(
@@ -35,11 +36,15 @@ if __name__ == "__main__":
     )
     qaoa.run()
 
+    # CMAES caches a per-dimension algorithm object on the optimizer instance;
+    # reset before reusing across programs with different param counts.
+    optimizer.reset()
+
     pce = PCE(
         problem=problem,
         ansatz=GenericLayerAnsatz(
-            gate_sequence=[qml.RY, qml.RZ],
-            entangler=qml.CNOT,
+            gate_sequence=[qp.RY, qp.RZ],
+            entangler=qp.CNOT,
             entangling_layout="all-to-all",
         ),
         n_layers=1,

@@ -18,6 +18,7 @@ except ImportError as _err:
 from qiskit import QuantumCircuit
 
 from divi.backends import CircuitRunner, ExecutionResult
+from divi.backends._shot_allocation import from_wire, per_circuit, validate
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +246,7 @@ class MaestroSimulator(CircuitRunner):
         circuits: Mapping[str, str],
         ham_ops: str | None = None,
         circuit_ham_map: list[list[int]] | None = None,
+        shot_groups: list[list[int]] | None = None,
         **kwargs,  # noqa: ARG002 — accepted for CircuitRunner interface compatibility
     ) -> ExecutionResult:
         """Submit quantum circuits for execution on the maestro simulator.
@@ -256,6 +258,11 @@ class MaestroSimulator(CircuitRunner):
             circuit_ham_map: Maps circuit index ranges to observable groups for
                 heterogeneous batches. Each inner list contains circuit indices
                 belonging to that observable group.
+            shot_groups: Per-circuit shot allocation as ``[start, end, shots]``
+                triples covering the iteration order of ``circuits``. Sampling
+                mode only — ignored when ``ham_ops`` is provided because
+                maestro's ``simple_estimate`` computes expectation values
+                analytically.
             **kwargs: Ignored — accepted so callers using the generic
                 :class:`~divi.backends.CircuitRunner` interface can forward
                 unrelated options without breaking.
@@ -263,6 +270,13 @@ class MaestroSimulator(CircuitRunner):
         Returns:
             ExecutionResult containing either counts (sampling) or expectation values.
         """
+        if ham_ops is not None and shot_groups is not None:
+            raise ValueError(
+                "shot_groups is incompatible with ham_ops: maestro's "
+                "simple_estimate computes expectation values analytically "
+                "and ignores shot counts. Pass exactly one."
+            )
+
         circuit_labels = list(circuits.keys())
         qasm_strings = list(circuits.values())
 
@@ -288,8 +302,19 @@ class MaestroSimulator(CircuitRunner):
         if ham_ops is None:
             # Sampling mode — reverse bitstrings from maestro's big-endian
             # (q[0] leftmost) to Qiskit's little-endian (q[0] rightmost).
-            for label, qasm in zip(circuit_labels, qasm_strings):
-                raw = maestro.simple_execute(qasm, config=sim_config, shots=self.shots)
+            if shot_groups is not None:
+                shot_ranges = from_wire(shot_groups)
+                validate(shot_ranges, len(circuit_labels))
+                per_circuit_shots = per_circuit(shot_ranges, len(circuit_labels))
+            else:
+                per_circuit_shots = None
+            for i, (label, qasm) in enumerate(zip(circuit_labels, qasm_strings)):
+                shots = (
+                    per_circuit_shots[i]
+                    if per_circuit_shots is not None
+                    else self.shots
+                )
+                raw = maestro.simple_execute(qasm, config=sim_config, shots=shots)
                 counts = {bs[::-1]: n for bs, n in raw["counts"].items()}
                 results.append({"label": label, "results": counts})
         else:

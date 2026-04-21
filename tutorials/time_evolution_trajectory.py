@@ -17,7 +17,7 @@ Examples:
 import math
 
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 
 from divi.qprog import TimeEvolutionTrajectory
 from divi.qprog.ensemble import BatchConfig, BatchMode
@@ -32,9 +32,9 @@ if __name__ == "__main__":
     time_points = np.linspace(0.01, math.pi, 20).tolist()
 
     trajectory = TimeEvolutionTrajectory(
-        hamiltonian=qml.PauliX(0),
+        hamiltonian=qp.PauliX(0),
         time_points=time_points,
-        observable=qml.PauliZ(0),
+        observable=qp.PauliZ(0),
         backend=backend,
     )
     trajectory.create_programs()
@@ -60,9 +60,9 @@ if __name__ == "__main__":
     time_points_2 = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
 
     trajectory2 = TimeEvolutionTrajectory(
-        hamiltonian=qml.PauliZ(0) + qml.PauliZ(1),
+        hamiltonian=qp.PauliZ(0) + qp.PauliZ(1),
         time_points=time_points_2,
-        observable=qml.PauliZ(0),
+        observable=qp.PauliZ(0),
         backend=backend,
     )
     trajectory2.create_programs()

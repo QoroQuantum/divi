@@ -674,6 +674,59 @@ class TestDepthContracts:
 
 
 # ---------------------------------------------------------------------------
+# shot_groups (per-circuit shot allocation)
+# ---------------------------------------------------------------------------
+
+
+class TestShotGroupsSampling:
+    """Spec: in sampling mode, MaestroSimulator runs each circuit with the
+    shot count assigned by ``shot_groups``."""
+
+    def test_per_circuit_shots_passed_to_simple_execute(self, mocker):
+        fake = _make_fake_maestro(mocker)
+        sim = _make_simulator(mocker, fake, shots=999)
+        circuits = {"c0": _QASM_SMALL, "c1": _QASM_SMALL, "c2": _QASM_SMALL}
+        sim.submit_circuits(circuits, shot_groups=[[0, 1, 50], [1, 3, 200]])
+
+        # One call per circuit; each call's shots= matches the range.
+        call_args_list = fake.simple_execute.call_args_list
+        assert len(call_args_list) == 3
+        assert call_args_list[0].kwargs["shots"] == 50
+        assert call_args_list[1].kwargs["shots"] == 200
+        assert call_args_list[2].kwargs["shots"] == 200
+
+    def test_no_shot_groups_uses_instance_shots(self, mocker):
+        fake = _make_fake_maestro(mocker)
+        sim = _make_simulator(mocker, fake, shots=999)
+        sim.submit_circuits({"c0": _QASM_SMALL, "c1": _QASM_SMALL})
+
+        for call in fake.simple_execute.call_args_list:
+            assert call.kwargs["shots"] == 999
+
+    def test_shot_groups_with_ham_ops_raises(self, mocker):
+        """maestro.simple_estimate is analytical -> shots are irrelevant.
+        Passing both ham_ops and shot_groups is a programming error and
+        must be caught at the backend boundary."""
+        fake = _make_fake_maestro(mocker, expvals=[0.5])
+        sim = _make_simulator(mocker, fake)
+        with pytest.raises(ValueError, match="incompatible with ham_ops"):
+            sim.submit_circuits(
+                {"c0": _QASM_SMALL, "c1": _QASM_SMALL},
+                ham_ops="Z" + "I" * 9,
+                shot_groups=[[0, 2, 7]],
+            )
+
+    def test_partial_coverage_raises_at_submit(self, mocker):
+        fake = _make_fake_maestro(mocker)
+        sim = _make_simulator(mocker, fake)
+        with pytest.raises(ValueError, match="do not cover every circuit"):
+            sim.submit_circuits(
+                {"c0": _QASM_SMALL, "c1": _QASM_SMALL, "c2": _QASM_SMALL},
+                shot_groups=[[0, 2, 100]],
+            )
+
+
+# ---------------------------------------------------------------------------
 # Real-maestro integration — guards against upstream API drift
 # ---------------------------------------------------------------------------
 #

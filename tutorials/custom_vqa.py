@@ -4,7 +4,7 @@
 
 """Tutorial: CustomVQA with QuantumScript and Qiskit inputs."""
 
-import pennylane as qml
+import pennylane as qp
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
 
@@ -13,14 +13,14 @@ from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from tutorials._backend import get_backend
 
 
-def build_quantum_script() -> qml.tape.QuantumScript:
+def build_quantum_script() -> qp.tape.QuantumScript:
     """Create a parameterized QuantumScript with a single expval measurement."""
     ops = [
-        qml.RX(0.0, wires=0),
-        qml.RZ(0.0, wires=0),
+        qp.RX(0.0, wires=0),
+        qp.RZ(0.0, wires=0),
     ]
-    measurements = [qml.expval(qml.Z(0))]
-    return qml.tape.QuantumScript(ops=ops, measurements=measurements)
+    measurements = [qp.expval(qp.Z(0))]
+    return qp.tape.QuantumScript(ops=ops, measurements=measurements)
 
 
 def build_qiskit_quantum_circuit() -> QuantumCircuit:

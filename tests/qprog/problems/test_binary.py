@@ -5,11 +5,12 @@
 import dimod
 import hybrid
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 import pytest
 import scipy.sparse as sps
 
 from divi.backends import CircuitRunner
+from divi.hamiltonians import BinaryPolynomialProblem
 from divi.qprog import (
     PCE,
     QAOA,
@@ -23,7 +24,6 @@ from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.problems import BinaryOptimizationProblem
 from divi.qprog.problems._binary import _merge_substates, _sanitize_problem_input
 from divi.qprog.workflows import PartitioningProgramEnsemble
-from divi.typing import BinaryPolynomialProblem
 from tests.qprog.problems._helpers import (
     HUBO_CUBIC,
     QUBO_MATRIX,
@@ -559,12 +559,12 @@ class TestQUBOInput:
 
         assert len(qaoa_problem.cost_hamiltonian) == 4
         assert all(
-            isinstance(op, (qml.Z, qml.ops.Prod))
+            isinstance(op, (qp.Z, qp.ops.Prod))
             for op in qaoa_problem.cost_hamiltonian.terms()[1]
         )
         assert len(qaoa_problem.problem.mixer_hamiltonian) == 3
         assert all(
-            isinstance(op, qml.X)
+            isinstance(op, qp.X)
             for op in qaoa_problem.problem.mixer_hamiltonian.terms()[1]
         )
 
@@ -761,11 +761,11 @@ class TestQUBOInput:
 
         assert len(qaoa_problem.cost_hamiltonian) == 3
         assert all(
-            isinstance(op, qml.Z) for op in qaoa_problem.cost_hamiltonian.terms()[1]
+            isinstance(op, qp.Z) for op in qaoa_problem.cost_hamiltonian.terms()[1]
         )
         assert len(qaoa_problem.problem.mixer_hamiltonian) == 3
         assert all(
-            isinstance(op, qml.X)
+            isinstance(op, qp.X)
             for op in qaoa_problem.problem.mixer_hamiltonian.terms()[1]
         )
 
@@ -869,7 +869,7 @@ class TestQUBOInput:
 
 @pytest.fixture
 def basic_ansatz() -> GenericLayerAnsatz:
-    return GenericLayerAnsatz([qml.RY, qml.RZ])
+    return GenericLayerAnsatz([qp.RY, qp.RZ])
 
 
 @pytest.fixture

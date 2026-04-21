@@ -707,3 +707,43 @@ class TestDefaultNProcesses:
         mocker.patch("divi.backends._qiskit_simulator.os.cpu_count", return_value=None)
         # cpu_count=4 -> max(2, 4-1) = 3
         assert _default_n_processes() == 3
+
+
+class TestQiskitSimulatorShotGroupsMutualExclusion:
+    """Spec: ham_ops + shot_groups together is rejected at the API boundary."""
+
+    def test_both_provided_raises_value_error(self):
+        sim = QiskitSimulator(shots=100)
+        with pytest.raises(ValueError, match="incompatible with ham_ops"):
+            sim.submit_circuits(
+                {"c0": "OPENQASM 2.0;\nqreg q[1];\n"},
+                ham_ops="Z",
+                shot_groups=[[0, 1, 100]],
+            )
+
+
+class TestQiskitSimulatorShotGroupsDeterministic:
+    """Spec: shot_groups is respected even with _deterministic_execution=True.
+
+    Without this, the deterministic short-circuit would silently use
+    self.shots for every circuit and ignore the per-group allocation.
+    """
+
+    _IDENTITY_QASM = (
+        "OPENQASM 2.0;\n"
+        'include "qelib1.inc";\n'
+        "qreg q[1];\n"
+        "creg c[1];\n"
+        "measure q[0] -> c[0];\n"
+    )
+
+    def test_deterministic_path_honors_per_group_shots(self):
+        sim = QiskitSimulator(shots=999, _deterministic_execution=True)
+        circuits = {
+            "c0": self._IDENTITY_QASM,
+            "c1": self._IDENTITY_QASM,
+            "c2": self._IDENTITY_QASM,
+        }
+        result = sim.submit_circuits(circuits, shot_groups=[[0, 1, 50], [1, 3, 200]])
+        per_circuit_totals = [sum(r["results"].values()) for r in result.results]
+        assert per_circuit_totals == [50, 200, 200]

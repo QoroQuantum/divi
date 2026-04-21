@@ -34,7 +34,7 @@ scales close to 1, switch to :func:`~divi.circuits.qem.local_fold`.
    from divi.circuits.qem import ZNE, RichardsonExtrapolator
    from divi.qprog import VQE
    from divi.backends import QiskitSimulator
-   import pennylane as qml
+   import pennylane as qp
    import numpy as np
 
    # Create a ZNE protocol with three noise scale factors.  The default
@@ -48,7 +48,7 @@ scales close to 1, switch to :func:`~divi.circuits.qem.local_fold`.
    )
 
    # Apply to VQE
-   h2_molecule = qml.qchem.Molecule(
+   h2_molecule = qp.qchem.Molecule(
        symbols=["H", "H"],
        coordinates=np.array([[0.0, 0.0, -0.6614], [0.0, 0.0, 0.6614]])
    )
@@ -149,10 +149,10 @@ on the ensemble circuits.
    from divi.circuits.quepp import QuEPP
    from divi.qprog import VQE
    from divi.backends import QiskitSimulator
-   import pennylane as qml
+   import pennylane as qp
    import numpy as np
 
-   h2_molecule = qml.qchem.Molecule(
+   h2_molecule = qp.qchem.Molecule(
        symbols=["H", "H"],
        coordinates=np.array([[0.0, 0.0, -0.6614], [0.0, 0.0, 0.6614]])
    )

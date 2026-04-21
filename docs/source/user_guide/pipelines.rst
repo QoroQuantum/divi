@@ -261,24 +261,24 @@ field Ising model:
 
 .. code-block:: python
 
-   import pennylane as qml
+   import pennylane as qp
    from divi.qprog import CustomVQA
    from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
    from divi.backends import MaestroSimulator
 
    # 1. Define the Hamiltonian (observable to minimize)
-   H = -1.0 * qml.Z(0) @ qml.Z(1) + 0.5 * qml.X(0) + 0.5 * qml.X(1)
+   H = -1.0 * qp.Z(0) @ qp.Z(1) + 0.5 * qp.X(0) + 0.5 * qp.X(1)
 
    # 2. Build a parameterized ansatz as a QuantumScript
    ops = [
-       qml.RY(0.0, wires=0),
-       qml.RY(0.0, wires=1),
-       qml.CNOT(wires=[0, 1]),
-       qml.RY(0.0, wires=0),
-       qml.RY(0.0, wires=1),
+       qp.RY(0.0, wires=0),
+       qp.RY(0.0, wires=1),
+       qp.CNOT(wires=[0, 1]),
+       qp.RY(0.0, wires=0),
+       qp.RY(0.0, wires=1),
    ]
-   measurements = [qml.expval(H)]
-   qscript = qml.tape.QuantumScript(ops=ops, measurements=measurements)
+   measurements = [qp.expval(H)]
+   qscript = qp.tape.QuantumScript(ops=ops, measurements=measurements)
 
    # Mark only the gate parameters as trainable (freeze Hamiltonian coefficients)
    qscript.trainable_params = [0, 1, 2, 3]
@@ -319,14 +319,14 @@ converter spec stages — no ``QuantumProgram`` required.
 
 .. code-block:: python
 
-   import pennylane as qml
+   import pennylane as qp
    from divi.pipeline import CircuitPipeline, PipelineEnv
    from divi.pipeline.stages import PennyLaneSpecStage, MeasurementStage
    from divi.backends import MaestroSimulator
 
-   qscript = qml.tape.QuantumScript(
-       ops=[qml.Hadamard(0), qml.CNOT(wires=[0, 1])],
-       measurements=[qml.probs()],
+   qscript = qp.tape.QuantumScript(
+       ops=[qp.Hadamard(0), qp.CNOT(wires=[0, 1])],
+       measurements=[qp.probs()],
    )
 
    pipeline = CircuitPipeline(stages=[
@@ -445,6 +445,56 @@ Bell-state circuit and measures its probabilities:
 This pattern composes naturally — you can insert any ``BundleStage`` between the
 spec stage and the measurement stage to add parameter binding, error mitigation,
 or any custom transformation.
+
+
+.. _adaptive-shot-allocation:
+
+Adaptive Shot Allocation
+------------------------
+
+By default, every measurement group produced by
+:class:`~divi.pipeline.stages.MeasurementStage` is sampled with the
+backend's full shot count — even tiny terms with little impact on the
+final energy.  Setting the ``shot_distribution`` argument splits the same
+total budget across groups according to their importance, reducing
+estimator variance without spending more shots:
+
+.. code-block:: python
+
+   from divi.pipeline.stages import MeasurementStage
+
+   # Concentrate shots on dominant Hamiltonian terms
+   MeasurementStage(grouping_strategy="qwc", shot_distribution="weighted")
+
+The available strategies (see :data:`~divi.pipeline.ShotDistStrategy`):
+
+- ``"uniform"`` — equal split across groups.
+- ``"weighted"`` — proportional to per-group coefficient L1 norm; dominant
+  Hamiltonian terms get more shots (largest-remainder rounding preserves
+  the total exactly).
+- ``"weighted_random"`` — multinomial sample of the same probabilities.
+  Reproducible when ``env.rng`` is seeded; may drop more low-weight
+  groups than the deterministic ``"weighted"`` for the same budget.
+- A callable ``(group_l1_norms, total_shots) -> per_group_shots`` for
+  fully custom allocation.
+
+Variational algorithms accept the same option directly as a constructor
+keyword (e.g. ``VQE(..., shot_distribution="weighted")``); it is threaded
+through to the cost pipeline's measurement stage.  See
+:doc:`ground_state_energy_estimation_vqe` for an end-to-end example.
+
+When a group ends up with zero allocated shots its measurement circuit is
+skipped and its observables contribute zero to the final estimate.  The
+stage emits a :class:`UserWarning` reporting the dropped fraction of the
+Hamiltonian's L1 norm so you can quantify the resulting bias.
+
+Adaptive shot allocation only applies to sampling-based execution.
+Combining ``shot_distribution`` with the analytical
+``grouping_strategy="_backend_expval"`` path (which divi auto-selects on
+expval-capable backends like :class:`~divi.backends.MaestroSimulator`)
+raises a :class:`ValueError` — pass an explicit
+``grouping_strategy="qwc"`` (or ``"wires"`` / ``None``) to opt into
+sampling.
 
 
 Stage Validation

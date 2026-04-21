@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Hashable
 from typing import Any
 
-import pennylane as qml
+import pennylane as qp
 
 from divi.qprog.algorithms._initial_state import InitialState, SuperpositionState
 
@@ -26,12 +26,12 @@ class QAOAProblem(ABC):
 
     @property
     @abstractmethod
-    def cost_hamiltonian(self) -> qml.operation.Operator:
+    def cost_hamiltonian(self) -> qp.operation.Operator:
         """The cost Hamiltonian encoding the optimization objective."""
 
     @property
     @abstractmethod
-    def mixer_hamiltonian(self) -> qml.operation.Operator:
+    def mixer_hamiltonian(self) -> qp.operation.Operator:
         """The mixer Hamiltonian for exploring the solution space."""
 
     @property

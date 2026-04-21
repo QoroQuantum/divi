@@ -7,7 +7,7 @@
 from collections.abc import Mapping
 
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 import sympy as sp
 from pennylane.tape import QuantumScript
 from pennylane_qiskit.converter import QISKIT_OPERATION_MAP, circuit_to_qiskit
@@ -23,7 +23,7 @@ from divi.circuits._core import MetaCircuit
 # table.  Using this directly (instead of maintaining our own mirror) means
 # any gate ``pennylane-qiskit`` adds is automatically supported here, and
 # stays symmetric with ``_qiskit_spec_stage.py`` which uses the inverse
-# direction via ``qml.from_qiskit``.
+# direction via ``qp.from_qiskit``.
 _PL_TO_QISKIT_GATE = QISKIT_OPERATION_MAP
 
 # QASM2 gate name per Qiskit instruction name, for the body emitter.  Matches
@@ -145,15 +145,15 @@ def _qscript_to_dag(
     wire_map: dict | None = None
     if needs_wire_map:
         wire_map = {w: i for i, w in enumerate(wires)}
-        mapped_qscripts, _ = qml.map_wires(qscript, wire_map=wire_map)
+        mapped_qscripts, _ = qp.map_wires(qscript, wire_map=wire_map)
         qscript = mapped_qscripts[0]
 
     # Decompose gates outside the supported set.  Mirror of
-    # _circuit_body_to_qasm's qml.transforms.decompose call — pennylane-qiskit
+    # _circuit_body_to_qasm's qp.transforms.decompose call — pennylane-qiskit
     # itself doesn't auto-decompose, so we do it up front so the subsequent
     # circuit_to_qiskit call always sees gates it recognises.
     just_ops = QuantumScript(qscript.operations)
-    [decomposed_qscript], _ = qml.transforms.decompose(
+    [decomposed_qscript], _ = qp.transforms.decompose(
         just_ops, stopping_condition=lambda obj: obj.name in _PL_TO_QISKIT_GATE
     )
 
@@ -268,7 +268,7 @@ def dag_to_qasm_body(dag: DAGCircuit, precision: int = 8) -> str:
 
 
 def observable_to_sparse_pauli_op(
-    obs: qml.operation.Operator,
+    obs: qp.operation.Operator,
     wires,
 ) -> SparsePauliOp:
     """Convert a PennyLane observable to a Qiskit :class:`SparsePauliOp`.
@@ -317,7 +317,7 @@ def observable_to_sparse_pauli_op(
 def sparse_pauli_op_to_pl_observable(
     op: SparsePauliOp,
     wires,
-) -> qml.operation.Operator:
+) -> qp.operation.Operator:
     """Convert a Qiskit :class:`SparsePauliOp` back into a PennyLane observable.
 
     ``pennylane_qiskit.load_pauli_op`` exists but always produces complex
@@ -326,9 +326,9 @@ def sparse_pauli_op_to_pl_observable(
     expects real floats.  We keep a custom implementation that extracts
     real coefficients explicitly.
     """
-    pauli_cls = {"I": qml.Identity, "X": qml.PauliX, "Y": qml.PauliY, "Z": qml.PauliZ}
+    pauli_cls = {"I": qp.Identity, "X": qp.PauliX, "Y": qp.PauliY, "Z": qp.PauliZ}
     wire_list = list(wires)
-    terms: list[qml.operation.Operator] = []
+    terms: list[qp.operation.Operator] = []
     for pauli_str, coeff in zip(op.paulis.to_labels(), op.coeffs):
         ops_for_term = [
             pauli_cls[char](wire_list[i])
@@ -336,11 +336,11 @@ def sparse_pauli_op_to_pl_observable(
             if char != "I"
         ]
         if not ops_for_term:
-            term = qml.Identity(wire_list[0])
+            term = qp.Identity(wire_list[0])
         elif len(ops_for_term) == 1:
             term = ops_for_term[0]
         else:
-            term = qml.prod(*ops_for_term)
+            term = qp.prod(*ops_for_term)
 
         c = float(np.real(coeff))
         terms.append(c * term if c != 1.0 else term)
@@ -349,17 +349,16 @@ def sparse_pauli_op_to_pl_observable(
         raise ValueError(
             "sparse_pauli_op_to_pl_observable: SparsePauliOp has no terms."
         )
-    return terms[0] if len(terms) == 1 else qml.sum(*terms)
+    return terms[0] if len(terms) == 1 else qp.sum(*terms)
 
 
 def sparse_pauli_op_to_ham_string(op: SparsePauliOp) -> str:
     """Render a :class:`SparsePauliOp` as the ``;``-separated dense Pauli
     string format used by backend ``ham_ops`` artifacts.
 
-    The backend contract is big-endian (qubit 0 on the left), matching the
-    PennyLane-based :func:`~divi.hamiltonians.convert_hamiltonian_to_pauli_string`
-    output.  Coefficients are intentionally dropped — the backend computes
-    ``<ψ|P|ψ>`` per term and the caller recombines with coefficients.
+    The backend contract is big-endian (qubit 0 on the left).  Coefficients
+    are intentionally dropped — the backend computes ``<ψ|P|ψ>`` per term and
+    the caller recombines with coefficients.
     """
     return ";".join(label[::-1] for label in op.paulis.to_labels())
 
@@ -396,11 +395,11 @@ def qscript_to_meta(
 
     observable = None
     measured_wires = None
-    if isinstance(measurement, qml.measurements.ExpectationMP):
+    if isinstance(measurement, qp.measurements.ExpectationMP):
         observable = observable_to_sparse_pauli_op(measurement.obs, qscript.wires)
     elif isinstance(
         measurement,
-        (qml.measurements.ProbabilityMP, qml.measurements.CountsMP),
+        (qp.measurements.ProbabilityMP, qp.measurements.CountsMP),
     ):
         target_wires = measurement.wires if len(measurement.wires) else qscript.wires
         measured_wires = tuple(qscript.wires.index(w) for w in target_wires)

@@ -7,7 +7,7 @@ from warnings import warn
 
 import numpy as np
 import numpy.typing as npt
-import pennylane as qml
+import pennylane as qp
 from qiskit.circuit import ParameterVector
 
 from divi.circuits import MetaCircuit, qscript_to_meta
@@ -50,8 +50,8 @@ class VQE(VariationalQuantumAlgorithm):
 
     def __init__(
         self,
-        hamiltonian: qml.operation.Operator | None = None,
-        molecule: qml.qchem.Molecule | None = None,
+        hamiltonian: qp.operation.Operator | None = None,
+        molecule: qp.qchem.Molecule | None = None,
         n_electrons: int | None = None,
         n_layers: int = 1,
         ansatz: Ansatz | None = None,
@@ -62,8 +62,8 @@ class VQE(VariationalQuantumAlgorithm):
         """Initialize the VQE problem.
 
         Args:
-            hamiltonian (qml.operation.Operator | None): A Hamiltonian representing the problem. Defaults to None.
-            molecule (qml.qchem.Molecule | None): The molecule representing the problem. Defaults to None.
+            hamiltonian (qp.operation.Operator | None): A Hamiltonian representing the problem. Defaults to None.
+            molecule (qp.qchem.Molecule | None): The molecule representing the problem. Defaults to None.
             n_electrons (int | None): Number of electrons associated with the Hamiltonian.
                 Only needed when a Hamiltonian is given. Defaults to None.
             n_layers (int): Number of ansatz layers. Defaults to 1.
@@ -162,7 +162,7 @@ class VQE(VariationalQuantumAlgorithm):
 
         if molecule is not None:
             self.molecule = molecule
-            hamiltonian, self.n_qubits = qml.qchem.molecular_hamiltonian(molecule)
+            hamiltonian, self.n_qubits = qp.qchem.molecular_hamiltonian(molecule)
             self.n_electrons = molecule.n_electrons
 
             if (n_electrons is not None) and self.n_electrons != n_electrons:
@@ -202,14 +202,14 @@ class VQE(VariationalQuantumAlgorithm):
         flat_params = tuple(weights.flatten())
         return {
             "cost_circuit": qscript_to_meta(
-                qml.tape.QuantumScript(
-                    ops=ops, measurements=[qml.expval(self._cost_hamiltonian)]
+                qp.tape.QuantumScript(
+                    ops=ops, measurements=[qp.expval(self._cost_hamiltonian)]
                 ),
                 precision=self._precision,
                 parameter_order=flat_params,
             ),
             "meas_circuit": qscript_to_meta(
-                qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()]),
+                qp.tape.QuantumScript(ops=ops, measurements=[qp.probs()]),
                 precision=self._precision,
                 parameter_order=flat_params,
             ),

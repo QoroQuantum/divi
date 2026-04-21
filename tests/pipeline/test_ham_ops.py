@@ -13,7 +13,7 @@ Validates that:
 
 import re
 
-import pennylane as qml
+import pennylane as qp
 import pytest
 
 from divi.backends import CircuitRunner, ExecutionResult
@@ -94,9 +94,9 @@ def _make_expval_meta():
     """MetaCircuit with observable: 0.5*Z(0) + 0.3*Z(1) on 2 qubits."""
 
     # Two-qubit tape: use a Hadamard on each wire so both qubits are active.
-    qscript = qml.tape.QuantumScript(
-        ops=[qml.Hadamard(0), qml.Hadamard(1)],
-        measurements=[qml.expval(0.5 * qml.Z(0) + 0.3 * qml.Z(1))],
+    qscript = qp.tape.QuantumScript(
+        ops=[qp.Hadamard(0), qp.Hadamard(1)],
+        measurements=[qp.expval(0.5 * qp.Z(0) + 0.3 * qp.Z(1))],
     )
     return qscript_to_meta(qscript)
 
@@ -104,9 +104,9 @@ def _make_expval_meta():
 def _make_probs_meta():
     """MetaCircuit with probs() on 1 qubit."""
 
-    qscript = qml.tape.QuantumScript(
-        ops=[qml.Hadamard(0)],
-        measurements=[qml.probs()],
+    qscript = qp.tape.QuantumScript(
+        ops=[qp.Hadamard(0)],
+        measurements=[qp.probs()],
     )
     return qscript_to_meta(qscript)
 

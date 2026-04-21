@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 import pytest
 
 from divi.circuits import qscript_to_meta
@@ -45,9 +45,9 @@ class TestCountsToExpvals:
                 assert isinstance(v, (int, float))
 
     def test_multi_obs_group_returns_dict(self, dummy_pipeline_env):
-        qscript = qml.tape.QuantumScript(
-            ops=[qml.Hadamard(0), qml.Hadamard(1)],
-            measurements=[qml.expval(0.5 * qml.Z(0) + 0.3 * qml.Z(1))],
+        qscript = qp.tape.QuantumScript(
+            ops=[qp.Hadamard(0), qp.Hadamard(1)],
+            measurements=[qp.expval(0.5 * qp.Z(0) + 0.3 * qp.Z(1))],
         )
         meta = qscript_to_meta(qscript)
 

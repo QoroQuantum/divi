@@ -2,20 +2,21 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import warnings
 from typing import Any
 
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 import pytest
 import sympy as sp
 from scipy.optimize import OptimizeResult
 
 from divi.circuits import dag_to_qasm_body, qscript_to_meta
 from divi.circuits._conversions import _qscript_to_dag
-from divi.pipeline.stages import CircuitSpecStage
+from divi.exceptions import ExecutionCancelledError
+from divi.pipeline.stages import CircuitSpecStage, MeasurementStage
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.early_stopping import EarlyStopping, StopReason
-from divi.qprog.exceptions import _CancelledError
 from divi.qprog.optimizers import MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
 from divi.qprog.variational_quantum_algorithm import (
     VariationalQuantumAlgorithm,
@@ -46,7 +47,7 @@ class SampleVQAProgram(VariationalQuantumAlgorithm):
         super().__init__(backend=kwargs.pop("backend", None), **kwargs)
 
         self._cost_hamiltonian = (
-            qml.PauliX(0) + qml.PauliZ(1) + qml.PauliX(0) @ qml.PauliZ(1)
+            qp.PauliX(0) + qp.PauliZ(1) + qp.PauliX(0) @ qp.PauliZ(1)
         )
         self.loss_constant = 0.0
 
@@ -55,19 +56,19 @@ class SampleVQAProgram(VariationalQuantumAlgorithm):
         self._measurement_pipeline = self._build_measurement_pipeline()
 
     @property
-    def cost_hamiltonian(self) -> qml.operation.Operator:
+    def cost_hamiltonian(self) -> qp.operation.Operator:
         """The cost Hamiltonian for the VQA problem."""
         return self._cost_hamiltonian
 
     def _create_meta_circuit_factories(self):
         symbols = [sp.Symbol("beta"), *sp.symarray("theta", 3)]
         ops = [
-            qml.RX(symbols[0], wires=0),
-            qml.U3(*symbols[1:], wires=1),
-            qml.CNOT(wires=[0, 1]),
+            qp.RX(symbols[0], wires=0),
+            qp.U3(*symbols[1:], wires=1),
+            qp.CNOT(wires=[0, 1]),
         ]
-        tape = qml.tape.QuantumScript(
-            ops=ops, measurements=[qml.expval(self.cost_hamiltonian)]
+        tape = qp.tape.QuantumScript(
+            ops=ops, measurements=[qp.expval(self.cost_hamiltonian)]
         )
         meta_circuit = qscript_to_meta(tape, precision=self._precision)
         return {"cost_circuit": meta_circuit}
@@ -150,6 +151,86 @@ class TestProgram:
 
         # Verify that the grouping strategy was overridden to "_backend_expval"
         assert program._grouping_strategy == "_backend_expval"
+
+    def test_shot_distribution_default_is_none(self, mocker):
+        """Spec: omitting shot_distribution leaves the field unset (None)."""
+        program = self._create_sample_program(mocker)
+        assert program._shot_distribution is None
+
+    def test_shot_distribution_stored_on_program(self, mocker):
+        """Spec: explicit shot_distribution is stored verbatim."""
+        program = self._create_sample_program(mocker, shot_distribution="weighted")
+        assert program._shot_distribution == "weighted"
+
+    def test_shot_distribution_suppresses_backend_expval_autoswitch(self, mocker):
+        """Spec: setting shot_distribution prevents the auto-fallback to
+        _backend_expval that normally happens on expval-supporting backends."""
+        mock_backend = self._create_mock_backend(mocker, supports_expval=True)
+
+        # No warning should be emitted: shot_distribution implies sampling intent.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            program = self._create_sample_program(
+                mocker,
+                grouping_strategy="qwc",
+                shot_distribution="uniform",
+                backend=mock_backend,
+            )
+        assert program._grouping_strategy == "qwc"
+        assert program._shot_distribution == "uniform"
+
+    def test_shot_distribution_with_explicit_backend_expval_raises(self, mocker):
+        """Spec: combining shot_distribution with grouping_strategy='_backend_expval'
+        raises ValueError because the backend ignores shots in that mode."""
+        mock_backend = self._create_mock_backend(mocker, supports_expval=True)
+        with pytest.raises(ValueError, match="incompatible with grouping_strategy"):
+            self._create_sample_program(
+                mocker,
+                grouping_strategy="_backend_expval",
+                shot_distribution="weighted",
+                backend=mock_backend,
+            )
+
+    def test_shot_distribution_threaded_to_measurement_stage(self, mocker):
+        """Implementation detail: _build_cost_pipeline forwards shot_distribution
+        to MeasurementStage's constructor."""
+        program = self._create_sample_program(
+            mocker, shot_distribution="weighted_random"
+        )
+        program._build_pipelines()
+
+        meas_stage = next(
+            stage
+            for stage in program._cost_pipeline.stages
+            if isinstance(stage, MeasurementStage)
+        )
+        assert meas_stage._shot_distribution == "weighted_random"
+
+    def test_shot_distribution_callable_threaded_through(self, mocker):
+        """Implementation detail: callable shot_distribution survives threading."""
+
+        def custom(norms, total):
+            return [total] + [0] * (len(norms) - 1)
+
+        program = self._create_sample_program(mocker, shot_distribution=custom)
+        program._build_pipelines()
+
+        meas_stage = next(
+            stage
+            for stage in program._cost_pipeline.stages
+            if isinstance(stage, MeasurementStage)
+        )
+        assert meas_stage._shot_distribution is custom
+
+    def test_program_rng_threaded_into_pipeline_env(self, mocker):
+        """Spec: VariationalQuantumAlgorithm._build_pipeline_env populates
+        env.rng from self._rng so weighted_random shot allocation is
+        reproducible across runs of the same seeded program."""
+        program = self._create_sample_program(
+            mocker, shot_distribution="weighted_random"
+        )
+        env = program._build_pipeline_env(param_sets=np.zeros((1, 4)))
+        assert env.rng is program._rng
 
     def test_evaluate_cost_param_sets_uses_initial_spec_hook(self, mocker):
         """Cost evaluation should delegate to the initial-spec hook."""
@@ -456,7 +537,7 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         mock_event = mocker.MagicMock()
         mock_event.is_set.return_value = True
         program._cancellation_event = mock_event
-        program.optimizer.optimize.side_effect = _CancelledError(
+        program.optimizer.optimize.side_effect = ExecutionCancelledError(
             "Cancellation requested"
         )
 
@@ -851,9 +932,9 @@ class TestPrecisionFunctionality(BaseVariationalQuantumAlgorithmTest):
     def test_precision_used_in_qasm_conversion(self):
         """Precision controls decimal digits in dag_to_qasm_body output."""
         # Circuit with a known numeric constant (not symbolic).
-        qscript = qml.tape.QuantumScript(
-            ops=[qml.RZ(0.123456789, 0)],
-            measurements=[qml.expval(qml.Z(0))],
+        qscript = qp.tape.QuantumScript(
+            ops=[qp.RZ(0.123456789, 0)],
+            measurements=[qp.expval(qp.Z(0))],
         )
         dag, _, _ = _qscript_to_dag(qscript)
 

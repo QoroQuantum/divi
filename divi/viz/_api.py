@@ -108,12 +108,10 @@ def _require_supported_program(program: _SupportsVizScan) -> None:
     ):
         raise TypeError("divi.viz currently supports VariationalQuantumAlgorithm only.")
 
-    from divi.qprog import IterativeQAOA  # lazy: divi.qprog <-> divi.viz cycle
-
-    if isinstance(program, IterativeQAOA):
+    if not getattr(program, "_supports_fixed_param_scans", True):
         raise NotImplementedError(
-            "IterativeQAOA varies circuit depth during optimization and has no "
-            "fixed parameter space for these scans; use a fixed-depth QAOA instance."
+            f"{type(program).__name__} varies its parameter space during optimization "
+            "and has no fixed parameter space for these scans; use a fixed-depth variant."
         )
 
 

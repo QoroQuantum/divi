@@ -3,14 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 import pytest
 
+from divi.hamiltonians import _evaluate_binary_polynomial
 from divi.pipeline.stages import CircuitSpecStage, ParameterBindingStage, PCECostStage
 from divi.pipeline.stages._pce_cost_stage import (
     _compute_hard_cvar_energy,
     _compute_soft_energy,
-    _evaluate_binary_polynomial,
 )
 from divi.qprog import PCE, MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
 from divi.qprog.algorithms import GenericLayerAnsatz
@@ -31,7 +31,7 @@ from tests.qprog.qprog_contracts import verify_metacircuit_dict
 
 @pytest.fixture
 def basic_ansatz() -> GenericLayerAnsatz:
-    return GenericLayerAnsatz([qml.RY, qml.RZ])
+    return GenericLayerAnsatz([qp.RY, qp.RZ])
 
 
 @pytest.fixture

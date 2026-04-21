@@ -28,13 +28,13 @@ Let's solve a quantum chemistry problem - finding the ground state energy of a h
 .. code-block:: python
 
    import numpy as np
-   import pennylane as qml
+   import pennylane as qp
    from divi.qprog import VQE, HartreeFockAnsatz
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
    # Step 1: Define your molecule
-   h2_molecule = qml.qchem.Molecule(
+   h2_molecule = qp.qchem.Molecule(
       symbols=["H", "H"], coordinates=np.array([[0.0, 0.0, -0.6614], [0.0, 0.0, 0.6614]])
    )
 
@@ -108,7 +108,7 @@ Divi offers specialized algorithms for different problem types:
    .. code-block:: python
 
       import numpy as np
-      import pennylane as qml
+      import pennylane as qp
       from divi.qprog import PCE, GenericLayerAnsatz
       from divi.backends import MaestroSimulator
 
@@ -116,8 +116,8 @@ Divi offers specialized algorithms for different problem types:
       pce = PCE(
           problem=qubo_matrix,
           ansatz=GenericLayerAnsatz(
-              gate_sequence=[qml.RY, qml.RZ],
-              entangler=qml.CNOT,
+              gate_sequence=[qp.RY, qp.RZ],
+              entangler=qp.CNOT,
               entangling_layout="all-to-all",
           ),
           backend=MaestroSimulator(),
@@ -130,12 +130,12 @@ Divi offers specialized algorithms for different problem types:
    .. code-block:: python
 
       import math
-      import pennylane as qml
+      import pennylane as qp
       from divi.qprog import TimeEvolution
       from divi.backends import MaestroSimulator
 
       te = TimeEvolution(
-          hamiltonian=qml.PauliX(0) + qml.PauliX(1),
+          hamiltonian=qp.PauliX(0) + qp.PauliX(1),
           time=math.pi / 2,
           backend=MaestroSimulator(shots=5000),
       )

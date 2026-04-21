@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import pennylane as qml
+import pennylane as qp
 
 from divi.circuits import MetaCircuit, qscript_to_meta
 from divi.circuits.qem import _NoMitigation
@@ -35,13 +35,13 @@ class TimeEvolution(QuantumProgram):
 
     def __init__(
         self,
-        hamiltonian: qml.operation.Operator,
+        hamiltonian: qp.operation.Operator,
         trotterization_strategy: TrotterizationStrategy | None = None,
         time: float = 1.0,
         n_steps: int = 1,
         order: int = 1,
         initial_state: InitialState | None = None,
-        observable: qml.operation.Operator | None = None,
+        observable: qp.operation.Operator | None = None,
         **kwargs,
     ):
         """Initialize TimeEvolution.
@@ -56,7 +56,7 @@ class TimeEvolution(QuantumProgram):
             initial_state: Initial state preparation. Pass an :class:`~divi.qprog.algorithms.InitialState`
                 instance (e.g. ``ZerosState()``, ``SuperpositionState()``).
                 Defaults to ``ZerosState()`` if None.
-            observable: If None, measure ``qml.probs()``; else ``qml.expval(observable)``.
+            observable: If None, measure ``qp.probs()``; else ``qp.expval(observable)``.
             **kwargs: Passed to QuantumProgram (backend, seed, progress_queue, etc.).
                 Accepts ``qem_protocol`` for quantum error mitigation (requires
                 ``observable`` to be set, since QEM operates on expectation values).
@@ -111,18 +111,18 @@ class TimeEvolution(QuantumProgram):
         return {"evolution": (self._pipeline, self._hamiltonian)}
 
     def _meta_circuit_factory(
-        self, hamiltonian: qml.operation.Operator, ham_id: int
+        self, hamiltonian: qp.operation.Operator, ham_id: int
     ) -> MetaCircuit:
         """Factory for TrotterSpecStage: build a MetaCircuit for one Hamiltonian sample."""
         ops = self._build_ops(hamiltonian)
         # Ensure canonical wire ordering matches the Hamiltonian,
         # regardless of which subset of terms QDrift sampled.
-        ops = [qml.Identity(w) for w in self._circuit_wires] + ops
+        ops = [qp.Identity(w) for w in self._circuit_wires] + ops
         use_probs = self.observable is None
 
-        measurement = qml.probs() if use_probs else qml.expval(self.observable)
+        measurement = qp.probs() if use_probs else qp.expval(self.observable)
         return qscript_to_meta(
-            qml.tape.QuantumScript(ops=ops, measurements=[measurement]),
+            qp.tape.QuantumScript(ops=ops, measurements=[measurement]),
         )
 
     def run(self, **kwargs) -> "TimeEvolution":
@@ -149,7 +149,7 @@ class TimeEvolution(QuantumProgram):
 
         return self
 
-    def _build_ops(self, hamiltonian: qml.operation.Operator) -> list:
+    def _build_ops(self, hamiltonian: qp.operation.Operator) -> list:
         """Build circuit ops: initial state, evolution, measurement."""
         ops = self.initial_state.build(self._circuit_wires)
 
@@ -165,7 +165,7 @@ class TimeEvolution(QuantumProgram):
             step_time = self.time / self.n_steps
             for _ in range(self.n_steps):
                 ops.extend(
-                    qml.adjoint(qml.evolve(term, coeff=step_time))
+                    qp.adjoint(qp.evolve(term, coeff=step_time))
                     for term in sampled_terms
                 )
             return ops
@@ -173,8 +173,8 @@ class TimeEvolution(QuantumProgram):
         # Standard Trotter-Suzuki for ExactTrotterization
         n_terms = len(hamiltonian) if _is_multi_term_sum(hamiltonian) else 1
         if n_terms >= 2:
-            evo = qml.adjoint(
-                qml.TrotterProduct(
+            evo = qp.adjoint(
+                qp.TrotterProduct(
                     hamiltonian, time=self.time, n=self.n_steps, order=self.order
                 )
             )
@@ -185,6 +185,6 @@ class TimeEvolution(QuantumProgram):
                 if not _is_multi_term_sum(hamiltonian)
                 else _get_terms_iterable(hamiltonian)[0]
             )
-            ops.append(qml.evolve(term, coeff=self.time))
+            ops.append(qp.evolve(term, coeff=self.time))
 
         return ops

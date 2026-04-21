@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 import pytest
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
@@ -22,9 +22,9 @@ from tests.qprog.qprog_contracts import (
 @pytest.fixture
 def simple_quantum_script():
     """Fixture for a simple parameterized QuantumScript."""
-    ops = [qml.RX(0.0, wires=0), qml.RZ(0.0, wires=0)]
-    measurements = [qml.expval(qml.Z(0))]
-    return qml.tape.QuantumScript(ops=ops, measurements=measurements)
+    ops = [qp.RX(0.0, wires=0), qp.RZ(0.0, wires=0)]
+    measurements = [qp.expval(qp.Z(0))]
+    return qp.tape.QuantumScript(ops=ops, measurements=measurements)
 
 
 @pytest.fixture
@@ -119,12 +119,12 @@ class TestInitialization:
         circuit = request.getfixturevalue(circuit_fixture)
         program = CustomVQA(qscript=circuit, backend=dummy_simulator)
 
-        assert isinstance(program.qscript, qml.tape.QuantumScript)
+        assert isinstance(program.qscript, qp.tape.QuantumScript)
         assert program.n_qubits == expected_n_qubits
         assert program.n_layers == 1
         assert program.n_params_per_layer == 2
         assert program.param_shape == (2,)
-        assert isinstance(program.cost_hamiltonian, qml.operation.Operator)
+        assert isinstance(program.cost_hamiltonian, qp.operation.Operator)
         verify_metacircuit_dict(program, ["cost_circuit"])
 
     @pytest.mark.parametrize(
@@ -174,7 +174,7 @@ class TestInitialization:
             )
 
         assert program.n_qubits == 1
-        assert isinstance(program.cost_hamiltonian, qml.operation.Operator)
+        assert isinstance(program.cost_hamiltonian, qp.operation.Operator)
 
 
 class TestErrorCases:
@@ -187,49 +187,49 @@ class TestErrorCases:
 
     def test_multiple_measurements_fails(self, dummy_simulator):
         """Test that QuantumScript with multiple measurements fails."""
-        ops = [qml.RX(0.0, wires=0)]
-        measurements = [qml.expval(qml.Z(0)), qml.expval(qml.Z(0))]
-        qscript = qml.tape.QuantumScript(ops=ops, measurements=measurements)
+        ops = [qp.RX(0.0, wires=0)]
+        measurements = [qp.expval(qp.Z(0)), qp.expval(qp.Z(0))]
+        qscript = qp.tape.QuantumScript(ops=ops, measurements=measurements)
 
         with pytest.raises(ValueError, match="exactly one measurement"):
             CustomVQA(qscript=qscript, backend=dummy_simulator)
 
     def test_no_measurement_fails(self, dummy_simulator):
         """Test that QuantumScript without measurement fails."""
-        ops = [qml.RX(0.0, wires=0)]
-        qscript = qml.tape.QuantumScript(ops=ops, measurements=[])
+        ops = [qp.RX(0.0, wires=0)]
+        qscript = qp.tape.QuantumScript(ops=ops, measurements=[])
 
         with pytest.raises(ValueError, match="exactly one measurement"):
             CustomVQA(qscript=qscript, backend=dummy_simulator)
 
     def test_non_expval_measurement_fails(self, dummy_simulator):
         """Test that non-expectation-value measurement fails."""
-        ops = [qml.RX(0.0, wires=0)]
-        measurements = [qml.probs(wires=0)]
-        qscript = qml.tape.QuantumScript(ops=ops, measurements=measurements)
+        ops = [qp.RX(0.0, wires=0)]
+        measurements = [qp.probs(wires=0)]
+        qscript = qp.tape.QuantumScript(ops=ops, measurements=measurements)
 
         with pytest.raises(ValueError, match="expectation-value measurement"):
             CustomVQA(qscript=qscript, backend=dummy_simulator)
 
     def test_constant_only_hamiltonian_fails(self, dummy_simulator):
         """Test that constant-only Hamiltonian fails."""
-        ops = [qml.RX(0.0, wires=0)]
-        measurements = [qml.expval(qml.Identity(0) * 5.0)]
-        qscript = qml.tape.QuantumScript(ops=ops, measurements=measurements)
+        ops = [qp.RX(0.0, wires=0)]
+        measurements = [qp.expval(qp.Identity(0) * 5.0)]
+        qscript = qp.tape.QuantumScript(ops=ops, measurements=measurements)
 
         with pytest.raises(ValueError, match="only constant terms"):
             CustomVQA(qscript=qscript, backend=dummy_simulator)
 
     @pytest.mark.parametrize(
         "observable",
-        [0.5 * qml.Z(0), qml.Z(0)],
+        [0.5 * qp.Z(0), qp.Z(0)],
         ids=["sprod", "bare_pauli"],
     )
     def test_single_term_observable_succeeds(self, dummy_simulator, observable):
         """Single-term observables (SProd, bare Pauli) initialize without operands error."""
-        ops = [qml.RX(0.0, wires=0)]
-        measurements = [qml.expval(observable)]
-        qscript = qml.tape.QuantumScript(ops=ops, measurements=measurements)
+        ops = [qp.RX(0.0, wires=0)]
+        measurements = [qp.expval(observable)]
+        qscript = qp.tape.QuantumScript(ops=ops, measurements=measurements)
 
         vqa = CustomVQA(qscript=qscript, backend=dummy_simulator)
         assert vqa.cost_hamiltonian is not None
@@ -238,8 +238,8 @@ class TestErrorCases:
     def test_no_trainable_parameters_fails(self, dummy_simulator):
         """Test that QuantumScript without trainable parameters fails."""
         # Create a script with no operations (empty circuit)
-        measurements = [qml.expval(qml.Z(0))]
-        qscript = qml.tape.QuantumScript(ops=[], measurements=measurements)
+        measurements = [qp.expval(qp.Z(0))]
+        qscript = qp.tape.QuantumScript(ops=[], measurements=measurements)
 
         with pytest.raises(ValueError, match="trainable parameters"):
             CustomVQA(qscript=qscript, backend=dummy_simulator)
@@ -292,9 +292,9 @@ class TestParameterHandling:
 
     def test_multiple_wire_observable(self, dummy_simulator):
         """Test with observable on multiple wires."""
-        ops = [qml.RX(0.0, wires=0), qml.RY(0.0, wires=1)]
-        measurements = [qml.expval(qml.Z(0) @ qml.Z(1))]
-        qscript = qml.tape.QuantumScript(ops=ops, measurements=measurements)
+        ops = [qp.RX(0.0, wires=0), qp.RY(0.0, wires=1)]
+        measurements = [qp.expval(qp.Z(0) @ qp.Z(1))]
+        qscript = qp.tape.QuantumScript(ops=ops, measurements=measurements)
 
         program = CustomVQA(qscript=qscript, backend=dummy_simulator)
         assert program.n_qubits == 2
@@ -340,15 +340,15 @@ class TestQiskitConversion:
 
         assert program.n_qubits == expected_n_qubits
         assert program.n_params_per_layer == expected_n_params
-        assert isinstance(program.cost_hamiltonian, qml.operation.Operator)
+        assert isinstance(program.cost_hamiltonian, qp.operation.Operator)
 
         if len(expected_measured_wires) > 1:
-            assert isinstance(program.cost_hamiltonian, qml.ops.Sum)
+            assert isinstance(program.cost_hamiltonian, qp.ops.Sum)
             ops = program.cost_hamiltonian.operands
-            measured_wires = {op.wires[0] for op in ops if isinstance(op, qml.Z)}
+            measured_wires = {op.wires[0] for op in ops if isinstance(op, qp.Z)}
             assert measured_wires == expected_measured_wires
         else:
-            assert isinstance(program.cost_hamiltonian, qml.Z)
+            assert isinstance(program.cost_hamiltonian, qp.Z)
             assert program.cost_hamiltonian.wires[0] in expected_measured_wires
 
 

@@ -9,6 +9,13 @@ This page covers single-instance ground-state energy estimation with
 :class:`~divi.qprog.algorithms.VQE` and large-scale sweeps with
 :class:`~divi.qprog.workflows.VQEHyperparameterSweep`.
 
+.. tip::
+
+   On sampling backends, pass ``shot_distribution="weighted"`` to focus the
+   same shot budget on the Hamiltonian's dominant terms — free variance
+   reduction on the skewed coefficient distributions typical of chemistry.
+   See `Spending Shots Where They Matter`_ below.
+
 Basic :class:`~divi.qprog.algorithms.VQE` Usage
 -----------------------------------------------
 
@@ -17,13 +24,13 @@ Here's how to set up a basic :class:`~divi.qprog.algorithms.VQE` calculation for
 .. code-block:: python
 
    import numpy as np
-   import pennylane as qml
+   import pennylane as qp
    from divi.qprog import VQE, HartreeFockAnsatz
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
    # Create H2 molecule
-   mol = qml.qchem.Molecule(
+   mol = qp.qchem.Molecule(
        symbols=["H", "H"],
        coordinates=np.array([[0.0, 0.0, -0.6614], [0.0, 0.0, 0.6614]])
    )
@@ -59,16 +66,16 @@ In the case of a Hamiltonian input, the input would be passed to the constructor
 .. code-block:: python
 
    import numpy as np
-   import pennylane as qml
+   import pennylane as qp
    from divi.qprog import VQE, HartreeFockAnsatz
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
-   mol = qml.qchem.Molecule(
+   mol = qp.qchem.Molecule(
        symbols=["H", "H"],
        coordinates=np.array([(0, 0, 0), (0, 0, 0.5)])
    )
-   ham, _ = qml.qchem.molecular_hamiltonian(mol)
+   ham, _ = qp.qchem.molecular_hamiltonian(mol)
 
    vqe_problem = VQE(
        hamiltonian=ham,
@@ -135,7 +142,7 @@ Implement a custom ansatz by subclassing the abstract :class:`~divi.qprog.algori
            raise NotImplementedError
 
 The ``build`` method must return a list of PennyLane operations
-(``list[qml.operation.Operator]``). Refer to the built-in ansätze in the
+(``list[qp.operation.Operator]``). Refer to the built-in ansätze in the
 repository for concrete examples.
 
 VQE Hyperparameter Sweep
@@ -162,12 +169,12 @@ Divi uses `Z-matrices <https://en.wikipedia.org/wiki/Z-matrix_(chemistry)>`_ to 
 
    from divi.qprog import VQEHyperparameterSweep, MoleculeTransformer
    from divi.qprog.optimizers import MonteCarloOptimizer
-   import pennylane as qml
+   import pennylane as qp
    import numpy as np
    from divi.qprog import HartreeFockAnsatz, UCCSDAnsatz
    from divi.backends import MaestroSimulator
 
-   mol = qml.qchem.Molecule(
+   mol = qp.qchem.Molecule(
        symbols=["H", "H"],
        coordinates=np.array([(0, 0, 0), (0, 0, 0.5)])
    )
@@ -220,6 +227,45 @@ A few details worth calling out:
    compatible measurement groups.  Backends like ``MaestroSimulator`` compute
    expectation values directly from the state representation, so measurement
    grouping has no effect and is overridden with a warning.
+
+Spending Shots Where They Matter
+--------------------------------
+
+For chemistry Hamiltonians the coefficient distribution is typically highly
+skewed — a handful of dominant terms account for most of the energy, while
+many small terms contribute fractions of a millihartree.  Sampling every
+measurement group with the full shot count wastes precision on those small
+terms.
+
+Pass ``shot_distribution`` to focus the same total budget on the groups
+that matter:
+
+.. code-block:: python
+
+   from divi.qprog import VQE
+   from divi.backends import QiskitSimulator
+
+   vqe = VQE(
+       molecule=molecule,
+       ansatz=UCCSDAnsatz(),
+       optimizer=mc_optimizer,
+       backend=QiskitSimulator(shots=2000),
+       grouping_strategy="qwc",
+       shot_distribution="weighted",  # focus shots on dominant terms
+   )
+
+The ``"weighted"`` strategy allocates shots proportional to each group's
+coefficient L1 norm.  See the :ref:`adaptive-shot-allocation` section of
+the pipelines guide for the full list of strategies (``"uniform"``,
+``"weighted"``, ``"weighted_random"``, or a custom callable) and their
+trade-offs, including the bias-vs-budget implications when
+small-coefficient groups end up with zero allocated shots.
+
+This option requires sampling-based execution.  On expval-capable
+backends like :class:`~divi.backends.MaestroSimulator`, divi auto-selects
+an analytical strategy that ignores shots entirely; pass
+``grouping_strategy="qwc"`` (or ``"wires"`` / ``None``) explicitly to opt
+into sampling and unlock ``shot_distribution``.
 
 Next Steps
 ----------

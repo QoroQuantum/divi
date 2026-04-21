@@ -5,7 +5,7 @@
 """Tests for divi.pipeline.stages._pennylane_spec_stage."""
 
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 import pytest
 import sympy
 
@@ -19,18 +19,18 @@ from divi.pipeline.stages import (
 
 def _bell_script():
     """Non-parametric Bell-state QuantumScript."""
-    return qml.tape.QuantumScript(
-        ops=[qml.Hadamard(0), qml.CNOT(wires=[0, 1])],
-        measurements=[qml.probs()],
+    return qp.tape.QuantumScript(
+        ops=[qp.Hadamard(0), qp.CNOT(wires=[0, 1])],
+        measurements=[qp.probs()],
     )
 
 
 def _parametric_script():
     """Parametric QuantumScript with two sympy symbols."""
     theta, phi = sympy.symbols("theta phi")
-    return qml.tape.QuantumScript(
-        ops=[qml.RX(theta, wires=0), qml.RZ(phi, wires=0)],
-        measurements=[qml.expval(qml.Z(0))],
+    return qp.tape.QuantumScript(
+        ops=[qp.RX(theta, wires=0), qp.RZ(phi, wires=0)],
+        measurements=[qp.expval(qp.Z(0))],
     )
 
 
@@ -48,7 +48,7 @@ class TestPennyLaneSpecStageExpand:
         assert key == (("circuit", 0),)
         meta = batch[key]
         assert meta.parameters == ()
-        # Bell uses qml.probs() over all wires → measured_wires = (0, 1).
+        # Bell uses qp.probs() over all wires → measured_wires = (0, 1).
         assert meta.measured_wires == (0, 1)
         assert meta.observable is None
 
@@ -99,13 +99,13 @@ class TestPennyLaneSpecStageQNode:
     """Expand: QNode(s) are converted to MetaCircuit batches."""
 
     def test_non_parametric_qnode(self, dummy_pipeline_env):
-        dev = qml.device("default.qubit", wires=2)
+        dev = qp.device("default.qubit", wires=2)
 
-        @qml.qnode(dev)
+        @qp.qnode(dev)
         def bell():
-            qml.Hadamard(0)
-            qml.CNOT(wires=[0, 1])
-            return qml.probs()
+            qp.Hadamard(0)
+            qp.CNOT(wires=[0, 1])
+            return qp.probs()
 
         stage = PennyLaneSpecStage()
 
@@ -116,13 +116,13 @@ class TestPennyLaneSpecStageQNode:
         assert meta.parameters == ()
 
     def test_parametric_qnode(self, dummy_pipeline_env):
-        dev = qml.device("default.qubit", wires=1)
+        dev = qp.device("default.qubit", wires=1)
 
-        @qml.qnode(dev)
+        @qp.qnode(dev)
         def circuit(x, y):
-            qml.RX(x, wires=0)
-            qml.RZ(y, wires=0)
-            return qml.expval(qml.Z(0))
+            qp.RX(x, wires=0)
+            qp.RZ(y, wires=0)
+            return qp.expval(qp.Z(0))
 
         stage = PennyLaneSpecStage()
 
@@ -134,12 +134,12 @@ class TestPennyLaneSpecStageQNode:
         assert param_names == {"p0", "p1"}
 
     def test_sequence_mixed_qnode_and_script(self, dummy_pipeline_env):
-        dev = qml.device("default.qubit", wires=1)
+        dev = qp.device("default.qubit", wires=1)
 
-        @qml.qnode(dev)
+        @qp.qnode(dev)
         def qnode_circuit():
-            qml.Hadamard(0)
-            return qml.probs()
+            qp.Hadamard(0)
+            return qp.probs()
 
         qs = _bell_script()
         stage = PennyLaneSpecStage()
@@ -152,12 +152,12 @@ class TestPennyLaneSpecStageQNode:
 
     def test_single_param_qnode(self, dummy_pipeline_env):
         """QNode with exactly one parameter doesn't break tuple unpacking."""
-        dev = qml.device("default.qubit", wires=1)
+        dev = qp.device("default.qubit", wires=1)
 
-        @qml.qnode(dev)
+        @qp.qnode(dev)
         def single_param(x):
-            qml.RX(x, wires=0)
-            return qml.expval(qml.Z(0))
+            qp.RX(x, wires=0)
+            return qp.expval(qp.Z(0))
 
         stage = PennyLaneSpecStage()
 
@@ -172,13 +172,13 @@ class TestPennyLaneSpecStageQNodeArray:
     """QNodes with array parameters are auto-detected and converted."""
 
     def test_qnode_array_param_auto_detected(self, dummy_pipeline_env):
-        dev = qml.device("default.qubit", wires=2)
+        dev = qp.device("default.qubit", wires=2)
 
-        @qml.qnode(dev)
+        @qp.qnode(dev)
         def circuit(params):
-            qml.RX(params[0], wires=0)
-            qml.RY(params[1], wires=1)
-            return qml.expval(qml.Z(0))
+            qp.RX(params[0], wires=0)
+            qp.RY(params[1], wires=1)
+            return qp.expval(qp.Z(0))
 
         stage = PennyLaneSpecStage()
 
@@ -189,13 +189,13 @@ class TestPennyLaneSpecStageQNodeArray:
 
     def test_qnode_array_with_fixed_constants(self, dummy_pipeline_env):
         """Only array-derived parameters become symbols; fixed constants stay numeric."""
-        dev = qml.device("default.qubit", wires=2)
+        dev = qp.device("default.qubit", wires=2)
 
-        @qml.qnode(dev)
+        @qp.qnode(dev)
         def circuit(params):
-            qml.RX(params[0], wires=0)
-            qml.RY(np.pi / 2, wires=1)  # fixed constant
-            return qml.probs()
+            qp.RX(params[0], wires=0)
+            qp.RY(np.pi / 2, wires=1)  # fixed constant
+            return qp.probs()
 
         stage = PennyLaneSpecStage()
 
@@ -206,13 +206,13 @@ class TestPennyLaneSpecStageQNodeArray:
         assert len(meta.parameters) == 1
 
     def test_qnode_multi_array_param_raises(self, dummy_pipeline_env):
-        dev = qml.device("default.qubit", wires=2)
+        dev = qp.device("default.qubit", wires=2)
 
-        @qml.qnode(dev)
+        @qp.qnode(dev)
         def circuit(weights, biases):
-            qml.RX(weights[0], wires=0)
-            qml.RY(biases[0], wires=1)
-            return qml.probs()
+            qp.RX(weights[0], wires=0)
+            qp.RY(biases[0], wires=1)
+            return qp.probs()
 
         stage = PennyLaneSpecStage()
 
@@ -224,9 +224,9 @@ class TestPennyLaneSpecStageMeasurementValidation:
     """Measurement type validation: only probs, expval, counts are supported."""
 
     def test_multi_measurement_raises(self, dummy_pipeline_env):
-        qs = qml.tape.QuantumScript(
-            ops=[qml.Hadamard(0)],
-            measurements=[qml.expval(qml.Z(0)), qml.probs()],
+        qs = qp.tape.QuantumScript(
+            ops=[qp.Hadamard(0)],
+            measurements=[qp.expval(qp.Z(0)), qp.probs()],
         )
         stage = PennyLaneSpecStage()
 
@@ -234,9 +234,9 @@ class TestPennyLaneSpecStageMeasurementValidation:
             stage.expand(qs, dummy_pipeline_env)
 
     def test_unsupported_measurement_raises(self, dummy_pipeline_env):
-        qs = qml.tape.QuantumScript(
-            ops=[qml.Hadamard(0)],
-            measurements=[qml.sample()],
+        qs = qp.tape.QuantumScript(
+            ops=[qp.Hadamard(0)],
+            measurements=[qp.sample()],
         )
         stage = PennyLaneSpecStage()
 
@@ -244,9 +244,9 @@ class TestPennyLaneSpecStageMeasurementValidation:
             stage.expand(qs, dummy_pipeline_env)
 
     def test_counts_measurement_accepted(self, dummy_pipeline_env):
-        qs = qml.tape.QuantumScript(
-            ops=[qml.Hadamard(0)],
-            measurements=[qml.counts()],
+        qs = qp.tape.QuantumScript(
+            ops=[qp.Hadamard(0)],
+            measurements=[qp.counts()],
         )
         stage = PennyLaneSpecStage()
 
@@ -254,9 +254,9 @@ class TestPennyLaneSpecStageMeasurementValidation:
         assert len(batch) == 1
 
     def test_expval_measurement_accepted(self, dummy_pipeline_env):
-        qs = qml.tape.QuantumScript(
-            ops=[qml.Hadamard(0)],
-            measurements=[qml.expval(qml.Z(0))],
+        qs = qp.tape.QuantumScript(
+            ops=[qp.Hadamard(0)],
+            measurements=[qp.expval(qp.Z(0))],
         )
         stage = PennyLaneSpecStage()
 
@@ -303,13 +303,13 @@ class TestPennyLaneSpecStagePipeline:
 
     def test_parametric_qnode_with_binding(self, default_test_simulator):
         """QNode with parameter binding produces expectation value."""
-        dev = qml.device("default.qubit", wires=1)
+        dev = qp.device("default.qubit", wires=1)
 
-        @qml.qnode(dev)
+        @qp.qnode(dev)
         def circuit(x, y):
-            qml.RX(x, wires=0)
-            qml.RZ(y, wires=0)
-            return qml.expval(qml.Z(0))
+            qp.RX(x, wires=0)
+            qp.RZ(y, wires=0)
+            return qp.expval(qp.Z(0))
 
         pipeline = CircuitPipeline(
             stages=[

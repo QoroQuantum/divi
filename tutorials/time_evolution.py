@@ -13,7 +13,7 @@ This tutorial demonstrates:
 
 import math
 
-import pennylane as qml
+import pennylane as qp
 
 from divi.hamiltonians import QDrift
 from divi.qprog import TimeEvolution
@@ -37,7 +37,7 @@ if __name__ == "__main__":
     # Because X₀ and X₁ commute, each qubit evolves independently:
     #   e^{-iπ/2 X} |0⟩ = -i|1⟩
     # so the final state is |11⟩ with certainty.
-    h1 = qml.PauliX(0) + qml.PauliX(1)
+    h1 = qp.PauliX(0) + qp.PauliX(1)
     te_probs = TimeEvolution(
         hamiltonian=h1,
         time=math.pi / 2,
@@ -52,9 +52,9 @@ if __name__ == "__main__":
     # H = X₀ + Z₀ (single-qubit), observable = Z₀, t = 0.6.
     # Exact: ⟨Z₀⟩ = cos²(√2 · t) ≈ 0.435 (derivable from H = √2 · n̂·σ̂).
     # Trotter error + shot noise cause a small deviation.
-    h2 = qml.PauliX(0) + qml.PauliZ(0)
+    h2 = qp.PauliX(0) + qp.PauliZ(0)
     t2 = 0.6
-    observable = qml.PauliZ(0)
+    observable = qp.PauliZ(0)
     te_expval = TimeEvolution(
         hamiltonian=h2,
         time=t2,
@@ -85,7 +85,7 @@ if __name__ == "__main__":
         sampling_strategy="weighted",
         seed=7,
     )
-    h3 = qml.PauliX(0) + 0.5 * qml.PauliZ(0) + qml.PauliX(1)
+    h3 = qp.PauliX(0) + 0.5 * qp.PauliZ(0) + qp.PauliX(1)
     te_qdrift = TimeEvolution(
         hamiltonian=h3,
         trotterization_strategy=qdrift,

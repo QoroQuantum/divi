@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 import numpy as np
 import numpy.typing as npt
-import pennylane as qml
+import pennylane as qp
 import pennylane.qaoa as pqaoa
 import sympy
 from scipy.optimize import linear_sum_assignment
@@ -917,7 +917,7 @@ def create_cvrp_hubo_binary(
 def build_binary_superposition_ops(
     config: BinaryBlockConfig,
     wires: Sequence[int],
-) -> list[qml.operation.Operator]:
+) -> list[qp.operation.Operator]:
     """Prepare a uniform superposition over valid slot values.
 
     For each slot of ``bits_per_slot`` qubits, prepares a Hadamard
@@ -936,9 +936,9 @@ def build_binary_superposition_ops(
     Returns:
         List of PennyLane operations.
     """
-    ops: list[qml.operation.Operator] = []
+    ops: list[qp.operation.Operator] = []
     for w in wires:
-        ops.append(qml.Hadamard(wires=w))
+        ops.append(qp.Hadamard(wires=w))
     return ops
 
 
@@ -946,7 +946,7 @@ def build_binary_mixer_ops(
     beta: sympy.Expr | float,
     config: BinaryBlockConfig,
     wires: Sequence[int],
-) -> list[qml.operation.Operator]:
+) -> list[qp.operation.Operator]:
     """Build a mixer for binary-encoded slots.
 
     Uses an X-mixer (RX rotation) on every qubit. This is the standard
@@ -963,9 +963,9 @@ def build_binary_mixer_ops(
     Returns:
         List of PennyLane operations.
     """
-    ops: list[qml.operation.Operator] = []
+    ops: list[qp.operation.Operator] = []
     for w in wires:
-        ops.append(qml.RX(phi=2 * beta, wires=w))
+        ops.append(qp.RX(phi=2 * beta, wires=w))
     return ops
 
 
@@ -1325,11 +1325,11 @@ class _RoutingProblemBase(QAOAProblem):
             self._mixer_hamiltonian = pqaoa.x_mixer(range(self._ising.n_qubits))
 
     @property
-    def cost_hamiltonian(self) -> qml.operation.Operator:
+    def cost_hamiltonian(self) -> qp.operation.Operator:
         return self._ising.cost_hamiltonian
 
     @property
-    def mixer_hamiltonian(self) -> qml.operation.Operator:
+    def mixer_hamiltonian(self) -> qp.operation.Operator:
         return self._mixer_hamiltonian
 
     @property

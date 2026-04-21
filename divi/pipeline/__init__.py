@@ -19,6 +19,7 @@ from divi.pipeline._dry_run import (
     dry_run_pipeline,
     format_dry_run,
 )
+from divi.pipeline._shot_distribution import ShotDistStrategy
 from divi.pipeline.abc import (
     ContractViolation,
     DiviPerformanceWarning,
@@ -39,6 +40,7 @@ __all__ = [
     "PipelineEnv",
     "PipelineResult",
     "PipelineTrace",
+    "ShotDistStrategy",
     "SpecStage",
     "Stage",
     "StageInfo",

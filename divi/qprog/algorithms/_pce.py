@@ -8,19 +8,23 @@ from warnings import warn
 
 import numpy as np
 import numpy.typing as npt
-import pennylane as qml
+import pennylane as qp
 from qiskit.circuit import ParameterVector
 
 from divi.circuits import MetaCircuit, qscript_to_meta
-from divi.hamiltonians import normalize_binary_polynomial_problem
+from divi.hamiltonians import (
+    BinaryPolynomialProblem,
+    HUBOProblemTypes,
+    QUBOProblemTypes,
+    _evaluate_binary_polynomial,
+    compile_problem,
+    normalize_binary_polynomial_problem,
+)
 from divi.pipeline import CircuitPipeline
 from divi.pipeline.stages import CircuitSpecStage, ParameterBindingStage, PCECostStage
-from divi.pipeline.stages._numba_kernels import compile_problem
-from divi.pipeline.stages._pce_cost_stage import _evaluate_binary_polynomial
 from divi.qprog.algorithms._numba_kernels import _popcount_parity_jit
 from divi.qprog.algorithms._vqe import VQE
 from divi.qprog.variational_quantum_algorithm import SolutionEntry
-from divi.typing import BinaryPolynomialProblem, HUBOProblemTypes, QUBOProblemTypes
 
 
 def _fast_popcount_parity(arr_input: npt.NDArray[np.integer]) -> npt.NDArray[np.uint8]:
@@ -191,8 +195,8 @@ class PCE(VQE):
 
         # Placeholder Hamiltonian required by VQE; we care about the measurement
         # probability distribution, and Z-basis measurements provide it.
-        placeholder_hamiltonian = qml.Hamiltonian(
-            [1.0] * self.n_qubits, [qml.PauliZ(i) for i in range(self.n_qubits)]
+        placeholder_hamiltonian = qp.Hamiltonian(
+            [1.0] * self.n_qubits, [qp.PauliZ(i) for i in range(self.n_qubits)]
         )
         # PCE replaces the cost pipeline with PCECostStage (a standalone
         # BundleStage), so VQE's grouping_strategy is irrelevant for cost
@@ -255,14 +259,14 @@ class PCE(VQE):
         flat_params = tuple(weights.flatten())
         return {
             "cost_circuit": qscript_to_meta(
-                qml.tape.QuantumScript(
-                    ops=ops, measurements=[qml.expval(self._cost_hamiltonian)]
+                qp.tape.QuantumScript(
+                    ops=ops, measurements=[qp.expval(self._cost_hamiltonian)]
                 ),
                 precision=self._precision,
                 parameter_order=flat_params,
             ),
             "meas_circuit": qscript_to_meta(
-                qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()]),
+                qp.tape.QuantumScript(ops=ops, measurements=[qp.probs()]),
                 precision=self._precision,
                 parameter_order=flat_params,
             ),

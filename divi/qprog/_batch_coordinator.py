@@ -20,7 +20,8 @@ from typing import NamedTuple
 
 from divi.backends import CircuitRunner, JobStatus
 from divi.backends._execution_result import ExecutionResult
-from divi.qprog.exceptions import _CancelledError
+from divi.backends._shot_allocation import from_wire, to_wire
+from divi.exceptions import ExecutionCancelledError
 from divi.reporting import BATCH_COLORS
 
 logger = logging.getLogger(__name__)
@@ -197,13 +198,13 @@ class _BatchCoordinator:
             Tuple of (demuxed results list, per-program runtime share).
 
         Raises:
-            _CancelledError: If the coordinator has been cancelled.
+            ExecutionCancelledError: If the coordinator has been cancelled.
         """
         future: Future = Future()
 
         with self._lock:
             if self._cancelled.is_set():
-                raise _CancelledError("Batch coordinator has been cancelled.")
+                raise ExecutionCancelledError("Batch coordinator has been cancelled.")
 
             self._pending[program_key] = _PendingEntry(
                 prefixed_circuits, kwargs, future
@@ -304,27 +305,99 @@ class _BatchCoordinator:
         """Merge circuits from all programs and build unified submit kwargs.
 
         When all programs share identical kwargs the circuits are merged in
-        batch iteration order and the common kwargs are returned directly.
+        batch iteration order and the common kwargs are returned directly,
+        with one exception: ``shot_groups`` indices are per-program and must
+        be re-offset to point into the merged circuit list.
 
         When programs have different ``ham_ops``, circuits are **reordered** so
         that circuits sharing the same ``ham_ops`` are contiguous.  The
         individual ``ham_ops`` strings are combined with ``|`` and a
         ``circuit_ham_map`` is computed so the backend routes each group to the
-        correct circuit slice.
+        correct circuit slice. Combining heterogeneous ``ham_ops`` with
+        ``shot_groups`` is currently rejected because the circuit reordering
+        would require reshuffling the per-circuit shot allocation in lockstep.
 
         Returns:
             ``(merged_circuits, submit_kwargs)``
         """
         all_kwargs = [entry.kwargs for entry in batch.values()]
 
-        # Fast path: all kwargs identical → simple merge, no reordering.
+        # Fast path: all kwargs identical → simple merge.
         if all(kw == all_kwargs[0] for kw in all_kwargs):
             merged: dict[str, str] = {}
+            offset = 0
+            template_shot_groups = all_kwargs[0].get("shot_groups")
+            merged_ranges = [] if template_shot_groups is not None else None
             for entry in batch.values():
+                if merged_ranges is not None:
+                    for r in from_wire(entry.kwargs["shot_groups"]):
+                        merged_ranges.append(r.shift(offset))
                 merged.update(entry.circuits)
-            return merged, dict(all_kwargs[0])
+                offset += len(entry.circuits)
 
-        # Slow path: different ham_ops values across programs.
+            merged_kw = dict(all_kwargs[0])
+            if merged_ranges is not None:
+                merged_kw["shot_groups"] = to_wire(merged_ranges)
+            return merged, merged_kw
+
+        # Slow path: kwargs differ across programs.  We support two
+        # independent forms of variation: per-program ``shot_groups`` (sampling
+        # mode) and per-program ``ham_ops`` (expval mode). Combining the two
+        # would require reshuffling the per-circuit shot allocation when
+        # circuits are reordered by observable group, which is out of scope.
+        any_shot_groups = any(
+            entry.kwargs.get("shot_groups") is not None for entry in batch.values()
+        )
+        any_ham_ops = any(
+            entry.kwargs.get("ham_ops") is not None for entry in batch.values()
+        )
+        if any_shot_groups and any_ham_ops:
+            raise ValueError(
+                "Cannot merge programs that combine per-program 'shot_groups' "
+                "with heterogeneous 'ham_ops'. Submit such programs in "
+                "separate batches."
+            )
+
+        if any_shot_groups:
+            # Programs differ only in shot_groups (sampling mode). Merge
+            # circuits in batch order and re-offset each program's
+            # shot_groups indices into the merged circuit list.
+            for entry in batch.values():
+                if entry.kwargs.get("shot_groups") is None:
+                    raise ValueError(
+                        "Cannot merge a mix of programs with and without "
+                        "'shot_groups' in the same sub-batch. Either set "
+                        "shot_distribution on every program or none."
+                    )
+
+            # Guard against future kwargs silently diverging: the template
+            # below uses all_kwargs[0], so any other differing key would be
+            # discarded without notice.
+            def _without_shot_groups(kw: dict) -> dict:
+                return {k: v for k, v in kw.items() if k != "shot_groups"}
+
+            template_other = _without_shot_groups(all_kwargs[0])
+            for kw in all_kwargs[1:]:
+                if _without_shot_groups(kw) != template_other:
+                    raise ValueError(
+                        "Cannot merge programs whose kwargs differ in keys "
+                        "other than 'shot_groups'. Submit such programs in "
+                        "separate batches."
+                    )
+
+            merged = {}
+            merged_ranges = []
+            offset = 0
+            for entry in batch.values():
+                for r in from_wire(entry.kwargs["shot_groups"]):
+                    merged_ranges.append(r.shift(offset))
+                merged.update(entry.circuits)
+                offset += len(entry.circuits)
+
+            merged_kw = dict(all_kwargs[0])
+            merged_kw["shot_groups"] = to_wire(merged_ranges)
+            return merged, merged_kw
+
         # Group by ham_ops so circuits with the same observable are contiguous.
         ham_to_programs: dict[str, list[str]] = {}
         for prog_key, entry in batch.items():
@@ -388,7 +461,8 @@ class _BatchCoordinator:
         try:
             if self._cancelled.is_set():
                 _fail_futures(
-                    batch, _CancelledError("Batch coordinator has been cancelled.")
+                    batch,
+                    ExecutionCancelledError("Batch coordinator has been cancelled."),
                 )
                 return
 
@@ -421,10 +495,10 @@ class _BatchCoordinator:
             with self._lock:
                 self._total_runtime += total_runtime
 
-        except _CancelledError:
+        except ExecutionCancelledError:
             self._send_batch_progress(flush_group, final_status="Cancelled")
             _fail_futures(
-                batch, _CancelledError("Batch coordinator has been cancelled.")
+                batch, ExecutionCancelledError("Batch coordinator has been cancelled.")
             )
         except Exception as exc:
             self._send_batch_progress(flush_group, final_status="Failed")
@@ -457,7 +531,7 @@ class _BatchCoordinator:
         flush_group.execution_result = execution_result
 
         if self._cancelled.is_set():
-            raise _CancelledError("Batch coordinator has been cancelled.")
+            raise ExecutionCancelledError("Batch coordinator has been cancelled.")
 
         # --- Collect results (sync or async) ---
         runtime = 0.0
@@ -540,7 +614,7 @@ class _BatchCoordinator:
                 f"Merged batch job {execution_result.job_id} has failed."
             )
         if status == JobStatus.CANCELLED:
-            raise _CancelledError(
+            raise ExecutionCancelledError(
                 f"Merged batch job {execution_result.job_id} was cancelled."
             )
         if status != JobStatus.COMPLETED:
@@ -583,7 +657,7 @@ class _BatchCoordinator:
         with self._lock:
             _fail_futures(
                 self._pending,
-                _CancelledError("Batch coordinator has been cancelled."),
+                ExecutionCancelledError("Batch coordinator has been cancelled."),
             )
             self._pending.clear()
 

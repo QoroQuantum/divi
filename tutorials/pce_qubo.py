@@ -12,11 +12,11 @@ from functools import partial
 
 import dimod
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 
+from divi.hamiltonians import qubo_to_matrix
 from divi.qprog import PCE, GenericLayerAnsatz
 from divi.qprog.optimizers import PymooMethod, PymooOptimizer
-from divi.typing import qubo_to_matrix
 from tutorials._backend import get_backend
 
 
@@ -30,8 +30,8 @@ def main():
     layers = 2
 
     ansatz = GenericLayerAnsatz(
-        gate_sequence=[qml.RY, qml.RZ],
-        entangler=qml.CNOT,
+        gate_sequence=[qp.RY, qp.RZ],
+        entangler=qp.CNOT,
         entangling_layout="all-to-all",
     )
 

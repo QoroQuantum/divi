@@ -24,7 +24,7 @@ To run specific test files:
 
 .. code-block:: bash
 
-   uv run pytest tests/test_hamiltonians.py
+   uv run pytest tests/hamiltonians/
 
 **Parallel Testing** (Recommended for CI/Large Test Suites)
 
@@ -65,17 +65,12 @@ Tests requiring cloud API access are conditionally executed:
 Test Structure
 --------------
 
-Tests are organized in the ``tests/`` directory:
+Tests under ``tests/`` mirror the ``divi/`` package layout. The only
+non-obvious split is within ``tests/qprog/``:
 
-- ``tests/qprog/problems/`` - Tests for ``QAOAProblem`` subclasses (one file per problem domain)
-- ``tests/qprog/algorithms/`` - Tests for algorithm-generic behavior (QAOA pipeline, QDrift, VQE, PCE)
-- ``tests/qprog/workflows/`` - Tests for workflow orchestrators (``PartitioningProgramEnsemble``, ``VQEHyperparameterSweep``)
-- ``tests/circuits/`` - Tests for circuit operations and QEM
-- ``tests/backends/`` - Tests for backend implementations
-- ``tests/pipeline/`` - Tests for the circuit pipeline and stages
-- ``tests/reporting/`` - Tests for progress reporters
-- ``tests/test_hamiltonians.py`` - Tests for Hamiltonian utilities and Trotterization
-- ``tests/conftest.py`` - Shared fixtures and configuration
+- ``tests/qprog/problems/`` - one file per ``QAOAProblem`` subclass
+- ``tests/qprog/algorithms/`` - algorithm-generic behavior (QAOA pipeline, QDrift, VQE, PCE)
+- ``tests/qprog/workflows/`` - workflow orchestrators (``PartitioningProgramEnsemble``, ``VQEHyperparameterSweep``)
 
 **Key Fixtures Available:**
 
@@ -163,14 +158,14 @@ or in a shared fixture:
 
    import numpy as np
    import pytest
-   import pennylane as qml
+   import pennylane as qp
    from divi.qprog import VQE
    from divi.qprog.algorithms import HartreeFockAnsatz
 
    def test_vqe_initialization(dummy_simulator):
        """Test that VQE initializes correctly with mock backend."""
        # Minimal H2 molecule for testing (or use a fixture from conftest)
-       mol = qml.qchem.Molecule(
+       mol = qp.qchem.Molecule(
            symbols=["H", "H"],
            coordinates=np.array([[0.0, 0.0, -0.6614], [0.0, 0.0, 0.6614]]),
        )
