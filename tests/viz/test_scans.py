@@ -279,7 +279,7 @@ class TestDirectAPI:
         center = np.zeros(2)
 
         with pytest.raises(
-            NotImplementedError, match="IterativeQAOA varies circuit depth"
+            NotImplementedError, match="IterativeQAOA varies its parameter space"
         ):
             scan_1d(program, center=center, n_points=3)
 

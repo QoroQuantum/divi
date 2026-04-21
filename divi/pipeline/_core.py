@@ -12,6 +12,7 @@ from rich.console import Console
 from rich.tree import Tree
 
 from divi.backends import JobStatus
+from divi.exceptions import ExecutionCancelledError
 from divi.pipeline._compilation import _collapse_to_parent_results, _compile_batch
 from divi.pipeline._postprocessing import (
     _counts_to_expvals,
@@ -95,9 +96,6 @@ def _wait_for_async_result(backend, execution_result, env):
     if job_id is None:
         raise ValueError("ExecutionResult must have a job_id for async completion")
 
-    # Lazy import to avoid circular dependency: pipeline → qprog → pipeline
-    from divi.qprog.exceptions import _CancelledError
-
     # Build the poll callback if reporter is available
     progress_callback = None
     if env.reporter is not None:
@@ -133,10 +131,10 @@ def _wait_for_async_result(backend, execution_result, env):
         raise RuntimeError(f"Job {job_id} has failed")
 
     if status == JobStatus.CANCELLED:
-        # If cancellation was requested (e.g., by ProgramEnsemble), raise _CancelledError
+        # If cancellation was requested (e.g., by ProgramEnsemble), raise ExecutionCancelledError
         # so it's handled gracefully. Otherwise, raise RuntimeError for unexpected cancellation.
         if env.cancellation_event and env.cancellation_event.is_set():
-            raise _CancelledError(f"Job {job_id} was cancelled")
+            raise ExecutionCancelledError(f"Job {job_id} was cancelled")
         raise RuntimeError(f"Job {job_id} was cancelled")
 
     if status != JobStatus.COMPLETED:

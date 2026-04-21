@@ -4,7 +4,7 @@
 
 import pytest
 
-from divi.circuits import is_valid_qasm, validate_qasm, validate_qasm_count_qubits
+from divi.qasm import is_valid_qasm, validate_qasm, validate_qasm_count_qubits
 
 VALID_QASM = {
     "argvalues": [

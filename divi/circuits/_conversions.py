@@ -356,10 +356,9 @@ def sparse_pauli_op_to_ham_string(op: SparsePauliOp) -> str:
     """Render a :class:`SparsePauliOp` as the ``;``-separated dense Pauli
     string format used by backend ``ham_ops`` artifacts.
 
-    The backend contract is big-endian (qubit 0 on the left), matching the
-    PennyLane-based :func:`~divi.hamiltonians.convert_hamiltonian_to_pauli_string`
-    output.  Coefficients are intentionally dropped — the backend computes
-    ``<ψ|P|ψ>`` per term and the caller recombines with coefficients.
+    The backend contract is big-endian (qubit 0 on the left).  Coefficients
+    are intentionally dropped — the backend computes ``<ψ|P|ψ>`` per term and
+    the caller recombines with coefficients.
     """
     return ";".join(label[::-1] for label in op.paulis.to_labels())
 

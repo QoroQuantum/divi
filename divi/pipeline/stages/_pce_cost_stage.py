@@ -10,6 +10,13 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
+from divi.hamiltonians import (
+    BinaryPolynomialProblem,
+    CompiledBinaryPolynomial,
+    _compute_hard_cvar_energy_jit,
+    _evaluate_binary_polynomial,
+    compile_problem,
+)
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
@@ -19,18 +26,6 @@ from divi.pipeline.abc import (
     ResultFormat,
     StageToken,
 )
-from divi.pipeline.stages._numba_kernels import (
-    _compute_hard_cvar_energy_jit,
-    _eval_poly_1d_jit,
-    _eval_poly_2d_jit,
-    compile_problem,
-)
-from divi.typing import BinaryPolynomialProblem
-
-# Type alias for the tuple returned by ``compile_problem``.
-CompiledProblem = tuple[
-    npt.NDArray[np.int32], npt.NDArray[np.int32], npt.NDArray[np.float64], float
-]
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -40,62 +35,8 @@ PCE_MEAS_AXIS = "pce_meas"
 # Axis name for the single Z-basis measurement circuit emitted by PCECostStage.
 
 # ---------------------------------------------------------------------------
-# PCE energy helpers
+# PCE energy reducers (parity → polynomial energy aggregation)
 # ---------------------------------------------------------------------------
-
-
-def _evaluate_binary_polynomial(
-    x_vals: npt.NDArray[np.float64],
-    problem: BinaryPolynomialProblem,
-    _compiled: CompiledProblem | None = None,
-) -> npt.NDArray[np.float64] | float:
-    """Evaluate binary polynomial energy for one or many assignments.
-
-    Degree-1 terms are evaluated as ``c * x_i²`` rather than ``c * x_i`` to
-    undo the linearization (``x_i² → x_i``) applied during polynomial
-    normalization.  This is a no-op for binary values (``x² = x``) but
-    produces correct energies for continuous soft-relaxed values.
-
-    Args:
-        x_vals: Variable assignments. Shape ``(n_vars,)`` for one assignment
-            or ``(n_vars, n_states)`` for many.
-        problem: Canonical binary polynomial problem.
-        _compiled: Pre-compiled CSR arrays from :func:`compile_problem`.
-            When provided the Numba JIT kernel is used instead of the
-            Python loop.
-    """
-    if _compiled is not None:
-        term_indices, term_offsets, coeffs, constant = _compiled
-        x = np.ascontiguousarray(x_vals, dtype=np.float64)
-        if x.ndim == 1:
-            return float(
-                _eval_poly_1d_jit(x, term_indices, term_offsets, coeffs, constant)
-            )
-        return _eval_poly_2d_jit(x, term_indices, term_offsets, coeffs, constant)
-
-    is_single = x_vals.ndim == 1
-    energy = 0.0 if is_single else np.zeros(x_vals.shape[1], dtype=np.float64)
-
-    for term, coeff in problem.terms.items():
-        coeff = float(coeff)
-        if coeff == 0:
-            continue
-        if len(term) == 0:
-            energy = energy + coeff
-            continue
-
-        indices = [problem.variable_to_idx[var] for var in term]
-        if len(term) == 1:
-            # De-linearise: evaluate as c * x_i² instead of c * x_i.
-            idx = indices[0]
-            monomial = x_vals[idx] ** 2 if is_single else x_vals[idx, :] ** 2
-        elif is_single:
-            monomial = np.prod(x_vals[indices])
-        else:
-            monomial = np.prod(x_vals[indices, :], axis=0)
-        energy = energy + (coeff * monomial)
-
-    return float(energy) if is_single else energy
 
 
 def _compute_soft_energy(
@@ -103,7 +44,7 @@ def _compute_soft_energy(
     probs: npt.NDArray[np.float64],
     alpha: float,
     problem: BinaryPolynomialProblem,
-    _compiled: CompiledProblem | None = None,
+    _compiled: CompiledBinaryPolynomial | None = None,
 ) -> float:
     """Compute the relaxed (soft) energy from parity expectations."""
     mean_parities = parities.dot(probs)
@@ -118,7 +59,7 @@ def _compute_hard_cvar_energy(
     total_shots: float,
     problem: BinaryPolynomialProblem,
     alpha_cvar: float = 0.25,
-    _compiled: CompiledProblem | None = None,
+    _compiled: CompiledBinaryPolynomial | None = None,
 ) -> float:
     """Compute CVaR energy from sampled hard assignments."""
     x_vals = np.ascontiguousarray(1.0 - parities.astype(np.float64))

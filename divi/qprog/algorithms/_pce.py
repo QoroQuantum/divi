@@ -12,15 +12,19 @@ import pennylane as qml
 from qiskit.circuit import ParameterVector
 
 from divi.circuits import MetaCircuit, qscript_to_meta
-from divi.hamiltonians import normalize_binary_polynomial_problem
+from divi.hamiltonians import (
+    BinaryPolynomialProblem,
+    HUBOProblemTypes,
+    QUBOProblemTypes,
+    _evaluate_binary_polynomial,
+    compile_problem,
+    normalize_binary_polynomial_problem,
+)
 from divi.pipeline import CircuitPipeline
 from divi.pipeline.stages import CircuitSpecStage, ParameterBindingStage, PCECostStage
-from divi.pipeline.stages._numba_kernels import compile_problem
-from divi.pipeline.stages._pce_cost_stage import _evaluate_binary_polynomial
 from divi.qprog.algorithms._numba_kernels import _popcount_parity_jit
 from divi.qprog.algorithms._vqe import VQE
 from divi.qprog.variational_quantum_algorithm import SolutionEntry
-from divi.typing import BinaryPolynomialProblem, HUBOProblemTypes, QUBOProblemTypes
 
 
 def _fast_popcount_parity(arr_input: npt.NDArray[np.integer]) -> npt.NDArray[np.uint8]:

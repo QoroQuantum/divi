@@ -113,7 +113,6 @@ Or pin a specific nightly by date:
    api_reference/reporting
    api_reference/visualization
    api_reference/hamiltonians
-   api_reference/types
 
 .. toctree::
    :maxdepth: 1

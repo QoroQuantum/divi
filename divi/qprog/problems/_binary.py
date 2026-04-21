@@ -15,9 +15,13 @@ import pennylane.qaoa as pqaoa
 import scipy.sparse as sps
 from dimod import BinaryQuadraticModel
 
-from divi.hamiltonians import normalize_binary_polynomial_problem, qubo_to_ising
+from divi.hamiltonians import (
+    HUBOProblemTypes,
+    QUBOProblemTypes,
+    normalize_binary_polynomial_problem,
+    qubo_to_ising,
+)
 from divi.qprog.problems._base import QAOAProblem
-from divi.typing import HUBOProblemTypes, QUBOProblemTypes
 
 
 def _merge_substates(_, substates):

@@ -14,9 +14,9 @@ import dimod
 import numpy as np
 import pennylane as qml
 
+from divi.hamiltonians import qubo_to_matrix
 from divi.qprog import PCE, GenericLayerAnsatz
 from divi.qprog.optimizers import PymooMethod, PymooOptimizer
-from divi.typing import qubo_to_matrix
 from tutorials._backend import get_backend
 
 

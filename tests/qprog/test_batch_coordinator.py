@@ -11,6 +11,7 @@ from threading import Barrier, Event, Thread
 import pytest
 
 from divi.backends import CircuitRunner, ExecutionResult
+from divi.exceptions import ExecutionCancelledError
 from divi.qprog._batch_coordinator import (
     _TAG_SEP,
     BatchConfig,
@@ -22,7 +23,6 @@ from divi.qprog._batch_coordinator import (
     _PendingEntry,
     _ProxyBackend,
 )
-from divi.qprog.exceptions import _CancelledError
 
 
 class FakeSyncBackend(CircuitRunner):
@@ -731,7 +731,7 @@ class TestCancellation:
         coord.register_program("p1")
         coord.cancel()
 
-        with pytest.raises(_CancelledError):
+        with pytest.raises(ExecutionCancelledError):
             coord.submit("p1", {"c": "q"})
 
     def test_cancel_resolves_pending_futures(self):
@@ -745,7 +745,7 @@ class TestCancellation:
 
         coord.cancel()
 
-        with pytest.raises(_CancelledError):
+        with pytest.raises(ExecutionCancelledError):
             entry.future.result(timeout=0)
 
     def test_shutdown_clears_active_programs(self):
@@ -772,7 +772,7 @@ class TestCancellation:
             barrier.wait(timeout=5)
             try:
                 result_holder["p1"] = coord.submit("p1", {f"p1{_TAG_SEP}c1": "q"})
-            except _CancelledError as e:
+            except ExecutionCancelledError as e:
                 error_holder["p1"] = e
 
         t = Thread(target=_submit_p1)

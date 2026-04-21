@@ -21,7 +21,7 @@ from typing import NamedTuple
 from divi.backends import CircuitRunner, JobStatus
 from divi.backends._execution_result import ExecutionResult
 from divi.backends._shot_allocation import from_wire, to_wire
-from divi.qprog.exceptions import _CancelledError
+from divi.exceptions import ExecutionCancelledError
 from divi.reporting import BATCH_COLORS
 
 logger = logging.getLogger(__name__)
@@ -198,13 +198,13 @@ class _BatchCoordinator:
             Tuple of (demuxed results list, per-program runtime share).
 
         Raises:
-            _CancelledError: If the coordinator has been cancelled.
+            ExecutionCancelledError: If the coordinator has been cancelled.
         """
         future: Future = Future()
 
         with self._lock:
             if self._cancelled.is_set():
-                raise _CancelledError("Batch coordinator has been cancelled.")
+                raise ExecutionCancelledError("Batch coordinator has been cancelled.")
 
             self._pending[program_key] = _PendingEntry(
                 prefixed_circuits, kwargs, future
@@ -448,7 +448,8 @@ class _BatchCoordinator:
         try:
             if self._cancelled.is_set():
                 _fail_futures(
-                    batch, _CancelledError("Batch coordinator has been cancelled.")
+                    batch,
+                    ExecutionCancelledError("Batch coordinator has been cancelled."),
                 )
                 return
 
@@ -481,10 +482,10 @@ class _BatchCoordinator:
             with self._lock:
                 self._total_runtime += total_runtime
 
-        except _CancelledError:
+        except ExecutionCancelledError:
             self._send_batch_progress(flush_group, final_status="Cancelled")
             _fail_futures(
-                batch, _CancelledError("Batch coordinator has been cancelled.")
+                batch, ExecutionCancelledError("Batch coordinator has been cancelled.")
             )
         except Exception as exc:
             self._send_batch_progress(flush_group, final_status="Failed")
@@ -517,7 +518,7 @@ class _BatchCoordinator:
         flush_group.execution_result = execution_result
 
         if self._cancelled.is_set():
-            raise _CancelledError("Batch coordinator has been cancelled.")
+            raise ExecutionCancelledError("Batch coordinator has been cancelled.")
 
         # --- Collect results (sync or async) ---
         runtime = 0.0
@@ -600,7 +601,7 @@ class _BatchCoordinator:
                 f"Merged batch job {execution_result.job_id} has failed."
             )
         if status == JobStatus.CANCELLED:
-            raise _CancelledError(
+            raise ExecutionCancelledError(
                 f"Merged batch job {execution_result.job_id} was cancelled."
             )
         if status != JobStatus.COMPLETED:
@@ -643,7 +644,7 @@ class _BatchCoordinator:
         with self._lock:
             _fail_futures(
                 self._pending,
-                _CancelledError("Batch coordinator has been cancelled."),
+                ExecutionCancelledError("Batch coordinator has been cancelled."),
             )
             self._pending.clear()
 

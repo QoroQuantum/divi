@@ -24,6 +24,7 @@ from rich.console import Console
 from divi.backends import CircuitRunner
 from divi.backends._config import ExecutionConfig, JobConfig
 from divi.backends._execution_result import ExecutionResult
+from divi.backends._pauli_serde import compress_ham_ops
 from divi.backends._results_processing import _decode_qh1_b64
 from divi.backends._shot_allocation import (
     from_wire,
@@ -41,9 +42,11 @@ from divi.backends._systems import (
     update_qpu_systems_cache,
     update_simulator_clusters_cache,
 )
-from divi.circuits import is_valid_qasm, validate_qasm
-from divi.circuits._qasm_validation import _format_validation_error_with_context
-from divi.hamiltonians import compress_ham_ops
+from divi.qasm import (
+    _format_validation_error_with_context,
+    is_valid_qasm,
+    validate_qasm,
+)
 
 API_URL = "https://app.qoroquantum.net/api"
 _MAX_PAYLOAD_SIZE_MB = 0.95

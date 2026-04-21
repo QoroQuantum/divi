@@ -14,9 +14,8 @@ import numpy as np
 import numpy.typing as npt
 
 from divi.backends import CircuitRunner
-from divi.circuits import MetaCircuit
+from divi.circuits import AxisLabel, MetaCircuit
 from divi.reporting import ProgressReporter
-from divi.typing import AxisLabel
 
 __all__ = [
     "BundleStage",

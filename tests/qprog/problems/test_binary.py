@@ -10,6 +10,7 @@ import pytest
 import scipy.sparse as sps
 
 from divi.backends import CircuitRunner
+from divi.hamiltonians import BinaryPolynomialProblem
 from divi.qprog import (
     PCE,
     QAOA,
@@ -23,7 +24,6 @@ from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.problems import BinaryOptimizationProblem
 from divi.qprog.problems._binary import _merge_substates, _sanitize_problem_input
 from divi.qprog.workflows import PartitioningProgramEnsemble
-from divi.typing import BinaryPolynomialProblem
 from tests.qprog.problems._helpers import (
     HUBO_CUBIC,
     QUBO_MATRIX,

@@ -8,7 +8,7 @@ from abc import abstractmethod
 from datetime import datetime
 from pathlib import Path
 from queue import Queue
-from typing import Any, Literal, NamedTuple
+from typing import Any, ClassVar, Literal, NamedTuple
 from warnings import warn
 
 import numpy as np
@@ -19,6 +19,7 @@ from scipy.optimize import OptimizeResult
 
 from divi.backends import CircuitRunner
 from divi.circuits import MetaCircuit
+from divi.exceptions import ExecutionCancelledError
 from divi.pipeline import CircuitPipeline, PipelineEnv, Stage
 from divi.pipeline.stages import (
     CircuitSpecStage,
@@ -37,7 +38,6 @@ from divi.qprog.checkpointing import (
     resolve_checkpoint_path,
 )
 from divi.qprog.early_stopping import EarlyStopping, StopReason
-from divi.qprog.exceptions import _CancelledError
 from divi.qprog.optimizers import (
     MonteCarloOptimizer,
     Optimizer,
@@ -255,6 +255,10 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         _meta_circuit_factories (dict): Lazily-built mapping of circuit names to MetaCircuit factories.
     """
 
+    # Subclasses whose parameter space varies during optimization (e.g. depth schedules)
+    # should set this to False so ``divi.viz`` fixed-parameter scans reject them.
+    _supports_fixed_param_scans: ClassVar[bool] = True
+
     def __init__(
         self,
         backend: CircuitRunner,
@@ -293,7 +297,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 group. Options: ``"qwc"`` (qubit-wise-commuting — most
                 compact), ``"wires"`` (group by support wires), or ``None``
                 (one circuit per term). Defaults to ``"qwc"``.
-            shot_distribution (ShotDistStrategy | None): Focus the backend's
+            shot_distribution (str or callable, optional): Focus the backend's
                 shot budget on the Hamiltonian terms that matter most.
                 Without this option, every measurement group is sampled with
                 the backend's full shot count, even tiny terms with little
@@ -1282,7 +1286,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 self.save_state(checkpoint_config)
 
             if self._cancellation_event and self._cancellation_event.is_set():
-                raise _CancelledError("Cancellation requested by batch.")
+                raise ExecutionCancelledError("Cancellation requested by batch.")
 
             # --- Early stopping ---
             if self._early_stopping is not None:
@@ -1323,8 +1327,8 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 max_iterations=self.max_iterations,
                 rng=self._rng,
             )
-        except (_CancelledError, StopIteration) as exc:
-            if isinstance(exc, _CancelledError):
+        except (ExecutionCancelledError, StopIteration) as exc:
+            if isinstance(exc, ExecutionCancelledError):
                 message = "Optimization cancelled."
             else:
                 reason = self._stop_reason.value if self._stop_reason else "Stopped"
@@ -1338,7 +1342,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 message=message,
             )
 
-            if isinstance(exc, _CancelledError):
+            if isinstance(exc, ExecutionCancelledError):
                 return self
         else:
             self.optimize_result.success = True

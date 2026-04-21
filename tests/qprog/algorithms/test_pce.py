@@ -6,11 +6,11 @@ import numpy as np
 import pennylane as qml
 import pytest
 
+from divi.hamiltonians import _evaluate_binary_polynomial
 from divi.pipeline.stages import CircuitSpecStage, ParameterBindingStage, PCECostStage
 from divi.pipeline.stages._pce_cost_stage import (
     _compute_hard_cvar_energy,
     _compute_soft_energy,
-    _evaluate_binary_polynomial,
 )
 from divi.qprog import PCE, MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
 from divi.qprog.algorithms import GenericLayerAnsatz

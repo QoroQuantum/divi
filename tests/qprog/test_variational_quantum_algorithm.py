@@ -13,10 +13,10 @@ from scipy.optimize import OptimizeResult
 
 from divi.circuits import dag_to_qasm_body, qscript_to_meta
 from divi.circuits._conversions import _qscript_to_dag
+from divi.exceptions import ExecutionCancelledError
 from divi.pipeline.stages import CircuitSpecStage, MeasurementStage
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.early_stopping import EarlyStopping, StopReason
-from divi.qprog.exceptions import _CancelledError
 from divi.qprog.optimizers import MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
 from divi.qprog.variational_quantum_algorithm import (
     VariationalQuantumAlgorithm,
@@ -537,7 +537,7 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         mock_event = mocker.MagicMock()
         mock_event.is_set.return_value = True
         program._cancellation_event = mock_event
-        program.optimizer.optimize.side_effect = _CancelledError(
+        program.optimizer.optimize.side_effect = ExecutionCancelledError(
             "Cancellation requested"
         )
 

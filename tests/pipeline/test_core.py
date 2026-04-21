@@ -9,6 +9,7 @@ from threading import Event
 import pytest
 
 from divi.backends import ExecutionResult, JobStatus
+from divi.exceptions import ExecutionCancelledError
 from divi.pipeline import (
     CircuitPipeline,
     PipelineEnv,
@@ -25,7 +26,6 @@ from divi.pipeline._core import (
     _wait_for_async_result,
 )
 from divi.pipeline.stages import MeasurementStage
-from divi.qprog.exceptions import _CancelledError
 
 from .helpers import (
     DummySpecStage,
@@ -424,7 +424,7 @@ class TestWaitForAsyncResult:
     """Tests for _wait_for_async_result: polling and cancellation handling."""
 
     def test_cancelled_with_event_raises_cancelled_error(self, mocker):
-        """When job is CANCELLED and cancellation event is set, raises _CancelledError."""
+        """When job is CANCELLED and cancellation event is set, raises ExecutionCancelledError."""
         mock_backend = mocker.Mock()
         mock_backend.poll_job_status.return_value = JobStatus.CANCELLED
         mock_backend.max_retries = 100
@@ -435,7 +435,7 @@ class TestWaitForAsyncResult:
 
         execution_result = ExecutionResult(job_id="test_job")
 
-        with pytest.raises(_CancelledError, match="Job test_job was cancelled"):
+        with pytest.raises(ExecutionCancelledError, match="Job test_job was cancelled"):
             _wait_for_async_result(mock_backend, execution_result, env)
 
     def test_cancelled_without_event_raises_runtime_error(self, mocker):

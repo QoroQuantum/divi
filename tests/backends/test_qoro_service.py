@@ -29,7 +29,7 @@ from divi.backends._systems import (
     update_qpu_systems_cache,
     update_simulator_clusters_cache,
 )
-from divi.circuits import validate_qasm
+from divi.qasm import validate_qasm
 from tests.backends import circuit_runner_contracts as contracts
 
 # --- Test Fixtures ---

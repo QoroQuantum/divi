@@ -19,6 +19,7 @@ from divi.hamiltonians import (
     _get_terms_iterable,
     _is_empty_hamiltonian,
 )
+from divi.qprog._types import GraphProblemTypes
 from divi.qprog.algorithms._initial_state import (
     InitialState,
     OnesState,
@@ -30,7 +31,6 @@ from divi.qprog.problems._graph_partitioning_utils import (
     GraphPartitioningConfig,
     _node_partition_graph,
 )
-from divi.typing import GraphProblemTypes
 
 
 class _GraphProblemBase(QAOAProblem):

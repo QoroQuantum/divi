@@ -230,6 +230,8 @@ class IterativeQAOA(QAOA):
             ``optimizer``, ``initial_state``, etc.).
     """
 
+    _supports_fixed_param_scans = False
+
     def __init__(
         self,
         problem,

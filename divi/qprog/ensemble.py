@@ -525,8 +525,8 @@ class ProgramEnsemble(ABC):
         With the batch coordinator active, cancellation works as follows:
         1. ``coordinator.cancel()`` sets the cancelled flag, cancels any
            in-flight backend jobs, and resolves pending futures with
-           ``_CancelledError``.
-        2. The program threads see the ``_CancelledError`` (or the
+           ``ExecutionCancelledError``.
+        2. The program threads see the ``ExecutionCancelledError`` (or the
            ``_cancellation_event``) and exit.
         3. We wait for all still-running futures and mark them in the
            progress bar.
