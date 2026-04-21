@@ -188,6 +188,92 @@ class TestMergeCircuitsAndKwargs:
         assert kw["circuit_ham_map"] == [[0, 2], [2, 3]]
 
 
+class TestMergeCircuitsAndKwargsShotGroups:
+    """Tests for shot_groups behavior in _merge_circuits_and_kwargs.
+
+    When programs in an ensemble use shot_distribution, each program's
+    submit_kwargs include a ``shot_groups`` payload whose indices are
+    relative to that program's own circuit list.  After merging multiple
+    programs, those indices must be re-offset to point into the merged
+    circuit list, otherwise the backend will see ranges that don't cover
+    every circuit.
+    """
+
+    def test_identical_shot_groups_reindexed_per_program(self):
+        """Two programs with identical encoded shot_groups must be expanded
+        into a merged shot_groups whose ranges cover ALL merged circuits."""
+        batch: _Batch = {
+            "p1": _make_entry(
+                {"p1@c1": "q1", "p1@c2": "q2", "p1@c3": "q3"},
+                {"shot_groups": [[0, 3, 100]]},
+            ),
+            "p2": _make_entry(
+                {"p2@c1": "q4", "p2@c2": "q5", "p2@c3": "q6"},
+                {"shot_groups": [[0, 3, 100]]},
+            ),
+        }
+        merged, kw = _BatchCoordinator._merge_circuits_and_kwargs(batch)
+        assert len(merged) == 6
+        # The merged shot_groups must cover all 6 circuits (not just first 3).
+        flat = []
+        for s, e, shots in kw["shot_groups"]:
+            flat.extend([shots] * (e - s))
+        assert len(flat) == 6
+        assert all(s == 100 for s in flat)
+
+    def test_distinct_shot_groups_per_program_reindexed(self):
+        """Programs with different shot allocations get correctly stitched."""
+        batch: _Batch = {
+            "p1": _make_entry(
+                {"p1@c1": "q1", "p1@c2": "q2"},
+                {"shot_groups": [[0, 1, 50], [1, 2, 200]]},
+            ),
+            "p2": _make_entry(
+                {"p2@c1": "q3", "p2@c2": "q4"},
+                {"shot_groups": [[0, 2, 300]]},
+            ),
+        }
+        merged, kw = _BatchCoordinator._merge_circuits_and_kwargs(batch)
+        assert len(merged) == 4
+        flat = []
+        for s, e, shots in kw["shot_groups"]:
+            flat.extend([shots] * (e - s))
+        # p1's allocation: [50, 200], p2's: [300, 300] -> merged [50, 200, 300, 300]
+        assert flat == [50, 200, 300, 300]
+
+    def test_mixed_with_without_shot_groups_raises(self):
+        """Programs that mix shot_groups-set and shot_groups-unset can't merge."""
+        batch: _Batch = {
+            "p1": _make_entry(
+                {"p1@c1": "q1"},
+                {"shot_groups": [[0, 1, 100]]},
+            ),
+            "p2": _make_entry(
+                {"p2@c1": "q2"},
+                {"shots": 100},  # no shot_groups
+            ),
+        }
+        with pytest.raises(ValueError, match="mix of programs"):
+            _BatchCoordinator._merge_circuits_and_kwargs(batch)
+
+    def test_shot_groups_with_different_ham_ops_raises(self):
+        """Combining shot_groups with heterogeneous ham_ops would require
+        reordering shots in lockstep with circuit reordering. Out of scope
+        for v1 — must raise a clear error rather than misbehave."""
+        batch: _Batch = {
+            "p1": _make_entry(
+                {"p1@c1": "q1"},
+                {"ham_ops": "Z", "shot_groups": [[0, 1, 100]]},
+            ),
+            "p2": _make_entry(
+                {"p2@c1": "q2"},
+                {"ham_ops": "X", "shot_groups": [[0, 1, 200]]},
+            ),
+        }
+        with pytest.raises(ValueError, match="shot_groups"):
+            _BatchCoordinator._merge_circuits_and_kwargs(batch)
+
+
 class TestSplitByHamOps:
     """Tests for _BatchCoordinator._split_by_ham_ops."""
 

@@ -489,7 +489,7 @@ class TestQuEPPProtocol:
         assert ctx["n_paths"] >= 1
 
     def test_montecarlo_all_discarded_returns_empty_when_fallback_is_zero(
-        self, mixed_qc
+        self, mixed_qc, suppress_quepp_warnings
     ):
         """When all MC samples are non-diagonal *and* the all-cos fallback has
         no diagonal contribution, the protocol correctly produces zero paths

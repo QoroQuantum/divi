@@ -4,6 +4,7 @@
 
 import base64
 import gzip
+import itertools
 import json
 import logging
 import os
@@ -24,6 +25,12 @@ from divi.backends import CircuitRunner
 from divi.backends._config import ExecutionConfig, JobConfig
 from divi.backends._execution_result import ExecutionResult
 from divi.backends._results_processing import _decode_qh1_b64
+from divi.backends._shot_allocation import (
+    from_wire,
+    restrict_to_chunk,
+    to_wire,
+    validate,
+)
 from divi.backends._systems import (
     QPUSystem,
     SimulatorCluster,
@@ -442,6 +449,7 @@ class QoroService(CircuitRunner):
         circuits: Mapping[str, str],
         ham_ops: str | None = None,
         circuit_ham_map: list[list[int]] | None = None,
+        shot_groups: list[list[int]] | None = None,
         job_type: JobType | None = None,
         override_execution_config: ExecutionConfig | None = None,
         override_job_config: JobConfig | None = None,
@@ -466,6 +474,11 @@ class QoroService(CircuitRunner):
                 slice of the ordered circuit list.  Must have the same length as
                 ``ham_ops.split("|")``.  When None, a single ``ham_ops`` group is
                 applied to all circuits.
+            shot_groups (list[list[int]] | None, optional):
+                Per-circuit shot allocation as ``[start, end, shots]`` triples
+                covering the iteration order of ``circuits``. Mutually exclusive
+                with the service-level ``shots`` field. When provided, ranges
+                spanning multiple internal chunks are re-indexed automatically.
             job_type (JobType | None, optional):
                 Type of job to execute (EXECUTE or EXPECTATION).
                 If not provided, defaults to EXECUTE.
@@ -494,6 +507,18 @@ class QoroService(CircuitRunner):
             job_config = self._resolve_and_validate_target(config)
         else:
             job_config = self.job_config
+
+        if ham_ops is not None and shot_groups is not None:
+            raise ValueError(
+                "shot_groups is incompatible with ham_ops: EXPECTATION jobs "
+                "compute expectation values analytically on the backend and "
+                "ignore shot counts. Pass exactly one."
+            )
+
+        shot_ranges = None
+        if shot_groups is not None:
+            shot_ranges = from_wire(shot_groups)
+            validate(shot_ranges, len(circuits))
 
         # Handle Hamiltonian operators: validate compatibility and auto-infer job type
         if ham_ops is not None:
@@ -590,7 +615,13 @@ class QoroService(CircuitRunner):
         num_chunks = len(circuit_chunks)
         compressed_ham_ops = compress_ham_ops(ham_ops) if ham_ops is not None else None
 
-        for i, chunk in enumerate(circuit_chunks):
+        # Per-chunk starting offset into the global circuit list, used to
+        # re-index ``shot_groups`` when chunking. Built up-front so the loop
+        # body has no manual accumulator to maintain.
+        chunk_offsets = list(
+            itertools.accumulate((len(c) for c in circuit_chunks), initial=0)
+        )
+        for i, (chunk, chunk_offset) in enumerate(zip(circuit_chunks, chunk_offsets)):
             is_last_chunk = i == num_chunks - 1
             add_circuits_payload = {
                 "circuits": chunk,
@@ -603,6 +634,10 @@ class QoroService(CircuitRunner):
                 add_circuits_payload["observables"] = compressed_ham_ops
                 if circuit_ham_map is not None:
                     add_circuits_payload["circuit_ham_map"] = circuit_ham_map
+            elif shot_ranges is not None:
+                add_circuits_payload["shot_groups"] = to_wire(
+                    restrict_to_chunk(shot_ranges, chunk_offset, len(chunk))
+                )
             else:
                 add_circuits_payload["shots"] = job_config.shots
 

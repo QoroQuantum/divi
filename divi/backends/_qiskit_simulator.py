@@ -23,6 +23,13 @@ from qiskit_aer.noise import NoiseModel
 
 from divi.backends import CircuitRunner
 from divi.backends._execution_result import ExecutionResult
+from divi.backends._shot_allocation import (
+    ShotRange,
+    bucket_by_shots,
+    from_wire,
+    per_circuit,
+    validate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -260,6 +267,7 @@ class QiskitSimulator(CircuitRunner):
         circuit_labels: list[str],
         transpiled_circuits: list[QuantumCircuit],
         resolved_backend: Backend | None,
+        per_circuit_shots: list[int] | None = None,
     ) -> list[dict[str, Any]]:
         """
         Execute circuits individually for debugging purposes.
@@ -272,6 +280,9 @@ class QiskitSimulator(CircuitRunner):
             circuit_labels: List of circuit labels
             transpiled_circuits: List of transpiled QuantumCircuit objects
             resolved_backend: Resolved backend for simulator creation
+            per_circuit_shots: Optional per-circuit shot counts (e.g. from
+                ``shot_groups``). When ``None``, every circuit uses
+                ``self.shots``.
 
         Returns:
             List of result dictionaries
@@ -287,7 +298,10 @@ class QiskitSimulator(CircuitRunner):
                 circuit_simulator.set_options(seed_simulator=self.simulation_seed + i)
 
             # Run the single circuit
-            job = circuit_simulator.run(transpiled_circuit, shots=self.shots)
+            shots = (
+                per_circuit_shots[i] if per_circuit_shots is not None else self.shots
+            )
+            job = circuit_simulator.run(transpiled_circuit, shots=shots)
             circuit_result = job.result()
             counts = circuit_result.get_counts(0)
             results.append({"label": label, "results": dict(counts)})
@@ -430,6 +444,7 @@ class QiskitSimulator(CircuitRunner):
         circuits: Mapping[str, str],
         ham_ops: str | None = None,
         circuit_ham_map: list[list[int]] | None = None,
+        shot_groups: list[list[int]] | None = None,
         **kwargs,
     ) -> ExecutionResult:
         """Submit multiple circuits for parallel simulation using Qiskit's built-in parallelism.
@@ -441,6 +456,11 @@ class QiskitSimulator(CircuitRunner):
                 ``circuit_ham_map`` is provided. If None, runs in sampling mode.
             circuit_ham_map: Each entry is ``[start, end)`` mapping a ``|``-group in
                 ``ham_ops`` to a contiguous slice of circuits.
+            shot_groups: Per-circuit shot allocation as ``[start, end, shots]``
+                triples covering the iteration order of ``circuits``. When
+                provided, overrides ``self.shots`` for each contiguous range
+                and triggers one ``aer_simulator.run`` call per range.
+                Sampling-mode only — ignored when ``ham_ops`` is provided.
             **kwargs: Additional parameters (unused, accepted for interface compatibility).
 
         Returns:
@@ -449,6 +469,12 @@ class QiskitSimulator(CircuitRunner):
         logger.debug(
             f"Simulating {len(circuits)} circuits with {self.n_processes} processes"
         )
+
+        if ham_ops is not None and shot_groups is not None:
+            raise ValueError(
+                "shot_groups is incompatible with ham_ops: expectation-value "
+                "mode is analytical and ignores shot counts. Pass exactly one."
+            )
 
         # 1. Parse Circuits
         circuit_labels = list(circuits.keys())
@@ -483,9 +509,28 @@ class QiskitSimulator(CircuitRunner):
         )
 
         # 5. Execute
+        shot_ranges: list[ShotRange] | None = None
+        if shot_groups is not None:
+            shot_ranges = from_wire(shot_groups)
+            validate(shot_ranges, len(transpiled_circuits))
+
         if self._deterministic_execution:
+            per_circuit_shots = (
+                per_circuit(shot_ranges, len(transpiled_circuits))
+                if shot_ranges is not None
+                else None
+            )
             results = self._execute_circuits_deterministically(
-                circuit_labels, transpiled_circuits, resolved_backend
+                circuit_labels,
+                transpiled_circuits,
+                resolved_backend,
+                per_circuit_shots=per_circuit_shots,
+            )
+            return ExecutionResult(results=results)
+
+        if shot_ranges is not None:
+            results = self._execute_with_shot_groups(
+                circuit_labels, transpiled_circuits, aer_simulator, shot_ranges
             )
             return ExecutionResult(results=results)
 
@@ -511,6 +556,35 @@ class QiskitSimulator(CircuitRunner):
             for i, label in enumerate(circuit_labels)
         ]
         return ExecutionResult(results=results)
+
+    def _execute_with_shot_groups(
+        self,
+        circuit_labels: list[str],
+        transpiled_circuits: list,
+        aer_simulator: AerSimulator,
+        shot_ranges: list[ShotRange],
+    ) -> list[dict[str, Any]]:
+        """Execute one ``aer_simulator.run`` per distinct shot count.
+
+        Aer's ``run(shots=...)`` applies a single shot count to all circuits in
+        the call, so distinct shot levels require distinct calls. Ranges that
+        share the same shot count — even if non-contiguous — are batched into
+        one ``run`` to preserve Aer's internal parallelism. Results are
+        re-ordered back to the original circuit positions.
+        """
+        n_total = len(transpiled_circuits)
+        results: list[dict[str, Any] | None] = [None] * n_total
+
+        for shots, indices in bucket_by_shots(shot_ranges).items():
+            sub_circuits = [transpiled_circuits[i] for i in indices]
+            job = aer_simulator.run(sub_circuits, shots=shots)
+            batch_result = job.result()
+            for offset, idx in enumerate(indices):
+                results[idx] = {
+                    "label": circuit_labels[idx],
+                    "results": dict(batch_result.get_counts(offset)),
+                }
+        return results  # type: ignore[return-value]
 
     @staticmethod
     def estimate_run_time_single_circuit(

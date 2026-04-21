@@ -148,6 +148,11 @@ class PipelineEnv:
     cancellation_event: Event | None = None
     """Threading event signalling cancellation (set by ProgramEnsemble)."""
 
+    rng: np.random.Generator | None = None
+    """Random generator for stochastic stage decisions (e.g. ``weighted_random``
+    shot allocation). When ``None``, stages that need randomness construct a
+    fresh, unseeded generator, which means they are not reproducible."""
+
 
 class ContractViolation(ValueError):
     """Raised when a stage's positional requirements are not met."""
@@ -183,6 +188,20 @@ class Stage(ABC, Generic[InT, OutT]):
     def stateful(self) -> bool:
         """Whether this stage invalidates forward-pass reuse from this point."""
         return False
+
+    def cache_key_extras(self, env: "PipelineEnv") -> tuple:
+        """Hashable env inputs that this stage reads during :meth:`expand`.
+
+        The forward-pass cache is keyed on the initial spec, the list of
+        stage instances, and the tuple returned by each stage's
+        ``cache_key_extras``.  Override this method to declare any live env
+        state your stage reads during ``expand`` (for example
+        ``env.backend.shots`` when shot allocation depends on the budget, or
+        a timestamp when the stage depends on external context).  Values not
+        listed here won't trigger cache invalidation when they change.  The
+        return value must be hashable; defaults to an empty tuple.
+        """
+        return ()
 
     def validate(self, before: tuple["Stage", ...], after: tuple["Stage", ...]) -> None:
         """Check this stage's position in the pipeline.

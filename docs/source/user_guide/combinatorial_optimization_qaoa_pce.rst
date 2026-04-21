@@ -150,6 +150,12 @@ count), see the `qaoa_qdrift.py
 <https://github.com/QoroQuantum/divi/blob/main/tutorials/qaoa_qdrift.py>`_
 tutorial.
 
+.. tip::
+
+   On sampling backends, pass ``shot_distribution="weighted"`` to focus the
+   cost Hamiltonian's shot budget on its dominant terms.  See
+   :ref:`adaptive-shot-allocation` for the full list of strategies.
+
 Graph Problems
 --------------
 

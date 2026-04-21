@@ -288,8 +288,44 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 below threshold, cost variance settled). Defaults to None.
 
         Keyword Args:
-            grouping_strategy (str): Strategy for grouping operations in Pennylane transforms.
-                Options: "default", "wires", "qwc". Defaults to "qwc".
+            grouping_strategy (str): Strategy for partitioning Hamiltonian terms
+                into compatible measurement groups; one circuit is executed per
+                group. Options: ``"qwc"`` (qubit-wise-commuting — most
+                compact), ``"wires"`` (group by support wires), or ``None``
+                (one circuit per term). Defaults to ``"qwc"``.
+            shot_distribution (ShotDistStrategy | None): Focus the backend's
+                shot budget on the Hamiltonian terms that matter most.
+                Without this option, every measurement group is sampled with
+                the backend's full shot count, even tiny terms with little
+                impact on the final energy. With ``shot_distribution`` set,
+                the same total budget is split across groups according to
+                their importance — reducing variance without spending more
+                shots.
+
+                Available strategies:
+
+                - ``"uniform"`` — equal split across groups.
+                - ``"weighted"`` — proportional to per-group coefficient L1
+                  norm; dominant Hamiltonian terms get more shots.
+                - ``"weighted_random"`` — multinomial sample of the same
+                  probabilities; may drop more low-weight groups than the
+                  deterministic ``"weighted"`` for the same budget.
+                - A callable ``(group_l1_norms, total_shots) -> per_group_shots``
+                  for fully custom allocation.
+
+                Example::
+
+                    vqe = MyVQA(
+                        backend=QiskitSimulator(shots=1000),
+                        shot_distribution="weighted",
+                    )
+                    vqe.run()
+
+                Only valid when sampling is actually used. Setting it on a
+                backend that computes expectation values analytically
+                (``grouping_strategy="_backend_expval"``) is rejected because
+                shots are ignored in that mode. Defaults to ``None`` (every
+                group receives the full shot budget).
             precision (int): Number of decimal places for parameter values in QASM conversion.
                 Defaults to 8.
 
@@ -311,6 +347,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         _UNSET = object()
         grouping_strategy = kwargs.pop("grouping_strategy", _UNSET)
+        shot_distribution = kwargs.pop("shot_distribution", None)
         precision = kwargs.pop("precision", 8)
         decode_solution_fn = kwargs.pop(
             "decode_solution_fn", lambda bitstring: bitstring
@@ -354,10 +391,16 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         self._stop_reason: StopReason | None = None
 
         # --- Backend & Circuit Configuration ---
-        if self.backend.supports_expval and grouping_strategy not in (
-            None,
-            "_backend_expval",
-        ):
+        # Adaptive shot allocation requires sampling-based execution. When
+        # the user requests it, suppress the auto-fallback to
+        # ``_backend_expval`` so the configured grouping strategy (defaulting
+        # to "qwc") is honoured.
+        auto_to_backend_expval = (
+            self.backend.supports_expval
+            and shot_distribution is None
+            and grouping_strategy not in (None, "_backend_expval")
+        )
+        if auto_to_backend_expval:
             if grouping_strategy is not _UNSET:
                 warn(
                     "Backend supports direct expectation value calculation, but a "
@@ -372,6 +415,18 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 grouping_strategy if grouping_strategy is not _UNSET else "qwc"
             )
 
+        if (
+            shot_distribution is not None
+            and self._grouping_strategy == "_backend_expval"
+        ):
+            raise ValueError(
+                "shot_distribution is incompatible with grouping_strategy="
+                "'_backend_expval': the backend computes expectation values "
+                "analytically and ignores shots. Set grouping_strategy to "
+                "'qwc', 'wires', or None."
+            )
+
+        self._shot_distribution = shot_distribution
         self._precision = precision
 
         # --- Solution Decoding ---
@@ -979,6 +1034,8 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         """Construct a PipelineEnv for the provided parameter sets."""
         if "param_sets" not in overrides:
             overrides["param_sets"] = self._initialize_param_sets()
+        if "rng" not in overrides:
+            overrides["rng"] = self._rng
         return super()._build_pipeline_env(**overrides)
 
     def _build_cost_pipeline(self, spec_stage: Stage) -> CircuitPipeline:
@@ -1010,7 +1067,12 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         n_twirls = getattr(self._qem_protocol, "n_twirls", 0)
         if n_twirls > 0:
             stages.append(PauliTwirlStage(n_twirls=n_twirls))
-        stages.append(MeasurementStage(grouping_strategy=self._grouping_strategy))
+        stages.append(
+            MeasurementStage(
+                grouping_strategy=self._grouping_strategy,
+                shot_distribution=self._shot_distribution,
+            )
+        )
 
         if not bind_early:
             stages.append(ParameterBindingStage())

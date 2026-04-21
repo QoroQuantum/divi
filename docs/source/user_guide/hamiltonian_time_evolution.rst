@@ -56,6 +56,12 @@ Provide ``observable=...`` to estimate expectation values after evolution:
    te.run()
    print(f"<Z0> = {te.results:.6f}")
 
+.. tip::
+
+   On sampling backends, pass ``shot_distribution="weighted"`` to focus the
+   shot budget on the observable's dominant terms.  See
+   :ref:`adaptive-shot-allocation` for the full list of strategies.
+
 QDrift Trotterization
 ---------------------
 

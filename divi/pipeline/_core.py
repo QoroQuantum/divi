@@ -145,6 +145,56 @@ def _wait_for_async_result(backend, execution_result, env):
     return backend.get_job_results(execution_result)
 
 
+def _build_shot_groups(
+    circuits: dict[str, str],
+    lineage_by_label: dict[str, tuple],
+    per_group_shots: dict[tuple, dict[int, int]],
+) -> list[list[int]] | None:
+    """Translate per-spec/per-group shot allocations into backend ``shot_groups``.
+
+    The backend interface accepts ``shot_groups`` as a list of
+    ``[start, end, shots]`` triples covering the iteration order of
+    ``circuits``. Consecutive circuits with identical shot counts are
+    collapsed into a single range. Returns ``None`` if no per-group
+    allocation applies (every circuit's spec is unmapped).
+    """
+    spec_keys = list(per_group_shots.keys())
+    per_circuit_shots: list[int | None] = []
+    for label in circuits:
+        branch_key = lineage_by_label[label]
+        branch_axes = set(branch_key)
+        spec_match = next(
+            (sk for sk in spec_keys if set(sk).issubset(branch_axes)), None
+        )
+        obs_group_idx = next((v for ax, v in branch_key if ax == "obs_group"), None)
+        if spec_match is None or obs_group_idx is None:
+            per_circuit_shots.append(None)
+            continue
+        per_circuit_shots.append(per_group_shots[spec_match].get(obs_group_idx))
+
+    if all(s is None for s in per_circuit_shots):
+        return None
+
+    # Collapse consecutive identical shot counts into [start, end, shots] ranges.
+    shot_groups: list[list[int]] = []
+    n = len(per_circuit_shots)
+    i = 0
+    while i < n:
+        shots = per_circuit_shots[i]
+        if shots is None:
+            raise ValueError(
+                f"Circuit at position {i} has no per-group shot allocation; "
+                "per_group_shots must cover every submitted circuit."
+            )
+        j = i + 1
+        while j < n and per_circuit_shots[j] == shots:
+            j += 1
+        shot_groups.append([i, j, shots])
+        i = j
+
+    return shot_groups
+
+
 def _default_execute_fn(
     trace: PipelineTrace,
     env: PipelineEnv,
@@ -158,6 +208,12 @@ def _default_execute_fn(
     ham_ops = env.artifacts.get("ham_ops")
     if ham_ops is not None:
         submit_kwargs["ham_ops"] = ham_ops
+
+    per_group_shots = env.artifacts.get("per_group_shots")
+    if per_group_shots:
+        shot_groups = _build_shot_groups(circuits, lineage_by_label, per_group_shots)
+        if shot_groups is not None:
+            submit_kwargs["shot_groups"] = shot_groups
 
     result = env.backend.submit_circuits(circuits, **submit_kwargs)
 
@@ -342,7 +398,8 @@ class CircuitPipeline:
             return data, tokens, expansions
 
         stage_ids = tuple(id(stage) for stage in self._stages)
-        cache_key = (id(initial_spec), stage_ids)
+        stage_extras = tuple(stage.cache_key_extras(env) for stage in self._stages)
+        cache_key = (id(initial_spec), stage_ids, stage_extras)
         cached = None if force_forward_sweep else self._forward_cache.get(cache_key)
 
         first_stateful_idx = next(
@@ -351,6 +408,19 @@ class CircuitPipeline:
         )
 
         if cached is not None and first_stateful_idx is None:
+            # Replay the cached trace's env side-effects onto the live env so
+            # downstream consumers (e.g. _default_execute_fn reading
+            # ``env.artifacts["per_group_shots"]``) see the same state as on
+            # the original run. Caller mutations win on collision.
+            env.artifacts.update(
+                {
+                    k: v
+                    for k, v in cached.env_artifacts.items()
+                    if k not in env.artifacts
+                }
+            )
+            if env.result_format is None:
+                env.result_format = cached.result_format
             return cached
 
         if cached is None or first_stateful_idx == 0:

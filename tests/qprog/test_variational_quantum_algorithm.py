@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import warnings
 from typing import Any
 
 import numpy as np
@@ -12,7 +13,7 @@ from scipy.optimize import OptimizeResult
 
 from divi.circuits import dag_to_qasm_body, qscript_to_meta
 from divi.circuits._conversions import _qscript_to_dag
-from divi.pipeline.stages import CircuitSpecStage
+from divi.pipeline.stages import CircuitSpecStage, MeasurementStage
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.early_stopping import EarlyStopping, StopReason
 from divi.qprog.exceptions import _CancelledError
@@ -150,6 +151,86 @@ class TestProgram:
 
         # Verify that the grouping strategy was overridden to "_backend_expval"
         assert program._grouping_strategy == "_backend_expval"
+
+    def test_shot_distribution_default_is_none(self, mocker):
+        """Spec: omitting shot_distribution leaves the field unset (None)."""
+        program = self._create_sample_program(mocker)
+        assert program._shot_distribution is None
+
+    def test_shot_distribution_stored_on_program(self, mocker):
+        """Spec: explicit shot_distribution is stored verbatim."""
+        program = self._create_sample_program(mocker, shot_distribution="weighted")
+        assert program._shot_distribution == "weighted"
+
+    def test_shot_distribution_suppresses_backend_expval_autoswitch(self, mocker):
+        """Spec: setting shot_distribution prevents the auto-fallback to
+        _backend_expval that normally happens on expval-supporting backends."""
+        mock_backend = self._create_mock_backend(mocker, supports_expval=True)
+
+        # No warning should be emitted: shot_distribution implies sampling intent.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            program = self._create_sample_program(
+                mocker,
+                grouping_strategy="qwc",
+                shot_distribution="uniform",
+                backend=mock_backend,
+            )
+        assert program._grouping_strategy == "qwc"
+        assert program._shot_distribution == "uniform"
+
+    def test_shot_distribution_with_explicit_backend_expval_raises(self, mocker):
+        """Spec: combining shot_distribution with grouping_strategy='_backend_expval'
+        raises ValueError because the backend ignores shots in that mode."""
+        mock_backend = self._create_mock_backend(mocker, supports_expval=True)
+        with pytest.raises(ValueError, match="incompatible with grouping_strategy"):
+            self._create_sample_program(
+                mocker,
+                grouping_strategy="_backend_expval",
+                shot_distribution="weighted",
+                backend=mock_backend,
+            )
+
+    def test_shot_distribution_threaded_to_measurement_stage(self, mocker):
+        """Implementation detail: _build_cost_pipeline forwards shot_distribution
+        to MeasurementStage's constructor."""
+        program = self._create_sample_program(
+            mocker, shot_distribution="weighted_random"
+        )
+        program._build_pipelines()
+
+        meas_stage = next(
+            stage
+            for stage in program._cost_pipeline.stages
+            if isinstance(stage, MeasurementStage)
+        )
+        assert meas_stage._shot_distribution == "weighted_random"
+
+    def test_shot_distribution_callable_threaded_through(self, mocker):
+        """Implementation detail: callable shot_distribution survives threading."""
+
+        def custom(norms, total):
+            return [total] + [0] * (len(norms) - 1)
+
+        program = self._create_sample_program(mocker, shot_distribution=custom)
+        program._build_pipelines()
+
+        meas_stage = next(
+            stage
+            for stage in program._cost_pipeline.stages
+            if isinstance(stage, MeasurementStage)
+        )
+        assert meas_stage._shot_distribution is custom
+
+    def test_program_rng_threaded_into_pipeline_env(self, mocker):
+        """Spec: VariationalQuantumAlgorithm._build_pipeline_env populates
+        env.rng from self._rng so weighted_random shot allocation is
+        reproducible across runs of the same seeded program."""
+        program = self._create_sample_program(
+            mocker, shot_distribution="weighted_random"
+        )
+        env = program._build_pipeline_env(param_sets=np.zeros((1, 4)))
+        assert env.rng is program._rng
 
     def test_evaluate_cost_param_sets_uses_initial_spec_hook(self, mocker):
         """Cost evaluation should delegate to the initial-spec hook."""
