@@ -256,6 +256,22 @@ class TestMergeCircuitsAndKwargsShotGroups:
         with pytest.raises(ValueError, match="mix of programs"):
             _BatchCoordinator._merge_circuits_and_kwargs(batch)
 
+    def test_shot_groups_with_diverging_other_kwargs_raises(self):
+        """Programs that share shot_groups but differ in any other kwarg
+        must raise rather than silently discarding the diverging value."""
+        batch: _Batch = {
+            "p1": _make_entry(
+                {"p1@c1": "q1"},
+                {"shots": 100, "shot_groups": [[0, 1, 100]]},
+            ),
+            "p2": _make_entry(
+                {"p2@c1": "q2"},
+                {"shots": 200, "shot_groups": [[0, 1, 200]]},
+            ),
+        }
+        with pytest.raises(ValueError, match="keys other than 'shot_groups'"):
+            _BatchCoordinator._merge_circuits_and_kwargs(batch)
+
     def test_shot_groups_with_different_ham_ops_raises(self):
         """Combining shot_groups with heterogeneous ham_ops would require
         reordering shots in lockstep with circuit reordering. Out of scope

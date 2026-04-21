@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -136,6 +138,27 @@ class TestComputeShotDistributionCallable:
 
         with pytest.raises(ValueError, match="negative shot counts"):
             compute_shot_distribution([1.0, 1.0], 10, bad)
+
+    def test_callable_float_truncation_warns(self):
+        """Float results that truncate to less than total_shots must warn."""
+
+        def fractional(norms, total):
+            # 100/3 fractions truncate to 33+33+33 = 99, dropping 1 shot.
+            return [total / 3] * 3
+
+        with pytest.warns(UserWarning, match="budget drift"):
+            result = compute_shot_distribution([1.0, 1.0, 1.0], 100, fractional)
+        assert result == [33, 33, 33]
+
+    def test_callable_integer_result_does_not_warn(self):
+        """Integer-valued callables that sum to total_shots must not warn."""
+
+        def exact(norms, total):
+            return [total, 0, 0]
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            assert compute_shot_distribution([1.0, 1.0, 1.0], 30, exact) == [30, 0, 0]
 
 
 class TestComputeShotDistributionErrors:

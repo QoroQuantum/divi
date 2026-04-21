@@ -10,6 +10,7 @@ total shot budget can be distributed across groups uniformly, weighted by the
 L1 norm of each group's coefficients, or via a user-defined callable.
 """
 
+import warnings
 from collections.abc import Callable, Sequence
 from typing import Literal
 
@@ -100,7 +101,20 @@ def compute_shot_distribution(
             )
         if any(s < 0 for s in result):
             raise ValueError("Custom shot distribution returned negative shot counts.")
-        return [int(s) for s in result]
+        int_result = [int(s) for s in result]
+        # Callable contract doesn't require integer/sum-preserving output;
+        # warn when truncation drops shots so the user knows their budget
+        # drifted instead of silently running with fewer shots.
+        if sum(int_result) != total_shots:
+            warnings.warn(
+                f"Custom shot distribution returned values summing to "
+                f"{sum(result):.6g} (truncated to {sum(int_result)}), which "
+                f"does not equal total_shots={total_shots}. Return integer "
+                f"values that sum to total_shots to avoid budget drift.",
+                UserWarning,
+                stacklevel=3,
+            )
+        return int_result
 
     if strategy == "uniform":
         return _uniform_distribution(n_groups, total_shots)

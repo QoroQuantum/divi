@@ -362,25 +362,38 @@ class _BatchCoordinator:
             # Programs differ only in shot_groups (sampling mode). Merge
             # circuits in batch order and re-offset each program's
             # shot_groups indices into the merged circuit list.
-            merged = {}
-            merged_ranges = []
-            offset = 0
             for entry in batch.values():
-                shot_groups_in = entry.kwargs.get("shot_groups")
-                if shot_groups_in is None:
+                if entry.kwargs.get("shot_groups") is None:
                     raise ValueError(
                         "Cannot merge a mix of programs with and without "
                         "'shot_groups' in the same sub-batch. Either set "
                         "shot_distribution on every program or none."
                     )
-                for r in from_wire(shot_groups_in):
+
+            # Guard against future kwargs silently diverging: the template
+            # below uses all_kwargs[0], so any other differing key would be
+            # discarded without notice.
+            def _without_shot_groups(kw: dict) -> dict:
+                return {k: v for k, v in kw.items() if k != "shot_groups"}
+
+            template_other = _without_shot_groups(all_kwargs[0])
+            for kw in all_kwargs[1:]:
+                if _without_shot_groups(kw) != template_other:
+                    raise ValueError(
+                        "Cannot merge programs whose kwargs differ in keys "
+                        "other than 'shot_groups'. Submit such programs in "
+                        "separate batches."
+                    )
+
+            merged = {}
+            merged_ranges = []
+            offset = 0
+            for entry in batch.values():
+                for r in from_wire(entry.kwargs["shot_groups"]):
                     merged_ranges.append(r.shift(offset))
                 merged.update(entry.circuits)
                 offset += len(entry.circuits)
 
-            # Use the first program's kwargs as a template, replacing
-            # shot_groups with the merged version. All other kwargs must
-            # match (the equality check above failed only on shot_groups).
             merged_kw = dict(all_kwargs[0])
             merged_kw["shot_groups"] = to_wire(merged_ranges)
             return merged, merged_kw
