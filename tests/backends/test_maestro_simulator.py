@@ -2,11 +2,32 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from dataclasses import fields
+
 import pytest
 
-from divi.backends._maestro_simulator import MaestroSimulator, _strip_measurements
+from divi.backends._maestro_simulator import (
+    MaestroConfig,
+    MaestroSimulator,
+    _strip_measurements,
+)
 from tests.backends import circuit_runner_contracts as contracts
 from tests.backends.circuit_runner_contracts import QASM_DEPTH_2, QASM_DEPTH_3
+
+try:
+    import maestro as _real_maestro
+except ImportError:
+    _real_maestro = None
+
+requires_real_maestro = pytest.mark.skipif(
+    _real_maestro is None, reason="qoro-maestro is not installed"
+)
+
+_BELL_QASM = (
+    'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[2];\ncreg c[2];\n'
+    "h q[0];\ncx q[0], q[1];\n"
+    "measure q[0] -> c[0];\nmeasure q[1] -> c[1];\n"
+)
 
 # ---------------------------------------------------------------------------
 # Helpers — build a fake ``maestro`` module that MaestroSimulator can import
@@ -25,6 +46,17 @@ def _make_fake_maestro(mocker, counts=None, expvals=None):
         "MatrixProductState": "MatrixProductState",
     }
 
+    # ``SimulatorConfig(**kwargs)`` — echo kwargs back as a ``spec=dict`` mock so
+    # tests can inspect what was passed.
+    def _make_sim_config(**kwargs):
+        cfg = mocker.MagicMock(name="SimulatorConfig")
+        cfg.kwargs = kwargs
+        for k, v in kwargs.items():
+            setattr(cfg, k, v)
+        return cfg
+
+    maestro.SimulatorConfig.side_effect = _make_sim_config
+
     # Sampling
     if counts is None:
         counts = {"00": 2500, "11": 2500}
@@ -38,10 +70,20 @@ def _make_fake_maestro(mocker, counts=None, expvals=None):
     return maestro
 
 
-def _make_simulator(mocker, fake_maestro, **kwargs):
+def _make_simulator(mocker, fake_maestro, *, config=None, **kwargs):
     """Instantiate MaestroSimulator with a pre-injected fake maestro module."""
     mocker.patch("divi.backends._maestro_simulator.maestro", fake_maestro)
-    return MaestroSimulator(**kwargs)
+    return MaestroSimulator(config=config, **kwargs)
+
+
+def _sim_config_call(fake_maestro):
+    """Return kwargs passed to the most recent ``SimulatorConfig(**kwargs)`` call."""
+    return fake_maestro.SimulatorConfig.call_args.kwargs
+
+
+def _submit_config_arg(call):
+    """Pull the ``config=`` kwarg from a ``simple_execute``/``simple_estimate`` call."""
+    return call[1]["config"]
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +97,59 @@ class TestImportGuard:
         mocker.patch("divi.backends._maestro_simulator.maestro", None)
         with pytest.raises(ImportError, match="qoro-maestro is required"):
             MaestroSimulator()
+
+
+# ---------------------------------------------------------------------------
+# MaestroConfig behaviors
+# ---------------------------------------------------------------------------
+
+
+class TestMaestroConfig:
+    def test_defaults(self):
+        """Default MaestroConfig matches maestro's SimulatorConfig defaults."""
+        cfg = MaestroConfig()
+        assert cfg.simulator_type is None
+        assert cfg.simulation_type is None
+        assert cfg.max_bond_dimension is None
+        assert cfg.singular_value_threshold is None
+        assert cfg.use_double_precision is False
+        assert cfg.disable_optimized_swapping is False
+        assert cfg.lookahead_depth == -1
+        assert cfg.mps_measure_no_collapse is True
+        assert cfg.mps_qubit_threshold == 22
+
+    def test_frozen(self):
+        """MaestroConfig is a frozen dataclass — attributes are immutable."""
+        cfg = MaestroConfig(simulation_type="Statevector")
+        with pytest.raises(Exception):  # FrozenInstanceError
+            cfg.simulation_type = "MatrixProductState"
+
+    def test_override_replaces_non_default_fields(self):
+        """override() copies only non-default fields from ``other``."""
+        base = MaestroConfig(
+            simulation_type="Statevector",
+            max_bond_dimension=128,
+        )
+        override = MaestroConfig(max_bond_dimension=256)
+        merged = base.override(override)
+
+        assert merged.simulation_type == "Statevector"  # preserved from base
+        assert merged.max_bond_dimension == 256  # taken from override
+
+    def test_override_returns_new_instance(self):
+        """override() never mutates the original."""
+        base = MaestroConfig(simulation_type="Statevector")
+        override = MaestroConfig(simulation_type="MatrixProductState")
+        merged = base.override(override)
+
+        assert base.simulation_type == "Statevector"
+        assert merged is not base
+        assert merged.simulation_type == "MatrixProductState"
+
+    def test_rejects_unknown_field(self):
+        """Unknown fields raise TypeError — no silent kwarg-dropping."""
+        with pytest.raises(TypeError):
+            MaestroConfig(bogus_field=1)
 
 
 # ---------------------------------------------------------------------------
@@ -79,21 +174,22 @@ class TestProperties:
         sim = _make_simulator(mocker, _make_fake_maestro(mocker), shots=1024)
         assert sim.shots == 1024
 
-    def test_config_storage(self, mocker):
-        sim = _make_simulator(
-            mocker,
-            _make_fake_maestro(mocker),
+    def test_default_config(self, mocker):
+        """No ``config=`` argument → backend uses a default MaestroConfig."""
+        sim = _make_simulator(mocker, _make_fake_maestro(mocker))
+        assert sim.config == MaestroConfig()
+
+    def test_custom_config_stored(self, mocker):
+        """The ``config`` attribute carries the user-provided MaestroConfig."""
+        cfg = MaestroConfig(
             simulator_type="QCSim",
-            simulation_type="MPS",
+            simulation_type="MatrixProductState",
             max_bond_dimension=64,
             singular_value_threshold=1e-8,
             use_double_precision=True,
         )
-        assert sim.simulator_type == "QCSim"
-        assert sim.simulation_type == "MPS"
-        assert sim.max_bond_dimension == 64
-        assert sim.singular_value_threshold == 1e-8
-        assert sim.use_double_precision is True
+        sim = _make_simulator(mocker, _make_fake_maestro(mocker), config=cfg)
+        assert sim.config is cfg
 
 
 # ---------------------------------------------------------------------------
@@ -116,13 +212,12 @@ class TestMpsThreshold:
 
     def test_default_threshold(self, mocker):
         sim = _make_simulator(mocker, _make_fake_maestro(mocker))
-        assert sim.mps_qubit_threshold == 22
+        assert sim.config.mps_qubit_threshold == 22
 
     def test_custom_threshold(self, mocker):
-        sim = _make_simulator(
-            mocker, _make_fake_maestro(mocker), mps_qubit_threshold=10
-        )
-        assert sim.mps_qubit_threshold == 10
+        cfg = MaestroConfig(mps_qubit_threshold=10)
+        sim = _make_simulator(mocker, _make_fake_maestro(mocker), config=cfg)
+        assert sim.config.mps_qubit_threshold == 10
 
     def test_below_threshold_no_simulation_type(self, mocker):
         """Circuits below the threshold should not set simulation_type."""
@@ -131,8 +226,8 @@ class TestMpsThreshold:
 
         sim.submit_circuits({"c0": _QASM_SMALL})
 
-        call_kwargs = fake.simple_execute.call_args[1]
-        assert "simulation_type" not in call_kwargs
+        kwargs = _sim_config_call(fake)
+        assert "simulation_type" not in kwargs
 
     def test_above_threshold_selects_mps(self, mocker):
         """Circuits above the threshold should auto-select MPS."""
@@ -141,18 +236,20 @@ class TestMpsThreshold:
 
         sim.submit_circuits({"c0": _QASM_LARGE})
 
-        call_kwargs = fake.simple_execute.call_args[1]
-        assert call_kwargs["simulation_type"] == "MatrixProductState"
+        kwargs = _sim_config_call(fake)
+        assert kwargs["simulation_type"] == "MatrixProductState"
 
     def test_explicit_simulation_type_overrides_threshold(self, mocker):
         """An explicit simulation_type should not be overridden by the threshold."""
         fake = _make_fake_maestro(mocker)
-        sim = _make_simulator(mocker, fake, simulation_type="Statevector")
+        sim = _make_simulator(
+            mocker, fake, config=MaestroConfig(simulation_type="Statevector")
+        )
 
         sim.submit_circuits({"c0": _QASM_LARGE})
 
-        call_kwargs = fake.simple_execute.call_args[1]
-        assert call_kwargs["simulation_type"] == "Statevector"
+        kwargs = _sim_config_call(fake)
+        assert kwargs["simulation_type"] == "Statevector"
 
     def test_threshold_applies_to_expval_mode(self, mocker):
         """MPS threshold also applies in expectation value mode."""
@@ -161,28 +258,30 @@ class TestMpsThreshold:
 
         sim.submit_circuits({"c0": _QASM_LARGE}, ham_ops="Z" + "I" * 24)
 
-        call_kwargs = fake.simple_estimate.call_args[1]
-        assert call_kwargs["simulation_type"] == "MatrixProductState"
+        kwargs = _sim_config_call(fake)
+        assert kwargs["simulation_type"] == "MatrixProductState"
 
     def test_custom_threshold_respected(self, mocker):
         """A custom threshold of 5 should trigger MPS for a 10-qubit circuit."""
         fake = _make_fake_maestro(mocker)
-        sim = _make_simulator(mocker, fake, mps_qubit_threshold=5)
+        sim = _make_simulator(mocker, fake, config=MaestroConfig(mps_qubit_threshold=5))
 
         sim.submit_circuits({"c0": _QASM_SMALL})
 
-        call_kwargs = fake.simple_execute.call_args[1]
-        assert call_kwargs["simulation_type"] == "MatrixProductState"
+        kwargs = _sim_config_call(fake)
+        assert kwargs["simulation_type"] == "MatrixProductState"
 
     def test_at_threshold_no_mps(self, mocker):
         """Circuits exactly at the threshold should NOT trigger MPS (> not >=)."""
         fake = _make_fake_maestro(mocker)
-        sim = _make_simulator(mocker, fake, mps_qubit_threshold=10)
+        sim = _make_simulator(
+            mocker, fake, config=MaestroConfig(mps_qubit_threshold=10)
+        )
 
         sim.submit_circuits({"c0": _QASM_SMALL})
 
-        call_kwargs = fake.simple_execute.call_args[1]
-        assert "simulation_type" not in call_kwargs
+        kwargs = _sim_config_call(fake)
+        assert "simulation_type" not in kwargs
 
     def test_auto_mps_sets_default_bond_dimension(self, mocker):
         """Auto-MPS should set bond dimension to 64 when not explicitly configured."""
@@ -191,18 +290,20 @@ class TestMpsThreshold:
 
         sim.submit_circuits({"c0": _QASM_LARGE})
 
-        call_kwargs = fake.simple_execute.call_args[1]
-        assert call_kwargs["max_bond_dimension"] == 64
+        kwargs = _sim_config_call(fake)
+        assert kwargs["max_bond_dimension"] == 64
 
     def test_explicit_bond_dimension_not_overridden(self, mocker):
         """User-specified bond dimension should not be overridden by auto-MPS."""
         fake = _make_fake_maestro(mocker)
-        sim = _make_simulator(mocker, fake, max_bond_dimension=128)
+        sim = _make_simulator(
+            mocker, fake, config=MaestroConfig(max_bond_dimension=128)
+        )
 
         sim.submit_circuits({"c0": _QASM_LARGE})
 
-        call_kwargs = fake.simple_execute.call_args[1]
-        assert call_kwargs["max_bond_dimension"] == 128
+        kwargs = _sim_config_call(fake)
+        assert kwargs["max_bond_dimension"] == 128
 
     def test_no_auto_bond_dimension_below_threshold(self, mocker):
         """Below threshold, bond dimension should not be set unless explicit."""
@@ -211,8 +312,8 @@ class TestMpsThreshold:
 
         sim.submit_circuits({"c0": _QASM_SMALL})
 
-        call_kwargs = fake.simple_execute.call_args[1]
-        assert "max_bond_dimension" not in call_kwargs
+        kwargs = _sim_config_call(fake)
+        assert "max_bond_dimension" not in kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -245,42 +346,81 @@ class TestSamplingSubmission:
         # "100" (maestro) -> "001" (qiskit), "001" -> "100"
         assert result.results[0]["results"] == {"001": 70, "100": 30}
 
+    def test_shots_and_config_passed_to_simple_execute(self, mocker):
+        """shots is forwarded, and the SimulatorConfig built from MaestroConfig
+        is passed via config=."""
+        fake = _make_fake_maestro(mocker)
+        sim = _make_simulator(mocker, fake, shots=1234)
+
+        sim.submit_circuits({"c0": QASM_DEPTH_2})
+
+        call = fake.simple_execute.call_args
+        assert call[1]["shots"] == 1234
+        passed_config = _submit_config_arg(call)
+        assert passed_config is fake.SimulatorConfig.return_value or hasattr(
+            passed_config, "kwargs"
+        )
+
     def test_config_passthrough(self, mocker):
-        """Non-None config options are passed through to simple_execute."""
+        """MaestroConfig fields are forwarded to maestro.SimulatorConfig."""
         fake = _make_fake_maestro(mocker)
         sim = _make_simulator(
             mocker,
             fake,
-            simulator_type="QCSim",
-            simulation_type="MPS",
-            max_bond_dimension=32,
-            singular_value_threshold=1e-6,
-            use_double_precision=True,
+            config=MaestroConfig(
+                simulator_type="QCSim",
+                simulation_type="MatrixProductState",
+                max_bond_dimension=32,
+                singular_value_threshold=1e-6,
+                use_double_precision=True,
+            ),
         )
 
         sim.submit_circuits({"c0": QASM_DEPTH_2})
 
-        call_kwargs = fake.simple_execute.call_args[1]
-        assert call_kwargs["shots"] == 5000
-        assert call_kwargs["simulator_type"] == "QCSim"
-        assert call_kwargs["simulation_type"] == "MPS"
-        assert call_kwargs["max_bond_dimension"] == 32
-        assert call_kwargs["singular_value_threshold"] == 1e-6
-        assert call_kwargs["use_double_precision"] is True
+        kwargs = _sim_config_call(fake)
+        assert kwargs["simulator_type"] == "QCSim"
+        assert kwargs["simulation_type"] == "MatrixProductState"
+        assert kwargs["max_bond_dimension"] == 32
+        assert kwargs["singular_value_threshold"] == 1e-6
+        assert kwargs["use_double_precision"] is True
+
+    def test_extra_knobs_passed_when_non_default(self, mocker):
+        """New maestro knobs are forwarded when set to non-default values."""
+        fake = _make_fake_maestro(mocker)
+        sim = _make_simulator(
+            mocker,
+            fake,
+            config=MaestroConfig(
+                disable_optimized_swapping=True,
+                lookahead_depth=4,
+                mps_measure_no_collapse=False,
+            ),
+        )
+
+        sim.submit_circuits({"c0": QASM_DEPTH_2})
+
+        kwargs = _sim_config_call(fake)
+        assert kwargs["disable_optimized_swapping"] is True
+        assert kwargs["lookahead_depth"] == 4
+        assert kwargs["mps_measure_no_collapse"] is False
 
     def test_none_config_not_passed(self, mocker):
-        """None config options are not passed to simple_execute."""
+        """None-valued config options are not passed to SimulatorConfig."""
         fake = _make_fake_maestro(mocker)
         sim = _make_simulator(mocker, fake)
 
         sim.submit_circuits({"c0": QASM_DEPTH_2})
 
-        call_kwargs = fake.simple_execute.call_args[1]
-        assert "simulator_type" not in call_kwargs
-        assert "simulation_type" not in call_kwargs
-        assert "max_bond_dimension" not in call_kwargs
-        assert "singular_value_threshold" not in call_kwargs
-        assert "use_double_precision" not in call_kwargs
+        kwargs = _sim_config_call(fake)
+        assert "simulator_type" not in kwargs
+        assert "simulation_type" not in kwargs
+        assert "max_bond_dimension" not in kwargs
+        assert "singular_value_threshold" not in kwargs
+        assert "use_double_precision" not in kwargs
+        assert "disable_optimized_swapping" not in kwargs
+        assert "lookahead_depth" not in kwargs
+        assert "mps_measure_no_collapse" not in kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -359,22 +499,26 @@ class TestExpvalSubmission:
         assert result.results[0]["results"] == {"ZI": 0.1, "IX": 0.2, "YY": 0.3}
 
     def test_expval_config_passthrough(self, mocker):
-        """Non-None config options are passed through to simple_estimate."""
+        """MaestroConfig fields are passed through to simple_estimate via config=."""
         fake = _make_fake_maestro(mocker, expvals=[0.5])
         sim = _make_simulator(
             mocker,
             fake,
-            simulator_type="QCSim",
-            simulation_type="MPS",
-            max_bond_dimension=32,
+            config=MaestroConfig(
+                simulator_type="QCSim",
+                simulation_type="MatrixProductState",
+                max_bond_dimension=32,
+            ),
         )
 
         sim.submit_circuits({"c0": QASM_DEPTH_2}, ham_ops="ZI")
 
-        call_kwargs = fake.simple_estimate.call_args[1]
-        assert call_kwargs["simulator_type"] == "QCSim"
-        assert call_kwargs["simulation_type"] == "MPS"
-        assert call_kwargs["max_bond_dimension"] == 32
+        kwargs = _sim_config_call(fake)
+        assert kwargs["simulator_type"] == "QCSim"
+        assert kwargs["simulation_type"] == "MatrixProductState"
+        assert kwargs["max_bond_dimension"] == 32
+        # config is forwarded to simple_estimate
+        assert "config" in fake.simple_estimate.call_args[1]
 
     def test_sampling_retains_measurements(self, mocker):
         """Sampling mode must NOT strip measurements — they are needed."""
@@ -527,3 +671,71 @@ class TestDepthContracts:
     def test_std_zero_single(self, _mocker, _fake_maestro):
         runner = self._sim(_mocker, _fake_maestro, track_depth=True)
         contracts.verify_std_depth_zero_for_single_value(runner, {"c0": QASM_DEPTH_2})
+
+
+# ---------------------------------------------------------------------------
+# Real-maestro integration — guards against upstream API drift
+# ---------------------------------------------------------------------------
+#
+# The mocked tests above rubber-stamp any kwargs MaestroSimulator hands off,
+# so a breaking change in ``maestro.SimulatorConfig`` slips through them.
+# These tests exercise the *real* module: any renamed, removed, or newly
+# added knob will fail one of the assertions below and force a review.
+
+
+@requires_real_maestro
+class TestRealMaestroIntegration:
+    def test_knob_parity_with_maestro_simulator_config(self):
+        """MaestroConfig must cover every knob on maestro.SimulatorConfig.
+
+        Compares field names by introspecting ``maestro.SimulatorConfig``'s
+        data descriptors against ``MaestroConfig``'s dataclass fields.  Any
+        drift — maestro adds, removes, or renames a knob — fails here and
+        forces a deliberate decision about whether to expose it.
+        """
+        maestro_fields = {
+            name
+            for name in dir(_real_maestro.SimulatorConfig)
+            if not name.startswith("_")
+        }
+        divi_fields = {f.name for f in fields(MaestroConfig)} - {
+            # mps_qubit_threshold is divi-side auto-MPS logic, not a maestro knob.
+            "mps_qubit_threshold"
+        }
+        assert maestro_fields == divi_fields, (
+            "MaestroConfig is out of sync with maestro.SimulatorConfig.\n"
+            f"  Missing in MaestroConfig: {sorted(maestro_fields - divi_fields)}\n"
+            f"  Extra in MaestroConfig:   {sorted(divi_fields - maestro_fields)}"
+        )
+
+    def test_every_knob_round_trips_to_real_maestro(self):
+        """Every MaestroConfig field survives the hand-off to real maestro.
+
+        Sets every knob to a non-default value and runs a small circuit.  If
+        maestro renames or removes one of the kwargs we forward, the nanobind
+        dispatcher raises ``TypeError`` here — catching the class of break
+        that slipped past us on the previous maestro release.
+        """
+        cfg = MaestroConfig(
+            simulator_type="QCSim",
+            simulation_type="MatrixProductState",
+            max_bond_dimension=16,
+            singular_value_threshold=1e-7,
+            use_double_precision=True,
+            disable_optimized_swapping=True,
+            lookahead_depth=2,
+            mps_measure_no_collapse=False,
+        )
+        sim = MaestroSimulator(shots=100, config=cfg)
+
+        result = sim.submit_circuits({"c0": _BELL_QASM})
+
+        assert sum(result.results[0]["results"].values()) == 100
+
+    def test_expval_path_on_real_maestro(self):
+        """The simple_estimate call path is covered separately from simple_execute."""
+        sim = MaestroSimulator(shots=100)
+
+        result = sim.submit_circuits({"c0": _BELL_QASM}, ham_ops="ZI;IZ")
+
+        assert set(result.results[0]["results"]) == {"ZI", "IZ"}

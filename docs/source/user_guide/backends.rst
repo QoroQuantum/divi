@@ -85,16 +85,32 @@ MaestroSimulator
 **Key Features:**
 
 * **Native C++ Core**: Backed by ``qoro-maestro``, a compiled simulator designed for low per-circuit overhead.
-* **Auto Method Selection**: Switches from Statevector to MatrixProductState for circuits exceeding 22 qubits (configurable via ``mps_qubit_threshold``), so a single backend handles both narrow and wide registers.
+* **Auto Method Selection**: Switches from Statevector to MatrixProductState for circuits exceeding 22 qubits (configurable via :class:`~divi.backends.MaestroConfig`'s ``mps_qubit_threshold``), so a single backend handles both narrow and wide registers.
 * **Multiple Simulation Methods**: Statevector, MatrixProductState, Stabilizer, TensorNetwork, PauliPropagator.
 
 
-Getting Started
-^^^^^^^^^^^^^^^
+.. _configuring-maestrosimulator:
+
+Configuring MaestroSimulator
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Simulator configuration is carried by a dedicated
+:class:`~divi.backends.MaestroConfig` object — the same pattern
+:class:`~divi.backends.QoroService` uses with
+:class:`~divi.backends.ExecutionConfig`, so the mental model is the same
+whether you run locally or in the cloud.  Field semantics are documented in
+the `maestro Python bindings guide <https://qoroquantum.github.io/maestro/d7/d01/python_guide.html#py_config>`_,
+since each :class:`~divi.backends.MaestroConfig` field maps directly to the
+identically-named field on maestro's ``SimulatorConfig``.
+
+Constructing :class:`~divi.backends.MaestroSimulator` with no config gives you
+automatic simulation-method selection: Statevector for narrow circuits, MPS
+above ``mps_qubit_threshold`` (default 22 qubits) so wide registers do not try
+to store a full statevector.
 
 .. code-block:: python
 
-   from divi.backends import MaestroSimulator
+   from divi.backends import MaestroSimulator, MaestroConfig
 
    # Default — auto-selects Statevector or MPS based on circuit size
    backend = MaestroSimulator()
@@ -102,8 +118,10 @@ Getting Started
    # Explicit MPS for large circuits
    backend = MaestroSimulator(
        shots=5000,
-       simulation_type="MatrixProductState",
-       max_bond_dimension=64,
+       config=MaestroConfig(
+           simulation_type="MatrixProductState",
+           max_bond_dimension=64,
+       ),
    )
 
 
@@ -323,7 +341,7 @@ All backends accept ``track_depth=True`` on construction to record per-batch dep
 Operational notes
 -----------------
 
-* **MaestroSimulator and many qubits**: With ``simulation_type=None``, circuits wider than ``mps_qubit_threshold`` (default 22) switch to **MatrixProductState** so a full statevector is not stored. That changes memory and runtime scaling; it is not a generic “make it faster” switch. Override with ``mps_qubit_threshold``, ``simulation_type``, or ``max_bond_dimension`` as needed.
+* **MaestroSimulator and many qubits**: See :ref:`Configuring MaestroSimulator <configuring-maestrosimulator>` above for the auto-MPS threshold and the :class:`~divi.backends.MaestroConfig` fields that control it (``mps_qubit_threshold``, ``simulation_type``, ``max_bond_dimension``).  Note that switching to MPS changes memory and runtime scaling — it is not a generic "make it faster" switch.
 * **QiskitSimulator**: ``n_processes`` and ``shots`` trade throughput, memory, and statistical noise; there is no single knob—balance them for your machine and accuracy needs.
 * **Shot reproducibility**: :meth:`~divi.backends.MaestroSimulator.set_seed` is currently a no-op (the C++ engine does not expose sampling seeds yet). For reproducible shots through Aer, use :class:`~divi.backends.QiskitSimulator` with ``simulation_seed``.
 * **QoroService latency**: Client-side wait time is dominated by how you poll; tune ``polling_interval`` and ``max_retries`` on :class:`~divi.backends.QoroService`. For fast inner loops, use a local simulator; cloud queue time is outside the client library.
