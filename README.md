@@ -38,13 +38,13 @@ Run a VQE energy minimization in a few lines:
 
 ```python
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 from divi.qprog import VQE, HartreeFockAnsatz
 from divi.backends import MaestroSimulator
 from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
 
 # Define an H₂ molecule
-molecule = qml.qchem.Molecule(
+molecule = qp.qchem.Molecule(
     symbols=["H", "H"],
     coordinates=np.array([(0, 0, 0), (0, 0, 0.5)]),
 )

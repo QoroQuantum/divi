@@ -24,13 +24,13 @@ Here's how to set up a basic :class:`~divi.qprog.algorithms.VQE` calculation for
 .. code-block:: python
 
    import numpy as np
-   import pennylane as qml
+   import pennylane as qp
    from divi.qprog import VQE, HartreeFockAnsatz
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
    # Create H2 molecule
-   mol = qml.qchem.Molecule(
+   mol = qp.qchem.Molecule(
        symbols=["H", "H"],
        coordinates=np.array([[0.0, 0.0, -0.6614], [0.0, 0.0, 0.6614]])
    )
@@ -66,16 +66,16 @@ In the case of a Hamiltonian input, the input would be passed to the constructor
 .. code-block:: python
 
    import numpy as np
-   import pennylane as qml
+   import pennylane as qp
    from divi.qprog import VQE, HartreeFockAnsatz
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
-   mol = qml.qchem.Molecule(
+   mol = qp.qchem.Molecule(
        symbols=["H", "H"],
        coordinates=np.array([(0, 0, 0), (0, 0, 0.5)])
    )
-   ham, _ = qml.qchem.molecular_hamiltonian(mol)
+   ham, _ = qp.qchem.molecular_hamiltonian(mol)
 
    vqe_problem = VQE(
        hamiltonian=ham,
@@ -142,7 +142,7 @@ Implement a custom ansatz by subclassing the abstract :class:`~divi.qprog.algori
            raise NotImplementedError
 
 The ``build`` method must return a list of PennyLane operations
-(``list[qml.operation.Operator]``). Refer to the built-in ansätze in the
+(``list[qp.operation.Operator]``). Refer to the built-in ansätze in the
 repository for concrete examples.
 
 VQE Hyperparameter Sweep
@@ -169,12 +169,12 @@ Divi uses `Z-matrices <https://en.wikipedia.org/wiki/Z-matrix_(chemistry)>`_ to 
 
    from divi.qprog import VQEHyperparameterSweep, MoleculeTransformer
    from divi.qprog.optimizers import MonteCarloOptimizer
-   import pennylane as qml
+   import pennylane as qp
    import numpy as np
    from divi.qprog import HartreeFockAnsatz, UCCSDAnsatz
    from divi.backends import MaestroSimulator
 
-   mol = qml.qchem.Molecule(
+   mol = qp.qchem.Molecule(
        symbols=["H", "H"],
        coordinates=np.array([(0, 0, 0), (0, 0, 0.5)])
    )

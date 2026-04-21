@@ -36,7 +36,7 @@ minimal example that encodes a simple 2-qubit Hamiltonian:
 
 .. code-block:: python
 
-   import pennylane as qml
+   import pennylane as qp
    from divi.qprog import QAOA, ScipyOptimizer, ScipyMethod
    from divi.qprog.problems import QAOAProblem
    from divi.backends import MaestroSimulator
@@ -44,11 +44,11 @@ minimal example that encodes a simple 2-qubit Hamiltonian:
    class MyProblem(QAOAProblem):
        @property
        def cost_hamiltonian(self):
-           return -1.0 * qml.Z(0) @ qml.Z(1) + 0.5 * qml.Z(0)
+           return -1.0 * qp.Z(0) @ qp.Z(1) + 0.5 * qp.Z(0)
 
        @property
        def mixer_hamiltonian(self):
-           return qml.X(0) + qml.X(1)
+           return qp.X(0) + qp.X(1)
 
        @property
        def loss_constant(self):
@@ -571,7 +571,7 @@ One QUBO, one set of imports, and one helper for ``create_programs`` → ``run``
 
    import dimod
    import hybrid
-   import pennylane as qml
+   import pennylane as qp
    from divi.qprog import InterpolationStrategy
    from divi.qprog.problems import BinaryOptimizationProblem
    from divi.qprog.workflows import PartitioningProgramEnsemble
@@ -609,7 +609,7 @@ One QUBO, one set of imports, and one helper for ``create_programs`` → ``run``
    ensemble = PartitioningProgramEnsemble(
        problem=problem,
        quantum_routine="pce",
-       ansatz=GenericLayerAnsatz([qml.RY, qml.RZ]),
+       ansatz=GenericLayerAnsatz([qp.RY, qp.RZ]),
        n_layers=2,
        encoding_type="dense",
        alpha=2.0,

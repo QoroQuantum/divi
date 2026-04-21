@@ -21,7 +21,7 @@ from typing import Literal, Sequence
 
 import networkx as nx
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 
 # ---------------------------------------------------------------------------
 # Abstract base class
@@ -36,7 +36,7 @@ class InitialState(ABC):
     """
 
     @abstractmethod
-    def build(self, wires: Sequence[int]) -> list[qml.operation.Operator]:
+    def build(self, wires: Sequence[int]) -> list[qp.operation.Operator]:
         """Return gate operations that prepare this state on *wires*.
 
         Args:
@@ -60,22 +60,22 @@ class InitialState(ABC):
 class ZerosState(InitialState):
     r"""Computational basis state \|00…0⟩ (no gates needed)."""
 
-    def build(self, wires: Sequence[int]) -> list[qml.operation.Operator]:
+    def build(self, wires: Sequence[int]) -> list[qp.operation.Operator]:
         return []
 
 
 class OnesState(InitialState):
     r"""All-ones state \|11…1⟩ via PauliX on every qubit."""
 
-    def build(self, wires: Sequence[int]) -> list[qml.operation.Operator]:
-        return [qml.PauliX(wires=w) for w in wires]
+    def build(self, wires: Sequence[int]) -> list[qp.operation.Operator]:
+        return [qp.PauliX(wires=w) for w in wires]
 
 
 class SuperpositionState(InitialState):
     """Equal superposition via Hadamard on every qubit."""
 
-    def build(self, wires: Sequence[int]) -> list[qml.operation.Operator]:
-        return [qml.Hadamard(wires=w) for w in wires]
+    def build(self, wires: Sequence[int]) -> list[qp.operation.Operator]:
+        return [qp.Hadamard(wires=w) for w in wires]
 
 
 class CustomPerQubitState(InitialState):
@@ -97,22 +97,22 @@ class CustomPerQubitState(InitialState):
             )
         self.state_string = state_string
 
-    def build(self, wires: Sequence[int]) -> list[qml.operation.Operator]:
+    def build(self, wires: Sequence[int]) -> list[qp.operation.Operator]:
         wires = list(wires)
         if len(wires) != len(self.state_string):
             raise ValueError(
                 f"state_string length ({len(self.state_string)}) "
                 f"must match wire count ({len(wires)})."
             )
-        ops: list[qml.operation.Operator] = []
+        ops: list[qp.operation.Operator] = []
         for w, char in zip(wires, self.state_string):
             if char == "1":
-                ops.append(qml.PauliX(wires=w))
+                ops.append(qp.PauliX(wires=w))
             elif char == "+":
-                ops.append(qml.Hadamard(wires=w))
+                ops.append(qp.Hadamard(wires=w))
             elif char == "-":
-                ops.append(qml.PauliX(wires=w))
-                ops.append(qml.Hadamard(wires=w))
+                ops.append(qp.PauliX(wires=w))
+                ops.append(qp.Hadamard(wires=w))
         return ops
 
 
@@ -142,7 +142,7 @@ class WState(InitialState):
         self.block_size = block_size
         self.n_blocks = n_blocks
 
-    def build(self, wires: Sequence[int]) -> list[qml.operation.Operator]:
+    def build(self, wires: Sequence[int]) -> list[qp.operation.Operator]:
         """Prepare W-states on each block of *wires*.
 
         Args:
@@ -155,21 +155,21 @@ class WState(InitialState):
                 f"Expected {expected} wires ({self.block_size} × {self.n_blocks}), "
                 f"got {len(wires)}."
             )
-        ops: list[qml.operation.Operator] = []
+        ops: list[qp.operation.Operator] = []
         for b in range(self.n_blocks):
             start = b * self.block_size
             ops.extend(self._w_state(wires[start : start + self.block_size]))
         return ops
 
     @staticmethod
-    def _w_state(wires: list[int]) -> list[qml.operation.Operator]:
+    def _w_state(wires: list[int]) -> list[qp.operation.Operator]:
         """CRY + CNOT ladder for a single W-state on *wires*."""
         n = len(wires)
-        ops: list[qml.operation.Operator] = [qml.PauliX(wires=wires[0])]
+        ops: list[qp.operation.Operator] = [qp.PauliX(wires=wires[0])]
         for k in range(n - 1):
             angle = 2 * np.arccos(np.sqrt(1.0 / (n - k)))
-            ops.append(qml.CRY(phi=angle, wires=[wires[k], wires[k + 1]]))
-            ops.append(qml.CNOT(wires=[wires[k + 1], wires[k]]))
+            ops.append(qp.CRY(phi=angle, wires=[wires[k], wires[k + 1]]))
+            ops.append(qp.CNOT(wires=[wires[k + 1], wires[k]]))
         return ops
 
 

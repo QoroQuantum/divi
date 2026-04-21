@@ -8,7 +8,7 @@ from warnings import warn
 
 import numpy as np
 import numpy.typing as npt
-import pennylane as qml
+import pennylane as qp
 from qiskit.circuit import ParameterVector
 
 from divi.circuits import MetaCircuit, qscript_to_meta
@@ -195,8 +195,8 @@ class PCE(VQE):
 
         # Placeholder Hamiltonian required by VQE; we care about the measurement
         # probability distribution, and Z-basis measurements provide it.
-        placeholder_hamiltonian = qml.Hamiltonian(
-            [1.0] * self.n_qubits, [qml.PauliZ(i) for i in range(self.n_qubits)]
+        placeholder_hamiltonian = qp.Hamiltonian(
+            [1.0] * self.n_qubits, [qp.PauliZ(i) for i in range(self.n_qubits)]
         )
         # PCE replaces the cost pipeline with PCECostStage (a standalone
         # BundleStage), so VQE's grouping_strategy is irrelevant for cost
@@ -259,14 +259,14 @@ class PCE(VQE):
         flat_params = tuple(weights.flatten())
         return {
             "cost_circuit": qscript_to_meta(
-                qml.tape.QuantumScript(
-                    ops=ops, measurements=[qml.expval(self._cost_hamiltonian)]
+                qp.tape.QuantumScript(
+                    ops=ops, measurements=[qp.expval(self._cost_hamiltonian)]
                 ),
                 precision=self._precision,
                 parameter_order=flat_params,
             ),
             "meas_circuit": qscript_to_meta(
-                qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()]),
+                qp.tape.QuantumScript(ops=ops, measurements=[qp.probs()]),
                 precision=self._precision,
                 parameter_order=flat_params,
             ),

@@ -5,7 +5,7 @@
 import dimod
 import hybrid
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 import pytest
 import scipy.sparse as sps
 
@@ -559,12 +559,12 @@ class TestQUBOInput:
 
         assert len(qaoa_problem.cost_hamiltonian) == 4
         assert all(
-            isinstance(op, (qml.Z, qml.ops.Prod))
+            isinstance(op, (qp.Z, qp.ops.Prod))
             for op in qaoa_problem.cost_hamiltonian.terms()[1]
         )
         assert len(qaoa_problem.problem.mixer_hamiltonian) == 3
         assert all(
-            isinstance(op, qml.X)
+            isinstance(op, qp.X)
             for op in qaoa_problem.problem.mixer_hamiltonian.terms()[1]
         )
 
@@ -761,11 +761,11 @@ class TestQUBOInput:
 
         assert len(qaoa_problem.cost_hamiltonian) == 3
         assert all(
-            isinstance(op, qml.Z) for op in qaoa_problem.cost_hamiltonian.terms()[1]
+            isinstance(op, qp.Z) for op in qaoa_problem.cost_hamiltonian.terms()[1]
         )
         assert len(qaoa_problem.problem.mixer_hamiltonian) == 3
         assert all(
-            isinstance(op, qml.X)
+            isinstance(op, qp.X)
             for op in qaoa_problem.problem.mixer_hamiltonian.terms()[1]
         )
 
@@ -869,7 +869,7 @@ class TestQUBOInput:
 
 @pytest.fixture
 def basic_ansatz() -> GenericLayerAnsatz:
-    return GenericLayerAnsatz([qml.RY, qml.RZ])
+    return GenericLayerAnsatz([qp.RY, qp.RZ])
 
 
 @pytest.fixture

@@ -4,7 +4,7 @@
 
 """Tests for divi.pipeline.stages._trotter_spec_stage."""
 
-import pennylane as qml
+import pennylane as qp
 import pytest
 
 from divi.circuits import MetaCircuit, qscript_to_meta
@@ -31,8 +31,8 @@ class _DummyStrategy:
 
 
 def _meta_factory(hamiltonian, ham_id):
-    qscript = qml.tape.QuantumScript(
-        ops=[qml.Hadamard(0)], measurements=[qml.expval(hamiltonian)]
+    qscript = qp.tape.QuantumScript(
+        ops=[qp.Hadamard(0)], measurements=[qp.expval(hamiltonian)]
     )
     return qscript_to_meta(qscript)
 
@@ -49,7 +49,7 @@ class TestExpand:
             _DummyStrategy(n=3), meta_circuit_factory=_meta_factory
         )
         env = PipelineEnv(backend=dummy_expval_backend)
-        batch, token = stage.expand(qml.Z(0), env)
+        batch, token = stage.expand(qp.Z(0), env)
 
         assert len(batch) == 3
         for i in range(3):
@@ -63,7 +63,7 @@ class TestExpand:
             ExactTrotterization(), meta_circuit_factory=_meta_factory
         )
         env = PipelineEnv(backend=dummy_expval_backend)
-        batch, _ = stage.expand(qml.Z(0) + qml.Z(1), env)
+        batch, _ = stage.expand(qp.Z(0) + qp.Z(1), env)
         assert len(batch) == 1
 
     def test_raises_empty_hamiltonian(self, dummy_expval_backend):
@@ -72,7 +72,7 @@ class TestExpand:
         )
         env = PipelineEnv(backend=dummy_expval_backend)
         with pytest.raises(ValueError, match="only constant terms|empty"):
-            stage.expand(qml.I(0), env)
+            stage.expand(qp.I(0), env)
 
     def test_raises_non_operator_input(self, dummy_expval_backend):
         stage = TrotterSpecStage(_DummyStrategy(), meta_circuit_factory=_meta_factory)
@@ -92,7 +92,7 @@ class TestIntrospect:
             _DummyStrategy(n=3), meta_circuit_factory=_meta_factory
         )
         env = PipelineEnv(backend=dummy_expval_backend)
-        batch, token = stage.expand(qml.Z(0), env)
+        batch, token = stage.expand(qp.Z(0), env)
 
         info = stage.introspect(batch, env, token)
         assert info["strategy"] == "_DummyStrategy"
@@ -124,7 +124,7 @@ class TestReduce:
             branch_keys = sorted(lineage_by_label.values(), key=str)
             return {bk: 1.0 + i for i, bk in enumerate(branch_keys)}
 
-        reduced = pipeline.run(initial_spec=qml.Z(0), env=env, execute_fn=_execute_fn)
+        reduced = pipeline.run(initial_spec=qp.Z(0), env=env, execute_fn=_execute_fn)
         assert len(reduced) >= 1
         assert any(v == pytest.approx(2.0) for v in reduced.values())
 
@@ -185,7 +185,7 @@ class TestDryRun:
             ]
         )
         env = PipelineEnv(backend=dummy_expval_backend)
-        trace = pipeline.run_forward_pass(initial_spec=qml.Z(0), env=env)
+        trace = pipeline.run_forward_pass(initial_spec=qp.Z(0), env=env)
 
         assert len(trace.final_batch) >= 2
         # All keys should contain the ham axis

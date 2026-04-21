@@ -7,7 +7,7 @@ from itertools import tee
 from typing import Literal, Sequence
 from warnings import warn
 
-import pennylane as qml
+import pennylane as qp
 
 
 def _require_trainable_params(n_params: int, ansatz_name: str) -> int:
@@ -36,7 +36,7 @@ class Ansatz(ABC):
     @abstractmethod
     def build(
         self, params, n_qubits: int, n_layers: int, **kwargs
-    ) -> list[qml.operation.Operator]:
+    ) -> list[qp.operation.Operator]:
         """
         Builds the ansatz circuit and returns a list of operations.
 
@@ -47,7 +47,7 @@ class Ansatz(ABC):
             **kwargs: Additional arguments specific to the ansatz.
 
         Returns:
-            list[qml.operation.Operator]: List of PennyLane operations representing the ansatz.
+            list[qp.operation.Operator]: List of PennyLane operations representing the ansatz.
         """
         raise NotImplementedError
 
@@ -62,8 +62,8 @@ class GenericLayerAnsatz(Ansatz):
 
     def __init__(
         self,
-        gate_sequence: Sequence[qml.operation.Operator],
-        entangler: qml.operation.Operator | None = None,
+        gate_sequence: Sequence[qp.operation.Operator],
+        entangler: qp.operation.Operator | None = None,
         entangling_layout: (
             Literal["linear", "brick", "circular", "all-to-all"]
             | Sequence[tuple[int, int]]
@@ -72,13 +72,13 @@ class GenericLayerAnsatz(Ansatz):
     ):
         """
         Args:
-            gate_sequence (list[Callable]): List of one-qubit gate classes (e.g., qml.RY, qml.Rot).
-            entangler (Callable): Two-qubit entangling gate class (e.g., qml.CNOT, qml.CZ).
+            gate_sequence (list[Callable]): List of one-qubit gate classes (e.g., qp.RY, qp.Rot).
+            entangler (Callable): Two-qubit entangling gate class (e.g., qp.CNOT, qp.CZ).
                                   If None, no entanglement is applied.
             entangling_layout (str): Layout for entangling layer ("linear", "all-to-all", etc.).
         """
         if not all(
-            issubclass(g, qml.operation.Operator) and g.num_wires == 1
+            issubclass(g, qp.operation.Operator) and g.num_wires == 1
             for g in gate_sequence
         ):
             raise ValueError(
@@ -86,8 +86,8 @@ class GenericLayerAnsatz(Ansatz):
             )
         self.gate_sequence = gate_sequence
 
-        if entangler not in (None, qml.CNOT, qml.CZ):
-            raise ValueError("Only qml.CNOT and qml.CZ are supported as entanglers.")
+        if entangler not in (None, qp.CNOT, qp.CZ):
+            raise ValueError("Only qp.CNOT and qp.CZ are supported as entanglers.")
         self.entangler = entangler
 
         self.entangling_layout = entangling_layout
@@ -134,7 +134,7 @@ class GenericLayerAnsatz(Ansatz):
 
     def build(
         self, params, n_qubits: int, n_layers: int, **kwargs
-    ) -> list[qml.operation.Operator]:
+    ) -> list[qp.operation.Operator]:
         # calculate how many params each gate needs per qubit
         gate_param_counts = [getattr(g, "num_params", 1) for g in self.gate_sequence]
         per_qubit = sum(gate_param_counts)
@@ -191,12 +191,12 @@ class QAOAAnsatz(Ansatz):
         Returns:
             int: Number of parameters needed per layer.
         """
-        n_params = qml.QAOAEmbedding.shape(n_layers=1, n_wires=n_qubits)[1]
+        n_params = qp.QAOAEmbedding.shape(n_layers=1, n_wires=n_qubits)[1]
         return _require_trainable_params(n_params, QAOAAnsatz.__name__)
 
     def build(
         self, params, n_qubits: int, n_layers: int, **kwargs
-    ) -> list[qml.operation.Operator]:
+    ) -> list[qp.operation.Operator]:
         """
         Build the QAOA ansatz circuit.
 
@@ -207,13 +207,13 @@ class QAOAAnsatz(Ansatz):
             **kwargs: Additional unused arguments.
 
         Returns:
-            list[qml.operation.Operator]: List of operations representing the QAOA ansatz.
+            list[qp.operation.Operator]: List of operations representing the QAOA ansatz.
         """
-        return qml.QAOAEmbedding.compute_decomposition(
+        return qp.QAOAEmbedding.compute_decomposition(
             features=[],
             weights=params.reshape(n_layers, -1),
             wires=range(n_qubits),
-            local_field=qml.RY,
+            local_field=qp.RY,
         )
 
 
@@ -235,7 +235,7 @@ class HardwareEfficientAnsatz(Ansatz):
 
     def build(
         self, params, n_qubits: int, n_layers: int, **kwargs
-    ) -> list[qml.operation.Operator]:
+    ) -> list[qp.operation.Operator]:
         """Not yet implemented."""
         raise NotImplementedError("HardwareEfficientAnsatz is not yet implemented.")
 
@@ -265,14 +265,14 @@ class UCCSDAnsatz(Ansatz):
         Returns:
             int: Number of parameters (number of single + double excitations).
         """
-        singles, doubles = qml.qchem.excitations(n_electrons, n_qubits)
-        s_wires, d_wires = qml.qchem.excitations_to_wires(singles, doubles)
+        singles, doubles = qp.qchem.excitations(n_electrons, n_qubits)
+        s_wires, d_wires = qp.qchem.excitations_to_wires(singles, doubles)
         n_params = len(s_wires) + len(d_wires)
         return _require_trainable_params(n_params, UCCSDAnsatz.__name__)
 
     def build(
         self, params, n_qubits: int, n_layers: int, **kwargs
-    ) -> list[qml.operation.Operator]:
+    ) -> list[qp.operation.Operator]:
         """
         Build the UCCSD ansatz circuit.
 
@@ -284,14 +284,14 @@ class UCCSDAnsatz(Ansatz):
                 n_electrons (int): Number of electrons in the system (required).
 
         Returns:
-            list[qml.operation.Operator]: List of operations representing the UCCSD ansatz.
+            list[qp.operation.Operator]: List of operations representing the UCCSD ansatz.
         """
         n_electrons = kwargs.pop("n_electrons")
-        singles, doubles = qml.qchem.excitations(n_electrons, n_qubits)
-        s_wires, d_wires = qml.qchem.excitations_to_wires(singles, doubles)
-        hf_state = qml.qchem.hf_state(n_electrons, n_qubits)
+        singles, doubles = qp.qchem.excitations(n_electrons, n_qubits)
+        s_wires, d_wires = qp.qchem.excitations_to_wires(singles, doubles)
+        hf_state = qp.qchem.hf_state(n_electrons, n_qubits)
 
-        return qml.UCCSD.compute_decomposition(
+        return qp.UCCSD.compute_decomposition(
             params.reshape(n_layers, -1),
             wires=range(n_qubits),
             s_wires=s_wires,
@@ -323,13 +323,13 @@ class HartreeFockAnsatz(Ansatz):
         Returns:
             int: Number of parameters (number of single + double excitations).
         """
-        singles, doubles = qml.qchem.excitations(n_electrons, n_qubits)
+        singles, doubles = qp.qchem.excitations(n_electrons, n_qubits)
         n_params = len(singles) + len(doubles)
         return _require_trainable_params(n_params, HartreeFockAnsatz.__name__)
 
     def build(
         self, params, n_qubits: int, n_layers: int, **kwargs
-    ) -> list[qml.operation.Operator]:
+    ) -> list[qp.operation.Operator]:
         """
         Build the Hartree-Fock ansatz circuit.
 
@@ -341,16 +341,16 @@ class HartreeFockAnsatz(Ansatz):
                 n_electrons (int): Number of electrons in the system (required).
 
         Returns:
-            list[qml.operation.Operator]: List of operations representing the Hartree-Fock ansatz.
+            list[qp.operation.Operator]: List of operations representing the Hartree-Fock ansatz.
         """
         n_electrons = kwargs.pop("n_electrons")
-        singles, doubles = qml.qchem.excitations(n_electrons, n_qubits)
-        hf_state = qml.qchem.hf_state(n_electrons, n_qubits)
+        singles, doubles = qp.qchem.excitations(n_electrons, n_qubits)
+        hf_state = qp.qchem.hf_state(n_electrons, n_qubits)
 
         operations = []
         for layer_params in params.reshape(n_layers, -1):
             operations.extend(
-                qml.AllSinglesDoubles.compute_decomposition(
+                qp.AllSinglesDoubles.compute_decomposition(
                     layer_params,
                     wires=range(n_qubits),
                     hf_state=hf_state,
@@ -398,7 +398,7 @@ class QCCAnsatz(Ansatz):
 
     def build(
         self, params, n_qubits: int, n_layers: int, **kwargs
-    ) -> list[qml.operation.Operator]:
+    ) -> list[qp.operation.Operator]:
         """
         Build the QCC ansatz circuit.
 
@@ -410,10 +410,10 @@ class QCCAnsatz(Ansatz):
                 n_electrons (int): Number of electrons in the system (required).
 
         Returns:
-            list[qml.operation.Operator]: List of operations representing the QCC ansatz.
+            list[qp.operation.Operator]: List of operations representing the QCC ansatz.
         """
         n_electrons = kwargs.pop("n_electrons")
-        hf_state = qml.qchem.hf_state(n_electrons, n_qubits)
+        hf_state = qp.qchem.hf_state(n_electrons, n_qubits)
         wires = list(range(n_qubits))
         n_singles = n_qubits
 
@@ -423,14 +423,14 @@ class QCCAnsatz(Ansatz):
             for pauli in ("XX", "YY", "ZZ")
         ]
 
-        operations = [qml.BasisState(hf_state, wires=wires)]
+        operations = [qp.BasisState(hf_state, wires=wires)]
 
         for layer_params in params.reshape(n_layers, -1):
             for i in range(n_qubits):
-                operations.append(qml.RY(layer_params[i], wires=wires[i]))
+                operations.append(qp.RY(layer_params[i], wires=wires[i]))
 
             ent_params = layer_params[n_singles:]
             for (pauli_string, pair), theta in zip(entangler_pool, ent_params):
-                operations.append(qml.PauliRot(theta, pauli_string, wires=pair))
+                operations.append(qp.PauliRot(theta, pauli_string, wires=pair))
 
         return operations

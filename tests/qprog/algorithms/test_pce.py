@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 import pytest
 
 from divi.hamiltonians import _evaluate_binary_polynomial
@@ -31,7 +31,7 @@ from tests.qprog.qprog_contracts import verify_metacircuit_dict
 
 @pytest.fixture
 def basic_ansatz() -> GenericLayerAnsatz:
-    return GenericLayerAnsatz([qml.RY, qml.RZ])
+    return GenericLayerAnsatz([qp.RY, qp.RZ])
 
 
 @pytest.fixture

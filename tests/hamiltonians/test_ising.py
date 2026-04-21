@@ -6,7 +6,7 @@
 
 import dimod
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 import pytest
 import scipy.sparse as sps
 
@@ -52,12 +52,10 @@ class TestQuboToIsingConversion:
         qubo_matrix = np.array([[-1.0, 2.0], [2.0, -1.0]])
         hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
 
-        expected_hamiltonian = (
-            1.0 * (qml.Z(0) @ qml.Z(1)) - 0.5 * qml.Z(0) - 0.5 * qml.Z(1)
-        )
+        expected_hamiltonian = 1.0 * (qp.Z(0) @ qp.Z(1)) - 0.5 * qp.Z(0) - 0.5 * qp.Z(1)
 
         assert np.isclose(constant, 0.0)
-        assert qml.equal(hamiltonian.simplify(), expected_hamiltonian.simplify())
+        assert qp.equal(hamiltonian.simplify(), expected_hamiltonian.simplify())
 
     def test_upper_triangular_dense_qubo(self):
         """
@@ -69,12 +67,10 @@ class TestQuboToIsingConversion:
         qubo_matrix = np.array([[-1.0, 4.0], [0.0, -1.0]])
         hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
 
-        expected_hamiltonian = (
-            1.0 * (qml.Z(0) @ qml.Z(1)) - 0.5 * qml.Z(0) - 0.5 * qml.Z(1)
-        )
+        expected_hamiltonian = 1.0 * (qp.Z(0) @ qp.Z(1)) - 0.5 * qp.Z(0) - 0.5 * qp.Z(1)
 
         assert np.isclose(constant, 0.0)
-        assert qml.equal(hamiltonian.simplify(), expected_hamiltonian.simplify())
+        assert qp.equal(hamiltonian.simplify(), expected_hamiltonian.simplify())
 
     def test_non_sanitized_qubo_raises_warning(self):
         """
@@ -87,12 +83,10 @@ class TestQuboToIsingConversion:
             hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
 
         # Symmetrized version is [[-1, 2], [2, -1]] → same Ising as symmetric test.
-        expected_hamiltonian = (
-            1.0 * (qml.Z(0) @ qml.Z(1)) - 0.5 * qml.Z(0) - 0.5 * qml.Z(1)
-        )
+        expected_hamiltonian = 1.0 * (qp.Z(0) @ qp.Z(1)) - 0.5 * qp.Z(0) - 0.5 * qp.Z(1)
 
         assert np.isclose(constant, 0.0)
-        assert qml.equal(hamiltonian.simplify(), expected_hamiltonian.simplify())
+        assert qp.equal(hamiltonian.simplify(), expected_hamiltonian.simplify())
 
     def test_non_sanitized_sparse_qubo_raises_warning(self):
         """Non-sanitized sparse QUBO raises warning and is symmetrized."""
@@ -101,11 +95,9 @@ class TestQuboToIsingConversion:
         with pytest.warns(UserWarning, match="neither symmetric nor upper triangular"):
             hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
 
-        expected_hamiltonian = (
-            1.0 * (qml.Z(0) @ qml.Z(1)) - 0.5 * qml.Z(0) - 0.5 * qml.Z(1)
-        )
+        expected_hamiltonian = 1.0 * (qp.Z(0) @ qp.Z(1)) - 0.5 * qp.Z(0) - 0.5 * qp.Z(1)
         assert np.isclose(constant, 0.0)
-        assert qml.equal(hamiltonian.simplify(), expected_hamiltonian.simplify())
+        assert qp.equal(hamiltonian.simplify(), expected_hamiltonian.simplify())
 
     def test_diagonal_qubo(self):
         """
@@ -114,23 +106,21 @@ class TestQuboToIsingConversion:
         qubo_matrix = np.array([[1.0, 0.0], [0.0, -2.0]])
         hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
 
-        expected_hamiltonian = -0.5 * qml.Z(0) + 1.0 * qml.Z(1)
+        expected_hamiltonian = -0.5 * qp.Z(0) + 1.0 * qp.Z(1)
         expected_constant = -0.5
 
         assert np.isclose(constant, expected_constant)
-        assert qml.equal(hamiltonian, expected_hamiltonian)
+        assert qp.equal(hamiltonian, expected_hamiltonian)
 
     def test_sparse_qubo(self):
         """Tests conversion with a sparse QUBO matrix."""
         qubo_matrix = sps.csr_matrix([[-1.0, 2.0], [2.0, -1.0]])
         hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
 
-        expected_hamiltonian = (
-            1.0 * (qml.Z(0) @ qml.Z(1)) - 0.5 * qml.Z(0) - 0.5 * qml.Z(1)
-        )
+        expected_hamiltonian = 1.0 * (qp.Z(0) @ qp.Z(1)) - 0.5 * qp.Z(0) - 0.5 * qp.Z(1)
 
         assert np.isclose(constant, 0.0)
-        assert qml.equal(hamiltonian.simplify(), expected_hamiltonian.simplify())
+        assert qp.equal(hamiltonian.simplify(), expected_hamiltonian.simplify())
 
     def test_3x3_qubo(self):
         """Tests a larger 3x3 QUBO matrix to ensure correct term summation."""
@@ -140,12 +130,12 @@ class TestQuboToIsingConversion:
 
         expected_constant = 10.5
         expected_hamiltonian = (
-            1.0 * (qml.Z(0) @ qml.Z(1))
-            + 1.5 * (qml.Z(0) @ qml.Z(2))
-            + 2.5 * (qml.Z(1) @ qml.Z(2))
-            - 3.0 * qml.Z(0)
-            - 5.5 * qml.Z(1)
-            - 7.0 * qml.Z(2)
+            1.0 * (qp.Z(0) @ qp.Z(1))
+            + 1.5 * (qp.Z(0) @ qp.Z(2))
+            + 2.5 * (qp.Z(1) @ qp.Z(2))
+            - 3.0 * qp.Z(0)
+            - 5.5 * qp.Z(1)
+            - 7.0 * qp.Z(2)
         )
 
         assert np.isclose(constant, expected_constant)
@@ -241,7 +231,7 @@ class TestQuboToIsingConversion:
         else:
             hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
 
-        h_matrix = np.real(np.diag(qml.matrix(hamiltonian, wire_order=range(n))))
+        h_matrix = np.real(np.diag(qp.matrix(hamiltonian, wire_order=range(n))))
 
         for bits in iterproduct((0, 1), repeat=n):
             x = np.array(bits, dtype=float)
@@ -280,7 +270,7 @@ class TestBinaryToIsingConverters:
         z_vals = {i: 1 - (2 * assignment[var]) for var, i in variable_to_idx.items()}
         energy = float(constant)
         for coeff, op in zip(coeffs, ops):
-            if isinstance(op, qml.ops.Prod):
+            if isinstance(op, qp.ops.Prod):
                 wires = [int(wire) for wire in op.wires]
                 parity = np.prod([z_vals[w] for w in wires])
             else:
@@ -375,7 +365,7 @@ class TestBinaryToIsingConverters:
         # Explicit wire_order ensures consistent bitstring↔energy mapping
         # regardless of operator wire ordering (which varies with dimod's
         # non-deterministic ancilla naming).
-        h_matrix = qml.matrix(result.operator, wire_order=range(n_total))
+        h_matrix = qp.matrix(result.operator, wire_order=range(n_total))
 
         # Group all computational-basis energies by decoded original assignment,
         # then verify the minimum matches the polynomial energy.
@@ -479,7 +469,7 @@ class TestQuboToIsing:
         result = qubo_to_ising(qubo)
         # The cleaned hamiltonian should not be a pure Identity
         # (constant terms are absorbed into loss_constant)
-        assert not isinstance(result.cost_hamiltonian, qml.Identity)
+        assert not isinstance(result.cost_hamiltonian, qp.Identity)
 
     # -- n_qubits matches wire count --
 

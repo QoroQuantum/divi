@@ -5,7 +5,7 @@
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 import pytest
 from sklearn.decomposition import PCA
 
@@ -26,13 +26,13 @@ from divi.viz import scan_1d, scan_2d, scan_interp_1d, scan_interp_2d, scan_pca
 
 @pytest.fixture
 def basic_ansatz():
-    return GenericLayerAnsatz([qml.RY, qml.RZ])
+    return GenericLayerAnsatz([qp.RY, qp.RZ])
 
 
 @pytest.fixture
 def vqe_program(dummy_simulator, basic_ansatz):
     return VQE(
-        hamiltonian=qml.Z(0),
+        hamiltonian=qp.Z(0),
         n_electrons=1,
         ansatz=basic_ansatz,
         n_layers=1,
@@ -63,9 +63,9 @@ def pce_program_soft(dummy_simulator, basic_ansatz):
 
 @pytest.fixture
 def custom_vqa_program(dummy_simulator):
-    qscript = qml.tape.QuantumScript(
-        ops=[qml.RX(0.0, wires=0), qml.RZ(0.0, wires=0)],
-        measurements=[qml.expval(qml.Z(0))],
+    qscript = qp.tape.QuantumScript(
+        ops=[qp.RX(0.0, wires=0), qp.RZ(0.0, wires=0)],
+        measurements=[qp.expval(qp.Z(0))],
     )
     return CustomVQA(qscript=qscript, backend=dummy_simulator)
 

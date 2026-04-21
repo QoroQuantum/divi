@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 import pytest
 import sympy
 
@@ -30,10 +30,10 @@ class TestGenericLayerAnsatz:
     @pytest.mark.parametrize(
         "gate_sequence, entangler, layout",
         [
-            ([qml.RX], qml.CNOT, "linear"),
-            ([qml.RY, qml.RZ], qml.CZ, "circular"),
-            ([qml.Rot], None, "all-to-all"),
-            ([qml.RX], qml.CNOT, [(0, 2), (1, 3)]),
+            ([qp.RX], qp.CNOT, "linear"),
+            ([qp.RY, qp.RZ], qp.CZ, "circular"),
+            ([qp.Rot], None, "all-to-all"),
+            ([qp.RX], qp.CNOT, [(0, 2), (1, 3)]),
         ],
     )
     @pytest.mark.filterwarnings("ignore::UserWarning")
@@ -50,21 +50,21 @@ class TestGenericLayerAnsatz:
 
     def test_initialization_invalid_gate_sequence_type_error(self):
         """Tests that a TypeError is raised for non-class items in the sequence."""
-        bad_sequence = [qml.RX, "not-a-gate"]
+        bad_sequence = [qp.RX, "not-a-gate"]
         with pytest.raises(TypeError, match=r"issubclass\(\) arg 1 must be a class"):
             GenericLayerAnsatz(gate_sequence=bad_sequence)
 
     def test_initialization_invalid_gate_sequence_value_error(self):
         """Tests that a ValueError is raised for multi-qubit gates."""
-        bad_sequence = [qml.CNOT]
+        bad_sequence = [qp.CNOT]
         with pytest.raises(ValueError, match="must be PennyLane one-qubit gate"):
             GenericLayerAnsatz(gate_sequence=bad_sequence)
 
     def test_initialization_invalid_entangler(self):
         """Tests that initialization fails with an unsupported entangler."""
-        with pytest.raises(ValueError, match="Only qml.CNOT and qml.CZ are supported"):
+        with pytest.raises(ValueError, match="Only qp.CNOT and qp.CZ are supported"):
             GenericLayerAnsatz(
-                gate_sequence=[qml.RX], entangler=qml.CRX, entangling_layout="linear"
+                gate_sequence=[qp.RX], entangler=qp.CRX, entangling_layout="linear"
             )
 
     def test_initialization_invalid_layout_string(self):
@@ -73,8 +73,8 @@ class TestGenericLayerAnsatz:
             ValueError, match="must be 'linear', 'circular', 'all-to-all'"
         ):
             GenericLayerAnsatz(
-                gate_sequence=[qml.RX],
-                entangler=qml.CNOT,
+                gate_sequence=[qp.RX],
+                entangler=qp.CNOT,
                 entangling_layout="invalid_layout",
             )
 
@@ -82,16 +82,16 @@ class TestGenericLayerAnsatz:
         """Tests that a warning is issued if a layout is given but entangler is None."""
         with pytest.warns(UserWarning, match="`entangler` is None"):
             GenericLayerAnsatz(
-                gate_sequence=[qml.RX], entangler=None, entangling_layout="linear"
+                gate_sequence=[qp.RX], entangler=None, entangling_layout="linear"
             )
 
     @pytest.mark.parametrize(
         "gate_sequence, n_qubits, expected_params",
         [
-            ([qml.RX], 4, 4),
-            ([qml.RX, qml.RZ], 4, 8),
-            ([qml.Rot], 3, 9),
-            ([qml.RY, qml.Rot], 2, 8),  # 1 + 3 params per qubit
+            ([qp.RX], 4, 4),
+            ([qp.RX, qp.RZ], 4, 8),
+            ([qp.Rot], 3, 9),
+            ([qp.RY, qp.Rot], 2, 8),  # 1 + 3 params per qubit
         ],
     )
     def test_n_params_per_layer(self, gate_sequence, n_qubits, expected_params):
@@ -101,14 +101,14 @@ class TestGenericLayerAnsatz:
 
     def test_n_params_per_layer_rejects_parameter_free_ansatz(self):
         """Tests that parameter-free ansatz is rejected."""
-        ansatz = GenericLayerAnsatz(gate_sequence=[qml.Hadamard])
+        ansatz = GenericLayerAnsatz(gate_sequence=[qp.Hadamard])
         with pytest.raises(ValueError, match="must define at least one trainable"):
             ansatz.n_params_per_layer(n_qubits=2)
 
     def test_build_no_entangler(self):
         """Tests building a circuit with only rotation gates."""
         n_qubits, n_layers = 2, 2
-        ansatz = GenericLayerAnsatz(gate_sequence=[qml.RX, qml.RY], entangler=None)
+        ansatz = GenericLayerAnsatz(gate_sequence=[qp.RX, qp.RY], entangler=None)
         n_params = n_layers * ansatz.n_params_per_layer(n_qubits)
         params = sympy.symarray("p", n_params)
 
@@ -124,7 +124,7 @@ class TestGenericLayerAnsatz:
         """Tests building a circuit with rotation and CNOT gates."""
         n_qubits, n_layers = 3, 1
         ansatz = GenericLayerAnsatz(
-            gate_sequence=[qml.RX], entangler=qml.CNOT, entangling_layout="linear"
+            gate_sequence=[qp.RX], entangler=qp.CNOT, entangling_layout="linear"
         )
         n_params = n_layers * ansatz.n_params_per_layer(n_qubits)
         params = sympy.symarray("p", n_params)
@@ -160,10 +160,10 @@ class TestQAOAAnsatz:
         # Actually, let's check: for n_qubits=4, n_layers=3, we get 40 operations
         assert len(ops) == 40
         # Should start with Hadamard gates
-        assert all(isinstance(op, qml.Hadamard) for op in ops[:n_qubits])
+        assert all(isinstance(op, qp.Hadamard) for op in ops[:n_qubits])
         # Should contain MultiRZ and RY operations
-        assert any(isinstance(op, qml.MultiRZ) for op in ops)
-        assert any(isinstance(op, qml.RY) for op in ops)
+        assert any(isinstance(op, qp.MultiRZ) for op in ops)
+        assert any(isinstance(op, qp.RY) for op in ops)
 
 
 # --- Test HardwareEfficientAnsatz ---
@@ -202,7 +202,7 @@ class TestUCCSDAnsatz:
         n_params = n_layers * ansatz.n_params_per_layer(n_qubits, n_electrons)
         params = sympy.symarray("p", n_params)
 
-        # n_layers is handled internally by qml.UCCSD via n_repeats
+        # n_layers is handled internally by qp.UCCSD via n_repeats
         ops = get_circuit_operations(
             ansatz, params, n_qubits, n_layers=n_layers, n_electrons=n_electrons
         )
@@ -211,14 +211,14 @@ class TestUCCSDAnsatz:
         # 1 BasisState + 6 excitation operations (1 double + 2 singles per layer)
         assert len(ops) == 7
         # First operation should be BasisState with the HF state
-        assert isinstance(ops[0], qml.BasisState)
+        assert isinstance(ops[0], qp.BasisState)
         assert np.all(ops[0].data[0] == mock_hf)
         # Should contain FermionicDoubleExcitation and FermionicSingleExcitation operations
         double_excitations = [
-            op for op in ops if isinstance(op, qml.FermionicDoubleExcitation)
+            op for op in ops if isinstance(op, qp.FermionicDoubleExcitation)
         ]
         single_excitations = [
-            op for op in ops if isinstance(op, qml.FermionicSingleExcitation)
+            op for op in ops if isinstance(op, qp.FermionicSingleExcitation)
         ]
         assert len(double_excitations) == 2  # One per layer
         assert len(single_excitations) == 4  # Two per layer
@@ -256,7 +256,7 @@ class TestHartreeFockAnsatz:
         assert len(ops) == 8
 
         # First layer should have BasisState with hf_state
-        assert isinstance(ops[0], qml.BasisState)
+        assert isinstance(ops[0], qp.BasisState)
         assert np.all(ops[0].data[0] == mock_hf)
 
         # Second layer should have BasisState (at index 4, after first 4 operations)
@@ -266,11 +266,11 @@ class TestHartreeFockAnsatz:
         # The reset logic in the implementation attempts to modify _hyperparameters["hf_state"],
         # but BasisState doesn't have this, so the reset may not work as intended.
         # We verify the structure is correct - both layers have BasisState operations.
-        assert isinstance(second_layer_basis, qml.BasisState)
+        assert isinstance(second_layer_basis, qp.BasisState)
 
         # Should contain DoubleExcitation and SingleExcitation operations
-        double_excitations = [op for op in ops if isinstance(op, qml.DoubleExcitation)]
-        single_excitations = [op for op in ops if isinstance(op, qml.SingleExcitation)]
+        double_excitations = [op for op in ops if isinstance(op, qp.DoubleExcitation)]
+        single_excitations = [op for op in ops if isinstance(op, qp.SingleExcitation)]
         assert len(double_excitations) == 2  # One per layer
         assert len(single_excitations) == 4  # Two per layer
 
@@ -303,18 +303,18 @@ class TestQCCAnsatz:
         assert len(ops) == 14
 
         # First operation should be BasisState with HF state
-        assert isinstance(ops[0], qml.BasisState)
+        assert isinstance(ops[0], qp.BasisState)
         assert np.all(ops[0].data[0] == mock_hf)
 
         # Next 4 should be RY on wires 0..3
         ry_ops = ops[1:5]
-        assert all(isinstance(op, qml.RY) for op in ry_ops)
+        assert all(isinstance(op, qp.RY) for op in ry_ops)
         assert [op.wires.tolist() for op in ry_ops] == [[0], [1], [2], [3]]
 
         # Remaining 9 should be PauliRot (XX, YY, ZZ for each adjacent pair)
         pauli_ops = ops[5:]
         assert len(pauli_ops) == 9
-        assert all(isinstance(op, qml.PauliRot) for op in pauli_ops)
+        assert all(isinstance(op, qp.PauliRot) for op in pauli_ops)
 
         # Check Pauli strings cycle through XX, YY, ZZ for pairs (0,1), (1,2), (2,3)
         expected = [
@@ -348,14 +348,14 @@ class TestQCCAnsatz:
         assert len(ops) == 27
 
         # Only one BasisState at the start
-        basis_ops = [op for op in ops if isinstance(op, qml.BasisState)]
+        basis_ops = [op for op in ops if isinstance(op, qp.BasisState)]
         assert len(basis_ops) == 1
         assert ops[0] is basis_ops[0]
 
         # 8 RY total (4 per layer)
-        ry_ops = [op for op in ops if isinstance(op, qml.RY)]
+        ry_ops = [op for op in ops if isinstance(op, qp.RY)]
         assert len(ry_ops) == 8
 
         # 18 PauliRot total (9 per layer)
-        pauli_ops = [op for op in ops if isinstance(op, qml.PauliRot)]
+        pauli_ops = [op for op in ops if isinstance(op, qp.PauliRot)]
         assert len(pauli_ops) == 18

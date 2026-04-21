@@ -5,7 +5,7 @@
 import time
 
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 
 from divi.qprog import (
     HartreeFockAnsatz,
@@ -17,7 +17,7 @@ from divi.qprog.optimizers import MonteCarloOptimizer
 from tutorials._backend import get_backend
 
 if __name__ == "__main__":
-    mol = qml.qchem.Molecule(
+    mol = qp.qchem.Molecule(
         symbols=["H", "H"], coordinates=np.array([(0, 0, 0), (0, 0, 0.5)])
     )
 

@@ -172,7 +172,7 @@ qasm
 qchem
 QDrift
 Qiskit
-qml
+qp
 QNodes
 Qoro
 qprog

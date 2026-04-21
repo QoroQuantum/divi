@@ -8,7 +8,7 @@ import inspect
 from collections.abc import Mapping, Sequence
 
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 import sympy as sp
 from pennylane.measurements import CountsMP, ExpectationMP, ProbabilityMP
 from pennylane.workflow.qnode import QNode
@@ -18,7 +18,7 @@ from divi.pipeline.abc import MetaCircuitBatch, PipelineEnv, StageToken
 from divi.pipeline.stages._circuit_spec_stage import CircuitSpecStage
 
 #: Input types accepted by :class:`PennyLaneSpecStage`.
-PennyLaneInput = qml.tape.QuantumScript | QNode
+PennyLaneInput = qp.tape.QuantumScript | QNode
 
 _SUPPORTED_MEASUREMENTS = (ProbabilityMP, ExpectationMP, CountsMP)
 
@@ -57,7 +57,7 @@ class PennyLaneSpecStage(CircuitSpecStage):
         return super().expand(self._convert(items), env)
 
     @staticmethod
-    def _qnode_to_qscript(qnode: QNode) -> qml.tape.QuantumScript:
+    def _qnode_to_qscript(qnode: QNode) -> qp.tape.QuantumScript:
         """Convert a QNode into a QuantumScript, creating sympy symbols for parameters.
 
         Tries scalar symbols first.  If that fails (e.g. the function
@@ -71,7 +71,7 @@ class PennyLaneSpecStage(CircuitSpecStage):
 
         # Phase 1: try scalar symbols
         try:
-            return qml.tape.make_qscript(qnode.func)(*symbols)
+            return qp.tape.make_qscript(qnode.func)(*symbols)
         except TypeError:
             pass
 
@@ -85,7 +85,7 @@ class PennyLaneSpecStage(CircuitSpecStage):
             )
 
         try:
-            probe_qs = qml.tape.make_qscript(qnode.func)(np.zeros(_PROBE_SIZE))
+            probe_qs = qp.tape.make_qscript(qnode.func)(np.zeros(_PROBE_SIZE))
         except Exception as e:
             raise TypeError(
                 "Failed to convert QNode — could not probe the function "
@@ -103,7 +103,7 @@ class PennyLaneSpecStage(CircuitSpecStage):
         sym_array = sp.symarray("p", (n_gate_params,))
 
         try:
-            return qml.tape.make_qscript(qnode.func)(sym_array)
+            return qp.tape.make_qscript(qnode.func)(sym_array)
         except (TypeError, IndexError) as e:
             raise TypeError(
                 "Failed to convert QNode with array parameter. "
@@ -111,7 +111,7 @@ class PennyLaneSpecStage(CircuitSpecStage):
             ) from e
 
     @staticmethod
-    def _validate_measurements(qscript: qml.tape.QuantumScript) -> None:
+    def _validate_measurements(qscript: qp.tape.QuantumScript) -> None:
         """Validate that the QuantumScript has exactly one supported measurement."""
         measurements = qscript.measurements
         if len(measurements) != 1 or not isinstance(
@@ -136,7 +136,7 @@ class PennyLaneSpecStage(CircuitSpecStage):
         items: PennyLaneInput | Sequence[PennyLaneInput] | Mapping[str, PennyLaneInput],
     ) -> MetaCircuit | list[MetaCircuit] | dict[str, MetaCircuit]:
         """Dispatch input shape and convert each input to MetaCircuit."""
-        if isinstance(items, (qml.tape.QuantumScript, QNode)):
+        if isinstance(items, (qp.tape.QuantumScript, QNode)):
             return PennyLaneSpecStage._pennylane_to_meta(items)
         if isinstance(items, str):
             raise TypeError(

@@ -9,7 +9,7 @@ from typing import Literal, Protocol
 from warnings import warn
 
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 
 from divi.hamiltonians._term_ops import (
     _clean_hamiltonian,
@@ -32,8 +32,8 @@ class TrotterizationStrategy(Protocol):
         ...
 
     def process_hamiltonian(
-        self, hamiltonian: qml.operation.Operator
-    ) -> qml.operation.Operator:
+        self, hamiltonian: qp.operation.Operator
+    ) -> qp.operation.Operator:
         """Trotterize the Hamiltonian."""
         ...
 
@@ -78,8 +78,8 @@ class ExactTrotterization(TrotterizationStrategy):
         return False
 
     def process_hamiltonian(
-        self, hamiltonian: qml.operation.Operator
-    ) -> qml.operation.Operator:
+        self, hamiltonian: qp.operation.Operator
+    ) -> qp.operation.Operator:
         """Exact Trotterize the Hamiltonian."""
         if self.keep_fraction is None and self.keep_top_n is None:
             return hamiltonian.simplify()
@@ -110,7 +110,7 @@ class ExactTrotterization(TrotterizationStrategy):
         sorted_non_id_terms = _sort_hamiltonian_terms(non_id_terms, order="magnitude")
 
         if not _is_multi_term_sum(sorted_non_id_terms):
-            return (sorted_non_id_terms + constant * qml.Identity()).simplify()
+            return (sorted_non_id_terms + constant * qp.Identity()).simplify()
 
         if self.keep_top_n is not None:
             slice_idx = -self.keep_top_n
@@ -127,8 +127,8 @@ class ExactTrotterization(TrotterizationStrategy):
             c * t for c, t in zip(list(coeffs)[slice_idx:], list(terms)[slice_idx:])
         ]
         if constant != 0:
-            sliced_operands.append(constant * qml.Identity())
-        result = qml.sum(*sliced_operands).simplify()
+            sliced_operands.append(constant * qp.Identity())
+        result = qp.sum(*sliced_operands).simplify()
 
         self._cache[hamiltonian] = result
 
@@ -199,8 +199,8 @@ class QDrift(TrotterizationStrategy):
         return True
 
     def process_hamiltonian(
-        self, hamiltonian: qml.operation.Operator
-    ) -> qml.operation.Operator:
+        self, hamiltonian: qp.operation.Operator
+    ) -> qp.operation.Operator:
         r"""Apply the ``QDrift`` randomized channel to a Hamiltonian.
 
         Implements the ``QDrift`` protocol (Campbell 2019): for H = Σ c_i P_i,
@@ -238,7 +238,7 @@ class QDrift(TrotterizationStrategy):
 
             self._cache[hamiltonian] = (keep_hamiltonian, to_sample_hamiltonian)
 
-            if triggered_exact_trotterization and qml.equal(
+            if triggered_exact_trotterization and qp.equal(
                 keep_hamiltonian, hamiltonian
             ):
                 warn(
@@ -253,7 +253,7 @@ class QDrift(TrotterizationStrategy):
                 return hamiltonian.simplify()
             return keep_hamiltonian
 
-        if triggered_exact_trotterization and qml.equal(keep_hamiltonian, hamiltonian):
+        if triggered_exact_trotterization and qp.equal(keep_hamiltonian, hamiltonian):
             return hamiltonian
 
         # to_sample_hamiltonian already set above (from cache or computation)
@@ -264,7 +264,7 @@ class QDrift(TrotterizationStrategy):
                 UserWarning,
             )
             if keep_hamiltonian is None:
-                return qml.Hamiltonian([], [])
+                return qp.Hamiltonian([], [])
             return keep_hamiltonian
 
         if not _is_multi_term_sum(to_sample_hamiltonian):
@@ -317,7 +317,7 @@ class QDrift(TrotterizationStrategy):
                 all_individual_terms.append(keep_hamiltonian)
         object.__setattr__(self, "_last_sampled_terms", all_individual_terms)
 
-        sampled_sum = qml.ops.Sum(*sampled_terms)
+        sampled_sum = qp.ops.Sum(*sampled_terms)
         if keep_hamiltonian is not None:
             sampled_sum = sampled_sum + keep_hamiltonian
         return sampled_sum.simplify()

@@ -36,10 +36,10 @@ To enable checkpointing, pass a :class:`~divi.qprog.checkpointing.CheckpointConf
    from divi.qprog import VQE, HartreeFockAnsatz
    from divi.qprog.checkpointing import CheckpointConfig
    from divi.backends import MaestroSimulator
-   import pennylane as qml
+   import pennylane as qp
 
    # Create a molecule
-   mol = qml.qchem.Molecule(
+   mol = qp.qchem.Molecule(
        symbols=["H", "H"],
        coordinates=np.array([[0.0, 0.0, -0.6614], [0.0, 0.0, 0.6614]])
    )

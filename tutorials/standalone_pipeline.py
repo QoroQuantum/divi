@@ -14,7 +14,7 @@ directly.
 """
 
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 from qiskit import QuantumCircuit
 
 from divi.pipeline import CircuitPipeline, PipelineEnv
@@ -40,9 +40,9 @@ def run_pennylane_script(backend):
     print("Example 1: PennyLane QuantumScript (Bell state)")
     print("=" * 60)
 
-    qscript = qml.tape.QuantumScript(
-        ops=[qml.Hadamard(0), qml.CNOT(wires=[0, 1])],
-        measurements=[qml.probs()],
+    qscript = qp.tape.QuantumScript(
+        ops=[qp.Hadamard(0), qp.CNOT(wires=[0, 1])],
+        measurements=[qp.probs()],
     )
 
     pipeline = CircuitPipeline(
@@ -66,13 +66,13 @@ def run_pennylane_qnode(backend):
     print("Example 2: PennyLane QNode (parametric circuit)")
     print("=" * 60)
 
-    dev = qml.device("default.qubit", wires=1)
+    dev = qp.device("default.qubit", wires=1)
 
-    @qml.qnode(dev)
+    @qp.qnode(dev)
     def circuit(x, y):
-        qml.RX(x, wires=0)
-        qml.RZ(y, wires=0)
-        return qml.expval(qml.Z(0))
+        qp.RX(x, wires=0)
+        qp.RZ(y, wires=0)
+        return qp.expval(qp.Z(0))
 
     pipeline = CircuitPipeline(
         stages=[

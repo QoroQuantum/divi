@@ -16,14 +16,14 @@ Use probability mode when you want a final-state distribution:
 .. code-block:: python
 
    import math
-   import pennylane as qml
+   import pennylane as qp
    from divi.backends import MaestroSimulator
    from divi.qprog import TimeEvolution
 
    backend = MaestroSimulator(shots=5000)
 
    te = TimeEvolution(
-       hamiltonian=qml.PauliX(0) + qml.PauliX(1),
+       hamiltonian=qp.PauliX(0) + qp.PauliX(1),
        time=math.pi / 2,
        backend=backend,
    )
@@ -40,17 +40,17 @@ Provide ``observable=...`` to estimate expectation values after evolution:
 
 .. code-block:: python
 
-   import pennylane as qml
+   import pennylane as qp
    from divi.backends import MaestroSimulator
    from divi.qprog import TimeEvolution
 
    backend = MaestroSimulator(shots=5000)
 
    te = TimeEvolution(
-       hamiltonian=qml.PauliX(0) + qml.PauliZ(0),
+       hamiltonian=qp.PauliX(0) + qp.PauliZ(0),
        time=0.6,
        n_steps=8,
-       observable=qml.PauliZ(0),
+       observable=qp.PauliZ(0),
        backend=backend,
    )
    te.run()
@@ -69,7 +69,7 @@ For large Hamiltonians, you can use :class:`~divi.hamiltonians.QDrift` to sample
 
 .. code-block:: python
 
-   import pennylane as qml
+   import pennylane as qp
    from divi.backends import MaestroSimulator
    from divi.hamiltonians import QDrift
    from divi.qprog import SuperpositionState, TimeEvolution
@@ -84,7 +84,7 @@ For large Hamiltonians, you can use :class:`~divi.hamiltonians.QDrift` to sample
    )
 
    te = TimeEvolution(
-       hamiltonian=0.7 * qml.PauliZ(0) + 0.4 * qml.PauliX(0) + 0.2 * qml.PauliZ(1),
+       hamiltonian=0.7 * qp.PauliZ(0) + 0.4 * qp.PauliX(0) + 0.2 * qp.PauliZ(1),
        trotterization_strategy=qdrift,
        time=0.8,
        initial_state=SuperpositionState(),
@@ -110,16 +110,16 @@ collects results into a time-ordered mapping.
 
    import math
    import numpy as np
-   import pennylane as qml
+   import pennylane as qp
    from divi.backends import MaestroSimulator
    from divi.qprog import TimeEvolutionTrajectory
 
    backend = MaestroSimulator(shots=5000)
 
    trajectory = TimeEvolutionTrajectory(
-       hamiltonian=qml.PauliX(0),
+       hamiltonian=qp.PauliX(0),
        time_points=np.linspace(0.01, math.pi, 20).tolist(),
-       observable=qml.PauliZ(0),
+       observable=qp.PauliZ(0),
        backend=backend,
    )
    trajectory.create_programs()

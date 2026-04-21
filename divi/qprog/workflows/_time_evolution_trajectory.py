@@ -6,7 +6,7 @@ import copy
 from collections.abc import Sequence
 
 import matplotlib.pyplot as plt
-import pennylane as qml
+import pennylane as qp
 
 from divi.backends import CircuitRunner
 from divi.hamiltonians import TrotterizationStrategy
@@ -25,7 +25,7 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
     Example::
 
         trajectory = TimeEvolutionTrajectory(
-            hamiltonian=qml.PauliX(0) + qml.PauliX(1),
+            hamiltonian=qp.PauliX(0) + qp.PauliX(1),
             time_points=[0.0, 0.5, 1.0, 1.5],
             backend=backend,
         )
@@ -39,7 +39,7 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
 
     def __init__(
         self,
-        hamiltonian: qml.operation.Operator,
+        hamiltonian: qp.operation.Operator,
         time_points: Sequence[float],
         *,
         backend: CircuitRunner,
@@ -47,7 +47,7 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
         n_steps: int = 1,
         order: int = 1,
         initial_state: InitialState | None = None,
-        observable: qml.operation.Operator | None = None,
+        observable: qp.operation.Operator | None = None,
         seed: int | None = None,
     ):
         """Initialize TimeEvolutionTrajectory.

@@ -5,7 +5,7 @@
 from itertools import product
 
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 import pytest
 from scipy.spatial.distance import pdist, squareform
 
@@ -28,7 +28,7 @@ def h2_molecule():
     """Fixture for a simple H2 molecule with a bond length of 0.74 Å."""
     symbols = ["H", "H"]
     coordinates = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.74]])
-    return qml.qchem.Molecule(symbols, coordinates)
+    return qp.qchem.Molecule(symbols, coordinates)
 
 
 @pytest.fixture
@@ -39,7 +39,7 @@ def water_molecule():
     coordinates = np.array(
         [[0.0000, 0.0000, 0.0000], [0.757, 0.586, 0.0000], [-0.757, 0.586, 0.0000]]
     )
-    return qml.qchem.Molecule(symbols, coordinates)
+    return qp.qchem.Molecule(symbols, coordinates)
 
 
 def get_pairwise_distances(coords_or_molecule):
@@ -304,7 +304,7 @@ class TestMoleculeTransformerGeneration:
 @pytest.fixture
 def vqe_sweep_ansatze():
     """Shared ansatze for VQE sweep tests."""
-    return [HartreeFockAnsatz(), GenericLayerAnsatz([qml.RY])]
+    return [HartreeFockAnsatz(), GenericLayerAnsatz([qp.RY])]
 
 
 @pytest.fixture
@@ -322,7 +322,7 @@ def vqe_sweep_max_iterations():
 @pytest.fixture
 def h2_hamiltonian(h2_molecule):
     """Fixture for an H2 molecular Hamiltonian."""
-    hamiltonian, _ = qml.qchem.molecular_hamiltonian(h2_molecule)
+    hamiltonian, _ = qp.qchem.molecular_hamiltonian(h2_molecule)
     return hamiltonian
 
 
@@ -474,7 +474,7 @@ class TestVQEHyperparameterSweep:
         vqe_sweep = VQEHyperparameterSweep(
             ansatze=[HartreeFockAnsatz()],
             molecule_transformer=None,
-            hamiltonians=[qml.Identity(0)],
+            hamiltonians=[qp.Identity(0)],
             optimizer=vqe_sweep_optimizer,
             max_iterations=vqe_sweep_max_iterations,
             backend=default_test_simulator,
@@ -502,7 +502,7 @@ class TestVQEHyperparameterSweep:
             VQEHyperparameterSweep(
                 ansatze=[HartreeFockAnsatz()],
                 molecule_transformer=transformer,
-                hamiltonians=[qml.PauliZ(0)],
+                hamiltonians=[qp.PauliZ(0)],
                 optimizer=vqe_sweep_optimizer,
                 max_iterations=vqe_sweep_max_iterations,
                 backend=default_test_simulator,
@@ -520,7 +520,7 @@ class TestVQEHyperparameterSweep:
         mock_program_2.best_loss = -1.1
 
         uccsd_instance = UCCSDAnsatz()
-        generic_ry_instance = GenericLayerAnsatz([qml.RY])
+        generic_ry_instance = GenericLayerAnsatz([qp.RY])
 
         vqe_sweep.programs = {
             (uccsd_instance, 0.9): mock_program_1,

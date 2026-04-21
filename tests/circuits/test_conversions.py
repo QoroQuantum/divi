@@ -7,7 +7,7 @@
 from collections import Counter
 
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 import pytest
 import sympy as sp
 from qiskit import QuantumCircuit
@@ -84,10 +84,8 @@ class TestQScriptToDag:
     """End-to-end QuantumScript → DAG conversion."""
 
     def test_non_parametric_circuit(self):
-        ops = [qml.Hadamard(0), qml.CNOT([0, 1]), qml.PauliZ(1)]
-        qscript = qml.tape.QuantumScript(
-            ops=ops, measurements=[qml.expval(qml.PauliZ(0))]
-        )
+        ops = [qp.Hadamard(0), qp.CNOT([0, 1]), qp.PauliZ(1)]
+        qscript = qp.tape.QuantumScript(ops=ops, measurements=[qp.expval(qp.PauliZ(0))])
         dag, params, _ = _qscript_to_dag(qscript)
         assert params == ()
         gate_names = Counter(node.op.name for node in dag.op_nodes())
@@ -97,25 +95,25 @@ class TestQScriptToDag:
         # 3 qubits, ring graph, 1 QAOA layer.
         gamma, beta = sp.symbols("gamma beta")
         ops = [
-            qml.Hadamard(0),
-            qml.Hadamard(1),
-            qml.Hadamard(2),
-            qml.CNOT([0, 1]),
-            qml.RZ(gamma, 1),
-            qml.CNOT([0, 1]),
-            qml.CNOT([1, 2]),
-            qml.RZ(gamma, 2),
-            qml.CNOT([1, 2]),
-            qml.CNOT([2, 0]),
-            qml.RZ(gamma, 0),
-            qml.CNOT([2, 0]),
-            qml.RX(beta, 0),
-            qml.RX(beta, 1),
-            qml.RX(beta, 2),
+            qp.Hadamard(0),
+            qp.Hadamard(1),
+            qp.Hadamard(2),
+            qp.CNOT([0, 1]),
+            qp.RZ(gamma, 1),
+            qp.CNOT([0, 1]),
+            qp.CNOT([1, 2]),
+            qp.RZ(gamma, 2),
+            qp.CNOT([1, 2]),
+            qp.CNOT([2, 0]),
+            qp.RZ(gamma, 0),
+            qp.CNOT([2, 0]),
+            qp.RX(beta, 0),
+            qp.RX(beta, 1),
+            qp.RX(beta, 2),
         ]
-        qscript = qml.tape.QuantumScript(
+        qscript = qp.tape.QuantumScript(
             ops=ops,
-            measurements=[qml.expval(qml.PauliZ(0))],
+            measurements=[qp.expval(qp.PauliZ(0))],
         )
         dag, params, _ = _qscript_to_dag(qscript)
         # Parameters come out in first-appearance order: gamma then beta.
@@ -126,19 +124,19 @@ class TestQScriptToDag:
     def test_parameters_preserve_first_appearance_order(self):
         a, b, c = sp.symbols("a b c")
         # QScript references c, then a, then b.
-        ops = [qml.RX(c, 0), qml.RY(a, 0), qml.RZ(b, 0)]
-        qscript = qml.tape.QuantumScript(
+        ops = [qp.RX(c, 0), qp.RY(a, 0), qp.RZ(b, 0)]
+        qscript = qp.tape.QuantumScript(
             ops=ops,
-            measurements=[qml.expval(qml.PauliZ(0))],
+            measurements=[qp.expval(qp.PauliZ(0))],
         )
         _, params, _ = _qscript_to_dag(qscript)
         assert [p.name for p in params] == ["c", "a", "b"]
 
     def test_compound_sympy_expression(self):
         theta = sp.Symbol("theta")
-        qscript = qml.tape.QuantumScript(
-            ops=[qml.RX(2 * theta, 0)],
-            measurements=[qml.expval(qml.PauliZ(0))],
+        qscript = qp.tape.QuantumScript(
+            ops=[qp.RX(2 * theta, 0)],
+            measurements=[qp.expval(qp.PauliZ(0))],
         )
         dag, (p,), _ = _qscript_to_dag(qscript)
         op = next(iter(dag.op_nodes()))
@@ -155,9 +153,9 @@ class TestDagToQasmBody:
 
     def test_preamble_is_not_emitted(self):
         dag, _, _ = _qscript_to_dag(
-            qml.tape.QuantumScript(
-                ops=[qml.Hadamard(0)],
-                measurements=[qml.expval(qml.PauliZ(0))],
+            qp.tape.QuantumScript(
+                ops=[qp.Hadamard(0)],
+                measurements=[qp.expval(qp.PauliZ(0))],
             )
         )
         body = dag_to_qasm_body(dag)
@@ -170,9 +168,9 @@ class TestDagToQasmBody:
     def test_parametric_gate_emits_identifier(self):
         theta = sp.Symbol("theta")
         dag, (p,), _ = _qscript_to_dag(
-            qml.tape.QuantumScript(
-                ops=[qml.RX(theta, 0)],
-                measurements=[qml.expval(qml.PauliZ(0))],
+            qp.tape.QuantumScript(
+                ops=[qp.RX(theta, 0)],
+                measurements=[qp.expval(qp.PauliZ(0))],
             )
         )
         body = dag_to_qasm_body(dag)
@@ -180,9 +178,9 @@ class TestDagToQasmBody:
 
     def test_numeric_gate_uses_precision(self):
         dag, _, _ = _qscript_to_dag(
-            qml.tape.QuantumScript(
-                ops=[qml.RX(0.123456789, 0)],
-                measurements=[qml.expval(qml.PauliZ(0))],
+            qp.tape.QuantumScript(
+                ops=[qp.RX(0.123456789, 0)],
+                measurements=[qp.expval(qp.PauliZ(0))],
             )
         )
         body3 = dag_to_qasm_body(dag, precision=3)
@@ -192,9 +190,9 @@ class TestDagToQasmBody:
 
     def test_cnot_emits_two_qubit_args(self):
         dag, _, _ = _qscript_to_dag(
-            qml.tape.QuantumScript(
-                ops=[qml.CNOT([0, 1])],
-                measurements=[qml.expval(qml.PauliZ(0))],
+            qp.tape.QuantumScript(
+                ops=[qp.CNOT([0, 1])],
+                measurements=[qp.expval(qp.PauliZ(0))],
             )
         )
         assert "cx q[0],q[1];" in dag_to_qasm_body(dag)
@@ -204,33 +202,33 @@ class TestObservableToSparsePauliOp:
     """Conversion of PennyLane observables into Qiskit SparsePauliOp."""
 
     def test_single_pauli(self):
-        wires = qml.wires.Wires([0, 1, 2])
-        op = observable_to_sparse_pauli_op(qml.PauliZ(1), wires)
+        wires = qp.wires.Wires([0, 1, 2])
+        op = observable_to_sparse_pauli_op(qp.PauliZ(1), wires)
         # SparsePauliOp on 3 qubits: Z on qubit 1 ⇒ "IZI" (qubit 0 rightmost).
         assert op == SparsePauliOp.from_list([("IZI", 1.0)])
 
     def test_tensor_product(self):
-        wires = qml.wires.Wires([0, 1])
-        op = observable_to_sparse_pauli_op(qml.PauliZ(0) @ qml.PauliX(1), wires)
+        wires = qp.wires.Wires([0, 1])
+        op = observable_to_sparse_pauli_op(qp.PauliZ(0) @ qp.PauliX(1), wires)
         # qubit 0 → Z, qubit 1 → X, little-endian string: "XZ".
         assert op == SparsePauliOp.from_list([("XZ", 1.0)])
 
     def test_hamiltonian_sum_of_terms(self):
-        wires = qml.wires.Wires([0, 1])
-        obs = qml.Hamiltonian([0.5, -0.3], [qml.PauliZ(0), qml.PauliX(1)])
+        wires = qp.wires.Wires([0, 1])
+        obs = qp.Hamiltonian([0.5, -0.3], [qp.PauliZ(0), qp.PauliX(1)])
         op = observable_to_sparse_pauli_op(obs, wires)
         # {0.5 Z_0, -0.3 X_1} → {"IZ": 0.5, "XI": -0.3}
         expected = SparsePauliOp.from_list([("IZ", 0.5), ("XI", -0.3)])
         assert op.simplify() == expected.simplify()
 
     def test_identity(self):
-        wires = qml.wires.Wires([0, 1])
-        op = observable_to_sparse_pauli_op(qml.Identity(0), wires)
+        wires = qp.wires.Wires([0, 1])
+        op = observable_to_sparse_pauli_op(qp.Identity(0), wires)
         assert op == SparsePauliOp.from_list([("II", 1.0)])
 
     def test_sum_of_single_qubit_terms(self):
-        wires = qml.wires.Wires([0, 1, 2])
-        obs = qml.sum(qml.PauliZ(0), qml.PauliZ(1), qml.PauliZ(2))
+        wires = qp.wires.Wires([0, 1, 2])
+        obs = qp.sum(qp.PauliZ(0), qp.PauliZ(1), qp.PauliZ(2))
         op = observable_to_sparse_pauli_op(obs, wires).simplify()
         expected = SparsePauliOp.from_list(
             [("IIZ", 1.0), ("IZI", 1.0), ("ZII", 1.0)]
@@ -240,15 +238,15 @@ class TestObservableToSparsePauliOp:
     def test_non_sequential_wire_labels(self):
         # PennyLane wire labels can be arbitrary hashables — we resolve
         # via wires.index() rather than treating them as ints.
-        wires = qml.wires.Wires(["a", "b", "c"])
-        obs = qml.PauliZ("b")
+        wires = qp.wires.Wires(["a", "b", "c"])
+        obs = qp.PauliZ("b")
         op = observable_to_sparse_pauli_op(obs, wires)
         # "b" is wires.index("b") = 1 → "IZI".
         assert op == SparsePauliOp.from_list([("IZI", 1.0)])
 
     def test_non_pauli_observable_raises(self):
-        wires = qml.wires.Wires([0])
-        herm = qml.Hermitian(np.array([[1.0, 0.0], [0.0, -1.0]]), wires=0)
+        wires = qp.wires.Wires([0])
+        herm = qp.Hermitian(np.array([[1.0, 0.0], [0.0, -1.0]]), wires=0)
         with pytest.raises(ValueError, match="no Pauli representation"):
             observable_to_sparse_pauli_op(herm, wires)
 
@@ -269,22 +267,22 @@ class TestEndToEndEquivalence:
     def test_qaoa_3q_unitary_matches_current_path(self):
         gamma, beta = sp.symbols("gamma beta")
         ops = [
-            qml.Hadamard(0),
-            qml.Hadamard(1),
-            qml.Hadamard(2),
-            qml.CNOT([0, 1]),
-            qml.RZ(gamma, 1),
-            qml.CNOT([0, 1]),
-            qml.CNOT([1, 2]),
-            qml.RZ(gamma, 2),
-            qml.CNOT([1, 2]),
-            qml.RX(beta, 0),
-            qml.RX(beta, 1),
-            qml.RX(beta, 2),
+            qp.Hadamard(0),
+            qp.Hadamard(1),
+            qp.Hadamard(2),
+            qp.CNOT([0, 1]),
+            qp.RZ(gamma, 1),
+            qp.CNOT([0, 1]),
+            qp.CNOT([1, 2]),
+            qp.RZ(gamma, 2),
+            qp.CNOT([1, 2]),
+            qp.RX(beta, 0),
+            qp.RX(beta, 1),
+            qp.RX(beta, 2),
         ]
-        qscript = qml.tape.QuantumScript(
+        qscript = qp.tape.QuantumScript(
             ops=ops,
-            measurements=[qml.expval(qml.PauliZ(0))],
+            measurements=[qp.expval(qp.PauliZ(0))],
         )
 
         # PL qscript → DAG → body-only parametric QASM → template → bound QASM.
@@ -311,22 +309,22 @@ class TestEndToEndEquivalence:
             )
             for o in ops
         ]
-        ref_qscript = qml.tape.QuantumScript(
+        ref_qscript = qp.tape.QuantumScript(
             ops=[
-                qml.Hadamard(0),
-                qml.Hadamard(1),
-                qml.Hadamard(2),
-                qml.CNOT([0, 1]),
-                qml.RZ(0.3, 1),
-                qml.CNOT([0, 1]),
-                qml.CNOT([1, 2]),
-                qml.RZ(0.3, 2),
-                qml.CNOT([1, 2]),
-                qml.RX(1.1, 0),
-                qml.RX(1.1, 1),
-                qml.RX(1.1, 2),
+                qp.Hadamard(0),
+                qp.Hadamard(1),
+                qp.Hadamard(2),
+                qp.CNOT([0, 1]),
+                qp.RZ(0.3, 1),
+                qp.CNOT([0, 1]),
+                qp.CNOT([1, 2]),
+                qp.RZ(0.3, 2),
+                qp.CNOT([1, 2]),
+                qp.RX(1.1, 0),
+                qp.RX(1.1, 1),
+                qp.RX(1.1, 2),
             ],
-            measurements=[qml.expval(qml.PauliZ(0))],
+            measurements=[qp.expval(qp.PauliZ(0))],
         )
         ref_dag, _, _ = _qscript_to_dag(ref_qscript)
         ref_body = dag_to_qasm_body(ref_dag, precision=8)
@@ -335,9 +333,9 @@ class TestEndToEndEquivalence:
 
     def test_compound_expression_round_trip(self):
         theta = sp.Symbol("theta")
-        qscript = qml.tape.QuantumScript(
-            ops=[qml.RX(2 * theta, 0), qml.RY(theta + 1, 0)],
-            measurements=[qml.expval(qml.PauliZ(0))],
+        qscript = qp.tape.QuantumScript(
+            ops=[qp.RX(2 * theta, 0), qp.RY(theta + 1, 0)],
+            measurements=[qp.expval(qp.PauliZ(0))],
         )
         dag, (p,), _ = _qscript_to_dag(qscript)
         body = dag_to_qasm_body(dag, precision=8)

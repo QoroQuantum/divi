@@ -11,14 +11,14 @@ backend's shot budget across those groups.
 """
 
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 
 from divi.qprog import VQE, HartreeFockAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from tutorials._backend import get_backend
 
 if __name__ == "__main__":
-    mol = qml.qchem.Molecule(
+    mol = qp.qchem.Molecule(
         symbols=["H", "H"], coordinates=np.array([(0, 0, 0), (0, 0, 0.5)])
     )
 

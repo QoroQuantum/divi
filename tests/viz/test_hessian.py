@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 import pytest
 
 from divi.qprog import VQE, GenericLayerAnsatz
@@ -12,13 +12,13 @@ from divi.viz import GradientMethod, compute_hessian
 
 @pytest.fixture
 def basic_ansatz():
-    return GenericLayerAnsatz([qml.RY, qml.RZ])
+    return GenericLayerAnsatz([qp.RY, qp.RZ])
 
 
 @pytest.fixture
 def vqe_program(dummy_simulator, basic_ansatz):
     return VQE(
-        hamiltonian=qml.Z(0),
+        hamiltonian=qp.Z(0),
         n_electrons=1,
         ansatz=basic_ansatz,
         n_layers=1,

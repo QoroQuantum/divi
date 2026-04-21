@@ -158,14 +158,14 @@ or in a shared fixture:
 
    import numpy as np
    import pytest
-   import pennylane as qml
+   import pennylane as qp
    from divi.qprog import VQE
    from divi.qprog.algorithms import HartreeFockAnsatz
 
    def test_vqe_initialization(dummy_simulator):
        """Test that VQE initializes correctly with mock backend."""
        # Minimal H2 molecule for testing (or use a fixture from conftest)
-       mol = qml.qchem.Molecule(
+       mol = qp.qchem.Molecule(
            symbols=["H", "H"],
            coordinates=np.array([[0.0, 0.0, -0.6614], [0.0, 0.0, 0.6614]]),
        )

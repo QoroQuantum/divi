@@ -102,7 +102,7 @@ You can create custom program ensemble workflows by inheriting from :class:`~div
 
    from divi.qprog import ProgramEnsemble, VQE
    from divi.backends import CircuitRunner, MaestroSimulator
-   import pennylane as qml
+   import pennylane as qp
    import numpy as np
 
    class CustomParameterSweep(ProgramEnsemble):
@@ -136,9 +136,9 @@ You can create custom program ensemble workflows by inheriting from :class:`~div
            return results
 
    # Usage
-   mol1 = qml.qchem.Molecule(symbols=["H", "H"], coordinates=np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.74]]))
-   mol2 = qml.qchem.Molecule(symbols=["Li", "H"], coordinates=np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.6]]))
-   mol3 = qml.qchem.Molecule(symbols=["H", "F"], coordinates=np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.92]]))
+   mol1 = qp.qchem.Molecule(symbols=["H", "H"], coordinates=np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.74]]))
+   mol2 = qp.qchem.Molecule(symbols=["Li", "H"], coordinates=np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.6]]))
+   mol3 = qp.qchem.Molecule(symbols=["H", "F"], coordinates=np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.92]]))
    molecules = [mol1, mol2, mol3]
 
    # Use a local simulator

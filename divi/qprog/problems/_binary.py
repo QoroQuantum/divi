@@ -10,7 +10,7 @@ from typing import Any, Literal
 import dimod
 import hybrid
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 import pennylane.qaoa as pqaoa
 import scipy.sparse as sps
 from dimod import BinaryQuadraticModel
@@ -101,11 +101,11 @@ class BinaryOptimizationProblem(QAOAProblem):
         self._bqm_subproblem_states = {}
 
     @property
-    def cost_hamiltonian(self) -> qml.operation.Operator:
+    def cost_hamiltonian(self) -> qp.operation.Operator:
         return self._ising.cost_hamiltonian
 
     @property
-    def mixer_hamiltonian(self) -> qml.operation.Operator:
+    def mixer_hamiltonian(self) -> qp.operation.Operator:
         return self._mixer_hamiltonian
 
     @property

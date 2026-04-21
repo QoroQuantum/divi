@@ -4,7 +4,7 @@
 
 import math
 
-import pennylane as qml
+import pennylane as qp
 import pytest
 
 from divi.qprog import TimeEvolutionTrajectory
@@ -15,7 +15,7 @@ _PROB_TOL = 0.05
 
 @pytest.fixture
 def two_qubit_hamiltonian():
-    return 0.5 * qml.PauliZ(0) + 0.3 * qml.PauliZ(1)
+    return 0.5 * qp.PauliZ(0) + 0.3 * qp.PauliZ(1)
 
 
 class TestTimeEvolutionTrajectoryInit:
@@ -111,7 +111,7 @@ class TestTimeEvolutionTrajectoryRun:
         traj = TimeEvolutionTrajectory(
             hamiltonian=two_qubit_hamiltonian,
             time_points=[0.5, 1.0],
-            observable=qml.PauliZ(0),
+            observable=qp.PauliZ(0),
             backend=default_test_simulator,
         )
         traj.create_programs()
@@ -218,7 +218,7 @@ class TestTimeEvolutionTrajectoryE2E:
     def test_x_rotation_trajectory(self, default_test_simulator):
         """H=X, |0⟩: at t=0 P(0)=1, at t=π/4 P(0)≈0.5, at t=π/2 P(1)=1."""
         traj = TimeEvolutionTrajectory(
-            hamiltonian=qml.PauliX(0),
+            hamiltonian=qp.PauliX(0),
             time_points=[0.01, math.pi / 4, math.pi / 2],
             backend=default_test_simulator,
         )
@@ -241,7 +241,7 @@ class TestTimeEvolutionTrajectoryE2E:
     def test_eigenstate_stays_constant(self, default_test_simulator):
         """H=Z₀+Z₁, |00⟩ is eigenstate: P(00)=1 at all times."""
         traj = TimeEvolutionTrajectory(
-            hamiltonian=0.5 * qml.PauliZ(0) + 0.3 * qml.PauliZ(1),
+            hamiltonian=0.5 * qp.PauliZ(0) + 0.3 * qp.PauliZ(1),
             time_points=[0.5, 1.0, 2.0],
             backend=default_test_simulator,
         )

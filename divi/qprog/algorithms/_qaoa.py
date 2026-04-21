@@ -7,7 +7,7 @@ import pickle
 from typing import Any, Literal
 
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 import pennylane.qaoa as pqaoa
 from qiskit.circuit import ParameterVector
 
@@ -162,7 +162,7 @@ class QAOA(VariationalQuantumAlgorithm):
         """
         return self._decoded_solution
 
-    def _build_qaoa_ops(self, cost_hamiltonian: qml.operation.Operator) -> list:
+    def _build_qaoa_ops(self, cost_hamiltonian: qp.operation.Operator) -> list:
         """Build QAOA layer ops for a given cost Hamiltonian."""
         ops = self.initial_state.build(self._circuit_wires)
 
@@ -174,12 +174,12 @@ class QAOA(VariationalQuantumAlgorithm):
         return ops
 
     def _cost_meta_circuit_factory(
-        self, processed_ham: qml.operation.Operator, ham_id: int
+        self, processed_ham: qp.operation.Operator, ham_id: int
     ) -> MetaCircuit:
         """Build a cost MetaCircuit for a given (possibly QDrift-sampled) Hamiltonian."""
-        tape = qml.tape.QuantumScript(
+        tape = qp.tape.QuantumScript(
             ops=self._build_qaoa_ops(processed_ham),
-            measurements=[qml.expval(processed_ham)],
+            measurements=[qp.expval(processed_ham)],
         )
         return qscript_to_meta(
             tape,
@@ -194,20 +194,20 @@ class QAOA(VariationalQuantumAlgorithm):
 
         return {
             "cost_circuit": qscript_to_meta(
-                qml.tape.QuantumScript(
-                    ops=ops, measurements=[qml.expval(self._cost_hamiltonian)]
+                qp.tape.QuantumScript(
+                    ops=ops, measurements=[qp.expval(self._cost_hamiltonian)]
                 ),
                 precision=self._precision,
                 parameter_order=flat_params,
             ),
             "meas_circuit": qscript_to_meta(
-                qml.tape.QuantumScript(ops=ops, measurements=[qml.probs()]),
+                qp.tape.QuantumScript(ops=ops, measurements=[qp.probs()]),
                 precision=self._precision,
                 parameter_order=flat_params,
             ),
         }
 
-    def _get_cost_pipeline_initial_spec(self) -> qml.operation.Operator:
+    def _get_cost_pipeline_initial_spec(self) -> qp.operation.Operator:
         """Use the cost Hamiltonian as the input spec for the cost pipeline."""
         return self._cost_hamiltonian
 

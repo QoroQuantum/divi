@@ -13,7 +13,7 @@ from warnings import warn
 import dimod
 import numpy as np
 import numpy.typing as npt
-import pennylane as qml
+import pennylane as qp
 import scipy.sparse as sps
 
 from divi.hamiltonians._polynomial import normalize_binary_polynomial_problem
@@ -28,7 +28,7 @@ from divi.hamiltonians._types import BinaryPolynomialProblem
 class IsingEncoding(NamedTuple):
     """Result of converting a binary polynomial problem to an Ising Hamiltonian."""
 
-    operator: qml.operation.Operator
+    operator: qp.operation.Operator
     constant: float
     decode_fn: Callable[[str], Any]
     metadata: dict[str, object] | None = None
@@ -52,7 +52,7 @@ class NativeIsingConverter(BinaryToIsingConverter):
         n_qubits = problem.n_vars
         if n_qubits == 0:
             return IsingEncoding(
-                operator=qml.Hamiltonian([], []),
+                operator=qp.Hamiltonian([], []),
                 constant=problem.constant,
                 decode_fn=lambda bitstring: np.array([], dtype=np.int32),
                 metadata={"strategy": "native", "term_count": 0},
@@ -88,9 +88,9 @@ class NativeIsingConverter(BinaryToIsingConverter):
             if abs(weight) > self.zero_tol
         ]
         operator = (
-            qml.sum(*weighted_terms).simplify()
+            qp.sum(*weighted_terms).simplify()
             if weighted_terms
-            else qml.Hamiltonian([], [])
+            else qp.Hamiltonian([], [])
         )
 
         variable_to_idx = problem.variable_to_idx
@@ -119,7 +119,7 @@ class QuadratizedIsingConverter(BinaryToIsingConverter):
     def convert(self, problem: BinaryPolynomialProblem) -> IsingEncoding:
         if problem.n_vars == 0:
             return IsingEncoding(
-                operator=qml.Hamiltonian([], []),
+                operator=qp.Hamiltonian([], []),
                 constant=problem.constant,
                 decode_fn=lambda bitstring: np.array([], dtype=np.int32),
                 metadata={"strategy": "quadratized", "ancilla_count": 0},
@@ -189,7 +189,7 @@ def _resolve_ising_converter(
 class IsingResult(NamedTuple):
     """Result of converting a QUBO/HUBO to a cleaned Ising Hamiltonian."""
 
-    cost_hamiltonian: qml.operation.Operator
+    cost_hamiltonian: qp.operation.Operator
     loss_constant: float
     n_qubits: int
     encoding: IsingEncoding
@@ -271,7 +271,7 @@ def _is_sanitized(
 
 def convert_qubo_matrix_to_pennylane_ising(
     qubo_matrix: npt.NDArray[np.float64] | sps.spmatrix,
-) -> tuple[qml.operation.Operator, float]:
+) -> tuple[qp.operation.Operator, float]:
     """
     Convert a QUBO matrix to an Ising Hamiltonian in PennyLane format.
 
@@ -291,7 +291,7 @@ def convert_qubo_matrix_to_pennylane_ising(
             symmetric or upper triangular.
 
     Returns:
-        tuple[qml.operation.Operator, float]: A tuple containing:
+        tuple[qp.operation.Operator, float]: A tuple containing:
             - Ising Hamiltonian as a PennyLane operator (sum of Pauli Z terms)
             - Constant offset term to be added to energy calculations
 
@@ -368,7 +368,7 @@ def convert_qubo_matrix_to_pennylane_ising(
         ising_weights.append(float(curr_lin_term))
 
     # Construct the Ising Hamiltonian as a PennyLane operator
-    pauli_string = qml.Identity(0) * 0
+    pauli_string = qp.Identity(0) * 0
     for term, weight in zip(ising_terms, ising_weights):
         curr_term = _z_product(tuple(term)) * weight
         pauli_string += curr_term

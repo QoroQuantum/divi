@@ -6,7 +6,7 @@ from collections.abc import Callable
 from warnings import warn
 
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 from qiskit import QuantumCircuit
 from qiskit.circuit import ParameterExpression, ParameterVector
 
@@ -28,8 +28,8 @@ from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 
 def _qiskit_to_pennylane(
     qc: QuantumCircuit,
-    measurement_fn: Callable[[list[int]], qml.measurements.MeasurementProcess],
-) -> qml.tape.QuantumScript:
+    measurement_fn: Callable[[list[int]], qp.measurements.MeasurementProcess],
+) -> qp.tape.QuantumScript:
     """Convert a Qiskit QuantumCircuit to a PennyLane QuantumScript."""
     measured_wires = sorted(
         {
@@ -55,20 +55,20 @@ def _qiskit_to_pennylane(
                 instruction.operation, instruction.qubits, instruction.clbits
             )
 
-    qfunc = qml.from_qiskit(qc_no_measure)
-    params = [qml.numpy.array(0.0, requires_grad=True) for _ in qc.parameters]
+    qfunc = qp.from_qiskit(qc_no_measure)
+    params = [qp.numpy.array(0.0, requires_grad=True) for _ in qc.parameters]
 
     def qfunc_with_measurement(*p):
         qfunc(*p)
         return measurement_fn(measured_wires)
 
-    return qml.tape.make_qscript(qfunc_with_measurement)(*params)
+    return qp.tape.make_qscript(qfunc_with_measurement)(*params)
 
 
 def _bind_qiskit_expressions(
-    qscript: qml.tape.QuantumScript,
+    qscript: qp.tape.QuantumScript,
     qc: QuantumCircuit,
-) -> tuple[qml.tape.QuantumScript, np.ndarray]:
+) -> tuple[qp.tape.QuantumScript, np.ndarray]:
     """Bind Qiskit parameter expressions from gate params into a QuantumScript."""
     base_params = np.array(list(qc.parameters), dtype=object)
     if len(base_params) == 0:
@@ -110,7 +110,7 @@ class CustomVQA(VariationalQuantumAlgorithm):
     (e.g. ``2 * theta``) are preserved natively.
 
     Attributes:
-        qscript (``qml.tape.QuantumScript``): The parameterized ``QuantumScript``.
+        qscript (``qp.tape.QuantumScript``): The parameterized ``QuantumScript``.
         param_shape: Shape of a single parameter set.
         n_qubits (int): Number of qubits in the script.
         n_layers (int): Layer count (fixed to 1 for this wrapper).
@@ -123,7 +123,7 @@ class CustomVQA(VariationalQuantumAlgorithm):
 
     def __init__(
         self,
-        qscript: qml.tape.QuantumScript | QuantumCircuit,
+        qscript: qp.tape.QuantumScript | QuantumCircuit,
         *,
         param_shape: tuple[int, ...] | int | None = None,
         max_iterations: int = 10,
@@ -132,7 +132,7 @@ class CustomVQA(VariationalQuantumAlgorithm):
         """Initialize a CustomVQA instance.
 
         Args:
-            qscript (qml.tape.QuantumScript | QuantumCircuit): A parameterized QuantumScript with a
+            qscript (qp.tape.QuantumScript | QuantumCircuit): A parameterized QuantumScript with a
                 single expectation-value measurement, or a Qiskit QuantumCircuit with
                 computational basis measurements.
             param_shape: Shape of a single parameter
@@ -253,31 +253,31 @@ class CustomVQA(VariationalQuantumAlgorithm):
 
     def _coerce_to_quantum_script(
         self,
-        qscript: qml.tape.QuantumScript | QuantumCircuit,
-    ) -> qml.tape.QuantumScript:
+        qscript: qp.tape.QuantumScript | QuantumCircuit,
+    ) -> qp.tape.QuantumScript:
         """Convert supported inputs into a PennyLane QuantumScript.
 
         Args:
-            qscript (qml.tape.QuantumScript): Input QuantumScript or Qiskit QuantumCircuit.
+            qscript (qp.tape.QuantumScript): Input QuantumScript or Qiskit QuantumCircuit.
 
         Returns:
-            qml.tape.QuantumScript: The converted QuantumScript.
+            qp.tape.QuantumScript: The converted QuantumScript.
 
         Raises:
             TypeError: If the input type is unsupported.
         """
-        if isinstance(qscript, qml.tape.QuantumScript):
+        if isinstance(qscript, qp.tape.QuantumScript):
             return qscript
 
         if isinstance(qscript, QuantumCircuit):
 
             def _expval_measurement(measured_wires):
                 obs = (
-                    qml.Z(measured_wires[0])
+                    qp.Z(measured_wires[0])
                     if len(measured_wires) == 1
-                    else qml.sum(*(qml.Z(wire) for wire in measured_wires))
+                    else qp.sum(*(qp.Z(wire) for wire in measured_wires))
                 )
-                return qml.expval(obs)
+                return qp.expval(obs)
 
             qs = _qiskit_to_pennylane(qscript, _expval_measurement)
             bound, self._qiskit_base_params = _bind_qiskit_expressions(qs, qscript)

@@ -13,7 +13,7 @@ from warnings import warn
 
 import numpy as np
 import numpy.typing as npt
-import pennylane as qml
+import pennylane as qp
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 from scipy.optimize import OptimizeResult
 
@@ -443,7 +443,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         self._cancellation_event = None
 
     @property
-    def cost_hamiltonian(self) -> qml.operation.Operator:
+    def cost_hamiltonian(self) -> qp.operation.Operator:
         """The cost Hamiltonian for the variational problem."""
         return self._cost_hamiltonian
 

@@ -56,18 +56,18 @@ The standalone API is useful when you want to make the scan call explicit:
 .. code-block:: python
 
    import numpy as np
-   import pennylane as qml
+   import pennylane as qp
 
    from divi.backends import MaestroSimulator
    from divi.qprog import GenericLayerAnsatz, VQE
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.viz import scan_1d, scan_2d
 
-   hamiltonian = -1.0 * qml.Z(0) + 0.5 * qml.Z(0) @ qml.Z(1)
+   hamiltonian = -1.0 * qp.Z(0) + 0.5 * qp.Z(0) @ qp.Z(1)
 
    vqe = VQE(
        hamiltonian=hamiltonian,
-       ansatz=GenericLayerAnsatz([qml.RY, qml.RZ]),
+       ansatz=GenericLayerAnsatz([qp.RY, qp.RZ]),
        n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        max_iterations=12,

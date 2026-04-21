@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 import pytest
 from qiskit.quantum_info import SparsePauliOp
 
@@ -78,9 +78,9 @@ class TestComputeMeasurementGroups:
 
 class TestMetaCircuitWithGrouping:
     def test_wires_and_empty_group_produce_same_measurement_qasm(self):
-        circuit = qml.tape.QuantumScript(
-            ops=[qml.Hadamard(0), qml.CNOT(wires=[0, 1])],
-            measurements=[qml.probs()],
+        circuit = qp.tape.QuantumScript(
+            ops=[qp.Hadamard(0), qp.CNOT(wires=[0, 1])],
+            measurements=[qp.probs()],
         )
         meta = qscript_to_meta(circuit)
         n_qubits = meta.n_qubits

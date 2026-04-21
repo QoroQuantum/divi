@@ -13,7 +13,7 @@ from typing import Literal, NamedTuple
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
-import pennylane as qml
+import pennylane as qp
 
 from divi.qprog import VQE, Ansatz, ProgramEnsemble
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer, copy_optimizer
@@ -302,14 +302,14 @@ class MoleculeTransformer:
             If None, no alignment is carried out.
     """
 
-    base_molecule: qml.qchem.Molecule
+    base_molecule: qp.qchem.Molecule
     bond_modifiers: Sequence[float]
     atom_connectivity: Sequence[tuple[int, int]] | None = None
     bonds_to_transform: Sequence[tuple[int, int]] | None = None
     alignment_atoms: Sequence[int] | None = None
 
     def __post_init__(self):
-        if not isinstance(self.base_molecule, qml.qchem.Molecule):
+        if not isinstance(self.base_molecule, qp.qchem.Molecule):
             raise ValueError(
                 "`base_molecule` is expected to be a Pennylane `Molecule` instance."
             )
@@ -361,7 +361,7 @@ class MoleculeTransformer:
                 "`alignment_atoms` need to be in range (0, len(molecule.symbols))"
             )
 
-    def generate(self) -> dict[float, qml.qchem.Molecule]:
+    def generate(self) -> dict[float, qp.qchem.Molecule]:
         variants = {}
         original_coords = self.base_molecule.coordinates
         mode = "scale" if all(v > 0 for v in self.bond_modifiers) else "delta"
@@ -401,7 +401,7 @@ class VQEHyperparameterSweep(ProgramEnsemble):
         self,
         ansatze: Sequence[Ansatz],
         molecule_transformer: MoleculeTransformer | None = None,
-        hamiltonians: Sequence[qml.operation.Operator] | None = None,
+        hamiltonians: Sequence[qp.operation.Operator] | None = None,
         optimizer: Optimizer | None = None,
         max_iterations: int = 10,
         **kwargs,
@@ -413,7 +413,7 @@ class VQEHyperparameterSweep(ProgramEnsemble):
         ----------
         ansatze: Sequence[Ansatz]
             A sequence of ansatz circuits to test.
-        hamiltonians: Sequence[qml.operation.Operator], optional
+        hamiltonians: Sequence[qp.operation.Operator], optional
             A sequence of Hamiltonians to use for the VQE runs. If ``None``
             (the default), no Hamiltonians are provided explicitly and
             molecule-based VQE runs will use their default Hamiltonians.

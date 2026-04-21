@@ -15,7 +15,7 @@ import shutil
 from pathlib import Path
 
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 
 from divi.qprog import VQE, HartreeFockAnsatz
 from divi.qprog.checkpointing import (
@@ -34,7 +34,7 @@ if __name__ == "__main__":
 
     try:
         # Create molecule
-        mol = qml.qchem.Molecule(
+        mol = qp.qchem.Molecule(
             symbols=["H", "H"], coordinates=np.array([(0, 0, 0), (0, 0, 0.5)])
         )
 

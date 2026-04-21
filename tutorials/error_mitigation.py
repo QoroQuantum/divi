@@ -16,7 +16,7 @@ All values come from one deterministic run per method.
 """
 
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 from qiskit_aer.noise import NoiseModel, depolarizing_error
 from rich.console import Console
 from rich.table import Table
@@ -28,7 +28,7 @@ from divi.qprog import VQE, HartreeFockAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 
 if __name__ == "__main__":
-    mol = qml.qchem.Molecule(
+    mol = qp.qchem.Molecule(
         symbols=["H", "H"],
         coordinates=np.array([[0.0, 0.0, -0.6614], [0.0, 0.0, 0.6614]]),
     )

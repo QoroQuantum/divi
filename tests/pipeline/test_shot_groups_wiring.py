@@ -14,7 +14,7 @@ Covers:
 from collections.abc import Mapping
 from typing import Any
 
-import pennylane as qml
+import pennylane as qp
 import pytest
 from qiskit_aer import AerSimulator
 
@@ -31,10 +31,8 @@ from .helpers import DummySpecStage
 def _three_group_meta() -> MetaCircuit:
     from divi.circuits._conversions import qscript_to_meta
 
-    obs = 10.0 * qml.Z(0) + 1.0 * qml.X(0) + 0.1 * qml.Y(0)
-    qscript = qml.tape.QuantumScript(
-        ops=[qml.Hadamard(0)], measurements=[qml.expval(obs)]
-    )
+    obs = 10.0 * qp.Z(0) + 1.0 * qp.X(0) + 0.1 * qp.Y(0)
+    qscript = qp.tape.QuantumScript(ops=[qp.Hadamard(0)], measurements=[qp.expval(obs)])
     return qscript_to_meta(qscript)
 
 

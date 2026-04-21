@@ -7,7 +7,7 @@
 import warnings
 
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 import pytest
 import stim
 from qiskit import QuantumCircuit
@@ -916,9 +916,9 @@ class TestBindBeforeMitigation:
 class TestQuEPPPipelineIntegration:
     def test_pipeline_integration(self, dummy_pipeline_env, suppress_quepp_warnings):
         """QuEPP integrates correctly with QEMStage in a pipeline."""
-        qscript = qml.tape.QuantumScript(
-            ops=[qml.RX(0.5, wires=0)],
-            measurements=[qml.expval(qml.Z(0))],
+        qscript = qp.tape.QuantumScript(
+            ops=[qp.RX(0.5, wires=0)],
+            measurements=[qp.expval(qp.Z(0))],
         )
         meta = qscript_to_meta(qscript)
         pipeline = CircuitPipeline(
@@ -936,9 +936,9 @@ class TestQuEPPPipelineIntegration:
     @pytest.mark.e2e
     def test_effectiveness_with_readout_noise(self, suppress_quepp_warnings):
         """QuEPP mitigates uniform readout noise on a real backend."""
-        qscript = qml.tape.QuantumScript(
-            ops=[qml.RX(0.8, wires=0)],
-            measurements=[qml.expval(qml.Z(0))],
+        qscript = qp.tape.QuantumScript(
+            ops=[qp.RX(0.8, wires=0)],
+            measurements=[qp.expval(qp.Z(0))],
         )
         meta = qscript_to_meta(qscript)
 

@@ -261,24 +261,24 @@ field Ising model:
 
 .. code-block:: python
 
-   import pennylane as qml
+   import pennylane as qp
    from divi.qprog import CustomVQA
    from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
    from divi.backends import MaestroSimulator
 
    # 1. Define the Hamiltonian (observable to minimize)
-   H = -1.0 * qml.Z(0) @ qml.Z(1) + 0.5 * qml.X(0) + 0.5 * qml.X(1)
+   H = -1.0 * qp.Z(0) @ qp.Z(1) + 0.5 * qp.X(0) + 0.5 * qp.X(1)
 
    # 2. Build a parameterized ansatz as a QuantumScript
    ops = [
-       qml.RY(0.0, wires=0),
-       qml.RY(0.0, wires=1),
-       qml.CNOT(wires=[0, 1]),
-       qml.RY(0.0, wires=0),
-       qml.RY(0.0, wires=1),
+       qp.RY(0.0, wires=0),
+       qp.RY(0.0, wires=1),
+       qp.CNOT(wires=[0, 1]),
+       qp.RY(0.0, wires=0),
+       qp.RY(0.0, wires=1),
    ]
-   measurements = [qml.expval(H)]
-   qscript = qml.tape.QuantumScript(ops=ops, measurements=measurements)
+   measurements = [qp.expval(H)]
+   qscript = qp.tape.QuantumScript(ops=ops, measurements=measurements)
 
    # Mark only the gate parameters as trainable (freeze Hamiltonian coefficients)
    qscript.trainable_params = [0, 1, 2, 3]
@@ -319,14 +319,14 @@ converter spec stages — no ``QuantumProgram`` required.
 
 .. code-block:: python
 
-   import pennylane as qml
+   import pennylane as qp
    from divi.pipeline import CircuitPipeline, PipelineEnv
    from divi.pipeline.stages import PennyLaneSpecStage, MeasurementStage
    from divi.backends import MaestroSimulator
 
-   qscript = qml.tape.QuantumScript(
-       ops=[qml.Hadamard(0), qml.CNOT(wires=[0, 1])],
-       measurements=[qml.probs()],
+   qscript = qp.tape.QuantumScript(
+       ops=[qp.Hadamard(0), qp.CNOT(wires=[0, 1])],
+       measurements=[qp.probs()],
    )
 
    pipeline = CircuitPipeline(stages=[

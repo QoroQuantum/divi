@@ -7,7 +7,7 @@ from functools import partial
 import dimod
 import hybrid
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 
 from divi.qprog import EarlyStopping
 from divi.qprog.algorithms import GenericLayerAnsatz
@@ -78,7 +78,7 @@ if __name__ == "__main__":
             bqm=bqm,
             engine="pce",
             engine_kwargs={
-                "ansatz": GenericLayerAnsatz([qml.RY, qml.RZ]),
+                "ansatz": GenericLayerAnsatz([qp.RY, qp.RZ]),
                 "encoding_type": "dense",
                 "alpha": 2.0,
             },

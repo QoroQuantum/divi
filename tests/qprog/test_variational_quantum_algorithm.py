@@ -6,7 +6,7 @@ import warnings
 from typing import Any
 
 import numpy as np
-import pennylane as qml
+import pennylane as qp
 import pytest
 import sympy as sp
 from scipy.optimize import OptimizeResult
@@ -47,7 +47,7 @@ class SampleVQAProgram(VariationalQuantumAlgorithm):
         super().__init__(backend=kwargs.pop("backend", None), **kwargs)
 
         self._cost_hamiltonian = (
-            qml.PauliX(0) + qml.PauliZ(1) + qml.PauliX(0) @ qml.PauliZ(1)
+            qp.PauliX(0) + qp.PauliZ(1) + qp.PauliX(0) @ qp.PauliZ(1)
         )
         self.loss_constant = 0.0
 
@@ -56,19 +56,19 @@ class SampleVQAProgram(VariationalQuantumAlgorithm):
         self._measurement_pipeline = self._build_measurement_pipeline()
 
     @property
-    def cost_hamiltonian(self) -> qml.operation.Operator:
+    def cost_hamiltonian(self) -> qp.operation.Operator:
         """The cost Hamiltonian for the VQA problem."""
         return self._cost_hamiltonian
 
     def _create_meta_circuit_factories(self):
         symbols = [sp.Symbol("beta"), *sp.symarray("theta", 3)]
         ops = [
-            qml.RX(symbols[0], wires=0),
-            qml.U3(*symbols[1:], wires=1),
-            qml.CNOT(wires=[0, 1]),
+            qp.RX(symbols[0], wires=0),
+            qp.U3(*symbols[1:], wires=1),
+            qp.CNOT(wires=[0, 1]),
         ]
-        tape = qml.tape.QuantumScript(
-            ops=ops, measurements=[qml.expval(self.cost_hamiltonian)]
+        tape = qp.tape.QuantumScript(
+            ops=ops, measurements=[qp.expval(self.cost_hamiltonian)]
         )
         meta_circuit = qscript_to_meta(tape, precision=self._precision)
         return {"cost_circuit": meta_circuit}
@@ -932,9 +932,9 @@ class TestPrecisionFunctionality(BaseVariationalQuantumAlgorithmTest):
     def test_precision_used_in_qasm_conversion(self):
         """Precision controls decimal digits in dag_to_qasm_body output."""
         # Circuit with a known numeric constant (not symbolic).
-        qscript = qml.tape.QuantumScript(
-            ops=[qml.RZ(0.123456789, 0)],
-            measurements=[qml.expval(qml.Z(0))],
+        qscript = qp.tape.QuantumScript(
+            ops=[qp.RZ(0.123456789, 0)],
+            measurements=[qp.expval(qp.Z(0))],
         )
         dag, _, _ = _qscript_to_dag(qscript)
 
