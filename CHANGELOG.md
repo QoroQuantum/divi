@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.1](https://github.com/QoroQuantum/divi/compare/v0.11.0...v0.11.1) (2026-04-21)
+
+
+### 🐛 Fixed
+
+* **backends:** carry MaestroSimulator config via MaestroConfig ([df064d2](https://github.com/QoroQuantum/divi/commit/df064d2b5bcf721a5606a6e20959de2ef8912f0e))
+
 ## [0.11.0](https://github.com/QoroQuantum/divi/compare/v0.10.0...v0.11.0) (2026-04-20)
 
 ### ✨ Added
