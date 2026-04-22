@@ -48,8 +48,9 @@ if __name__ == "__main__":
     # Swap in ``sampler=RemoteTBISampler(endpoint=...)`` to target real hardware.
     sampler = SimulatedTBISampler(seed=0)
 
-    solver = TBIVariationalQUBO(Q, loop_lengths=(1, 2), sampler=sampler)
+    print(f"Running QUBO on {M} qubits with Time Bin Interferometer Simulator, takes ~2 minutes.")
 
+    solver = TBIVariationalQUBO(Q, loop_lengths=(1, 2), sampler=sampler)
     t0 = time.time()
     result = solver.run(updates=20, shots=200, seed=0)
     elapsed = time.time() - t0

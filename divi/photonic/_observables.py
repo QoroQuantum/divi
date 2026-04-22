@@ -162,10 +162,21 @@ class MMDSampleLoss:
     def _kernel_matrix(self, A: np.ndarray, B: np.ndarray) -> np.ndarray:
         # Squared L2 distance between all rows of A and B.
         # ||a - b||^2 = ||a||^2 + ||b||^2 - 2 a . b
+        # Cast to float64 upfront: A/B arrive as int64 parity-bit arrays and
+        # mixed int/float BLAS paths produce spurious divide-by-zero / overflow
+        # RuntimeWarnings on some numpy builds. NaN cannot arise in int64 but
+        # can appear after the float promotion; nan_to_num guards against it
+        # passing silently through np.maximum (NaN > 0.0 is False).
+        A = np.asarray(A, dtype=np.float64)
+        B = np.asarray(B, dtype=np.float64)
         a2 = np.sum(A * A, axis=1, keepdims=True)
         b2 = np.sum(B * B, axis=1, keepdims=True).T
-        d2 = a2 + b2 - 2.0 * A @ B.T
-        d2 = np.maximum(d2, 0.0)
+        # Apple Accelerate BLAS emits spurious divide-by-zero / overflow /
+        # invalid warnings inside matmul even for well-formed float64 0/1
+        # arrays. Suppress them here; nan_to_num below catches any real NaN.
+        with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+            d2 = a2 + b2 - 2.0 * A @ B.T
+        d2 = np.maximum(np.nan_to_num(d2, nan=0.0), 0.0)
 
         K = np.zeros_like(d2, dtype=np.float64)
         for sigma in self.kernel_bandwidths:
