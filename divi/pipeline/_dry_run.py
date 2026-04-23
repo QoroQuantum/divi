@@ -14,6 +14,7 @@ from typing import Any, NamedTuple
 from rich.console import Console
 from rich.tree import Tree
 
+from divi.circuits import MetaCircuit
 from divi.pipeline.abc import (
     MetaCircuitBatch,
     PipelineEnv,
@@ -39,12 +40,30 @@ class DryRunReport(NamedTuple):
     pipeline_name: str
     stages: tuple[StageInfo, ...]
     total_circuits: int
+    env_artifacts: dict[str, Any] = {}
+    """Stage-produced artifacts captured during the forward pass — e.g.
+    ``per_group_shots`` (when a ``shot_distribution`` is configured on
+    :class:`~divi.pipeline.stages.MeasurementStage`), ``ham_ops`` (for
+    expval-native backends).  These are the same artifacts the pipeline
+    would produce on a real run, so a dry-run report is the canonical
+    surface for ``"what would my pipeline do?"`` introspection — no
+    need to drop into private helpers or rerun the forward pass manually.
+    """
+
+
+def _effective_bodies(mc: MetaCircuit) -> tuple:
+    """Return the body tuple that ``_compile_batch`` would actually submit.
+
+    Mirrors the precedence rule in :func:`divi.pipeline._compilation._compile_batch`:
+    bound (pre-rendered) bodies take priority over the parametric DAG list.
+    """
+    return mc.bound_circuit_bodies or mc.circuit_bodies or ()
 
 
 def _count_qasms(batch: MetaCircuitBatch) -> tuple[int, int, int]:
     """Return (n_meta_circuits, total_bodies, total_measurements)."""
     n_mc = len(batch)
-    total_bodies = sum(len(mc.circuit_bodies or ()) for mc in batch.values())
+    total_bodies = sum(len(_effective_bodies(mc)) for mc in batch.values())
     total_meas = sum(len(mc.measurement_qasms or ()) for mc in batch.values())
     return n_mc, total_bodies, total_meas
 
@@ -107,11 +126,16 @@ def dry_run_pipeline(
         prev_bodies, prev_meas = cur_bodies, cur_meas
 
     total = sum(
-        len(mc.circuit_bodies or ()) * max(len(mc.measurement_qasms or ()), 1)
+        len(_effective_bodies(mc)) * max(len(mc.measurement_qasms or ()), 1)
         for mc in trace.final_batch.values()
     )
 
-    return DryRunReport(pipeline_name=name, stages=tuple(infos), total_circuits=total)
+    return DryRunReport(
+        pipeline_name=name,
+        stages=tuple(infos),
+        total_circuits=total,
+        env_artifacts=dict(trace.env_artifacts),
+    )
 
 
 def format_dry_run(reports: dict[str, DryRunReport]) -> None:

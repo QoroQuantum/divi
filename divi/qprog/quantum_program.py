@@ -6,13 +6,14 @@ from abc import ABC, abstractmethod
 from http import HTTPStatus
 from queue import Queue
 from threading import Event
+from typing import Any
 from warnings import warn
 
 import requests
 
 from divi.backends import CircuitRunner
 from divi.circuits.qem import _NoMitigation
-from divi.pipeline import DryRunReport, PipelineEnv, dry_run_pipeline, format_dry_run
+from divi.pipeline import CircuitPipeline, DryRunReport, PipelineEnv, dry_run_pipeline
 from divi.reporting import LoggingProgressReporter, QueueProgressReporter
 
 
@@ -159,43 +160,69 @@ class QuantumProgram(ABC):
     # ------------------------------------------------------------------ #
 
     @abstractmethod
-    def _build_pipelines(self) -> None:
-        """Construct all :class:`~divi.pipeline.CircuitPipeline` instances for this program.
+    def _build_pipelines(self) -> dict[str, CircuitPipeline]:
+        """Build and return this program's pipelines keyed by stable name.
 
-        Every subclass must implement this to set up its pipeline attributes
-        (e.g. ``self._pipeline``, ``self._cost_pipeline``).
+        The returned dict is the **single source of truth** for which
+        pipelines this program owns — :meth:`dry_run` and every other
+        introspection surface iterate it, using the dict key as the
+        pipeline's label.  Subclasses call this method from ``__init__``
+        and assign the result to ``self._pipelines``.
+
+        Pipelines should be **pure structural** here (stage composition
+        only); anything that depends on program state resolved at run
+        time — observables, parameter-bound meta-circuits, Hamiltonians —
+        belongs in :meth:`_get_initial_spec`, which is called lazily.
         """
         ...
 
-    def dry_run(self) -> dict[str, DryRunReport]:
-        """Run forward pass on all pipelines and print fan-out analysis.
-
-        Traverses each pipeline stage without executing circuits,
-        reporting the fan-out factor and metadata per stage and the
-        total circuit count per pass.
-        """
-        self._build_pipelines()
-        pipelines = self._get_dry_run_pipelines()
-        reports = {}
-        for name, (pipeline, initial_spec) in pipelines.items():
-            env = self._build_pipeline_env()
-            trace = pipeline.run_forward_pass(
-                initial_spec, env, force_forward_sweep=True
-            )
-            reports[name] = dry_run_pipeline(name, trace, pipeline.stages, env)
-        format_dry_run(reports)
-        return reports
-
-    def _get_dry_run_pipelines(self) -> dict[str, tuple]:
-        """Return ``{name: (pipeline, initial_spec)}`` for dry-run inspection.
-
-        Subclasses must override to provide their pipeline(s) and the
-        corresponding initial spec for each.
-        """
+    def _get_initial_spec(self, name: str) -> Any:
+        """Return the ``initial_spec`` for pipeline ``name`` — typed to match
+        the input expected by that pipeline's :class:`~divi.pipeline.abc.SpecStage`."""
         raise NotImplementedError(
-            f"{type(self).__name__} must implement _get_dry_run_pipelines() "
+            f"{type(self).__name__} must implement _get_initial_spec() "
             f"to support dry_run()."
         )
+
+    def dry_run(
+        self, *, force_circuit_generation: bool = False
+    ) -> dict[str, DryRunReport]:
+        """Run forward pass on all pipelines and return a fan-out analysis.
+
+        Traverses each pipeline stage without executing circuits and collects
+        the fan-out factor, per-stage metadata, and total circuit count into a
+        dict of :class:`~divi.pipeline.DryRunReport` objects keyed by the
+        names registered in :meth:`_build_pipelines`. Pass the returned dict
+        to :func:`~divi.pipeline.format_dry_run` for the pretty tree output.
+
+        Uses the analytic dry path by default; see the user guide for how
+        that trades circuit generation for multiplicative-factor
+        bookkeeping.
+
+        Args:
+            force_circuit_generation: If ``True``, force every stage to run
+                its full ``expand`` path so that the trace contains real
+                DAGs and QASM strings. Useful when inspecting actual
+                pipeline output (e.g. debugging a stage's circuit
+                transformation). Defaults to ``False``.
+
+        Example:
+            >>> from divi.pipeline import format_dry_run
+            >>> reports = program.dry_run()
+            >>> format_dry_run(reports)  # pretty-print to stdout
+        """
+        self._pipelines = self._build_pipelines()
+        reports: dict[str, DryRunReport] = {}
+        for name, pipeline in self._pipelines.items():
+            env = self._build_pipeline_env()
+            trace = pipeline.run_forward_pass(
+                self._get_initial_spec(name),
+                env,
+                force_forward_sweep=True,
+                dry=not force_circuit_generation,
+            )
+            reports[name] = dry_run_pipeline(name, trace, pipeline.stages, env)
+        return reports
 
     def _build_pipeline_env(self, **overrides) -> PipelineEnv:
         """Construct a :class:`PipelineEnv` from the current program state.

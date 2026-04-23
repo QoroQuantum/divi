@@ -64,10 +64,14 @@ class TrotterSpecStage(SpecStage[qp.operation.Operator]):
         )
         self._meta_circuit_factory = meta_circuit_factory
 
-    def expand(
-        self, items: qp.operation.Operator, env: PipelineEnv
-    ) -> tuple[MetaCircuitBatch, StageToken]:
-        """Transform Hamiltonian into a keyed batch of MetaCircuits (one per strategy output)."""
+    def _prepare(
+        self, items: qp.operation.Operator
+    ) -> tuple[qp.operation.Operator, TrotterizationStrategy, int, dict]:
+        """Validate input and compute the shared (hamiltonian, strategy, n_samples, token) tuple.
+
+        Reused by :meth:`expand` and :meth:`dry_expand` so the Hamiltonian
+        cleaning and token construction don't drift between paths.
+        """
         hamiltonian = items
 
         if not isinstance(hamiltonian, qp.operation.Operator):
@@ -83,19 +87,46 @@ class TrotterSpecStage(SpecStage[qp.operation.Operator]):
         strategy = self._trotterization_strategy
         n_samples = getattr(strategy, "n_hamiltonians_per_iteration", 1)
 
-        metas: dict[object, MetaCircuit] = {}
-
-        for ham_id in range(n_samples):
-            processed = strategy.process_hamiltonian(hamiltonian_clean)
-            meta = self._meta_circuit_factory(processed, ham_id)
-            metas[(("ham", ham_id),)] = meta
-
         token = {
             "strategy": type(strategy).__name__,
             "n_terms": _hamiltonian_term_count(hamiltonian_clean),
             "n_qubits": len(hamiltonian_clean.wires),
             "n_samples": n_samples,
         }
+        return hamiltonian_clean, strategy, n_samples, token
+
+    def expand(
+        self, items: qp.operation.Operator, env: PipelineEnv
+    ) -> tuple[MetaCircuitBatch, StageToken]:
+        """Transform Hamiltonian into a keyed batch of MetaCircuits (one per strategy output)."""
+        hamiltonian_clean, strategy, n_samples, token = self._prepare(items)
+
+        metas: dict[object, MetaCircuit] = {}
+        for ham_id in range(n_samples):
+            processed = strategy.process_hamiltonian(hamiltonian_clean)
+            meta = self._meta_circuit_factory(processed, ham_id)
+            metas[(("ham", ham_id),)] = meta
+
+        return metas, token
+
+    def dry_expand(
+        self, items: qp.operation.Operator, env: PipelineEnv
+    ) -> tuple[MetaCircuitBatch, StageToken]:
+        """Analytic path: build one prototype MetaCircuit, fan it out ``n_samples`` times.
+
+        For stochastic strategies (e.g. QDrift) each sample would in
+        principle produce a slightly different DAG. Dry runs only count
+        circuits, so a single prototype from ham_id=0 is reused — saving
+        (n_samples - 1) expensive factory invocations. For the dominant
+        deterministic case (``ExactTrotterization`` with ``n_samples=1``)
+        this reduces to the same single factory call as :meth:`expand`.
+        """
+        hamiltonian_clean, strategy, n_samples, token = self._prepare(items)
+
+        prototype = self._meta_circuit_factory(
+            strategy.process_hamiltonian(hamiltonian_clean), 0
+        )
+        metas = {(("ham", ham_id),): prototype for ham_id in range(n_samples)}
         return metas, token
 
     def introspect(

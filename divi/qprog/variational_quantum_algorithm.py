@@ -1024,15 +1024,34 @@ class VariationalQuantumAlgorithm(QuantumProgram):
     # Pipeline builders
     # ------------------------------------------------------------------ #
 
-    def _get_dry_run_pipelines(self) -> dict[str, tuple]:
+    @property
+    def _cost_pipeline(self) -> CircuitPipeline:
+        """The cost-evaluation pipeline built by :meth:`_build_pipelines`."""
+        return self._pipelines["cost"]
+
+    @property
+    def _measurement_pipeline(self) -> CircuitPipeline | None:
+        """The final-measurement pipeline, or ``None`` if this algorithm has none."""
+        return self._pipelines.get("measurement")
+
+    def _get_initial_spec(self, name: str) -> Any:
+        """Resolve the initial spec for pipeline ``name`` (lazy).
+
+        Default VQA mapping:
+
+        * ``"cost"``        → ``meta_circuit_factories["cost_circuit"]``
+        * ``"measurement"`` → ``meta_circuit_factories["meas_circuit"]``,
+                             falling back to ``"cost_circuit"``.
+
+        Subclasses override to change either entry (e.g. QAOA's cost
+        pipeline uses a Hamiltonian, not a MetaCircuit, as initial spec).
+        """
         factories = self.meta_circuit_factories
-        result = {"cost": (self._cost_pipeline, factories["cost_circuit"])}
-        if hasattr(self, "_measurement_pipeline") and self._measurement_pipeline:
-            result["measurement"] = (
-                self._measurement_pipeline,
-                factories.get("meas_circuit", factories["cost_circuit"]),
-            )
-        return result
+        if name == "cost":
+            return factories["cost_circuit"]
+        if name == "measurement":
+            return factories.get("meas_circuit", factories["cost_circuit"])
+        raise KeyError(f"No initial spec registered for pipeline {name!r}.")
 
     def _build_pipeline_env(self, **overrides) -> PipelineEnv:
         """Construct a PipelineEnv for the provided parameter sets."""
@@ -1100,10 +1119,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             ]
         )
 
-    def _get_cost_pipeline_initial_spec(self) -> Any:
-        """Return the initial spec passed into ``_cost_pipeline``."""
-        return self.meta_circuit_factories["cost_circuit"]
-
     # ------------------------------------------------------------------ #
     # Execution
     # ------------------------------------------------------------------ #
@@ -1120,7 +1135,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         env = self._build_pipeline_env(param_sets=normalized_param_sets)
         result = self._cost_pipeline.run(
-            initial_spec=self._get_cost_pipeline_initial_spec(),
+            initial_spec=self._get_initial_spec("cost"),
             env=env,
         )
         self._total_circuit_count += env.artifacts.get("circuit_count", 0)
@@ -1367,7 +1382,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         """Execute measurement circuits via the pipeline for the provided parameter sets."""
         env = self._build_pipeline_env(param_sets=np.atleast_2d(param_sets))
         result = self._measurement_pipeline.run(
-            initial_spec=self.meta_circuit_factories["meas_circuit"],
+            initial_spec=self._get_initial_spec("measurement"),
             env=env,
         )
         self._total_circuit_count += env.artifacts.get("circuit_count", 0)

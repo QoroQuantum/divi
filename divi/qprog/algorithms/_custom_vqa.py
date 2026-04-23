@@ -208,10 +208,10 @@ class CustomVQA(VariationalQuantumAlgorithm):
 
         # Build cost pipeline once (structure is fixed; only env changes per call).
         # No measurement pipeline needed — _perform_final_computation is a no-op.
-        self._build_pipelines()
+        self._pipelines = self._build_pipelines()
 
-    def _build_pipelines(self) -> None:
-        self._cost_pipeline = self._build_cost_pipeline(CircuitSpecStage())
+    def _build_pipelines(self) -> dict:
+        return {"cost": self._build_cost_pipeline(CircuitSpecStage())}
 
     @property
     def param_shape(self) -> tuple[int, ...]:

@@ -271,11 +271,12 @@ class TestQuEPPLocalEffectiveness:
                 return int(value)
         return None
 
+    @pytest.mark.usefixtures(
+        "suppress_pipeline_perf_warnings", "suppress_quepp_warnings"
+    )
     def test_local_relative_effectiveness_with_and_without_twirling(
         self,
         dummy_pipeline_env,
-        suppress_pipeline_perf_warnings,
-        suppress_quepp_warnings,
     ):
         angle = 0.8
         exact = float(np.cos(angle))

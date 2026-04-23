@@ -143,11 +143,15 @@ Dry Run
 
 Before executing any circuits you can inspect the pipeline to understand the
 total circuit count and how each stage contributes to it.  Call
-:meth:`~divi.qprog.QuantumProgram.dry_run` on any quantum program:
+:meth:`~divi.qprog.QuantumProgram.dry_run` on any quantum program, then pass
+the resulting dict to :func:`~divi.pipeline.format_dry_run` for the rich
+tree output:
 
 .. skip: next
 
 .. code-block:: python
+
+   from divi.pipeline import format_dry_run
 
    vqe = VQE(
        molecule=h2_molecule,
@@ -155,11 +159,11 @@ total circuit count and how each stage contributes to it.  Call
        backend=QiskitSimulator(qiskit_backend="auto"),
    )
 
-   # Runs the forward pass without executing circuits
-   vqe.dry_run()
+   # Runs the forward pass without executing circuits, then pretty-print.
+   format_dry_run(vqe.dry_run())
 
-This prints a tree for each pipeline showing the fan-out factor and metadata
-per stage:
+``format_dry_run`` prints a tree for each pipeline showing the fan-out factor
+and metadata per stage:
 
 .. code-block:: text
 
@@ -187,9 +191,10 @@ estimate cloud costs, tune ``truncation_order`` or ``n_twirls``, and verify
 that measurement grouping behaves as expected — all before spending a single
 shot.
 
-``dry_run()`` returns a ``dict[str, DryRunReport]`` keyed by pipeline name
-(e.g. ``"cost"``, ``"measurement"``), so you can also inspect the report
-programmatically:
+``dry_run()`` itself is print-free — it returns a
+``dict[str, DryRunReport]`` keyed by pipeline name (e.g. ``"cost"``,
+``"measurement"``), so you can inspect the report programmatically instead of
+(or in addition to) rendering it:
 
 .. skip: next
 
@@ -198,6 +203,26 @@ programmatically:
    reports = vqe.dry_run()
    print(reports["cost"].total_circuits)   # 500
    print(reports["cost"].stages[3].metadata)  # QEM stage metadata dict
+
+When Dry Run Falls Back
+~~~~~~~~~~~~~~~~~~~~~~~
+
+The analytic dry path emits shared DAG references across the branches it
+fans out — safe for any downstream stage that either treats those DAGs as
+read-only or has its own dry-mode override.  When a downstream stage
+instead claims to **consume** DAG bodies (``consumes_dag_bodies=True``) and
+provides no ``dry_expand``, the pipeline would risk feeding the same DAG
+reference into repeated in-place mutations.  To stay safe, it demotes the
+upstream dry-aware stage back to its real ``expand`` for that run and
+emits a :class:`~divi.pipeline.DiviPerformanceWarning` naming both
+stages.  **The circuit count stays correct**; only the analytic speedup
+for the demoted stage is forfeited.
+
+The warning is actionable in two ways: implement ``dry_expand`` on the
+downstream stage (the preferred fix — it restores the speedup for every
+pipeline that uses it), or, if that stage does not actually mutate body
+DAGs in place, declare ``consumes_dag_bodies=False`` on it so the
+pipeline no longer sees it as unsafe.
 
 
 How Existing Algorithms Build Pipelines

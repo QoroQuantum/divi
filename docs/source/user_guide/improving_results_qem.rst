@@ -219,11 +219,14 @@ Estimating Circuit Cost with Dry Run
 
 Error mitigation can multiply the number of circuits significantly.  Use
 :meth:`~divi.qprog.QuantumProgram.dry_run` to preview the per-stage expansion
-before committing to a full run:
+before committing to a full run, and pipe the returned reports through
+:func:`~divi.pipeline.format_dry_run` to render them as a tree:
 
 .. skip: next
 
 .. code-block:: python
+
+   from divi.pipeline import format_dry_run
 
    vqe = VQE(
        molecule=h2_molecule,
@@ -231,8 +234,8 @@ before committing to a full run:
        backend=QiskitSimulator(qiskit_backend="auto"),
    )
 
-   # Prints a tree showing the fan-out at each stage
-   vqe.dry_run()
+   # Collect the analytic reports and render a fan-out tree per pipeline.
+   format_dry_run(vqe.dry_run())
 
 The output shows the multiplicative cost of each pipeline stage — including
 how many Pauli paths QuEPP generates, the Clifford simulation count, and the

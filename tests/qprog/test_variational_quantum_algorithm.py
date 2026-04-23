@@ -51,9 +51,11 @@ class SampleVQAProgram(VariationalQuantumAlgorithm):
         )
         self.loss_constant = 0.0
 
-    def _build_pipelines(self) -> None:
-        self._cost_pipeline = self._build_cost_pipeline(CircuitSpecStage())
-        self._measurement_pipeline = self._build_measurement_pipeline()
+    def _build_pipelines(self) -> dict:
+        return {
+            "cost": self._build_cost_pipeline(CircuitSpecStage()),
+            "measurement": self._build_measurement_pipeline(),
+        }
 
     @property
     def cost_hamiltonian(self) -> qp.operation.Operator:
@@ -197,7 +199,7 @@ class TestProgram:
         program = self._create_sample_program(
             mocker, shot_distribution="weighted_random"
         )
-        program._build_pipelines()
+        program._pipelines = program._build_pipelines()
 
         meas_stage = next(
             stage
@@ -213,7 +215,7 @@ class TestProgram:
             return [total] + [0] * (len(norms) - 1)
 
         program = self._create_sample_program(mocker, shot_distribution=custom)
-        program._build_pipelines()
+        program._pipelines = program._build_pipelines()
 
         meas_stage = next(
             stage
@@ -235,11 +237,11 @@ class TestProgram:
     def test_evaluate_cost_param_sets_uses_initial_spec_hook(self, mocker):
         """Cost evaluation should delegate to the initial-spec hook."""
         program = self._create_sample_program(mocker)
-        program._build_pipelines()
+        program._pipelines = program._build_pipelines()
         program.loss_constant = 10.0
 
         initial_spec_mock = mocker.patch.object(
-            program, "_get_cost_pipeline_initial_spec", return_value="hook_spec"
+            program, "_get_initial_spec", return_value="hook_spec"
         )
         pipeline_run = mocker.patch.object(
             program._cost_pipeline,
@@ -253,7 +255,7 @@ class TestProgram:
         param_sets = np.array([[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]])
         losses = program._evaluate_cost_param_sets(param_sets)
 
-        initial_spec_mock.assert_called_once_with()
+        initial_spec_mock.assert_called_once_with("cost")
         np.testing.assert_array_equal(
             pipeline_run.call_args.kwargs["env"].param_sets, param_sets
         )

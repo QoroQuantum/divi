@@ -907,16 +907,62 @@ class QuEPP(QEMProtocol):
     def name(self) -> str:
         return "quepp"
 
+    def _prepare_paths(
+        self, dag: DAGCircuit, observable: SparsePauliOp | None
+    ) -> tuple["_PreprocResult", list["_PauliPath"]]:
+        """Shared setup for :meth:`expand` / :meth:`dry_expand`.
+
+        Runs the cheap prefix (validation, preprocessing, path selection,
+        truncation warning) — everything except the expensive Clifford
+        simulation + per-path DAG cloning. Both real and dry paths build
+        on the returned ``(prep, paths)`` tuple.
+        """
+        self._validate_observable(observable)
+        prep = self._preprocess(dag, observable)
+        paths = self._select_paths(prep)
+        self._warn_on_truncation_ratio(prep)
+        return prep, paths
+
     def expand(
         self,
         dag: DAGCircuit,
         observable: SparsePauliOp | None = None,
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
-        self._validate_observable(observable)
-        prep = self._preprocess(dag, observable)
-        paths = self._select_paths(prep)
-        self._warn_on_truncation_ratio(prep)
+        prep, paths = self._prepare_paths(dag, observable)
         return self._build_ensemble(dag, prep, paths, observable)
+
+    def dry_expand(
+        self,
+        dag: DAGCircuit,
+        observable: SparsePauliOp | None = None,
+    ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
+        """Analytic path: emit ``1 + n_paths`` placeholder DAGs, no Clifford sim.
+
+        Reuses :meth:`_prepare_paths` to get the exact path count (source
+        of truth for the fan-out), then skips the per-path
+        ``_build_path_dag`` surgery and the full Clifford ensemble
+        simulation — the two dominant costs of :meth:`expand` — and reuses
+        the input ``dag`` as a shared placeholder for every emitted slot.
+        Context keys read by :class:`~divi.pipeline.stages.QEMStage`'s
+        introspect hook (``n_rotations``, ``n_paths``, ``symbolic``) are
+        populated so dry-run reports render correctly.
+        """
+        prep, paths = self._prepare_paths(dag, observable)
+        n_paths = len(paths)
+        # Placeholder DAG per slot — dry stages don't submit / simulate.
+        all_dags = (dag,) * (1 + n_paths)
+        context: QEMContext = {
+            "classical_values": None,
+            "weights": None,
+            "target_idx": 0,
+            "ensemble_start": 1,
+            "n_rotations": len(prep.rotations),
+            "n_paths": n_paths,
+        }
+        if prep.symbolic:
+            context["symbolic"] = True
+            context["weight_symbols"] = []
+        return all_dags, context
 
     @staticmethod
     def _validate_observable(observable: SparsePauliOp | None) -> None:

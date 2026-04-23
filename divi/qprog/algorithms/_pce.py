@@ -205,13 +205,13 @@ class PCE(VQE):
         kwargs.pop("grouping_strategy", None)
         super().__init__(hamiltonian=placeholder_hamiltonian, **kwargs)
 
-    def _build_pipelines(self) -> None:
+    def _build_pipelines(self) -> dict:
         """Build the PCE-specific cost and measurement pipelines."""
         # PCECostStage is a standalone BundleStage (not a MeasurementStage
         # subclass) that emits one "measure all qubits" QASM per circuit
         # spec and computes the nonlinear binary-polynomial objective from
         # raw shot histograms. QEMStage is intentionally excluded.
-        self._cost_pipeline = CircuitPipeline(
+        cost_pipeline = CircuitPipeline(
             stages=[
                 CircuitSpecStage(),
                 PCECostStage(
@@ -224,7 +224,10 @@ class PCE(VQE):
                 ParameterBindingStage(),
             ]
         )
-        self._measurement_pipeline = self._build_measurement_pipeline()
+        return {
+            "cost": cost_pipeline,
+            "measurement": self._build_measurement_pipeline(),
+        }
 
     def _evaluate_cost_param_sets(
         self, param_sets: np.ndarray, **kwargs

@@ -226,6 +226,32 @@ class Stage(ABC, Generic[InT, OutT]):
         """Transform input for the forward pass and return a reduction token."""
         ...
 
+    def dry_expand(self, items: InT, env: PipelineEnv) -> tuple[OutT, StageToken]:
+        """Analytic forward pass for dry runs.
+
+        Must emit a batch with the **same shape** as :meth:`expand` (same keys,
+        same ``len(circuit_bodies)``, same ``len(measurement_qasms)``) and an
+        ``introspect``-compatible token, but **without** generating expensive
+        per-item content (DAG deep-copies, QASM strings, classical simulations).
+
+        The default implementation falls back to :meth:`expand`, so stages that
+        cannot skip circuit generation keep working unchanged.
+
+        **Shared-reference contract.** Overriding implementations commonly
+        emit the same DAG object across multiple tagged entries in
+        ``meta.circuit_bodies`` (true of every built-in dry path today).
+        Consumers may read those DAGs freely, but **must not mutate them
+        in place** — a mutation on one entry would leak across sibling
+        branches.  :class:`~divi.pipeline.CircuitPipeline` enforces this
+        by demoting such a stage to its real :meth:`expand` whenever a
+        downstream stage declares ``consumes_dag_bodies=True`` and has
+        not overridden ``dry_expand``; a
+        :class:`~divi.pipeline.DiviPerformanceWarning` is emitted naming
+        both stages.  The dry-run circuit count stays correct either way —
+        only the analytic speedup is forfeited for the affected stage.
+        """
+        return self.expand(items, env)
+
     @abstractmethod
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken

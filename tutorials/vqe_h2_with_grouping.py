@@ -56,17 +56,15 @@ if __name__ == "__main__":
         ("QWC", vqe_problem_qwc_grouping),
     ]
 
-    # Count measurement groups by running the cost pipeline's forward pass —
-    # the group count on ``meta_circuit_factories["cost_circuit"]`` is always
-    # zero since the factory stores the pre-expansion MetaCircuit.
+    # The measurement-stage fan-out is carried on every dry-run report —
+    # no need to reach into pipeline internals.
     n_groups_by_strategy: dict[str, int] = {}
     for name, problem in strategies:
-        env_probe = problem._build_pipeline_env()
-        trace = problem._cost_pipeline.run_forward_pass(
-            problem._get_cost_pipeline_initial_spec(), env_probe
+        cost_report = problem.dry_run()["cost"]
+        measurement_info = next(
+            s for s in cost_report.stages if s.name == "MeasurementStage"
         )
-        expanded_meta = next(iter(trace.final_batch.values()))
-        n_groups_by_strategy[name] = len(expanded_meta.measurement_groups)
+        n_groups_by_strategy[name] = measurement_info.metadata["n_groups"]
 
     for name, problem in strategies:
         backend.set_seed(1997)
@@ -114,9 +112,8 @@ if __name__ == "__main__":
     allocations: dict[str, list[int]] = {}
     for shot_dist in ("uniform", "weighted"):
         vqe = VQE(**vqe_input, grouping_strategy="qwc", shot_distribution=shot_dist)
-        env = vqe._build_pipeline_env()
-        vqe._cost_pipeline.run_forward_pass(vqe._get_cost_pipeline_initial_spec(), env)
-        spec_alloc = next(iter(env.artifacts["per_group_shots"].values()))
+        cost_report = vqe.dry_run()["cost"]
+        spec_alloc = next(iter(cost_report.env_artifacts["per_group_shots"].values()))
         n_groups = max(spec_alloc.keys()) + 1
         allocations[shot_dist] = [spec_alloc.get(i, 0) for i in range(n_groups)]
 

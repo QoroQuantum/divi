@@ -85,34 +85,60 @@ class QEMStage(BundleStage):
             )
 
     def _expand_bodies(
-        self, meta: MetaCircuit
+        self, meta: MetaCircuit, protocol_fn
     ) -> tuple[tuple[tuple, ...], list[QEMContext]]:
-        """Apply the protocol to each body DAG and return tagged results + contexts."""
+        """Apply ``protocol_fn`` to each body DAG and return tagged results + contexts.
+
+        ``protocol_fn`` is ``self.protocol.expand`` for a real run and
+        ``self.protocol.dry_expand`` for a dry run; the outer iteration,
+        axis tagging, and context bookkeeping stay identical either way.
+        """
         observable = meta.observable
         ctxs: list[QEMContext] = []
         bodies: list[tuple] = []
 
         for tag, dag in meta.circuit_bodies:
-            expanded_dags, ctx = self.protocol.expand(dag, observable)
+            expanded_dags, ctx = protocol_fn(dag, observable)
             ctxs.append(ctx)
             for i, expanded in enumerate(expanded_dags):
                 bodies.append(((*tag, (self.axis_name, i)), expanded))
 
         return tuple(bodies), ctxs
 
-    def expand(
-        self, batch: MetaCircuitBatch, env: PipelineEnv
+    def _expand_with(
+        self, batch: MetaCircuitBatch, protocol_fn
     ) -> tuple[ExpansionResult, StageToken]:
+        """Shared outer pass: applies ``protocol_fn`` per parent key."""
         out: dict[object, MetaCircuit] = {}
         contexts: dict[tuple, QEMContext] = {}
 
         for parent_key, meta in batch.items():
-            bodies, ctxs = self._expand_bodies(meta)
+            bodies, ctxs = self._expand_bodies(meta, protocol_fn)
             for (tag, _), ctx in zip(meta.circuit_bodies, ctxs):
                 contexts[parent_key + tag] = ctx
             out[parent_key] = meta.set_circuit_bodies(bodies)
 
         return ExpansionResult(batch=out), contexts
+
+    def expand(
+        self, batch: MetaCircuitBatch, env: PipelineEnv
+    ) -> tuple[ExpansionResult, StageToken]:
+        return self._expand_with(batch, self.protocol.expand)
+
+    def dry_expand(
+        self, batch: MetaCircuitBatch, env: PipelineEnv
+    ) -> tuple[ExpansionResult, StageToken]:
+        """Analytic path: delegates each body to ``protocol.dry_expand``.
+
+        The default :meth:`~divi.circuits.qem.QEMProtocol.dry_expand` falls
+        back to ``expand`` so simple / cheap protocols (e.g.
+        ``_NoMitigation``, :class:`~divi.circuits.qem.ZNE`) stay correct
+        unchanged. Expensive protocols such as
+        :class:`~divi.circuits.quepp.QuEPP` override ``dry_expand`` to skip
+        Clifford simulation + per-path DAG cloning while preserving the
+        emitted DAG count.
+        """
+        return self._expand_with(batch, self.protocol.dry_expand)
 
     def _detect_per_obs(self, grouped: dict) -> bool:
         """Check whether results are per-observable dicts or scalars."""

@@ -252,17 +252,78 @@ class MeasurementStage(BundleStage):
         self._result_format_override = result_format_override
         self._shot_distribution = shot_distribution
 
+    # ------------------------------------------------------------------ #
+    # Real-path QASM factories (shared inside :meth:`expand` / :meth:`dry_expand`).
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _build_wires_qasm(wires: tuple[int, ...]) -> str:
+        """Build the ``measure q[i] -> c[i];`` sequence for a probs circuit."""
+        return "".join(f"measure q[{q}] -> c[{q}];\n" for q in wires)
+
+    @staticmethod
+    def _dry_wires_qasm(wires: tuple[int, ...]) -> str:
+        """Dry placeholder: probs measurement is always one tagged entry."""
+        return ""
+
+    @staticmethod
+    def _dry_expval_qasms(
+        surviving_groups: tuple[tuple[object, ...], ...], n_qubits: int
+    ) -> tuple[str, ...]:
+        """Dry placeholder: one empty string per surviving measurement group."""
+        return ("",) * len(surviving_groups)
+
     def expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
     ) -> tuple[ExpansionResult, StageToken]:
         """Set up measurements and declare the result format on env."""
+        return self._dispatch(
+            batch,
+            env,
+            expval_qasm_factory=measurement_qasms_from_groups,
+            probs_qasm_factory=self._build_wires_qasm,
+        )
+
+    def dry_expand(
+        self, batch: MetaCircuitBatch, env: PipelineEnv
+    ) -> tuple[ExpansionResult, StageToken]:
+        """Analytic path: keep grouping + shot allocation, skip QASM rendering.
+
+        Group count is the source of truth for the measurement fan-out, so
+        we always run ``compute_measurement_groups`` and
+        ``_allocate_per_group_shots`` (both cheap, pure numpy / analytic).
+        Only the per-group QASM string generation is swapped for a
+        placeholder so the emitted batch has correct shape without
+        materialising measurement circuits.
+        """
+        return self._dispatch(
+            batch,
+            env,
+            expval_qasm_factory=self._dry_expval_qasms,
+            probs_qasm_factory=self._dry_wires_qasm,
+        )
+
+    def _dispatch(
+        self,
+        batch: MetaCircuitBatch,
+        env: PipelineEnv,
+        *,
+        expval_qasm_factory: Callable,
+        probs_qasm_factory: Callable,
+    ) -> tuple[ExpansionResult, StageToken]:
+        """Shared front-end for both real and dry paths.
+
+        Picks the expval vs probs branch from the first MetaCircuit's shape
+        and applies the ``result_format_override``, exactly as the legacy
+        ``expand`` did — only the QASM factory differs between modes.
+        """
         sample_meta = next(iter(batch.values()))
         # Probs/counts circuits carry measured_wires; expval circuits carry
         # observable.  Exactly one is expected to be set.
         if sample_meta.observable is not None:
-            result = self._expand_expval(batch, env)
+            result = self._expand_expval(batch, env, expval_qasm_factory)
         elif sample_meta.measured_wires is not None:
-            result = self._expand_probs(batch, env)
+            result = self._expand_probs(batch, env, probs_qasm_factory)
         else:
             raise ValueError(
                 "MeasurementStage: MetaCircuit has neither an observable "
@@ -279,7 +340,10 @@ class MeasurementStage(BundleStage):
     # ------------------------------------------------------------------ #
 
     def _expand_probs(
-        self, batch: MetaCircuitBatch, env: PipelineEnv
+        self,
+        batch: MetaCircuitBatch,
+        env: PipelineEnv,
+        qasm_factory: Callable[[tuple[int, ...]], str],
     ) -> tuple[ExpansionResult, StageToken]:
         """Generate measurement QASM for ``probs()`` / ``counts()`` circuits."""
         env.result_format = ResultFormat.PROBS
@@ -295,7 +359,7 @@ class MeasurementStage(BundleStage):
                     f"MeasurementStage (probs path): key '{key}' has no "
                     "measured_wires set."
                 )
-            measure_qasm = "".join(f"measure q[{q}] -> c[{q}];\n" for q in wires)
+            measure_qasm = qasm_factory(wires)
             tagged_measurement_qasms = ((((PROBS_MEAS_AXIS, 0),), measure_qasm),)
             out[key] = meta.set_measurement_bodies(tagged_measurement_qasms)
 
@@ -307,9 +371,19 @@ class MeasurementStage(BundleStage):
     # ------------------------------------------------------------------ #
 
     def _expand_expval(
-        self, batch: MetaCircuitBatch, env: PipelineEnv
+        self,
+        batch: MetaCircuitBatch,
+        env: PipelineEnv,
+        qasm_factory: Callable[[tuple[tuple[object, ...], ...], int], tuple[str, ...]],
     ) -> tuple[ExpansionResult, StageToken]:
-        """Group observables and generate measurement QASM (or ham_ops)."""
+        """Group observables and generate measurement QASM (or ham_ops).
+
+        ``qasm_factory`` turns ``(surviving_groups, n_qubits)`` into a tuple of
+        per-group measurement QASMs. :meth:`expand` passes
+        :func:`measurement_qasms_from_groups`; :meth:`dry_expand` passes a
+        placeholder factory so the batch shape is preserved without
+        serialising diagonalising gates + ``measure`` instructions.
+        """
         env.result_format = ResultFormat.EXPVALS
 
         # Setting shot_distribution declares sampling intent — skip the
@@ -368,9 +442,7 @@ class MeasurementStage(BundleStage):
                 per_group_shots_by_spec[key] = surviving_shots
 
             surviving_groups = tuple(measurement_groups[i] for i in surviving_indices)
-            measurement_qasms = measurement_qasms_from_groups(
-                surviving_groups, meta.n_qubits
-            )
+            measurement_qasms = qasm_factory(surviving_groups, meta.n_qubits)
             tagged_measurement_qasms = tuple(
                 (((OBS_GROUP_AXIS, orig_idx),), meas_qasm)
                 for orig_idx, meas_qasm in zip(surviving_indices, measurement_qasms)

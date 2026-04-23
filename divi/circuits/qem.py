@@ -70,6 +70,28 @@ class QEMProtocol(ABC):
         :class:`~divi.pipeline.abc.BundleStage`).
         """
 
+    def dry_expand(
+        self,
+        dag: DAGCircuit,
+        observable: Any | None = None,
+    ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
+        """Analytic counterpart to :meth:`expand` used by dry-run pipelines.
+
+        Must emit the **same number of DAGs** as :meth:`expand` would on the
+        same input and populate any context keys that
+        :meth:`~divi.pipeline.stages.QEMStage.introspect` inspects
+        (``n_rotations``, ``n_paths``, ``symbolic``) so dry-run reports
+        render correctly. Implementations
+        should skip any computation that only matters at reduction time —
+        classical simulation, weight evaluation, deep-copying the DAG for
+        each scale factor, etc.
+
+        The default implementation falls back to :meth:`expand`, which is
+        correct but not necessarily fast; override on expensive protocols
+        (e.g. QuEPP's Clifford simulation).
+        """
+        return self.expand(dag, observable)
+
     @abstractmethod
     def reduce(
         self,

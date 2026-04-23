@@ -7,6 +7,7 @@ import time
 import numpy as np
 import pennylane as qp
 
+from divi.pipeline import format_dry_run
 from divi.qprog import VQE, HartreeFockAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from tutorials._backend import get_backend
@@ -28,7 +29,7 @@ if __name__ == "__main__":
     )
 
     # --- Dry run: inspect pipeline fan-out before executing ---
-    vqe_problem.dry_run()
+    format_dry_run(vqe_problem.dry_run())
 
     t1 = time.time()
 

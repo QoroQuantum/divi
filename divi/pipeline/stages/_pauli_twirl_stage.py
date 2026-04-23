@@ -70,6 +70,16 @@ _TWIRL_DAG_ARRAY_TABLES = {
 }
 
 
+def _twirl_tag(variant_tag: tuple, axis_name: str, twirl_idx: int) -> tuple:
+    """Compose the twirl axis suffix onto a variant tag.
+
+    Shared by both real expand paths and :meth:`PauliTwirlStage.dry_expand` —
+    the same labelling ensures ``_compile_batch`` and the dry-run counter
+    produce consistent keys regardless of which path built the batch.
+    """
+    return (*variant_tag, (axis_name, twirl_idx))
+
+
 def _parametrise_rotations(
     dag: DAGCircuit,
 ) -> tuple[DAGCircuit, tuple[str, ...]]:
@@ -260,6 +270,44 @@ class PauliTwirlStage(BundleStage):
 
         return ExpansionResult(batch=out), None
 
+    def dry_expand(
+        self, batch: MetaCircuitBatch, env: PipelineEnv
+    ) -> tuple[ExpansionResult, StageToken]:
+        """Analytic path: emit ``n_bodies × n_twirls`` shape-correct placeholders.
+
+        Skips label sampling, topology grouping, deep-copying, and QASM
+        rendering entirely — twirling is a purely multiplicative fan-out, so
+        the circuit count is exact from ``n_twirls`` alone. Matches the output
+        slot (``bound_circuit_bodies`` vs ``circuit_bodies``) of the real path
+        so downstream dry stages and ``_compile_batch``-aware counters see the
+        right shape.
+        """
+        out: MetaCircuitBatch = {}
+        for parent_key, meta in batch.items():
+            out[parent_key] = self._expand_dry(meta)
+        return ExpansionResult(batch=out), None
+
+    def _expand_dry(self, meta: MetaCircuit) -> MetaCircuit:
+        """Produce placeholder twirled bodies matching the real path's shape."""
+        if self._fast_path:
+            # Fast path emits pre-rendered QASM strings into bound_circuit_bodies.
+            placeholders = tuple(
+                (_twirl_tag(variant_tag, self.axis_name, twirl_idx), "")
+                for variant_tag, _ in meta.circuit_bodies
+                for twirl_idx in range(self._n_twirls)
+            )
+            return meta.set_bound_bodies(placeholders)
+
+        # Structural path replaces circuit_bodies with twirled DAGs.  The
+        # source DAG is shared across placeholders — nothing in the dry
+        # forward pass mutates it.
+        placeholders = tuple(
+            (_twirl_tag(variant_tag, self.axis_name, twirl_idx), variant_dag)
+            for variant_tag, variant_dag in meta.circuit_bodies
+            for twirl_idx in range(self._n_twirls)
+        )
+        return meta.set_circuit_bodies(placeholders)
+
     def _group_by_topology(
         self, meta: MetaCircuit
     ) -> tuple[list[tuple], dict[tuple, list[tuple[tuple, DAGCircuit]]]]:
@@ -306,8 +354,9 @@ class PauliTwirlStage(BundleStage):
                 ]
                 for twirl_idx, unique_idx in enumerate(twirl_to_unique):
                     twirled = twirled_by_unique[unique_idx]
-                    twirl_tag = (*variant_tag, (self.axis_name, twirl_idx))
-                    updated_bodies.append((twirl_tag, twirled))
+                    updated_bodies.append(
+                        (_twirl_tag(variant_tag, self.axis_name, twirl_idx), twirled)
+                    )
 
         return meta.set_circuit_bodies(tuple(updated_bodies))
 
@@ -366,9 +415,11 @@ class PauliTwirlStage(BundleStage):
                 formatted = tuple(_format_bound_param(v, precision) for v in values)
                 for twirl_idx, unique_idx in enumerate(twirl_to_unique):
                     template = templates_per_unique[unique_idx]
-                    bound_tag = (*variant_tag, (self.axis_name, twirl_idx))
                     bound_bodies.append(
-                        (bound_tag, render_template(template, formatted))
+                        (
+                            _twirl_tag(variant_tag, self.axis_name, twirl_idx),
+                            render_template(template, formatted),
+                        )
                     )
 
         return meta.set_bound_bodies(tuple(bound_bodies))

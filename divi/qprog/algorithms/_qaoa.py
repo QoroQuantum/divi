@@ -108,16 +108,26 @@ class QAOA(VariationalQuantumAlgorithm):
         gammas = ParameterVector("γ", self.n_layers)
         self._params = np.array([[b, g] for b, g in zip(betas, gammas)], dtype=object)
 
-        self._build_pipelines()
+        self._pipelines = self._build_pipelines()
 
-    def _build_pipelines(self) -> None:
-        self._cost_pipeline = self._build_cost_pipeline(
-            TrotterSpecStage(
-                trotterization_strategy=self.trotterization_strategy,
-                meta_circuit_factory=self._cost_meta_circuit_factory,
-            )
-        )
-        self._measurement_pipeline = self._build_measurement_pipeline()
+    def _build_pipelines(self) -> dict:
+        return {
+            "cost": self._build_cost_pipeline(
+                TrotterSpecStage(
+                    trotterization_strategy=self.trotterization_strategy,
+                    meta_circuit_factory=self._cost_meta_circuit_factory,
+                )
+            ),
+            "measurement": self._build_measurement_pipeline(),
+        }
+
+    def _get_initial_spec(self, name: str) -> Any:
+        # QAOA's cost pipeline is driven by a TrotterSpecStage, which expects
+        # a Hamiltonian (not a MetaCircuit) as its initial spec.  Measurement
+        # keeps the default (a pre-built MetaCircuit).
+        if name == "cost":
+            return self._cost_hamiltonian
+        return super()._get_initial_spec(name)
 
     def _save_subclass_state(self) -> dict[str, Any]:
         """Save QAOA-specific runtime state."""
@@ -206,10 +216,6 @@ class QAOA(VariationalQuantumAlgorithm):
                 parameter_order=flat_params,
             ),
         }
-
-    def _get_cost_pipeline_initial_spec(self) -> qp.operation.Operator:
-        """Use the cost Hamiltonian as the input spec for the cost pipeline."""
-        return self._cost_hamiltonian
 
     def _perform_final_computation(self, **kwargs):
         """Run measurement circuits with the best parameters and decode the solution.

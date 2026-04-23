@@ -229,6 +229,52 @@ def _default_execute_fn(
     return _collapse_to_parent_results(raw_by_label, lineage_by_label)
 
 
+def _has_custom_dry_expand(stage: Stage) -> bool:
+    """True iff ``stage``'s class overrides :meth:`Stage.dry_expand`."""
+    return type(stage).dry_expand is not Stage.dry_expand
+
+
+def _unsafe_downstream_dag_consumers(stages: Sequence[Stage], idx: int) -> list[Stage]:
+    """Downstream stages that would corrupt ``stages[idx]``'s dry placeholders.
+
+    Returns stages after ``idx`` that both (a) declare
+    ``consumes_dag_bodies=True`` — so their real :meth:`~Stage.expand` may
+    mutate circuit-body DAGs in place — and (b) have not overridden
+    :meth:`~Stage.dry_expand` — so they would run that real expand over the
+    shared DAG references an upstream dry path emits.  When this list is
+    non-empty for some upstream stage, the pipeline demotes that upstream
+    stage to its real ``expand`` under :meth:`CircuitPipeline.run_forward_pass`
+    dry mode, so downstream mutation stays safely sandboxed per branch.
+    """
+    return [
+        s
+        for s in stages[idx + 1 :]
+        if getattr(s, "consumes_dag_bodies", True) and not _has_custom_dry_expand(s)
+    ]
+
+
+def _warn_dry_fallback(stage: Stage, unsafe_stages: Sequence[Stage]) -> None:
+    """Emit a :class:`DiviPerformanceWarning` for a demoted dry-mode stage.
+
+    Called by :meth:`CircuitPipeline._resolve_expand_fns` when ``stage``'s
+    analytic ``dry_expand`` can't be used safely because one or more
+    downstream stages lack a ``dry_expand`` override while claiming to
+    consume DAG bodies — see :func:`_unsafe_downstream_dag_consumers`.
+    """
+    culprits = ", ".join(type(s).__name__ for s in unsafe_stages)
+    stage_name = type(stage).__name__
+    warnings.warn(
+        f"Dry-run analytic path disabled for {stage_name}: downstream "
+        f"stage(s) {culprits} consume DAG bodies but don't override "
+        f"dry_expand. Circuit counts stay correct, only the speedup for "
+        f"{stage_name} is lost. To fix: implement dry_expand on "
+        f"{culprits}, or set consumes_dag_bodies=False if they don't "
+        f"mutate DAGs.",
+        DiviPerformanceWarning,
+        stacklevel=4,
+    )
+
+
 def _validate_stage_order(stages: Sequence[Stage]) -> None:
     """Ensure non-empty, exactly one spec stage first, then bundle stages."""
     if not stages:
@@ -372,19 +418,52 @@ class CircuitPipeline:
         return PipelineResult(self._reduce(raw, env, plan.stage_tokens))
 
     def run_forward_pass(
-        self, initial_spec: Any, env: PipelineEnv, *, force_forward_sweep: bool = False
+        self,
+        initial_spec: Any,
+        env: PipelineEnv,
+        *,
+        force_forward_sweep: bool = False,
+        dry: bool = False,
     ) -> PipelineTrace:
-        """Run only the forward expansion pass and return lineage metadata."""
+        """Run only the forward expansion pass and return lineage metadata.
+
+        When ``dry=True``, each stage is invoked via :meth:`~Stage.dry_expand`
+        instead of :meth:`~Stage.expand`, skipping expensive per-item content
+        generation (DAG copies, QASM rendering, classical simulations). Dry
+        traces are never cached and never read from the cache — they carry
+        placeholder bodies that would corrupt real runs if replayed.
+
+        If a dry-aware stage has a downstream neighbour that (a) declares
+        ``consumes_dag_bodies=True`` and (b) has not overridden
+        :meth:`~Stage.dry_expand`, the pipeline conservatively demotes the
+        upstream stage to its real ``expand`` for this run and emits a
+        :class:`~divi.pipeline.DiviPerformanceWarning` naming both stages.
+        The circuit count stays correct; only the analytic speedup is
+        lost for the affected stage.
+        """
+
+        # Pair each stage with the expand callable to use for this run.
+        # In dry mode, some stages may be demoted back to their real expand
+        # to keep the trace correct when a non-dry-aware downstream stage
+        # would otherwise mutate shared DAG references.  Keeping stage and
+        # callable zipped together eliminates any index-drift footgun when
+        # the list is sliced below.
+        plan: list[
+            tuple[Stage, Callable[[Any, PipelineEnv], tuple[Any, StageToken]]]
+        ] = list(zip(self._stages, self._resolve_expand_fns(dry=dry)))
 
         def run_bundle_stages(
-            data: Any, bundle_stages: Sequence[Stage]
+            data: Any,
+            bundle_plan: Sequence[
+                tuple[Stage, Callable[[Any, PipelineEnv], tuple[Any, StageToken]]]
+            ],
         ) -> tuple[Any, list[StageToken], list[ExpansionResult]]:
             tokens: list[StageToken] = []
             expansions: list[ExpansionResult] = []
 
-            for stage in bundle_stages:
+            for stage, stage_expand in bundle_plan:
                 _report_pipeline_stage(env, stage.name)
-                expansion_result, token = stage.expand(data, env)
+                expansion_result, token = stage_expand(data, env)
                 data = expansion_result.batch
                 tokens.append(token)
                 expansions.append(
@@ -398,7 +477,12 @@ class CircuitPipeline:
         stage_ids = tuple(id(stage) for stage in self._stages)
         stage_extras = tuple(stage.cache_key_extras(env) for stage in self._stages)
         cache_key = (id(initial_spec), stage_ids, stage_extras)
-        cached = None if force_forward_sweep else self._forward_cache.get(cache_key)
+
+        # Dry traces carry placeholder bodies — never cache them, and never
+        # serve a real-run request from a dry trace (or vice versa).
+        cached = (
+            None if (force_forward_sweep or dry) else self._forward_cache.get(cache_key)
+        )
 
         first_stateful_idx = next(
             (idx for idx, stage in enumerate(self._stages) if stage.stateful),
@@ -422,15 +506,13 @@ class CircuitPipeline:
             return cached
 
         if cached is None or first_stateful_idx == 0:
-            spec_stage = self._stages[0]
+            spec_stage, spec_expand = plan[0]
             _report_pipeline_stage(env, spec_stage.name)
-            data, spec_token = spec_stage.expand(initial_spec, env)
+            data, spec_token = spec_expand(initial_spec, env)
 
             initial_batch_snapshot = data
 
-            final_batch, bundle_tokens, expansions = run_bundle_stages(
-                data, self._stages[1:]
-            )
+            final_batch, bundle_tokens, expansions = run_bundle_stages(data, plan[1:])
             trace = PipelineTrace(
                 initial_batch=initial_batch_snapshot,
                 final_batch=final_batch,
@@ -439,7 +521,8 @@ class CircuitPipeline:
                 result_format=env.result_format,
                 env_artifacts=dict(env.artifacts),
             )
-            self._forward_cache[cache_key] = trace
+            if not dry:
+                self._forward_cache[cache_key] = trace
             return trace
 
         if first_stateful_idx is None or first_stateful_idx <= 0:
@@ -451,7 +534,7 @@ class CircuitPipeline:
             data = cached.stage_expansions[first_stateful_idx - 2].batch
 
         final_batch, rerun_tokens, rerun_expansions = run_bundle_stages(
-            data, self._stages[first_stateful_idx:]
+            data, plan[first_stateful_idx:]
         )
         prefix_tokens = list(cached.stage_tokens[:first_stateful_idx])
         prefix_expansions = list(cached.stage_expansions[: first_stateful_idx - 1])
@@ -468,9 +551,43 @@ class CircuitPipeline:
             env_artifacts={**cached.env_artifacts, **env.artifacts},
         )
 
-        self._forward_cache[cache_key] = trace
+        if not dry:
+            self._forward_cache[cache_key] = trace
 
         return trace
+
+    def _resolve_expand_fns(
+        self, *, dry: bool
+    ) -> list[Callable[[Any, PipelineEnv], tuple[Any, StageToken]]]:
+        """Build the per-stage expand callables for one forward pass.
+
+        Real runs always route through :meth:`Stage.expand`.  Dry runs route
+        through :meth:`Stage.dry_expand`, except that any stage with a custom
+        ``dry_expand`` whose downstream neighbours would mutate its shared
+        placeholder DAGs is demoted back to the real path — with a
+        :class:`DiviPerformanceWarning` naming the upstream stage and the
+        downstream culprit(s).  The circuit count stays correct regardless;
+        only the affected stage loses its analytic speedup.
+        """
+        if not dry:
+            return [stage.expand for stage in self._stages]
+
+        fns: list[Callable[[Any, PipelineEnv], tuple[Any, StageToken]]] = []
+        for idx, stage in enumerate(self._stages):
+            if not _has_custom_dry_expand(stage):
+                # No analytic override — the default ``dry_expand`` already
+                # delegates to ``expand``; call ``expand`` directly for a
+                # cleaner stack trace under debugging.
+                fns.append(stage.expand)
+                continue
+
+            unsafe = _unsafe_downstream_dag_consumers(self._stages, idx)
+            if unsafe:
+                _warn_dry_fallback(stage, unsafe)
+                fns.append(stage.expand)
+            else:
+                fns.append(stage.dry_expand)
+        return fns
 
     def _reduce(
         self,

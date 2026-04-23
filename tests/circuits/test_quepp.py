@@ -441,9 +441,8 @@ class TestHasSymbolicAngles:
 
 
 class TestQuEPPProtocol:
-    def test_expand_returns_circuits_and_context(
-        self, mixed_qc, suppress_quepp_warnings
-    ):
+    @pytest.mark.usefixtures("suppress_quepp_warnings")
+    def test_expand_returns_circuits_and_context(self, mixed_qc):
         obs = SparsePauliOp.from_list([("IZ", 0.5), ("ZI", -0.3)])
         p = QuEPP(truncation_order=2, sampling="exhaustive", n_twirls=0)
         dags, ctx = p.expand(circuit_to_dag(mixed_qc), obs)
@@ -479,7 +478,8 @@ class TestQuEPPProtocol:
         with pytest.raises(TypeError, match="SparsePauliOp"):
             p.expand(circuit_to_dag(bell_qc), "not an observable")
 
-    def test_montecarlo_expand(self, mixed_qc, suppress_quepp_warnings):
+    @pytest.mark.usefixtures("suppress_quepp_warnings")
+    def test_montecarlo_expand(self, mixed_qc):
         # ZZ (rather than IZ) picks an observable that propagates to a
         # diagonal Pauli under mixed_qc, so MC sampling returns real
         # diagonal paths and does not fall back.
@@ -488,8 +488,9 @@ class TestQuEPPProtocol:
         _, ctx = p.expand(circuit_to_dag(mixed_qc), obs)
         assert ctx["n_paths"] >= 1
 
+    @pytest.mark.usefixtures("suppress_quepp_warnings")
     def test_montecarlo_all_discarded_returns_empty_when_fallback_is_zero(
-        self, mixed_qc, suppress_quepp_warnings
+        self, mixed_qc
     ):
         """When all MC samples are non-diagonal *and* the all-cos fallback has
         no diagonal contribution, the protocol correctly produces zero paths
@@ -523,7 +524,8 @@ class TestQuEPPSignalDestruction:
 
 
 class TestSymbolicExpand:
-    def test_expand_marks_symbolic(self, suppress_quepp_warnings):
+    @pytest.mark.usefixtures("suppress_quepp_warnings")
+    def test_expand_marks_symbolic(self):
         theta = Parameter("theta")
         qc = QuantumCircuit(2)
         qc.h(0)
@@ -535,7 +537,8 @@ class TestSymbolicExpand:
         assert ctx.get("symbolic") is True
         assert [str(s) for s in ctx["weight_symbols"]] == ["theta"]
 
-    def test_weights_are_parameter_expressions(self, suppress_quepp_warnings):
+    @pytest.mark.usefixtures("suppress_quepp_warnings")
+    def test_weights_are_parameter_expressions(self):
         theta = Parameter("theta")
         qc = QuantumCircuit(2)
         qc.h(0)
@@ -548,7 +551,8 @@ class TestSymbolicExpand:
         for w in ctx["weights"]:
             assert isinstance(w, (ParameterExpression, int, float))
 
-    def test_montecarlo_falls_back_to_exhaustive(self, suppress_quepp_warnings):
+    @pytest.mark.usefixtures("suppress_quepp_warnings")
+    def test_montecarlo_falls_back_to_exhaustive(self):
         theta = Parameter("theta")
         qc = QuantumCircuit(1)
         qc.rx(theta, 0)
@@ -601,7 +605,8 @@ def _exact_expval(qc: QuantumCircuit, obs: SparsePauliOp) -> float:
 class TestCPTExpansion:
     """Verify that the Heisenberg CPT expansion recovers exact expectation values."""
 
-    def test_single_rx(self, suppress_quepp_warnings):
+    @pytest.mark.usefixtures("suppress_quepp_warnings")
+    def test_single_rx(self):
         """Rx(θ) with Z observable → cos(θ)."""
         angle = 0.8
         qc = _rx_qc(angle)
@@ -612,7 +617,8 @@ class TestCPTExpansion:
         cpt = float(ctx["weights"] @ ctx["classical_values"])
         assert cpt == pytest.approx(np.cos(angle), abs=1e-6)
 
-    def test_h_rx_h_ry(self, suppress_quepp_warnings):
+    @pytest.mark.usefixtures("suppress_quepp_warnings")
+    def test_h_rx_h_ry(self):
         """Multi-gate single-qubit circuit."""
         qc = QuantumCircuit(1)
         qc.h(0)
@@ -626,7 +632,8 @@ class TestCPTExpansion:
         cpt = float(ctx["weights"] @ ctx["classical_values"])
         assert cpt == pytest.approx(_exact_expval(qc, obs), abs=1e-4)
 
-    def test_two_qubit_circuit(self, mixed_qc, suppress_quepp_warnings):
+    @pytest.mark.usefixtures("suppress_quepp_warnings")
+    def test_two_qubit_circuit(self, mixed_qc):
         """Two-qubit circuit with ZZ observable."""
         obs = SparsePauliOp.from_list([("ZZ", 1.0)])
         _, ctx = QuEPP(sampling="exhaustive", truncation_order=5, n_twirls=0).expand(
@@ -635,7 +642,8 @@ class TestCPTExpansion:
         cpt = float(ctx["weights"] @ ctx["classical_values"])
         assert cpt == pytest.approx(_exact_expval(mixed_qc, obs), abs=1e-4)
 
-    def test_commuting_gate_no_branch(self, suppress_quepp_warnings):
+    @pytest.mark.usefixtures("suppress_quepp_warnings")
+    def test_commuting_gate_no_branch(self):
         """When observable commutes with rotation generator, no branching occurs.
 
         Rx with X observable — X commutes with X generator, so the gate
@@ -685,7 +693,8 @@ class TestDecomposeControlledRotationsExtended:
 
 
 class TestNormalizeCircuitExtended:
-    def test_cpt_accuracy_with_normalization(self, suppress_quepp_warnings):
+    @pytest.mark.usefixtures("suppress_quepp_warnings")
+    def test_cpt_accuracy_with_normalization(self):
         """CPT expansion on normalized circuit still recovers exact value."""
         angle = 1.2  # > π/4, so normalization kicks in
         qc = _rx_qc(angle)
@@ -703,7 +712,8 @@ class TestNormalizeCircuitExtended:
 
 
 class TestMCWeightsConvergence:
-    def test_mc_weights_are_cpt_coefficients(self, suppress_quepp_warnings):
+    @pytest.mark.usefixtures("suppress_quepp_warnings")
+    def test_mc_weights_are_cpt_coefficients(self):
         """MC IS-weighted paths converge to the correct CPT estimate."""
         angle = 0.5
         qc = _rx_qc(angle)
@@ -732,7 +742,8 @@ class TestMCWeightsConvergence:
 
 
 class TestQuEPPRoundTrip:
-    def test_full_round_trip_single_qubit(self, suppress_quepp_warnings):
+    @pytest.mark.usefixtures("suppress_quepp_warnings")
+    def test_full_round_trip_single_qubit(self):
         """expand → reduce with exact quantum results recovers ideal value."""
         angle = 0.8
         qc = _rx_qc(angle)
@@ -744,7 +755,8 @@ class TestQuEPPRoundTrip:
         qr.extend(ctx["classical_values"])
         assert protocol.reduce(qr, ctx) == pytest.approx(exact, abs=1e-6)
 
-    def test_noise_correction(self, suppress_quepp_warnings):
+    @pytest.mark.usefixtures("suppress_quepp_warnings")
+    def test_noise_correction(self):
         """QuEPP corrects a globally-scaled noise bias."""
         angle = 0.8
         qc = _rx_qc(angle)
@@ -757,7 +769,8 @@ class TestQuEPPRoundTrip:
         qr.extend(ctx["classical_values"] * noise_factor)
         assert protocol.reduce(qr, ctx) == pytest.approx(exact, abs=1e-4)
 
-    def test_expand_with_controlled_rotation(self, suppress_quepp_warnings):
+    @pytest.mark.usefixtures("suppress_quepp_warnings")
+    def test_expand_with_controlled_rotation(self):
         """Full QuEPP expand works on a circuit with controlled rotations."""
         qc = QuantumCircuit(2)
         qc.h(0)
@@ -880,7 +893,8 @@ class TestShallowCircuitWarning:
 
 
 class TestSymbolicHybridNormalization:
-    def test_hybrid_normalization(self, suppress_quepp_warnings):
+    @pytest.mark.usefixtures("suppress_quepp_warnings")
+    def test_hybrid_normalization(self):
         """Concrete rotations are normalized; symbolic ones are kept as-is."""
         theta = Parameter("theta")
         qc = QuantumCircuit(1)
@@ -914,7 +928,8 @@ class TestBindBeforeMitigation:
 
 
 class TestQuEPPPipelineIntegration:
-    def test_pipeline_integration(self, dummy_pipeline_env, suppress_quepp_warnings):
+    @pytest.mark.usefixtures("suppress_quepp_warnings")
+    def test_pipeline_integration(self, dummy_pipeline_env):
         """QuEPP integrates correctly with QEMStage in a pipeline."""
         qscript = qp.tape.QuantumScript(
             ops=[qp.RX(0.5, wires=0)],
@@ -934,7 +949,8 @@ class TestQuEPPPipelineIntegration:
         assert len(final_meta.circuit_bodies) >= 2
 
     @pytest.mark.e2e
-    def test_effectiveness_with_readout_noise(self, suppress_quepp_warnings):
+    @pytest.mark.usefixtures("suppress_quepp_warnings")
+    def test_effectiveness_with_readout_noise(self):
         """QuEPP mitigates uniform readout noise on a real backend."""
         qscript = qp.tape.QuantumScript(
             ops=[qp.RX(0.8, wires=0)],

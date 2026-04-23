@@ -109,11 +109,13 @@ class VQE(VariationalQuantumAlgorithm):
 
         # Build pipelines once (structure is fixed; only env changes per call)
 
-        self._build_pipelines()
+        self._pipelines = self._build_pipelines()
 
-    def _build_pipelines(self) -> None:
-        self._cost_pipeline = self._build_cost_pipeline(CircuitSpecStage())
-        self._measurement_pipeline = self._build_measurement_pipeline()
+    def _build_pipelines(self) -> dict:
+        return {
+            "cost": self._build_cost_pipeline(CircuitSpecStage()),
+            "measurement": self._build_measurement_pipeline(),
+        }
 
     @property
     def n_params_per_layer(self):

@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from typing import Any
+
 import pennylane as qp
 
 from divi.circuits import MetaCircuit, qscript_to_meta
@@ -89,9 +91,9 @@ class TimeEvolution(QuantumProgram):
 
         self.results: dict[str, float] | float | None = None
 
-        self._build_pipelines()
+        self._pipelines = self._build_pipelines()
 
-    def _build_pipelines(self) -> None:
+    def _build_pipelines(self) -> dict:
         trotter = TrotterSpecStage(
             trotterization_strategy=self.trotterization_strategy,
             meta_circuit_factory=self._meta_circuit_factory,
@@ -105,10 +107,17 @@ class TimeEvolution(QuantumProgram):
                 stages.append(PauliTwirlStage(n_twirls=n_twirls))
 
         stages.append(MeasurementStage())
-        self._pipeline = CircuitPipeline(stages=stages)
+        return {"evolution": CircuitPipeline(stages=stages)}
 
-    def _get_dry_run_pipelines(self) -> dict[str, tuple]:
-        return {"evolution": (self._pipeline, self._hamiltonian)}
+    @property
+    def _pipeline(self) -> CircuitPipeline:
+        """The evolution pipeline (thin accessor over ``self._pipelines``)."""
+        return self._pipelines["evolution"]
+
+    def _get_initial_spec(self, name: str) -> Any:
+        if name == "evolution":
+            return self._hamiltonian
+        raise KeyError(f"No initial spec registered for pipeline {name!r}.")
 
     def _meta_circuit_factory(
         self, hamiltonian: qp.operation.Operator, ham_id: int
