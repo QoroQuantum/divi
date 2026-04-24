@@ -162,13 +162,13 @@ tree output:
    # Runs the forward pass without executing circuits, then pretty-print.
    format_dry_run(vqe.dry_run())
 
-``format_dry_run`` prints a tree for each pipeline showing the fan-out factor
-and metadata per stage:
+``format_dry_run`` prints a tree for each pipeline showing the per-stage
+factor (fan-out or reduction) and metadata:
 
 .. code-block:: text
 
    cost
-   ├── CircuitSpecStage [circuit] → 1
+   ├── CircuitSpecStage [circuit] → 14
    │   ├── n_qubits: 4
    │   ├── n_gates: 4
    │   └── n_2q_gates: 2
@@ -178,18 +178,21 @@ and metadata per stage:
    │   └── n_clifford_sims: 9
    ├── PauliTwirlStage [twirl] → ×10
    │   └── n_twirls: 10
-   ├── MeasurementStage [obs_group] → ×5
+   ├── MeasurementStage [obs_group] → ÷2.8
    │   ├── strategy: qwc
    │   ├── n_groups: 5
    │   └── n_terms: 14
    ├── ParameterBindingStage [param_set] → 1
    │   └── n_params: 3
-   └── Total: 10 × 10 × 5 = 500 circuits
+   └── Total: 14 × 10 × 10 ÷ 2.8 = 500 circuits
 
-The report shows the multiplicative expansion at each stage.  Use this to
-estimate cloud costs, tune ``truncation_order`` or ``n_twirls``, and verify
-that measurement grouping behaves as expected — all before spending a single
-shot.
+The spec stage's number (here ``14``) is the naive baseline: one circuit per
+Pauli term in the observable.  Stages that *fan out* show up as ``×K`` (QEM
+path enumeration, Pauli twirling); stages that *reduce* show up as ``÷K``
+(observable grouping collapsing commuting Pauli terms into shared
+measurement circuits).  Use this to estimate cloud costs, tune
+``truncation_order`` or ``n_twirls``, and see at a glance how much grouping
+saves — all before spending a single shot.
 
 ``dry_run()`` itself is print-free — it returns a
 ``dict[str, DryRunReport]`` keyed by pipeline name (e.g. ``"cost"``,

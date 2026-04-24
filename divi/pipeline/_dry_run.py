@@ -4,9 +4,11 @@
 
 """Dry-run analysis for circuit pipelines.
 
-Inspects a :class:`PipelineTrace` (produced by
-:meth:`CircuitPipeline.run_forward_pass`) and reports the fan-out
-factor introduced by each stage, without executing any circuits.
+Reports the per-stage factor (fan-out or reduction) introduced by a
+:class:`PipelineTrace`, without executing any circuits. Observable
+grouping in :class:`~divi.pipeline.stages.MeasurementStage` is counted
+as a reduction (``factor < 1``), since grouping N Pauli terms into
+M ≤ N commuting groups saves circuits.
 """
 
 from typing import Any, NamedTuple
@@ -24,13 +26,20 @@ from divi.pipeline.abc import (
 
 
 class StageInfo(NamedTuple):
-    """Per-stage fan-out report."""
+    """Per-stage dry-run report.
+
+    ``factor`` is the ratio of logical circuits after this stage to
+    circuits before it. ``factor > 1`` is a fan-out (e.g.
+    :class:`~divi.pipeline.stages.ParameterBindingStage`,
+    :class:`~divi.pipeline.stages.PauliTwirlStage`); ``factor < 1`` is a
+    reduction (e.g. observable grouping in
+    :class:`~divi.pipeline.stages.MeasurementStage` collapsing N Pauli
+    terms into M ≤ N commuting groups yields ``factor = M / N``).
+    """
 
     name: str
     axis: str | None
-    fan_out: int
-    cumulative_bodies: int
-    cumulative_measurements: int
+    factor: float
     metadata: dict[str, Any]
 
 
@@ -52,20 +61,23 @@ class DryRunReport(NamedTuple):
 
 
 def _effective_bodies(mc: MetaCircuit) -> tuple:
-    """Return the body tuple that ``_compile_batch`` would actually submit.
-
-    Mirrors the precedence rule in :func:`divi.pipeline._compilation._compile_batch`:
-    bound (pre-rendered) bodies take priority over the parametric DAG list.
-    """
+    # Mirrors _compile_batch: bound bodies take priority over parametric DAGs.
     return mc.bound_circuit_bodies or mc.circuit_bodies or ()
 
 
-def _count_qasms(batch: MetaCircuitBatch) -> tuple[int, int, int]:
-    """Return (n_meta_circuits, total_bodies, total_measurements)."""
-    n_mc = len(batch)
-    total_bodies = sum(len(_effective_bodies(mc)) for mc in batch.values())
-    total_meas = sum(len(mc.measurement_qasms or ()) for mc in batch.values())
-    return n_mc, total_bodies, total_meas
+def _logical_count(mc: MetaCircuit) -> int:
+    n_bodies = len(_effective_bodies(mc))
+    if mc.measurement_qasms:
+        return n_bodies * len(mc.measurement_qasms)
+    if mc.observable is not None:
+        # Pre-measurement baseline: one circuit per Pauli term, so that
+        # grouping at the measurement stage shows up as a reduction.
+        return n_bodies * len(mc.observable)
+    return n_bodies
+
+
+def _batch_logical_circuits(batch: MetaCircuitBatch) -> int:
+    return sum(_logical_count(mc) for mc in batch.values())
 
 
 def dry_run_pipeline(
@@ -74,42 +86,31 @@ def dry_run_pipeline(
     stages: tuple[Stage, ...],
     env: PipelineEnv | None = None,
 ) -> DryRunReport:
-    """Analyze a pipeline trace and compute per-stage fan-out."""
+    """Analyze a pipeline trace and compute per-stage factor."""
     infos: list[StageInfo] = []
 
-    # SpecStage (stages[0])
-    n_mc, prev_bodies, prev_meas = _count_qasms(trace.initial_batch)
     spec_stage = stages[0]
     spec_token = trace.stage_tokens[0] if trace.stage_tokens else None
     spec_meta = spec_stage.introspect(trace.initial_batch, env, spec_token)
+    prev_logical = _batch_logical_circuits(trace.initial_batch)
     infos.append(
         StageInfo(
             name=type(spec_stage).__name__,
             axis=getattr(spec_stage, "axis_name", None),
-            fan_out=n_mc,
-            cumulative_bodies=prev_bodies,
-            cumulative_measurements=prev_meas,
+            factor=float(prev_logical),
             metadata=spec_meta,
         )
     )
 
-    # BundleStages (stages[1:], corresponding to trace.stage_expansions)
     for i, expansion in enumerate(trace.stage_expansions):
         stage = stages[i + 1]
-        _, cur_bodies, cur_meas = _count_qasms(expansion.batch)
+        cur_logical = _batch_logical_circuits(expansion.batch)
 
-        if cur_meas > 0 and prev_meas == 0:
-            body_fan = max(cur_bodies // prev_bodies, 1) if prev_bodies else 1
-            meas_fan = cur_meas // max(n_mc, 1)
-            fan_out = max(body_fan, meas_fan)
-        elif cur_bodies != prev_bodies:
-            fan_out = cur_bodies // prev_bodies if prev_bodies else cur_bodies
-        elif cur_meas != prev_meas and prev_meas > 0:
-            fan_out = cur_meas // prev_meas
+        if prev_logical:
+            factor = cur_logical / prev_logical
         else:
-            fan_out = 1
+            factor = float(cur_logical)
 
-        # Token index: stage_tokens[0] = spec_token, stage_tokens[1+] = bundle tokens
         token = trace.stage_tokens[i + 1] if i + 1 < len(trace.stage_tokens) else None
         meta = stage.introspect(expansion.batch, env, token)
 
@@ -117,13 +118,11 @@ def dry_run_pipeline(
             StageInfo(
                 name=type(stage).__name__,
                 axis=getattr(stage, "axis_name", None),
-                fan_out=fan_out,
-                cumulative_bodies=cur_bodies,
-                cumulative_measurements=cur_meas,
+                factor=factor,
                 metadata=meta,
             )
         )
-        prev_bodies, prev_meas = cur_bodies, cur_meas
+        prev_logical = cur_logical
 
     total = sum(
         len(_effective_bodies(mc)) * max(len(mc.measurement_qasms or ()), 1)
@@ -138,25 +137,40 @@ def dry_run_pipeline(
     )
 
 
+def _format_factor(factor: float) -> tuple[str, str, str | None]:
+    # Returns (line_token, total_token, total_op). total_op=None omits this
+    # stage from the Total product line.
+    if factor == 1:
+        return "1", "", None
+    if factor > 1:
+        token = f"{factor:g}"
+        return f"[bold yellow]×{token}[/bold yellow]", token, "×"
+    reciprocal = 1.0 / factor if factor else 0.0
+    if reciprocal and abs(reciprocal - round(reciprocal)) < 1e-9:
+        token = f"{int(round(reciprocal))}"
+    else:
+        token = f"{reciprocal:.3g}"
+    return f"[bold green]÷{token}[/bold green]", token, "÷"
+
+
 def format_dry_run(reports: dict[str, DryRunReport]) -> None:
     """Print dry-run reports as rich trees with stage metadata."""
     console = Console()
 
     for report in reports.values():
         tree = Tree(f"[bold]{report.pipeline_name}[/bold]")
-        factors = []
+        factors: list[tuple[str, str]] = []
 
-        for stage in report.stages:
+        for idx, stage in enumerate(report.stages):
             axis_str = f" [dim]\\[{stage.axis}][/dim]" if stage.axis else ""
-            if stage.fan_out > 1:
-                fan_str = f"[bold yellow]×{stage.fan_out}[/bold yellow]"
-                factors.append(str(stage.fan_out))
-            else:
-                fan_str = str(stage.fan_out)
+            line_token, total_token, total_op = _format_factor(stage.factor)
+            if total_op is not None:
+                factors.append((total_op, total_token))
 
-            node = tree.add(f"[cyan]{stage.name}[/cyan]{axis_str} → {fan_str}")
+            # Spec stage is the source, not a multiplier — bare number on its line.
+            display_token = total_token if idx == 0 and total_op == "×" else line_token
+            node = tree.add(f"[cyan]{stage.name}[/cyan]{axis_str} → {display_token}")
 
-            # Render metadata as sub-items
             for key, val in stage.metadata.items():
                 if isinstance(val, list) and len(val) == 2:
                     node.add(f"[green]{key}: {val[0]} .. {val[1]}[/green]")
@@ -165,10 +179,15 @@ def format_dry_run(reports: dict[str, DryRunReport]) -> None:
                 else:
                     node.add(f"[green]{key}: {val}[/green]")
 
-        total_str = " × ".join(factors) if factors else "1"
-        tree.add(
-            f"[bold]Total: {total_str} = {report.total_circuits:,} circuits[/bold]"
-        )
+        if len(factors) > 1:
+            total_str = factors[0][1]
+            for op, tok in factors[1:]:
+                total_str += f" {op} {tok}"
+            tree.add(
+                f"[bold]Total: {total_str} = {report.total_circuits:,} circuits[/bold]"
+            )
+        else:
+            tree.add(f"[bold]Total: {report.total_circuits:,} circuits[/bold]")
 
         console.print(tree)
         console.print()

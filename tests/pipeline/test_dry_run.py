@@ -136,7 +136,7 @@ class TestAnalyticDryRun:
         assert real_report.total_circuits == dry_report.total_circuits
         # Fan-outs per stage must match too.
         for real_stage, dry_stage in zip(real_report.stages, dry_report.stages):
-            assert real_stage.fan_out == dry_stage.fan_out
+            assert real_stage.factor == dry_stage.factor
 
     def test_param_binding_fast_path_counts_correctly(self, dummy_pipeline_env):
         """Fast-path ParameterBindingStage populates bound_circuit_bodies; dry-run
@@ -160,6 +160,9 @@ class TestAnalyticDryRun:
 
         # 1 body × 3 param sets × 2 obs groups.
         assert dry_report.total_circuits == 6
+        # ZZ+XX don't QWC-commute, so grouping saves nothing: factor == 1.
+        meas_stage = next(s for s in dry_report.stages if s.name == "MeasurementStage")
+        assert meas_stage.factor == 1.0
 
     def test_dry_skips_pauli_twirl_deepcopy(self, dummy_pipeline_env, mocker):
         """Dry PauliTwirl must not invoke the twirl-substitute DAG surgery."""
@@ -262,6 +265,7 @@ class TestAnalyticDryRun:
         meas = by_name["MeasurementStage"]
         assert meas.metadata["n_groups"] == len(meta.observable)
         assert meas.metadata["n_terms"] == len(meta.observable)
+        assert meas.factor == 1.0
 
     def test_env_artifacts_surface_on_dry_run_report(self, dummy_pipeline_env):
         """``DryRunReport.env_artifacts`` is the canonical introspection surface
@@ -323,6 +327,138 @@ class TestAnalyticDryRun:
             "real run produced placeholder measurement QASMs — "
             "cache leaked dry state"
         )
+
+
+class TestMeasurementStageReduction:
+    """MeasurementStage must be reported as a reduction when observable grouping
+    collapses multiple Pauli terms into fewer commuting groups. The spec stage's
+    logical count uses one circuit per term; the measurement stage's logical
+    count uses one circuit per group."""
+
+    @staticmethod
+    def _qwc_single_group_meta() -> MetaCircuit:
+        """0.5*ZZ + 0.5*ZI — both QWC-commute, so qwc grouping yields 1 group."""
+        qc = QuantumCircuit(2)
+        qc.h(0)
+        observable = SparsePauliOp.from_list([("ZZ", 0.5), ("ZI", 0.5)])
+        return MetaCircuit(
+            circuit_bodies=(((), circuit_to_dag(qc)),),
+            observable=observable,
+        )
+
+    def test_qwc_grouping_shows_reduction(self, dummy_pipeline_env):
+        """Two QWC-commuting Pauli terms collapse to one group — the spec stage
+        reports one circuit per term (×2 baseline) and MeasurementStage reports
+        the grouping as a reduction (``factor = 0.5``)."""
+        meta = self._qwc_single_group_meta()
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=meta),
+                # Pin shot_distribution so MeasurementStage stays on the qwc
+                # branch (the dummy backend supports expval and would otherwise
+                # auto-promote to _backend_expval).
+                MeasurementStage(shot_distribution="weighted"),
+            ]
+        )
+        trace = pipeline.run_forward_pass(
+            "ignored", dummy_pipeline_env, force_forward_sweep=True, dry=True
+        )
+        report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
+
+        spec, meas = report.stages
+        assert spec.factor == 2.0  # one per Pauli term
+        assert meas.factor == 0.5  # 2 terms -> 1 group
+        assert meas.metadata["n_groups"] == 1
+        assert report.total_circuits == 1
+
+    def test_reduction_scales_with_upstream_fanout(self, dummy_pipeline_env):
+        """Upstream body fan-out (e.g. ParameterBindingStage) scales the logical
+        baseline. MeasurementStage still reports the same reduction factor."""
+        dummy_pipeline_env.param_sets = np.asarray([[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]])
+        theta = Parameter("theta")
+        phi = Parameter("phi")
+        qc = QuantumCircuit(2)
+        qc.rx(theta, 0)
+        qc.ry(phi, 1)
+        qc.cx(0, 1)
+        meta = MetaCircuit(
+            circuit_bodies=(((), circuit_to_dag(qc)),),
+            parameters=(theta, phi),
+            observable=SparsePauliOp.from_list([("ZZ", 0.5), ("ZI", 0.5)]),
+        )
+
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=meta),
+                ParameterBindingStage(),
+                MeasurementStage(shot_distribution="weighted"),
+            ]
+        )
+        trace = pipeline.run_forward_pass(
+            "ignored", dummy_pipeline_env, force_forward_sweep=True, dry=True
+        )
+        report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
+
+        spec, param, meas = report.stages
+        assert spec.factor == 2.0  # 1 body × 2 Pauli terms
+        assert param.factor == 3.0  # 3 param sets
+        assert meas.factor == 0.5  # 2 terms -> 1 group
+        assert report.total_circuits == 3
+
+    def test_backend_expval_shows_full_reduction(self, dummy_pipeline_env):
+        """When MeasurementStage auto-promotes to ``_backend_expval`` (all-same
+        observable, expval-native backend), the whole observable collapses to
+        one backend-evaluated expval — ``factor = 1 / n_terms``."""
+        # Four distinct Pauli terms fed to an expval backend without
+        # shot_distribution, so strategy auto-promotes to ``_backend_expval``.
+        qc = QuantumCircuit(2)
+        qc.h(0)
+        observable = SparsePauliOp.from_list(
+            [("ZZ", 0.1), ("ZI", 0.2), ("IZ", 0.3), ("II", 0.4)]
+        )
+        meta = MetaCircuit(
+            circuit_bodies=(((), circuit_to_dag(qc)),),
+            observable=observable,
+        )
+        pipeline = CircuitPipeline(
+            stages=[DummySpecStage(meta=meta), MeasurementStage()]
+        )
+        trace = pipeline.run_forward_pass(
+            "ignored", dummy_pipeline_env, force_forward_sweep=True, dry=True
+        )
+        report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
+
+        spec, meas = report.stages
+        # All 4 Paulis QWC-commute, so plain qwc would also yield 1 group —
+        # pin the strategy so this test doesn't silently pass if auto-promotion
+        # were removed.
+        assert meas.metadata["strategy"] == "_backend_expval"
+        assert spec.factor == 4.0  # one per Pauli term
+        assert meas.factor == pytest.approx(0.25)  # 4 terms -> 1 backend expval
+        assert report.total_circuits == 1
+
+    def test_probs_path_has_unit_factor(self, dummy_pipeline_env):
+        """Probs circuits (``measured_wires`` instead of observable) have no
+        observable to group — MeasurementStage must report ``factor = 1`` and
+        the total matches the body count."""
+        qc = QuantumCircuit(2)
+        qc.h(0)
+        meta = MetaCircuit(
+            circuit_bodies=(((), circuit_to_dag(qc)),),
+            measured_wires=(0, 1),
+        )
+        pipeline = CircuitPipeline(
+            stages=[DummySpecStage(meta=meta), MeasurementStage()]
+        )
+        trace = pipeline.run_forward_pass(
+            "ignored", dummy_pipeline_env, force_forward_sweep=True, dry=True
+        )
+        report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
+
+        spec, meas = report.stages
+        assert spec.factor == 1.0  # 1 body, no observable
+        assert meas.factor == 1.0
+        assert report.total_circuits == 1
 
 
 @pytest.mark.usefixtures("suppress_quepp_warnings")
@@ -424,9 +560,9 @@ class TestQuantumProgramDryRun:
             assert analytic[name].total_circuits == forced[name].total_circuits
             # Per-stage fan-outs must also agree.
             for a_stage, f_stage in zip(analytic[name].stages, forced[name].stages):
-                assert a_stage.fan_out == f_stage.fan_out, (
-                    f"{name}/{a_stage.name}: analytic={a_stage.fan_out} "
-                    f"forced={f_stage.fan_out}"
+                assert a_stage.factor == f_stage.factor, (
+                    f"{name}/{a_stage.name}: analytic={a_stage.factor} "
+                    f"forced={f_stage.factor}"
                 )
 
     def test_env_artifacts_exposed_via_dry_run(self, default_test_simulator):
@@ -470,9 +606,9 @@ class TestQuantumProgramDryRun:
         for name in analytic:
             assert analytic[name].total_circuits == forced[name].total_circuits
             for a_stage, f_stage in zip(analytic[name].stages, forced[name].stages):
-                assert a_stage.fan_out == f_stage.fan_out, (
-                    f"{name}/{a_stage.name}: analytic={a_stage.fan_out} "
-                    f"forced={f_stage.fan_out}"
+                assert a_stage.factor == f_stage.factor, (
+                    f"{name}/{a_stage.name}: analytic={a_stage.factor} "
+                    f"forced={f_stage.factor}"
                 )
 
 

@@ -234,13 +234,17 @@ before committing to a full run, and pipe the returned reports through
        backend=QiskitSimulator(qiskit_backend="auto"),
    )
 
-   # Collect the analytic reports and render a fan-out tree per pipeline.
+   # Collect the analytic reports and render a per-stage factor tree per pipeline.
    format_dry_run(vqe.dry_run())
 
-The output shows the multiplicative cost of each pipeline stage — including
-how many Pauli paths QuEPP generates, the Clifford simulation count, and the
-twirl fan-out — so you can tune ``truncation_order``, ``coefficient_threshold``,
-and ``n_twirls`` before spending any shots.
+The output shows the factor each pipeline stage contributes — including how
+many Pauli paths QuEPP generates, the Clifford simulation count, and the
+twirl fan-out.  Observable grouping in
+:class:`~divi.pipeline.stages.MeasurementStage` appears as a *reduction*
+(``÷K``) rather than a fan-out: commuting Pauli terms are collapsed into
+shared measurement circuits, which claws some cost back.  Use this to tune
+``truncation_order``, ``coefficient_threshold``, and ``n_twirls`` before
+spending any shots.
 
 See :doc:`pipelines` for full documentation of the dry-run tool.
 

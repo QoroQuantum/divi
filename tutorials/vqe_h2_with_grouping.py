@@ -56,8 +56,6 @@ if __name__ == "__main__":
         ("QWC", vqe_problem_qwc_grouping),
     ]
 
-    # The measurement-stage fan-out is carried on every dry-run report —
-    # no need to reach into pipeline internals.
     n_groups_by_strategy: dict[str, int] = {}
     for name, problem in strategies:
         cost_report = problem.dry_run()["cost"]
