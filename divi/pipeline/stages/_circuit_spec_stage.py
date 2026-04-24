@@ -42,24 +42,24 @@ class CircuitSpecStage(SpecStage[CircuitSpec]):
         super().__init__(name=type(self).__name__)
 
     def expand(
-        self, items: CircuitSpec, env: PipelineEnv
+        self, batch: CircuitSpec, env: PipelineEnv
     ) -> tuple[MetaCircuitBatch, StageToken]:
         """Wrap input MetaCircuit(s) into a keyed batch."""
-        if isinstance(items, MetaCircuit):
-            batch: MetaCircuitBatch = {(("circuit", 0),): items}
+        if isinstance(batch, MetaCircuit):
+            out: MetaCircuitBatch = {(("circuit", 0),): batch}
             fmt = "single"
-        elif isinstance(items, Mapping):
-            batch = {(("circuit", name),): meta for name, meta in items.items()}
+        elif isinstance(batch, Mapping):
+            out = {(("circuit", name),): meta for name, meta in batch.items()}
             fmt = "mapping"
-        elif isinstance(items, Sequence):
-            batch = {(("circuit", i),): meta for i, meta in enumerate(items)}
+        elif isinstance(batch, Sequence):
+            out = {(("circuit", i),): meta for i, meta in enumerate(batch)}
             fmt = "sequence"
         else:
             raise TypeError(
                 f"CircuitSpecStage expects a MetaCircuit, sequence, or mapping, "
-                f"got {type(items).__name__}"
+                f"got {type(batch).__name__}"
             )
-        return batch, fmt
+        return out, fmt
 
     def introspect(
         self, batch: MetaCircuitBatch, env: PipelineEnv, token: StageToken

@@ -6,14 +6,23 @@ import logging
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, fields
+from typing import TYPE_CHECKING
 
-try:
+if TYPE_CHECKING:
+    # For type checkers, assume maestro is always available — runtime code
+    # that uses it is gated behind MaestroSimulator.__init__'s availability
+    # check, so the type-checker view matches post-init invariants.
     import maestro
 
-    _maestro_import_error = None
-except ImportError as _err:
-    maestro = None
-    _maestro_import_error = _err
+    _maestro_import_error: ImportError | None = None
+else:
+    try:
+        import maestro
+
+        _maestro_import_error = None
+    except ImportError as _err:
+        maestro = None
+        _maestro_import_error = _err
 
 from qiskit import QuantumCircuit
 

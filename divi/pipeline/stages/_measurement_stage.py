@@ -183,7 +183,7 @@ class MeasurementStage(BundleStage):
     """
 
     @property
-    def axis_name(self) -> str | None:
+    def axis_name(self) -> str:
         return OBS_GROUP_AXIS
 
     @property

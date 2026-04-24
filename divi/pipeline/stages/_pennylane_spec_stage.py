@@ -50,11 +50,11 @@ class PennyLaneSpecStage(CircuitSpecStage):
 
     def expand(
         self,
-        items: PennyLaneInput | Sequence[PennyLaneInput] | Mapping[str, PennyLaneInput],
+        batch: PennyLaneInput | Sequence[PennyLaneInput] | Mapping[str, PennyLaneInput],
         env: PipelineEnv,
     ) -> tuple[MetaCircuitBatch, StageToken]:
         """Convert PennyLane circuit(s) to MetaCircuit(s) and build a keyed batch."""
-        return super().expand(self._convert(items), env)
+        return super().expand(self._convert(batch), env)
 
     @staticmethod
     def _qnode_to_qscript(qnode: QNode) -> qp.tape.QuantumScript:

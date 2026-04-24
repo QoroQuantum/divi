@@ -532,6 +532,12 @@ class VQEHyperparameterSweep(ProgramEnsemble):
                 f"Invalid graph type: {graph_type}. Choose between 'line' and 'scatter'."
             )
 
+        if (transformer := self.molecule_transformer) is None:
+            raise RuntimeError(
+                "visualize_results currently supports molecule-transformer sweeps only; "
+                "visualization for hamiltonians-only sweeps is not implemented."
+            )
+
         if self._executor is not None:
             self.join()
 
@@ -550,7 +556,7 @@ class VQEHyperparameterSweep(ProgramEnsemble):
             for ansatz in unique_ansatze:
                 modifiers = []
                 energies = []
-                for modifier in self.molecule_transformer.bond_modifiers:
+                for modifier in transformer.bond_modifiers:
                     program_key = (ansatz.name, modifier)
                     if program_key in self._programs:
                         modifiers.append(modifier)
@@ -567,19 +573,17 @@ class VQEHyperparameterSweep(ProgramEnsemble):
         elif graph_type == "line":
             for ansatz in unique_ansatze:
                 energies = []
-                for modifier in self.molecule_transformer.bond_modifiers:
+                for modifier in transformer.bond_modifiers:
                     energies.append(self._programs[(ansatz.name, modifier)].best_loss)
 
                 plt.plot(
-                    self.molecule_transformer.bond_modifiers,
+                    transformer.bond_modifiers,
                     energies,
                     label=ansatz.name,
                     color=color_map[ansatz],
                 )
 
-        plt.xlabel(
-            "Scale Factor" if self.molecule_transformer._mode == "scale" else "Bond Δ"
-        )
+        plt.xlabel("Scale Factor" if transformer._mode == "scale" else "Bond Δ")
         plt.ylabel("Energy level")
         plt.legend()
         plt.show()

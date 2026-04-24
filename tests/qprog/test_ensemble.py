@@ -155,7 +155,7 @@ class TestProgramEnsemble:
 
         # Assert that state attributes are cleared
         assert program_ensemble._executor is None
-        assert program_ensemble.futures is None
+        assert program_ensemble.futures == []
 
     def test_total_circuit_count_setter(self, program_ensemble):
         with pytest.raises(

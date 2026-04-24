@@ -85,22 +85,22 @@ class QAOA(VariationalQuantumAlgorithm):
 
         # Problem provides all domain-specific ingredients
         self.problem = problem
-        self._cost_hamiltonian = problem.cost_hamiltonian
+        self.cost_hamiltonian = problem.cost_hamiltonian
         self._decode_solution_fn = problem.decode_fn
         self.loss_constant = problem.loss_constant
         self.initial_state = initial_state or problem.recommended_initial_state
         self.problem_metadata = getattr(problem, "metadata", {})
 
         # Derived from cost Hamiltonian
-        self.n_qubits = len(self._cost_hamiltonian.wires)
-        self._circuit_wires = tuple(self._cost_hamiltonian.wires)
+        self.n_qubits = len(self.cost_hamiltonian.wires)
+        self._circuit_wires = tuple(self.cost_hamiltonian.wires)
 
         # Algorithm parameters
         self.n_layers = n_layers
         self.max_iterations = max_iterations
         self.current_iteration = 0
         self.trotterization_strategy = trotterization_strategy or ExactTrotterization()
-        self._n_params_per_layer = 2
+        self.n_params_per_layer = 2
         self._decoded_solution = None
 
         # Circuit parameters — Qiskit ParameterVector, no sympy.
@@ -126,7 +126,7 @@ class QAOA(VariationalQuantumAlgorithm):
         # a Hamiltonian (not a MetaCircuit) as its initial spec.  Measurement
         # keeps the default (a pre-built MetaCircuit).
         if name == "cost":
-            return self._cost_hamiltonian
+            return self.cost_hamiltonian
         return super()._get_initial_spec(name)
 
     def _save_subclass_state(self) -> dict[str, Any]:
@@ -199,13 +199,13 @@ class QAOA(VariationalQuantumAlgorithm):
 
     def _create_meta_circuit_factories(self) -> dict[str, MetaCircuit]:
         """Generate meta-circuit factories for the QAOA problem."""
-        ops = self._build_qaoa_ops(self._cost_hamiltonian)
+        ops = self._build_qaoa_ops(self.cost_hamiltonian)
         flat_params = tuple(self._params.flatten())
 
         return {
             "cost_circuit": qscript_to_meta(
                 qp.tape.QuantumScript(
-                    ops=ops, measurements=[qp.expval(self._cost_hamiltonian)]
+                    ops=ops, measurements=[qp.expval(self.cost_hamiltonian)]
                 ),
                 precision=self._precision,
                 parameter_order=flat_params,
@@ -217,12 +217,8 @@ class QAOA(VariationalQuantumAlgorithm):
             ),
         }
 
-    def _perform_final_computation(self, **kwargs):
-        """Run measurement circuits with the best parameters and decode the solution.
-
-        Returns:
-            tuple[int, float]: Total circuit count and total runtime.
-        """
+    def _perform_final_computation(self, **kwargs) -> None:
+        """Run measurement circuits with the best parameters and decode the solution."""
         self.reporter.info(message="🏁 Computing Final Solution 🏁", overwrite=True)
 
         self._run_solution_measurement_for(np.atleast_2d(self._best_params))
@@ -231,7 +227,6 @@ class QAOA(VariationalQuantumAlgorithm):
         self._decoded_solution = self._decode_solution_fn(best_bitstring)
 
         self.reporter.info(message="🏁 Computed Final Solution! 🏁")
-        return self._total_circuit_count, self._total_run_time
 
     def get_top_solutions(
         self,

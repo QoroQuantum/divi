@@ -40,13 +40,13 @@ class SampleVQAProgram(VariationalQuantumAlgorithm):
         self.run_time = run_time
 
         self.n_layers = 1
-        self._n_params_per_layer = 4
+        self.n_params_per_layer = 4
         self.current_iteration = 0
         self.max_iterations = 0  # Default value to prevent AttributeError
 
         super().__init__(backend=kwargs.pop("backend", None), **kwargs)
 
-        self._cost_hamiltonian = (
+        self.cost_hamiltonian = (
             qp.PauliX(0) + qp.PauliZ(1) + qp.PauliX(0) @ qp.PauliZ(1)
         )
         self.loss_constant = 0.0
@@ -56,11 +56,6 @@ class SampleVQAProgram(VariationalQuantumAlgorithm):
             "cost": self._build_cost_pipeline(CircuitSpecStage()),
             "measurement": self._build_measurement_pipeline(),
         }
-
-    @property
-    def cost_hamiltonian(self) -> qp.operation.Operator:
-        """The cost Hamiltonian for the VQA problem."""
-        return self._cost_hamiltonian
 
     def _create_meta_circuit_factories(self):
         symbols = [sp.Symbol("beta"), *sp.symarray("theta", 3)]
@@ -91,9 +86,7 @@ class SampleVQAProgram(VariationalQuantumAlgorithm):
 
     def _load_subclass_state(self, state: dict[str, Any]) -> None:
         """Load SampleVQAProgram-specific state."""
-
-    def _perform_final_computation(self):
-        pass
+        ...
 
 
 class TestProgram:
@@ -1545,7 +1538,7 @@ class TestGradientFunction(BaseVariationalQuantumAlgorithmTest):
             seed=42,
             **kwargs,
         )
-        program._n_params_per_layer = n_params_per_layer
+        program.n_params_per_layer = n_params_per_layer
         program.max_iterations = 2
         return program
 

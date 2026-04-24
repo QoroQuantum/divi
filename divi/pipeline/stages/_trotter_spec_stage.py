@@ -38,7 +38,7 @@ class TrotterSpecStage(SpecStage[qp.operation.Operator]):
     """
 
     @property
-    def axis_name(self) -> str | None:
+    def axis_name(self) -> str:
         return "ham"
 
     @property
@@ -96,10 +96,10 @@ class TrotterSpecStage(SpecStage[qp.operation.Operator]):
         return hamiltonian_clean, strategy, n_samples, token
 
     def expand(
-        self, items: qp.operation.Operator, env: PipelineEnv
+        self, batch: qp.operation.Operator, env: PipelineEnv
     ) -> tuple[MetaCircuitBatch, StageToken]:
         """Transform Hamiltonian into a keyed batch of MetaCircuits (one per strategy output)."""
-        hamiltonian_clean, strategy, n_samples, token = self._prepare(items)
+        hamiltonian_clean, strategy, n_samples, token = self._prepare(batch)
 
         metas: dict[object, MetaCircuit] = {}
         for ham_id in range(n_samples):
@@ -110,7 +110,7 @@ class TrotterSpecStage(SpecStage[qp.operation.Operator]):
         return metas, token
 
     def dry_expand(
-        self, items: qp.operation.Operator, env: PipelineEnv
+        self, batch: qp.operation.Operator, env: PipelineEnv
     ) -> tuple[MetaCircuitBatch, StageToken]:
         """Analytic path: build one prototype MetaCircuit, fan it out ``n_samples`` times.
 
@@ -121,7 +121,7 @@ class TrotterSpecStage(SpecStage[qp.operation.Operator]):
         deterministic case (``ExactTrotterization`` with ``n_samples=1``)
         this reduces to the same single factory call as :meth:`expand`.
         """
-        hamiltonian_clean, strategy, n_samples, token = self._prepare(items)
+        hamiltonian_clean, strategy, n_samples, token = self._prepare(batch)
 
         prototype = self._meta_circuit_factory(
             strategy.process_hamiltonian(hamiltonian_clean), 0

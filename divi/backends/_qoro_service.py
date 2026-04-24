@@ -203,6 +203,11 @@ class QoroService(CircuitRunner):
         Whether the backend supports expectation value measurements.
         """
         target = self.job_config.simulator_cluster or self.job_config.qpu_system
+        if not isinstance(target, (SimulatorCluster, QPUSystem)):
+            raise RuntimeError(
+                "JobConfig target is unresolved; this should have been resolved "
+                "by _resolve_and_validate_target before reaching here."
+            )
         return target.supports_expval and not self.job_config.force_sampling
 
     @property
@@ -456,6 +461,7 @@ class QoroService(CircuitRunner):
         job_type: JobType | None = None,
         override_execution_config: ExecutionConfig | None = None,
         override_job_config: JobConfig | None = None,
+        **kwargs,
     ) -> ExecutionResult:
         """
         Submit quantum circuits to the Qoro API for execution.
@@ -494,6 +500,10 @@ class QoroService(CircuitRunner):
             override_job_config (JobConfig | None, optional):
                 Configuration object to override the service's default settings.
                 If not provided, default values are used.
+            **kwargs:
+                Accepted to match the ``CircuitRunner.submit_circuits``
+                signature but not used by this backend. Any extra keyword
+                arguments are ignored.
 
         Raises:
             ValueError: If any circuit is not valid QASM.
@@ -599,9 +609,9 @@ class QoroService(CircuitRunner):
             "job_type": job_type.value,
             "use_packing": job_config.use_circuit_packing or False,
         }
-        if job_config.simulator_cluster:
+        if isinstance(job_config.simulator_cluster, SimulatorCluster):
             init_payload["simulator_cluster"] = job_config.simulator_cluster.name
-        elif job_config.qpu_system:
+        elif isinstance(job_config.qpu_system, QPUSystem):
             init_payload["qpu_system_name"] = job_config.qpu_system.name
         if execution_config is not None:
             init_payload["execution_configuration"] = execution_config.to_payload()

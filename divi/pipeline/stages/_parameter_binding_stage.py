@@ -138,7 +138,7 @@ class ParameterBindingStage(BundleStage):
     """
 
     @property
-    def axis_name(self) -> str | None:
+    def axis_name(self) -> str:
         return PARAM_SET_AXIS
 
     @property

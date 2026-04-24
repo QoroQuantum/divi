@@ -263,7 +263,7 @@ class PCE(VQE):
         return {
             "cost_circuit": qscript_to_meta(
                 qp.tape.QuantumScript(
-                    ops=ops, measurements=[qp.expval(self._cost_hamiltonian)]
+                    ops=ops, measurements=[qp.expval(self.cost_hamiltonian)]
                 ),
                 precision=self._precision,
                 parameter_order=flat_params,

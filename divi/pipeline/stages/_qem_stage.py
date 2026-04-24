@@ -36,7 +36,7 @@ class QEMStage(BundleStage):
     """
 
     @property
-    def axis_name(self) -> str | None:
+    def axis_name(self) -> str:
         return f"{QEM_AXIS}_{self.protocol.name}"
 
     @property

@@ -199,7 +199,9 @@ class TestUCCSDAnsatz:
         mock_hf = np.array([1, 1, 0, 0])
 
         ansatz = UCCSDAnsatz()
-        n_params = n_layers * ansatz.n_params_per_layer(n_qubits, n_electrons)
+        n_params = n_layers * ansatz.n_params_per_layer(
+            n_qubits, n_electrons=n_electrons
+        )
         params = sympy.symarray("p", n_params)
 
         # n_layers is handled internally by qp.UCCSD via n_repeats
@@ -244,7 +246,9 @@ class TestHartreeFockAnsatz:
         mock_hf = np.array([1, 1, 0, 0])
 
         ansatz = HartreeFockAnsatz()
-        n_params = n_layers * ansatz.n_params_per_layer(n_qubits, n_electrons)
+        n_params = n_layers * ansatz.n_params_per_layer(
+            n_qubits, n_electrons=n_electrons
+        )
         params = sympy.symarray("p", n_params)
 
         ops = get_circuit_operations(

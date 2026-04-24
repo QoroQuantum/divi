@@ -11,7 +11,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import cma
 import dill
@@ -94,7 +94,7 @@ class Optimizer(ABC):
 
     @property
     @abstractmethod
-    def n_param_sets(self):
+    def n_param_sets(self) -> int:
         """
         Returns the number of parameter sets the optimizer can handle per optimization run.
         Returns:
@@ -218,7 +218,7 @@ class PymooOptimizer(Optimizer):
         self._curr_algorithm_obj: Any | None = None
 
     @property
-    def n_param_sets(self):
+    def n_param_sets(self) -> int:
         """
         Get the number of parameter sets (population size) used by this optimizer.
 
@@ -287,7 +287,10 @@ class PymooOptimizer(Optimizer):
             **self.algorithm_kwargs,
         )
 
-        seed = rng.bit_generator.seed_seq.spawn(1)[0].generate_state(1)[0]
+        # numpy's stub types seed_seq as ISeedSequence which lacks `spawn`;
+        # at runtime it's always the concrete SeedSequence.
+        seed_seq = cast(np.random.SeedSequence, rng.bit_generator.seed_seq)
+        seed = seed_seq.spawn(1)[0].generate_state(1)[0]
         n_var = initial_params.shape[-1]
 
         xl = np.zeros(n_var)
@@ -335,6 +338,11 @@ class PymooOptimizer(Optimizer):
         callback_fn: Callable | None,
     ) -> OptimizeResult:
         """Run CMA-ES optimization loop."""
+        if self._curr_algorithm_obj is None:
+            raise RuntimeError(
+                "_curr_algorithm_obj is not initialized; call optimize() first "
+                "so _initialize_optimizer runs."
+            )
         es = self._curr_algorithm_obj
         for _ in range(iterations_to_run):
             # Ask
@@ -364,30 +372,36 @@ class PymooOptimizer(Optimizer):
         callback_fn: Callable | None,
     ) -> OptimizeResult:
         """Run Pymoo (DE) optimization loop."""
-        problem = self._curr_algorithm_obj.problem
+        if self._curr_algorithm_obj is None:
+            raise RuntimeError(
+                "_curr_algorithm_obj is not initialized; call optimize() first "
+                "so _initialize_optimizer runs."
+            )
+        algo = self._curr_algorithm_obj
+        problem = algo.problem
 
         for _ in range(iterations_to_run):
-            pop = self._curr_algorithm_obj.pop
+            pop = algo.pop
             evaluated_X = pop.get("X")
 
             curr_losses = cost_fn(evaluated_X)
             Evaluator().eval(StaticProblem(problem, F=curr_losses), pop)
 
-            self._curr_algorithm_obj.tell(infills=pop)
+            algo.tell(infills=pop)
 
             # Ask for next population to evaluate
-            self._curr_algorithm_obj.pop = self._curr_algorithm_obj.ask()
+            algo.pop = algo.ask()
 
             if callback_fn:
                 callback_fn(OptimizeResult(x=evaluated_X, fun=curr_losses))
 
-        result = self._curr_algorithm_obj.result()
+        result = algo.result()
 
         # nit should represent total iterations completed (n_gen is 1-indexed)
         return OptimizeResult(
             x=result.X,
             fun=result.F,
-            nit=self._curr_algorithm_obj.n_gen - 1,
+            nit=algo.n_gen - 1,
         )
 
     def optimize(
@@ -931,7 +945,11 @@ class MonteCarloOptimizer(Optimizer):
         Raises:
             RuntimeError: If optimization has not been run (no state to save).
         """
-        if self._curr_population is None:
+        if (
+            self._curr_population is None
+            or self._curr_evaluated_population is None
+            or self._curr_losses is None
+        ):
             raise RuntimeError(
                 "Cannot save checkpoint: optimization has not been run. "
                 "At least one iteration must complete before saving optimizer state."

@@ -222,11 +222,11 @@ class Stage(ABC, Generic[InT, OutT]):
         """
 
     @abstractmethod
-    def expand(self, items: InT, env: PipelineEnv) -> tuple[OutT, StageToken]:
+    def expand(self, batch: InT, env: PipelineEnv) -> tuple[OutT, StageToken]:
         """Transform input for the forward pass and return a reduction token."""
         ...
 
-    def dry_expand(self, items: InT, env: PipelineEnv) -> tuple[OutT, StageToken]:
+    def dry_expand(self, batch: InT, env: PipelineEnv) -> tuple[OutT, StageToken]:
         """Analytic forward pass for dry runs.
 
         Must emit a batch with the **same shape** as :meth:`expand` (same keys,
@@ -250,7 +250,7 @@ class Stage(ABC, Generic[InT, OutT]):
         both stages.  The dry-run circuit count stays correct either way —
         only the analytic speedup is forfeited for the affected stage.
         """
-        return self.expand(items, env)
+        return self.expand(batch, env)
 
     @abstractmethod
     def reduce(
@@ -283,7 +283,7 @@ class SpecStage(Stage[InT, MetaCircuitBatch], ABC):
 
     @abstractmethod
     def expand(
-        self, items: InT, env: PipelineEnv
+        self, batch: InT, env: PipelineEnv
     ) -> tuple[MetaCircuitBatch, StageToken]:
         """Transform input (e.g. Hamiltonian) into a keyed batch of MetaCircuits."""
         ...

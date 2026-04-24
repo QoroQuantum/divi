@@ -69,6 +69,7 @@ class ProgramEnsemble(ABC):
         self._programs = {}
         self._coordinator: _BatchCoordinator | None = None
         self._program_key_map: dict[QuantumProgram, str] = {}
+        self.futures: list[Future] = []
 
         self._total_circuit_count = 0
         self._total_run_time = 0.0
@@ -183,23 +184,23 @@ class ProgramEnsemble(ABC):
         if self._executor is not None:
             self._executor.shutdown(wait=False)
             self._executor = None
-            self.futures = None
+            self.futures.clear()
 
         # Signal and wait for listener thread to stop
         if hasattr(self, "_done_event") and self._done_event is not None:
             self._done_event.set()
             self._done_event = None
 
-        if getattr(self, "_listener_thread", None) is not None:
-            self._listener_thread.join(timeout=1)
-            if self._listener_thread.is_alive():
+        if (listener_thread := getattr(self, "_listener_thread", None)) is not None:
+            listener_thread.join(timeout=1)
+            if listener_thread.is_alive():
                 warn("Listener thread did not terminate within timeout.")
             self._listener_thread = None
 
         # Stop the live display if it's still active
-        if getattr(self, "_live_display", None) is not None:
+        if (live_display := getattr(self, "_live_display", None)) is not None:
             try:
-                self._live_display.stop()
+                live_display.stop()
             except Exception:
                 pass  # Already stopped or not running
             self._live_display = None
@@ -269,6 +270,10 @@ class ProgramEnsemble(ABC):
                 if coordinator is not None and program_key is not None:
                     coordinator.deregister_program(program_key)
 
+        if self._executor is None:
+            raise RuntimeError(
+                "Cannot submit program: executor is not initialized. Call run() first."
+            )
         return self._executor.submit(_coordinated_task, program)
 
     def run(
@@ -340,7 +345,7 @@ class ProgramEnsemble(ABC):
 
         self._executor = ThreadPoolExecutor()
         self._cancellation_event = Event()
-        self.futures = []
+        self.futures.clear()
         self._future_to_program = {}
         self._pb_task_map = {}
         self._pb_lock = Lock()
@@ -363,7 +368,7 @@ class ProgramEnsemble(ABC):
                     self.backend, self._coordinator, program_key
                 )
 
-        if self._progress_bar is not None:
+        if self._progress_bar is not None and self._live_display is not None:
             self._live_display.start()
 
             listener_kwargs = {
@@ -413,6 +418,13 @@ class ProgramEnsemble(ABC):
             bool: True if all programs are finished (successfully or with errors),
                 False if any are still running.
         """
+        if not self.futures:
+            warn(
+                "check_all_done called with no active futures — run() has "
+                "not been invoked (or the ensemble has been reset).",
+                UserWarning,
+                stacklevel=2,
+            )
         return all(future.done() for future in self.futures)
 
     def _collect_completed_results(self, completed_futures: list):
@@ -702,7 +714,12 @@ class ProgramEnsemble(ABC):
                 self._executor.shutdown(wait=True)
                 self._executor = None
 
-            if self._progress_bar is not None:
+            if (
+                self._progress_bar is not None
+                and self._done_event is not None
+                and self._listener_thread is not None
+                and self._live_display is not None
+            ):
                 self._queue.join()
                 self._done_event.set()
                 self._listener_thread.join()
@@ -760,7 +777,7 @@ class ProgramEnsemble(ABC):
                 )
 
     @abstractmethod
-    def aggregate_results(self):
+    def aggregate_results(self) -> Any:
         """
         Aggregate results from all programs in the ensemble after execution.
 

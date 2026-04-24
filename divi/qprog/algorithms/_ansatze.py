@@ -253,7 +253,7 @@ class UCCSDAnsatz(Ansatz):
     """
 
     @staticmethod
-    def n_params_per_layer(n_qubits: int, n_electrons: int, **kwargs) -> int:
+    def n_params_per_layer(n_qubits: int, *, n_electrons: int, **kwargs) -> int:
         """
         Calculate the number of parameters per layer for UCCSD ansatz.
 
@@ -311,7 +311,7 @@ class HartreeFockAnsatz(Ansatz):
     """
 
     @staticmethod
-    def n_params_per_layer(n_qubits: int, n_electrons: int, **kwargs) -> int:
+    def n_params_per_layer(n_qubits: int, *, n_electrons: int, **kwargs) -> int:
         """
         Calculate the number of parameters per layer for Hartree-Fock ansatz.
 

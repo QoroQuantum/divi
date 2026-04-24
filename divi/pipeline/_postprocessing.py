@@ -73,10 +73,10 @@ def _batched_expectation(
         unique_states_int = np.array(
             [int(bs, 2) for bs in unique_bitstrings], dtype=np.uint64
         )
-        use_int = True
+        bitstring_chars = None
     else:
+        unique_states_int = None
         bitstring_chars = np.array([list(bs) for bs in unique_bitstrings], dtype="U1")
-        use_int = False
 
     reduced_eigvals_matrix = np.zeros((n_observables, n_unique_states))
     powers_cache: dict[int, npt.NDArray] = {}
@@ -100,11 +100,15 @@ def _batched_expectation(
         positions = np.array(active_positions, dtype=np.uint32)
         eigvals = _eigvals_for_label(label)
 
-        if use_int:
+        if unique_states_int is not None:
             shifts = n_qubits - 1 - positions
             bits = ((unique_states_int[:, np.newaxis] >> shifts) & 1).astype(np.intp)
-        else:
+        elif bitstring_chars is not None:
             bits = bitstring_chars[:, positions].astype(np.intp)
+        else:
+            raise RuntimeError(
+                "unreachable: unique_states_int or bitstring_chars must be set"
+            )
 
         obs_state_indices = np.dot(bits, powers)
         reduced_eigvals_matrix[obs_idx, :] = eigvals[obs_state_indices]

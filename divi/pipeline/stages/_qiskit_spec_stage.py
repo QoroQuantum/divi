@@ -37,11 +37,11 @@ class QiskitSpecStage(CircuitSpecStage):
 
     def expand(
         self,
-        items: QuantumCircuit | Sequence[QuantumCircuit] | Mapping[str, QuantumCircuit],
+        batch: QuantumCircuit | Sequence[QuantumCircuit] | Mapping[str, QuantumCircuit],
         env: PipelineEnv,
     ) -> tuple[MetaCircuitBatch, StageToken]:
         """Convert QuantumCircuit(s) to MetaCircuit(s) and build a keyed batch."""
-        return super().expand(self._convert(items), env)
+        return super().expand(self._convert(batch), env)
 
     @staticmethod
     def _qiskit_to_meta(qc: QuantumCircuit) -> MetaCircuit:

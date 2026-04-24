@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Hashable
+from collections.abc import Callable
 from typing import Any
 
 import pennylane as qp
@@ -93,10 +93,10 @@ class QAOAProblem(ABC):
     # Decomposition hooks (override to enable partitioned workflows)
     # ------------------------------------------------------------------
 
-    def decompose(self) -> dict[Hashable, QAOAProblem]:
+    def decompose(self) -> dict[tuple[str, int], QAOAProblem]:
         """Decompose this problem into sub-problems for partitioned solving.
 
-        Returns a dict mapping program IDs (any hashable) to sub-Problems.
+        Returns a dict mapping program IDs ``(name, size)`` to sub-Problems.
         The decomposition strategy should be configured at construction time.
 
         Raises:
@@ -116,7 +116,7 @@ class QAOAProblem(ABC):
     def extend_solution(
         self,
         current_solution: list[int],
-        prog_id: Hashable,
+        prog_id: tuple[str, int],
         candidate_decoded: list[int],
     ) -> list[int]:
         """Map a sub-solution's decoded bits into the global solution vector.

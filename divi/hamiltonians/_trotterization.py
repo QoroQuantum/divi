@@ -112,15 +112,18 @@ class ExactTrotterization(TrotterizationStrategy):
         if not _is_multi_term_sum(sorted_non_id_terms):
             return (sorted_non_id_terms + constant * qp.Identity()).simplify()
 
-        if self.keep_top_n is not None:
-            slice_idx = -self.keep_top_n
-
         if self.keep_fraction is not None:
             absolute_coeffs = np.abs(sorted_non_id_terms.terms()[0])
             target = absolute_coeffs.sum() * self.keep_fraction
             cumsum_from_end = np.cumsum(absolute_coeffs[::-1])
             n_keep = np.searchsorted(cumsum_from_end, target, side="left") + 1
             slice_idx = -min(n_keep, len(absolute_coeffs))
+        elif self.keep_top_n is not None:
+            slice_idx = -self.keep_top_n
+        else:
+            raise RuntimeError(
+                "keep_fraction and keep_top_n are both None; at least one must be set."
+            )
 
         coeffs, terms = sorted_non_id_terms.terms()
         sliced_operands = [

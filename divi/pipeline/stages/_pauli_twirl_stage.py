@@ -178,7 +178,7 @@ class PauliTwirlStage(BundleStage):
     """
 
     @property
-    def axis_name(self) -> str | None:
+    def axis_name(self) -> str:
         return TWIRL_AXIS
 
     @property

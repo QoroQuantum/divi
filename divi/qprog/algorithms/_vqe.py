@@ -119,10 +119,11 @@ class VQE(VariationalQuantumAlgorithm):
 
     @property
     def n_params_per_layer(self):
-        """Get the number of trainable parameters per ansatz layer.
+        """Number of trainable parameters per ansatz layer.
 
         Returns:
-            int: Parameters per layer for the current ansatz and qubit count.
+            int: Parameters per layer for the current ansatz, qubit count,
+            and electron count.
         """
         return self.ansatz.n_params_per_layer(
             self.n_qubits, n_electrons=self.n_electrons
@@ -175,8 +176,8 @@ class VQE(VariationalQuantumAlgorithm):
                     UserWarning,
                 )
 
-        self._cost_hamiltonian, self.loss_constant = _clean_hamiltonian(hamiltonian)
-        if _is_empty_hamiltonian(self._cost_hamiltonian):
+        self.cost_hamiltonian, self.loss_constant = _clean_hamiltonian(hamiltonian)
+        if _is_empty_hamiltonian(self.cost_hamiltonian):
             raise ValueError("Hamiltonian contains only constant terms.")
 
     def _create_meta_circuit_factories(self) -> dict[str, MetaCircuit]:
@@ -205,7 +206,7 @@ class VQE(VariationalQuantumAlgorithm):
         return {
             "cost_circuit": qscript_to_meta(
                 qp.tape.QuantumScript(
-                    ops=ops, measurements=[qp.expval(self._cost_hamiltonian)]
+                    ops=ops, measurements=[qp.expval(self.cost_hamiltonian)]
                 ),
                 precision=self._precision,
                 parameter_order=flat_params,
@@ -217,7 +218,7 @@ class VQE(VariationalQuantumAlgorithm):
             ),
         }
 
-    def _perform_final_computation(self, **kwargs):
+    def _perform_final_computation(self, **kwargs) -> None:
         """Extract the eigenstate corresponding to the lowest energy found."""
         self.reporter.info(message="🏁 Computing Final Eigenstate 🏁", overwrite=True)
 
@@ -231,8 +232,6 @@ class VQE(VariationalQuantumAlgorithm):
             self._eigenstate = np.fromiter(eigenstate_bitstring, dtype=np.int32)
 
         self.reporter.info(message="🏁 Computed Final Eigenstate! 🏁")
-
-        return self._total_circuit_count, self._total_run_time
 
     def _save_subclass_state(self) -> dict[str, Any]:
         """Save VQE-specific runtime state."""

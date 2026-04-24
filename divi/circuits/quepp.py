@@ -691,8 +691,7 @@ def _sample_paths_montecarlo(
 
     abs_coeffs = np.array([abs(c) for c, _ in observable_terms])
     coeff_sum = abs_coeffs.sum()
-    if len(observable_terms) > 1:
-        term_probs = abs_coeffs / coeff_sum
+    term_probs = abs_coeffs / coeff_sum
 
     for _ in range(n_samples):
         if len(observable_terms) == 1:

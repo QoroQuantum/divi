@@ -255,9 +255,26 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         _meta_circuit_factories (dict): Lazily-built mapping of circuit names to MetaCircuit factories.
     """
 
-    # Subclasses whose parameter space varies during optimization (e.g. depth schedules)
-    # should set this to False so ``divi.viz`` fixed-parameter scans reject them.
+    # Subclass-populated declarations.
+    #
+    # ``_supports_fixed_param_scans`` defaults to True; override to False for
+    # VQAs whose parameter space varies during optimization (e.g. depth
+    # schedules) so ``divi.viz`` fixed-parameter scans reject them. The rest
+    # have no default — each concrete VQA must assign them during ``__init__``
+    # (or override as a property) or the corresponding methods will raise
+    # AttributeError.
     _supports_fixed_param_scans: ClassVar[bool] = True
+    current_iteration: int
+    n_layers: int
+    loss_constant: float
+    cost_hamiltonian: qp.operation.Operator
+    """The cost Hamiltonian for the variational problem."""
+    n_params_per_layer: int
+    """Number of trainable parameters per layer.
+
+    Used by the base class to compute the total parameter count as
+    ``n_layers * n_params_per_layer``.
+    """
 
     def __init__(
         self,
@@ -443,11 +460,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         self._cancellation_event = None
 
     @property
-    def cost_hamiltonian(self) -> qp.operation.Operator:
-        """The cost Hamiltonian for the variational problem."""
-        return self._cost_hamiltonian
-
-    @property
     def total_circuit_count(self) -> int:
         """Get the total number of circuits executed.
 
@@ -474,19 +486,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 MetaCircuit factories.
         """
         return self._meta_circuit_factories
-
-    @property
-    def n_params_per_layer(self):
-        """Number of trainable parameters per layer.
-
-        Subclasses must set ``_n_params_per_layer`` (or override this property)
-        so that the base class can compute the total parameter count as
-        ``n_layers * n_params_per_layer``.
-
-        Returns:
-            int: Trainable parameters per layer.
-        """
-        return self._n_params_per_layer
 
     def _has_run_optimization(self) -> bool:
         """Check if optimization has been run at least once.

@@ -165,8 +165,8 @@ class CustomVQA(VariationalQuantumAlgorithm):
                 "QuantumScript must contain a single expectation-value measurement."
             )
 
-        self._cost_hamiltonian, self.loss_constant = _clean_hamiltonian(measurement.obs)
-        if _is_empty_hamiltonian(self._cost_hamiltonian):
+        self.cost_hamiltonian, self.loss_constant = _clean_hamiltonian(measurement.obs)
+        if _is_empty_hamiltonian(self.cost_hamiltonian):
             raise ValueError("Hamiltonian contains only constant terms.")
 
         self.n_qubits = self.qscript.num_wires
@@ -204,7 +204,7 @@ class CustomVQA(VariationalQuantumAlgorithm):
         self._trainable_param_indices = trainable_indices
         self._qscript = bound_qscript
 
-        self._n_params_per_layer = int(np.prod(self._param_shape))
+        self.n_params_per_layer = int(np.prod(self._param_shape))
 
         # Build cost pipeline once (structure is fixed; only env changes per call).
         # No measurement pipeline needed — _perform_final_computation is a no-op.
@@ -295,6 +295,3 @@ class CustomVQA(VariationalQuantumAlgorithm):
                 precision=self._precision,
             )
         }
-
-    def _perform_final_computation(self, **kwargs) -> None:
-        """No-op by default for custom QuantumScript optimization."""

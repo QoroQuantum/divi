@@ -19,6 +19,7 @@ Three interpolation strategies are provided:
 
 from collections.abc import Callable
 from enum import Enum
+from warnings import warn
 
 import numpy as np
 import numpy.typing as npt
@@ -272,7 +273,7 @@ class IterativeQAOA(QAOA):
     def _rebuild_for_depth(self, depth: int) -> None:
         """Rebuild parameters and pipelines for a new circuit depth."""
         self.n_layers = depth
-        self._n_params_per_layer = 2
+        self.n_params_per_layer = 2
         betas = ParameterVector("β", depth)
         gammas = ParameterVector("γ", depth)
         # Replaces the parent QAOA._params so _build_qaoa_ops and the
@@ -292,7 +293,13 @@ class IterativeQAOA(QAOA):
         self._stop_reason = None
         self.optimizer.reset()
 
-    def run(self, perform_final_computation=True, **kwargs):
+    def run(
+        self,
+        initial_params=None,
+        perform_final_computation=True,
+        checkpoint_config=None,
+        **kwargs,
+    ):
         """Run the iterative QAOA procedure across increasing depths.
 
         At each depth from 1 to ``max_depth``, the algorithm optimizes the
@@ -301,13 +308,26 @@ class IterativeQAOA(QAOA):
         restored to the depth that achieved the best overall loss.
 
         Args:
+            initial_params: Ignored — each depth computes its own warm-start
+                via interpolation of the previous depth's best parameters.
+                Passing a non-None value emits a ``UserWarning``.
             perform_final_computation: Whether to run the final measurement
                 at the best depth to extract the solution. Defaults to True.
+            checkpoint_config: Forwarded to each inner ``super().run()``.
             **kwargs: Additional keyword arguments passed to the parent ``run()``.
 
         Returns:
             IterativeQAOA: Returns ``self`` for method chaining.
         """
+        if initial_params is not None:
+            warn(
+                "IterativeQAOA ignores `initial_params` — each depth computes its "
+                "own warm-start via interpolation of the previous depth's best "
+                "parameters. Use QAOA directly if you want to seed the first run.",
+                UserWarning,
+                stacklevel=2,
+            )
+
         depth_history: list[dict] = []
         prev_best_params: npt.NDArray[np.float64] | None = None
         total_circuits = 0
@@ -318,7 +338,7 @@ class IterativeQAOA(QAOA):
             self._rebuild_for_depth(depth)
             self._reset_optimization_state()
             self.max_iterations = self._get_max_iters(depth)
-            initial_params = None
+            depth_initial_params = None
 
             if depth > 1 and prev_best_params is not None:
                 interpolated = interpolate_qaoa_params(
@@ -327,11 +347,14 @@ class IterativeQAOA(QAOA):
                     self._strategy,
                     self._n_basis_terms,
                 )
-                initial_params = np.tile(interpolated, (self.optimizer.n_param_sets, 1))
+                depth_initial_params = np.tile(
+                    interpolated, (self.optimizer.n_param_sets, 1)
+                )
 
             super().run(
-                initial_params=initial_params,
+                initial_params=depth_initial_params,
                 perform_final_computation=False,
+                checkpoint_config=checkpoint_config,
                 **kwargs,
             )
             total_circuits += self._total_circuit_count
