@@ -5,13 +5,13 @@
 import heapq
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, cast
 from warnings import warn
 
-import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
+from matplotlib import colormaps
 from sklearn.cluster import SpectralClustering
 
 # TODO: Make this dynamic through an interaction with usher
@@ -84,7 +84,7 @@ class GraphPartitioningConfig:
 
 def _apply_split_with_relabel(
     graph: nx.Graph, algorithm: Literal["spectral", "metis"], n_clusters: int
-) -> tuple[nx.Graph, nx.Graph]:
+) -> tuple[nx.Graph, ...]:
     """
     Relabels nodes of a graph to (0, ..., N-1) for algorithms that
     require this input/has output of this format and requires mapping
@@ -114,7 +114,8 @@ def _apply_split_with_relabel(
                 "imported. On Windows, install via conda: conda install -c conda-forge pymetis. "
                 "Otherwise use 'spectral' or 'kernighan_lin' instead."
             ) from e
-        adj_list = list(nx.to_dict_of_lists(int_graph).values())
+        # After relabeling, nodes are integers (networkx stubs don't narrow this).
+        adj_list = cast(list[list[int]], list(nx.to_dict_of_lists(int_graph).values()))
         _, parts = part_graph(n_clusters, adjacency=adj_list)
     else:
         raise RuntimeError("Relabeling only needed for `spectral` and `metis`.")
@@ -164,11 +165,14 @@ def _split_graph(
         )
 
 
+HeapEntry = tuple[int, int, nx.Graph]
+
+
 def _bisect_with_predicate(
-    initial_partitions: Sequence[nx.Graph],
-    predicate: Callable[[nx.Graph | None, Sequence[nx.Graph] | None], bool],
+    initial_partitions: list[HeapEntry],
+    predicate: Callable[[nx.Graph, Sequence[HeapEntry]], bool],
     partitioning_config: GraphPartitioningConfig,
-) -> Sequence[nx.Graph]:
+) -> list[HeapEntry]:
     """
     Recursively bisects a list of graph partitions based on a user-defined predicate.
 
@@ -179,31 +183,35 @@ def _bisect_with_predicate(
 
     The predicate is expected to accept two arguments:
         - The current subgraph under consideration.
-        - A list of other subgraphs in the current iteration (both previously processed
-        and yet to be processed), serving as the context for the decision.
+        - A list of the other heap entries in the current iteration (both previously
+          processed and yet to be processed), serving as the context for the decision.
 
     Returns the final list of subgraphs as a heapified sequence, ordered by descending
     node count.
     """
-    subgraphs = initial_partitions
+    subgraphs: list[HeapEntry] = initial_partitions
     heapq.heapify(subgraphs)
+    entry_counter = len(subgraphs)
 
     while True:
-        new_subgraphs = []
+        new_subgraphs: list[HeapEntry] = []
         changed = False
 
         while subgraphs:
-            _, _, subgraph = heapq.heappop(subgraphs)
+            entry = heapq.heappop(subgraphs)
+            subgraph = entry[2]
 
             if predicate(subgraph, new_subgraphs + subgraphs):
-                new_subgraphs.extend(_split_graph(subgraph, partitioning_config))
+                for child in _split_graph(subgraph, partitioning_config):
+                    new_subgraphs.append(
+                        (-child.number_of_nodes(), entry_counter, child)
+                    )
+                    entry_counter += 1
                 changed = True
             else:
-                new_subgraphs.append(subgraph)
+                new_subgraphs.append(entry)
 
-        subgraphs = [
-            (-sg.number_of_nodes(), i, sg) for (i, sg) in enumerate(new_subgraphs)
-        ]
+        subgraphs = new_subgraphs
         heapq.heapify(subgraphs)
 
         if not changed:
@@ -251,7 +259,7 @@ def _node_partition_graph(
         )
 
     # Clean up on aisle 3
-    return tuple(graph for (_, _, graph) in subgraphs)
+    return [graph for (_, _, graph) in subgraphs]
 
 
 def draw_partitions(
@@ -259,7 +267,7 @@ def draw_partitions(
     reverse_index_maps: dict,
     pos: dict | None = None,
     figsize: tuple[int, int] | None = (10, 8),
-    node_size: int | None = 300,
+    node_size: int = 300,
 ):
     """Draw a graph with nodes colored by partition.
 
@@ -281,7 +289,7 @@ def draw_partitions(
 
     unique_partitions = sorted(set(node_to_partition.values()))
     n_partitions = len(unique_partitions)
-    colors = cm.Set3(np.linspace(0, 1, n_partitions))
+    colors = colormaps["Set3"](np.linspace(0, 1, n_partitions))
     partition_colors = {pid: colors[i] for i, pid in enumerate(unique_partitions)}
 
     node_colors = [

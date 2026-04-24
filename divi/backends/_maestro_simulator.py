@@ -230,7 +230,7 @@ class MaestroSimulator(CircuitRunner):
         """Maestro executes circuits synchronously."""
         return False
 
-    def set_seed(self, seed: int) -> None:  # noqa: ARG002
+    def set_seed(self, seed: int) -> None:
         """No-op — maestro does not yet expose seeding from C++."""
 
     def _get_ham_ops_for_circuit(

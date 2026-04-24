@@ -20,14 +20,19 @@ class ConcreteQuantumProgram(QuantumProgram):
         super().__init__(backend, seed, progress_queue, **kwargs)
         self._total_circuit_count = 0
         self._total_run_time = 0.0
+        self._ran = False
 
     def _build_pipelines(self) -> None:
         pass
+
+    def has_results(self) -> bool:
+        return self._ran
 
     def run(self):
         """Concrete implementation of run method."""
         self._total_circuit_count = 5
         self._total_run_time = 1.5
+        self._ran = True
         return self
 
 

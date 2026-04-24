@@ -996,9 +996,8 @@ class TestPropertyWarnings(BaseVariationalQuantumAlgorithmTest):
         program = self._create_program_with_mock_optimizer(mocker)
 
         with pytest.warns(UserWarning, match=expected_warning_msg):
-            # .copy() works on lists, so this won't raise - just warns
             result = getattr(program, property_name)
-            assert isinstance(result, list)
+            assert isinstance(result, np.ndarray)
             assert len(result) == 0
 
     def test_best_loss_raises_runtime_error_if_still_infinite_after_optimization(

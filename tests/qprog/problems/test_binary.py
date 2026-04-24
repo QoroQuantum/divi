@@ -969,15 +969,15 @@ class TestQUBOPartitioningEnsemble:
 
         mock_program_empty_losses = mocker.MagicMock(spec=QAOA)
         mock_program_empty_losses.best_probs = {}
-        mock_program_empty_losses._losses_history = []
+        mock_program_empty_losses.has_results.return_value = False
         qubo_ensemble_qaoa.programs = {("A", 2): mock_program_empty_losses}
 
-        with pytest.raises(RuntimeError, match="Some/All programs have empty losses"):
+        with pytest.raises(RuntimeError, match="Some/All programs have no results"):
             qubo_ensemble_qaoa.aggregate_results()
 
         mock_program_empty_final_probs = mocker.MagicMock(spec=QAOA)
         mock_program_empty_final_probs.best_probs = {}
-        mock_program_empty_final_probs.losses_history = [{"dummy_loss": 0.0}]
+        mock_program_empty_final_probs.has_results.return_value = True
         qubo_ensemble_qaoa.programs = {("A", 2): mock_program_empty_final_probs}
 
         with pytest.raises(

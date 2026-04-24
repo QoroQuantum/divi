@@ -89,9 +89,61 @@ class TimeEvolution(QuantumProgram):
             )
         self.initial_state = initial_state
 
-        self.results: dict[str, float] | float | None = None
+        self._results: dict[str, float] | float | None = None
 
         self._pipelines = self._build_pipelines()
+
+    def has_results(self) -> bool:
+        return self._results is not None
+
+    @property
+    def results(self) -> dict[str, float] | float:
+        """Get the final results.
+
+        Returns either a probability distribution (``dict[str, float]``) when
+        no observable was provided, or an expectation value (``float``) when
+        ``observable`` was specified.
+
+        Raises:
+            RuntimeError: If ``.run()`` has not yet been called.
+        """
+        if self._results is None:
+            raise RuntimeError(
+                "TimeEvolution.results is not available. Call .run() first."
+            )
+        return self._results
+
+    def probabilities(self) -> dict[str, float]:
+        """Return probability-mode results.
+
+        Raises:
+            RuntimeError: If ``.run()`` has not yet been called, or if this
+                instance was constructed with an ``observable`` (expectation
+                value mode). Use :meth:`expval` instead.
+        """
+        results = self.results
+        if not isinstance(results, dict):
+            raise RuntimeError(
+                "TimeEvolution was run in expectation-value mode; use "
+                ".expval() instead of .probabilities()."
+            )
+        return results
+
+    def expval(self) -> float:
+        """Return expectation-value-mode results.
+
+        Raises:
+            RuntimeError: If ``.run()`` has not yet been called, or if this
+                instance was constructed without an ``observable`` (probability
+                mode). Use :meth:`probabilities` instead.
+        """
+        results = self.results
+        if not isinstance(results, float):
+            raise RuntimeError(
+                "TimeEvolution was run in probability mode; use "
+                ".probabilities() instead of .expval()."
+            )
+        return results
 
     def _build_pipelines(self) -> dict:
         trotter = TrotterSpecStage(
@@ -152,7 +204,7 @@ class TimeEvolution(QuantumProgram):
                 f"Expected exactly 1 pipeline result, got {len(result)}."
             )
         (raw,) = result.values()
-        self.results = raw if self.observable is None else float(raw)
+        self._results = raw if self.observable is None else float(raw)
 
         self.reporter.info(message="Finished successfully!")
 

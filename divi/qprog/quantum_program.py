@@ -85,6 +85,10 @@ class QuantumProgram(ABC):
             QuantumProgram: Returns ``self`` for method chaining.
         """
 
+    @abstractmethod
+    def has_results(self) -> bool:
+        """Return True once the program has produced results."""
+
     def _set_cancellation_event(self, event: Event):
         """Set a cancellation event for graceful program termination.
 

@@ -198,7 +198,7 @@ class IsingResult(NamedTuple):
 def qubo_to_ising(
     qubo,
     *,
-    hamiltonian_builder: str = "native",
+    hamiltonian_builder: Literal["native", "quadratized"] = "native",
     quadratization_strength: float = 10.0,
 ) -> IsingResult:
     """Convert a QUBO/HUBO to a cleaned Ising Hamiltonian.
@@ -239,7 +239,7 @@ def qubo_to_ising(
 
 def _is_sanitized(
     qubo_matrix: npt.NDArray[np.float64] | sps.spmatrix,
-) -> npt.NDArray[np.float64] | sps.spmatrix:
+) -> bool:
     """
     Check if a QUBO matrix is either symmetric or upper triangular.
 
@@ -254,18 +254,15 @@ def _is_sanitized(
     Returns:
         bool: True if the matrix is symmetric or upper triangular, False otherwise.
     """
-    is_sparse = sps.issparse(qubo_matrix)
-
-    return (
-        (
-            ((qubo_matrix != qubo_matrix.T).nnz == 0)
-            or ((qubo_matrix != sps.triu(qubo_matrix)).nnz == 0)
+    if sps.issparse(qubo_matrix):
+        sparse_m = sps.csr_matrix(qubo_matrix)
+        return bool(
+            (sparse_m != sparse_m.T).nnz == 0
+            or (sparse_m != sps.triu(sparse_m)).nnz == 0
         )
-        if is_sparse
-        else (
-            np.allclose(qubo_matrix, qubo_matrix.T)
-            or np.allclose(qubo_matrix, np.triu(qubo_matrix))
-        )
+    dense_m = np.asarray(qubo_matrix)
+    return bool(
+        np.allclose(dense_m, dense_m.T) or np.allclose(dense_m, np.triu(dense_m))
     )
 
 
@@ -310,27 +307,17 @@ def convert_qubo_matrix_to_pennylane_ising(
             "The QUBO matrix is neither symmetric nor upper triangular."
             " Symmetrizing it for the Ising Hamiltonian creation."
         )
-        qubo_matrix = (qubo_matrix + qubo_matrix.T) / 2
-
-    is_sparse = sps.issparse(qubo_matrix)
-    backend = sps if is_sparse else np
-
-    symmetrized_qubo = (qubo_matrix + qubo_matrix.T) / 2
 
     # Gather non-zero indices in the upper triangle of the matrix
-    triu_matrix = backend.triu(
-        symmetrized_qubo,
-        **(
-            {"format": qubo_matrix.format if qubo_matrix.format != "coo" else "csc"}
-            if is_sparse
-            else {}
-        ),
-    )
-
-    if is_sparse:
-        coo_mat = triu_matrix.tocoo()
+    if sps.issparse(qubo_matrix):
+        sparse_m = sps.csr_matrix(qubo_matrix)
+        symmetrized_qubo = (sparse_m + sparse_m.T) / 2
+        coo_mat = sps.triu(symmetrized_qubo).tocoo()
         rows, cols, values = coo_mat.row, coo_mat.col, coo_mat.data
     else:
+        dense_m = np.asarray(qubo_matrix)
+        symmetrized_qubo = (dense_m + dense_m.T) / 2
+        triu_matrix = np.triu(symmetrized_qubo)
         rows, cols = triu_matrix.nonzero()
         values = triu_matrix[rows, cols]
 

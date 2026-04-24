@@ -26,6 +26,9 @@ from divi.qprog.variational_quantum_algorithm import (
 
 logger = logging.getLogger(__name__)
 
+# Sentinel distinguishing 'run() not yet called' from a decoded solution of ``None``.
+_UNSET: Any = object()
+
 
 class QAOA(VariationalQuantumAlgorithm):
     """Quantum Approximate Optimization Algorithm (QAOA) implementation.
@@ -101,7 +104,7 @@ class QAOA(VariationalQuantumAlgorithm):
         self.current_iteration = 0
         self.trotterization_strategy = trotterization_strategy or ExactTrotterization()
         self.n_params_per_layer = 2
-        self._decoded_solution = None
+        self._decoded_solution: Any = _UNSET
 
         # Circuit parameters — Qiskit ParameterVector, no sympy.
         betas = ParameterVector("β", self.n_layers)
@@ -131,9 +134,10 @@ class QAOA(VariationalQuantumAlgorithm):
 
     def _save_subclass_state(self) -> dict[str, Any]:
         """Save QAOA-specific runtime state."""
+        decoded = None if self._decoded_solution is _UNSET else self._decoded_solution
         return {
             "problem_metadata": self.problem_metadata,
-            "decoded_solution": self._decoded_solution,
+            "decoded_solution": decoded,
             "loss_constant": self.loss_constant,
             "trotterization_strategy": pickle.dumps(
                 self.trotterization_strategy, protocol=pickle.HIGHEST_PROTOCOL
@@ -168,8 +172,14 @@ class QAOA(VariationalQuantumAlgorithm):
     def solution(self):
         """Get the solution found by QAOA optimization.
 
-        The return type depends on the Problem's decode function.
+        The return type depends on the Problem's decode function; ``None``
+        is a legitimate decoded value after ``.run()``.
+
+        Raises:
+            RuntimeError: If ``.run()`` has not yet been called.
         """
+        if self._decoded_solution is _UNSET:
+            raise RuntimeError("QAOA.solution is not available. Call .run() first.")
         return self._decoded_solution
 
     def _build_qaoa_ops(self, cost_hamiltonian: qp.operation.Operator) -> list:

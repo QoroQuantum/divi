@@ -34,17 +34,19 @@ class SimpleTestProgram(QuantumProgram):
         super().__init__(backend=backend, **kwargs)
         self.circ_count = circ_count
         self.run_time = run_time
-        # program_id is automatically set by the base class from kwargs["job_id"]
-        # This attribute is checked by the base ProgramEnsemble.aggregate_results method
-        self.losses_history = [1]
+        self._ran = False
 
     def _build_pipelines(self) -> None:
         pass
+
+    def has_results(self) -> bool:
+        return self._ran
 
     def run(self):
         """A mock run that sets the preset values on the instance."""
         self._total_circuit_count = self.circ_count
         self._total_run_time = self.run_time
+        self._ran = True
         return self
 
     def _generate_circuits(self, **kwargs):

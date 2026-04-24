@@ -174,7 +174,7 @@ class TestQuboToIsingConversion:
                 ),
                 False,
             ),
-            # Non-sanitized dense (triggers warning + double symmetrization)
+            # Non-sanitized dense (triggers warning + symmetrization)
             (np.array([[-1.0, 3.0], [1.0, -1.0]]), True),
             # Non-sanitized sparse
             (sps.csc_matrix([[-1.0, 3.0], [1.0, -1.0]]), True),
@@ -212,7 +212,7 @@ class TestQuboToIsingConversion:
         Ising energy <σ|H|σ> + constant must equal x^T Q x, where σ and x
         are related by x_i = (1 - σ_i) / 2.
 
-        Covers dense, sparse, upper-triangular, non-sanitized (double
+        Covers dense, sparse, upper-triangular, non-sanitized (triggers
         symmetrization), and larger matrix inputs.
         """
         from itertools import product as iterproduct

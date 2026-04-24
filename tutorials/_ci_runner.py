@@ -255,16 +255,16 @@ def run_tutorial(
     print(f"[{name}] Starting (timeout {effective_timeout:.0f}s)", flush=True)
     start = time.monotonic()
 
+    proc = subprocess.Popen(
+        [sys.executable, str(file_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        env=os.environ.copy(),
+        cwd=str(REPO_ROOT),
+    )
     try:
-        proc = subprocess.Popen(
-            [sys.executable, str(file_path)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            env=os.environ.copy(),
-            cwd=str(REPO_ROOT),
-        )
         reader = threading.Thread(
             target=_stream_output, args=(proc.stdout, name), daemon=True
         )

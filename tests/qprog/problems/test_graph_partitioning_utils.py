@@ -237,24 +237,35 @@ class TestGraphPartitioningConfig:
             _split_graph(G, config)
 
     def test_predicate_receives_correct_arguments(self):
-        G = nx.path_graph(4)
-        initial = [(-G.number_of_nodes(), 0, G)]
+        G1 = nx.path_graph(4)
+        G2 = nx.path_graph(3)
+        initial = [
+            (-G1.number_of_nodes(), 0, G1),
+            (-G2.number_of_nodes(), 1, G2),
+        ]
         called_args = []
 
         def predicate(subgraph, others):
-            called_args.append((subgraph, others))
+            called_args.append((subgraph, list(others)))
             return False
 
         _bisect_with_predicate(initial, predicate, partitioning_config=None)
 
-        # Ensure predicate was called at least once
-        assert len(called_args) > 0
+        # Ensure predicate was called at least once with a non-empty others list.
+        assert len(called_args) == 2
+        assert any(others for _, others in called_args)
 
         # Check the types and contents
         for subgraph, others in called_args:
             assert isinstance(subgraph, nx.Graph)
             assert isinstance(others, list)
-            assert all(isinstance(o, tuple) for o in others)
+            # others is Sequence[HeapEntry] where HeapEntry = (int, int, nx.Graph)
+            for entry in others:
+                assert isinstance(entry, tuple)
+                assert len(entry) == 3
+                assert isinstance(entry[0], int)
+                assert isinstance(entry[1], int)
+                assert isinstance(entry[2], nx.Graph)
 
     def test_no_split_predicate(self):
         G = nx.path_graph(4)

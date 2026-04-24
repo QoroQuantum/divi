@@ -69,9 +69,7 @@ class TestGenericLayerAnsatz:
 
     def test_initialization_invalid_layout_string(self):
         """Tests that initialization fails with an invalid layout string."""
-        with pytest.raises(
-            ValueError, match="must be 'linear', 'circular', 'all-to-all'"
-        ):
+        with pytest.raises(ValueError, match="Unknown entangling_layout:"):
             GenericLayerAnsatz(
                 gate_sequence=[qp.RX],
                 entangler=qp.CNOT,

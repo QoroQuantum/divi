@@ -54,6 +54,16 @@ class CircuitRunner(ABC):
         """
         return False
 
+    def set_seed(self, seed: int) -> None:
+        """Seed the backend's random number generator, if supported.
+
+        The default implementation is a no-op. Backends that can seed
+        their simulation RNG should override this method.
+
+        Args:
+            seed: Seed value for the backend's RNG.
+        """
+
     @abstractmethod
     def submit_circuits(self, circuits: Mapping[str, str], **kwargs) -> ExecutionResult:
         """

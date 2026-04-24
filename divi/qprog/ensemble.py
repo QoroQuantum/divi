@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import atexit
-import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
@@ -740,38 +739,7 @@ class ProgramEnsemble(ABC):
             self.join()
 
         for program in self._programs.values():
-            if isinstance(program, VariationalQuantumAlgorithm):
-                with warnings.catch_warnings():
-                    warnings.filterwarnings(
-                        "ignore",
-                        category=UserWarning,
-                        message=".*losses_history is empty.*",
-                    )
-                    if len(program.losses_history) == 0:
-                        raise RuntimeError(
-                            "Some/All programs have empty losses. Did you call run()?"
-                        )
-            else:
-                # Non-VQA programs (QuantumProgram subclasses, mocks, etc.)
-                # Check results first; fall back to losses_history for
-                # backward compatibility with test helpers that set it.
-                results = getattr(program, "results", None)
-                if results is not None:
-                    continue
-                losses = getattr(program, "losses_history", None)
-                if losses is not None:
-                    with warnings.catch_warnings():
-                        warnings.filterwarnings(
-                            "ignore",
-                            category=UserWarning,
-                            message=".*losses_history is empty.*",
-                        )
-                        if len(losses) == 0:
-                            raise RuntimeError(
-                                "Some/All programs have empty losses. "
-                                "Did you call run()?"
-                            )
-                    continue
+            if not program.has_results():
                 raise RuntimeError(
                     "Some/All programs have no results. Did you call run()?"
                 )

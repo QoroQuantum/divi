@@ -3,8 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Iterable, Sequence
 from itertools import tee
-from typing import Literal, Sequence
+from typing import Literal
 from warnings import warn
 
 import pennylane as qp
@@ -36,7 +37,7 @@ class Ansatz(ABC):
     @abstractmethod
     def build(
         self, params, n_qubits: int, n_layers: int, **kwargs
-    ) -> list[qp.operation.Operator]:
+    ) -> Sequence[qp.operation.Operator]:
         """
         Builds the ansatz circuit and returns a list of operations.
 
@@ -47,7 +48,7 @@ class Ansatz(ABC):
             **kwargs: Additional arguments specific to the ansatz.
 
         Returns:
-            list[qp.operation.Operator]: List of PennyLane operations representing the ansatz.
+            Sequence[qp.operation.Operator]: List of PennyLane operations representing the ansatz.
         """
         raise NotImplementedError
 
@@ -60,10 +61,12 @@ class GenericLayerAnsatz(Ansatz):
     A flexible ansatz alternating single-qubit gates with optional entanglers.
     """
 
+    _layout_fn: Callable[[int], Iterable[tuple[int, int]]]
+
     def __init__(
         self,
-        gate_sequence: Sequence[qp.operation.Operator],
-        entangler: qp.operation.Operator | None = None,
+        gate_sequence: Sequence[type[qp.operation.Operator]],
+        entangler: type[qp.operation.Operator] | None = None,
         entangling_layout: (
             Literal["linear", "brick", "circular", "all-to-all"]
             | Sequence[tuple[int, int]]
@@ -112,20 +115,26 @@ class GenericLayerAnsatz(Ansatz):
                 self._layout_fn = lambda n_qubits: (
                     (i, j) for i in range(n_qubits) for j in range(i + 1, n_qubits)
                 )
-            case _:
+            case list() | tuple() as custom_layout:
                 if not all(
                     isinstance(ent, tuple)
                     and len(ent) == 2
                     and isinstance(ent[0], int)
                     and isinstance(ent[1], int)
-                    for ent in entangling_layout
+                    for ent in custom_layout
                 ):
                     raise ValueError(
                         "entangling_layout must be 'linear', 'circular', "
                         "'all-to-all', or a Sequence of tuples of integers."
                     )
 
-                self._layout_fn = lambda _: entangling_layout
+                self._layout_fn = lambda _: custom_layout
+            case _:
+                raise ValueError(
+                    f"Unknown entangling_layout: {entangling_layout!r}. "
+                    "Must be 'linear', 'brick', 'circular', 'all-to-all', or "
+                    "a Sequence of (int, int) tuples."
+                )
 
     def n_params_per_layer(self, n_qubits: int, **kwargs) -> int:
         """Total parameters = sum of ``gate.num_params`` per qubit per layer."""
@@ -134,7 +143,7 @@ class GenericLayerAnsatz(Ansatz):
 
     def build(
         self, params, n_qubits: int, n_layers: int, **kwargs
-    ) -> list[qp.operation.Operator]:
+    ) -> Sequence[qp.operation.Operator]:
         # calculate how many params each gate needs per qubit
         gate_param_counts = [getattr(g, "num_params", 1) for g in self.gate_sequence]
         per_qubit = sum(gate_param_counts)
@@ -196,7 +205,7 @@ class QAOAAnsatz(Ansatz):
 
     def build(
         self, params, n_qubits: int, n_layers: int, **kwargs
-    ) -> list[qp.operation.Operator]:
+    ) -> Sequence[qp.operation.Operator]:
         """
         Build the QAOA ansatz circuit.
 
@@ -207,7 +216,7 @@ class QAOAAnsatz(Ansatz):
             **kwargs: Additional unused arguments.
 
         Returns:
-            list[qp.operation.Operator]: List of operations representing the QAOA ansatz.
+            Sequence[qp.operation.Operator]: List of operations representing the QAOA ansatz.
         """
         return qp.QAOAEmbedding.compute_decomposition(
             features=[],
@@ -235,7 +244,7 @@ class HardwareEfficientAnsatz(Ansatz):
 
     def build(
         self, params, n_qubits: int, n_layers: int, **kwargs
-    ) -> list[qp.operation.Operator]:
+    ) -> Sequence[qp.operation.Operator]:
         """Not yet implemented."""
         raise NotImplementedError("HardwareEfficientAnsatz is not yet implemented.")
 
@@ -272,7 +281,7 @@ class UCCSDAnsatz(Ansatz):
 
     def build(
         self, params, n_qubits: int, n_layers: int, **kwargs
-    ) -> list[qp.operation.Operator]:
+    ) -> Sequence[qp.operation.Operator]:
         """
         Build the UCCSD ansatz circuit.
 
@@ -284,7 +293,7 @@ class UCCSDAnsatz(Ansatz):
                 n_electrons (int): Number of electrons in the system (required).
 
         Returns:
-            list[qp.operation.Operator]: List of operations representing the UCCSD ansatz.
+            Sequence[qp.operation.Operator]: List of operations representing the UCCSD ansatz.
         """
         n_electrons = kwargs.pop("n_electrons")
         singles, doubles = qp.qchem.excitations(n_electrons, n_qubits)
@@ -329,7 +338,7 @@ class HartreeFockAnsatz(Ansatz):
 
     def build(
         self, params, n_qubits: int, n_layers: int, **kwargs
-    ) -> list[qp.operation.Operator]:
+    ) -> Sequence[qp.operation.Operator]:
         """
         Build the Hartree-Fock ansatz circuit.
 
@@ -341,7 +350,7 @@ class HartreeFockAnsatz(Ansatz):
                 n_electrons (int): Number of electrons in the system (required).
 
         Returns:
-            list[qp.operation.Operator]: List of operations representing the Hartree-Fock ansatz.
+            Sequence[qp.operation.Operator]: List of operations representing the Hartree-Fock ansatz.
         """
         n_electrons = kwargs.pop("n_electrons")
         singles, doubles = qp.qchem.excitations(n_electrons, n_qubits)
@@ -398,7 +407,7 @@ class QCCAnsatz(Ansatz):
 
     def build(
         self, params, n_qubits: int, n_layers: int, **kwargs
-    ) -> list[qp.operation.Operator]:
+    ) -> Sequence[qp.operation.Operator]:
         """
         Build the QCC ansatz circuit.
 
@@ -410,7 +419,7 @@ class QCCAnsatz(Ansatz):
                 n_electrons (int): Number of electrons in the system (required).
 
         Returns:
-            list[qp.operation.Operator]: List of operations representing the QCC ansatz.
+            Sequence[qp.operation.Operator]: List of operations representing the QCC ansatz.
         """
         n_electrons = kwargs.pop("n_electrons")
         hf_state = qp.qchem.hf_state(n_electrons, n_qubits)
@@ -423,7 +432,7 @@ class QCCAnsatz(Ansatz):
             for pauli in ("XX", "YY", "ZZ")
         ]
 
-        operations = [qp.BasisState(hf_state, wires=wires)]
+        operations: list[qp.operation.Operator] = [qp.BasisState(hf_state, wires=wires)]
 
         for layer_params in params.reshape(n_layers, -1):
             for i in range(n_qubits):

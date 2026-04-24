@@ -150,9 +150,9 @@ def verify_basic_program_ensemble_behaviour(mocker, obj: ProgramEnsemble):
         obj.create_programs()
 
     mock_program = mocker.MagicMock(spec=VariationalQuantumAlgorithm)
-    mock_program.losses_history = []
+    mock_program.has_results.return_value = False
 
     obj.programs = {"dummy": mock_program}
 
-    with pytest.raises(RuntimeError, match="Some/All programs have empty losses"):
+    with pytest.raises(RuntimeError, match="Some/All programs have no results"):
         obj.aggregate_results()

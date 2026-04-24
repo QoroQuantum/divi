@@ -4,7 +4,7 @@
 
 """Shared type aliases and domain dataclasses for the hamiltonians package."""
 
-from collections.abc import Hashable
+from collections.abc import Hashable, Mapping
 from dataclasses import dataclass
 
 import dimod
@@ -14,7 +14,7 @@ import scipy.sparse as sps
 
 QUBOProblemTypes = list | np.ndarray | sps.spmatrix | dimod.BinaryQuadraticModel
 HUBOTerm = tuple[Hashable, ...]
-HUBOProblemTypes = dict[HUBOTerm, float] | dimod.BinaryPolynomial
+HUBOProblemTypes = Mapping[HUBOTerm, float] | dimod.BinaryPolynomial
 
 # CSR-style compact form of a BinaryPolynomialProblem, returned by
 # ``compile_problem`` and consumed by the JIT evaluators.

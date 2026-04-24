@@ -60,7 +60,7 @@ OptionalArray: TypeAlias = npt.ArrayLike | None
 class _SupportsVizScan(Protocol):
     n_layers: int
     n_params_per_layer: int
-    _best_params: npt.NDArray[np.float64] | list[float]
+    _best_params: npt.NDArray[np.float64]
 
     def _has_run_optimization(self) -> bool: ...
 

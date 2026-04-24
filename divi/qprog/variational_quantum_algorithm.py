@@ -20,7 +20,7 @@ from scipy.optimize import OptimizeResult
 from divi.backends import CircuitRunner
 from divi.circuits import MetaCircuit
 from divi.exceptions import ExecutionCancelledError
-from divi.pipeline import CircuitPipeline, PipelineEnv, Stage
+from divi.pipeline import CircuitPipeline, GroupingStrategy, PipelineEnv, Stage
 from divi.pipeline.stages import (
     CircuitSpecStage,
     MeasurementStage,
@@ -170,7 +170,8 @@ class ProgramState(BaseModel):
         """Apply this state object back to a program instance."""
         # 1. Bulk restore standard attributes
         for name, field in self.__class__.model_fields.items():
-            target_attr = field.validation_alias or name
+            alias = field.validation_alias
+            target_attr = alias if isinstance(alias, str) else name
 
             # Skip adapter properties (they are read-only / calculated)
             if target_attr.startswith("_serialized_"):
@@ -275,6 +276,11 @@ class VariationalQuantumAlgorithm(QuantumProgram):
     Used by the base class to compute the total parameter count as
     ``n_layers * n_params_per_layer``.
     """
+
+    _grouping_strategy: GroupingStrategy
+    _best_params: npt.NDArray[np.float64]
+    _final_params: npt.NDArray[np.float64]
+    _meta_circuit_factories: dict[str, MetaCircuit] | None
 
     def __init__(
         self,
@@ -385,8 +391,8 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         # --- Optimization Results & History ---
         self._losses_history = []
         self._param_history: list[npt.NDArray[np.float64]] = []
-        self._best_params = []
-        self._final_params = []
+        self._best_params = np.array([], dtype=np.float64)
+        self._final_params = np.array([], dtype=np.float64)
         self._best_loss = float("inf")
         self._best_probs = {}
         self.optimize_result: OptimizeResult | None = None
@@ -477,16 +483,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         """
         return self._total_run_time
 
-    @property
-    def meta_circuit_factories(self) -> dict[str, MetaCircuit]:
-        """Get the meta-circuit factories used by this program.
-
-        Returns:
-            dict[str, MetaCircuit]: Dictionary mapping circuit names to their
-                MetaCircuit factories.
-        """
-        return self._meta_circuit_factories
-
     def _has_run_optimization(self) -> bool:
         """Check if optimization has been run at least once.
 
@@ -494,6 +490,9 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             bool: True if optimization has been run, False otherwise.
         """
         return len(self._losses_history) > 0
+
+    def has_results(self) -> bool:
+        return self._has_run_optimization()
 
     @property
     def stop_reason(self) -> StopReason | None:
@@ -895,7 +894,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             config=config_dict,
         )
 
-    def save_state(self, checkpoint_config: CheckpointConfig) -> str:
+    def save_state(self, checkpoint_config: CheckpointConfig) -> Path:
         """Save the program state to a checkpoint directory."""
         if self.current_iteration == 0 and len(self._losses_history) == 0:
             raise RuntimeError("Cannot save checkpoint: optimization has not been run.")
@@ -994,7 +993,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
     def _optimizer_has_resume_state(self) -> bool:
         """Return True when the optimizer already carries resumable state."""
         if isinstance(self.optimizer, MonteCarloOptimizer):
-            return self.optimizer._curr_population is not None
+            return self.optimizer._has_checkpoint
         if isinstance(self.optimizer, PymooOptimizer):
             return self.optimizer._curr_algorithm_obj is not None
         return False
@@ -1379,8 +1378,13 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         self, param_sets: npt.NDArray[np.float64]
     ) -> None:
         """Execute measurement circuits via the pipeline for the provided parameter sets."""
+        if (pipeline := self._measurement_pipeline) is None:
+            raise RuntimeError(
+                "This algorithm does not have a measurement pipeline; "
+                "_run_solution_measurement_for cannot be called."
+            )
         env = self._build_pipeline_env(param_sets=np.atleast_2d(param_sets))
-        result = self._measurement_pipeline.run(
+        result = pipeline.run(
             initial_spec=self._get_initial_spec("measurement"),
             env=env,
         )

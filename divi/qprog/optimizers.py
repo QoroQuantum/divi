@@ -105,8 +105,8 @@ class Optimizer(ABC):
     @abstractmethod
     def optimize(
         self,
-        cost_fn: Callable[[npt.NDArray[np.float64]], float],
-        initial_params: npt.NDArray[np.float64],
+        cost_fn: Callable[[npt.NDArray[np.float64]], float | npt.NDArray[np.float64]],
+        initial_params: npt.NDArray[np.float64] | None = None,
         callback_fn: Callable[[OptimizeResult], Any] | None = None,
         **kwargs,
     ) -> OptimizeResult:
@@ -149,23 +149,23 @@ class Optimizer(ABC):
         raise NotImplementedError("This method should be implemented by subclasses.")
 
     @abstractmethod
-    def save_state(self, checkpoint_dir: str) -> None:
+    def save_state(self, checkpoint_dir: Path | str) -> None:
         """Save the optimizer's internal state to a checkpoint directory.
 
         Args:
-            checkpoint_dir (str): Directory path where the optimizer state will be saved.
+            checkpoint_dir: Directory path where the optimizer state will be saved.
         """
         raise NotImplementedError("This method should be implemented by subclasses.")
 
     @classmethod
     @abstractmethod
-    def load_state(cls, checkpoint_dir: str) -> "Optimizer":
+    def load_state(cls, checkpoint_dir: Path | str) -> "Optimizer":
         """Load the optimizer's internal state from a checkpoint directory.
 
         Creates a new optimizer instance with the state restored from the checkpoint.
 
         Args:
-            checkpoint_dir (str): Directory path where the optimizer state is saved.
+            checkpoint_dir: Directory path where the optimizer state is saved.
 
         Returns:
             Optimizer: A new optimizer instance with restored state.
@@ -333,7 +333,7 @@ class PymooOptimizer(Optimizer):
 
     def _optimize_cmaes(
         self,
-        cost_fn: Callable[[npt.NDArray[np.float64]], float],
+        cost_fn: Callable[[npt.NDArray[np.float64]], float | npt.NDArray[np.float64]],
         iterations_to_run: int,
         callback_fn: Callable | None,
     ) -> OptimizeResult:
@@ -367,7 +367,7 @@ class PymooOptimizer(Optimizer):
 
     def _optimize_pymoo(
         self,
-        cost_fn: Callable[[npt.NDArray[np.float64]], float],
+        cost_fn: Callable[[npt.NDArray[np.float64]], float | npt.NDArray[np.float64]],
         iterations_to_run: int,
         callback_fn: Callable | None,
     ) -> OptimizeResult:
@@ -406,7 +406,7 @@ class PymooOptimizer(Optimizer):
 
     def optimize(
         self,
-        cost_fn: Callable[[npt.NDArray[np.float64]], float],
+        cost_fn: Callable[[npt.NDArray[np.float64]], float | npt.NDArray[np.float64]],
         initial_params: npt.NDArray[np.float64] | None = None,
         callback_fn: Callable | None = None,
         **kwargs,
@@ -449,6 +449,10 @@ class PymooOptimizer(Optimizer):
             iterations_remaining = max_iterations - iterations_completed
             iterations_to_run = max(0, iterations_remaining)
         else:
+            if initial_params is None:
+                raise ValueError(
+                    "initial_params is required for a fresh PymooOptimizer run."
+                )
             rng = kwargs.pop("rng", np.random.default_rng())
             self._curr_algorithm_obj = self._initialize_optimizer(initial_params, rng)
             iterations_to_run = max_iterations
@@ -583,7 +587,7 @@ class ScipyOptimizer(Optimizer):
     def optimize(
         self,
         cost_fn: Callable[[npt.NDArray[np.float64]], float],
-        initial_params: npt.NDArray[np.float64],
+        initial_params: npt.NDArray[np.float64] | None = None,
         callback_fn: Callable[[OptimizeResult], Any] | None = None,
         **kwargs,
     ) -> OptimizeResult:
@@ -638,6 +642,9 @@ class ScipyOptimizer(Optimizer):
                 else max_iterations
             )
 
+        if initial_params is None:
+            raise ValueError("ScipyOptimizer requires initial_params.")
+
         return minimize(
             cost_fn,
             initial_params.squeeze(),
@@ -649,14 +656,14 @@ class ScipyOptimizer(Optimizer):
             options={"maxiter": maxiter},
         )
 
-    def save_state(self, checkpoint_dir: str) -> None:
+    def save_state(self, checkpoint_dir: Path | str) -> None:
         """Save the optimizer's internal state to a checkpoint directory.
 
         Scipy optimizers do not support saving state mid-minimization as scipy.optimize
         does not provide access to the internal optimizer state.
 
         Args:
-            checkpoint_dir (str): Directory path where the optimizer state would be saved.
+            checkpoint_dir: Directory path where the optimizer state would be saved.
 
         Raises:
             NotImplementedError: Always raised, as scipy optimizers cannot save state.
@@ -668,13 +675,13 @@ class ScipyOptimizer(Optimizer):
         )
 
     @classmethod
-    def load_state(cls, checkpoint_dir: str) -> "ScipyOptimizer":
+    def load_state(cls, checkpoint_dir: Path | str) -> "ScipyOptimizer":
         """Load the optimizer's internal state from a checkpoint directory.
 
         Scipy optimizers do not support loading state as they cannot save state.
 
         Args:
-            checkpoint_dir (str): Directory path where the optimizer state would be loaded from.
+            checkpoint_dir: Directory path where the optimizer state would be loaded from.
 
         Raises:
             NotImplementedError: Always raised, as scipy optimizers cannot load state.
@@ -757,6 +764,10 @@ class MonteCarloOptimizer(Optimizer):
         self._curr_losses: npt.NDArray[np.float64] | None = None
         self._curr_iteration: int | None = None
         self._curr_rng_state: dict | None = None
+
+    @property
+    def _has_checkpoint(self) -> bool:
+        return self._curr_population is not None and self._curr_iteration is not None
 
     @property
     def population_size(self) -> int:
@@ -858,8 +869,8 @@ class MonteCarloOptimizer(Optimizer):
 
     def optimize(
         self,
-        cost_fn: Callable[[npt.NDArray[np.float64]], float],
-        initial_params: npt.NDArray[np.float64],
+        cost_fn: Callable[[npt.NDArray[np.float64]], float | npt.NDArray[np.float64]],
+        initial_params: npt.NDArray[np.float64] | None = None,
         callback_fn: Callable[[OptimizeResult], Any] | None = None,
         **kwargs,
     ) -> OptimizeResult:
@@ -885,7 +896,7 @@ class MonteCarloOptimizer(Optimizer):
         max_iterations = kwargs.pop("max_iterations", 5)
 
         # Resume from checkpoint or initialize fresh
-        if self._curr_population is not None:
+        if self._curr_population is not None and self._curr_iteration is not None:
             start_iter = self._curr_iteration + 1
             rng.bit_generator.state = self._curr_rng_state
             # Calculate remaining iterations to reach total desired
@@ -893,13 +904,19 @@ class MonteCarloOptimizer(Optimizer):
             iterations_remaining = max_iterations - iterations_completed
             end_iter = start_iter + max(0, iterations_remaining)
         else:
+            if initial_params is None:
+                raise ValueError(
+                    "initial_params is required for a fresh MonteCarloOptimizer run."
+                )
             self._curr_population = np.copy(initial_params)
             start_iter = 0
             end_iter = max_iterations
 
         for curr_iter in range(start_iter, end_iter):
             # Evaluate the entire population once
-            self._curr_losses = cost_fn(self._curr_population)
+            self._curr_losses = np.atleast_1d(cost_fn(self._curr_population)).astype(
+                np.float64
+            )
             self._curr_evaluated_population = np.copy(self._curr_population)
 
             # Find the indices of the best-performing parameter sets
@@ -923,6 +940,11 @@ class MonteCarloOptimizer(Optimizer):
 
         # Note: 'losses' here are from the last successfully evaluated population
         # (either from the loop above, or from checkpoint state if loop didn't run)
+        if self._curr_losses is None or self._curr_evaluated_population is None:
+            raise RuntimeError(
+                "MonteCarloOptimizer.optimize produced no evaluated population; "
+                "nothing to return."
+            )
         best_idx = np.argmin(self._curr_losses)
 
         # Return the best results from the LAST EVALUATED population
@@ -949,6 +971,7 @@ class MonteCarloOptimizer(Optimizer):
             self._curr_population is None
             or self._curr_evaluated_population is None
             or self._curr_losses is None
+            or self._curr_iteration is None
         ):
             raise RuntimeError(
                 "Cannot save checkpoint: optimization has not been run. "
@@ -1140,8 +1163,8 @@ class GridSearchOptimizer(Optimizer):
 
     def optimize(
         self,
-        cost_fn: Callable[[npt.NDArray[np.float64]], float],
-        initial_params: npt.NDArray[np.float64],
+        cost_fn: Callable[[npt.NDArray[np.float64]], float | npt.NDArray[np.float64]],
+        initial_params: npt.NDArray[np.float64] | None = None,
         callback_fn: Callable[[OptimizeResult], Any] | None = None,
         **kwargs,
     ) -> OptimizeResult:
@@ -1171,7 +1194,7 @@ class GridSearchOptimizer(Optimizer):
             )
         kwargs.pop("rng", None)
 
-        self._all_losses = cost_fn(self._param_grid)
+        self._all_losses = np.atleast_1d(cost_fn(self._param_grid)).astype(np.float64)
 
         best_idx = np.argmin(self._all_losses)
         self._best_params = self._param_grid[best_idx].copy()

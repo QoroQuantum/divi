@@ -38,10 +38,11 @@ if __name__ == "__main__":
 
     print(f"Total circuits: {qaoa_problem.total_circuit_count}")
 
-    # Get classical solution for comparison
+    # Get classical solution for comparison.
+    # dimod's ``SampleSet.first`` is a namedtuple ``(sample, energy, num_occurrences)``.
     classical_samples = ExactSolver().sample(bqm)
-    best_classical = classical_samples.first
-    classical_solution = [best_classical.sample[v] for v in bqm.variables]
+    classical_sample, classical_energy, _ = classical_samples.first
+    classical_solution = [classical_sample[v] for v in bqm.variables]
 
     # Get quantum solution (dict for named BQM vars, else array in variable order)
     sol = qaoa_problem.solution
@@ -56,5 +57,5 @@ if __name__ == "__main__":
     # Print solutions side by side for easy comparison
     print(f"Classical Solution:\t[{''.join(map(str, classical_solution))}]")
     print(f"Quantum Solution:\t[{''.join(map(str, quantum_values))}]")
-    print(f"Classical Energy:\t{best_classical.energy:.9f}")
+    print(f"Classical Energy:\t{classical_energy:.9f}")
     print(f"Quantum Energy:\t\t{quantum_energy:.9f}")

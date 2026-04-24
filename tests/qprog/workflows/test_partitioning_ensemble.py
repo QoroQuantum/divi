@@ -39,6 +39,7 @@ def _make_mock_program(mocker, best_probs, top_solutions):
     prog.best_probs = best_probs
     prog.losses_history = [1.0]
     prog.results = {"some": "result"}
+    prog.has_results.return_value = True
     prog.get_top_solutions.return_value = top_solutions
     return prog
 
@@ -110,10 +111,10 @@ class TestPartitioningProgramEnsemble:
         ensemble.create_programs()
 
         prog = mocker.MagicMock(spec=VariationalQuantumAlgorithm)
-        prog.losses_history = []
+        prog.has_results.return_value = False
         ensemble._programs["A"] = prog
 
-        with pytest.raises(RuntimeError, match="Some/All programs have empty losses"):
+        with pytest.raises(RuntimeError, match="Some/All programs have no results"):
             ensemble.aggregate_results()
 
     def test_aggregate_raises_if_no_best_probs(self, mocker, dummy_simulator):
@@ -127,8 +128,7 @@ class TestPartitioningProgramEnsemble:
         ensemble.create_programs()
 
         prog = mocker.MagicMock(spec=VariationalQuantumAlgorithm)
-        prog.losses_history = [1.0]
-        prog.results = {"some": "result"}
+        prog.has_results.return_value = True
         prog.best_probs = {}
         ensemble._programs["A"] = prog
 
@@ -162,10 +162,10 @@ class TestPartitioningProgramEnsemble:
         ensemble.create_programs()
 
         prog = mocker.MagicMock(spec=VariationalQuantumAlgorithm)
-        prog.losses_history = []
+        prog.has_results.return_value = False
         ensemble._programs["A"] = prog
 
-        with pytest.raises(RuntimeError, match="Some/All programs have empty losses"):
+        with pytest.raises(RuntimeError, match="Some/All programs have no results"):
             ensemble.get_top_solutions(n=1)
 
     def test_verify_basic_behaviour(self, mocker, dummy_simulator):

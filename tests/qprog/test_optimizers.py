@@ -536,6 +536,26 @@ class TestMonteCarloOptimizer:
         with pytest.raises(RuntimeError, match="optimization has not been run"):
             optimizer.save_state(str(checkpoint_dir))
 
+    def test_fresh_run_without_initial_params_raises(self):
+        """A fresh run must receive initial_params."""
+        optimizer = self._create_optimizer(keep_best_params=False)
+
+        with pytest.raises(ValueError, match="initial_params is required"):
+            optimizer.optimize(sphere_cost_fn_population, max_iterations=3)
+
+    def test_fresh_run_zero_iterations_raises(self):
+        """Fresh run with max_iterations=0 never evaluates the cost, so no state exists to return."""
+        optimizer = self._create_optimizer(keep_best_params=False)
+        initial_params = self._create_initial_params()
+
+        with pytest.raises(RuntimeError, match="produced no evaluated population"):
+            optimizer.optimize(
+                sphere_cost_fn_population,
+                initial_params,
+                max_iterations=0,
+                rng=self.rng,
+            )
+
 
 class TestPopulationOptimizerCheckpointing:
     """Shared checkpoint/resume behaviours for population-based optimizers."""
@@ -951,6 +971,13 @@ class TestPymooOptimizer:
         )
         assert result2.nit == 5  # Should still be 5, not 10
 
+    def test_fresh_run_without_initial_params_raises(self):
+        """A fresh run must receive initial_params."""
+        optimizer = PymooOptimizer(method=PymooMethod.CMAES, population_size=5)
+
+        with pytest.raises(ValueError, match="initial_params is required"):
+            optimizer.optimize(sphere_cost_fn_population, max_iterations=3)
+
 
 class TestScipyOptimizer:
     """Specific tests for ScipyOptimizer features."""
@@ -994,6 +1021,13 @@ class TestScipyOptimizer:
             NotImplementedError, match="ScipyOptimizer does not support"
         ):
             ScipyOptimizer.load_state(checkpoint_dir)
+
+    def test_optimize_without_initial_params_raises(self):
+        """ScipyOptimizer cannot resume, so initial_params is always required."""
+        optimizer = ScipyOptimizer(method=ScipyMethod.L_BFGS_B)
+
+        with pytest.raises(ValueError, match="ScipyOptimizer requires initial_params"):
+            optimizer.optimize(sphere_cost_fn_single, max_iterations=3)
 
     @pytest.mark.parametrize(
         ("method", "expects_jac"),
