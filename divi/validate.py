@@ -71,6 +71,8 @@ def validate(
         n_qubits: Explicit qubit count (auto-detected if omitted).
         ansatz: Ansatz configuration dict
             (e.g. ``{"mixer": "x", "layers": 1}``).
+            Note: ``auto_warmstart`` is managed by the backend and
+            cannot be overridden from the client.
         constraints: List of constraint descriptors.
         gamma: Fixed γ value (overrides parameter sweep).
         beta: Fixed β value (overrides parameter sweep).
@@ -130,6 +132,9 @@ def validate(
     if analysis:
         options["analysis"] = analysis
     if ansatz is not None:
+        # auto_warmstart is managed server-side; strip it so users
+        # can't accidentally override backend heuristics.
+        ansatz = {k: v for k, v in ansatz.items() if k != "auto_warmstart"}
         options["ansatz"] = ansatz
     if cost_wire is not None:
         options["cost_qubo"] = cost_wire
