@@ -391,18 +391,21 @@ class TestQoroServiceValidateQubo:
         mock_init = mocker.MagicMock()
         mock_init.json.return_value = {"job_id": "val-job-123"}
 
-        mock_submit = mocker.MagicMock()
-        mock_submit.status_code = HTTPStatus.OK
-        mock_submit.json.return_value = {"status": "COMPLETED"}
-
         mock_result = mocker.MagicMock()
         mock_result.json.return_value = SAMPLE_VALIDATION_RESPONSE
 
+        # init + result go through _make_request
         mock_req = mocker.patch.object(
             service,
             "_make_request",
-            side_effect=[mock_init, mock_submit, mock_result],
+            side_effect=[mock_init, mock_result],
         )
+
+        # submit goes through requests.post directly (non-retrying)
+        mock_submit = mocker.MagicMock()
+        mock_submit.status_code = HTTPStatus.OK
+        mock_submit.json.return_value = {"status": "COMPLETED"}
+        mock_post = mocker.patch("divi.backends._qoro_service.requests.post", return_value=mock_submit)
 
         result = service.validate_qubo(
             qubo={"0,0": -1.0, "0,1": 2.0},
@@ -414,35 +417,34 @@ class TestQoroServiceValidateQubo:
         assert result.quality_score == 78.5
         assert result.hardness["difficulty"] == "medium"
 
-        # Verify 3 API calls were made
-        assert mock_req.call_count == 3
-
-        # Verify init call
+        # Verify init + result calls via _make_request
+        assert mock_req.call_count == 2
         init_call = mock_req.call_args_list[0]
         assert init_call.args == ("post", "job/init/")
         assert init_call.kwargs["json"]["job_type"] == "VALIDATE"
 
-        # Verify submit call
-        submit_call = mock_req.call_args_list[1]
-        assert "submit_qubo" in submit_call.args[1]
-        payload = submit_call.kwargs["json"]
-        assert payload["qubo"] == {"0,0": -1.0, "0,1": 2.0}
-        assert payload["target_states"] == ["01", "10"]
+        # Verify submit call via requests.post
+        assert mock_post.call_count == 1
+        submit_payload = mock_post.call_args.kwargs["json"]
+        assert submit_payload["qubo"] == {"0,0": -1.0, "0,1": 2.0}
+        assert submit_payload["target_states"] == ["01", "10"]
 
     def test_validate_qubo_with_options(self, mocker, qoro_service_factory):
         service = qoro_service_factory()
 
         mock_init = mocker.MagicMock()
         mock_init.json.return_value = {"job_id": "val-opt-123"}
-        mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
         mock_result = mocker.MagicMock()
         mock_result.json.return_value = SAMPLE_VALIDATION_RESPONSE
 
         mock_req = mocker.patch.object(
             service,
             "_make_request",
-            side_effect=[mock_init, mock_submit, mock_result],
+            side_effect=[mock_init, mock_result],
         )
+
+        mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
+        mock_post = mocker.patch("divi.backends._qoro_service.requests.post", return_value=mock_submit)
 
         options = {
             "ansatz": {"mixer": "x", "layers": 1},
@@ -455,7 +457,7 @@ class TestQoroServiceValidateQubo:
             options=options,
         )
 
-        submit_payload = mock_req.call_args_list[1].kwargs["json"]
+        submit_payload = mock_post.call_args.kwargs["json"]
         assert submit_payload["options"] == options
 
 
@@ -544,15 +546,16 @@ class TestTopLevelValidate:
 
         mock_init = mocker.MagicMock()
         mock_init.json.return_value = {"job_id": "top-123"}
-        mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
         mock_result = mocker.MagicMock()
         mock_result.json.return_value = SAMPLE_VALIDATION_RESPONSE
 
         mocker.patch.object(
             service,
             "_make_request",
-            side_effect=[mock_init, mock_submit, mock_result],
+            side_effect=[mock_init, mock_result],
         )
+        mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
+        mocker.patch("divi.backends._qoro_service.requests.post", return_value=mock_submit)
 
         from divi.validate import validate
 
@@ -567,15 +570,16 @@ class TestTopLevelValidate:
 
         mock_init = mocker.MagicMock()
         mock_init.json.return_value = {"job_id": "top-opt-123"}
-        mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
         mock_result = mocker.MagicMock()
         mock_result.json.return_value = SAMPLE_VALIDATION_RESPONSE
 
-        mock_req = mocker.patch.object(
+        mocker.patch.object(
             service,
             "_make_request",
-            side_effect=[mock_init, mock_submit, mock_result],
+            side_effect=[mock_init, mock_result],
         )
+        mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
+        mock_post = mocker.patch("divi.backends._qoro_service.requests.post", return_value=mock_submit)
 
         from divi.validate import validate
 
@@ -590,7 +594,7 @@ class TestTopLevelValidate:
             beta=0.5,
         )
 
-        submit_payload = mock_req.call_args_list[1].kwargs["json"]
+        submit_payload = mock_post.call_args.kwargs["json"]
         options = submit_payload["options"]
         assert options["analysis"]["sensitivity"] is True
         assert options["analysis"]["parameter_sweep"] is True
@@ -603,15 +607,16 @@ class TestTopLevelValidate:
 
         mock_init = mocker.MagicMock()
         mock_init.json.return_value = {"job_id": "pen-123"}
-        mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
         mock_result = mocker.MagicMock()
         mock_result.json.return_value = SAMPLE_VALIDATION_RESPONSE
 
-        mock_req = mocker.patch.object(
+        mocker.patch.object(
             service,
             "_make_request",
-            side_effect=[mock_init, mock_submit, mock_result],
+            side_effect=[mock_init, mock_result],
         )
+        mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
+        mock_post = mocker.patch("divi.backends._qoro_service.requests.post", return_value=mock_submit)
 
         from divi.validate import validate
 
@@ -626,7 +631,7 @@ class TestTopLevelValidate:
             penalty_qubo=pen_q,
         )
 
-        submit_payload = mock_req.call_args_list[1].kwargs["json"]
+        submit_payload = mock_post.call_args.kwargs["json"]
         options = submit_payload["options"]
         assert "cost_qubo" in options
         assert "penalty_qubo" in options
