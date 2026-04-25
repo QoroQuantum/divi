@@ -22,7 +22,7 @@ from divi.hamiltonians import (
     qubo_to_ising,
 )
 from divi.qprog.problems._base import QAOAProblem
-
+from divi.validate import validate as _validate
 
 def _merge_substates(_, substates):
     """Merge two hybrid framework substates by stacking their sample sets."""
@@ -262,3 +262,26 @@ class BinaryOptimizationProblem(QAOAProblem):
 
         sol, energy, _ = final_state.samples.record[0]
         return np.array(sol, dtype=np.int32), float(energy)
+
+    def validate(self, target_states, *, service=None, **kwargs):
+        """Validate this problem's QUBO formulation via the Qoro Service.
+
+        Convenience wrapper around :func:`divi.validate.validate` that
+        passes ``self`` as the problem.
+
+        Args:
+            target_states: List of target bitstrings (e.g. ``["01", "10"]``).
+            service: Optional :class:`~divi.backends.QoroService` instance.
+            **kwargs: Extra options forwarded to
+                :func:`~divi.validate.validate` (``sensitivity``,
+                ``parameter_sweep``, ``auto_tune``, etc.).
+
+        Returns:
+            QUBOValidationResult: Rich result with quality score, hardness,
+            state probabilities, and Jupyter HTML rendering.
+
+        .. note::
+            Credit cost scales with QUBO size.
+        """
+        return _validate(self, target_states, service=service, **kwargs)
+

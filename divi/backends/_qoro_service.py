@@ -71,7 +71,17 @@ def _raise_with_details(resp: requests.Response):
         data = resp.json()
         body = json.dumps(data, ensure_ascii=False)
     except ValueError:
-        body = resp.text
+        # Non-JSON response (e.g. Cloudflare HTML error page) — don't
+        # dump hundreds of lines of HTML on the user.
+        text = resp.text or ""
+        if "<html" in text.lower():
+            body = (
+                f"(HTML error page from {resp.url or 'server'}; "
+                f"upstream may be down or timed out)"
+            )
+        else:
+            # Keep non-HTML text but truncate if very long
+            body = text[:500] + ("..." if len(text) > 500 else "")
     msg = f"{resp.status_code} {resp.reason}: {body}"
     raise requests.HTTPError(msg, response=resp)
 
@@ -103,6 +113,9 @@ class JobType(Enum):
 
     EXPECTATION = "EXPECTATION"
     """Compute expectation values for Hamiltonian operators."""
+
+    VALIDATE = "VALIDATE"
+    """Submit a QUBO/HUBO for validation (no simulator/QPU needed)."""
 
 
 class MaxRetriesReachedError(Exception):
@@ -906,3 +919,201 @@ class QoroService(CircuitRunner):
         finally:
             if polling_status:
                 polling_status.stop()
+
+    # ------------------------------------------------------------------ #
+    # QUBO / HUBO Validation
+    # ------------------------------------------------------------------ #
+
+    def validate_qubo(
+        self,
+        qubo: dict,
+        target_states: list[str],
+        options: dict | None = None,
+    ) -> "QUBOValidationResult":
+        """Submit a QUBO for validation and return the full report.
+
+        Orchestrates the complete 3-step validation flow in a single
+        blocking call:
+
+        1. ``POST /api/job/init/`` with ``job_type=VALIDATE``
+        2. ``POST /api/job/<id>/submit_qubo/`` with the QUBO + options
+        3. ``GET  /api/job/<id>/validation_result/``
+
+        Args:
+            qubo: Wire-format QUBO dict with string keys
+                (e.g. ``{"0,0": -1.0, "0,1": 2.0}``).
+            target_states: List of target bitstrings
+                (e.g. ``["01", "10"]``).
+            options: Optional dict forwarded to ``submit_qubo``.
+                Keys may include ``ansatz``, ``analysis``,
+                ``cost_qubo``, ``penalty_qubo``, ``n_qubits``,
+                ``constraints``.
+
+        Returns:
+            QUBOValidationResult: Rich result object with quality score,
+                hardness, state probabilities, and more.
+
+        Raises:
+            requests.exceptions.HTTPError: If any step in the flow fails.
+
+        .. note::
+            Credit cost scales with QUBO size.
+        """
+        from divi.backends._validation import QUBOValidationResult
+
+        # Step 1 — init VALIDATE job
+        init_payload = {
+            "job_type": JobType.VALIDATE.value,
+            "tag": "divi-validation",
+        }
+        init_resp = self._make_request(
+            "post", "job/init/", json=init_payload, timeout=100
+        )
+        job_id = init_resp.json()["job_id"]
+
+        # Step 2 — submit QUBO
+        # Use a direct request (no auto-retry) because submit_qubo
+        # mutates the job state (PENDING → RUNNING).  Retrying after
+        # a 502 would hit a non-PENDING job and cascade to 409.
+        submit_payload: dict = {
+            "qubo": qubo,
+            "target_states": target_states,
+        }
+        if options:
+            submit_payload["options"] = options
+
+        url = f"{API_URL}/job/{job_id}/submit_qubo/"
+        headers = {"Authorization": self.auth_token, "Content-Type": "application/json"}
+        try:
+            submit_resp = requests.post(
+                url, json=submit_payload, headers=headers, timeout=300,
+            )
+        except requests.exceptions.ConnectionError as exc:
+            raise requests.HTTPError(
+                f"Connection to validation service lost (job {job_id}). "
+                f"The server may be restarting — please retry in a few "
+                f"minutes.",
+            ) from exc
+        except requests.exceptions.Timeout as exc:
+            raise requests.HTTPError(
+                f"Validation request timed out (job {job_id}). "
+                f"The QUBO may be too large for a single request — "
+                f"try reducing the problem size or disabling "
+                f"parameter_sweep / sensitivity.",
+            ) from exc
+
+        if submit_resp.status_code in (502, 503, 504):
+            raise requests.HTTPError(
+                f"{submit_resp.status_code} {submit_resp.reason}: "
+                f"Validation service is temporarily unavailable "
+                f"(job {job_id}). This usually means the analysis "
+                f"exceeded the server time limit. Try a smaller QUBO, "
+                f"fewer layers, or disable parameter_sweep/sensitivity.",
+                response=submit_resp,
+            )
+        if submit_resp.status_code >= 400:
+            _raise_with_details(submit_resp)
+
+        # Step 3 — fetch result
+        result_resp = self._make_request(
+            "get",
+            f"job/{job_id}/validation_result/",
+            timeout=100,
+        )
+        data = result_resp.json()
+
+        return QUBOValidationResult(
+            job_id=data.get("job_id", job_id),
+            status=data.get("status", "COMPLETED"),
+            hardness=data.get("hardness"),
+            report=data.get("report"),
+            created_at=data.get("created_at"),
+            completed_at=data.get("completed_at"),
+        )
+
+    def validate_hardness(
+        self,
+        qubo: dict,
+        n_qubits: int | None = None,
+    ) -> dict:
+        """Quick hardness check without full validation.
+
+        Creates a VALIDATE job and submits the QUBO with
+        ``analysis.hardness_only`` set to ``True``, then returns the
+        raw hardness dict (spectral gap, condition number, difficulty).
+
+        Args:
+            qubo: Wire-format QUBO dict.
+            n_qubits: Optional number of qubits (auto-detected if omitted).
+
+        Returns:
+            dict: Hardness metrics::
+
+                {
+                    "difficulty": "medium",
+                    "spectral_gap": 0.35,
+                    "condition_number": 4.2,
+                    ...
+                }
+        """
+        options: dict = {"analysis": {"hardness_only": True}}
+        if n_qubits is not None:
+            options["n_qubits"] = n_qubits
+
+        init_payload = {
+            "job_type": JobType.VALIDATE.value,
+            "tag": "divi-hardness",
+        }
+        init_resp = self._make_request(
+            "post", "job/init/", json=init_payload, timeout=100
+        )
+        job_id = init_resp.json()["job_id"]
+
+        submit_payload: dict = {
+            "qubo": qubo,
+            "target_states": [],
+            "options": options,
+        }
+        self._make_request(
+            "post",
+            f"job/{job_id}/submit_qubo/",
+            json=submit_payload,
+            timeout=300,
+        )
+
+        result_resp = self._make_request(
+            "get",
+            f"job/{job_id}/validation_result/",
+            timeout=100,
+        )
+        data = result_resp.json()
+        return data.get("hardness", {})
+
+    def get_validation_result(
+        self,
+        job_id: str,
+    ) -> "QUBOValidationResult":
+        """Fetch an existing validation result by job ID.
+
+        Args:
+            job_id: The UUID of a previously submitted validation job.
+
+        Returns:
+            QUBOValidationResult: The stored validation result.
+        """
+        from divi.backends._validation import QUBOValidationResult
+
+        resp = self._make_request(
+            "get",
+            f"job/{job_id}/validation_result/",
+            timeout=100,
+        )
+        data = resp.json()
+        return QUBOValidationResult(
+            job_id=data.get("job_id", job_id),
+            status=data.get("status", "COMPLETED"),
+            hardness=data.get("hardness"),
+            report=data.get("report"),
+            created_at=data.get("created_at"),
+            completed_at=data.get("completed_at"),
+        )
