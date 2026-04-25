@@ -10,6 +10,7 @@ from ._maestro_simulator import MaestroConfig, MaestroSimulator
 from ._qiskit_simulator import QiskitSimulator
 from ._qoro_service import JobStatus, JobType, QoroService
 from ._systems import QPU, QPUSystem, SimulatorCluster
+from ._validation import QUBOValidationResult
 from ._results_processing import convert_counts_to_probs, reverse_dict_endianness
 
 __all__ = [
@@ -23,6 +24,7 @@ __all__ = [
     "MaestroSimulator",
     "QPU",
     "QPUSystem",
+    "QUBOValidationResult",
     "QiskitSimulator",
     "QoroService",
     "SimulationMethod",

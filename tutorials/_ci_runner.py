@@ -46,6 +46,7 @@ DEFAULT_TIMEOUT = 120
 
 SKIP = [
     "qasm_thru_service.py",  # requires API key
+    "validate_maxcut_qubo.py",  # requires API key + costs credits
 ]
 
 NO_PATCHES = [
