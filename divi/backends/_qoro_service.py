@@ -1055,12 +1055,27 @@ class QoroService(CircuitRunner):
             "target_states": [],
             "options": options,
         }
-        self._make_request(
-            "post",
-            f"job/{job_id}/submit_qubo/",
-            json=submit_payload,
-            timeout=300,
-        )
+
+        # Use a direct request (no auto-retry) because submit_qubo
+        # mutates the job state (PENDING → RUNNING).  Retrying after
+        # a 502 would hit a non-PENDING job and cascade to 409.
+        url = f"{API_URL}/job/{job_id}/submit_qubo/"
+        headers = {"Authorization": self.auth_token, "Content-Type": "application/json"}
+        try:
+            submit_resp = requests.post(
+                url, json=submit_payload, headers=headers, timeout=300,
+            )
+        except requests.exceptions.ConnectionError as exc:
+            raise requests.HTTPError(
+                f"Connection lost during hardness submit (job {job_id}). "
+                f"Retry in a few minutes.",
+            ) from exc
+        except requests.exceptions.Timeout as exc:
+            raise requests.HTTPError(
+                f"Hardness submit timed out (job {job_id}).",
+            ) from exc
+        if submit_resp.status_code >= 400:
+            _raise_with_details(submit_resp)
 
         result_resp = self._make_request(
             "get",
