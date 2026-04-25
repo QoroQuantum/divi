@@ -856,7 +856,9 @@ def _build_validation_html(result: QUBOValidationResult) -> str:
     job_short = result.job_id[:8] if result.job_id else "?"
     timing = ""
     if result.created_at and result.completed_at:
-        timing = f" · {result.created_at} → {result.completed_at}"
+        timing = (
+            f" · {html.escape(str(result.created_at))} → {html.escape(str(result.completed_at))}"
+        )
     parts.append(
         f'<div class="qvr-footer">Job {html.escape(job_short)}…{timing}</div>'
     )

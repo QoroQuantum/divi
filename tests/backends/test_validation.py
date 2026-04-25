@@ -20,10 +20,13 @@ import numpy as np
 import pytest
 import scipy.sparse as sps
 
+from divi.backends._qoro_service import JobType, QoroService
 from divi.backends._validation import (
     QUBOValidationResult,
     _serialize_qubo_for_wire,
 )
+from divi.qprog.problems._binary import BinaryOptimizationProblem
+from divi.validate import validate
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +95,7 @@ def empty_result():
 @pytest.fixture
 def qoro_service_factory():
     """Factory for creating mocked QoroService instances."""
-    from divi.backends._qoro_service import QoroService
+
 
     class _EmptyResponse:
         @staticmethod
@@ -200,7 +203,7 @@ class TestSerializeQuboForWire:
         assert wire["0,1"] == 2.0
 
     def test_binary_optimization_problem(self):
-        from divi.qprog.problems._binary import BinaryOptimizationProblem
+
 
         problem = BinaryOptimizationProblem(
             np.array([[-1.0, 2.0], [0.0, -1.0]])
@@ -469,7 +472,6 @@ class TestQoroServiceValidateHardness:
 
         mock_init = mocker.MagicMock()
         mock_init.json.return_value = {"job_id": "hard-123"}
-        mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
         mock_result = mocker.MagicMock()
         mock_result.json.return_value = {
             "hardness": SAMPLE_HARDNESS,
@@ -479,8 +481,12 @@ class TestQoroServiceValidateHardness:
         mocker.patch.object(
             service,
             "_make_request",
-            side_effect=[mock_init, mock_submit, mock_result],
+            side_effect=[mock_init, mock_result],
         )
+
+        # submit goes through requests.post directly (non-retrying)
+        mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
+        mocker.patch("divi.backends._qoro_service.requests.post", return_value=mock_submit)
 
         result = service.validate_hardness(
             qubo={"0,0": -1.0, "0,1": 2.0},
@@ -498,19 +504,22 @@ class TestQoroServiceValidateHardness:
 
         mock_init = mocker.MagicMock()
         mock_init.json.return_value = {"job_id": "hard-456"}
-        mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
         mock_result = mocker.MagicMock()
         mock_result.json.return_value = {"hardness": {}, "status": "COMPLETED"}
 
-        mock_req = mocker.patch.object(
+        mocker.patch.object(
             service,
             "_make_request",
-            side_effect=[mock_init, mock_submit, mock_result],
+            side_effect=[mock_init, mock_result],
         )
+
+        # submit goes through requests.post directly (non-retrying)
+        mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
+        mock_post = mocker.patch("divi.backends._qoro_service.requests.post", return_value=mock_submit)
 
         service.validate_hardness(qubo={"0,0": -1.0})
 
-        submit_payload = mock_req.call_args_list[1].kwargs["json"]
+        submit_payload = mock_post.call_args.kwargs["json"]
         assert submit_payload["target_states"] == []
         assert submit_payload["options"]["analysis"]["hardness_only"] is True
 
@@ -557,7 +566,7 @@ class TestTopLevelValidate:
         mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
         mocker.patch("divi.backends._qoro_service.requests.post", return_value=mock_submit)
 
-        from divi.validate import validate
+
 
         Q = np.array([[-1.0, 2.0], [0.0, -1.0]])
         result = validate(Q, target_states=["01", "10"], service=service)
@@ -581,7 +590,7 @@ class TestTopLevelValidate:
         mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
         mock_post = mocker.patch("divi.backends._qoro_service.requests.post", return_value=mock_submit)
 
-        from divi.validate import validate
+
 
         validate(
             np.array([[-1.0, 2.0], [0.0, -1.0]]),
@@ -618,7 +627,7 @@ class TestTopLevelValidate:
         mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
         mock_post = mocker.patch("divi.backends._qoro_service.requests.post", return_value=mock_submit)
 
-        from divi.validate import validate
+
 
         cost_q = np.array([[-1.0, 0.0], [0.0, -1.0]])
         pen_q = np.array([[0.0, 2.0], [0.0, 0.0]])
@@ -647,12 +656,12 @@ class TestJobTypeValidate:
     """Tests for the VALIDATE enum value."""
 
     def test_validate_value_exists(self):
-        from divi.backends._qoro_service import JobType
+
 
         assert JobType.VALIDATE.value == "VALIDATE"
 
     def test_validate_in_all_values(self):
-        from divi.backends._qoro_service import JobType
+
 
         values = [j.value for j in JobType]
         assert "VALIDATE" in values
