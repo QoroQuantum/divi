@@ -436,7 +436,7 @@ class QUBOValidationResult:
 
             for entry in sens[:16]:
                 q = entry.get("qubit", "?")
-                val = entry.get("sensitivity", 0)
+                val = entry.get("score", entry.get("sensitivity", 0))
                 if val > 0.5:
                     assessment = "[red]fragile[/red]"
                 elif val > 0.2:
@@ -832,7 +832,7 @@ def _build_validation_html(result: QUBOValidationResult) -> str:
         )
         for entry in sens[:16]:
             q = entry.get("qubit", "?")
-            val = entry.get("sensitivity", 0)
+            val = entry.get("score", entry.get("sensitivity", 0))
             bar_color = _gauge_color(max(0, 100 - val * 100))
             parts.append(
                 f"<tr>"
