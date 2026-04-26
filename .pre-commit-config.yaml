@@ -68,6 +68,14 @@ repos:
         stages: [commit-msg]
         args: []
 
+-   repo: https://github.com/facebook/pyrefly-pre-commit
+    rev: 0.62.0
+    hooks:
+      - id: pyrefly-check
+        name: pyrefly type check
+        language: system
+        pass_filenames: false
+
 -   repo: local
     hooks:
       - id: tutorials-ci-dry-run
