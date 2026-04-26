@@ -868,7 +868,21 @@ def _build_validation_html(result: QUBOValidationResult) -> str:
 
 
 def _build_recommendations(result: QUBOValidationResult) -> list[str]:
-    """Generate actionable recommendations based on the validation report."""
+    """Generate actionable recommendations based on the validation report.
+
+    Prefers server-side recommendations (returned by the Composer
+    validation engine) when available, since the server has richer
+    context (warm-start details, landscape shape, exploration budget).
+    Falls back to client-generated heuristics when the report does not
+    include server recommendations.
+    """
+    # --- Server-side recommendations (preferred) ---
+    if result.report:
+        server_recs = result.report.get("recommendations")
+        if server_recs and isinstance(server_recs, list) and len(server_recs) > 0:
+            return [str(r) for r in server_recs]
+
+    # --- Client-side fallback ---
     recs: list[str] = []
 
     qs = result.quality_score
