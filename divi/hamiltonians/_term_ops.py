@@ -4,19 +4,24 @@
 
 """Low-level manipulation primitives for PennyLane Hamiltonian operators."""
 
+from collections.abc import Sequence
 from functools import reduce
-from typing import Literal
+from typing import Literal, TypeGuard
 
 import pennylane as qp
 
 
-def _is_multi_term_sum(op: qp.operation.Operator) -> bool:
+def _is_multi_term_sum(
+    op: qp.operation.Operator,
+) -> TypeGuard[qp.Hamiltonian | qp.ops.Sum]:
     """True if op is a multi-term Sum or Hamiltonian (has operands and len)."""
     return isinstance(op, (qp.Hamiltonian, qp.ops.Sum))
 
 
-def _get_terms_iterable(op: qp.operation.Operator) -> list:
-    """Return terms as a list for iteration. Works for Sum/Hamiltonian and single-term."""
+def _get_terms_iterable(
+    op: qp.operation.Operator,
+) -> Sequence[qp.operation.Operator]:
+    """Return terms as a sequence for iteration. Works for Sum/Hamiltonian and single-term."""
     return op.operands if _is_multi_term_sum(op) else [op]
 
 

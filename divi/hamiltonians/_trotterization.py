@@ -113,7 +113,7 @@ class ExactTrotterization(TrotterizationStrategy):
             return (sorted_non_id_terms + constant * qp.Identity()).simplify()
 
         if self.keep_fraction is not None:
-            absolute_coeffs = np.abs(sorted_non_id_terms.terms()[0])
+            absolute_coeffs = np.abs(np.asarray(sorted_non_id_terms.terms()[0]))
             target = absolute_coeffs.sum() * self.keep_fraction
             cumsum_from_end = np.cumsum(absolute_coeffs[::-1])
             n_keep = np.searchsorted(cumsum_from_end, target, side="left") + 1
@@ -241,9 +241,7 @@ class QDrift(TrotterizationStrategy):
 
             self._cache[hamiltonian] = (keep_hamiltonian, to_sample_hamiltonian)
 
-            if triggered_exact_trotterization and qp.equal(
-                keep_hamiltonian, hamiltonian
-            ):
+            if keep_hamiltonian is not None and qp.equal(keep_hamiltonian, hamiltonian):
                 warn(
                     "All terms were kept; there are no terms left to sample. "
                     "Returning the full Hamiltonian.",
@@ -256,7 +254,7 @@ class QDrift(TrotterizationStrategy):
                 return hamiltonian.simplify()
             return keep_hamiltonian
 
-        if triggered_exact_trotterization and qp.equal(keep_hamiltonian, hamiltonian):
+        if keep_hamiltonian is not None and qp.equal(keep_hamiltonian, hamiltonian):
             return hamiltonian
 
         # to_sample_hamiltonian already set above (from cache or computation)
@@ -274,13 +272,15 @@ class QDrift(TrotterizationStrategy):
             # Single term: no sampling needed, return as-is.
             sampled_terms = [to_sample_hamiltonian]
         else:
-            absolute_coeffs = np.abs(to_sample_hamiltonian.terms()[0])
+            absolute_coeffs = np.abs(np.asarray(to_sample_hamiltonian.terms()[0]))
             coeff_sum = absolute_coeffs.sum()
             if coeff_sum == 0:
                 warn(
                     "All term coefficients are zero; returning the kept Hamiltonian.",
                     UserWarning,
                 )
+                if keep_hamiltonian is None:
+                    return qp.Hamiltonian([], [])
                 return keep_hamiltonian
             probs = (
                 (absolute_coeffs / coeff_sum).tolist()

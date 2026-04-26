@@ -584,6 +584,7 @@ class ScipyOptimizer(Optimizer):
         """
         return 1
 
+    # pyrefly: ignore[bad-override]
     def optimize(
         self,
         cost_fn: Callable[[npt.NDArray[np.float64]], float],

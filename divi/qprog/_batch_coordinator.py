@@ -18,8 +18,7 @@ from queue import Queue
 from threading import Event, Lock, Thread
 from typing import NamedTuple
 
-from divi.backends import CircuitRunner, JobStatus
-from divi.backends._execution_result import ExecutionResult
+from divi.backends import AsyncJobBackend, CircuitRunner, ExecutionResult, JobStatus
 from divi.backends._shot_allocation import from_wire, to_wire
 from divi.exceptions import ExecutionCancelledError
 from divi.reporting import BATCH_COLORS
@@ -581,6 +580,15 @@ class _BatchCoordinator:
         n_programs: int,
     ) -> tuple[list[dict], float]:
         """Poll an async job to completion and return (results, runtime)."""
+        if not isinstance(self._real_backend, AsyncJobBackend):
+            raise RuntimeError(
+                f"Backend {type(self._real_backend).__name__} returned an "
+                "ExecutionResult with a job_id but does not implement the "
+                "AsyncJobBackend protocol (poll_job_status, get_job_results, "
+                "cancel_job)."
+            )
+        backend = self._real_backend
+
         runtime = 0.0
 
         def _on_complete(response):
@@ -601,7 +609,7 @@ class _BatchCoordinator:
                 max_retries=getattr(self._real_backend, "max_retries", 0),
             )
 
-        status = self._real_backend.poll_job_status(
+        status = backend.poll_job_status(
             execution_result,
             loop_until_complete=True,
             on_complete=_on_complete,
@@ -623,7 +631,12 @@ class _BatchCoordinator:
                 f"ended with unexpected status: {status}"
             )
 
-        completed = self._real_backend.get_job_results(execution_result)
+        completed = backend.get_job_results(execution_result)
+        if completed.results is None:
+            raise RuntimeError(
+                f"Merged batch job {execution_result.job_id} completed but "
+                "returned no results."
+            )
         return completed.results, runtime
 
     # ------------------------------------------------------------------
@@ -639,19 +652,20 @@ class _BatchCoordinator:
             return
         self._cancelled.set()
 
-        # Cancel in-flight backend jobs
+        # Cancel in-flight backend jobs (only async backends expose cancel_job).
         with self._in_flight_lock:
-            for group in self._in_flight:
-                if (
-                    group.execution_result is not None
-                    and group.execution_result.job_id is not None
-                ):
-                    try:
-                        self._real_backend.cancel_job(group.execution_result)
-                    except Exception:
-                        logger.debug(
-                            "Failed to cancel in-flight batch job", exc_info=True
-                        )
+            if isinstance(self._real_backend, AsyncJobBackend):
+                for group in self._in_flight:
+                    if (
+                        group.execution_result is not None
+                        and group.execution_result.job_id is not None
+                    ):
+                        try:
+                            self._real_backend.cancel_job(group.execution_result)
+                        except Exception:
+                            logger.debug(
+                                "Failed to cancel in-flight batch job", exc_info=True
+                            )
 
         # Resolve any pending futures that haven't been flushed yet
         with self._lock:
@@ -704,7 +718,7 @@ class _ProxyBackend(CircuitRunner):
 
     @property
     def little_endian_bitstrings(self) -> bool:
-        return self._real.little_endian_bitstrings
+        return getattr(self._real, "little_endian_bitstrings", False)
 
     @property
     def max_retries(self):

@@ -5,6 +5,7 @@
 import logging
 
 import pytest
+from rich.logging import RichHandler
 
 from divi.reporting import disable_logging, enable_logging
 from divi.reporting._qlogger import CustomRichFormatter
@@ -37,8 +38,6 @@ def test_enable_logging_default_level(caplog, root_logger):
 
     assert root_logger.level == logging.INFO
     assert len(root_logger.handlers) == 1
-    from rich.logging import RichHandler
-
     assert isinstance(root_logger.handlers[0], RichHandler)
 
     # Test logging output

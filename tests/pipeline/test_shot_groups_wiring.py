@@ -21,6 +21,7 @@ from qiskit_aer import AerSimulator
 from divi.backends import CircuitRunner, ExecutionResult
 from divi.backends._qiskit_simulator import QiskitSimulator
 from divi.circuits import MetaCircuit
+from divi.circuits._conversions import qscript_to_meta
 from divi.pipeline import CircuitPipeline, PipelineEnv
 from divi.pipeline._core import _build_shot_groups
 from divi.pipeline.stages import MeasurementStage
@@ -29,8 +30,6 @@ from .helpers import DummySpecStage
 
 
 def _three_group_meta() -> MetaCircuit:
-    from divi.circuits._conversions import qscript_to_meta
-
     obs = 10.0 * qp.Z(0) + 1.0 * qp.X(0) + 0.1 * qp.Y(0)
     qscript = qp.tape.QuantumScript(ops=[qp.Hadamard(0)], measurements=[qp.expval(obs)])
     return qscript_to_meta(qscript)

@@ -79,7 +79,7 @@ def _compute_hard_cvar_energy(
             )
         )
 
-    energies = _evaluate_binary_polynomial(x_vals, problem)
+    energies = np.atleast_1d(_evaluate_binary_polynomial(x_vals, problem))
 
     sorted_indices = np.argsort(energies)
     sorted_energies = energies[sorted_indices]

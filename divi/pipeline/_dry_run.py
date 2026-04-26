@@ -84,7 +84,7 @@ def dry_run_pipeline(
     name: str,
     trace: PipelineTrace,
     stages: tuple[Stage, ...],
-    env: PipelineEnv | None = None,
+    env: PipelineEnv,
 ) -> DryRunReport:
     """Analyze a pipeline trace and compute per-stage factor."""
     infos: list[StageInfo] = []

@@ -3,13 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
+from qiskit.quantum_info import SparsePauliOp
 
-from divi.circuits import MetaCircuit
 from divi.circuits._conversions import (
     measurement_qasms_from_groups,
     sparse_pauli_op_to_ham_string,
@@ -210,7 +210,7 @@ class MeasurementStage(BundleStage):
             self._shot_distribution
         )
 
-    def cache_key_extras(self, env) -> tuple:
+    def cache_key_extras(self, env) -> tuple[Hashable, ...]:
         """Fold ``env.backend.shots`` into the forward-pass cache key.
 
         Any configured shot distribution (even the deterministic ones) reads
@@ -348,7 +348,7 @@ class MeasurementStage(BundleStage):
         """Generate measurement QASM for ``probs()`` / ``counts()`` circuits."""
         env.result_format = ResultFormat.PROBS
 
-        out: dict[object, MetaCircuit] = {}
+        out: MetaCircuitBatch = {}
 
         for key, meta in batch.items():
             wires = meta.measured_wires
@@ -406,21 +406,25 @@ class MeasurementStage(BundleStage):
                 "ignores shots. Set grouping_strategy to 'qwc', 'wires', or None."
             )
 
-        result: dict[object, MetaCircuit] = {}
+        result: MetaCircuitBatch = {}
         postprocess_fn_by_spec: dict[object, Callable] = {}
         n_observable_terms: int | None = None
         zero_shot_groups_by_spec: dict[object, dict[int, object]] = {}
         per_group_shots_by_spec: dict[object, dict[int, int]] = {}
+        sample_observable: SparsePauliOp | None = None
 
         for key, meta in batch.items():
-            if meta.observable is None:
+            observable = meta.observable
+            if observable is None:
                 raise ValueError(
                     f"MeasurementStage (expval path): key '{key}' has no "
                     "observable set."
                 )
+            if sample_observable is None:
+                sample_observable = observable
 
             measurement_groups, partition_indices, postprocessing_fn = (
-                compute_measurement_groups(meta.observable, strategy, meta.n_qubits)
+                compute_measurement_groups(observable, strategy, meta.n_qubits)
             )
             if strategy == "_backend_expval" and n_observable_terms is None:
                 n_observable_terms = sum(len(p) for p in partition_indices)
@@ -429,7 +433,7 @@ class MeasurementStage(BundleStage):
             surviving_indices, zero_shot_groups, surviving_shots = (
                 _allocate_per_group_shots(
                     key,
-                    meta.observable,
+                    observable,
                     measurement_groups,
                     partition_indices,
                     env,
@@ -463,11 +467,8 @@ class MeasurementStage(BundleStage):
 
         # For expval-native backends, compute ham_ops from the SparsePauliOp
         # and store it in env.artifacts so _default_execute_fn can use it.
-        if strategy == "_backend_expval":
-            sample_meta = next(iter(batch.values()))
-            env.artifacts["ham_ops"] = sparse_pauli_op_to_ham_string(
-                sample_meta.observable
-            )
+        if strategy == "_backend_expval" and sample_observable is not None:
+            env.artifacts["ham_ops"] = sparse_pauli_op_to_ham_string(sample_observable)
         else:
             env.artifacts.pop("ham_ops", None)
 

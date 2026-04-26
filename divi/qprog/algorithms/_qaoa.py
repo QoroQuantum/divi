@@ -103,7 +103,6 @@ class QAOA(VariationalQuantumAlgorithm):
         self.max_iterations = max_iterations
         self.current_iteration = 0
         self.trotterization_strategy = trotterization_strategy or ExactTrotterization()
-        self.n_params_per_layer = 2
         self._decoded_solution: Any = _UNSET
 
         # Circuit parameters — Qiskit ParameterVector, no sympy.
@@ -112,6 +111,10 @@ class QAOA(VariationalQuantumAlgorithm):
         self._params = np.array([[b, g] for b, g in zip(betas, gammas)], dtype=object)
 
         self._pipelines = self._build_pipelines()
+
+    @property
+    def n_params_per_layer(self) -> int:
+        return 2
 
     def _build_pipelines(self) -> dict:
         return {

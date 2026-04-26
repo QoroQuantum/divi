@@ -147,6 +147,6 @@ class QAOAProblem(ABC):
         """Format beam search output for get_top_solutions().
 
         Returns:
-            A list of ``(result, energy)`` tuples.  Default: returns as-is.
+            A list of ``(result, energy)`` tuples.  Default: ``(solution, score)``.
         """
-        return results
+        return [(solution, score) for score, solution in results]

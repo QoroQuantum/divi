@@ -6,6 +6,7 @@
 # order conflicts with Qiskit / PennyLane that trigger segfaults in
 # maestro.simple_estimate.  See internal docs for details.
 try:
+    # pyrefly: ignore[missing-import]  # ``maestro`` ships separately
     import maestro as _maestro  # noqa: F401
 except ImportError:
     pass

@@ -155,7 +155,7 @@ def _decompress_histogram_jit(
             pos_scan = _uleb128_decode_limbs_jit(data, pos_scan, scratch1)
             rle_total += int(scratch1[0])
 
-    is_one = np.empty(rle_total, dtype=numba.boolean)
+    is_one = np.empty(rle_total, dtype=np.bool_)
 
     # Second pass: fill is_one
     if num_runs > 0:

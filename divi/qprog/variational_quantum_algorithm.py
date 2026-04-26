@@ -270,12 +270,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
     loss_constant: float
     cost_hamiltonian: qp.operation.Operator
     """The cost Hamiltonian for the variational problem."""
-    n_params_per_layer: int
-    """Number of trainable parameters per layer.
-
-    Used by the base class to compute the total parameter count as
-    ``n_layers * n_params_per_layer``.
-    """
 
     _grouping_strategy: GroupingStrategy
     _best_params: npt.NDArray[np.float64]
@@ -857,6 +851,15 @@ class VariationalQuantumAlgorithm(QuantumProgram):
     @abstractmethod
     def _create_meta_circuit_factories(self) -> dict[str, MetaCircuit]:
         pass
+
+    @property
+    @abstractmethod
+    def n_params_per_layer(self) -> int:
+        """Number of trainable parameters per ansatz layer.
+
+        Used by the base class to compute the total parameter count as
+        ``n_layers * n_params_per_layer``.
+        """
 
     def _save_subclass_state(self) -> dict[str, Any]:
         """Hook method for subclasses to save additional state.

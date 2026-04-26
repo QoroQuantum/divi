@@ -68,7 +68,7 @@ class TestDryRunPipeline:
             stages=[DummySpecStage(meta=meta), MeasurementStage()]
         )
         trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env)
-        report = dry_run_pipeline("test", trace, pipeline.stages)
+        report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
 
         assert report.pipeline_name == "test"
         assert len(report.stages) == 2
@@ -87,7 +87,7 @@ class TestDryRunPipeline:
             ]
         )
         trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env)
-        report = dry_run_pipeline("test", trace, pipeline.stages)
+        report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
         compiled, _ = _compile_batch(trace.final_batch)
         assert report.total_circuits == len(compiled)
 
@@ -98,7 +98,7 @@ class TestDryRunPipeline:
             stages=[DummySpecStage(meta=meta), MeasurementStage()]
         )
         trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env)
-        report = dry_run_pipeline("test", trace, pipeline.stages)
+        report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
         format_dry_run({"test": report})
 
 

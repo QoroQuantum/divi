@@ -109,7 +109,7 @@ class QEMStage(BundleStage):
         self, batch: MetaCircuitBatch, protocol_fn
     ) -> tuple[ExpansionResult, StageToken]:
         """Shared outer pass: applies ``protocol_fn`` per parent key."""
-        out: dict[object, MetaCircuit] = {}
+        out: MetaCircuitBatch = {}
         contexts: dict[tuple, QEMContext] = {}
 
         for parent_key, meta in batch.items():
@@ -240,8 +240,11 @@ class QEMStage(BundleStage):
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken
     ) -> ChildResults:
-        contexts: dict[tuple, QEMContext] | None = token
-        if isinstance(contexts, dict):
+        # ``token`` carries tuple keys → ``QEMContext`` plus an optional
+        # ``FOREIGN_KEY_ATTR`` (str) entry whose value is the active foreign
+        # key tuple injected by ``_scope_token``.
+        contexts: dict[Any, Any] | None = token if isinstance(token, dict) else None
+        if contexts is not None:
             foreign_key = contexts.pop(FOREIGN_KEY_ATTR, ())
             self._bind_symbolic_weights(contexts, foreign_key, env)
 

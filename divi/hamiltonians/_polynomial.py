@@ -84,8 +84,9 @@ def _default_variable_order(variables: set[Hashable]) -> tuple[Hashable, ...]:
     lexicographically ("0", "1", "10", "11", ..., "2").  Non-integer
     labels fall back to ``repr``-based ordering.
     """
-    if all(isinstance(v, int) for v in variables):
-        return tuple(sorted(variables))
+    int_vars = [v for v in variables if isinstance(v, int)]
+    if len(int_vars) == len(variables):
+        return tuple(sorted(int_vars))
     return tuple(sorted(variables, key=repr))
 
 
@@ -153,14 +154,9 @@ def qubo_to_binary_polynomial(qubo: QUBOProblemTypes) -> dimod.BinaryPolynomial:
         return dimod.BinaryPolynomial(poly_terms, dimod.Vartype.BINARY)
 
     matrix = qubo_to_matrix(qubo)
-    if sps.isspmatrix(matrix):
-        coo_matrix = matrix.tocoo()
-        rows, cols, values = coo_matrix.row, coo_matrix.col, coo_matrix.data
-        n_vars = matrix.shape[0]
-    else:
-        rows, cols = matrix.nonzero()
-        values = matrix[rows, cols]
-        n_vars = matrix.shape[0]
+    coo = sps.coo_matrix(matrix)
+    rows, cols, values = coo.row, coo.col, coo.data
+    n_vars = matrix.shape[0]
 
     poly_terms: dict[frozenset[Hashable], float] = {}
     for i, j, coeff in zip(rows, cols, values):
@@ -315,6 +311,7 @@ def _eval_poly_2d_jit(
     n_terms = len(coeffs)
     n_states = x_vals.shape[1]
     energies = np.empty(n_states, dtype=np.float64)
+    # pyrefly: ignore[not-iterable]  # numba.prange is iterable inside @njit
     for s in numba.prange(n_states):
         e = constant
         for t in range(n_terms):
@@ -436,4 +433,6 @@ def _evaluate_binary_polynomial(
             monomial = np.prod(x_vals[indices, :], axis=0)
         energy = energy + (coeff * monomial)
 
-    return float(energy) if is_single else energy
+    if is_single:
+        return float(energy)
+    return np.asarray(energy, dtype=np.float64)

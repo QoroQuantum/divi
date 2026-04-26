@@ -35,6 +35,7 @@ class QiskitSpecStage(CircuitSpecStage):
     :class:`~divi.pipeline.stages.ParameterBindingStage` at bind time.
     """
 
+    # pyrefly: ignore[bad-override]
     def expand(
         self,
         batch: QuantumCircuit | Sequence[QuantumCircuit] | Mapping[str, QuantumCircuit],

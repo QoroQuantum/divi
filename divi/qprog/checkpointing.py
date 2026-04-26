@@ -5,6 +5,7 @@
 """Checkpointing utilities for variational quantum algorithms."""
 
 import json
+import shutil
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -563,6 +564,4 @@ def cleanup_old_checkpoints(main_dir: Path, keep_last_n: int) -> None:
 
     for checkpoint_info in to_remove:
         # Remove directory and all contents
-        import shutil
-
         shutil.rmtree(checkpoint_info.path)

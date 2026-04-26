@@ -19,6 +19,7 @@ from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.early_stopping import EarlyStopping, StopReason
 from divi.qprog.optimizers import MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
 from divi.qprog.variational_quantum_algorithm import (
+    SolutionEntry,
     VariationalQuantumAlgorithm,
     _compute_parameter_shift_mask,
 )
@@ -35,12 +36,12 @@ def mock_backend(mocker):
 
 
 class SampleVQAProgram(VariationalQuantumAlgorithm):
-    def __init__(self, circ_count, run_time, **kwargs):
+    def __init__(self, circ_count, run_time, n_params_per_layer=4, **kwargs):
         self.circ_count = circ_count
         self.run_time = run_time
+        self._n_params_per_layer = n_params_per_layer
 
         self.n_layers = 1
-        self.n_params_per_layer = 4
         self.current_iteration = 0
         self.max_iterations = 0  # Default value to prevent AttributeError
 
@@ -50,6 +51,10 @@ class SampleVQAProgram(VariationalQuantumAlgorithm):
             qp.PauliX(0) + qp.PauliZ(1) + qp.PauliX(0) @ qp.PauliZ(1)
         )
         self.loss_constant = 0.0
+
+    @property
+    def n_params_per_layer(self) -> int:
+        return self._n_params_per_layer
 
     def _build_pipelines(self) -> dict:
         return {
@@ -1209,8 +1214,6 @@ class TestTopSolutionsAPI(BaseVariationalQuantumAlgorithmTest):
 
     def test_get_top_solutions_returns_solution_entry_instances(self, mocker):
         """Test that get_top_solutions returns SolutionEntry namedtuple instances."""
-        from divi.qprog.variational_quantum_algorithm import SolutionEntry
-
         probs = {"00": 0.6, "11": 0.4}
         program = self._setup_program_with_probs(mocker, probs)
 
@@ -1289,8 +1292,6 @@ class TestSolutionEntryNamedTuple:
 
     def test_solution_entry_creation(self):
         """Test basic SolutionEntry creation."""
-        from divi.qprog.variational_quantum_algorithm import SolutionEntry
-
         entry = SolutionEntry(bitstring="101", prob=0.42, decoded=[0, 2])
 
         assert entry.bitstring == "101"
@@ -1299,16 +1300,12 @@ class TestSolutionEntryNamedTuple:
 
     def test_solution_entry_decoded_defaults_to_none(self):
         """Test that decoded defaults to None when not provided."""
-        from divi.qprog.variational_quantum_algorithm import SolutionEntry
-
         entry = SolutionEntry(bitstring="101", prob=0.42)
 
         assert entry.decoded is None
 
     def test_solution_entry_is_frozen(self):
         """Test that SolutionEntry is immutable."""
-        from divi.qprog.variational_quantum_algorithm import SolutionEntry
-
         entry = SolutionEntry(bitstring="101", prob=0.42)
 
         with pytest.raises((AttributeError, TypeError)):
@@ -1319,8 +1316,6 @@ class TestSolutionEntryNamedTuple:
 
     def test_solution_entry_equality(self):
         """Test SolutionEntry equality comparison."""
-        from divi.qprog.variational_quantum_algorithm import SolutionEntry
-
         entry1 = SolutionEntry(bitstring="101", prob=0.42, decoded=[0, 2])
         entry2 = SolutionEntry(bitstring="101", prob=0.42, decoded=[0, 2])
         entry3 = SolutionEntry(bitstring="101", prob=0.42, decoded=None)
@@ -1330,15 +1325,11 @@ class TestSolutionEntryNamedTuple:
 
     def test_solution_entry_decoded_can_be_any_type(self):
         """Test that decoded field accepts various types."""
-        from divi.qprog.variational_quantum_algorithm import SolutionEntry
-
         # List
         entry1 = SolutionEntry(bitstring="101", prob=0.5, decoded=[1, 2, 3])
         assert entry1.decoded == [1, 2, 3]
 
         # Numpy array
-        import numpy as np
-
         decoded_array = np.array([1, 0, 1])
         entry2 = SolutionEntry(bitstring="101", prob=0.5, decoded=decoded_array)
         np.testing.assert_array_equal(entry2.decoded, decoded_array)
@@ -1532,12 +1523,12 @@ class TestGradientFunction(BaseVariationalQuantumAlgorithmTest):
         program = SampleVQAProgram(
             circ_count=1,
             run_time=0.1,
+            n_params_per_layer=n_params_per_layer,
             optimizer=optimizer,
             backend=backend,
             seed=42,
             **kwargs,
         )
-        program.n_params_per_layer = n_params_per_layer
         program.max_iterations = 2
         return program
 

@@ -6,7 +6,7 @@ import copy
 import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 import numpy as np
 from qiskit.dagcircuit import DAGCircuit
@@ -242,7 +242,7 @@ def local_fold(
     dag: DAGCircuit,
     scale: float,
     *,
-    selection: str = "random",
+    selection: Literal["random", "from_left", "from_right"] = "random",
     exclude: set[str] | None = None,
     rng=None,
 ) -> tuple[DAGCircuit, float]:

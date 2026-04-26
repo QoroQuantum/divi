@@ -262,18 +262,19 @@ class UCCSDAnsatz(Ansatz):
     """
 
     @staticmethod
-    def n_params_per_layer(n_qubits: int, *, n_electrons: int, **kwargs) -> int:
+    def n_params_per_layer(n_qubits: int, **kwargs) -> int:
         """
         Calculate the number of parameters per layer for UCCSD ansatz.
 
         Args:
             n_qubits (int): Number of qubits in the circuit.
-            n_electrons (int): Number of electrons in the system.
-            **kwargs: Additional unused arguments.
+            **kwargs: Additional arguments:
+                n_electrons (int): Number of electrons in the system (required).
 
         Returns:
             int: Number of parameters (number of single + double excitations).
         """
+        n_electrons = kwargs.pop("n_electrons")
         singles, doubles = qp.qchem.excitations(n_electrons, n_qubits)
         s_wires, d_wires = qp.qchem.excitations_to_wires(singles, doubles)
         n_params = len(s_wires) + len(d_wires)
@@ -320,18 +321,19 @@ class HartreeFockAnsatz(Ansatz):
     """
 
     @staticmethod
-    def n_params_per_layer(n_qubits: int, *, n_electrons: int, **kwargs) -> int:
+    def n_params_per_layer(n_qubits: int, **kwargs) -> int:
         """
         Calculate the number of parameters per layer for Hartree-Fock ansatz.
 
         Args:
             n_qubits (int): Number of qubits in the circuit.
-            n_electrons (int): Number of electrons in the system.
-            **kwargs: Additional unused arguments.
+            **kwargs: Additional arguments:
+                n_electrons (int): Number of electrons in the system (required).
 
         Returns:
             int: Number of parameters (number of single + double excitations).
         """
+        n_electrons = kwargs.pop("n_electrons")
         singles, doubles = qp.qchem.excitations(n_electrons, n_qubits)
         n_params = len(singles) + len(doubles)
         return _require_trainable_params(n_params, HartreeFockAnsatz.__name__)

@@ -18,7 +18,14 @@ from divi.qprog.workflows import (
 )
 from divi.qprog.workflows._vqe_sweep import (
     _cartesian_to_zmatrix,
+    _compute_angle,
+    _compute_dihedral,
+    _find_refs,
+    _kabsch_align,
+    _safe_normalize,
+    _transform_bonds,
     _zmatrix_to_cartesian,
+    _ZMatrixEntry,
 )
 from tests.qprog.qprog_contracts import verify_basic_program_ensemble_behaviour
 
@@ -678,8 +685,6 @@ class TestHelperFunctions:
 
     def test_safe_normalize_edge_cases(self):
         """Test _safe_normalize with edge cases."""
-        from divi.qprog.workflows._vqe_sweep import _safe_normalize
-
         # Test with zero vector
         zero_vec = np.array([0.0, 0.0, 0.0])
         result = _safe_normalize(zero_vec)
@@ -704,8 +709,6 @@ class TestHelperFunctions:
 
     def test_compute_angle_edge_cases(self):
         """Test _compute_angle with edge cases."""
-        from divi.qprog.workflows._vqe_sweep import _compute_angle
-
         # Test with parallel vectors
         v1 = np.array([1.0, 0.0, 0.0])
         v2 = np.array([2.0, 0.0, 0.0])
@@ -730,8 +733,6 @@ class TestHelperFunctions:
 
     def test_compute_dihedral_edge_cases(self):
         """Test _compute_dihedral with edge cases."""
-        from divi.qprog.workflows._vqe_sweep import _compute_dihedral
-
         # Test with collinear vectors
         b0 = np.array([1.0, 0.0, 0.0])
         b1 = np.array([2.0, 0.0, 0.0])
@@ -755,8 +756,6 @@ class TestHelperFunctions:
 
     def test_find_refs_edge_cases(self):
         """Test _find_refs with edge cases."""
-        from divi.qprog.workflows._vqe_sweep import _find_refs
-
         # Test with no valid references
         adj = [[2], [2], [0, 1]]
         placed = {0, 1}
@@ -777,8 +776,6 @@ class TestZMatrixConversion:
 
     def test_cartesian_to_zmatrix_empty_coords(self):
         """Test _cartesian_to_zmatrix with empty coordinates."""
-        from divi.qprog.workflows._vqe_sweep import _cartesian_to_zmatrix
-
         empty_coords = np.array([]).reshape(0, 3)
         connectivity = []
 
@@ -787,8 +784,6 @@ class TestZMatrixConversion:
 
     def test_cartesian_to_zmatrix_single_atom(self):
         """Test _cartesian_to_zmatrix with single atom."""
-        from divi.qprog.workflows._vqe_sweep import _cartesian_to_zmatrix
-
         coords = np.array([[0.0, 0.0, 0.0]])
         connectivity = []
 
@@ -800,8 +795,6 @@ class TestZMatrixConversion:
 
     def test_zmatrix_to_cartesian_edge_cases(self):
         """Test _zmatrix_to_cartesian with edge cases."""
-        from divi.qprog.workflows._vqe_sweep import _zmatrix_to_cartesian, _ZMatrixEntry
-
         # Test with empty Z-matrix
         empty_zmatrix = []
         coords = _zmatrix_to_cartesian(empty_zmatrix)
@@ -825,8 +818,6 @@ class TestZMatrixConversion:
 
     def test_cartesian_to_zmatrix_with_dihedral(self):
         """Test Z-matrix conversion with 4+ atoms requiring dihedral angles."""
-        from divi.qprog.workflows._vqe_sweep import _cartesian_to_zmatrix
-
         # Create a 4-atom chain molecule to ensure dihedral references are found
         coords = np.array(
             [
@@ -851,8 +842,6 @@ class TestZMatrixConversion:
 
     def test_zmatrix_to_cartesian_four_atoms(self):
         """Test Z-matrix to Cartesian conversion with 4+ atoms."""
-        from divi.qprog.workflows._vqe_sweep import _zmatrix_to_cartesian, _ZMatrixEntry
-
         # Create Z-matrix with 4 atoms to test the 4+ atom placement loop
         zmatrix = [
             _ZMatrixEntry(None, None, None, None, None, None),  # Atom 0
@@ -874,8 +863,6 @@ class TestZMatrixConversion:
 
     def test_zmatrix_to_cartesian_with_none_references(self):
         """Test Z-matrix conversion with None references in 4+ atom case."""
-        from divi.qprog.workflows._vqe_sweep import _zmatrix_to_cartesian, _ZMatrixEntry
-
         # Test edge case where some references are None
         zmatrix = [
             _ZMatrixEntry(None, None, None, None, None, None),  # Atom 0
@@ -892,8 +879,6 @@ class TestZMatrixConversion:
 
     def test_zmatrix_to_cartesian_zero_angles(self):
         """Test Z-matrix conversion with zero angles and dihedrals."""
-        from divi.qprog.workflows._vqe_sweep import _zmatrix_to_cartesian, _ZMatrixEntry
-
         # Test with zero angles and dihedrals
         zmatrix = [
             _ZMatrixEntry(None, None, None, None, None, None),  # Atom 0
@@ -982,8 +967,6 @@ class TestBondTransformation:
 
     def test_transform_bonds_zero_length_error(self):
         """Test _transform_bonds raises RuntimeError for zero bond length."""
-        from divi.qprog.workflows._vqe_sweep import _transform_bonds, _ZMatrixEntry
-
         zmatrix = [
             _ZMatrixEntry(None, None, None, None, None, None),
             _ZMatrixEntry(0, None, None, 1.0, None, None),
@@ -1004,16 +987,12 @@ class TestKabschAlignment:
 
     def test_kabsch_align_identical_points(self):
         """Test _kabsch_align with identical point sets."""
-        from divi.qprog.workflows._vqe_sweep import _kabsch_align
-
         points = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]])
         aligned = _kabsch_align(points, points)
         np.testing.assert_array_almost_equal(aligned, points)
 
     def test_kabsch_align_translation(self):
         """Test _kabsch_align with translated point sets."""
-        from divi.qprog.workflows._vqe_sweep import _kabsch_align
-
         P = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
         Q = P + np.array([10.0, 20.0, 30.0])  # Translation
         aligned = _kabsch_align(P, Q)
@@ -1021,8 +1000,6 @@ class TestKabschAlignment:
 
     def test_kabsch_align_rotation(self):
         """Test _kabsch_align with rotated point sets."""
-        from divi.qprog.workflows._vqe_sweep import _kabsch_align
-
         # Simple rotation around Z-axis
         angle = np.pi / 4
         cos_a, sin_a = np.cos(angle), np.sin(angle)
@@ -1040,8 +1017,6 @@ class TestKabschAlignment:
 
     def test_kabsch_align_with_reference_atoms(self):
         """Test _kabsch_align with reference atom subset."""
-        from divi.qprog.workflows._vqe_sweep import _kabsch_align
-
         P = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]])
         Q = P + np.array([10.0, 20.0, 30.0])
 
@@ -1059,8 +1034,6 @@ class TestMathematicalCorrectnessIssues:
 
     def test_kabsch_reflection_handling_fixed(self):
         """Test that Kabsch algorithm finds the best rotation, not a reflection."""
-        from divi.qprog.workflows._vqe_sweep import _kabsch_align
-
         # Create a right-handed coordinate system for P (non-planar)
         P = np.array(
             [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
@@ -1091,8 +1064,6 @@ class TestMathematicalCorrectnessIssues:
 
     def test_physical_validation_fixed(self):
         """Test that zero bond lengths are now properly rejected."""
-        from divi.qprog.workflows._vqe_sweep import _zmatrix_to_cartesian, _ZMatrixEntry
-
         # Create Z-matrix with physically impossible geometry
         # Bond length of 0.0 should be invalid
         zmatrix = [

@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import warnings
+
 import numpy as np
 import pytest
 from scipy.optimize import OptimizeResult
@@ -1241,10 +1243,8 @@ class TestGridSearchOptimizer:
     def test_max_iterations_1_no_warning(self):
         grid = GridSearchOptimizer(param_ranges=[(0, 1)], grid_points=5)
         # Should not warn when max_iterations=1 (the default)
-        import warnings as w
-
-        with w.catch_warnings():
-            w.simplefilter("error")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
             grid.optimize(
                 sphere_cost_fn_population,
                 initial_params=np.zeros((5, 1)),

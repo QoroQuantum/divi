@@ -548,12 +548,12 @@ class Fourier2DResult:
         else:
             fig = ax.figure
 
-        extent = [
+        extent: tuple[float, float, float, float] = (
             float(self.frequencies_x[0]),
             float(self.frequencies_x[-1]),
             float(self.frequencies_y[0]),
             float(self.frequencies_y[-1]),
-        ]
+        )
         defaults: dict = {"cmap": "inferno", "aspect": "auto", "origin": "lower"}
         if log_scale and "norm" not in imshow_kwargs:
             floor = float(np.max(self.power_spectrum)) * 1e-10

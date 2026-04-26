@@ -137,7 +137,7 @@ def _chebyshev(
     for l in range(k):
         basis_new[:, l] = np.cos(l * np.arccos(x_new))
 
-    return basis_new @ coeffs
+    return (basis_new @ coeffs).astype(np.float64, copy=False)
 
 
 def interpolate_qaoa_params(
@@ -273,7 +273,6 @@ class IterativeQAOA(QAOA):
     def _rebuild_for_depth(self, depth: int) -> None:
         """Rebuild parameters and pipelines for a new circuit depth."""
         self.n_layers = depth
-        self.n_params_per_layer = 2
         betas = ParameterVector("β", depth)
         gammas = ParameterVector("γ", depth)
         # Replaces the parent QAOA._params so _build_qaoa_ops and the
@@ -285,7 +284,7 @@ class IterativeQAOA(QAOA):
         """Reset VQA optimization tracking state for a fresh run."""
         self._losses_history = []
         self._param_history = []
-        self._best_params = []
+        self._best_params = np.array([], dtype=np.float64)
         self._best_loss = float("inf")
         self._best_probs = {}
         self.current_iteration = 0

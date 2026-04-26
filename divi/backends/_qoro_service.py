@@ -14,6 +14,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import replace
 from enum import Enum
 from http import HTTPStatus
+from typing import Any
 
 import requests
 from dotenv import dotenv_values, find_dotenv
@@ -117,9 +118,12 @@ class MaxRetriesReachedError(Exception):
 
 
 _DEFAULT_SIMULATOR_CLUSTER = SimulatorCluster(name="qoro_maestro")
+_DEFAULT_SHOTS = 1000
 
 _DEFAULT_JOB_CONFIG = JobConfig(
-    shots=1000, simulator_cluster=_DEFAULT_SIMULATOR_CLUSTER, use_circuit_packing=False
+    shots=_DEFAULT_SHOTS,
+    simulator_cluster=_DEFAULT_SIMULATOR_CLUSTER,
+    use_circuit_packing=False,
 )
 
 
@@ -173,11 +177,11 @@ class QoroService(CircuitRunner):
                 auth_token = dotenv_values(env_path)["QORO_API_KEY"]
             except KeyError:
                 auth_token = os.environ.get("QORO_API_KEY")
-                if auth_token is None:
-                    raise ValueError(
-                        "Qoro API key not provided nor found in a .env file "
-                        "or QORO_API_KEY environment variable."
-                    )
+        if auth_token is None:
+            raise ValueError(
+                "Qoro API key not provided nor found in a .env file "
+                "or QORO_API_KEY environment variable."
+            )
 
         self.auth_token = "Bearer " + auth_token
         self.polling_interval = polling_interval
@@ -195,7 +199,12 @@ class QoroService(CircuitRunner):
 
         self.execution_config = execution_config
 
-        super().__init__(shots=self.job_config.shots, track_depth=track_depth)
+        shots = (
+            self.job_config.shots
+            if self.job_config.shots is not None
+            else _DEFAULT_SHOTS
+        )
+        super().__init__(shots=shots, track_depth=track_depth)
 
     @property
     def supports_expval(self) -> bool:
@@ -410,7 +419,7 @@ class QoroService(CircuitRunner):
         return response.json()
 
     @staticmethod
-    def _compress_data(value) -> bytes:
+    def _compress_data(value: str) -> str:
         return base64.b64encode(gzip.compress(value.encode("utf-8"))).decode("utf-8")
 
     def _split_circuits(self, circuits: Mapping[str, str]) -> list[dict[str, str]]:
@@ -604,7 +613,7 @@ class QoroService(CircuitRunner):
             execution_config = self.execution_config
 
         # Initialize the job without circuits to get a job_id
-        init_payload = {
+        init_payload: dict[str, Any] = {
             "tag": job_config.tag,
             "job_type": job_type.value,
             "use_packing": job_config.use_circuit_packing or False,
@@ -636,7 +645,7 @@ class QoroService(CircuitRunner):
         )
         for i, (chunk, chunk_offset) in enumerate(zip(circuit_chunks, chunk_offsets)):
             is_last_chunk = i == num_chunks - 1
-            add_circuits_payload = {
+            add_circuits_payload: dict[str, Any] = {
                 "circuits": chunk,
                 "mode": "append",
                 "finalized": "true" if is_last_chunk else "false",

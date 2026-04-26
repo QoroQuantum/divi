@@ -101,7 +101,7 @@ class TrotterSpecStage(SpecStage[qp.operation.Operator]):
         """Transform Hamiltonian into a keyed batch of MetaCircuits (one per strategy output)."""
         hamiltonian_clean, strategy, n_samples, token = self._prepare(batch)
 
-        metas: dict[object, MetaCircuit] = {}
+        metas: MetaCircuitBatch = {}
         for ham_id in range(n_samples):
             processed = strategy.process_hamiltonian(hamiltonian_clean)
             meta = self._meta_circuit_factory(processed, ham_id)
@@ -126,7 +126,9 @@ class TrotterSpecStage(SpecStage[qp.operation.Operator]):
         prototype = self._meta_circuit_factory(
             strategy.process_hamiltonian(hamiltonian_clean), 0
         )
-        metas = {(("ham", ham_id),): prototype for ham_id in range(n_samples)}
+        metas: MetaCircuitBatch = {
+            (("ham", ham_id),): prototype for ham_id in range(n_samples)
+        }
         return metas, token
 
     def introspect(

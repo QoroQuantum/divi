@@ -44,7 +44,7 @@ def _sanitize_problem_input(qubo):
         return qubo, dimod.BinaryQuadraticModel(qubo, vartype=dimod.Vartype.BINARY)
 
     if isinstance(qubo, sps.spmatrix):
-        coo = qubo.tocoo()
+        coo = sps.coo_matrix(qubo)
         return qubo, dimod.BinaryQuadraticModel(
             {(row, col): data for row, col, data in zip(coo.row, coo.col, coo.data)},
             vartype=dimod.Vartype.BINARY,
@@ -87,6 +87,7 @@ class BinaryOptimizationProblem(QAOAProblem):
 
         # Decomposition support (optional)
         self._decomposer = decomposer
+        self._bqm: dimod.BinaryQuadraticModel | None
         if decomposer is not None:
             _, self._bqm = _sanitize_problem_input(problem)
             self._partitioning = hybrid.Unwind(decomposer)
@@ -143,7 +144,7 @@ class BinaryOptimizationProblem(QAOAProblem):
         return self._raw_problem
 
     def decompose(self) -> dict[tuple[str, int], QAOAProblem]:
-        if self._decomposer is None:
+        if self._decomposer is None or self._bqm is None:
             raise ValueError(
                 "Cannot decompose: no decomposer was provided at construction."
             )
@@ -158,7 +159,7 @@ class BinaryOptimizationProblem(QAOAProblem):
         all_variables = list(self._bqm.variables)
         var_to_global_idx = {v: i for i, v in enumerate(all_variables)}
 
-        sub_problems = {}
+        sub_problems: dict[tuple[str, int], QAOAProblem] = {}
 
         for i, partition in enumerate(_bqm_partitions):
             if i > 0:
@@ -195,6 +196,11 @@ class BinaryOptimizationProblem(QAOAProblem):
         return sub_problems
 
     def initial_solution_size(self) -> int:
+        if self._bqm is None:
+            raise RuntimeError(
+                "initial_solution_size requires a decomposer to have been "
+                "provided at construction."
+            )
         return len(self._bqm.variables)
 
     def extend_solution(
@@ -212,9 +218,14 @@ class BinaryOptimizationProblem(QAOAProblem):
         return extended
 
     def evaluate_global_solution(self, solution: list[int]) -> float:
+        if self._bqm is None:
+            raise RuntimeError(
+                "evaluate_global_solution requires a decomposer to have been "
+                "provided at construction."
+            )
         variables = list(self._bqm.variables)
         sample = dict(zip(variables, solution))
-        return self._bqm.energy(sample)
+        return float(self._bqm.energy(sample))
 
     def finalize_solution(
         self, score: float, solution: list[int]

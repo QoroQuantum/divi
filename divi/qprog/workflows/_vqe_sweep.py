@@ -5,7 +5,7 @@
 import copy
 from collections import deque
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from itertools import product
 from typing import Literal, NamedTuple
@@ -109,7 +109,7 @@ def _cartesian_to_zmatrix(
                 )
 
             zmatrix_entries[child_idx] = _ZMatrixEntry(
-                parent_idx, gp, ggp, bond_len, angle, dihedral
+                parent_idx, gp, ggp, float(bond_len), angle, dihedral
             )
 
     return [zmatrix_entries[i] for i in range(num_atoms)]
@@ -204,6 +204,7 @@ def _transform_bonds(
     for i, entry in enumerate(zmatrix):
         if (
             entry.bond_ref is not None
+            and entry.bond_length is not None
             and tuple(sorted((i, entry.bond_ref))) in bonds_set
         ):
             old_length = entry.bond_length
@@ -308,6 +309,8 @@ class MoleculeTransformer:
     bonds_to_transform: Sequence[tuple[int, int]] | None = None
     alignment_atoms: Sequence[int] | None = None
 
+    _mode: Literal["scale", "delta"] = field(init=False, repr=False, compare=False)
+
     def __post_init__(self):
         if not isinstance(self.base_molecule, qp.qchem.Molecule):
             raise ValueError(
@@ -325,19 +328,17 @@ class MoleculeTransformer:
         )
 
         n_symbols = len(self.base_molecule.symbols)
+        atom_connectivity: Sequence[tuple[int, int]]
         if self.atom_connectivity is None:
-            object.__setattr__(
-                self,
-                "atom_connectivity",
-                tuple(zip(range(n_symbols), range(1, n_symbols))),
-            )
+            atom_connectivity = tuple(zip(range(n_symbols), range(1, n_symbols)))
+            object.__setattr__(self, "atom_connectivity", atom_connectivity)
         else:
-            if len(set(self.atom_connectivity)) < len(self.atom_connectivity):
+            atom_connectivity = self.atom_connectivity
+            if len(set(atom_connectivity)) < len(atom_connectivity):
                 raise ValueError("`atom_connectivity` contains duplicate values.")
 
             if not all(
-                0 <= a < n_symbols and 0 <= b < n_symbols
-                for a, b in self.atom_connectivity
+                0 <= a < n_symbols and 0 <= b < n_symbols for a, b in atom_connectivity
             ):
                 raise ValueError(
                     "`atom_connectivity` should be a sequence of tuples of"
@@ -345,11 +346,12 @@ class MoleculeTransformer:
                 )
 
         if self.bonds_to_transform is None:
-            object.__setattr__(self, "bonds_to_transform", self.atom_connectivity)
+            object.__setattr__(self, "bonds_to_transform", atom_connectivity)
         else:
-            if len(self.bonds_to_transform) == 0:
+            bonds_to_transform = self.bonds_to_transform
+            if len(bonds_to_transform) == 0:
                 raise ValueError("`bonds_to_transform` cannot be empty.")
-            if not set(self.bonds_to_transform).issubset(self.atom_connectivity):
+            if not set(bonds_to_transform).issubset(atom_connectivity):
                 raise ValueError(
                     "`bonds_to_transform` is not a subset of `atom_connectivity`"
                 )
@@ -364,17 +366,20 @@ class MoleculeTransformer:
     def generate(self) -> dict[float, qp.qchem.Molecule]:
         variants = {}
         original_coords = self.base_molecule.coordinates
-        mode = "scale" if all(v > 0 for v in self.bond_modifiers) else "delta"
+        mode = self._mode
+
+        atom_connectivity = list(self.atom_connectivity or ())
+        bonds_to_transform = list(self.bonds_to_transform or ())
 
         # Convert to Z-matrix, with connectivity
-        z_matrix = _cartesian_to_zmatrix(original_coords, self.atom_connectivity)
+        z_matrix = _cartesian_to_zmatrix(original_coords, atom_connectivity)
 
         for value in self.bond_modifiers:
             if (value == 0 and mode == "delta") or (value == 1 and mode == "scale"):
                 transformed_coords = original_coords.copy()
             else:
                 transformed_z_matrix = _transform_bonds(
-                    z_matrix, self.bonds_to_transform, value, mode
+                    z_matrix, bonds_to_transform, value, mode
                 )
 
                 transformed_coords = _zmatrix_to_cartesian(transformed_z_matrix)
@@ -480,10 +485,11 @@ class VQEHyperparameterSweep(ProgramEnsemble):
                 for modifier, molecule in molecule_variants.items()
             )
         else:
-            if isinstance(self.hamiltonians, dict):
-                h_items = self.hamiltonians.items()
+            hamiltonians = self.hamiltonians or ()
+            if isinstance(hamiltonians, dict):
+                h_items = hamiltonians.items()
             else:
-                h_items = enumerate(self.hamiltonians)
+                h_items = enumerate(hamiltonians)
             sweep_items = ((h_id, None, hamiltonian) for h_id, hamiltonian in h_items)
 
         for ansatz, (item_id, molecule, hamiltonian) in product(

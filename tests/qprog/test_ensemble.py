@@ -12,7 +12,7 @@ from threading import Lock, Thread
 import pytest
 from rich.progress import Progress
 
-from divi.backends import ExecutionResult
+from divi.backends import AsyncJobBackend, ExecutionResult
 from divi.qprog.ensemble import BatchConfig, BatchMode, ProgramEnsemble
 from divi.qprog.quantum_program import QuantumProgram
 from divi.reporting import queue_listener
@@ -557,8 +557,8 @@ class TestProgramEnsemble:
         execution_result = ExecutionResult(job_id="test_job_123")
         program._current_execution_result = execution_result
 
-        # Mock backend cancel_job
-        mock_backend = mocker.Mock()
+        # Mock backend cancel_job (spec'd to satisfy AsyncJobBackend protocol)
+        mock_backend = mocker.Mock(spec=AsyncJobBackend)
         mock_backend.cancel_job = mocker.Mock()
         program.backend = mock_backend
 

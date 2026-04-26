@@ -197,13 +197,13 @@ def _qiskit_clifford_to_stim(qc_or_dag: QuantumCircuit | DAGCircuit) -> stim.Cir
 
     sc = stim.Circuit()
     if n_qubits > 0:
-        sc.append("I", list(range(n_qubits)))
+        sc.append("I", list(range(n_qubits)), ())
 
     for op, qargs in op_stream:
         name = op.name
         stim_name = clifford_map.get(name)
         if stim_name is not None:
-            sc.append(stim_name, [qubit_idx[q] for q in qargs])
+            sc.append(stim_name, [qubit_idx[q] for q in qargs], ())
             continue
         if name in rotation_names:
             (angle,) = op.params
@@ -221,7 +221,7 @@ def _qiskit_clifford_to_stim(qc_or_dag: QuantumCircuit | DAGCircuit) -> stim.Cir
                 )
             stim_rot = rotation_map[(name[1], n % 4)]
             if stim_rot is not None:
-                sc.append(stim_rot, [qubit_idx[q] for q in qargs])
+                sc.append(stim_rot, [qubit_idx[q] for q in qargs], ())
             continue
         raise ValueError(
             f"Gate {name!r} is not recognised as Clifford by QuEPP's stim "
@@ -908,27 +908,27 @@ class QuEPP(QEMProtocol):
 
     def _prepare_paths(
         self, dag: DAGCircuit, observable: SparsePauliOp | None
-    ) -> tuple["_PreprocResult", list["_PauliPath"]]:
+    ) -> tuple["_PreprocResult", list["_PauliPath"], SparsePauliOp]:
         """Shared setup for :meth:`expand` / :meth:`dry_expand`.
 
         Runs the cheap prefix (validation, preprocessing, path selection,
         truncation warning) — everything except the expensive Clifford
         simulation + per-path DAG cloning. Both real and dry paths build
-        on the returned ``(prep, paths)`` tuple.
+        on the returned ``(prep, paths, validated_observable)`` tuple.
         """
-        self._validate_observable(observable)
-        prep = self._preprocess(dag, observable)
+        validated = self._validate_observable(observable)
+        prep = self._preprocess(dag, validated)
         paths = self._select_paths(prep)
         self._warn_on_truncation_ratio(prep)
-        return prep, paths
+        return prep, paths, validated
 
     def expand(
         self,
         dag: DAGCircuit,
         observable: SparsePauliOp | None = None,
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
-        prep, paths = self._prepare_paths(dag, observable)
-        return self._build_ensemble(dag, prep, paths, observable)
+        prep, paths, validated = self._prepare_paths(dag, observable)
+        return self._build_ensemble(dag, prep, paths, validated)
 
     def dry_expand(
         self,
@@ -946,7 +946,7 @@ class QuEPP(QEMProtocol):
         introspect hook (``n_rotations``, ``n_paths``, ``symbolic``) are
         populated so dry-run reports render correctly.
         """
-        prep, paths = self._prepare_paths(dag, observable)
+        prep, paths, _ = self._prepare_paths(dag, observable)
         n_paths = len(paths)
         # Placeholder DAG per slot — dry stages don't submit / simulate.
         all_dags = (dag,) * (1 + n_paths)
@@ -964,7 +964,7 @@ class QuEPP(QEMProtocol):
         return all_dags, context
 
     @staticmethod
-    def _validate_observable(observable: SparsePauliOp | None) -> None:
+    def _validate_observable(observable: SparsePauliOp | None) -> SparsePauliOp:
         if observable is None:
             raise ValueError(
                 "QuEPP requires an observable (SparsePauliOp) for classical "
@@ -975,6 +975,7 @@ class QuEPP(QEMProtocol):
                 f"QuEPP.expand expected a SparsePauliOp observable, got "
                 f"{type(observable).__name__}."
             )
+        return observable
 
     @staticmethod
     def _preprocess(dag: DAGCircuit, observable: SparsePauliOp) -> "_PreprocResult":

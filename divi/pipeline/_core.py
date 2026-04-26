@@ -5,7 +5,7 @@
 import logging
 import warnings
 from collections import Counter, defaultdict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Hashable, Sequence
 from typing import Any
 
 from rich.console import Console
@@ -35,6 +35,13 @@ from divi.pipeline.abc import (
 from divi.pipeline.transformations import FOREIGN_KEY_ATTR
 
 logger = logging.getLogger(__name__)
+
+#: ``(id(initial_spec), stage_instance_ids, per_stage_cache_key_extras)``.
+_ForwardCacheKey = tuple[
+    int,
+    tuple[int, ...],
+    tuple[tuple[Hashable, ...], ...],
+]
 
 
 def _path_children(keys: Sequence[Any]) -> dict[str, list[str]]:
@@ -341,7 +348,7 @@ class CircuitPipeline:
             for i, stage in enumerate(stages):
                 stage.validate(before=tuple(stages[:i]), after=tuple(stages[i + 1 :]))
         self._stages = list(stages)
-        self._forward_cache: dict[tuple[int, tuple[int, ...]], PipelineTrace] = {}
+        self._forward_cache: dict[_ForwardCacheKey, PipelineTrace] = {}
 
     @property
     def stages(self) -> tuple[Stage, ...]:

@@ -138,3 +138,6 @@ major_version_zero = true
 project-includes = [
     "divi/**/*.py",
 ]
+project-excludes = [
+    "divi/ai/**/*.py",
+]

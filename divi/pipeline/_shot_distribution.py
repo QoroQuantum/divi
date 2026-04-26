@@ -25,21 +25,24 @@ ShotDistStrategy = (
 
 
 def compute_group_l1_norms(
-    coefficients: Sequence[float],
+    coefficients: Sequence[float] | np.ndarray,
     partition_indices: Sequence[Sequence[int]],
 ) -> list[float]:
     """Sum the absolute coefficient values within each measurement group.
 
     Args:
         coefficients: Coefficients of the original (single-term) observables,
-            in the order produced by ``_extract_coeffs``.
+            in the order produced by ``_extract_coeffs``. Accepts a Python
+            sequence or a 1D real-valued ``ndarray``.
         partition_indices: Each inner list is the set of original-observable
             indices that belong to one measurement group.
 
     Returns:
         One non-negative float per group; ``len(...) == len(partition_indices)``.
     """
-    return [sum(abs(coefficients[i]) for i in group) for group in partition_indices]
+    return [
+        float(sum(abs(coefficients[i]) for i in group)) for group in partition_indices
+    ]
 
 
 def compute_shot_distribution(

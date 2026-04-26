@@ -184,8 +184,8 @@ class ParameterBindingStage(BundleStage):
 
     def _run_fast(
         self, batch: MetaCircuitBatch, param_sets: np.ndarray
-    ) -> dict[object, MetaCircuit]:
-        out: dict[object, MetaCircuit] = {}
+    ) -> MetaCircuitBatch:
+        out: MetaCircuitBatch = {}
         for key, node in batch.items():
             if len(node.parameters) == 0:
                 # Non-parametric: serialise each body once, no param-set expansion.
@@ -204,8 +204,8 @@ class ParameterBindingStage(BundleStage):
 
     def _run_slow(
         self, batch: MetaCircuitBatch, param_sets: np.ndarray
-    ) -> dict[object, MetaCircuit]:
-        out: dict[object, MetaCircuit] = {}
+    ) -> MetaCircuitBatch:
+        out: MetaCircuitBatch = {}
         for key, node in batch.items():
             if len(node.parameters) == 0:
                 # No parameters to bind; nothing to rewrite.
@@ -220,7 +220,7 @@ class ParameterBindingStage(BundleStage):
 
     def _run_dry(
         self, batch: MetaCircuitBatch, param_sets: np.ndarray
-    ) -> dict[object, MetaCircuit]:
+    ) -> MetaCircuitBatch:
         """Analytic path: emit shape-correct placeholders, no per-variant work.
 
         Fast-path emits empty QASM strings into ``bound_circuit_bodies``;
@@ -229,7 +229,7 @@ class ParameterBindingStage(BundleStage):
         or not) see the attribute they expect populated.
         """
         n_param_sets = len(param_sets)
-        out: dict[object, MetaCircuit] = {}
+        out: MetaCircuitBatch = {}
         for key, node in batch.items():
             n_params = len(node.parameters)
             if self._fast_path:

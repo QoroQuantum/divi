@@ -9,7 +9,7 @@ by the reduce chain (expectation values or probability distributions).
 """
 
 from collections.abc import Mapping, Sequence
-from functools import lru_cache, reduce
+from functools import lru_cache
 from typing import Any
 
 import numpy as np
@@ -37,7 +37,10 @@ def _eigvals_for_label(label: str) -> npt.NDArray[np.int8]:
     active = tuple(c for c in label if c != "I")
     if not active:
         return np.array([1], dtype=np.int8)
-    return reduce(np.kron, (_EIGVAL_MAP[c] for c in active))
+    result = _EIGVAL_MAP[active[0]]
+    for c in active[1:]:
+        result = np.kron(result, _EIGVAL_MAP[c])
+    return result.astype(np.int8, copy=False)
 
 
 def _batched_expectation(
@@ -141,11 +144,11 @@ def _counts_to_expvals(
     """
     # Pre-compute per-batch-key lookup tables.
     batch_keys = set(batch.keys())
-    labels_by_bk: dict[tuple, dict[int, tuple[str, ...]]] = {}
+    labels_by_bk: dict[tuple, dict[int, tuple[object, ...]]] = {}
     nq_by_bk: dict[tuple, int] = {}
     for bk, node in batch.items():
         nq_by_bk[bk] = node.n_qubits
-        labels_by_bk[bk] = dict(enumerate(node.measurement_groups))
+        labels_by_bk[bk] = {i: g for i, g in enumerate(node.measurement_groups)}
 
     out: ChildResults = {}
     for branch_key, counts in raw.items():
@@ -156,7 +159,9 @@ def _counts_to_expvals(
         group_labels = labels_by_bk[bk][obs_group_idx]
         n_qubits = nq_by_bk[bk]
 
-        expvals = _batched_expectation([counts], list(group_labels), n_qubits)
+        expvals = _batched_expectation(
+            [counts], [str(p) for p in group_labels], n_qubits
+        )
         col = expvals[:, 0]
         out[branch_key] = (
             float(col[0]) if len(col) == 1 else {i: float(v) for i, v in enumerate(col)}

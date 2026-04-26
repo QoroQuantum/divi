@@ -122,6 +122,11 @@ def _lex(src: str) -> list[Tok]:
                 f"Illegal character at {line}:{i-line_start+1}: {snippet!r}"
             )
         kind = m.lastgroup
+        if kind is None:
+            raise SyntaxError(
+                f"Tokenizer match at {line}:{i-line_start+1} produced no named "
+                f"group; this is a tokenizer bug."
+            )
         val = m.group(kind)
         col = i - line_start + 1
         if kind == "ID" and val in KEYWORDS:

@@ -151,23 +151,21 @@ class _GraphProblemBase(QAOAProblem):
         )
 
         self._reverse_index_maps = {}
-        sub_problems = {}
+        sub_problems: dict[tuple[str, int], QAOAProblem] = {}
 
-        for i, subgraph in enumerate(subgraphs):
-            prog_id = (f"P{i}", subgraph.number_of_nodes())
-
-            index_map = {node: idx for idx, node in enumerate(subgraph.nodes())}
-            self._reverse_index_maps[prog_id] = {v: k for k, v in index_map.items()}
-
-            relabeled = nx.relabel_nodes(subgraph, index_map)
+        for i, (subgraph, cluster_ids) in enumerate(subgraphs):
+            prog_id = (f"P{i}", len(subgraph))
+            # ``cluster_ids[local_idx] == original_node_id``; the partitioner
+            # has already relabeled each subgraph to ``0..M-1``.
+            self._reverse_index_maps[prog_id] = dict(enumerate(cluster_ids))
             sub_problems[prog_id] = type(self)(
-                relabeled, is_constrained=self._is_constrained
+                subgraph, is_constrained=self._is_constrained
             )
 
         return sub_problems
 
     def initial_solution_size(self) -> int:
-        return self.graph.number_of_nodes()
+        return len(self.graph)
 
     def extend_solution(
         self,

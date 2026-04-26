@@ -16,9 +16,11 @@ from warnings import warn
 from qiskit import QuantumCircuit, transpile
 from qiskit.converters import circuit_to_dag
 from qiskit.dagcircuit import DAGOpNode
-from qiskit.providers import Backend
+from qiskit.providers import BackendV2
+from qiskit.quantum_info import Pauli
 from qiskit.transpiler.exceptions import TranspilerError
 from qiskit_aer import AerSimulator
+from qiskit_aer.library import SaveExpectationValue
 from qiskit_aer.noise import NoiseModel
 
 from divi.backends import CircuitRunner
@@ -141,7 +143,7 @@ class QiskitSimulator(CircuitRunner):
         n_processes: int | None = None,
         shots: int = 5000,
         simulation_seed: int | None = None,
-        qiskit_backend: Backend | Literal["auto"] | None = None,
+        qiskit_backend: BackendV2 | Literal["auto"] | None = None,
         noise_model: NoiseModel | None = None,
         track_depth: bool = False,
         force_sampling: bool = False,
@@ -158,7 +160,7 @@ class QiskitSimulator(CircuitRunner):
                 characteristics.
             shots (int, optional): Number of shots to perform. Defaults to 5000.
             simulation_seed (int, optional): Seed for the random number generator to ensure reproducibility. Defaults to None.
-            qiskit_backend (Backend | Literal["auto"] | None, optional): A Qiskit backend to initiate the simulator from.
+            qiskit_backend (BackendV2 | Literal["auto"] | None, optional): A Qiskit backend to initiate the simulator from.
                 If ``"auto"`` is passed, the best-fit most recent fake backend will be chosen for the given circuit.
                 Defaults to None, resulting in noiseless simulation.
             noise_model (NoiseModel, optional): Qiskit noise model to use in simulation. Defaults to None.
@@ -238,7 +240,9 @@ class QiskitSimulator(CircuitRunner):
         """
         return False
 
-    def _resolve_backend(self, circuit: QuantumCircuit | None = None) -> Backend | None:
+    def _resolve_backend(
+        self, circuit: QuantumCircuit | None = None
+    ) -> BackendV2 | None:
         """Resolve the backend from qiskit_backend setting."""
         if self.qiskit_backend == "auto":
             if circuit is None:
@@ -254,7 +258,7 @@ class QiskitSimulator(CircuitRunner):
             return backend_list[-1]()
         return self.qiskit_backend
 
-    def _create_simulator(self, resolved_backend: Backend | None) -> AerSimulator:
+    def _create_simulator(self, resolved_backend: BackendV2 | None) -> AerSimulator:
         """Create an AerSimulator instance from a resolved backend or noise model."""
         return (
             AerSimulator.from_backend(resolved_backend)
@@ -266,7 +270,7 @@ class QiskitSimulator(CircuitRunner):
         self,
         circuit_labels: list[str],
         transpiled_circuits: list[QuantumCircuit],
-        resolved_backend: Backend | None,
+        resolved_backend: BackendV2 | None,
         per_circuit_shots: list[int] | None = None,
     ) -> list[dict[str, Any]]:
         """
@@ -386,13 +390,13 @@ class QiskitSimulator(CircuitRunner):
         Returns:
             New circuit with measurements removed and expectation-value save instructions.
         """
-        from qiskit.quantum_info import Pauli
-
-        qc = circuit.remove_final_measurements(inplace=False)
+        qc = circuit.copy()
+        qc.remove_final_measurements(inplace=True)
         for pauli_str in pauli_ops:
             # Reverse: divi big-endian (q0 leftmost) → Qiskit little-endian (q0 rightmost)
-            qc.save_expectation_value(
-                Pauli(pauli_str[::-1]), qubits=range(qc.num_qubits), label=pauli_str
+            qc.append(
+                SaveExpectationValue(Pauli(pauli_str[::-1]), label=pauli_str),
+                qargs=range(qc.num_qubits),
             )
         return qc
 
@@ -589,7 +593,7 @@ class QiskitSimulator(CircuitRunner):
     @staticmethod
     def estimate_run_time_single_circuit(
         circuit: str,
-        qiskit_backend: Backend | Literal["auto"],
+        qiskit_backend: BackendV2 | Literal["auto"],
         **transpilation_kwargs,
     ) -> float:
         """
@@ -619,7 +623,13 @@ class QiskitSimulator(CircuitRunner):
         )
 
         total_run_time_s = 0.0
-        durations = resolved_backend.target.durations()
+        target = resolved_backend.target
+        if target is None:
+            raise RuntimeError(
+                f"Backend {resolved_backend!r} has no transpiler target; "
+                "cannot estimate run time."
+            )
+        durations = target.durations()
 
         for node in circuit_to_dag(transpiled_circuit).longest_path():
             if not isinstance(node, DAGOpNode) or not node.num_qubits:
@@ -655,7 +665,9 @@ class QiskitSimulator(CircuitRunner):
         """
 
         # Compute the run time estimates for each given circuit, in descending order
-        if precomputed_durations is None:
+        if precomputed_durations is not None:
+            estimated_run_times_sorted = sorted(precomputed_durations, reverse=True)
+        elif circuits is not None:
             with Pool() as p:
                 estimated_run_times = p.map(
                     partial(
@@ -667,7 +679,10 @@ class QiskitSimulator(CircuitRunner):
                 )
             estimated_run_times_sorted = sorted(estimated_run_times, reverse=True)
         else:
-            estimated_run_times_sorted = sorted(precomputed_durations, reverse=True)
+            raise ValueError(
+                "estimate_run_time_batch requires either ``circuits`` or "
+                "``precomputed_durations`` to be provided."
+            )
 
         # Optimization for trivial case
         if n_qpus >= len(estimated_run_times_sorted):

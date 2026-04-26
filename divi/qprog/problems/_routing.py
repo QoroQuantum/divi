@@ -965,6 +965,7 @@ def build_binary_mixer_ops(
     """
     ops: list[qp.operation.Operator] = []
     for w in wires:
+        # pyrefly: ignore[unsupported-operation]  # sympy stub fails on Expr * int
         ops.append(qp.RX(phi=2 * beta, wires=w))
     return ops
 
@@ -1308,7 +1309,7 @@ class _RoutingProblemBase(QAOAProblem):
         *,
         block_size: int,
         n_blocks: int,
-        hamiltonian_builder: str = "native",
+        hamiltonian_builder: Literal["native", "quadratized"] = "native",
         use_xy_mixer: bool = True,
     ) -> None:
         """Shared Ising conversion + mixer setup."""
@@ -1530,7 +1531,9 @@ class CVRPProblem(_RoutingProblemBase):
             depot=self._depot,
         )
 
-    def repair_infeasible_bitstring(self, bitstring: str) -> tuple[str, Any, float]:
+    def repair_infeasible_bitstring(
+        self, bitstring: str
+    ) -> tuple[str, Any, float | None]:
         if self._encoding == "binary":
             # Binary repair not yet implemented; return unchanged.
             return bitstring, None, None

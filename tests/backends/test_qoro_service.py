@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import warnings
 from http import HTTPStatus
 
 import pytest
@@ -1135,7 +1136,6 @@ class TestQoroServiceMock:
     def test_set_job_config_defaults_no_target(self, qoro_service_factory):
         """Setting job_config with no target defaults with a warning."""
         service = qoro_service_factory()
-        import warnings
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")

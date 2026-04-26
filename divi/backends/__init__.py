@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from ._async_job_backend import AsyncJobBackend
 from ._backend_properties_conversion import create_backend_from_properties
 from ._circuit_runner import CircuitRunner
 from ._config import ExecutionConfig, JobConfig, SimulationMethod, Simulator
@@ -13,6 +14,7 @@ from ._systems import QPU, QPUSystem, SimulatorCluster
 from ._results_processing import convert_counts_to_probs, reverse_dict_endianness
 
 __all__ = [
+    "AsyncJobBackend",
     "CircuitRunner",
     "ExecutionConfig",
     "ExecutionResult",

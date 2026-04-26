@@ -48,6 +48,7 @@ class PennyLaneSpecStage(CircuitSpecStage):
     are not supported by the pipeline execution backend.
     """
 
+    # pyrefly: ignore[bad-override]
     def expand(
         self,
         batch: PennyLaneInput | Sequence[PennyLaneInput] | Mapping[str, PennyLaneInput],

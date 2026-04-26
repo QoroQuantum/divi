@@ -9,7 +9,7 @@ from threading import Event
 import pytest
 import requests
 
-from divi.backends import ExecutionResult
+from divi.backends import AsyncJobBackend, ExecutionResult
 from divi.qprog.quantum_program import QuantumProgram
 
 
@@ -166,7 +166,7 @@ class TestQuantumProgramJobManagement:
 
     def test_cancel_unfinished_job_success(self, mocker):
         """Test cancel_unfinished_job successfully cancels job."""
-        mock_backend = mocker.Mock()
+        mock_backend = mocker.Mock(spec=AsyncJobBackend)
         mock_backend.cancel_job = mocker.Mock()
         program = ConcreteQuantumProgram(backend=mock_backend)
         program._current_execution_result = ExecutionResult(job_id="test_job_123")
@@ -179,7 +179,7 @@ class TestQuantumProgramJobManagement:
 
     def test_cancel_unfinished_job_409_conflict(self, mocker):
         """Test cancel_unfinished_job handles 409 Conflict gracefully."""
-        mock_backend = mocker.Mock()
+        mock_backend = mocker.Mock(spec=AsyncJobBackend)
         mock_response = mocker.Mock()
         mock_response.status_code = HTTPStatus.CONFLICT
         mock_error = requests.exceptions.HTTPError("409 Conflict")
@@ -198,7 +198,7 @@ class TestQuantumProgramJobManagement:
 
     def test_cancel_unfinished_job_other_error(self, mocker):
         """Test cancel_unfinished_job reports other errors."""
-        mock_backend = mocker.Mock()
+        mock_backend = mocker.Mock(spec=AsyncJobBackend)
         mock_response = mocker.Mock()
         mock_response.status_code = HTTPStatus.FORBIDDEN
         mock_error = requests.exceptions.HTTPError("403 Forbidden")
@@ -218,7 +218,7 @@ class TestQuantumProgramJobManagement:
 
     def test_cancel_unfinished_job_no_reporter(self, mocker):
         """Test cancel_unfinished_job works without reporter."""
-        mock_backend = mocker.Mock()
+        mock_backend = mocker.Mock(spec=AsyncJobBackend)
         mock_backend.cancel_job = mocker.Mock()
         program = ConcreteQuantumProgram(backend=mock_backend)
         program._current_execution_result = ExecutionResult(job_id="test_job_123")

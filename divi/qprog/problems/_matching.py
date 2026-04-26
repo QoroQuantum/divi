@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 import networkx as nx
 import numpy as np
+import scipy.sparse.linalg as spla
 
 from divi.qprog.problems._base import QAOAProblem
 from divi.qprog.problems._binary import BinaryOptimizationProblem
@@ -197,8 +198,6 @@ def _kl_bisect(graph: nx.Graph, seed: int | None = None) -> tuple[set, set]:
 
 def _spectral_bisect(graph: nx.Graph) -> tuple[set, set]:
     """Fiedler-vector bisection on the graph Laplacian."""
-    import scipy.sparse.linalg as spla
-
     L = nx.laplacian_matrix(graph).astype(float)
     _eigenvalues, eigenvectors = spla.eigsh(L, k=2, which="SM")
     fiedler = eigenvectors[:, 1]

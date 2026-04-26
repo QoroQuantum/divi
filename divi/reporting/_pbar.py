@@ -4,7 +4,7 @@
 
 from queue import Empty, Queue
 from threading import Event, Lock
-from typing import Any
+from typing import Any, cast
 
 from rich.console import Group
 from rich.live import Live
@@ -14,6 +14,7 @@ from rich.progress import (
     Progress,
     ProgressColumn,
     SpinnerColumn,
+    Task,
     TaskID,
     TextColumn,
     TimeElapsedColumn,
@@ -66,7 +67,7 @@ class ConditionalSpinnerColumn(ProgressColumn):
             return Text("")
 
         # Force the task to appear unfinished for spinner animation
-        return self.spinner.render(_UnfinishedTaskWrapper(task))
+        return self.spinner.render(cast(Task, _UnfinishedTaskWrapper(task)))
 
 
 class PhaseStatusColumn(ProgressColumn):
@@ -297,6 +298,8 @@ def handle_batch_message(
     sub-batches (e.g. expval vs shots) each get their own status line.
     """
     batch_id = msg.get("batch_id")
+    if not isinstance(batch_id, int):
+        return
     color = msg.get("batch_color", "")
     label = msg.get("batch_label", "")
     n_circuits = msg.get("n_circuits", 0)

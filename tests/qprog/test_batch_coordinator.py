@@ -4,6 +4,7 @@
 
 """Unit tests for _BatchCoordinator, _ProxyBackend, and related helpers."""
 
+import time
 from concurrent.futures import Future
 from queue import Queue
 from threading import Barrier, Event, Thread
@@ -448,8 +449,6 @@ class TestFlushWithSyncBackend:
         t.start()
 
         # p1 is now blocked waiting for p2. Deregistering p2 should flush.
-        import time
-
         time.sleep(0.1)  # Give p1's thread time to submit
         coord.deregister_program("p2")
         t.join(timeout=10)
@@ -795,8 +794,6 @@ class TestCancellation:
         t.start()
 
         barrier.wait(timeout=5)
-        import time
-
         time.sleep(0.1)
         coord.cancel()
         t.join(timeout=10)

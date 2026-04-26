@@ -157,7 +157,7 @@ class ProgramEnsemble(ABC):
             )
 
         self._queue = Queue()
-        self._done_event = Event()
+        self._done_event: Event | None = Event()
 
     def reset(self):
         """
@@ -370,7 +370,7 @@ class ProgramEnsemble(ABC):
         if self._progress_bar is not None and self._live_display is not None:
             self._live_display.start()
 
-            listener_kwargs = {
+            listener_kwargs: dict[str, Any] = {
                 "live_display": self._live_display,
                 "is_jupyter": self._is_jupyter,
             }
@@ -851,9 +851,8 @@ def _beam_search_aggregate_top_n(
     else:
         n_fetch = 2**20  # exhaustive
 
-    beam: list[tuple[float, list[int]]] = [
-        (evaluate_fn(initial_solution), list(initial_solution))
-    ]
+    initial_list = list(initial_solution)
+    beam: list[tuple[float, list[int]]] = [(evaluate_fn(initial_list), initial_list)]
 
     for prog_id, program in programs.items():
         candidates = program.get_top_solutions(n=n_fetch, include_decoded=True)

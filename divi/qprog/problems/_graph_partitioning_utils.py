@@ -11,8 +11,12 @@ from warnings import warn
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
+import rustworkx as rx
+import scipy.sparse as sps
 from matplotlib import colormaps
 from sklearn.cluster import SpectralClustering
+
+from divi.qprog._types import GraphProblemTypes
 
 # TODO: Make this dynamic through an interaction with usher
 # once a proper endpoint is exposed
@@ -82,22 +86,108 @@ class GraphPartitioningConfig:
             )
 
 
-def _apply_split_with_relabel(
-    graph: nx.Graph, algorithm: Literal["spectral", "metis"], n_clusters: int
-) -> tuple[nx.Graph, ...]:
-    """
-    Relabels nodes of a graph to (0, ..., N-1) for algorithms that
-    require this input/has output of this format and requires mapping
-    back to original labels.
-    """
-    int_graph = nx.convert_node_labels_to_integers(graph, label_attribute="orig_label")
+def _spectral_inputs(
+    graph: GraphProblemTypes,
+):
+    """Return ``(adjacency_matrix, node_ids)`` for spectral clustering.
 
-    if algorithm == "spectral":
-        adj_matrix = nx.to_scipy_sparse_array(graph, format="csr")
-
+    Row ``i`` of the CSR adjacency matrix corresponds to ``node_ids[i]``.
+    """
+    if isinstance(graph, rx.PyGraph):
+        adj_matrix = sps.csr_matrix(rx.graph_adjacency_matrix(graph))
         adj_matrix.indptr = adj_matrix.indptr.astype(np.int32)
         adj_matrix.indices = adj_matrix.indices.astype(np.int32)
+        return adj_matrix, list(graph.node_indexes())
+    adj_matrix = nx.to_scipy_sparse_array(graph, format="csr")
+    adj_matrix.indptr = adj_matrix.indptr.astype(np.int32)
+    adj_matrix.indices = adj_matrix.indices.astype(np.int32)
+    return adj_matrix, list(graph.nodes())
 
+
+def _metis_inputs(
+    graph: GraphProblemTypes,
+) -> tuple[list[list[int]], list]:
+    """Return ``(adjacency_list, node_ids)`` for METIS.
+
+    The adjacency list is keyed by integer indices ``0..N-1``; ``node_ids``
+    maps those indices back to the parent graph's node identifiers.
+    """
+    if isinstance(graph, rx.PyGraph):
+        node_ids = list(graph.node_indexes())
+        adj_list = [list(graph.neighbors(n)) for n in node_ids]
+        return adj_list, node_ids
+    int_graph = nx.convert_node_labels_to_integers(graph, label_attribute="orig_label")
+    adj_list = cast(list[list[int]], list(nx.to_dict_of_lists(int_graph).values()))
+    node_ids = [int_graph.nodes[idx]["orig_label"] for idx in range(len(int_graph))]
+    return adj_list, node_ids
+
+
+def _pygraph_to_nx(graph: rx.PyGraph) -> nx.Graph:
+    """Convert a rustworkx ``PyGraph`` to a networkx ``Graph``.
+
+    Edge payload handling:
+
+    - ``dict`` payloads pass through as edge attributes.
+    - Numeric (``int`` / ``float``) payloads become the ``weight`` attribute.
+    - ``None`` payloads add an unweighted edge.
+    - Other payloads emit a ``UserWarning`` naming the type and the edge
+      is added unweighted.
+    """
+    nx_g: nx.Graph = nx.Graph()
+    nx_g.add_nodes_from(graph.node_indexes())
+    edges_to_add: list[tuple] = []
+    dropped_types: set[str] = set()
+    for u, v, attrs in graph.weighted_edge_list():
+        if isinstance(attrs, dict):
+            edges_to_add.append((u, v, attrs))
+        elif isinstance(attrs, (int, float)):
+            edges_to_add.append((u, v, {"weight": float(attrs)}))
+        elif attrs is None:
+            edges_to_add.append((u, v, {}))
+        else:
+            dropped_types.add(type(attrs).__name__)
+            edges_to_add.append((u, v, {}))
+    if dropped_types:
+        warn(
+            "_pygraph_to_nx: dropped non-dict, non-numeric edge payloads of "
+            f"type(s) {sorted(dropped_types)} during conversion; "
+            "Kernighan–Lin will run unweighted on those edges.",
+            UserWarning,
+            stacklevel=2,
+        )
+    nx_g.add_edges_from(edges_to_add)
+    return nx_g
+
+
+def _relabeled_subgraph_with_ids(
+    graph: GraphProblemTypes, cluster: list
+) -> tuple[GraphProblemTypes, list]:
+    """Build a ``0..M-1``-indexed subgraph for ``cluster`` and return it
+    alongside the original IDs.  ``cluster_ids[i]`` is the parent-graph
+    identifier for the subgraph's local node ``i``.
+    """
+    sub = graph.subgraph(cluster).copy()
+    if isinstance(sub, nx.Graph):
+        sub = nx.relabel_nodes(sub, {node: i for i, node in enumerate(cluster)})
+    return sub, list(cluster)
+
+
+_SubgraphWithIds = tuple[GraphProblemTypes, list]
+
+
+def _apply_split_with_relabel(
+    graph: GraphProblemTypes,
+    algorithm: Literal["spectral", "metis"],
+    n_clusters: int,
+) -> tuple[_SubgraphWithIds, ...]:
+    """Spectral or METIS split.
+
+    Returns a tuple of ``(relabeled_subgraph, cluster_ids)`` pairs where
+    each subgraph is locally indexed ``0..M-1`` and ``cluster_ids[i]``
+    is the parent-graph identifier for local node ``i``.
+    """
+    if algorithm == "spectral":
+        adj_matrix, node_ids = _spectral_inputs(graph)
         sc = SpectralClustering(
             n_clusters=n_clusters,
             affinity="precomputed",
@@ -114,23 +204,33 @@ def _apply_split_with_relabel(
                 "imported. On Windows, install via conda: conda install -c conda-forge pymetis. "
                 "Otherwise use 'spectral' or 'kernighan_lin' instead."
             ) from e
-        # After relabeling, nodes are integers (networkx stubs don't narrow this).
-        adj_list = cast(list[list[int]], list(nx.to_dict_of_lists(int_graph).values()))
+        adj_list, node_ids = _metis_inputs(graph)
         _, parts = part_graph(n_clusters, adjacency=adj_list)
     else:
         raise RuntimeError("Relabeling only needed for `spectral` and `metis`.")
 
-    clusters = [[] for _ in range(n_clusters)]
+    clusters: list[list] = [[] for _ in range(n_clusters)]
     for idx, part in enumerate(parts):
-        orig_label = int_graph.nodes[idx]["orig_label"]
-        clusters[part].append(orig_label)
+        clusters[part].append(node_ids[idx])
 
-    return tuple(graph.subgraph(clstr).copy() for clstr in clusters)
+    non_empty_clusters = [clstr for clstr in clusters if clstr]
+    if len(non_empty_clusters) != n_clusters:
+        warn(
+            f"_apply_split_with_relabel: {algorithm!r} requested {n_clusters} "
+            f"clusters but produced {len(non_empty_clusters)} non-empty "
+            "cluster(s); empty clusters were dropped from the result.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    return tuple(
+        _relabeled_subgraph_with_ids(graph, clstr) for clstr in non_empty_clusters
+    )
 
 
 def _split_graph(
-    graph: nx.Graph, partitioning_config: GraphPartitioningConfig
-) -> Sequence[nx.Graph]:
+    graph: GraphProblemTypes, partitioning_config: GraphPartitioningConfig
+) -> Sequence[_SubgraphWithIds]:
     """
     Splits a graph.
 
@@ -139,11 +239,13 @@ def _split_graph(
     For "kernighan_lin", a bisection will be returned
 
     Args:
-        graph (nx.Graph): The input graph to be partitioned.
+        graph: The input graph to be partitioned (``nx.Graph`` or ``rx.PyGraph``).
         partitioning_config (GraphPartitioningConfig): The configuration to follow.
 
     Returns:
-        subgraphs: a sequence of the generated partitions.
+        Sequence of ``(relabeled_subgraph, cluster_ids)`` tuples.  Each
+        subgraph is locally indexed ``0..M-1``; ``cluster_ids[i]`` is the
+        parent-graph identifier for local node ``i``.
     """
     if (algorithm := partitioning_config.partitioning_algorithm) in (
         "spectral",
@@ -156,8 +258,23 @@ def _split_graph(
             partitioning_config.minimum_n_clusters or 2,
         )
     elif partitioning_config.partitioning_algorithm == "kernighan_lin":
-        part_1, part_2 = nx.algorithms.community.kernighan_lin_bisection(graph)
-        return graph.subgraph(part_1).copy(), graph.subgraph(part_2).copy()
+        nx_graph: nx.Graph = (
+            _pygraph_to_nx(graph) if isinstance(graph, rx.PyGraph) else graph
+        )
+        nx_results: list[tuple[nx.Graph, list]] = []
+        for part in nx.algorithms.community.kernighan_lin_bisection(nx_graph):
+            cluster = list(part)
+            relabeled = nx.relabel_nodes(
+                nx_graph.subgraph(cluster).copy(),
+                {node: i for i, node in enumerate(cluster)},
+            )
+            nx_results.append((relabeled, cluster))
+        if isinstance(graph, rx.PyGraph):
+            return tuple(
+                (cast(rx.PyGraph, rx.networkx_converter(sub)), ids)
+                for sub, ids in nx_results
+            )
+        return tuple(nx_results)
     else:
         raise ValueError(
             f"Unsupported partitioning algorithm: "
@@ -165,12 +282,12 @@ def _split_graph(
         )
 
 
-HeapEntry = tuple[int, int, nx.Graph]
+HeapEntry = tuple[int, int, GraphProblemTypes, list]
 
 
 def _bisect_with_predicate(
     initial_partitions: list[HeapEntry],
-    predicate: Callable[[nx.Graph, Sequence[HeapEntry]], bool],
+    predicate: Callable[[GraphProblemTypes, Sequence[HeapEntry]], bool],
     partitioning_config: GraphPartitioningConfig,
 ) -> list[HeapEntry]:
     """
@@ -191,6 +308,8 @@ def _bisect_with_predicate(
     """
     subgraphs: list[HeapEntry] = initial_partitions
     heapq.heapify(subgraphs)
+    # Strictly monotonic — breaks heap ties before falling through to the
+    # graph object or cluster_ids list.
     entry_counter = len(subgraphs)
 
     while True:
@@ -199,12 +318,15 @@ def _bisect_with_predicate(
 
         while subgraphs:
             entry = heapq.heappop(subgraphs)
-            subgraph = entry[2]
+            _, _, subgraph, parent_ids = entry
 
             if predicate(subgraph, new_subgraphs + subgraphs):
-                for child in _split_graph(subgraph, partitioning_config):
+                for child, child_local_ids in _split_graph(
+                    subgraph, partitioning_config
+                ):
+                    child_global_ids = [parent_ids[i] for i in child_local_ids]
                     new_subgraphs.append(
-                        (-child.number_of_nodes(), entry_counter, child)
+                        (-len(child), entry_counter, child, child_global_ids)
                     )
                     entry_counter += 1
                 changed = True
@@ -221,33 +343,40 @@ def _bisect_with_predicate(
 
 
 def _node_partition_graph(
-    graph: nx.Graph, partitioning_config: GraphPartitioningConfig
-) -> list[nx.Graph]:
+    graph: GraphProblemTypes, partitioning_config: GraphPartitioningConfig
+) -> list[_SubgraphWithIds]:
+    """Partition ``graph`` into subgraphs honouring the configured constraints.
 
-    subgraphs = [(-graph.number_of_nodes(), 0, graph)]
+    Returns a list of ``(relabeled_subgraph, cluster_ids)`` pairs.  Each
+    subgraph is locally indexed ``0..M-1``; ``cluster_ids[i]`` is the
+    original-graph identifier for local node ``i``.
+    """
+    n_nodes = len(graph)
+    initial_ids: list = (
+        list(graph.node_indexes())
+        if isinstance(graph, rx.PyGraph)
+        else list(graph.nodes())
+    )
+    subgraphs: list[HeapEntry] = [(-n_nodes, 0, graph, initial_ids)]
 
-    # First generate the minimum number of clusters, requested by user
-    # Initialize the graph as the initial subgraph
-    # Add generic ID to break ties in heap
     if partitioning_config.minimum_n_clusters:
-        if partitioning_config.minimum_n_clusters > graph.number_of_nodes():
+        if partitioning_config.minimum_n_clusters > n_nodes:
             raise ValueError(
                 "Number of requested clusters larger than the size of the graph."
             )
 
         subgraphs = _bisect_with_predicate(
-            [(-graph.number_of_nodes(), 0, graph)],
+            subgraphs,
             lambda _, subgraphs: len(subgraphs)
             < partitioning_config.minimum_n_clusters - 1,
             partitioning_config,
         )
 
-    # Split oversized clusters
     if partitioning_config.max_n_nodes_per_cluster:
         subgraphs = _bisect_with_predicate(
             subgraphs,
             lambda subgraph, _: (
-                subgraph.number_of_nodes() > partitioning_config.max_n_nodes_per_cluster
+                len(subgraph) > partitioning_config.max_n_nodes_per_cluster
             ),
             partitioning_config,
         )
@@ -258,8 +387,7 @@ def _node_partition_graph(
             f"the available backends: {_MAXIMUM_AVAILABLE_QUBITS} qubits."
         )
 
-    # Clean up on aisle 3
-    return [graph for (_, _, graph) in subgraphs]
+    return [(graph, ids) for (_, _, graph, ids) in subgraphs]
 
 
 def draw_partitions(

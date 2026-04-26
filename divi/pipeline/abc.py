@@ -4,7 +4,7 @@
 
 import warnings
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Hashable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from threading import Event
@@ -188,7 +188,7 @@ class Stage(ABC, Generic[InT, OutT]):
         """Whether this stage invalidates forward-pass reuse from this point."""
         return False
 
-    def cache_key_extras(self, env: "PipelineEnv") -> tuple:
+    def cache_key_extras(self, env: "PipelineEnv") -> tuple[Hashable, ...]:
         """Hashable env inputs that this stage reads during :meth:`expand`.
 
         The forward-pass cache is keyed on the initial spec, the list of

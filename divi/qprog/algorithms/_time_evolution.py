@@ -179,9 +179,11 @@ class TimeEvolution(QuantumProgram):
         # Ensure canonical wire ordering matches the Hamiltonian,
         # regardless of which subset of terms QDrift sampled.
         ops = [qp.Identity(w) for w in self._circuit_wires] + ops
-        use_probs = self.observable is None
 
-        measurement = qp.probs() if use_probs else qp.expval(self.observable)
+        if self.observable is None:
+            measurement = qp.probs()
+        else:
+            measurement = qp.expval(self.observable)
         return qscript_to_meta(
             qp.tape.QuantumScript(ops=ops, measurements=[measurement]),
         )

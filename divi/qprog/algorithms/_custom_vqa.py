@@ -204,11 +204,13 @@ class CustomVQA(VariationalQuantumAlgorithm):
         self._trainable_param_indices = trainable_indices
         self._qscript = bound_qscript
 
-        self.n_params_per_layer = int(np.prod(self._param_shape))
-
         # Build cost pipeline once (structure is fixed; only env changes per call).
         # No measurement pipeline needed — _perform_final_computation is a no-op.
         self._pipelines = self._build_pipelines()
+
+    @property
+    def n_params_per_layer(self) -> int:
+        return int(np.prod(self._param_shape))
 
     def _build_pipelines(self) -> dict:
         return {"cost": self._build_cost_pipeline(CircuitSpecStage())}

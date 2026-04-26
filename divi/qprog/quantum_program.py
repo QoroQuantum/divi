@@ -11,10 +11,14 @@ from warnings import warn
 
 import requests
 
-from divi.backends import CircuitRunner
+from divi.backends import AsyncJobBackend, CircuitRunner
 from divi.circuits.qem import _NoMitigation
 from divi.pipeline import CircuitPipeline, DryRunReport, PipelineEnv, dry_run_pipeline
-from divi.reporting import LoggingProgressReporter, QueueProgressReporter
+from divi.reporting import (
+    LoggingProgressReporter,
+    ProgressReporter,
+    QueueProgressReporter,
+)
 
 
 class QuantumProgram(ABC):
@@ -69,6 +73,7 @@ class QuantumProgram(ABC):
 
         # --- Progress Reporting ---
         self.program_id = program_id
+        self.reporter: ProgressReporter
         if progress_queue and self.program_id is not None:
             self.reporter = QueueProgressReporter(self.program_id, progress_queue)
         else:
@@ -136,6 +141,14 @@ class QuantumProgram(ABC):
 
         if result.job_id is None:
             warn("Cannot cancel job: execution result has no job_id", stacklevel=2)
+            return
+
+        if not isinstance(self.backend, AsyncJobBackend):
+            warn(
+                f"Cannot cancel job: backend {type(self.backend).__name__} "
+                "does not implement the AsyncJobBackend protocol.",
+                stacklevel=2,
+            )
             return
 
         try:

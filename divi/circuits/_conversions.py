@@ -4,6 +4,7 @@
 
 """PennyLane QuantumScript → Qiskit DAGCircuit conversion and DAG → parametric QASM2 emission."""
 
+import warnings
 from collections.abc import Mapping
 
 import numpy as np
@@ -81,7 +82,7 @@ def _sympy_to_qiskit(
             f"Unmapped sympy symbol(s) {missing!r}; mapping covers "
             f"{list(mapping.keys())}"
         )
-    name_map = {mapping[s].name: mapping[s] for s in expr.free_symbols}
+    name_map = {p.name: p for s, p in mapping.items() if s in expr.free_symbols}
     try:
         return ParameterExpression(name_map, str(expr))
     except (RuntimeError, TypeError) as e:
@@ -282,8 +283,6 @@ def observable_to_sparse_pauli_op(
     coefficient has a non-negligible imaginary part (>1e-10), which would
     indicate a non-Hermitian observable.
     """
-    import warnings
-
     pauli_rep = obs.pauli_rep
     if pauli_rep is None:
         raise ValueError(
@@ -326,7 +325,12 @@ def sparse_pauli_op_to_pl_observable(
     expects real floats.  We keep a custom implementation that extracts
     real coefficients explicitly.
     """
-    pauli_cls = {"I": qp.Identity, "X": qp.PauliX, "Y": qp.PauliY, "Z": qp.PauliZ}
+    pauli_cls: dict[str, type[qp.operation.Operator]] = {
+        "I": qp.Identity,
+        "X": qp.PauliX,
+        "Y": qp.PauliY,
+        "Z": qp.PauliZ,
+    }
     wire_list = list(wires)
     terms: list[qp.operation.Operator] = []
     for pauli_str, coeff in zip(op.paulis.to_labels(), op.coeffs):
@@ -335,15 +339,16 @@ def sparse_pauli_op_to_pl_observable(
             for i, char in enumerate(reversed(pauli_str))
             if char != "I"
         ]
+        term: qp.operation.Operator
         if not ops_for_term:
             term = qp.Identity(wire_list[0])
         elif len(ops_for_term) == 1:
             term = ops_for_term[0]
         else:
-            term = qp.prod(*ops_for_term)
+            term = qp.ops.Prod(*ops_for_term)
 
         c = float(np.real(coeff))
-        terms.append(c * term if c != 1.0 else term)
+        terms.append(qp.ops.SProd(c, term))
 
     if not terms:
         raise ValueError(
@@ -396,6 +401,8 @@ def qscript_to_meta(
     observable = None
     measured_wires = None
     if isinstance(measurement, qp.measurements.ExpectationMP):
+        if measurement.obs is None:
+            raise ValueError("ExpectationMP without an observable is not supported.")
         observable = observable_to_sparse_pauli_op(measurement.obs, qscript.wires)
     elif isinstance(
         measurement,

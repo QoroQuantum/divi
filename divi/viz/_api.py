@@ -27,7 +27,7 @@ plane scans.
 """
 
 from dataclasses import dataclass
-from typing import Protocol, TypeAlias
+from typing import Literal, Protocol, TypeAlias
 
 import numpy as np
 import numpy.typing as npt
@@ -41,6 +41,7 @@ from ._neb import (
     _neb_perpendicular_gradients,
     _redistribute_uniform,
 )
+from ._periodic import periodic_trajectory_wrap
 from ._results import (
     Fourier2DResult,
     HessianResult,
@@ -59,10 +60,17 @@ OptionalArray: TypeAlias = npt.ArrayLike | None
 
 class _SupportsVizScan(Protocol):
     n_layers: int
-    n_params_per_layer: int
     _best_params: npt.NDArray[np.float64]
 
+    @property
+    def n_params_per_layer(self) -> int: ...
+
     def _has_run_optimization(self) -> bool: ...
+
+    def param_history(
+        self,
+        mode: Literal["all_evaluated", "best_per_iteration"] = ...,
+    ) -> list[npt.NDArray[np.float64]]: ...
 
     def _evaluate_cost_param_sets(
         self, param_sets: npt.NDArray[np.float64], **kwargs
@@ -1235,8 +1243,6 @@ class ProgramViz:
         samples before fitting PCA.
         """
         if "samples" not in kwargs:
-            from ._periodic import periodic_trajectory_wrap
-
             blocks = self.program.param_history(mode="best_per_iteration")
             if not blocks:
                 raise ValueError(

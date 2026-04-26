@@ -131,7 +131,7 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
 
         results = self.aggregate_results()
         times = list(results.keys())
-        values = list(results.values())
+        values = [float(v) for v in results.values() if isinstance(v, (int, float))]
 
         plt.plot(times, values, marker="o")
         plt.xlabel("Time")

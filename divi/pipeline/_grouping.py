@@ -57,16 +57,18 @@ def _create_postprocessing_fn(
     n_terms: int,
 ) -> Callable:
     """Build a callable that reassembles per-group results into a scalar expval."""
-    reverse_map: list[tuple[int, int] | None] = [None] * n_terms
+    reverse_lookup: dict[int, tuple[int, int]] = {}
     for group_idx, indices in enumerate(partition_indices):
         for pos, orig_idx in enumerate(indices):
-            reverse_map[orig_idx] = (group_idx, pos)
+            reverse_lookup[orig_idx] = (group_idx, pos)
 
-    missing = [i for i, v in enumerate(reverse_map) if v is None]
+    missing = [i for i in range(n_terms) if i not in reverse_lookup]
     if missing:
         raise RuntimeError(
             f"partition_indices does not cover all term indices. Missing: {missing}"
         )
+
+    reverse_map: list[tuple[int, int]] = [reverse_lookup[i] for i in range(n_terms)]
 
     def postprocessing_fn(grouped_results):
         if len(grouped_results) != len(partition_indices):

@@ -4,6 +4,9 @@
 
 """Tests for binary-to-Ising conversion (_ising.py)."""
 
+from collections import defaultdict
+from itertools import product as iterproduct
+
 import dimod
 import numpy as np
 import pennylane as qp
@@ -215,8 +218,6 @@ class TestQuboToIsingConversion:
         Covers dense, sparse, upper-triangular, non-sanitized (triggers
         symmetrization), and larger matrix inputs.
         """
-        from itertools import product as iterproduct
-
         q_dense = qubo_matrix.toarray() if sps.issparse(qubo_matrix) else qubo_matrix
         n = q_dense.shape[0]
         Q_sym = (q_dense + q_dense.T) / 2
@@ -369,9 +370,6 @@ class TestBinaryToIsingConverters:
 
         # Group all computational-basis energies by decoded original assignment,
         # then verify the minimum matches the polynomial energy.
-        from collections import defaultdict
-        from itertools import product as iterproduct
-
         energies_by_assignment = defaultdict(list)
         for val in range(2**n_total):
             bs = format(val, f"0{n_total}b")

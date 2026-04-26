@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     # For type checkers, assume maestro is always available — runtime code
     # that uses it is gated behind MaestroSimulator.__init__'s availability
     # check, so the type-checker view matches post-init invariants.
+    # pyrefly: ignore[missing-import]  # ``maestro`` ships separately
     import maestro
 
     _maestro_import_error: ImportError | None = None
