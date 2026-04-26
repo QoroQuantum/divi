@@ -62,9 +62,7 @@ def _serialize_qubo_for_wire(qubo) -> dict[str, float]:
 
     if isinstance(qubo, np.ndarray):
         if qubo.ndim != 2 or qubo.shape[0] != qubo.shape[1]:
-            raise ValueError(
-                f"QUBO matrix must be square, got shape {qubo.shape}"
-            )
+            raise ValueError(f"QUBO matrix must be square, got shape {qubo.shape}")
         # Emit upper-triangular form: diagonal as-is, off-diagonal
         # entries folded as Q_wire[i,j] = Q[i,j] + Q[j,i] for i < j.
         # This avoids double-counting when the matrix is symmetric.
@@ -163,9 +161,7 @@ class QUBOValidationResult:
         parameters.
         """
         if self.report:
-            return self.report.get(
-                "quality_at_best", self.report.get("quality_score")
-            )
+            return self.report.get("quality_at_best", self.report.get("quality_score"))
         return None
 
     @property
@@ -454,7 +450,9 @@ class QUBOValidationResult:
             import re
 
             def _html_to_rich(text: str) -> str:
-                text = text.replace("<strong>", "[bold]").replace("</strong>", "[/bold]")
+                text = text.replace("<strong>", "[bold]").replace(
+                    "</strong>", "[/bold]"
+                )
                 text = re.sub(r"<[^>]+>", "", text)  # strip remaining HTML
                 return text
 
@@ -763,10 +761,12 @@ def _build_validation_html(result: QUBOValidationResult) -> str:
             prob = s.get("probability", 0)
             bar_w = max(1, int(100 * prob / max_prob))
             energy = s.get("energy", "—")
-            energy_str = f"{energy:.4f}" if isinstance(energy, (int, float)) else str(energy)
+            energy_str = (
+                f"{energy:.4f}" if isinstance(energy, (int, float)) else str(energy)
+            )
             parts.append(
                 f"<tr>"
-                f'<td><code>{state_str}</code></td>'
+                f"<td><code>{state_str}</code></td>"
                 f'<td class="{marker_cls}">{marker}</td>'
                 f'<td>{prob:.4f} <span class="qvr-prob-bar" style="width:{bar_w}px;"></span></td>'
                 f"<td>{html.escape(energy_str)}</td>"
@@ -786,9 +786,7 @@ def _build_validation_html(result: QUBOValidationResult) -> str:
         if "beta" in bp:
             params.append(f"β = <strong>{bp['beta']:.4f}</strong>")
         if "probability" in bp:
-            params.append(
-                f"P(target) = <strong>{bp['probability']:.4f}</strong>"
-            )
+            params.append(f"P(target) = <strong>{bp['probability']:.4f}</strong>")
         parts.append(
             '<div style="font-size:14px;color:#cbd5e1;">'
             + " &nbsp;·&nbsp; ".join(params)
@@ -856,12 +854,8 @@ def _build_validation_html(result: QUBOValidationResult) -> str:
     job_short = result.job_id[:8] if result.job_id else "?"
     timing = ""
     if result.created_at and result.completed_at:
-        timing = (
-            f" · {html.escape(str(result.created_at))} → {html.escape(str(result.completed_at))}"
-        )
-    parts.append(
-        f'<div class="qvr-footer">Job {html.escape(job_short)}…{timing}</div>'
-    )
+        timing = f" · {html.escape(str(result.created_at))} → {html.escape(str(result.completed_at))}"
+    parts.append(f'<div class="qvr-footer">Job {html.escape(job_short)}…{timing}</div>')
 
     parts.append("</div>")  # close .qvr-root
     return "\n".join(parts)
