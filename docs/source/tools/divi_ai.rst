@@ -173,11 +173,48 @@ Troubleshooting
 ---------------
 
 **llama-cpp-python fails to install**
-   This is the most common issue. The package compiles C++ at install time
-   and needs a working toolchain: ``build-essential`` on Debian/Ubuntu,
-   Xcode Command Line Tools on macOS, or Visual Studio Build Tools on
-   Windows. On some systems, installing a prebuilt wheel helps:
-   ``pip install llama-cpp-python --prefer-binary``
+   On Windows this is the most common installation failure.
+   ``llama-cpp-python`` has no prebuilt wheels on PyPI, so
+   ``pip install`` always downloads the source and compiles it. On
+   Linux and macOS this usually succeeds silently when a C++ toolchain
+   is present; on Windows it frequently fails. Try these in order:
+
+   1. **Install a prebuilt wheel from abetlen's index** (works on
+      Windows, Linux, and macOS):
+
+      .. code-block:: bash
+
+         pip install "llama-cpp-python==0.3.19" \
+             --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu \
+             --only-binary=:all:
+         pip install "qoro-divi[ai]"
+
+      The explicit ``==0.3.19`` is required: PyPI hosts no wheels for
+      this package, so without a version pin pip downloads the latest
+      source release and compiles it. ``--only-binary=:all:`` causes
+      pip to report an error immediately if no wheel matches your
+      Python version and architecture, instead of silently compiling
+      from source.
+
+   2. **If you must build from source**, install a C++ toolchain:
+
+      * **Linux:** ``build-essential`` (Debian/Ubuntu) or equivalent.
+      * **macOS:** Xcode Command Line Tools (``xcode-select --install``).
+      * **Windows:** Visual Studio Build Tools with the *Desktop
+        development with C++* workload. Run ``pip install`` from an
+        *x64 Native Tools Command Prompt for VS* so MSVC's ``cl.exe``
+        is on ``PATH``.
+
+   .. note::
+
+      **Windows: Strawberry Perl on PATH.** If a Windows source build
+      fails and the build log shows ``C:/Strawberry/c/bin/gcc.exe`` or
+      any path under ``C:\Strawberry``, CMake is picking up the MinGW
+      compiler bundled with Strawberry Perl instead of MSVC. The
+      vendored ``llama.cpp`` sources do not build cleanly with that
+      toolchain. Either remove ``C:\Strawberry\c\bin`` from ``PATH``
+      in the current Command Prompt window, or launch an *x64 Native
+      Tools Command Prompt for VS* before running pip.
 
 **"Context window exceeded" / answers cut off mid-sentence**
    The conversation has filled the model's context window. Use ``/reset``
