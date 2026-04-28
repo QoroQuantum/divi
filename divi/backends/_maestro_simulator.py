@@ -101,6 +101,18 @@ class MaestroConfig:
     ``simulation_type`` is set explicitly.  Divi-specific; not forwarded to
     ``maestro.SimulatorConfig``."""
 
+    noise_model: maestro.NoiseModel | None = None
+    """ Maestro NoiseModel object. Configured before passing to MaestroConfig"""
+
+    noise_seed: int | None = 42
+    """ Seed for the random noise model. Only active when :attr:`noise_model` is not `None` """
+
+    noise_realizations: int | None = None
+    """ Number of realizations to use for noise model. Only active when :attr:`noise_model` is not `None` 
+    - If `None`, no noise is actually used, instead a damping factor is computed and applied to get the expected average under the noise model
+    - If `int`, it randomly inserts Pauli gates and computes expectation values `int` times, then averages over the instances
+    ==> NB: behaviour(`None`) != behaviour(int: 1) !!! rather, behaviour(`None`) = behaviour(`int: n -> /infinity)"""
+
     def override(self, other: "MaestroConfig") -> "MaestroConfig":
         """Return a new config overriding fields with non-default values from ``other``.
 
@@ -314,7 +326,10 @@ class MaestroSimulator(CircuitRunner):
                     if per_circuit_shots is not None
                     else self.shots
                 )
-                raw = maestro.simple_execute(qasm, config=sim_config, shots=shots)
+                if self.config.noise_model is None:
+                    raw = maestro.simple_execute(qasm, config=sim_config, shots=shots)
+                else:
+                    raw = maestro.noisy_execute(qasm, self.config.noise_model, config=sim_config, shots=shots, noise_realizations=self.config.noise_realizations, seed=self.config.seed)
                 counts = {bs[::-1]: n for bs, n in raw["counts"].items()}
                 results.append({"label": label, "results": counts})
         else:
@@ -324,11 +339,27 @@ class MaestroSimulator(CircuitRunner):
                 pauli_string = self._get_ham_ops_for_circuit(
                     i, ham_ops, circuit_ham_map
                 )
-                raw = maestro.simple_estimate(
-                    _strip_measurements(qasm),
-                    observables=pauli_string,
-                    config=sim_config,
-                )
+                if self.config.noise_model is None:
+                    raw = maestro.simple_estimate(
+                        _strip_measurements(qasm),
+                        observables=pauli_string,
+                        config=sim_config,
+                    )
+                if self.config.noise_model is not None:
+                    if self.config.noise_realizations is None:
+                        raw = maestro.noisy_estimate(
+                            _strip_measurements(qasm),
+                            self.config.noise_model,
+                            observables=pauli_string,
+                            config=sim_config,
+                        )
+                    else:
+                        raw = maestro.noisy_estimate_montecarlo(
+                            _strip_measurements(qasm),
+                            self.config.noise_model,
+                            observables=pauli_string,
+                            config=sim_config,
+                        )
                 ops = pauli_string.split(";")
                 expvals = dict(zip(ops, raw["expectation_values"]))
                 results.append({"label": label, "results": expvals})
