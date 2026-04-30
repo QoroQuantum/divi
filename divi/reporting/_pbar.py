@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import os
 from queue import Empty, Queue
 from threading import Event, Lock
 from typing import Any, cast
@@ -29,6 +30,17 @@ from divi.reporting._qlogger import _ensure_unbuffered_stdout
 #: that progress rows can be visually associated with their participating
 #: programs.
 BATCH_COLORS = ("green", "cyan", "magenta", "yellow", "red", "blue")
+
+_PROGRESS_DISABLE_ENV = "DIVI_DISABLE_PROGRESS"
+_PROGRESS_DISABLE_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def progress_disabled() -> bool:
+    """Return True if ``DIVI_DISABLE_PROGRESS`` is set to a truthy value
+    (``1``, ``true``, ``yes``, ``on``; case-insensitive)."""
+    return (
+        os.getenv(_PROGRESS_DISABLE_ENV, "").strip().lower() in _PROGRESS_DISABLE_TRUTHY
+    )
 
 
 class BatchIndicatorColumn(ProgressColumn):
@@ -165,12 +177,14 @@ def _make_batch_status_bar() -> Progress:
 
 def make_progress_display(
     is_jupyter: bool = False,
-) -> tuple[Progress, Live]:
+) -> tuple[Progress | None, Live | None]:
     """Create a ``Live``-wrapped progress bar for per-program tracking.
 
-    Returns:
-        Tuple of (program_progress, live_display).
+    Returns ``(None, None)`` when :func:`progress_disabled` is true.
     """
+    if progress_disabled():
+        return None, None
+
     _ensure_unbuffered_stdout()
     program_progress = make_progress_bar()
     live = Live(
@@ -183,16 +197,18 @@ def make_progress_display(
 
 def make_batch_display(
     is_jupyter: bool = False,
-) -> tuple[Progress, Progress, Live]:
+) -> tuple[Progress | None, Progress | None, Live | None]:
     """Create a composed Live display with separate batch status and program progress bars.
 
     In Jupyter environments auto-refresh is disabled to avoid double-rendering
     issues (rich#1737). The caller is responsible for calling ``live.refresh()``
     after each update.
 
-    Returns:
-        Tuple of (batch_progress, program_progress, live_display).
+    Returns ``(None, None, None)`` when :func:`progress_disabled` is true.
     """
+    if progress_disabled():
+        return None, None, None
+
     _ensure_unbuffered_stdout()
     batch_progress = _make_batch_status_bar()
     program_progress = make_progress_bar()

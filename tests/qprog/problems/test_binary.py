@@ -9,6 +9,7 @@ import pennylane as qp
 import pytest
 import scipy.sparse as sps
 
+import divi.qprog.problems._binary as binary_module
 from divi.backends import CircuitRunner
 from divi.hamiltonians import BinaryPolynomialProblem
 from divi.qprog import (
@@ -100,6 +101,68 @@ class TestBinaryOptimizationProblem:
             match=r"BinaryQuadraticModel must have vartype='BINARY', got Vartype\.SPIN",
         ):
             BinaryOptimizationProblem(bqm)
+
+
+class TestLazyIsingInit:
+    """The Ising conversion and X-mixer are computed lazily on first access.
+
+    For workflows like ``QUBOPartitioningQAOA`` the parent's full Ising is
+    never used after decomposition, so eager construction was wasted work.
+    These tests pin both the laziness and the per-property memoization.
+    """
+
+    def test_constructor_does_not_call_qubo_to_ising(self, mocker):
+        spy = mocker.spy(binary_module, "qubo_to_ising")
+        BinaryOptimizationProblem(QUBO_MATRIX)
+        spy.assert_not_called()
+
+    def test_constructor_does_not_build_x_mixer(self, mocker):
+        spy = mocker.spy(binary_module.pqaoa, "x_mixer")
+        BinaryOptimizationProblem(QUBO_MATRIX)
+        spy.assert_not_called()
+
+    def test_cost_hamiltonian_triggers_ising_build(self, mocker):
+        spy = mocker.spy(binary_module, "qubo_to_ising")
+        problem = BinaryOptimizationProblem(QUBO_MATRIX)
+        spy.assert_not_called()
+
+        _ = problem.cost_hamiltonian
+        spy.assert_called_once()
+
+    def test_ising_cached_across_dependent_properties(self, mocker):
+        """All properties backed by the Ising share one ``qubo_to_ising`` call."""
+        spy = mocker.spy(binary_module, "qubo_to_ising")
+        problem = BinaryOptimizationProblem(QUBO_MATRIX)
+
+        _ = problem.cost_hamiltonian
+        _ = problem.loss_constant
+        _ = problem.metadata
+        _ = problem.decode_fn
+        _ = problem.mixer_hamiltonian  # also touches Ising for n_qubits
+
+        spy.assert_called_once()
+
+    def test_mixer_cached_independently(self, mocker):
+        spy = mocker.spy(binary_module.pqaoa, "x_mixer")
+        problem = BinaryOptimizationProblem(QUBO_MATRIX)
+
+        first = problem.mixer_hamiltonian
+        second = problem.mixer_hamiltonian
+        assert first is second
+        spy.assert_called_once()
+
+    def test_lazy_init_passes_constructor_kwargs(self, mocker):
+        """Builder + quadratization strength are forwarded on the deferred call."""
+        spy = mocker.spy(binary_module, "qubo_to_ising")
+        problem = BinaryOptimizationProblem(
+            QUBO_MATRIX,
+            hamiltonian_builder="quadratized",
+            quadratization_strength=7.5,
+        )
+        _ = problem.cost_hamiltonian
+
+        assert spy.call_args.kwargs["hamiltonian_builder"] == "quadratized"
+        assert spy.call_args.kwargs["quadratization_strength"] == 7.5
 
 
 # ---------------------------------------------------------------------------

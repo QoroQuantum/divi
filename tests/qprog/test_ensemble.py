@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import os
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from multiprocessing import Event
@@ -12,6 +13,7 @@ from threading import Lock, Thread
 import pytest
 from rich.progress import Progress
 
+import divi.qprog.ensemble as ensemble_module
 from divi.backends import AsyncJobBackend, ExecutionResult
 from divi.qprog.ensemble import BatchConfig, BatchMode, ProgramEnsemble
 from divi.qprog.quantum_program import QuantumProgram
@@ -923,6 +925,142 @@ class TestBatchConfig:
         config = BatchConfig(max_batch_size=10)
         with pytest.raises(AttributeError):
             config.max_batch_size = 20
+
+
+class _ParameterizedEnsemble(ProgramEnsemble):
+    """Ensemble whose program count is configurable, for sizing tests."""
+
+    def __init__(self, backend, n_programs):
+        super().__init__(backend)
+        self._n_programs = n_programs
+        self.max_iterations = 1
+
+    def create_programs(self):
+        super().create_programs()
+        self.programs = {
+            f"prog_{i}": SimpleTestProgram(
+                1, 0.0, backend=self.backend, program_id=f"prog_{i}"
+            )
+            for i in range(self._n_programs)
+        }
+
+    def aggregate_results(self):
+        super().aggregate_results()
+        return None
+
+
+class TestExecutorSizing:
+    """Three-tier executor sizing in :meth:`ProgramEnsemble.run`.
+
+    The default wait-for-all barrier needs one executor slot per program; the
+    tests below pin each tier of the sizing decision so a regression in any
+    tier — including the >256 fail-fast — is caught immediately.
+    """
+
+    @staticmethod
+    def _spy_executor(mocker):
+        return mocker.spy(ensemble_module, "ThreadPoolExecutor")
+
+    def test_default_barrier_path_pool_at_least_n_programs(
+        self, dummy_simulator, mocker
+    ):
+        """Default ``BatchConfig`` reserves one slot per registered program.
+
+        The exact value is ``max(n_programs, cpu+4)``; pinning that exact
+        formula ensures the test fails if the barrier-scaling branch is
+        ever silently dropped on a host where ``cpu+4`` happens to dominate.
+        """
+        spy = self._spy_executor(mocker)
+        ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=10)
+        ensemble.create_programs()
+        ensemble.run(blocking=True)
+
+        spy.assert_called_once()
+        expected = max(10, (os.cpu_count() or 1) + 4)
+        assert spy.call_args.kwargs["max_workers"] == expected
+
+    def test_default_barrier_path_floors_at_cpu_default(self, dummy_simulator, mocker):
+        """Small ensembles still get the cpu+4 default — never under-provisioned."""
+        spy = self._spy_executor(mocker)
+        ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=2)
+        ensemble.create_programs()
+        ensemble.run(blocking=True)
+
+        spy.assert_called_once()
+        assert spy.call_args.kwargs["max_workers"] >= (os.cpu_count() or 1) + 4
+
+    def test_max_batch_size_uses_bounded_pool(self, dummy_simulator, mocker):
+        """Opting into early-flush keeps the pool at cpu+4 regardless of program count."""
+        spy = self._spy_executor(mocker)
+        ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=20)
+        ensemble.create_programs()
+        ensemble.run(blocking=True, batch_config=BatchConfig(max_batch_size=4))
+
+        spy.assert_called_once()
+        # Bounded — does NOT scale with program count.
+        assert spy.call_args.kwargs["max_workers"] == (os.cpu_count() or 1) + 4
+
+    def test_off_mode_uses_default_pool(self, dummy_simulator, mocker):
+        """``BatchMode.OFF`` has no barrier, so the cpu+4 default is sufficient."""
+        spy = self._spy_executor(mocker)
+        ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=20)
+        ensemble.create_programs()
+        ensemble.run(blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF))
+
+        spy.assert_called_once()
+        assert spy.call_args.kwargs["max_workers"] == (os.cpu_count() or 1) + 4
+
+    def test_exceeds_barrier_limit_raises(self, dummy_simulator):
+        """Default config + >256 programs fails fast with an actionable message."""
+        ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=257)
+        ensemble.create_programs()
+        with pytest.raises(RuntimeError) as excinfo:
+            ensemble.run(blocking=True)
+
+        msg = str(excinfo.value)
+        assert "257" in msg
+        assert "max_batch_size" in msg
+        assert "BatchMode.OFF" in msg
+
+    def test_exceeds_barrier_limit_succeeds_with_max_batch_size(self, dummy_simulator):
+        """Same large ensemble runs cleanly once the user opts into early-flush."""
+        ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=257)
+        ensemble.create_programs()
+        ensemble.run(blocking=True, batch_config=BatchConfig(max_batch_size=8))
+        # All 257 programs ran (each contributes circ_count=1).
+        assert ensemble.total_circuit_count == 257
+
+    def test_exceeds_barrier_limit_succeeds_with_off_mode(self, dummy_simulator):
+        ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=257)
+        ensemble.create_programs()
+        ensemble.run(blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF))
+        assert ensemble.total_circuit_count == 257
+
+    def test_coordinator_program_limit_only_in_barrier_path(self, program_ensemble):
+        """``max_concurrent_programs`` is load-bearing only on the barrier path.
+
+        When the user opts into early-flush the limit must be ``None``,
+        otherwise the guard would incorrectly reject registrations beyond
+        the bounded pool size.
+        """
+        program_ensemble.create_programs()
+        program_ensemble.run(blocking=False, batch_config=BatchConfig(max_batch_size=4))
+        assert program_ensemble._coordinator is not None
+        assert program_ensemble._coordinator._max_concurrent_programs is None
+        program_ensemble.join()
+
+    def test_coordinator_program_limit_set_on_barrier_path(self, program_ensemble):
+        """Default barrier path passes the executor capacity to the coordinator."""
+        program_ensemble.create_programs()
+        program_ensemble.run(blocking=False)
+        assert program_ensemble._coordinator is not None
+        assert program_ensemble._coordinator._max_concurrent_programs is not None
+        # Matches executor capacity.
+        assert (
+            program_ensemble._coordinator._max_concurrent_programs
+            == program_ensemble._executor._max_workers
+        )
+        program_ensemble.join()
 
 
 def testqueue_listener(mocker):

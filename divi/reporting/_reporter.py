@@ -4,13 +4,13 @@
 
 import atexit
 import logging
-import os
 from abc import ABC, abstractmethod
 from queue import Queue
 
 from rich.console import Console
 
 import divi.reporting._qlogger as _qlogger
+from divi.reporting._pbar import progress_disabled
 from divi.reporting._qlogger import _ensure_unbuffered_stdout
 
 logger = logging.getLogger(__name__)
@@ -101,8 +101,7 @@ class LoggingProgressReporter(ProgressReporter):
     def _should_disable_progress() -> bool:
         if _qlogger._logging_disabled:
             return True
-        disable_env = os.getenv("DIVI_DISABLE_PROGRESS", "").strip().lower()
-        return disable_env in {"1", "true", "yes", "on"}
+        return progress_disabled()
 
     def _close_status(self):
         """Close any active status."""

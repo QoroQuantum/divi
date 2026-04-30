@@ -133,12 +133,18 @@ class _BatchCoordinator:
         real_backend: CircuitRunner,
         progress_queue: Queue | None = None,
         batch_config: BatchConfig | None = None,
+        *,
+        max_concurrent_programs: int | None = None,
     ):
         self._real_backend = real_backend
         self._progress_queue = progress_queue
         self._batch_config = batch_config or BatchConfig()
         self._lock = Lock()
         self._cancelled = Event()
+
+        # When set, register_program rejects beyond this many active programs
+        # so the wait-for-all barrier can't deadlock against a smaller executor.
+        self._max_concurrent_programs = max_concurrent_programs
 
         # Programs currently executing (not yet finished their run()).
         self._active_programs: set[str] = set()
@@ -161,8 +167,24 @@ class _BatchCoordinator:
     # ------------------------------------------------------------------
 
     def register_program(self, program_key: str) -> None:
-        """Register a program as active before it starts executing."""
+        """Register a program as active before it starts executing.
+
+        Raises:
+            RuntimeError: If ``max_concurrent_programs`` is set and the
+                registration would exceed it.
+        """
         with self._lock:
+            if (
+                self._max_concurrent_programs is not None
+                and program_key not in self._active_programs
+                and len(self._active_programs) >= self._max_concurrent_programs
+            ):
+                raise RuntimeError(
+                    f"Cannot register program {program_key!r}: exceeds the "
+                    f"executor's max_concurrent_programs="
+                    f"{self._max_concurrent_programs}. Use BatchMode.OFF or "
+                    f"raise the ensemble's executor capacity."
+                )
             self._active_programs.add(program_key)
 
     def deregister_program(self, program_key: str) -> None:

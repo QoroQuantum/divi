@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import atexit
+import os
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
@@ -35,6 +36,10 @@ from divi.reporting import (
 )
 
 __all__ = ["BatchConfig", "BatchMode", "ProgramEnsemble"]
+
+#: Largest ensemble size for which :meth:`ProgramEnsemble.run` will allocate
+#: one executor thread per program under the default wait-for-all barrier.
+_BARRIER_PROGRAM_LIMIT = 256
 
 
 def _default_task_function(program: QuantumProgram):
@@ -299,12 +304,18 @@ class ProgramEnsemble(ABC):
                 ``BatchConfig(max_batch_size=50)`` to cap the number of circuits
                 per merged backend call.
 
+                The default barrier requires one executor thread per program,
+                so it is capped at ``256`` programs.  Larger ensembles must
+                opt into ``max_batch_size`` (early-flush, bounded thread pool)
+                or ``BatchMode.OFF``.
+
         Returns:
             ProgramEnsemble: Returns self for method chaining.
 
         Raises:
-            RuntimeError: If an ensemble is already running or if no programs have been
-                created.
+            RuntimeError: If an ensemble is already running, if no programs
+                have been created, or if the ensemble exceeds 256 programs
+                under the default wait-for-all barrier.
 
         Note:
             In non-blocking mode, call `join()` later to wait for completion and
@@ -342,7 +353,27 @@ class ProgramEnsemble(ABC):
                 "You must provide a unique instance for each program ID."
             )
 
-        self._executor = ThreadPoolExecutor()
+        # Sized to keep the wait-for-all barrier from deadlocking against a
+        # too-small pool.  Early-flush and OFF mode don't need that guarantee.
+        default_workers = (os.cpu_count() or 1) + 4
+        coordinator_program_limit: int | None = None
+        if batching_enabled:
+            if batch_config.max_batch_size is not None:
+                n_workers = default_workers
+            elif len(self._programs) <= _BARRIER_PROGRAM_LIMIT:
+                n_workers = max(len(self._programs), default_workers)
+                coordinator_program_limit = n_workers
+            else:
+                raise RuntimeError(
+                    f"Ensemble has {len(self._programs)} programs, exceeding the "
+                    f"wait-for-all barrier limit ({_BARRIER_PROGRAM_LIMIT}). Set "
+                    f"BatchConfig(max_batch_size=N) for early-flush, or use "
+                    f"BatchConfig(mode=BatchMode.OFF)."
+                )
+        else:
+            n_workers = default_workers
+
+        self._executor = ThreadPoolExecutor(max_workers=n_workers)
         self._cancellation_event = Event()
         self.futures.clear()
         self._future_to_program = {}
@@ -357,6 +388,7 @@ class ProgramEnsemble(ABC):
                 self.backend,
                 progress_queue=progress_queue,
                 batch_config=batch_config,
+                max_concurrent_programs=coordinator_program_limit,
             )
             self._program_key_map = {}
             for idx, (prog_id, program) in enumerate(self._programs.items()):

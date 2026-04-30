@@ -2,10 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import os
 from dataclasses import fields
 
 import pytest
 
+import divi.backends._maestro_simulator as maestro_module
 from divi.backends._maestro_simulator import (
     MaestroConfig,
     MaestroSimulator,
@@ -421,6 +423,122 @@ class TestSamplingSubmission:
         assert "disable_optimized_swapping" not in kwargs
         assert "lookahead_depth" not in kwargs
         assert "mps_measure_no_collapse" not in kwargs
+
+
+class TestParallelExecution:
+    """Multi-circuit submissions fan out across a thread pool capped at
+    ``cpu_count // 2`` (so maestro's internal OpenMP threads aren't
+    oversubscribed).  These tests pin both the cap and the result-label
+    alignment that the parallel path must preserve."""
+
+    @staticmethod
+    def _spy_pool(mocker):
+        return mocker.spy(maestro_module, "ThreadPoolExecutor")
+
+    def test_n_workers_capped_at_half_cpu(self, mocker):
+        """Many circuits → pool capped at cpu_count // 2 (or 1 if cpu//2 == 0)."""
+        fake = _make_fake_maestro(mocker)
+        sim = _make_simulator(mocker, fake)
+        spy = self._spy_pool(mocker)
+
+        # Send more circuits than the cap so the cap is the binding constraint.
+        n = max((os.cpu_count() or 2) // 2, 1) + 4
+        sim.submit_circuits({f"c{i}": QASM_DEPTH_2 for i in range(n)})
+
+        spy.assert_called_once()
+        expected_cap = max(1, (os.cpu_count() or 2) // 2)
+        assert spy.call_args.kwargs["max_workers"] == expected_cap
+
+    def test_n_workers_not_exceeding_circuit_count(self, mocker):
+        """Few circuits → pool sized to circuit count, never more."""
+        fake = _make_fake_maestro(mocker)
+        sim = _make_simulator(mocker, fake)
+        spy = self._spy_pool(mocker)
+
+        sim.submit_circuits({"c0": QASM_DEPTH_2, "c1": QASM_DEPTH_3})
+
+        spy.assert_called_once()
+        # Two circuits + min(2, max(1, cpu//2)): on any CI host with cpu>=4
+        # this resolves to 2; on a 1-cpu host it resolves to 1.
+        expected = min(2, max(1, (os.cpu_count() or 2) // 2))
+        assert spy.call_args.kwargs["max_workers"] == expected
+
+    def test_n_workers_floors_at_one(self, mocker):
+        """Single circuit always yields exactly one worker, regardless of cpu count."""
+        fake = _make_fake_maestro(mocker)
+        sim = _make_simulator(mocker, fake)
+        spy = self._spy_pool(mocker)
+
+        sim.submit_circuits({"c0": QASM_DEPTH_2})
+
+        spy.assert_called_once()
+        assert spy.call_args.kwargs["max_workers"] == 1
+
+    def test_label_alignment_under_parallel_dispatch_sampling(self, mocker):
+        """Label binding must use the input index, not the completion order.
+
+        ``pool.map`` returns results in submission order, but each worker's
+        side-effect must be looked up by *input identity* (the QASM passed
+        in) rather than call order — otherwise thread interleaving (which
+        differs between Python versions) silently scrambles which result
+        attaches to which label.
+        """
+        fake = _make_fake_maestro(mocker)
+        # Three distinct QASMs → three distinct counts.  A side_effect
+        # function keyed on the QASM avoids any dependence on call order.
+        qasms = [
+            QASM_DEPTH_2,
+            QASM_DEPTH_3,
+            QASM_DEPTH_2.replace("h q[0]", "x q[0]"),
+        ]
+        per_qasm_counts = {
+            qasms[0]: {"00": 100, "11": 0},
+            qasms[1]: {"00": 0, "11": 100},
+            qasms[2]: {"01": 50, "10": 50},
+        }
+        fake.simple_execute.side_effect = lambda qasm, **_: {
+            "counts": per_qasm_counts[qasm]
+        }
+        sim = _make_simulator(mocker, fake)
+
+        result = sim.submit_circuits({"c0": qasms[0], "c1": qasms[1], "c2": qasms[2]})
+
+        labels = [r["label"] for r in result.results]
+        assert labels == ["c0", "c1", "c2"]
+        # Each label retains the counts produced for *its* QASM.
+        # (Counts are reversed big-endian → little-endian, so palindromic
+        # strings are unchanged; "01"/"10" swap.)
+        assert result.results[0]["results"] == {"00": 100, "11": 0}
+        assert result.results[1]["results"] == {"00": 0, "11": 100}
+        assert result.results[2]["results"] == {"10": 50, "01": 50}
+
+    def test_label_alignment_under_parallel_dispatch_expval(self, mocker):
+        fake = _make_fake_maestro(mocker)
+        qasms = [
+            QASM_DEPTH_2,
+            QASM_DEPTH_3,
+            QASM_DEPTH_2.replace("h q[0]", "x q[0]"),
+        ]
+        per_qasm_expval = {
+            _strip_measurements(qasms[0]): 0.1,
+            _strip_measurements(qasms[1]): 0.2,
+            _strip_measurements(qasms[2]): 0.3,
+        }
+        fake.simple_estimate.side_effect = lambda qasm, **_: {
+            "expectation_values": [per_qasm_expval[qasm]]
+        }
+        sim = _make_simulator(mocker, fake)
+
+        result = sim.submit_circuits(
+            {"a": qasms[0], "b": qasms[1], "c": qasms[2]},
+            ham_ops="ZI",
+        )
+
+        labels = [r["label"] for r in result.results]
+        assert labels == ["a", "b", "c"]
+        assert result.results[0]["results"] == {"ZI": 0.1}
+        assert result.results[1]["results"] == {"ZI": 0.2}
+        assert result.results[2]["results"] == {"ZI": 0.3}
 
 
 # ---------------------------------------------------------------------------

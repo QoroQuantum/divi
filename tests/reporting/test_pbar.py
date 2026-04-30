@@ -5,13 +5,17 @@
 from threading import Lock
 
 import pytest
+from rich.live import Live
 from rich.progress import Progress, TextColumn
 
 from divi.reporting._pbar import (
     ConditionalSpinnerColumn,
     PhaseStatusColumn,
     handle_batch_message,
+    make_batch_display,
     make_progress_bar,
+    make_progress_display,
+    progress_disabled,
 )
 
 
@@ -547,3 +551,66 @@ class TestHandleBatchMessage:
         assert 10 not in batch_task_ids
         assert 20 in batch_task_ids
         assert _task_visible(batch_progress, tid_20)
+
+
+class TestProgressDisabled:
+    """The ``DIVI_DISABLE_PROGRESS`` env var controls whether the rich
+    progress UI is disabled.  Parsing is centralized in
+    :func:`progress_disabled`; both the standalone helper and the factory
+    short-circuit must agree on what 'truthy' means."""
+
+    @pytest.mark.parametrize(
+        "value", ["1", "true", "TRUE", "yes", "YES", "on", "ON", " True "]
+    )
+    def test_truthy_values_disable(self, monkeypatch, value):
+        monkeypatch.setenv("DIVI_DISABLE_PROGRESS", value)
+        assert progress_disabled() is True
+
+    @pytest.mark.parametrize("value", ["0", "false", "no", "off", "", "random"])
+    def test_falsy_values_keep_enabled(self, monkeypatch, value):
+        monkeypatch.setenv("DIVI_DISABLE_PROGRESS", value)
+        assert progress_disabled() is False
+
+    def test_unset_env_var_keeps_enabled(self, monkeypatch):
+        monkeypatch.delenv("DIVI_DISABLE_PROGRESS", raising=False)
+        assert progress_disabled() is False
+
+
+class TestFactoryShortCircuit:
+    """Both display factories must return all-``None`` tuples when the env
+    var disables progress, so callers' ``is not None`` guards transparently
+    skip UI work without an explicit branch."""
+
+    def test_make_progress_display_returns_nones_when_disabled(self, monkeypatch):
+        monkeypatch.setenv("DIVI_DISABLE_PROGRESS", "1")
+        progress, live = make_progress_display()
+        assert progress is None
+        assert live is None
+
+    def test_make_batch_display_returns_nones_when_disabled(self, monkeypatch):
+        monkeypatch.setenv("DIVI_DISABLE_PROGRESS", "1")
+        batch, progress, live = make_batch_display()
+        assert batch is None
+        assert progress is None
+        assert live is None
+
+    def test_make_progress_display_returns_real_objects_when_enabled(self, monkeypatch):
+        monkeypatch.delenv("DIVI_DISABLE_PROGRESS", raising=False)
+        progress, live = make_progress_display()
+        try:
+            assert isinstance(progress, Progress)
+            assert isinstance(live, Live)
+        finally:
+            if live is not None:
+                live.stop()
+
+    def test_make_batch_display_returns_real_objects_when_enabled(self, monkeypatch):
+        monkeypatch.delenv("DIVI_DISABLE_PROGRESS", raising=False)
+        batch, progress, live = make_batch_display()
+        try:
+            assert isinstance(batch, Progress)
+            assert isinstance(progress, Progress)
+            assert isinstance(live, Live)
+        finally:
+            if live is not None:
+                live.stop()

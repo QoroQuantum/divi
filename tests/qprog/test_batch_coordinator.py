@@ -7,7 +7,7 @@
 import time
 from concurrent.futures import Future
 from queue import Queue
-from threading import Barrier, Event, Thread
+from threading import Barrier, Event, Lock, Thread
 
 import pytest
 
@@ -356,6 +356,90 @@ class TestRegistrationAndBarrier:
         # Both pending — ready.
         coord._pending["b"] = _make_entry({})
         assert coord._should_flush()
+
+
+class TestMaxConcurrentProgramsGuard:
+    """The ``max_concurrent_programs`` guard turns a barrier deadlock
+    (registrations exceeding executor capacity) into a clear, immediate
+    RuntimeError."""
+
+    def test_register_within_capacity_succeeds(self):
+        coord = _BatchCoordinator(FakeSyncBackend(), max_concurrent_programs=2)
+        coord.register_program("a")
+        coord.register_program("b")
+        assert coord._active_programs == {"a", "b"}
+
+    def test_register_beyond_capacity_raises(self):
+        coord = _BatchCoordinator(FakeSyncBackend(), max_concurrent_programs=2)
+        coord.register_program("a")
+        coord.register_program("b")
+        with pytest.raises(RuntimeError, match="exceeds the executor's"):
+            coord.register_program("c")
+
+    def test_re_register_existing_key_at_capacity_is_no_op(self):
+        """Idempotent re-registration of an active key must not raise even at capacity."""
+        coord = _BatchCoordinator(FakeSyncBackend(), max_concurrent_programs=2)
+        coord.register_program("a")
+        coord.register_program("b")
+        coord.register_program("a")  # same key — set add is idempotent
+        assert coord._active_programs == {"a", "b"}
+
+    def test_capacity_none_is_unbounded(self):
+        coord = _BatchCoordinator(FakeSyncBackend(), max_concurrent_programs=None)
+        for i in range(50):
+            coord.register_program(f"p{i}")
+        assert len(coord._active_programs) == 50
+
+    def test_deregister_frees_capacity(self):
+        coord = _BatchCoordinator(FakeSyncBackend(), max_concurrent_programs=2)
+        coord.register_program("a")
+        coord.register_program("b")
+        coord.deregister_program("a")
+        coord.register_program("c")  # slot freed — should succeed
+        assert coord._active_programs == {"b", "c"}
+
+    def test_error_message_names_the_levers(self):
+        coord = _BatchCoordinator(FakeSyncBackend(), max_concurrent_programs=1)
+        coord.register_program("a")
+        with pytest.raises(RuntimeError) as excinfo:
+            coord.register_program("b")
+        msg = str(excinfo.value)
+        assert "max_concurrent_programs=1" in msg
+        assert "BatchMode.OFF" in msg
+
+    def test_concurrent_registration_is_serialized(self):
+        """Two threads racing on a capacity-1 coordinator: exactly one wins.
+
+        Pins that the lock around the guard prevents a TOCTOU where both
+        threads observe ``len(active) < limit`` and both succeed.
+        """
+        coord = _BatchCoordinator(FakeSyncBackend(), max_concurrent_programs=1)
+        gate = Barrier(2)
+        outcomes: list[BaseException | None] = []
+        outcomes_lock = Lock()
+
+        def _try_register(key):
+            gate.wait(timeout=5)
+            try:
+                coord.register_program(key)
+                with outcomes_lock:
+                    outcomes.append(None)
+            except RuntimeError as exc:
+                with outcomes_lock:
+                    outcomes.append(exc)
+
+        t1 = Thread(target=_try_register, args=("a",))
+        t2 = Thread(target=_try_register, args=("b",))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        successes = [o for o in outcomes if o is None]
+        failures = [o for o in outcomes if isinstance(o, RuntimeError)]
+        assert len(successes) == 1
+        assert len(failures) == 1
+        assert len(coord._active_programs) == 1
 
 
 class TestFlushWithSyncBackend:

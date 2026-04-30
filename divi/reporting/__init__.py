@@ -8,6 +8,7 @@ from ._pbar import (
     make_batch_display,
     make_progress_bar,
     make_progress_display,
+    progress_disabled,
     queue_listener,
 )
 from ._qlogger import disable_logging, enable_logging

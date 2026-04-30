@@ -3,8 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+import os
 import re
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING
 
@@ -307,7 +309,11 @@ class MaestroSimulator(CircuitRunner):
         qasm_strings = [_strip_id_gates(q) for q in qasm_strings]
 
         sim_config = self.config._to_maestro_config(n_qubits=max_qubits)
-        results = []
+
+        # Maestro's C++ entrypoints release the GIL and use internal OpenMP
+        # threads, so we cap fan-out at cores/2 to leave headroom for that
+        # internal parallelism rather than oversubscribing.
+        n_workers = min(len(circuit_labels), max(1, (os.cpu_count() or 2) // 2))
 
         if ham_ops is None:
             # Sampling mode — reverse bitstrings from maestro's big-endian
@@ -318,7 +324,9 @@ class MaestroSimulator(CircuitRunner):
                 per_circuit_shots = per_circuit(shot_ranges, len(circuit_labels))
             else:
                 per_circuit_shots = None
-            for i, (label, qasm) in enumerate(zip(circuit_labels, qasm_strings)):
+
+            def _run_sample(item):
+                i, label, qasm = item
                 shots = (
                     per_circuit_shots[i]
                     if per_circuit_shots is not None
@@ -326,11 +334,19 @@ class MaestroSimulator(CircuitRunner):
                 )
                 raw = maestro.simple_execute(qasm, config=sim_config, shots=shots)
                 counts = {bs[::-1]: n for bs, n in raw["counts"].items()}
-                results.append({"label": label, "results": counts})
+                return {"label": label, "results": counts}
+
+            items = [
+                (i, label, qasm)
+                for i, (label, qasm) in enumerate(zip(circuit_labels, qasm_strings))
+            ]
+            with ThreadPoolExecutor(max_workers=n_workers) as pool:
+                results = list(pool.map(_run_sample, items))
         else:
             # Expectation value mode — strip measurement gates so they don't
             # collapse the statevector before expectation values are computed.
-            for i, (label, qasm) in enumerate(zip(circuit_labels, qasm_strings)):
+            def _run_estimate(item):
+                i, label, qasm = item
                 pauli_string = self._get_ham_ops_for_circuit(
                     i, ham_ops, circuit_ham_map
                 )
@@ -341,6 +357,13 @@ class MaestroSimulator(CircuitRunner):
                 )
                 ops = pauli_string.split(";")
                 expvals = dict(zip(ops, raw["expectation_values"]))
-                results.append({"label": label, "results": expvals})
+                return {"label": label, "results": expvals}
+
+            items = [
+                (i, label, qasm)
+                for i, (label, qasm) in enumerate(zip(circuit_labels, qasm_strings))
+            ]
+            with ThreadPoolExecutor(max_workers=n_workers) as pool:
+                results = list(pool.map(_run_estimate, items))
 
         return ExecutionResult(results=results)

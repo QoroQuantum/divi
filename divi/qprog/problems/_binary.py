@@ -17,6 +17,7 @@ from dimod import BinaryQuadraticModel
 
 from divi.hamiltonians import (
     HUBOProblemTypes,
+    IsingResult,
     QUBOProblemTypes,
     normalize_binary_polynomial_problem,
     qubo_to_ising,
@@ -76,14 +77,19 @@ class BinaryOptimizationProblem(QAOAProblem):
         decomposer: hybrid.traits.ProblemDecomposer | None = None,
         composer: hybrid.traits.SubsamplesComposer | None = None,
     ):
+        if hamiltonian_builder not in ("native", "quadratized"):
+            raise ValueError(
+                "hamiltonian_builder must be either 'native' or 'quadratized'."
+            )
+
         self._raw_problem = problem
         self._canonical_problem = normalize_binary_polynomial_problem(problem)
-        self._ising = qubo_to_ising(
-            problem,
-            hamiltonian_builder=hamiltonian_builder,
-            quadratization_strength=quadratization_strength,
+        self._hamiltonian_builder: Literal["native", "quadratized"] = (
+            hamiltonian_builder
         )
-        self._mixer_hamiltonian = pqaoa.x_mixer(range(self._ising.n_qubits))
+        self._quadratization_strength = quadratization_strength
+        self._ising_cache: IsingResult | None = None
+        self._mixer_cache: qp.operation.Operator | None = None
 
         # Decomposition support (optional)
         self._decomposer = decomposer
@@ -102,12 +108,24 @@ class BinaryOptimizationProblem(QAOAProblem):
         self._bqm_subproblem_states = {}
 
     @property
+    def _ising(self) -> IsingResult:
+        if self._ising_cache is None:
+            self._ising_cache = qubo_to_ising(
+                self._raw_problem,
+                hamiltonian_builder=self._hamiltonian_builder,
+                quadratization_strength=self._quadratization_strength,
+            )
+        return self._ising_cache
+
+    @property
     def cost_hamiltonian(self) -> qp.operation.Operator:
         return self._ising.cost_hamiltonian
 
     @property
     def mixer_hamiltonian(self) -> qp.operation.Operator:
-        return self._mixer_hamiltonian
+        if self._mixer_cache is None:
+            self._mixer_cache = pqaoa.x_mixer(range(self._ising.n_qubits))
+        return self._mixer_cache
 
     @property
     def loss_constant(self) -> float:

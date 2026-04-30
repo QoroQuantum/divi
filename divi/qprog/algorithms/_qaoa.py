@@ -104,6 +104,7 @@ class QAOA(VariationalQuantumAlgorithm):
         self.current_iteration = 0
         self.trotterization_strategy = trotterization_strategy or ExactTrotterization()
         self._decoded_solution: Any = _UNSET
+        self._cost_meta_cache: dict[tuple[int, int], MetaCircuit] = {}
 
         # Circuit parameters — Qiskit ParameterVector, no sympy.
         betas = ParameterVector("β", self.n_layers)
@@ -200,15 +201,25 @@ class QAOA(VariationalQuantumAlgorithm):
         self, processed_ham: qp.operation.Operator, ham_id: int
     ) -> MetaCircuit:
         """Build a cost MetaCircuit for a given (possibly QDrift-sampled) Hamiltonian."""
+        stateless = not self.trotterization_strategy.stateful
+        # Cache key includes the parameter count so a depth change
+        # (IterativeQAOA) self-invalidates without external bookkeeping.
+        cache_key = (ham_id, self._params.size)
+        if stateless and cache_key in self._cost_meta_cache:
+            return self._cost_meta_cache[cache_key]
+
         tape = qp.tape.QuantumScript(
             ops=self._build_qaoa_ops(processed_ham),
             measurements=[qp.expval(processed_ham)],
         )
-        return qscript_to_meta(
+        meta = qscript_to_meta(
             tape,
             precision=self._precision,
             parameter_order=tuple(self._params.flatten()),
         )
+        if stateless:
+            self._cost_meta_cache[cache_key] = meta
+        return meta
 
     def _create_meta_circuit_factories(self) -> dict[str, MetaCircuit]:
         """Generate meta-circuit factories for the QAOA problem."""

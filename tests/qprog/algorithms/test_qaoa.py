@@ -7,6 +7,7 @@ import networkx as nx
 import numpy as np
 import pytest
 
+import divi.qprog.algorithms._qaoa as qaoa_module
 from divi.circuits.qem import ZNE, LinearExtrapolator
 from divi.hamiltonians import (
     ExactTrotterization,
@@ -18,6 +19,7 @@ from divi.qprog import (
     ScipyMethod,
     ScipyOptimizer,
 )
+from divi.qprog.algorithms import IterativeQAOA
 from divi.qprog.problems import (
     BinaryOptimizationProblem,
     MaxCliqueProblem,
@@ -373,3 +375,98 @@ class TestFinalComputationDecode:
         qaoa.run()
         sol = qaoa.solution
         assert all(b in (0, 1) for b in sol)
+
+
+class TestCostMetaCircuitCache:
+    """``_cost_meta_circuit_factory`` memoizes built MetaCircuits per
+    ``ham_id`` for stateless trotterization strategies, where the operator
+    is deterministic across calls.  Stateful strategies (e.g. QDrift) must
+    bypass the cache because their operator is resampled each call."""
+
+    @staticmethod
+    def _make_qaoa(strategy, backend):
+        return QAOA(
+            MaxCutProblem(make_bull_graph()),
+            n_layers=1,
+            trotterization_strategy=strategy,
+            backend=backend,
+            max_iterations=1,
+        )
+
+    def test_stateless_strategy_caches_by_ham_id(self, dummy_simulator):
+        qaoa = self._make_qaoa(ExactTrotterization(), dummy_simulator)
+        ham = qaoa.cost_hamiltonian
+        m1 = qaoa._cost_meta_circuit_factory(ham, ham_id=0)
+        m2 = qaoa._cost_meta_circuit_factory(ham, ham_id=0)
+        assert m1 is m2
+
+    def test_stateless_distinct_ham_ids_cached_separately(self, dummy_simulator):
+        qaoa = self._make_qaoa(ExactTrotterization(), dummy_simulator)
+        ham = qaoa.cost_hamiltonian
+        m1 = qaoa._cost_meta_circuit_factory(ham, ham_id=0)
+        m2 = qaoa._cost_meta_circuit_factory(ham, ham_id=1)
+        assert m1 is not m2
+        size = qaoa._params.size
+        assert qaoa._cost_meta_cache[(0, size)] is m1
+        assert qaoa._cost_meta_cache[(1, size)] is m2
+
+    def test_stateless_skips_qscript_to_meta_on_cache_hit(
+        self, dummy_simulator, mocker
+    ):
+        qaoa = self._make_qaoa(ExactTrotterization(), dummy_simulator)
+        ham = qaoa.cost_hamiltonian
+
+        # Prime the cache, then start counting.
+        qaoa._cost_meta_circuit_factory(ham, ham_id=0)
+        spy = mocker.spy(qaoa_module, "qscript_to_meta")
+
+        for _ in range(3):
+            qaoa._cost_meta_circuit_factory(ham, ham_id=0)
+        spy.assert_not_called()
+
+    def test_stateful_strategy_skips_cache(self, dummy_simulator):
+        strategy = QDrift(
+            sampling_budget=2,
+            n_hamiltonians_per_iteration=1,
+            seed=42,
+        )
+        qaoa = self._make_qaoa(strategy, dummy_simulator)
+        ham = qaoa.cost_hamiltonian
+        m1 = qaoa._cost_meta_circuit_factory(ham, ham_id=0)
+        m2 = qaoa._cost_meta_circuit_factory(ham, ham_id=0)
+        assert m1 is not m2
+        assert qaoa._cost_meta_cache == {}
+
+    def test_cache_independent_per_instance(self, dummy_simulator):
+        qaoa1 = self._make_qaoa(ExactTrotterization(), dummy_simulator)
+        qaoa2 = self._make_qaoa(ExactTrotterization(), dummy_simulator)
+
+        qaoa1._cost_meta_circuit_factory(qaoa1.cost_hamiltonian, ham_id=0)
+        assert qaoa1._cost_meta_cache  # populated
+        assert qaoa2._cost_meta_cache == {}
+
+    def test_cache_self_invalidates_on_depth_rebuild(self, dummy_simulator):
+        """IterativeQAOA mutates ``self._params`` per depth.  The cache key
+        embeds the parameter size, so the depth-2 lookup misses, builds a
+        new MetaCircuit, and stores it under a distinct key — without the
+        subclass needing to clear the cache.
+        """
+        qaoa = IterativeQAOA(
+            MaxCutProblem(make_bull_graph()),
+            max_depth=2,
+            backend=dummy_simulator,
+            max_iterations_per_depth=1,
+        )
+        ham = qaoa.cost_hamiltonian
+        m_d1 = qaoa._cost_meta_circuit_factory(ham, ham_id=0)
+        d1_size = qaoa._params.size
+
+        qaoa._rebuild_for_depth(2)
+        d2_size = qaoa._params.size
+        assert d2_size != d1_size
+
+        m_d2 = qaoa._cost_meta_circuit_factory(ham, ham_id=0)
+        assert m_d2 is not m_d1
+        # Both entries coexist under distinct keys.
+        assert qaoa._cost_meta_cache[(0, d1_size)] is m_d1
+        assert qaoa._cost_meta_cache[(0, d2_size)] is m_d2
