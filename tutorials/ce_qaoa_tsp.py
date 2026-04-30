@@ -42,6 +42,45 @@ def brute_force_tsp(cost_matrix, start_city):
     return best_tour, best_cost
 
 
+def _print_loss_landscape(losses, grid):
+    table = Table(title="Loss Landscape (γ \\ β)")
+    table.add_column("γ \\ β", style="bold")
+    betas = sorted(set(grid[:, 1]))
+    for b in betas:
+        table.add_column(f"{b:.2f}", justify="right")
+    for g in sorted(set(grid[:, 0])):
+        row = [f"{g:.2f}"]
+        for b in betas:
+            mask = np.isclose(grid[:, 0], g) & np.isclose(grid[:, 1], b)
+            idx = np.where(mask)[0]
+            row.append(f"{losses[idx[0]]:.2f}" if len(idx) else "—")
+        table.add_row(*row)
+    Console().print(table)
+
+
+def _print_top_tours(repaired, opt_cost):
+    table = Table(title="Top 5 Tours")
+    table.add_column("#", style="dim")
+    table.add_column("Tour")
+    table.add_column("Cost", justify="right")
+    table.add_column("Prob", justify="right")
+    table.add_column("Gap", justify="right")
+
+    for i, sol in enumerate(repaired, 1):
+        tour_str = " → ".join(str(c) for c in sol.decoded) if sol.decoded else "—"
+        gap = f"{(sol.energy - opt_cost) / opt_cost * 100:.1f}%" if sol.energy else "—"
+        table.add_row(
+            str(i),
+            tour_str,
+            f"{sol.energy:.1f}" if sol.energy else "—",
+            f"{sol.prob:.2%}",
+            gap,
+        )
+    console = Console()
+    console.print(table)
+    console.print(f"\n[dim]Optimal cost: {opt_cost}[/dim]")
+
+
 if __name__ == "__main__":
     console = Console()
     backend = get_backend(shots=5000)
@@ -75,22 +114,7 @@ if __name__ == "__main__":
         f"Best (γ, β): ({ce_grid.best_params[0]:.3f}, {ce_grid.best_params[1]:.3f})"
     )
 
-    # Loss landscape table
-    losses = grid_opt._all_losses
-    grid = grid_opt._param_grid
-    table = Table(title="Loss Landscape (γ \\ β)")
-    table.add_column("γ \\ β", style="bold")
-    betas = sorted(set(grid[:, 1]))
-    for b in betas:
-        table.add_column(f"{b:.2f}", justify="right")
-    for g in sorted(set(grid[:, 0])):
-        row = [f"{g:.2f}"]
-        for b in betas:
-            mask = np.isclose(grid[:, 0], g) & np.isclose(grid[:, 1], b)
-            idx = np.where(mask)[0]
-            row.append(f"{losses[idx[0]]:.2f}" if len(idx) else "—")
-        table.add_row(*row)
-    console.print(table)
+    _print_loss_landscape(grid_opt._all_losses, grid_opt._param_grid)
 
     # ── 3) Parameter transfer: grid → variational ─────────────────────
     console.rule("[bold]Parameter Transfer → Monte Carlo Refinement")
@@ -139,22 +163,4 @@ if __name__ == "__main__":
     console.rule("[bold]Top Solutions (with repair)")
 
     repaired = ce_mc.get_top_solutions(n=5, feasibility="repair", include_decoded=True)
-    table2 = Table(title="Top 5 Tours")
-    table2.add_column("#", style="dim")
-    table2.add_column("Tour")
-    table2.add_column("Cost", justify="right")
-    table2.add_column("Prob", justify="right")
-    table2.add_column("Gap", justify="right")
-
-    for i, sol in enumerate(repaired, 1):
-        tour_str = " → ".join(str(c) for c in sol.decoded) if sol.decoded else "—"
-        gap = f"{(sol.energy - opt_cost) / opt_cost * 100:.1f}%" if sol.energy else "—"
-        table2.add_row(
-            str(i),
-            tour_str,
-            f"{sol.energy:.1f}" if sol.energy else "—",
-            f"{sol.prob:.2%}",
-            gap,
-        )
-    console.print(table2)
-    console.print(f"\n[dim]Optimal cost: {opt_cost}[/dim]")
+    _print_top_tours(repaired, opt_cost)

@@ -29,6 +29,18 @@ def _print_sorted_probs(title: str, probs: dict[str, float], top_k: int = 8) -> 
     print(f"  Total probability: {sum(probs.values()):.6f}")
 
 
+def _print_observable_result(
+    estimated: float, exact: float, circuit_count: int
+) -> None:
+    title = "Example 2 — Observable mode"
+    print(f"\n{title}")
+    print("-" * len(title))
+    print(f"  Estimated ⟨Z₀⟩:  {estimated:.6f}")
+    print(f"  Exact     ⟨Z₀⟩:  {exact:.6f}")
+    print(f"  Error:            {abs(estimated - exact):.6f}")
+    print(f"  Circuits executed: {circuit_count}")
+
+
 if __name__ == "__main__":
     backend = get_backend(shots=5000)
 
@@ -65,14 +77,7 @@ if __name__ == "__main__":
     te_expval.run()
 
     exact_z = math.cos(math.sqrt(2) * t2) ** 2
-
-    print("\nExample 2 — Observable mode")
-    print("---------------------------")
-    estimated_z = te_expval.expval()
-    print(f"  Estimated ⟨Z₀⟩:  {estimated_z:.6f}")
-    print(f"  Exact     ⟨Z₀⟩:  {exact_z:.6f}")
-    print(f"  Error:            {abs(estimated_z - exact_z):.6f}")
-    print(f"  Circuits executed: {te_expval.total_circuit_count}")
+    _print_observable_result(te_expval.expval(), exact_z, te_expval.total_circuit_count)
 
     # ── Example 3: QDrift randomized Trotterization ──────────────────
     # H = X₀ + 0.5·Z₀ + X₁, |00⟩, t = 1.0.

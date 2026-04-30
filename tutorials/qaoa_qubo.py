@@ -30,6 +30,38 @@ def _bqm_to_numpy_matrix(bqm):
     return dense
 
 
+def _print_method_comparison(
+    quantum_energy, classical_energy, quantum_solution, classical_solution
+):
+    quantum_bitstring = "".join(str(bit) for bit in quantum_solution)
+    classical_bitstring = "".join(str(bit) for bit in classical_solution)
+    bitstring_width = max(len(quantum_bitstring), len(classical_bitstring))
+
+    print("Method     Energy        Bitstring")
+    print("-------    -----------   " + "-" * bitstring_width)
+    print(
+        f"QAOA       {quantum_energy:>11.6f}   {quantum_bitstring:<{bitstring_width}}"
+    )
+    print(
+        f"Classical  {classical_energy:>11.6f}   "
+        f"{classical_bitstring:<{bitstring_width}}"
+    )
+
+
+def _print_top_solutions(top_solutions, bqm):
+    print("\n" + "=" * 60)
+    print("Top 5 Solutions by Probability:")
+    print("=" * 60)
+    for i, sol in enumerate(top_solutions, 1):
+        solution_array = np.array([int(bit) for bit in sol.bitstring])
+        energy = bqm.energy(solution_array)
+        print(
+            f"{i}. Bitstring: {sol.bitstring} | "
+            f"Probability: {sol.prob:0.2%} | "
+            f"Energy: {energy:.4f}"
+        )
+
+
 if __name__ == "__main__":
     bqm = dimod.generators.gnp_random_bqm(
         10,
@@ -57,32 +89,11 @@ if __name__ == "__main__":
         dimod.ExactSolver().sample(bqm).lowest().record[0]
     )
 
-    quantum_bitstring = "".join(str(bit) for bit in quantum_solution)
-    classical_bitstring = "".join(str(bit) for bit in best_classical_bitstring)
-    bitstring_width = max(len(quantum_bitstring), len(classical_bitstring))
-
     print(f"Total circuits: {qaoa_problem.total_circuit_count}\n")
-    print("Method     Energy        Bitstring")
-    print("-------    -----------   " + "-" * bitstring_width)
-    print(
-        f"QAOA       {quantum_energy:>11.6f}   {quantum_bitstring:<{bitstring_width}}"
+    _print_method_comparison(
+        quantum_energy,
+        best_classical_energy,
+        quantum_solution,
+        best_classical_bitstring,
     )
-    print(
-        f"Classical  {best_classical_energy:>11.6f}   "
-        f"{classical_bitstring:<{bitstring_width}}"
-    )
-
-    # Demonstrate top-N solutions functionality
-    print("\n" + "=" * 60)
-    print("Top 5 Solutions by Probability:")
-    print("=" * 60)
-    top_solutions = qaoa_problem.get_top_solutions(n=5)
-    for i, sol in enumerate(top_solutions, 1):
-        # Convert bitstring to numpy array for energy calculation
-        solution_array = np.array([int(bit) for bit in sol.bitstring])
-        energy = bqm.energy(solution_array)
-        print(
-            f"{i}. Bitstring: {sol.bitstring} | "
-            f"Probability: {sol.prob:0.2%} | "
-            f"Energy: {energy:.4f}"
-        )
+    _print_top_solutions(qaoa_problem.get_top_solutions(n=5), bqm)

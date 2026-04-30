@@ -17,6 +17,31 @@ from divi.qprog.optimizers import PymooMethod, PymooOptimizer
 from divi.qprog.problems import BinaryOptimizationProblem
 from tutorials._backend import get_backend
 
+
+def _print_scan_summary(label, best_loss, line_scan, plane_scan, pca_scan):
+    print(label)
+    print(f"  Best loss after optimization: {best_loss:.6f}")
+    print(f"  1D scan minimum: {line_scan.values.min():.6f}")
+    print(f"  2D scan minimum: {plane_scan.values.min():.6f}")
+    print(f"  PCA scan minimum: {pca_scan.values.min():.6f}")
+
+
+def _plot_landscape_comparison(
+    qaoa_line, pce_line, qaoa_plane, pce_plane, qaoa_pca, pce_pca
+):
+    fig, axes = plt.subplots(3, 2, figsize=(12, 12), constrained_layout=True)
+    qaoa_line.plot(ax=axes[0, 0], color="tab:blue")
+    pce_line.plot(ax=axes[0, 1], color="tab:orange")
+    qaoa_plane.plot(ax=axes[1, 0], cmap="viridis")
+    pce_plane.plot(ax=axes[1, 1], cmap="magma")
+    # PCA scans with trajectory overlay showing the optimization path.
+    qaoa_pca.plot(ax=axes[2, 0], cmap="cividis", show_trajectory=True)
+    pce_pca.plot(ax=axes[2, 1], cmap="plasma", show_trajectory=True)
+    fig.suptitle("QAOA vs PCE Loss-Landscape Comparison")
+
+    plt.show()
+
+
 if __name__ == "__main__":
     problem = np.array([[-1.0, 2.0], [0.0, 1.0]])
     # CMAES is population-based, so every iteration records a full generation
@@ -98,25 +123,9 @@ if __name__ == "__main__":
         span_y=(-0.5, 0.5),
     )
 
-    print("QAOA")
-    print(f"  Best loss after optimization: {qaoa.best_loss:.6f}")
-    print(f"  1D scan minimum: {qaoa_line.values.min():.6f}")
-    print(f"  2D scan minimum: {qaoa_plane.values.min():.6f}")
-    print(f"  PCA scan minimum: {qaoa_pca.values.min():.6f}")
-    print("PCE")
-    print(f"  Best loss after optimization: {pce.best_loss:.6f}")
-    print(f"  1D scan minimum: {pce_line.values.min():.6f}")
-    print(f"  2D scan minimum: {pce_plane.values.min():.6f}")
-    print(f"  PCA scan minimum: {pce_pca.values.min():.6f}")
+    _print_scan_summary("QAOA", qaoa.best_loss, qaoa_line, qaoa_plane, qaoa_pca)
+    _print_scan_summary("PCE", pce.best_loss, pce_line, pce_plane, pce_pca)
 
-    fig, axes = plt.subplots(3, 2, figsize=(12, 12), constrained_layout=True)
-    qaoa_line.plot(ax=axes[0, 0], color="tab:blue")
-    pce_line.plot(ax=axes[0, 1], color="tab:orange")
-    qaoa_plane.plot(ax=axes[1, 0], cmap="viridis")
-    pce_plane.plot(ax=axes[1, 1], cmap="magma")
-    # PCA scans with trajectory overlay showing the optimization path.
-    qaoa_pca.plot(ax=axes[2, 0], cmap="cividis", show_trajectory=True)
-    pce_pca.plot(ax=axes[2, 1], cmap="plasma", show_trajectory=True)
-    fig.suptitle("QAOA vs PCE Loss-Landscape Comparison")
-
-    plt.show()
+    _plot_landscape_comparison(
+        qaoa_line, pce_line, qaoa_plane, pce_plane, qaoa_pca, pce_pca
+    )

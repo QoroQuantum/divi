@@ -54,7 +54,7 @@ def generate_random_graph(n_nodes: int, n_edges: int) -> nx.Graph:
     return graph
 
 
-def analyze_results(quantum_solution, classical_cut_size):
+def analyze_results(quantum_solution, classical_cut_size, graph):
     cut_edges = 0
 
     for u, v in graph.edges():
@@ -64,8 +64,31 @@ def analyze_results(quantum_solution, classical_cut_size):
     return cut_edges / classical_cut_size
 
 
-if __name__ == "__main__":
+def _print_greedy_vs_beam(greedy_ratio, beam_ratio):
     console = Console()
+    console.print("\n[bold]Greedy vs Beam Search[/bold]")
+    table = Table(show_header=True, header_style="bold cyan")
+    table.add_column("Method")
+    table.add_column("Cut/Classical Ratio", justify="right")
+    table.add_row("Greedy (beam_width=1, n=5)", f"{greedy_ratio:.6f}")
+    table.add_row("Beam (beam_width=3, n=5)", f"{beam_ratio:.6f}")
+    console.print(table)
+
+
+def _print_top_solutions(top_solutions, classical_cut_size, graph):
+    console = Console()
+    console.print("\n[bold]Top-5 Solutions[/bold]")
+    top_table = Table(show_header=True, header_style="bold cyan")
+    top_table.add_column("Rank", justify="right")
+    top_table.add_column("Selected Nodes")
+    top_table.add_column("Cut/Classical Ratio", justify="right")
+    for i, sol in enumerate(top_solutions, 1):
+        ratio = analyze_results(sol, classical_cut_size, graph)
+        top_table.add_row(str(i), str(sol), f"{ratio:.6f}")
+    console.print(top_table)
+
+
+if __name__ == "__main__":
     N_NODES = 30
     N_EDGES = 40
 
@@ -112,23 +135,8 @@ if __name__ == "__main__":
         graph, seed=1
     )
 
-    greedy_ratio = analyze_results(greedy_solution, classical_cut_size)
-    beam_ratio = analyze_results(beam_solution, classical_cut_size)
+    greedy_ratio = analyze_results(greedy_solution, classical_cut_size, graph)
+    beam_ratio = analyze_results(beam_solution, classical_cut_size, graph)
 
-    console.print("\n[bold]Greedy vs Beam Search[/bold]")
-    table = Table(show_header=True, header_style="bold cyan")
-    table.add_column("Method")
-    table.add_column("Cut/Classical Ratio", justify="right")
-    table.add_row("Greedy (beam_width=1, n=5)", f"{greedy_ratio:.6f}")
-    table.add_row("Beam (beam_width=3, n=5)", f"{beam_ratio:.6f}")
-    console.print(table)
-
-    console.print("\n[bold]Top-5 Solutions[/bold]")
-    top_table = Table(show_header=True, header_style="bold cyan")
-    top_table.add_column("Rank", justify="right")
-    top_table.add_column("Selected Nodes")
-    top_table.add_column("Cut/Classical Ratio", justify="right")
-    for i, sol in enumerate(top_solutions, 1):
-        ratio = analyze_results(sol, classical_cut_size)
-        top_table.add_row(str(i), str(sol), f"{ratio:.6f}")
-    console.print(top_table)
+    _print_greedy_vs_beam(greedy_ratio, beam_ratio)
+    _print_top_solutions(top_solutions, classical_cut_size, graph)

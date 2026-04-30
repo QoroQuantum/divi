@@ -26,6 +26,32 @@ from divi.viz import (
 )
 from tutorials._backend import get_backend
 
+
+def _plot_landscape_analysis(interp_1d, interp_2d, hess_scan, spectrum, neb_result):
+    fig, axes = plt.subplots(3, 2, figsize=(14, 16), constrained_layout=True)
+
+    # Row 1: interpolation scans
+    interp_1d.plot(ax=axes[0, 0], color="tab:green")
+    axes[0, 0].set_title("1D Interpolation")
+    interp_2d.plot(ax=axes[0, 1], cmap="viridis")
+    axes[0, 1].set_title("2D Interpolation")
+
+    # Row 2: Hessian-directed scan with gradient overlay + Fourier spectrum
+    hess_scan.plot(ax=axes[1, 0], cmap="coolwarm", show_gradients=True)
+    axes[1, 0].set_title("Hessian Eigenvector Scan + Gradients")
+    spectrum.plot(ax=axes[1, 1])
+
+    # Row 3: 3D surface + NEB energy profile
+    ax3d = fig.add_subplot(3, 2, 5, projection="3d")
+    axes[2, 0].set_visible(False)
+    hess_scan.plot_3d(ax=ax3d, cmap="coolwarm", alpha=0.8)
+    ax3d.set_title("3D Surface")
+    neb_result.plot(ax=axes[2, 1], color="tab:red")
+
+    fig.suptitle("Advanced Loss-Landscape Analysis", fontsize=14)
+    plt.show()
+
+
 if __name__ == "__main__":
     problem = np.array([[-1.0, 2.0], [0.0, 1.0]])
     backend = get_backend(shots=4000)
@@ -107,25 +133,4 @@ if __name__ == "__main__":
     )
 
     # ---- Plotting ----
-    fig, axes = plt.subplots(3, 2, figsize=(14, 16), constrained_layout=True)
-
-    # Row 1: interpolation scans
-    interp_1d.plot(ax=axes[0, 0], color="tab:green")
-    axes[0, 0].set_title("1D Interpolation")
-    interp_2d.plot(ax=axes[0, 1], cmap="viridis")
-    axes[0, 1].set_title("2D Interpolation")
-
-    # Row 2: Hessian-directed scan with gradient overlay + Fourier spectrum
-    hess_scan.plot(ax=axes[1, 0], cmap="coolwarm", show_gradients=True)
-    axes[1, 0].set_title("Hessian Eigenvector Scan + Gradients")
-    spectrum.plot(ax=axes[1, 1])
-
-    # Row 3: 3D surface + NEB energy profile
-    ax3d = fig.add_subplot(3, 2, 5, projection="3d")
-    axes[2, 0].set_visible(False)
-    hess_scan.plot_3d(ax=ax3d, cmap="coolwarm", alpha=0.8)
-    ax3d.set_title("3D Surface")
-    neb_result.plot(ax=axes[2, 1], color="tab:red")
-
-    fig.suptitle("Advanced Loss-Landscape Analysis", fontsize=14)
-    plt.show()
+    _plot_landscape_analysis(interp_1d, interp_2d, hess_scan, spectrum, neb_result)

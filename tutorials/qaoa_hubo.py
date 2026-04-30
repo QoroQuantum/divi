@@ -55,6 +55,43 @@ def exact_minimum(hubo: dict, variables: list[str]) -> tuple[dict, float]:
     return best_assignment, best_energy
 
 
+def _print_results_table(
+    classical_solution, classical_energy, qaoa_native, qaoa_quad_runs
+):
+    def format_assignment(sol: dict) -> str:
+        return "  ".join(f"{k}={v}" for k, v in sorted(sol.items()))
+
+    table = Table(
+        title="HUBO Optimization Results", show_header=True, header_style="bold cyan"
+    )
+    table.add_column("Method")
+    table.add_column("Energy", justify="right")
+    table.add_column("Assignment")
+    table.add_column("Circuits", justify="right")
+
+    table.add_row(
+        "Classical",
+        f"{classical_energy:.4f}",
+        format_assignment(classical_solution),
+        "-",
+    )
+    table.add_row(
+        "Native",
+        f"{qaoa_native.best_loss:.4f}",
+        format_assignment(qaoa_native.solution),
+        str(qaoa_native.total_circuit_count),
+    )
+    for strength, qaoa_quad in qaoa_quad_runs:
+        table.add_row(
+            f"Quadratized (P={strength})",
+            f"{qaoa_quad.best_loss:.4f}",
+            format_assignment(qaoa_quad.solution),
+            str(qaoa_quad.total_circuit_count),
+        )
+
+    Console().print(table)
+
+
 if __name__ == "__main__":
     # ── Define a 4-variable cubic HUBO with string labels ────────────
     hubo = {
@@ -106,39 +143,6 @@ if __name__ == "__main__":
     # A lower penalty (e.g. P=1) can outperform higher P because the landscape
     # stays dominated by the problem terms; high P can trap the optimizer in
     # a consistent but suboptimal assignment.
-    native_solution = qaoa_native.solution
-
-    def format_assignment(sol: dict) -> str:
-        return "  ".join(f"{k}={v}" for k, v in sorted(sol.items()))
-
-    console = Console()
-    table = Table(
-        title="HUBO Optimization Results", show_header=True, header_style="bold cyan"
+    _print_results_table(
+        classical_solution, classical_energy, qaoa_native, qaoa_quad_runs
     )
-    table.add_column("Method")
-    table.add_column("Energy", justify="right")
-    table.add_column("Assignment")
-    table.add_column("Circuits", justify="right")
-
-    table.add_row(
-        "Classical",
-        f"{classical_energy:.4f}",
-        format_assignment(classical_solution),
-        "-",
-    )
-    table.add_row(
-        "Native",
-        f"{qaoa_native.best_loss:.4f}",
-        format_assignment(native_solution),
-        str(qaoa_native.total_circuit_count),
-    )
-    for strength, qaoa_quad in qaoa_quad_runs:
-        quad_solution = qaoa_quad.solution
-        table.add_row(
-            f"Quadratized (P={strength})",
-            f"{qaoa_quad.best_loss:.4f}",
-            format_assignment(quad_solution),
-            str(qaoa_quad.total_circuit_count),
-        )
-
-    console.print(table)

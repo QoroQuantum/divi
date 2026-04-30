@@ -27,6 +27,29 @@ from divi.circuits.quepp import QuEPP
 from divi.qprog import VQE, HartreeFockAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 
+
+def _print_mitigation_comparison(runs, reference_energy):
+    print(f"Noiseless baseline energy: {reference_energy:.6f}")
+
+    table = Table(title="Error Mitigation Comparison (single deterministic runs)")
+    table.add_column("Method", style="bold")
+    table.add_column("Energy", justify="right")
+    table.add_column("|Error vs baseline|", justify="right")
+    table.add_column("# Circuits", justify="right")
+
+    for name, vqe in runs:
+        energy = vqe.best_loss
+        error = abs(energy - reference_energy)
+        table.add_row(
+            name,
+            f"{energy:.6f}",
+            f"{error:.6f}",
+            str(vqe.total_circuit_count),
+        )
+
+    Console().print(table)
+
+
 if __name__ == "__main__":
     mol = qp.qchem.Molecule(
         symbols=["H", "H"],
@@ -102,24 +125,4 @@ if __name__ == "__main__":
     for _, vqe in runs:
         vqe.run()
 
-    reference_energy = vqe_noiseless.best_loss
-    print(f"Noiseless baseline energy: {reference_energy:.6f}")
-
-    # --- Print comparison table ---
-    table = Table(title="Error Mitigation Comparison (single deterministic runs)")
-    table.add_column("Method", style="bold")
-    table.add_column("Energy", justify="right")
-    table.add_column("|Error vs baseline|", justify="right")
-    table.add_column("# Circuits", justify="right")
-
-    for name, vqe in runs:
-        energy = vqe.best_loss
-        error = abs(energy - reference_energy)
-        table.add_row(
-            name,
-            f"{energy:.6f}",
-            f"{error:.6f}",
-            str(vqe.total_circuit_count),
-        )
-
-    Console().print(table)
+    _print_mitigation_comparison(runs, vqe_noiseless.best_loss)

@@ -69,6 +69,82 @@ Cost 67
 """
 
 
+def _print_one_hot_routes(oh_sols):
+    table = Table(title="One-Hot Routes")
+    table.add_column("#", style="dim")
+    table.add_column("Routes")
+    table.add_column("Cost", justify="right")
+    table.add_column("Prob", justify="right")
+    for i, sol in enumerate(oh_sols, 1):
+        if sol.decoded:
+            display = " | ".join(
+                " → ".join(str(c) for c in r) for r in sol.decoded if len(r) > 2
+            )
+        else:
+            display = "—"
+        table.add_row(
+            str(i),
+            display,
+            f"{sol.energy:.0f}" if sol.energy else "—",
+            f"{sol.prob:.2%}",
+        )
+    Console().print(table)
+
+
+def _print_encoding_comparison(ce_oh, ce_bin):
+    comp = Table(title="Encoding Comparison")
+    comp.add_column("Metric")
+    comp.add_column("One-Hot", justify="right")
+    comp.add_column("Binary", justify="right")
+    comp.add_row("Qubits", str(ce_oh.n_qubits), str(ce_bin.n_qubits))
+    comp.add_row(
+        "Circuits", str(ce_oh.total_circuit_count), str(ce_bin.total_circuit_count)
+    )
+    comp.add_row("Best loss", f"{ce_oh.best_loss:.4f}", f"{ce_bin.best_loss:.4f}")
+    Console().print(comp)
+
+
+def _print_qubit_projections():
+    proj = Table(title="Qubits by Encoding and Scale")
+    proj.add_column("N (customers)")
+    proj.add_column("K (vehicles)")
+    proj.add_column("One-Hot", justify="right")
+    proj.add_column("Binary (full)", justify="right")
+    proj.add_column("Binary (tight)", justify="right")
+    proj.add_column("Savings", justify="right")
+
+    for n_cust, k in [(3, 2), (10, 3), (20, 4), (50, 10)]:
+        oh_q = cvrp_block_structure(n_cust, k)[0] * cvrp_block_structure(n_cust, k)[1]
+        bin_full = binary_block_config(n_cust, k)
+        tight_steps = max(2, (n_cust + k - 1) // k + 1)
+        bin_tight = binary_block_config(n_cust, k, max_steps=tight_steps)
+        proj.add_row(
+            str(n_cust),
+            str(k),
+            f"{oh_q:,}",
+            f"{bin_full.n_qubits:,}",
+            f"{bin_tight.n_qubits:,}",
+            f"{(1 - bin_tight.n_qubits / oh_q) * 100:.0f}%",
+        )
+    console = Console()
+    console.print(proj)
+    console.print(
+        "[dim]Paper's enhanced formula for QOBLIB (N=20, K=4): ~133 qubits[/dim]"
+    )
+
+
+def _print_parsed_instance(inst, opt_routes, opt_cost):
+    console = Console()
+    console.print(f"Instance: {inst.name}")
+    console.print(
+        f"Nodes: {inst.dimension} ({inst.n_customers} customers + depot), "
+        f"Vehicles: {inst.n_vehicles}, Capacity: {inst.capacity}"
+    )
+    console.print(f"Optimal cost: {opt_cost}")
+    for i, route in enumerate(opt_routes, 1):
+        console.print(f"  Vehicle {i}: {' → '.join(str(n) for n in route)}")
+
+
 if __name__ == "__main__":
     console = Console()
     backend = get_backend(shots=5000)
@@ -100,26 +176,9 @@ if __name__ == "__main__":
     console.print(f"Circuits: {ce_oh.total_circuit_count}")
     console.print(f"Best loss: {ce_oh.best_loss:.4f}")
 
-    oh_sols = ce_oh.get_top_solutions(n=3, feasibility="repair", include_decoded=True)
-    table = Table(title="One-Hot Routes")
-    table.add_column("#", style="dim")
-    table.add_column("Routes")
-    table.add_column("Cost", justify="right")
-    table.add_column("Prob", justify="right")
-    for i, sol in enumerate(oh_sols, 1):
-        if sol.decoded:
-            display = " | ".join(
-                " → ".join(str(c) for c in r) for r in sol.decoded if len(r) > 2
-            )
-        else:
-            display = "—"
-        table.add_row(
-            str(i),
-            display,
-            f"{sol.energy:.0f}" if sol.energy else "—",
-            f"{sol.prob:.2%}",
-        )
-    console.print(table)
+    _print_one_hot_routes(
+        ce_oh.get_top_solutions(n=3, feasibility="repair", include_decoded=True)
+    )
 
     # ── 2) Binary CE-QAOA on same instance ────────────────────────────
     console.rule("[bold]CE-QAOA: Binary Encoding (same instance)")
@@ -151,46 +210,11 @@ if __name__ == "__main__":
 
     # ── 3) Encoding comparison table ──────────────────────────────────
     console.rule("[bold]One-Hot vs Binary Comparison")
-
-    comp = Table(title="Encoding Comparison")
-    comp.add_column("Metric")
-    comp.add_column("One-Hot", justify="right")
-    comp.add_column("Binary", justify="right")
-    comp.add_row("Qubits", str(ce_oh.n_qubits), str(ce_bin.n_qubits))
-    comp.add_row(
-        "Circuits", str(ce_oh.total_circuit_count), str(ce_bin.total_circuit_count)
-    )
-    comp.add_row("Best loss", f"{ce_oh.best_loss:.4f}", f"{ce_bin.best_loss:.4f}")
-    console.print(comp)
+    _print_encoding_comparison(ce_oh, ce_bin)
 
     # ── 4) Qubit projections at scale ─────────────────────────────────
     console.rule("[bold]Qubit Projections")
-
-    proj = Table(title="Qubits by Encoding and Scale")
-    proj.add_column("N (customers)")
-    proj.add_column("K (vehicles)")
-    proj.add_column("One-Hot", justify="right")
-    proj.add_column("Binary (full)", justify="right")
-    proj.add_column("Binary (tight)", justify="right")
-    proj.add_column("Savings", justify="right")
-
-    for n_cust, k in [(3, 2), (10, 3), (20, 4), (50, 10)]:
-        oh_q = cvrp_block_structure(n_cust, k)[0] * cvrp_block_structure(n_cust, k)[1]
-        bin_full = binary_block_config(n_cust, k)
-        tight_steps = max(2, (n_cust + k - 1) // k + 1)
-        bin_tight = binary_block_config(n_cust, k, max_steps=tight_steps)
-        proj.add_row(
-            str(n_cust),
-            str(k),
-            f"{oh_q:,}",
-            f"{bin_full.n_qubits:,}",
-            f"{bin_tight.n_qubits:,}",
-            f"{(1 - bin_tight.n_qubits / oh_q) * 100:.0f}%",
-        )
-    console.print(proj)
-    console.print(
-        "[dim]Paper's enhanced formula for QOBLIB (N=20, K=4): ~133 qubits[/dim]"
-    )
+    _print_qubit_projections()
 
     # ── 5) VRP file parser demo ───────────────────────────────────────
     console.rule("[bold]VRP File Parser")
@@ -204,11 +228,4 @@ if __name__ == "__main__":
         inst = parse_vrp_file(vrp_path)
         opt_routes, opt_cost = parse_vrp_solution(sol_path)
 
-    console.print(f"Instance: {inst.name}")
-    console.print(
-        f"Nodes: {inst.dimension} ({inst.n_customers} customers + depot), "
-        f"Vehicles: {inst.n_vehicles}, Capacity: {inst.capacity}"
-    )
-    console.print(f"Optimal cost: {opt_cost}")
-    for i, route in enumerate(opt_routes, 1):
-        console.print(f"  Vehicle {i}: {' → '.join(str(n) for n in route)}")
+    _print_parsed_instance(inst, opt_routes, opt_cost)
