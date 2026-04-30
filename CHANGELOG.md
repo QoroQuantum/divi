@@ -7,6 +7,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0](https://github.com/QoroQuantum/divi/compare/v0.11.1...v0.12.0) (2026-04-30)
+
+
+### ✨ Added
+
+* adaptive shot allocation across measurement groups ([f6d5a89](https://github.com/QoroQuantum/divi/commit/f6d5a8938dd6c25354826f09c31686ec43572c57))
+* **pipeline:** analytic dry runs with exact fan-out counts ([05ef63f](https://github.com/QoroQuantum/divi/commit/05ef63f183f0b166251ee8ce56ab4ca12289f620))
+
+
+### 🐛 Fixed
+
+* guard shot_groups merge kwargs and custom shot-dist truncation ([905d3c8](https://github.com/QoroQuantum/divi/commit/905d3c888ba3b145f18d979246f409a7b1ef3455))
+* stress-test hardening for ensembles, QAOA, QUBO, and reporting ([19b0e76](https://github.com/QoroQuantum/divi/commit/19b0e76a03c20b69686404c7ed79c3ea1641e2eb))
+
+
+### 🔄 Changed
+
+* adopt pyrefly and drive a type-checker cleanup pass ([c278a2b](https://github.com/QoroQuantum/divi/commit/c278a2bdd9ec928c58cf3a33d52a2708d1e26dce))
+* disentangle module dependencies ([5555748](https://github.com/QoroQuantum/divi/commit/5555748d5f5b9c194699d4544468cfa7acd8fbf9))
+* **pipeline:** report measurement grouping as a reduction in dry runs ([115545c](https://github.com/QoroQuantum/divi/commit/115545cb991f572f3f10bbc1c68a128667ed87cb))
+* rename pennylane alias qml -&gt; qp ([fcf6c08](https://github.com/QoroQuantum/divi/commit/fcf6c08ba8eb0b2062652e666f5d8e605552cedc))
+* second pyrefly pass with tutorial-driven API hardening ([a22504a](https://github.com/QoroQuantum/divi/commit/a22504ab25455c2a48906a15328b996679652ede))
+* third pyrefly pass with type-native graph partitioning ([000af2c](https://github.com/QoroQuantum/divi/commit/000af2c8b9b5eac184658131763256c566303286))
+* **tutorials:** extract presentation code into private helpers ([bf1e468](https://github.com/QoroQuantum/divi/commit/bf1e4689aa331839ccf5de62f8c3324c16603a02))
+
+
+### 🔧 Internal
+
+* add style-check workflow and pyrefly pre-commit hook ([8e14f84](https://github.com/QoroQuantum/divi/commit/8e14f841856e8886da992f48d70f92d78a58a05b))
+* Merge pull request [#77](https://github.com/QoroQuantum/divi/issues/77) from QoroQuantum/adaptive-shots ([2b33ae9](https://github.com/QoroQuantum/divi/commit/2b33ae9fa37881ad676ef66cfd134355765c7ca0))
+
+
+### 📝 Documentation
+
+* **ai:** fix llama-cpp-python install troubleshooting [skip ci] ([9657d84](https://github.com/QoroQuantum/divi/commit/9657d846bb1a4592eb2a8543d150f74993db70c4))
+
 ## [0.11.1](https://github.com/QoroQuantum/divi/compare/v0.11.0...v0.11.1) (2026-04-21)
 
 
