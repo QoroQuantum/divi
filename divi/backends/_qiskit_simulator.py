@@ -668,7 +668,11 @@ class QiskitSimulator(CircuitRunner):
         if precomputed_durations is not None:
             estimated_run_times_sorted = sorted(precomputed_durations, reverse=True)
         elif circuits is not None:
-            with Pool() as p:
+            # Pin the worker count to ``_default_n_processes()`` so this
+            # static helper inherits the same fork/thread-aware sizing the
+            # instance uses, instead of defaulting to ``os.cpu_count()``
+            # workers regardless of context.
+            with Pool(processes=_default_n_processes()) as p:
                 estimated_run_times = p.map(
                     partial(
                         QiskitSimulator.estimate_run_time_single_circuit,

@@ -226,6 +226,25 @@ def make_batch_display(
 # ---------------------------------------------------------------------------
 
 
+def _safe_log(console, msg: str) -> None:
+    """Best-effort console log — swallow any errors from Rich (especially
+    during interpreter / live-display teardown) so the listener thread
+    never dies on its own diagnostics."""
+    try:
+        console.log(msg)
+    except Exception:
+        pass
+
+
+def _safe_call(fn, /, *args, **kwargs) -> None:
+    """Run *fn(*args, **kwargs)* and swallow any exception; same intent
+    as :func:`_safe_log` for non-logging Rich calls (e.g. ``live.refresh``)."""
+    try:
+        fn(*args, **kwargs)
+    except Exception:
+        pass
+
+
 def queue_listener(
     queue: Queue,
     progress_bar: Progress,
@@ -244,60 +263,87 @@ def queue_listener(
     Runs in a daemon thread until *done_event* is set.  Messages with
     ``batch=True`` are routed to :func:`handle_batch_message`; all others
     update the per-program *progress_bar*.
+
+    Each per-message body is wrapped so a malformed message (e.g. unknown
+    ``job_id``, Rich raising during teardown) cannot starve ``queue.join()``
+    or kill the listener thread.  Exceptions are logged and the queue
+    advances to the next message.
     """
+    console = progress_bar.console
+
     while not done_event.is_set():
         try:
             msg: dict[str, Any] = queue.get(timeout=0.1)
         except Empty:
             continue
         except Exception as e:
-            progress_bar.console.log(f"[queue_listener] Unexpected exception: {e}")
+            _safe_log(console, f"[queue_listener] queue.get failed: {e}")
             continue
 
-        # --- Batch-level messages from the coordinator ---
-        if msg.get("batch"):
-            if batch_progress is not None and batch_task_ids is not None:
-                handle_batch_message(
-                    msg,
-                    batch_progress,
-                    batch_task_ids,
-                    progress_bar,
-                    program_key_to_task_ids or {},
-                    lock,
+        try:
+            # --- Batch-level messages from the coordinator ---
+            if msg.get("batch"):
+                if batch_progress is not None and batch_task_ids is not None:
+                    handle_batch_message(
+                        msg,
+                        batch_progress,
+                        batch_task_ids,
+                        progress_bar,
+                        program_key_to_task_ids or {},
+                        lock,
+                    )
+                if is_jupyter and live_display is not None:
+                    _safe_call(live_display.refresh)
+                continue
+
+            # --- Regular per-program messages ---
+            with lock:
+                task_id = pb_task_map.get(msg["job_id"])
+            if task_id is None:
+                # Stale or unknown job_id (e.g. a late progress message
+                # arriving after the program's task was torn down).  Drop
+                # it rather than letting a KeyError kill the listener.
+                _safe_log(
+                    console,
+                    f"[queue_listener] dropped message for unknown job_id "
+                    f"{msg.get('job_id')!r}",
                 )
+                continue
+
+            update_args: dict[str, Any] = {"advance": msg["progress"]}
+            for key in (
+                "poll_attempt",
+                "max_retries",
+                "service_job_id",
+                "job_status",
+                "loss",
+            ):
+                if key in msg:
+                    update_args[key] = msg[key]
+            if msg.get("message"):
+                update_args["message"] = msg["message"]
+            if "final_status" in msg:
+                update_args["final_status"] = msg.get("final_status", "")
+
+            try:
+                progress_bar.update(task_id, **update_args)
+            except Exception as e:
+                _safe_log(console, f"[queue_listener] progress_bar.update failed: {e}")
+
             if is_jupyter and live_display is not None:
-                live_display.refresh()
+                _safe_call(live_display.refresh)
+
+        except Exception as e:
+            # Final safety net: any unexpected exception in the per-message
+            # body is logged and swallowed.  Without this, queue.join() in
+            # ProgramEnsemble would block forever waiting for the
+            # task_done() that the dead listener thread never makes.
+            _safe_log(
+                console,
+                f"[queue_listener] unexpected exception while handling message: {e}",
+            )
+        finally:
             queue.task_done()
-            continue
-
-        # --- Regular per-program messages ---
-        with lock:
-            task_id = pb_task_map[msg["job_id"]]
-
-        # Prepare update arguments, starting with progress.
-        update_args = {"advance": msg["progress"]}
-
-        if "poll_attempt" in msg:
-            update_args["poll_attempt"] = msg.get("poll_attempt", 0)
-        if "max_retries" in msg:
-            update_args["max_retries"] = msg.get("max_retries")
-        if "service_job_id" in msg:
-            update_args["service_job_id"] = msg.get("service_job_id")
-        if "job_status" in msg:
-            update_args["job_status"] = msg.get("job_status")
-        if msg.get("message"):
-            update_args["message"] = msg.get("message")
-        if "final_status" in msg:
-            update_args["final_status"] = msg.get("final_status", "")
-        if "loss" in msg:
-            update_args["loss"] = msg.get("loss")
-
-        progress_bar.update(task_id, **update_args)
-
-        if is_jupyter and live_display is not None:
-            live_display.refresh()
-
-        queue.task_done()
 
 
 def handle_batch_message(

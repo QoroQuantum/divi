@@ -126,6 +126,13 @@ class _BatchCoordinator:
     Each call to :meth:`submit` blocks until the barrier is met (all active
     programs have submitted) and the merged job returns results.  Multiple
     flush groups can be in-flight concurrently.
+
+    Lock order:
+        ``_lock`` first, then ``_in_flight_lock``.  Code that needs both must
+        acquire them in that order; never invert.  Network I/O (e.g.
+        ``cancel_job``) must run **outside** every coordinator lock — snapshot
+        the relevant state under the appropriate lock, release it, then make
+        the call.  ``cancel()`` follows this pattern.
     """
 
     def __init__(
@@ -135,12 +142,25 @@ class _BatchCoordinator:
         batch_config: BatchConfig | None = None,
         *,
         max_concurrent_programs: int | None = None,
+        cancellation_event: Event | None = None,
     ):
         self._real_backend = real_backend
         self._progress_queue = progress_queue
         self._batch_config = batch_config or BatchConfig()
         self._lock = Lock()
-        self._cancelled = Event()
+        # Shared cancellation Event with the enclosing ProgramEnsemble so that
+        # setting either side (KeyboardInterrupt path or coordinator.cancel())
+        # is observed by the other.  When constructed standalone (no
+        # ensemble), a private Event is created.
+        self._cancelled = (
+            cancellation_event if cancellation_event is not None else Event()
+        )
+        # Distinct from ``_cancelled``: this Event flips exactly once when
+        # ``cancel()`` has finished its in-flight job teardown and pending
+        # future cleanup.  We need both because ``_cancelled`` may be set
+        # externally (via the ensemble) before ``cancel()`` runs its
+        # cleanup, and we still need to ensure that work happens once.
+        self._cancel_completed = Event()
 
         # When set, register_program rejects beyond this many active programs
         # so the wait-for-all barrier can't deadlock against a smaller executor.
@@ -477,6 +497,11 @@ class _BatchCoordinator:
         ``ham_ops``) so that each backend call receives a uniform set of
         kwargs.  Within a sub-batch, programs with different ``ham_ops``
         values are merged using ``circuit_ham_map``.
+
+        Per-sub-batch runtime is accumulated into ``_total_runtime`` inside
+        :meth:`_submit_sub_batch` so that a partial-success scenario (one
+        sub-batch succeeds, a later one fails) preserves the credit for the
+        successful sub-batch.
         """
         sub_flush_groups: list[_FlushGroup] = []
         try:
@@ -488,7 +513,6 @@ class _BatchCoordinator:
                 return
 
             sub_batches = self._split_by_ham_ops(batch)
-            total_runtime = 0.0
 
             # Build (sub_batch, flush_group) pairs. When there's only one
             # sub-batch reuse the parent flush_group; otherwise create
@@ -510,11 +534,7 @@ class _BatchCoordinator:
                     sub_groups.append((sub_batch, sub_fg))
 
             for sub_batch, sub_fg in sub_groups:
-                runtime = self._submit_sub_batch(sub_batch, sub_fg)
-                total_runtime += runtime
-
-            with self._lock:
-                self._total_runtime += total_runtime
+                self._submit_sub_batch(sub_batch, sub_fg)
 
         except ExecutionCancelledError:
             self._send_batch_progress(flush_group, final_status="Cancelled")
@@ -533,7 +553,9 @@ class _BatchCoordinator:
     def _submit_sub_batch(self, sub_batch: _Batch, flush_group: _FlushGroup) -> float:
         """Merge, submit, poll, demux, and resolve a single compatible sub-batch.
 
-        Returns the runtime reported by the backend.
+        Returns the runtime reported by the backend.  Successful sub-batches
+        increment ``_total_runtime`` immediately so that a later sub-batch
+        failing within the same flush does not erase this credit.
         """
         merged_circuits, submit_kwargs = self._merge_circuits_and_kwargs(sub_batch)
 
@@ -588,6 +610,13 @@ class _BatchCoordinator:
                     (program_results.get(prog_key, []), per_program_runtime)
                 )
 
+        # Credit runtime per successful sub-batch so that partial-success
+        # flushes don't drop the work that did complete.  Lock window is
+        # narrow — never held across the network call above.
+        if runtime:
+            with self._lock:
+                self._total_runtime += runtime
+
         return runtime
 
     # ------------------------------------------------------------------
@@ -631,12 +660,16 @@ class _BatchCoordinator:
                 max_retries=getattr(self._real_backend, "max_retries", 0),
             )
 
+        # Pass the coordinator's cancellation Event to the backend so that
+        # cancel() interrupts the polling sleep promptly instead of waiting
+        # up to ``polling_interval`` seconds per attempt.
         status = backend.poll_job_status(
             execution_result,
             loop_until_complete=True,
             on_complete=_on_complete,
             verbose=False,
             progress_callback=_progress_callback,
+            cancellation_event=self._cancelled,
         )
 
         if status == JobStatus.FAILED:
@@ -668,39 +701,59 @@ class _BatchCoordinator:
     def cancel(self) -> None:
         """Cancel all pending and in-flight operations.
 
-        Safe to call multiple times — subsequent calls are no-ops.
+        Idempotent — subsequent calls after cleanup has run are no-ops, even
+        if the cancellation Event was set externally (e.g. by the enclosing
+        ensemble's ``_handle_cancellation`` path).
         """
-        if self._cancelled.is_set():
-            return
+        # Test-and-set under ``_lock`` so concurrent callers do the
+        # cleanup work exactly once.  ``Event.is_set()`` + ``Event.set()``
+        # are individually atomic but their combination is not — the lock
+        # is what makes the gate exactly-once.
+        with self._lock:
+            if self._cancel_completed.is_set():
+                return
+            self._cancel_completed.set()
         self._cancelled.set()
 
-        # Cancel in-flight backend jobs (only async backends expose cancel_job).
+        # Snapshot in-flight refs under the in-flight lock, then release it
+        # before issuing network calls.  Holding the lock across cancel_job
+        # would block concurrent _do_flush finalizers from removing groups
+        # from _in_flight.
         with self._in_flight_lock:
-            if isinstance(self._real_backend, AsyncJobBackend):
-                for group in self._in_flight:
-                    if (
-                        group.execution_result is not None
-                        and group.execution_result.job_id is not None
-                    ):
-                        try:
-                            self._real_backend.cancel_job(group.execution_result)
-                        except Exception:
-                            logger.debug(
-                                "Failed to cancel in-flight batch job", exc_info=True
-                            )
+            in_flight_snapshot = list(self._in_flight)
 
-        # Resolve any pending futures that haven't been flushed yet
+        if isinstance(self._real_backend, AsyncJobBackend):
+            for group in in_flight_snapshot:
+                if (
+                    group.execution_result is not None
+                    and group.execution_result.job_id is not None
+                ):
+                    try:
+                        self._real_backend.cancel_job(group.execution_result)
+                    except Exception:
+                        logger.debug(
+                            "Failed to cancel in-flight batch job", exc_info=True
+                        )
+
+        # Resolve any pending futures that haven't been flushed yet and
+        # clear the active program set under the same lock so the barrier
+        # invariants stay consistent.
         with self._lock:
             _fail_futures(
                 self._pending,
                 ExecutionCancelledError("Batch coordinator has been cancelled."),
             )
             self._pending.clear()
+            self._active_programs.clear()
 
     def shutdown(self) -> None:
-        """Clean up coordinator state."""
+        """Clean up coordinator state.
+
+        ``cancel()`` already clears ``_active_programs`` under ``_lock``;
+        this method is kept as the public cleanup entry point so callers
+        don't reach into ``cancel`` directly.
+        """
         self.cancel()
-        self._active_programs.clear()
 
     @property
     def total_runtime(self) -> float:

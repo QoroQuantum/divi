@@ -10,6 +10,7 @@ result-fetching, and cancellation against that handle.
 """
 
 from collections.abc import Callable, Mapping
+from threading import Event
 from typing import Protocol, runtime_checkable
 
 import requests
@@ -35,6 +36,7 @@ class AsyncJobBackend(Protocol):
         on_complete: Callable[[requests.Response], None] | None = None,
         verbose: bool = True,
         progress_callback: Callable[[int, str], None] | None = None,
+        cancellation_event: Event | None = None,
     ): ...
 
     def get_job_results(self, execution_result: ExecutionResult) -> ExecutionResult: ...

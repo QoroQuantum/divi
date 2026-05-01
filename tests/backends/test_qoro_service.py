@@ -2,8 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import time
 import warnings
 from http import HTTPStatus
+from threading import Event, Thread
 
 import pytest
 import requests
@@ -30,6 +32,7 @@ from divi.backends._systems import (
     update_qpu_systems_cache,
     update_simulator_clusters_cache,
 )
+from divi.exceptions import ExecutionCancelledError
 from divi.qasm import validate_qasm
 from tests.backends import circuit_runner_contracts as contracts
 
@@ -840,6 +843,73 @@ class TestQoroServiceMock:
 
         assert status == JobStatus.COMPLETED
         progress_callback.assert_called()
+
+    def test_poll_job_status_cancellation_event_interrupts_sleep(
+        self, mocker, qoro_service_factory
+    ):
+        """Setting the cancellation Event must wake the polling loop within
+        a small fraction of ``polling_interval`` and raise
+        ``ExecutionCancelledError`` instead of blocking on ``time.sleep``.
+        """
+        # Long polling_interval so a non-event-aware impl would clearly
+        # block past the test's join timeout.
+        service = qoro_service_factory(
+            auth_token="test_token", max_retries=10, polling_interval=5.0
+        )
+        mocker.patch.object(
+            service,
+            "_make_request",
+            return_value=make_mock_status_response(mocker, JobStatus.RUNNING),
+        )
+
+        cancel_event = Event()
+        captured: dict = {}
+
+        def _runner():
+            try:
+                service.poll_job_status(
+                    make_execution_result(),
+                    loop_until_complete=True,
+                    cancellation_event=cancel_event,
+                )
+            except ExecutionCancelledError as exc:
+                captured["exc"] = exc
+            except BaseException as exc:  # noqa: BLE001 - capture for assertion
+                captured["unexpected"] = exc
+
+        t = Thread(target=_runner)
+        t.start()
+
+        # Let the loop reach its first wait, then cancel.
+        time.sleep(0.05)
+        cancel_event.set()
+
+        t.join(timeout=2)
+        assert not t.is_alive(), "poll_job_status did not honor cancellation_event"
+        assert "unexpected" not in captured, captured.get("unexpected")
+        assert isinstance(captured.get("exc"), ExecutionCancelledError)
+
+    def test_poll_job_status_no_cancellation_event_unchanged(
+        self, mocker, qoro_service_factory
+    ):
+        """When ``cancellation_event`` is None the loop must still terminate
+        normally on a RUNNING → COMPLETED transition (regression guard for
+        the new branch)."""
+        service = qoro_service_factory(
+            auth_token="test_token", max_retries=3, polling_interval=0.01
+        )
+        mocker.patch.object(
+            service,
+            "_make_request",
+            side_effect=[
+                make_mock_status_response(mocker, JobStatus.RUNNING),
+                make_mock_status_response(mocker, JobStatus.COMPLETED),
+            ],
+        )
+        status = service.poll_job_status(
+            make_execution_result(), loop_until_complete=True, cancellation_event=None
+        )
+        assert status == JobStatus.COMPLETED
 
     def test_get_job_results_error_handling(self, mocker, qoro_service_factory):
         """Test get_job_results error handling."""

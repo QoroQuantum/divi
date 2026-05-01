@@ -14,6 +14,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import replace
 from enum import Enum
 from http import HTTPStatus
+from threading import Event
 from typing import Any
 
 import requests
@@ -43,6 +44,7 @@ from divi.backends._systems import (
     update_qpu_systems_cache,
     update_simulator_clusters_cache,
 )
+from divi.exceptions import ExecutionCancelledError
 from divi.qasm import (
     _format_validation_error_with_context,
     is_valid_qasm,
@@ -833,6 +835,7 @@ class QoroService(CircuitRunner):
         on_complete: Callable[[requests.Response], None] | None = None,
         verbose: bool = True,
         progress_callback: Callable[[int, str], None] | None = None,
+        cancellation_event: Event | None = None,
     ) -> JobStatus:
         """
         Get the status of a job and optionally execute a function on completion.
@@ -845,12 +848,21 @@ class QoroService(CircuitRunner):
             verbose (bool, optional): If True, prints polling status to the logger.
             progress_callback (Callable, optional): A function for updating progress bars.
                 Takes `(retry_count, status)`.
+            cancellation_event (Event, optional): When provided, the polling loop
+                waits on this Event between attempts instead of plain
+                ``time.sleep`` so that ``Event.set()`` interrupts the next sleep
+                window and raises :class:`ExecutionCancelledError`.  An
+                in-flight HTTP request is **not** interrupted — worst-case
+                cancellation latency is bounded by the per-request ``timeout``
+                rather than the polling interval.
 
         Returns:
             JobStatus: The current job status.
 
         Raises:
             ValueError: If the ExecutionResult does not have a job_id.
+            ExecutionCancelledError: If ``cancellation_event`` was set during
+                a polling-interval wait.
         """
         job_id = self._extract_job_id(execution_result)
 
@@ -889,6 +901,11 @@ class QoroService(CircuitRunner):
             }
 
             for retry_count in range(1, self.max_retries + 1):
+                if cancellation_event is not None and cancellation_event.is_set():
+                    raise ExecutionCancelledError(
+                        f"Polling cancelled for job {job_id}."
+                    )
+
                 response = self._make_request(
                     "get", f"job/{job_id}/status/", timeout=200
                 )
@@ -900,7 +917,14 @@ class QoroService(CircuitRunner):
                     return status
 
                 update_fn(retry_count, status.value)
-                time.sleep(self.polling_interval)
+
+                if cancellation_event is not None:
+                    if cancellation_event.wait(self.polling_interval):
+                        raise ExecutionCancelledError(
+                            f"Polling cancelled for job {job_id}."
+                        )
+                else:
+                    time.sleep(self.polling_interval)
 
             raise MaxRetriesReachedError(job_id, self.max_retries)
         finally:
