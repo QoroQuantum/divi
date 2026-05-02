@@ -23,7 +23,7 @@ from qiskit import QuantumCircuit
 from requests.adapters import HTTPAdapter, Retry
 from rich.console import Console
 
-from divi.backends import CircuitRunner
+from divi.backends._circuit_runner import CircuitRunner
 from divi.backends._config import ExecutionConfig, JobConfig
 from divi.backends._execution_result import ExecutionResult
 from divi.backends._pauli_serde import compress_ham_ops
@@ -116,8 +116,11 @@ class JobType(Enum):
     EXPECTATION = "EXPECTATION"
     """Compute expectation values for Hamiltonian operators."""
 
-    VALIDATE = "VALIDATE"
-    """Submit a QUBO/HUBO for validation (no simulator/QPU needed)."""
+    CHARACTERIZE = "VALIDATE"
+    """Submit a QUBO/HUBO for characterization (no simulator/QPU needed).
+
+    The wire value remains ``"VALIDATE"`` for server compatibility.
+    """
 
 
 class MaxRetriesReachedError(Exception):
@@ -283,7 +286,14 @@ class QoroService(CircuitRunner):
 
         return config
 
-    def _make_request(self, method: str, endpoint: str, **kwargs) -> requests.Response:
+    def _make_request(
+        self,
+        method: str,
+        endpoint: str,
+        *,
+        retry: bool = True,
+        **kwargs,
+    ) -> requests.Response:
         """
         Make an authenticated HTTP request to the Qoro API.
 
@@ -293,6 +303,10 @@ class QoroService(CircuitRunner):
         Args:
             method (str): HTTP method to use (e.g., 'get', 'post', 'delete').
             endpoint (str): API endpoint path (without base URL).
+            retry (bool): When ``True`` (the default), the request goes
+                through the session that has the retry adapter mounted.
+                Set to ``False`` for state-mutating endpoints where a
+                retry would target a job already past its initial state.
             **kwargs: Additional arguments to pass to requests.request(), such as
                 'json', 'timeout', 'params', etc.
 
@@ -313,7 +327,8 @@ class QoroService(CircuitRunner):
         if "headers" in kwargs:
             headers.update(kwargs.pop("headers"))
 
-        response = session.request(method, url, headers=headers, **kwargs)
+        requester = session.request if retry else requests.request
+        response = requester(method, url, headers=headers, **kwargs)
 
         # Raise with comprehensive error details if request failed
         if response.status_code >= 400:
@@ -945,214 +960,114 @@ class QoroService(CircuitRunner):
                 polling_status.stop()
 
     # ------------------------------------------------------------------ #
-    # QUBO / HUBO Validation
+    # QUBO / HUBO Characterization
     # ------------------------------------------------------------------ #
 
-    def validate_qubo(
+    def characterize(
         self,
-        qubo: dict,
-        target_states: list[str],
+        qubo: dict | None = None,
+        *,
+        target_states: list[str] | None = None,
         options: dict | None = None,
-    ) -> "QUBOValidationResult":
-        """Submit a QUBO for validation and return the full report.
+        job_id: str | None = None,
+        tag: str = "divi-characterize",
+    ) -> dict:
+        """Submit a QUBO for characterization, or fetch an existing result.
 
-        Orchestrates the complete 3-step validation flow in a single
-        blocking call:
+        Two modes, dispatched by whether ``job_id`` is provided:
 
-        1. ``POST /api/job/init/`` with ``job_type=VALIDATE``
-        2. ``POST /api/job/<id>/submit_qubo/`` with the QUBO + options
-        3. ``GET  /api/job/<id>/validation_result/``
+        * **Submit** (``qubo`` provided, ``job_id`` is ``None``): runs
+          the 3-step server flow (init → submit → fetch result).
+        * **Fetch** (``job_id`` provided): retrieves a previously-stored
+          result without re-running the analysis. No credit cost.
+
+        For a hardness-only check, pass
+        ``options={"analysis": {"hardness_only": True}}`` and read the
+        ``hardness`` field of the response.
 
         Args:
-            qubo: Wire-format QUBO dict with string keys
-                (e.g. ``{"0,0": -1.0, "0,1": 2.0}``).
-            target_states: List of target bitstrings
-                (e.g. ``["01", "10"]``).
-            options: Optional dict forwarded to ``submit_qubo``.
-                Keys may include ``ansatz``, ``analysis``,
-                ``cost_qubo``, ``penalty_qubo``, ``n_qubits``,
-                ``constraints``.
+            qubo: Wire-format QUBO dict (e.g. ``{"0,0": -1.0}``).
+                Required in submit mode.
+            target_states: Bitstrings to evaluate against. Defaults to
+                ``[]`` when submitting (e.g. for hardness-only runs).
+            options: Optional dict forwarded to ``submit_qubo``. Keys
+                may include ``ansatz``, ``analysis``, ``cost_qubo``,
+                ``penalty_qubo``, ``n_qubits``, ``constraints``.
+            job_id: Identifier of an existing characterization job to fetch.
+                When set, ``qubo`` / ``target_states`` / ``options`` /
+                ``tag`` are ignored.
+            tag: Job tag used during init (submit mode only).
 
         Returns:
-            QUBOValidationResult: Rich result object with quality score,
-                hardness, state probabilities, and more.
+            dict: The raw characterization-result response — keys include
+            ``job_id``, ``status``, ``hardness``, ``report``,
+            ``recommendations``, ``created_at``, ``completed_at``. For a
+            rich client-side wrapper, prefer
+            :func:`~divi.backends.characterize`.
 
         Raises:
-            requests.exceptions.HTTPError: If any step in the flow fails.
+            ValueError: If neither ``qubo`` nor ``job_id`` is provided.
+            requests.exceptions.HTTPError: If any request fails.
 
         .. note::
-            Credit cost scales with QUBO size.
+            Credit cost scales with QUBO size in submit mode. Fetching
+            by ``job_id`` is free.
         """
-        from divi.backends._validation import QUBOValidationResult
+        if job_id is None:
+            if qubo is None:
+                raise ValueError(
+                    "characterize() requires either 'qubo' (to submit a "
+                    "new job) or 'job_id' (to fetch an existing result)."
+                )
 
-        # Step 1 — init VALIDATE job
-        init_payload = {
-            "job_type": JobType.VALIDATE.value,
-            "tag": "divi-validation",
-        }
-        init_resp = self._make_request(
-            "post", "job/init/", json=init_payload, timeout=100
-        )
-        job_id = init_resp.json()["job_id"]
-
-        # Step 2 — submit QUBO
-        # Use a direct request (no auto-retry) because submit_qubo
-        # mutates the job state (PENDING → RUNNING).  Retrying after
-        # a 502 would hit a non-PENDING job and cascade to 409.
-        submit_payload: dict = {
-            "qubo": qubo,
-            "target_states": target_states,
-        }
-        if options:
-            submit_payload["options"] = options
-
-        url = f"{API_URL}/job/{job_id}/submit_qubo/"
-        headers = {"Authorization": self.auth_token, "Content-Type": "application/json"}
-        try:
-            submit_resp = requests.post(
-                url, json=submit_payload, headers=headers, timeout=300,
+            # Step 1 — init characterization job
+            init_resp = self._make_request(
+                "post",
+                "job/init/",
+                json={"job_type": JobType.CHARACTERIZE.value, "tag": tag},
+                timeout=100,
             )
-        except requests.exceptions.ConnectionError as exc:
-            raise requests.HTTPError(
-                f"Connection to validation service lost (job {job_id}). "
-                f"The server may be restarting — please retry in a few "
-                f"minutes.",
-            ) from exc
-        except requests.exceptions.Timeout as exc:
-            raise requests.HTTPError(
-                f"Validation request timed out (job {job_id}). "
-                f"The QUBO may be too large for a single request — "
-                f"try reducing the problem size or disabling "
-                f"parameter_sweep / sensitivity.",
-            ) from exc
+            job_id = init_resp.json()["job_id"]
 
-        if submit_resp.status_code in (502, 503, 504):
-            raise requests.HTTPError(
-                f"{submit_resp.status_code} {submit_resp.reason}: "
-                f"Validation service is temporarily unavailable "
-                f"(job {job_id}). This usually means the analysis "
-                f"exceeded the server time limit. Try a smaller QUBO, "
-                f"fewer layers, or disable parameter_sweep/sensitivity.",
-                response=submit_resp,
+            # Step 2 — submit QUBO.
+            # ``retry=False`` because submit_qubo mutates job state
+            # (PENDING → RUNNING); retrying after a 502 would hit a
+            # non-PENDING job and cascade to 409.
+            submit_payload: dict = {
+                "qubo": qubo,
+                "target_states": target_states or [],
+            }
+            if options:
+                submit_payload["options"] = options
+
+            self._make_request(
+                "post",
+                f"job/{job_id}/submit_qubo/",
+                retry=False,
+                json=submit_payload,
+                timeout=300,
             )
-        if submit_resp.status_code >= 400:
-            _raise_with_details(submit_resp)
 
-        # Step 3 — fetch result
+        # Step 3 — fetch result (works for both modes).
         result_resp = self._make_request(
             "get",
             f"job/{job_id}/validation_result/",
             timeout=100,
         )
         data = result_resp.json()
+        data.setdefault("job_id", job_id)
+        return data
 
-        return QUBOValidationResult(
-            job_id=data.get("job_id", job_id),
-            status=data.get("status", "COMPLETED"),
-            hardness=data.get("hardness"),
-            report=data.get("report"),
-            created_at=data.get("created_at"),
-            completed_at=data.get("completed_at"),
-        )
+    def _fetch_characterization_html(self, job_id: str) -> str:
+        """Fetch the server-rendered HTML report for a characterization job.
 
-    def validate_hardness(
-        self,
-        qubo: dict,
-        n_qubits: int | None = None,
-    ) -> dict:
-        """Quick hardness check without full validation.
-
-        Creates a VALIDATE job and submits the QUBO with
-        ``analysis.hardness_only`` set to ``True``, then returns the
-        raw hardness dict (spectral gap, condition number, difficulty).
-
-        Args:
-            qubo: Wire-format QUBO dict.
-            n_qubits: Optional number of qubits (auto-detected if omitted).
-
-        Returns:
-            dict: Hardness metrics::
-
-                {
-                    "difficulty": "medium",
-                    "spectral_gap": 0.35,
-                    "condition_number": 4.2,
-                    ...
-                }
+        Used by :meth:`CharacterizationResult._repr_html_` to lazily render
+        the result in Jupyter. The endpoint returns a self-contained HTML
+        fragment (inline CSS, no external assets).
         """
-        options: dict = {"analysis": {"hardness_only": True}}
-        if n_qubits is not None:
-            options["n_qubits"] = n_qubits
-
-        init_payload = {
-            "job_type": JobType.VALIDATE.value,
-            "tag": "divi-hardness",
-        }
-        init_resp = self._make_request(
-            "post", "job/init/", json=init_payload, timeout=100
-        )
-        job_id = init_resp.json()["job_id"]
-
-        submit_payload: dict = {
-            "qubo": qubo,
-            "target_states": [],
-            "options": options,
-        }
-
-        # Use a direct request (no auto-retry) because submit_qubo
-        # mutates the job state (PENDING → RUNNING).  Retrying after
-        # a 502 would hit a non-PENDING job and cascade to 409.
-        url = f"{API_URL}/job/{job_id}/submit_qubo/"
-        headers = {"Authorization": self.auth_token, "Content-Type": "application/json"}
-        try:
-            submit_resp = requests.post(
-                url, json=submit_payload, headers=headers, timeout=300,
-            )
-        except requests.exceptions.ConnectionError as exc:
-            raise requests.HTTPError(
-                f"Connection lost during hardness submit (job {job_id}). "
-                f"Retry in a few minutes.",
-            ) from exc
-        except requests.exceptions.Timeout as exc:
-            raise requests.HTTPError(
-                f"Hardness submit timed out (job {job_id}).",
-            ) from exc
-        if submit_resp.status_code >= 400:
-            _raise_with_details(submit_resp)
-
-        result_resp = self._make_request(
-            "get",
-            f"job/{job_id}/validation_result/",
-            timeout=100,
-        )
-        data = result_resp.json()
-        return data.get("hardness", {})
-
-    def get_validation_result(
-        self,
-        job_id: str,
-    ) -> "QUBOValidationResult":
-        """Fetch an existing validation result by job ID.
-
-        Args:
-            job_id: The UUID of a previously submitted validation job.
-
-        Returns:
-            QUBOValidationResult: The stored validation result.
-        """
-        from divi.backends._validation import QUBOValidationResult
-
         resp = self._make_request(
             "get",
-            f"job/{job_id}/validation_result/",
+            f"job/{job_id}/validation_result/html/",
             timeout=100,
         )
-        data = resp.json()
-        return QUBOValidationResult(
-            job_id=data.get("job_id", job_id),
-            status=data.get("status", "COMPLETED"),
-            hardness=data.get("hardness"),
-            report=data.get("report"),
-            created_at=data.get("created_at"),
-            completed_at=data.get("completed_at"),
-        )
+        return resp.text
