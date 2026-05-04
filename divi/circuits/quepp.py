@@ -925,15 +925,17 @@ class QuEPP(QEMProtocol):
     def expand(
         self,
         dag: DAGCircuit,
-        observable: SparsePauliOp | None = None,
-    ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
+        observable: SparsePauliOp | tuple[SparsePauliOp, ...] | None = None,
+    ) -> tuple[tuple[DAGCircuit, ...], QEMContext | list[QEMContext]]:
+        if isinstance(observable, tuple):
+            return self._expand_for_observables(dag, observable)
         prep, paths, validated = self._prepare_paths(dag, observable)
         return self._build_ensemble(dag, prep, paths, validated)
 
     def dry_expand(
         self,
         dag: DAGCircuit,
-        observable: SparsePauliOp | None = None,
+        observable: SparsePauliOp | tuple[SparsePauliOp, ...] | None = None,
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
         """Analytic path: emit ``1 + n_paths`` placeholder DAGs, no Clifford sim.
 
@@ -946,6 +948,10 @@ class QuEPP(QEMProtocol):
         introspect hook (``n_rotations``, ``n_paths``, ``symbolic``) are
         populated so dry-run reports render correctly.
         """
+        # Multi-observable dry-run accounting is not yet implemented;
+        # use the first observable's path count as a conservative proxy.
+        if isinstance(observable, tuple):
+            observable = observable[0] if observable else None
         prep, paths, _ = self._prepare_paths(dag, observable)
         n_paths = len(paths)
         # Placeholder DAG per slot — dry stages don't submit / simulate.
@@ -962,6 +968,122 @@ class QuEPP(QEMProtocol):
             context["symbolic"] = True
             context["weight_symbols"] = []
         return all_dags, context
+
+    def _expand_for_observables(
+        self,
+        dag: DAGCircuit,
+        observables: tuple[SparsePauliOp, ...],
+    ) -> tuple[tuple[DAGCircuit, ...], list[QEMContext]]:
+        """Multi-observable expansion that shares the target DAG and dedupes
+        path DAGs across observables.
+
+        The target circuit is observable-independent and is emitted once at
+        index 0 of ``merged_dags``.  Path DAGs are determined by
+        ``(working_dag, rotation_positions, branches)`` — paths from
+        different observables that share a ``branches`` tuple produce the
+        same DAG and are deduplicated.  Each per-observable context records
+        ``"dag_indices"`` listing the positions in ``merged_dags`` that make
+        up its target+ensemble (with target at the slice's index 0 and the
+        observable's ensemble at indices 1..k).
+
+        Path enumeration and η are per-observable per the QuEPP paper
+        (arXiv:2603.14485, Eq. 1, Sec. III) — the only sharing here is the
+        observable-independent preprocessing, the target circuit, and
+        coincident path DAGs.
+        """
+        if len(observables) == 0:
+            raise ValueError(
+                "QuEPP requires at least one observable in the tuple."
+            )
+        for obs in observables:
+            self._validate_observable(obs)
+
+        # ----- Observable-independent preprocessing (done ONCE) ---------- #
+        target_qc = dag_to_circuit(dag)
+        n_qubits = target_qc.num_qubits
+        decomposed = _decompose_controlled_rotations(target_qc)
+        symbolic = _has_symbolic_angles(decomposed)
+        working = _normalize_circuit(decomposed)
+        rotations = _extract_rotation_gates(working)
+        tableaus = _build_clifford_tableaus(working, rotations)
+
+        # ----- Per-observable path enumeration --------------------------- #
+        obs_paths_list: list[list[_PauliPath]] = []
+        for obs in observables:
+            prep = _PreprocResult(
+                working=working,
+                n_qubits=n_qubits,
+                rotations=rotations,
+                tableaus=tableaus,
+                obs_terms=_obs_to_stim_terms(obs, n_qubits),
+                symbolic=symbolic,
+            )
+            obs_paths_list.append(self._select_paths(prep))
+        # Truncation-ratio warning depends only on the rotation count and
+        # K_T, both observable-independent — emit at most once.
+        self._warn_on_truncation_ratio(prep)
+
+        # ----- Path-DAG dedup across observables ------------------------- #
+        working_dag = circuit_to_dag(working)
+        rotation_positions = [(rot.inst_idx, rot) for rot in rotations]
+        branch_to_dag_idx: dict[tuple[int, ...], int] = {}
+        merged_path_dags: list[DAGCircuit] = []
+        for paths in obs_paths_list:
+            for p in paths:
+                if p.branches not in branch_to_dag_idx:
+                    branch_to_dag_idx[p.branches] = len(merged_path_dags)
+                    merged_path_dags.append(
+                        _build_path_dag(working_dag, rotation_positions, p.branches)
+                    )
+
+        # merged_dags: shared target at index 0, deduped path DAGs at 1..M
+        merged_dags = (dag,) + tuple(merged_path_dags)
+
+        # ----- Per-observable contexts ----------------------------------- #
+        all_params: set[Parameter] | None = None
+        if symbolic:
+            all_params = set().union(
+                *(
+                    rot.angle.parameters
+                    for rot in rotations
+                    if _is_parametric(rot.angle)
+                )
+            )
+
+        contexts: list[QEMContext] = []
+        for obs, paths in zip(observables, obs_paths_list):
+            # Position in merged_dags for each of this observable's paths
+            # (offset by +1 because index 0 is the shared target).
+            path_positions = [branch_to_dag_idx[p.branches] + 1 for p in paths]
+            dag_indices = [0] + path_positions
+
+            # Classical simulation uses each obs's own terms; pull the
+            # already-built (deduped) path DAGs in this obs's path order.
+            obs_path_dags = [
+                merged_path_dags[branch_to_dag_idx[p.branches]] for p in paths
+            ]
+            classical_values = _simulate_clifford_ensemble(
+                obs_path_dags, obs, n_qubits
+            )
+            weights = [p.weight for p in paths]
+
+            ctx: QEMContext = {
+                "classical_values": classical_values,
+                "weights": (
+                    np.array(weights, dtype=object) if symbolic else np.array(weights)
+                ),
+                "target_idx": 0,
+                "ensemble_start": 1,
+                "n_rotations": len(rotations),
+                "n_paths": len(paths),
+                "dag_indices": dag_indices,
+            }
+            if symbolic:
+                ctx["symbolic"] = True
+                ctx["weight_symbols"] = sorted(all_params, key=lambda p: p.name)
+            contexts.append(ctx)
+
+        return merged_dags, contexts
 
     @staticmethod
     def _validate_observable(observable: SparsePauliOp | None) -> SparsePauliOp:
@@ -1083,6 +1205,10 @@ class QuEPP(QEMProtocol):
             "ensemble_start": 1,
             "n_rotations": len(prep.rotations),
             "n_paths": len(paths),
+            # Identity range — present on every context so that ``reduce``
+            # uses the same slicing path in both single- and multi-observable
+            # mode (see ``_expand_for_observables`` for the non-trivial case).
+            "dag_indices": list(range(len(all_dags))),
         }
         if symbolic:
             all_params: set[Parameter] = set().union(
@@ -1138,8 +1264,10 @@ class QuEPP(QEMProtocol):
     def reduce(
         self,
         quantum_results: Sequence[float],
-        context: QEMContext,
-    ) -> float:
+        context: QEMContext | list[QEMContext],
+    ) -> float | list[float]:
+        if isinstance(context, list):
+            return self._reduce_for_list_context(quantum_results, context)
         d = context
         if d.get("symbolic"):
             raise ValueError(
@@ -1147,6 +1275,12 @@ class QuEPP(QEMProtocol):
                 "never substituted. Add ParameterBindingStage to the "
                 "pipeline or use QuEPP(bind_before_mitigation=True)."
             )
+        # Slice by ``dag_indices`` so target_idx/ensemble_start are
+        # interpreted relative to this observable's view of the merged DAG
+        # tuple.  Falls back to the full results for legacy contexts.
+        indices = d.get("dag_indices")
+        if indices is not None:
+            quantum_results = [quantum_results[i] for i in indices]
         target_noisy = quantum_results[d["target_idx"]]
         ensemble_noisy = np.array(quantum_results[d["ensemble_start"] :], dtype=float)
         classical_values = d["classical_values"]

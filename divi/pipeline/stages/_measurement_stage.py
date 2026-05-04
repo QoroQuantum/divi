@@ -14,7 +14,11 @@ from divi.circuits._conversions import (
     measurement_qasms_from_groups,
     sparse_pauli_op_to_ham_string,
 )
-from divi.pipeline._grouping import GroupingStrategy, compute_measurement_groups
+from divi.pipeline._grouping import (
+    GroupingStrategy,
+    compute_measurement_groups,
+    compute_multi_observable_measurement_groups,
+)
 from divi.pipeline._shot_distribution import (
     ShotDistStrategy,
     compute_group_l1_norms,
@@ -390,14 +394,26 @@ class MeasurementStage(BundleStage):
         # analytical fallback entirely so the user's per-group allocation
         # is actually used.
         strategy = self._grouping_strategy
+        # ``_backend_expval`` auto-promotion only applies when every meta
+        # carries the *same* single observable.  Tuple-observable metas
+        # (multi-expval) cannot use the backend's analytical path because
+        # it evaluates one observable at a time.
+        any_tuple_obs = any(
+            isinstance(meta.observable, tuple) for meta in batch.values()
+        )
         if (
             self._shot_distribution is None
             and strategy in ("qwc", "_backend_expval")
             and env.backend.supports_expval
+            and not any_tuple_obs
         ):
             first_obs = next(iter(batch.values())).observable
             all_same_obs = all(meta.observable == first_obs for meta in batch.values())
             strategy = "_backend_expval" if all_same_obs else "qwc"
+        elif strategy == "_backend_expval" and any_tuple_obs:
+            # User explicitly asked for backend_expval but a tuple meta is
+            # present — fall back to QWC for the multi-observable path.
+            strategy = "qwc"
 
         if self._shot_distribution is not None and strategy == "_backend_expval":
             raise ValueError(
@@ -423,23 +439,44 @@ class MeasurementStage(BundleStage):
             if sample_observable is None:
                 sample_observable = observable
 
-            measurement_groups, partition_indices, postprocessing_fn = (
-                compute_measurement_groups(observable, strategy, meta.n_qubits)
-            )
-            if strategy == "_backend_expval" and n_observable_terms is None:
-                n_observable_terms = sum(len(p) for p in partition_indices)
-
-            # Decide which groups to actually submit and with how many shots.
-            surviving_indices, zero_shot_groups, surviving_shots = (
-                _allocate_per_group_shots(
-                    key,
-                    observable,
-                    measurement_groups,
-                    partition_indices,
-                    env,
-                    self._shot_distribution,
+            if isinstance(observable, tuple):
+                # Multi-observable: QWC across the UNION of every
+                # observable's Pauli terms.  postprocessing_fn returns a
+                # ``list[float]`` of per-observable expvals (in tuple order).
+                measurement_groups, partition_indices, postprocessing_fn = (
+                    compute_multi_observable_measurement_groups(
+                        observable, strategy, meta.n_qubits
+                    )
                 )
-            )
+                # Adaptive shot allocation needs a single observable to
+                # weight groups by; not yet supported for tuple metas.
+                if self._shot_distribution is not None:
+                    raise ValueError(
+                        "shot_distribution is not supported for "
+                        "multi-observable (tuple) metas; pass a single "
+                        "observable or disable shot_distribution."
+                    )
+                surviving_indices = list(range(len(measurement_groups)))
+                zero_shot_groups: dict[int, object] = {}
+                surviving_shots = None
+            else:
+                measurement_groups, partition_indices, postprocessing_fn = (
+                    compute_measurement_groups(observable, strategy, meta.n_qubits)
+                )
+                if strategy == "_backend_expval" and n_observable_terms is None:
+                    n_observable_terms = sum(len(p) for p in partition_indices)
+
+                # Decide which groups to actually submit and with how many shots.
+                surviving_indices, zero_shot_groups, surviving_shots = (
+                    _allocate_per_group_shots(
+                        key,
+                        observable,
+                        measurement_groups,
+                        partition_indices,
+                        env,
+                        self._shot_distribution,
+                    )
+                )
             if zero_shot_groups:
                 zero_shot_groups_by_spec[key] = zero_shot_groups
             if surviving_shots is not None:

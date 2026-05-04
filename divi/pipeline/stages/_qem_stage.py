@@ -159,7 +159,7 @@ class QEMStage(BundleStage):
     def _reduce_grouped(
         self,
         grouped: dict[tuple, dict[int, Any]],
-        contexts: dict[tuple, QEMContext] | None,
+        contexts: dict[tuple, QEMContext | list[QEMContext]] | None,
         per_obs: bool,
     ) -> ChildResults:
         reduced: ChildResults = {}
@@ -167,7 +167,14 @@ class QEMStage(BundleStage):
             ordered = [v for _, v in sorted(values_by_idx.items())]
             ctx = {} if contexts is None else contexts[base_key]
 
-            if per_obs:
+            if isinstance(ctx, list):
+                # Multi-observable: protocol.reduce dispatches on list-of-
+                # contexts and returns one mitigated value per observable.
+                # ``ordered`` is the full QEM-axis ordered result array; each
+                # per-observable context selects its own slice via
+                # ``dag_indices``.
+                reduced[base_key] = self.protocol.reduce(ordered, ctx)
+            elif per_obs:
                 reduced[base_key] = {
                     obs_idx: self.protocol.reduce([d[obs_idx] for d in ordered], ctx)
                     for obs_idx in sorted(ordered[0].keys())
@@ -186,7 +193,13 @@ class QEMStage(BundleStage):
         ctx = next(iter(contexts.values()), None)
         if ctx is None:
             return info
-        data = ctx
+        if isinstance(ctx, list):
+            info["n_observables"] = len(ctx)
+            if not ctx:
+                return info
+            data = ctx[0]
+        else:
+            data = ctx
         for key in ("n_rotations", "n_paths"):
             if key in data:
                 info[key] = data[key]
@@ -212,7 +225,7 @@ class QEMStage(BundleStage):
 
     def _bind_symbolic_weights(
         self,
-        contexts: dict[tuple, QEMContext],
+        contexts: dict[tuple, QEMContext | list[QEMContext]],
         foreign_key: tuple,
         env: PipelineEnv,
     ) -> None:
@@ -220,22 +233,39 @@ class QEMStage(BundleStage):
 
         When QuEPP runs before ParameterBindingStage, weights are stored
         as sympy expressions.  This method substitutes the concrete
-        parameter values for the current param_set group.
+        parameter values for the current param_set group.  For
+        multi-observable contexts (a list of dicts) it binds each entry
+        independently.
         """
         param_idx = next((v for k, v in foreign_key if k == "param_set"), None)
         if param_idx is None:
             return
         param_values = np.asarray(env.param_sets, dtype=float)[param_idx]
 
+        def _bind_single(c: QEMContext) -> QEMContext:
+            c = dict(c)
+            symbols = c.get("weight_symbols", [])
+            QuEPP.evaluate_symbolic_weights(c, symbols, param_values)
+            return c
+
         for key, ctx in list(contexts.items()):
+            if isinstance(ctx, list):
+                if not any(
+                    isinstance(c, dict) and c.get("symbolic") for c in ctx
+                ):
+                    continue
+                contexts[key] = [
+                    _bind_single(c)
+                    if isinstance(c, dict) and c.get("symbolic")
+                    else c
+                    for c in ctx
+                ]
+                continue
             if not isinstance(ctx, dict) or not ctx.get("symbolic"):
                 continue
             # Shallow-copy to avoid mutating the shared context across
             # different param_set groups.
-            ctx = dict(ctx)
-            contexts[key] = ctx
-            symbols = ctx.get("weight_symbols", [])
-            QuEPP.evaluate_symbolic_weights(ctx, symbols, param_values)
+            contexts[key] = _bind_single(ctx)
 
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken
@@ -253,7 +283,12 @@ class QEMStage(BundleStage):
         reduced = self._reduce_grouped(grouped, contexts, per_obs=per_obs)
 
         if contexts is not None:
-            all_ctxs = list(contexts.values())
+            all_ctxs: list[QEMContext] = []
+            for v in contexts.values():
+                if isinstance(v, list):
+                    all_ctxs.extend(v)
+                else:
+                    all_ctxs.append(v)
             self.protocol.post_reduce(all_ctxs)
 
         return reduced

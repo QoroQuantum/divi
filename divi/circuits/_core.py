@@ -40,8 +40,17 @@ class MetaCircuit:
     Order matches the flat parameter-values array fed by
     :class:`~divi.pipeline.stages.ParameterBindingStage`."""
 
-    observable: SparsePauliOp | None = None
-    """Observable for expectation-value measurements. ``None`` for probs/counts."""
+    observable: SparsePauliOp | tuple[SparsePauliOp, ...] | None = None
+    """Observable(s) for expectation-value measurements.
+
+    * ``None`` — probs/counts measurement (uses :attr:`measured_wires` instead).
+    * Single :class:`~qiskit.quantum_info.SparsePauliOp` — one mitigated
+      expectation value (the standard case).
+    * ``tuple[SparsePauliOp, ...]`` — one mitigated expectation value per
+      entry. Stages that share work across observables (e.g. QuEPP path-DAG
+      dedup, QWC measurement-batching across the union) branch on this case.
+
+    Use :func:`isinstance(meta.observable, tuple)` to dispatch."""
 
     measured_wires: tuple[int, ...] | None = None
     """Qubit indices to measure for probs/counts measurements. ``None`` for expval."""

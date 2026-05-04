@@ -382,8 +382,15 @@ def qscript_to_meta(
     from the qscript's single measurement.
 
     Args:
-        qscript: PennyLane ``QuantumScript`` with exactly one measurement
-            (``expval``, ``probs``, or ``counts``).
+        qscript: PennyLane ``QuantumScript``.  Accepts:
+
+            * a single ``probs``/``counts`` measurement;
+            * a single ``expval`` measurement (sets ``observable`` to a
+              :class:`~qiskit.quantum_info.SparsePauliOp`);
+            * multiple ``expval`` measurements — sets ``observable`` to a
+              ``tuple[SparsePauliOp, ...]``, one entry per measurement
+              (used by error-mitigation protocols that share work across
+              observables).
         precision: ``MetaCircuit.precision`` for numeric gate parameters.
         parameter_order: Explicit parameter ordering for the resulting
             ``MetaCircuit``.  Use when the qscript's first-appearance order
@@ -392,24 +399,42 @@ def qscript_to_meta(
             When ``None``, ordering is inferred from the qscript
             (first appearance).
     """
-    measurement = qscript.measurements[0] if qscript.measurements else None
+    measurements = list(qscript.measurements)
 
     dag, inferred_params, _ = _qscript_to_dag(qscript)
 
     params = parameter_order if parameter_order is not None else inferred_params
 
-    observable = None
+    observable: SparsePauliOp | tuple[SparsePauliOp, ...] | None = None
     measured_wires = None
-    if isinstance(measurement, qp.measurements.ExpectationMP):
-        if measurement.obs is None:
+
+    expval_measurements = [
+        m for m in measurements if isinstance(m, qp.measurements.ExpectationMP)
+    ]
+    if len(expval_measurements) >= 2:
+        # Multi-observable path: every measurement must be an expval.
+        # Mixing expval with probs/counts in one qscript is not supported.
+        if len(expval_measurements) != len(measurements):
+            raise ValueError(
+                "qscript_to_meta: mixing `expval` with `probs`/`counts` "
+                "measurements in a single QuantumScript is not supported."
+            )
+        observable = tuple(
+            observable_to_sparse_pauli_op(m.obs, qscript.wires)
+            for m in expval_measurements
+        )
+    elif len(expval_measurements) == 1:
+        m = expval_measurements[0]
+        if m.obs is None:
             raise ValueError("ExpectationMP without an observable is not supported.")
-        observable = observable_to_sparse_pauli_op(measurement.obs, qscript.wires)
-    elif isinstance(
-        measurement,
-        (qp.measurements.ProbabilityMP, qp.measurements.CountsMP),
-    ):
-        target_wires = measurement.wires if len(measurement.wires) else qscript.wires
-        measured_wires = tuple(qscript.wires.index(w) for w in target_wires)
+        observable = observable_to_sparse_pauli_op(m.obs, qscript.wires)
+    elif measurements:
+        first = measurements[0]
+        if isinstance(
+            first, (qp.measurements.ProbabilityMP, qp.measurements.CountsMP)
+        ):
+            target_wires = first.wires if len(first.wires) else qscript.wires
+            measured_wires = tuple(qscript.wires.index(w) for w in target_wires)
 
     return MetaCircuit(
         circuit_bodies=(((), dag),),

@@ -47,7 +47,12 @@ class TimeEvolution(QuantumProgram):
         n_steps: int = 1,
         order: int = 1,
         initial_state: InitialState | None = None,
-        observable: qp.operation.Operator | None = None,
+        observable: (
+            qp.operation.Operator
+            | tuple[qp.operation.Operator, ...]
+            | list[qp.operation.Operator]
+            | None
+        ) = None,
         _template_meta: MetaCircuit | None = None,
         _template_param: Parameter | None = None,
         **kwargs,
@@ -64,7 +69,19 @@ class TimeEvolution(QuantumProgram):
             initial_state: Initial state preparation. Pass an :class:`~divi.qprog.algorithms.InitialState`
                 instance (e.g. ``ZerosState()``, ``SuperpositionState()``).
                 Defaults to ``ZerosState()`` if None.
-            observable: If None, measure ``qp.probs()``; else ``qp.expval(observable)``.
+            observable: One of:
+
+                * ``None`` — measure ``qp.probs()``.
+                * Single :class:`~pennylane.operation.Operator` — one
+                  ``qp.expval(observable)`` measurement; ``self.results`` is
+                  a ``float``.
+                * ``Sequence[Operator]`` — multiple ``qp.expval(O_i)``
+                  measurements from the same circuit; ``self.results`` is a
+                  ``list[float]`` (one mitigated value per observable).
+                  Commuting observables are measured from a shared shot
+                  batch via :class:`MeasurementStage`'s QWC grouping; QuEPP
+                  shares the target circuit and dedupes path DAGs across
+                  observables.
             **kwargs: Passed to QuantumProgram (backend, seed, progress_queue, etc.).
                 Accepts ``qem_protocol`` for quantum error mitigation (requires
                 ``observable`` to be set, since QEM operates on expectation values).
@@ -83,6 +100,13 @@ class TimeEvolution(QuantumProgram):
         self.time = time
         self.n_steps = n_steps
         self.order = order
+        # Normalise multi-observable input to a tuple so downstream
+        # ``isinstance(..., tuple)`` checks fire regardless of whether the
+        # caller passed a list or a tuple.  Single observables and ``None``
+        # are passed through unchanged so the standard scalar code path is
+        # bit-for-bit unchanged.
+        if isinstance(observable, list):
+            observable = tuple(observable)
         self.observable = observable
         self._circuit_wires = tuple(hamiltonian_clean.wires)
         self.n_qubits = len(self._circuit_wires)
@@ -102,7 +126,7 @@ class TimeEvolution(QuantumProgram):
         self._template_meta = _template_meta
         self._template_param = _template_param
 
-        self._results: dict[str, float] | float | None = None
+        self._results: dict[str, float] | float | list[float] | None = None
 
         self._pipelines = self._build_pipelines()
 
@@ -110,12 +134,16 @@ class TimeEvolution(QuantumProgram):
         return self._results is not None
 
     @property
-    def results(self) -> dict[str, float] | float:
+    def results(self) -> dict[str, float] | float | list[float]:
         """Get the final results.
 
-        Returns either a probability distribution (``dict[str, float]``) when
-        no observable was provided, or an expectation value (``float``) when
-        ``observable`` was specified.
+        Returns one of:
+
+        * ``dict[str, float]`` — probability distribution when no
+          ``observable`` was provided.
+        * ``float`` — expectation value for a single ``observable``.
+        * ``list[float]`` — per-observable expectation values when
+          ``observable`` is a list/tuple.
 
         Raises:
             RuntimeError: If ``.run()`` has not yet been called.
@@ -205,11 +233,13 @@ class TimeEvolution(QuantumProgram):
         ops = [qp.Identity(w) for w in self._circuit_wires] + ops
 
         if self.observable is None:
-            measurement = qp.probs()
+            measurements = [qp.probs()]
+        elif isinstance(self.observable, tuple):
+            measurements = [qp.expval(o) for o in self.observable]
         else:
-            measurement = qp.expval(self.observable)
+            measurements = [qp.expval(self.observable)]
         return qscript_to_meta(
-            qp.tape.QuantumScript(ops=ops, measurements=[measurement]),
+            qp.tape.QuantumScript(ops=ops, measurements=measurements),
         )
 
     def run(self, **kwargs) -> "TimeEvolution":
@@ -230,7 +260,13 @@ class TimeEvolution(QuantumProgram):
                 f"Expected exactly 1 pipeline result, got {len(result)}."
             )
         (raw,) = result.values()
-        self._results = raw if self.observable is None else float(raw)
+        if self.observable is None:
+            self._results = raw
+        elif isinstance(self.observable, tuple):
+            # Multi-observable: pipeline yields a per-observable list.
+            self._results = [float(v) for v in raw]
+        else:
+            self._results = float(raw)
 
         self.reporter.info(
             message="Finished successfully!", final_status=TerminalStatus.SUCCESS

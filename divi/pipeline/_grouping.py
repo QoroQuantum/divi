@@ -170,3 +170,104 @@ def compute_measurement_groups(
 
     postprocessing_fn = _create_postprocessing_fn(coeffs, partition_indices, n_terms)
     return measurement_groups, partition_indices, postprocessing_fn
+
+
+def compute_multi_observable_measurement_groups(
+    observables: tuple[SparsePauliOp, ...],
+    strategy: GroupingStrategy,
+    n_qubits: int,
+) -> tuple[tuple[tuple[str, ...], ...], list[list[int]], Callable]:
+    """Group multiple observables for shared measurement fan-out.
+
+    All observables are measured from the same shot batch by computing
+    measurement groups over the UNION of their Pauli terms.  The returned
+    postprocessing function reads per-group expectation values once and
+    returns a ``list[float]`` of per-observable expectation values (one
+    entry per input observable, in input order).
+
+    The single-observable analogue is :func:`compute_measurement_groups`.
+
+    Args:
+        observables: Non-empty tuple of Hermitian observables.  Each
+            observable contributes its own Pauli terms (and coefficients)
+            to the union; postprocessing recovers per-observable expvals
+            using the original coefficients.
+        strategy: Grouping strategy applied to the union.
+            ``"_backend_expval"`` is rejected — the backend can only
+            evaluate one observable analytically at a time.
+        n_qubits: Total qubit count in the circuit.
+    """
+    if not observables:
+        raise ValueError(
+            "compute_multi_observable_measurement_groups: observables tuple "
+            "is empty."
+        )
+    if strategy == "_backend_expval":
+        raise ValueError(
+            "compute_multi_observable_measurement_groups does not support "
+            "'_backend_expval' (backend evaluates a single observable "
+            "analytically). Use 'qwc' or 'wires'."
+        )
+
+    # Build a flat union of every observable's Pauli labels and remember
+    # which union-index each observable's k-th term occupies, plus that
+    # observable's real coefficient on it.
+    all_le_labels: list[str] = []
+    obs_indices: list[list[int]] = []
+    obs_coeffs: list[np.ndarray] = []
+    for obs in observables:
+        le_labels = list(obs.paulis.to_labels())
+        coeffs = np.real(obs.coeffs).astype(np.float64)
+        indices: list[int] = []
+        for lab in le_labels:
+            indices.append(len(all_le_labels))
+            all_le_labels.append(lab)
+        obs_indices.append(indices)
+        obs_coeffs.append(coeffs)
+
+    if not all_le_labels:
+        raise ValueError(
+            "compute_multi_observable_measurement_groups: every observable "
+            "in the tuple is empty."
+        )
+
+    # Run the existing single-observable grouper on the union; coefficients
+    # are unused for grouping (we only need the partition + per-term group
+    # positions), so we set them to 1.0.
+    union = SparsePauliOp.from_list([(lab, 1.0) for lab in all_le_labels])
+    measurement_groups, partition_indices, _ = compute_measurement_groups(
+        union, strategy, n_qubits
+    )
+
+    n_total = len(all_le_labels)
+    reverse_map: list[tuple[int, int] | None] = [None] * n_total
+    for group_idx, indices in enumerate(partition_indices):
+        for pos, orig_idx in enumerate(indices):
+            reverse_map[orig_idx] = (group_idx, pos)
+    missing = [i for i, v in enumerate(reverse_map) if v is None]
+    if missing:
+        raise RuntimeError(
+            f"partition_indices does not cover all union term indices. "
+            f"Missing: {missing}"
+        )
+
+    n_obs = len(observables)
+
+    def postprocessing_fn(grouped_results):
+        if len(grouped_results) != len(partition_indices):
+            raise RuntimeError(
+                f"Expected {len(partition_indices)} grouped results, "
+                f"got {len(grouped_results)}."
+            )
+        flat = np.zeros(n_total, dtype=np.float64)
+        for orig_idx in range(n_total):
+            g_idx, pos = reverse_map[orig_idx]
+            val = grouped_results[g_idx]
+            if isinstance(val, dict):
+                val = val[pos]
+            flat[orig_idx] = float(np.asarray(val).flat[0])
+        return [
+            float(np.dot(obs_coeffs[i], flat[obs_indices[i]])) for i in range(n_obs)
+        ]
+
+    return measurement_groups, partition_indices, postprocessing_fn

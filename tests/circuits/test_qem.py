@@ -44,7 +44,10 @@ class TestNoMitigation:
         dags, ctx = _NoMitigation().expand(bell_dag)
         assert len(dags) == 1
         assert dags[0] is bell_dag
-        assert ctx == {}
+        # ``dag_indices`` is set uniformly by every protocol's ``expand`` so
+        # that ``reduce`` can slice ``quantum_results`` consistently in both
+        # single- and multi-observable mode.
+        assert ctx == {"dag_indices": [0]}
 
     def test_reduce_returns_single_value(self, bell_dag):
         p = _NoMitigation()

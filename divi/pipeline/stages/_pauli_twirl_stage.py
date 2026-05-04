@@ -444,6 +444,15 @@ class PauliTwirlStage(BundleStage):
                 reduced[base_key] = {
                     k: sum(v[k] for v in values) / len(values) for k in obs_keys
                 }
+            elif isinstance(values[0], list):
+                # Per-observable expval lists from multi-observable
+                # MeasurementStage — average element-wise so each observable's
+                # twirl-averaged value is preserved.
+                n = len(values)
+                n_obs = len(values[0])
+                reduced[base_key] = [
+                    sum(v[i] for v in values) / n for i in range(n_obs)
+                ]
             else:
                 reduced[base_key] = sum(values) / len(values)
         return reduced

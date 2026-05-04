@@ -1006,3 +1006,247 @@ class TestQuEPPPipelineIntegration:
             f"QuEPP error ({quepp_err:.4f}) should be less than half "
             f"of noisy error ({noisy_err:.4f})"
         )
+
+
+class TestQuEPPMultiObservable:
+    """QuEPP with a tuple of observables (shared target + deduped paths)."""
+
+    @pytest.fixture
+    def qc_two_rotations(self):
+        qc = QuantumCircuit(2)
+        qc.h(0)
+        qc.rx(0.3, 0)
+        qc.cx(0, 1)
+        qc.rz(0.7, 1)
+        return qc
+
+    def test_expand_returns_list_of_contexts(self, qc_two_rotations):
+        obs1 = SparsePauliOp.from_list([("IZ", 1.0)])
+        obs2 = SparsePauliOp.from_list([("ZZ", 1.0)])
+        protocol = QuEPP(sampling="exhaustive", truncation_order=2, n_twirls=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            _, ctxs = protocol.expand(circuit_to_dag(qc_two_rotations), (obs1, obs2))
+        assert isinstance(ctxs, list)
+        assert len(ctxs) == 2
+        for ctx in ctxs:
+            assert "classical_values" in ctx
+            assert "weights" in ctx
+            assert "dag_indices" in ctx
+            # Target shared across all observables, always at merged index 0.
+            assert ctx["dag_indices"][0] == 0
+
+    def test_classical_values_match_independent_runs(self, qc_two_rotations):
+        """Multi-observable expand produces the same per-observable
+        classical values as N independent single-observable expand calls.
+        """
+        obs1 = SparsePauliOp.from_list([("IZ", 1.0)])
+        obs2 = SparsePauliOp.from_list([("ZZ", 1.0)])
+        protocol = QuEPP(sampling="exhaustive", truncation_order=2, n_twirls=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            _, ctx1 = protocol.expand(circuit_to_dag(qc_two_rotations.copy()), obs1)
+            _, ctx2 = protocol.expand(circuit_to_dag(qc_two_rotations.copy()), obs2)
+            _, ctxs_multi = protocol.expand(
+                circuit_to_dag(qc_two_rotations.copy()), (obs1, obs2)
+            )
+        # Per-observable enumeration is observable-specific (per the paper)
+        # — same paths up to enumeration order, so compare sorted classical
+        # values.
+        np.testing.assert_allclose(
+            sorted(ctxs_multi[0]["classical_values"]),
+            sorted(ctx1["classical_values"]),
+            atol=1e-9,
+        )
+        np.testing.assert_allclose(
+            sorted(ctxs_multi[1]["classical_values"]),
+            sorted(ctx2["classical_values"]),
+            atol=1e-9,
+        )
+
+    def test_target_dag_is_shared_across_observables(self, qc_two_rotations):
+        obs1 = SparsePauliOp.from_list([("IZ", 1.0)])
+        obs2 = SparsePauliOp.from_list([("ZZ", 1.0)])
+        protocol = QuEPP(sampling="exhaustive", truncation_order=2, n_twirls=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            dags, ctxs = protocol.expand(
+                circuit_to_dag(qc_two_rotations), (obs1, obs2)
+            )
+        # Both observables' dag_indices must point at the SAME object for
+        # their target — the cost saving of the multi-observable path.
+        target_dag_for_obs1 = dags[ctxs[0]["dag_indices"][0]]
+        target_dag_for_obs2 = dags[ctxs[1]["dag_indices"][0]]
+        assert target_dag_for_obs1 is target_dag_for_obs2
+
+    def test_path_dag_dedup_across_observables(self):
+        """Two observables that produce the same branches tuple should
+        share a single path DAG in the merged tuple.
+        """
+        # Identical observables → identical paths → dedup is maximal.
+        qc = QuantumCircuit(1)
+        qc.rx(0.4, 0)
+        obs = SparsePauliOp.from_list([("Z", 1.0)])
+        protocol = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            dags_solo, _ = protocol.expand(circuit_to_dag(qc.copy()), obs)
+            dags_multi, ctxs_multi = protocol.expand(
+                circuit_to_dag(qc.copy()), (obs, obs)
+            )
+        # Solo: target + n_paths.  Multi with two identical observables:
+        # also target + n_paths (every path is shared).  Same total DAG count.
+        assert len(dags_multi) == len(dags_solo)
+        # Both ctxs hold identical dag_indices (they reference the same
+        # shared target and paths).
+        assert ctxs_multi[0]["dag_indices"] == ctxs_multi[1]["dag_indices"]
+
+    def test_reduce_returns_list_when_context_is_list(self, qc_two_rotations):
+        obs1 = SparsePauliOp.from_list([("IZ", 1.0)])
+        obs2 = SparsePauliOp.from_list([("ZZ", 1.0)])
+        protocol = QuEPP(sampling="exhaustive", truncation_order=2, n_twirls=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            dags, ctxs = protocol.expand(
+                circuit_to_dag(qc_two_rotations), (obs1, obs2)
+            )
+        # MeasurementStage emits per-DAG list[float] of per-observable expvals
+        # for tuple-observable metas; mimic that here with arbitrary numbers.
+        per_dag_per_obs = [[0.5, 0.3] for _ in dags]
+        out = protocol.reduce(per_dag_per_obs, ctxs)
+        assert isinstance(out, list)
+        assert len(out) == 2
+        assert all(isinstance(v, float) for v in out)
+
+    def test_reduce_per_observable_matches_independent_runs(self, qc_two_rotations):
+        """When given the same noisy measurement values, the multi-observable
+        reduce produces the same numbers as running QuEPP per observable
+        separately.  (Both modes are observable-specific in path enumeration
+        and η — sharing the target/path DAGs doesn't change the arithmetic.)
+        """
+        obs1 = SparsePauliOp.from_list([("IZ", 1.0)])
+        obs2 = SparsePauliOp.from_list([("ZZ", 1.0)])
+        protocol = QuEPP(sampling="exhaustive", truncation_order=2, n_twirls=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            _, ctx1 = protocol.expand(circuit_to_dag(qc_two_rotations.copy()), obs1)
+            _, ctx2 = protocol.expand(circuit_to_dag(qc_two_rotations.copy()), obs2)
+            dags_multi, ctxs_multi = protocol.expand(
+                circuit_to_dag(qc_two_rotations.copy()), (obs1, obs2)
+            )
+
+        # Build a noiseless oracle: for the multi-observable case, every
+        # DAG produces a per-observable list of "noisy" values that are
+        # exact classical values for that observable.  Then per-observable
+        # reduce should recover those exact classical values from the
+        # noiseless ensemble (η=1).
+        rng = np.random.default_rng(0)
+        # Independent runs: per-observable noisy results (target + ensemble).
+        noisy_solo_1 = np.concatenate(
+            [[float(rng.uniform(-1, 1))], np.array(ctx1["classical_values"])]
+        )
+        noisy_solo_2 = np.concatenate(
+            [[float(rng.uniform(-1, 1))], np.array(ctx2["classical_values"])]
+        )
+        out1 = protocol.reduce(noisy_solo_1.tolist(), ctx1)
+        out2 = protocol.reduce(noisy_solo_2.tolist(), ctx2)
+
+        # Multi run: build a per-DAG list[float] structure where row d's
+        # column 0 is the noisy result for obs1 (when d is in obs1's
+        # dag_indices) and column 1 is for obs2.  For DAGs not in an obs's
+        # ensemble, the value is unused (so we put NaN to assert this).
+        n_dags = len(dags_multi)
+        rows = [[float("nan"), float("nan")] for _ in range(n_dags)]
+        # obs1 sees dag_indices into rows; assign noisy_solo_1 in order.
+        for slot, d in enumerate(ctxs_multi[0]["dag_indices"]):
+            rows[d][0] = noisy_solo_1[slot]
+        for slot, d in enumerate(ctxs_multi[1]["dag_indices"]):
+            rows[d][1] = noisy_solo_2[slot]
+
+        out_multi = protocol.reduce(rows, ctxs_multi)
+        assert out_multi[0] == pytest.approx(out1, abs=1e-9)
+        assert out_multi[1] == pytest.approx(out2, abs=1e-9)
+
+    def test_qscript_to_meta_multi_expval_populates_tuple(self):
+        """A multi-measurement qscript with N expvals → meta.observable
+        is a tuple of N SparsePauliOps."""
+        qc_pl = qp.tape.QuantumScript(
+            ops=[qp.Hadamard(0), qp.RX(0.3, 0), qp.CNOT([0, 1])],
+            measurements=[
+                qp.expval(qp.PauliZ(0)),
+                qp.expval(qp.PauliZ(0) @ qp.PauliZ(1)),
+            ],
+        )
+        meta = qscript_to_meta(qc_pl)
+        assert isinstance(meta.observable, tuple)
+        assert len(meta.observable) == 2
+        for obs in meta.observable:
+            assert isinstance(obs, SparsePauliOp)
+
+    def test_empty_observables_tuple_rejected(self, qc_two_rotations):
+        protocol = QuEPP(sampling="exhaustive", truncation_order=2, n_twirls=0)
+        with pytest.raises(ValueError, match="at least one observable"):
+            protocol.expand(circuit_to_dag(qc_two_rotations), ())
+
+    def test_pipeline_e2e_matches_independent_runs(self, suppress_quepp_warnings):
+        """End-to-end pipeline (CircuitSpecStage → QEMStage(QuEPP) →
+        MeasurementStage) on a noiseless backend with two QWC observables
+        produces the same per-observable mitigated values as running each
+        observable through its own pipeline.
+        """
+        # Single multi-observable qscript (two expvals on QWC observables).
+        ops = [qp.Hadamard(0), qp.RX(0.3, 0), qp.CNOT([0, 1]), qp.RZ(0.7, 1)]
+        multi_meta = qscript_to_meta(
+            qp.tape.QuantumScript(
+                ops=ops,
+                measurements=[
+                    qp.expval(qp.Z(0)),
+                    qp.expval(qp.Z(0) @ qp.Z(1)),
+                ],
+            )
+        )
+        single_meta_1 = qscript_to_meta(
+            qp.tape.QuantumScript(ops=ops, measurements=[qp.expval(qp.Z(0))])
+        )
+        single_meta_2 = qscript_to_meta(
+            qp.tape.QuantumScript(
+                ops=ops, measurements=[qp.expval(qp.Z(0) @ qp.Z(1))]
+            )
+        )
+
+        backend_kwargs = dict(
+            shots=200000, simulation_seed=42, _deterministic_execution=True
+        )
+
+        def _run(meta):
+            return list(
+                CircuitPipeline(
+                    stages=[
+                        CircuitSpecStage(),
+                        QEMStage(
+                            protocol=QuEPP(
+                                sampling="exhaustive",
+                                truncation_order=2,
+                                n_twirls=0,
+                            )
+                        ),
+                        MeasurementStage(),
+                    ],
+                    suppress_performance_warnings=True,
+                )
+                .run(meta, PipelineEnv(backend=QiskitSimulator(**backend_kwargs)))
+                .values()
+            )[0]
+
+        multi_out = _run(multi_meta)
+        solo_1 = _run(single_meta_1)
+        solo_2 = _run(single_meta_2)
+
+        assert isinstance(multi_out, list)
+        assert len(multi_out) == 2
+        # Tolerances are loose because the noiseless QuEPP path still passes
+        # through finite-shot measurement; QWC grouping plus the η rescale
+        # produce numbers that agree between modes only up to statistical
+        # noise (and tiny numerical drift from the path-DAG dedup).
+        assert multi_out[0] == pytest.approx(solo_1, abs=5e-3)
+        assert multi_out[1] == pytest.approx(solo_2, abs=5e-3)
