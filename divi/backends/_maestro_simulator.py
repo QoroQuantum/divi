@@ -115,18 +115,6 @@ class MaestroConfig:
     ``simulation_type`` is set explicitly.  Divi-specific; not forwarded to
     ``maestro.SimulatorConfig``."""
 
-    noise_model: maestro.NoiseModel | None = None
-    """ Maestro NoiseModel object. Configured before passing to MaestroConfig"""
-
-    noise_seed: int | None = 42
-    """ Seed for the random noise model. Only active when :attr:`noise_model` is not `None` """
-
-    noise_realizations: int | None = None
-    """ Number of realizations to use for noise model. Only active when :attr:`noise_model` is not `None` 
-    - If `None`, no noise is actually used, instead a damping factor is computed and applied to get the expected average under the noise model
-    - If `int`, it randomly inserts Pauli gates and computes expectation values `int` times, then averages over the instances
-    ==> NB: behaviour(`None`) != behaviour(int: 1) !!! rather, behaviour(`None`) = behaviour(`int: n -> /infinity)"""
-
     def override(self, other: "MaestroConfig") -> "MaestroConfig":
         """Return a new config overriding fields with non-default values from ``other``.
 
@@ -219,6 +207,10 @@ class MaestroSimulator(CircuitRunner):
     :class:`~divi.backends.ExecutionConfig` / :class:`~divi.backends.QoroService`
     pattern.
 
+    Noise is handled separately from the rest of the configuration to respect the
+    existing architecture of MaestroConfig in Maestro, which decouples noise models
+    from simulators (running multiple noise models in one simulator allowed).
+
     .. note::
 
         Maestro's C++ extension must be loaded before other C++ libraries
@@ -238,6 +230,9 @@ class MaestroSimulator(CircuitRunner):
         shots: int = 5000,
         config: MaestroConfig | None = None,
         track_depth: bool = False,
+        noise_model: maestro.NoiseModel | None = None,
+        noise_seed: int | None = 42,
+        noise_realizations: int | None = None,
     ):
         if maestro is None:
             raise ImportError(
@@ -246,6 +241,7 @@ class MaestroSimulator(CircuitRunner):
 
         super().__init__(shots=shots, track_depth=track_depth)
         self.config: MaestroConfig = config if config is not None else MaestroConfig()
+        self.noise_config = {"noise_model": noise_model, "noise_seed": noise_seed, "noise_realizations": noise_realizations}
 
         # Per-instance circuit fan-out pool, lazy-initialized on first
         # ``submit_circuits`` call.  Maestro's C++ entrypoints release the
@@ -414,10 +410,17 @@ class MaestroSimulator(CircuitRunner):
                     if per_circuit_shots is not None
                     else self.shots
                 )
-                if self.config.noise_model is None:
+                if self.noise_config["noise_model"] is None:
                     raw = maestro.simple_execute(qasm, config=sim_config, shots=shots)
                 else:
-                    raw = maestro.noisy_execute(qasm, self.config.noise_model, config=sim_config, shots=shots, noise_realizations=self.config.noise_realizations, seed=self.config.seed)
+                    raw = maestro.noisy_execute(
+                        qasm,
+                        self.noise_config["noise_model"],
+                        config=sim_config,
+                        shots=shots,
+                        noise_realizations=self.noise_config["noise_realizations"],
+                        seed=self.noise_config["noise_seed"],
+                    )
                 counts = {bs[::-1]: n for bs, n in raw["counts"].items()}
                 return {"label": label, "results": counts}
 
@@ -434,24 +437,25 @@ class MaestroSimulator(CircuitRunner):
                 pauli_string = self._get_ham_ops_for_circuit(
                     i, ham_ops, circuit_ham_map
                 )
-                if self.config.noise_model is None:
+                if self.noise_config["noise_model"] is None:
                     raw = maestro.simple_estimate(
                         _strip_measurements(qasm),
                         observables=pauli_string,
                         config=sim_config,
                     )
-                if self.config.noise_model is not None:
-                    if self.config.noise_realizations is None:
+                else:
+                    if self.noise_config["noise_realizations"] in [None, 0]:
                         raw = maestro.noisy_estimate(
                             _strip_measurements(qasm),
-                            self.config.noise_model,
+                            self.noise_config["noise_model"],
                             observables=pauli_string,
                             config=sim_config,
                         )
                     else:
                         raw = maestro.noisy_estimate_montecarlo(
                             _strip_measurements(qasm),
-                            self.config.noise_model,
+                            self.noise_config["noise_model"],
+                            noise_realizations=self.noise_config["noise_realizations"],
                             observables=pauli_string,
                             config=sim_config,
                         )
