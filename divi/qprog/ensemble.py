@@ -41,6 +41,14 @@ __all__ = ["BatchConfig", "BatchMode", "ProgramEnsemble"]
 #: one executor thread per program under the default wait-for-all barrier.
 _BARRIER_PROGRAM_LIMIT = 256
 
+#: Above this program count, per-program progress rows are hidden on
+#: successful completion so the batch row remains the focal signal.
+_HIDE_ON_SUCCESS_THRESHOLD = 32
+
+#: Above this many ``max_concurrent_programs``, ``run`` warns to flag a
+#: likely misuse of the knob (e.g. the user wanted ``max_batch_size``).
+_CONCURRENT_PROGRAMS_SOFT_CAP = 1024
+
 
 def _default_task_function(program: QuantumProgram):
     return program.run()
@@ -306,8 +314,10 @@ class ProgramEnsemble(ABC):
 
                 The default barrier requires one executor thread per program,
                 so it is capped at ``256`` programs.  Larger ensembles must
-                opt into ``max_batch_size`` (early-flush, bounded thread pool)
-                or ``BatchMode.OFF``.
+                opt into ``max_batch_size`` (bounded pool, smaller merges),
+                ``max_concurrent_programs`` (explicit pool size, ideal for
+                cloud submission of one large merged job), or
+                ``BatchMode.OFF``.
 
         Returns:
             ProgramEnsemble: Returns self for method chaining.
@@ -315,7 +325,7 @@ class ProgramEnsemble(ABC):
         Raises:
             RuntimeError: If an ensemble is already running, if no programs
                 have been created, or if the ensemble exceeds 256 programs
-                under the default wait-for-all barrier.
+                without an explicit batching strategy.
 
         Note:
             In non-blocking mode, call `join()` later to wait for completion and
@@ -353,21 +363,33 @@ class ProgramEnsemble(ABC):
                 "You must provide a unique instance for each program ID."
             )
 
-        # Sized to keep the wait-for-all barrier from deadlocking against a
-        # too-small pool.  Early-flush and OFF mode don't need that guarantee.
+        # In barrier mode the pool is sized to fit every program so the
+        # merge is maximal.
         default_workers = (os.cpu_count() or 1) + 4
-        coordinator_program_limit: int | None = None
         if batching_enabled:
-            if batch_config.max_batch_size is not None:
+            if batch_config.max_concurrent_programs is not None:
+                if batch_config.max_concurrent_programs == -1:
+                    n_workers = len(self._programs)
+                else:
+                    n_workers = batch_config.max_concurrent_programs
+                    if n_workers > _CONCURRENT_PROGRAMS_SOFT_CAP:
+                        warn(
+                            f"max_concurrent_programs={n_workers} spawns that many "
+                            f"executor threads; if you meant to merge submissions, "
+                            f"set max_batch_size on BatchConfig instead.",
+                            UserWarning,
+                            stacklevel=2,
+                        )
+            elif batch_config.max_batch_size is not None:
                 n_workers = default_workers
             elif len(self._programs) <= _BARRIER_PROGRAM_LIMIT:
                 n_workers = max(len(self._programs), default_workers)
-                coordinator_program_limit = n_workers
             else:
                 raise RuntimeError(
                     f"Ensemble has {len(self._programs)} programs, exceeding the "
                     f"wait-for-all barrier limit ({_BARRIER_PROGRAM_LIMIT}). Set "
-                    f"BatchConfig(max_batch_size=N) for early-flush, or use "
+                    f"BatchConfig(max_batch_size=N) for early-flush, "
+                    f"BatchConfig(max_concurrent_programs=N) to bypass the cap, or "
                     f"BatchConfig(mode=BatchMode.OFF)."
                 )
         else:
@@ -397,7 +419,7 @@ class ProgramEnsemble(ABC):
                     self.backend,
                     progress_queue=progress_queue,
                     batch_config=batch_config,
-                    max_concurrent_programs=coordinator_program_limit,
+                    n_workers=n_workers,
                     cancellation_event=self._cancellation_event,
                 )
                 self._program_key_map = {}
@@ -415,6 +437,9 @@ class ProgramEnsemble(ABC):
                 listener_kwargs: dict[str, Any] = {
                     "live_display": self._live_display,
                     "is_jupyter": self._is_jupyter,
+                    "hide_on_success": (
+                        len(self._programs) > _HIDE_ON_SUCCESS_THRESHOLD
+                    ),
                 }
 
                 if batching_enabled and self._batch_progress is not None:

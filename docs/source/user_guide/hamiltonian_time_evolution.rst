@@ -132,8 +132,13 @@ collects results into a time-ordered mapping.
 
 The trajectory supports all the same options as ``TimeEvolution``
 (``trotterization_strategy``, ``n_steps``, ``order``, ``initial_state``).
-When running on a cloud backend, enable circuit batching (the default) to
-merge circuit submissions into fewer API calls:
+
+**Batching across time points**
+
+Each time point becomes its own program in a
+:class:`~divi.qprog.ensemble.ProgramEnsemble`, so the trajectory inherits
+the ensemble's circuit-batching machinery.  The default ``BatchConfig()``
+already merges every program's submission into a single backend call:
 
 .. skip: next
 
@@ -141,12 +146,28 @@ merge circuit submissions into fewer API calls:
 
    from divi.qprog import BatchConfig
 
-   # Merged submissions (default) — ideal for cloud backends
+   # Default — single merged call for all time points
    trajectory.run(blocking=True, batch_config=BatchConfig())
+
+For dense trajectories (e.g. 512 time points) on
+:class:`~divi.backends.QoroService`, set ``max_concurrent_programs=-1`` so
+all time points run concurrently and the entire ensemble submits as one
+cloud job, reducing overhead significantly:
+
+.. skip: next
+
+.. code-block:: python
+
+   trajectory.run(
+       blocking=True,
+       batch_config=BatchConfig(max_concurrent_programs=-1),
+   )
+
+See :ref:`circuit-batching` for the full batching reference.
 
 Next Steps
 ----------
 
-- Run the full tutorial scripts: `time_evolution.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/time_evolution.py>`_ and `time_evolution_trajectory.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/time_evolution_trajectory.py>`_
+- Run the full tutorial scripts: `time_evolution.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/time_evolution.py>`_, `time_evolution_trajectory.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/time_evolution_trajectory.py>`_, and `nmr_spectroscopy.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/nmr_spectroscopy.py>`_ — a 34-spin NMR simulation that demonstrates the cloud-merge recipe end-to-end.
 - Learn about optimization-based workflows in :doc:`ground_state_energy_estimation_vqe` and :doc:`combinatorial_optimization_qaoa_pce`
 - Explore backend choices in :doc:`backends`

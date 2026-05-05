@@ -660,6 +660,125 @@ class TestQueueListenerCrashSafety:
             "unknown" in c for c in log_calls
         ), f"expected an 'unknown job_id' log entry, got {log_calls}"
 
+    def test_success_status_fills_bar_when_no_incremental_advance(self, mocker):
+        """A Success final_status with progress=0 must mark the bar full
+        so the task doesn't render as 0/N when its program never ticked
+        the counter (e.g. single-shot TimeEvolution programs)."""
+        q: Queue = Queue()
+        progress_bar = mocker.MagicMock()
+        progress_bar.console = mocker.MagicMock()
+        # Rich Progress keeps tasks in a private dict; emulate that.
+        task = mocker.Mock(total=1)
+        progress_bar._tasks = {1: task}
+        pb_task_map = {"j1": 1}
+        done = Event()
+        lock = Lock()
+
+        q.put(
+            {
+                "job_id": "j1",
+                "progress": 0,
+                "message": "Finished successfully!",
+                "final_status": "Success",
+            }
+        )
+
+        thread = Thread(
+            target=queue_listener,
+            args=(q, progress_bar, pb_task_map, done, lock),
+        )
+        thread.start()
+        try:
+            q.join()
+        finally:
+            done.set()
+            thread.join(timeout=2)
+
+        progress_bar.update.assert_called_once()
+        kwargs = progress_bar.update.call_args.kwargs
+        assert kwargs.get("completed") == 1
+        # ``advance`` must not coexist with ``completed`` — Rich would
+        # otherwise apply both and overshoot the total.
+        assert "advance" not in kwargs
+        assert kwargs.get("final_status") == "Success"
+
+    def test_hide_on_success_hides_completed_program_row(self, mocker):
+        """With ``hide_on_success=True``, a Success message must hide the
+        program row.  Failed rows must remain visible so users can diagnose."""
+        q: Queue = Queue()
+        progress_bar = mocker.MagicMock()
+        progress_bar.console = mocker.MagicMock()
+        progress_bar._tasks = {1: mocker.Mock(total=1), 2: mocker.Mock(total=1)}
+        pb_task_map = {"j_ok": 1, "j_fail": 2}
+        done = Event()
+        lock = Lock()
+
+        q.put(
+            {
+                "job_id": "j_ok",
+                "progress": 0,
+                "message": "Finished successfully!",
+                "final_status": "Success",
+            }
+        )
+        q.put(
+            {
+                "job_id": "j_fail",
+                "progress": 0,
+                "message": "boom",
+                "final_status": "Failed",
+            }
+        )
+
+        thread = Thread(
+            target=queue_listener,
+            args=(q, progress_bar, pb_task_map, done, lock),
+            kwargs={"hide_on_success": True},
+        )
+        thread.start()
+        try:
+            q.join()
+        finally:
+            done.set()
+            thread.join(timeout=2)
+
+        calls = {c.args[0]: c.kwargs for c in progress_bar.update.call_args_list}
+        assert calls[1].get("visible") is False
+        assert "visible" not in calls[2]
+
+    def test_hide_on_success_default_keeps_row_visible(self, mocker):
+        """Default behavior (small ensembles): successful rows stay visible."""
+        q: Queue = Queue()
+        progress_bar = mocker.MagicMock()
+        progress_bar.console = mocker.MagicMock()
+        progress_bar._tasks = {1: mocker.Mock(total=1)}
+        pb_task_map = {"j_ok": 1}
+        done = Event()
+        lock = Lock()
+
+        q.put(
+            {
+                "job_id": "j_ok",
+                "progress": 0,
+                "message": "Finished successfully!",
+                "final_status": "Success",
+            }
+        )
+
+        thread = Thread(
+            target=queue_listener,
+            args=(q, progress_bar, pb_task_map, done, lock),
+        )
+        thread.start()
+        try:
+            q.join()
+        finally:
+            done.set()
+            thread.join(timeout=2)
+
+        kwargs = progress_bar.update.call_args.kwargs
+        assert "visible" not in kwargs
+
     def test_progress_bar_update_failure_is_swallowed(self, mocker):
         """If ``progress_bar.update`` raises (e.g. Rich teardown), the
         listener must keep going and ``task_done()`` must still fire."""

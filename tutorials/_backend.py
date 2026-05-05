@@ -55,7 +55,7 @@ def _parse_args() -> argparse.Namespace:
         default=False,
     )
     args, _ = parser.parse_known_args()
-    args.mode = args.mode or "local-qiskit"
+    args.mode = args.mode or "local-maestro"
 
     return args
 
@@ -81,8 +81,8 @@ def get_backend(
             ``--local-maestro`` is selected.
 
     Returns:
-        A ``QiskitSimulator`` (``--local-qiskit``, default),
-        ``MaestroSimulator`` (``--local-maestro``), or
+        A ``MaestroSimulator`` (``--local-maestro``, default),
+        ``QiskitSimulator`` (``--local-qiskit``), or
         ``QoroService`` (``--cloud-maestro``) instance.
     """
     ci_max_shots = os.environ.get("DIVI_CI_MAX_SHOTS")

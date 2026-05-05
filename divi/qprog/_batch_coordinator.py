@@ -47,6 +47,31 @@ class BatchMode(Enum):
 class BatchConfig:
     """Configuration for circuit batching in :meth:`ProgramEnsemble.run`.
 
+    **Choosing values**
+
+    The two main knobs — ``max_concurrent_programs`` and ``max_batch_size``
+    — work together to shape merged backend submissions:
+
+    - ``max_concurrent_programs`` controls how many programs run at once.
+      It sizes the executor pool and the wait-for-all barrier.
+    - ``max_batch_size`` caps the number of circuits in a single merged
+      backend call.
+
+    The default (both unset) sizes the pool to fit every program (up to
+    256) and waits for all to submit — one merged call.  For larger
+    ensembles or to bound the merged-call payload, set the relevant knob.
+
+    *Cloud submission* (e.g. :class:`~divi.backends.QoroService`) typically
+    benefits from one large merged job to amortize HTTP round trips.
+    Pass ``-1`` to unleash every program concurrently::
+
+        ensemble.run(
+            batch_config=BatchConfig(max_concurrent_programs=-1),
+        )
+
+    *Local simulators* benefit from smaller merges that overlap circuit
+    construction with execution.  The default settings already do this.
+
     Attributes:
         mode: Whether to merge circuit submissions across programs.
             Defaults to :attr:`~divi.qprog.ensemble.BatchMode.MERGED`.
@@ -56,6 +81,20 @@ class BatchConfig:
             program to submit.  ``None`` (the default) preserves the
             wait-for-all barrier behavior.  Only meaningful when
             ``mode`` is :attr:`~divi.qprog.ensemble.BatchMode.MERGED`.
+        max_concurrent_programs: Maximum number of programs running
+            concurrently.  When set to a positive integer, sizes the
+            executor pool to that value and bypasses the default
+            ensemble-size cap, letting the wait-for-all barrier admit
+            a single merged submission of up to this many programs.
+            Pass ``-1`` to size the pool to the entire ensemble — the
+            cloud-merge recipe — without having to query
+            ``len(ensemble.programs)`` yourself.  ``None`` (the default)
+            auto-sizes the pool: ``max(len(programs), cpu_count + 4)``
+            in barrier mode (capped at 256), or ``cpu_count + 4`` when
+            ``max_batch_size`` is set.  Explicit values above 1024 emit
+            a :class:`UserWarning`; the ``-1`` form is silent because
+            it's an intentional opt-in.  Only meaningful when ``mode``
+            is :attr:`~divi.qprog.ensemble.BatchMode.MERGED`.
         _sort_programs: Whether to sort programs by key before merging their
             circuits into a single backend call.  Defaults to ``False``.
 
@@ -74,6 +113,7 @@ class BatchConfig:
 
     mode: BatchMode = BatchMode.MERGED
     max_batch_size: int | None = None
+    max_concurrent_programs: int | None = None
     _sort_programs: bool = False
 
     def __post_init__(self):
@@ -81,8 +121,22 @@ class BatchConfig:
             raise ValueError(
                 f"max_batch_size must be >= 1 or None, got {self.max_batch_size}"
             )
+        if (
+            self.max_concurrent_programs is not None
+            and self.max_concurrent_programs != -1
+            and self.max_concurrent_programs < 1
+        ):
+            raise ValueError(
+                "max_concurrent_programs must be >= 1, -1 (resolves to the "
+                "ensemble size), or None, got "
+                f"{self.max_concurrent_programs}"
+            )
         if self.mode is BatchMode.OFF and self.max_batch_size is not None:
             raise ValueError("max_batch_size has no effect when mode is BatchMode.OFF.")
+        if self.mode is BatchMode.OFF and self.max_concurrent_programs is not None:
+            raise ValueError(
+                "max_concurrent_programs has no effect when mode is BatchMode.OFF."
+            )
         if self.mode is BatchMode.OFF and self._sort_programs:
             raise ValueError("_sort_programs has no effect when mode is BatchMode.OFF.")
 
@@ -141,7 +195,7 @@ class _BatchCoordinator:
         progress_queue: Queue | None = None,
         batch_config: BatchConfig | None = None,
         *,
-        max_concurrent_programs: int | None = None,
+        n_workers: int | None = None,
         cancellation_event: Event | None = None,
     ):
         self._real_backend = real_backend
@@ -162,9 +216,9 @@ class _BatchCoordinator:
         # cleanup, and we still need to ensure that work happens once.
         self._cancel_completed = Event()
 
-        # When set, register_program rejects beyond this many active programs
-        # so the wait-for-all barrier can't deadlock against a smaller executor.
-        self._max_concurrent_programs = max_concurrent_programs
+        # Cap on the barrier predicate; ``None`` means wait for every
+        # registered program.
+        self._n_workers = n_workers
 
         # Programs currently executing (not yet finished their run()).
         self._active_programs: set[str] = set()
@@ -187,24 +241,8 @@ class _BatchCoordinator:
     # ------------------------------------------------------------------
 
     def register_program(self, program_key: str) -> None:
-        """Register a program as active before it starts executing.
-
-        Raises:
-            RuntimeError: If ``max_concurrent_programs`` is set and the
-                registration would exceed it.
-        """
+        """Register a program as active before it starts executing."""
         with self._lock:
-            if (
-                self._max_concurrent_programs is not None
-                and program_key not in self._active_programs
-                and len(self._active_programs) >= self._max_concurrent_programs
-            ):
-                raise RuntimeError(
-                    f"Cannot register program {program_key!r}: exceeds the "
-                    f"executor's max_concurrent_programs="
-                    f"{self._max_concurrent_programs}. Use BatchMode.OFF or "
-                    f"raise the ensemble's executor capacity."
-                )
             self._active_programs.add(program_key)
 
     def deregister_program(self, program_key: str) -> None:
@@ -269,8 +307,11 @@ class _BatchCoordinator:
         """Check whether the barrier condition is met (lock must be held)."""
         if not self._pending:
             return False
-        # Barrier: all active programs have submitted.
-        if len(self._pending) >= len(self._active_programs):
+        # Barrier: every program that can concurrently submit has.
+        effective_active = len(self._active_programs)
+        if self._n_workers is not None:
+            effective_active = min(effective_active, self._n_workers)
+        if len(self._pending) >= effective_active:
             return True
         # Circuit-count cap: flush early when pending circuits hit the limit.
         if (

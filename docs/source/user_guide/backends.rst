@@ -159,7 +159,21 @@ QoroService
 
 :class:`~divi.backends.QoroService` talks to the Qoro cloud API, giving programs access to advanced simulators, tensor-network backends, and real QPUs. It supports two execution modes: **sampling mode** (measurement counts) and **expectation mode** (Pauli expectation values, simulation-only).
 
-Use circuit packing (:attr:`~divi.backends.JobConfig.use_circuit_packing`) to batch circuits into a single job for efficiency.
+**Two layers of batching**
+
+QoroService participates in two complementary batching mechanisms:
+
+1. **Backend-level packing** (:attr:`~divi.backends.JobConfig.use_circuit_packing`,
+   enabled by default) — within a single ``submit_circuits`` call, circuits
+   are packed into one cloud job, amortizing the per-job scheduler cost.
+2. **Ensemble-level merging** (:class:`~divi.qprog.ensemble.BatchConfig` on
+   :meth:`~divi.qprog.ensemble.ProgramEnsemble.run`) — merges submissions
+   from multiple programs into one ``submit_circuits`` call.  See
+   :ref:`circuit-batching`.
+
+The two compose: ensemble-level merging yields one large
+``submit_circuits`` call per flush, which backend-level packing then sends
+as a single cloud job.
 
 Submitting and Monitoring Jobs
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

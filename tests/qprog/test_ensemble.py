@@ -1154,31 +1154,108 @@ class TestExecutorSizing:
         ensemble.run(blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF))
         assert ensemble.total_circuit_count == 257
 
-    def test_coordinator_program_limit_only_in_barrier_path(self, program_ensemble):
-        """``max_concurrent_programs`` is load-bearing only on the barrier path.
-
-        When the user opts into early-flush the limit must be ``None``,
-        otherwise the guard would incorrectly reject registrations beyond
-        the bounded pool size.
-        """
+    def test_coordinator_n_workers_matches_executor_in_early_flush(
+        self, program_ensemble
+    ):
+        """The coordinator's barrier cap matches executor capacity in early-flush."""
         program_ensemble.create_programs()
         program_ensemble.run(blocking=False, batch_config=BatchConfig(max_batch_size=4))
         assert program_ensemble._coordinator is not None
-        assert program_ensemble._coordinator._max_concurrent_programs is None
+        assert (
+            program_ensemble._coordinator._n_workers
+            == program_ensemble._executor._max_workers
+        )
         program_ensemble.join()
 
-    def test_coordinator_program_limit_set_on_barrier_path(self, program_ensemble):
+    def test_coordinator_n_workers_matches_executor_on_barrier_path(
+        self, program_ensemble
+    ):
         """Default barrier path passes the executor capacity to the coordinator."""
         program_ensemble.create_programs()
         program_ensemble.run(blocking=False)
         assert program_ensemble._coordinator is not None
-        assert program_ensemble._coordinator._max_concurrent_programs is not None
-        # Matches executor capacity.
         assert (
-            program_ensemble._coordinator._max_concurrent_programs
+            program_ensemble._coordinator._n_workers
             == program_ensemble._executor._max_workers
         )
         program_ensemble.join()
+
+    def test_max_batch_size_exceeds_pool_runs_to_completion(self, dummy_simulator):
+        """Regression: programs > pool with max_batch_size > pool must not deadlock.
+
+        Each program submits 1 circuit, so the circuit-count cap can never
+        fire before the barrier — the barrier predicate's ``n_workers`` cap
+        is what keeps the run satisfiable.
+        """
+        ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=64)
+        ensemble.create_programs()
+        ensemble.run(blocking=True, batch_config=BatchConfig(max_batch_size=64))
+        assert ensemble.total_circuit_count == 64
+
+    def test_max_concurrent_programs_sizes_pool_directly(self, dummy_simulator, mocker):
+        """``max_concurrent_programs`` on BatchConfig drives executor size."""
+        spy = self._spy_executor(mocker)
+        ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=10)
+        ensemble.create_programs()
+        ensemble.run(
+            blocking=True,
+            batch_config=BatchConfig(max_concurrent_programs=10),
+        )
+
+        spy.assert_called_once()
+        assert spy.call_args.kwargs["max_workers"] == 10
+
+    def test_max_concurrent_programs_bypasses_barrier_limit(self, dummy_simulator):
+        """Explicit ``max_concurrent_programs`` lifts the 256-program cap."""
+        ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=300)
+        ensemble.create_programs()
+        ensemble.run(
+            blocking=True,
+            batch_config=BatchConfig(max_concurrent_programs=300),
+        )
+        assert ensemble.total_circuit_count == 300
+
+    def test_max_concurrent_programs_above_soft_cap_warns(self, dummy_simulator):
+        """Values above the advisory soft cap emit a UserWarning."""
+        ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=2)
+        ensemble.create_programs()
+        with pytest.warns(UserWarning, match="max_concurrent_programs"):
+            ensemble.run(
+                blocking=True,
+                batch_config=BatchConfig(max_concurrent_programs=2000),
+            )
+
+    def test_max_concurrent_programs_minus_one_resolves_to_ensemble_size(
+        self, dummy_simulator, mocker
+    ):
+        """``-1`` resolves to ``len(programs)`` at run time."""
+        spy = self._spy_executor(mocker)
+        ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=37)
+        ensemble.create_programs()
+        ensemble.run(
+            blocking=True,
+            batch_config=BatchConfig(max_concurrent_programs=-1),
+        )
+
+        spy.assert_called_once()
+        assert spy.call_args.kwargs["max_workers"] == 37
+
+    def test_max_concurrent_programs_minus_one_does_not_warn(
+        self, dummy_simulator, recwarn
+    ):
+        """The ``-1`` sentinel is an explicit opt-in; no soft-cap warning
+        even when the resolved value exceeds 1024."""
+        ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=2000)
+        ensemble.create_programs()
+        ensemble.run(
+            blocking=True,
+            batch_config=BatchConfig(max_concurrent_programs=-1),
+        )
+
+        soft_cap_warnings = [
+            w for w in recwarn.list if "max_concurrent_programs" in str(w.message)
+        ]
+        assert soft_cap_warnings == []
 
 
 def testqueue_listener(mocker):

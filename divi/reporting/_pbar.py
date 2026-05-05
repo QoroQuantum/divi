@@ -257,6 +257,7 @@ def queue_listener(
     program_key_to_task_ids: dict[str, list[TaskID]] | None = None,
     live_display: Live | None = None,
     is_jupyter: bool = False,
+    hide_on_success: bool = False,
 ):
     """Drain a message queue and update progress bars accordingly.
 
@@ -324,6 +325,19 @@ def queue_listener(
                 update_args["message"] = msg["message"]
             if "final_status" in msg:
                 update_args["final_status"] = msg.get("final_status", "")
+                # Fill the bar so a successful program isn't displayed
+                # as 0/N when it didn't tick the counter incrementally.
+                if msg["final_status"] == "Success":
+                    task = progress_bar._tasks.get(task_id)
+                    if task is not None and task.total is not None:
+                        update_args["completed"] = task.total
+                        update_args.pop("advance", None)
+                    # In large ensembles, hide successful rows so the
+                    # batch row remains the focal signal.  Failed,
+                    # cancelled, and aborted rows stay visible so users
+                    # can diagnose what went wrong.
+                    if hide_on_success:
+                        update_args["visible"] = False
 
             try:
                 progress_bar.update(task_id, **update_args)

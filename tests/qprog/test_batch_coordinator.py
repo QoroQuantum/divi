@@ -130,6 +130,7 @@ class TestBatchConfig:
         cfg = BatchConfig()
         assert cfg.mode is BatchMode.MERGED
         assert cfg.max_batch_size is None
+        assert cfg.max_concurrent_programs is None
         assert cfg._sort_programs is False
 
     def test_sort_programs_true_is_accepted(self):
@@ -147,6 +148,26 @@ class TestBatchConfig:
     def test_mode_off_with_sort_true_raises(self):
         with pytest.raises(ValueError, match="_sort_programs has no effect"):
             BatchConfig(mode=BatchMode.OFF, _sort_programs=True)
+
+    def test_max_concurrent_programs_accepted(self):
+        cfg = BatchConfig(max_concurrent_programs=64)
+        assert cfg.max_concurrent_programs == 64
+
+    def test_max_concurrent_programs_zero_raises(self):
+        with pytest.raises(ValueError, match="max_concurrent_programs must be >= 1"):
+            BatchConfig(max_concurrent_programs=0)
+
+    def test_max_concurrent_programs_negative_one_accepted(self):
+        cfg = BatchConfig(max_concurrent_programs=-1)
+        assert cfg.max_concurrent_programs == -1
+
+    def test_max_concurrent_programs_other_negatives_raise(self):
+        with pytest.raises(ValueError, match="max_concurrent_programs must be >= 1"):
+            BatchConfig(max_concurrent_programs=-2)
+
+    def test_mode_off_with_max_concurrent_programs_raises(self):
+        with pytest.raises(ValueError, match="max_concurrent_programs has no effect"):
+            BatchConfig(mode=BatchMode.OFF, max_concurrent_programs=10)
 
 
 class TestMergeCircuitsAndKwargs:
@@ -358,88 +379,115 @@ class TestRegistrationAndBarrier:
         assert coord._should_flush()
 
 
-class TestMaxConcurrentProgramsGuard:
-    """The ``max_concurrent_programs`` guard turns a barrier deadlock
-    (registrations exceeding executor capacity) into a clear, immediate
-    RuntimeError."""
+class TestNWorkersBarrierCap:
+    """The ``n_workers`` cap on the barrier predicate keeps the wait-for-all
+    barrier satisfiable when ``_active_programs`` exceeds executor capacity."""
 
-    def test_register_within_capacity_succeeds(self):
-        coord = _BatchCoordinator(FakeSyncBackend(), max_concurrent_programs=2)
+    def test_no_cap_waits_for_every_active(self):
+        coord = _BatchCoordinator(FakeSyncBackend())
+        for key in ("a", "b", "c"):
+            coord.register_program(key)
+        coord._pending["a"] = _make_entry({"c": "q"})
+        coord._pending["b"] = _make_entry({"c": "q"})
+        assert not coord._should_flush()
+        coord._pending["c"] = _make_entry({"c": "q"})
+        assert coord._should_flush()
+
+    def test_cap_fires_below_full_active(self):
+        coord = _BatchCoordinator(FakeSyncBackend(), n_workers=2)
+        for key in ("a", "b", "c", "d", "e"):
+            coord.register_program(key)
+        coord._pending["a"] = _make_entry({"c": "q"})
+        assert not coord._should_flush()
+        coord._pending["b"] = _make_entry({"c": "q"})
+        assert coord._should_flush()
+
+    def test_cap_dormant_when_active_smaller_than_cap(self):
+        coord = _BatchCoordinator(FakeSyncBackend(), n_workers=14)
         coord.register_program("a")
         coord.register_program("b")
-        assert coord._active_programs == {"a", "b"}
+        coord._pending["a"] = _make_entry({"c": "q"})
+        assert not coord._should_flush()
+        coord._pending["b"] = _make_entry({"c": "q"})
+        assert coord._should_flush()
 
-    def test_register_beyond_capacity_raises(self):
-        coord = _BatchCoordinator(FakeSyncBackend(), max_concurrent_programs=2)
-        coord.register_program("a")
-        coord.register_program("b")
-        with pytest.raises(RuntimeError, match="exceeds the executor's"):
-            coord.register_program("c")
+    def test_predicate_collapses_when_active_drops_below_cap(self):
+        coord = _BatchCoordinator(FakeSyncBackend(), n_workers=4)
+        for key in ("a", "b", "c", "d", "e"):
+            coord.register_program(key)
+        # 3 pending against active=5, cap=4 → min is 4, not satisfied yet.
+        coord._pending["a"] = _make_entry({"c": "q"})
+        coord._pending["b"] = _make_entry({"c": "q"})
+        coord._pending["c"] = _make_entry({"c": "q"})
+        assert not coord._should_flush()
+        # Shrink active below cap directly so the predicate, not the
+        # deregister side-effect, is what's under test.
+        coord._active_programs.discard("d")
+        coord._active_programs.discard("e")
+        assert coord._should_flush()
 
-    def test_re_register_existing_key_at_capacity_is_no_op(self):
-        """Idempotent re-registration of an active key must not raise even at capacity."""
-        coord = _BatchCoordinator(FakeSyncBackend(), max_concurrent_programs=2)
-        coord.register_program("a")
-        coord.register_program("b")
-        coord.register_program("a")  # same key — set add is idempotent
-        assert coord._active_programs == {"a", "b"}
-
-    def test_capacity_none_is_unbounded(self):
-        coord = _BatchCoordinator(FakeSyncBackend(), max_concurrent_programs=None)
-        for i in range(50):
+    def test_deadlock_repro_programs_exceed_pool(self):
+        """Bounded pool + many programs + 1-circuit submits must flush."""
+        backend = FakeSyncBackend()
+        n_workers = 4
+        n_programs = 16
+        coord = _BatchCoordinator(
+            backend,
+            batch_config=BatchConfig(max_batch_size=n_programs),
+            n_workers=n_workers,
+        )
+        for i in range(n_programs):
             coord.register_program(f"p{i}")
-        assert len(coord._active_programs) == 50
 
-    def test_deregister_frees_capacity(self):
-        coord = _BatchCoordinator(FakeSyncBackend(), max_concurrent_programs=2)
-        coord.register_program("a")
-        coord.register_program("b")
-        coord.deregister_program("a")
-        coord.register_program("c")  # slot freed — should succeed
-        assert coord._active_programs == {"b", "c"}
+        gate = Barrier(n_workers)
+        results = {}
+        results_lock = Lock()
 
-    def test_error_message_names_the_levers(self):
-        coord = _BatchCoordinator(FakeSyncBackend(), max_concurrent_programs=1)
-        coord.register_program("a")
-        with pytest.raises(RuntimeError) as excinfo:
-            coord.register_program("b")
-        msg = str(excinfo.value)
-        assert "max_concurrent_programs=1" in msg
-        assert "BatchMode.OFF" in msg
-
-    def test_concurrent_registration_is_serialized(self):
-        """Two threads racing on a capacity-1 coordinator: exactly one wins.
-
-        Pins that the lock around the guard prevents a TOCTOU where both
-        threads observe ``len(active) < limit`` and both succeed.
-        """
-        coord = _BatchCoordinator(FakeSyncBackend(), max_concurrent_programs=1)
-        gate = Barrier(2)
-        outcomes: list[BaseException | None] = []
-        outcomes_lock = Lock()
-
-        def _try_register(key):
+        def _submit(key):
             gate.wait(timeout=5)
-            try:
-                coord.register_program(key)
-                with outcomes_lock:
-                    outcomes.append(None)
-            except RuntimeError as exc:
-                with outcomes_lock:
-                    outcomes.append(exc)
+            res, _runtime = coord.submit(key, {f"{key}{_TAG_SEP}c": "qasm"}, shots=100)
+            with results_lock:
+                results[key] = res
 
-        t1 = Thread(target=_try_register, args=("a",))
-        t2 = Thread(target=_try_register, args=("b",))
-        t1.start()
-        t2.start()
-        t1.join(timeout=10)
-        t2.join(timeout=10)
+        threads = [Thread(target=_submit, args=(f"p{i}",)) for i in range(n_workers)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
 
-        successes = [o for o in outcomes if o is None]
-        failures = [o for o in outcomes if isinstance(o, RuntimeError)]
-        assert len(successes) == 1
-        assert len(failures) == 1
-        assert len(coord._active_programs) == 1
+        assert len(results) == n_workers
+        for i in range(n_workers):
+            assert len(results[f"p{i}"]) == 1
+
+    def test_pool_sized_to_programs_yields_one_flush(self):
+        """When ``n_workers == n_programs`` the barrier admits a single
+        merged backend call — the cloud-merge recipe."""
+        backend = FakeSyncBackend()
+        n = 64
+        coord = _BatchCoordinator(backend, n_workers=n)
+        for i in range(n):
+            coord.register_program(f"p{i}")
+
+        gate = Barrier(n)
+        results: dict[str, list] = {}
+        results_lock = Lock()
+
+        def _submit(key):
+            gate.wait(timeout=10)
+            res, _runtime = coord.submit(key, {f"{key}{_TAG_SEP}c": "qasm"}, shots=100)
+            with results_lock:
+                results[key] = res
+
+        threads = [Thread(target=_submit, args=(f"p{i}",)) for i in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=20)
+
+        assert len(results) == n
+        # Single merged backend call for all 64 programs.
+        assert len(backend.submitted) == 1
+        assert len(backend.submitted[0]) == n
 
 
 class TestFlushWithSyncBackend:

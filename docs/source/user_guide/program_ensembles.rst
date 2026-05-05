@@ -170,6 +170,8 @@ The ``KeyboardInterrupt`` is caught during :meth:`~divi.qprog.ensemble.ProgramEn
 which cancels any in-flight backend jobs and allows currently running programs
 to finish their current iteration before shutting down.
 
+.. _circuit-batching:
+
 Circuit Batching
 ----------------
 
@@ -224,6 +226,52 @@ the backend and can improve latency for large ensembles.
 ``max_batch_size`` controls **merging granularity**, not individual payload
 size.  A single program that submits more circuits than the limit will still
 flush normally.
+
+**Cloud submission with one merged job**
+
+When submitting through :class:`~divi.backends.QoroService`, every
+``submit_circuits`` call costs an HTTP round trip and a scheduler
+queue slot.  A 512-program ensemble batched in chunks of ~14 produces
+~37 round trips; merging all 512 into a single job amortizes that to
+one.  Pass ``max_concurrent_programs=-1`` to size the executor pool to
+the entire ensemble and bypass the default 256-program barrier cap:
+
+.. skip: next
+
+.. code-block:: python
+
+   from divi.qprog import BatchConfig
+
+   # All programs run concurrently -> single merged backend submission.
+   ensemble.run(
+       blocking=True,
+       batch_config=BatchConfig(max_concurrent_programs=-1),
+   )
+
+The ``-1`` sentinel follows the same convention as scikit-learn's
+``n_jobs=-1`` ("use all available").  An explicit positive integer
+works too, e.g. ``max_concurrent_programs=512``.
+
+For ensembles where each program emits many circuits per call, combine
+``max_concurrent_programs`` with ``max_batch_size`` to bound the merged
+payload:
+
+.. skip: next
+
+.. code-block:: python
+
+   ensemble.run(
+       batch_config=BatchConfig(
+           max_concurrent_programs=20,   # how many programs run at once
+           max_batch_size=1024,          # cap circuits per merged call
+       ),
+   )
+
+Explicit values of ``max_concurrent_programs`` above 1024 emit a
+:class:`UserWarning` — that's a soft cap meant to flag the most common
+mistake (reaching for ``max_concurrent_programs`` when the user actually
+wanted ``max_batch_size``).  The ``-1`` form is silent because it's an
+intentional opt-in.
 
 **Disabling batching**
 
