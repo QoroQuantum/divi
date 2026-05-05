@@ -104,6 +104,7 @@ class QAOA(VariationalQuantumAlgorithm):
         self.current_iteration = 0
         self.trotterization_strategy = trotterization_strategy or ExactTrotterization()
         self._decoded_solution: Any = _UNSET
+        self._solution_bitstring: Any = _UNSET
         self._cost_meta_cache: dict[tuple[int, int], MetaCircuit] = {}
 
         # Circuit parameters — Qiskit ParameterVector, no sympy.
@@ -139,9 +140,13 @@ class QAOA(VariationalQuantumAlgorithm):
     def _save_subclass_state(self) -> dict[str, Any]:
         """Save QAOA-specific runtime state."""
         decoded = None if self._decoded_solution is _UNSET else self._decoded_solution
+        bitstring = (
+            None if self._solution_bitstring is _UNSET else self._solution_bitstring
+        )
         return {
             "problem_metadata": self.problem_metadata,
             "decoded_solution": decoded,
+            "solution_bitstring": bitstring,
             "loss_constant": self.loss_constant,
             "trotterization_strategy": pickle.dumps(
                 self.trotterization_strategy, protocol=pickle.HIGHEST_PROTOCOL
@@ -167,6 +172,10 @@ class QAOA(VariationalQuantumAlgorithm):
 
         self.problem_metadata = state["problem_metadata"]
         self._decoded_solution = state["decoded_solution"]
+        loaded_bitstring = state.get("solution_bitstring")
+        self._solution_bitstring = (
+            _UNSET if loaded_bitstring is None else loaded_bitstring
+        )
         self.loss_constant = state["loss_constant"]
         self.trotterization_strategy = pickle.loads(
             bytes.fromhex(state["trotterization_strategy"])
@@ -185,6 +194,23 @@ class QAOA(VariationalQuantumAlgorithm):
         if self._decoded_solution is _UNSET:
             raise RuntimeError("QAOA.solution is not available. Call .run() first.")
         return self._decoded_solution
+
+    @property
+    def solution_bitstring(self) -> str:
+        """Most-probable bitstring measured at the optimized parameters.
+
+        Always a string of ``0``/``1`` characters of length
+        :attr:`n_qubits`, regardless of how the problem's decode function
+        shapes :attr:`solution`.
+
+        Raises:
+            RuntimeError: If ``.run()`` has not yet been called.
+        """
+        if self._solution_bitstring is _UNSET:
+            raise RuntimeError(
+                "QAOA.solution_bitstring is not available. Call .run() first."
+            )
+        return self._solution_bitstring
 
     def _build_qaoa_ops(self, cost_hamiltonian: qp.operation.Operator) -> list:
         """Build QAOA layer ops for a given cost Hamiltonian."""
@@ -248,6 +274,7 @@ class QAOA(VariationalQuantumAlgorithm):
         self._run_solution_measurement_for(np.atleast_2d(self._best_params))
         best_probs = next(iter(self._best_probs.values()))
         best_bitstring = max(best_probs, key=best_probs.get)
+        self._solution_bitstring = best_bitstring
         self._decoded_solution = self._decode_solution_fn(best_bitstring)
 
         self.reporter.info(message="🏁 Computed Final Solution! 🏁")

@@ -5,21 +5,18 @@
 """MaxCut QUBO — Characterize & Solve
 ======================================
 
-Demonstrates how the Divi Characterization Service accelerates QAOA by
-replacing expensive shot-based parameter optimization with a single
-exact diagnostic call.
-
-**Key insight**: QAOA performance hinges on finding good (γ, β)
-parameters.  Traditional approaches burn hundreds of circuit
-evaluations searching blindly.  The characterizer uses a
-simulator to sweep the full parameter landscape and
-returns the optimal point — no shots, no noise, no guesswork.
+Demonstrates how the Divi Characterization Service can shortcut the QAOA
+parameter-search loop. The characterizer runs an exact (statevector)
+parameter sweep server-side and returns the optimal (γ, β); QAOA can then
+skip its outer optimizer and run a single shot-based evaluation at those
+parameters.
 
 Workflow:
   1. Build a MaxCut QUBO (10-qubit Petersen graph).
-  2. **Characterize** — exact (γ, β) sweep via the Qoro service.
-  3. **Compare** — QAOA with the characterizer's params (1 evaluation)
-     vs blind optimization (80 iterations × 5 random seeds).
+  2. Compute the classical ground truth via brute force.
+  3. **Characterize** — exact (γ, β) sweep via the Qoro service.
+  4. **Compare** — QAOA with the characterizer's params (1 evaluation)
+     vs unguided optimization (5 random seeds × 80 COBYLA iterations).
 
 Requirements:
     - ``QORO_API_KEY`` in ``.env`` or environment variable.
@@ -41,35 +38,9 @@ from tutorials._backend import get_backend
 
 console = Console()
 
-# ──────────────────────────────────────────────────────────────────────
-# 1. Build graph & QUBO
-# ──────────────────────────────────────────────────────────────────────
-
-G = nx.petersen_graph()
-rng = np.random.default_rng(42)
-for u, v in G.edges():
-    G[u][v]["weight"] = round(rng.uniform(0.5, 3.0), 2)
-
-n = G.number_of_nodes()
-Q = np.zeros((n, n))
-
-for u, v, data in G.edges(data=True):
-    w = data.get("weight", 1.0)
-    Q[u, v] = -w
-    Q[v, u] = -w
-    Q[u, u] += w
-    Q[v, v] += w
-
-problem = BinaryOptimizationProblem(Q)
-
-console.print(f"\n[bold cyan]1. Graph & QUBO[/bold cyan]")
-console.print(f"   Petersen graph: {n} nodes, {G.number_of_edges()} edges (weighted)")
-console.print(f"   QUBO matrix: {Q.shape}, {np.count_nonzero(Q)} non-zero entries\n")
-
-
-# ──────────────────────────────────────────────────────────────────────
-# 2. Classical ground truth
-# ──────────────────────────────────────────────────────────────────────
+SHOTS = 20000
+N_BLIND_ITERS = 80
+BLIND_SEEDS = [7, 21, 42, 77, 99]
 
 
 def maxcut_value(bitstring: str, graph: nx.Graph) -> float:
@@ -82,85 +53,153 @@ def maxcut_value(bitstring: str, graph: nx.Graph) -> float:
     return total
 
 
-best_cut = -float("inf")
-best_bitstrings = []
-for bits in itertools.product("01", repeat=n):
-    bs = "".join(bits)
-    cut = maxcut_value(bs, G)
-    if cut > best_cut:
-        best_cut = cut
-        best_bitstrings = [bs]
-    elif cut == best_cut:
-        best_bitstrings.append(bs)
+def main() -> None:
+    # ──────────────────────────────────────────────────────────────────
+    # 1. Build graph & QUBO
+    # ──────────────────────────────────────────────────────────────────
+    G = nx.petersen_graph()
+    rng = np.random.default_rng(42)
+    for u, v in G.edges():
+        G[u][v]["weight"] = round(rng.uniform(0.5, 3.0), 2)
 
-table = Table(title="Exact Optimal Solutions (Brute Force)", border_style="green")
-table.add_column("Bitstring", style="bold")
-table.add_column("Cut Value", justify="right")
-for bs in best_bitstrings[:4]:
-    table.add_row(bs, f"{best_cut:.2f}")
-console.print(table)
-console.print(
-    f"   Max cut: {best_cut:.2f}  ({len(best_bitstrings)} optimal solutions)\n"
-)
+    n = G.number_of_nodes()
+    Q = np.zeros((n, n))
+    for u, v, data in G.edges(data=True):
+        w = data.get("weight", 1.0)
+        Q[u, v] = -w
+        Q[v, u] = -w
+        Q[u, u] += w
+        Q[v, v] += w
+
+    problem = BinaryOptimizationProblem(Q)
+
+    console.print("\n[bold cyan]1. Graph & QUBO[/bold cyan]")
+    console.print(
+        f"   Petersen graph: {n} nodes, {G.number_of_edges()} edges (weighted)"
+    )
+    console.print(f"   QUBO matrix: {Q.shape}, {np.count_nonzero(Q)} non-zero entries")
+
+    # ──────────────────────────────────────────────────────────────────
+    # 2. Classical ground truth (brute force)
+    # ──────────────────────────────────────────────────────────────────
+    console.print("\n[bold cyan]2. Classical Ground Truth[/bold cyan]")
+
+    best_cut = -float("inf")
+    best_bitstrings: list[str] = []
+    for bits in itertools.product("01", repeat=n):
+        bs = "".join(bits)
+        cut = maxcut_value(bs, G)
+        if cut > best_cut:
+            best_cut = cut
+            best_bitstrings = [bs]
+        elif cut == best_cut:
+            best_bitstrings.append(bs)
+
+    console.print(_brute_force_table(best_cut, best_bitstrings))
+    console.print(
+        f"   Max cut: {best_cut:.2f}  ({len(best_bitstrings)} optimal solutions)"
+    )
+
+    # ──────────────────────────────────────────────────────────────────
+    # 3. Characterize — parameter sweep + diagnostic report
+    # ──────────────────────────────────────────────────────────────────
+    console.print(
+        "\n[bold cyan]3. Characterization Service — Parameter Sweep[/bold cyan]"
+    )
+    console.print("   Sweeping (γ, β)...\n")
+
+    sweep_result = characterize(
+        problem,
+        target_states=best_bitstrings[:2],
+        service=QoroService(),
+        options=CharacterizationOptions(
+            parameter_sweep=True,
+            sensitivity=True,
+            ansatz={"mixer": "x", "layers": 1},
+        ),
+    )
+
+    bp = sweep_result.best_parameters
+    optimal_gamma, optimal_beta = bp["gamma"], bp["beta"]
+
+    console.print(
+        f"   [green]Sweep returned: γ = {optimal_gamma:.4f}, "
+        f"β = {optimal_beta:.4f}[/green]\n"
+    )
+    sweep_result.display()
+
+    # ──────────────────────────────────────────────────────────────────
+    # 4. QAOA comparison & results
+    # ──────────────────────────────────────────────────────────────────
+    # Approach A — "Blind" QAOA: optimizer searches from random starting
+    #   points using shot-based evaluations (80 iters × 5 seeds).
+    # Approach B — "Characterizer-guided": evaluate once at the sweep's
+    #   optimal params (max_iterations=1) — no optimization needed.
+
+    backend = get_backend(shots=SHOTS)
+    console.print(
+        f"\n[bold cyan]4. QAOA Comparison & Results (p=1, {SHOTS} shots)[/bold cyan]\n"
+    )
+
+    console.print(
+        f"   [bold]A) Blind QAOA[/bold]: {len(BLIND_SEEDS)} random seeds × {N_BLIND_ITERS} iterations"
+    )
+    blind_results = [_run_blind_qaoa(problem, backend, G, seed) for seed in BLIND_SEEDS]
+
+    blind_cuts = [r["cut"] for r in blind_results]
+    blind_mean = float(np.mean(blind_cuts))
+    blind_std = float(np.std(blind_cuts))
+    blind_min, blind_max = min(blind_cuts), max(blind_cuts)
+    total_random_circuits = sum(r["circuits"] for r in blind_results)
+
+    console.print(
+        f"\n   [bold]B) Characterizer-guided[/bold]: 1 evaluation at "
+        f"(γ={optimal_gamma:.4f}, β={optimal_beta:.4f})"
+    )
+    seeded = _run_guided_qaoa(problem, backend, G, optimal_gamma, optimal_beta)
+    console.print(
+        f"      seeded  →  cut={seeded['cut']:>5.2f}  "
+        f"({seeded['circuits']} circuits)\n"
+    )
+
+    console.print(
+        _comparison_table(
+            blind_mean=blind_mean,
+            blind_std=blind_std,
+            blind_min=blind_min,
+            blind_max=blind_max,
+            seeded_cut=seeded["cut"],
+            best_cut=best_cut,
+            total_random_circuits=total_random_circuits,
+            seeded_circuits=seeded["circuits"],
+            n_blind_iters=N_BLIND_ITERS,
+            n_blind_seeds=len(BLIND_SEEDS),
+        )
+    )
+    console.print(
+        _summary_panel(
+            seeded_circuits=seeded["circuits"],
+            seeded_cut=seeded["cut"],
+            seeded_ratio=seeded["cut"] / best_cut,
+            total_random_circuits=total_random_circuits,
+            blind_mean=blind_mean,
+            blind_std=blind_std,
+            blind_min=blind_min,
+            blind_max=blind_max,
+            best_cut=best_cut,
+        )
+    )
+
 
 # ──────────────────────────────────────────────────────────────────────
-# 3. Characterize — parameter sweep + diagnostic report
+# QAOA runners
 # ──────────────────────────────────────────────────────────────────────
 
-console.print("[bold cyan]2. Characterization Service — Parameter Sweep[/bold cyan]")
-console.print("   Sweeping (γ, β)...\n")
 
-ansatz_config = {"mixer": "x", "layers": 1}
-
-sweep_result = characterize(
-    problem,
-    target_states=best_bitstrings[:2],
-    service=QoroService(),
-    options=CharacterizationOptions(
-        parameter_sweep=True,
-        sensitivity=True,
-        ansatz=ansatz_config,
-    ),
-)
-
-bp = sweep_result.best_parameters
-optimal_gamma = bp["gamma"]
-optimal_beta = bp["beta"]
-prob = bp.get("probability", 0)
-uniform_prob = 1 / 2**n
-
-console.print(
-    f"   [green]Optimal: γ = {optimal_gamma:.4f}, β = {optimal_beta:.4f}[/green]"
-)
-console.print(
-    f"   P(optimal cut) = {prob:.6f}  ({prob / uniform_prob:.1f}× above uniform)\n"
-)
-
-sweep_result.display()
-
-# ──────────────────────────────────────────────────────────────────────
-# 4. QAOA comparison
-# ──────────────────────────────────────────────────────────────────────
-# Approach A — "Blind" QAOA: optimizer searches from random starting
-#   points using noisy shot-based evaluations (80 iters × 5 seeds).
-#
-# Approach B — "Characterizer-guided": we already have the optimal params,
-#   so we just evaluate the circuit once (max_iterations=1).  No
-#   optimization needed — the characterizer did the hard work.
-
-SHOTS = 20000
-backend = get_backend(shots=SHOTS)
-
-console.print(f"\n[bold cyan]3. QAOA Comparison (p=1, {SHOTS} shots)[/bold cyan]\n")
-
-# --- A. Blind QAOA: 5 random starting points ---
-N_BLIND_ITERS = 80
-console.print(
-    f"   [bold]A) Blind QAOA[/bold]: 5 random seeds × {N_BLIND_ITERS} iterations"
-)
-
-random_results = []
-for seed in [7, 21, 42, 77, 99]:
+def _run_blind_qaoa(
+    problem: BinaryOptimizationProblem, backend, graph: nx.Graph, seed: int
+) -> dict:
+    """One blind-QAOA run: COBYLA from a random start, return summary stats."""
     qaoa = QAOA(
         problem,
         n_layers=1,
@@ -170,129 +209,164 @@ for seed in [7, 21, 42, 77, 99]:
         seed=seed,
     )
     qaoa.run()
-    bs = "".join(str(b) for b in qaoa.solution)
-    cut = maxcut_value(bs, G)
-    # Also measure quality of top-5 solutions
-    top5_cuts = [maxcut_value(s.bitstring, G) for s in qaoa.get_top_solutions(n=5)]
-    best_top5 = max(top5_cuts)
-    random_results.append(
-        {
-            "seed": seed,
-            "bitstring": bs,
-            "cut": cut,
-            "best_top5": best_top5,
-            "loss": qaoa.best_loss,
-            "circuits": qaoa.total_circuit_count,
-        }
-    )
+    bs = qaoa.solution_bitstring
+    cut = maxcut_value(bs, graph)
     console.print(
         f"      seed={seed:>2}  →  cut={cut:>5.2f}  "
-        f"best-in-top5={best_top5:>5.2f}  ({qaoa.total_circuit_count} circuits)"
+        f"({qaoa.total_circuit_count} circuits)"
     )
+    return {
+        "seed": seed,
+        "bitstring": bs,
+        "cut": cut,
+        "circuits": qaoa.total_circuit_count,
+    }
 
-best_random_cut = max(r["cut"] for r in random_results)
-best_random_top5 = max(r["best_top5"] for r in random_results)
-avg_random_cut = np.mean([r["cut"] for r in random_results])
-total_random_circuits = sum(r["circuits"] for r in random_results)
 
-# --- B. Characterizer-guided: one evaluation at optimal params ---
-console.print(
-    f"\n   [bold]B) Characterizer-guided[/bold]: 1 evaluation at (γ={optimal_gamma:.4f}, β={optimal_beta:.4f})"
-)
-
-qaoa_seeded = QAOA(
-    problem,
-    n_layers=1,
-    optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
-    max_iterations=1,
-    backend=backend,
-    seed=42,
-)
-initial_params = np.array([[optimal_gamma, optimal_beta]])
-qaoa_seeded.run(initial_params=initial_params)
-
-seeded_bs = "".join(str(b) for b in qaoa_seeded.solution)
-seeded_cut = maxcut_value(seeded_bs, G)
-seeded_top5 = [maxcut_value(s.bitstring, G) for s in qaoa_seeded.get_top_solutions(n=5)]
-seeded_best_top5 = max(seeded_top5)
-seeded_circuits = qaoa_seeded.total_circuit_count
-
-console.print(
-    f"      seeded  →  cut={seeded_cut:>5.2f}  "
-    f"best-in-top5={seeded_best_top5:>5.2f}  ({seeded_circuits} circuits)\n"
-)
-
-# ──────────────────────────────────────────────────────────────────────
-# 5. Results
-# ──────────────────────────────────────────────────────────────────────
-
-cmp = Table(title="QAOA Performance Comparison", border_style="cyan")
-cmp.add_column("", style="bold")
-cmp.add_column("Blind QAOA\n(best of 5)", justify="right")
-cmp.add_column("Blind QAOA\n(average)", justify="right")
-cmp.add_column("Characterizer-\nGuided", justify="right", style="green")
-
-cmp.add_row(
-    "Solution Cut",
-    f"{best_random_cut:.2f}",
-    f"{avg_random_cut:.2f}",
-    f"{seeded_cut:.2f}",
-)
-cmp.add_row("Best in Top-5", f"{best_random_top5:.2f}", "—", f"{seeded_best_top5:.2f}")
-cmp.add_row(
-    "Approx. Ratio",
-    f"{best_random_cut/best_cut:.3f}",
-    f"{avg_random_cut/best_cut:.3f}",
-    f"{seeded_cut/best_cut:.3f}",
-)
-cmp.add_row(
-    "Total Circuits",
-    str(total_random_circuits),
-    str(total_random_circuits),
-    str(seeded_circuits),
-)
-cmp.add_row(
-    "Optimizer Iters", f"5 × {N_BLIND_ITERS}", f"5 × {N_BLIND_ITERS}", "0 (exact)"
-)
-cmp.add_row("Optimal", f"{best_cut:.2f}", f"{best_cut:.2f}", f"{best_cut:.2f}")
-console.print(cmp)
-
-# Top-5 from seeded run
-top = qaoa_seeded.get_top_solutions(n=10)
-sol_table = Table(
-    title="Top 10 States (Characterizer-Guided, Single Evaluation)",
-    border_style="green",
-)
-sol_table.add_column("Bitstring", style="bold")
-sol_table.add_column("Probability", justify="right")
-sol_table.add_column("Cut Value", justify="right")
-sol_table.add_column("Optimal?", justify="center")
-for s in top:
-    c = maxcut_value(s.bitstring, G)
-    sol_table.add_row(
-        s.bitstring,
-        f"{s.prob:.4f}",
-        f"{c:.2f}",
-        "[green]✓[/green]" if s.bitstring in best_bitstrings else "",
+def _run_guided_qaoa(
+    problem: BinaryOptimizationProblem,
+    backend,
+    graph: nx.Graph,
+    gamma: float,
+    beta: float,
+) -> dict:
+    """Single characterizer-guided QAOA evaluation at the supplied (γ, β)."""
+    qaoa = QAOA(
+        problem,
+        n_layers=1,
+        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+        max_iterations=1,
+        backend=backend,
+        seed=42,
     )
-console.print(sol_table)
+    qaoa.run(initial_params=np.array([[gamma, beta]]))
+    bs = qaoa.solution_bitstring
+    cut = maxcut_value(bs, graph)
+    return {
+        "bitstring": bs,
+        "cut": cut,
+        "circuits": qaoa.total_circuit_count,
+    }
+
 
 # ──────────────────────────────────────────────────────────────────────
-# Summary
+# Presentation helpers — Rich tables & summary panel
 # ──────────────────────────────────────────────────────────────────────
 
-speedup = total_random_circuits / max(seeded_circuits, 1)
-console.print(
-    Panel(
-        f"[bold]The Characterization Service found the optimal QAOA parameters — zero circuit evaluations needed.[/bold]\n\n"
-        f"• Characterizer-guided: [green]{seeded_circuits} circuits[/green] → "
-        f"cut = {seeded_cut:.2f}, best-in-top5 = {seeded_best_top5:.2f}\n"
-        f"• Blind QAOA:       [yellow]{total_random_circuits} circuits[/yellow] → "
-        f"best cut = {best_random_cut:.2f} (across 5 attempts)\n\n"
-        f"The characterizer achieves comparable solution quality with "
-        f"[bold green]{speedup:.0f}× fewer circuit evaluations[/bold green] — "
-        f"a direct reduction in quantum hardware cost.",
+
+def _brute_force_table(best_cut: float, best_bitstrings: list[str]) -> Table:
+    table = Table(title="Exact Optimal Solutions (Brute Force)", border_style="green")
+    table.add_column("Bitstring", style="bold")
+    table.add_column("Cut Value", justify="right")
+    for bs in best_bitstrings[:4]:
+        table.add_row(bs, f"{best_cut:.2f}")
+    return table
+
+
+def _comparison_table(
+    *,
+    blind_mean: float,
+    blind_std: float,
+    blind_min: float,
+    blind_max: float,
+    seeded_cut: float,
+    best_cut: float,
+    total_random_circuits: int,
+    seeded_circuits: int,
+    n_blind_iters: int,
+    n_blind_seeds: int,
+) -> Table:
+    """Honest side-by-side comparison.
+
+    Reports mean ± std and range for blind QAOA across seeds — single-best
+    bitstring cut for the seeded run. Approximation ratios are computed
+    consistently against the exact optimum on both columns. No "best of N"
+    cherry-picking and no shot-sampled order statistics.
+    """
+    cmp = Table(title="QAOA Performance Comparison", border_style="cyan")
+    cmp.add_column("", style="bold")
+    cmp.add_column(f"Blind QAOA\n({n_blind_seeds} seeds)", justify="right")
+    cmp.add_column("Characterizer-\nGuided", justify="right", style="green")
+
+    cmp.add_row(
+        "Solution Cut",
+        f"{blind_mean:.2f} ± {blind_std:.2f}",
+        f"{seeded_cut:.2f}",
+    )
+    cmp.add_row(
+        "Range across seeds",
+        f"[{blind_min:.2f}, {blind_max:.2f}]",
+        "— (deterministic)",
+    )
+    cmp.add_row(
+        "Approx. Ratio",
+        f"{blind_mean/best_cut:.3f} ± {blind_std/best_cut:.3f}",
+        f"{seeded_cut/best_cut:.3f}",
+    )
+    cmp.add_row(
+        "Total Circuits",
+        str(total_random_circuits),
+        str(seeded_circuits),
+    )
+    cmp.add_row(
+        "Optimizer Iters",
+        f"{n_blind_seeds} × {n_blind_iters}",
+        "0",
+    )
+    cmp.add_row("Optimum (exact)", f"{best_cut:.2f}", f"{best_cut:.2f}")
+    return cmp
+
+
+def _summary_panel(
+    *,
+    seeded_circuits: int,
+    seeded_cut: float,
+    seeded_ratio: float,
+    total_random_circuits: int,
+    blind_mean: float,
+    blind_std: float,
+    blind_min: float,
+    blind_max: float,
+    best_cut: float,
+) -> Panel:
+    """Honest summary: circuit savings + reproducibility, no quality overclaim."""
+    speedup = total_random_circuits / max(seeded_circuits, 1)
+    delta_vs_mean = seeded_cut - blind_mean
+    # Where the seeded result falls inside the blind seed lottery — be honest
+    # if it's just lucky-seed-equivalent rather than a true win.
+    if seeded_cut > blind_max:
+        position = "above the blind best — a real lift over every seed"
+    elif seeded_cut >= blind_max - 1e-6:
+        position = (
+            "tied with the blind best — the seed lottery happened to graze "
+            "the same ceiling"
+        )
+    else:
+        position = (
+            f"inside the blind range [{blind_min:.2f}, {blind_max:.2f}] — "
+            "near the p=1 ceiling, not above it"
+        )
+    return Panel(
+        f"[bold]Characterizer-guided[/bold]: "
+        f"[green]{seeded_circuits} circuits[/green], "
+        f"cut = {seeded_cut:.2f} "
+        f"(approx. ratio {seeded_ratio:.3f}, deterministic).\n"
+        f"[bold]Blind QAOA[/bold] ({total_random_circuits} circuits across seeds): "
+        f"cut = {blind_mean:.2f} ± {blind_std:.2f}, "
+        f"range [{blind_min:.2f}, {blind_max:.2f}].\n\n"
+        f"Seeded result is [bold]{delta_vs_mean:+.2f}[/bold] vs the blind "
+        f"mean and {position}.\n\n"
+        f"Both methods saturate near the p=1 ceiling — neither finds the "
+        f"exact optimum ({best_cut:.2f}). The characterizer's value here is "
+        f"[bold green]{speedup:.0f}× fewer circuits[/bold green] and a "
+        f"deterministic answer instead of seed-dependent variance, plus the "
+        f"static QUBO diagnostics (spectral gap, condition number, "
+        f"sensitivity) — a structural fingerprint of your QUBO that persists "
+        f"as a reusable artifact even when you do run full optimization.",
         title="Summary",
         border_style="cyan",
     )
-)
+
+
+if __name__ == "__main__":
+    main()

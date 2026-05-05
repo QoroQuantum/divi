@@ -6,17 +6,20 @@
 
 import re
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
 from divi.backends._qoro_service import QoroService
-from divi.qprog.problems import BinaryOptimizationProblem
+
+if TYPE_CHECKING:
+    from divi.qprog.problems import BinaryOptimizationProblem
 
 
 def _serialize_qubo_for_wire(
-    problem: BinaryOptimizationProblem,
+    problem: "BinaryOptimizationProblem",
 ) -> dict[str, float]:
     """Serialize a :class:`BinaryOptimizationProblem` to the Usher wire format.
 
@@ -92,6 +95,24 @@ class CharacterizationResult:
     report: dict | None = field(default=None, repr=False)
     """Full characterization report — quality score, state probabilities, etc."""
 
+    recommendations: list[dict] = field(default_factory=list, repr=False)
+    """Actionable suggestions for tuning the QUBO or QAOA setup, derived
+    from the characterization report.
+
+    Always a list — empty when no rules fire or the job didn't complete.
+    Each entry is a dict with these keys:
+
+    * ``level`` — one of ``"info"``, ``"warn"``, ``"action"``. ``action``
+      recommends a concrete change; ``warn`` flags a risk; ``info`` is
+      contextual.
+    * ``metric`` — which report field triggered the rule
+      (e.g. ``"quality_score"``, ``"feasibility_rate"``).
+    * ``text`` — plain-text message, suitable for terminal/log output.
+    * ``html`` — the same message with inline ``<strong>`` markup,
+      consumed by the notebook ``_repr_html_`` renderer. ``text`` and
+      ``html`` carry the same content; choose by output medium.
+    """
+
     created_at: str | None = None
     """ISO timestamp when the characterization job was created."""
 
@@ -114,25 +135,44 @@ class CharacterizationResult:
 
     @property
     def quality_score(self) -> float | None:
-        """Overall quality score (0–100) from the characterization report.
+        """Composite metric (0–100) of the QUBO's structural amenability to QAOA.
+
+        Derived server-side from spectral and concentration features of the
+        QUBO matrix. **Does not predict approximation ratio at any specific
+        depth** — a high score means the QUBO is well-conditioned for QAOA,
+        not that p=1 will solve it.
 
         When a parameter sweep was run, returns the score at the best
-        parameters found (``quality_at_best``); otherwise the score at
-        the user-supplied or default parameters.
+        parameters found (``quality_at_best``); otherwise the score at the
+        user-supplied or default parameters.
         """
         return self._field("quality_at_best", "quality_score")
 
     @property
     def concentration_ratio(self) -> float | None:
-        """How tightly probability mass concentrates on target states.
+        """Probability mass on target states relative to the uniform baseline.
 
-        Prefers the value at the best sweep parameters when available.
+        ``1.0`` matches a uniform distribution; ``> 1`` means the ansatz
+        concentrates mass *on* targets; ``< 1`` means it concentrates *away*
+        from them. Values near or below 1 at the returned parameters indicate
+        the ansatz at this depth cannot resolve the target — increasing
+        circuit depth (more QAOA layers) or running a deeper parameter sweep
+        is the typical remedy.
+
+        Prefers the value at the best sweep parameters
+        (``concentration_at_best``) when available.
         """
         return self._field("concentration_at_best", "concentration_ratio")
 
     @property
     def approximation_ratio(self) -> float | None:
-        """Approximation ratio achieved by the QAOA ansatz."""
+        """Approximation ratio achieved by the QAOA ansatz at the returned
+        ``best_parameters`` (and depth specified in the sweep options).
+
+        This is the server's diagnostic estimate, not a measurement from a
+        live QAOA run. Comparing it against your own QAOA's approximation
+        ratio is only meaningful at the same depth and ansatz configuration.
+        """
         return self._field("approximation_ratio")
 
     @property
@@ -165,17 +205,6 @@ class CharacterizationResult:
         """Whether the penalty parameter is well-tuned based on the analysis."""
         pt = self._field("penalty_tuning")
         return pt.get("is_well_tuned") if isinstance(pt, dict) else None
-
-    @property
-    def recommendations(self) -> list[dict]:
-        """Server-supplied list of interpretive recommendations.
-
-        Each entry is a dict with ``level`` (``info`` / ``warn`` / ``action``),
-        ``metric`` (which report field triggered it), and ``html`` (a short
-        message containing inline ``<strong>`` markup).
-        """
-        recs = self._field("recommendations")
-        return recs if isinstance(recs, list) else []
 
     def summary(self) -> str:
         """Return a rich text summary of the characterization result."""
@@ -264,10 +293,10 @@ class CharacterizationOptions:
     beta: float | None = None
     """Fixed β value. Mutually exclusive with ``parameter_sweep``."""
 
-    cost_qubo: BinaryOptimizationProblem | None = None
+    cost_qubo: "BinaryOptimizationProblem | None" = None
     """Cost-only :class:`BinaryOptimizationProblem` for penalty analysis."""
 
-    penalty_qubo: BinaryOptimizationProblem | None = None
+    penalty_qubo: "BinaryOptimizationProblem | None" = None
     """Penalty-only :class:`BinaryOptimizationProblem` for penalty analysis."""
 
     constraints: list | None = None
@@ -361,35 +390,73 @@ def _render(result: "CharacterizationResult") -> None:
         )
         console.print(f"  Quality: {bar} [bold]{qs:.2f}[/bold] / 100\n")
 
-    # --- Hardness analysis ---
-    if result.hardness:
-        ht = Table(title="Hardness Analysis", border_style="yellow")
-        ht.add_column("Metric", style="bold")
-        ht.add_column("Value", justify="right")
-        for key, value in result.hardness.items():
-            label = key.replace("_", " ").title()
-            fmt = f"{value:.4f}" if isinstance(value, float) else str(value)
-            ht.add_row(label, fmt)
-        console.print(ht)
+    # Pre-compute the uniform baseline; reused by the Best Parameters panel
+    # (for the inline P(target) vs uniform cue) and the State Probabilities
+    # table further down.
+    uniform_prob = (1.0 / (2**n_qubits)) if n_qubits else None
+    target_set = set((result.report or {}).get("target_states") or ())
 
     # --- Best parameters ---
+    # Surfaced near the top: this is the actionable output of the sweep.
     bp = result.best_parameters
     if bp:
         gamma = bp.get("gamma")
         beta = bp.get("beta")
-        prob = bp.get("probability")
+        # Derive ``P(target)`` from ``state_probabilities`` so the rendered
+        # number matches the rendered table further down. The server-supplied
+        # ``bp["probability"]`` field has opaque semantics and does not in
+        # general equal the sum of target-state sampling probabilities.
+        sp = result.state_probabilities or []
+        target_prob: float | None = None
+        if target_set and sp:
+            target_prob = sum(
+                float(s.get("probability", 0))
+                for s in sp
+                if s.get("is_target", s.get("state") in target_set)
+            )
+
         parts = []
         if gamma is not None:
             parts.append(f"[bold green]γ = {gamma:.4f}[/bold green]")
         if beta is not None:
             parts.append(f"[bold green]β = {beta:.4f}[/bold green]")
-        if prob is not None:
-            parts.append(f"[dim]P(target) = {prob:.6f}[/dim]")
+        if target_prob is not None:
+            # Inline the boost-vs-uniform so the number is self-interpretable
+            # without scrolling to the State Probabilities table.
+            cue = ""
+            if uniform_prob:
+                boost = target_prob / uniform_prob
+                cue = (
+                    f"  ({boost:.2f}× uniform)"
+                    if boost < 1.0
+                    else f"  ({boost:.1f}× uniform)"
+                )
+            parts.append(f"[dim]P(target) = {target_prob:.6f}{cue}[/dim]")
         console.print(
             Panel(
                 "  " + "\n  ".join(parts),
                 title="[green]Best Parameters[/green]",
                 border_style="green",
+            )
+        )
+
+    # --- Recommendations (server-supplied) ---
+    # Surfaced right after Best Parameters: the most actionable interpretive
+    # content the report carries. Reference tables (hardness, state probs,
+    # sensitivity) live below.
+    recs = result.recommendations
+    if recs:
+        default_bullet = _RECOMMENDATION_BULLETS["info"]
+        lines = [
+            f"  {_RECOMMENDATION_BULLETS.get(r.get('level', 'info'), default_bullet)}"
+            f" {_html_to_rich(r.get('html', ''))}"
+            for r in recs
+        ]
+        console.print(
+            Panel(
+                "\n".join(lines),
+                title="[cyan]Recommendations[/cyan]",
+                border_style="cyan",
             )
         )
 
@@ -413,9 +480,6 @@ def _render(result: "CharacterizationResult") -> None:
     # --- State probabilities ---
     sp = result.state_probabilities
     if sp:
-        target_set = set((result.report or {}).get("target_states") or ())
-        uniform_prob = (1.0 / (2**n_qubits)) if n_qubits else None
-
         st = Table(title="State Probabilities", border_style="magenta")
         st.add_column("State", style="bold")
         st.add_column("Target?", justify="center")
@@ -439,7 +503,22 @@ def _render(result: "CharacterizationResult") -> None:
         if uniform_prob and n_qubits is not None:
             console.print(f"  [dim]Uniform: {uniform_prob:.6f} (1/{2**n_qubits})[/dim]")
 
-    # --- Sensitivity ---
+    # --- Hardness analysis (reference: static QUBO structure) ---
+    if result.hardness:
+        ht = Table(
+            title="Hardness Analysis",
+            caption="[dim]Static QUBO structure metrics — does not predict QAOA quality at any specific depth.[/dim]",
+            border_style="yellow",
+        )
+        ht.add_column("Metric", style="bold")
+        ht.add_column("Value", justify="right")
+        for key, value in result.hardness.items():
+            label = key.replace("_", " ").title()
+            fmt = f"{value:.4f}" if isinstance(value, float) else str(value)
+            ht.add_row(label, fmt)
+        console.print(ht)
+
+    # --- Sensitivity (reference: per-qubit fragility) ---
     sens = result.sensitivity
     if sens:
         se = Table(
@@ -457,34 +536,19 @@ def _render(result: "CharacterizationResult") -> None:
             se.add_row(str(entry.get("qubit", "?")), f"{val:.4f}", assessment)
         console.print(se)
 
-    # --- Recommendations (server-supplied) ---
-    recs = result.recommendations
-    if recs:
-        default_bullet = _RECOMMENDATION_BULLETS["info"]
-        lines = [
-            f"  {_RECOMMENDATION_BULLETS.get(r.get('level', 'info'), default_bullet)}"
-            f" {_html_to_rich(r.get('html', ''))}"
-            for r in recs
-        ]
-        console.print(
-            Panel(
-                "\n".join(lines),
-                title="[cyan]Recommendations[/cyan]",
-                border_style="cyan",
-            )
-        )
-
 
 def _wrap_response(data: dict, service: QoroService) -> CharacterizationResult:
     # ``job_id`` and ``status`` are required fields in the server contract;
     # let ``KeyError`` surface noisily on a malformed payload rather than
     # silently fabricating defaults. Optional metadata stays as ``.get()``.
     job_id = data["job_id"]
+    recs = data.get("recommendations")
     return CharacterizationResult(
         job_id=job_id,
         status=data["status"],
         hardness=data.get("hardness"),
         report=data.get("report"),
+        recommendations=recs if recs is not None else [],
         created_at=data.get("created_at"),
         completed_at=data.get("completed_at"),
         html=service._fetch_characterization_html(job_id),
@@ -492,7 +556,7 @@ def _wrap_response(data: dict, service: QoroService) -> CharacterizationResult:
 
 
 def characterize(
-    problem: BinaryOptimizationProblem,
+    problem: "BinaryOptimizationProblem",
     target_states: list[str],
     *,
     service: QoroService,
