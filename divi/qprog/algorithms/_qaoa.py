@@ -199,9 +199,8 @@ class QAOA(VariationalQuantumAlgorithm):
     def solution_bitstring(self) -> str:
         """Most-probable bitstring measured at the optimized parameters.
 
-        Always a string of ``0``/``1`` characters of length
-        :attr:`n_qubits`, regardless of how the problem's decode function
-        shapes :attr:`solution`.
+        Always a string of ``0``/``1`` characters of length ``n_qubits``,
+        regardless of how the problem's decode function shapes :attr:`solution`.
 
         Raises:
             RuntimeError: If ``.run()`` has not yet been called.

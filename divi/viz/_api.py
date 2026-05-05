@@ -41,7 +41,7 @@ from ._neb import (
     _neb_perpendicular_gradients,
     _redistribute_uniform,
 )
-from ._periodic import periodic_trajectory_wrap
+from ._periodic import periodic_trajectory_wrap, periodic_wrap
 from ._results import (
     Fourier2DResult,
     HessianResult,
@@ -1252,6 +1252,18 @@ class ProgramViz:
             samples = np.vstack(blocks)
             if wrap_periodic:
                 samples = periodic_trajectory_wrap(samples)
+                # periodic_trajectory_wrap anchors at samples[0]; the unwrapped
+                # trajectory generically lives in a different 2π-copy than a
+                # raw `center` argument.  Rigidly shift so samples[-1] (= the
+                # converged best_per_iteration row) aligns to the center's copy,
+                # otherwise `shift = center - mean` carries a stray 2π·k that
+                # offsets the projected cloud from the heatmap in score space.
+                center = kwargs.get("center")
+                if center is not None:
+                    ref = np.asarray(center, dtype=np.float64).reshape(-1)
+                    delta = periodic_wrap(samples[-1], reference=ref) - samples[-1]
+                    samples = samples + delta
+                    assert np.max(np.abs(samples[-1] - ref)) <= np.pi + 1e-9
             kwargs["samples"] = samples
         return scan_pca(self.program, **kwargs)
 

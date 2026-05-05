@@ -294,10 +294,10 @@ class CharacterizationOptions:
     """Fixed β value. Mutually exclusive with ``parameter_sweep``."""
 
     cost_qubo: "BinaryOptimizationProblem | None" = None
-    """Cost-only :class:`BinaryOptimizationProblem` for penalty analysis."""
+    """Cost-only :class:`~divi.qprog.problems.BinaryOptimizationProblem` for penalty analysis."""
 
     penalty_qubo: "BinaryOptimizationProblem | None" = None
-    """Penalty-only :class:`BinaryOptimizationProblem` for penalty analysis."""
+    """Penalty-only :class:`~divi.qprog.problems.BinaryOptimizationProblem` for penalty analysis."""
 
     constraints: list | None = None
     """Constraint descriptors."""

@@ -879,7 +879,7 @@ class QoroService(CircuitRunner):
             cancellation_event (Event, optional): When provided, the polling loop
                 waits on this Event between attempts instead of plain
                 ``time.sleep`` so that ``Event.set()`` interrupts the next sleep
-                window and raises :class:`ExecutionCancelledError`.  An
+                window and raises :class:`~divi.exceptions.ExecutionCancelledError`.  An
                 in-flight HTTP request is **not** interrupted — worst-case
                 cancellation latency is bounded by the per-request ``timeout``
                 rather than the polling interval.

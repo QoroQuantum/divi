@@ -286,7 +286,7 @@ class MaestroSimulator(CircuitRunner):
         """Shut down the per-instance executor.
 
         Safe to call multiple times.  Called automatically when the
-        instance is garbage-collected via :func:`weakref.finalize`, but
+        instance is garbage-collected via :class:`weakref.finalize`, but
         callers that want deterministic cleanup (e.g. inside long-running
         services) can invoke this explicitly.
 
