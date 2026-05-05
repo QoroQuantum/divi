@@ -17,7 +17,7 @@ from ._systems import QPU, QPUSystem, SimulatorCluster
 from ._characterization import (
     CharacterizationOptions,
     CharacterizationResult,
-    characterize,
+    characterize_and_validate,
     get_characterization_result,
 )
 
@@ -40,7 +40,7 @@ __all__ = [
     "SimulationMethod",
     "Simulator",
     "SimulatorCluster",
-    "characterize",
+    "characterize_and_validate",
     "convert_counts_to_probs",
     "create_backend_from_properties",
     "get_characterization_result",

@@ -75,8 +75,8 @@ def _html_to_rich(text: str) -> str:
 class CharacterizationResult:
     """Result container for QUBO/HUBO characterization.
 
-    Returned by :meth:`~divi.backends.QoroService.characterize` and
-    :func:`~divi.backends.characterize`. Displays a rich HTML report when
+    Returned by :meth:`~divi.backends.QoroService.characterize_and_validate` and
+    :func:`~divi.backends.characterize_and_validate`. Displays a rich HTML report when
     rendered in a Jupyter notebook.
 
     .. note::
@@ -263,7 +263,7 @@ class CharacterizationResult:
 
 @dataclass
 class CharacterizationOptions:
-    """Configuration for :func:`~divi.backends.characterize`.
+    """Configuration for :func:`~divi.backends.characterize_and_validate`.
 
     All fields are optional; default-construct for a basic run with no
     sub-analyses. The dataclass validates field combinations at
@@ -555,7 +555,7 @@ def _wrap_response(data: dict, service: QoroService) -> CharacterizationResult:
     )
 
 
-def characterize(
+def characterize_and_validate(
     problem: "BinaryOptimizationProblem",
     target_states: list[str],
     *,
@@ -592,11 +592,11 @@ def characterize(
         >>> from divi.backends import (
         ...     CharacterizationOptions,
         ...     QoroService,
-        ...     characterize,
+        ...     characterize_and_validate,
         ... )
         >>> from divi.qprog.problems import BinaryOptimizationProblem
         >>> problem = BinaryOptimizationProblem(np.array([[-1, 2], [0, -1]]))
-        >>> result = characterize(
+        >>> result = characterize_and_validate(
         ...     problem,
         ...     target_states=["01", "10"],
         ...     service=QoroService(),
@@ -609,7 +609,7 @@ def characterize(
         Credit cost scales with QUBO size.
     """
     options = options or CharacterizationOptions()
-    data = service.characterize(
+    data = service.characterize_and_validate(
         qubo=_serialize_qubo_for_wire(problem),
         target_states=target_states,
         options=options._to_wire(),
@@ -646,5 +646,5 @@ def get_characterization_result(
         >>> result.quality_score
         45.89
     """
-    data = service.characterize(job_id=job_id)
+    data = service.characterize_and_validate(job_id=job_id)
     return _wrap_response(data, service)

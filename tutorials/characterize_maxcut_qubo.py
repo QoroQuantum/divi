@@ -30,7 +30,11 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from divi.backends import CharacterizationOptions, QoroService, characterize
+from divi.backends import (
+    CharacterizationOptions,
+    QoroService,
+    characterize_and_validate,
+)
 from divi.qprog import QAOA
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import BinaryOptimizationProblem
@@ -108,7 +112,7 @@ def main() -> None:
     )
     console.print("   Sweeping (γ, β)...\n")
 
-    sweep_result = characterize(
+    sweep_result = characterize_and_validate(
         problem,
         target_states=best_bitstrings[:2],
         service=QoroService(),

@@ -963,7 +963,7 @@ class QoroService(CircuitRunner):
     # QUBO / HUBO Characterization
     # ------------------------------------------------------------------ #
 
-    def characterize(
+    def characterize_and_validate(
         self,
         qubo: dict | None = None,
         *,
@@ -1003,7 +1003,7 @@ class QoroService(CircuitRunner):
             ``job_id``, ``status``, ``hardness``, ``report``,
             ``recommendations``, ``created_at``, ``completed_at``. For a
             rich client-side wrapper, prefer
-            :func:`~divi.backends.characterize`.
+            :func:`~divi.backends.characterize_and_validate`.
 
         Raises:
             ValueError: If neither ``qubo`` nor ``job_id`` is provided.
@@ -1016,7 +1016,7 @@ class QoroService(CircuitRunner):
         if job_id is None:
             if qubo is None:
                 raise ValueError(
-                    "characterize() requires either 'qubo' (to submit a "
+                    "characterize_and_validate() requires either 'qubo' (to submit a "
                     "new job) or 'job_id' (to fetch an existing result)."
                 )
 

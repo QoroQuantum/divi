@@ -7,8 +7,8 @@
 Tests cover:
 - Wire-format serialization from all supported QUBO/HUBO types
 - CharacterizationResult dataclass properties and display
-- QoroService.characterize submit + fetch flows (mocked HTTP)
-- Top-level divi.backends.characterize convenience function
+- QoroService.characterize_and_validate submit + fetch flows (mocked HTTP)
+- Top-level divi.backends.characterize_and_validate convenience function
 """
 
 from http import HTTPStatus
@@ -20,7 +20,7 @@ import requests
 from divi.backends import (
     CharacterizationOptions,
     ExecutionResult,
-    characterize,
+    characterize_and_validate,
     get_characterization_result,
 )
 from divi.backends._characterization import (
@@ -360,7 +360,7 @@ class TestCharacterizationResult:
 
 
 # ---------------------------------------------------------------------------
-# QoroService.characterize (mocked HTTP)
+# QoroService.characterize_and_validate (mocked HTTP)
 # ---------------------------------------------------------------------------
 
 
@@ -385,13 +385,13 @@ class TestQoroServiceCharacterize:
             service, "_fetch_characterization_html", return_value="<div/>"
         )
 
-        result = service.characterize(
+        result = service.characterize_and_validate(
             qubo={"0,0": -1.0, "0,1": 2.0},
             target_states=["01", "10"],
         )
 
-        # service.characterize returns the raw API response dict;
-        # the rich wrapper is built by divi.backends.characterize().
+        # service.characterize_and_validate returns the raw API response dict;
+        # the rich wrapper is built by divi.backends.characterize_and_validate().
         assert isinstance(result, dict)
         assert result["status"] == "COMPLETED"
         assert result["report"]["quality_score"] == 78.5
@@ -431,7 +431,7 @@ class TestQoroServiceCharacterize:
             "analysis": {"sensitivity": True, "parameter_sweep": True},
         }
 
-        service.characterize(
+        service.characterize_and_validate(
             qubo={"0,0": -1.0},
             target_states=["0"],
             options=options,
@@ -458,7 +458,7 @@ class TestQoroServiceCharacterize:
             service, "_fetch_characterization_html", return_value="<div/>"
         )
 
-        service.characterize(
+        service.characterize_and_validate(
             qubo={"0,0": -1.0},
             target_states=[],
             options={"analysis": {"hardness_only": True}},
@@ -477,7 +477,7 @@ class TestQoroServiceCharacterize:
 
         mock_req = mocker.patch.object(service, "_make_request", return_value=mock_resp)
 
-        result = service.characterize(job_id="abc-123")
+        result = service.characterize_and_validate(job_id="abc-123")
 
         assert isinstance(result, dict)
         assert result["job_id"] == "abc-123"
@@ -490,16 +490,16 @@ class TestQoroServiceCharacterize:
     def test_requires_qubo_or_job_id(self, qoro_service_factory):
         service = qoro_service_factory()
         with pytest.raises(ValueError, match="qubo.*or.*job_id"):
-            service.characterize()
+            service.characterize_and_validate()
 
 
 # ---------------------------------------------------------------------------
-# Top-level characterize() function
+# Top-level characterize_and_validate() function
 # ---------------------------------------------------------------------------
 
 
 class TestTopLevelCharacterize:
-    """Tests for the divi.backends.characterize convenience function."""
+    """Tests for the divi.backends.characterize_and_validate convenience function."""
 
     def test_characterize_with_ndarray(self, mocker, qoro_service_factory):
         service = qoro_service_factory()
@@ -520,7 +520,9 @@ class TestTopLevelCharacterize:
         )
 
         problem = BinaryOptimizationProblem(np.array([[-1.0, 2.0], [0.0, -1.0]]))
-        result = characterize(problem, target_states=["01", "10"], service=service)
+        result = characterize_and_validate(
+            problem, target_states=["01", "10"], service=service
+        )
 
         assert isinstance(result, CharacterizationResult)
         assert result.quality_score == 78.5
@@ -543,7 +545,7 @@ class TestTopLevelCharacterize:
             service, "_fetch_characterization_html", return_value="<div/>"
         )
 
-        characterize(
+        characterize_and_validate(
             BinaryOptimizationProblem(np.array([[-1.0, 2.0], [0.0, -1.0]])),
             target_states=["01"],
             service=service,
@@ -577,7 +579,7 @@ class TestTopLevelCharacterize:
             service, "_fetch_characterization_html", return_value="<div/>"
         )
 
-        characterize(
+        characterize_and_validate(
             BinaryOptimizationProblem(np.array([[-1.0, 2.0], [0.0, -1.0]])),
             target_states=["01"],
             service=service,
@@ -617,7 +619,7 @@ class TestTopLevelCharacterize:
         cost_q = BinaryOptimizationProblem(np.array([[-1.0, 0.0], [0.0, -1.0]]))
         pen_q = BinaryOptimizationProblem(np.array([[0.0, 2.0], [0.0, 0.0]]))
 
-        characterize(
+        characterize_and_validate(
             BinaryOptimizationProblem(np.array([[-1.0, 2.0], [0.0, -1.0]])),
             target_states=["01"],
             service=service,
@@ -675,7 +677,7 @@ class TestQoroServiceValidationHtmlE2E:
     Endpoints exercised:
       - ``POST /api/job/init/``                         (job creation)
       - ``POST /api/job/<pk>/submit_qubo/``             (validation submit)
-      - ``GET  /api/job/<pk>/validation_result/``       (JSON, via ``characterize``)
+      - ``GET  /api/job/<pk>/validation_result/``       (JSON, via ``characterize_and_validate``)
       - ``GET  /api/job/<pk>/validation_result/html/``  (HTML)
 
     Deferred (not covered here — would need orchestration we can't drive
@@ -704,7 +706,7 @@ class TestQoroServiceValidationHtmlE2E:
         # 2-qubit QUBO with a concrete optimum at ``00``. Larger than this
         # adds prod cost without unlocking new wire-contract surface.
         problem = BinaryOptimizationProblem(np.array([[1.0, -1.0], [-1.0, 1.0]]))
-        result = characterize(
+        result = characterize_and_validate(
             problem,
             target_states=["00"],
             service=service,
@@ -734,7 +736,7 @@ class TestQoroServiceValidationHtmlE2E:
         """
         service = QoroService(auth_token=api_key)
         problem = BinaryOptimizationProblem(np.array([[1.0, -1.0], [-1.0, 1.0]]))
-        result = characterize(
+        result = characterize_and_validate(
             problem,
             target_states=[],
             service=service,
@@ -871,8 +873,8 @@ class TestQoroServiceValidationHtmlE2E:
         Pins the read-only code path: a second call with only the prior
         job's ``job_id`` must return a ``CharacterizationResult`` whose
         data fields equal the original. Catches drift between the submit-
-        then-fetch path (``characterize``) and the pure-fetch path
-        (``get_characterization_result``) in ``QoroService.characterize``.
+        then-fetch path (``characterize_and_validate``) and the pure-fetch path
+        (``get_characterization_result``) in ``QoroService.characterize_and_validate``.
 
         The ``html`` field is excluded from the equality check by the
         dataclass (``compare=False``); we additionally assert it's
