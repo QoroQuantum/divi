@@ -4,15 +4,19 @@
 
 """QUBO/HUBO characterization: serialization, result container, and public API."""
 
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+import requests
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
 from divi.backends._qoro_service import QoroService
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from divi.qprog.problems import BinaryOptimizationProblem
@@ -119,10 +123,8 @@ class CharacterizationResult:
     completed_at: str | None = None
     """ISO timestamp when the characterization job completed."""
 
-    # Server-rendered HTML report, fetched once at construction (see
-    # ``_wrap_response``). ``kw_only=True`` lets it sit after the optional
-    # fields without imposing a default.
-    html: str = field(kw_only=True, repr=False, compare=False)
+    html: str = field(kw_only=True, default="", repr=False, compare=False)
+    """Server-rendered HTML report. Empty when the HTML endpoint was unreachable."""
 
     def _field(self, key: str, *fallbacks: str):
         """Return ``self.report[key]`` (or first present fallback), else ``None``."""
@@ -383,7 +385,7 @@ def _render(result: "CharacterizationResult") -> None:
     qs = result.quality_score
     if qs is not None:
         color = _threshold_pick(qs, _QUALITY_COLORS, default="red")
-        filled = int(_QUALITY_BAR_LEN * qs / 100)
+        filled = min(_QUALITY_BAR_LEN, int(_QUALITY_BAR_LEN * qs / 100))
         bar = (
             f"[{color}]{'█' * filled}[/{color}]"
             f"[dim]{'░' * (_QUALITY_BAR_LEN - filled)}[/dim]"
@@ -393,7 +395,7 @@ def _render(result: "CharacterizationResult") -> None:
     # Pre-compute the uniform baseline; reused by the Best Parameters panel
     # (for the inline P(target) vs uniform cue) and the State Probabilities
     # table further down.
-    uniform_prob = (1.0 / (2**n_qubits)) if n_qubits else None
+    uniform_prob = (1.0 / (2**n_qubits)) if n_qubits is not None else None
     target_set = set((result.report or {}).get("target_states") or ())
 
     # --- Best parameters ---
@@ -543,6 +545,18 @@ def _wrap_response(data: dict, service: QoroService) -> CharacterizationResult:
     # silently fabricating defaults. Optional metadata stays as ``.get()``.
     job_id = data["job_id"]
     recs = data.get("recommendations")
+
+    try:
+        html = service._fetch_characterization_html(job_id)
+    except requests.RequestException as exc:
+        logger.warning(
+            "Could not fetch HTML report for job %s: %s. "
+            "Returning result without rendered HTML.",
+            job_id,
+            exc,
+        )
+        html = ""
+
     return CharacterizationResult(
         job_id=job_id,
         status=data["status"],
@@ -551,7 +565,7 @@ def _wrap_response(data: dict, service: QoroService) -> CharacterizationResult:
         recommendations=recs if recs is not None else [],
         created_at=data.get("created_at"),
         completed_at=data.get("completed_at"),
-        html=service._fetch_characterization_html(job_id),
+        html=html,
     )
 
 
