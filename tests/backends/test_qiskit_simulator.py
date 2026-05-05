@@ -656,6 +656,32 @@ class TestQiskitSimulatorRuntimeEstimation:
 
         assert estimated_time == 1.0
 
+    def test_estimate_run_time_batch_pins_pool_processes(self, mocker):
+        """``estimate_run_time_batch`` must construct
+        ``multiprocessing.Pool`` with ``processes=_default_n_processes()``
+        instead of relying on ``os.cpu_count()`` defaults — otherwise it
+        oversubscribes when called from inside a worker thread.
+        """
+        # Capture how Pool was instantiated.
+        pool_kwargs: dict = {}
+        mock_pool_cm = mocker.MagicMock()
+        mock_pool_cm.__enter__.return_value.map.return_value = [0.1, 0.2, 0.3]
+        mock_pool_cm.__exit__.return_value = False
+
+        def fake_pool(*args, **kwargs):
+            pool_kwargs.update(kwargs)
+            return mock_pool_cm
+
+        mocker.patch("divi.backends._qiskit_simulator.Pool", side_effect=fake_pool)
+        mocker.patch(
+            "divi.backends._qiskit_simulator._default_n_processes",
+            return_value=7,
+        )
+
+        QiskitSimulator.estimate_run_time_batch(circuits=["a", "b", "c"], n_qpus=2)
+
+        assert pool_kwargs.get("processes") == 7
+
 
 class TestDefaultNProcesses:
     """Tests for _default_n_processes CPU-count logic."""

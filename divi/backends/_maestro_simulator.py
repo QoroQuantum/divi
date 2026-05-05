@@ -5,9 +5,11 @@
 import logging
 import os
 import re
+import weakref
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, fields
+from threading import Lock
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -183,6 +185,16 @@ class MaestroConfig:
         return maestro.SimulatorConfig(**kwargs)
 
 
+def _shutdown_executor(executor: ThreadPoolExecutor) -> None:
+    """Module-level finalizer callback for the per-instance fan-out pool.
+
+    Lives at module scope (rather than as a method) so the
+    :class:`weakref.finalize` registration does not capture a strong
+    reference to the simulator instance, which would defeat GC.
+    """
+    executor.shutdown(wait=False)
+
+
 class MaestroSimulator(CircuitRunner):
     """A CircuitRunner backend powered by qoro-maestro, Qoro's C++ quantum simulator.
 
@@ -223,6 +235,17 @@ class MaestroSimulator(CircuitRunner):
         super().__init__(shots=shots, track_depth=track_depth)
         self.config: MaestroConfig = config if config is not None else MaestroConfig()
 
+        # Per-instance circuit fan-out pool, lazy-initialized on first
+        # ``submit_circuits`` call.  Maestro's C++ entrypoints release the
+        # GIL and use internal OpenMP threads, so we cap workers at cores/2
+        # to leave headroom for that internal parallelism rather than
+        # oversubscribing.  ``ThreadPoolExecutor.map`` is thread-safe across
+        # concurrent submit calls — overlapping submissions multiplex
+        # through the same worker pool instead of each spawning their own.
+        self._executor: ThreadPoolExecutor | None = None
+        self._executor_lock = Lock()
+        self._executor_finalizer: weakref.finalize | None = None
+
     @property
     def supports_expval(self) -> bool:
         """Maestro supports native observable estimation."""
@@ -235,6 +258,56 @@ class MaestroSimulator(CircuitRunner):
 
     def set_seed(self, seed: int) -> None:
         """No-op — maestro does not yet expose seeding from C++."""
+
+    def _get_executor(self) -> ThreadPoolExecutor:
+        """Return the per-instance circuit fan-out pool, creating it lazily.
+
+        Sized once at first use; callers that submit fewer tasks than the
+        worker count simply leave the extra workers idle (no per-call cost).
+        """
+        with self._executor_lock:
+            if self._executor is None:
+                n_workers = max(1, (os.cpu_count() or 2) // 2)
+                executor = ThreadPoolExecutor(
+                    max_workers=n_workers,
+                    thread_name_prefix="maestro",
+                )
+                # Finalizer: shut the pool down when the simulator is GC'd
+                # so its threads don't outlive the instance.  Use a static
+                # callable (no ``self`` reference) so the weakref can
+                # actually be collected.
+                self._executor = executor
+                self._executor_finalizer = weakref.finalize(
+                    self, _shutdown_executor, executor
+                )
+            return self._executor
+
+    def close(self) -> None:
+        """Shut down the per-instance executor.
+
+        Safe to call multiple times.  Called automatically when the
+        instance is garbage-collected via :class:`weakref.finalize`, but
+        callers that want deterministic cleanup (e.g. inside long-running
+        services) can invoke this explicitly.
+
+        ``shutdown(wait=True)`` runs **outside** ``_executor_lock`` — a
+        concurrent ``submit_circuits`` on another thread can grab the lock
+        and lazily re-create a fresh pool while the old one drains, instead
+        of serializing behind a slow shutdown.  Subsequent submits therefore
+        observe ``close()`` as "release current pool; new pool created on
+        demand".
+        """
+        with self._executor_lock:
+            executor = self._executor
+            finalizer = self._executor_finalizer
+            # Detach the finalizer before zeroing attributes so a GC pass
+            # interleaving these two writes can't fire the callback.
+            if finalizer is not None:
+                finalizer.detach()
+            self._executor = None
+            self._executor_finalizer = None
+        if executor is not None:
+            executor.shutdown(wait=True)
 
     def _get_ham_ops_for_circuit(
         self,
@@ -310,10 +383,7 @@ class MaestroSimulator(CircuitRunner):
 
         sim_config = self.config._to_maestro_config(n_qubits=max_qubits)
 
-        # Maestro's C++ entrypoints release the GIL and use internal OpenMP
-        # threads, so we cap fan-out at cores/2 to leave headroom for that
-        # internal parallelism rather than oversubscribing.
-        n_workers = min(len(circuit_labels), max(1, (os.cpu_count() or 2) // 2))
+        executor = self._get_executor()
 
         if ham_ops is None:
             # Sampling mode — reverse bitstrings from maestro's big-endian
@@ -340,8 +410,7 @@ class MaestroSimulator(CircuitRunner):
                 (i, label, qasm)
                 for i, (label, qasm) in enumerate(zip(circuit_labels, qasm_strings))
             ]
-            with ThreadPoolExecutor(max_workers=n_workers) as pool:
-                results = list(pool.map(_run_sample, items))
+            results = list(executor.map(_run_sample, items))
         else:
             # Expectation value mode — strip measurement gates so they don't
             # collapse the statevector before expectation values are computed.
@@ -363,7 +432,6 @@ class MaestroSimulator(CircuitRunner):
                 (i, label, qasm)
                 for i, (label, qasm) in enumerate(zip(circuit_labels, qasm_strings))
             ]
-            with ThreadPoolExecutor(max_workers=n_workers) as pool:
-                results = list(pool.map(_run_estimate, items))
+            results = list(executor.map(_run_estimate, items))
 
         return ExecutionResult(results=results)

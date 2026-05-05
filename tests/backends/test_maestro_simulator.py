@@ -4,6 +4,7 @@
 
 import os
 from dataclasses import fields
+from threading import Event, Thread
 
 import pytest
 
@@ -426,53 +427,150 @@ class TestSamplingSubmission:
 
 
 class TestParallelExecution:
-    """Multi-circuit submissions fan out across a thread pool capped at
-    ``cpu_count // 2`` (so maestro's internal OpenMP threads aren't
-    oversubscribed).  These tests pin both the cap and the result-label
-    alignment that the parallel path must preserve."""
+    """Multi-circuit submissions fan out across a per-instance thread pool
+    sized at ``max(1, cpu_count // 2)`` so maestro's internal OpenMP
+    threads aren't oversubscribed.  The pool is constructed lazily on the
+    first :meth:`MaestroSimulator.submit_circuits` call and reused across
+    subsequent submissions; these tests pin that lifecycle plus the
+    result-label alignment that the parallel path must preserve."""
 
     @staticmethod
     def _spy_pool(mocker):
         return mocker.spy(maestro_module, "ThreadPoolExecutor")
 
-    def test_n_workers_capped_at_half_cpu(self, mocker):
-        """Many circuits → pool capped at cpu_count // 2 (or 1 if cpu//2 == 0)."""
+    def test_pool_sized_at_half_cpu(self, mocker):
+        """The persistent pool is sized at ``max(1, cpu_count // 2)`` regardless
+        of how many circuits the first submission carries."""
         fake = _make_fake_maestro(mocker)
         sim = _make_simulator(mocker, fake)
         spy = self._spy_pool(mocker)
 
-        # Send more circuits than the cap so the cap is the binding constraint.
-        n = max((os.cpu_count() or 2) // 2, 1) + 4
-        sim.submit_circuits({f"c{i}": QASM_DEPTH_2 for i in range(n)})
+        sim.submit_circuits({f"c{i}": QASM_DEPTH_2 for i in range(3)})
 
         spy.assert_called_once()
         expected_cap = max(1, (os.cpu_count() or 2) // 2)
         assert spy.call_args.kwargs["max_workers"] == expected_cap
 
-    def test_n_workers_not_exceeding_circuit_count(self, mocker):
-        """Few circuits → pool sized to circuit count, never more."""
-        fake = _make_fake_maestro(mocker)
-        sim = _make_simulator(mocker, fake)
-        spy = self._spy_pool(mocker)
-
-        sim.submit_circuits({"c0": QASM_DEPTH_2, "c1": QASM_DEPTH_3})
-
-        spy.assert_called_once()
-        # Two circuits + min(2, max(1, cpu//2)): on any CI host with cpu>=4
-        # this resolves to 2; on a 1-cpu host it resolves to 1.
-        expected = min(2, max(1, (os.cpu_count() or 2) // 2))
-        assert spy.call_args.kwargs["max_workers"] == expected
-
-    def test_n_workers_floors_at_one(self, mocker):
-        """Single circuit always yields exactly one worker, regardless of cpu count."""
+    def test_pool_persists_across_submissions(self, mocker):
+        """A second ``submit_circuits`` reuses the pool created on the first
+        call instead of constructing a fresh one (the load-bearing perf win
+        of moving from per-call pools to a persistent per-instance pool)."""
         fake = _make_fake_maestro(mocker)
         sim = _make_simulator(mocker, fake)
         spy = self._spy_pool(mocker)
 
         sim.submit_circuits({"c0": QASM_DEPTH_2})
+        first_pool = sim._executor
+        sim.submit_circuits({"c1": QASM_DEPTH_3})
+
+        spy.assert_called_once()
+        assert sim._executor is first_pool
+
+    def test_pool_floors_at_one_with_low_cpu_count(self, mocker):
+        """If ``os.cpu_count()`` returns 0 or 1, the pool still has at least
+        one worker — never zero."""
+        fake = _make_fake_maestro(mocker)
+        sim = _make_simulator(mocker, fake)
+        spy = self._spy_pool(mocker)
+        mocker.patch.object(maestro_module.os, "cpu_count", return_value=1)
+
+        sim.submit_circuits({"c0": QASM_DEPTH_2})
 
         spy.assert_called_once()
         assert spy.call_args.kwargs["max_workers"] == 1
+
+    def test_close_shuts_down_pool(self, mocker):
+        """``close()`` releases the pool so its threads don't outlive the
+        simulator instance.  Calling ``close()`` a second time is a no-op."""
+        fake = _make_fake_maestro(mocker)
+        sim = _make_simulator(mocker, fake)
+        sim.submit_circuits({"c0": QASM_DEPTH_2})
+        assert sim._executor is not None
+
+        sim.close()
+        assert sim._executor is None
+        # Idempotent.
+        sim.close()
+        assert sim._executor is None
+
+    def test_submit_after_close_recreates_pool(self, mocker):
+        """A ``submit_circuits`` after ``close()`` lazily re-initializes a
+        fresh pool and registers a new finalizer."""
+        fake = _make_fake_maestro(mocker)
+        sim = _make_simulator(mocker, fake)
+        sim.submit_circuits({"c0": QASM_DEPTH_2})
+        first_pool = sim._executor
+        first_finalizer = sim._executor_finalizer
+
+        sim.close()
+        assert sim._executor is None
+        assert sim._executor_finalizer is None
+
+        sim.submit_circuits({"c1": QASM_DEPTH_3})
+        assert sim._executor is not None
+        assert sim._executor is not first_pool
+        assert sim._executor_finalizer is not None
+        assert sim._executor_finalizer is not first_finalizer
+
+    def test_close_does_not_block_concurrent_submit(self, mocker):
+        """``close()`` releases ``_executor_lock`` before draining the old
+        pool, so a concurrent ``submit_circuits`` on another thread can
+        acquire the lock and lazily create a fresh pool while the old one
+        finishes shutting down."""
+        fake = _make_fake_maestro(mocker)
+
+        # The first submission's worker signals ``worker_started`` once
+        # the task is actually executing inside the pool, then blocks on
+        # ``drain_release`` until the test lets it finish.  This avoids a
+        # ``time.sleep`` race for "is the worker mid-task yet?"
+        worker_started = Event()
+        drain_release = Event()
+        fast_response = {"counts": {"00": 1}}
+
+        def _slow_run(*_args, **_kwargs):
+            worker_started.set()
+            drain_release.wait(timeout=5)
+            return fast_response
+
+        fake.simple_execute.side_effect = _slow_run
+        sim = _make_simulator(mocker, fake)
+
+        first_thread = Thread(target=sim.submit_circuits, args=({"c0": QASM_DEPTH_2},))
+        first_thread.start()
+        assert worker_started.wait(
+            timeout=5
+        ), "first submission did not reach the worker"
+        first_pool = sim._executor
+
+        # close() will block in shutdown(wait=True) waiting for the slow
+        # task.  After the fix, _executor_lock is released *before*
+        # draining, so a concurrent submit can grab it and re-init.
+        close_thread = Thread(target=sim.close)
+        close_thread.start()
+
+        # New submit uses a non-blocking fake so it completes promptly.
+        fake.simple_execute.side_effect = lambda *a, **kw: fast_response
+        submit_done = Event()
+
+        def _fast_submit():
+            sim.submit_circuits({"c1": QASM_DEPTH_3})
+            submit_done.set()
+
+        new_submit_thread = Thread(target=_fast_submit)
+        new_submit_thread.start()
+        assert submit_done.wait(
+            timeout=2
+        ), "concurrent submit was blocked by close()'s drain"
+
+        drain_release.set()
+        first_thread.join(timeout=5)
+        close_thread.join(timeout=5)
+        new_submit_thread.join(timeout=5)
+
+        # A fresh pool was created during the concurrent submit; the old
+        # one was discarded.
+        assert sim._executor is not None
+        assert sim._executor is not first_pool
 
     def test_label_alignment_under_parallel_dispatch_sampling(self, mocker):
         """Label binding must use the input index, not the completion order.

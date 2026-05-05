@@ -10,11 +10,21 @@ from ._execution_result import ExecutionResult
 from ._maestro_simulator import MaestroConfig, MaestroSimulator
 from ._qiskit_simulator import QiskitSimulator
 from ._qoro_service import JobStatus, JobType, QoroService
-from ._systems import QPU, QPUSystem, SimulatorCluster
 from ._results_processing import convert_counts_to_probs, reverse_dict_endianness
+from ._systems import QPU, QPUSystem, SimulatorCluster
+
+# isort: split
+from ._characterization import (
+    CharacterizationOptions,
+    CharacterizationResult,
+    characterize_and_validate,
+    get_characterization_result,
+)
 
 __all__ = [
     "AsyncJobBackend",
+    "CharacterizationOptions",
+    "CharacterizationResult",
     "CircuitRunner",
     "ExecutionConfig",
     "ExecutionResult",
@@ -30,7 +40,9 @@ __all__ = [
     "SimulationMethod",
     "Simulator",
     "SimulatorCluster",
+    "characterize_and_validate",
     "convert_counts_to_probs",
     "create_backend_from_properties",
+    "get_characterization_result",
     "reverse_dict_endianness",
 ]

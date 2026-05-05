@@ -88,6 +88,10 @@ copybutton_prompt_is_regexp = True
 # ``typing.Union`` as ``py:class`` but the extension emits ``py:data`` on < 3.14.
 always_use_bars_union = True
 
+autodoc_type_aliases = {
+    "BinaryOptimizationProblem": "divi.qprog.problems.BinaryOptimizationProblem",
+}
+
 # -- Napoleon configuration --------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/extensions/napoleon.html
 
@@ -144,6 +148,8 @@ nitpick_ignore_regex = [
     (r"py:class", r"cirq\..*"),
     # dimod's inventory lives under the Ocean umbrella.
     (r"py:class", r"dimod\..*"),
+    # dwave-hybrid does not publish a sphinx inventory.
+    (r"py:class", r"hybrid\..*"),
     # TypeVars in ``Generic[InT, OutT]`` — not documentable by Sphinx.
     (r"py:obj", r"divi\.pipeline\.abc\.(InT|OutT)"),
     # ``numpy.float64`` is ``py:attribute`` in numpy's inventory, but

@@ -14,6 +14,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import replace
 from enum import Enum
 from http import HTTPStatus
+from threading import Event
 from typing import Any
 
 import requests
@@ -22,7 +23,7 @@ from qiskit import QuantumCircuit
 from requests.adapters import HTTPAdapter, Retry
 from rich.console import Console
 
-from divi.backends import CircuitRunner
+from divi.backends._circuit_runner import CircuitRunner
 from divi.backends._config import ExecutionConfig, JobConfig
 from divi.backends._execution_result import ExecutionResult
 from divi.backends._pauli_serde import compress_ham_ops
@@ -43,6 +44,7 @@ from divi.backends._systems import (
     update_qpu_systems_cache,
     update_simulator_clusters_cache,
 )
+from divi.exceptions import ExecutionCancelledError
 from divi.qasm import (
     _format_validation_error_with_context,
     is_valid_qasm,
@@ -71,7 +73,17 @@ def _raise_with_details(resp: requests.Response):
         data = resp.json()
         body = json.dumps(data, ensure_ascii=False)
     except ValueError:
-        body = resp.text
+        # Non-JSON response (e.g. Cloudflare HTML error page) — don't
+        # dump hundreds of lines of HTML on the user.
+        text = resp.text or ""
+        if "<html" in text.lower():
+            body = (
+                f"(HTML error page from {resp.url or 'server'}; "
+                f"upstream may be down or timed out)"
+            )
+        else:
+            # Keep non-HTML text but truncate if very long
+            body = text[:500] + ("..." if len(text) > 500 else "")
     msg = f"{resp.status_code} {resp.reason}: {body}"
     raise requests.HTTPError(msg, response=resp)
 
@@ -103,6 +115,12 @@ class JobType(Enum):
 
     EXPECTATION = "EXPECTATION"
     """Compute expectation values for Hamiltonian operators."""
+
+    CHARACTERIZE = "VALIDATE"
+    """Submit a QUBO/HUBO for characterization (no simulator/QPU needed).
+
+    The wire value remains ``"VALIDATE"`` for server compatibility.
+    """
 
 
 class MaxRetriesReachedError(Exception):
@@ -268,7 +286,14 @@ class QoroService(CircuitRunner):
 
         return config
 
-    def _make_request(self, method: str, endpoint: str, **kwargs) -> requests.Response:
+    def _make_request(
+        self,
+        method: str,
+        endpoint: str,
+        *,
+        retry: bool = True,
+        **kwargs,
+    ) -> requests.Response:
         """
         Make an authenticated HTTP request to the Qoro API.
 
@@ -278,6 +303,10 @@ class QoroService(CircuitRunner):
         Args:
             method (str): HTTP method to use (e.g., 'get', 'post', 'delete').
             endpoint (str): API endpoint path (without base URL).
+            retry (bool): When ``True`` (the default), the request goes
+                through the session that has the retry adapter mounted.
+                Set to ``False`` for state-mutating endpoints where a
+                retry would target a job already past its initial state.
             **kwargs: Additional arguments to pass to requests.request(), such as
                 'json', 'timeout', 'params', etc.
 
@@ -298,7 +327,8 @@ class QoroService(CircuitRunner):
         if "headers" in kwargs:
             headers.update(kwargs.pop("headers"))
 
-        response = session.request(method, url, headers=headers, **kwargs)
+        requester = session.request if retry else requests.request
+        response = requester(method, url, headers=headers, **kwargs)
 
         # Raise with comprehensive error details if request failed
         if response.status_code >= 400:
@@ -833,6 +863,7 @@ class QoroService(CircuitRunner):
         on_complete: Callable[[requests.Response], None] | None = None,
         verbose: bool = True,
         progress_callback: Callable[[int, str], None] | None = None,
+        cancellation_event: Event | None = None,
     ) -> JobStatus:
         """
         Get the status of a job and optionally execute a function on completion.
@@ -845,12 +876,21 @@ class QoroService(CircuitRunner):
             verbose (bool, optional): If True, prints polling status to the logger.
             progress_callback (Callable, optional): A function for updating progress bars.
                 Takes `(retry_count, status)`.
+            cancellation_event (Event, optional): When provided, the polling loop
+                waits on this Event between attempts instead of plain
+                ``time.sleep`` so that ``Event.set()`` interrupts the next sleep
+                window and raises :class:`~divi.exceptions.ExecutionCancelledError`.  An
+                in-flight HTTP request is **not** interrupted — worst-case
+                cancellation latency is bounded by the per-request ``timeout``
+                rather than the polling interval.
 
         Returns:
             JobStatus: The current job status.
 
         Raises:
             ValueError: If the ExecutionResult does not have a job_id.
+            ExecutionCancelledError: If ``cancellation_event`` was set during
+                a polling-interval wait.
         """
         job_id = self._extract_job_id(execution_result)
 
@@ -889,6 +929,11 @@ class QoroService(CircuitRunner):
             }
 
             for retry_count in range(1, self.max_retries + 1):
+                if cancellation_event is not None and cancellation_event.is_set():
+                    raise ExecutionCancelledError(
+                        f"Polling cancelled for job {job_id}."
+                    )
+
                 response = self._make_request(
                     "get", f"job/{job_id}/status/", timeout=200
                 )
@@ -900,9 +945,129 @@ class QoroService(CircuitRunner):
                     return status
 
                 update_fn(retry_count, status.value)
-                time.sleep(self.polling_interval)
+
+                if cancellation_event is not None:
+                    if cancellation_event.wait(self.polling_interval):
+                        raise ExecutionCancelledError(
+                            f"Polling cancelled for job {job_id}."
+                        )
+                else:
+                    time.sleep(self.polling_interval)
 
             raise MaxRetriesReachedError(job_id, self.max_retries)
         finally:
             if polling_status:
                 polling_status.stop()
+
+    # ------------------------------------------------------------------ #
+    # QUBO / HUBO Characterization
+    # ------------------------------------------------------------------ #
+
+    def characterize_and_validate(
+        self,
+        qubo: dict | None = None,
+        *,
+        target_states: list[str] | None = None,
+        options: dict | None = None,
+        job_id: str | None = None,
+        tag: str = "divi-characterize",
+    ) -> dict:
+        """Submit a QUBO for characterization, or fetch an existing result.
+
+        Two modes, dispatched by whether ``job_id`` is provided:
+
+        * **Submit** (``qubo`` provided, ``job_id`` is ``None``): runs
+          the 3-step server flow (init → submit → fetch result).
+        * **Fetch** (``job_id`` provided): retrieves a previously-stored
+          result without re-running the analysis. No credit cost.
+
+        For a hardness-only check, pass
+        ``options={"analysis": {"hardness_only": True}}`` and read the
+        ``hardness`` field of the response.
+
+        Args:
+            qubo: Wire-format QUBO dict (e.g. ``{"0,0": -1.0}``).
+                Required in submit mode.
+            target_states: Bitstrings to evaluate against. Defaults to
+                ``[]`` when submitting (e.g. for hardness-only runs).
+            options: Optional dict forwarded to ``submit_qubo``. Keys
+                may include ``ansatz``, ``analysis``, ``cost_qubo``,
+                ``penalty_qubo``, ``n_qubits``, ``constraints``.
+            job_id: Identifier of an existing characterization job to fetch.
+                When set, ``qubo`` / ``target_states`` / ``options`` /
+                ``tag`` are ignored.
+            tag: Job tag used during init (submit mode only).
+
+        Returns:
+            dict: The raw characterization-result response — keys include
+            ``job_id``, ``status``, ``hardness``, ``report``,
+            ``recommendations``, ``created_at``, ``completed_at``. For a
+            rich client-side wrapper, prefer
+            :func:`~divi.backends.characterize_and_validate`.
+
+        Raises:
+            ValueError: If neither ``qubo`` nor ``job_id`` is provided.
+            requests.exceptions.HTTPError: If any request fails.
+
+        .. note::
+            Credit cost scales with QUBO size in submit mode. Fetching
+            by ``job_id`` is free.
+        """
+        if job_id is None:
+            if qubo is None:
+                raise ValueError(
+                    "characterize_and_validate() requires either 'qubo' (to submit a "
+                    "new job) or 'job_id' (to fetch an existing result)."
+                )
+
+            # Step 1 — init characterization job
+            init_resp = self._make_request(
+                "post",
+                "job/init/",
+                json={"job_type": JobType.CHARACTERIZE.value, "tag": tag},
+                timeout=100,
+            )
+            job_id = init_resp.json()["job_id"]
+
+            # Step 2 — submit QUBO.
+            # ``retry=False`` because submit_qubo mutates job state
+            # (PENDING → RUNNING); retrying after a 502 would hit a
+            # non-PENDING job and cascade to 409.
+            submit_payload: dict = {
+                "qubo": qubo,
+                "target_states": target_states or [],
+            }
+            if options:
+                submit_payload["options"] = options
+
+            self._make_request(
+                "post",
+                f"job/{job_id}/submit_qubo/",
+                retry=False,
+                json=submit_payload,
+                timeout=300,
+            )
+
+        # Step 3 — fetch result (works for both modes).
+        result_resp = self._make_request(
+            "get",
+            f"job/{job_id}/validation_result/",
+            timeout=100,
+        )
+        data = result_resp.json()
+        data.setdefault("job_id", job_id)
+        return data
+
+    def _fetch_characterization_html(self, job_id: str) -> str:
+        """Fetch the server-rendered HTML report for a characterization job.
+
+        Used by :meth:`CharacterizationResult._repr_html_` to lazily render
+        the result in Jupyter. The endpoint returns a self-contained HTML
+        fragment (inline CSS, no external assets).
+        """
+        resp = self._make_request(
+            "get",
+            f"job/{job_id}/validation_result/html/",
+            timeout=100,
+        )
+        return resp.text

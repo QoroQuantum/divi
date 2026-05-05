@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from threading import Lock
+from queue import Queue
+from threading import Event, Lock, Thread
 
 import pytest
 from rich.live import Live
@@ -16,6 +17,7 @@ from divi.reporting._pbar import (
     make_progress_bar,
     make_progress_display,
     progress_disabled,
+    queue_listener,
 )
 
 
@@ -614,3 +616,75 @@ class TestFactoryShortCircuit:
         finally:
             if live is not None:
                 live.stop()
+
+
+class TestQueueListenerCrashSafety:
+    """Regression for fix #3: a malformed message must not kill the
+    listener thread; ``queue.task_done()`` must fire for every ``get()``
+    so ``Queue.join()`` can never block forever.
+    """
+
+    def test_unknown_job_id_does_not_kill_listener(self, mocker):
+        q: Queue = Queue()
+        progress_bar = mocker.MagicMock()
+        progress_bar.console = mocker.MagicMock()
+        pb_task_map = {"known": 1}
+        done = Event()
+        lock = Lock()
+
+        # First message references an unknown job_id (would raise KeyError
+        # pre-fix); second references a known one and must be processed.
+        q.put({"job_id": "unknown", "progress": 1})
+        q.put({"job_id": "known", "progress": 2, "message": "ok"})
+
+        thread = Thread(
+            target=queue_listener,
+            args=(q, progress_bar, pb_task_map, done, lock),
+        )
+        thread.start()
+        # Wait for the queue to drain — this is the load-bearing assertion.
+        # Pre-fix the listener died on the first message and the second
+        # message's task_done() never fired, so ``q.join()`` would hang.
+        try:
+            q.join()
+        finally:
+            done.set()
+            thread.join(timeout=2)
+
+        assert not thread.is_alive(), "listener thread should exit on done_event"
+        # The second (valid) message reached the progress bar.
+        progress_bar.update.assert_called_once()
+        # The malformed message was specifically logged as an unknown job_id.
+        log_calls = [str(c) for c in progress_bar.console.log.call_args_list]
+        assert any(
+            "unknown" in c for c in log_calls
+        ), f"expected an 'unknown job_id' log entry, got {log_calls}"
+
+    def test_progress_bar_update_failure_is_swallowed(self, mocker):
+        """If ``progress_bar.update`` raises (e.g. Rich teardown), the
+        listener must keep going and ``task_done()`` must still fire."""
+        q: Queue = Queue()
+        progress_bar = mocker.MagicMock()
+        progress_bar.console = mocker.MagicMock()
+        progress_bar.update.side_effect = RuntimeError("Rich is gone")
+        pb_task_map = {"j1": 1, "j2": 2}
+        done = Event()
+        lock = Lock()
+
+        q.put({"job_id": "j1", "progress": 1})
+        q.put({"job_id": "j2", "progress": 1})
+
+        thread = Thread(
+            target=queue_listener,
+            args=(q, progress_bar, pb_task_map, done, lock),
+        )
+        thread.start()
+        try:
+            q.join()  # must return even though update() raises
+        finally:
+            done.set()
+            thread.join(timeout=2)
+
+        assert not thread.is_alive()
+        # Both messages were attempted.
+        assert progress_bar.update.call_count == 2

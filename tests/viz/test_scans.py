@@ -320,6 +320,45 @@ class TestProgramVizWrapper:
         assert result.projected_samples.shape == (4, 2)
         assert result.program_type == "QAOA"
 
+    def test_scan_pca_wrap_periodic_aligns_trajectory_to_center(
+        self, qaoa_program, mocker
+    ):
+        # Synthetic trajectory whose last row is best_params + (2π, 0): same
+        # parameter point modulo 2π, but in a different periodic lift.  Without
+        # the alignment shift, `shift = center - mean(wrapped_samples)` carries
+        # a bogus 2π·k component that pushes projected_samples far from origin.
+        best_params = np.array([0.3, 0.2])
+        traj = np.array(
+            [
+                [0.0, 0.0],
+                [0.10, 0.05],
+                [0.20, 0.10],
+                [0.30, 0.20],
+            ]
+        )
+        offset_traj = traj + np.array(
+            [2 * np.pi, 0.0]
+        )  # same lift mismatch as last row
+        blocks = [row.reshape(1, -1).copy() for row in offset_traj]
+        mocker.patch.object(qaoa_program, "param_history", return_value=blocks)
+
+        result = qaoa_program.viz.scan_pca(
+            wrap_periodic=True,
+            center=best_params,
+            grid_shape=(3, 3),
+            span_x=(-0.5, 0.5),
+            span_y=(-0.5, 0.5),
+        )
+
+        # After alignment, samples[-1] coincides with center, so its projection
+        # onto either PC must be (numerically) zero.
+        np.testing.assert_allclose(result.projected_samples[-1], 0.0, atol=1e-12)
+        # And the whole projected cloud lies inside the user's chosen span —
+        # the span is wide enough to hold the genuine ~0.3-unit trajectory but
+        # would NOT contain a 2π-offset cloud.
+        assert np.all(np.abs(result.projected_samples[:, 0]) <= 0.5 + 1e-9)
+        assert np.all(np.abs(result.projected_samples[:, 1]) <= 0.5 + 1e-9)
+
 
 class TestScanInterp1D:
     def test_endpoints_match_theta_1_and_theta_2(self, vqe_program):

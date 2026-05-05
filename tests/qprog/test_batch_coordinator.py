@@ -896,6 +896,44 @@ class TestTotalRuntime:
         # Sync backend → no runtime tracking.
         assert coord.total_runtime == 0.0
 
+    def test_partial_subbatch_failure_preserves_credit(self, mocker):
+        """Sub-batch 0 succeeds, sub-batch 1 raises → coordinator keeps the
+        credit from sub-batch 0."""
+        backend = FakeSyncBackend()
+        # Force the async branch so _submit_sub_batch's runtime
+        # accumulation runs (sync branch always reports runtime=0).
+        mocker.patch.object(
+            backend,
+            "submit_circuits",
+            lambda circuits, **kw: ExecutionResult(results=None, job_id="fake"),
+        )
+        coord = _BatchCoordinator(backend)
+
+        batch = {
+            "p_with_ham": _make_entry({"c1": "q"}, {"ham_ops": "Z"}),
+            "p_no_ham": _make_entry({"c2": "q"}, {}),
+        }
+
+        poll_calls = {"n": 0}
+
+        def fake_poll(self, execution_result, flush_group, n_circuits, n_programs):
+            poll_calls["n"] += 1
+            if poll_calls["n"] == 1:
+                return [{"label": f"p_with_ham{_TAG_SEP}c1", "results": {}}], 7.5
+            raise RuntimeError("second sub-batch fails")
+
+        mocker.patch.object(_BatchCoordinator, "_poll_and_get_results", fake_poll)
+
+        flush_group = _FlushGroup(
+            futures={k: e.future for k, e in batch.items()}, color="green"
+        )
+        with coord._in_flight_lock:
+            coord._in_flight.append(flush_group)
+
+        coord._do_flush(batch, flush_group)
+
+        assert coord.total_runtime == 7.5
+
 
 class TestProxyBackend:
     def test_delegates_properties(self):

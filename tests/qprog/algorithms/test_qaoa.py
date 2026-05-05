@@ -376,6 +376,31 @@ class TestFinalComputationDecode:
         sol = qaoa.solution
         assert all(b in (0, 1) for b in sol)
 
+    def test_solution_bitstring_after_run(self, default_test_simulator):
+        """``solution_bitstring`` exposes the raw measured bitstring as a string."""
+        qaoa = QAOA(
+            BinaryOptimizationProblem(QUBO_MATRIX),
+            backend=default_test_simulator,
+            max_iterations=1,
+        )
+        qaoa.run()
+        bs = qaoa.solution_bitstring
+        assert isinstance(bs, str)
+        assert len(bs) == qaoa.n_qubits
+        assert set(bs) <= {"0", "1"}
+        # Bitstring corresponds to the same state ``solution`` was decoded from.
+        assert [int(c) for c in bs] == list(qaoa.solution)
+
+    def test_solution_bitstring_before_run_raises(self, default_test_simulator):
+        """Accessing ``solution_bitstring`` before ``.run()`` is an error."""
+        qaoa = QAOA(
+            BinaryOptimizationProblem(QUBO_MATRIX),
+            backend=default_test_simulator,
+            max_iterations=1,
+        )
+        with pytest.raises(RuntimeError, match="Call .run\\(\\) first"):
+            _ = qaoa.solution_bitstring
+
 
 class TestCostMetaCircuitCache:
     """``_cost_meta_circuit_factory`` memoizes built MetaCircuits per

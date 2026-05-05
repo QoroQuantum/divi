@@ -380,58 +380,100 @@ class ProgramEnsemble(ABC):
         self._pb_task_map = {}
         self._pb_lock = Lock()
         self._program_key_to_task_ids: dict[str, list[TaskID]] = {}
+        self._listener_thread = None
 
-        # Set up batch coordinator to merge circuit submissions.
-        if batching_enabled:
-            progress_queue = getattr(self, "_queue", None)
-            self._coordinator = _BatchCoordinator(
-                self.backend,
-                progress_queue=progress_queue,
-                batch_config=batch_config,
-                max_concurrent_programs=coordinator_program_limit,
-            )
-            self._program_key_map = {}
-            for idx, (prog_id, program) in enumerate(self._programs.items()):
-                program_key = str(idx)
-                self._program_key_map[program] = program_key
-                self._coordinator.register_program(program_key)
-                program.backend = _ProxyBackend(
-                    self.backend, self._coordinator, program_key
+        # Setup → registration → executor.submit happen sequentially on the
+        # main thread.  If any of them raises after partial work is done
+        # (e.g. some programs registered with the coordinator but the
+        # remainder didn't reach _add_program_to_executor), the barrier
+        # invariant ``len(_pending) >= len(_active_programs)`` would never
+        # hold for survivors and they'd hang forever.  Tear everything
+        # down on failure so the caller can retry cleanly.
+        try:
+            # Set up batch coordinator to merge circuit submissions.
+            if batching_enabled:
+                progress_queue = getattr(self, "_queue", None)
+                self._coordinator = _BatchCoordinator(
+                    self.backend,
+                    progress_queue=progress_queue,
+                    batch_config=batch_config,
+                    max_concurrent_programs=coordinator_program_limit,
+                    cancellation_event=self._cancellation_event,
                 )
+                self._program_key_map = {}
+                for idx, (prog_id, program) in enumerate(self._programs.items()):
+                    program_key = str(idx)
+                    self._program_key_map[program] = program_key
+                    self._coordinator.register_program(program_key)
+                    program.backend = _ProxyBackend(
+                        self.backend, self._coordinator, program_key
+                    )
 
-        if self._progress_bar is not None and self._live_display is not None:
-            self._live_display.start()
+            if self._progress_bar is not None and self._live_display is not None:
+                self._live_display.start()
 
-            listener_kwargs: dict[str, Any] = {
-                "live_display": self._live_display,
-                "is_jupyter": self._is_jupyter,
-            }
+                listener_kwargs: dict[str, Any] = {
+                    "live_display": self._live_display,
+                    "is_jupyter": self._is_jupyter,
+                }
 
-            if batching_enabled and self._batch_progress is not None:
-                listener_kwargs.update(
-                    batch_progress=self._batch_progress,
-                    batch_task_ids={},
-                    program_key_to_task_ids=self._program_key_to_task_ids,
+                if batching_enabled and self._batch_progress is not None:
+                    listener_kwargs.update(
+                        batch_progress=self._batch_progress,
+                        batch_task_ids={},
+                        program_key_to_task_ids=self._program_key_to_task_ids,
+                    )
+
+                self._listener_thread = Thread(
+                    target=queue_listener,
+                    args=(
+                        self._queue,
+                        self._progress_bar,
+                        self._pb_task_map,
+                        self._done_event,
+                        self._pb_lock,
+                    ),
+                    kwargs=listener_kwargs,
+                    daemon=True,
                 )
+                self._listener_thread.start()
 
-            self._listener_thread = Thread(
-                target=queue_listener,
-                args=(
-                    self._queue,
-                    self._progress_bar,
-                    self._pb_task_map,
-                    self._done_event,
-                    self._pb_lock,
-                ),
-                kwargs=listener_kwargs,
-                daemon=True,
-            )
-            self._listener_thread.start()
+            for program in self._programs.values():
+                future = self._add_program_to_executor(program)
+                self.futures.append(future)
+                self._future_to_program[future] = program
 
-        for program in self._programs.values():
-            future = self._add_program_to_executor(program)
-            self.futures.append(future)
-            self._future_to_program[future] = program
+        except BaseException:
+            # Tear down: shut down coordinator (clears state under lock),
+            # signal/join the listener if it was started, stop live display,
+            # and shut down the executor.  Any half-submitted futures will
+            # resolve with ExecutionCancelledError via coordinator.cancel().
+            if self._coordinator is not None:
+                self._coordinator.shutdown()
+                self._coordinator = None
+            self._program_key_map.clear()
+
+            if self._done_event is not None:
+                self._done_event.set()
+            if self._listener_thread is not None:
+                self._listener_thread.join(timeout=5)
+                self._listener_thread = None
+
+            if self._live_display is not None:
+                try:
+                    self._live_display.stop()
+                except Exception:
+                    pass
+                self._live_display = None
+                self._progress_bar = None
+                self._batch_progress = None
+
+            if self._executor is not None:
+                self._executor.shutdown(wait=False)
+                self._executor = None
+            self.futures.clear()
+            self._future_to_program = {}
+            raise
 
         if not blocking:
             # Arm safety net

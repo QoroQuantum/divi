@@ -308,9 +308,11 @@ def _bisect_with_predicate(
     """
     subgraphs: list[HeapEntry] = initial_partitions
     heapq.heapify(subgraphs)
-    # Strictly monotonic — breaks heap ties before falling through to the
-    # graph object or cluster_ids list.
-    entry_counter = len(subgraphs)
+    # Strictly monotonic — breaks heap ties before falling through to
+    # the graph object or cluster_ids list.
+    entry_counter = (
+        max((counter for _, counter, _, _ in initial_partitions), default=-1) + 1
+    )
 
     while True:
         new_subgraphs: list[HeapEntry] = []

@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from multiprocessing import Event
@@ -15,6 +16,7 @@ from rich.progress import Progress
 
 import divi.qprog.ensemble as ensemble_module
 from divi.backends import AsyncJobBackend, ExecutionResult
+from divi.qprog._batch_coordinator import _BatchCoordinator
 from divi.qprog.ensemble import BatchConfig, BatchMode, ProgramEnsemble
 from divi.qprog.quantum_program import QuantumProgram
 from divi.reporting import queue_listener
@@ -364,7 +366,7 @@ class TestProgramEnsemble:
         listener_thread.join(timeout=1)
 
         mock_console.log.assert_called()
-        assert "Unexpected exception" in str(mock_console.log.call_args)
+        assert "queue.get failed" in str(mock_console.log.call_args)
 
     def testqueue_listener_optional_message_fields(self, mocker):
         """Test queue listener handles all optional message fields."""
@@ -888,6 +890,122 @@ class TestProgramEnsemble:
         )
         assert program_ensemble.total_circuit_count == 15
         assert program_ensemble._coordinator is None
+
+
+class TestRegistrationFailureCleanup:
+    """Regression tests for partial-registration failure cleanup in ``run()``."""
+
+    @staticmethod
+    def _flush_threads_alive() -> int:
+        # Thread name prefixes are not part of the public contract; this
+        # check is a fragile heuristic and may need to be updated if the
+        # coordinator's daemon-thread naming changes.
+        return sum(
+            1
+            for t in threading.enumerate()
+            if t.is_alive()
+            and (t.name.startswith("flush") or "BatchCoordinator" in t.name)
+        )
+
+    def test_register_program_failure_clears_state(self, dummy_simulator, mocker):
+        """``register_program`` raising mid-loop must leave the coordinator
+        with empty ``_active_programs`` (and the ensemble with no live
+        executor or coordinator handle)."""
+        ensemble = SampleProgramEnsemble(backend=dummy_simulator)
+        ensemble.create_programs()
+        ensemble.programs = {
+            f"prog{i}": SimpleTestProgram(
+                1, 0.1, backend=dummy_simulator, program_id=f"prog{i}"
+            )
+            for i in range(1, 5)
+        }
+
+        # Capture the coordinator instance via a side-effect on
+        # construction so we can inspect its state *after* run() has
+        # cleared the ensemble's reference to it.
+        captured: dict = {}
+        original_init = _BatchCoordinator.__init__
+
+        def _capturing_init(self, *args, **kwargs):
+            original_init(self, *args, **kwargs)
+            captured["coord"] = self
+
+        mocker.patch.object(_BatchCoordinator, "__init__", _capturing_init)
+
+        original_register = _BatchCoordinator.register_program
+        calls = {"n": 0}
+
+        def _flaky(self, program_key):
+            calls["n"] += 1
+            if calls["n"] == 3:
+                raise RuntimeError("boom: simulated registration failure")
+            return original_register(self, program_key)
+
+        mocker.patch.object(_BatchCoordinator, "register_program", _flaky)
+
+        baseline_alive = self._flush_threads_alive()
+
+        with pytest.raises(RuntimeError, match="boom"):
+            ensemble.run(blocking=False)
+
+        coord = captured["coord"]
+        # Load-bearing assertion: the orphaned-registration bug.
+        assert coord._active_programs == set()
+        assert coord._pending == {}
+        # Coordinator + executor handle on the ensemble should be cleared.
+        assert ensemble._coordinator is None
+        assert ensemble._executor is None
+        assert self._flush_threads_alive() == baseline_alive
+
+    def test_run_recovers_after_registration_failure(self, dummy_simulator, mocker):
+        """A second ``run()`` after a registration failure must succeed —
+        no leftover state blocks re-entry."""
+        ensemble = SampleProgramEnsemble(backend=dummy_simulator)
+        ensemble.create_programs()
+
+        original_register = _BatchCoordinator.register_program
+        calls = {"n": 0}
+
+        def _flaky_once(self, program_key):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("boom")
+            return original_register(self, program_key)
+
+        mocker.patch.object(_BatchCoordinator, "register_program", _flaky_once)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            ensemble.run(blocking=False)
+
+        # Subsequent register_program calls fall through to the original
+        # implementation, so the second run() should succeed end-to-end.
+        ensemble.run(blocking=True)
+        assert ensemble.aggregate_results() == 15
+
+
+class TestSharedCancellationEvent:
+    """Regression for fix #1.5: ``ProgramEnsemble._cancellation_event`` and
+    ``_BatchCoordinator._cancelled`` must reference the same Event so a
+    signal on either side is observed by the other.
+    """
+
+    def test_cancellation_event_is_shared_with_coordinator(self, dummy_simulator):
+        """When the ensemble's cancellation event is set, the coordinator's
+        ``_cancelled`` Event must also report ``is_set()``."""
+        ensemble = SampleProgramEnsemble(backend=dummy_simulator)
+        ensemble.create_programs()
+        try:
+            ensemble.run(blocking=False)
+            assert (
+                ensemble._coordinator is not None
+            ), "expected coordinator under default BatchMode.MERGED"
+            # Same identity, not just same value.
+            assert ensemble._cancellation_event is ensemble._coordinator._cancelled
+            # Setting the ensemble side propagates to the coordinator.
+            ensemble._cancellation_event.set()
+            assert ensemble._coordinator._cancelled.is_set()
+        finally:
+            ensemble.join()
 
 
 class TestBatchConfig:

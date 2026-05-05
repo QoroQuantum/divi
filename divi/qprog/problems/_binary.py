@@ -22,7 +22,7 @@ from divi.hamiltonians import (
     normalize_binary_polynomial_problem,
     qubo_to_ising,
 )
-from divi.qprog.problems._base import QAOAProblem
+from divi.qprog.problems import QAOAProblem
 
 
 def _merge_substates(_, substates):
@@ -55,17 +55,55 @@ def _sanitize_problem_input(qubo):
 
 
 class BinaryOptimizationProblem(QAOAProblem):
-    """Generic QUBO or HUBO problem.
+    """Generic QUBO or HUBO problem for QAOA.
 
-    Normalizes the input, converts to an Ising Hamiltonian, and provides
-    a standard X-mixer with equal superposition initial state.
+    Wraps a binary optimization problem expressed as either a quadratic
+    form (QUBO) or higher-order polynomial (HUBO), normalizes it to a
+    canonical :class:`~divi.hamiltonians.BinaryPolynomialProblem`, and
+    exposes the QAOA building blocks: cost Hamiltonian (via Ising
+    conversion), standard X-mixer, and ground-state initial
+    superposition.
+
+    Accepted inputs (anything :class:`dimod.BinaryQuadraticModel` or
+    :class:`dimod.BinaryPolynomial` accepts, plus matrices):
+
+    - ``np.ndarray`` / ``scipy.sparse.spmatrix`` — square QUBO matrix.
+    - :class:`dimod.BinaryQuadraticModel` — quadratic form with named
+      variables.
+    - ``dict`` with tuple keys — HUBO terms, e.g.
+      ``{(0,): -1.0, (0, 1, 2): 2.0}``.
+    - :class:`dimod.BinaryPolynomial` — polynomial of arbitrary degree.
+
+    Ising-conversion strategies selected via ``hamiltonian_builder``:
+
+    - ``"native"`` (default): translates each polynomial term into a
+      Pauli-Z product. Exact, but high-degree terms produce many-body
+      interactions that some simulators handle slowly.
+    - ``"quadratized"``: introduces auxiliary qubits and penalty terms
+      so every interaction becomes two-body. Penalty magnitude is
+      ``quadratization_strength``.
+
+    Optionally accepts a ``dimod.hybrid`` decomposer/composer pair to
+    enable partitioned solving via :meth:`decompose`. Without one, the
+    decomposition-related methods raise ``RuntimeError``.
 
     Args:
-        problem: QUBO matrix, BinaryQuadraticModel, HUBO dict, or
-            BinaryPolynomial.
-        hamiltonian_builder: Ising conversion backend (``"native"`` or
-            ``"quadratized"``).
-        quadratization_strength: Penalty strength for quadratization.
+        problem: QUBO matrix, BQM, HUBO dict, or BinaryPolynomial.
+        hamiltonian_builder: ``"native"`` (default) or ``"quadratized"``.
+        quadratization_strength: Penalty strength for the quadratized
+            builder. Ignored when ``hamiltonian_builder="native"``.
+        decomposer: Optional ``hybrid.traits.ProblemDecomposer`` that
+            enables :meth:`decompose`.
+        composer: Optional ``hybrid.traits.SubsamplesComposer`` for
+            recombining sub-solutions; defaults to
+            ``hybrid.SplatComposer``.
+
+    Examples:
+        >>> import numpy as np
+        >>> from divi.qprog.problems import BinaryOptimizationProblem
+        >>> Q = np.array([[-1.0, 2.0], [0.0, -1.0]])
+        >>> problem = BinaryOptimizationProblem(Q)
+        >>> problem.cost_hamiltonian  # ready for QAOA
     """
 
     def __init__(
@@ -109,6 +147,7 @@ class BinaryOptimizationProblem(QAOAProblem):
 
     @property
     def _ising(self) -> IsingResult:
+        """Cached Ising conversion of the canonical polynomial."""
         if self._ising_cache is None:
             self._ising_cache = qubo_to_ising(
                 self._raw_problem,
@@ -119,20 +158,30 @@ class BinaryOptimizationProblem(QAOAProblem):
 
     @property
     def cost_hamiltonian(self) -> qp.operation.Operator:
+        """Cost Hamiltonian derived from the Ising conversion of the QUBO/HUBO."""
         return self._ising.cost_hamiltonian
 
     @property
     def mixer_hamiltonian(self) -> qp.operation.Operator:
+        """Standard X-mixer over all qubits in the Ising encoding."""
         if self._mixer_cache is None:
             self._mixer_cache = pqaoa.x_mixer(range(self._ising.n_qubits))
         return self._mixer_cache
 
     @property
     def loss_constant(self) -> float:
+        """Constant offset from Ising conversion, added back to expectation values."""
         return self._ising.loss_constant
 
     @property
     def decode_fn(self) -> Callable[[str], Any]:
+        """Decode a measurement bitstring to the original variable assignment.
+
+        For problems built from named variables (e.g. a BQM with
+        non-integer keys), the result is a ``dict`` mapping the original
+        variable names to their bit values. For integer-indexed
+        problems, returns the encoding's raw bitstring projection.
+        """
         base_decode = self._ising.encoding.decode_fn
         vo = self._canonical_problem.variable_order
 
@@ -149,6 +198,7 @@ class BinaryOptimizationProblem(QAOAProblem):
 
     @property
     def metadata(self) -> dict[str, Any]:
+        """Encoding metadata from the Ising conversion (e.g. quadratization aux info)."""
         return self._ising.encoding.metadata or {}
 
     @property
@@ -162,6 +212,16 @@ class BinaryOptimizationProblem(QAOAProblem):
         return self._raw_problem
 
     def decompose(self) -> dict[tuple[str, int], QAOAProblem]:
+        """Partition the problem using the configured ``hybrid`` decomposer.
+
+        Each non-trivial partition becomes its own
+        :class:`BinaryOptimizationProblem` keyed by ``(name, size)``.
+        Partitions with no interactions are tracked internally and
+        skipped during composition.
+
+        Raises:
+            ValueError: If no decomposer was provided at construction.
+        """
         if self._decomposer is None or self._bqm is None:
             raise ValueError(
                 "Cannot decompose: no decomposer was provided at construction."
@@ -214,6 +274,14 @@ class BinaryOptimizationProblem(QAOAProblem):
         return sub_problems
 
     def initial_solution_size(self) -> int:
+        """Number of variables in the global solution vector.
+
+        Equals the number of variables in the underlying BQM. Only
+        defined when a decomposer was provided at construction.
+
+        Raises:
+            RuntimeError: If no decomposer was provided.
+        """
         if self._bqm is None:
             raise RuntimeError(
                 "initial_solution_size requires a decomposer to have been "
@@ -227,6 +295,11 @@ class BinaryOptimizationProblem(QAOAProblem):
         prog_id: tuple[str, int],
         candidate_decoded: list[int],
     ) -> list[int]:
+        """Splice a sub-problem's decoded bits into the global solution.
+
+        Returns a new list with values at positions corresponding to
+        ``prog_id``'s variables overwritten by ``candidate_decoded``.
+        """
         extended = list(current_solution)
         global_indices = self._variable_maps[prog_id]
 
@@ -236,6 +309,11 @@ class BinaryOptimizationProblem(QAOAProblem):
         return extended
 
     def evaluate_global_solution(self, solution: list[int]) -> float:
+        """Energy of a global bit assignment under the underlying BQM.
+
+        Raises:
+            RuntimeError: If no decomposer was provided at construction.
+        """
         if self._bqm is None:
             raise RuntimeError(
                 "evaluate_global_solution requires a decomposer to have been "
@@ -248,11 +326,19 @@ class BinaryOptimizationProblem(QAOAProblem):
     def finalize_solution(
         self, score: float, solution: list[int]
     ) -> tuple[np.ndarray, float]:
+        """Run a global solution through the configured composer.
+
+        Returns:
+            Tuple ``(composed_solution, energy)`` where
+            ``composed_solution`` is an ``int32`` ndarray of bits and
+            ``energy`` is the objective value computed by the composer.
+        """
         return self._compose_solution(solution)
 
     def format_top_solutions(
         self, results: list[tuple[float, list[int]]]
     ) -> list[tuple[np.ndarray, float]]:
+        """Compose each top beam-search result and sort by energy ascending."""
         composed = [self._compose_solution(sol) for _score, sol in results]
         composed.sort(key=lambda entry: entry[1])
         return composed
