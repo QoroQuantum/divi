@@ -413,12 +413,15 @@ class MaestroSimulator(CircuitRunner):
                 if self.noise_config["noise_model"] is None:
                     raw = maestro.simple_execute(qasm, config=sim_config, shots=shots)
                 else:
+                    # unlike simple_estimate, the noisy functions take in a maestro Circuit object
+                    circuit_parser = maestro.QasmToCirc()
+                    maestro_circuit = circuit_parser.parse_and_translate(qasm)
                     raw = maestro.noisy_execute(
-                        qasm,
+                        maestro_circuit,
                         self.noise_config["noise_model"],
                         config=sim_config,
                         shots=shots,
-                        noise_realizations=self.noise_config["noise_realizations"],
+                        noise_realizations=self.noise_config["noise_realizations"] or 1,
                         seed=self.noise_config["noise_seed"],
                     )
                 counts = {bs[::-1]: n for bs, n in raw["counts"].items()}
@@ -444,19 +447,22 @@ class MaestroSimulator(CircuitRunner):
                         config=sim_config,
                     )
                 else:
+                    # unlike simple_estimate, the noisy functions take in a maestro Circuit object
+                    circuit_parser = maestro.QasmToCirc()
+                    maestro_circuit = circuit_parser.parse_and_translate(_strip_measurements(qasm))
                     if self.noise_config["noise_realizations"] in [None, 0]:
                         raw = maestro.noisy_estimate(
-                            _strip_measurements(qasm),
-                            self.noise_config["noise_model"],
+                            maestro_circuit,
                             observables=pauli_string,
+                            noise_model=self.noise_config["noise_model"],
                             config=sim_config,
                         )
                     else:
                         raw = maestro.noisy_estimate_montecarlo(
-                            _strip_measurements(qasm),
-                            self.noise_config["noise_model"],
-                            noise_realizations=self.noise_config["noise_realizations"],
+                            maestro_circuit,
                             observables=pauli_string,
+                            noise_model=self.noise_config["noise_model"],
+                            noise_realizations=self.noise_config["noise_realizations"] or 1,
                             config=sim_config,
                         )
                 ops = pauli_string.split(";")
