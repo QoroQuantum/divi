@@ -5,7 +5,7 @@
 import warnings
 from collections.abc import Callable, Hashable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from qiskit.quantum_info import SparsePauliOp
@@ -14,10 +14,10 @@ from divi.circuits._conversions import (
     measurement_qasms_from_groups,
     sparse_pauli_op_to_ham_string,
 )
+from divi.circuits._core import flatten_observable_tuple
 from divi.pipeline._grouping import (
     GroupingStrategy,
     compute_measurement_groups,
-    compute_multi_observable_measurement_groups,
 )
 from divi.pipeline._shot_distribution import (
     ShotDistStrategy,
@@ -390,30 +390,26 @@ class MeasurementStage(BundleStage):
         """
         env.result_format = ResultFormat.EXPVALS
 
-        # Setting shot_distribution declares sampling intent — skip the
-        # analytical fallback entirely so the user's per-group allocation
-        # is actually used.
         strategy = self._grouping_strategy
-        # ``_backend_expval`` auto-promotion only applies when every meta
-        # carries the *same* single observable.  Tuple-observable metas
-        # (multi-expval) cannot use the backend's analytical path because
-        # it evaluates one observable at a time.
-        any_tuple_obs = any(
-            isinstance(meta.observable, tuple) for meta in batch.values()
+        all_single_obs = all(
+            meta.observable is not None and len(meta.observable) == 1
+            for meta in batch.values()
         )
         if (
             self._shot_distribution is None
             and strategy in ("qwc", "_backend_expval")
             and env.backend.supports_expval
-            and not any_tuple_obs
+            and all_single_obs
         ):
             first_obs = next(iter(batch.values())).observable
             all_same_obs = all(meta.observable == first_obs for meta in batch.values())
             strategy = "_backend_expval" if all_same_obs else "qwc"
-        elif strategy == "_backend_expval" and any_tuple_obs:
-            # User explicitly asked for backend_expval but a tuple meta is
-            # present — fall back to QWC for the multi-observable path.
-            strategy = "qwc"
+        elif strategy == "_backend_expval" and not all_single_obs:
+            raise NotImplementedError(
+                "'_backend_expval' grouping strategy requires a single "
+                "observable per MetaCircuit (length-1 tuple); a multi-"
+                "observable tuple was supplied. Use 'qwc' or 'wires' instead."
+            )
 
         if self._shot_distribution is not None and strategy == "_backend_expval":
             raise ValueError(
@@ -427,56 +423,36 @@ class MeasurementStage(BundleStage):
         n_observable_terms: int | None = None
         zero_shot_groups_by_spec: dict[object, dict[int, object]] = {}
         per_group_shots_by_spec: dict[object, dict[int, int]] = {}
-        sample_observable: SparsePauliOp | tuple[SparsePauliOp, ...] | None = None
+        sample_union: SparsePauliOp | None = None
 
         for key, meta in batch.items():
-            observable = meta.observable
-            if observable is None:
+            if meta.observable is None:
                 raise ValueError(
                     f"MeasurementStage (expval path): key '{key}' has no "
                     "observable set."
                 )
-            if sample_observable is None:
-                sample_observable = observable
+            observable = cast(tuple[SparsePauliOp, ...], meta.observable)
 
-            if isinstance(observable, tuple):
-                # Multi-observable: QWC across the UNION of every
-                # observable's Pauli terms.  postprocessing_fn returns a
-                # ``list[float]`` of per-observable expvals (in tuple order).
-                measurement_groups, partition_indices, postprocessing_fn = (
-                    compute_multi_observable_measurement_groups(
-                        observable, strategy, meta.n_qubits
-                    )
-                )
-                # Adaptive shot allocation needs a single observable to
-                # weight groups by; not yet supported for tuple metas.
-                if self._shot_distribution is not None:
-                    raise ValueError(
-                        "shot_distribution is not supported for "
-                        "multi-observable (tuple) metas; pass a single "
-                        "observable or disable shot_distribution."
-                    )
-                surviving_indices = list(range(len(measurement_groups)))
-                zero_shot_groups: dict[int, object] = {}
-                surviving_shots = None
-            else:
-                measurement_groups, partition_indices, postprocessing_fn = (
-                    compute_measurement_groups(observable, strategy, meta.n_qubits)
-                )
-                if strategy == "_backend_expval" and n_observable_terms is None:
-                    n_observable_terms = sum(len(p) for p in partition_indices)
+            measurement_groups, partition_indices, postprocessing_fn = (
+                compute_measurement_groups(observable, strategy, meta.n_qubits)
+            )
+            if strategy == "_backend_expval" and n_observable_terms is None:
+                n_observable_terms = sum(len(p) for p in partition_indices)
 
-                # Decide which groups to actually submit and with how many shots.
-                surviving_indices, zero_shot_groups, surviving_shots = (
-                    _allocate_per_group_shots(
-                        key,
-                        observable,
-                        measurement_groups,
-                        partition_indices,
-                        env,
-                        self._shot_distribution,
-                    )
+            # Shot allocation weights groups by the union's coefficient L1 norm.
+            union_obs, _ = flatten_observable_tuple(observable)
+            if sample_union is None:
+                sample_union = union_obs
+            surviving_indices, zero_shot_groups, surviving_shots = (
+                _allocate_per_group_shots(
+                    key,
+                    union_obs,
+                    measurement_groups,
+                    partition_indices,
+                    env,
+                    self._shot_distribution,
                 )
+            )
             if zero_shot_groups:
                 zero_shot_groups_by_spec[key] = zero_shot_groups
             if surviving_shots is not None:
@@ -504,12 +480,8 @@ class MeasurementStage(BundleStage):
 
         # For expval-native backends, compute ham_ops from the SparsePauliOp
         # and store it in env.artifacts so _default_execute_fn can use it.
-        # ``_backend_expval`` is rejected upstream for tuple observables
-        # (compute_multi_observable_measurement_groups raises and the
-        # auto-promotion guard falls back to QWC), so a tuple here is a bug.
-        if strategy == "_backend_expval" and sample_observable is not None:
-            assert isinstance(sample_observable, SparsePauliOp)
-            env.artifacts["ham_ops"] = sparse_pauli_op_to_ham_string(sample_observable)
+        if strategy == "_backend_expval" and sample_union is not None:
+            env.artifacts["ham_ops"] = sparse_pauli_op_to_ham_string(sample_union)
         else:
             env.artifacts.pop("ham_ops", None)
 
@@ -543,7 +515,7 @@ class MeasurementStage(BundleStage):
             info["n_groups"] = 1
             if getattr(token, "n_observable_terms", None) is not None:
                 info["n_terms"] = token.n_observable_terms
-            obs_str = str(meta.observable) if meta.observable is not None else ""
+            obs_str = str(meta.observable[0]) if meta.observable else ""
             if len(obs_str) > 80:
                 obs_str = obs_str[:77] + "..."
             info["observable"] = obs_str

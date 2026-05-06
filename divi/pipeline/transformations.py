@@ -110,9 +110,7 @@ def reduce_mean(
         if values and isinstance(values[0], list):
             n = len(values)
             n_obs = len(values[0])
-            out[base_key] = [
-                sum(v[i] for v in values) / n for i in range(n_obs)
-            ]
+            out[base_key] = [sum(v[i] for v in values) / n for i in range(n_obs)]
         else:
             out[base_key] = sum(values) / len(values)
     return out

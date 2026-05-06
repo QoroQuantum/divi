@@ -263,8 +263,9 @@ class TestAnalyticDryRun:
         # MeasurementStage surfaces the observable grouping outcome — ZZ
         # and XX don't QWC-commute, so each gets its own group.
         meas = by_name["MeasurementStage"]
-        assert meas.metadata["n_groups"] == len(meta.observable)
-        assert meas.metadata["n_terms"] == len(meta.observable)
+        n_terms = sum(len(o) for o in meta.observable)
+        assert meas.metadata["n_groups"] == n_terms
+        assert meas.metadata["n_terms"] == n_terms
         assert meas.factor == 1.0
 
     def test_env_artifacts_surface_on_dry_run_report(self, dummy_pipeline_env):

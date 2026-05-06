@@ -159,7 +159,8 @@ overwrite.
 
 :attr:`~divi.backends.MaestroConfig.noise_model` and
 :attr:`~divi.backends.MaestroConfig.noise_realizations` together select
-one of five Maestro entry points:
+one of five dispatch scenarios across four C++ entry points
+(``noisy_execute`` covers two of the rows below):
 
 .. list-table::
    :header-rows: 1
@@ -448,7 +449,7 @@ Backend Comparison
      - Qiskit fake backends & noise models
      - Hardware noise (real QPUs)
    * - **Seed / Reproducibility**
-     - ``noise_seed`` (noisy paths only)
+     - ``noise_seed`` (noisy paths only, defaults to ``42``)
      - ``simulation_seed`` parameter
      - N/A
    * - **Depth Tracking**

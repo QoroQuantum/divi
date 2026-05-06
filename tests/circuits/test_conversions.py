@@ -360,13 +360,15 @@ class TestEndToEndEquivalence:
 class TestQscriptToMetaObservable:
     """``meta.observable`` shape varies with the qscript's measurement(s)."""
 
-    def test_single_expval_yields_sparse_pauli_op(self):
+    def test_single_expval_yields_length_one_tuple(self):
         qs = qp.tape.QuantumScript(
             ops=[qp.Hadamard(0)],
             measurements=[qp.expval(qp.PauliZ(0))],
         )
         meta = qscript_to_meta(qs)
-        assert isinstance(meta.observable, SparsePauliOp)
+        assert isinstance(meta.observable, tuple)
+        assert len(meta.observable) == 1
+        assert isinstance(meta.observable[0], SparsePauliOp)
         assert meta.measured_wires is None
 
     def test_two_expvals_yields_tuple_of_sparse_pauli_ops(self):

@@ -1054,6 +1054,33 @@ class TestNoisyExpvalSubmission:
 
         assert result.results[0]["results"] == {"ZI": 0.1, "IX": 0.2, "YY": 0.3}
 
+    def test_montecarlo_multi_circuit_label_alignment_and_seed_offset(self, mocker):
+        """Submit two circuits through the Monte Carlo path and verify:
+        labels keep their input order in the result; per-circuit seed is
+        ``noise_seed + i`` so circuit 0 sees seed N, circuit 1 sees N+1."""
+        fake = _make_fake_maestro(mocker, expvals=[0.9])
+        seeds_seen: dict[int, int] = {}
+
+        def _capture(
+            circuit, observables, noise_model, noise_realizations, seed, config
+        ):
+            # Each call gets a unique parsed-circuit tuple keyed on the qasm
+            # string, recovered from the parser side_effect.
+            seeds_seen[id(circuit)] = seed
+            return {"expectation_values": [0.9]}
+
+        fake.noisy_estimate_montecarlo.side_effect = _capture
+        sim, _ = _make_noisy_sim(mocker, fake, noise_seed=10, noise_realizations=3)
+
+        result = sim.submit_circuits(
+            {"a": _BELL_QASM, "b": _BELL_QASM.replace("h q[0]", "x q[0]")},
+            ham_ops="ZI",
+        )
+
+        labels = [r["label"] for r in result.results]
+        assert labels == ["a", "b"]
+        assert sorted(seeds_seen.values()) == [10, 11]
+
 
 # ---------------------------------------------------------------------------
 # _strip_measurements

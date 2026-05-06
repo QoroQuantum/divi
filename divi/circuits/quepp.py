@@ -283,8 +283,8 @@ class _PauliPath:
 
 @dataclass(frozen=True)
 class _PreprocResult:
-    """Bundle of quantities shared across :meth:`QuEPP._preprocess`,
-    :meth:`QuEPP._select_paths`, and :meth:`QuEPP._build_ensemble`."""
+    """Bundle of quantities shared across :meth:`QuEPP._preprocess` and
+    :meth:`QuEPP._select_paths`."""
 
     working: QuantumCircuit
     n_qubits: int
@@ -906,97 +906,21 @@ class QuEPP(QEMProtocol):
     def name(self) -> str:
         return "quepp"
 
-    def _prepare_paths(
-        self, dag: DAGCircuit, observable: SparsePauliOp | None
-    ) -> tuple["_PreprocResult", list["_PauliPath"], SparsePauliOp]:
-        """Shared setup for :meth:`expand` / :meth:`dry_expand`.
-
-        Runs the cheap prefix (validation, preprocessing, path selection,
-        truncation warning) — everything except the expensive Clifford
-        simulation + per-path DAG cloning. Both real and dry paths build
-        on the returned ``(prep, paths, validated_observable)`` tuple.
-        """
-        validated = self._validate_observable(observable)
-        prep = self._preprocess(dag, validated)
-        paths = self._select_paths(prep)
-        self._warn_on_truncation_ratio(len(prep.rotations))
-        return prep, paths, validated
-
     def expand(
         self,
         dag: DAGCircuit,
-        observable: SparsePauliOp | tuple[SparsePauliOp, ...] | None = None,
-    ) -> tuple[tuple[DAGCircuit, ...], QEMContext | list[QEMContext]]:
-        if isinstance(observable, tuple):
-            return self._expand_for_observables(dag, observable)
-        prep, paths, validated = self._prepare_paths(dag, observable)
-        return self._build_ensemble(dag, prep, paths, validated)
-
-    def dry_expand(
-        self,
-        dag: DAGCircuit,
-        observable: SparsePauliOp | tuple[SparsePauliOp, ...] | None = None,
+        observable: tuple[SparsePauliOp, ...] | None = None,
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
-        """Analytic path: emit ``1 + n_paths`` placeholder DAGs, no Clifford sim.
+        """Build path DAGs and per-observable classical context.
 
-        Reuses :meth:`_prepare_paths` to get the exact path count (source
-        of truth for the fan-out), then skips the per-path
-        ``_build_path_dag`` surgery and the full Clifford ensemble
-        simulation — the two dominant costs of :meth:`expand` — and reuses
-        the input ``dag`` as a shared placeholder for every emitted slot.
-        Context keys read by :class:`~divi.pipeline.stages.QEMStage`'s
-        introspect hook (``n_rotations``, ``n_paths``, ``symbolic``) are
-        populated so dry-run reports render correctly.
+        Preprocessing and Clifford tableau construction run once; path
+        enumeration and classical simulation run per observable.  Paths
+        sharing a ``branches`` tuple produce the same Clifford circuit
+        and are deduped across observables.
         """
-        # Multi-observable dry-run accounting is not yet implemented;
-        # use the first observable's path count as a conservative proxy.
-        if isinstance(observable, tuple):
-            observable = observable[0] if observable else None
-        prep, paths, _ = self._prepare_paths(dag, observable)
-        n_paths = len(paths)
-        # Placeholder DAG per slot — dry stages don't submit / simulate.
-        all_dags = (dag,) * (1 + n_paths)
-        context: QEMContext = {
-            "classical_values": None,
-            "weights": None,
-            "target_idx": 0,
-            "ensemble_start": 1,
-            "n_rotations": len(prep.rotations),
-            "n_paths": n_paths,
-        }
-        if prep.symbolic:
-            context["symbolic"] = True
-            context["weight_symbols"] = []
-        return all_dags, context
+        observables = self._validate_observable_tuple(observable)
 
-    def _expand_for_observables(
-        self,
-        dag: DAGCircuit,
-        observables: tuple[SparsePauliOp, ...],
-    ) -> tuple[tuple[DAGCircuit, ...], list[QEMContext]]:
-        """Multi-observable expansion that shares the target DAG and dedupes
-        path DAGs across observables.
-
-        The target circuit is observable-independent and is emitted once at
-        index 0 of ``merged_dags``.  Path DAGs are determined by
-        ``(working_dag, rotation_positions, branches)`` — paths from
-        different observables that share a ``branches`` tuple produce the
-        same DAG and are deduplicated.  Each per-observable context records
-        ``"dag_indices"`` listing the positions in ``merged_dags`` that make
-        up its target+ensemble (with target at the slice's index 0 and the
-        observable's ensemble at indices 1..k).
-
-        Path enumeration and η are per-observable per the QuEPP paper
-        (arXiv:2603.14485, Eq. 1, Sec. III) — the only sharing here is the
-        observable-independent preprocessing, the target circuit, and
-        coincident path DAGs.
-        """
-        if len(observables) == 0:
-            raise ValueError("QuEPP requires at least one observable in the tuple.")
-        for obs in observables:
-            self._validate_observable(obs)
-
-        # ----- Observable-independent preprocessing (done ONCE) ---------- #
+        # ----- Observable-independent preprocessing ---------------------- #
         target_qc = dag_to_circuit(dag)
         n_qubits = target_qc.num_qubits
         decomposed = _decompose_controlled_rotations(target_qc)
@@ -1017,8 +941,6 @@ class QuEPP(QEMProtocol):
                 symbolic=symbolic,
             )
             obs_paths_list.append(self._select_paths(prep))
-        # Truncation-ratio warning depends only on the rotation count and
-        # K_T, both observable-independent — emit at most once.
         self._warn_on_truncation_ratio(len(rotations))
 
         # ----- Path-DAG dedup across observables ------------------------- #
@@ -1034,10 +956,9 @@ class QuEPP(QEMProtocol):
                         _build_path_dag(working_dag, rotation_positions, p.branches)
                     )
 
-        # merged_dags: shared target at index 0, deduped path DAGs at 1..M
         merged_dags = (dag,) + tuple(merged_path_dags)
 
-        # ----- Per-observable contexts ----------------------------------- #
+        # ----- Per-observable per-path classical sim + weights ----------- #
         all_params: set[Parameter] | None = None
         if symbolic:
             all_params = set().union(
@@ -1048,51 +969,119 @@ class QuEPP(QEMProtocol):
                 )
             )
 
-        contexts: list[QEMContext] = []
+        per_obs: list[dict] = []
         for obs, paths in zip(observables, obs_paths_list):
-            # Position in merged_dags for each of this observable's paths
-            # (offset by +1 because index 0 is the shared target).
+            # +1 offset because merged_dags[0] is the shared target.
             path_positions = [branch_to_dag_idx[p.branches] + 1 for p in paths]
             dag_indices = [0] + path_positions
 
-            # Classical simulation uses each obs's own terms; pull the
-            # already-built (deduped) path DAGs in this obs's path order.
             obs_path_dags = [
                 merged_path_dags[branch_to_dag_idx[p.branches]] for p in paths
             ]
             classical_values = _simulate_clifford_ensemble(obs_path_dags, obs, n_qubits)
             weights = [p.weight for p in paths]
+            per_obs.append(
+                {
+                    "classical_values": classical_values,
+                    "weights": (
+                        np.array(weights, dtype=object)
+                        if symbolic
+                        else np.array(weights)
+                    ),
+                    "n_paths": len(paths),
+                    "dag_indices": dag_indices,
+                }
+            )
 
-            ctx: QEMContext = {
-                "classical_values": classical_values,
-                "weights": (
-                    np.array(weights, dtype=object) if symbolic else np.array(weights)
-                ),
-                "target_idx": 0,
-                "ensemble_start": 1,
-                "n_rotations": len(rotations),
-                "n_paths": len(paths),
-                "dag_indices": dag_indices,
-            }
-            if symbolic:
-                ctx["symbolic"] = True
-                ctx["weight_symbols"] = sorted(all_params or [], key=lambda p: p.name)
-            contexts.append(ctx)
+        context: QEMContext = {
+            "per_obs": per_obs,
+            "target_idx": 0,
+            "ensemble_start": 1,
+            "n_rotations": len(rotations),
+            "n_paths": len(merged_path_dags),
+        }
+        if symbolic:
+            context["symbolic"] = True
+            context["weight_symbols"] = sorted(
+                all_params if all_params is not None else [],
+                key=lambda p: p.name,
+            )
+        return merged_dags, context
 
-        return merged_dags, contexts
+    def dry_expand(
+        self,
+        dag: DAGCircuit,
+        observable: tuple[SparsePauliOp, ...] | None = None,
+    ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
+        """Analytic path: emit ``1 + n_paths`` placeholder DAGs, no Clifford sim.
+
+        Runs the same preprocessing + per-observable path enumeration as
+        :meth:`expand` to get an accurate fan-out factor, then skips the
+        per-path DAG surgery and Clifford ensemble simulation — the two
+        dominant costs — and reuses the input ``dag`` as a placeholder for
+        every emitted slot.  ``n_paths`` reflects the deduplicated count
+        across all observables.
+        """
+        observables = self._validate_observable_tuple(observable)
+
+        target_qc = dag_to_circuit(dag)
+        n_qubits = target_qc.num_qubits
+        decomposed = _decompose_controlled_rotations(target_qc)
+        symbolic = _has_symbolic_angles(decomposed)
+        working = _normalize_circuit(decomposed)
+        rotations = _extract_rotation_gates(working)
+        tableaus = _build_clifford_tableaus(working, rotations)
+
+        unique_branches: set[tuple[int, ...]] = set()
+        for obs in observables:
+            prep = _PreprocResult(
+                working=working,
+                n_qubits=n_qubits,
+                rotations=rotations,
+                tableaus=tableaus,
+                obs_terms=_obs_to_stim_terms(obs, n_qubits),
+                symbolic=symbolic,
+            )
+            for p in self._select_paths(prep):
+                unique_branches.add(p.branches)
+        self._warn_on_truncation_ratio(len(rotations))
+
+        n_paths = len(unique_branches)
+        all_dags = (dag,) * (1 + n_paths)
+        context: QEMContext = {
+            "per_obs": None,
+            "target_idx": 0,
+            "ensemble_start": 1,
+            "n_rotations": len(rotations),
+            "n_paths": n_paths,
+        }
+        if symbolic:
+            context["symbolic"] = True
+            context["weight_symbols"] = []
+        return all_dags, context
 
     @staticmethod
-    def _validate_observable(observable: SparsePauliOp | None) -> SparsePauliOp:
+    def _validate_observable_tuple(
+        observable: SparsePauliOp | tuple[SparsePauliOp, ...] | None,
+    ) -> tuple[SparsePauliOp, ...]:
         if observable is None:
             raise ValueError(
-                "QuEPP requires an observable (SparsePauliOp) for classical "
-                "Clifford simulation."
+                "QuEPP requires at least one observable (SparsePauliOp) for "
+                "classical Clifford simulation."
             )
-        if not isinstance(observable, SparsePauliOp):
-            raise TypeError(
-                f"QuEPP.expand expected a SparsePauliOp observable, got "
-                f"{type(observable).__name__}."
+        if isinstance(observable, SparsePauliOp):
+            observable = (observable,)
+        if not observable:
+            raise ValueError(
+                "QuEPP requires at least one observable (SparsePauliOp) for "
+                "classical Clifford simulation."
             )
+        for obs in observable:
+            if not isinstance(obs, SparsePauliOp):
+                raise TypeError(
+                    f"QuEPP.expand observable tuple entries must be "
+                    f"SparsePauliOp; got {type(obs).__name__}."
+                )
         return observable
 
     @staticmethod
@@ -1161,63 +1150,6 @@ class QuEPP(QEMProtocol):
                 stacklevel=3,
             )
 
-    def _build_ensemble(
-        self,
-        dag: DAGCircuit,
-        prep: "_PreprocResult",
-        paths: list[_PauliPath],
-        observable: SparsePauliOp,
-    ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
-        """Build Clifford path DAGs, simulate them, and assemble the context.
-
-        Returns the original (non-normalised) target DAG together with the
-        Clifford path DAGs.  The target runs on hardware; path circuits are
-        only used for classical stim simulation and the η rescaling, never
-        transmitted to the backend — but the pipeline treats them uniformly
-        as DAGs, so we emit them as such.
-        """
-        # inst_idx == topological position (both enumerate qc.data order),
-        # so _build_path_dag can do O(K) node surgery per path.
-        working_dag = circuit_to_dag(prep.working)
-        rotation_positions = [(rot.inst_idx, rot) for rot in prep.rotations]
-
-        path_dags = [
-            _build_path_dag(working_dag, rotation_positions, p.branches) for p in paths
-        ]
-        classical_values = _simulate_clifford_ensemble(
-            path_dags, observable, prep.n_qubits
-        )
-        weights = [p.weight for p in paths]
-
-        all_dags = (dag,) + tuple(path_dags)
-        symbolic = prep.symbolic
-        context: QEMContext = {
-            "classical_values": classical_values,
-            "weights": (
-                np.array(weights, dtype=object) if symbolic else np.array(weights)
-            ),
-            "target_idx": 0,
-            "ensemble_start": 1,
-            "n_rotations": len(prep.rotations),
-            "n_paths": len(paths),
-            # Identity range — present on every context so that ``reduce``
-            # uses the same slicing path in both single- and multi-observable
-            # mode (see ``_expand_for_observables`` for the non-trivial case).
-            "dag_indices": list(range(len(all_dags))),
-        }
-        if symbolic:
-            all_params: set[Parameter] = set().union(
-                *(
-                    rot.angle.parameters
-                    for rot in prep.rotations
-                    if _is_parametric(rot.angle)
-                )
-            )
-            context["symbolic"] = True
-            context["weight_symbols"] = sorted(all_params, key=lambda p: p.name)
-
-        return all_dags, context
-
     @staticmethod
     def compute_eta(
         classical_values: np.ndarray,
@@ -1233,71 +1165,103 @@ class QuEPP(QEMProtocol):
 
     @staticmethod
     def evaluate_symbolic_weights(
-        context: QEMContext,
+        per_obs_entry: dict,
         symbols: Sequence[Parameter],
         param_values: np.ndarray,
     ) -> None:
         """Substitute concrete parameter values into symbolic weight expressions.
 
-        *symbols* are the Qiskit :class:`~qiskit.circuit.Parameter`
-        objects referenced by the weight expressions.  *param_values* are
-        the corresponding numeric values (same positional order).
+        Operates on a single ``per_obs`` slot.  *symbols* are the Qiskit
+        :class:`~qiskit.circuit.Parameter` objects referenced by the
+        weight expressions; *param_values* are their numeric values in
+        the same positional order.
         """
+        if "per_obs" in per_obs_entry:
+            raise TypeError(
+                "evaluate_symbolic_weights expects a per_obs entry "
+                "(context['per_obs'][i]), not the full QuEPP context."
+            )
         binding = {p: float(v) for p, v in zip(symbols, param_values)}
-        context["weights"] = np.array(
+        per_obs_entry["weights"] = np.array(
             [
                 (
                     float(w.bind({p: binding[p] for p in w.parameters}))
                     if isinstance(w, ParameterExpression)
                     else float(w)
                 )
-                for w in context["weights"]
+                for w in per_obs_entry["weights"]
             ]
         )
-        context["symbolic"] = False
 
     def reduce(
         self,
         quantum_results: Sequence[float],
-        context: QEMContext | list[QEMContext],
-    ) -> float | list[float]:
-        if isinstance(context, list):
-            return self._reduce_for_list_context(quantum_results, context)
-        d = context
-        if d.get("symbolic"):
+        context: QEMContext,
+    ) -> list[float]:
+        """Combine quantum results with per-observable classical context(s)
+        into a list of mitigated expectation values.
+
+        The context's ``per_obs`` list carries one entry per observable;
+        each entry has its own ``dag_indices`` slicing
+        ``quantum_results``, its own ``classical_values`` and ``weights``,
+        and produces one mitigated value via the QuEPP η formula.
+        """
+        if context.get("symbolic"):
             raise ValueError(
                 "QuEPP weights are still symbolic — parameter values were "
                 "never substituted. Add ParameterBindingStage to the "
                 "pipeline or use QuEPP(bind_before_mitigation=True)."
             )
-        # Slice by ``dag_indices`` so target_idx/ensemble_start are
-        # interpreted relative to this observable's view of the merged DAG
-        # tuple.  Falls back to the full results for legacy contexts.
-        indices = d.get("dag_indices")
-        if indices is not None:
-            quantum_results = [quantum_results[i] for i in indices]
-        target_noisy = quantum_results[d["target_idx"]]
-        ensemble_noisy = np.array(quantum_results[d["ensemble_start"] :], dtype=float)
-        classical_values = d["classical_values"]
-        weights = d["weights"]
+        per_obs: list[dict] | None = context.get("per_obs")
+        if per_obs is None:
+            raise RuntimeError(
+                "QuEPP.reduce: context has no per_obs entries (was this a "
+                "dry-run context?)."
+            )
+        target_idx = context["target_idx"]
+        ensemble_start = context["ensemble_start"]
+        n_rotations = context["n_rotations"]
 
-        if d["n_rotations"] == 0:
-            return float(weights @ classical_values)
+        out: list[float] = []
+        for obs_idx, entry in enumerate(per_obs):
+            indices = entry["dag_indices"]
+            obs_results: list[float] = []
+            for i in indices:
+                row = quantum_results[i]
+                if isinstance(row, (list, tuple)):
+                    obs_results.append(float(row[obs_idx]))
+                else:
+                    obs_results.append(float(row))
 
-        classical_est = float(weights @ classical_values)
-        noisy_est = float(weights @ ensemble_noisy)
+            target_noisy = obs_results[target_idx]
+            ensemble_noisy = np.array(obs_results[ensemble_start:], dtype=float)
+            classical_values = entry["classical_values"]
+            weights = entry["weights"]
 
-        eta = self.compute_eta(classical_values, ensemble_noisy)
-        if eta is None:
-            valid = np.abs(classical_values) > 1e-12
-            if np.any(valid):
-                context["_signal_destroyed"] = True
-            return float(target_noisy)
+            if n_rotations == 0:
+                out.append(float(weights @ classical_values))
+                continue
 
-        return classical_est + (target_noisy - noisy_est) / eta
+            classical_est = float(weights @ classical_values)
+            noisy_est = float(weights @ ensemble_noisy)
+
+            eta = self.compute_eta(classical_values, ensemble_noisy)
+            if eta is None:
+                valid = np.abs(classical_values) > 1e-12
+                if np.any(valid):
+                    entry["_signal_destroyed"] = True
+                out.append(float(target_noisy))
+                continue
+
+            out.append(classical_est + (target_noisy - noisy_est) / eta)
+
+        return out
 
     def post_reduce(self, contexts: Sequence[QEMContext]) -> None:
-        destroyed = sum(1 for c in contexts if c.get("_signal_destroyed"))
+        destroyed = 0
+        for ctx in contexts:
+            per_obs = ctx.get("per_obs") or []
+            destroyed += sum(1 for entry in per_obs if entry.get("_signal_destroyed"))
         if destroyed:
             warnings.warn(
                 "QuEPP: signal destroyed — η fell below the safety threshold "

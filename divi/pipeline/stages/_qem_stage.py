@@ -159,7 +159,7 @@ class QEMStage(BundleStage):
     def _reduce_grouped(
         self,
         grouped: dict[tuple, dict[int, Any]],
-        contexts: dict[tuple, QEMContext | list[QEMContext]] | None,
+        contexts: dict[tuple, QEMContext] | None,
         per_obs: bool,
     ) -> ChildResults:
         reduced: ChildResults = {}
@@ -167,14 +167,7 @@ class QEMStage(BundleStage):
             ordered = [v for _, v in sorted(values_by_idx.items())]
             ctx = {} if contexts is None else contexts[base_key]
 
-            if isinstance(ctx, list):
-                # Multi-observable: protocol.reduce dispatches on list-of-
-                # contexts and returns one mitigated value per observable.
-                # ``ordered`` is the full QEM-axis ordered result array; each
-                # per-observable context selects its own slice via
-                # ``dag_indices``.
-                reduced[base_key] = self.protocol.reduce(ordered, ctx)
-            elif per_obs:
+            if per_obs:
                 reduced[base_key] = {
                     obs_idx: self.protocol.reduce([d[obs_idx] for d in ordered], ctx)
                     for obs_idx in sorted(ordered[0].keys())
@@ -193,23 +186,24 @@ class QEMStage(BundleStage):
         ctx = next(iter(contexts.values()), None)
         if ctx is None:
             return info
-        if isinstance(ctx, list):
-            info["n_observables"] = len(ctx)
-            if not ctx:
-                return info
-            data = ctx[0]
-        else:
-            data = ctx
+
         for key in ("n_rotations", "n_paths"):
-            if key in data:
-                info[key] = data[key]
-        if "n_paths" in data:
-            info["n_clifford_sims"] = data["n_paths"]
+            if key in ctx:
+                info[key] = ctx[key]
+        if "n_paths" in ctx:
+            info["n_clifford_sims"] = ctx["n_paths"]
 
         # Skip float-dependent stats for symbolic weights (not yet bound).
-        if data.get("symbolic"):
+        if ctx.get("symbolic"):
             info["symbolic"] = True
             return info
+
+        per_obs = ctx.get("per_obs")
+        if per_obs:
+            info["n_observables"] = len(per_obs)
+            data = per_obs[0]
+        else:
+            data = ctx
 
         weights = data.get("weights")
         if weights is not None and len(weights) > 0:
@@ -225,7 +219,7 @@ class QEMStage(BundleStage):
 
     def _bind_symbolic_weights(
         self,
-        contexts: dict[tuple, QEMContext | list[QEMContext]],
+        contexts: dict[tuple, QEMContext],
         foreign_key: tuple,
         env: PipelineEnv,
     ) -> None:
@@ -233,39 +227,30 @@ class QEMStage(BundleStage):
 
         When QuEPP runs before ParameterBindingStage, weights are stored
         as sympy expressions.  This method substitutes the concrete
-        parameter values for the current param_set group.  For
-        multi-observable contexts (a list of dicts) it binds each entry
-        independently.
+        parameter values for the current param_set group, iterating over
+        each ``per_obs`` slot.
         """
         param_idx = next((v for k, v in foreign_key if k == "param_set"), None)
         if param_idx is None:
             return
         param_values = np.asarray(env.param_sets, dtype=float)[param_idx]
 
-        def _bind_single(c: QEMContext) -> QEMContext:
-            c = dict(c)
-            symbols = c.get("weight_symbols", [])
-            QuEPP.evaluate_symbolic_weights(c, symbols, param_values)
-            return c
-
         for key, ctx in list(contexts.items()):
-            if isinstance(ctx, list):
-                if not any(
-                    isinstance(c, dict) and c.get("symbolic") for c in ctx
-                ):
-                    continue
-                contexts[key] = [
-                    _bind_single(c)
-                    if isinstance(c, dict) and c.get("symbolic")
-                    else c
-                    for c in ctx
-                ]
-                continue
             if not isinstance(ctx, dict) or not ctx.get("symbolic"):
                 continue
-            # Shallow-copy to avoid mutating the shared context across
-            # different param_set groups.
-            contexts[key] = _bind_single(ctx)
+            # Shallow-copy so different param_set groups don't share state.
+            new_ctx = dict(ctx)
+            symbols = new_ctx.get("weight_symbols", [])
+            per_obs = new_ctx.get("per_obs")
+            if per_obs:
+                new_per_obs = []
+                for entry in per_obs:
+                    new_entry = dict(entry)
+                    QuEPP.evaluate_symbolic_weights(new_entry, symbols, param_values)
+                    new_per_obs.append(new_entry)
+                new_ctx["per_obs"] = new_per_obs
+            new_ctx["symbolic"] = False
+            contexts[key] = new_ctx
 
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken
@@ -283,12 +268,6 @@ class QEMStage(BundleStage):
         reduced = self._reduce_grouped(grouped, contexts, per_obs=per_obs)
 
         if contexts is not None:
-            all_ctxs: list[QEMContext] = []
-            for v in contexts.values():
-                if isinstance(v, list):
-                    all_ctxs.extend(v)
-                else:
-                    all_ctxs.append(v)
-            self.protocol.post_reduce(all_ctxs)
+            self.protocol.post_reduce(list(contexts.values()))
 
         return reduced

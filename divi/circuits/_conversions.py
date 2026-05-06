@@ -372,6 +372,7 @@ def qscript_to_meta(
     qscript: QuantumScript,
     precision: int = 8,
     parameter_order: tuple[Parameter, ...] | None = None,
+    was_multi_obs: bool | None = None,
 ):
     """Shared helper: convert a PennyLane ``QuantumScript`` to a ``MetaCircuit``.
 
@@ -385,12 +386,10 @@ def qscript_to_meta(
         qscript: PennyLane ``QuantumScript``.  Accepts:
 
             * a single ``probs``/``counts`` measurement;
-            * a single ``expval`` measurement (sets ``observable`` to a
-              :class:`~qiskit.quantum_info.SparsePauliOp`);
-            * multiple ``expval`` measurements — sets ``observable`` to a
-              ``tuple[SparsePauliOp, ...]``, one entry per measurement
-              (used by error-mitigation protocols that share work across
-              observables).
+            * one or more ``expval`` measurements — sets ``observable`` to
+              a ``tuple[SparsePauliOp, ...]``, one entry per measurement.
+              Mixing ``expval`` with ``probs``/``counts`` in one
+              ``QuantumScript`` is not supported.
         precision: ``MetaCircuit.precision`` for numeric gate parameters.
         parameter_order: Explicit parameter ordering for the resulting
             ``MetaCircuit``.  Use when the qscript's first-appearance order
@@ -398,6 +397,14 @@ def qscript_to_meta(
             gates in a different order than the flat weight array).
             When ``None``, ordering is inferred from the qscript
             (first appearance).
+        was_multi_obs: Optional override for the resulting MetaCircuit's
+            ``_was_multi_obs`` flag.  When ``None`` (default), inferred
+            from the script: more than one ``expval`` measurement → ``True``,
+            otherwise ``False``.  Pass ``True`` when the higher-level
+            caller knows the user opted into the multi-observable API
+            (e.g. ``observable=[O]`` in
+            :class:`~divi.qprog.algorithms.TimeEvolution`) even when only
+            one expval ends up in the script.
     """
     measurements = list(qscript.measurements)
 
@@ -405,16 +412,13 @@ def qscript_to_meta(
 
     params = parameter_order if parameter_order is not None else inferred_params
 
-    observable: SparsePauliOp | tuple[SparsePauliOp, ...] | None = None
+    observable: tuple[SparsePauliOp, ...] | None = None
     measured_wires = None
 
     expval_measurements = [
         m for m in measurements if isinstance(m, qp.measurements.ExpectationMP)
     ]
-    if len(expval_measurements) >= 2:
-        # Multi-observable path: every measurement must be an expval with an
-        # operator attached.  Mixing expval with probs/counts in one
-        # QuantumScript is not supported.
+    if expval_measurements:
         if len(expval_measurements) != len(measurements):
             raise ValueError(
                 "qscript_to_meta: mixing `expval` with `probs`/`counts` "
@@ -428,16 +432,14 @@ def qscript_to_meta(
                 )
             ops.append(observable_to_sparse_pauli_op(m.obs, qscript.wires))
         observable = tuple(ops)
-    elif len(expval_measurements) == 1:
-        m = expval_measurements[0]
-        if m.obs is None:
-            raise ValueError("ExpectationMP without an observable is not supported.")
-        observable = observable_to_sparse_pauli_op(m.obs, qscript.wires)
     elif measurements:
         first = measurements[0]
         if isinstance(first, (qp.measurements.ProbabilityMP, qp.measurements.CountsMP)):
             target_wires = first.wires if len(first.wires) else qscript.wires
             measured_wires = tuple(qscript.wires.index(w) for w in target_wires)
+
+    if was_multi_obs is None:
+        was_multi_obs = len(expval_measurements) > 1
 
     return MetaCircuit(
         circuit_bodies=(((), dag),),
@@ -445,6 +447,7 @@ def qscript_to_meta(
         observable=observable,
         measured_wires=measured_wires,
         precision=precision,
+        _was_multi_obs=was_multi_obs,
     )
 
 

@@ -16,6 +16,8 @@ from typing import Literal
 import numpy as np
 from qiskit.quantum_info import SparsePauliOp
 
+from divi.circuits._core import flatten_observable_tuple
+
 GroupingStrategy = Literal["wires", "default", "qwc", "_backend_expval"] | None
 
 
@@ -52,23 +54,34 @@ def _wire_grouping_from_labels(
 
 
 def _create_postprocessing_fn(
-    coefficients: np.ndarray,
+    observables: tuple[SparsePauliOp, ...],
+    per_obs_term_indices: list[list[int]],
     partition_indices: list[list[int]],
-    n_terms: int,
+    n_union_terms: int,
 ) -> Callable:
-    """Build a callable that reassembles per-group results into a scalar expval."""
+    """Build a callable that reassembles per-group results into per-observable expvals.
+
+    Returns a function that takes per-group results (one entry per
+    measurement group) and returns a ``list[float]`` of per-observable
+    expectation values.
+    """
     reverse_lookup: dict[int, tuple[int, int]] = {}
     for group_idx, indices in enumerate(partition_indices):
         for pos, orig_idx in enumerate(indices):
             reverse_lookup[orig_idx] = (group_idx, pos)
 
-    missing = [i for i in range(n_terms) if i not in reverse_lookup]
+    missing = [i for i in range(n_union_terms) if i not in reverse_lookup]
     if missing:
         raise RuntimeError(
-            f"partition_indices does not cover all term indices. Missing: {missing}"
+            f"partition_indices does not cover all union term indices. "
+            f"Missing: {missing}"
         )
 
-    reverse_map: list[tuple[int, int]] = [reverse_lookup[i] for i in range(n_terms)]
+    reverse_map: list[tuple[int, int]] = [
+        reverse_lookup[i] for i in range(n_union_terms)
+    ]
+    n_obs = len(observables)
+    obs_coeffs = [np.real(o.coeffs).astype(np.float64) for o in observables]
 
     def postprocessing_fn(grouped_results):
         if len(grouped_results) != len(partition_indices):
@@ -76,58 +89,77 @@ def _create_postprocessing_fn(
                 f"Expected {len(partition_indices)} grouped results, "
                 f"got {len(grouped_results)}."
             )
-        flat = np.zeros(n_terms, dtype=np.float64)
-        for orig_idx in range(n_terms):
+        flat = np.zeros(n_union_terms, dtype=np.float64)
+        for orig_idx in range(n_union_terms):
             g_idx, pos = reverse_map[orig_idx]
             val = grouped_results[g_idx]
             if isinstance(val, dict):
                 val = val[pos]
             flat[orig_idx] = float(np.asarray(val).flat[0])
-        return np.dot(coefficients, flat)
+        return [
+            float(np.dot(obs_coeffs[i], flat[per_obs_term_indices[i]]))
+            for i in range(n_obs)
+        ]
 
     return postprocessing_fn
 
 
 def compute_measurement_groups(
-    observable: SparsePauliOp,
+    observable: tuple[SparsePauliOp, ...],
     strategy: GroupingStrategy,
     n_qubits: int,
 ) -> tuple[tuple[tuple[str, ...], ...], list[list[int]], Callable]:
-    """Group an observable's Pauli terms for measurement fan-out.
+    """Group an observable tuple's Pauli terms for measurement fan-out.
+
+    Operates on the union of every observable's Pauli terms — overlapping
+    Paulis (across or within observables) are deduplicated, and QWC
+    grouping shares measurement circuits across observables when their
+    terms are mutually qubit-wise commuting.
 
     Args:
-        observable: The Hermitian observable to group.
+        observable: Non-empty ``tuple[SparsePauliOp, ...]``.
         strategy: ``"qwc"``, ``"default"``, ``"wires"``,
-            ``"_backend_expval"``, or ``None``.
+            ``"_backend_expval"``, or ``None``.  ``"_backend_expval"`` is
+            valid only for length-1 observables.
         n_qubits: Total qubit count in the circuit.
 
     Returns:
         ``(measurement_groups, partition_indices, postprocessing_fn)``
 
         *measurement_groups*: tuple of tuples of big-endian Pauli label
-        strings (qubit 0 on the left).  Each inner tuple is one
-        commuting group.
+        strings (qubit 0 on the left), one tuple per commuting group over
+        the union of Pauli terms.
 
-        *partition_indices*: ``list[list[int]]`` mapping original term
+        *partition_indices*: ``list[list[int]]`` mapping union term
         indices to groups.
 
         *postprocessing_fn*: callable that recombines per-group
-        expectation values into the final scalar using the observable's
-        coefficients.
+        expectation values into a ``list[float]`` of per-observable
+        expectation values, in input order.
     """
-    # Qiskit labels are little-endian; we store big-endian internally.
-    le_labels = observable.paulis.to_labels()
-    be_labels = [label[::-1] for label in le_labels]
-    n_terms = len(be_labels)
-    coeffs = np.real(observable.coeffs).astype(np.float64)
+    if not observable:
+        raise ValueError("compute_measurement_groups: observable tuple is empty.")
+    if strategy == "_backend_expval" and len(observable) > 1:
+        raise ValueError(
+            "compute_measurement_groups does not support '_backend_expval' "
+            "for multi-observable inputs (the backend evaluates a single "
+            "observable analytically). Use 'qwc' or 'wires'."
+        )
 
-    # Pad labels to n_qubits if the observable acts on fewer qubits.
-    if len(be_labels[0]) < n_qubits:
+    union, per_obs_term_indices = flatten_observable_tuple(observable)
+
+    # Qiskit labels are little-endian; we store big-endian internally.
+    le_labels = union.paulis.to_labels()
+    be_labels = [label[::-1] for label in le_labels]
+    n_union_terms = len(be_labels)
+
+    # Pad labels to n_qubits if the union acts on fewer qubits.
+    if be_labels and len(be_labels[0]) < n_qubits:
         pad = n_qubits - len(be_labels[0])
         be_labels = [label + "I" * pad for label in be_labels]
 
     if strategy in ("qwc", "default"):
-        grouped_ops = observable.group_commuting(qubit_wise=True)
+        grouped_ops = union.group_commuting(qubit_wise=True)
         # Reconstruct partition_indices by matching labels back to originals.
         partition_indices: list[list[int]] = []
         grouped_be_labels: list[tuple[str, ...]] = []
@@ -158,126 +190,17 @@ def compute_measurement_groups(
         )
 
     elif strategy is None:
-        partition_indices = [[i] for i in range(n_terms)]
+        partition_indices = [[i] for i in range(n_union_terms)]
         measurement_groups = tuple((label,) for label in be_labels)
 
     elif strategy == "_backend_expval":
-        partition_indices = [list(range(n_terms))]
+        partition_indices = [list(range(n_union_terms))]
         measurement_groups = ((),)
 
     else:
         raise ValueError(f"Unknown grouping strategy: {strategy}")
 
-    postprocessing_fn = _create_postprocessing_fn(coeffs, partition_indices, n_terms)
-    return measurement_groups, partition_indices, postprocessing_fn
-
-
-def compute_multi_observable_measurement_groups(
-    observables: tuple[SparsePauliOp, ...],
-    strategy: GroupingStrategy,
-    n_qubits: int,
-) -> tuple[tuple[tuple[str, ...], ...], list[list[int]], Callable]:
-    """Group multiple observables for shared measurement fan-out.
-
-    All observables are measured from the same shot batch by computing
-    measurement groups over the UNION of their Pauli terms.  The returned
-    postprocessing function reads per-group expectation values once and
-    returns a ``list[float]`` of per-observable expectation values (one
-    entry per input observable, in input order).
-
-    The single-observable analogue is :func:`compute_measurement_groups`.
-
-    Args:
-        observables: Non-empty tuple of Hermitian observables.  Each
-            observable contributes its own Pauli terms (and coefficients)
-            to the union; postprocessing recovers per-observable expvals
-            using the original coefficients.
-        strategy: Grouping strategy applied to the union.
-            ``"_backend_expval"`` is rejected — the backend can only
-            evaluate one observable analytically at a time.
-        n_qubits: Total qubit count in the circuit.
-    """
-    if not observables:
-        raise ValueError(
-            "compute_multi_observable_measurement_groups: observables tuple "
-            "is empty."
-        )
-    if strategy == "_backend_expval":
-        raise ValueError(
-            "compute_multi_observable_measurement_groups does not support "
-            "'_backend_expval' (backend evaluates a single observable "
-            "analytically). Use 'qwc' or 'wires'."
-        )
-
-    # Build a flat union of every observable's Pauli labels and remember
-    # which union-index each observable's k-th term occupies, plus that
-    # observable's real coefficient on it.  Duplicate Paulis (across
-    # observables, or within one observable) collapse to a single union
-    # slot so postprocessing computes ``<P>`` once per unique Pauli;
-    # ``obs_indices[i]`` may reference the same slot from multiple owners.
-    all_le_labels: list[str] = []
-    label_to_union_idx: dict[str, int] = {}
-    obs_indices: list[list[int]] = []
-    obs_coeffs: list[np.ndarray] = []
-    for obs in observables:
-        le_labels = list(obs.paulis.to_labels())
-        coeffs = np.real(obs.coeffs).astype(np.float64)
-        indices: list[int] = []
-        for lab in le_labels:
-            slot = label_to_union_idx.get(lab)
-            if slot is None:
-                slot = len(all_le_labels)
-                label_to_union_idx[lab] = slot
-                all_le_labels.append(lab)
-            indices.append(slot)
-        obs_indices.append(indices)
-        obs_coeffs.append(coeffs)
-
-    if not all_le_labels:
-        raise ValueError(
-            "compute_multi_observable_measurement_groups: every observable "
-            "in the tuple is empty."
-        )
-
-    # Run the existing single-observable grouper on the union; coefficients
-    # are unused for grouping (we only need the partition + per-term group
-    # positions), so we set them to 1.0.
-    union = SparsePauliOp.from_list([(lab, 1.0) for lab in all_le_labels])
-    measurement_groups, partition_indices, _ = compute_measurement_groups(
-        union, strategy, n_qubits
+    postprocessing_fn = _create_postprocessing_fn(
+        observable, per_obs_term_indices, partition_indices, n_union_terms
     )
-
-    n_total = len(all_le_labels)
-    reverse_map: list[tuple[int, int] | None] = [None] * n_total
-    for group_idx, indices in enumerate(partition_indices):
-        for pos, orig_idx in enumerate(indices):
-            reverse_map[orig_idx] = (group_idx, pos)
-    missing = [i for i, v in enumerate(reverse_map) if v is None]
-    if missing:
-        raise RuntimeError(
-            f"partition_indices does not cover all union term indices. "
-            f"Missing: {missing}"
-        )
-
-    n_obs = len(observables)
-
-    def postprocessing_fn(grouped_results):
-        if len(grouped_results) != len(partition_indices):
-            raise RuntimeError(
-                f"Expected {len(partition_indices)} grouped results, "
-                f"got {len(grouped_results)}."
-            )
-        flat = np.zeros(n_total, dtype=np.float64)
-        for orig_idx in range(n_total):
-            entry = reverse_map[orig_idx]
-            assert entry is not None  # validated by the ``missing`` check above
-            g_idx, pos = entry
-            val = grouped_results[g_idx]
-            if isinstance(val, dict):
-                val = val[pos]
-            flat[orig_idx] = float(np.asarray(val).flat[0])
-        return [
-            float(np.dot(obs_coeffs[i], flat[obs_indices[i]])) for i in range(n_obs)
-        ]
-
     return measurement_groups, partition_indices, postprocessing_fn

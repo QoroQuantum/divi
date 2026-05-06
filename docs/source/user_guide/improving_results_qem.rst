@@ -312,6 +312,26 @@ Performance Considerations
   :meth:`~divi.qprog.QuantumProgram.dry_run` to preview expansion before a long
   run.
 
+.. _qem-multi-observable:
+
+Multi-Observable Programs
+-------------------------
+
+Programs that accept several observables in one run (for example
+:class:`~divi.qprog.algorithms.TimeEvolution` with
+``observable=[O1, O2, ...]`` — see :ref:`time-evolution-multi-observable`)
+amortise mitigation cost across the group:
+
+- **ZNE** runs each scale factor's circuit once for the *whole* observable
+  set, not once per observable.  Total shots scale with the number of
+  scale factors, not with ``#scales × #observables``.
+- **QuEPP** shares the target circuit across all observables and dedupes
+  path DAGs across observables that produce coincident branches, so a
+  large fraction of the classical Clifford simulation is reused.
+
+Both protocols return one mitigated value per input observable, in input
+order.
+
 Custom Error Mitigation Protocols
 ---------------------------------
 

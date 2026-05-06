@@ -101,11 +101,6 @@ class TimeEvolution(QuantumProgram):
         self.time = time
         self.n_steps = n_steps
         self.order = order
-        # Normalise multi-observable input to a tuple so downstream
-        # ``isinstance(..., tuple)`` checks fire regardless of whether the
-        # caller passed a list or a tuple.  Single observables and ``None``
-        # are passed through unchanged so the standard scalar code path is
-        # bit-for-bit unchanged.
         if isinstance(observable, list):
             observable = tuple(observable)
         self.observable = observable
@@ -171,8 +166,12 @@ class TimeEvolution(QuantumProgram):
             )
         return results
 
-    def expval(self) -> float:
+    def expval(self) -> float | list[float]:
         """Return expectation-value-mode results.
+
+        Returns a ``float`` when ``observable`` was a single operator, or a
+        ``list[float]`` (one entry per observable, in input order) when
+        ``observable`` was a list/tuple.
 
         Raises:
             RuntimeError: If ``.run()`` has not yet been called, or if this
@@ -180,7 +179,7 @@ class TimeEvolution(QuantumProgram):
                 mode). Use :meth:`probabilities` instead.
         """
         results = self.results
-        if not isinstance(results, float):
+        if isinstance(results, dict):
             raise RuntimeError(
                 "TimeEvolution was run in probability mode; use "
                 ".probabilities() instead of .expval()."
@@ -241,6 +240,7 @@ class TimeEvolution(QuantumProgram):
             measurements = [qp.expval(self.observable)]
         return qscript_to_meta(
             qp.tape.QuantumScript(ops=ops, measurements=measurements),
+            was_multi_obs=isinstance(self.observable, tuple),
         )
 
     def run(self, **kwargs) -> "TimeEvolution":
@@ -264,10 +264,10 @@ class TimeEvolution(QuantumProgram):
         if self.observable is None:
             self._results = raw
         elif isinstance(self.observable, tuple):
-            # Multi-observable: pipeline yields a per-observable list.
             self._results = [float(v) for v in raw]
         else:
-            self._results = float(raw)
+            (single,) = raw
+            self._results = float(single)
 
         self.reporter.info(
             message="Finished successfully!", final_status=TerminalStatus.SUCCESS

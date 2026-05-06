@@ -55,7 +55,7 @@ class TestMeasurementStage:
             initial_spec="ignored", env=dummy_pipeline_env, execute_fn=ones_execute_fn
         )
         assert len(reduced) == 1
-        assert list(reduced.values())[0] == pytest.approx(1.3)
+        assert list(reduced.values())[0] == pytest.approx([1.3])
 
 
 class TestMeasurementStageExpvalBackendReduce:
@@ -138,7 +138,7 @@ class TestMeasurementStageExpvalBackendReduce:
         assert len(reduced) == 1
         # With ones_execute_fn each obs group returns 1.0
         # Postprocessing applies coefficients: 0.9 * 1.0 + 0.4 * 1.0 = 1.3
-        assert list(reduced.values())[0] == pytest.approx(1.3)
+        assert list(reduced.values())[0] == pytest.approx([1.3])
 
 
 class TestMeasurementStageResultFormatOverride:
@@ -507,7 +507,7 @@ class TestMeasurementStageShotDistributionReducePath:
         # Surviving groups: 0 (coeff 10) and 1 (coeff 1) each return +1.0.
         # Dropped group 2 (coeff 0.1) contributes 0.
         # Final: 10*1 + 1*1 + 0.1*0 = 11.0
-        assert list(reduced.values())[0] == pytest.approx(11.0)
+        assert list(reduced.values())[0] == pytest.approx([11.0])
 
     def test_reduce_no_drops_works_normally(self):
 
@@ -526,7 +526,7 @@ class TestMeasurementStageShotDistributionReducePath:
             execute_fn=self._counts_returning_plus_one,
         )
         # All 3 terms contribute: 10 + 1 + 0.1 = 11.1
-        assert list(reduced.values())[0] == pytest.approx(11.1)
+        assert list(reduced.values())[0] == pytest.approx([11.1])
 
 
 class TestMeasurementStageShotDistributionBackendExpval:
@@ -816,7 +816,7 @@ class TestAllocatePerGroupShotsHelper:
 
         surviving, dropped, shots = _allocate_per_group_shots(
             "spec_x",
-            meta.observable,
+            meta.observable[0],
             groups,
             partition,
             env,
@@ -835,7 +835,7 @@ class TestAllocatePerGroupShotsHelper:
 
         surviving, dropped, shots = _allocate_per_group_shots(
             "spec_x",
-            meta.observable,
+            meta.observable[0],
             groups,
             partition,
             env,
@@ -856,7 +856,7 @@ class TestAllocatePerGroupShotsHelper:
             warnings.simplefilter("ignore")
             surviving, dropped, shots = _allocate_per_group_shots(
                 "spec_x",
-                meta.observable,
+                meta.observable[0],
                 groups,
                 partition,
                 env,
@@ -890,11 +890,8 @@ class TestMeasurementStageTupleObservable:
     """When ``meta.observable`` is a tuple of SparsePauliOps the stage takes
     the multi-observable union-grouping path and emits a list[float]."""
 
-    def test_tuple_observable_yields_list_of_floats(self):
-        from divi.backends import QiskitSimulator
-
-        backend = QiskitSimulator(shots=5000, _deterministic_execution=True)
-        env = PipelineEnv(backend=backend)
+    def test_tuple_observable_yields_list_of_floats(self, default_test_simulator):
+        env = PipelineEnv(backend=default_test_simulator)
         pipeline = CircuitPipeline(
             stages=[
                 DummySpecStage(meta=_tuple_observable_meta()),
@@ -927,12 +924,11 @@ class TestMeasurementStageTupleObservable:
         pipeline.run_forward_pass(initial_spec="ignored", env=env)
         assert "ham_ops" not in env.artifacts
 
-    def test_explicit_backend_expval_strategy_falls_back_to_qwc(
+    def test_explicit_backend_expval_strategy_raises_for_multi(
         self, dummy_expval_backend
     ):
-        """User-explicit ``_backend_expval`` is incompatible with tuple metas;
-        the stage silently falls back to QWC instead of raising — the user's
-        intent (analytical) is honoured per-observable to the extent possible."""
+        """``_backend_expval`` requires a single observable per MetaCircuit;
+        a multi-observable tuple raises ``NotImplementedError``."""
         env = PipelineEnv(backend=dummy_expval_backend)
         pipeline = CircuitPipeline(
             stages=[
@@ -940,13 +936,12 @@ class TestMeasurementStageTupleObservable:
                 MeasurementStage(grouping_strategy="_backend_expval"),
             ],
         )
-        # No ValueError, no ham_ops artifact (QWC path was taken).
-        pipeline.run_forward_pass(initial_spec="ignored", env=env)
-        assert "ham_ops" not in env.artifacts
+        with pytest.raises(NotImplementedError, match="_backend_expval"):
+            pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
-    def test_shot_distribution_with_tuple_raises(self):
-        """Adaptive per-group shot distribution requires a single observable
-        to weight by — must be rejected for tuple metas."""
+    def test_shot_distribution_with_tuple_works(self):
+        """Adaptive shot allocation operates on the union L1 norm and is
+        well-defined for any tuple length."""
         backend = DummySimulator(shots=100)
         env = PipelineEnv(backend=backend)
         pipeline = CircuitPipeline(
@@ -955,5 +950,63 @@ class TestMeasurementStageTupleObservable:
                 MeasurementStage(shot_distribution="uniform"),
             ],
         )
-        with pytest.raises(ValueError, match="multi-observable"):
-            pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        # No raise: the union has well-defined coefficients for shot weighting.
+        pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        assert "per_group_shots" in env.artifacts
+
+    def test_shot_distribution_with_sign_canceling_observables(self):
+        """Sign-canceling observables must not zero out shot allocation on the
+        shared Pauli — the union uses absolute coefficients."""
+        qc = QuantumCircuit(1)
+        qc.h(0)
+        meta = MetaCircuit(
+            circuit_bodies=(((), circuit_to_dag(qc)),),
+            observable=(
+                SparsePauliOp.from_list([("Z", 1.0)]),
+                SparsePauliOp.from_list([("Z", -1.0)]),
+            ),
+        )
+        backend = DummySimulator(shots=200)
+        env = PipelineEnv(backend=backend)
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=meta),
+                MeasurementStage(shot_distribution="weighted"),
+            ],
+        )
+        pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        per_group_shots = env.artifacts["per_group_shots"]
+        spec_key = (("spec", "circ"),)
+        shots = per_group_shots[spec_key]
+        assert all(
+            n > 0 for n in shots.values()
+        ), f"sign-canceling observables zeroed out shot allocation: {shots}"
+
+    def test_sign_canceling_observables_full_reduce_preserves_signs(
+        self, default_test_simulator
+    ):
+        """End-to-end reduce: ``+Z`` and ``-Z`` share one measurement group
+        and must come back as ``[+v, -v]`` — not ``[+v, +v]`` or ``[0, 0]``."""
+        qc = QuantumCircuit(1)
+        qc.h(0)
+        meta = MetaCircuit(
+            circuit_bodies=(((), circuit_to_dag(qc)),),
+            observable=(
+                SparsePauliOp.from_list([("Z", 1.0)]),
+                SparsePauliOp.from_list([("Z", -1.0)]),
+            ),
+        )
+        env = PipelineEnv(backend=default_test_simulator)
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=meta),
+                MeasurementStage(shot_distribution="weighted"),
+            ],
+        )
+        reduced = pipeline.run(initial_spec="ignored", env=env)
+        out = reduced[(("spec", "circ"),)]
+        assert isinstance(out, list)
+        assert len(out) == 2
+        # H|0> gives <Z> = 0 in expectation; with finite shots there's noise.
+        # The key invariant: out[1] == -out[0] regardless of the measured value.
+        assert out[1] == pytest.approx(-out[0], abs=1e-9)

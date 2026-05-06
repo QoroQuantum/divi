@@ -401,7 +401,13 @@ class MaestroSimulator(CircuitRunner):
         ham_ops: str,
         circuit_ham_map: list[list[int]] | None,
     ) -> str:
-        """Resolve which observable string applies to a given circuit index."""
+        """Resolve which observable string applies to a given circuit index.
+
+        When ``circuit_ham_map`` is provided but no range covers
+        ``circuit_index``, falls back to the full ``ham_ops`` string —
+        callers may submit auxiliary circuits outside the per-group ranges
+        and expect them to be evaluated against every observable.
+        """
         if circuit_ham_map is None:
             return ham_ops
 

@@ -291,6 +291,145 @@ class TestTimeEvolutionMultiObservable:
         assert te_multi.results[1] == pytest.approx(te_solo_1.results, abs=0.1)
 
 
+class TestTimeEvolutionExpvalAccessor:
+    """``.expval()`` mirrors ``.results`` for both single- and multi-observable
+    runs and rejects only the probability-mode case."""
+
+    def test_expval_returns_scalar_for_single_observable(
+        self, two_qubit_hamiltonian, default_test_simulator
+    ):
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            time=0.5,
+            observable=qp.PauliZ(0),
+            backend=default_test_simulator,
+        )
+        te.run()
+        out = te.expval()
+        assert isinstance(out, float)
+        assert out == te.results
+
+    def test_expval_returns_list_for_multi_observable(
+        self, two_qubit_hamiltonian, default_test_simulator
+    ):
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            time=0.5,
+            observable=[qp.PauliZ(0), qp.PauliZ(1)],
+            backend=default_test_simulator,
+        )
+        te.run()
+        out = te.expval()
+        assert isinstance(out, list)
+        assert len(out) == 2
+        assert all(isinstance(v, float) for v in out)
+        assert out == te.results
+
+    def test_expval_rejects_probability_mode(
+        self, two_qubit_hamiltonian, default_test_simulator
+    ):
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            time=0.5,
+            backend=default_test_simulator,
+        )
+        te.run()
+        with pytest.raises(RuntimeError, match="probability mode"):
+            te.expval()
+
+    def test_expval_returns_list_via_expval_native_backend(
+        self, two_qubit_hamiltonian, dummy_expval_backend, mocker
+    ):
+        """Multi-obs expval() works through an expval-native backend, not just
+        shot-based simulators. Pins the contract for QoroService and Maestro
+        analytical paths."""
+
+        def _deterministic_submit(circuits, **kwargs):
+            ham_ops = kwargs.get("ham_ops", "")
+            ops = ham_ops.split(";") if ham_ops else []
+            payload = {op: 1.0 for op in ops}
+            return ExecutionResult(
+                results=[
+                    {"label": label, "results": payload.copy()}
+                    for label in circuits.keys()
+                ]
+            )
+
+        mocker.patch.object(
+            dummy_expval_backend,
+            "submit_circuits",
+            side_effect=_deterministic_submit,
+        )
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            time=0.5,
+            observable=[qp.PauliZ(0), qp.PauliZ(1)],
+            backend=dummy_expval_backend,
+        )
+        te.run()
+        out = te.expval()
+        assert isinstance(out, list)
+        assert len(out) == 2
+        assert all(isinstance(v, float) for v in out)
+
+    def test_expval_raises_before_run(
+        self, two_qubit_hamiltonian, default_test_simulator
+    ):
+        """``expval()`` before ``run()`` raises a clear runtime error."""
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            observable=qp.PauliZ(0),
+            backend=default_test_simulator,
+        )
+        with pytest.raises(RuntimeError):
+            te.expval()
+
+
+class TestTimeEvolutionSingleItemListPreserved:
+    """``observable=[O]`` (an explicit single-item list) opts the user
+    into the multi-observable API: results stay as a length-1 ``list``
+    rather than being squeezed to a scalar."""
+
+    def test_single_item_list_returns_length_one_list(
+        self, two_qubit_hamiltonian, default_test_simulator
+    ):
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            time=0.5,
+            observable=[qp.PauliZ(0)],
+            backend=default_test_simulator,
+        )
+        te.run()
+        assert isinstance(te.results, list)
+        assert len(te.results) == 1
+        assert isinstance(te.results[0], float)
+
+    def test_bare_observable_returns_scalar(
+        self, two_qubit_hamiltonian, default_test_simulator
+    ):
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            time=0.5,
+            observable=qp.PauliZ(0),
+            backend=default_test_simulator,
+        )
+        te.run()
+        assert isinstance(te.results, float)
+
+    def test_single_item_tuple_returns_length_one_list(
+        self, two_qubit_hamiltonian, default_test_simulator
+    ):
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            time=0.5,
+            observable=(qp.PauliZ(0),),
+            backend=default_test_simulator,
+        )
+        te.run()
+        assert isinstance(te.results, list)
+        assert len(te.results) == 1
+
+
 class TestTimeEvolutionQDrift:
     def test_qdrift_multi_sample_averages_probs(
         self, two_qubit_hamiltonian, default_test_simulator

@@ -163,7 +163,10 @@ class TestReduceHistogram:
         )
 
         assert len(result) == 1
-        assert isinstance(list(result.values())[0], float)
+        value = list(result.values())[0]
+        assert isinstance(value, list)
+        assert len(value) == 1
+        assert isinstance(value[0], float)
 
     def test_different_histograms_produce_different_energies(self):
         """Different shot distributions yield different energies."""
@@ -182,7 +185,9 @@ class TestReduceHistogram:
             token=None,
         )
 
-        assert list(result_a.values())[0] != pytest.approx(list(result_b.values())[0])
+        assert list(result_a.values())[0][0] != pytest.approx(
+            list(result_b.values())[0][0]
+        )
 
 
 class TestReducePathRouting:
@@ -199,10 +204,10 @@ class TestReducePathRouting:
 
         soft_energy = list(
             soft_stage.reduce({_meas_key(0): histogram}, env, token=None).values()
-        )[0]
+        )[0][0]
         hard_energy = list(
             hard_stage.reduce({_meas_key(0): histogram}, env, token=None).values()
-        )[0]
+        )[0][0]
 
         assert soft_energy != pytest.approx(hard_energy)
 
@@ -222,7 +227,7 @@ class TestReducePathRouting:
 
         x = 0.5 * (1.0 + np.tanh(1.0))  # ≈ 0.8808
         expected = 1.0 * x**2 + 2.0 * x**2  # 3 * x²
-        assert list(result.values())[0] == pytest.approx(expected)
+        assert list(result.values())[0][0] == pytest.approx(expected)
 
     def test_deterministic_histogram_hard_cvar_energy(self):
         """All shots in one bitstring → known CVaR energy.
@@ -237,7 +242,7 @@ class TestReducePathRouting:
 
         result = stage.reduce({_meas_key(0): {"11": 100}}, env, token=None)
 
-        assert list(result.values())[0] == pytest.approx(0.0)
+        assert list(result.values())[0][0] == pytest.approx(0.0)
 
     def test_hard_cvar_selects_low_energy_tail(self):
         """CVaR with alpha_cvar=0.5 selects the lower-energy half of shots.
@@ -256,7 +261,7 @@ class TestReducePathRouting:
 
         result = stage.reduce({_meas_key(0): {"11": 50, "00": 50}}, env, token=None)
 
-        assert list(result.values())[0] == pytest.approx(0.0)
+        assert list(result.values())[0][0] == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +286,6 @@ class TestReduceMultiParamSet:
         reduced = stage.reduce(results, env, token=None)
 
         assert len(reduced) == 2
-        energies = list(reduced.values())
+        energies = [v[0] for v in reduced.values()]
         # Different histograms must yield different energies
         assert energies[0] != pytest.approx(energies[1])

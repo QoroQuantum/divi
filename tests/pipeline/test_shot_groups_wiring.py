@@ -269,9 +269,9 @@ class TestQiskitSimulatorShotGroups:
         result = pipeline.run(initial_spec="ignored", env=env)
         assert len(result) == 1
         energy = list(result.values())[0]
-        # Energy is a real, finite scalar within the range of |c_i| sums (= 11.1).
-        assert isinstance(energy, float)
-        assert -11.2 <= energy <= 11.2
+        assert isinstance(energy, list) and len(energy) == 1
+        assert isinstance(energy[0], float)
+        assert -11.2 <= energy[0] <= 11.2
 
 
 class TestQiskitSimulatorShotGroupsValidation:

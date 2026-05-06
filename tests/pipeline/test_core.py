@@ -13,6 +13,7 @@ from divi.exceptions import ExecutionCancelledError
 from divi.pipeline import (
     CircuitPipeline,
     PipelineEnv,
+    PipelineResult,
     PipelineTrace,
     format_pipeline_tree,
 )
@@ -195,7 +196,7 @@ class TestCircuitPipelineRunForwardPass:
         )
 
         assert len(reduced) == 1
-        assert list(reduced.values())[0] == pytest.approx(3.9)
+        assert list(reduced.values())[0] == pytest.approx([3.9])
 
     def test_force_forward_sweep_recomputes_even_with_cache(self, dummy_pipeline_env):
         pipeline = CircuitPipeline(stages=two_group_pipeline_stages())
@@ -334,7 +335,7 @@ def test_custom_execute_fn_returning_per_key_values_reduces_correctly(
         execute_fn=_execute_fn,
     )
     assert len(reduced) == 1
-    assert list(reduced.values())[0] == pytest.approx(7.8)
+    assert list(reduced.values())[0] == pytest.approx([7.8])
     assert next(iter(reduced)) == (("spec", "circ"),)
 
 
@@ -417,7 +418,10 @@ def test_run_with_default_execute_fn_and_shots_backend_auto_converts_counts(
     assert len(reduced) == 1
     key = next(iter(reduced))
     assert key == (("spec", "circ"),)
-    assert isinstance(reduced[key], (int, float))
+    value = reduced[key]
+    assert isinstance(value, list)
+    assert len(value) == 1
+    assert isinstance(value[0], (int, float))
 
 
 class TestWaitForAsyncResult:
@@ -550,3 +554,33 @@ class TestWaitForAsyncResult:
         _wait_for_async_result(mock_backend, execution_result, env)
 
         assert env.artifacts["run_time"] == 3.5
+
+
+class TestPipelineResultSqueeze:
+    """``.value`` squeezes a length-1 list only when ``_squeeze`` is True
+    (the pipeline disables it when any source MetaCircuit was built with
+    ``_was_multi_obs=True``)."""
+
+    def test_squeeze_unwraps_length_one_list_by_default(self):
+        result = PipelineResult({(): [0.42]})
+        assert result.value == 0.42
+
+    def test_squeeze_preserves_multi_element_list(self):
+        result = PipelineResult({(): [0.1, 0.2, 0.3]})
+        assert result.value == [0.1, 0.2, 0.3]
+
+    def test_squeeze_passes_dict_through_unchanged(self):
+        probs = {"00": 0.5, "11": 0.5}
+        result = PipelineResult({(): probs})
+        assert result.value == probs
+
+    def test_squeeze_disabled_preserves_length_one_list(self):
+        result = PipelineResult({(): [0.42]})
+        result._squeeze = False
+        assert result.value == [0.42]
+
+    def test_squeeze_disabled_does_not_affect_dicts(self):
+        probs = {"00": 1.0}
+        result = PipelineResult({(): probs})
+        result._squeeze = False
+        assert result.value == probs

@@ -6,10 +6,11 @@ import copy
 import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
-from typing import Any, Literal, Protocol, cast, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 import numpy as np
 from qiskit.dagcircuit import DAGCircuit
+from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits._qem_passes import (
     GlobalFoldPass,
@@ -43,20 +44,15 @@ class QEMProtocol(ABC):
     expand/reduce lifecycle:
 
     * ``expand`` — given a Qiskit :class:`~qiskit.dagcircuit.DAGCircuit`
-      and the observable(s) being measured, return the DAGs to execute on
-      quantum hardware and a ``QEMContext`` (or list thereof) carrying any
-      classically-computed side-channel data needed during postprocessing.
-    * ``reduce`` — given the context(s) from ``expand`` and the quantum
-      results, produce the mitigated expectation value(s).
+      and the observable tuple being measured, return the DAGs to execute
+      on quantum hardware and a ``QEMContext`` carrying any classically-
+      computed side-channel data needed during postprocessing.
+    * ``reduce`` — given the context from ``expand`` and the quantum
+      results, produce a ``list[float]`` of per-observable mitigated
+      expectation values.
 
-    Both methods accept either a single observable / single context (the
-    standard case, returns scalar) or a tuple of observables / list of
-    contexts (one mitigated value per observable, returns list).  Each
-    context carries a ``"dag_indices"`` field giving the positions in the
-    merged DAG tuple that belong to that context — :meth:`reduce` uses this
-    to slice ``quantum_results`` before applying its protocol-specific
-    logic, so single-observable code paths and per-observable code paths
-    share the same arithmetic.
+    The observable flows through as a ``tuple[SparsePauliOp, ...]`` and is
+    forwarded unchanged to whichever stage needs its structure.
     """
 
     @property
@@ -68,9 +64,9 @@ class QEMProtocol(ABC):
     def expand(
         self,
         dag: DAGCircuit,
-        observable: Any | tuple[Any, ...] | None = None,
-    ) -> tuple[tuple[DAGCircuit, ...], QEMContext | list[QEMContext]]:
-        """Generate DAGs and classical context(s) for error mitigation.
+        observable: tuple[SparsePauliOp, ...] | None = None,
+    ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
+        """Generate DAGs and classical context for error mitigation.
 
         The input ``dag`` is consumed by this method: implementations may
         mutate it, and callers must not retain it expecting the original
@@ -80,28 +76,15 @@ class QEMProtocol(ABC):
 
         Args:
             dag: Circuit to mitigate.
-            observable: One of:
-
-                * ``None`` or a single :class:`~qiskit.quantum_info.SparsePauliOp` —
-                  standard single-observable path.  Returns
-                  ``(merged_dags, ctx)`` with ``ctx["dag_indices"] =
-                  list(range(len(merged_dags)))`` (the trivial identity range).
-                * ``tuple[SparsePauliOp, ...]`` — multi-observable path.
-                  Returns ``(merged_dags, list[ctx])``, one ctx per
-                  observable.  Each ctx's ``"dag_indices"`` selects the
-                  positions in ``merged_dags`` that belong to that observable.
-                  Indices may overlap across contexts when DAGs are shared
-                  (e.g. the target circuit in QuEPP).
-
-        Implementations without specialised multi-observable handling can
-        delegate the tuple case to :meth:`_expand_per_observable_loop`.
+            observable: ``tuple[SparsePauliOp, ...]`` (one entry per
+                expectation value being measured), or ``None``.
         """
 
     def dry_expand(
         self,
         dag: DAGCircuit,
-        observable: Any | None = None,
-    ) -> tuple[tuple[DAGCircuit, ...], QEMContext | list[QEMContext]]:
+        observable: tuple[SparsePauliOp, ...] | None = None,
+    ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
         """Analytic counterpart to :meth:`expand` used by dry-run pipelines.
 
         Must emit the **same number of DAGs** as :meth:`expand` would on the
@@ -122,97 +105,19 @@ class QEMProtocol(ABC):
     @abstractmethod
     def reduce(
         self,
-        quantum_results: Sequence[float],
-        context: QEMContext | list[QEMContext],
-    ) -> float | list[float]:
-        """Combine quantum results with classical context(s) into mitigated value(s).
-
-        When ``context`` is a list (one entry per observable), returns a
-        ``list[float]`` of the same length.  Otherwise returns a single
-        ``float``.
-
-        Implementations should use ``context["dag_indices"]`` (when present)
-        to select the relevant positions in ``quantum_results`` before
-        applying protocol-specific arithmetic; this keeps single-observable
-        and per-observable code paths uniform.
-        """
-
-    # ----------------------------------------------------------------- #
-    # Reusable helpers for the multi-observable path
-    # ----------------------------------------------------------------- #
-
-    def _expand_per_observable_loop(
-        self,
-        dag: DAGCircuit,
-        observables: Sequence[Any],
-    ) -> tuple[tuple[DAGCircuit, ...], list[QEMContext]]:
-        """Default multi-observable expansion: loop :meth:`expand` per observable.
-
-        Deepcopies ``dag`` for every call but the last (matching
-        :meth:`expand`'s mutation contract), concatenates the resulting DAG
-        tuples, and overwrites each context's ``"dag_indices"`` so it points
-        at the right slice of the merged tuple.  Subclasses that can share
-        work across observables (path-DAG dedup, shared target execution)
-        should override this method instead.
-        """
-        n = len(observables)
-        if n == 0:
-            raise ValueError("Expansion requires at least one observable in the tuple.")
-
-        merged_dags: list[DAGCircuit] = []
-        contexts: list[QEMContext] = []
-        for i, obs in enumerate(observables):
-            input_dag = dag if i == n - 1 else copy.deepcopy(dag)
-            obs_dags, ctx = self.expand(input_dag, obs)
-            if isinstance(ctx, list):
-                raise TypeError(
-                    "_expand_per_observable_loop expected a single context "
-                    "from each per-observable expand call; got a list. "
-                    "Override this helper if your protocol nests tuples."
-                )
-            ctx = dict(ctx)
-            start = len(merged_dags)
-            merged_dags.extend(obs_dags)
-            ctx["dag_indices"] = list(range(start, len(merged_dags)))
-            contexts.append(ctx)
-        return tuple(merged_dags), contexts
-
-    def _reduce_for_list_context(
-        self,
         quantum_results: Sequence[Any],
-        contexts: list[QEMContext],
+        context: QEMContext,
     ) -> list[float]:
-        """Default multi-observable :meth:`reduce` dispatch helper.
+        """Combine quantum results with classical context into mitigated values.
 
-        Distinguishes two shapes of ``quantum_results``:
+        Returns a ``list[float]`` of per-observable mitigated values.
+        ``quantum_results`` is ordered along the QEM axis; each entry is
+        itself a ``list[float]`` of per-observable expectation values from
+        :class:`~divi.pipeline.stages.MeasurementStage`.
 
-        * **Per-DAG rows of per-observable values** (length-N lists, where
-          N matches ``len(contexts)``) — emitted by ``MeasurementStage``
-          when the meta carries a tuple ``observable``.  Each observable's
-          mitigated value comes from extracting its column.
-        * **Scalar rows** — typically only seen by tests that bypass
-          ``MeasurementStage``.  Each context sees the full results.
+        Implementations may use ``context["dag_indices"]`` (when present)
+        to select the relevant positions in ``quantum_results``.
         """
-        if quantum_results and isinstance(quantum_results[0], (list, tuple)):
-            n = len(contexts)
-            sample_len = len(quantum_results[0])
-            if sample_len != n:
-                raise RuntimeError(
-                    f"Expected {n} per-observable values per DAG, got "
-                    f"{sample_len}.  Multi-observable contexts and "
-                    f"MeasurementStage rows are out of sync."
-                )
-            # Each inner ``reduce`` is passed a single QEMContext, not a list,
-            # so it returns ``float`` — but the public signature is wider, so
-            # we narrow with ``cast``.
-            return [
-                cast(
-                    float,
-                    self.reduce([row[i] for row in quantum_results], contexts[i]),
-                )
-                for i in range(n)
-            ]
-        return [cast(float, self.reduce(quantum_results, c)) for c in contexts]
 
     def post_reduce(self, contexts: Sequence[QEMContext]) -> None:
         """Hook called after all per-group ``reduce`` calls in an evaluation.
@@ -232,19 +137,15 @@ class _NoMitigation(QEMProtocol):
     def expand(
         self,
         dag: DAGCircuit,
-        observable: Any | tuple[Any, ...] | None = None,
-    ) -> tuple[tuple[DAGCircuit, ...], QEMContext | list[QEMContext]]:
-        if isinstance(observable, tuple):
-            return self._expand_per_observable_loop(dag, observable)
+        observable: tuple[SparsePauliOp, ...] | None = None,
+    ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
         return (dag,), {"dag_indices": [0]}
 
     def reduce(
         self,
-        quantum_results: Sequence[float],
-        context: QEMContext | list[QEMContext],
-    ) -> float | list[float]:
-        if isinstance(context, list):
-            return self._reduce_for_list_context(quantum_results, context)
+        quantum_results: Sequence[Any],
+        context: QEMContext,
+    ) -> list[float]:
         indices = context.get("dag_indices")
         selected = (
             [quantum_results[i] for i in indices]
@@ -255,7 +156,10 @@ class _NoMitigation(QEMProtocol):
             raise RuntimeError("NoMitigation received an empty results sequence.")
         if len(selected) > 1:
             raise RuntimeError("NoMitigation class received multiple partial results.")
-        return selected[0]
+        only = selected[0]
+        if isinstance(only, list):
+            return [float(v) for v in only]
+        return [float(only)]
 
 
 # ---------------------------------------------------------------------------
@@ -507,14 +411,8 @@ class ZNE(QEMProtocol):
     def expand(
         self,
         dag: DAGCircuit,
-        observable: Any | tuple[Any, ...] | None = None,
-    ) -> tuple[tuple[DAGCircuit, ...], QEMContext | list[QEMContext]]:
-        if isinstance(observable, tuple):
-            # Folding is observable-independent, so the loop helper produces
-            # N copies of the same folded DAGs.  Correct, not optimal — a
-            # ZNE-specific override could share the folded set.
-            return self._expand_per_observable_loop(dag, observable)
-
+        observable: tuple[SparsePauliOp, ...] | None = None,
+    ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
         # Expand takes ownership of `dag` (see QEMProtocol.expand).  For
         # S scale factors we need S distinct folded outputs; the input
         # can absorb one of them, so we deepcopy S-1 times instead of S.
@@ -545,11 +443,15 @@ class ZNE(QEMProtocol):
 
     def reduce(
         self,
-        quantum_results: Sequence[float],
-        context: QEMContext | list[QEMContext],
-    ) -> float | list[float]:
-        if isinstance(context, list):
-            return self._reduce_for_list_context(quantum_results, context)
+        quantum_results: Sequence[Any],
+        context: QEMContext,
+    ) -> list[float]:
+        """Extrapolate per-observable expectation values to ``s=0``.
+
+        Each entry of ``quantum_results`` is a ``list[float]`` of per-
+        observable expectation values from one scale factor.  Extrapolation
+        runs independently per observable.
+        """
         indices = context.get("dag_indices")
         selected = (
             [quantum_results[i] for i in indices]
@@ -557,4 +459,14 @@ class ZNE(QEMProtocol):
             else list(quantum_results)
         )
         scales = context.get("effective_scales", self._scale_factors)
-        return self._extrapolator.extrapolate(scales, selected)
+
+        if not selected:
+            raise RuntimeError("ZNE received an empty results sequence.")
+
+        if not isinstance(selected[0], (list, tuple)):
+            selected = [[v] for v in selected]
+        n_obs = len(selected[0])
+        return [
+            float(self._extrapolator.extrapolate(scales, [row[i] for row in selected]))
+            for i in range(n_obs)
+        ]

@@ -72,7 +72,7 @@ def _logical_count(mc: MetaCircuit) -> int:
     if mc.observable is not None:
         # Pre-measurement baseline: one circuit per Pauli term, so that
         # grouping at the measurement stage shows up as a reduction.
-        return n_bodies * len(mc.observable)
+        return n_bodies * sum(len(o) for o in mc.observable)
     return n_bodies
 
 

@@ -126,7 +126,7 @@ class TestReduce:
 
         reduced = pipeline.run(initial_spec=qp.Z(0), env=env, execute_fn=_execute_fn)
         assert len(reduced) >= 1
-        assert any(v == pytest.approx(2.0) for v in reduced.values())
+        assert any(v == pytest.approx([2.0]) for v in reduced.values())
 
     def test_merges_histogram_results(self, dummy_expval_backend):
         """Dict (histogram) results from multiple ham samples are averaged."""

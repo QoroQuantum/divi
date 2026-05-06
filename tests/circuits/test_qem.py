@@ -51,8 +51,8 @@ class TestNoMitigation:
 
     def test_reduce_returns_single_value(self, bell_dag):
         p = _NoMitigation()
-        assert p.reduce([1.23], {}) == 1.23
-        assert p.reduce([-0.5], {}) == -0.5
+        assert p.reduce([1.23], {}) == [1.23]
+        assert p.reduce([-0.5], {}) == [-0.5]
 
     def test_reduce_raises_on_multi_results(self, bell_dag):
         with pytest.raises(RuntimeError, match="multiple partial results"):
@@ -120,19 +120,19 @@ class TestZNE:
         extrapolated = zne.reduce(
             [1.0, -1.0, -3.0], {"effective_scales": (1.0, 3.0, 5.0)}
         )
-        assert extrapolated == pytest.approx(2.0)
+        assert extrapolated == pytest.approx([2.0])
 
     def test_reduce_falls_back_to_requested_scales_without_context(self, bell_dag):
         """If a legacy context lacks effective_scales, reduce uses the requested values."""
         zne = ZNE(scale_factors=[1.0, 3.0, 5.0], extrapolator=LinearExtrapolator())
-        assert zne.reduce([1.0, -1.0, -3.0], {}) == pytest.approx(2.0)
+        assert zne.reduce([1.0, -1.0, -3.0], {}) == pytest.approx([2.0])
 
     def test_expand_forwards_effective_scales_to_reduce(self, bell_dag):
         """Effective scales survive the expand→reduce roundtrip unbiased."""
         zne = ZNE(scale_factors=[1.0, 3.0, 5.0], extrapolator=LinearExtrapolator())
         _, ctx = zne.expand(bell_dag)
         # y = 2 - s evaluated at effective scales (1, 3, 5).
-        assert zne.reduce([1.0, -1.0, -3.0], ctx) == pytest.approx(2.0)
+        assert zne.reduce([1.0, -1.0, -3.0], ctx) == pytest.approx([2.0])
 
     def test_expand_warns_when_scales_collapse(self, bell_dag):
         """Small-d circuits can snap distinct requested scales to the same effective value."""
@@ -172,86 +172,28 @@ class TestLinearExtrapolator:
             LinearExtrapolator().extrapolate([1.0, float("inf")], [1.0, 2.0])
 
 
-class TestNoMitigationMultiObservable:
-    """Tuple-observable expand/reduce path on the trivial protocol."""
+class TestNoMitigationTupleObservable:
+    """Tuple-observable expand/reduce on the trivial protocol."""
 
-    def test_expand_with_tuple_returns_list_of_contexts(self, bell_dag):
-        # Two distinct "observables" — the protocol ignores their content,
-        # but the loop helper still produces one context per entry.
-        dags, ctxs = _NoMitigation().expand(bell_dag, observable=("o1", "o2"))
-        assert isinstance(ctxs, list)
-        assert len(ctxs) == 2
-        # Each context's dag_indices points at exactly one DAG slot,
-        # and slots are disjoint (one DAG per observable for _NoMitigation).
-        all_indices = [i for c in ctxs for i in c["dag_indices"]]
-        assert len(all_indices) == len(set(all_indices))
-        assert len(dags) == 2
+    def test_expand_with_tuple_returns_single_context(self, bell_dag):
+        dags, ctx = _NoMitigation().expand(bell_dag, observable=("o1", "o2"))
+        assert ctx == {"dag_indices": [0]}
+        assert len(dags) == 1
 
-    def test_reduce_with_per_dag_per_obs_rows(self, bell_dag):
-        """When ``MeasurementStage`` emits per-DAG list[float], reduce slices
-        out each observable's column."""
-        _, ctxs = _NoMitigation().expand(bell_dag, observable=("o1", "o2"))
-        # Each row is [val_for_obs1, val_for_obs2] for that DAG.  Each ctx
-        # selects a single row via dag_indices and a single column via
-        # _reduce_for_list_context's per-observable slicing.
-        rows = [[0.7, -0.3], [0.5, 0.1]]
-        out = _NoMitigation().reduce(rows, ctxs)
-        assert out == [0.7, 0.1]
-
-    def test_reduce_with_scalar_rows_falls_back_to_full_results(self, bell_dag):
-        """Scalar quantum_results path: each ctx sees the full sequence."""
-        # A protocol like _NoMitigation expects 1 result per ctx; build a
-        # tuple of length-1 contexts so the inner reduce calls don't choke.
-        # Use a fresh expand for each obs to ensure dag_indices line up.
-        dags, ctxs = _NoMitigation().expand(bell_dag, observable=("o1",))
-        # Single observable in the tuple → one ctx → one inner reduce call.
-        out = _NoMitigation().reduce([0.42], ctxs)
-        assert out == [0.42]
-
-    def test_empty_observables_tuple_rejected(self, bell_dag):
-        with pytest.raises(ValueError, match="at least one observable"):
-            _NoMitigation().expand(bell_dag, observable=())
-
-    def test_per_dag_row_count_mismatch_raises(self, bell_dag):
-        """Per-DAG rows whose length doesn't match the number of contexts
-        is treated as a sync bug between MeasurementStage and the protocol."""
-        _, ctxs = _NoMitigation().expand(bell_dag, observable=("o1", "o2"))
-        # 3 columns but only 2 contexts → mismatch.
-        rows = [[0.1, 0.2, 0.3]]
-        with pytest.raises(RuntimeError, match="out of sync"):
-            _NoMitigation().reduce(rows, ctxs)
+    def test_reduce_with_per_obs_list(self, bell_dag):
+        out = _NoMitigation().reduce([[0.7, -0.3]], {"dag_indices": [0]})
+        assert out == [0.7, -0.3]
 
 
-class TestZNEMultiObservable:
-    """ZNE on tuple observables loops the helper (folding is observable-independent)."""
+class TestZNETupleObservable:
+    """ZNE on a tuple observable extrapolates per-observable element-wise."""
 
-    def test_expand_with_tuple_returns_list_of_contexts(self, bell_dag):
-        zne = ZNE(scale_factors=[1.0, 3.0])
-        dags, ctxs = zne.expand(bell_dag, observable=("o1", "o2"))
-        assert isinstance(ctxs, list)
-        assert len(ctxs) == 2
-        # 2 observables × 2 scale factors → 4 DAG slots in the merged tuple.
-        # The default _expand_per_observable_loop does NOT dedupe folded DAGs.
-        assert len(dags) == 4
-        for ctx in ctxs:
-            assert "effective_scales" in ctx
-            assert "dag_indices" in ctx
-            assert len(ctx["dag_indices"]) == 2
-
-    def test_reduce_with_tuple_returns_list_of_floats(self, bell_dag):
-        # y_obs1 = 2 - s, y_obs2 = 4 - 2s; intercepts at s=0 are 2 and 4.
+    def test_reduce_with_per_obs_list(self, bell_dag):
+        # y_obs1 = 2 - s → 2; y_obs2 = 4 - 2s → 4.
         zne = ZNE(scale_factors=[1.0, 3.0], extrapolator=LinearExtrapolator())
-        _, ctxs = zne.expand(bell_dag, observable=("a", "b"))
-        # Each row is a per-observable list at one DAG.  Build them so that
-        # each ctx's dag_indices selects [y@s=1, y@s=3] for that observable.
-        # The two ctxs have disjoint dag_indices (loop helper, no dedup).
-        n_dags = 4
-        rows = [[float("nan"), float("nan")] for _ in range(n_dags)]
-        for slot, d in enumerate(ctxs[0]["dag_indices"]):
-            rows[d][0] = (1.0, -1.0)[slot]  # y_obs1 at s=1, s=3
-        for slot, d in enumerate(ctxs[1]["dag_indices"]):
-            rows[d][1] = (2.0, -2.0)[slot]  # y_obs2 at s=1, s=3
-        out = zne.reduce(rows, ctxs)
+        _, ctx = zne.expand(bell_dag, observable=("a", "b"))
+        rows = [[1.0, 2.0], [-1.0, -2.0]]
+        out = zne.reduce(rows, ctx)
         assert isinstance(out, list)
         assert out[0] == pytest.approx(2.0)
         assert out[1] == pytest.approx(4.0)

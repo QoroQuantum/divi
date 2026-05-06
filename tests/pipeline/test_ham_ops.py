@@ -149,8 +149,8 @@ class TestHamOpsExpvalBackend:
         assert "ZI" in expval_spy.last_ham_ops
         assert "IZ" in expval_spy.last_ham_ops
 
-    def test_reduce_unpacks_pauli_dict_to_scalar(self, expval_spy):
-        """Pipeline with expval backend reduces {pauli: value} → scalar expval."""
+    def test_reduce_unpacks_pauli_dict_to_per_obs_list(self, expval_spy):
+        """Pipeline with expval backend reduces {pauli: value} → list[float]."""
         env = PipelineEnv(backend=expval_spy)
         pipeline = CircuitPipeline(
             stages=[
@@ -161,7 +161,9 @@ class TestHamOpsExpvalBackend:
         result = pipeline.run(initial_spec="x", env=env)
         assert len(result) == 1
         value = next(iter(result.values()))
-        assert isinstance(value, (int, float))
+        assert isinstance(value, list)
+        assert len(value) == 1
+        assert isinstance(value[0], (int, float))
 
     def test_ham_ops_not_set_for_shots_backend(self, shots_spy):
         """Shots backends don't populate env.artifacts['ham_ops']."""

@@ -245,8 +245,8 @@ class TestProgram:
             program._cost_pipeline,
             "run",
             return_value={
-                (("param_set", 1),): 2.0,
-                (("param_set", 0),): 1.0,
+                (("param_set", 1),): [2.0],
+                (("param_set", 0),): [1.0],
             },
         )
 

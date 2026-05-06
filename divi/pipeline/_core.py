@@ -422,7 +422,10 @@ class CircuitPipeline:
                 else:
                     raw = _counts_to_expvals(raw, plan.final_batch)
 
-        return PipelineResult(self._reduce(raw, env, plan.stage_tokens))
+        result = PipelineResult(self._reduce(raw, env, plan.stage_tokens))
+        if any(meta._was_multi_obs for meta in plan.initial_batch.values()):
+            result._squeeze = False
+        return result
 
     def run_forward_pass(
         self,

@@ -49,11 +49,29 @@ class PipelineResult(dict):
     instead of ``result[()]``.
     """
 
-    @property
-    def value(self):
-        """Return the single result value.
+    _squeeze: bool = True
+    """When ``True`` (default), :attr:`value` squeezes a length-1 expval list to a
+    scalar.  Pipelines set this to ``False`` when any source MetaCircuit was built
+    with ``_was_multi_obs=True`` (e.g. ``observable=[O]`` was passed explicitly)."""
 
-        Equivalent to ``result[()]`` for single-circuit pipelines.
+    @property
+    def value(self) -> Any:
+        """Return the single result value, unwrapped at the boundary.
+
+        Pipelines store expectation values in a canonical ``list[float]``
+        shape indexed by observable position.  This accessor squeezes a
+        length-1 list (single-observable expval) to a scalar ``float`` so
+        casual callers get the natural shape — mirroring the
+        scalar-in/scalar-out symmetry of higher-level programs like
+        :class:`~divi.qprog.algorithms.TimeEvolution`.  Probability and
+        count dicts pass through unchanged; multi-observable lists are
+        returned as-is.  For the canonical raw form regardless of length,
+        use ``result[()]``.
+
+        When the source MetaCircuit was constructed with
+        ``_was_multi_obs=True`` (e.g. the user wrote ``observable=[O]``),
+        the pipeline disables the squeeze and a length-1 list is returned
+        as-is.
 
         Raises:
             ValueError: If the result contains more than one key.
@@ -64,7 +82,10 @@ class PipelineResult(dict):
                 f"Keys: {list(self.keys())}. "
                 f"Use result[key] to access specific results."
             )
-        return next(iter(self.values()))
+        raw = next(iter(self.values()))
+        if self._squeeze and isinstance(raw, list) and len(raw) == 1:
+            return raw[0]
+        return raw
 
 
 InT = TypeVar("InT")  # Generic input type consumed by Stage.expand.
