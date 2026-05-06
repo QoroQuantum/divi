@@ -1021,7 +1021,7 @@ class QuEPP(QEMProtocol):
             obs_paths_list.append(self._select_paths(prep))
         # Truncation-ratio warning depends only on the rotation count and
         # K_T, both observable-independent — emit at most once.
-        self._warn_on_truncation_ratio(prep)
+        self._warn_on_truncation_ratio(len(rotations))
 
         # ----- Path-DAG dedup across observables ------------------------- #
         working_dag = circuit_to_dag(working)
@@ -1154,8 +1154,7 @@ class QuEPP(QEMProtocol):
             coefficient_threshold=coeff_threshold,
         )
 
-    def _warn_on_truncation_ratio(self, prep: "_PreprocResult") -> None:
-        n_rotations = len(prep.rotations)
+    def _warn_on_truncation_ratio(self, n_rotations: int) -> None:
         if n_rotations > 0 and self._K_T / n_rotations > 0.33:
             warnings.warn(
                 f"QuEPP: truncation order K={self._K_T} replaces a large "

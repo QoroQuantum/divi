@@ -462,7 +462,8 @@ class MaestroSimulator(CircuitRunner):
                             maestro_circuit,
                             observables=pauli_string,
                             noise_model=self.noise_config["noise_model"],
-                            noise_realizations=self.noise_config["noise_realizations"] or 1,
+                            noise_realizations=self.noise_config["noise_realizations"],
+                            seed=self.noise_config["noise_seed"],
                             config=sim_config,
                         )
                 ops = pauli_string.split(";")

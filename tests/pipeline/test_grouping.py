@@ -155,7 +155,11 @@ class TestComputeMultiObservableMeasurementGroups:
         assert out == pytest.approx([0.7, -0.4])
 
     def test_coefficients_applied_per_observable(self):
-        """Postprocessing recovers each observable's full coeff·term sum."""
+        """Postprocessing recovers each observable's full coeff·term sum.
+
+        Also exercises the cross-observable Z-dedup: only one Z slot exists
+        in the union even though both observables contribute one.
+        """
         # obs1 = 2·Z(0) + 0.5·X(0)
         obs1 = SparsePauliOp.from_list([("Z", 2.0), ("X", 0.5)])
         # obs2 = -1·Z(0)
@@ -163,33 +167,57 @@ class TestComputeMultiObservableMeasurementGroups:
         groups, partition, postproc = compute_multi_observable_measurement_groups(
             (obs1, obs2), "qwc", 1
         )
-        # Z and X don't QWC-commute → 2 groups: {Z, Z}, {X}.
-        # Union order: obs1 contributes Z (idx 0), X (idx 1); obs2 contributes Z (idx 2).
-        # The Z's go in one group, the X in its own.
+        # Z and X don't QWC-commute → 2 groups: {Z}, {X} (Z deduped).
         n_groups = len(groups)
         assert n_groups == 2
-        # Build a synthetic per-group result:
-        # for the Z group, the original-index-to-position map is determined
-        # internally; we feed the values keyed by the position in each group.
-        # For determinism, run the same single-observable grouper on the union
-        # to discover positions, then drive postproc with consistent values.
-        union = SparsePauliOp.from_list([("Z", 1.0), ("X", 1.0), ("Z", 1.0)])
-        _, union_partition, _ = compute_measurement_groups(union, "qwc", 1)
-        # union_partition is a list of lists; for each group, position i maps
-        # to original term index union_partition[g][i].
-        # Build per-group dicts that put 1.0 for term Z and 0.0 for term X.
-        per_group_results = []
-        for g_idx, indices in enumerate(union_partition):
-            d = {}
-            for pos, orig_idx in enumerate(indices):
-                # term at orig_idx 0 or 2 → Z, value 1.0; term at orig_idx 1 → X, value 0.5.
-                d[pos] = 1.0 if orig_idx in (0, 2) else 0.5
-            per_group_results.append(d)
+        # Drive postproc using the function's own partition_indices so the
+        # test doesn't have to reproduce the dedup logic.  Each union slot
+        # gets a known value; postproc folds that through each obs's coeffs.
+        slot_value = {}  # union slot index -> <P> value
+        for g_idx, indices in enumerate(partition):
+            for pos, slot in enumerate(indices):
+                # Slot label determines value: Z → 1.0, X → 0.5.
+                # We don't know which slot is which without re-grouping, so
+                # rely on the group's basis: a 1-qubit group with a single
+                # diagonal Pauli yields one slot; map by group order.
+                slot_value[slot] = 1.0 if "Z" in groups[g_idx][pos] else 0.5
+        per_group_results = [
+            {pos: slot_value[slot] for pos, slot in enumerate(indices)}
+            for indices in partition
+        ]
         out = postproc(per_group_results)
         # obs1 = 2·<Z> + 0.5·<X> = 2·1 + 0.5·0.5 = 2.25
         # obs2 = -1·<Z> = -1.0
         assert out[0] == pytest.approx(2.25)
         assert out[1] == pytest.approx(-1.0)
+
+    def test_duplicate_paulis_dedup_to_one_union_slot(self):
+        """Identical Paulis across observables share a single union slot
+        so postprocessing computes ``<P>`` once per unique Pauli."""
+        obs1 = SparsePauliOp.from_list([("IZ", 1.0)])
+        obs2 = SparsePauliOp.from_list([("IZ", 1.0)])  # same label
+        groups, partition, postproc = compute_multi_observable_measurement_groups(
+            (obs1, obs2), "qwc", 2
+        )
+        # One unique label → one group with one term — not two.
+        assert len(groups) == 1
+        assert len(groups[0]) == 1
+        assert sum(len(p) for p in partition) == 1
+        # Both observables read from the same single slot.
+        out = postproc([{0: 0.4}])
+        assert out == pytest.approx([0.4, 0.4])
+
+    def test_within_observable_duplicates_collapse(self):
+        """Repeated terms inside one observable also share a slot; their
+        coefficients accumulate via ``np.dot`` over the duplicated index."""
+        obs = SparsePauliOp.from_list([("Z", 0.5), ("Z", 0.25)])
+        groups, partition, postproc = compute_multi_observable_measurement_groups(
+            (obs,), "qwc", 1
+        )
+        assert sum(len(p) for p in partition) == 1
+        # 0.5·<Z> + 0.25·<Z> with <Z>=0.8 → (0.5+0.25)·0.8 = 0.6
+        out = postproc([{0: 0.8}])
+        assert out == pytest.approx([0.6])
 
     def test_qwc_groups_shared_across_observables(self):
         """When every observable's terms QWC-commute, exactly one group is emitted."""

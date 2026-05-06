@@ -211,8 +211,12 @@ def compute_multi_observable_measurement_groups(
 
     # Build a flat union of every observable's Pauli labels and remember
     # which union-index each observable's k-th term occupies, plus that
-    # observable's real coefficient on it.
+    # observable's real coefficient on it.  Duplicate Paulis (across
+    # observables, or within one observable) collapse to a single union
+    # slot so postprocessing computes ``<P>`` once per unique Pauli;
+    # ``obs_indices[i]`` may reference the same slot from multiple owners.
     all_le_labels: list[str] = []
+    label_to_union_idx: dict[str, int] = {}
     obs_indices: list[list[int]] = []
     obs_coeffs: list[np.ndarray] = []
     for obs in observables:
@@ -220,8 +224,12 @@ def compute_multi_observable_measurement_groups(
         coeffs = np.real(obs.coeffs).astype(np.float64)
         indices: list[int] = []
         for lab in le_labels:
-            indices.append(len(all_le_labels))
-            all_le_labels.append(lab)
+            slot = label_to_union_idx.get(lab)
+            if slot is None:
+                slot = len(all_le_labels)
+                label_to_union_idx[lab] = slot
+                all_le_labels.append(lab)
+            indices.append(slot)
         obs_indices.append(indices)
         obs_coeffs.append(coeffs)
 
