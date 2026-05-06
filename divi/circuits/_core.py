@@ -48,9 +48,7 @@ class MetaCircuit:
       expectation value (the standard case).
     * ``tuple[SparsePauliOp, ...]`` — one mitigated expectation value per
       entry. Stages that share work across observables (e.g. QuEPP path-DAG
-      dedup, QWC measurement-batching across the union) branch on this case.
-
-    Use :func:`isinstance(meta.observable, tuple)` to dispatch."""
+      dedup, QWC measurement-batching across the union) branch on this case."""
 
     measured_wires: tuple[int, ...] | None = None
     """Qubit indices to measure for probs/counts measurements. ``None`` for expval."""

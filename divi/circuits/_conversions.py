@@ -412,17 +412,22 @@ def qscript_to_meta(
         m for m in measurements if isinstance(m, qp.measurements.ExpectationMP)
     ]
     if len(expval_measurements) >= 2:
-        # Multi-observable path: every measurement must be an expval.
-        # Mixing expval with probs/counts in one qscript is not supported.
+        # Multi-observable path: every measurement must be an expval with an
+        # operator attached.  Mixing expval with probs/counts in one
+        # QuantumScript is not supported.
         if len(expval_measurements) != len(measurements):
             raise ValueError(
                 "qscript_to_meta: mixing `expval` with `probs`/`counts` "
                 "measurements in a single QuantumScript is not supported."
             )
-        observable = tuple(
-            observable_to_sparse_pauli_op(m.obs, qscript.wires)
-            for m in expval_measurements
-        )
+        ops: list[SparsePauliOp] = []
+        for m in expval_measurements:
+            if m.obs is None:
+                raise ValueError(
+                    "ExpectationMP without an observable is not supported."
+                )
+            ops.append(observable_to_sparse_pauli_op(m.obs, qscript.wires))
+        observable = tuple(ops)
     elif len(expval_measurements) == 1:
         m = expval_measurements[0]
         if m.obs is None:
@@ -430,9 +435,7 @@ def qscript_to_meta(
         observable = observable_to_sparse_pauli_op(m.obs, qscript.wires)
     elif measurements:
         first = measurements[0]
-        if isinstance(
-            first, (qp.measurements.ProbabilityMP, qp.measurements.CountsMP)
-        ):
+        if isinstance(first, (qp.measurements.ProbabilityMP, qp.measurements.CountsMP)):
             target_wires = first.wires if len(first.wires) else qscript.wires
             measured_wires = tuple(qscript.wires.index(w) for w in target_wires)
 

@@ -73,8 +73,8 @@ Available Backends
 
 Divi ships three :class:`~divi.backends.CircuitRunner` implementations:
 
-* :class:`~divi.backends.MaestroSimulator` — A high-performance local simulator, recommended as the default for development and testing.
-* :class:`~divi.backends.QiskitSimulator` — A convenience wrapper around Qiskit's ``AerSimulator`` with simplified noise modeling and thread-count control. Use this when you need noisy simulation.
+* :class:`~divi.backends.MaestroSimulator` — A high-performance local simulator, recommended as the default for development and testing.  Supports Pauli-channel noise via ``maestro.NoiseModel`` (see :ref:`noisy-simulation-maestro`).
+* :class:`~divi.backends.QiskitSimulator` — A convenience wrapper around Qiskit's ``AerSimulator`` with thread-count control.  Use this when you need device-calibrated noise from a Qiskit fake backend or an arbitrary ``qiskit_aer.noise.NoiseModel``.
 * :class:`~divi.backends.QoroService` — A cloud-based quantum computing service for accessing powerful simulators and real quantum hardware.
 
 MaestroSimulator
@@ -87,6 +87,7 @@ MaestroSimulator
 * **Native C++ Core**: Backed by ``qoro-maestro``, a compiled simulator designed for low per-circuit overhead.
 * **Auto Method Selection**: Switches from Statevector to MatrixProductState for circuits exceeding 22 qubits (configurable via :class:`~divi.backends.MaestroConfig`'s ``mps_qubit_threshold``), so a single backend handles both narrow and wide registers.
 * **Multiple Simulation Methods**: Statevector, MatrixProductState, Stabilizer, TensorNetwork, PauliPropagator.
+* **Pauli-channel noise**: Analytical exact-mean expectation values or Monte-Carlo sampling under a ``maestro.NoiseModel``, configured directly on :class:`~divi.backends.MaestroConfig` — see :ref:`noisy-simulation-maestro`.
 
 
 .. _configuring-maestrosimulator:
@@ -125,10 +126,121 @@ to store a full statevector.
    )
 
 
+.. _noisy-simulation-maestro:
+
+Noisy simulation
+^^^^^^^^^^^^^^^^
+
+Pass a ``maestro.NoiseModel`` via :class:`~divi.backends.MaestroConfig` to
+enable Pauli-channel noise.
+
+**Building a noise model**
+
+Each ``set_*`` method on a ``NoiseModel`` *adds* a Pauli channel to the
+qubits it touches; calling more than one composes them, it does not
+overwrite.
+
+.. code-block:: python
+
+   import maestro
+
+   # Start with uniform 1 % depolarizing on every qubit of a 2-qubit circuit.
+   noise_model = maestro.NoiseModel()
+   noise_model.set_all_depolarizing(num_qubits=2, p=0.01)
+
+   # Add stronger dephasing on top, per-qubit (composes with the above).
+   noise_model.set_dephasing(qubit=0, p=0.005)
+   noise_model.set_dephasing(qubit=1, p=0.02)
+
+   # Add an asymmetric Pauli channel on qubit 0 (also composes).
+   noise_model.set_qubit_noise(qubit=0, px=0.002, py=0.001, pz=0.003)
+
+**Choosing an execution mode**
+
+:attr:`~divi.backends.MaestroConfig.noise_model` and
+:attr:`~divi.backends.MaestroConfig.noise_realizations` together select
+one of five Maestro entry points:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 20 55
+
+   * - ``noise_realizations``
+     - Backend
+     - Notes
+   * - *(not set)*
+     - ``simple_execute`` / ``simple_estimate``
+     - No noise applied.
+   * - ``None`` *(expval mode, default when* ``noise_model`` *is set)*
+     - ``noisy_estimate``
+     - Exact analytical mean: applies per-Pauli damping coefficients to
+       noiseless expectation values.  Deterministic; zero Monte-Carlo overhead.
+   * - ``None`` *(sampling mode)*
+     - ``noisy_execute`` with 1 realization
+     - One random Pauli error pattern per circuit; counts are stochastic.
+       For statistical accuracy set an explicit count (e.g. ``noise_realizations=20``).
+   * - Positive ``int`` *N* *(expval mode)*
+     - ``noisy_estimate_montecarlo``
+     - *N* independent Pauli-injection passes; mean of expectation values.
+       Converges to analytical as *N* → ∞.
+   * - Positive ``int`` *N* *(sampling mode)*
+     - ``noisy_execute`` with *N* batches
+     - Total shots is always ``shots``; distributed across
+       ``min(shots, N)`` batches, each with a fresh noise pattern.
+
+.. note::
+
+   ``noise_realizations=1`` (expval) is **not** the same as ``noise_realizations=None``:
+   the former is one random Pauli sampling; the latter is the exact analytical mean.
+
+**Analytical noisy expectation values**
+
+.. code-block:: python
+
+   from divi.backends import MaestroSimulator, MaestroConfig
+
+   # noise_realizations defaults to None → analytical noisy_estimate
+   sim = MaestroSimulator(config=MaestroConfig(noise_model=noise_model))
+   result = sim.submit_circuits({"c0": qasm_string}, ham_ops="ZI;IZ")
+   expvals = result.results[0]["results"]   # {"ZI": <float>, "IZ": <float>}
+
+**Monte Carlo noisy expectation values**
+
+.. code-block:: python
+
+   sim_mc = MaestroSimulator(
+       config=MaestroConfig(
+           noise_model=noise_model,
+           noise_realizations=20,
+           noise_seed=42,
+       )
+   )
+   result = sim_mc.submit_circuits({"c0": qasm_string}, ham_ops="ZI;IZ")
+   expvals = result.results[0]["results"]
+
+**Noisy sampling (counts mode)**
+
+.. code-block:: python
+
+   sim_sample = MaestroSimulator(
+       shots=5000,
+       config=MaestroConfig(
+           noise_model=noise_model,
+           noise_realizations=10,
+           noise_seed=0,
+       ),
+   )
+   result = sim_sample.submit_circuits({"c0": qasm_string})
+   counts = result.results[0]["results"]
+   # 5000 shots distributed across 10 random Pauli error patterns.
+
+For reproducibility under noisy execution see :ref:`Operational notes <operational-notes-shot-reproducibility>` below.
+
+
 QiskitSimulator
 ------------------
 
-:class:`~divi.backends.QiskitSimulator` wraps Qiskit's ``AerSimulator`` with simplified thread-count control and noise configuration. Use it when you need to model realistic hardware noise - for example, when developing error mitigation strategies or benchmarking algorithm robustness.
+:class:`~divi.backends.QiskitSimulator` wraps Qiskit's ``AerSimulator`` with thread-count control and Qiskit-native noise configuration.  Use it when you need device-calibrated noise from a Qiskit fake backend, or when you have an existing ``qiskit_aer.noise.NoiseModel`` you want to run as-is.  For Pauli-channel noise written from scratch, :ref:`MaestroSimulator's noisy paths <noisy-simulation-maestro>` are usually faster.
 
 
 Examples
@@ -306,7 +418,8 @@ Backend Selection Guide
 
 Choosing the right backend depends on what stage of development you're in.
 
-* **For Development and Testing**, use :class:`~divi.backends.MaestroSimulator` for exact noiseless simulation. For device noise models, use :class:`~divi.backends.QiskitSimulator` with Qiskit noise models.
+* **For Development and Testing**, use :class:`~divi.backends.MaestroSimulator` — for exact noiseless simulation, for analytical Pauli-channel noise, or for fast Monte Carlo over a hand-written noise model.
+* **For Qiskit-native noise**, use :class:`~divi.backends.QiskitSimulator` — its strength is plugging into Qiskit fake backends and arbitrary ``qiskit_aer.noise.NoiseModel`` instances built from device calibration data.
 * **For Production Runs**, use :class:`~divi.backends.QoroService` for cloud simulation, real quantum hardware, and scalable execution.
 * **For Research**, start with :class:`~divi.backends.MaestroSimulator` for prototyping, then use :class:`~divi.backends.QoroService` for validation against real hardware.
 
@@ -323,19 +436,19 @@ Backend Comparison
      - :class:`~divi.backends.QiskitSimulator`
      - :class:`~divi.backends.QoroService`
    * - **Use Case**
-     - Default local simulation
-     - Noisy simulation
+     - Default local simulation; Pauli-channel noise
+     - Qiskit-native noise (fake backends, calibrated models)
      - Production & real hardware
    * - **Simulation Engine**
      - Qoro C++ (qoro-maestro)
      - Qiskit Aer
      - Cloud (Maestro / Aer / hardware)
    * - **Noise Support**
-     - No
+     - ``maestro.NoiseModel`` (Pauli channels)
      - Qiskit fake backends & noise models
      - Hardware noise (real QPUs)
    * - **Seed / Reproducibility**
-     - No (``set_seed`` is a no-op)
+     - ``noise_seed`` (noisy paths only)
      - ``simulation_seed`` parameter
      - N/A
    * - **Depth Tracking**
@@ -357,7 +470,10 @@ Operational notes
 
 * **MaestroSimulator and many qubits**: See :ref:`Configuring MaestroSimulator <configuring-maestrosimulator>` above for the auto-MPS threshold and the :class:`~divi.backends.MaestroConfig` fields that control it (``mps_qubit_threshold``, ``simulation_type``, ``max_bond_dimension``).  Note that switching to MPS changes memory and runtime scaling — it is not a generic "make it faster" switch.
 * **QiskitSimulator**: ``n_processes`` and ``shots`` trade throughput, memory, and statistical noise; there is no single knob—balance them for your machine and accuracy needs.
-* **Shot reproducibility**: :meth:`~divi.backends.MaestroSimulator.set_seed` is currently a no-op (the C++ engine does not expose sampling seeds yet). For reproducible shots through Aer, use :class:`~divi.backends.QiskitSimulator` with ``simulation_seed``.
+
+.. _operational-notes-shot-reproducibility:
+
+* **Shot reproducibility**: :meth:`~divi.backends.MaestroSimulator.set_seed` is a no-op — Maestro's noiseless simulators seed their measurement RNG from system entropy.  :attr:`~divi.backends.MaestroConfig.noise_seed` pins **Pauli error patterns** for noisy execution (each circuit gets ``noise_seed + i``), so noisy expval runs are fully reproducible; noisy sampling counts still vary because Maestro's measurement sampler re-seeds from entropy each call.  For reproducible noiseless counts, use :class:`~divi.backends.QiskitSimulator` with ``simulation_seed``.
 * **QoroService latency**: Client-side wait time is dominated by how you poll; tune ``polling_interval`` and ``max_retries`` on :class:`~divi.backends.QoroService`. For fast inner loops, use a local simulator; cloud queue time is outside the client library.
 
 Next Steps

@@ -919,7 +919,7 @@ class QuEPP(QEMProtocol):
         validated = self._validate_observable(observable)
         prep = self._preprocess(dag, validated)
         paths = self._select_paths(prep)
-        self._warn_on_truncation_ratio(prep)
+        self._warn_on_truncation_ratio(len(prep.rotations))
         return prep, paths, validated
 
     def expand(
@@ -992,9 +992,7 @@ class QuEPP(QEMProtocol):
         coincident path DAGs.
         """
         if len(observables) == 0:
-            raise ValueError(
-                "QuEPP requires at least one observable in the tuple."
-            )
+            raise ValueError("QuEPP requires at least one observable in the tuple.")
         for obs in observables:
             self._validate_observable(obs)
 
@@ -1062,9 +1060,7 @@ class QuEPP(QEMProtocol):
             obs_path_dags = [
                 merged_path_dags[branch_to_dag_idx[p.branches]] for p in paths
             ]
-            classical_values = _simulate_clifford_ensemble(
-                obs_path_dags, obs, n_qubits
-            )
+            classical_values = _simulate_clifford_ensemble(obs_path_dags, obs, n_qubits)
             weights = [p.weight for p in paths]
 
             ctx: QEMContext = {
@@ -1080,7 +1076,7 @@ class QuEPP(QEMProtocol):
             }
             if symbolic:
                 ctx["symbolic"] = True
-                ctx["weight_symbols"] = sorted(all_params, key=lambda p: p.name)
+                ctx["weight_symbols"] = sorted(all_params or [], key=lambda p: p.name)
             contexts.append(ctx)
 
         return merged_dags, contexts

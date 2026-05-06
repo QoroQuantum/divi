@@ -150,6 +150,8 @@ nitpick_ignore_regex = [
     (r"py:class", r"dimod\..*"),
     # dwave-hybrid does not publish a sphinx inventory.
     (r"py:class", r"hybrid\..*"),
+    # qoro-maestro does not publish a sphinx inventory.
+    (r"py:class", r"maestro\..*"),
     # TypeVars in ``Generic[InT, OutT]`` — not documentable by Sphinx.
     (r"py:obj", r"divi\.pipeline\.abc\.(InT|OutT)"),
     # ``numpy.float64`` is ``py:attribute`` in numpy's inventory, but

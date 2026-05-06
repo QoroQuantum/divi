@@ -79,9 +79,10 @@ class TimeEvolution(QuantumProgram):
                   measurements from the same circuit; ``self.results`` is a
                   ``list[float]`` (one mitigated value per observable).
                   Commuting observables are measured from a shared shot
-                  batch via :class:`MeasurementStage`'s QWC grouping; QuEPP
-                  shares the target circuit and dedupes path DAGs across
-                  observables.
+                  batch via
+                  :class:`~divi.pipeline.stages.MeasurementStage`'s QWC
+                  grouping; QuEPP shares the target circuit and dedupes
+                  path DAGs across observables.
             **kwargs: Passed to QuantumProgram (backend, seed, progress_queue, etc.).
                 Accepts ``qem_protocol`` for quantum error mitigation (requires
                 ``observable`` to be set, since QEM operates on expectation values).

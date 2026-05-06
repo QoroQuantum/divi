@@ -6,7 +6,7 @@ import copy
 import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, cast, runtime_checkable
 
 import numpy as np
 from qiskit.dagcircuit import DAGCircuit
@@ -101,7 +101,7 @@ class QEMProtocol(ABC):
         self,
         dag: DAGCircuit,
         observable: Any | None = None,
-    ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
+    ) -> tuple[tuple[DAGCircuit, ...], QEMContext | list[QEMContext]]:
         """Analytic counterpart to :meth:`expand` used by dry-run pipelines.
 
         Must emit the **same number of DAGs** as :meth:`expand` would on the
@@ -157,9 +157,7 @@ class QEMProtocol(ABC):
         """
         n = len(observables)
         if n == 0:
-            raise ValueError(
-                "Expansion requires at least one observable in the tuple."
-            )
+            raise ValueError("Expansion requires at least one observable in the tuple.")
 
         merged_dags: list[DAGCircuit] = []
         contexts: list[QEMContext] = []
@@ -204,11 +202,17 @@ class QEMProtocol(ABC):
                     f"{sample_len}.  Multi-observable contexts and "
                     f"MeasurementStage rows are out of sync."
                 )
+            # Each inner ``reduce`` is passed a single QEMContext, not a list,
+            # so it returns ``float`` — but the public signature is wider, so
+            # we narrow with ``cast``.
             return [
-                self.reduce([row[i] for row in quantum_results], contexts[i])
+                cast(
+                    float,
+                    self.reduce([row[i] for row in quantum_results], contexts[i]),
+                )
                 for i in range(n)
             ]
-        return [self.reduce(quantum_results, c) for c in contexts]
+        return [cast(float, self.reduce(quantum_results, c)) for c in contexts]
 
     def post_reduce(self, contexts: Sequence[QEMContext]) -> None:
         """Hook called after all per-group ``reduce`` calls in an evaluation.

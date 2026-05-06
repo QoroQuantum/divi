@@ -58,6 +58,31 @@ def _strip_measurements(qasm: str) -> str:
     return re.sub(r"measure\s+q\[\d+\]\s*->\s*\w+\[\d+\]\s*;\n?", "", qasm)
 
 
+def _resolve_noise_realizations(
+    realizations: int | None, *, sampling: bool
+) -> int | None:
+    """Validate ``noise_realizations`` and resolve the backend dispatch.
+
+    Returns ``None`` to signal "use the analytical backend" (expval only),
+    or a positive ``int`` to forward to a Monte-Carlo entry point.
+
+    Sampling has no analytical equivalent, so ``None`` collapses to ``1``
+    (a single noise realization).  Maestro's native default for
+    ``noisy_execute`` is 64; divi deliberately uses 1 to avoid silently
+    multiplying the shot budget.
+
+    Zero or negative values raise ``ValueError`` — they have no meaningful
+    MC interpretation and ``None`` already covers the analytical path.
+    """
+    if realizations is None:
+        return 1 if sampling else None
+    if realizations < 1:
+        raise ValueError(
+            f"noise_realizations must be None or a positive integer, got {realizations}."
+        )
+    return realizations
+
+
 @dataclass(frozen=True)
 class MaestroConfig:
     """Configuration object for :class:`MaestroSimulator`.
@@ -115,6 +140,58 @@ class MaestroConfig:
     ``simulation_type`` is set explicitly.  Divi-specific; not forwarded to
     ``maestro.SimulatorConfig``."""
 
+    noise_model: "maestro.NoiseModel | None" = None
+    """Maestro ``NoiseModel`` object.  ``None`` (default) disables noise —
+    circuits run via ``simple_execute`` (sampling) or ``simple_estimate``
+    (expval).  When set, dispatch routes to ``noisy_execute`` /
+    ``noisy_estimate`` / ``noisy_estimate_montecarlo`` depending on
+    :attr:`noise_realizations`.  Divi-specific; not forwarded to
+    ``maestro.SimulatorConfig`` — Maestro keeps noise models separate from
+    simulator config and accepts them positionally on the noisy entry points."""
+
+    noise_seed: int = 42
+    """Seed for Pauli-error sampling.  Consulted whenever execution routes
+    through one of Maestro's stochastic noisy entry points
+    (``noisy_execute`` or ``noisy_estimate_montecarlo``); the analytical
+    ``noisy_estimate`` path ignores it.  Each circuit in a
+    :meth:`MaestroSimulator.submit_circuits` batch is seeded with
+    ``noise_seed + i`` (where ``i`` is the circuit's index in the input
+    mapping) so circuits in the same batch get independent error patterns.
+
+    Reproducibility scope: the seed pins the **Pauli error patterns**
+    sampled from the noise model.  Expectation-value runs
+    (``noisy_estimate_montecarlo``) are fully reproducible because the
+    inner loop is analytical.  Noisy *sampling* runs (``noisy_execute``)
+    are only partially reproducible: the same Pauli errors are injected,
+    but the shot-count outcomes still vary across runs because Maestro's
+    measurement sampler initialises its own RNG from system entropy on
+    every call.
+
+    Divi-specific; not forwarded to ``maestro.SimulatorConfig``."""
+
+    noise_realizations: int | None = None
+    """Number of Monte-Carlo noise realizations.  ``None`` (default) selects
+    the analytical noisy backend when available:
+
+    * **Expval** — ``maestro.noisy_estimate``, which applies exact Pauli
+      damping coefficients to noiseless expectation values.  Deterministic.
+    * **Sampling** — no analytical equivalent; falls back to one realization
+      (``noisy_execute`` with ``noise_realizations=1``).
+
+    A positive ``int`` ``N`` selects Monte-Carlo backends:
+
+    * **Expval** — ``maestro.noisy_estimate_montecarlo``, which runs ``N``
+      independent Pauli-injection passes and averages the expectation values.
+    * **Sampling** — ``maestro.noisy_execute``, which divides ``shots``
+      across ``min(shots, N)`` batches, each with a freshly sampled noise
+      pattern.  Total shot count is always ``shots``; if ``N > shots`` the
+      effective realization count is capped at ``shots``.
+
+    Note that ``noise_realizations=1`` is **not** equivalent to ``None``
+    for expval — the former is one random Pauli sampling, the latter is
+    the exact analytical average.  Divi-specific; not forwarded to
+    ``maestro.SimulatorConfig``."""
+
     def override(self, other: "MaestroConfig") -> "MaestroConfig":
         """Return a new config overriding fields with non-default values from ``other``.
 
@@ -127,6 +204,11 @@ class MaestroConfig:
 
         for f in fields(MaestroConfig):
             other_value = getattr(other, f.name)
+            # Relies on != with the default sentinel.  Safe for scalar fields and
+            # for noise_model because None is the default — any non-None object
+            # evaluates != None as True.  If two non-None NoiseModel instances ever
+            # need to be distinguished by value equality this logic would need
+            # an identity check (``is not``) instead.
             if other_value != defaults[f.name]:
                 merged[f.name] = other_value
 
@@ -202,14 +284,14 @@ class MaestroSimulator(CircuitRunner):
     PauliPropagator), intelligent auto-routing, GPU acceleration, and native observable
     estimation.
 
-    All maestro-level configuration is carried in a :class:`MaestroConfig` object
-    rather than as loose keyword arguments, matching the
+    All maestro-level configuration — including noise — is carried in a
+    :class:`MaestroConfig` object rather than as loose keyword arguments,
+    matching the
     :class:`~divi.backends.ExecutionConfig` / :class:`~divi.backends.QoroService`
-    pattern.
-
-    Noise is handled separately from the rest of the configuration to respect the
-    existing architecture of MaestroConfig in Maestro, which decouples noise models
-    from simulators (running multiple noise models in one simulator allowed).
+    pattern.  Pass a ``maestro.NoiseModel`` via :attr:`MaestroConfig.noise_model`
+    (and tune :attr:`MaestroConfig.noise_seed` and
+    :attr:`MaestroConfig.noise_realizations`) to route execution through
+    Maestro's noisy entry points.
 
     .. note::
 
@@ -220,8 +302,8 @@ class MaestroSimulator(CircuitRunner):
     Args:
         shots: Number of measurement shots. Defaults to 5000.
         config: :class:`MaestroConfig` controlling simulator backend, simulation
-            method, bond dimension, and related knobs.  Defaults to
-            ``MaestroConfig()``.
+            method, bond dimension, noise model, and related knobs.  Defaults
+            to ``MaestroConfig()``.
         track_depth: Record circuit depth per submission. Defaults to False.
     """
 
@@ -230,9 +312,6 @@ class MaestroSimulator(CircuitRunner):
         shots: int = 5000,
         config: MaestroConfig | None = None,
         track_depth: bool = False,
-        noise_model: maestro.NoiseModel | None = None,
-        noise_seed: int | None = 42,
-        noise_realizations: int | None = None,
     ):
         if maestro is None:
             raise ImportError(
@@ -241,7 +320,6 @@ class MaestroSimulator(CircuitRunner):
 
         super().__init__(shots=shots, track_depth=track_depth)
         self.config: MaestroConfig = config if config is not None else MaestroConfig()
-        self.noise_config = {"noise_model": noise_model, "noise_seed": noise_seed, "noise_realizations": noise_realizations}
 
         # Per-instance circuit fan-out pool, lazy-initialized on first
         # ``submit_circuits`` call.  Maestro's C++ entrypoints release the
@@ -264,7 +342,7 @@ class MaestroSimulator(CircuitRunner):
         """Maestro executes circuits synchronously."""
         return False
 
-    def set_seed(self, seed: int) -> None:
+    def set_seed(self, seed: int) -> None:  # noqa: ARG002 — CircuitRunner interface
         """No-op — maestro does not yet expose seeding from C++."""
 
     def _get_executor(self) -> ThreadPoolExecutor:
@@ -410,19 +488,24 @@ class MaestroSimulator(CircuitRunner):
                     if per_circuit_shots is not None
                     else self.shots
                 )
-                if self.noise_config["noise_model"] is None:
+                if self.config.noise_model is None:
                     raw = maestro.simple_execute(qasm, config=sim_config, shots=shots)
                 else:
-                    # unlike simple_estimate, the noisy functions take in a maestro Circuit object
+                    # Noisy functions require a parsed maestro Circuit, not a raw QASM string.
                     circuit_parser = maestro.QasmToCirc()
                     maestro_circuit = circuit_parser.parse_and_translate(qasm)
+                    realizations = _resolve_noise_realizations(
+                        self.config.noise_realizations, sampling=True
+                    )
                     raw = maestro.noisy_execute(
                         maestro_circuit,
-                        self.noise_config["noise_model"],
+                        self.config.noise_model,
                         config=sim_config,
                         shots=shots,
-                        noise_realizations=self.noise_config["noise_realizations"] or 1,
-                        seed=self.noise_config["noise_seed"],
+                        noise_realizations=realizations,
+                        # Derive a per-circuit seed so circuits in a batch don't
+                        # all receive the same Pauli error pattern.
+                        seed=self.config.noise_seed + i,
                     )
                 counts = {bs[::-1]: n for bs, n in raw["counts"].items()}
                 return {"label": label, "results": counts}
@@ -440,30 +523,37 @@ class MaestroSimulator(CircuitRunner):
                 pauli_string = self._get_ham_ops_for_circuit(
                     i, ham_ops, circuit_ham_map
                 )
-                if self.noise_config["noise_model"] is None:
+                if self.config.noise_model is None:
                     raw = maestro.simple_estimate(
                         _strip_measurements(qasm),
                         observables=pauli_string,
                         config=sim_config,
                     )
                 else:
-                    # unlike simple_estimate, the noisy functions take in a maestro Circuit object
+                    # Noisy functions require a parsed maestro Circuit, not a raw QASM string.
                     circuit_parser = maestro.QasmToCirc()
-                    maestro_circuit = circuit_parser.parse_and_translate(_strip_measurements(qasm))
-                    if self.noise_config["noise_realizations"] in [None, 0]:
+                    maestro_circuit = circuit_parser.parse_and_translate(
+                        _strip_measurements(qasm)
+                    )
+                    realizations = _resolve_noise_realizations(
+                        self.config.noise_realizations, sampling=False
+                    )
+                    if realizations is None:
                         raw = maestro.noisy_estimate(
                             maestro_circuit,
                             observables=pauli_string,
-                            noise_model=self.noise_config["noise_model"],
+                            noise_model=self.config.noise_model,
                             config=sim_config,
                         )
                     else:
                         raw = maestro.noisy_estimate_montecarlo(
                             maestro_circuit,
                             observables=pauli_string,
-                            noise_model=self.noise_config["noise_model"],
-                            noise_realizations=self.noise_config["noise_realizations"],
-                            seed=self.noise_config["noise_seed"],
+                            noise_model=self.config.noise_model,
+                            noise_realizations=realizations,
+                            # Derive a per-circuit seed so circuits in a batch don't
+                            # all receive the same Pauli error pattern.
+                            seed=self.config.noise_seed + i,
                             config=sim_config,
                         )
                 ops = pauli_string.split(";")

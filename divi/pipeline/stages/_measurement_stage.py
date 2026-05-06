@@ -427,7 +427,7 @@ class MeasurementStage(BundleStage):
         n_observable_terms: int | None = None
         zero_shot_groups_by_spec: dict[object, dict[int, object]] = {}
         per_group_shots_by_spec: dict[object, dict[int, int]] = {}
-        sample_observable: SparsePauliOp | None = None
+        sample_observable: SparsePauliOp | tuple[SparsePauliOp, ...] | None = None
 
         for key, meta in batch.items():
             observable = meta.observable
@@ -504,7 +504,11 @@ class MeasurementStage(BundleStage):
 
         # For expval-native backends, compute ham_ops from the SparsePauliOp
         # and store it in env.artifacts so _default_execute_fn can use it.
+        # ``_backend_expval`` is rejected upstream for tuple observables
+        # (compute_multi_observable_measurement_groups raises and the
+        # auto-promotion guard falls back to QWC), so a tuple here is a bug.
         if strategy == "_backend_expval" and sample_observable is not None:
+            assert isinstance(sample_observable, SparsePauliOp)
             env.artifacts["ham_ops"] = sparse_pauli_op_to_ham_string(sample_observable)
         else:
             env.artifacts.pop("ham_ops", None)

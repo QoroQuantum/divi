@@ -269,7 +269,9 @@ def compute_multi_observable_measurement_groups(
             )
         flat = np.zeros(n_total, dtype=np.float64)
         for orig_idx in range(n_total):
-            g_idx, pos = reverse_map[orig_idx]
+            entry = reverse_map[orig_idx]
+            assert entry is not None  # validated by the ``missing`` check above
+            g_idx, pos = entry
             val = grouped_results[g_idx]
             if isinstance(val, dict):
                 val = val[pos]

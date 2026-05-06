@@ -22,6 +22,7 @@ import matplotlib
 # Headless backend must be selected before pyplot is imported.
 os.environ.setdefault("MPLBACKEND", "Agg")
 matplotlib.use("Agg")
+import maestro
 import matplotlib.pyplot as plt  # noqa: E402 — after matplotlib.use
 import numpy as np
 import pennylane as qp
@@ -226,6 +227,13 @@ def setup(namespace):
         coordinates=np.array([[0.0, 0.0, -0.6614], [0.0, 0.0, 0.6614]]),
     )
     namespace["backend"] = MaestroSimulator()
+
+    # Pre-built noise model for noisy-simulation snippets: uniform 1 % depolarizing
+    # on a 2-qubit register.  Snippets that need a different topology should
+    # construct their own, but most examples can share this fixture.
+    _noise_model = maestro.NoiseModel()
+    _noise_model.set_all_depolarizing(num_qubits=2, p=0.01)
+    namespace["noise_model"] = _noise_model
 
 
 def teardown(namespace):
