@@ -10,7 +10,7 @@ from queue import Queue
 from rich.console import Console
 
 import divi.reporting._qlogger as _qlogger
-from divi.reporting._pbar import progress_disabled
+from divi.reporting._pbar import TerminalStatus, progress_disabled
 from divi.reporting._qlogger import _ensure_unbuffered_stdout
 
 logger = logging.getLogger(__name__)
@@ -24,11 +24,19 @@ class ProgressReporter(ABC):
         """Provides a progress update."""
 
     @abstractmethod
-    def info(self, message: str, **kwargs) -> None:
+    def info(
+        self,
+        message: str,
+        *,
+        final_status: TerminalStatus | None = None,
+        **kwargs,
+    ) -> None:
         """Provides a simple informational message.
 
         Args:
             message: The message to display.
+            final_status: :class:`TerminalStatus` member to tag the row
+                as final.  Defaults to ``None`` (non-terminal).
             **kwargs: Additional keyword arguments for subclasses.
         """
 
@@ -46,11 +54,17 @@ class QueueProgressReporter(ProgressReporter):
             payload["loss"] = kwargs["loss"]
         self._queue.put(payload)
 
-    def info(self, message: str, **kwargs):
+    def info(
+        self,
+        message: str,
+        *,
+        final_status: TerminalStatus | None = None,
+        **kwargs,
+    ):
         payload = {"job_id": self._job_id, "progress": 0, "message": message}
 
-        if "Finished successfully!" in message:
-            payload["final_status"] = "Success"
+        if final_status is not None:
+            payload["final_status"] = final_status
 
         if "poll_attempt" in kwargs:
             # For polling, remove the message key so the last message persists.
@@ -149,7 +163,18 @@ class LoggingProgressReporter(ProgressReporter):
 
         logger.info(f"Finished Iteration #{kwargs['iteration']}")
 
-    def info(self, message: str, overwrite: bool = False, **kwargs):
+    def info(
+        self,
+        message: str,
+        *,
+        final_status: TerminalStatus | None = None,
+        overwrite: bool = False,
+        **kwargs,
+    ):
+        # final_status is part of the ProgressReporter contract but does
+        # not influence this reporter's display path; the Rich Status /
+        # logger formatting key off the message text.
+        del final_status
         if self._should_disable_progress():
             logger.info(message)
             return

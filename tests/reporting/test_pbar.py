@@ -9,15 +9,18 @@ import pytest
 from rich.live import Live
 from rich.progress import Progress, TextColumn
 
-from divi.reporting._pbar import (
-    ConditionalSpinnerColumn,
-    PhaseStatusColumn,
+from divi.reporting import (
+    TerminalStatus,
     handle_batch_message,
-    make_batch_display,
     make_progress_bar,
     make_progress_display,
     progress_disabled,
     queue_listener,
+)
+from divi.reporting._pbar import (
+    ConditionalSpinnerColumn,
+    PhaseStatusColumn,
+    _ProgramOnlyColumn,
 )
 
 
@@ -225,21 +228,22 @@ def _task_visible(progress: Progress, task_id) -> bool:
 
 
 class TestHandleBatchMessage:
-    """Tests for handle_batch_message progress bar state management."""
+    """Tests for handle_batch_message progress bar state management.
+
+    After the two-Progress collapse, batch rows live in the same
+    ``Progress`` as program rows, distinguished by the ``row_kind``
+    field.
+    """
 
     @pytest.fixture
-    def batch_progress(self):
-        return _make_simple_progress()
-
-    @pytest.fixture
-    def program_progress(self):
+    def progress(self):
         return _make_simple_progress()
 
     @pytest.fixture
     def lock(self):
         return Lock()
 
-    def test_creates_row_lazily(self, batch_progress, program_progress, lock):
+    def test_creates_row_lazily(self, progress, lock):
         """First message for a batch_id creates a new task row."""
         batch_task_ids: dict[int, int] = {}
 
@@ -252,26 +256,25 @@ class TestHandleBatchMessage:
                 "n_programs": 2,
                 "program_keys": [],
             },
-            batch_progress,
+            progress,
             batch_task_ids,
-            program_progress,
-            {},
             lock,
         )
 
         assert 1 in batch_task_ids
         task_id = batch_task_ids[1]
-        assert _task_visible(batch_progress, task_id)
-        fields = _task_fields(batch_progress, task_id)
+        assert _task_visible(progress, task_id)
+        fields = _task_fields(progress, task_id)
+        assert fields["row_kind"] == "batch"
         assert "5 circuits" in fields["job_name"]
         assert "2 programs" in fields["job_name"]
         assert fields["batch_color"] == "green"
 
-    def test_reuses_existing_row(self, batch_progress, program_progress, lock):
+    def test_reuses_existing_row(self, progress, lock):
         """Subsequent messages with the same batch_id reuse the same task row."""
         batch_task_ids: dict[int, int] = {}
 
-        for i in range(3):
+        for _ in range(3):
             handle_batch_message(
                 {
                     "batch_id": 42,
@@ -280,18 +283,15 @@ class TestHandleBatchMessage:
                     "n_programs": 3,
                     "program_keys": [],
                 },
-                batch_progress,
+                progress,
                 batch_task_ids,
-                program_progress,
-                {},
                 lock,
             )
 
-        # Only one task row should exist.
         assert len(batch_task_ids) == 1
-        assert len(batch_progress.tasks) == 1
+        assert len(progress.tasks) == 1
 
-    def test_labelled_batch_prefix(self, batch_progress, program_progress, lock):
+    def test_labelled_batch_prefix(self, progress, lock):
         """Label is included in the job_name prefix."""
         batch_task_ids: dict[int, int] = {}
 
@@ -304,17 +304,15 @@ class TestHandleBatchMessage:
                 "n_programs": 1,
                 "program_keys": [],
             },
-            batch_progress,
+            progress,
             batch_task_ids,
-            program_progress,
-            {},
             lock,
         )
 
-        fields = _task_fields(batch_progress, batch_task_ids[1])
+        fields = _task_fields(progress, batch_task_ids[1])
         assert fields["job_name"].startswith("Batch (expval)")
 
-    def test_unlabelled_batch_prefix(self, batch_progress, program_progress, lock):
+    def test_unlabelled_batch_prefix(self, progress, lock):
         """Without a label, prefix is just 'Batch'."""
         batch_task_ids: dict[int, int] = {}
 
@@ -327,23 +325,18 @@ class TestHandleBatchMessage:
                 "n_programs": 1,
                 "program_keys": [],
             },
-            batch_progress,
+            progress,
             batch_task_ids,
-            program_progress,
-            {},
             lock,
         )
 
-        fields = _task_fields(batch_progress, batch_task_ids[1])
+        fields = _task_fields(progress, batch_task_ids[1])
         assert fields["job_name"].startswith("Batch:")
 
-    def test_final_status_hides_row_and_cleans_up(
-        self, batch_progress, program_progress, lock
-    ):
+    def test_final_status_hides_row_and_cleans_up(self, progress, lock):
         """A final_status message hides the row and removes the batch_id mapping."""
         batch_task_ids: dict[int, int] = {}
 
-        # Create the row first.
         handle_batch_message(
             {
                 "batch_id": 7,
@@ -352,16 +345,13 @@ class TestHandleBatchMessage:
                 "n_programs": 1,
                 "program_keys": [],
             },
-            batch_progress,
+            progress,
             batch_task_ids,
-            program_progress,
-            {},
             lock,
         )
         task_id = batch_task_ids[7]
-        assert _task_visible(batch_progress, task_id)
+        assert _task_visible(progress, task_id)
 
-        # Now send success.
         handle_batch_message(
             {
                 "batch_id": 7,
@@ -371,26 +361,34 @@ class TestHandleBatchMessage:
                 "final_status": "Success",
                 "program_keys": [],
             },
-            batch_progress,
+            progress,
             batch_task_ids,
-            program_progress,
-            {},
             lock,
         )
 
         assert 7 not in batch_task_ids
-        assert not _task_visible(batch_progress, task_id)
+        assert not _task_visible(progress, task_id)
 
-    def test_program_color_set_on_start(self, batch_progress, program_progress, lock):
-        """Active batch colors the participating program rows."""
-        # Create program rows.
-        p1_tid = program_progress.add_task(
-            "", job_name="prog1", batch_color="", total=10
+    def test_program_color_set_on_start(self, progress, lock):
+        """Active batch colors the participating program rows; coloring
+        works by matching ``program_key`` task fields, not via a parallel
+        index."""
+        p1_tid = progress.add_task(
+            "",
+            job_name="prog1",
+            batch_color="",
+            total=10,
+            row_kind="program",
+            program_key="p1",
         )
-        p2_tid = program_progress.add_task(
-            "", job_name="prog2", batch_color="", total=10
+        p2_tid = progress.add_task(
+            "",
+            job_name="prog2",
+            batch_color="",
+            total=10,
+            row_kind="program",
+            program_key="p2",
         )
-        program_key_to_task_ids = {"p1": [p1_tid], "p2": [p2_tid]}
         batch_task_ids: dict[int, int] = {}
 
         handle_batch_message(
@@ -401,27 +399,26 @@ class TestHandleBatchMessage:
                 "n_programs": 2,
                 "program_keys": ["p1", "p2"],
             },
-            batch_progress,
+            progress,
             batch_task_ids,
-            program_progress,
-            program_key_to_task_ids,
             lock,
         )
 
-        assert _task_fields(program_progress, p1_tid)["batch_color"] == "magenta"
-        assert _task_fields(program_progress, p2_tid)["batch_color"] == "magenta"
+        assert _task_fields(progress, p1_tid)["batch_color"] == "magenta"
+        assert _task_fields(progress, p2_tid)["batch_color"] == "magenta"
 
-    def test_program_color_cleared_on_final(
-        self, batch_progress, program_progress, lock
-    ):
+    def test_program_color_cleared_on_final(self, progress, lock):
         """Final status clears batch color from program rows."""
-        p1_tid = program_progress.add_task(
-            "", job_name="prog1", batch_color="cyan", total=10
+        p1_tid = progress.add_task(
+            "",
+            job_name="prog1",
+            batch_color="cyan",
+            total=10,
+            row_kind="program",
+            program_key="p1",
         )
-        program_key_to_task_ids = {"p1": [p1_tid]}
         batch_task_ids: dict[int, int] = {}
 
-        # Create, then finalize.
         for msg in [
             {
                 "batch_id": 1,
@@ -439,18 +436,11 @@ class TestHandleBatchMessage:
                 "program_keys": ["p1"],
             },
         ]:
-            handle_batch_message(
-                msg,
-                batch_progress,
-                batch_task_ids,
-                program_progress,
-                program_key_to_task_ids,
-                lock,
-            )
+            handle_batch_message(msg, progress, batch_task_ids, lock)
 
-        assert _task_fields(program_progress, p1_tid)["batch_color"] == ""
+        assert _task_fields(progress, p1_tid)["batch_color"] == ""
 
-    def test_polling_fields_forwarded(self, batch_progress, program_progress, lock):
+    def test_polling_fields_forwarded(self, progress, lock):
         """Polling metadata is forwarded to the batch task."""
         batch_task_ids: dict[int, int] = {}
 
@@ -466,21 +456,19 @@ class TestHandleBatchMessage:
                 "poll_attempt": 3,
                 "max_retries": 100,
             },
-            batch_progress,
+            progress,
             batch_task_ids,
-            program_progress,
-            {},
             lock,
         )
 
-        fields = _task_fields(batch_progress, batch_task_ids[1])
+        fields = _task_fields(progress, batch_task_ids[1])
         assert fields["service_job_id"] == "job-abc"
         assert fields["job_status"] == "PENDING"
         assert fields["poll_attempt"] == 3
         assert fields["max_retries"] == 100
 
-    def test_multiple_concurrent_batches(self, batch_progress, program_progress, lock):
-        """Multiple batch_ids can coexist simultaneously."""
+    def test_multiple_concurrent_batches(self, progress, lock):
+        """Multiple batch_ids can coexist simultaneously in the same Progress."""
         batch_task_ids: dict[int, int] = {}
 
         for bid, color, label in [(1, "green", "expval"), (2, "cyan", "shots")]:
@@ -493,28 +481,26 @@ class TestHandleBatchMessage:
                     "n_programs": 1,
                     "program_keys": [],
                 },
-                batch_progress,
+                progress,
                 batch_task_ids,
-                program_progress,
-                {},
                 lock,
             )
 
         assert len(batch_task_ids) == 2
-        assert len(batch_progress.tasks) == 2
+        batch_rows = [t for t in progress.tasks if t.fields["row_kind"] == "batch"]
+        assert len(batch_rows) == 2
 
-        fields_1 = _task_fields(batch_progress, batch_task_ids[1])
-        fields_2 = _task_fields(batch_progress, batch_task_ids[2])
+        fields_1 = _task_fields(progress, batch_task_ids[1])
+        fields_2 = _task_fields(progress, batch_task_ids[2])
         assert "expval" in fields_1["job_name"]
         assert "shots" in fields_2["job_name"]
         assert fields_1["batch_color"] == "green"
         assert fields_2["batch_color"] == "cyan"
 
-    def test_final_one_batch_keeps_other(self, batch_progress, program_progress, lock):
+    def test_final_one_batch_keeps_other(self, progress, lock):
         """Finalizing one batch doesn't affect another active batch."""
         batch_task_ids: dict[int, int] = {}
 
-        # Start two batches.
         for bid in (10, 20):
             handle_batch_message(
                 {
@@ -524,16 +510,13 @@ class TestHandleBatchMessage:
                     "n_programs": 1,
                     "program_keys": [],
                 },
-                batch_progress,
+                progress,
                 batch_task_ids,
-                program_progress,
-                {},
                 lock,
             )
 
         tid_20 = batch_task_ids[20]
 
-        # Finalize batch 10.
         handle_batch_message(
             {
                 "batch_id": 10,
@@ -543,16 +526,45 @@ class TestHandleBatchMessage:
                 "final_status": "Success",
                 "program_keys": [],
             },
-            batch_progress,
+            progress,
             batch_task_ids,
-            program_progress,
-            {},
             lock,
         )
 
         assert 10 not in batch_task_ids
         assert 20 in batch_task_ids
-        assert _task_visible(batch_progress, tid_20)
+        assert _task_visible(progress, tid_20)
+
+
+class TestProgramOnlyColumn:
+    """The conditional column wrappers must render only on program rows
+    and emit empty text for batch (or any non-program) rows."""
+
+    def _task(self, mocker, row_kind):
+        task = mocker.Mock()
+        task.fields = {"row_kind": row_kind}
+        return task
+
+    def test_renders_inner_for_program_row(self, mocker):
+        inner = mocker.Mock()
+        inner.render.return_value = "INNER"
+        col = _ProgramOnlyColumn(inner)
+        assert col.render(self._task(mocker, "program")) == "INNER"
+        inner.render.assert_called_once()
+
+    def test_empty_text_for_batch_row(self, mocker):
+        inner = mocker.Mock()
+        col = _ProgramOnlyColumn(inner)
+        result = col.render(self._task(mocker, "batch"))
+        assert str(result) == ""
+        inner.render.assert_not_called()
+
+    def test_empty_text_for_unknown_row_kind(self, mocker):
+        inner = mocker.Mock()
+        col = _ProgramOnlyColumn(inner)
+        result = col.render(self._task(mocker, None))
+        assert str(result) == ""
+        inner.render.assert_not_called()
 
 
 class TestProgressDisabled:
@@ -589,28 +601,10 @@ class TestFactoryShortCircuit:
         assert progress is None
         assert live is None
 
-    def test_make_batch_display_returns_nones_when_disabled(self, monkeypatch):
-        monkeypatch.setenv("DIVI_DISABLE_PROGRESS", "1")
-        batch, progress, live = make_batch_display()
-        assert batch is None
-        assert progress is None
-        assert live is None
-
     def test_make_progress_display_returns_real_objects_when_enabled(self, monkeypatch):
         monkeypatch.delenv("DIVI_DISABLE_PROGRESS", raising=False)
         progress, live = make_progress_display()
         try:
-            assert isinstance(progress, Progress)
-            assert isinstance(live, Live)
-        finally:
-            if live is not None:
-                live.stop()
-
-    def test_make_batch_display_returns_real_objects_when_enabled(self, monkeypatch):
-        monkeypatch.delenv("DIVI_DISABLE_PROGRESS", raising=False)
-        batch, progress, live = make_batch_display()
-        try:
-            assert isinstance(batch, Progress)
             assert isinstance(progress, Progress)
             assert isinstance(live, Live)
         finally:
@@ -702,9 +696,11 @@ class TestQueueListenerCrashSafety:
         assert "advance" not in kwargs
         assert kwargs.get("final_status") == "Success"
 
-    def test_hide_on_success_hides_completed_program_row(self, mocker):
-        """With ``hide_on_success=True``, a Success message must hide the
-        program row.  Failed rows must remain visible so users can diagnose."""
+    def test_hide_program_rows_reveals_failed_row(self, mocker):
+        """With ``hide_program_rows=True`` (large ensemble: rows created
+        invisible by the ensemble), a non-Success terminal status must
+        flip ``visible=True`` so failures stay diagnosable.  Successful
+        rows stay hidden."""
         q: Queue = Queue()
         progress_bar = mocker.MagicMock()
         progress_bar.console = mocker.MagicMock()
@@ -718,7 +714,7 @@ class TestQueueListenerCrashSafety:
                 "job_id": "j_ok",
                 "progress": 0,
                 "message": "Finished successfully!",
-                "final_status": "Success",
+                "final_status": TerminalStatus.SUCCESS,
             }
         )
         q.put(
@@ -726,14 +722,14 @@ class TestQueueListenerCrashSafety:
                 "job_id": "j_fail",
                 "progress": 0,
                 "message": "boom",
-                "final_status": "Failed",
+                "final_status": TerminalStatus.FAILED,
             }
         )
 
         thread = Thread(
             target=queue_listener,
             args=(q, progress_bar, pb_task_map, done, lock),
-            kwargs={"hide_on_success": True},
+            kwargs={"hide_program_rows": True},
         )
         thread.start()
         try:
@@ -743,11 +739,14 @@ class TestQueueListenerCrashSafety:
             thread.join(timeout=2)
 
         calls = {c.args[0]: c.kwargs for c in progress_bar.update.call_args_list}
-        assert calls[1].get("visible") is False
-        assert "visible" not in calls[2]
+        # Success: row stays hidden (no visibility change emitted).
+        assert "visible" not in calls[1]
+        # Failure: row is revealed.
+        assert calls[2].get("visible") is True
 
-    def test_hide_on_success_default_keeps_row_visible(self, mocker):
-        """Default behavior (small ensembles): successful rows stay visible."""
+    def test_hide_program_rows_default_keeps_visibility_untouched(self, mocker):
+        """Default behavior (small ensembles): listener leaves visibility
+        alone on any terminal status."""
         q: Queue = Queue()
         progress_bar = mocker.MagicMock()
         progress_bar.console = mocker.MagicMock()
@@ -761,7 +760,7 @@ class TestQueueListenerCrashSafety:
                 "job_id": "j_ok",
                 "progress": 0,
                 "message": "Finished successfully!",
-                "final_status": "Success",
+                "final_status": TerminalStatus.SUCCESS,
             }
         )
 

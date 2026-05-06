@@ -223,6 +223,11 @@ class _BatchCoordinator:
         # Programs currently executing (not yet finished their run()).
         self._active_programs: set[str] = set()
 
+        # Programs that have already emitted their prep-progress signal —
+        # used to make the prep-row tick exactly once per program even
+        # when a program submits multiple times during its lifetime.
+        self._prep_emitted: set[str] = set()
+
         # Pending submissions waiting for the barrier.
         self._pending: _Batch = {}
 
@@ -289,8 +294,19 @@ class _BatchCoordinator:
                 prefixed_circuits, kwargs, future
             )
 
+            first_submit = program_key not in self._prep_emitted
+            if first_submit:
+                self._prep_emitted.add(program_key)
+
             if self._should_flush():
                 self._trigger_flush()
+
+        # Outside the lock: emit the prep-progress signal that lets the
+        # ensemble's "Submitting circuits" row tick up.  Done per-program
+        # on first submit so multi-iteration programs don't reset the
+        # bar mid-run.
+        if first_submit and self._progress_queue is not None:
+            self._progress_queue.put({"prep_advance": True, "program_key": program_key})
 
         # Block until this program's results are ready.
         return future.result()

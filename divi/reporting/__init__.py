@@ -4,8 +4,8 @@
 
 from ._pbar import (
     BATCH_COLORS,
+    TerminalStatus,
     handle_batch_message,
-    make_batch_display,
     make_progress_bar,
     make_progress_display,
     progress_disabled,

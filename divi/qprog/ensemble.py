@@ -4,6 +4,7 @@
 
 import atexit
 import os
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
@@ -14,7 +15,6 @@ from warnings import warn
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import TaskID
 
 from divi.backends import CircuitRunner
 from divi.qprog._batch_coordinator import (
@@ -29,11 +29,12 @@ from divi.qprog.variational_quantum_algorithm import (
     VariationalQuantumAlgorithm,
 )
 from divi.reporting import (
+    TerminalStatus,
     disable_logging,
-    make_batch_display,
     make_progress_display,
     queue_listener,
 )
+from divi.reporting._pbar import _drain_queue_quietly
 
 __all__ = ["BatchConfig", "BatchMode", "ProgramEnsemble"]
 
@@ -41,9 +42,13 @@ __all__ = ["BatchConfig", "BatchMode", "ProgramEnsemble"]
 #: one executor thread per program under the default wait-for-all barrier.
 _BARRIER_PROGRAM_LIMIT = 256
 
-#: Above this program count, per-program progress rows are hidden on
-#: successful completion so the batch row remains the focal signal.
-_HIDE_ON_SUCCESS_THRESHOLD = 32
+#: Above this program count, per-program progress rows are created
+#: hidden so the display isn't flooded by hundreds of rows.  Failed,
+#: cancelled, and aborted programs are revealed on terminal status so
+#: users can still diagnose what went wrong.  In hide mode the
+#: ensemble also adds a "Submitting circuits" prep row that ticks up
+#: as workers finish circuit construction and call ``submit``.
+_HIDE_PROGRAM_ROWS_THRESHOLD = 64
 
 #: Above this many ``max_concurrent_programs``, ``run`` warns to flag a
 #: likely misuse of the knob (e.g. the user wanted ``max_batch_size``).
@@ -85,6 +90,11 @@ class ProgramEnsemble(ABC):
 
         self._total_circuit_count = 0
         self._total_run_time = 0.0
+
+        self._progress_bar = None
+        self._listener_thread = None
+        self._hide_program_rows = False
+        self._prep_task_id = None
 
         self._is_jupyter = Console().is_jupyter
 
@@ -217,7 +227,6 @@ class ProgramEnsemble(ABC):
                 pass  # Already stopped or not running
             self._live_display = None
             self._progress_bar = None
-            self._batch_progress = None
             self._pb_task_map.clear()
 
     def _atexit_cleanup_hook(self):
@@ -261,15 +270,12 @@ class ProgramEnsemble(ABC):
                     completed=0,
                     message="",
                     batch_color="",
+                    row_kind="program",
+                    program_key=self._program_key_map.get(program),
+                    final_status=None,
+                    visible=not self._hide_program_rows,
                 )
                 self._pb_task_map[program.program_id] = task_id
-
-                # Link program_key to this progress bar task for batch coloring
-                prog_key = self._program_key_map.get(program)
-                if prog_key is not None:
-                    self._program_key_to_task_ids.setdefault(prog_key, []).append(
-                        task_id
-                    )
 
         coordinator = self._coordinator
         program_key = self._program_key_map.get(program)
@@ -338,20 +344,37 @@ class ProgramEnsemble(ABC):
             raise RuntimeError("No programs to run.")
 
         self._progress_bar = None
-        self._batch_progress = None
         self._live_display = None
+        self._prep_task_id = None
         batching_enabled = batch_config.mode is BatchMode.MERGED
+        self._hide_program_rows = (
+            batching_enabled and len(self._programs) > _HIDE_PROGRAM_ROWS_THRESHOLD
+        )
         _wants_progress = hasattr(self, "max_iterations") or getattr(
             self, "_show_progress", False
         )
         if _wants_progress:
-            if batching_enabled:
-                self._batch_progress, self._progress_bar, self._live_display = (
-                    make_batch_display(is_jupyter=self._is_jupyter)
-                )
-            else:
-                self._progress_bar, self._live_display = make_progress_display(
-                    is_jupyter=self._is_jupyter
+            self._progress_bar, self._live_display = make_progress_display(
+                is_jupyter=self._is_jupyter
+            )
+            if self._progress_bar is not None and self._hide_program_rows:
+                # In hide mode, add a single "Submitting circuits" row up
+                # front so the user sees activity during the prep window
+                # (workers building circuits in Python, no batch flush
+                # yet).  The coordinator emits a ``prep_advance`` message
+                # per program on its first ``submit`` call, ticking this
+                # row up until it reaches len(programs) — at which point
+                # the merged backend submission fires.
+                self._prep_task_id = self._progress_bar.add_task(
+                    "",
+                    job_name="Submitting circuits",
+                    total=len(self._programs),
+                    completed=0,
+                    message="",
+                    batch_color="",
+                    row_kind="program",
+                    program_key=None,
+                    final_status=None,
                 )
 
         # Validate that all program instances are unique to prevent thread-safety issues
@@ -400,8 +423,11 @@ class ProgramEnsemble(ABC):
         self.futures.clear()
         self._future_to_program = {}
         self._pb_task_map = {}
+        # Guards ``_pb_task_map`` mutations and the snapshot taken when
+        # iterating ``progress_bar._tasks`` for batch coloring.  Any
+        # cross-task field lookup that walks the Progress's task dict
+        # must take this lock around the snapshot.
         self._pb_lock = Lock()
-        self._program_key_to_task_ids: dict[str, list[TaskID]] = {}
         self._listener_thread = None
 
         # Setup → registration → executor.submit happen sequentially on the
@@ -434,33 +460,38 @@ class ProgramEnsemble(ABC):
             if self._progress_bar is not None and self._live_display is not None:
                 self._live_display.start()
 
-                listener_kwargs: dict[str, Any] = {
-                    "live_display": self._live_display,
-                    "is_jupyter": self._is_jupyter,
-                    "hide_on_success": (
-                        len(self._programs) > _HIDE_ON_SUCCESS_THRESHOLD
-                    ),
-                }
+                # Co-allocated with ``_progress_bar`` in the setup path, so a
+                # progress-active branch implies ``_done_event`` is live.
+                assert self._done_event is not None
+                queue_obj = self._queue
+                progress_bar = self._progress_bar
+                pb_task_map = self._pb_task_map
+                done_event = self._done_event
+                pb_lock = self._pb_lock
+                hide_program_rows = self._hide_program_rows
+                prep_task_id = self._prep_task_id
 
-                if batching_enabled and self._batch_progress is not None:
-                    listener_kwargs.update(
-                        batch_progress=self._batch_progress,
-                        batch_task_ids={},
-                        program_key_to_task_ids=self._program_key_to_task_ids,
-                    )
+                def _listener_runner():
+                    # Spawn-side guard: if ``queue_listener`` dies for any
+                    # reason — including signature errors before its body
+                    # runs — drain the queue so any ``queue.join()`` caller
+                    # doesn't hang waiting for ``task_done()`` calls that
+                    # will never come.
+                    try:
+                        queue_listener(
+                            queue_obj,
+                            progress_bar,
+                            pb_task_map,
+                            done_event,
+                            pb_lock,
+                            hide_program_rows=hide_program_rows,
+                            prep_task_id=prep_task_id,
+                        )
+                    except BaseException:
+                        _drain_queue_quietly(queue_obj)
+                        raise
 
-                self._listener_thread = Thread(
-                    target=queue_listener,
-                    args=(
-                        self._queue,
-                        self._progress_bar,
-                        self._pb_task_map,
-                        self._done_event,
-                        self._pb_lock,
-                    ),
-                    kwargs=listener_kwargs,
-                    daemon=True,
-                )
+                self._listener_thread = Thread(target=_listener_runner, daemon=True)
                 self._listener_thread.start()
 
             for program in self._programs.values():
@@ -491,7 +522,6 @@ class ProgramEnsemble(ABC):
                     pass
                 self._live_display = None
                 self._progress_bar = None
-                self._batch_progress = None
 
             if self._executor is not None:
                 self._executor.shutdown(wait=False)
@@ -538,14 +568,75 @@ class ProgramEnsemble(ABC):
                 except Exception:
                     pass  # Skip failed futures
 
+    def _wait_for_listener_drain(self, timeout: float = 30.0) -> None:
+        """Wait for the listener to drain the queue, with a watchdog.
+
+        ``queue.join()`` blocks until ``task_done()`` count matches
+        ``put()`` count.  This helper polls for drain progress and bails
+        out on either of two failure modes so ``ensemble.join()`` never
+        hangs:
+
+        - **Listener dead**: the loop returns immediately with a warning.
+        - **Listener alive but stuck**: after ``timeout`` seconds with
+          no drain progress the loop returns with a warning.  Display
+          will be incomplete but the program exits.
+        """
+        if self._listener_thread is None:
+            return
+        deadline = time.monotonic() + timeout
+        while self._queue.unfinished_tasks > 0:
+            if not self._listener_thread.is_alive():
+                warn(
+                    "Progress listener thread died before draining the queue; "
+                    "some terminal-status updates may be missing from the "
+                    "displayed progress.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                return
+            if time.monotonic() >= deadline:
+                warn(
+                    f"Progress listener did not drain within {timeout:.0f}s; "
+                    "some terminal-status updates may be missing.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                return
+            time.sleep(0.05)
+
+    def _emit_progress_message(
+        self,
+        prog_id: str | None,
+        *,
+        final_status: TerminalStatus | None = None,
+        message: str | None = None,
+    ) -> None:
+        """Put a synthetic progress message on the listener queue.
+
+        Used by failure / cancellation paths so every progress mutation
+        flows through the same single-writer queue → listener pipeline,
+        keeping ordering coherent with the worker-emitted messages.
+
+        No-op when there is no progress display: without a listener
+        nothing would consume the message.
+        """
+        if prog_id is None or self._queue is None or self._progress_bar is None:
+            return
+        payload: dict[str, Any] = {"job_id": prog_id, "progress": 0}
+        if final_status is not None:
+            payload["final_status"] = final_status
+        if message is not None:
+            payload["message"] = message
+        self._queue.put(payload)
+
     def _stop_remaining_programs(
         self,
         *,
-        pending_status: str,
+        pending_status: TerminalStatus,
         pending_message: str,
-        running_status: str,
+        running_status: TerminalStatus,
         running_message: str,
-        failed_status: str = "Failed",
+        failed_status: TerminalStatus = TerminalStatus.FAILED,
         failed_message: str = "Job failed",
     ) -> None:
         """Signal all remaining programs to stop and wait for them to finish.
@@ -579,19 +670,17 @@ class ProgramEnsemble(ABC):
             if future.done():
                 # Mark already-failed futures so their progress bars don't
                 # freeze.  Futures that completed successfully are fine.
-                if self._progress_bar and not future.cancelled():
+                if not future.cancelled():
                     try:
                         exc = future.exception()
                     except Exception:
                         exc = True  # defensive; treat as failed
                     if exc is not None:
-                        task_id = self._pb_task_map.get(program.program_id)
-                        if task_id is not None:
-                            self._progress_bar.update(
-                                task_id,
-                                final_status=failed_status,
-                                message=failed_message,
-                            )
+                        self._emit_progress_message(
+                            program.program_id,
+                            final_status=failed_status,
+                            message=failed_message,
+                        )
                 continue
 
             cancel_result = future.cancel()
@@ -604,30 +693,27 @@ class ProgramEnsemble(ABC):
                 if self._coordinator is None:
                     program.cancel_unfinished_job()
                 unstoppable_futures.append(future)
-                task_id = self._pb_task_map.get(program.program_id)
-                if self._progress_bar and task_id is not None:
-                    self._progress_bar.update(task_id, message="Finishing... ⏳")
+                self._emit_progress_message(
+                    program.program_id,
+                    message="Finishing... ⏳",
+                )
 
         # Immediately mark successfully cancelled tasks
         for program in successfully_cancelled:
-            task_id = self._pb_task_map.get(program.program_id)
-            if self._progress_bar and task_id is not None:
-                self._progress_bar.update(
-                    task_id,
-                    final_status=pending_status,
-                    message=pending_message,
-                )
+            self._emit_progress_message(
+                program.program_id,
+                final_status=pending_status,
+                message=pending_message,
+            )
 
         # Wait for running tasks to finish
         for future in as_completed(unstoppable_futures):
             program = self._future_to_program[future]
-            task_id = self._pb_task_map.get(program.program_id)
-            if self._progress_bar and task_id is not None:
-                self._progress_bar.update(
-                    task_id,
-                    final_status=running_status,
-                    message=running_message,
-                )
+            self._emit_progress_message(
+                program.program_id,
+                final_status=running_status,
+                message=running_message,
+            )
 
     def _handle_cancellation(self):
         """Handle cancellation gracefully with accurate progress feedback.
@@ -646,9 +732,9 @@ class ProgramEnsemble(ABC):
         for running ones.
         """
         self._stop_remaining_programs(
-            pending_status="Cancelled",
+            pending_status=TerminalStatus.CANCELLED,
             pending_message="Cancelled by user",
-            running_status="Aborted",
+            running_status=TerminalStatus.ABORTED,
             running_message="Stopped after current iteration",
         )
 
@@ -666,18 +752,16 @@ class ProgramEnsemble(ABC):
         if failed_future is not None:
             failed_program = self._future_to_program.get(failed_future)
             if failed_program is not None:
-                task_id = self._pb_task_map.get(failed_program.program_id)
-                if self._progress_bar and task_id is not None:
-                    self._progress_bar.update(
-                        task_id,
-                        final_status="Failed",
-                        message="Job failed",
-                    )
+                self._emit_progress_message(
+                    failed_program.program_id,
+                    final_status=TerminalStatus.FAILED,
+                    message="Job failed",
+                )
 
         self._stop_remaining_programs(
-            pending_status="Cancelled",
+            pending_status=TerminalStatus.CANCELLED,
             pending_message="Cancelled due to failure",
-            running_status="Aborted",
+            running_status=TerminalStatus.ABORTED,
             running_message="Aborted due to failure",
         )
 
@@ -818,7 +902,7 @@ class ProgramEnsemble(ABC):
                 and self._listener_thread is not None
                 and self._live_display is not None
             ):
-                self._queue.join()
+                self._wait_for_listener_drain()
                 self._done_event.set()
                 self._listener_thread.join()
                 self._live_display.stop()

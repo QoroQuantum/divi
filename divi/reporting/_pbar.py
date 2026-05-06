@@ -3,11 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+from enum import Enum
 from queue import Empty, Queue
 from threading import Event, Lock
 from typing import Any, cast
 
-from rich.console import Group
 from rich.live import Live
 from rich.progress import (
     BarColumn,
@@ -23,6 +23,16 @@ from rich.progress import (
 from rich.text import Text
 
 from divi.reporting._qlogger import _ensure_unbuffered_stdout
+
+
+class TerminalStatus(str, Enum):
+    """Terminal status for a progress row; members equal their string value."""
+
+    SUCCESS = "Success"
+    FAILED = "Failed"
+    CANCELLED = "Cancelled"
+    ABORTED = "Aborted"
+
 
 #: Color cycle assigned to flush groups in ensemble progress displays.
 #:
@@ -65,8 +75,22 @@ class _UnfinishedTaskWrapper:
         return getattr(self._task, name)
 
 
+class _ProgramOnlyColumn(ProgressColumn):
+    """Wrap a stock column so it renders only on rows tagged
+    ``row_kind="program"``; batch-row cells fall back to empty text."""
+
+    def __init__(self, inner: ProgressColumn):
+        super().__init__()
+        self._inner = inner
+
+    def render(self, task):
+        if task.fields.get("row_kind") == "program":
+            return self._inner.render(task)
+        return Text("")
+
+
 class ConditionalSpinnerColumn(ProgressColumn):
-    _FINAL_STATUSES = ("Success", "Failed", "Cancelled", "Aborted")
+    _FINAL_STATUSES = frozenset(TerminalStatus)
 
     def __init__(self):
         super().__init__()
@@ -84,10 +108,10 @@ class ConditionalSpinnerColumn(ProgressColumn):
 
 class PhaseStatusColumn(ProgressColumn):
     _STATUS_MESSAGES = {
-        "Success": ("• Success! ✅ ", "bold green"),
-        "Failed": ("• Failed! ❌ ", "bold red"),
-        "Cancelled": ("• Cancelled ⏹️ ", "bold yellow"),
-        "Aborted": ("• Aborted ⚠️ ", "dim magenta"),
+        TerminalStatus.SUCCESS: ("• Success! ✅ ", "bold green"),
+        TerminalStatus.FAILED: ("• Failed! ❌ ", "bold red"),
+        TerminalStatus.CANCELLED: ("• Cancelled ⏹️ ", "bold yellow"),
+        TerminalStatus.ABORTED: ("• Aborted ⚠️ ", "dim magenta"),
     }
 
     def __init__(self, table_column=None):
@@ -148,37 +172,33 @@ class PhaseStatusColumn(ProgressColumn):
 
 
 def make_progress_bar() -> Progress:
-    """Create a Rich Progress bar for per-program tracking.
+    """Create the unified Rich Progress bar.
 
-    Auto-refresh is disabled; the enclosing ``Live`` display handles refresh.
+    Per-program rows render the full bar/M-of-N/elapsed columns; batch
+    rows render only the indicator/text/spinner/status columns thanks
+    to the :class:`_ProgramOnlyColumn` wrappers.  Tasks distinguish
+    themselves via the ``row_kind`` field.
     """
     return Progress(
         BatchIndicatorColumn(),
         TextColumn("[bold blue]{task.fields[job_name]}"),
-        BarColumn(),
-        MofNCompleteColumn(),
-        TimeElapsedColumn(),
+        _ProgramOnlyColumn(BarColumn()),
+        _ProgramOnlyColumn(MofNCompleteColumn()),
+        _ProgramOnlyColumn(TimeElapsedColumn()),
         ConditionalSpinnerColumn(),
         PhaseStatusColumn(),
-        auto_refresh=False,
-    )
-
-
-def _make_batch_status_bar() -> Progress:
-    """Create a lightweight Progress bar for batch status lines (no bar/M-of-N/time)."""
-    return Progress(
-        BatchIndicatorColumn(),
-        TextColumn("[bold blue]{task.fields[job_name]}"),
-        ConditionalSpinnerColumn(),
-        PhaseStatusColumn(),
-        auto_refresh=False,
     )
 
 
 def make_progress_display(
     is_jupyter: bool = False,
 ) -> tuple[Progress | None, Live | None]:
-    """Create a ``Live``-wrapped progress bar for per-program tracking.
+    """Create a ``Live``-wrapped progress bar covering both per-program
+    and batch rows.
+
+    In Jupyter, ``auto_refresh`` is disabled to avoid double-rendering
+    (rich#1737); the caller is responsible for ``live.refresh()`` after
+    each update in that mode.
 
     Returns ``(None, None)`` when :func:`progress_disabled` is true.
     """
@@ -186,39 +206,13 @@ def make_progress_display(
         return None, None
 
     _ensure_unbuffered_stdout()
-    program_progress = make_progress_bar()
+    progress_bar = make_progress_bar()
     live = Live(
-        program_progress,
+        progress_bar,
         auto_refresh=not is_jupyter,
         refresh_per_second=10,
     )
-    return program_progress, live
-
-
-def make_batch_display(
-    is_jupyter: bool = False,
-) -> tuple[Progress | None, Progress | None, Live | None]:
-    """Create a composed Live display with separate batch status and program progress bars.
-
-    In Jupyter environments auto-refresh is disabled to avoid double-rendering
-    issues (rich#1737). The caller is responsible for calling ``live.refresh()``
-    after each update.
-
-    Returns ``(None, None, None)`` when :func:`progress_disabled` is true.
-    """
-    if progress_disabled():
-        return None, None, None
-
-    _ensure_unbuffered_stdout()
-    batch_progress = _make_batch_status_bar()
-    program_progress = make_progress_bar()
-    group = Group(program_progress, batch_progress)
-    live = Live(
-        group,
-        auto_refresh=not is_jupyter,
-        refresh_per_second=10,
-    )
-    return batch_progress, program_progress, live
+    return progress_bar, live
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +239,22 @@ def _safe_call(fn, /, *args, **kwargs) -> None:
         pass
 
 
+def _drain_queue_quietly(queue: Queue) -> None:
+    """Drain remaining messages and ``task_done()`` each so callers
+    blocked on ``queue.join()`` aren't held hostage by a dead listener."""
+    while True:
+        try:
+            queue.get_nowait()
+        except Empty:
+            break
+        except Exception:
+            break
+        try:
+            queue.task_done()
+        except Exception:
+            pass
+
+
 def queue_listener(
     queue: Queue,
     progress_bar: Progress,
@@ -252,18 +262,25 @@ def queue_listener(
     done_event: Event,
     lock: Lock,
     *,
-    batch_progress: Progress | None = None,
-    batch_task_ids: dict[int, TaskID] | None = None,
-    program_key_to_task_ids: dict[str, list[TaskID]] | None = None,
-    live_display: Live | None = None,
-    is_jupyter: bool = False,
-    hide_on_success: bool = False,
+    hide_program_rows: bool = False,
+    prep_task_id: TaskID | None = None,
 ):
-    """Drain a message queue and update progress bars accordingly.
+    """Drain a message queue and update the unified progress bar.
 
     Runs in a daemon thread until *done_event* is set.  Messages with
-    ``batch=True`` are routed to :func:`handle_batch_message`; all others
-    update the per-program *progress_bar*.
+    ``batch=True`` are routed to :func:`handle_batch_message`; messages
+    with ``prep_advance=True`` advance the prep row; all others are
+    program-level updates resolved through ``pb_task_map``.
+
+    When ``hide_program_rows`` is set, per-program rows were created
+    invisible by the ensemble — the listener reveals them only on a
+    non-Success terminal status so failures stay diagnosable.
+
+    The body is fully guarded: per-message exceptions are caught by the
+    inner try; anything that escapes (including a thread-construction
+    error before this body even runs) is caught by the outer
+    ``BaseException`` handler in the spawned thread, which drains the
+    queue so ``queue.join()`` callers never hang on a dead listener.
 
     Each per-message body is wrapped so a malformed message (e.g. unknown
     ``job_id``, Rich raising during teardown) cannot starve ``queue.join()``
@@ -271,107 +288,152 @@ def queue_listener(
     advances to the next message.
     """
     console = progress_bar.console
+    # Batch rows live in the same Progress as program rows now; their
+    # TaskIDs are tracked locally so split flush groups (expval vs
+    # shots) each get their own row.
+    batch_task_ids: dict[int, TaskID] = {}
 
     while not done_event.is_set():
+        # Outer-loop guard: this listener is the sole writer of progress
+        # updates after the queue-routing refactor.  A dead listener
+        # silently freezes the display and hangs ``ensemble.join()``'s
+        # drain wait, so any escaping ``Exception`` is logged and the
+        # loop continues — the inner per-message try is the primary
+        # defence; this is belt-and-suspenders.
         try:
-            msg: dict[str, Any] = queue.get(timeout=0.1)
-        except Empty:
-            continue
-        except Exception as e:
-            _safe_log(console, f"[queue_listener] queue.get failed: {e}")
-            continue
-
-        try:
-            # --- Batch-level messages from the coordinator ---
-            if msg.get("batch"):
-                if batch_progress is not None and batch_task_ids is not None:
-                    handle_batch_message(
-                        msg,
-                        batch_progress,
-                        batch_task_ids,
-                        progress_bar,
-                        program_key_to_task_ids or {},
-                        lock,
-                    )
-                if is_jupyter and live_display is not None:
-                    _safe_call(live_display.refresh)
+            try:
+                msg: dict[str, Any] = queue.get(timeout=0.1)
+            except Empty:
                 continue
-
-            # --- Regular per-program messages ---
-            with lock:
-                task_id = pb_task_map.get(msg["job_id"])
-            if task_id is None:
-                # Stale or unknown job_id (e.g. a late progress message
-                # arriving after the program's task was torn down).  Drop
-                # it rather than letting a KeyError kill the listener.
-                _safe_log(
-                    console,
-                    f"[queue_listener] dropped message for unknown job_id "
-                    f"{msg.get('job_id')!r}",
-                )
+            except Exception as e:
+                _safe_log(console, f"[queue_listener] queue.get failed: {e}")
                 continue
-
-            update_args: dict[str, Any] = {"advance": msg["progress"]}
-            for key in (
-                "poll_attempt",
-                "max_retries",
-                "service_job_id",
-                "job_status",
-                "loss",
-            ):
-                if key in msg:
-                    update_args[key] = msg[key]
-            if msg.get("message"):
-                update_args["message"] = msg["message"]
-            if "final_status" in msg:
-                update_args["final_status"] = msg.get("final_status", "")
-                # Fill the bar so a successful program isn't displayed
-                # as 0/N when it didn't tick the counter incrementally.
-                if msg["final_status"] == "Success":
-                    task = progress_bar._tasks.get(task_id)
-                    if task is not None and task.total is not None:
-                        update_args["completed"] = task.total
-                        update_args.pop("advance", None)
-                    # In large ensembles, hide successful rows so the
-                    # batch row remains the focal signal.  Failed,
-                    # cancelled, and aborted rows stay visible so users
-                    # can diagnose what went wrong.
-                    if hide_on_success:
-                        update_args["visible"] = False
 
             try:
-                progress_bar.update(task_id, **update_args)
+                # --- Batch-level messages from the coordinator ---
+                if msg.get("batch"):
+                    handle_batch_message(
+                        msg,
+                        progress_bar,
+                        batch_task_ids,
+                        lock,
+                    )
+                    continue
+
+                # --- Prep-progress signals from the coordinator ---
+                if msg.get("prep_advance"):
+                    if prep_task_id is None:
+                        continue
+                    prep_update: dict[str, Any] = {"advance": 1}
+                    prep_task = progress_bar._tasks.get(prep_task_id)
+                    if (
+                        prep_task is not None
+                        and prep_task.total is not None
+                        and prep_task.completed + 1 >= prep_task.total
+                    ):
+                        # Last program reached submit — barrier is about
+                        # to fire.  Mark the prep row as final so the
+                        # display reads "Success ✅" instead of leaving
+                        # an active spinner.
+                        prep_update["final_status"] = TerminalStatus.SUCCESS
+                        prep_update.pop("advance", None)
+                        prep_update["completed"] = prep_task.total
+                    progress_bar.update(prep_task_id, **prep_update)
+                    continue
+
+                # --- Regular per-program messages ---
+                with lock:
+                    task_id = pb_task_map.get(msg["job_id"])
+                if task_id is None:
+                    # Stale or unknown job_id (e.g. a late progress message
+                    # arriving after the program's task was torn down).
+                    # Drop it rather than letting a KeyError kill the
+                    # listener.
+                    _safe_log(
+                        console,
+                        f"[queue_listener] dropped message for unknown job_id "
+                        f"{msg.get('job_id')!r}",
+                    )
+                    continue
+
+                update_args: dict[str, Any] = {"advance": msg["progress"]}
+                for key in (
+                    "poll_attempt",
+                    "max_retries",
+                    "service_job_id",
+                    "job_status",
+                    "loss",
+                ):
+                    if key in msg:
+                        update_args[key] = msg[key]
+                if msg.get("message"):
+                    update_args["message"] = msg["message"]
+                if "final_status" in msg:
+                    final_status = msg["final_status"]
+                    update_args["final_status"] = final_status
+                    if final_status == TerminalStatus.SUCCESS:
+                        # Fill the bar so a successful program isn't
+                        # displayed as 0/N when it didn't tick the
+                        # counter incrementally.
+                        task = progress_bar._tasks.get(task_id)
+                        if task is not None and task.total is not None:
+                            update_args["completed"] = task.total
+                            update_args.pop("advance", None)
+                    elif hide_program_rows and final_status in (
+                        TerminalStatus.FAILED,
+                        TerminalStatus.CANCELLED,
+                        TerminalStatus.ABORTED,
+                    ):
+                        # Per-program rows were created hidden by the
+                        # ensemble; reveal this one so the user can see
+                        # what went wrong.
+                        update_args["visible"] = True
+
+                try:
+                    progress_bar.update(task_id, **update_args)
+                except Exception as e:
+                    _safe_log(
+                        console,
+                        f"[queue_listener] progress_bar.update failed: {e}",
+                    )
+
             except Exception as e:
-                _safe_log(console, f"[queue_listener] progress_bar.update failed: {e}")
-
-            if is_jupyter and live_display is not None:
-                _safe_call(live_display.refresh)
-
+                # Per-message safety net: any unexpected exception in the
+                # processing body is logged and swallowed.  Without this,
+                # queue.join() in ProgramEnsemble would block forever
+                # waiting for the task_done() that the dead listener
+                # thread never makes.
+                _safe_log(
+                    console,
+                    f"[queue_listener] unexpected exception while handling message: {e}",
+                )
+            finally:
+                queue.task_done()
         except Exception as e:
-            # Final safety net: any unexpected exception in the per-message
-            # body is logged and swallowed.  Without this, queue.join() in
-            # ProgramEnsemble would block forever waiting for the
-            # task_done() that the dead listener thread never makes.
             _safe_log(
                 console,
-                f"[queue_listener] unexpected exception while handling message: {e}",
+                f"[queue_listener] outer-loop exception (continuing): {e}",
             )
-        finally:
-            queue.task_done()
 
 
 def handle_batch_message(
     msg: dict[str, Any],
-    batch_progress: Progress,
+    progress_bar: Progress,
     batch_task_ids: dict[int, TaskID],
-    program_progress: Progress,
-    program_key_to_task_ids: dict[str, list[TaskID]],
     lock: Lock,
 ):
-    """Process a batch-level progress message using the separate batch Progress bar.
+    """Process a batch-level progress message in the unified progress bar.
 
     Batch rows are created dynamically per ``batch_id`` so that split
     sub-batches (e.g. expval vs shots) each get their own status line.
+    The conditional column wrappers keep the bar/M-of-N/elapsed cells
+    empty for batch rows; the indicator/text/spinner/status columns
+    render normally.
+
+    Program-row coloring works by reading each task's ``program_key``
+    field — no parallel ``program_key → TaskID`` index needed.  Reading
+    ``progress_bar._tasks`` mirrors the same pattern used elsewhere in
+    the listener.
     """
     batch_id = msg.get("batch_id")
     if not isinstance(batch_id, int):
@@ -382,16 +444,18 @@ def handle_batch_message(
     n_programs = msg.get("n_programs", 0)
     final_status = msg.get("final_status")
 
-    # Lazily create a batch row for this batch_id
+    # Lazily create a batch row for this batch_id.
     if batch_id not in batch_task_ids:
-        batch_task_ids[batch_id] = batch_progress.add_task(
+        batch_task_ids[batch_id] = progress_bar.add_task(
             "",
             job_name="",
             total=0,
             visible=False,
+            row_kind="batch",
+            program_key=None,
             batch_color="",
             message="",
-            final_status="",
+            final_status=None,
         )
     task_id = batch_task_ids[batch_id]
 
@@ -399,19 +463,15 @@ def handle_batch_message(
     update_args: dict[str, Any] = {}
 
     if not final_status:
-        # Show the batch row and update its label/color
         update_args["visible"] = True
         prefix = f"Batch ({label})" if label else "Batch"
         update_args["job_name"] = (
             f"{prefix}: {n_circuits} circuits, {n_programs} programs"
         )
         update_args["batch_color"] = color
-
-        # Color-code participating programs
-        with lock:
-            for prog_key in msg.get("program_keys", []):
-                for tid in program_key_to_task_ids.get(prog_key, []):
-                    program_progress.update(tid, batch_color=color)
+        _apply_color_to_program_rows(
+            progress_bar, msg.get("program_keys", ()), color, lock
+        )
 
     if "poll_attempt" in msg:
         update_args["poll_attempt"] = msg["poll_attempt"]
@@ -425,13 +485,31 @@ def handle_batch_message(
         update_args["message"] = msg["message"]
 
     if final_status:
-        # Hide the batch row and clear program colors
         update_args["visible"] = False
-        with lock:
-            for prog_key in msg.get("program_keys", []):
-                for tid in program_key_to_task_ids.get(prog_key, []):
-                    program_progress.update(tid, batch_color="")
-        # Clean up the mapping
+        _apply_color_to_program_rows(
+            progress_bar, msg.get("program_keys", ()), "", lock
+        )
         del batch_task_ids[batch_id]
 
-    batch_progress.update(task_id, **update_args)
+    progress_bar.update(task_id, **update_args)
+
+
+def _apply_color_to_program_rows(
+    progress_bar: Progress,
+    program_keys,
+    color: str,
+    lock: Lock,
+) -> None:
+    """Set ``batch_color`` on every program row whose ``program_key``
+    field appears in *program_keys*.  Pass ``color=""`` to clear."""
+    if not program_keys:
+        return
+    keys_set = set(program_keys)
+    # Snapshot under the lock so a concurrent ``add_task`` can't resize
+    # ``_tasks`` mid-iteration.  ``progress_bar.update`` does not need
+    # the lock — it only mutates per-task fields, not the dict.
+    with lock:
+        snapshot = list(progress_bar._tasks.items())
+    for tid, task in snapshot:
+        if task.fields.get("program_key") in keys_set:
+            progress_bar.update(tid, batch_color=color)

@@ -7,10 +7,11 @@ from queue import Queue
 import pytest
 
 import divi.reporting._qlogger as _qlogger
-from divi.reporting._reporter import (
+from divi.reporting import (
     LoggingProgressReporter,
     ProgressReporter,
     QueueProgressReporter,
+    TerminalStatus,
 )
 
 
@@ -95,20 +96,27 @@ class TestQueueProgressReporter:
         }
         mock_queue.put.assert_called_once_with(expected_payload)
 
-    def test_info_finished_message(self, mock_queue):
-        """
-        Test the info method with a 'Finished successfully!' message.
-        """
+    def test_info_with_explicit_final_status_tags_success(self, mock_queue):
+        """``final_status`` is a kwarg now — explicit tagging only, no
+        substring magic."""
         reporter = QueueProgressReporter(job_id="test_job", progress_queue=mock_queue)
-        reporter.info("Finished successfully!")
+        reporter.info("Finished successfully!", final_status=TerminalStatus.SUCCESS)
         expected_payload = {
             "job_id": "test_job",
             "progress": 0,
             "message": "Finished successfully!",
-            "final_status": "Success",
+            "final_status": TerminalStatus.SUCCESS,
             "poll_attempt": 0,
         }
         mock_queue.put.assert_called_once_with(expected_payload)
+
+    def test_info_finished_message_without_kwarg_does_not_tag_success(self, mock_queue):
+        """The substring ``"Finished successfully!"`` no longer auto-tags
+        Success — the kwarg is now load-bearing."""
+        reporter = QueueProgressReporter(job_id="test_job", progress_queue=mock_queue)
+        reporter.info("Finished successfully!")
+        payload = mock_queue.put.call_args[0][0]
+        assert "final_status" not in payload
 
     def test_info_with_polling(self, mock_queue):
         """
@@ -197,6 +205,15 @@ class TestLoggingProgressReporter:
         reporter = LoggingProgressReporter()
         reporter.info("Hello World")
         mock_logger.info.assert_called_once_with("Hello World")
+
+    def test_info_with_final_status_does_not_raise(self, mocker):
+        """``LoggingProgressReporter`` accepts ``final_status`` for ABC
+        compatibility but its display path doesn't key on it — just log
+        the message and move on."""
+        mock_logger = mocker.patch("divi.reporting._reporter.logger")
+        reporter = LoggingProgressReporter()
+        reporter.info("Done", final_status=TerminalStatus.SUCCESS)
+        mock_logger.info.assert_called_once_with("Done")
 
     def test_info_with_overwrite(self, mocker):
         """

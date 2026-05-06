@@ -19,7 +19,7 @@ from divi.backends import AsyncJobBackend, ExecutionResult
 from divi.qprog._batch_coordinator import _BatchCoordinator
 from divi.qprog.ensemble import BatchConfig, BatchMode, ProgramEnsemble
 from divi.qprog.quantum_program import QuantumProgram
-from divi.reporting import queue_listener
+from divi.reporting import TerminalStatus, queue_listener
 from tests.qprog.qprog_contracts import verify_basic_program_ensemble_behaviour
 
 
@@ -136,7 +136,6 @@ class TestProgramEnsemble:
         program_ensemble._executor = mocker.MagicMock(spec=ThreadPoolExecutor)
         program_ensemble._listener_thread = mocker.MagicMock(spec=Thread)
         program_ensemble._progress_bar = mocker.MagicMock()
-        program_ensemble._batch_progress = mocker.MagicMock()
         program_ensemble._live_display = mocker.MagicMock()
         program_ensemble.futures = [mocker.MagicMock()]
         program_ensemble._pb_task_map = {}
@@ -425,7 +424,6 @@ class TestProgramEnsemble:
         mock_live_display.stop.side_effect = Exception("Stop failed")
         program_ensemble._live_display = mock_live_display
         program_ensemble._progress_bar = mocker.MagicMock()
-        program_ensemble._batch_progress = mocker.MagicMock()
         program_ensemble._pb_task_map = {}
 
         # Should not raise exception, just pass silently
@@ -444,11 +442,85 @@ class TestProgramEnsemble:
         ):
             program_ensemble._atexit_cleanup_hook()
 
-    def test_handle_cancellation_phases(self, program_ensemble, mocker):
-        """Test all three phases of cancellation handling."""
+    def test_emit_progress_message_puts_on_queue(self, program_ensemble, mocker):
+        """Synthetic terminal-status messages flow through the queue —
+        not direct ``progress_bar.update`` calls — so the listener stays
+        the single writer of the display."""
         program_ensemble.create_programs()
-        mock_progress_bar = mocker.MagicMock()
-        program_ensemble._progress_bar = mock_progress_bar
+        program_ensemble._progress_bar = mocker.MagicMock()
+        program_ensemble._emit_progress_message(
+            "prog1", final_status=TerminalStatus.FAILED, message="Job failed"
+        )
+        msg = program_ensemble._queue.get_nowait()
+        assert msg == {
+            "job_id": "prog1",
+            "progress": 0,
+            "final_status": TerminalStatus.FAILED,
+            "message": "Job failed",
+        }
+
+    def test_emit_progress_message_no_op_without_program_id(
+        self, program_ensemble, mocker
+    ):
+        program_ensemble.create_programs()
+        program_ensemble._progress_bar = mocker.MagicMock()
+        program_ensemble._emit_progress_message(
+            None, final_status=TerminalStatus.FAILED
+        )
+        assert program_ensemble._queue.empty()
+
+    def test_emit_progress_message_no_op_without_progress_bar(self, program_ensemble):
+        """When no progress display is active, emitting a message is a
+        no-op — without a listener nothing would consume it."""
+        program_ensemble.create_programs()
+        assert program_ensemble._progress_bar is None
+        program_ensemble._emit_progress_message(
+            "prog1", final_status=TerminalStatus.FAILED
+        )
+        assert program_ensemble._queue.empty()
+
+    def test_wait_for_listener_drain_bails_on_dead_listener(
+        self, program_ensemble, mocker
+    ):
+        """If the listener thread has died, ``_wait_for_listener_drain``
+        warns and returns rather than hanging on ``queue.join()``."""
+        program_ensemble.create_programs()
+        program_ensemble._listener_thread = mocker.MagicMock()
+        program_ensemble._listener_thread.is_alive.return_value = False
+        # Put a message on the queue with no listener to drain it.
+        program_ensemble._queue.put({"job_id": "prog1", "progress": 0})
+
+        with pytest.warns(RuntimeWarning, match="listener thread died"):
+            program_ensemble._wait_for_listener_drain()
+
+    def test_wait_for_listener_drain_bails_on_timeout(self, program_ensemble, mocker):
+        """A live-but-stuck listener must not hang ``join()``: after the
+        configured timeout the watchdog warns and returns."""
+        program_ensemble.create_programs()
+        program_ensemble._listener_thread = mocker.MagicMock()
+        program_ensemble._listener_thread.is_alive.return_value = (
+            True  # alive but stuck
+        )
+        program_ensemble._queue.put({"job_id": "prog1", "progress": 0})
+
+        with pytest.warns(RuntimeWarning, match="did not drain within"):
+            program_ensemble._wait_for_listener_drain(timeout=0.2)
+
+        # Drop the live mock before fixture teardown — otherwise reset()
+        # would treat ``is_alive()`` as still True and emit its own
+        # "Listener thread did not terminate" warning, polluting the
+        # test's warning capture for downstream runs.
+        program_ensemble._listener_thread = None
+
+    def test_handle_cancellation_phases(self, program_ensemble, mocker):
+        """Test all three phases of cancellation handling.
+
+        Each phase emits a synthetic progress message via
+        ``_emit_progress_message``; we spy on the helper to inspect the
+        messages.
+        """
+        program_ensemble.create_programs()
+        spy = mocker.spy(program_ensemble, "_emit_progress_message")
         program_ensemble._pb_task_map = {"prog1": 1, "prog2": 2}
         program_ensemble._cancellation_event = mocker.MagicMock()
 
@@ -475,11 +547,8 @@ class TestProgramEnsemble:
             program_ensemble._handle_cancellation()
 
         program_ensemble._cancellation_event.set.assert_called_once()
-        assert mock_progress_bar.update.call_count >= 2
 
-        # Verify specific update messages for each phase
-        update_calls = mock_progress_bar.update.call_args_list
-        messages = [call[1].get("message", "") for call in update_calls]
+        messages = [call.kwargs.get("message", "") for call in spy.call_args_list]
         assert "Cancelled by user" in messages
         assert "Finishing... ⏳" in messages
         assert "Stopped after current iteration" in messages
@@ -487,8 +556,7 @@ class TestProgramEnsemble:
     def test_handle_cancellation_unstoppable_futures(self, program_ensemble, mocker):
         """Test cancellation handling with unstoppable futures."""
         program_ensemble.create_programs()
-        mock_progress_bar = mocker.MagicMock()
-        program_ensemble._progress_bar = mock_progress_bar
+        spy = mocker.spy(program_ensemble, "_emit_progress_message")
         program_ensemble._pb_task_map = {"prog1": 1}
         program_ensemble._cancellation_event = mocker.MagicMock()
 
@@ -508,8 +576,8 @@ class TestProgramEnsemble:
 
         finishing_calls = [
             call
-            for call in mock_progress_bar.update.call_args_list
-            if call[1].get("message") == "Finishing... ⏳"
+            for call in spy.call_args_list
+            if call.kwargs.get("message") == "Finishing... ⏳"
         ]
         assert len(finishing_calls) > 0
 
@@ -601,12 +669,10 @@ class TestProgramEnsemble:
         assert program_ensemble._cancellation_event.is_set()
 
     def test_handle_failure_updates_progress_bars(self, program_ensemble, mocker):
-        """Failure path should update progress bars with failure status."""
+        """Failure path should emit a Failed terminal-status message."""
         program_ensemble.create_programs()
         program_ensemble.run(blocking=False)
-
-        mock_progress_bar = mocker.MagicMock()
-        program_ensemble._progress_bar = mock_progress_bar
+        spy = mocker.spy(program_ensemble, "_emit_progress_message")
         program_ensemble._pb_task_map = {"prog1": 1, "prog2": 2}
 
         f_bad = Future()
@@ -628,13 +694,18 @@ class TestProgramEnsemble:
         with pytest.raises(RuntimeError):
             program_ensemble.join()
 
-        update_calls = mock_progress_bar.update.call_args_list
-        final_statuses = [
-            call[1].get("final_status")
-            for call in update_calls
-            if "final_status" in call[1]
+        # Identity check on the enum member (not just the string value):
+        # `TerminalStatus.FAILED == "Failed"` thanks to the str-mixin,
+        # so an `in "Failed"` assertion would silently accept a raw
+        # string regression.
+        failed_calls = [
+            call
+            for call in spy.call_args_list
+            if call.kwargs.get("final_status") is TerminalStatus.FAILED
         ]
-        assert "Failed" in final_statuses
+        assert any(
+            call.args[0] == progs[0].program_id for call in failed_calls
+        ), "the failed program's row was not emitted with final_status=Failed"
 
     def test_handle_failure_non_batched_cancels_jobs(self, program_ensemble, mocker):
         """Without coordinator, failure should call cancel_unfinished_job on running programs."""
@@ -710,12 +781,11 @@ class TestProgramEnsemble:
         assert "failure" in call_kwargs["pending_message"].lower()
 
     def test_handle_failure_all_futures_failed(self, program_ensemble, mocker):
-        """When batch coordinator fails all futures, every program should be marked Failed."""
+        """When batch coordinator fails all futures, every program should
+        emit a Failed terminal-status message via the queue."""
         program_ensemble.create_programs()
         program_ensemble.run(blocking=False)
-
-        mock_progress_bar = mocker.MagicMock()
-        program_ensemble._progress_bar = mock_progress_bar
+        spy = mocker.spy(program_ensemble, "_emit_progress_message")
         program_ensemble._pb_task_map = {"prog1": 1, "prog2": 2}
 
         # Simulate _fail_futures setting the same exception on all futures
@@ -742,14 +812,14 @@ class TestProgramEnsemble:
         with pytest.raises(RuntimeError, match="Ensemble execution failed"):
             program_ensemble.join()
 
-        # Both programs should have a "Failed" final_status
-        update_calls = mock_progress_bar.update.call_args_list
-        failed_task_ids = {
-            call[0][0]
-            for call in update_calls
-            if call[1].get("final_status") == "Failed"
+        # Both programs' rows should have been emitted with the FAILED
+        # enum member specifically.
+        failed_prog_ids = {
+            call.args[0]
+            for call in spy.call_args_list
+            if call.kwargs.get("final_status") is TerminalStatus.FAILED
         }
-        assert failed_task_ids == {1, 2}
+        assert failed_prog_ids == {"prog1", "prog2"}
 
     def test_join_early_return_no_executor(self, program_ensemble):
         """Test join returns early when no executor."""

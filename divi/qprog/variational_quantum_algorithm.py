@@ -46,6 +46,7 @@ from divi.qprog.optimizers import (
     ScipyOptimizer,
 )
 from divi.qprog.quantum_program import QuantumProgram
+from divi.reporting import TerminalStatus
 from divi.viz import ProgramViz
 
 logger = logging.getLogger(__name__)
@@ -1373,7 +1374,9 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         if perform_final_computation:
             self._perform_final_computation(**kwargs)
 
-        self.reporter.info(message="Finished successfully!")
+        self.reporter.info(
+            message="Finished successfully!", final_status=TerminalStatus.SUCCESS
+        )
 
         return self
 

@@ -796,7 +796,7 @@ class TestHamOpsSplitting:
 
 class TestBatchProgress:
     def test_progress_messages_sent_to_queue(self):
-        """Flush sends start and success progress messages."""
+        """Flush sends start and success batch progress messages."""
         queue = Queue()
         backend = FakeSyncBackend()
         coord = _BatchCoordinator(backend, progress_queue=queue)
@@ -805,16 +805,18 @@ class TestBatchProgress:
         # Single program → barrier met immediately on submit.
         coord.submit("p1", {f"p1{_TAG_SEP}c1": "q1"})
 
-        messages = []
+        all_msgs = []
         while not queue.empty():
-            messages.append(queue.get_nowait())
+            all_msgs.append(queue.get_nowait())
 
-        # At minimum: one start message and one success message.
-        assert len(messages) >= 2
-        assert messages[0]["batch"] is True
-        assert messages[0]["n_circuits"] == 1
-        assert messages[0]["n_programs"] == 1
-        assert messages[-1].get("final_status") == "Success"
+        # The queue may also carry ``prep_advance`` signals — filter to
+        # batch messages for the assertions below.
+        batch_msgs = [m for m in all_msgs if m.get("batch")]
+
+        assert len(batch_msgs) >= 2
+        assert batch_msgs[0]["n_circuits"] == 1
+        assert batch_msgs[0]["n_programs"] == 1
+        assert batch_msgs[-1].get("final_status") == "Success"
 
     def test_no_progress_without_queue(self):
         """When no queue is provided, nothing breaks."""
@@ -838,8 +840,13 @@ class TestBatchProgress:
         while not queue.empty():
             messages.append(queue.get_nowait())
 
-        colors = [m["batch_color"] for m in messages if "final_status" not in m]
-        # First flush → first color, second flush → second color.
+        # Only batch start messages carry ``batch_color``; prep_advance
+        # signals don't, so filter explicitly.
+        colors = [
+            m["batch_color"]
+            for m in messages
+            if m.get("batch") and "final_status" not in m
+        ]
         assert colors[0] != colors[1]
 
     def test_mixed_ham_ops_sends_labelled_messages(self):
