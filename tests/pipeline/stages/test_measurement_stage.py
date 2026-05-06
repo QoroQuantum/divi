@@ -865,3 +865,95 @@ class TestAllocatePerGroupShotsHelper:
         assert 2 not in shots
         assert dropped == {2: {0: 0.0}}
         assert surviving == [0, 1]
+
+
+# --------------------------------------------------------------------------- #
+# Multi-observable (tuple) MetaCircuit handling
+# --------------------------------------------------------------------------- #
+
+
+def _tuple_observable_meta() -> MetaCircuit:
+    """Two-qubit Bell circuit with a tuple of two QWC observables."""
+    qc = QuantumCircuit(2)
+    qc.h(0)
+    qc.cx(0, 1)
+    return MetaCircuit(
+        circuit_bodies=(((), circuit_to_dag(qc)),),
+        observable=(
+            SparsePauliOp.from_list([("IZ", 1.0)]),
+            SparsePauliOp.from_list([("ZZ", 1.0)]),
+        ),
+    )
+
+
+class TestMeasurementStageTupleObservable:
+    """When ``meta.observable`` is a tuple of SparsePauliOps the stage takes
+    the multi-observable union-grouping path and emits a list[float]."""
+
+    def test_tuple_observable_yields_list_of_floats(self):
+        from divi.backends import QiskitSimulator
+
+        backend = QiskitSimulator(shots=5000, _deterministic_execution=True)
+        env = PipelineEnv(backend=backend)
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=_tuple_observable_meta()),
+                MeasurementStage(),
+            ],
+        )
+        reduced = pipeline.run(initial_spec="ignored", env=env)
+        out = reduced[(("spec", "circ"),)]
+        assert isinstance(out, list)
+        assert len(out) == 2
+        # Bell state |00>+|11>: <Z(0)>=0, <Z(0)Z(1)>=1.
+        # IZ has Z on qubit 0 (qiskit little-endian); ZZ is Z on both qubits.
+        assert out[0] == pytest.approx(0.0, abs=0.05)
+        assert out[1] == pytest.approx(1.0, abs=0.05)
+
+    def test_tuple_observable_suppresses_backend_expval_auto_promotion(
+        self, dummy_expval_backend
+    ):
+        """An expval-supporting backend would normally upgrade qwc →
+        ``_backend_expval`` when every meta carries the same observable.
+        For tuple observables the backend can't evaluate them in one shot,
+        so the auto-promotion must be skipped (no ``ham_ops`` in artifacts)."""
+        env = PipelineEnv(backend=dummy_expval_backend)
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=_tuple_observable_meta()),
+                MeasurementStage(),
+            ],
+        )
+        pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        assert "ham_ops" not in env.artifacts
+
+    def test_explicit_backend_expval_strategy_falls_back_to_qwc(
+        self, dummy_expval_backend
+    ):
+        """User-explicit ``_backend_expval`` is incompatible with tuple metas;
+        the stage silently falls back to QWC instead of raising — the user's
+        intent (analytical) is honoured per-observable to the extent possible."""
+        env = PipelineEnv(backend=dummy_expval_backend)
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=_tuple_observable_meta()),
+                MeasurementStage(grouping_strategy="_backend_expval"),
+            ],
+        )
+        # No ValueError, no ham_ops artifact (QWC path was taken).
+        pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        assert "ham_ops" not in env.artifacts
+
+    def test_shot_distribution_with_tuple_raises(self):
+        """Adaptive per-group shot distribution requires a single observable
+        to weight by — must be rejected for tuple metas."""
+        backend = DummySimulator(shots=100)
+        env = PipelineEnv(backend=backend)
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=_tuple_observable_meta()),
+                MeasurementStage(shot_distribution="uniform"),
+            ],
+        )
+        with pytest.raises(ValueError, match="multi-observable"):
+            pipeline.run_forward_pass(initial_spec="ignored", env=env)

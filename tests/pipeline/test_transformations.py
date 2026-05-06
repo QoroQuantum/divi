@@ -67,6 +67,27 @@ class TestReduceMean:
         out = reduce_mean(grouped)
         assert out == {("a",): 2.0, ("b",): 15.0}
 
+    def test_averages_per_observable_lists_elementwise(self):
+        """When values are per-observable list[float] (multi-observable
+        MeasurementStage output), each observable's mean is preserved."""
+        grouped = {
+            ("a",): [[1.0, 5.0], [3.0, 7.0]],
+            ("b",): [[2.0, 4.0, -2.0], [4.0, 0.0, 2.0]],
+        }
+        out = reduce_mean(grouped)
+        assert out[("a",)] == pytest.approx([2.0, 6.0])
+        assert out[("b",)] == pytest.approx([3.0, 2.0, 0.0])
+
+    def test_mixed_keys_dispatch_independently(self):
+        """Per-key dispatch: scalar key averaged scalar-wise, list key elementwise."""
+        grouped = {
+            ("scalar",): [1.0, 3.0],
+            ("list",): [[1.0, 2.0], [3.0, 4.0]],
+        }
+        out = reduce_mean(grouped)
+        assert out[("scalar",)] == pytest.approx(2.0)
+        assert out[("list",)] == pytest.approx([2.0, 3.0])
+
 
 class TestReducePostprocessOrdered:
     def test_single_postprocess_fn(self):

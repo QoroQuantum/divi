@@ -201,6 +201,96 @@ class TestTimeEvolutionObservable:
         assert te.results == pytest.approx(2.0)
 
 
+class TestTimeEvolutionMultiObservable:
+    """Multiple ``observable`` entries → results is a list[float] in input order."""
+
+    def test_list_observables_normalised_to_tuple(
+        self, two_qubit_hamiltonian, default_test_simulator
+    ):
+        """``observable=[...]`` is normalised to a tuple so downstream
+        ``isinstance(..., tuple)`` checks fire."""
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            time=0.5,
+            observable=[qp.PauliZ(0), qp.PauliZ(1)],
+            backend=default_test_simulator,
+        )
+        assert isinstance(te.observable, tuple)
+        assert len(te.observable) == 2
+
+    def test_tuple_observable_returns_list_of_floats(
+        self, two_qubit_hamiltonian, default_test_simulator
+    ):
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            time=0.5,
+            observable=(qp.PauliZ(0), qp.PauliZ(1)),
+            backend=default_test_simulator,
+        )
+        te.run()
+        assert isinstance(te.results, list)
+        assert len(te.results) == 2
+        for v in te.results:
+            assert isinstance(v, float)
+            assert -1.1 <= v <= 1.1
+
+    def test_single_observable_returns_float(
+        self, two_qubit_hamiltonian, default_test_simulator
+    ):
+        """Single (non-tuple) observable keeps the scalar result contract."""
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            time=0.5,
+            observable=qp.PauliZ(0),
+            backend=default_test_simulator,
+        )
+        te.run()
+        assert isinstance(te.results, float)
+
+    def test_none_observable_returns_probs_dict(
+        self, two_qubit_hamiltonian, default_test_simulator
+    ):
+        """No observable → probs dict (unchanged contract)."""
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            time=0.5,
+            backend=default_test_simulator,
+        )
+        te.run()
+        assert isinstance(te.results, dict)
+
+    def test_multi_observable_matches_per_observable_runs(
+        self, two_qubit_hamiltonian, default_test_simulator
+    ):
+        """For commuting observables on a noiseless backend, the multi
+        run produces (within shot noise) the same per-observable values
+        as one TimeEvolution per observable."""
+        common = dict(
+            hamiltonian=two_qubit_hamiltonian,
+            time=0.5,
+        )
+        te_multi = TimeEvolution(
+            **common,
+            observable=(qp.PauliZ(0), qp.PauliZ(1)),
+            backend=default_test_simulator,
+        )
+        te_multi.run()
+
+        te_solo_0 = TimeEvolution(
+            **common, observable=qp.PauliZ(0), backend=default_test_simulator
+        )
+        te_solo_0.run()
+        te_solo_1 = TimeEvolution(
+            **common, observable=qp.PauliZ(1), backend=default_test_simulator
+        )
+        te_solo_1.run()
+
+        # Loose tolerance: shot noise + any small numerical drift from QWC
+        # grouping vs single-observable measurement.
+        assert te_multi.results[0] == pytest.approx(te_solo_0.results, abs=0.1)
+        assert te_multi.results[1] == pytest.approx(te_solo_1.results, abs=0.1)
+
+
 class TestTimeEvolutionQDrift:
     def test_qdrift_multi_sample_averages_probs(
         self, two_qubit_hamiltonian, default_test_simulator
