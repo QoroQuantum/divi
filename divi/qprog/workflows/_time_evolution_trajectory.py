@@ -3,15 +3,27 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import copy
+import logging
 from collections.abc import Sequence
+from dataclasses import replace
 
 import matplotlib.pyplot as plt
 import pennylane as qp
+import pennylane.numpy as qnp
+from qiskit.circuit import Parameter
 
 from divi.backends import CircuitRunner
-from divi.hamiltonians import TrotterizationStrategy
+from divi.circuits import MetaCircuit
+from divi.hamiltonians import ExactTrotterization, TrotterizationStrategy
 from divi.qprog.algorithms import InitialState, TimeEvolution
 from divi.qprog.ensemble import ProgramEnsemble
+
+logger = logging.getLogger(__name__)
+
+# Below this many time points the cost of building the parametric template
+# (one symbolic ``_meta_circuit_factory`` call) outweighs the savings from
+# sharing it across programs.
+_CACHE_MIN_TIME_POINTS = 4
 
 
 class TimeEvolutionTrajectory(ProgramEnsemble):
@@ -88,6 +100,8 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
         """Create one TimeEvolution program per time point."""
         super().create_programs()
 
+        template_meta, t_param = self._maybe_build_template()
+
         for t in self._time_points:
             prog_id = f"t={t}"
             self._programs[prog_id] = TimeEvolution(
@@ -102,7 +116,72 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
                 seed=self._seed,
                 program_id=prog_id,
                 progress_queue=self._queue,
+                _template_meta=template_meta,
+                _template_param=t_param,
             )
+
+    def _maybe_build_template(self) -> tuple[MetaCircuit | None, Parameter | None]:
+        """Build a parametric MetaCircuit shared across all time-point
+        programs, or return ``(None, None)`` when caching does not apply.
+
+        The template is built only when the trotterization strategy is
+        :class:`ExactTrotterization` (QDrift's per-program random sampling
+        means each program's circuit topology differs) and the number of
+        time points clears :data:`_CACHE_MIN_TIME_POINTS`. Any exception
+        raised by the symbolic-time probe is logged at WARNING and the
+        trajectory falls back to per-program circuit construction.
+
+        Implementation note: PennyLane's ``exp`` decomposition calls
+        ``math.real`` on the evolution time. Passing a bare Qiskit
+        :class:`Parameter` makes autoray look for a ``real`` function on
+        a non-existent ``qiskit`` backend; wrapping the parameter in a
+        ``pennylane.numpy`` tensor routes the call through numpy's
+        object-dtype path so the symbol survives the decomposition and
+        lands on the Qiskit DAG as ``coef * t`` ``ParameterExpression``
+        instances.
+        """
+        strategy = self._trotterization_strategy
+        if strategy is not None and not isinstance(strategy, ExactTrotterization):
+            return None, None
+        if len(self._time_points) < _CACHE_MIN_TIME_POINTS:
+            return None, None
+
+        t_param = Parameter("t")
+        try:
+            probe = TimeEvolution(
+                hamiltonian=self._hamiltonian,
+                trotterization_strategy=copy.deepcopy(self._trotterization_strategy),
+                # Wrap in pennylane.numpy tensor so autoray routes
+                # ``math.real`` through numpy's object-dtype path; a bare
+                # Parameter would trigger an autoray-vs-qiskit-backend
+                # ImportError inside ``exp.decomposition``.  ``requires_grad=False``
+                # keeps the wrapper off autograd's tape — we never differentiate
+                # the probe and don't want it holding a gradient reference.
+                time=qnp.array(t_param, requires_grad=False),
+                n_steps=self._n_steps,
+                order=self._order,
+                initial_state=self._initial_state,
+                observable=self._observable,
+                backend=self.backend,
+                seed=self._seed,
+            )
+            template = probe._meta_circuit_factory(self._hamiltonian, ham_id=0)
+        except Exception:
+            logger.warning(
+                "TimeEvolutionTrajectory: parametric template build failed; "
+                "falling back to per-program circuit construction.",
+                exc_info=True,
+            )
+            return None, None
+
+        if not template.circuit_bodies:
+            logger.warning(
+                "TimeEvolutionTrajectory: probe produced an empty MetaCircuit; "
+                "falling back to per-program circuit construction."
+            )
+            return None, None
+
+        return replace(template, parameters=(t_param,)), t_param
 
     def aggregate_results(self) -> dict[float, dict | float]:
         """Aggregate results into a time-ordered mapping.

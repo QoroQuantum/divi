@@ -4,7 +4,9 @@
 
 from typing import Any
 
+import numpy as np
 import pennylane as qp
+from qiskit.circuit import Parameter
 
 from divi.circuits import MetaCircuit, qscript_to_meta
 from divi.circuits.qem import _NoMitigation
@@ -19,12 +21,14 @@ from divi.hamiltonians import (
 from divi.pipeline import CircuitPipeline
 from divi.pipeline.stages import (
     MeasurementStage,
+    ParameterBindingStage,
     PauliTwirlStage,
     QEMStage,
     TrotterSpecStage,
 )
 from divi.qprog.algorithms import InitialState, ZerosState
 from divi.qprog.quantum_program import QuantumProgram
+from divi.reporting import TerminalStatus
 
 
 class TimeEvolution(QuantumProgram):
@@ -44,6 +48,8 @@ class TimeEvolution(QuantumProgram):
         order: int = 1,
         initial_state: InitialState | None = None,
         observable: qp.operation.Operator | None = None,
+        _template_meta: MetaCircuit | None = None,
+        _template_param: Parameter | None = None,
         **kwargs,
     ):
         """Initialize TimeEvolution.
@@ -88,6 +94,13 @@ class TimeEvolution(QuantumProgram):
                 f"initial_state must be an InitialState instance, got {type(initial_state).__name__}"
             )
         self.initial_state = initial_state
+
+        if (_template_meta is None) != (_template_param is None):
+            raise ValueError(
+                "_template_meta and _template_param must be provided together."
+            )
+        self._template_meta = _template_meta
+        self._template_param = _template_param
 
         self._results: dict[str, float] | float | None = None
 
@@ -159,7 +172,16 @@ class TimeEvolution(QuantumProgram):
                 stages.append(PauliTwirlStage(n_twirls=n_twirls))
 
         stages.append(MeasurementStage())
+        if self._template_meta is not None:
+            # ParameterBindingStage binds the trajectory template's
+            # ``t`` parameter to ``self.time`` via ``env.param_sets``.
+            stages.append(ParameterBindingStage())
         return {"evolution": CircuitPipeline(stages=stages)}
+
+    def _build_pipeline_env(self, **overrides):
+        if self._template_meta is not None and "param_sets" not in overrides:
+            overrides["param_sets"] = np.array([[float(self.time)]])
+        return super()._build_pipeline_env(**overrides)
 
     @property
     def _pipeline(self) -> CircuitPipeline:
@@ -175,6 +197,8 @@ class TimeEvolution(QuantumProgram):
         self, hamiltonian: qp.operation.Operator, ham_id: int
     ) -> MetaCircuit:
         """Factory for TrotterSpecStage: build a MetaCircuit for one Hamiltonian sample."""
+        if self._template_meta is not None:
+            return self._template_meta
         ops = self._build_ops(hamiltonian)
         # Ensure canonical wire ordering matches the Hamiltonian,
         # regardless of which subset of terms QDrift sampled.
@@ -208,7 +232,9 @@ class TimeEvolution(QuantumProgram):
         (raw,) = result.values()
         self._results = raw if self.observable is None else float(raw)
 
-        self.reporter.info(message="Finished successfully!")
+        self.reporter.info(
+            message="Finished successfully!", final_status=TerminalStatus.SUCCESS
+        )
 
         return self
 
