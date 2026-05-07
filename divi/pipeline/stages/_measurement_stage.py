@@ -541,7 +541,9 @@ class MeasurementStage(BundleStage):
         if effective_strategy == "_backend_expval":
             info["n_groups"] = 1
             if getattr(token, "n_observable_terms", None) is not None:
-                info["n_terms"] = token.n_observable_terms
+                # Pauli-term count across observables, distinct from
+                # TrotterSpec's ``n_terms`` (Hamiltonian-term count).
+                info["n_pauli_terms"] = token.n_observable_terms
             obs_str = str(meta.observable[0]) if meta.observable else ""
             if len(obs_str) > 80:
                 obs_str = obs_str[:77] + "..."
@@ -550,14 +552,34 @@ class MeasurementStage(BundleStage):
 
         groups = meta.measurement_groups
         info["n_groups"] = len(groups)
-        n_terms = sum(len(g) for g in groups)
-        info["n_terms"] = n_terms
-        # Largest group by term count
+        info["n_pauli_terms"] = sum(len(g) for g in groups)
+        # Two complementary "biggest measurement" stats: how many Pauli
+        # strings the largest group contains, and how many qubits its
+        # measurement actually touches (union of non-I positions across
+        # group members). The first answers "how much QWC saves us"; the
+        # second answers "how big a basis change does this group require".
         if groups:
             largest = max(groups, key=len)
-            info["largest_group"] = ", ".join(str(op) for op in largest[:5])
-            if len(largest) > 5:
-                info["largest_group"] += f" ... ({len(largest)} terms)"
+            info["largest_group_size"] = len(largest)
+            touched = {
+                q for label in largest for q, c in enumerate(str(label)) if c != "I"
+            }
+            info["largest_group_width"] = f"{len(touched)} qubits"
+
+        # Shot-budget surface: tells the user what each circuit will be
+        # billed for (or how the budget was distributed across QWC groups).
+        backend_shots = getattr(env.backend, "shots", None)
+        if backend_shots is not None:
+            per_group_shots = env.artifacts.get("per_group_shots") or {}
+            spec_pgs = next(iter(per_group_shots.values()), None)
+            if spec_pgs:
+                # Shot-distribution strategy active — each group gets its
+                # own slice; surface the range so users see the spread.
+                values = sorted(spec_pgs.values())
+                info["shots_per_group"] = [values[0], values[-1]]
+            else:
+                # Default: every circuit submitted with backend.shots.
+                info["shots_per_circuit"] = backend_shots
         return info
 
     # Reduce

@@ -100,6 +100,22 @@ class TestIntrospect:
         assert info["n_qubits"] == 1
         assert info["n_terms"] >= 1
 
+    def test_exact_trotterization_omits_n_samples(self, dummy_expval_backend):
+        # ExactTrotterization is deterministic — its n_samples is
+        # structurally always 1, so introspect drops the line. Other fields
+        # stay; only n_samples is filtered.
+        stage = TrotterSpecStage(
+            ExactTrotterization(), meta_circuit_factory=_meta_factory
+        )
+        env = PipelineEnv(backend=dummy_expval_backend)
+        batch, token = stage.expand(qp.Z(0), env)
+
+        info = stage.introspect(batch, env, token)
+        assert info["strategy"] == "ExactTrotterization"
+        assert "n_samples" not in info
+        assert info["n_qubits"] == 1
+        assert info["n_terms"] >= 1
+
 
 # ---------------------------------------------------------------------------
 # reduce

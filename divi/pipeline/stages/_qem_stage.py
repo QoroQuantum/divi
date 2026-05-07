@@ -195,7 +195,7 @@ class QEMStage(BundleStage):
 
         # Skip float-dependent stats for symbolic weights (not yet bound).
         if ctx.get("symbolic"):
-            info["symbolic"] = True
+            info["weights"] = "unbound (run after parameter binding)"
             return info
 
         per_obs = ctx.get("per_obs")
@@ -203,11 +203,23 @@ class QEMStage(BundleStage):
             info["n_observables"] = len(per_obs)
             data = per_obs[0]
         else:
+            # Dry path skips per_obs but persists the count separately so
+            # introspect() can still surface it.
+            if "n_observables" in ctx:
+                info["n_observables"] = ctx["n_observables"]
             data = ctx
 
         weights = data.get("weights")
         if weights is not None and len(weights) > 0:
             info["weight_sum"] = round(float(np.sum(weights)), 4)
+            # L1 norm = ∑|w_i|. Coincides with weight_sum for non-negative
+            # weight schemes but diverges when any path carries a negative
+            # weight (e.g. QuEPP sin-branches with sign flips). It is the
+            # variance-amplification factor: a noiseless mitigated estimate
+            # has variance proportional to (l1_norm)^2 / shots, so a value
+            # of 3.2 means the user's error bar grows ~3.2× compared to
+            # an unmitigated estimate at the same shot budget.
+            info["weight_l1_norm"] = round(float(np.sum(np.abs(weights))), 4)
             info["weight_range"] = [
                 round(float(np.min(weights)), 4),
                 round(float(np.max(weights)), 4),

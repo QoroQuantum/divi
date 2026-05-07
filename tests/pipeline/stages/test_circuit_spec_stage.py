@@ -99,3 +99,28 @@ class TestCircuitSpecStageReduce:
         # are grouped under (("meas", 0),) as a list.
         assert (("meas", 0),) in reduced
         assert reduced[(("meas", 0),)] == [1.0, 2.0]
+
+
+class TestCircuitSpecStageIntrospect:
+    """Spec: ``introspect()`` reports gate counts plus depth and depth_2q
+    for the sample (first) DAG body — the same surface ``CircuitRunner``
+    exposes at runtime via ``depth_history``.
+    """
+
+    def test_depth_and_depth_2q_in_metadata(self, dummy_expval_backend):
+        # H, then CX, then H — three gates in three layers, exactly one is 2q.
+        qc = QuantumCircuit(2)
+        qc.h(0)
+        qc.cx(0, 1)
+        qc.h(0)
+        meta = MetaCircuit(circuit_bodies=(((), circuit_to_dag(qc)),))
+
+        stage = CircuitSpecStage()
+        env = PipelineEnv(backend=dummy_expval_backend)
+        batch, token = stage.expand(meta, env)
+
+        info = stage.introspect(batch, env, token)
+        assert info["depth"] == circuit_to_dag(qc).depth()
+        assert info["depth_2q"] == 1
+        assert info["n_1q_gates"] == 2
+        assert info["n_2q_gates"] == 1

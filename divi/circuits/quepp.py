@@ -1061,6 +1061,9 @@ class QuEPP(QEMProtocol):
             "ensemble_start": 1,
             "n_rotations": len(rotations),
             "n_paths": n_paths,
+            # Persisted for introspect(); the dry path skips per_obs
+            # construction, so the observable count needs its own slot.
+            "n_observables": len(observables),
         }
         if symbolic:
             context["symbolic"] = True
