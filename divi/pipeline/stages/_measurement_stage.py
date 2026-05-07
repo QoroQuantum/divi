@@ -5,7 +5,7 @@
 import warnings
 from collections.abc import Callable, Hashable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from qiskit.quantum_info import SparsePauliOp
@@ -14,7 +14,11 @@ from divi.circuits._conversions import (
     measurement_qasms_from_groups,
     sparse_pauli_op_to_ham_string,
 )
-from divi.pipeline._grouping import GroupingStrategy, compute_measurement_groups
+from divi.circuits._core import flatten_observable_tuple
+from divi.pipeline._grouping import (
+    GroupingStrategy,
+    compute_measurement_groups,
+)
 from divi.pipeline._shot_distribution import (
     ShotDistStrategy,
     compute_group_l1_norms,
@@ -35,6 +39,47 @@ OBS_GROUP_AXIS = "obs_group"
 PROBS_MEAS_AXIS = "meas"
 
 
+def _warn_imag_coeffs(
+    observable: SparsePauliOp | tuple[SparsePauliOp, ...],
+    spec_key: object,
+) -> None:
+    """Warn if any observable term carries a non-negligible imaginary coefficient.
+
+    Runs at the boundary of :class:`MeasurementStage` — before the
+    observable is flattened via :func:`flatten_observable_tuple` (which
+    drops imaginary parts via ``np.real``) — so the diagnostic still
+    fires when the user's original coefficients carry information that
+    shot allocation will silently discard.  Hermitian operators may
+    legitimately produce purely-imaginary coefficients (e.g. ``j*(O -
+    O.adjoint())`` decompositions); the warning steers users to
+    ``0.5 * (O + O.adjoint())`` symmetrization.
+    """
+    obs_iter = observable if isinstance(observable, tuple) else (observable,)
+    for obs in obs_iter:
+        coeffs = np.asarray(obs.coeffs)
+        if not coeffs.size:
+            continue
+        max_abs = float(np.max(np.abs(coeffs)))
+        if max_abs == 0.0:
+            continue
+        max_imag = float(np.max(np.abs(coeffs.imag)))
+        if max_imag > 1e-8 * max_abs:
+            warnings.warn(
+                f"Observable for spec {spec_key!r} has non-negligible "
+                f"imaginary coefficients (max |Im(c)| = {max_imag:.3g}, "
+                f"max |c| = {max_abs:.3g}). Shot allocation uses only the "
+                f"real parts; if the operator is meant to be Hermitian, "
+                f"symmetrize it as 0.5 * (O + O.adjoint()) before "
+                f"constructing the program.",
+                UserWarning,
+                stacklevel=3,
+            )
+            # One warning per spec is sufficient — the user needs to
+            # inspect their construction once, not once per offending
+            # tuple element.
+            return
+
+
 def _allocate_per_group_shots(
     spec_key: object,
     observable,
@@ -49,6 +94,10 @@ def _allocate_per_group_shots(
     ``env.rng`` from the pipeline environment, and ``shot_distribution``
     from the caller.
 
+    The ``observable`` here is the post-flatten union (real coefficients
+    only); imaginary-coefficient diagnostics are emitted earlier by
+    :func:`_warn_imag_coeffs` against the user's original observable.
+
     Returns:
         surviving_indices: Original indices of groups to actually submit.
         zero_shot_groups: ``{orig_idx: zero_result_for_group}`` for each
@@ -61,26 +110,7 @@ def _allocate_per_group_shots(
     if shot_distribution is None or n_groups == 0:
         return list(range(n_groups)), {}, None
 
-    raw_coeffs = np.asarray(observable.coeffs)
-    # SparsePauliOp stores complex coefficients. For a Hermitian operator the
-    # imaginary parts are zero up to construction round-off (~1e-15 relative).
-    # A non-trivial imaginary component means the operator isn't Hermitian,
-    # and silently dropping it would produce wrong group norms — warn so the
-    # user can symmetrize the operator or inspect their construction.
-    max_abs = float(np.max(np.abs(raw_coeffs))) if raw_coeffs.size else 0.0
-    if max_abs > 0:
-        max_imag = float(np.max(np.abs(raw_coeffs.imag)))
-        if max_imag > 1e-8 * max_abs:
-            warnings.warn(
-                f"Observable for spec {spec_key!r} has non-negligible imaginary "
-                f"coefficients (max |Im(c)| = {max_imag:.3g}, max |c| = "
-                f"{max_abs:.3g}). Shot allocation uses only the real parts; if "
-                f"the operator is meant to be Hermitian, symmetrize it as "
-                f"0.5 * (O + O.adjoint()) before constructing the program.",
-                UserWarning,
-                stacklevel=2,
-            )
-    coefficients = raw_coeffs.real.astype(np.float64)
+    coefficients = np.asarray(observable.coeffs).real.astype(np.float64)
     group_norms = compute_group_l1_norms(coefficients, partition_indices)
     per_group_shots = compute_shot_distribution(
         group_norms,
@@ -386,18 +416,26 @@ class MeasurementStage(BundleStage):
         """
         env.result_format = ResultFormat.EXPVALS
 
-        # Setting shot_distribution declares sampling intent — skip the
-        # analytical fallback entirely so the user's per-group allocation
-        # is actually used.
         strategy = self._grouping_strategy
+        all_single_obs = all(
+            meta.observable is not None and len(meta.observable) == 1
+            for meta in batch.values()
+        )
         if (
             self._shot_distribution is None
             and strategy in ("qwc", "_backend_expval")
             and env.backend.supports_expval
+            and all_single_obs
         ):
             first_obs = next(iter(batch.values())).observable
             all_same_obs = all(meta.observable == first_obs for meta in batch.values())
             strategy = "_backend_expval" if all_same_obs else "qwc"
+        elif strategy == "_backend_expval" and not all_single_obs:
+            raise NotImplementedError(
+                "'_backend_expval' grouping strategy requires a single "
+                "observable per MetaCircuit (length-1 tuple); a multi-"
+                "observable tuple was supplied. Use 'qwc' or 'wires' instead."
+            )
 
         if self._shot_distribution is not None and strategy == "_backend_expval":
             raise ValueError(
@@ -411,17 +449,16 @@ class MeasurementStage(BundleStage):
         n_observable_terms: int | None = None
         zero_shot_groups_by_spec: dict[object, dict[int, object]] = {}
         per_group_shots_by_spec: dict[object, dict[int, int]] = {}
-        sample_observable: SparsePauliOp | None = None
+        sample_union: SparsePauliOp | None = None
 
         for key, meta in batch.items():
-            observable = meta.observable
-            if observable is None:
+            if meta.observable is None:
                 raise ValueError(
                     f"MeasurementStage (expval path): key '{key}' has no "
                     "observable set."
                 )
-            if sample_observable is None:
-                sample_observable = observable
+            observable = cast(tuple[SparsePauliOp, ...], meta.observable)
+            _warn_imag_coeffs(observable, key)
 
             measurement_groups, partition_indices, postprocessing_fn = (
                 compute_measurement_groups(observable, strategy, meta.n_qubits)
@@ -429,11 +466,14 @@ class MeasurementStage(BundleStage):
             if strategy == "_backend_expval" and n_observable_terms is None:
                 n_observable_terms = sum(len(p) for p in partition_indices)
 
-            # Decide which groups to actually submit and with how many shots.
+            # Shot allocation weights groups by the union's coefficient L1 norm.
+            union_obs, _ = flatten_observable_tuple(observable)
+            if sample_union is None:
+                sample_union = union_obs
             surviving_indices, zero_shot_groups, surviving_shots = (
                 _allocate_per_group_shots(
                     key,
-                    observable,
+                    union_obs,
                     measurement_groups,
                     partition_indices,
                     env,
@@ -467,8 +507,8 @@ class MeasurementStage(BundleStage):
 
         # For expval-native backends, compute ham_ops from the SparsePauliOp
         # and store it in env.artifacts so _default_execute_fn can use it.
-        if strategy == "_backend_expval" and sample_observable is not None:
-            env.artifacts["ham_ops"] = sparse_pauli_op_to_ham_string(sample_observable)
+        if strategy == "_backend_expval" and sample_union is not None:
+            env.artifacts["ham_ops"] = sparse_pauli_op_to_ham_string(sample_union)
         else:
             env.artifacts.pop("ham_ops", None)
 
@@ -501,8 +541,10 @@ class MeasurementStage(BundleStage):
         if effective_strategy == "_backend_expval":
             info["n_groups"] = 1
             if getattr(token, "n_observable_terms", None) is not None:
-                info["n_terms"] = token.n_observable_terms
-            obs_str = str(meta.observable) if meta.observable is not None else ""
+                # Pauli-term count across observables, distinct from
+                # TrotterSpec's ``n_terms`` (Hamiltonian-term count).
+                info["n_pauli_terms"] = token.n_observable_terms
+            obs_str = str(meta.observable[0]) if meta.observable else ""
             if len(obs_str) > 80:
                 obs_str = obs_str[:77] + "..."
             info["observable"] = obs_str
@@ -510,14 +552,34 @@ class MeasurementStage(BundleStage):
 
         groups = meta.measurement_groups
         info["n_groups"] = len(groups)
-        n_terms = sum(len(g) for g in groups)
-        info["n_terms"] = n_terms
-        # Largest group by term count
+        info["n_pauli_terms"] = sum(len(g) for g in groups)
+        # Two complementary "biggest measurement" stats: how many Pauli
+        # strings the largest group contains, and how many qubits its
+        # measurement actually touches (union of non-I positions across
+        # group members). The first answers "how much QWC saves us"; the
+        # second answers "how big a basis change does this group require".
         if groups:
             largest = max(groups, key=len)
-            info["largest_group"] = ", ".join(str(op) for op in largest[:5])
-            if len(largest) > 5:
-                info["largest_group"] += f" ... ({len(largest)} terms)"
+            info["largest_group_size"] = len(largest)
+            touched = {
+                q for label in largest for q, c in enumerate(str(label)) if c != "I"
+            }
+            info["largest_group_width"] = f"{len(touched)} qubits"
+
+        # Shot-budget surface: tells the user what each circuit will be
+        # billed for (or how the budget was distributed across QWC groups).
+        backend_shots = getattr(env.backend, "shots", None)
+        if backend_shots is not None:
+            per_group_shots = env.artifacts.get("per_group_shots") or {}
+            spec_pgs = next(iter(per_group_shots.values()), None)
+            if spec_pgs:
+                # Shot-distribution strategy active — each group gets its
+                # own slice; surface the range so users see the spread.
+                values = sorted(spec_pgs.values())
+                info["shots_per_group"] = [values[0], values[-1]]
+            else:
+                # Default: every circuit submitted with backend.shots.
+                info["shots_per_circuit"] = backend_shots
         return info
 
     # Reduce

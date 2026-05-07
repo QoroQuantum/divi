@@ -93,12 +93,27 @@ def reduce_mean(
 ) -> ChildResults:
     """Reduce grouped values by averaging (e.g. Trotter ham samples).
 
+    Each entry's values may be scalars (the standard case — averaged
+    arithmetically) or per-observable lists of equal length emitted by a
+    multi-observable :class:`MeasurementStage` postprocess (averaged
+    element-wise so each observable's mean is preserved).
+
     Example::
 
         >>> reduce_mean({(('circ', 0),): [1.0, 3.0]})
         {(('circ', 0),): 2.0}
+        >>> reduce_mean({(('circ', 0),): [[1.0, 5.0], [3.0, 7.0]]})
+        {(('circ', 0),): [2.0, 6.0]}
     """
-    return {base_key: sum(values) / len(values) for base_key, values in grouped.items()}
+    out: ChildResults = {}
+    for base_key, values in grouped.items():
+        if values and isinstance(values[0], list):
+            n = len(values)
+            n_obs = len(values[0])
+            out[base_key] = [sum(v[i] for v in values) / n for i in range(n_obs)]
+        else:
+            out[base_key] = sum(values) / len(values)
+    return out
 
 
 def reduce_postprocess_ordered(

@@ -136,7 +136,13 @@ class TrotterSpecStage(SpecStage[qp.operation.Operator]):
     ) -> dict[str, Any]:
         if not isinstance(token, dict):
             return {}
-        return dict(token)
+        info = dict(token)
+        # ExactTrotterization is deterministic — its n_samples is structurally
+        # always 1 and adds no information for the user. For stochastic
+        # strategies (QDrift et al.) the count is a load-bearing knob.
+        if info.get("strategy") == "ExactTrotterization":
+            info.pop("n_samples", None)
+        return info
 
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken

@@ -51,7 +51,7 @@ class TestMetaCircuit:
     def test_with_observable(self, plain_dag):
         obs = SparsePauliOp.from_list([("IZ", 1.0), ("ZI", -1.0)])
         meta = MetaCircuit(circuit_bodies=(((), plain_dag),), observable=obs)
-        assert meta.observable is obs
+        assert meta.observable == (obs,)
 
     def test_with_measured_wires(self, plain_dag):
         meta = MetaCircuit(

@@ -64,11 +64,20 @@ def _make_fake_maestro(mocker, counts=None, expvals=None):
     if counts is None:
         counts = {"00": 2500, "11": 2500}
     maestro.simple_execute.return_value = {"counts": counts}
+    maestro.noisy_execute.return_value = {"counts": counts}
 
     # Expval — maestro returns {"expectation_values": [...], ...}
     if expvals is None:
         expvals = [0.5, -0.3]
     maestro.simple_estimate.return_value = {"expectation_values": expvals}
+    maestro.noisy_estimate.return_value = {"expectation_values": expvals}
+    maestro.noisy_estimate_montecarlo.return_value = {"expectation_values": expvals}
+
+    # ``QasmToCirc().parse_and_translate(qasm) -> "MaestroCircuit"`` —
+    # tag the parser so we can assert it was used (instead of the raw qasm).
+    parser = mocker.MagicMock(name="QasmToCirc")
+    parser.parse_and_translate.side_effect = lambda qasm: ("maestro_circuit", qasm)
+    maestro.QasmToCirc.return_value = parser
 
     return maestro
 
@@ -77,6 +86,21 @@ def _make_simulator(mocker, fake_maestro, *, config=None, **kwargs):
     """Instantiate MaestroSimulator with a pre-injected fake maestro module."""
     mocker.patch("divi.backends._maestro_simulator.maestro", fake_maestro)
     return MaestroSimulator(config=config, **kwargs)
+
+
+def _make_noisy_sim(mocker, fake_maestro, *, shots=None, **noise_kwargs):
+    """Build a simulator with a fresh ``NoiseModel`` mock baked into its config.
+
+    ``noise_kwargs`` are forwarded to ``MaestroConfig`` (so callers can
+    pass ``noise_seed=...``, ``noise_realizations=...``).  Returns
+    ``(sim, noise_model)`` so tests can assert the model identity.
+    """
+    nm = mocker.MagicMock(name="NoiseModel")
+    cfg = MaestroConfig(noise_model=nm, **noise_kwargs)
+    sim_kwargs: dict = {"config": cfg}
+    if shots is not None:
+        sim_kwargs["shots"] = shots
+    return _make_simulator(mocker, fake_maestro, **sim_kwargs), nm
 
 
 def _sim_config_call(fake_maestro):
@@ -790,6 +814,275 @@ class TestExpvalSubmission:
 
 
 # ---------------------------------------------------------------------------
+# Noisy simulation: sampling (noisy_execute) and expval (noisy_estimate /
+# noisy_estimate_montecarlo) dispatch.
+# ---------------------------------------------------------------------------
+
+
+class TestMaestroConfigNoiseDefaults:
+    """``MaestroConfig`` carries noise knobs; defaults disable noise."""
+
+    def test_default_noise_fields(self, mocker):
+        """No noise overrides → noise_model is None, default seed=42, no realizations."""
+        sim = _make_simulator(mocker, _make_fake_maestro(mocker))
+        assert sim.config.noise_model is None
+        assert sim.config.noise_seed == 42
+        assert sim.config.noise_realizations is None
+
+    def test_noise_fields_stored(self, mocker):
+        """noise_model / noise_seed / noise_realizations land on MaestroConfig."""
+        sim, nm = _make_noisy_sim(
+            mocker, _make_fake_maestro(mocker), noise_seed=7, noise_realizations=4
+        )
+        assert sim.config.noise_model is nm
+        assert sim.config.noise_seed == 7
+        assert sim.config.noise_realizations == 4
+
+    def test_override_carries_noise_model(self, mocker):
+        """``MaestroConfig.override`` propagates a noise_model from ``other``."""
+        nm = mocker.MagicMock(name="NoiseModel")
+        base = MaestroConfig(simulation_type="Statevector")
+        merged = base.override(MaestroConfig(noise_model=nm, noise_realizations=3))
+        assert merged.noise_model is nm
+        assert merged.noise_realizations == 3
+        # Base's other fields survive.
+        assert merged.simulation_type == "Statevector"
+
+    def test_override_preserves_base_realizations_when_other_uses_default(self, mocker):
+        """override() must not clobber base's noise_realizations when other's is
+        still at the default ``None``."""
+        nm = mocker.MagicMock(name="NoiseModel")
+        base = MaestroConfig(noise_realizations=5)
+        merged = base.override(MaestroConfig(noise_model=nm))
+        assert merged.noise_model is nm
+        assert merged.noise_realizations == 5  # base value, not other's None default
+
+
+class TestNoisySamplingSubmission:
+    """Sampling-mode dispatch: ``simple_execute`` vs ``noisy_execute``."""
+
+    def test_no_noise_uses_simple_execute(self, mocker):
+        """``noise_model=None`` keeps the sampling path on ``simple_execute``."""
+        fake = _make_fake_maestro(mocker)
+        sim = _make_simulator(mocker, fake)
+
+        sim.submit_circuits({"c0": _BELL_QASM})
+
+        fake.simple_execute.assert_called_once()
+        fake.noisy_execute.assert_not_called()
+        fake.QasmToCirc.assert_not_called()
+
+    def test_noise_routes_to_noisy_execute(self, mocker):
+        """A non-None ``noise_model`` swaps ``simple_execute`` for ``noisy_execute``."""
+        fake = _make_fake_maestro(mocker)
+        sim, _ = _make_noisy_sim(mocker, fake)
+
+        sim.submit_circuits({"c0": _BELL_QASM})
+
+        fake.noisy_execute.assert_called_once()
+        fake.simple_execute.assert_not_called()
+        # noisy_execute consumes a parsed maestro Circuit, not raw QASM.
+        fake.QasmToCirc.assert_called_once()
+        fake.QasmToCirc.return_value.parse_and_translate.assert_called_once()
+
+    def test_noisy_execute_passes_noise_model_seed_and_default_realizations(
+        self, mocker
+    ):
+        """``noisy_execute`` receives the noise model, default seed=42, and
+        ``noise_realizations`` falls back to 1 when unset."""
+        fake = _make_fake_maestro(mocker)
+        sim, nm = _make_noisy_sim(mocker, fake, shots=321)
+
+        sim.submit_circuits({"c0": _BELL_QASM})
+
+        call = fake.noisy_execute.call_args
+        # First positional: parsed maestro circuit; second positional: noise_model
+        assert call.args[0] == ("maestro_circuit", _BELL_QASM)
+        assert call.args[1] is nm
+        assert call.kwargs["shots"] == 321
+        assert call.kwargs["seed"] == 42
+        assert call.kwargs["noise_realizations"] == 1
+        assert "config" in call.kwargs
+
+    def test_noisy_execute_forwards_explicit_seed_and_realizations(self, mocker):
+        fake = _make_fake_maestro(mocker)
+        sim, _ = _make_noisy_sim(mocker, fake, noise_seed=11, noise_realizations=8)
+
+        sim.submit_circuits({"c0": _BELL_QASM})
+
+        call = fake.noisy_execute.call_args
+        assert call.kwargs["seed"] == 11
+        assert call.kwargs["noise_realizations"] == 8
+
+    def test_noisy_sampling_reverses_bitstrings(self, mocker):
+        """Big-endian → little-endian reversal applies to noisy results too."""
+        fake = _make_fake_maestro(mocker, counts={"100": 70, "001": 30})
+        sim, _ = _make_noisy_sim(mocker, fake)
+
+        result = sim.submit_circuits({"c0": _BELL_QASM})
+
+        assert result.results[0]["results"] == {"001": 70, "100": 30}
+
+    def test_noisy_sampling_honors_shot_groups(self, mocker):
+        """Per-circuit shot allocation is forwarded to ``noisy_execute``."""
+        fake = _make_fake_maestro(mocker)
+        sim, _ = _make_noisy_sim(mocker, fake, shots=999)
+
+        sim.submit_circuits(
+            {"c0": _QASM_SMALL, "c1": _QASM_SMALL, "c2": _QASM_SMALL},
+            shot_groups=[[0, 1, 50], [1, 3, 200]],
+        )
+
+        calls = fake.noisy_execute.call_args_list
+        assert len(calls) == 3
+        # ``ThreadPoolExecutor.map`` may reorder per-call kwargs; verify the
+        # shot multiset rather than positional ordering.
+        seen_shots = sorted(call.kwargs["shots"] for call in calls)
+        assert seen_shots == [50, 200, 200]
+
+    @pytest.mark.parametrize("realizations", [0, -1])
+    def test_invalid_realizations_raises_in_sampling(self, mocker, realizations):
+        """``noise_realizations`` must be ``None`` or a positive integer."""
+        fake = _make_fake_maestro(mocker)
+        sim, _ = _make_noisy_sim(mocker, fake, noise_realizations=realizations)
+        with pytest.raises(ValueError, match="noise_realizations"):
+            sim.submit_circuits({"c0": _BELL_QASM})
+
+
+class TestNoisyExpvalSubmission:
+    """Expval-mode dispatch: ``simple_estimate`` vs ``noisy_estimate``
+    vs ``noisy_estimate_montecarlo``."""
+
+    def test_no_noise_uses_simple_estimate(self, mocker):
+        fake = _make_fake_maestro(mocker)
+        sim = _make_simulator(mocker, fake)
+
+        sim.submit_circuits({"c0": _BELL_QASM}, ham_ops="ZI;IZ")
+
+        fake.simple_estimate.assert_called_once()
+        fake.noisy_estimate.assert_not_called()
+        fake.noisy_estimate_montecarlo.assert_not_called()
+        fake.QasmToCirc.assert_not_called()
+
+    def test_noise_no_realizations_uses_noisy_estimate(self, mocker):
+        """``noise_realizations`` unset (None) takes the analytical noisy path."""
+        fake = _make_fake_maestro(mocker)
+        sim, _ = _make_noisy_sim(mocker, fake)
+
+        sim.submit_circuits({"c0": _BELL_QASM}, ham_ops="ZI;IZ")
+
+        fake.noisy_estimate.assert_called_once()
+        fake.noisy_estimate_montecarlo.assert_not_called()
+        fake.simple_estimate.assert_not_called()
+
+    def test_analytical_noisy_estimate_does_not_receive_seed(self, mocker):
+        """``noisy_estimate`` (analytical) must not receive ``seed=`` — it is only
+        relevant for Monte-Carlo sampling.  A non-default seed is used to confirm
+        it does not leak onto the analytical path."""
+        fake = _make_fake_maestro(mocker)
+        sim, _ = _make_noisy_sim(mocker, fake, noise_seed=99)
+
+        sim.submit_circuits({"c0": _BELL_QASM}, ham_ops="ZI")
+
+        assert "seed" not in fake.noisy_estimate.call_args.kwargs
+
+    def test_realizations_1_uses_montecarlo_not_analytical(self, mocker):
+        """``noise_realizations=1`` must route to Monte Carlo, not the analytical
+        backend — one random Pauli sampling is not equivalent to the analytical mean.
+        This pins the documented non-equivalence: None → analytical, 1 → MC."""
+        fake = _make_fake_maestro(mocker)
+        sim, _ = _make_noisy_sim(mocker, fake, noise_realizations=1)
+
+        sim.submit_circuits({"c0": _BELL_QASM}, ham_ops="ZI")
+
+        fake.noisy_estimate_montecarlo.assert_called_once()
+        fake.noisy_estimate.assert_not_called()
+
+    @pytest.mark.parametrize("realizations", [0, -1])
+    def test_invalid_realizations_raises_in_expval(self, mocker, realizations):
+        """``noise_realizations`` must be ``None`` or a positive integer."""
+        fake = _make_fake_maestro(mocker)
+        sim, _ = _make_noisy_sim(mocker, fake, noise_realizations=realizations)
+        with pytest.raises(ValueError, match="noise_realizations"):
+            sim.submit_circuits({"c0": _BELL_QASM}, ham_ops="ZI")
+
+    def test_noise_with_realizations_uses_montecarlo(self, mocker):
+        """``noise_realizations >= 1`` switches to ``noisy_estimate_montecarlo``."""
+        fake = _make_fake_maestro(mocker)
+        sim, nm = _make_noisy_sim(mocker, fake, noise_realizations=5)
+
+        sim.submit_circuits({"c0": _BELL_QASM}, ham_ops="ZI;IZ")
+
+        fake.noisy_estimate_montecarlo.assert_called_once()
+        fake.noisy_estimate.assert_not_called()
+        call = fake.noisy_estimate_montecarlo.call_args
+        assert call.kwargs["noise_model"] is nm
+        assert call.kwargs["noise_realizations"] == 5
+        assert call.kwargs["observables"] == "ZI;IZ"
+        assert "config" in call.kwargs
+
+    def test_noisy_estimate_strips_measurements(self, mocker):
+        """``noisy_estimate``/``montecarlo`` receive a parsed circuit built
+        from QASM that has had its ``measure`` lines stripped — measurements
+        would corrupt the analytical statevector."""
+        fake = _make_fake_maestro(mocker)
+        sim, _ = _make_noisy_sim(mocker, fake)
+
+        sim.submit_circuits({"c0": _BELL_QASM}, ham_ops="ZI")
+
+        parsed_input = fake.QasmToCirc.return_value.parse_and_translate.call_args.args[
+            0
+        ]
+        assert "measure" not in parsed_input
+        assert "h q[0]" in parsed_input  # body preserved
+
+    def test_noisy_estimate_passes_observables_string(self, mocker):
+        fake = _make_fake_maestro(mocker)
+        sim, _ = _make_noisy_sim(mocker, fake)
+
+        sim.submit_circuits({"c0": _BELL_QASM}, ham_ops="ZI;IZ")
+
+        assert fake.noisy_estimate.call_args.kwargs["observables"] == "ZI;IZ"
+
+    def test_noisy_estimate_zips_results(self, mocker):
+        """Pauli operators map to expectation values regardless of which
+        noisy backend was used."""
+        fake = _make_fake_maestro(mocker, expvals=[0.1, 0.2, 0.3])
+        sim, _ = _make_noisy_sim(mocker, fake, noise_realizations=2)
+
+        result = sim.submit_circuits({"c0": _BELL_QASM}, ham_ops="ZI;IX;YY")
+
+        assert result.results[0]["results"] == {"ZI": 0.1, "IX": 0.2, "YY": 0.3}
+
+    def test_montecarlo_multi_circuit_label_alignment_and_seed_offset(self, mocker):
+        """Submit two circuits through the Monte Carlo path and verify:
+        labels keep their input order in the result; per-circuit seed is
+        ``noise_seed + i`` so circuit 0 sees seed N, circuit 1 sees N+1."""
+        fake = _make_fake_maestro(mocker, expvals=[0.9])
+        seeds_seen: dict[int, int] = {}
+
+        def _capture(
+            circuit, observables, noise_model, noise_realizations, seed, config
+        ):
+            # Each call gets a unique parsed-circuit tuple keyed on the qasm
+            # string, recovered from the parser side_effect.
+            seeds_seen[id(circuit)] = seed
+            return {"expectation_values": [0.9]}
+
+        fake.noisy_estimate_montecarlo.side_effect = _capture
+        sim, _ = _make_noisy_sim(mocker, fake, noise_seed=10, noise_realizations=3)
+
+        result = sim.submit_circuits(
+            {"a": _BELL_QASM, "b": _BELL_QASM.replace("h q[0]", "x q[0]")},
+            ham_ops="ZI",
+        )
+
+        labels = [r["label"] for r in result.results]
+        assert labels == ["a", "b"]
+        assert sorted(seeds_seen.values()) == [10, 11]
+
+
+# ---------------------------------------------------------------------------
 # _strip_measurements
 # ---------------------------------------------------------------------------
 
@@ -967,10 +1260,24 @@ class TestRealMaestroIntegration:
             for name in dir(_real_maestro.SimulatorConfig)
             if not name.startswith("_")
         }
-        divi_fields = {f.name for f in fields(MaestroConfig)} - {
+        _divi_only = {
             # mps_qubit_threshold is divi-side auto-MPS logic, not a maestro knob.
-            "mps_qubit_threshold"
+            "mps_qubit_threshold",
+            # Noise lives on MaestroConfig but is consumed by the noisy entry
+            # points (noisy_execute / noisy_estimate / *_montecarlo) — Maestro
+            # keeps noise out of SimulatorConfig itself.
+            "noise_model",
+            "noise_seed",
+            "noise_realizations",
         }
+        # Guard: if any divi-only field is removed from MaestroConfig, the
+        # exclusion set would silently over-exclude and the parity check would
+        # pass even though a field went missing.
+        assert _divi_only <= {f.name for f in fields(MaestroConfig)}, (
+            f"Exclusion set names fields no longer in MaestroConfig: "
+            f"{_divi_only - {f.name for f in fields(MaestroConfig)}}"
+        )
+        divi_fields = {f.name for f in fields(MaestroConfig)} - _divi_only
         assert maestro_fields == divi_fields, (
             "MaestroConfig is out of sync with maestro.SimulatorConfig.\n"
             f"  Missing in MaestroConfig: {sorted(maestro_fields - divi_fields)}\n"

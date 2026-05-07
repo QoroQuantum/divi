@@ -447,7 +447,7 @@ class TestQuEPPProtocol:
         p = QuEPP(truncation_order=2, sampling="exhaustive", n_twirls=0)
         dags, ctx = p.expand(circuit_to_dag(mixed_qc), obs)
         assert len(dags) == ctx["n_paths"] + 1
-        assert "classical_values" in ctx
+        assert "classical_values" in ctx["per_obs"][0]
         assert ctx["target_idx"] == 0
         assert ctx["ensemble_start"] == 1
 
@@ -463,10 +463,10 @@ class TestQuEPPProtocol:
         obs = SparsePauliOp.from_list([("ZZ", 1.0)])
         p = QuEPP(truncation_order=0, sampling="exhaustive", n_twirls=0)
         _, ctx = p.expand(circuit_to_dag(bell_qc), obs)
-        assert ctx["classical_values"][0] == pytest.approx(1.0)
+        assert ctx["per_obs"][0]["classical_values"][0] == pytest.approx(1.0)
         # No rotations → reduce returns weights @ classical_values.
         result = p.reduce([1.0, 1.0], ctx)
-        assert result == pytest.approx(1.0)
+        assert result == pytest.approx([1.0])
 
     def test_missing_observable_raises(self, bell_qc):
         p = QuEPP()
@@ -509,9 +509,15 @@ class TestQuEPPSignalDestruction:
         """
         # Non-zero classical values (so "valid" mask has entries) but the
         # ensemble_noisy values are ~0 ⇒ η ≈ 0 < min_eta (0.1) ⇒ fallback.
+        per_obs = [
+            {
+                "classical_values": np.array([1.0, 0.5]),
+                "weights": np.array([0.5, 0.5]),
+                "dag_indices": [0, 1, 2],
+            }
+        ]
         ctx = {
-            "classical_values": np.array([1.0, 0.5]),
-            "weights": np.array([0.5, 0.5]),
+            "per_obs": per_obs,
             "target_idx": 0,
             "ensemble_start": 1,
             "n_rotations": 1,
@@ -519,8 +525,84 @@ class TestQuEPPSignalDestruction:
         }
         p = QuEPP(n_twirls=0)
         result = p.reduce([0.3, 0.0, 0.0], ctx)
-        assert result == pytest.approx(0.3)
-        assert ctx.get("_signal_destroyed") is True
+        assert result == pytest.approx([0.3])
+        assert per_obs[0].get("_signal_destroyed") is True
+
+
+class TestQuEPPNoDiagonalPathsWarning:
+    """Spec: when path enumeration yields zero diagonal-final paths for an
+    observable, ``QuEPP.reduce`` silently returns the noisy target unchanged
+    (mitigation is a no-op). The expand-time warning surfaces this so the
+    user does not consume noisy results believing they were mitigated.
+    """
+
+    @staticmethod
+    def _h_then_rz_qc() -> QuantumCircuit:
+        # Single non-Clifford rotation (RZ) preceded by an H Clifford. Walking
+        # back-to-front, observable Z passes through RZ unchanged (commute),
+        # then conjugates through H to land as X — non-diagonal, so every
+        # candidate path is rejected by the diagonal-final filter.
+        qc = QuantumCircuit(1)
+        qc.h(0)
+        qc.rz(0.5, 0)
+        return qc
+
+    def test_warns_on_zero_diagonal_paths_in_expand(self):
+        proto = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
+        obs = SparsePauliOp.from_list([("Z", 1.0)])
+        with warnings.catch_warnings():
+            # The truncation-ratio warning also fires on this tiny circuit
+            # (K/n_rot = 100%); silence it so pytest.warns sees the target.
+            warnings.filterwarnings("ignore", message=r"QuEPP:.*shallow circuits")
+            with pytest.warns(UserWarning, match=r"zero diagonal Pauli paths"):
+                proto.expand(circuit_to_dag(self._h_then_rz_qc()), (obs,))
+
+    def test_warns_on_zero_diagonal_paths_in_dry_expand(self):
+        proto = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
+        obs = SparsePauliOp.from_list([("Z", 1.0)])
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=r"QuEPP:.*shallow circuits")
+            with pytest.warns(UserWarning, match=r"zero diagonal Pauli paths"):
+                proto.dry_expand(circuit_to_dag(self._h_then_rz_qc()), (obs,))
+
+    def test_warns_lists_all_offending_observables_once(self):
+        # Two failing observables in one tuple → ONE batched warning that
+        # mentions both indices, not two separate warnings.
+        proto = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
+        bad1 = SparsePauliOp.from_list([("Z", 1.0)])
+        bad2 = SparsePauliOp.from_list([("Z", 0.5)])
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            proto.expand(circuit_to_dag(self._h_then_rz_qc()), (bad1, bad2))
+        zero_path_warnings = [
+            w for w in caught if "zero diagonal Pauli paths" in str(w.message)
+        ]
+        assert len(zero_path_warnings) == 1
+        assert "[0, 1]" in str(zero_path_warnings[0].message)
+
+    def test_no_warning_when_paths_exist(self):
+        # RX(θ) with observable Z keeps Z as the back-propagated Pauli on the
+        # cos branch (diagonal) → at least one path survives → no warning.
+        qc = QuantumCircuit(1)
+        qc.rx(0.7, 0)
+        proto = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
+        obs = SparsePauliOp.from_list([("Z", 1.0)])
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            warnings.filterwarnings("ignore", message=r"QuEPP:.*shallow circuits")
+            proto.expand(circuit_to_dag(qc), (obs,))
+
+    def test_no_warning_for_clifford_only_circuit(self):
+        # n_rotations == 0 guard: a Clifford-only circuit has nothing to
+        # mitigate by construction, so the warning is suppressed even when
+        # no diagonal paths would survive in principle.
+        qc = QuantumCircuit(1)
+        qc.h(0)
+        proto = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
+        obs = SparsePauliOp.from_list([("Z", 1.0)])
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            proto.expand(circuit_to_dag(qc), (obs,))
 
 
 class TestSymbolicExpand:
@@ -547,8 +629,9 @@ class TestSymbolicExpand:
         obs = SparsePauliOp.from_list([("IZ", 1.0)])
         p = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
         _, ctx = p.expand(circuit_to_dag(qc), obs)
-        assert ctx["weights"].dtype == object
-        for w in ctx["weights"]:
+        weights = ctx["per_obs"][0]["weights"]
+        assert weights.dtype == object
+        for w in weights:
             assert isinstance(w, (ParameterExpression, int, float))
 
     @pytest.mark.usefixtures("suppress_quepp_warnings")
@@ -569,14 +652,19 @@ class TestEvaluateSymbolicWeights:
         # Build ParameterExpression weights: cos(theta) and sin(theta).
         cos_w = theta.cos()
         sin_w = theta.sin()
+        entry = {"weights": np.array([cos_w, sin_w], dtype=object)}
+        QuEPP.evaluate_symbolic_weights(entry, [theta], np.array([0.0]))
+        assert entry["weights"][0] == pytest.approx(1.0)
+        assert entry["weights"][1] == pytest.approx(0.0)
+
+    def test_rejects_full_context(self):
+        theta = Parameter("theta_full_ctx")
         ctx = {
-            "weights": np.array([cos_w, sin_w], dtype=object),
+            "per_obs": [{"weights": np.array([theta.cos()], dtype=object)}],
             "symbolic": True,
         }
-        QuEPP.evaluate_symbolic_weights(ctx, [theta], np.array([0.0]))
-        assert ctx["weights"][0] == pytest.approx(1.0)
-        assert ctx["weights"][1] == pytest.approx(0.0)
-        assert ctx["symbolic"] is False
+        with pytest.raises(TypeError, match="per_obs entry"):
+            QuEPP.evaluate_symbolic_weights(ctx, [theta], np.array([0.0]))
 
 
 # ---------------------------------------------------------------------------
@@ -614,7 +702,8 @@ class TestCPTExpansion:
         _, ctx = QuEPP(sampling="exhaustive", truncation_order=5, n_twirls=0).expand(
             circuit_to_dag(qc), obs
         )
-        cpt = float(ctx["weights"] @ ctx["classical_values"])
+        entry = ctx["per_obs"][0]
+        cpt = float(entry["weights"] @ entry["classical_values"])
         assert cpt == pytest.approx(np.cos(angle), abs=1e-6)
 
     @pytest.mark.usefixtures("suppress_quepp_warnings")
@@ -629,7 +718,8 @@ class TestCPTExpansion:
         _, ctx = QuEPP(sampling="exhaustive", truncation_order=5, n_twirls=0).expand(
             circuit_to_dag(qc), obs
         )
-        cpt = float(ctx["weights"] @ ctx["classical_values"])
+        entry = ctx["per_obs"][0]
+        cpt = float(entry["weights"] @ entry["classical_values"])
         assert cpt == pytest.approx(_exact_expval(qc, obs), abs=1e-4)
 
     @pytest.mark.usefixtures("suppress_quepp_warnings")
@@ -639,7 +729,8 @@ class TestCPTExpansion:
         _, ctx = QuEPP(sampling="exhaustive", truncation_order=5, n_twirls=0).expand(
             circuit_to_dag(mixed_qc), obs
         )
-        cpt = float(ctx["weights"] @ ctx["classical_values"])
+        entry = ctx["per_obs"][0]
+        cpt = float(entry["weights"] @ entry["classical_values"])
         assert cpt == pytest.approx(_exact_expval(mixed_qc, obs), abs=1e-4)
 
     @pytest.mark.usefixtures("suppress_quepp_warnings")
@@ -656,7 +747,8 @@ class TestCPTExpansion:
             circuit_to_dag(qc), obs
         )
         assert ctx["n_paths"] == 0
-        assert float(ctx["weights"] @ ctx["classical_values"]) == pytest.approx(0.0)
+        entry = ctx["per_obs"][0]
+        assert float(entry["weights"] @ entry["classical_values"]) == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -702,7 +794,8 @@ class TestNormalizeCircuitExtended:
         _, ctx = QuEPP(sampling="exhaustive", truncation_order=5, n_twirls=0).expand(
             circuit_to_dag(qc), obs
         )
-        cpt = float(ctx["weights"] @ ctx["classical_values"])
+        entry = ctx["per_obs"][0]
+        cpt = float(entry["weights"] @ entry["classical_values"])
         assert cpt == pytest.approx(np.cos(angle), abs=1e-6)
 
 
@@ -752,8 +845,8 @@ class TestQuEPPRoundTrip:
         protocol = QuEPP(sampling="exhaustive", truncation_order=10, n_twirls=0)
         _, ctx = protocol.expand(circuit_to_dag(qc), obs)
         qr = [exact]
-        qr.extend(ctx["classical_values"])
-        assert protocol.reduce(qr, ctx) == pytest.approx(exact, abs=1e-6)
+        qr.extend(ctx["per_obs"][0]["classical_values"])
+        assert protocol.reduce(qr, ctx) == pytest.approx([exact], abs=1e-6)
 
     @pytest.mark.usefixtures("suppress_quepp_warnings")
     def test_noise_correction(self):
@@ -766,8 +859,8 @@ class TestQuEPPRoundTrip:
         _, ctx = protocol.expand(circuit_to_dag(qc), obs)
         noise_factor = 0.9
         qr = [exact * noise_factor]
-        qr.extend(ctx["classical_values"] * noise_factor)
-        assert protocol.reduce(qr, ctx) == pytest.approx(exact, abs=1e-4)
+        qr.extend(ctx["per_obs"][0]["classical_values"] * noise_factor)
+        assert protocol.reduce(qr, ctx) == pytest.approx([exact], abs=1e-4)
 
     @pytest.mark.usefixtures("suppress_quepp_warnings")
     def test_expand_with_controlled_rotation(self):
@@ -779,7 +872,8 @@ class TestQuEPPRoundTrip:
         obs = SparsePauliOp.from_list([("ZZ", 1.0)])
         protocol = QuEPP(sampling="exhaustive", truncation_order=5, n_twirls=0)
         _, ctx = protocol.expand(circuit_to_dag(qc), obs)
-        cpt = float(ctx["weights"] @ ctx["classical_values"])
+        entry = ctx["per_obs"][0]
+        cpt = float(entry["weights"] @ entry["classical_values"])
         assert cpt == pytest.approx(_exact_expval(qc, obs), abs=1e-4)
 
 
@@ -795,9 +889,13 @@ class TestQuEPPSignalDestructionExtended:
     def _make_context(classical_values, weights=None):
         cv = np.array(classical_values)
         w = np.array(weights) if weights is not None else np.ones(len(cv)) / len(cv)
-        return {
+        per_obs_entry = {
             "classical_values": cv,
             "weights": w,
+            "dag_indices": list(range(1 + len(cv))),
+        }
+        return {
+            "per_obs": [per_obs_entry],
             "target_idx": 0,
             "ensemble_start": 1,
             "n_rotations": len(cv),
@@ -810,19 +908,19 @@ class TestQuEPPSignalDestructionExtended:
         # Ensemble noisy close to classical → eta ≈ 1.0
         quantum_results = [0.5, 0.48, 0.29]
         QuEPP(truncation_order=1, n_twirls=0).reduce(quantum_results, ctx)
-        assert "_signal_destroyed" not in ctx
+        assert "_signal_destroyed" not in ctx["per_obs"][0]
 
     def test_signal_destroyed_flag_not_set_for_near_zero_classical(self):
         """reduce() does NOT flag when classical values are all near zero."""
         ctx = self._make_context([1e-15, 1e-15])
         quantum_results = [0.5, 0.01, 0.01]
         QuEPP(truncation_order=1, n_twirls=0).reduce(quantum_results, ctx)
-        assert "_signal_destroyed" not in ctx
+        assert "_signal_destroyed" not in ctx["per_obs"][0]
 
     def test_post_reduce_warns_on_destroyed_signal(self):
         """post_reduce() emits a UserWarning when contexts have destroyed signals."""
-        destroyed = {"_signal_destroyed": True}
-        healthy = {}
+        destroyed = {"per_obs": [{"_signal_destroyed": True}]}
+        healthy = {"per_obs": [{}]}
         protocol = QuEPP(truncation_order=1, n_twirls=0)
         with pytest.warns(UserWarning, match=r"signal destroyed"):
             protocol.post_reduce([destroyed, healthy])
@@ -832,7 +930,7 @@ class TestQuEPPSignalDestructionExtended:
         protocol = QuEPP(truncation_order=1, n_twirls=0)
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            protocol.post_reduce([{}, {}])
+            protocol.post_reduce([{"per_obs": [{}]}, {"per_obs": [{}]}])
 
     def test_post_reduce_default_noop_on_base_class(self):
         """QEMProtocol.post_reduce() is a no-op that does not raise."""
@@ -967,7 +1065,7 @@ class TestQuEPPPipelineIntegration:
             CircuitPipeline(stages=[CircuitSpecStage(), MeasurementStage()])
             .run(meta, PipelineEnv(backend=QiskitSimulator(**shared)))
             .values()
-        )[0]
+        )[0][0]
 
         noisy = list(
             CircuitPipeline(stages=[CircuitSpecStage(), MeasurementStage()])
@@ -976,7 +1074,7 @@ class TestQuEPPPipelineIntegration:
                 PipelineEnv(backend=QiskitSimulator(noise_model=noise, **shared)),
             )
             .values()
-        )[0]
+        )[0][0]
 
         quepp_val = list(
             CircuitPipeline(
@@ -998,7 +1096,7 @@ class TestQuEPPPipelineIntegration:
                 PipelineEnv(backend=QiskitSimulator(noise_model=noise, **shared)),
             )
             .values()
-        )[0]
+        )[0][0]
 
         noisy_err = abs(noisy - exact)
         quepp_err = abs(quepp_val - exact)
@@ -1006,3 +1104,233 @@ class TestQuEPPPipelineIntegration:
             f"QuEPP error ({quepp_err:.4f}) should be less than half "
             f"of noisy error ({noisy_err:.4f})"
         )
+
+
+class TestQuEPPMultiObservable:
+    """QuEPP with a tuple of observables (shared target + deduped paths)."""
+
+    @pytest.fixture
+    def qc_two_rotations(self):
+        qc = QuantumCircuit(2)
+        qc.h(0)
+        qc.rx(0.3, 0)
+        qc.cx(0, 1)
+        qc.rz(0.7, 1)
+        return qc
+
+    def test_expand_returns_per_obs_entries(self, qc_two_rotations):
+        obs1 = SparsePauliOp.from_list([("IZ", 1.0)])
+        obs2 = SparsePauliOp.from_list([("ZZ", 1.0)])
+        protocol = QuEPP(sampling="exhaustive", truncation_order=2, n_twirls=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            _, ctx = protocol.expand(circuit_to_dag(qc_two_rotations), (obs1, obs2))
+        per_obs = ctx["per_obs"]
+        assert isinstance(per_obs, list)
+        assert len(per_obs) == 2
+        for entry in per_obs:
+            assert "classical_values" in entry
+            assert "weights" in entry
+            assert "dag_indices" in entry
+            # Target shared across all observables, always at merged index 0.
+            assert entry["dag_indices"][0] == 0
+
+    def test_classical_values_match_independent_runs(self, qc_two_rotations):
+        """Multi-observable expand produces the same per-observable
+        classical values as N independent single-observable expand calls.
+        """
+        obs1 = SparsePauliOp.from_list([("IZ", 1.0)])
+        obs2 = SparsePauliOp.from_list([("ZZ", 1.0)])
+        protocol = QuEPP(sampling="exhaustive", truncation_order=2, n_twirls=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            _, ctx1 = protocol.expand(circuit_to_dag(qc_two_rotations.copy()), obs1)
+            _, ctx2 = protocol.expand(circuit_to_dag(qc_two_rotations.copy()), obs2)
+            _, ctx_multi = protocol.expand(
+                circuit_to_dag(qc_two_rotations.copy()), (obs1, obs2)
+            )
+        np.testing.assert_allclose(
+            sorted(ctx_multi["per_obs"][0]["classical_values"]),
+            sorted(ctx1["per_obs"][0]["classical_values"]),
+            atol=1e-9,
+        )
+        np.testing.assert_allclose(
+            sorted(ctx_multi["per_obs"][1]["classical_values"]),
+            sorted(ctx2["per_obs"][0]["classical_values"]),
+            atol=1e-9,
+        )
+
+    def test_target_dag_is_shared_across_observables(self, qc_two_rotations):
+        obs1 = SparsePauliOp.from_list([("IZ", 1.0)])
+        obs2 = SparsePauliOp.from_list([("ZZ", 1.0)])
+        protocol = QuEPP(sampling="exhaustive", truncation_order=2, n_twirls=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            dags, ctx = protocol.expand(circuit_to_dag(qc_two_rotations), (obs1, obs2))
+        per_obs = ctx["per_obs"]
+        target_dag_for_obs1 = dags[per_obs[0]["dag_indices"][0]]
+        target_dag_for_obs2 = dags[per_obs[1]["dag_indices"][0]]
+        assert target_dag_for_obs1 is target_dag_for_obs2
+
+    def test_path_dag_dedup_across_observables(self):
+        qc = QuantumCircuit(1)
+        qc.rx(0.4, 0)
+        obs = SparsePauliOp.from_list([("Z", 1.0)])
+        protocol = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            dags_solo, _ = protocol.expand(circuit_to_dag(qc.copy()), obs)
+            dags_multi, ctx_multi = protocol.expand(
+                circuit_to_dag(qc.copy()), (obs, obs)
+            )
+        per_obs = ctx_multi["per_obs"]
+        assert len(dags_multi) == len(dags_solo)
+        assert per_obs[0]["dag_indices"] == per_obs[1]["dag_indices"]
+
+    def test_n_identical_observables_share_path_dags(self):
+        """N identical observables produce the same number of DAGs as 1
+        observable solo — path enumeration is not duplicated."""
+        qc = QuantumCircuit(1)
+        qc.rx(0.4, 0)
+        obs = SparsePauliOp.from_list([("Z", 1.0)])
+        protocol = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            dags_solo, _ = protocol.expand(circuit_to_dag(qc.copy()), obs)
+            dags_multi, _ = protocol.expand(circuit_to_dag(qc.copy()), (obs, obs, obs))
+        assert len(dags_multi) == len(dags_solo)
+
+    def test_reduce_returns_list_for_multi_obs_context(self, qc_two_rotations):
+        obs1 = SparsePauliOp.from_list([("IZ", 1.0)])
+        obs2 = SparsePauliOp.from_list([("ZZ", 1.0)])
+        protocol = QuEPP(sampling="exhaustive", truncation_order=2, n_twirls=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            dags, ctx = protocol.expand(circuit_to_dag(qc_two_rotations), (obs1, obs2))
+        per_dag_per_obs = [[0.5, 0.3] for _ in dags]
+        out = protocol.reduce(per_dag_per_obs, ctx)
+        assert isinstance(out, list)
+        assert len(out) == 2
+        assert all(isinstance(v, float) for v in out)
+
+    def test_reduce_per_observable_matches_independent_runs(self, qc_two_rotations):
+        obs1 = SparsePauliOp.from_list([("IZ", 1.0)])
+        obs2 = SparsePauliOp.from_list([("ZZ", 1.0)])
+        protocol = QuEPP(sampling="exhaustive", truncation_order=2, n_twirls=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            _, ctx1 = protocol.expand(circuit_to_dag(qc_two_rotations.copy()), obs1)
+            _, ctx2 = protocol.expand(circuit_to_dag(qc_two_rotations.copy()), obs2)
+            dags_multi, ctx_multi = protocol.expand(
+                circuit_to_dag(qc_two_rotations.copy()), (obs1, obs2)
+            )
+
+        rng = np.random.default_rng(0)
+        noisy_solo_1 = np.concatenate(
+            [
+                [float(rng.uniform(-1, 1))],
+                np.array(ctx1["per_obs"][0]["classical_values"]),
+            ]
+        )
+        noisy_solo_2 = np.concatenate(
+            [
+                [float(rng.uniform(-1, 1))],
+                np.array(ctx2["per_obs"][0]["classical_values"]),
+            ]
+        )
+        out1 = protocol.reduce(noisy_solo_1.tolist(), ctx1)
+        out2 = protocol.reduce(noisy_solo_2.tolist(), ctx2)
+
+        per_obs = ctx_multi["per_obs"]
+        n_dags = len(dags_multi)
+        rows = [[float("nan"), float("nan")] for _ in range(n_dags)]
+        for slot, d in enumerate(per_obs[0]["dag_indices"]):
+            rows[d][0] = noisy_solo_1[slot]
+        for slot, d in enumerate(per_obs[1]["dag_indices"]):
+            rows[d][1] = noisy_solo_2[slot]
+
+        out_multi = protocol.reduce(rows, ctx_multi)
+        assert out_multi[0] == pytest.approx(out1[0], abs=1e-9)
+        assert out_multi[1] == pytest.approx(out2[0], abs=1e-9)
+
+    def test_qscript_to_meta_multi_expval_populates_tuple(self):
+        """A multi-measurement qscript with N expvals → meta.observable
+        is a tuple of N SparsePauliOps."""
+        qc_pl = qp.tape.QuantumScript(
+            ops=[qp.Hadamard(0), qp.RX(0.3, 0), qp.CNOT([0, 1])],
+            measurements=[
+                qp.expval(qp.PauliZ(0)),
+                qp.expval(qp.PauliZ(0) @ qp.PauliZ(1)),
+            ],
+        )
+        meta = qscript_to_meta(qc_pl)
+        assert isinstance(meta.observable, tuple)
+        assert len(meta.observable) == 2
+        for obs in meta.observable:
+            assert isinstance(obs, SparsePauliOp)
+
+    def test_empty_observables_tuple_rejected(self, qc_two_rotations):
+        protocol = QuEPP(sampling="exhaustive", truncation_order=2, n_twirls=0)
+        with pytest.raises(ValueError, match="at least one observable"):
+            protocol.expand(circuit_to_dag(qc_two_rotations), ())
+
+    def test_pipeline_e2e_matches_independent_runs(self, suppress_quepp_warnings):
+        """End-to-end pipeline (CircuitSpecStage → QEMStage(QuEPP) →
+        MeasurementStage) on a noiseless backend with two QWC observables
+        produces the same per-observable mitigated values as running each
+        observable through its own pipeline.
+        """
+        # Single multi-observable qscript (two expvals on QWC observables).
+        ops = [qp.Hadamard(0), qp.RX(0.3, 0), qp.CNOT([0, 1]), qp.RZ(0.7, 1)]
+        multi_meta = qscript_to_meta(
+            qp.tape.QuantumScript(
+                ops=ops,
+                measurements=[
+                    qp.expval(qp.Z(0)),
+                    qp.expval(qp.Z(0) @ qp.Z(1)),
+                ],
+            )
+        )
+        single_meta_1 = qscript_to_meta(
+            qp.tape.QuantumScript(ops=ops, measurements=[qp.expval(qp.Z(0))])
+        )
+        single_meta_2 = qscript_to_meta(
+            qp.tape.QuantumScript(ops=ops, measurements=[qp.expval(qp.Z(0) @ qp.Z(1))])
+        )
+
+        backend_kwargs = dict(
+            shots=200000, simulation_seed=42, _deterministic_execution=True
+        )
+
+        def _run(meta):
+            return list(
+                CircuitPipeline(
+                    stages=[
+                        CircuitSpecStage(),
+                        QEMStage(
+                            protocol=QuEPP(
+                                sampling="exhaustive",
+                                truncation_order=2,
+                                n_twirls=0,
+                            )
+                        ),
+                        MeasurementStage(),
+                    ],
+                    suppress_performance_warnings=True,
+                )
+                .run(meta, PipelineEnv(backend=QiskitSimulator(**backend_kwargs)))
+                .values()
+            )[0]
+
+        multi_out = _run(multi_meta)
+        solo_1 = _run(single_meta_1)
+        solo_2 = _run(single_meta_2)
+
+        assert isinstance(multi_out, list)
+        assert len(multi_out) == 2
+        # Tolerances are loose because the noiseless QuEPP path still passes
+        # through finite-shot measurement; QWC grouping plus the η rescale
+        # produce numbers that agree between modes only up to statistical
+        # noise (and tiny numerical drift from the path-DAG dedup).
+        assert multi_out[0] == pytest.approx(solo_1[0], abs=5e-3)
+        assert multi_out[1] == pytest.approx(solo_2[0], abs=5e-3)

@@ -186,21 +186,40 @@ class QEMStage(BundleStage):
         ctx = next(iter(contexts.values()), None)
         if ctx is None:
             return info
-        data = ctx
+
         for key in ("n_rotations", "n_paths"):
-            if key in data:
-                info[key] = data[key]
-        if "n_paths" in data:
-            info["n_clifford_sims"] = data["n_paths"]
+            if key in ctx:
+                info[key] = ctx[key]
+        if "n_paths" in ctx:
+            info["n_clifford_sims"] = ctx["n_paths"]
 
         # Skip float-dependent stats for symbolic weights (not yet bound).
-        if data.get("symbolic"):
-            info["symbolic"] = True
+        if ctx.get("symbolic"):
+            info["weights"] = "unbound (run after parameter binding)"
             return info
+
+        per_obs = ctx.get("per_obs")
+        if per_obs:
+            info["n_observables"] = len(per_obs)
+            data = per_obs[0]
+        else:
+            # Dry path skips per_obs but persists the count separately so
+            # introspect() can still surface it.
+            if "n_observables" in ctx:
+                info["n_observables"] = ctx["n_observables"]
+            data = ctx
 
         weights = data.get("weights")
         if weights is not None and len(weights) > 0:
             info["weight_sum"] = round(float(np.sum(weights)), 4)
+            # L1 norm = ∑|w_i|. Coincides with weight_sum for non-negative
+            # weight schemes but diverges when any path carries a negative
+            # weight (e.g. QuEPP sin-branches with sign flips). It is the
+            # variance-amplification factor: a noiseless mitigated estimate
+            # has variance proportional to (l1_norm)^2 / shots, so a value
+            # of 3.2 means the user's error bar grows ~3.2× compared to
+            # an unmitigated estimate at the same shot budget.
+            info["weight_l1_norm"] = round(float(np.sum(np.abs(weights))), 4)
             info["weight_range"] = [
                 round(float(np.min(weights)), 4),
                 round(float(np.max(weights)), 4),
@@ -220,7 +239,8 @@ class QEMStage(BundleStage):
 
         When QuEPP runs before ParameterBindingStage, weights are stored
         as sympy expressions.  This method substitutes the concrete
-        parameter values for the current param_set group.
+        parameter values for the current param_set group, iterating over
+        each ``per_obs`` slot.
         """
         param_idx = next((v for k, v in foreign_key if k == "param_set"), None)
         if param_idx is None:
@@ -230,12 +250,19 @@ class QEMStage(BundleStage):
         for key, ctx in list(contexts.items()):
             if not isinstance(ctx, dict) or not ctx.get("symbolic"):
                 continue
-            # Shallow-copy to avoid mutating the shared context across
-            # different param_set groups.
-            ctx = dict(ctx)
-            contexts[key] = ctx
-            symbols = ctx.get("weight_symbols", [])
-            QuEPP.evaluate_symbolic_weights(ctx, symbols, param_values)
+            # Shallow-copy so different param_set groups don't share state.
+            new_ctx = dict(ctx)
+            symbols = new_ctx.get("weight_symbols", [])
+            per_obs = new_ctx.get("per_obs")
+            if per_obs:
+                new_per_obs = []
+                for entry in per_obs:
+                    new_entry = dict(entry)
+                    QuEPP.evaluate_symbolic_weights(new_entry, symbols, param_values)
+                    new_per_obs.append(new_entry)
+                new_ctx["per_obs"] = new_per_obs
+            new_ctx["symbolic"] = False
+            contexts[key] = new_ctx
 
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken
@@ -253,7 +280,6 @@ class QEMStage(BundleStage):
         reduced = self._reduce_grouped(grouped, contexts, per_obs=per_obs)
 
         if contexts is not None:
-            all_ctxs = list(contexts.values())
-            self.protocol.post_reduce(all_ctxs)
+            self.protocol.post_reduce(list(contexts.values()))
 
         return reduced

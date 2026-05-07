@@ -38,6 +38,7 @@ def suppress_quepp_warnings():
         warnings.filterwarnings("ignore", message=r"QuEPP:.*shallow circuits")
         warnings.filterwarnings("ignore", message=r"QuEPP:.*signal destroyed")
         warnings.filterwarnings("ignore", message=r"QuEPP Monte Carlo:.*non-diagonal")
+        warnings.filterwarnings("ignore", message=r"QuEPP:.*zero diagonal Pauli paths")
         yield
 
 

@@ -43,8 +43,16 @@ class _DummyQEMProtocol(QEMProtocol):
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
         return (dag,), QEMContext()
 
-    def reduce(self, quantum_results: Sequence[float], context: QEMContext) -> float:
-        return float(sum(quantum_results))
+    def reduce(
+        self, quantum_results: Sequence[Any], context: QEMContext
+    ) -> list[float]:
+        if not quantum_results:
+            return []
+        sample = quantum_results[0]
+        if isinstance(sample, (list, tuple)):
+            n_obs = len(sample)
+            return [float(sum(row[i] for row in quantum_results)) for i in range(n_obs)]
+        return [float(sum(quantum_results))]
 
 
 @pytest.fixture
@@ -105,7 +113,7 @@ class TestQEMStage:
             execute_fn=ones_execute_fn,
         )
         assert len(reduced) == 1
-        assert list(reduced.values())[0] == pytest.approx(3.9)
+        assert list(reduced.values())[0] == pytest.approx([3.9])
 
     def test_reduce_handles_multi_obs_expval_dicts(self, dummy_pipeline_env):
         """QEM reduce applies postprocessing per observable when values are {int: float} dicts."""
@@ -150,7 +158,7 @@ class TestQEMStage:
         assert len(reduced) == 1
         key = (("spec", "circ"), ("obs_group", 0))
         assert key in reduced
-        assert reduced[key] == {0: pytest.approx(6.0), 1: pytest.approx(33.0)}
+        assert reduced[key] == {0: pytest.approx([6.0]), 1: pytest.approx([33.0])}
 
     def test_reduce_binds_symbolic_weights_from_param_set_foreign_key(
         self, dummy_pipeline_env
@@ -160,8 +168,13 @@ class TestQEMStage:
         base_key = (("spec", "circ"),)
         contexts = {
             base_key: {
-                "classical_values": np.array([1.0, 0.0]),
-                "weights": np.array([theta.cos(), theta.sin()], dtype=object),
+                "per_obs": [
+                    {
+                        "classical_values": np.array([1.0, 0.0]),
+                        "weights": np.array([theta.cos(), theta.sin()], dtype=object),
+                        "dag_indices": [0, 1, 2],
+                    }
+                ],
                 "symbolic": True,
                 "weight_symbols": [theta],
                 "target_idx": 0,
@@ -181,10 +194,11 @@ class TestQEMStage:
 
         reduced = stage.reduce(results, env, token=contexts)
 
-        assert reduced[base_key] == pytest.approx(0.5)
+        assert reduced[base_key] == pytest.approx([0.5])
         assert contexts[base_key]["symbolic"] is False
-        assert contexts[base_key]["weights"][0] == pytest.approx(1.0)
-        assert contexts[base_key]["weights"][1] == pytest.approx(0.0)
+        bound_weights = contexts[base_key]["per_obs"][0]["weights"]
+        assert bound_weights[0] == pytest.approx(1.0)
+        assert bound_weights[1] == pytest.approx(0.0)
 
 
 class TestPipelineOutputMetaCircuitWithQEM:
@@ -303,7 +317,7 @@ class TestQuEPPLocalEffectiveness:
                 env=dummy_pipeline_env,
                 execute_fn=noisy_execute_fn,
             ).values()
-        )[0]
+        )[0][0]
 
         def build_quepp_execute_fn(with_twirls: bool):
             def execute_fn(trace, env):
@@ -322,8 +336,10 @@ class TestQuEPPLocalEffectiveness:
                         out[branch_key] = noisy_target + twirl_jitter
                     else:
                         path_idx = int(qem_idx) - 1
+                        per_obs_entry = ctx["per_obs"][0]
                         out[branch_key] = (
-                            float(ctx["classical_values"][path_idx]) * noise_scale
+                            float(per_obs_entry["classical_values"][path_idx])
+                            * noise_scale
                             + twirl_jitter
                         )
                 return out
@@ -348,7 +364,7 @@ class TestQuEPPLocalEffectiveness:
                 env=dummy_pipeline_env,
                 execute_fn=build_quepp_execute_fn(with_twirls=False),
             ).values()
-        )[0]
+        )[0][0]
 
         twirl_pipeline = CircuitPipeline(
             stages=[
@@ -369,7 +385,7 @@ class TestQuEPPLocalEffectiveness:
                 env=dummy_pipeline_env,
                 execute_fn=build_quepp_execute_fn(with_twirls=True),
             ).values()
-        )[0]
+        )[0][0]
 
         assert np.isfinite(noisy_result)
         assert np.isfinite(quepp_result)

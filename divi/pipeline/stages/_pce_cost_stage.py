@@ -191,21 +191,25 @@ class PCECostStage(BundleStage):
 
             if self._soft:
                 probs = counts / total_shots
-                reduced[base_key] = _compute_soft_energy(
-                    parities,
-                    probs,
-                    self._alpha,
-                    self._problem,
-                    _compiled=self._compiled,
-                )
+                reduced[base_key] = [
+                    _compute_soft_energy(
+                        parities,
+                        probs,
+                        self._alpha,
+                        self._problem,
+                        _compiled=self._compiled,
+                    )
+                ]
             else:
-                reduced[base_key] = _compute_hard_cvar_energy(
-                    parities,
-                    counts,
-                    total_shots,
-                    self._problem,
-                    self._alpha_cvar,
-                    _compiled=self._compiled,
-                )
+                reduced[base_key] = [
+                    _compute_hard_cvar_energy(
+                        parities,
+                        counts,
+                        total_shots,
+                        self._problem,
+                        self._alpha_cvar,
+                        _compiled=self._compiled,
+                    )
+                ]
 
         return reduced

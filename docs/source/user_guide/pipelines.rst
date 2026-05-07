@@ -83,6 +83,12 @@ and reduction stay consistent:
   collapses results back to the final shape (e.g. a single expectation value or
   a dict of bitstring probabilities per key).
 
+- **Reading single-circuit results**: Use :attr:`~divi.pipeline.PipelineResult.value`
+  for the natural shape — a scalar for single-observable expectation values,
+  a ``list[float]`` for multi-observable runs, a ``dict`` for probabilities and
+  counts.  For the canonical pipeline-internal form regardless of length (always
+  a list for expectation values), index the result directly via ``result[()]``.
+
 Built-in Stages
 ---------------
 
@@ -390,6 +396,16 @@ converter spec stages — no ``QuantumProgram`` required.
    print(result.value)  # {"00": ~0.5, "11": ~0.5}
 
 Both stages accept single circuits, sequences, or mappings as input.
+
+.. tip::
+
+   ``result.value`` returns the natural shape: a scalar ``float`` for a
+   single ``qp.expval(...)`` measurement, a ``list[float]`` for several
+   ``qp.expval(...)`` measurements (or when the user explicitly wrapped a
+   single observable in a list at the program layer), and a ``dict`` for
+   ``qp.probs`` / ``qp.counts``.  For the canonical pipeline-internal form
+   regardless of length (always a ``list[float]`` for expectation values),
+   use ``result[()]``.
 
 
 Example 3: Writing a Custom SpecStage

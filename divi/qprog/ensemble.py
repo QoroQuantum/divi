@@ -386,13 +386,23 @@ class ProgramEnsemble(ABC):
                 "You must provide a unique instance for each program ID."
             )
 
-        # In barrier mode the pool is sized to fit every program so the
-        # merge is maximal.
+        # In barrier mode the pool is sized so the barrier predicate can
+        # actually fill a batch.  When ``max_batch_size`` is set, the pool
+        # is capped at ``min(max_batch_size, len(programs))`` so:
+        #   - the barrier and the batch size align (one full wave per flush);
+        #   - we don't spawn more threads than necessary (avoids macOS's
+        #     per-process thread cap on large ensembles);
+        #   - threads recycle for the next wave after each flush completes.
         default_workers = (os.cpu_count() or 1) + 4
         if batching_enabled:
             if batch_config.max_concurrent_programs is not None:
                 if batch_config.max_concurrent_programs == -1:
-                    n_workers = len(self._programs)
+                    if batch_config.max_batch_size is not None:
+                        n_workers = min(
+                            batch_config.max_batch_size, len(self._programs)
+                        )
+                    else:
+                        n_workers = len(self._programs)
                 else:
                     n_workers = batch_config.max_concurrent_programs
                     if n_workers > _CONCURRENT_PROGRAMS_SOFT_CAP:
@@ -404,7 +414,7 @@ class ProgramEnsemble(ABC):
                             stacklevel=2,
                         )
             elif batch_config.max_batch_size is not None:
-                n_workers = default_workers
+                n_workers = min(batch_config.max_batch_size, len(self._programs))
             elif len(self._programs) <= _BARRIER_PROGRAM_LIMIT:
                 n_workers = max(len(self._programs), default_workers)
             else:

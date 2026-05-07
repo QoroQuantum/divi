@@ -44,12 +44,15 @@ class TestNoMitigation:
         dags, ctx = _NoMitigation().expand(bell_dag)
         assert len(dags) == 1
         assert dags[0] is bell_dag
-        assert ctx == {}
+        # ``dag_indices`` is set uniformly by every protocol's ``expand`` so
+        # that ``reduce`` can slice ``quantum_results`` consistently in both
+        # single- and multi-observable mode.
+        assert ctx == {"dag_indices": [0]}
 
     def test_reduce_returns_single_value(self, bell_dag):
         p = _NoMitigation()
-        assert p.reduce([1.23], {}) == 1.23
-        assert p.reduce([-0.5], {}) == -0.5
+        assert p.reduce([1.23], {}) == [1.23]
+        assert p.reduce([-0.5], {}) == [-0.5]
 
     def test_reduce_raises_on_multi_results(self, bell_dag):
         with pytest.raises(RuntimeError, match="multiple partial results"):
@@ -117,19 +120,19 @@ class TestZNE:
         extrapolated = zne.reduce(
             [1.0, -1.0, -3.0], {"effective_scales": (1.0, 3.0, 5.0)}
         )
-        assert extrapolated == pytest.approx(2.0)
+        assert extrapolated == pytest.approx([2.0])
 
     def test_reduce_falls_back_to_requested_scales_without_context(self, bell_dag):
         """If a legacy context lacks effective_scales, reduce uses the requested values."""
         zne = ZNE(scale_factors=[1.0, 3.0, 5.0], extrapolator=LinearExtrapolator())
-        assert zne.reduce([1.0, -1.0, -3.0], {}) == pytest.approx(2.0)
+        assert zne.reduce([1.0, -1.0, -3.0], {}) == pytest.approx([2.0])
 
     def test_expand_forwards_effective_scales_to_reduce(self, bell_dag):
         """Effective scales survive the expand→reduce roundtrip unbiased."""
         zne = ZNE(scale_factors=[1.0, 3.0, 5.0], extrapolator=LinearExtrapolator())
         _, ctx = zne.expand(bell_dag)
         # y = 2 - s evaluated at effective scales (1, 3, 5).
-        assert zne.reduce([1.0, -1.0, -3.0], ctx) == pytest.approx(2.0)
+        assert zne.reduce([1.0, -1.0, -3.0], ctx) == pytest.approx([2.0])
 
     def test_expand_warns_when_scales_collapse(self, bell_dag):
         """Small-d circuits can snap distinct requested scales to the same effective value."""
@@ -167,6 +170,33 @@ class TestLinearExtrapolator:
     def test_rejects_inf_input(self):
         with pytest.raises(ValueError, match="NaN or Inf"):
             LinearExtrapolator().extrapolate([1.0, float("inf")], [1.0, 2.0])
+
+
+class TestNoMitigationTupleObservable:
+    """Tuple-observable expand/reduce on the trivial protocol."""
+
+    def test_expand_with_tuple_returns_single_context(self, bell_dag):
+        dags, ctx = _NoMitigation().expand(bell_dag, observable=("o1", "o2"))
+        assert ctx == {"dag_indices": [0]}
+        assert len(dags) == 1
+
+    def test_reduce_with_per_obs_list(self, bell_dag):
+        out = _NoMitigation().reduce([[0.7, -0.3]], {"dag_indices": [0]})
+        assert out == [0.7, -0.3]
+
+
+class TestZNETupleObservable:
+    """ZNE on a tuple observable extrapolates per-observable element-wise."""
+
+    def test_reduce_with_per_obs_list(self, bell_dag):
+        # y_obs1 = 2 - s → 2; y_obs2 = 4 - 2s → 4.
+        zne = ZNE(scale_factors=[1.0, 3.0], extrapolator=LinearExtrapolator())
+        _, ctx = zne.expand(bell_dag, observable=("a", "b"))
+        rows = [[1.0, 2.0], [-1.0, -2.0]]
+        out = zne.reduce(rows, ctx)
+        assert isinstance(out, list)
+        assert out[0] == pytest.approx(2.0)
+        assert out[1] == pytest.approx(4.0)
 
 
 class TestRichardsonExtrapolator:

@@ -3,10 +3,11 @@ Hamiltonian Time Evolution
 
 The :class:`~divi.qprog.algorithms.TimeEvolution` program performs Hamiltonian time evolution simulation — simulating real-time quantum dynamics under a given Hamiltonian. Divi supports multiple Trotterization techniques out of the box: :class:`~divi.hamiltonians.ExactTrotterization` (full Trotter-Suzuki decomposition) and :class:`~divi.hamiltonians.QDrift` (randomized term sampling for shallower circuits on large Hamiltonians).
 
-It supports two output modes:
+It supports three output modes:
 
 - **Probability mode**: ``te.results`` contains measured basis-state probabilities (``dict[str, float]``).
 - **Observable mode**: ``te.results`` contains the estimated expectation value (``float``).
+- **Multi-observable mode**: ``te.results`` contains one expectation value per observable (``list[float]``), measured from a single shared evolution.
 
 Basic Usage
 -----------
@@ -61,6 +62,50 @@ Provide ``observable=...`` to estimate expectation values after evolution:
    On sampling backends, pass ``shot_distribution="weighted"`` to focus the
    shot budget on the observable's dominant terms.  See
    :ref:`adaptive-shot-allocation` for the full list of strategies.
+
+.. _time-evolution-multi-observable:
+
+Multi-Observable Mode
+---------------------
+
+Pass a list (or tuple) to ``observable=`` to estimate several expectation
+values from a single evolution.  ``te.results`` becomes a ``list[float]`` in
+the same order as the input observables, and the cost is shared across them:
+
+.. code-block:: python
+
+   import math
+   import pennylane as qp
+   from divi.backends import MaestroSimulator
+   from divi.qprog import TimeEvolution
+
+   backend = MaestroSimulator(shots=5000)
+
+   te = TimeEvolution(
+       hamiltonian=qp.PauliX(0) + qp.PauliX(1),
+       time=math.pi / 2,
+       observable=[qp.PauliZ(0), qp.PauliZ(1), qp.PauliZ(0) @ qp.PauliZ(1)],
+       backend=backend,
+   )
+   te.run()
+
+   z0, z1, zz = te.results
+   print(f"<Z0>   = {z0:+.4f}")
+   print(f"<Z1>   = {z1:+.4f}")
+   print(f"<Z0Z1> = {zz:+.4f}")
+
+Two cost-saving mechanisms apply automatically:
+
+- **Shared evolution**: the ``e^{-iHt}`` body is built and executed once per
+  measurement group, not once per observable.
+- **Cross-observable QWC grouping**:
+  :class:`~divi.pipeline.stages.MeasurementStage` unions the Pauli terms of
+  every observable and groups commuting terms into shared shot batches.  In
+  the example above all three observables are diagonal in the Z basis, so
+  they collapse into a single measurement group.
+
+When a quantum error mitigation protocol is set, the savings extend further;
+see :ref:`qem-multi-observable`.
 
 QDrift Trotterization
 ---------------------

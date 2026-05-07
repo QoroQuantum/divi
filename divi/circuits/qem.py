@@ -10,6 +10,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 
 import numpy as np
 from qiskit.dagcircuit import DAGCircuit
+from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits._qem_passes import (
     GlobalFoldPass,
@@ -43,11 +44,15 @@ class QEMProtocol(ABC):
     expand/reduce lifecycle:
 
     * ``expand`` — given a Qiskit :class:`~qiskit.dagcircuit.DAGCircuit`
-      (and optionally the observable being measured), return the DAGs to
-      execute on quantum hardware and a ``QEMContext`` carrying any
-      classically-computed side-channel data needed during postprocessing.
+      and the observable tuple being measured, return the DAGs to execute
+      on quantum hardware and a ``QEMContext`` carrying any classically-
+      computed side-channel data needed during postprocessing.
     * ``reduce`` — given the context from ``expand`` and the quantum
-      results, produce a single mitigated expectation value.
+      results, produce a ``list[float]`` of per-observable mitigated
+      expectation values.
+
+    The observable flows through as a ``tuple[SparsePauliOp, ...]`` and is
+    forwarded unchanged to whichever stage needs its structure.
     """
 
     @property
@@ -59,7 +64,7 @@ class QEMProtocol(ABC):
     def expand(
         self,
         dag: DAGCircuit,
-        observable: Any | None = None,
+        observable: tuple[SparsePauliOp, ...] | None = None,
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
         """Generate DAGs and classical context for error mitigation.
 
@@ -68,12 +73,17 @@ class QEMProtocol(ABC):
         state.  This matches the broader pipeline convention for
         ``consumes_dag_bodies`` stages (see
         :class:`~divi.pipeline.abc.BundleStage`).
+
+        Args:
+            dag: Circuit to mitigate.
+            observable: ``tuple[SparsePauliOp, ...]`` (one entry per
+                expectation value being measured), or ``None``.
         """
 
     def dry_expand(
         self,
         dag: DAGCircuit,
-        observable: Any | None = None,
+        observable: tuple[SparsePauliOp, ...] | None = None,
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
         """Analytic counterpart to :meth:`expand` used by dry-run pipelines.
 
@@ -95,10 +105,19 @@ class QEMProtocol(ABC):
     @abstractmethod
     def reduce(
         self,
-        quantum_results: Sequence[float],
+        quantum_results: Sequence[Any],
         context: QEMContext,
-    ) -> float:
-        """Combine quantum results with classical context into a mitigated value."""
+    ) -> list[float]:
+        """Combine quantum results with classical context into mitigated values.
+
+        Returns a ``list[float]`` of per-observable mitigated values.
+        ``quantum_results`` is ordered along the QEM axis; each entry is
+        itself a ``list[float]`` of per-observable expectation values from
+        :class:`~divi.pipeline.stages.MeasurementStage`.
+
+        Implementations may use ``context["dag_indices"]`` (when present)
+        to select the relevant positions in ``quantum_results``.
+        """
 
     def post_reduce(self, contexts: Sequence[QEMContext]) -> None:
         """Hook called after all per-group ``reduce`` calls in an evaluation.
@@ -116,16 +135,31 @@ class _NoMitigation(QEMProtocol):
         return "NoMitigation"
 
     def expand(
-        self, dag: DAGCircuit, observable: Any | None = None
+        self,
+        dag: DAGCircuit,
+        observable: tuple[SparsePauliOp, ...] | None = None,
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
-        return (dag,), {}
+        return (dag,), {"dag_indices": [0]}
 
-    def reduce(self, quantum_results: Sequence[float], context: QEMContext) -> float:
-        if len(quantum_results) == 0:
+    def reduce(
+        self,
+        quantum_results: Sequence[Any],
+        context: QEMContext,
+    ) -> list[float]:
+        indices = context.get("dag_indices")
+        selected = (
+            [quantum_results[i] for i in indices]
+            if indices is not None
+            else list(quantum_results)
+        )
+        if len(selected) == 0:
             raise RuntimeError("NoMitigation received an empty results sequence.")
-        if len(quantum_results) > 1:
+        if len(selected) > 1:
             raise RuntimeError("NoMitigation class received multiple partial results.")
-        return quantum_results[0]
+        only = selected[0]
+        if isinstance(only, list):
+            return [float(v) for v in only]
+        return [float(only)]
 
 
 # ---------------------------------------------------------------------------
@@ -375,7 +409,9 @@ class ZNE(QEMProtocol):
         return self._folding_fn
 
     def expand(
-        self, dag: DAGCircuit, observable: Any | None = None
+        self,
+        dag: DAGCircuit,
+        observable: tuple[SparsePauliOp, ...] | None = None,
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
         # Expand takes ownership of `dag` (see QEMProtocol.expand).  For
         # S scale factors we need S distinct folded outputs; the input
@@ -400,8 +436,37 @@ class ZNE(QEMProtocol):
                 stacklevel=2,
             )
 
-        return folded_dags, {"effective_scales": effective_scales}
+        return folded_dags, {
+            "effective_scales": effective_scales,
+            "dag_indices": list(range(len(folded_dags))),
+        }
 
-    def reduce(self, quantum_results: Sequence[float], context: QEMContext) -> float:
+    def reduce(
+        self,
+        quantum_results: Sequence[Any],
+        context: QEMContext,
+    ) -> list[float]:
+        """Extrapolate per-observable expectation values to ``s=0``.
+
+        Each entry of ``quantum_results`` is a ``list[float]`` of per-
+        observable expectation values from one scale factor.  Extrapolation
+        runs independently per observable.
+        """
+        indices = context.get("dag_indices")
+        selected = (
+            [quantum_results[i] for i in indices]
+            if indices is not None
+            else list(quantum_results)
+        )
         scales = context.get("effective_scales", self._scale_factors)
-        return self._extrapolator.extrapolate(scales, list(quantum_results))
+
+        if not selected:
+            raise RuntimeError("ZNE received an empty results sequence.")
+
+        if not isinstance(selected[0], (list, tuple)):
+            selected = [[v] for v in selected]
+        n_obs = len(selected[0])
+        return [
+            float(self._extrapolator.extrapolate(scales, [row[i] for row in selected]))
+            for i in range(n_obs)
+        ]

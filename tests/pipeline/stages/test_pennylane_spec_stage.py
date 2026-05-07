@@ -324,4 +324,4 @@ class TestPennyLaneSpecStagePipeline:
 
         # RX(0) RZ(0) |0> = |0>, so <Z> ≈ 1.0
         expval = next(iter(result.values()))
-        assert expval == pytest.approx(1.0, abs=0.05)
+        assert expval == pytest.approx([1.0], abs=0.05)

@@ -19,6 +19,7 @@ from divi.circuits._conversions import (
     _sympy_to_qiskit,
     dag_to_qasm_body,
     observable_to_sparse_pauli_op,
+    qscript_to_meta,
 )
 from divi.circuits._qasm_template import build_template, render_template
 
@@ -354,3 +355,83 @@ class TestEndToEndEquivalence:
         ref_qc.ry(1.5, 0)
         u_ref = Operator(ref_qc).data
         assert np.allclose(u, u_ref, atol=1e-10)
+
+
+class TestQscriptToMetaObservable:
+    """``meta.observable`` shape varies with the qscript's measurement(s)."""
+
+    def test_single_expval_yields_length_one_tuple(self):
+        qs = qp.tape.QuantumScript(
+            ops=[qp.Hadamard(0)],
+            measurements=[qp.expval(qp.PauliZ(0))],
+        )
+        meta = qscript_to_meta(qs)
+        assert isinstance(meta.observable, tuple)
+        assert len(meta.observable) == 1
+        assert isinstance(meta.observable[0], SparsePauliOp)
+        assert meta.measured_wires is None
+
+    def test_two_expvals_yields_tuple_of_sparse_pauli_ops(self):
+        qs = qp.tape.QuantumScript(
+            ops=[qp.Hadamard(0), qp.CNOT([0, 1])],
+            measurements=[
+                qp.expval(qp.PauliZ(0)),
+                qp.expval(qp.PauliZ(0) @ qp.PauliZ(1)),
+            ],
+        )
+        meta = qscript_to_meta(qs)
+        assert isinstance(meta.observable, tuple)
+        assert len(meta.observable) == 2
+        for obs in meta.observable:
+            assert isinstance(obs, SparsePauliOp)
+        assert meta.measured_wires is None
+
+    def test_three_expvals_preserve_order(self):
+        """Tuple entries are in the same order as the qscript's measurements."""
+        ops = [qp.Hadamard(0), qp.CNOT([0, 1])]
+        qs = qp.tape.QuantumScript(
+            ops=ops,
+            measurements=[
+                qp.expval(qp.PauliX(0)),
+                qp.expval(qp.PauliY(0)),
+                qp.expval(qp.PauliZ(0)),
+            ],
+        )
+        meta = qscript_to_meta(qs)
+        labels = [str(o.paulis.to_labels()[0]) for o in meta.observable]
+        # Qiskit labels are little-endian (qubit 0 on the right).  PauliX(0)
+        # on a 2-qubit wire frame → "IX"; PauliY(0) → "IY"; PauliZ(0) → "IZ".
+        assert labels == ["IX", "IY", "IZ"]
+
+    def test_mixing_multi_expval_with_probs_raises(self):
+        """Mixed measurement types on the multi-expval path are rejected —
+        the multi-observable code path expects every measurement to be an
+        expval."""
+        qs = qp.tape.QuantumScript(
+            ops=[qp.Hadamard(0)],
+            measurements=[
+                qp.expval(qp.PauliZ(0)),
+                qp.expval(qp.PauliX(0)),
+                qp.probs(wires=[0]),
+            ],
+        )
+        with pytest.raises(ValueError, match="mixing"):
+            qscript_to_meta(qs)
+
+    def test_single_probs_yields_measured_wires_no_observable(self):
+        qs = qp.tape.QuantumScript(
+            ops=[qp.Hadamard(0)],
+            measurements=[qp.probs(wires=[0])],
+        )
+        meta = qscript_to_meta(qs)
+        assert meta.observable is None
+        assert meta.measured_wires == (0,)
+
+    def test_no_measurement_yields_no_observable(self):
+        qs = qp.tape.QuantumScript(
+            ops=[qp.Hadamard(0)],
+            measurements=[],
+        )
+        meta = qscript_to_meta(qs)
+        assert meta.observable is None
+        assert meta.measured_wires is None

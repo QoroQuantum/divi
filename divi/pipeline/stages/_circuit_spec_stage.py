@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from divi.circuits import MetaCircuit
+from divi.pipeline._dry_run import _two_qubit_depth
 from divi.pipeline.abc import (
     ChildResults,
     MetaCircuitBatch,
@@ -77,6 +78,8 @@ class CircuitSpecStage(SpecStage[CircuitSpec]):
             "n_gates": dag.size(),
             "n_1q_gates": n_1q,
             "n_2q_gates": n_2q,
+            "depth": dag.depth(),
+            "depth_2q": _two_qubit_depth(dag),
         }
 
     def reduce(

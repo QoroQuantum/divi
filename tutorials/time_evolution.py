@@ -8,7 +8,8 @@ Time evolution with Divi TimeEvolution.
 This tutorial demonstrates:
 1. Probability-mode simulation for a known analytic case.
 2. Expectation-value mode with a user-defined observable (compared to exact).
-3. QDrift multi-sample averaging for randomized Trotterization.
+3. Multi-observable mode: several expectation values from one evolution.
+4. QDrift multi-sample averaging for randomized Trotterization.
 """
 
 import math
@@ -39,6 +40,27 @@ def _print_observable_result(
     print(f"  Exact     ⟨Z₀⟩:  {exact:.6f}")
     print(f"  Error:            {abs(estimated - exact):.6f}")
     print(f"  Circuits executed: {circuit_count}")
+
+
+def _print_multi_observable_result(
+    labels: list[str],
+    estimated: list[float],
+    exact: list[float],
+    multi_circuit_count: int,
+    solo_circuit_count: int,
+) -> None:
+    title = "Example 3 — Multi-observable mode"
+    print(f"\n{title}")
+    print("-" * len(title))
+    for label, est, ex in zip(labels, estimated, exact):
+        print(
+            f"  {label:<8} estimated: {est:+.6f}   "
+            f"exact: {ex:+.6f}   error: {abs(est - ex):.6f}"
+        )
+    print(f"  Multi-observable run circuits: {multi_circuit_count}")
+    print(f"  Three solo runs would use:     {solo_circuit_count}")
+    saved = 1 - multi_circuit_count / solo_circuit_count
+    print(f"  Saved by sharing the evolution: {saved:.0%}")
 
 
 if __name__ == "__main__":
@@ -79,7 +101,44 @@ if __name__ == "__main__":
     exact_z = math.cos(math.sqrt(2) * t2) ** 2
     _print_observable_result(te_expval.expval(), exact_z, te_expval.total_circuit_count)
 
-    # ── Example 3: QDrift randomized Trotterization ──────────────────
+    # ── Example 3: Multi-observable from one evolution ───────────────
+    # H = X₀ + X₁ at t = π/2, |00⟩ → |11⟩ (Example 1's analytic case).
+    # Read three observables from the same evolved state:
+    #   ⟨Z₀⟩ = -1, ⟨Z₁⟩ = -1, ⟨Z₀Z₁⟩ = +1
+    # All three are diagonal in the Z basis and qubit-wise commute, so
+    # MeasurementStage groups them into a single shot batch — the cost
+    # is roughly that of measuring one observable, not three.
+    h3 = qp.PauliX(0) + qp.PauliX(1)
+    observables = [qp.PauliZ(0), qp.PauliZ(1), qp.PauliZ(0) @ qp.PauliZ(1)]
+    te_multi = TimeEvolution(
+        hamiltonian=h3,
+        time=math.pi / 2,
+        observable=observables,
+        backend=backend,
+    )
+    te_multi.run()
+
+    # Apples-to-apples baseline: measure each observable in its own run.
+    solo_circuit_count = 0
+    for obs in observables:
+        te_solo = TimeEvolution(
+            hamiltonian=h3,
+            time=math.pi / 2,
+            observable=obs,
+            backend=backend,
+        )
+        te_solo.run()
+        solo_circuit_count += te_solo.total_circuit_count
+
+    _print_multi_observable_result(
+        labels=["⟨Z₀⟩", "⟨Z₁⟩", "⟨Z₀Z₁⟩"],
+        estimated=te_multi.expval(),
+        exact=[-1.0, -1.0, +1.0],
+        multi_circuit_count=te_multi.total_circuit_count,
+        solo_circuit_count=solo_circuit_count,
+    )
+
+    # ── Example 4: QDrift randomized Trotterization ──────────────────
     # H = X₀ + 0.5·Z₀ + X₁, |00⟩, t = 1.0.
     # QDrift stochastically samples Hamiltonian terms each Trotter step.
     # Starting from |00⟩ the X terms rotate both qubits, producing a
@@ -101,6 +160,6 @@ if __name__ == "__main__":
     )
     te_qdrift.run()
     _print_sorted_probs(
-        "Example 3 — QDrift probability mode", te_qdrift.probabilities()
+        "Example 4 — QDrift probability mode", te_qdrift.probabilities()
     )
     print(f"  Circuits executed: {te_qdrift.total_circuit_count}")

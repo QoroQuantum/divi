@@ -11,8 +11,10 @@ as a reduction (``factor < 1``), since grouping N Pauli terms into
 M ≤ N commuting groups saves circuits.
 """
 
+from statistics import mean, pstdev
 from typing import Any, NamedTuple
 
+from qiskit.dagcircuit import DAGCircuit
 from rich.console import Console
 from rich.tree import Tree
 
@@ -59,10 +61,84 @@ class DryRunReport(NamedTuple):
     need to drop into private helpers or rerun the forward pass manually.
     """
 
+    circuit_stats: dict[str, float] = {}
+    """Aggregate depth/width stats across the post-fan-out final batch's
+    DAG bodies — the pre-execution analogue of
+    :attr:`~divi.backends.CircuitRunner.depth_history`.  Empty when the
+    final batch has no DAG bodies (e.g. probability-mode pipelines that
+    only carry bound QASM strings).  Populated keys: ``mean_depth``,
+    ``std_depth``, ``min_depth``, ``max_depth``, ``mean_width``,
+    ``std_width``, ``min_width``, ``max_width``, ``mean_2q_depth``.
+    """
+
 
 def _effective_bodies(mc: MetaCircuit) -> tuple:
     # Mirrors _compile_batch: bound bodies take priority over parametric DAGs.
     return mc.bound_circuit_bodies or mc.circuit_bodies or ()
+
+
+def _two_qubit_depth(dag: DAGCircuit) -> int:
+    """Longest chain of two-qubit gates connected by shared qubits.
+
+    Mirrors ``DAGCircuit.depth()`` semantics but restricted to gates
+    whose ``qargs`` length is 2.  Single-qubit gates are ignored, even
+    when they would extend a circuit's overall depth — the goal here is
+    to surface the dominant fidelity predictor on superconducting
+    hardware, where two-qubit gates are an order of magnitude noisier
+    than single-qubit ones.
+
+    Internal helper: shared with :class:`~divi.pipeline.stages.CircuitSpecStage`
+    so its ``introspect()`` can report ``depth_2q`` without recomputing
+    the same walk.
+    """
+    qubit_depth: dict = {}
+    for node in dag.op_nodes():
+        if len(node.qargs) != 2:
+            continue
+        new_d = max((qubit_depth.get(q, 0) for q in node.qargs), default=0) + 1
+        for q in node.qargs:
+            qubit_depth[q] = new_d
+    return max(qubit_depth.values(), default=0)
+
+
+def _aggregate_circuit_stats(batch: MetaCircuitBatch) -> dict[str, float]:
+    """Compute mean/std/min/max for depth and width across a batch's DAG bodies.
+
+    Pre-execution analogue of :attr:`~divi.backends.CircuitRunner.depth_history`
+    aggregates: walks every ``circuit_bodies`` DAG in the batch and
+    summarises its depth, two-qubit depth, and qubit count.  Returns an
+    empty dict when no DAG bodies are reachable (e.g. probability-mode
+    pipelines whose final batch carries only bound QASM strings).
+    """
+    depths: list[int] = []
+    twoq_depths: list[int] = []
+    widths: list[int] = []
+    for mc in batch.values():
+        # bound_circuit_bodies are QASM strings — re-parsing them only to
+        # measure depth would be expensive, and in practice their structure
+        # mirrors ``circuit_bodies`` modulo concrete parameter substitution,
+        # which doesn't change depth or width.  Iterate the parametric DAGs
+        # when available; fall back to nothing when a body has only bound
+        # QASM (parameter-binding fast path stripped DAGs).
+        for _tag, dag in mc.circuit_bodies:
+            depths.append(dag.depth())
+            twoq_depths.append(_two_qubit_depth(dag))
+            widths.append(dag.num_qubits())
+
+    if not depths:
+        return {}
+
+    return {
+        "mean_depth": round(mean(depths), 2),
+        "std_depth": round(pstdev(depths), 2),
+        "min_depth": min(depths),
+        "max_depth": max(depths),
+        "mean_2q_depth": round(mean(twoq_depths), 2),
+        "mean_width": round(mean(widths), 2),
+        "std_width": round(pstdev(widths), 2),
+        "min_width": min(widths),
+        "max_width": max(widths),
+    }
 
 
 def _logical_count(mc: MetaCircuit) -> int:
@@ -72,7 +148,7 @@ def _logical_count(mc: MetaCircuit) -> int:
     if mc.observable is not None:
         # Pre-measurement baseline: one circuit per Pauli term, so that
         # grouping at the measurement stage shows up as a reduction.
-        return n_bodies * len(mc.observable)
+        return n_bodies * sum(len(o) for o in mc.observable)
     return n_bodies
 
 
@@ -134,6 +210,7 @@ def dry_run_pipeline(
         stages=tuple(infos),
         total_circuits=total,
         env_artifacts=dict(trace.env_artifacts),
+        circuit_stats=_aggregate_circuit_stats(trace.final_batch),
     )
 
 
@@ -188,6 +265,24 @@ def format_dry_run(reports: dict[str, DryRunReport]) -> None:
             )
         else:
             tree.add(f"[bold]Total: {report.total_circuits:,} circuits[/bold]")
+
+        if report.circuit_stats:
+            stats = report.circuit_stats
+            # Depth: lead with the average so the reader knows which stat
+            # this is. Add ± std and range only when there is spread.
+            if stats["min_depth"] == stats["max_depth"]:
+                depth_part = f"avg depth {stats['mean_depth']:g}"
+            else:
+                depth_part = (
+                    f"avg depth {stats['mean_depth']:g} "
+                    f"± {stats['std_depth']:g} "
+                    f"(range {stats['min_depth']}-{stats['max_depth']})"
+                )
+            if stats["min_width"] == stats["max_width"]:
+                width_part = f"width {stats['min_width']}"
+            else:
+                width_part = f"width {stats['min_width']}-{stats['max_width']}"
+            tree.add(f"[bold]Summary: {depth_part}, {width_part}[/bold]")
 
         console.print(tree)
         console.print()

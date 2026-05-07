@@ -1145,7 +1145,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         self._current_execution_result = env.artifacts.get("_current_execution_result")
 
         indexed = {
-            _extract_param_set_idx(key): value + self.loss_constant
+            _extract_param_set_idx(key): float(value[0]) + self.loss_constant
             for key, value in result.items()
         }
         return dict(sorted(indexed.items()))

@@ -21,6 +21,7 @@ from divi.circuits.qem import _NoMitigation
 from divi.circuits.quepp import QuEPP
 from divi.pipeline import CircuitPipeline, dry_run_pipeline, format_dry_run
 from divi.pipeline._compilation import _compile_batch
+from divi.pipeline._dry_run import _aggregate_circuit_stats, _two_qubit_depth
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
@@ -234,7 +235,7 @@ class TestAnalyticDryRun:
                 # Pin shot_distribution so MeasurementStage stays on the
                 # qwc branch rather than auto-promoting to _backend_expval
                 # on the dummy expval backend — the qwc grouping is what
-                # we want to inspect for n_groups / n_terms.
+                # we want to inspect for n_groups / n_pauli_terms.
                 MeasurementStage(shot_distribution="weighted"),
             ]
         )
@@ -263,8 +264,9 @@ class TestAnalyticDryRun:
         # MeasurementStage surfaces the observable grouping outcome — ZZ
         # and XX don't QWC-commute, so each gets its own group.
         meas = by_name["MeasurementStage"]
-        assert meas.metadata["n_groups"] == len(meta.observable)
-        assert meas.metadata["n_terms"] == len(meta.observable)
+        n_pauli_terms = sum(len(o) for o in meta.observable)
+        assert meas.metadata["n_groups"] == n_pauli_terms
+        assert meas.metadata["n_pauli_terms"] == n_pauli_terms
         assert meas.factor == 1.0
 
     def test_env_artifacts_surface_on_dry_run_report(self, dummy_pipeline_env):
@@ -775,3 +777,102 @@ class TestDrySafetyFallback:
             pipeline.run_forward_pass(
                 "ignored", dummy_pipeline_env, force_forward_sweep=True, dry=True
             )
+
+
+class TestTwoQubitDepth:
+    """Spec: ``_two_qubit_depth`` returns the longest chain of 2q gates."""
+
+    def test_zero_when_no_two_qubit_gates(self):
+        qc = QuantumCircuit(2)
+        qc.h(0)
+        qc.x(1)
+        qc.s(0)
+        assert _two_qubit_depth(circuit_to_dag(qc)) == 0
+
+    def test_counts_chained_2q_via_shared_qubit(self):
+        # Three CXs all touching qubit 0 → chain of 3 (each follows the previous).
+        qc = QuantumCircuit(3)
+        qc.cx(0, 1)
+        qc.cx(0, 2)
+        qc.cx(0, 1)
+        assert _two_qubit_depth(circuit_to_dag(qc)) == 3
+
+    def test_independent_2q_gates_dont_chain(self):
+        # CX(0,1) and CX(2,3) share no qubits → each contributes a chain of 1.
+        qc = QuantumCircuit(4)
+        qc.cx(0, 1)
+        qc.cx(2, 3)
+        assert _two_qubit_depth(circuit_to_dag(qc)) == 1
+
+    def test_ignores_single_qubit_gates_between_2q(self):
+        # Single-qubit gates extend overall depth but not 2q-depth.
+        qc = QuantumCircuit(2)
+        qc.cx(0, 1)
+        qc.h(0)
+        qc.h(1)
+        qc.cx(0, 1)
+        # depth() includes the H layers; _two_qubit_depth only counts the CXs.
+        assert circuit_to_dag(qc).depth() > 2
+        assert _two_qubit_depth(circuit_to_dag(qc)) == 2
+
+
+class TestCircuitStatsAggregate:
+    """Spec: ``DryRunReport.circuit_stats`` aggregates depth/width over the
+    final batch's DAG bodies, mirroring ``CircuitRunner.depth_history`` semantics.
+    """
+
+    def test_constant_depth_yields_zero_std(self, dummy_pipeline_env):
+        # Single body, fanned out only by Pauli twirling → all variants share
+        # the same parametric structure, so depth/width stats are constant.
+        meta = _parametric_twirlable_meta()
+        dummy_pipeline_env.param_sets = np.asarray([[0.1, 0.2]])
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=meta),
+                ParameterBindingStage(),
+                PauliTwirlStage(n_twirls=3, seed=0),
+                MeasurementStage(),
+            ]
+        )
+        trace = pipeline.run_forward_pass(
+            "ignored", dummy_pipeline_env, force_forward_sweep=True, dry=True
+        )
+        report = dry_run_pipeline("t", trace, pipeline.stages, dummy_pipeline_env)
+        stats = report.circuit_stats
+        assert stats, "circuit_stats should be populated when DAG bodies exist"
+        # Catch zeroing bugs: the parametric meta has gates, so mean_depth > 0.
+        assert stats["mean_depth"] > 0
+        assert stats["std_depth"] == 0.0
+        assert stats["min_depth"] == stats["max_depth"]
+        assert stats["min_width"] == stats["max_width"] == 2
+
+    def test_varying_depth_populates_range_stats(self):
+        # Two MetaCircuits with different depths exercise the spread branches
+        # of every stat (min/max/mean/std/2q_depth) — the constant case
+        # collapses all of them to the same number.
+        qc_shallow = QuantumCircuit(2)
+        qc_shallow.cx(0, 1)
+        qc_deep = QuantumCircuit(2)
+        qc_deep.cx(0, 1)
+        qc_deep.cx(0, 1)
+        batch = {
+            (("circuit", 0),): MetaCircuit(
+                circuit_bodies=(((), circuit_to_dag(qc_shallow)),)
+            ),
+            (("circuit", 1),): MetaCircuit(
+                circuit_bodies=(((), circuit_to_dag(qc_deep)),)
+            ),
+        }
+        stats = _aggregate_circuit_stats(batch)
+        assert stats["min_depth"] == 1
+        assert stats["max_depth"] == 2
+        assert stats["mean_depth"] == 1.5
+        assert stats["std_depth"] > 0
+        assert stats["mean_2q_depth"] == 1.5
+        # Width is constant at 2 across both circuits.
+        assert stats["min_width"] == stats["max_width"] == 2
+        assert stats["std_width"] == 0.0
+
+    def test_empty_dict_for_empty_batch(self):
+        # Aggregator returns {} when no MetaCircuits have DAG bodies to read.
+        assert _aggregate_circuit_stats({}) == {}
