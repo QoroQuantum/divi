@@ -75,12 +75,19 @@ class BatchConfig:
     Attributes:
         mode: Whether to merge circuit submissions across programs.
             Defaults to :attr:`~divi.qprog.ensemble.BatchMode.MERGED`.
-        max_batch_size: Maximum number of circuits per merged backend call.
-            When set, the coordinator flushes early once the pending circuit
-            count reaches this limit instead of waiting for every active
-            program to submit.  ``None`` (the default) preserves the
-            wait-for-all barrier behavior.  Only meaningful when
-            ``mode`` is :attr:`~divi.qprog.ensemble.BatchMode.MERGED`.
+        max_batch_size: Flush-trigger threshold on the pending circuit
+            count, **not** a hard cap on merged-call size.  When set, the
+            coordinator fires a flush as soon as pending circuits reach
+            this value, and the flush includes every circuit pending at
+            that moment — so an actual merged submission may exceed
+            ``max_batch_size`` when programs submit multiple circuits per
+            call.  ``None`` (the default) preserves the wait-for-all
+            barrier behavior.  Setting this value also couples the
+            executor pool size to it (when ``max_concurrent_programs``
+            is unset): the pool is sized to
+            ``min(max_batch_size, len(programs))`` so the barrier
+            predicate can fill the batch in one wave.  Only meaningful
+            when ``mode`` is :attr:`~divi.qprog.ensemble.BatchMode.MERGED`.
         max_concurrent_programs: Maximum number of programs running
             concurrently.  When set to a positive integer, sizes the
             executor pool to that value and bypasses the default
@@ -88,13 +95,17 @@ class BatchConfig:
             a single merged submission of up to this many programs.
             Pass ``-1`` to size the pool to the entire ensemble — the
             cloud-merge recipe — without having to query
-            ``len(ensemble.programs)`` yourself.  ``None`` (the default)
-            auto-sizes the pool: ``max(len(programs), cpu_count + 4)``
-            in barrier mode (capped at 256), or ``cpu_count + 4`` when
-            ``max_batch_size`` is set.  Explicit values above 1024 emit
-            a :class:`UserWarning`; the ``-1`` form is silent because
-            it's an intentional opt-in.  Only meaningful when ``mode``
-            is :attr:`~divi.qprog.ensemble.BatchMode.MERGED`.
+            ``len(ensemble.programs)`` yourself; when combined with
+            ``max_batch_size`` the pool is capped at
+            ``min(max_batch_size, len(programs))`` so the barrier and
+            batch size align (one full wave per flush, no surplus
+            threads).  ``None`` (the default) auto-sizes the pool:
+            ``max(len(programs), cpu_count + 4)`` in barrier mode
+            (capped at 256), or ``min(max_batch_size, len(programs))``
+            when ``max_batch_size`` is set.  Explicit values above 1024
+            emit a :class:`UserWarning`; the ``-1`` form is silent
+            because it's an intentional opt-in.  Only meaningful when
+            ``mode`` is :attr:`~divi.qprog.ensemble.BatchMode.MERGED`.
         _sort_programs: Whether to sort programs by key before merging their
             circuits into a single backend call.  Defaults to ``False``.
 

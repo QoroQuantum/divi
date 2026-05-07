@@ -1137,6 +1137,65 @@ class _ParameterizedEnsemble(ProgramEnsemble):
         return None
 
 
+class _SubmittingProgram(QuantumProgram):
+    """Test program whose ``run()`` actually submits circuits through its
+    backend — used to exercise the end-to-end ensemble → coordinator → flush
+    pipeline (so flush-size assertions reflect real backend calls)."""
+
+    def __init__(self, *, n_circuits: int = 1, backend, **kwargs):
+        super().__init__(backend=backend, **kwargs)
+        self.n_circuits = n_circuits
+        self._ran = False
+
+    def _build_pipelines(self) -> None:
+        pass
+
+    def has_results(self) -> bool:
+        return self._ran
+
+    _MINIMAL_QASM = 'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[1];\ncreg c[1];\nh q[0];\nmeasure q[0] -> c[0];\n'
+
+    def run(self):
+        circuits = {f"c{i}": self._MINIMAL_QASM for i in range(self.n_circuits)}
+        self.backend.submit_circuits(circuits)
+        self._total_circuit_count = self.n_circuits
+        self._total_run_time = 0.0
+        self._ran = True
+        return self
+
+    def _generate_circuits(self, **kwargs):
+        return []
+
+    def _post_process_results(self, results):
+        pass
+
+
+class _SubmittingEnsemble(ProgramEnsemble):
+    """Ensemble of :class:`_SubmittingProgram` instances; sizes flush
+    integration tests."""
+
+    def __init__(self, backend, n_programs: int, n_circuits_per_program: int = 1):
+        super().__init__(backend)
+        self._n_programs = n_programs
+        self._n_circuits_per_program = n_circuits_per_program
+        self.max_iterations = 1
+
+    def create_programs(self):
+        super().create_programs()
+        self.programs = {
+            f"prog_{i}": _SubmittingProgram(
+                n_circuits=self._n_circuits_per_program,
+                backend=self.backend,
+                program_id=f"prog_{i}",
+            )
+            for i in range(self._n_programs)
+        }
+
+    def aggregate_results(self):
+        super().aggregate_results()
+        return None
+
+
 class TestExecutorSizing:
     """Three-tier executor sizing in :meth:`ProgramEnsemble.run`.
 
@@ -1177,16 +1236,107 @@ class TestExecutorSizing:
         spy.assert_called_once()
         assert spy.call_args.kwargs["max_workers"] >= (os.cpu_count() or 1) + 4
 
-    def test_max_batch_size_uses_bounded_pool(self, dummy_simulator, mocker):
-        """Opting into early-flush keeps the pool at cpu+4 regardless of program count."""
+    def test_max_batch_size_pool_aligns_with_batch(self, dummy_simulator, mocker):
+        """``max_batch_size`` sizes the pool to ``min(max_batch_size, n_programs)``
+        so the barrier predicate can fill the batch in one wave (instead of
+        firing prematurely at ``cpu+4``)."""
         spy = self._spy_executor(mocker)
         ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=20)
         ensemble.create_programs()
         ensemble.run(blocking=True, batch_config=BatchConfig(max_batch_size=4))
 
         spy.assert_called_once()
-        # Bounded — does NOT scale with program count.
-        assert spy.call_args.kwargs["max_workers"] == (os.cpu_count() or 1) + 4
+        assert spy.call_args.kwargs["max_workers"] == 4
+
+    def test_max_batch_size_pool_capped_at_n_programs(self, dummy_simulator, mocker):
+        """When ``max_batch_size > len(programs)``, the pool falls back to
+        ``len(programs)`` — never spawn more threads than there is work for."""
+        spy = self._spy_executor(mocker)
+        ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=8)
+        ensemble.create_programs()
+        ensemble.run(blocking=True, batch_config=BatchConfig(max_batch_size=512))
+
+        spy.assert_called_once()
+        assert spy.call_args.kwargs["max_workers"] == 8
+
+    def test_predicate1_flushes_align_with_max_batch_size(
+        self, dummy_simulator, mocker
+    ):
+        """End-to-end: with one circuit per program, the pool-fills predicate
+        (predicate1) fires at exactly ``max_batch_size`` — so each merged
+        backend call carries that many circuits and the flush count matches
+        ``ceil(n_programs / max_batch_size)``.  Regresses the bug where the
+        pool was capped at ``cpu+4`` and flushes fired prematurely."""
+        original = dummy_simulator.submit_circuits
+        merged_sizes: list[int] = []
+
+        def _spy(circuits, **kwargs):
+            merged_sizes.append(len(circuits))
+            return original(circuits, **kwargs)
+
+        mocker.patch.object(dummy_simulator, "submit_circuits", _spy)
+
+        ensemble = _SubmittingEnsemble(backend=dummy_simulator, n_programs=32)
+        ensemble.create_programs()
+        ensemble.run(blocking=True, batch_config=BatchConfig(max_batch_size=8))
+
+        assert sum(merged_sizes) == 32
+        assert all(size == 8 for size in merged_sizes), merged_sizes
+        assert len(merged_sizes) == 4
+
+    def test_predicate2_flush_can_exceed_max_batch_size(self, dummy_simulator, mocker):
+        """``max_batch_size`` is a flush-trigger, not a hard cap.  When
+        each program submits a multi-circuit batch in a single call,
+        the circuit-count predicate (predicate2) fires the moment a
+        program's submission carries pending past the threshold — and
+        the flush takes everything pending, which can exceed
+        ``max_batch_size``.
+
+        Concretely: pool = ``min(10, 8) = 8``, so up to 8 programs run in
+        parallel.  Each program submits 5 circuits in one call.  All 40
+        circuits flush.  The combined merged-call sizes must sum to 40,
+        and the trigger semantics permit (but do not require) any single
+        flush to exceed 10.
+        """
+        original = dummy_simulator.submit_circuits
+        merged_sizes: list[int] = []
+
+        def _spy(circuits, **kwargs):
+            merged_sizes.append(len(circuits))
+            return original(circuits, **kwargs)
+
+        mocker.patch.object(dummy_simulator, "submit_circuits", _spy)
+
+        ensemble = _SubmittingEnsemble(
+            backend=dummy_simulator, n_programs=8, n_circuits_per_program=5
+        )
+        ensemble.create_programs()
+        ensemble.run(blocking=True, batch_config=BatchConfig(max_batch_size=10))
+
+        # All 40 circuits must be flushed across some number of merged calls.
+        assert sum(merged_sizes) == 40
+        # Each program contributes a 5-circuit chunk atomically, so every
+        # flush should be a positive multiple of 5.
+        assert merged_sizes, "expected at least one flush"
+        assert all(size > 0 and size % 5 == 0 for size in merged_sizes), merged_sizes
+
+    def test_minus_one_with_max_batch_size_caps_at_batch_size(
+        self, dummy_simulator, mocker
+    ):
+        """``max_concurrent_programs=-1`` combined with ``max_batch_size`` caps
+        the pool at ``min(max_batch_size, len(programs))`` instead of spawning
+        one thread per program (which can exhaust OS thread limits on large
+        ensembles)."""
+        spy = self._spy_executor(mocker)
+        ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=300)
+        ensemble.create_programs()
+        ensemble.run(
+            blocking=True,
+            batch_config=BatchConfig(max_concurrent_programs=-1, max_batch_size=64),
+        )
+
+        spy.assert_called_once()
+        assert spy.call_args.kwargs["max_workers"] == 64
 
     def test_off_mode_uses_default_pool(self, dummy_simulator, mocker):
         """``BatchMode.OFF`` has no barrier, so the cpu+4 default is sufficient."""
