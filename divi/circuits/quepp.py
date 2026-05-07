@@ -942,6 +942,9 @@ class QuEPP(QEMProtocol):
             )
             obs_paths_list.append(self._select_paths(prep))
         self._warn_on_truncation_ratio(len(rotations))
+        self._warn_no_diagonal_paths(
+            len(rotations), [len(paths) for paths in obs_paths_list]
+        )
 
         # ----- Path-DAG dedup across observables ------------------------- #
         working_dag = circuit_to_dag(working)
@@ -1033,6 +1036,7 @@ class QuEPP(QEMProtocol):
         tableaus = _build_clifford_tableaus(working, rotations)
 
         unique_branches: set[tuple[int, ...]] = set()
+        n_paths_per_obs: list[int] = []
         for obs in observables:
             prep = _PreprocResult(
                 working=working,
@@ -1042,9 +1046,12 @@ class QuEPP(QEMProtocol):
                 obs_terms=_obs_to_stim_terms(obs, n_qubits),
                 symbolic=symbolic,
             )
-            for p in self._select_paths(prep):
+            paths = self._select_paths(prep)
+            n_paths_per_obs.append(len(paths))
+            for p in paths:
                 unique_branches.add(p.branches)
         self._warn_on_truncation_ratio(len(rotations))
+        self._warn_no_diagonal_paths(len(rotations), n_paths_per_obs)
 
         n_paths = len(unique_branches)
         all_dags = (dag,) * (1 + n_paths)
@@ -1149,6 +1156,44 @@ class QuEPP(QEMProtocol):
                 f"truncation_order or using a deeper circuit.",
                 stacklevel=3,
             )
+
+    def _warn_no_diagonal_paths(
+        self, n_rotations: int, n_paths_per_obs: list[int]
+    ) -> None:
+        """Warn when one or more observables produce zero diagonal Pauli paths.
+
+        The Heisenberg-DFS enumerator only accepts paths whose final
+        back-propagated Pauli is diagonal (composed of ``I`` and ``Z``);
+        when the circuit's Clifford structure routes an observable into
+        a strictly non-diagonal basis (e.g. a final ``H`` rotates ``Z``
+        to ``X``), no path survives and ``classical_values`` is empty.
+        :meth:`reduce` then takes the ``eta is None`` branch and returns
+        the raw noisy target unchanged — so mitigation is a no-op even
+        though it was configured.  Surface this so the user does not
+        silently consume noisy results believing they were mitigated.
+
+        Emits a single warning listing every offending observable index,
+        so a multi-observable job with 50 failing observables produces
+        one diagnostic, not 50.
+        """
+        # All-Clifford circuits trivially have no rotations; mitigation
+        # is structurally a no-op and warning would be noise.
+        if n_rotations == 0:
+            return
+        zero_indices = [i for i, n in enumerate(n_paths_per_obs) if n == 0]
+        if not zero_indices:
+            return
+        warnings.warn(
+            f"QuEPP: observable(s) at index/indices {zero_indices} produced "
+            f"zero diagonal Pauli paths (truncation_order={self._K_T}, "
+            f"{n_rotations} non-Clifford rotation(s)). The Heisenberg "
+            f"back-propagation terminates in a non-diagonal basis, so "
+            f"mitigation will be a no-op for these observables and the "
+            f"raw noisy expectation will be returned. Consider rebasing "
+            f"the observable or restructuring the circuit's final "
+            f"Clifford layer.",
+            stacklevel=3,
+        )
 
     @staticmethod
     def compute_eta(

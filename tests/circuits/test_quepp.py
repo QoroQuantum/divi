@@ -529,6 +529,82 @@ class TestQuEPPSignalDestruction:
         assert per_obs[0].get("_signal_destroyed") is True
 
 
+class TestQuEPPNoDiagonalPathsWarning:
+    """Spec: when path enumeration yields zero diagonal-final paths for an
+    observable, ``QuEPP.reduce`` silently returns the noisy target unchanged
+    (mitigation is a no-op). The expand-time warning surfaces this so the
+    user does not consume noisy results believing they were mitigated.
+    """
+
+    @staticmethod
+    def _h_then_rz_qc() -> QuantumCircuit:
+        # Single non-Clifford rotation (RZ) preceded by an H Clifford. Walking
+        # back-to-front, observable Z passes through RZ unchanged (commute),
+        # then conjugates through H to land as X — non-diagonal, so every
+        # candidate path is rejected by the diagonal-final filter.
+        qc = QuantumCircuit(1)
+        qc.h(0)
+        qc.rz(0.5, 0)
+        return qc
+
+    def test_warns_on_zero_diagonal_paths_in_expand(self):
+        proto = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
+        obs = SparsePauliOp.from_list([("Z", 1.0)])
+        with warnings.catch_warnings():
+            # The truncation-ratio warning also fires on this tiny circuit
+            # (K/n_rot = 100%); silence it so pytest.warns sees the target.
+            warnings.filterwarnings("ignore", message=r"QuEPP:.*shallow circuits")
+            with pytest.warns(UserWarning, match=r"zero diagonal Pauli paths"):
+                proto.expand(circuit_to_dag(self._h_then_rz_qc()), (obs,))
+
+    def test_warns_on_zero_diagonal_paths_in_dry_expand(self):
+        proto = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
+        obs = SparsePauliOp.from_list([("Z", 1.0)])
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=r"QuEPP:.*shallow circuits")
+            with pytest.warns(UserWarning, match=r"zero diagonal Pauli paths"):
+                proto.dry_expand(circuit_to_dag(self._h_then_rz_qc()), (obs,))
+
+    def test_warns_lists_all_offending_observables_once(self):
+        # Two failing observables in one tuple → ONE batched warning that
+        # mentions both indices, not two separate warnings.
+        proto = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
+        bad1 = SparsePauliOp.from_list([("Z", 1.0)])
+        bad2 = SparsePauliOp.from_list([("Z", 0.5)])
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            proto.expand(circuit_to_dag(self._h_then_rz_qc()), (bad1, bad2))
+        zero_path_warnings = [
+            w for w in caught if "zero diagonal Pauli paths" in str(w.message)
+        ]
+        assert len(zero_path_warnings) == 1
+        assert "[0, 1]" in str(zero_path_warnings[0].message)
+
+    def test_no_warning_when_paths_exist(self):
+        # RX(θ) with observable Z keeps Z as the back-propagated Pauli on the
+        # cos branch (diagonal) → at least one path survives → no warning.
+        qc = QuantumCircuit(1)
+        qc.rx(0.7, 0)
+        proto = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
+        obs = SparsePauliOp.from_list([("Z", 1.0)])
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            warnings.filterwarnings("ignore", message=r"QuEPP:.*shallow circuits")
+            proto.expand(circuit_to_dag(qc), (obs,))
+
+    def test_no_warning_for_clifford_only_circuit(self):
+        # n_rotations == 0 guard: a Clifford-only circuit has nothing to
+        # mitigate by construction, so the warning is suppressed even when
+        # no diagonal paths would survive in principle.
+        qc = QuantumCircuit(1)
+        qc.h(0)
+        proto = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
+        obs = SparsePauliOp.from_list([("Z", 1.0)])
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            proto.expand(circuit_to_dag(qc), (obs,))
+
+
 class TestSymbolicExpand:
     @pytest.mark.usefixtures("suppress_quepp_warnings")
     def test_expand_marks_symbolic(self):

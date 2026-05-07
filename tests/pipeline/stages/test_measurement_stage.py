@@ -529,6 +529,71 @@ class TestMeasurementStageShotDistributionReducePath:
         assert list(reduced.values())[0] == pytest.approx([11.1])
 
 
+class TestMeasurementStageImagCoeffWarning:
+    """Spec: shot allocation drops imaginary parts and warns the user.
+
+    Regression: 4558ceb routed single-observable inputs through
+    ``flatten_observable_tuple`` (which strips imaginary parts via
+    ``np.real``) before ``_allocate_per_group_shots`` could check them,
+    silently bypassing this warning. The check now lives at
+    :class:`MeasurementStage`'s expand boundary so the user's original
+    coefficients are inspected before flattening.
+    """
+
+    @staticmethod
+    def _imag_obs_meta() -> MetaCircuit:
+        # Hermitian: 0.5j * (Z⊗X − X⊗Z). Coefficients are purely imaginary;
+        # ``flatten_observable_tuple`` would otherwise zero out the L1 norms.
+        qc = QuantumCircuit(2)
+        qc.h(0)
+        qc.cx(0, 1)
+        observable = SparsePauliOp.from_list([("ZX", 0.5j), ("XZ", -0.5j)])
+        return MetaCircuit(
+            circuit_bodies=(((), circuit_to_dag(qc)),),
+            observable=observable,
+        )
+
+    def test_warns_on_purely_imaginary_coefficients(self):
+        backend = DummySimulator(shots=1000)
+        env = PipelineEnv(backend=backend)
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=self._imag_obs_meta()),
+                MeasurementStage(shot_distribution="weighted"),
+            ],
+        )
+        with pytest.warns(UserWarning, match=r"imaginary coefficients"):
+            pipeline.run_forward_pass(initial_spec="ignored", env=env)
+
+    def test_warns_without_shot_distribution(self):
+        # The pre-fix check lived inside ``_allocate_per_group_shots`` and
+        # only fired when ``shot_distribution`` was set.  The new helper
+        # runs unconditionally — verify it does so on the default pipeline.
+        backend = DummySimulator(shots=1000)
+        env = PipelineEnv(backend=backend)
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=self._imag_obs_meta()),
+                MeasurementStage(),  # default shot_distribution=None
+            ],
+        )
+        with pytest.warns(UserWarning, match=r"imaginary coefficients"):
+            pipeline.run_forward_pass(initial_spec="ignored", env=env)
+
+    def test_no_warning_for_real_coefficients(self):
+        backend = DummySimulator(shots=1000)
+        env = PipelineEnv(backend=backend)
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=_two_term_meta()),
+                MeasurementStage(shot_distribution="weighted"),
+            ],
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            pipeline.run_forward_pass(initial_spec="ignored", env=env)
+
+
 class TestMeasurementStageShotDistributionBackendExpval:
     """Spec: shot_distribution is incompatible with _backend_expval strategy."""
 

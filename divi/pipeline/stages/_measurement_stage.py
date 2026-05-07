@@ -39,6 +39,47 @@ OBS_GROUP_AXIS = "obs_group"
 PROBS_MEAS_AXIS = "meas"
 
 
+def _warn_imag_coeffs(
+    observable: SparsePauliOp | tuple[SparsePauliOp, ...],
+    spec_key: object,
+) -> None:
+    """Warn if any observable term carries a non-negligible imaginary coefficient.
+
+    Runs at the boundary of :class:`MeasurementStage` — before the
+    observable is flattened via :func:`flatten_observable_tuple` (which
+    drops imaginary parts via ``np.real``) — so the diagnostic still
+    fires when the user's original coefficients carry information that
+    shot allocation will silently discard.  Hermitian operators may
+    legitimately produce purely-imaginary coefficients (e.g. ``j*(O -
+    O.adjoint())`` decompositions); the warning steers users to
+    ``0.5 * (O + O.adjoint())`` symmetrization.
+    """
+    obs_iter = observable if isinstance(observable, tuple) else (observable,)
+    for obs in obs_iter:
+        coeffs = np.asarray(obs.coeffs)
+        if not coeffs.size:
+            continue
+        max_abs = float(np.max(np.abs(coeffs)))
+        if max_abs == 0.0:
+            continue
+        max_imag = float(np.max(np.abs(coeffs.imag)))
+        if max_imag > 1e-8 * max_abs:
+            warnings.warn(
+                f"Observable for spec {spec_key!r} has non-negligible "
+                f"imaginary coefficients (max |Im(c)| = {max_imag:.3g}, "
+                f"max |c| = {max_abs:.3g}). Shot allocation uses only the "
+                f"real parts; if the operator is meant to be Hermitian, "
+                f"symmetrize it as 0.5 * (O + O.adjoint()) before "
+                f"constructing the program.",
+                UserWarning,
+                stacklevel=3,
+            )
+            # One warning per spec is sufficient — the user needs to
+            # inspect their construction once, not once per offending
+            # tuple element.
+            return
+
+
 def _allocate_per_group_shots(
     spec_key: object,
     observable,
@@ -53,6 +94,10 @@ def _allocate_per_group_shots(
     ``env.rng`` from the pipeline environment, and ``shot_distribution``
     from the caller.
 
+    The ``observable`` here is the post-flatten union (real coefficients
+    only); imaginary-coefficient diagnostics are emitted earlier by
+    :func:`_warn_imag_coeffs` against the user's original observable.
+
     Returns:
         surviving_indices: Original indices of groups to actually submit.
         zero_shot_groups: ``{orig_idx: zero_result_for_group}`` for each
@@ -65,26 +110,7 @@ def _allocate_per_group_shots(
     if shot_distribution is None or n_groups == 0:
         return list(range(n_groups)), {}, None
 
-    raw_coeffs = np.asarray(observable.coeffs)
-    # SparsePauliOp stores complex coefficients. For a Hermitian operator the
-    # imaginary parts are zero up to construction round-off (~1e-15 relative).
-    # A non-trivial imaginary component means the operator isn't Hermitian,
-    # and silently dropping it would produce wrong group norms — warn so the
-    # user can symmetrize the operator or inspect their construction.
-    max_abs = float(np.max(np.abs(raw_coeffs))) if raw_coeffs.size else 0.0
-    if max_abs > 0:
-        max_imag = float(np.max(np.abs(raw_coeffs.imag)))
-        if max_imag > 1e-8 * max_abs:
-            warnings.warn(
-                f"Observable for spec {spec_key!r} has non-negligible imaginary "
-                f"coefficients (max |Im(c)| = {max_imag:.3g}, max |c| = "
-                f"{max_abs:.3g}). Shot allocation uses only the real parts; if "
-                f"the operator is meant to be Hermitian, symmetrize it as "
-                f"0.5 * (O + O.adjoint()) before constructing the program.",
-                UserWarning,
-                stacklevel=2,
-            )
-    coefficients = raw_coeffs.real.astype(np.float64)
+    coefficients = np.asarray(observable.coeffs).real.astype(np.float64)
     group_norms = compute_group_l1_norms(coefficients, partition_indices)
     per_group_shots = compute_shot_distribution(
         group_norms,
@@ -432,6 +458,7 @@ class MeasurementStage(BundleStage):
                     "observable set."
                 )
             observable = cast(tuple[SparsePauliOp, ...], meta.observable)
+            _warn_imag_coeffs(observable, key)
 
             measurement_groups, partition_indices, postprocessing_fn = (
                 compute_measurement_groups(observable, strategy, meta.n_qubits)
