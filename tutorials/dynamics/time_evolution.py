@@ -3,21 +3,26 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Time evolution with Divi TimeEvolution.
+Hamiltonian time evolution with Divi.
 
 This tutorial demonstrates:
+
 1. Probability-mode simulation for a known analytic case.
 2. Expectation-value mode with a user-defined observable (compared to exact).
 3. Multi-observable mode: several expectation values from one evolution.
 4. QDrift multi-sample averaging for randomized Trotterization.
+5. Trajectories: ``TimeEvolutionTrajectory`` for evolving over many time
+   points in parallel and aggregating the result.
 """
 
 import math
 
+import numpy as np
 import pennylane as qp
 
 from divi.hamiltonians import QDrift
-from divi.qprog import TimeEvolution
+from divi.qprog import TimeEvolution, TimeEvolutionTrajectory
+from divi.qprog.ensemble import BatchConfig, BatchMode
 from tutorials._backend import get_backend
 
 
@@ -150,9 +155,9 @@ if __name__ == "__main__":
         sampling_strategy="weighted",
         seed=7,
     )
-    h3 = qp.PauliX(0) + 0.5 * qp.PauliZ(0) + qp.PauliX(1)
+    h4 = qp.PauliX(0) + 0.5 * qp.PauliZ(0) + qp.PauliX(1)
     te_qdrift = TimeEvolution(
-        hamiltonian=h3,
+        hamiltonian=h4,
         trotterization_strategy=qdrift,
         time=1.0,
         n_steps=1,
@@ -163,3 +168,32 @@ if __name__ == "__main__":
         "Example 4 — QDrift probability mode", te_qdrift.probabilities()
     )
     print(f"  Circuits executed: {te_qdrift.total_circuit_count}")
+
+    # ── Example 5: Trajectory over many time points ──────────────────
+    # H = X on a single qubit, observable = Z, |0⟩ initial state.
+    # Exact: ⟨Z⟩(t) = cos(2t) — Rabi oscillation.  ``TimeEvolutionTrajectory``
+    # runs one program per time point in parallel and aggregates.
+    title = "Example 5 — Trajectory: Rabi oscillation ⟨Z⟩(t) under H = X"
+    print(f"\n{title}")
+    print("-" * len(title))
+
+    time_points = np.linspace(0.01, math.pi, 20).tolist()
+
+    trajectory = TimeEvolutionTrajectory(
+        hamiltonian=qp.PauliX(0),
+        time_points=time_points,
+        observable=qp.PauliZ(0),
+        backend=backend,
+    )
+    trajectory.create_programs()
+    trajectory.run(blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF))
+
+    results = trajectory.aggregate_results()
+
+    exact_values = {t: math.cos(2 * t) for t in time_points}
+    for t in time_points[::4]:
+        print(f"  t={t:.3f}:  measured={results[t]:+.4f}  exact={exact_values[t]:+.4f}")
+
+    print(f"\n  Total circuits: {trajectory.total_circuit_count}")
+
+    trajectory.visualize_results()

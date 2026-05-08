@@ -2,17 +2,26 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""VQE on H2: grouping strategy and shot allocation, side by side.
+"""VQE on the H2 molecule.
 
-Part 1 compares ``grouping_strategy`` options — how many measurement groups
-each produces and whether the loss differs.  Part 2 holds the grouping
-strategy fixed and inspects how each ``shot_distribution`` splits the
-backend's shot budget across those groups.
+Three parts, all driven through :class:`~divi.qprog.algorithms.VQE`:
+
+1. Basic VQE — minimal setup with :class:`~divi.qprog.HartreeFockAnsatz` and
+   a ``dry_run()`` preview of the pipeline's circuit fan-out before execution.
+2. Grouping strategy comparison — how the ``grouping_strategy`` argument
+   (``None`` / ``"wires"`` / ``"qwc"``) changes the number of measurement
+   groups and the resulting loss.
+3. Shot allocation — within a fixed grouping strategy, how
+   ``shot_distribution`` (``None`` / ``"uniform"`` / ``"weighted"``) splits
+   the backend's shot budget across the groups produced by QWC grouping.
 """
+
+import time
 
 import numpy as np
 import pennylane as qp
 
+from divi.pipeline import format_dry_run
 from divi.qprog import VQE, HartreeFockAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from tutorials._backend import get_backend
@@ -21,6 +30,38 @@ if __name__ == "__main__":
     mol = qp.qchem.Molecule(
         symbols=["H", "H"], coordinates=np.array([(0, 0, 0), (0, 0, 0.5)])
     )
+
+    # ------------------------------------------------------------------ #
+    # Part 1 — Basic VQE run with a dry-run preview.
+    # ------------------------------------------------------------------ #
+    print("Part 1 — Basic VQE on H2")
+    print("-" * 40)
+
+    vqe_problem = VQE(
+        molecule=mol,
+        ansatz=HartreeFockAnsatz(),
+        n_layers=1,
+        optimizer=ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
+        max_iterations=3,
+        backend=get_backend(),
+    )
+
+    # --- Dry run: inspect pipeline fan-out before executing ---
+    format_dry_run(vqe_problem.dry_run())
+
+    t1 = time.time()
+    vqe_problem.run()
+
+    print(f"Minimum Energy Achieved: {vqe_problem.best_loss:.4f}")
+    print(f"Eigenstate: {vqe_problem.eigenstate}")
+    print(f"Total circuits: {vqe_problem.total_circuit_count}")
+    print(f"Time taken: {round(time.time() - t1, 5)} seconds")
+
+    # ------------------------------------------------------------------ #
+    # Part 2 — How does the choice of grouping strategy affect the run?
+    # ------------------------------------------------------------------ #
+    print("\nPart 2 — grouping strategy comparison")
+    print("-" * 40)
 
     backend = get_backend(shots=500, force_sampling=True)
 
@@ -34,26 +75,10 @@ if __name__ == "__main__":
         backend=backend,
     )
 
-    # ------------------------------------------------------------------ #
-    # Part 1 — How does the choice of grouping strategy affect the run?
-    # ------------------------------------------------------------------ #
-    vqe_problem_no_grouping = VQE(
-        **vqe_input,
-        grouping_strategy=None,
-    )
-    vqe_problem_wire_grouping = VQE(
-        **vqe_input,
-        grouping_strategy="wires",
-    )
-    vqe_problem_qwc_grouping = VQE(
-        **vqe_input,
-        grouping_strategy="qwc",
-    )
-
     strategies = [
-        ("None", vqe_problem_no_grouping),
-        ("Wires", vqe_problem_wire_grouping),
-        ("QWC", vqe_problem_qwc_grouping),
+        ("None", VQE(**vqe_input, grouping_strategy=None)),
+        ("Wires", VQE(**vqe_input, grouping_strategy="wires")),
+        ("QWC", VQE(**vqe_input, grouping_strategy="qwc")),
     ]
 
     n_groups_by_strategy: dict[str, int] = {}
@@ -68,7 +93,6 @@ if __name__ == "__main__":
         backend.set_seed(1997)
         problem.run()
 
-    print("Part 1 — grouping strategy comparison (every group sampled with full shots)")
     header = f"{'Strategy':<10} {'Groups':>8} {'Loss':>14} {'Circuits':>10}"
     print(header)
     print("-" * len(header))
@@ -84,7 +108,7 @@ if __name__ == "__main__":
     assert max_diff < 0.5, f"Losses diverged too much: {losses}"
 
     # ------------------------------------------------------------------ #
-    # Part 2 — Adaptive shot allocation within a fixed grouping strategy.
+    # Part 3 — Adaptive shot allocation within a fixed grouping strategy.
     #
     # With QWC grouping on H2 the Hamiltonian splits into a handful of
     # measurement groups whose coefficient L1 norms span more than an order
@@ -102,7 +126,8 @@ if __name__ == "__main__":
     # allocation directly by running the cost pipeline's forward pass once
     # and reading ``env.artifacts["per_group_shots"]``.
     # ------------------------------------------------------------------ #
-    print(f"\nPart 2 — per-group shot allocation (backend.shots = {backend.shots})")
+    print(f"\nPart 3 — per-group shot allocation (backend.shots = {backend.shots})")
+    print("-" * 40)
     header2 = f"{'shot_distribution':<18} {'per-group shots':<40} {'total':>10}"
     print(header2)
     print("-" * len(header2))

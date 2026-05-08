@@ -137,7 +137,7 @@ the landscape along the directions that captured the most variance during
 optimization. With few iterations, best-so-far points can lie almost on a line
 in parameter space (common with COBYLA early on), so give the run enough steps
 that the trajectory spans two independent directions — as in
-`tutorials/viz_qaoa_pce_comparison.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/viz_qaoa_pce_comparison.py>`_.
+`tutorials/visualization/viz_qaoa_pce_comparison.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/visualization/viz_qaoa_pce_comparison.py>`_.
 
 Use :func:`~divi.viz.scan_pca` with parameter vectors from the optimization
 history:

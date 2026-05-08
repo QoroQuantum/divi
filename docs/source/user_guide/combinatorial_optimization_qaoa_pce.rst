@@ -147,7 +147,7 @@ Example: QAOA with QDrift:
 
 For a full comparison of Exact Trotterization vs QDrift (including circuit depth and
 count), see the `qaoa_qdrift.py
-<https://github.com/QoroQuantum/divi/blob/main/tutorials/qaoa_qdrift.py>`_
+<https://github.com/QoroQuantum/divi/blob/main/tutorials/optimization/qaoa_qdrift.py>`_
 tutorial.
 
 .. tip::
@@ -650,7 +650,7 @@ Quantum hardware is limited in the number of qubits and circuit depth. For large
 Next Steps
 ----------
 
-- `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ — QAOA/PCE/partitioning examples (``qaoa_*.py``, ``pce_*.py``, ``ce_qaoa_*.py``, ``iterative_qaoa.py``)
+- `tutorials/optimization/ <https://github.com/QoroQuantum/divi/tree/main/tutorials/optimization>`_ — QAOA/PCE/partitioning examples: ``qubo_qaoa_vs_pce.py``, ``qaoa_graph_problems.py``, ``qaoa_partitioning.py``, ``qaoa_hubo.py``, ``qaoa_qdrift.py``, ``iterative_qaoa.py``; routing in `tutorials/routing/ <https://github.com/QoroQuantum/divi/tree/main/tutorials/routing>`_ (``ce_qaoa_routing.py``)
 - :doc:`routing` — TSP and CVRP with constraint-preserving encodings
 - :doc:`optimizers` — optimizer choice and ``run(initial_params=...)``
 - :doc:`backends` — simulators and services

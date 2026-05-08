@@ -213,6 +213,6 @@ See :ref:`circuit-batching` for the full batching reference.
 Next Steps
 ----------
 
-- Run the full tutorial scripts: `time_evolution.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/time_evolution.py>`_, `time_evolution_trajectory.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/time_evolution_trajectory.py>`_, and `nmr_spectroscopy.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/nmr_spectroscopy.py>`_ — a 34-spin NMR simulation that demonstrates the cloud-merge recipe end-to-end.
+- Run the full tutorial scripts: `time_evolution.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/dynamics/time_evolution.py>`_ — covers single-time-point evolution, trajectories, multi-observable groups, and QDrift — and `nmr_spectroscopy.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/nmr_spectroscopy.py>`_ — a 34-spin NMR simulation that demonstrates the cloud-merge recipe end-to-end.
 - Learn about optimization-based workflows in :doc:`ground_state_energy_estimation_vqe` and :doc:`combinatorial_optimization_qaoa_pce`
 - Explore backend choices in :doc:`backends`

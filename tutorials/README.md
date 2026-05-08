@@ -4,11 +4,10 @@ This directory contains runnable Python examples demonstrating Divi's capabiliti
 
 ## Quick Start
 
-To run any example:
+To run any example, point Python at the file from the repo root:
 
 ```bash
-cd tutorials
-python <example_name>.py
+python tutorials/optimization/qaoa_graph_problems.py
 ```
 
 ### Backend flags
@@ -23,67 +22,71 @@ Tutorials that use `get_backend()` from `_backend.py` accept these CLI flags:
 | `--force-sampling` | — | Disable exact expectation values; use shot-based sampling instead |
 
 ```bash
-python qaoa_max_clique.py --local-qiskit
-python qaoa_max_clique.py --cloud-maestro
-python qaoa_max_clique.py --local-qiskit --force-sampling
+python tutorials/optimization/qaoa_graph_problems.py --local-qiskit
+python tutorials/optimization/qaoa_graph_problems.py --cloud-maestro
+python tutorials/optimization/qaoa_graph_problems.py --local-qiskit --force-sampling
 ```
 
-## Examples by Category
+## Layout
 
-### Chemistry
+```
+tutorials/
+├── optimization/         QAOA / PCE / partitioning on QUBO and graph problems
+├── routing/              Constraint-Enhanced QAOA on TSP and CVRP
+├── chemistry/            VQE on molecular Hamiltonians
+├── dynamics/             Hamiltonian time evolution and trajectories
+├── error_mitigation/     ZNE / QuEPP wrapped around a VQA loop
+├── visualization/        Loss-landscape and parameter-space analysis tools
+├── advanced/             BYO circuits, custom optimization, checkpointing
+└── backends/             Qoro cloud and Qiskit backend integration
+```
 
-- **`vqe_h2_molecule.py`** - Basic VQE calculation for H2 molecule
-- **`vqe_h2_with_grouping.py`** - VQE with wire grouping for efficiency
-- **`vqe_hyperparameter_sweep.py`** - Hyperparameter sweeps across multiple molecules
+### `optimization/`
 
-### Optimization (QUBO & Binary Models)
+Two scaling axes: solver choice (QAOA vs PCE) and problem size (single program vs partitioned ensemble).
 
-- **`qaoa_qubo.py`** - QAOA for QUBO optimization problems
-- **`qaoa_hubo.py`** - QAOA for Higher-Order Binary Optimization (HUBO) problems
-- **`qaoa_binary_quadratic_model.py`** - QAOA for BinaryQuadraticModel inputs
-- **`qaoa_qubo_partitioning.py`** - QUBO partitioning for scalability
-- **`pce_qubo.py`** - PCE-VQE for a QUBO problem
+- **`qubo_qaoa_vs_pce.py`** — Solving the same QUBO with QAOA and PCE side by side
+- **`qaoa_hubo.py`** — QAOA for Higher-Order Binary Optimization (HUBO) problems
+- **`qaoa_partitioning.py`** — Partition a large problem into many sub-programs (graph, QUBO, and edge-based entry points)
+- **`qaoa_graph_problems.py`** — QAOA on max clique and max-weight matching
+- **`qaoa_qdrift.py`** — QAOA with QDrift randomized Trotterization
+- **`iterative_qaoa.py`** — Iterative QAOA with parameter interpolation vs standard QAOA
 
-### Optimization (Graph Problems)
+### `routing/`
 
-- **`qaoa_max_clique.py`** - Basic QAOA for maximum clique problem
-- **`qaoa_max_weight_matching.py`** - Maximum-weight matching with QAOA (standalone and partitioned)
-- **`qaoa_graph_partitioning.py`** - Large graph partitioning with QAOA
-- **`qaoa_qdrift.py`** - QAOA with QDrift randomized Trotterization
-- **`iterative_qaoa.py`** - Iterative QAOA with parameter interpolation vs standard QAOA
+- **`ce_qaoa_routing.py`** — Constraint-Enhanced QAOA on TSP (grid search → parameter transfer → repair) and CVRP (one-hot vs binary encoding, qubit projections, VRP file parser)
 
-### Optimization (Routing)
+### `chemistry/`
 
-- **`ce_qaoa_tsp.py`** - TSP with Constraint-Enhanced QAOA: grid search, parameter transfer, feasibility stats, repair
-- **`ce_qaoa_cvrp.py`** - CVRP with CE-QAOA: one-hot vs binary encoding, qubit projections, VRP file parser
+- **`vqe_h2_molecule.py`** — VQE on H2: basic run plus grouping-strategy and shot-allocation comparisons
+- **`vqe_hyperparameter_sweep.py`** — Hyperparameter sweeps across multiple molecules
 
-### Error Mitigation
+### `dynamics/`
 
-- **`error_mitigation.py`** - VQE with Zero Noise Extrapolation (ZNE) and probabilistic error amplification
+- **`time_evolution.py`** — Hamiltonian time evolution: probabilities, observables, multi-observable groups, QDrift, and trajectories over many time points
 
-### Dynamics
+### `error_mitigation/`
 
-- **`time_evolution.py`** - Hamiltonian time evolution with probs, observables, and QDrift
-- **`time_evolution_trajectory.py`** - Time-evolution trajectories over multiple time points
+- **`error_mitigation.py`** — VQE with Zero Noise Extrapolation (ZNE) and probabilistic error amplification
 
-### Bring Your Own Circuit
+### `visualization/`
 
-- **`standalone_pipeline.py`** - One-shot execution of PennyLane / Qiskit circuits through `CircuitPipeline` directly (no `QuantumProgram` wrapper, no optimization loop)
-- **`custom_vqa.py`** - Full variational optimization over a user-supplied parametric PennyLane / Qiskit circuit via `CustomVQA`
+- **`viz_qaoa_pce_comparison.py`** — Compare QAOA and PCE loss landscapes: 1D scans, 2D scans, PCA scans with trajectory overlay
+- **`viz_advanced_analysis.py`** — Interpolation scans, Hessian eigenvalue analysis, Fourier power spectra, gradient overlays, 3D surface plots, NEB minimum-energy paths
 
-### Visualization
+### `advanced/`
 
-- **`viz_qaoa_pce_comparison.py`** - Compare QAOA and PCE loss landscapes: 1D scans, 2D scans, PCA scans with trajectory overlay
-- **`viz_advanced_analysis.py`** - Interpolation scans, Hessian eigenvalue analysis (parameter-shift vs finite-difference), Fourier power spectra, gradient overlays, 3D surface plots, NEB minimum-energy paths
+Escape hatches for users who need to step outside the built-in algorithm classes: run circuits without a `QuantumProgram`, plug your own circuit into a VQA loop, or save and resume long-running optimizations.
 
-### Checkpointing
+- **`standalone_pipeline.py`** — One-shot execution of PennyLane / Qiskit circuits through `CircuitPipeline` directly (no `QuantumProgram` wrapper, no optimization loop)
+- **`custom_vqa.py`** — Full variational optimization over a user-supplied parametric circuit via `CustomVQA`
+- **`checkpointing.py`** — Save and resume optimization runs
 
-- **`checkpointing.py`** - Save and resume optimization runs with checkpointing
+### `backends/`
 
-### Backends and Services
-
-- **`qasm_thru_service.py`** - Using QoroService cloud backend
-- **`backend_properties_conversion.py`** - Converting `BackendProperties` to A Qiskit `BackendV2`
+- **`qasm_thru_service.py`** — Submit raw QASM circuits to the Qoro cloud
+- **`characterize_maxcut_qubo.py`** — Skip optimization via the Qoro Characterization Service
+- **`backend_properties_conversion.py`** — Converting Qiskit `BackendProperties` to a `BackendV2`
 
 ## Requirements
 
@@ -101,13 +104,14 @@ For comprehensive documentation and detailed explanations, see the [User Guide](
 
 When adding new examples:
 
-1. Keep examples focused and self-contained
-2. Add clear docstrings explaining the example's purpose
-3. Include expected output in comments
-4. Update this README with a brief description
-5. **Register in `_ci_runner.py`**: All tutorials are executed in CI to catch regressions — if a code change breaks a tutorial, the pipeline fails. To keep CI fast, tutorials run with reduced parameters (fewer iterations, smaller problems, lower shots). The runner copies tutorials to a temp directory, applies string patches, and runs them in parallel with per-tutorial timeouts.
+1. Drop the file into the folder that matches its primary topic (or open a new folder if it's a genuinely new category that maps to a user-guide page).
+2. Keep examples focused and self-contained.
+3. Add clear docstrings explaining the example's purpose.
+4. Include expected output in comments.
+5. Update this README with a brief description under the right folder section.
+6. **Register in `_ci_runner.py`**: All tutorials are executed in CI to catch regressions — if a code change breaks a tutorial, the pipeline fails. To keep CI fast, tutorials run with reduced parameters (fewer iterations, smaller problems, lower shots). The runner copies tutorials to a temp directory, applies string patches, and runs them in parallel with per-tutorial timeouts.
 
-   Every non-underscore `.py` file must appear in exactly one of these three lists (validated at startup):
+   Every non-underscore `.py` file must appear in exactly one of these three lists (validated at startup), keyed by its **path relative to `tutorials/`** (e.g. `"optimization/qaoa_hubo.py"`):
    - `SKIP` — tutorials that cannot run in CI (e.g. need API keys)
    - `NO_PATCHES` — tutorials that run as-is (shots capped by `DIVI_CI_MAX_SHOTS`)
    - `TUTORIALS` — tutorials that need source patches (e.g. fewer iterations, smaller problems) and/or custom timeouts

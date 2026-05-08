@@ -45,24 +45,20 @@ DEFAULT_TIMEOUT = 120
 # ---------------------------------------------------------------------------
 
 SKIP = [
-    "qasm_thru_service.py",  # requires API key
-    "characterize_maxcut_qubo.py",  # requires API key + costs credits
+    "backends/qasm_thru_service.py",  # requires API key
+    "backends/characterize_maxcut_qubo.py",  # requires API key + costs credits
 ]
 
 NO_PATCHES = [
-    "backend_properties_conversion.py",
-    "custom_vqa.py",
-    "qaoa_binary_quadratic_model.py",
-    "standalone_pipeline.py",
-    "time_evolution.py",
-    "time_evolution_trajectory.py",
-    "viz_qaoa_pce_comparison.py",
-    "vqe_h2_with_grouping.py",
-    "vqe_h2_molecule.py",
+    "backends/backend_properties_conversion.py",
+    "advanced/custom_vqa.py",
+    "advanced/standalone_pipeline.py",
+    "visualization/viz_qaoa_pce_comparison.py",
+    "chemistry/vqe_h2_molecule.py",
 ]
 
 TUTORIALS: dict[str, dict] = {
-    "vqe_hyperparameter_sweep.py": {
+    "chemistry/vqe_hyperparameter_sweep.py": {
         "timeout_seconds": 180,
         "patches": [
             ("shots=2000", "shots=100"),
@@ -78,7 +74,7 @@ TUTORIALS: dict[str, dict] = {
             ("population_size=10", "population_size=5"),
         ],
     },
-    "error_mitigation.py": {
+    "error_mitigation/error_mitigation.py": {
         "timeout_seconds": 360,
         "patches": [
             ("max_iterations = 20", "max_iterations = 5"),
@@ -86,74 +82,63 @@ TUTORIALS: dict[str, dict] = {
             ("n_twirls=3", "n_twirls=1"),
         ],
     },
-    "qaoa_qubo_partitioning.py": {
-        "timeout_seconds": 180,
+    "optimization/qaoa_partitioning.py": {
+        # Three partitioning entry points run sequentially; budget covers
+        # graph (METIS), QUBO (hybrid), and edge-based (Kernighan-Lin).
+        "timeout_seconds": 240,
         "patches": [
+            ("N_NODES = 30", "N_NODES = 10"),
+            ("N_EDGES = 40", "N_EDGES = 15"),
+            ("max_n_nodes_per_cluster=10", "max_n_nodes_per_cluster=5"),
+            ("max_iterations=20", "max_iterations=5"),
             ("max_iterations=30", "max_iterations=5"),
+            ("max_iterations=10", "max_iterations=3"),
             ("n_layers=2", "n_layers=1"),
             ("gnp_random_bqm(\n        25,", "gnp_random_bqm(\n        15,"),
+            ("gnm_random_graph(16, 30", "gnm_random_graph(8, 12"),
             ("beam_width=3", "beam_width=2"),
             ("beam_width=5", "beam_width=2"),
             ("n_partition_candidates=5", "n_partition_candidates=3"),
             ("get_top_solutions(\n        n=5,", "get_top_solutions(\n        n=3,"),
         ],
     },
-    "qaoa_max_weight_matching.py": {
+    "optimization/qaoa_graph_problems.py": {
         "timeout_seconds": 180,
-        "patches": [
-            ("n_layers=2", "n_layers=1"),
-            ("max_iterations=20", "max_iterations=5"),
-            ("max_iterations=10", "max_iterations=3"),
-            ("gnm_random_graph(16, 30", "gnm_random_graph(8, 12"),
-        ],
-    },
-    "qaoa_graph_partitioning.py": {
-        "timeout_seconds": 180,
-        "patches": [
-            ("N_NODES = 30", "N_NODES = 10"),
-            ("N_EDGES = 40", "N_EDGES = 15"),
-            ("max_n_nodes_per_cluster=10", "max_n_nodes_per_cluster=5"),
-            ("max_iterations=20", "max_iterations=5"),
-        ],
-    },
-    "qaoa_qubo.py": {
-        "patches": [
-            ("n_layers=2", "n_layers=1"),
-            ("max_iterations=10", "max_iterations=3"),
-        ],
-    },
-    "qaoa_max_clique.py": {
+        # Patch order matters: ``max_iterations=5`` (clique) must be
+        # rewritten to 3 BEFORE ``max_iterations=20`` (matching) is rewritten
+        # to 5; otherwise the matching value cascades through to 3.
         "patches": [
             ("n_layers=2", "n_layers=1"),
             ("max_iterations=5", "max_iterations=3"),
+            ("max_iterations=20", "max_iterations=5"),
         ],
     },
-    "qaoa_qdrift.py": {
+    "optimization/qaoa_qdrift.py": {
         "patches": [
             ("N_NODES, N_EDGES = 12, 25", "N_NODES, N_EDGES = 8, 12"),
             ("max_iterations=5", "max_iterations=3"),
         ],
     },
-    "checkpointing.py": {
+    "advanced/checkpointing.py": {
         "patches": [
             ("max_iterations=3", "max_iterations=2"),
             ("max_iterations=5", "max_iterations=2"),
             ("vqe2.max_iterations = 6", "vqe2.max_iterations = 4"),
         ],
     },
-    "pce_qubo.py": {
+    "optimization/qubo_qaoa_vs_pce.py": {
         "patches": [
-            ("iters = 10", "iters = 3"),
-            ("layers = 2", "layers = 1"),
+            ("n_layers=2", "n_layers=1"),
+            ("max_iterations=10", "max_iterations=3"),
         ],
     },
-    "qaoa_hubo.py": {
+    "optimization/qaoa_hubo.py": {
         "timeout_seconds": 180,
         "patches": [
             ("max_iterations=15", "max_iterations=5"),
         ],
     },
-    "iterative_qaoa.py": {
+    "optimization/iterative_qaoa.py": {
         "timeout_seconds": 180,
         "patches": [
             ("MAX_DEPTH = 8", "MAX_DEPTH = 3"),
@@ -161,21 +146,29 @@ TUTORIALS: dict[str, dict] = {
             ("SHOTS = 10000", "SHOTS = 500"),
         ],
     },
-    "ce_qaoa_tsp.py": {
+    "routing/ce_qaoa_routing.py": {
+        # Runs both TSP and CVRP walkthroughs back-to-back, so the budget
+        # is bumped above the legacy 180s of either standalone tutorial.
+        "timeout_seconds": 360,
         "patches": [
             ("grid_points=5", "grid_points=3"),
             ("max_iterations=5", "max_iterations=1"),
             ("pop_size = 10", "pop_size = 3"),
-        ],
-    },
-    "ce_qaoa_cvrp.py": {
-        "timeout_seconds": 180,
-        "patches": [
-            ("max_iterations=5", "max_iterations=1"),
             ("population_size=10", "population_size=3"),
         ],
     },
-    "viz_advanced_analysis.py": {
+    "dynamics/time_evolution.py": {
+        # Bundles four single-time-point examples plus a 20-point trajectory.
+        # In CI we shrink the trajectory to 5 points and grant a wider budget.
+        "timeout_seconds": 240,
+        "patches": [
+            (
+                "np.linspace(0.01, math.pi, 20).tolist()",
+                "np.linspace(0.01, math.pi, 5).tolist()",
+            ),
+        ],
+    },
+    "visualization/viz_advanced_analysis.py": {
         "patches": [
             ("grid_shape=(31, 31)", "grid_shape=(9, 9)"),
             ("grid_shape=(15, 15)", "grid_shape=(5, 5)"),
@@ -192,8 +185,16 @@ TUTORIALS: dict[str, dict] = {
 
 
 def discover_tutorials() -> set[str]:
-    """Find all runnable tutorial .py files (exclude _ prefixed)."""
-    return {p.name for p in TUTORIALS_DIR.glob("*.py") if not p.name.startswith("_")}
+    """Find all runnable tutorial .py files (exclude _ prefixed) recursively.
+
+    Returns paths relative to ``tutorials/`` in posix form, e.g.
+    ``"optimization/qaoa_hubo.py"``.
+    """
+    return {
+        p.relative_to(TUTORIALS_DIR).as_posix()
+        for p in TUTORIALS_DIR.rglob("*.py")
+        if not p.name.startswith("_")
+    }
 
 
 def validate_config(discovered: set[str]) -> list[str]:

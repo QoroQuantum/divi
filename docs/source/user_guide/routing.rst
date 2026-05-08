@@ -195,7 +195,7 @@ The "tight" binary column assumes ``max_steps ≈ customers / vehicles + 1``.
 Next Steps
 ----------
 
-- Run the ``ce_qaoa_tsp.py`` and ``ce_qaoa_cvrp.py`` tutorials
+- Run the ``tutorials/routing/ce_qaoa_routing.py`` tutorial
 - Explore :doc:`optimizers` — ``GridSearchOptimizer`` is particularly
   suited for the 2-parameter CE-QAOA landscape
 - See :doc:`combinatorial_optimization_qaoa_pce` for general QAOA usage

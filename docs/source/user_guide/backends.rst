@@ -480,7 +480,7 @@ Operational notes
 Next Steps
 ----------
 
-* `tutorials/qasm_thru_service.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/qasm_thru_service.py>`_ and `tutorials/backend_properties_conversion.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/backend_properties_conversion.py>`_ — Qoro submission and backend-from-metadata workflows
+* `tutorials/backends/qasm_thru_service.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/backends/qasm_thru_service.py>`_ and `tutorials/backends/backend_properties_conversion.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/backends/backend_properties_conversion.py>`_ — Qoro submission and backend-from-metadata workflows
 * :doc:`../api_reference/backends` — full ``CircuitRunner``, ``JobConfig``, and ``ExecutionConfig`` reference
 * :doc:`pipelines` — how programs drive backends through the pipeline
 * :doc:`improving_results_qem` — error mitigation on noisy hardware

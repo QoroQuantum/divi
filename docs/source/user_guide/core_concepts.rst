@@ -304,7 +304,7 @@ Divi uses a two-tier circuit system for maximum efficiency:
      :class:`~divi.circuits.MetaCircuit` (or batch) straight through
 
    For a runnable walkthrough, see
-   `standalone_pipeline.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/standalone_pipeline.py>`_.
+   `standalone_pipeline.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/advanced/standalone_pipeline.py>`_.
    If you need to assemble a :class:`~divi.circuits.MetaCircuit` directly
    (e.g. to write a custom :class:`~divi.pipeline.SpecStage`), see
    :doc:`pipelines`.
@@ -333,7 +333,7 @@ throughout Divi. Circuit specs are converted by spec stages such as
 :class:`~divi.pipeline.stages.QiskitSpecStage`, then flow through the remaining
 pipeline stages for binding, execution, and reduction. See :doc:`pipelines` for
 the full stage-by-stage view. For a complete runnable example, see
-`standalone_pipeline.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/standalone_pipeline.py>`_.
+`standalone_pipeline.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/advanced/standalone_pipeline.py>`_.
 
 .. code-block:: python
 
@@ -365,7 +365,7 @@ replaces trainable slots with internal symbols and optimizes them.
 ``param_shape`` defines the shape of one parameter set and must match the number
 of trainable parameters in ``qscript`` (here: 2).
 
-For the full tutorial, see `custom_vqa.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/custom_vqa.py>`_.
+For the full tutorial, see `custom_vqa.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/advanced/custom_vqa.py>`_.
 
 Backend Abstraction
 -------------------
