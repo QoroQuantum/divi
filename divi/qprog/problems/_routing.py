@@ -5,6 +5,7 @@
 """Routing problem classes and utilities for QAOA (TSP, CVRP)."""
 
 import math
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -914,6 +915,112 @@ def create_cvrp_hubo_binary(
     return hubo, config
 
 
+def create_tsp_hubo_binary(
+    cost_matrix: npt.NDArray[np.floating],
+    start_city: int = 0,
+    constraint_penalty: float = 4.0,
+    objective_weight: float = 1.0,
+) -> tuple[dict[tuple[int, ...], float], BinaryBlockConfig]:
+    """Generate a binary-encoded HUBO for TSP.
+
+    TSP is the K=1 special case of CVRP with no demands and ``max_steps``
+    locked to ``n_customers``. The customer-visit penalty alone already
+    rejects any configuration with fewer than ``n_customers`` customer
+    slots, but when ``n_customers + 1`` is not a power of 2 some bit
+    patterns decode to values outside ``[0, n_customers]``. We add an
+    explicit penalty on those out-of-range patterns so the Hamiltonian
+    landscape directly reflects the feasibility constraint, instead of
+    relying on a counting argument.
+
+    Args:
+        cost_matrix: Symmetric distance matrix, shape ``(n, n)``.
+        start_city: Index of the fixed start/end city.
+        constraint_penalty: Customer-visit + slot-validity penalty strength.
+        objective_weight: Tour-length weight.
+
+    Returns:
+        Tuple of (hubo_dict, config) — same shape as
+        :func:`create_cvrp_hubo_binary` but with ``n_vehicles=1`` and
+        ``max_steps=n_customers``.
+    """
+    n_nodes = cost_matrix.shape[0]
+    n_cust = n_nodes - 1
+    hubo, config = create_cvrp_hubo_binary(
+        cost_matrix=cost_matrix,
+        demands=np.zeros(n_nodes, dtype=np.float64),
+        capacity=1.0,  # any value; demands=0 makes capacity terms vacuous.
+        n_vehicles=1,
+        depot=start_city,
+        constraint_penalty=constraint_penalty,
+        objective_weight=objective_weight,
+        capacity_penalty=0.0,
+        max_steps=n_cust,
+    )
+
+    # Slot-validity penalty: for each slot s and each value v in
+    # ``(n_cust + 1, ..., 2^B - 1)``, add ``constraint_penalty * I(s == v)``
+    # to the HUBO. Skips when 2^B == n_cust + 1 (no out-of-range values).
+    B = config.bits_per_slot
+    invalid_values = range(n_cust + 1, 1 << B)
+    if invalid_values:
+        for slot in range(config.n_slots):
+            slot_bits = list(range(slot * B, slot * B + B))
+            for v in invalid_values:
+                # Indicator polynomial I(slot == v) expanded over bits.
+                terms: dict[frozenset[int], float] = {frozenset(): 1.0}
+                for b in range(B):
+                    bit_set = (v >> b) & 1
+                    new_terms: dict[frozenset[int], float] = {}
+                    for vars_set, coeff in terms.items():
+                        if bit_set:
+                            key = vars_set | {slot_bits[b]}
+                            new_terms[key] = new_terms.get(key, 0.0) + coeff
+                        else:
+                            new_terms[vars_set] = new_terms.get(vars_set, 0.0) + coeff
+                            key = vars_set | {slot_bits[b]}
+                            new_terms[key] = new_terms.get(key, 0.0) - coeff
+                    terms = new_terms
+                for vars_set, coeff in terms.items():
+                    if abs(coeff) < 1e-15:
+                        continue
+                    key = tuple(sorted(vars_set))
+                    hubo[key] = hubo.get(key, 0.0) + constraint_penalty * coeff
+
+    return hubo, config
+
+
+def decode_binary_tsp_solution(
+    bitstring: str,
+    config: BinaryBlockConfig,
+    n_nodes: int,
+    start_city: int = 0,
+) -> list[int] | None:
+    """Decode a binary-encoded TSP bitstring into a tour.
+
+    Returns ``[start_city, c1, ..., c_{n-1}, start_city]`` if the
+    bitstring decodes to a valid TSP tour (all customers, each exactly
+    once, no empty slot), else ``None``.
+    """
+    routes = decode_binary_cvrp_solution(bitstring, config, start_city, n_nodes)
+    if routes is None or len(routes) != 1:
+        return None
+    tour = routes[0]
+    # decode_binary_cvrp_solution prepends/appends depot; expect depot + n_cust customers + depot.
+    if len(tour) != n_nodes + 1:
+        return None
+    if len(set(tour[1:-1])) != n_nodes - 1:
+        return None
+    return tour
+
+
+def is_valid_binary_tsp(
+    bitstring: str, config: BinaryBlockConfig, n_nodes: int, start_city: int = 0
+) -> bool:
+    return (
+        decode_binary_tsp_solution(bitstring, config, n_nodes, start_city) is not None
+    )
+
+
 def build_binary_superposition_ops(
     config: BinaryBlockConfig,
     wires: Sequence[int],
@@ -1117,13 +1224,105 @@ class VRPInstance:
         return self.dimension - 1
 
 
+_SUPPORTED_EWT = {"EUC_2D", "GEO", "EXPLICIT"}
+_SUPPORTED_EXPLICIT_FORMATS = {
+    "LOWER_DIAG_ROW",
+    "LOWER_ROW",
+    "UPPER_ROW",
+    "UPPER_DIAG_ROW",
+    "FULL_MATRIX",
+}
+
+
+# TSPLIB's C reference uses PI = 3.141592 rather than math.pi. Mismatching
+# the constant shifts integer-truncated GEO distances by ±1 against published
+# benchmarks, so we mirror the reference exactly.
+_TSPLIB_PI = 3.141592
+
+
+def _nint(x: float) -> int:
+    """TSPLIB's nint: round half-away-from-zero (NOT Python's banker's round)."""
+    return int(x + 0.5) if x >= 0 else -int(-x + 0.5)
+
+
+def _euc2d_matrix(coords: list[tuple[float, float]]) -> npt.NDArray[np.float64]:
+    n = len(coords)
+    cost = np.zeros((n, n), dtype=np.float64)
+    for i in range(n):
+        for j in range(i + 1, n):
+            dx = coords[i][0] - coords[j][0]
+            dy = coords[i][1] - coords[j][1]
+            d = _nint(math.sqrt(dx * dx + dy * dy))
+            cost[i, j] = cost[j, i] = d
+    return cost
+
+
+def _geo_matrix(coords: list[tuple[float, float]]) -> npt.NDArray[np.float64]:
+    """TSPLIB GEO: spherical distance using the radius from the reference spec.
+
+    Mirrors the C reference exactly: ``PI = 3.141592``, the (1±q1)/(1∓q1)
+    cosine identity, integer-truncated `(int)(R*acos(...) + 1.0)`. The
+    ``acos`` argument is clamped to ``[-1, 1]`` to absorb 1-ulp drift from
+    the trig identity; without it, near-identical points can raise.
+    """
+
+    # TSPLIB encodes coords as DDD.MM where MM is minutes — convert to radians.
+    def to_rad(x: float) -> float:
+        deg = int(x)
+        minutes = x - deg
+        return _TSPLIB_PI * (deg + 5.0 * minutes / 3.0) / 180.0
+
+    rad = [(to_rad(lat), to_rad(lon)) for lat, lon in coords]
+    n = len(coords)
+    R = 6378.388
+    cost = np.zeros((n, n), dtype=np.float64)
+    for i in range(n):
+        for j in range(i + 1, n):
+            q1 = math.cos(rad[i][1] - rad[j][1])
+            q2 = math.cos(rad[i][0] - rad[j][0])
+            q3 = math.cos(rad[i][0] + rad[j][0])
+            arg = max(-1.0, min(1.0, 0.5 * ((1 + q1) * q2 - (1 - q1) * q3)))
+            d = int(R * math.acos(arg) + 1.0)
+            cost[i, j] = cost[j, i] = d
+    return cost
+
+
+def _unpack_explicit(values: list[float], n: int, fmt: str) -> npt.NDArray[np.float64]:
+    cost = np.zeros((n, n), dtype=np.float64)
+    it = iter(values)
+    if fmt == "LOWER_DIAG_ROW":
+        for i in range(n):
+            for j in range(i + 1):
+                cost[i, j] = cost[j, i] = next(it)
+    elif fmt == "LOWER_ROW":
+        for i in range(1, n):
+            for j in range(i):
+                cost[i, j] = cost[j, i] = next(it)
+    elif fmt == "UPPER_ROW":
+        for i in range(n):
+            for j in range(i + 1, n):
+                cost[i, j] = cost[j, i] = next(it)
+    elif fmt == "UPPER_DIAG_ROW":
+        for i in range(n):
+            for j in range(i, n):
+                cost[i, j] = cost[j, i] = next(it)
+    elif fmt == "FULL_MATRIX":
+        for i in range(n):
+            for j in range(n):
+                cost[i, j] = next(it)
+    else:
+        raise ValueError(f"unsupported EDGE_WEIGHT_FORMAT: {fmt}")
+    return cost
+
+
 def parse_vrp_file(path: str | Path) -> VRPInstance:
     """Parse a TSPLIB/CVRPLIB format `.vrp` or `.tsp` file.
 
     Supports:
     - ``TYPE: CVRP`` and ``TYPE: TSP``
-    - ``EDGE_WEIGHT_TYPE: EUC_2D`` (Euclidean 2D distances, rounded to int)
-    - ``NODE_COORD_SECTION``, ``DEMAND_SECTION``, ``DEPOT_SECTION``
+    - ``EDGE_WEIGHT_TYPE``: ``EUC_2D``, ``GEO``, ``EXPLICIT``
+    - ``EDGE_WEIGHT_FORMAT`` (for EXPLICIT): ``LOWER_DIAG_ROW``, ``UPPER_ROW``, ``FULL_MATRIX``
+    - ``NODE_COORD_SECTION``, ``EDGE_WEIGHT_SECTION``, ``DEMAND_SECTION``, ``DEPOT_SECTION``
 
     Args:
         path: Path to the `.vrp` or `.tsp` file.
@@ -1142,6 +1341,9 @@ def parse_vrp_file(path: str | Path) -> VRPInstance:
     coords_list: list[tuple[float, float]] = []
     demands_list: list[float] = []
     depot_nodes: list[int] = []
+    edge_weights: list[float] = []
+    edge_weight_type = "EUC_2D"
+    edge_weight_format: str | None = None
 
     for raw_line in lines:
         line = raw_line.strip()
@@ -1167,14 +1369,21 @@ def parse_vrp_file(path: str | Path) -> VRPInstance:
                 for prefix in [
                     "optimal cost:",
                     "optimal cost :",
+                    "optimal value:",
+                    "optimal value :",
                     "optimal:",
                 ]:
                     if prefix in lower:
-                        cost_str = lower.split(prefix)[1].strip().rstrip('"')
-                        try:
-                            inst.optimal_cost = float(cost_str)
-                        except ValueError:
-                            pass
+                        tail = lower.split(prefix, 1)[1]
+                        # Accept ints, decimals (with or without leading zero),
+                        # and scientific notation. Anchored to the start of
+                        # ``tail`` so we don't pick up unrelated numbers.
+                        match = re.search(
+                            r"-?(?:\d+\.\d+|\.\d+|\d+)(?:[eE][+-]?\d+)?",
+                            tail,
+                        )
+                        if match:
+                            inst.optimal_cost = float(match.group(0))
             elif key == "TYPE":
                 inst.problem_type = value.upper()
             elif key == "DIMENSION":
@@ -1182,11 +1391,14 @@ def parse_vrp_file(path: str | Path) -> VRPInstance:
             elif key == "CAPACITY":
                 inst.capacity = int(value)
             elif key == "EDGE_WEIGHT_TYPE":
-                if value.upper() != "EUC_2D":
+                edge_weight_type = value.upper()
+                if edge_weight_type not in _SUPPORTED_EWT:
                     raise ValueError(
                         f"Unsupported EDGE_WEIGHT_TYPE: {value}. "
-                        f"Only EUC_2D is supported."
+                        f"Supported: {sorted(_SUPPORTED_EWT)}."
                     )
+            elif key == "EDGE_WEIGHT_FORMAT":
+                edge_weight_format = value.upper()
             continue
 
         # Section headers
@@ -1200,8 +1412,15 @@ def parse_vrp_file(path: str | Path) -> VRPInstance:
         elif upper == "DEPOT_SECTION":
             section = "DEPOT"
             continue
+        elif upper == "EDGE_WEIGHT_SECTION":
+            section = "EDGE_WEIGHTS"
+            continue
         elif upper == "EOF":
             break
+        elif upper in {"DISPLAY_DATA_SECTION", "FIXED_EDGES_SECTION"}:
+            # Skip auxiliary sections we don't consume.
+            section = "SKIP"
+            continue
 
         # Section data
         if section == "COORDS":
@@ -1218,6 +1437,8 @@ def parse_vrp_file(path: str | Path) -> VRPInstance:
                 section = None
             else:
                 depot_nodes.append(val)
+        elif section == "EDGE_WEIGHTS":
+            edge_weights.extend(float(tok) for tok in line.split())
 
     # Build arrays
     if coords_list:
@@ -1228,19 +1449,23 @@ def parse_vrp_file(path: str | Path) -> VRPInstance:
         # TSPLIB uses 1-based indexing
         inst.depot = depot_nodes[0] - 1
 
-    # Compute Euclidean distance matrix (TSPLIB rounds to nearest int)
-    if len(coords_list) > 0:
-        n = len(coords_list)
-        cost = np.zeros((n, n), dtype=np.float64)
-        for i in range(n):
-            for j in range(i + 1, n):
-                dx = coords_list[i][0] - coords_list[j][0]
-                dy = coords_list[i][1] - coords_list[j][1]
-                # TSPLIB EUC_2D: nint(sqrt(dx^2 + dy^2))
-                d = round(math.sqrt(dx * dx + dy * dy))
-                cost[i, j] = d
-                cost[j, i] = d
-        inst.cost_matrix = cost
+    # Compute distance matrix
+    if edge_weight_type == "EXPLICIT":
+        if edge_weight_format is None:
+            raise ValueError("EXPLICIT requires EDGE_WEIGHT_FORMAT.")
+        if edge_weight_format not in _SUPPORTED_EXPLICIT_FORMATS:
+            raise ValueError(
+                f"unsupported EDGE_WEIGHT_FORMAT: {edge_weight_format}. "
+                f"Supported: {sorted(_SUPPORTED_EXPLICIT_FORMATS)}."
+            )
+        inst.cost_matrix = _unpack_explicit(
+            edge_weights, inst.dimension, edge_weight_format
+        )
+    elif coords_list:
+        if edge_weight_type == "GEO":
+            inst.cost_matrix = _geo_matrix(coords_list)
+        else:  # EUC_2D
+            inst.cost_matrix = _euc2d_matrix(coords_list)
 
     # Default demands for TSP
     if inst.problem_type == "TSP" and len(demands_list) == 0:
@@ -1344,13 +1569,19 @@ class _RoutingProblemBase(QAOAProblem):
 class TSPProblem(_RoutingProblemBase):
     """Traveling Salesman Problem for QAOA.
 
-    Generates a QUBO from the cost matrix, converts to an Ising
-    Hamiltonian, and uses block W-state initialization with an XY mixer
-    that preserves the one-hot constraint within each time-step block.
+    Supports two encodings:
+
+    * ``"one_hot"`` — assignment-matrix encoding with W-state initialisation
+      and an XY mixer that preserves the one-hot constraint per time slot.
+      Qubit count: ``(n-1)²``.
+    * ``"binary"`` — log-encoded slot bits (CE-QAOA binary) with
+      Hadamard initialisation and a transverse-field mixer. Qubit count:
+      ``(n-1) · ⌈log₂(n)⌉`` before quadratization.
 
     Args:
         cost_matrix: Symmetric distance/cost matrix of shape ``(n, n)``.
         start_city: Index of the fixed start city. Defaults to 0.
+        encoding: ``"one_hot"`` or ``"binary"``. Defaults to ``"one_hot"``.
         constraint_penalty: Constraint penalty strength. Defaults to 4.0.
         objective_weight: Objective weight. Defaults to 1.0.
     """
@@ -1360,27 +1591,58 @@ class TSPProblem(_RoutingProblemBase):
         cost_matrix: npt.NDArray[np.floating],
         *,
         start_city: int = 0,
+        encoding: Literal["one_hot", "binary"] = "one_hot",
         constraint_penalty: float = 4.0,
         objective_weight: float = 1.0,
     ):
         self._cost_matrix = np.asarray(cost_matrix, dtype=np.float64)
         self._start_city = start_city
         self._n_cities = self._cost_matrix.shape[0]
+        self._encoding = encoding
+        self._binary_config: BinaryBlockConfig | None = None
         m = self._n_cities - 1
 
-        qubo = create_tsp_qubo(
-            self._cost_matrix, start_city, constraint_penalty, objective_weight
-        )
-        self._init_ising(qubo, block_size=m, n_blocks=m)
+        if encoding == "binary":
+            hubo, self._binary_config = create_tsp_hubo_binary(
+                self._cost_matrix,
+                start_city=start_city,
+                constraint_penalty=constraint_penalty,
+                objective_weight=objective_weight,
+            )
+            self._init_ising(
+                hubo,
+                block_size=self._binary_config.bits_per_slot,
+                n_blocks=self._binary_config.n_slots,
+                hamiltonian_builder="quadratized",
+                use_xy_mixer=False,
+            )
+        else:
+            qubo = create_tsp_qubo(
+                self._cost_matrix, start_city, constraint_penalty, objective_weight
+            )
+            self._init_ising(qubo, block_size=m, n_blocks=m)
+
+    @property
+    def encoding(self) -> str:
+        return self._encoding
+
+    @property
+    def binary_config(self) -> BinaryBlockConfig | None:
+        return self._binary_config
 
     @property
     def recommended_initial_state(self) -> InitialState:
+        if self._encoding == "binary":
+            return SuperpositionState()
         return WState(self._block_size, self._n_blocks)
 
     @property
     def decode_fn(self) -> Callable[[str], Any]:
         n_cities = self._n_cities
         start = self._start_city
+        if self._encoding == "binary" and self._binary_config is not None:
+            cfg = self._binary_config
+            return lambda bs: decode_binary_tsp_solution(bs, cfg, n_cities, start)
         return lambda bs: decode_tsp_solution(bs, n_cities, start)
 
     @property
@@ -1393,16 +1655,30 @@ class TSPProblem(_RoutingProblemBase):
         return result
 
     def is_feasible(self, bitstring: str) -> bool:
+        if self._encoding == "binary" and self._binary_config is not None:
+            return is_valid_binary_tsp(
+                bitstring, self._binary_config, self._n_cities, self._start_city
+            )
         return is_valid_tsp_tour(bitstring, self._n_cities)
 
     def repair_infeasible_bitstring(self, bitstring: str) -> tuple[str, Any, float]:
+        if self._encoding == "binary":
+            # Binary repair would require its own greedy. Defer until needed.
+            raise NotImplementedError(
+                "repair_infeasible_bitstring is not implemented for binary TSP."
+            )
         return repair_tsp_solution(
             bitstring, self._n_cities, self._start_city, self._cost_matrix
         )
 
     def compute_energy(self, bitstring: str) -> float | None:
-        t = decode_tsp_solution(bitstring, self._n_cities, self._start_city)
-        return tour_cost(t, self._cost_matrix) if t is not None else None
+        if self._encoding == "binary" and self._binary_config is not None:
+            tour = decode_binary_tsp_solution(
+                bitstring, self._binary_config, self._n_cities, self._start_city
+            )
+        else:
+            tour = decode_tsp_solution(bitstring, self._n_cities, self._start_city)
+        return tour_cost(tour, self._cost_matrix) if tour is not None else None
 
 
 # --- CVRPProblem ---

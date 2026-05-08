@@ -8,12 +8,20 @@ import numpy as np
 import pytest
 
 from divi.qprog import QAOA
+from divi.qprog.algorithms import SuperpositionState
 from divi.qprog.optimizers import GridSearchOptimizer, MonteCarloOptimizer
-from divi.qprog.problems import CVRPProblem, TSPProblem
+from divi.qprog.problems import (
+    CVRPProblem,
+    TSPProblem,
+    VRPInstance,
+)
+from divi.qprog.problems import parse_vrp_file as parse_vrp_file_public
 from divi.qprog.problems._routing import (
+    _nint,
     binary_block_config,
     create_cvrp_hubo_binary,
     create_cvrp_qubo,
+    create_tsp_hubo_binary,
     create_tsp_qubo,
     cvrp_block_structure,
     decode_binary_cvrp_solution,
@@ -228,6 +236,267 @@ class TestParseVrpFile:
         assert inst.capacity == 231
         assert inst.optimal_cost == 646.0
 
+    def test_public_import_surface(self, vrp_file):
+        # Guards against __init__.py regressions: parse_vrp_file and
+        # VRPInstance must remain importable from divi.qprog.problems.
+        inst = parse_vrp_file_public(vrp_file)
+        assert isinstance(inst, VRPInstance)
+        assert inst.dimension == 5
+
+
+class TestParseTsplibFormats:
+    """Coverage for the EWT / EWF dispatch added beyond EUC_2D."""
+
+    @pytest.fixture
+    def explicit_lower_diag(self, tmp_path):
+        # 4×4 symmetric with diagonal zero. LOWER_DIAG_ROW reads, row by row,
+        # entries (i, j) for j <= i: (0)(1,0)(0)(2,0)(2,1)(0)(3,0)(3,1)(3,2)(0).
+        body = """\
+NAME: tiny
+TYPE: TSP
+DIMENSION: 4
+EDGE_WEIGHT_TYPE: EXPLICIT
+EDGE_WEIGHT_FORMAT: LOWER_DIAG_ROW
+EDGE_WEIGHT_SECTION
+0
+10 0
+20 30 0
+40 50 60 0
+EOF
+"""
+        p = tmp_path / "tiny_ldr.tsp"
+        p.write_text(body)
+        return p
+
+    @pytest.fixture
+    def explicit_upper_row(self, tmp_path):
+        # Strict upper triangle of a 4×4 symmetric matrix with the same
+        # off-diagonal entries as the LOWER_DIAG_ROW fixture.
+        body = """\
+NAME: tiny
+TYPE: TSP
+DIMENSION: 4
+EDGE_WEIGHT_TYPE: EXPLICIT
+EDGE_WEIGHT_FORMAT: UPPER_ROW
+EDGE_WEIGHT_SECTION
+10 20 40
+30 50
+60
+EOF
+"""
+        p = tmp_path / "tiny_ur.tsp"
+        p.write_text(body)
+        return p
+
+    @pytest.fixture
+    def explicit_lower_row(self, tmp_path):
+        # Strict lower triangle (no diagonal) of the same 4×4 matrix.
+        body = """\
+NAME: tiny
+TYPE: TSP
+DIMENSION: 4
+EDGE_WEIGHT_TYPE: EXPLICIT
+EDGE_WEIGHT_FORMAT: LOWER_ROW
+EDGE_WEIGHT_SECTION
+10
+20 30
+40 50 60
+EOF
+"""
+        p = tmp_path / "tiny_lr.tsp"
+        p.write_text(body)
+        return p
+
+    @pytest.fixture
+    def explicit_upper_diag_row(self, tmp_path):
+        # Upper triangle including diagonal of the same 4×4 matrix.
+        body = """\
+NAME: tiny
+TYPE: TSP
+DIMENSION: 4
+EDGE_WEIGHT_TYPE: EXPLICIT
+EDGE_WEIGHT_FORMAT: UPPER_DIAG_ROW
+EDGE_WEIGHT_SECTION
+0 10 20 40
+0 30 50
+0 60
+0
+EOF
+"""
+        p = tmp_path / "tiny_udr.tsp"
+        p.write_text(body)
+        return p
+
+    @pytest.fixture
+    def explicit_full_matrix(self, tmp_path):
+        body = """\
+NAME: tiny
+TYPE: TSP
+DIMENSION: 3
+EDGE_WEIGHT_TYPE: EXPLICIT
+EDGE_WEIGHT_FORMAT: FULL_MATRIX
+EDGE_WEIGHT_SECTION
+0 7 8
+7 0 9
+8 9 0
+EOF
+"""
+        p = tmp_path / "tiny_fm.tsp"
+        p.write_text(body)
+        return p
+
+    @pytest.fixture
+    def geo_burma14(self):
+        # Real GEO instance from the TSPLIB95 distribution.
+        path = Path(__file__).parent / "fixtures" / "burma14.tsp"
+        # Lazy fixture: not all checkouts ship this fixture; skip if missing.
+        if not path.exists():
+            pytest.skip("burma14.tsp fixture not available")
+        return path
+
+    def test_explicit_lower_diag_row(self, explicit_lower_diag):
+        inst = parse_vrp_file(explicit_lower_diag)
+        expected = np.array(
+            [[0, 10, 20, 40], [10, 0, 30, 50], [20, 30, 0, 60], [40, 50, 60, 0]],
+            dtype=float,
+        )
+        np.testing.assert_array_equal(inst.cost_matrix, expected)
+
+    def test_explicit_upper_row(self, explicit_upper_row):
+        inst = parse_vrp_file(explicit_upper_row)
+        expected = np.array(
+            [[0, 10, 20, 40], [10, 0, 30, 50], [20, 30, 0, 60], [40, 50, 60, 0]],
+            dtype=float,
+        )
+        np.testing.assert_array_equal(inst.cost_matrix, expected)
+
+    def test_explicit_lower_row(self, explicit_lower_row):
+        inst = parse_vrp_file(explicit_lower_row)
+        expected = np.array(
+            [[0, 10, 20, 40], [10, 0, 30, 50], [20, 30, 0, 60], [40, 50, 60, 0]],
+            dtype=float,
+        )
+        np.testing.assert_array_equal(inst.cost_matrix, expected)
+
+    def test_explicit_upper_diag_row(self, explicit_upper_diag_row):
+        inst = parse_vrp_file(explicit_upper_diag_row)
+        expected = np.array(
+            [[0, 10, 20, 40], [10, 0, 30, 50], [20, 30, 0, 60], [40, 50, 60, 0]],
+            dtype=float,
+        )
+        np.testing.assert_array_equal(inst.cost_matrix, expected)
+
+    def test_explicit_full_matrix(self, explicit_full_matrix):
+        inst = parse_vrp_file(explicit_full_matrix)
+        expected = np.array([[0, 7, 8], [7, 0, 9], [8, 9, 0]], dtype=float)
+        np.testing.assert_array_equal(inst.cost_matrix, expected)
+
+    def test_unsupported_ewt_raises(self, tmp_path):
+        p = tmp_path / "bad.tsp"
+        p.write_text(
+            "NAME: bad\nTYPE: TSP\nDIMENSION: 3\nEDGE_WEIGHT_TYPE: ATT\n"
+            "NODE_COORD_SECTION\n1 0 0\n2 1 0\n3 0 1\nEOF\n"
+        )
+        with pytest.raises(ValueError, match="Unsupported EDGE_WEIGHT_TYPE"):
+            parse_vrp_file(p)
+
+    def test_unsupported_ewf_raises(self, tmp_path):
+        p = tmp_path / "bad.tsp"
+        p.write_text(
+            "NAME: bad\nTYPE: TSP\nDIMENSION: 3\nEDGE_WEIGHT_TYPE: EXPLICIT\n"
+            "EDGE_WEIGHT_FORMAT: WEIRD_FORMAT\nEDGE_WEIGHT_SECTION\n0 1 2 3 4 5\nEOF\n"
+        )
+        with pytest.raises(ValueError, match="EDGE_WEIGHT_FORMAT"):
+            parse_vrp_file(p)
+
+    def test_geo_real_instance(self, geo_burma14):
+        inst = parse_vrp_file(geo_burma14)
+        assert inst.dimension == 14
+        c = inst.cost_matrix
+        assert c.shape == (14, 14)
+        assert (c == c.T).all()
+        assert (c.diagonal() == 0).all()
+        assert (c >= 0).all()
+
+    def test_geo_does_not_raise_on_identical_points(self, tmp_path):
+        # acos arg must be clamped to [-1, 1]; without clamp the trig
+        # identity can drift past 1.0 by 1 ulp for coincident points.
+        body = """\
+NAME: degenerate
+TYPE: TSP
+DIMENSION: 3
+EDGE_WEIGHT_TYPE: GEO
+NODE_COORD_SECTION
+1 49.30 6.10
+2 49.30 6.10
+3 50.00 6.00
+EOF
+"""
+        p = tmp_path / "degenerate_geo.tsp"
+        p.write_text(body)
+        # Parsing must not raise from an acos domain error on coincident coords.
+        inst = parse_vrp_file(p)
+        # TSPLIB's `int(R*acos(arg)+1.0)` for arg=1 yields exactly 1.
+        assert inst.cost_matrix[0, 1] == 1.0
+        assert inst.cost_matrix[0, 2] > 0
+
+    def test_euc2d_uses_half_away_from_zero(self, tmp_path):
+        # Coordinates whose Euclidean distance is exactly 2.5: TSPLIB nint
+        # rounds to 3, Python's banker round() returns 2. Catches the bug.
+        body = """\
+NAME: half_int
+TYPE: TSP
+DIMENSION: 2
+EDGE_WEIGHT_TYPE: EUC_2D
+NODE_COORD_SECTION
+1 0.0 0.0
+2 1.5 2.0
+EOF
+"""
+        p = tmp_path / "half_int.tsp"
+        p.write_text(body)
+        inst = parse_vrp_file(p)
+        # sqrt(1.5² + 2.0²) = sqrt(6.25) = 2.5  →  nint(2.5) = 3
+        assert inst.cost_matrix[0, 1] == 3.0
+
+    @pytest.mark.parametrize(
+        "comment, expected",
+        [
+            ('"Optimal cost: 1.5e3"', 1500.0),
+            ('"Optimal value: .25"', 0.25),
+            ('"Optimal value: -7"', -7.0),
+            ('"Optimal cost: 42"', 42.0),
+            ('"(Augerat et al, No of trucks: 8, Optimal value: 450)"', 450.0),
+        ],
+    )
+    def test_optimal_cost_regex_variants(self, tmp_path, comment, expected):
+        p = tmp_path / "opt.tsp"
+        p.write_text(
+            f"NAME: x\nTYPE: TSP\nDIMENSION: 2\nCOMMENT: {comment}\n"
+            "EDGE_WEIGHT_TYPE: EUC_2D\nNODE_COORD_SECTION\n1 0 0\n2 1 0\nEOF\n"
+        )
+        assert parse_vrp_file(p).optimal_cost == expected
+
+
+class TestNint:
+    """``_nint`` mirrors TSPLIB's half-away-from-zero rounding."""
+
+    @pytest.mark.parametrize(
+        "x, expected",
+        [
+            (2.5, 3),
+            (3.5, 4),  # Python round(3.5) -> 4; round(2.5) -> 2 (banker's)
+            (-2.5, -3),
+            (-3.5, -4),
+            (0.0, 0),
+            (0.49999, 0),
+            (0.5, 1),
+            (-0.5, -1),
+        ],
+    )
+    def test_half_away_from_zero(self, x, expected):
+        assert _nint(x) == expected
+
 
 class TestParseVrpSolution:
     def test_basic_solution(self, sol_file):
@@ -412,6 +681,122 @@ class TestTSPProblem:
         e2 = problem.compute_energy("0110")  # city2@t0, city1@t1
         assert e1 is not None and e2 is not None
         assert e1 == e2  # symmetric cost matrix
+
+
+class TestTSPProblemBinary:
+    """Binary CE-QAOA encoding for TSP — log-encoded slot bits + transverse mixer."""
+
+    def test_qubit_layout(self, four_city_cost):
+        # 4 cities, start fixed -> 3 customers, 3 slots, 2 bits/slot = 6 logical qubits.
+        problem = TSPProblem(four_city_cost, start_city=0, encoding="binary")
+        cfg = problem.binary_config
+        assert cfg is not None
+        assert cfg.n_customers == 3
+        assert cfg.n_vehicles == 1
+        assert cfg.max_steps == 3
+        assert cfg.bits_per_slot == 2
+        assert cfg.n_qubits == 6
+        # Quadratization adds ancillas; total physical qubits >= logical.
+        assert len(problem.cost_hamiltonian.wires) >= cfg.n_qubits
+
+    def test_initial_state_is_superposition(self, four_city_cost):
+        problem = TSPProblem(four_city_cost, encoding="binary")
+        assert isinstance(problem.recommended_initial_state, SuperpositionState)
+
+    def test_encoding_property(self, four_city_cost):
+        oh = TSPProblem(four_city_cost, encoding="one_hot")
+        bn = TSPProblem(four_city_cost, encoding="binary")
+        assert oh.encoding == "one_hot"
+        assert oh.binary_config is None
+        assert bn.encoding == "binary"
+        assert bn.binary_config is not None
+
+    def test_feasibility_roundtrip(self, four_city_cost):
+        # 4 cities, start=0, customers = [1,2,3] -> slot values 1,2,3.
+        # Tour 0->1->2->3->0 encodes as slots (1, 2, 3); little-endian bits:
+        # slot 0 = "10", slot 1 = "01", slot 2 = "11".
+        problem = TSPProblem(four_city_cost, start_city=0, encoding="binary")
+        bs = "10" + "01" + "11"
+        assert problem.is_feasible(bs) is True
+        tour = problem.decode_fn(bs)
+        assert tour == [0, 1, 2, 3, 0]
+
+    def test_compute_energy_matches_tour_cost(self, four_city_cost):
+        problem = TSPProblem(four_city_cost, start_city=0, encoding="binary")
+        bs = "10" + "01" + "11"  # tour 0-1-2-3-0
+        # 0->1: 10, 1->2: 35, 2->3: 30, 3->0: 20  => 95
+        assert problem.compute_energy(bs) == 95.0
+
+    def test_infeasible_returns_none(self, four_city_cost):
+        problem = TSPProblem(four_city_cost, start_city=0, encoding="binary")
+        # Slot value 0 = "empty" — not allowed in a TSP tour of length n_cust.
+        bs = "00" + "01" + "11"
+        assert problem.is_feasible(bs) is False
+        assert problem.compute_energy(bs) is None
+
+    def test_repair_not_implemented(self, four_city_cost):
+        problem = TSPProblem(four_city_cost, encoding="binary")
+        with pytest.raises(NotImplementedError):
+            problem.repair_infeasible_bitstring("000000")
+
+    def test_slot_validity_penalty_added_when_bit_width_overshoots(self):
+        # n=6 cities -> n_cust=5, B=ceil(log2(6))=3 (values 0..7), invalid: {6, 7}.
+        # CVRP K=1 does not penalize bit patterns that decode to 6 or 7; the TSP
+        # HUBO must — so coefficients on the valid-customer indicators differ.
+        cost = np.arange(36, dtype=float).reshape(6, 6)
+        cost = (cost + cost.T) / 2.0
+        np.fill_diagonal(cost, 0.0)
+
+        hubo_tsp, _ = create_tsp_hubo_binary(cost, start_city=0)
+        hubo_cvrp, _ = create_cvrp_hubo_binary(
+            cost,
+            demands=np.zeros(6, dtype=np.float64),
+            capacity=1.0,
+            n_vehicles=1,
+            depot=0,
+            capacity_penalty=0.0,
+            max_steps=5,
+        )
+        diff = {
+            k
+            for k in hubo_tsp.keys() | hubo_cvrp.keys()
+            if abs(hubo_tsp.get(k, 0.0) - hubo_cvrp.get(k, 0.0)) > 1e-12
+        }
+        assert diff, "expected slot-validity penalty to alter HUBO coefficients"
+
+        # An "all-invalid" bitstring (every slot decoded as 7 = '111') should
+        # carry strictly higher HUBO energy under TSP than under CVRP-K=1.
+        cfg = binary_block_config(5, 1, max_steps=5)
+        all_invalid_bits = "111" * cfg.n_slots
+
+        def _eval(hubo, bits):
+            # Skip the constant key () — `all([])` is vacuously True, which would
+            # spuriously credit the offset to the state-dependent energy.
+            energy = 0.0
+            for key, coeff in hubo.items():
+                if key and all(bits[i] == "1" for i in key):
+                    energy += coeff
+            return energy
+
+        assert _eval(hubo_tsp, all_invalid_bits) > _eval(hubo_cvrp, all_invalid_bits)
+
+    def test_no_slot_validity_penalty_when_bit_width_is_tight(self):
+        # n=4 cities -> n_cust=3, B=ceil(log2(4))=2 (values 0..3), no invalid values.
+        # The TSP HUBO should match the K=1 CVRP HUBO term-for-term.
+        cost = np.array(
+            [[0, 1, 2, 3], [1, 0, 4, 5], [2, 4, 0, 6], [3, 5, 6, 0]], dtype=float
+        )
+        hubo_tsp, _ = create_tsp_hubo_binary(cost, start_city=0)
+        hubo_cvrp, _ = create_cvrp_hubo_binary(
+            cost,
+            demands=np.zeros(4, dtype=np.float64),
+            capacity=1.0,
+            n_vehicles=1,
+            depot=0,
+            capacity_penalty=0.0,
+            max_steps=3,
+        )
+        assert hubo_tsp == hubo_cvrp
 
 
 # ---------------------------------------------------------------------------
