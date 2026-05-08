@@ -1188,7 +1188,7 @@ def is_valid_binary_cvrp(
 
 
 @dataclass
-class VRPInstance:
+class RoutingInstance:
     """Parsed VRP/TSP instance data.
 
     Attributes:
@@ -1315,7 +1315,7 @@ def _unpack_explicit(values: list[float], n: int, fmt: str) -> npt.NDArray[np.fl
     return cost
 
 
-def parse_vrp_file(path: str | Path) -> VRPInstance:
+def parse_tsplib_file(path: str | Path) -> RoutingInstance:
     """Parse a TSPLIB/CVRPLIB format `.vrp` or `.tsp` file.
 
     Supports:
@@ -1328,7 +1328,7 @@ def parse_vrp_file(path: str | Path) -> VRPInstance:
         path: Path to the `.vrp` or `.tsp` file.
 
     Returns:
-        Parsed :class:`~divi.qprog.problems.VRPInstance`.
+        Parsed :class:`~divi.qprog.problems.RoutingInstance`.
 
     Raises:
         ValueError: If the file format is unsupported or malformed.
@@ -1336,7 +1336,7 @@ def parse_vrp_file(path: str | Path) -> VRPInstance:
     path = Path(path)
     lines = path.read_text().splitlines()
 
-    inst = VRPInstance()
+    inst = RoutingInstance()
     section = None
     coords_list: list[tuple[float, float]] = []
     demands_list: list[float] = []

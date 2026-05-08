@@ -26,12 +26,12 @@ from divi.qprog.problems._graph_partitioning_utils import (
 from divi.qprog.problems._routing import (
     BinaryBlockConfig,
     CVRPProblem,
+    RoutingInstance,
     TSPProblem,
-    VRPInstance,
     binary_block_config,
     cvrp_block_structure,
     is_valid_tsp_tour,
-    parse_vrp_file,
+    parse_tsplib_file,
     parse_vrp_solution,
     tour_cost,
 )
@@ -48,8 +48,8 @@ __all__ = [
     "MaxWeightMatchingProblem",
     "MinVertexCoverProblem",
     "QAOAProblem",
+    "RoutingInstance",
     "TSPProblem",
-    "VRPInstance",
     "binary_block_config",
     "check_matching_matrix",
     "cvrp_block_structure",
@@ -57,7 +57,7 @@ __all__ = [
     "draw_partitions",
     "is_valid_matching",
     "is_valid_tsp_tour",
-    "parse_vrp_file",
+    "parse_tsplib_file",
     "parse_vrp_solution",
     "tour_cost",
 ]

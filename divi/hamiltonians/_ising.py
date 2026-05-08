@@ -354,10 +354,14 @@ def convert_qubo_matrix_to_pennylane_ising(
         ising_terms.append([i])
         ising_weights.append(float(curr_lin_term))
 
-    # Construct the Ising Hamiltonian as a PennyLane operator
-    pauli_string = qp.Identity(0) * 0
-    for term, weight in zip(ising_terms, ising_weights):
-        curr_term = _z_product(tuple(term)) * weight
-        pauli_string += curr_term
-
+    if not ising_terms:
+        return qp.Identity(0) * 0, constant_term
+    weighted_terms = [
+        _z_product(tuple(term)) * weight
+        for term, weight in zip(ising_terms, ising_weights)
+    ]
+    if len(weighted_terms) == 1:
+        pauli_string = weighted_terms[0]
+    else:
+        pauli_string = qp.sum(*weighted_terms)
     return pauli_string.simplify(), constant_term

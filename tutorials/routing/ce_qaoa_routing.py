@@ -41,7 +41,7 @@ from divi.qprog.problems import (
     binary_block_config,
     cvrp_block_structure,
     is_valid_tsp_tour,
-    parse_vrp_file,
+    parse_tsplib_file,
     parse_vrp_solution,
     tour_cost,
 )
@@ -384,7 +384,7 @@ def run_cvrp_walkthrough(backend) -> None:
         vrp_path.write_text(SAMPLE_VRP)
         sol_path.write_text(SAMPLE_SOL)
 
-        inst = parse_vrp_file(vrp_path)
+        inst = parse_tsplib_file(vrp_path)
         opt_routes, opt_cost = parse_vrp_solution(sol_path)
 
     _print_parsed_instance(inst, opt_routes, opt_cost)

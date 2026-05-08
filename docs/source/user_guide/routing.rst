@@ -144,16 +144,16 @@ parameter:
 Loading Benchmark Instances
 ---------------------------
 
-The ``parse_vrp_file`` utility reads standard TSPLIB/CVRPLIB ``.vrp``
+The ``parse_tsplib_file`` utility reads standard TSPLIB/CVRPLIB ``.vrp``
 files, as used by benchmarks like QOBLIB:
 
 .. skip: next
 
 .. code-block:: python
 
-   from divi.qprog.problems import parse_vrp_file, parse_vrp_solution
+   from divi.qprog.problems import parse_tsplib_file, parse_vrp_solution
 
-   inst = parse_vrp_file("XSH-n20-k4-01.vrp")
+   inst = parse_tsplib_file("XSH-n20-k4-01.vrp")
    # inst.cost_matrix, inst.demands, inst.capacity, inst.n_vehicles, ...
 
    opt_routes, opt_cost = parse_vrp_solution("XSH-n20-k4-01.opt.sol")

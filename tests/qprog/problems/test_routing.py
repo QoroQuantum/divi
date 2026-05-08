@@ -12,10 +12,10 @@ from divi.qprog.algorithms import SuperpositionState
 from divi.qprog.optimizers import GridSearchOptimizer, MonteCarloOptimizer
 from divi.qprog.problems import (
     CVRPProblem,
+    RoutingInstance,
     TSPProblem,
-    VRPInstance,
 )
-from divi.qprog.problems import parse_vrp_file as parse_vrp_file_public
+from divi.qprog.problems import parse_tsplib_file as parse_tsplib_file_public
 from divi.qprog.problems._routing import (
     _nint,
     binary_block_config,
@@ -30,7 +30,7 @@ from divi.qprog.problems._routing import (
     is_valid_binary_cvrp,
     is_valid_cvrp_solution,
     is_valid_tsp_tour,
-    parse_vrp_file,
+    parse_tsplib_file,
     parse_vrp_solution,
     repair_cvrp_solution,
     repair_tsp_solution,
@@ -195,7 +195,7 @@ def sol_file(tmp_path):
 
 class TestParseVrpFile:
     def test_basic_fields(self, vrp_file):
-        inst = parse_vrp_file(vrp_file)
+        inst = parse_tsplib_file(vrp_file)
         assert inst.name == "TEST-n4-k2-01"
         assert inst.problem_type == "CVRP"
         assert inst.dimension == 5
@@ -204,20 +204,20 @@ class TestParseVrpFile:
         assert inst.depot == 0
 
     def test_optimal_cost_extracted(self, vrp_file):
-        assert parse_vrp_file(vrp_file).optimal_cost == 100.0
+        assert parse_tsplib_file(vrp_file).optimal_cost == 100.0
 
     def test_coordinates(self, vrp_file):
-        inst = parse_vrp_file(vrp_file)
+        inst = parse_tsplib_file(vrp_file)
         assert inst.coords.shape == (5, 2)
         np.testing.assert_array_equal(inst.coords[0], [0, 0])
 
     def test_demands(self, vrp_file):
-        inst = parse_vrp_file(vrp_file)
+        inst = parse_tsplib_file(vrp_file)
         assert inst.demands.shape == (5,)
         assert inst.demands[0] == 0
 
     def test_cost_matrix_euclidean(self, vrp_file):
-        inst = parse_vrp_file(vrp_file)
+        inst = parse_tsplib_file(vrp_file)
         assert inst.cost_matrix.shape == (5, 5)
         assert inst.cost_matrix[0, 1] == 3.0
         assert inst.cost_matrix[0, 2] == 4.0
@@ -225,11 +225,11 @@ class TestParseVrpFile:
         assert inst.cost_matrix[1, 0] == inst.cost_matrix[0, 1]
 
     def test_n_customers(self, vrp_file):
-        assert parse_vrp_file(vrp_file).n_customers == 4
+        assert parse_tsplib_file(vrp_file).n_customers == 4
 
     def test_qoblib_instance(self):
         qoblib_path = Path(__file__).parent / "fixtures" / "XSH-n20-k4-01.vrp"
-        inst = parse_vrp_file(qoblib_path)
+        inst = parse_tsplib_file(qoblib_path)
         assert inst.dimension == 21
         assert inst.n_customers == 20
         assert inst.n_vehicles == 4
@@ -237,10 +237,10 @@ class TestParseVrpFile:
         assert inst.optimal_cost == 646.0
 
     def test_public_import_surface(self, vrp_file):
-        # Guards against __init__.py regressions: parse_vrp_file and
-        # VRPInstance must remain importable from divi.qprog.problems.
-        inst = parse_vrp_file_public(vrp_file)
-        assert isinstance(inst, VRPInstance)
+        # Guards against __init__.py regressions: parse_tsplib_file and
+        # RoutingInstance must remain importable from divi.qprog.problems.
+        inst = parse_tsplib_file_public(vrp_file)
+        assert isinstance(inst, RoutingInstance)
         assert inst.dimension == 5
 
 
@@ -355,7 +355,7 @@ EOF
         return path
 
     def test_explicit_lower_diag_row(self, explicit_lower_diag):
-        inst = parse_vrp_file(explicit_lower_diag)
+        inst = parse_tsplib_file(explicit_lower_diag)
         expected = np.array(
             [[0, 10, 20, 40], [10, 0, 30, 50], [20, 30, 0, 60], [40, 50, 60, 0]],
             dtype=float,
@@ -363,7 +363,7 @@ EOF
         np.testing.assert_array_equal(inst.cost_matrix, expected)
 
     def test_explicit_upper_row(self, explicit_upper_row):
-        inst = parse_vrp_file(explicit_upper_row)
+        inst = parse_tsplib_file(explicit_upper_row)
         expected = np.array(
             [[0, 10, 20, 40], [10, 0, 30, 50], [20, 30, 0, 60], [40, 50, 60, 0]],
             dtype=float,
@@ -371,7 +371,7 @@ EOF
         np.testing.assert_array_equal(inst.cost_matrix, expected)
 
     def test_explicit_lower_row(self, explicit_lower_row):
-        inst = parse_vrp_file(explicit_lower_row)
+        inst = parse_tsplib_file(explicit_lower_row)
         expected = np.array(
             [[0, 10, 20, 40], [10, 0, 30, 50], [20, 30, 0, 60], [40, 50, 60, 0]],
             dtype=float,
@@ -379,7 +379,7 @@ EOF
         np.testing.assert_array_equal(inst.cost_matrix, expected)
 
     def test_explicit_upper_diag_row(self, explicit_upper_diag_row):
-        inst = parse_vrp_file(explicit_upper_diag_row)
+        inst = parse_tsplib_file(explicit_upper_diag_row)
         expected = np.array(
             [[0, 10, 20, 40], [10, 0, 30, 50], [20, 30, 0, 60], [40, 50, 60, 0]],
             dtype=float,
@@ -387,7 +387,7 @@ EOF
         np.testing.assert_array_equal(inst.cost_matrix, expected)
 
     def test_explicit_full_matrix(self, explicit_full_matrix):
-        inst = parse_vrp_file(explicit_full_matrix)
+        inst = parse_tsplib_file(explicit_full_matrix)
         expected = np.array([[0, 7, 8], [7, 0, 9], [8, 9, 0]], dtype=float)
         np.testing.assert_array_equal(inst.cost_matrix, expected)
 
@@ -398,7 +398,7 @@ EOF
             "NODE_COORD_SECTION\n1 0 0\n2 1 0\n3 0 1\nEOF\n"
         )
         with pytest.raises(ValueError, match="Unsupported EDGE_WEIGHT_TYPE"):
-            parse_vrp_file(p)
+            parse_tsplib_file(p)
 
     def test_unsupported_ewf_raises(self, tmp_path):
         p = tmp_path / "bad.tsp"
@@ -407,10 +407,10 @@ EOF
             "EDGE_WEIGHT_FORMAT: WEIRD_FORMAT\nEDGE_WEIGHT_SECTION\n0 1 2 3 4 5\nEOF\n"
         )
         with pytest.raises(ValueError, match="EDGE_WEIGHT_FORMAT"):
-            parse_vrp_file(p)
+            parse_tsplib_file(p)
 
     def test_geo_real_instance(self, geo_burma14):
-        inst = parse_vrp_file(geo_burma14)
+        inst = parse_tsplib_file(geo_burma14)
         assert inst.dimension == 14
         c = inst.cost_matrix
         assert c.shape == (14, 14)
@@ -435,7 +435,7 @@ EOF
         p = tmp_path / "degenerate_geo.tsp"
         p.write_text(body)
         # Parsing must not raise from an acos domain error on coincident coords.
-        inst = parse_vrp_file(p)
+        inst = parse_tsplib_file(p)
         # TSPLIB's `int(R*acos(arg)+1.0)` for arg=1 yields exactly 1.
         assert inst.cost_matrix[0, 1] == 1.0
         assert inst.cost_matrix[0, 2] > 0
@@ -455,7 +455,7 @@ EOF
 """
         p = tmp_path / "half_int.tsp"
         p.write_text(body)
-        inst = parse_vrp_file(p)
+        inst = parse_tsplib_file(p)
         # sqrt(1.5² + 2.0²) = sqrt(6.25) = 2.5  →  nint(2.5) = 3
         assert inst.cost_matrix[0, 1] == 3.0
 
@@ -475,7 +475,7 @@ EOF
             f"NAME: x\nTYPE: TSP\nDIMENSION: 2\nCOMMENT: {comment}\n"
             "EDGE_WEIGHT_TYPE: EUC_2D\nNODE_COORD_SECTION\n1 0 0\n2 1 0\nEOF\n"
         )
-        assert parse_vrp_file(p).optimal_cost == expected
+        assert parse_tsplib_file(p).optimal_cost == expected
 
 
 class TestNint:
