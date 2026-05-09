@@ -17,13 +17,15 @@ from divi.hamiltonians import (
     IsingResult,
     NativeIsingConverter,
     QuadratizedIsingConverter,
-    _hamiltonian_term_count,
-    _is_sanitized,
-    _resolve_ising_converter,
-    convert_qubo_matrix_to_pennylane_ising,
     normalize_binary_polynomial_problem,
     qubo_to_ising,
 )
+from divi.hamiltonians._ising import (
+    _convert_qubo_matrix_to_ising_spo,
+    _is_sanitized,
+    _resolve_ising_converter,
+)
+from divi.hamiltonians._term_ops import _from_spo, _is_empty_hamiltonian, _to_spo
 
 
 @pytest.mark.parametrize(
@@ -43,96 +45,82 @@ def test_is_sanitized(matrix, expected):
 
 
 class TestQuboToIsingConversion:
-    """Tests for convert_qubo_matrix_to_pennylane_ising."""
+    """Tests for ``_convert_qubo_matrix_to_ising_spo``."""
 
     def test_symmetric_dense_qubo(self):
         """
-        Tests conversion with a simple symmetric dense QUBO matrix.
-
         Q = [[-1, 2], [2, -1]] → E(x) = -x₀ + 4x₀x₁ - x₁
         Hand-derived Ising: H = Z₀Z₁ - 0.5·Z₀ - 0.5·Z₁, offset = 0.
         """
         qubo_matrix = np.array([[-1.0, 2.0], [2.0, -1.0]])
-        hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
+        spo, constant = _convert_qubo_matrix_to_ising_spo(qubo_matrix)
 
-        expected_hamiltonian = 1.0 * (qp.Z(0) @ qp.Z(1)) - 0.5 * qp.Z(0) - 0.5 * qp.Z(1)
+        expected = _to_spo(1.0 * (qp.Z(0) @ qp.Z(1)) - 0.5 * qp.Z(0) - 0.5 * qp.Z(1))
 
         assert np.isclose(constant, 0.0)
-        assert qp.equal(hamiltonian.simplify(), expected_hamiltonian.simplify())
+        assert spo.simplify() == expected.simplify()
 
     def test_upper_triangular_dense_qubo(self):
-        """
-        Tests conversion with an upper triangular dense QUBO matrix.
-        The result should be the same as the symmetric equivalent.
-
-        Q = [[-1, 4], [0, -1]] → symmetrized [[-1, 2], [2, -1]] → same Ising.
-        """
+        """Upper-triangular Q = [[-1, 4], [0, -1]] symmetrises to the same Ising."""
         qubo_matrix = np.array([[-1.0, 4.0], [0.0, -1.0]])
-        hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
+        spo, constant = _convert_qubo_matrix_to_ising_spo(qubo_matrix)
 
-        expected_hamiltonian = 1.0 * (qp.Z(0) @ qp.Z(1)) - 0.5 * qp.Z(0) - 0.5 * qp.Z(1)
+        expected = _to_spo(1.0 * (qp.Z(0) @ qp.Z(1)) - 0.5 * qp.Z(0) - 0.5 * qp.Z(1))
 
         assert np.isclose(constant, 0.0)
-        assert qp.equal(hamiltonian.simplify(), expected_hamiltonian.simplify())
+        assert spo.simplify() == expected.simplify()
 
     def test_non_sanitized_qubo_raises_warning(self):
-        """
-        Tests that a non-sanitized QUBO matrix raises a warning and is correctly
-        symmetrized.
-        """
+        """A non-sanitised QUBO triggers the symmetrisation warning."""
         qubo_matrix = np.array([[-1.0, 3.0], [1.0, -1.0]])
 
         with pytest.warns(UserWarning, match="neither symmetric nor upper triangular"):
-            hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
+            spo, constant = _convert_qubo_matrix_to_ising_spo(qubo_matrix)
 
-        # Symmetrized version is [[-1, 2], [2, -1]] → same Ising as symmetric test.
-        expected_hamiltonian = 1.0 * (qp.Z(0) @ qp.Z(1)) - 0.5 * qp.Z(0) - 0.5 * qp.Z(1)
+        # Symmetrised version is [[-1, 2], [2, -1]] → same Ising as the symmetric test.
+        expected = _to_spo(1.0 * (qp.Z(0) @ qp.Z(1)) - 0.5 * qp.Z(0) - 0.5 * qp.Z(1))
 
         assert np.isclose(constant, 0.0)
-        assert qp.equal(hamiltonian.simplify(), expected_hamiltonian.simplify())
+        assert spo.simplify() == expected.simplify()
 
     def test_non_sanitized_sparse_qubo_raises_warning(self):
-        """Non-sanitized sparse QUBO raises warning and is symmetrized."""
+        """Non-sanitised sparse QUBO triggers the symmetrisation warning."""
         qubo_matrix = sps.csc_matrix([[-1.0, 3.0], [1.0, -1.0]])
 
         with pytest.warns(UserWarning, match="neither symmetric nor upper triangular"):
-            hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
+            spo, constant = _convert_qubo_matrix_to_ising_spo(qubo_matrix)
 
-        expected_hamiltonian = 1.0 * (qp.Z(0) @ qp.Z(1)) - 0.5 * qp.Z(0) - 0.5 * qp.Z(1)
+        expected = _to_spo(1.0 * (qp.Z(0) @ qp.Z(1)) - 0.5 * qp.Z(0) - 0.5 * qp.Z(1))
         assert np.isclose(constant, 0.0)
-        assert qp.equal(hamiltonian.simplify(), expected_hamiltonian.simplify())
+        assert spo.simplify() == expected.simplify()
 
     def test_diagonal_qubo(self):
-        """
-        Tests a purely diagonal QUBO matrix, which should result in only Z terms.
-        """
+        """Purely diagonal QUBO yields only single-Z terms."""
         qubo_matrix = np.array([[1.0, 0.0], [0.0, -2.0]])
-        hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
+        spo, constant = _convert_qubo_matrix_to_ising_spo(qubo_matrix)
 
-        expected_hamiltonian = -0.5 * qp.Z(0) + 1.0 * qp.Z(1)
-        expected_constant = -0.5
+        expected = _to_spo(-0.5 * qp.Z(0) + 1.0 * qp.Z(1))
 
-        assert np.isclose(constant, expected_constant)
-        assert qp.equal(hamiltonian, expected_hamiltonian)
+        assert np.isclose(constant, -0.5)
+        assert spo.simplify() == expected.simplify()
 
     def test_sparse_qubo(self):
-        """Tests conversion with a sparse QUBO matrix."""
+        """Sparse-matrix input yields the same Ising as its dense equivalent."""
         qubo_matrix = sps.csr_matrix([[-1.0, 2.0], [2.0, -1.0]])
-        hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
+        spo, constant = _convert_qubo_matrix_to_ising_spo(qubo_matrix)
 
-        expected_hamiltonian = 1.0 * (qp.Z(0) @ qp.Z(1)) - 0.5 * qp.Z(0) - 0.5 * qp.Z(1)
+        expected = _to_spo(1.0 * (qp.Z(0) @ qp.Z(1)) - 0.5 * qp.Z(0) - 0.5 * qp.Z(1))
 
         assert np.isclose(constant, 0.0)
-        assert qp.equal(hamiltonian.simplify(), expected_hamiltonian.simplify())
+        assert spo.simplify() == expected.simplify()
 
     def test_3x3_qubo(self):
-        """Tests a larger 3x3 QUBO matrix to ensure correct term summation."""
+        """Larger 3x3 QUBO exercises pair-term summation."""
         qubo_matrix = np.array([[1, 2, 3], [2, 4, 5], [3, 5, 6]], dtype=float)
 
-        hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
+        spo, constant = _convert_qubo_matrix_to_ising_spo(qubo_matrix)
 
-        expected_constant = 10.5
-        expected_hamiltonian = (
+        expected = _to_spo(
             1.0 * (qp.Z(0) @ qp.Z(1))
             + 1.5 * (qp.Z(0) @ qp.Z(2))
             + 2.5 * (qp.Z(1) @ qp.Z(2))
@@ -141,21 +129,8 @@ class TestQuboToIsingConversion:
             - 7.0 * qp.Z(2)
         )
 
-        assert np.isclose(constant, expected_constant)
-
-        hamiltonian = hamiltonian.simplify()
-        expected_hamiltonian = expected_hamiltonian.simplify()
-
-        h_coeffs, h_ops = hamiltonian.terms()
-        e_coeffs, e_ops = expected_hamiltonian.terms()
-
-        # Create dictionaries for easy lookup and comparison for robust comparison
-        h_map = {op.hash: coeff for coeff, op in zip(h_coeffs, h_ops)}
-        e_map = {op.hash: coeff for coeff, op in zip(e_coeffs, e_ops)}
-
-        assert h_map.keys() == e_map.keys()
-        for key in h_map:
-            assert np.isclose(h_map[key], e_map[key])
+        assert np.isclose(constant, 10.5)
+        assert spo.simplify() == expected.simplify()
 
     @pytest.mark.parametrize(
         "qubo_matrix, expect_warning",
@@ -226,12 +201,11 @@ class TestQuboToIsingConversion:
             with pytest.warns(
                 UserWarning, match="neither symmetric nor upper triangular"
             ):
-                hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(
-                    qubo_matrix
-                )
+                spo, constant = _convert_qubo_matrix_to_ising_spo(qubo_matrix)
         else:
-            hamiltonian, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
+            spo, constant = _convert_qubo_matrix_to_ising_spo(qubo_matrix)
 
+        hamiltonian = _from_spo(spo, range(n))
         h_matrix = np.real(np.diag(qp.matrix(hamiltonian, wire_order=range(n))))
 
         for bits in iterproduct((0, 1), repeat=n):
@@ -264,7 +238,7 @@ class TestBinaryToIsingConverters:
 
     @staticmethod
     def _eval_ising_energy(operator, constant, assignment, variable_to_idx):
-        if _hamiltonian_term_count(operator) == 0:
+        if _is_empty_hamiltonian(operator):
             return float(constant)
 
         coeffs, ops = operator.terms()
@@ -327,7 +301,7 @@ class TestBinaryToIsingConverters:
         decoded = result.decode_fn(bitstring)
         assert len(decoded) == problem.n_vars
 
-        if _hamiltonian_term_count(result.operator) > 0:
+        if not _is_empty_hamiltonian(result.operator):
             _, ops = result.operator.terms()
             for op in ops:
                 locality = len(op.wires)

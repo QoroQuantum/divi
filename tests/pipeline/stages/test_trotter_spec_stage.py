@@ -7,7 +7,7 @@
 import pennylane as qp
 import pytest
 
-from divi.circuits import MetaCircuit, qscript_to_meta
+from divi.circuits import MetaCircuit, qscript_to_meta, sparse_pauli_op_to_pl_observable
 from divi.hamiltonians import ExactTrotterization
 from divi.pipeline import CircuitPipeline, PipelineEnv, PipelineTrace
 from divi.pipeline._compilation import _compile_batch
@@ -20,7 +20,7 @@ from divi.pipeline.stages import MeasurementStage, TrotterSpecStage
 
 
 class _DummyStrategy:
-    """Trotterization strategy that returns the Hamiltonian unchanged N times."""
+    """Trotterization strategy that returns the SPO unchanged N times."""
 
     def __init__(self, n: int = 3, stateful: bool = False):
         self.n_hamiltonians_per_iteration = n
@@ -30,10 +30,12 @@ class _DummyStrategy:
         return hamiltonian
 
 
-def _meta_factory(hamiltonian, ham_id):
-    qscript = qp.tape.QuantumScript(
-        ops=[qp.Hadamard(0)], measurements=[qp.expval(hamiltonian)]
+def _meta_factory(processed_spo, ham_id):
+    """Test factory: SPO → PL observable for ``qp.expval`` at the boundary."""
+    obs = sparse_pauli_op_to_pl_observable(
+        processed_spo, range(processed_spo.num_qubits)
     )
+    qscript = qp.tape.QuantumScript(ops=[qp.Hadamard(0)], measurements=[qp.expval(obs)])
     return qscript_to_meta(qscript)
 
 

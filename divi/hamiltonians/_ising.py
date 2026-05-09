@@ -6,8 +6,9 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import cached_property
 from itertools import combinations
-from typing import Any, Literal, NamedTuple, Protocol
+from typing import Any, Literal, Protocol
 from warnings import warn
 
 import dimod
@@ -15,23 +16,46 @@ import numpy as np
 import numpy.typing as npt
 import pennylane as qp
 import scipy.sparse as sps
+from qiskit.quantum_info import SparsePauliOp
 
-from divi.hamiltonians._polynomial import normalize_binary_polynomial_problem
-from divi.hamiltonians._term_ops import (
-    _clean_hamiltonian,
-    _is_empty_hamiltonian,
-    _z_product,
+from ._polynomial import normalize_binary_polynomial_problem
+from ._term_ops import (
+    _clean_hamiltonian_spo,
+    _empty_spo,
+    _from_spo,
+    _num_qubits,
 )
-from divi.hamiltonians._types import BinaryPolynomialProblem
+from ._types import BinaryPolynomialProblem
 
 
-class IsingEncoding(NamedTuple):
-    """Result of converting a binary polynomial problem to an Ising Hamiltonian."""
+def _empty_decode(bitstring: str) -> np.ndarray:
+    """Decode function for the n_vars == 0 / empty-problem case."""
+    return np.array([], dtype=np.int32)
 
-    operator: qp.operation.Operator
+
+@dataclass(eq=False)
+class IsingEncoding:
+    """Result of converting a binary polynomial problem to an Ising Hamiltonian.
+
+    The cost operator is held as a ``SparsePauliOp`` and materialised to a
+    PennyLane :class:`~pennylane.operation.Operator` on first access via
+    the :attr:`operator` property.
+    """
+
+    _operator_spo: SparsePauliOp
     constant: float
     decode_fn: Callable[[str], Any]
     metadata: dict[str, object] | None = None
+
+    @property
+    def wires(self) -> tuple:
+        """Canonical wire mapping aligned with the SPO (always ``range(num_qubits)``)."""
+        return tuple(range(_num_qubits(self._operator_spo)))
+
+    @cached_property
+    def operator(self) -> qp.operation.Operator:
+        """Cost Hamiltonian as a PennyLane operator (built lazily on first access)."""
+        return _from_spo(self._operator_spo, self.wires)
 
 
 class BinaryToIsingConverter(Protocol):
@@ -52,9 +76,9 @@ class NativeIsingConverter(BinaryToIsingConverter):
         n_qubits = problem.n_vars
         if n_qubits == 0:
             return IsingEncoding(
-                operator=qp.Hamiltonian([], []),
+                _operator_spo=_empty_spo(0),
                 constant=problem.constant,
-                decode_fn=lambda bitstring: np.array([], dtype=np.int32),
+                decode_fn=_empty_decode,
                 metadata={"strategy": "native", "term_count": 0},
             )
 
@@ -82,16 +106,17 @@ class NativeIsingConverter(BinaryToIsingConverter):
                         z_term_weights.get(subset, 0.0) + contribution
                     )
 
-        weighted_terms = [
-            weight * _z_product(indices)
+        sparse_terms = [
+            ("Z" * len(indices), list(indices), float(weight))
             for indices, weight in z_term_weights.items()
             if abs(weight) > self.zero_tol
         ]
-        operator = (
-            qp.sum(*weighted_terms).simplify()
-            if weighted_terms
-            else qp.Hamiltonian([], [])
-        )
+        if sparse_terms:
+            spo = SparsePauliOp.from_sparse_list(
+                sparse_terms, num_qubits=n_qubits
+            ).simplify()
+        else:
+            spo = _empty_spo(n_qubits)
 
         variable_to_idx = problem.variable_to_idx
         variable_order = problem.variable_order
@@ -103,10 +128,10 @@ class NativeIsingConverter(BinaryToIsingConverter):
             )
 
         return IsingEncoding(
-            operator=operator,
+            _operator_spo=spo,
             constant=float(constant),
             decode_fn=_decode,
-            metadata={"strategy": "native", "term_count": len(weighted_terms)},
+            metadata={"strategy": "native", "term_count": len(sparse_terms)},
         )
 
 
@@ -119,9 +144,9 @@ class QuadratizedIsingConverter(BinaryToIsingConverter):
     def convert(self, problem: BinaryPolynomialProblem) -> IsingEncoding:
         if problem.n_vars == 0:
             return IsingEncoding(
-                operator=qp.Hamiltonian([], []),
+                _operator_spo=_empty_spo(0),
                 constant=problem.constant,
-                decode_fn=lambda bitstring: np.array([], dtype=np.int32),
+                decode_fn=_empty_decode,
                 metadata={"strategy": "quadratized", "ancilla_count": 0},
             )
 
@@ -136,19 +161,16 @@ class QuadratizedIsingConverter(BinaryToIsingConverter):
             i, j = var_to_idx[u], var_to_idx[v]
             qubo_matrix[i, j] += float(coeff)
 
-        # Quadratization output can be asymmetric depending on term ordering.
-        # Normalize once here so converter-level warning semantics stay reserved
-        # for direct external unsanitized inputs.
+        # Quadratization output can be asymmetric; symmetrise silently here
+        # so the user-facing warning stays reserved for direct unsanitised inputs.
         if not _is_sanitized(qubo_matrix):
             qubo_matrix = (qubo_matrix + qubo_matrix.T) / 2
 
-        operator, constant = convert_qubo_matrix_to_pennylane_ising(qubo_matrix)
+        spo, constant = _convert_qubo_matrix_to_ising_spo(qubo_matrix)
         original_vars = set(problem.variable_order)
         original_variable_order = problem.variable_order
         ancilla_variables = [var for var in variable_order if var not in original_vars]
 
-        # Build decode function that maps measured bitstring (over all variables
-        # including ancillas) back to the original variable assignments only.
         measure_variable_to_idx = var_to_idx
 
         def _decode(bitstring: str) -> np.ndarray:
@@ -161,7 +183,7 @@ class QuadratizedIsingConverter(BinaryToIsingConverter):
             )
 
         return IsingEncoding(
-            operator=operator,
+            _operator_spo=spo,
             constant=float(constant + offset),
             decode_fn=_decode,
             metadata={
@@ -186,13 +208,28 @@ def _resolve_ising_converter(
     raise ValueError("hamiltonian_builder must be either 'native' or 'quadratized'.")
 
 
-class IsingResult(NamedTuple):
-    """Result of converting a QUBO/HUBO to a cleaned Ising Hamiltonian."""
+@dataclass(eq=False)
+class IsingResult:
+    """Result of converting a QUBO/HUBO to a cleaned Ising Hamiltonian.
 
-    cost_hamiltonian: qp.operation.Operator
+    Mirrors :class:`IsingEncoding` in that ``cost_hamiltonian`` is built
+    lazily on first access from an internal ``SparsePauliOp``.
+    """
+
+    _cost_hamiltonian_spo: SparsePauliOp
     loss_constant: float
     n_qubits: int
     encoding: IsingEncoding
+
+    @property
+    def wires(self) -> tuple:
+        """Canonical wire mapping aligned with the SPO."""
+        return tuple(range(_num_qubits(self._cost_hamiltonian_spo)))
+
+    @cached_property
+    def cost_hamiltonian(self) -> qp.operation.Operator:
+        """Cleaned cost Hamiltonian as a PennyLane operator (lazy on first access)."""
+        return _from_spo(self._cost_hamiltonian_spo, self.wires)
 
 
 def qubo_to_ising(
@@ -224,15 +261,14 @@ def qubo_to_ising(
     )
     encoding = converter.convert(canonical)
 
-    raw_ham = encoding.operator
-    cleaned, ham_constant = _clean_hamiltonian(raw_ham)
-    if _is_empty_hamiltonian(cleaned):
+    cleaned_spo, ham_constant = _clean_hamiltonian_spo(encoding._operator_spo)
+    if cleaned_spo.size == 0:
         raise ValueError("Hamiltonian contains only constant terms.")
 
     return IsingResult(
-        cost_hamiltonian=cleaned,
+        _cost_hamiltonian_spo=cleaned_spo,
         loss_constant=encoding.constant + ham_constant,
-        n_qubits=len(raw_ham.wires),
+        n_qubits=_num_qubits(encoding._operator_spo),
         encoding=encoding,
     )
 
@@ -266,49 +302,28 @@ def _is_sanitized(
     )
 
 
-def convert_qubo_matrix_to_pennylane_ising(
+def _convert_qubo_matrix_to_ising_spo(
     qubo_matrix: npt.NDArray[np.float64] | sps.spmatrix,
-) -> tuple[qp.operation.Operator, float]:
-    """
-    Convert a QUBO matrix to an Ising Hamiltonian in PennyLane format.
+) -> tuple[SparsePauliOp, float]:
+    """Convert a QUBO matrix to an Ising Hamiltonian as a ``SparsePauliOp``.
 
-    The conversion follows the mapping from QUBO variables x_i ∈ {0,1} to
-    Ising variables σ_i ∈ {-1,1} via the transformation x_i = (1 - σ_i)/2. This
-    transforms a QUBO minimization problem into an equivalent Ising minimization
-    problem.
-
-    The function handles both dense NumPy arrays and sparse SciPy matrices efficiently.
-    If the input matrix is neither symmetric nor upper triangular, it will be
-    symmetrized automatically with a warning.
+    The mapping ``x_i = (1 - σ_i)/2`` rewrites ``min x^T Q x`` as a
+    Pauli-Z Ising minimisation.
 
     Args:
-        qubo_matrix (npt.NDArray[np.float64] | sps.spmatrix): The QUBO matrix Q where the
-            objective is to minimize x^T Q x. Can be a dense NumPy array or a
-            sparse SciPy matrix (any format). Should be square and either
-            symmetric or upper triangular.
+        qubo_matrix: Square QUBO matrix Q (dense or scipy.sparse). Symmetrised
+            with a warning if neither symmetric nor upper-triangular.
 
     Returns:
-        tuple[qp.operation.Operator, float]: A tuple containing:
-            - Ising Hamiltonian as a PennyLane operator (sum of Pauli Z terms)
-            - Constant offset term to be added to energy calculations
-
-    Raises:
-        UserWarning: If the QUBO matrix is neither symmetric nor upper triangular.
-
-    Example:
-        >>> import numpy as np
-        >>> qubo = np.array([[1, 2], [0, 3]])
-        >>> hamiltonian, offset = convert_qubo_matrix_to_pennylane_ising(qubo)
-        >>> print(f"Offset: {offset}")
+        ``(spo, constant_offset)`` — Pauli-Z-only Ising Hamiltonian and the
+        energy offset to add back when scoring.
     """
-
     if not _is_sanitized(qubo_matrix):
         warn(
             "The QUBO matrix is neither symmetric nor upper triangular."
             " Symmetrizing it for the Ising Hamiltonian creation."
         )
 
-    # Gather non-zero indices in the upper triangle of the matrix
     if sps.issparse(qubo_matrix):
         sparse_m = sps.csr_matrix(qubo_matrix)
         symmetrized_qubo = (sparse_m + sparse_m.T) / 2
@@ -332,36 +347,27 @@ def convert_qubo_matrix_to_pennylane_ising(
         i, j = int(i), int(j)
 
         if i == j:
-            # Diagonal elements
             linear_terms[i] -= weight / 2
             constant_term += weight / 2
         else:
-            # Off-diagonal elements (i < j since we're using triu)
-            # Factor of weight/2 because x^T Q x for symmetric Q counts both
-            # (i,j) and (j,i), so triu entry is half the total interaction.
+            # x^T Q x for symmetric Q counts both (i,j) and (j,i), so the
+            # triu entry contributes half the total interaction.
             ising_terms.append([i, j])
             ising_weights.append(weight / 2)
-
-            # Update linear terms
             linear_terms[i] -= weight / 2
             linear_terms[j] -= weight / 2
-
-            # Update constant term
             constant_term += weight / 2
 
-    # Add the linear terms (Z operators)
-    for i, curr_lin_term in filter(lambda x: x[1] != 0, enumerate(linear_terms)):
+    for i, curr_lin_term in ((i, v) for i, v in enumerate(linear_terms) if v != 0):
         ising_terms.append([i])
         ising_weights.append(float(curr_lin_term))
 
     if not ising_terms:
-        return qp.Identity(0) * 0, constant_term
-    weighted_terms = [
-        _z_product(tuple(term)) * weight
+        return _empty_spo(n), constant_term
+
+    sparse_terms = [
+        ("Z" * len(term), [int(i) for i in term], float(weight))
         for term, weight in zip(ising_terms, ising_weights)
     ]
-    if len(weighted_terms) == 1:
-        pauli_string = weighted_terms[0]
-    else:
-        pauli_string = qp.sum(*weighted_terms)
-    return pauli_string.simplify(), constant_term
+    spo = SparsePauliOp.from_sparse_list(sparse_terms, num_qubits=n).simplify()
+    return spo, constant_term

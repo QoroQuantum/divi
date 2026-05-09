@@ -14,23 +14,21 @@ import numpy as np
 import pennylane as qp
 import pennylane.qaoa as pqaoa
 
-from divi.hamiltonians import (
-    _clean_hamiltonian,
+from divi.hamiltonians._term_ops import (
+    _clean_hamiltonian_via_spo,
     _get_terms_iterable,
     _is_empty_hamiltonian,
+    _spo_wires,
 )
-from divi.qprog._types import GraphProblemTypes
-from divi.qprog.algorithms._initial_state import (
+from divi.qprog import GraphProblemTypes
+from divi.qprog.algorithms import (
     InitialState,
     OnesState,
     SuperpositionState,
     ZerosState,
 )
-from divi.qprog.problems._base import QAOAProblem
-from divi.qprog.problems._graph_partitioning_utils import (
-    GraphPartitioningConfig,
-    _node_partition_graph,
-)
+from divi.qprog.problems import GraphPartitioningConfig, QAOAProblem
+from divi.qprog.problems._graph_partitioning_utils import _node_partition_graph
 
 
 class _GraphProblemBase(QAOAProblem):
@@ -58,13 +56,13 @@ class _GraphProblemBase(QAOAProblem):
             graph, is_constrained
         )
 
-        cleaned, ham_constant = _clean_hamiltonian(cost_ham)
+        cleaned, ham_constant = _clean_hamiltonian_via_spo(cost_ham)
         if _is_empty_hamiltonian(cleaned):
             raise ValueError("Hamiltonian contains only constant terms.")
 
         self._cost_hamiltonian = cleaned
         self._loss_constant = ham_constant
-        self._wire_labels = tuple(cleaned.wires)
+        self._wire_labels = _spo_wires(cleaned)
         self._initial_state = (
             self._constrained_state_cls
             if is_constrained

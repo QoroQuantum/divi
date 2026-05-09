@@ -851,7 +851,8 @@ class TestQUBOInput:
 
         qaoa_problem.run()
 
-        expected_solution = {"w": 0, "x": 1, "y": 0, "z": 1}
+        # bqm_minimize linear = {x:1, y:-2, z:3, w:-1}; argmin = {w:1, x:0, y:1, z:0}, energy=-3.
+        expected_solution = {"w": 1, "x": 0, "y": 1, "z": 0}
         assert qaoa_problem.solution == expected_solution
 
     @pytest.mark.e2e
@@ -871,7 +872,8 @@ class TestQUBOInput:
 
         qaoa_problem.run()
 
-        expected_solution = {"w": 1, "x": 0, "y": 1, "z": 0}
+        # bqm_maximize linear = {x:-1, y:2, z:-3, w:1}; argmin = {w:0, x:1, y:0, z:1}, energy=-4.
+        expected_solution = {"w": 0, "x": 1, "y": 0, "z": 1}
         assert qaoa_problem.solution == expected_solution
 
     @pytest.mark.e2e
@@ -920,9 +922,44 @@ class TestQUBOInput:
         qaoa_problem2.max_iterations = 15
         qaoa_problem2.run()
 
-        expected_solution = {"w": 0, "x": 1, "y": 0, "z": 1}
+        expected_solution = {"w": 1, "x": 0, "y": 1, "z": 0}
         assert qaoa_problem2.solution == expected_solution
         assert qaoa_problem2.current_iteration == 15
+
+
+class TestBinaryDecodeMapping:
+    """Pin the qubit ↔ variable mapping contract independently of QAOA convergence.
+
+    Variable normalisation sorts alphabetically: ``variable_order = (w, x, y, z)``
+    and ``variable_to_idx = {w:0, x:1, y:2, z:3}``. ``decode_fn(bitstring)`` reads
+    qubit ``i`` for the variable at ``variable_order[i]``.
+    """
+
+    def test_decode_fn_maps_alphabetical_qubits_to_alphabetical_values(self):
+        problem = BinaryOptimizationProblem(make_bqm_minimize())
+        decode_fn = problem._ising.encoding.decode_fn
+        # Bitstring index i ↔ variable_order[i] = (w, x, y, z)[i].
+        assert list(decode_fn("1010")) == [1, 0, 1, 0]  # w=1, x=0, y=1, z=0
+        assert list(decode_fn("0101")) == [0, 1, 0, 1]
+        assert list(decode_fn("1100")) == [1, 1, 0, 0]
+        assert list(decode_fn("0000")) == [0, 0, 0, 0]
+        assert list(decode_fn("1111")) == [1, 1, 1, 1]
+
+    def test_decode_fn_pins_alphabetical_order_against_adversarial_naming(self):
+        """Insertion order ``(zebra, alpha, mango)`` ≠ alphabetical
+        ``(alpha, mango, zebra)``. The decode contract must read qubits in
+        alphabetical order regardless of how the BQM was constructed.
+        """
+        bqm = dimod.BinaryQuadraticModel(
+            {"zebra": 1.0, "alpha": 2.0, "mango": -3.0}, {}, 0.0, dimod.Vartype.BINARY
+        )
+        problem = BinaryOptimizationProblem(bqm)
+        decode_fn = problem._ising.encoding.decode_fn
+        # Bitstring "100" → qubit 0 (alpha) = 1, qubit 1 (mango) = 0, qubit 2 (zebra) = 0.
+        assert list(decode_fn("100")) == [1, 0, 0]
+        assert list(decode_fn("010")) == [0, 1, 0]
+        assert list(decode_fn("001")) == [0, 0, 1]
+        assert list(decode_fn("111")) == [1, 1, 1]
 
 
 # ---------------------------------------------------------------------------

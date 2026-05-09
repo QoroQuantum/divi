@@ -15,6 +15,7 @@ from qiskit.circuit import Parameter
 from divi.backends import CircuitRunner
 from divi.circuits import MetaCircuit
 from divi.hamiltonians import ExactTrotterization, TrotterizationStrategy
+from divi.hamiltonians._term_ops import _to_spo
 from divi.qprog.algorithms import InitialState, TimeEvolution
 from divi.qprog.ensemble import ProgramEnsemble
 
@@ -165,7 +166,7 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
                 backend=self.backend,
                 seed=self._seed,
             )
-            template = probe._meta_circuit_factory(self._hamiltonian, ham_id=0)
+            template = probe._meta_circuit_factory(_to_spo(self._hamiltonian), ham_id=0)
         except Exception:
             logger.warning(
                 "TimeEvolutionTrajectory: parametric template build failed; "

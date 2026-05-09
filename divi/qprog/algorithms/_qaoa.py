@@ -8,16 +8,22 @@ from typing import Any, Literal
 
 import numpy as np
 import pennylane as qp
-import pennylane.qaoa as pqaoa
 from qiskit.circuit import ParameterVector
+from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit, qscript_to_meta
 from divi.hamiltonians import (
     ExactTrotterization,
     TrotterizationStrategy,
 )
+from divi.hamiltonians._term_ops import (
+    _from_spo,
+    _spo_to_basis_gate_ops,
+    _spo_wires,
+    _to_spo,
+)
 from divi.pipeline.stages import TrotterSpecStage
-from divi.qprog.algorithms._initial_state import InitialState
+from divi.qprog.algorithms import InitialState
 from divi.qprog.problems import QAOAProblem
 from divi.qprog.variational_quantum_algorithm import (
     SolutionEntry,
@@ -94,9 +100,10 @@ class QAOA(VariationalQuantumAlgorithm):
         self.initial_state = initial_state or problem.recommended_initial_state
         self.problem_metadata = getattr(problem, "metadata", {})
 
-        # Derived from cost Hamiltonian
-        self.n_qubits = len(self.cost_hamiltonian.wires)
-        self._circuit_wires = tuple(self.cost_hamiltonian.wires)
+        # Canonical wire mapping aligned with the cost SPO; ``op.wires``
+        # would be unreliable after ``simplify()``.
+        self._circuit_wires = _spo_wires(self.cost_hamiltonian)
+        self.n_qubits = len(self._circuit_wires)
 
         # Algorithm parameters
         self.n_layers = n_layers
@@ -106,6 +113,9 @@ class QAOA(VariationalQuantumAlgorithm):
         self._decoded_solution: Any = _UNSET
         self._solution_bitstring: Any = _UNSET
         self._cost_meta_cache: dict[tuple[int, int], MetaCircuit] = {}
+        self._mixer_spo: SparsePauliOp = _to_spo(problem.mixer_hamiltonian)
+        self._mixer_wires = _spo_wires(problem.mixer_hamiltonian)
+        self._cost_spo: SparsePauliOp = _to_spo(self.cost_hamiltonian)
 
         # Circuit parameters — Qiskit ParameterVector, no sympy.
         betas = ParameterVector("β", self.n_layers)
@@ -211,21 +221,21 @@ class QAOA(VariationalQuantumAlgorithm):
             )
         return self._solution_bitstring
 
-    def _build_qaoa_ops(self, cost_hamiltonian: qp.operation.Operator) -> list:
-        """Build QAOA layer ops for a given cost Hamiltonian."""
+    def _build_qaoa_ops(self, cost_spo: SparsePauliOp) -> list:
+        """Build QAOA layer ops for a given cost Hamiltonian (as SPO)."""
         ops = self.initial_state.build(self._circuit_wires)
 
         for layer_params in self._params:
             gamma, beta = layer_params
-            ops.append(pqaoa.cost_layer(gamma, cost_hamiltonian))
-            ops.append(pqaoa.mixer_layer(beta, self.problem.mixer_hamiltonian))
+            ops.extend(_spo_to_basis_gate_ops(cost_spo, gamma, self._circuit_wires))
+            ops.extend(_spo_to_basis_gate_ops(self._mixer_spo, beta, self._mixer_wires))
 
         return ops
 
     def _cost_meta_circuit_factory(
-        self, processed_ham: qp.operation.Operator, ham_id: int
+        self, processed_spo: SparsePauliOp, ham_id: int
     ) -> MetaCircuit:
-        """Build a cost MetaCircuit for a given (possibly QDrift-sampled) Hamiltonian."""
+        """Build a cost MetaCircuit for a given (possibly QDrift-sampled) SPO."""
         stateless = not self.trotterization_strategy.stateful
         # Cache key includes the parameter count so a depth change
         # (IterativeQAOA) self-invalidates without external bookkeeping.
@@ -233,9 +243,11 @@ class QAOA(VariationalQuantumAlgorithm):
         if stateless and cache_key in self._cost_meta_cache:
             return self._cost_meta_cache[cache_key]
 
+        # ``qp.expval`` requires a PennyLane observable.
+        processed_pl = _from_spo(processed_spo, self._circuit_wires, simplify=False)
         tape = qp.tape.QuantumScript(
-            ops=self._build_qaoa_ops(processed_ham),
-            measurements=[qp.expval(processed_ham)],
+            ops=self._build_qaoa_ops(processed_spo),
+            measurements=[qp.expval(processed_pl)],
         )
         meta = qscript_to_meta(
             tape,
@@ -248,7 +260,7 @@ class QAOA(VariationalQuantumAlgorithm):
 
     def _create_meta_circuit_factories(self) -> dict[str, MetaCircuit]:
         """Generate meta-circuit factories for the QAOA problem."""
-        ops = self._build_qaoa_ops(self.cost_hamiltonian)
+        ops = self._build_qaoa_ops(self._cost_spo)
         flat_params = tuple(self._params.flatten())
 
         return {

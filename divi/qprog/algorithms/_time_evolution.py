@@ -7,16 +7,20 @@ from typing import Any
 import numpy as np
 import pennylane as qp
 from qiskit.circuit import Parameter
+from qiskit.quantum_info import SparsePauliOp
 
-from divi.circuits import MetaCircuit, qscript_to_meta
+from divi.circuits import MetaCircuit, qscript_to_meta, sparse_pauli_op_to_pl_observable
 from divi.circuits.qem import _NoMitigation
 from divi.hamiltonians import (
     ExactTrotterization,
     TrotterizationStrategy,
-    _clean_hamiltonian,
+)
+from divi.hamiltonians._term_ops import (
+    _clean_hamiltonian_via_spo,
     _get_terms_iterable,
     _is_empty_hamiltonian,
     _is_multi_term_sum,
+    _spo_wires,
 )
 from divi.pipeline import CircuitPipeline
 from divi.pipeline.stages import (
@@ -92,7 +96,7 @@ class TimeEvolution(QuantumProgram):
         if trotterization_strategy is None:
             trotterization_strategy = ExactTrotterization()
 
-        hamiltonian_clean, _ = _clean_hamiltonian(hamiltonian)
+        hamiltonian_clean, _ = _clean_hamiltonian_via_spo(hamiltonian)
         if _is_empty_hamiltonian(hamiltonian_clean):
             raise ValueError("Hamiltonian contains only constant terms.")
 
@@ -104,7 +108,7 @@ class TimeEvolution(QuantumProgram):
         if isinstance(observable, list):
             observable = tuple(observable)
         self.observable = observable
-        self._circuit_wires = tuple(hamiltonian_clean.wires)
+        self._circuit_wires = _spo_wires(hamiltonian_clean)
         self.n_qubits = len(self._circuit_wires)
 
         if initial_state is None:
@@ -222,11 +226,15 @@ class TimeEvolution(QuantumProgram):
         raise KeyError(f"No initial spec registered for pipeline {name!r}.")
 
     def _meta_circuit_factory(
-        self, hamiltonian: qp.operation.Operator, ham_id: int
+        self, processed_spo: SparsePauliOp, ham_id: int
     ) -> MetaCircuit:
-        """Factory for TrotterSpecStage: build a MetaCircuit for one Hamiltonian sample."""
+        """Factory for TrotterSpecStage: build a MetaCircuit for one Hamiltonian sample (SPO)."""
         if self._template_meta is not None:
             return self._template_meta
+        # ``qp.TrotterProduct`` / ``qp.evolve`` need a PennyLane operator.
+        hamiltonian = sparse_pauli_op_to_pl_observable(
+            processed_spo, self._circuit_wires
+        )
         ops = self._build_ops(hamiltonian)
         # Ensure canonical wire ordering matches the Hamiltonian,
         # regardless of which subset of terms QDrift sampled.
@@ -279,15 +287,15 @@ class TimeEvolution(QuantumProgram):
         """Build circuit ops: initial state, evolution, measurement."""
         ops = self.initial_state.build(self._circuit_wires)
 
-        # Campbell's faithful QDrift: individual evolution gates per sampled term.
-        # This avoids Trotter error from feeding a resampled Hamiltonian to
-        # TrotterProduct, which is incorrect for non-commuting Hamiltonians.
-        # Each Trotter step repeats the sampled terms with time/n_steps, giving
-        # sampling_budget * n_steps total gates (matching old circuit depth).
-        sampled_terms = getattr(
-            self.trotterization_strategy, "_last_sampled_terms", None
-        )
-        if sampled_terms is not None:
+        # Campbell's faithful QDrift: one evolution gate per sampled term,
+        # repeated ``n_steps`` times with ``time/n_steps`` per step.
+        sampled_spo = getattr(self.trotterization_strategy, "_last_sampled_spo", None)
+        if sampled_spo is not None:
+            # Skip simplify so sampling-with-replacement duplicates stay split.
+            sampled_pl_unsimplified = sparse_pauli_op_to_pl_observable(
+                sampled_spo, self._circuit_wires
+            )
+            sampled_terms = list(_get_terms_iterable(sampled_pl_unsimplified))
             step_time = self.time / self.n_steps
             for _ in range(self.n_steps):
                 ops.extend(

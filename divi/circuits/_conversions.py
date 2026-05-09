@@ -11,14 +11,19 @@ import numpy as np
 import pennylane as qp
 import sympy as sp
 from pennylane.tape import QuantumScript
-from pennylane_qiskit.converter import QISKIT_OPERATION_MAP, circuit_to_qiskit
+from pennylane_qiskit.converter import QISKIT_OPERATION_MAP
 from qiskit import transpile
-from qiskit.circuit import Parameter, ParameterExpression
+from qiskit.circuit import (
+    Parameter,
+    ParameterExpression,
+    QuantumCircuit,
+    QuantumRegister,
+)
 from qiskit.converters import circuit_to_dag
 from qiskit.dagcircuit import DAGCircuit
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.circuits._core import MetaCircuit
+from divi.circuits import MetaCircuit
 
 # Supported PennyLane op.name set, taken from ``pennylane-qiskit``'s gate
 # table.  Using this directly (instead of maintaining our own mirror) means
@@ -26,6 +31,34 @@ from divi.circuits._core import MetaCircuit
 # stays symmetric with ``_qiskit_spec_stage.py`` which uses the inverse
 # direction via ``qp.from_qiskit``.
 _PL_TO_QISKIT_GATE = QISKIT_OPERATION_MAP
+
+# Wire-reversal applies to ops that take a (state)vector indexed by qubit
+# ordering — Qiskit and PennyLane disagree on endianness for these.
+_REVERSE_WIRES = {"QubitUnitary", "StatePrep"}
+
+
+def _qscript_to_qiskit_circuit(
+    qscript: QuantumScript, register_size: int
+) -> QuantumCircuit:
+    """Build a Qiskit ``QuantumCircuit`` from a fully-decomposed ``QuantumScript``.
+
+    Every op in ``qscript.operations`` must be in :data:`_PL_TO_QISKIT_GATE`.
+    """
+    reg = QuantumRegister(register_size)
+    qc = QuantumCircuit(reg)
+    for op in qscript.operations:
+        params = op.parameters
+        for idx, p in enumerate(params):
+            if isinstance(p, np.ndarray):
+                params[idx] = p.tolist()
+        qubits = [reg[w] for w in op.wires.labels]
+        if op.name in _REVERSE_WIRES:
+            qubits.reverse()
+        # pyrefly: ignore[bad-argument-type]
+        gate = _PL_TO_QISKIT_GATE[op.name](*params)
+        qc.append(gate, qubits)
+    return qc
+
 
 # QASM2 gate name per Qiskit instruction name, for the body emitter.  Matches
 # the old OPENQASM_GATES values.  Any instruction outside this map is an
@@ -114,21 +147,24 @@ def _qscript_to_dag(
     #  - Qiskit Parameter/ParameterExpression (from factories that create
     #    Parameters directly — no sympy, no param_map needed)
     #  - sympy symbols (from PennyLaneSpecStage / QNode probing)
+    # Only operation data is walked; measurement observables in divi's
+    # pipeline carry float coefficients and contribute no parameters.
     ordered_qiskit_params: list[Parameter] = []
     ordered_sympy_symbols: list[sp.Symbol] = []
     seen_qk: set[Parameter] = set()
     seen_sp: set[sp.Symbol] = set()
-    for p in qscript.get_parameters():
-        if isinstance(p, ParameterExpression):
-            for qk_param in p.parameters:
-                if qk_param not in seen_qk:
-                    seen_qk.add(qk_param)
-                    ordered_qiskit_params.append(qk_param)
-        elif isinstance(p, sp.Expr):
-            for s in p.free_symbols:
-                if s not in seen_sp:
-                    seen_sp.add(s)
-                    ordered_sympy_symbols.append(s)
+    for op in qscript.operations:
+        for p in op.data:
+            if isinstance(p, ParameterExpression):
+                for qk_param in p.parameters:
+                    if qk_param not in seen_qk:
+                        seen_qk.add(qk_param)
+                        ordered_qiskit_params.append(qk_param)
+            elif isinstance(p, sp.Expr):
+                for s in p.free_symbols:
+                    if s not in seen_sp:
+                        seen_sp.add(s)
+                        ordered_sympy_symbols.append(s)
 
     # Build sympy → Qiskit Parameter mapping for sympy-parametric tapes.
     param_map: dict[sp.Symbol, Parameter] | None = None
@@ -172,12 +208,8 @@ def _qscript_to_dag(
                 new_values, indices
             )
 
-    # Delegate the actual PL-op → Qiskit-gate translation to pennylane-qiskit.
-    qc = circuit_to_qiskit(
-        decomposed_qscript,
-        register_size=len(qscript.wires),
-        measure=False,
-        diagonalize=False,
+    qc = _qscript_to_qiskit_circuit(
+        decomposed_qscript, register_size=len(qscript.wires)
     )
 
     # Decompose any gates outside the QASM2 basis (e.g. rxx/ryy/rzz from
@@ -302,12 +334,12 @@ def observable_to_sparse_pauli_op(
                 f"non-Hermitian observable.",
                 stacklevel=2,
             )
-        pw_dict = dict(pauli_word)
-        if not pw_dict:
+        pw_items = list(dict(pauli_word).items())
+        if not pw_items:
             sparse.append(("", [], c.real))
         else:
-            pauli_chars = "".join(pw_dict[w] for w in pw_dict)
-            qubit_indices = [wire_list.index(w) for w in pw_dict]
+            pauli_chars = "".join(ch for _, ch in pw_items)
+            qubit_indices = [wire_list.index(w) for w, _ in pw_items]
             sparse.append((pauli_chars, qubit_indices, c.real))
 
     return SparsePauliOp.from_sparse_list(sparse, num_qubits=num_qubits)

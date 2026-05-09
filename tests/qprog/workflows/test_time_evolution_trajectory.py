@@ -10,6 +10,7 @@ from qiskit.circuit import ParameterExpression
 from qiskit.converters import dag_to_circuit
 
 from divi.hamiltonians import ExactTrotterization, QDrift
+from divi.hamiltonians._term_ops import _to_spo
 from divi.qprog import TimeEvolutionTrajectory
 from divi.qprog.algorithms import TimeEvolution
 from divi.qprog.ensemble import BatchConfig, BatchMode
@@ -281,7 +282,7 @@ def _build_meta_at(H, observable, time, backend, *, n_steps=1, order=1):
         observable=observable,
         backend=backend,
     )
-    return prog._meta_circuit_factory(H, ham_id=0)
+    return prog._meta_circuit_factory(_to_spo(H), ham_id=0)
 
 
 def _dag_signature(meta):

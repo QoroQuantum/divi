@@ -11,15 +11,19 @@ import pennylane as qp
 from qiskit.circuit import ParameterVector
 
 from divi.circuits import MetaCircuit, qscript_to_meta
-from divi.hamiltonians import _clean_hamiltonian, _is_empty_hamiltonian
+from divi.hamiltonians._term_ops import (
+    _clean_hamiltonian_via_spo,
+    _is_empty_hamiltonian,
+)
 from divi.pipeline.stages import CircuitSpecStage
-from divi.qprog.algorithms._ansatze import (
+from divi.qprog.algorithms import (
     Ansatz,
     HartreeFockAnsatz,
+    InitialState,
     QCCAnsatz,
     UCCSDAnsatz,
+    ZerosState,
 )
-from divi.qprog.algorithms._initial_state import InitialState, ZerosState
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 
 
@@ -176,7 +180,9 @@ class VQE(VariationalQuantumAlgorithm):
                     UserWarning,
                 )
 
-        self.cost_hamiltonian, self.loss_constant = _clean_hamiltonian(hamiltonian)
+        self.cost_hamiltonian, self.loss_constant = _clean_hamiltonian_via_spo(
+            hamiltonian
+        )
         if _is_empty_hamiltonian(self.cost_hamiltonian):
             raise ValueError("Hamiltonian contains only constant terms.")
 

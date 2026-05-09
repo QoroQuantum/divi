@@ -6,15 +6,14 @@ from collections.abc import Callable
 from typing import Any
 
 import pennylane as qp
+from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
 from divi.hamiltonians import (
     ExactTrotterization,
     TrotterizationStrategy,
-    _clean_hamiltonian,
-    _hamiltonian_term_count,
-    _is_empty_hamiltonian,
 )
+from divi.hamiltonians._term_ops import _clean_hamiltonian_spo, _to_spo
 from divi.pipeline.abc import (
     ChildResults,
     MetaCircuitBatch,
@@ -32,9 +31,10 @@ from divi.pipeline.transformations import (
 class TrotterSpecStage(SpecStage[qp.operation.Operator]):
     """SpecStage that turns a Hamiltonian into a batch of MetaCircuits via a TrotterizationStrategy.
 
-    Takes the initial_spec (a Hamiltonian), runs it through the strategy to obtain
-    one or more Hamiltonian samples, and calls ``meta_circuit_factory(processed_hamiltonian, ham_id)``
-    for each.
+    Converts the initial_spec (a PennyLane Hamiltonian) to a
+    :class:`~qiskit.quantum_info.SparsePauliOp`, runs the strategy to
+    obtain one or more SPO samples, and invokes
+    ``meta_circuit_factory(processed_spo, ham_id)`` for each.
     """
 
     @property
@@ -66,11 +66,10 @@ class TrotterSpecStage(SpecStage[qp.operation.Operator]):
 
     def _prepare(
         self, items: qp.operation.Operator
-    ) -> tuple[qp.operation.Operator, TrotterizationStrategy, int, dict]:
-        """Validate input and compute the shared (hamiltonian, strategy, n_samples, token) tuple.
+    ) -> tuple[SparsePauliOp, TrotterizationStrategy, int, dict]:
+        """Validate input and compute the shared ``(spo, strategy, n_samples, token)`` tuple.
 
-        Reused by :meth:`expand` and :meth:`dry_expand` so the Hamiltonian
-        cleaning and token construction don't drift between paths.
+        Shared between :meth:`expand` and :meth:`dry_expand`.
         """
         hamiltonian = items
 
@@ -79,9 +78,10 @@ class TrotterSpecStage(SpecStage[qp.operation.Operator]):
                 f"TrotterSpecStage expects a PennyLane Operator (Hamiltonian), got {type(hamiltonian).__name__}"
             )
 
-        hamiltonian_clean, _ = _clean_hamiltonian(hamiltonian)
+        spo = _to_spo(hamiltonian)
+        spo_clean, _ = _clean_hamiltonian_spo(spo)
 
-        if _is_empty_hamiltonian(hamiltonian_clean):
+        if spo_clean.size == 0:
             raise ValueError("Hamiltonian contains only constant terms.")
 
         strategy = self._trotterization_strategy
@@ -89,21 +89,21 @@ class TrotterSpecStage(SpecStage[qp.operation.Operator]):
 
         token = {
             "strategy": type(strategy).__name__,
-            "n_terms": _hamiltonian_term_count(hamiltonian_clean),
-            "n_qubits": len(hamiltonian_clean.wires),
+            "n_terms": spo_clean.size,
+            "n_qubits": spo_clean.num_qubits,
             "n_samples": n_samples,
         }
-        return hamiltonian_clean, strategy, n_samples, token
+        return spo_clean, strategy, n_samples, token
 
     def expand(
         self, batch: qp.operation.Operator, env: PipelineEnv
     ) -> tuple[MetaCircuitBatch, StageToken]:
         """Transform Hamiltonian into a keyed batch of MetaCircuits (one per strategy output)."""
-        hamiltonian_clean, strategy, n_samples, token = self._prepare(batch)
+        spo_clean, strategy, n_samples, token = self._prepare(batch)
 
         metas: MetaCircuitBatch = {}
         for ham_id in range(n_samples):
-            processed = strategy.process_hamiltonian(hamiltonian_clean)
+            processed = strategy.process_hamiltonian(spo_clean)
             meta = self._meta_circuit_factory(processed, ham_id)
             metas[(("ham", ham_id),)] = meta
 
@@ -121,10 +121,10 @@ class TrotterSpecStage(SpecStage[qp.operation.Operator]):
         deterministic case (``ExactTrotterization`` with ``n_samples=1``)
         this reduces to the same single factory call as :meth:`expand`.
         """
-        hamiltonian_clean, strategy, n_samples, token = self._prepare(batch)
+        spo_clean, strategy, n_samples, token = self._prepare(batch)
 
         prototype = self._meta_circuit_factory(
-            strategy.process_hamiltonian(hamiltonian_clean), 0
+            strategy.process_hamiltonian(spo_clean), 0
         )
         metas: MetaCircuitBatch = {
             (("ham", ham_id),): prototype for ham_id in range(n_samples)
