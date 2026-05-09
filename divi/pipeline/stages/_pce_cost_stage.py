@@ -13,9 +13,11 @@ import numpy.typing as npt
 from divi.hamiltonians import (
     BinaryPolynomialProblem,
     CompiledBinaryPolynomial,
+    compile_problem,
+)
+from divi.hamiltonians._polynomial import (
     _compute_hard_cvar_energy_jit,
     _evaluate_binary_polynomial,
-    compile_problem,
 )
 from divi.pipeline.abc import (
     BundleStage,

@@ -10,7 +10,7 @@ from queue import Queue
 from rich.console import Console
 
 import divi.reporting._qlogger as _qlogger
-from divi.reporting._pbar import TerminalStatus, progress_disabled
+from divi.reporting import TerminalStatus, progress_disabled
 from divi.reporting._qlogger import _ensure_unbuffered_stdout
 
 logger = logging.getLogger(__name__)

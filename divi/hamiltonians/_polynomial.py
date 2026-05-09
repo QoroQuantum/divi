@@ -18,7 +18,7 @@ import numpy as np
 import numpy.typing as npt
 import scipy.sparse as sps
 
-from divi.hamiltonians._types import (
+from ._types import (
     BinaryPolynomialProblem,
     CompiledBinaryPolynomial,
     HUBOProblemTypes,

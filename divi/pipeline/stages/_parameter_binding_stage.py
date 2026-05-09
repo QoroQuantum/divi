@@ -22,7 +22,7 @@ from divi.pipeline.abc import (
     Stage,
     StageToken,
 )
-from divi.pipeline.stages._qem_stage import QEMStage
+from divi.pipeline.stages import QEMStage
 
 PARAM_SET_AXIS = "param_set"
 

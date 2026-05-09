@@ -20,11 +20,11 @@ from ._initial_state import (
     WState,
     ZerosState,
 )
+from ._vqe import VQE
 from ._iterative_qaoa import InterpolationStrategy, IterativeQAOA
 from ._pce import PCE
 from ._qaoa import QAOA
 from ._time_evolution import TimeEvolution
-from ._vqe import VQE
 
 __all__ = [
     "Ansatz",

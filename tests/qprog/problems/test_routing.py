@@ -14,27 +14,29 @@ from divi.qprog.problems import (
     CVRPProblem,
     RoutingInstance,
     TSPProblem,
+    binary_block_config,
+    cvrp_block_structure,
+    is_valid_tsp_tour,
 )
+from divi.qprog.problems import parse_tsplib_file
 from divi.qprog.problems import parse_tsplib_file as parse_tsplib_file_public
+from divi.qprog.problems import (
+    parse_vrp_solution,
+    tour_cost,
+)
 from divi.qprog.problems._routing import (
     _nint,
-    binary_block_config,
     create_cvrp_hubo_binary,
     create_cvrp_qubo,
     create_tsp_hubo_binary,
     create_tsp_qubo,
-    cvrp_block_structure,
     decode_binary_cvrp_solution,
     decode_cvrp_solution,
     decode_tsp_solution,
     is_valid_binary_cvrp,
     is_valid_cvrp_solution,
-    is_valid_tsp_tour,
-    parse_tsplib_file,
-    parse_vrp_solution,
     repair_cvrp_solution,
     repair_tsp_solution,
-    tour_cost,
 )
 
 # ---------------------------------------------------------------------------

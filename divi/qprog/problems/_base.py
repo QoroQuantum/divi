@@ -12,7 +12,7 @@ from typing import Any
 
 import pennylane as qp
 
-from divi.qprog.algorithms._initial_state import InitialState, SuperpositionState
+from divi.qprog.algorithms import InitialState, SuperpositionState
 
 
 class QAOAProblem(ABC):

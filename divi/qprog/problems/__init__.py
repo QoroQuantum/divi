@@ -4,9 +4,10 @@
 
 """Problem classes for QAOA-compatible quantum optimization."""
 
-from divi.qprog.problems._base import QAOAProblem
-from divi.qprog.problems._binary import BinaryOptimizationProblem
-from divi.qprog.problems._graphs import (
+from ._base import QAOAProblem
+from ._graph_partitioning_utils import GraphPartitioningConfig, draw_partitions
+from ._binary import BinaryOptimizationProblem
+from ._graphs import (
     MaxCliqueProblem,
     MaxCutProblem,
     MaxIndependentSetProblem,
@@ -14,16 +15,12 @@ from divi.qprog.problems._graphs import (
     MinVertexCoverProblem,
     draw_graph_solution_nodes,
 )
-from divi.qprog.problems._matching import (
+from ._matching import (
     MaxWeightMatchingProblem,
     check_matching_matrix,
     is_valid_matching,
 )
-from divi.qprog.problems._graph_partitioning_utils import (
-    GraphPartitioningConfig,
-    draw_partitions,
-)
-from divi.qprog.problems._routing import (
+from ._routing import (
     BinaryBlockConfig,
     CVRPProblem,
     RoutingInstance,

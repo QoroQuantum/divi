@@ -19,13 +19,9 @@ import sympy
 from scipy.optimize import linear_sum_assignment
 
 from divi.hamiltonians import qubo_to_ising
-from divi.qprog.algorithms._initial_state import (
-    InitialState,
-    SuperpositionState,
-    WState,
-    build_block_xy_mixer_graph,
-)
-from divi.qprog.problems._base import QAOAProblem
+from divi.qprog.algorithms import InitialState, SuperpositionState, WState
+from divi.qprog.algorithms._initial_state import build_block_xy_mixer_graph
+from divi.qprog.problems import QAOAProblem
 
 # --- TSP utilities ---
 

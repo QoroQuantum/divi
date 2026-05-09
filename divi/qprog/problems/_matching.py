@@ -12,8 +12,7 @@ import networkx as nx
 import numpy as np
 import scipy.sparse.linalg as spla
 
-from divi.qprog.problems._base import QAOAProblem
-from divi.qprog.problems._binary import BinaryOptimizationProblem
+from divi.qprog.problems import BinaryOptimizationProblem, QAOAProblem
 
 # ------------------------------------------------------------------
 # Matching utility functions

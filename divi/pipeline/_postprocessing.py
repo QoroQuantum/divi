@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-from divi.circuits._core import MetaCircuit
+from divi.circuits import MetaCircuit
 from divi.pipeline.abc import ChildResults
 
 # ---------------------------------------------------------------------------

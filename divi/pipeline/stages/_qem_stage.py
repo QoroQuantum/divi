@@ -21,7 +21,7 @@ from divi.pipeline.abc import (
     Stage,
     StageToken,
 )
-from divi.pipeline.stages._pauli_twirl_stage import PauliTwirlStage
+from divi.pipeline.stages import PauliTwirlStage
 from divi.pipeline.transformations import FOREIGN_KEY_ATTR, group_by_base_key
 
 QEM_AXIS = "qem"

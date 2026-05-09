@@ -7,7 +7,7 @@ from collections.abc import Mapping
 
 import numpy as np
 
-from divi.backends._execution_result import ExecutionResult
+from divi.backends import ExecutionResult
 
 
 class CircuitRunner(ABC):

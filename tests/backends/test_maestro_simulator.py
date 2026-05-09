@@ -9,11 +9,8 @@ from threading import Event, Thread
 import pytest
 
 import divi.backends._maestro_simulator as maestro_module
-from divi.backends._maestro_simulator import (
-    MaestroConfig,
-    MaestroSimulator,
-    _strip_measurements,
-)
+from divi.backends import MaestroConfig, MaestroSimulator
+from divi.backends._maestro_simulator import _strip_measurements
 from tests.backends import circuit_runner_contracts as contracts
 from tests.backends.circuit_runner_contracts import QASM_DEPTH_2, QASM_DEPTH_3
 

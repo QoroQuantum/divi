@@ -2,14 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from ._types import AxisLabel, QASMTag
+from ._core import MetaCircuit
 from ._conversions import (
     dag_to_qasm_body,
     measurement_qasms_from_groups,
     qscript_to_meta,
+    sparse_pauli_op_to_pl_observable,
 )
-from ._core import MetaCircuit
 from ._qasm_template import QASMTemplate, build_template, render_template
-from ._types import AxisLabel, QASMTag
 
 __all__ = [
     "AxisLabel",
@@ -17,8 +18,9 @@ __all__ = [
     "QASMTag",
     "QASMTemplate",
     "build_template",
-    "render_template",
-    "qscript_to_meta",
     "dag_to_qasm_body",
     "measurement_qasms_from_groups",
+    "qscript_to_meta",
+    "render_template",
+    "sparse_pauli_op_to_pl_observable",
 ]

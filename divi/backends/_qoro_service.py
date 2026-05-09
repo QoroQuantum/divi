@@ -23,9 +23,14 @@ from qiskit import QuantumCircuit
 from requests.adapters import HTTPAdapter, Retry
 from rich.console import Console
 
-from divi.backends._circuit_runner import CircuitRunner
-from divi.backends._config import ExecutionConfig, JobConfig
-from divi.backends._execution_result import ExecutionResult
+from divi.backends import (
+    CircuitRunner,
+    ExecutionConfig,
+    ExecutionResult,
+    JobConfig,
+    QPUSystem,
+    SimulatorCluster,
+)
 from divi.backends._pauli_serde import compress_ham_ops
 from divi.backends._results_processing import _decode_qh1_b64
 from divi.backends._shot_allocation import (
@@ -35,8 +40,6 @@ from divi.backends._shot_allocation import (
     validate,
 )
 from divi.backends._systems import (
-    QPUSystem,
-    SimulatorCluster,
     get_qpu_system,
     get_simulator_cluster,
     parse_qpu_systems,

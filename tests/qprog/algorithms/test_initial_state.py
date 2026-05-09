@@ -10,15 +10,15 @@ import pennylane.qaoa as pqaoa
 import pytest
 
 from divi.qprog import QAOA, VQE, TimeEvolution
-from divi.qprog.algorithms._ansatze import QAOAAnsatz
-from divi.qprog.algorithms._initial_state import (
+from divi.qprog.algorithms import (
     CustomPerQubitState,
     OnesState,
+    QAOAAnsatz,
     SuperpositionState,
     WState,
     ZerosState,
-    build_block_xy_mixer_graph,
 )
+from divi.qprog.algorithms._initial_state import build_block_xy_mixer_graph
 from divi.qprog.problems import MaxCutProblem
 
 # ---------------------------------------------------------------------------

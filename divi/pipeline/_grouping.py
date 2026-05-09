@@ -104,7 +104,7 @@ def _create_postprocessing_fn(
     return postprocessing_fn
 
 
-def compute_measurement_groups(
+def _compute_measurement_groups(
     observable: tuple[SparsePauliOp, ...],
     strategy: GroupingStrategy,
     n_qubits: int,
@@ -138,10 +138,10 @@ def compute_measurement_groups(
         expectation values, in input order.
     """
     if not observable:
-        raise ValueError("compute_measurement_groups: observable tuple is empty.")
+        raise ValueError("_compute_measurement_groups: observable tuple is empty.")
     if strategy == "_backend_expval" and len(observable) > 1:
         raise ValueError(
-            "compute_measurement_groups does not support '_backend_expval' "
+            "_compute_measurement_groups does not support '_backend_expval' "
             "for multi-observable inputs (the backend evaluates a single "
             "observable analytically). Use 'qwc' or 'wires'."
         )

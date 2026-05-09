@@ -9,10 +9,9 @@ from qiskit import QuantumCircuit
 from qiskit_aer.noise import NoiseModel
 from qiskit_ibm_runtime.fake_provider import FakeQuitoV2
 
-from divi.backends import ExecutionResult
+from divi.backends import ExecutionResult, QiskitSimulator
 from divi.backends._qiskit_simulator import (
     FAKE_BACKENDS,
-    QiskitSimulator,
     _default_n_processes,
     _find_best_fake_backend,
 )

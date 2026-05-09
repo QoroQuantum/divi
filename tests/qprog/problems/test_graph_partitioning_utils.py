@@ -21,16 +21,19 @@ _skip_no_pymetis = pytest.mark.skipif(
     reason="pymetis not available (install via conda: conda install -c conda-forge pymetis)",
 )
 
-from divi.qprog.problems import GraphPartitioningConfig, _graph_partitioning_utils
+from divi.qprog.problems import (
+    GraphPartitioningConfig,
+    MaxCutProblem,
+    _graph_partitioning_utils,
+    draw_partitions,
+)
 from divi.qprog.problems._graph_partitioning_utils import (
     _apply_split_with_relabel,
     _bisect_with_predicate,
     _node_partition_graph,
     _pygraph_to_nx,
     _split_graph,
-    draw_partitions,
 )
-from divi.qprog.problems._graphs import MaxCutProblem
 
 # ---------------------------------------------------------------------------
 # Shared helpers and graph-type parametrization fixtures

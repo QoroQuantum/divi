@@ -9,9 +9,7 @@ from divi.qprog.variational_quantum_algorithm import (
     SolutionEntry,
     VariationalQuantumAlgorithm,
 )
-from divi.qprog.workflows._partitioning_ensemble import (
-    PartitioningProgramEnsemble,
-)
+from divi.qprog.workflows import PartitioningProgramEnsemble
 from tests.qprog.qprog_contracts import verify_basic_program_ensemble_behaviour
 
 _DEFAULT_OPTIMIZER = ScipyOptimizer(method=ScipyMethod.NELDER_MEAD)

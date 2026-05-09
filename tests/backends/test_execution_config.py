@@ -4,11 +4,7 @@
 
 import pytest
 
-from divi.backends._config import (
-    ExecutionConfig,
-    SimulationMethod,
-    Simulator,
-)
+from divi.backends import ExecutionConfig, SimulationMethod, Simulator
 
 
 class TestExecutionConfigOverride:

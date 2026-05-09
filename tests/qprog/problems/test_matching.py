@@ -8,9 +8,13 @@ import pytest
 
 from divi.qprog import QAOA
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-from divi.qprog.problems import BinaryOptimizationProblem
-from divi.qprog.problems._matching import (
+from divi.qprog.problems import (
+    BinaryOptimizationProblem,
     MaxWeightMatchingProblem,
+    check_matching_matrix,
+    is_valid_matching,
+)
+from divi.qprog.problems._matching import (
     _bitstring_to_matching,
     _classical_cleanup,
     _construct_matching_qubo,
@@ -18,8 +22,6 @@ from divi.qprog.problems._matching import (
     _partition_graph_by_edges,
     _repair_matching,
     _sort_matching,
-    check_matching_matrix,
-    is_valid_matching,
 )
 from divi.qprog.workflows import PartitioningProgramEnsemble
 

@@ -17,14 +17,14 @@ from typing import Literal
 import numpy as np
 
 #: How to distribute a total shot budget across measurement groups.
-#: See :func:`compute_shot_distribution` for the behaviour of each choice.
+#: See :func:`_compute_shot_distribution` for the behaviour of each choice.
 ShotDistStrategy = (
     Literal["uniform", "weighted", "weighted_random"]
     | Callable[[list[float], int], list[int]]
 )
 
 
-def compute_group_l1_norms(
+def _compute_group_l1_norms(
     coefficients: Sequence[float] | np.ndarray,
     partition_indices: Sequence[Sequence[int]],
 ) -> list[float]:
@@ -45,7 +45,7 @@ def compute_group_l1_norms(
     ]
 
 
-def compute_shot_distribution(
+def _compute_shot_distribution(
     group_norms: Sequence[float],
     total_shots: int,
     strategy: ShotDistStrategy = "uniform",

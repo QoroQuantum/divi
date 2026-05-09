@@ -15,7 +15,7 @@ from typing import Protocol, runtime_checkable
 
 import requests
 
-from divi.backends._execution_result import ExecutionResult
+from divi.backends import ExecutionResult
 
 
 @runtime_checkable

@@ -10,10 +10,10 @@ from qiskit import QuantumCircuit, transpile
 from qiskit_aer import AerSimulator
 from qiskit_aer.noise import NoiseModel
 
+from divi.backends import create_backend_from_properties
 from divi.backends._backend_properties_conversion import (
     _normalize_nduv,
     _normalize_properties,
-    create_backend_from_properties,
 )
 
 

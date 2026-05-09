@@ -10,19 +10,25 @@ from threading import Event, Thread
 import pytest
 import requests
 
-from divi.backends import ExecutionConfig, ExecutionResult, _qoro_service
-from divi.backends._config import JobConfig, SimulationMethod, Simulator
-from divi.backends._qoro_service import (
+from divi.backends import (
+    ExecutionConfig,
+    ExecutionResult,
+    JobConfig,
     JobStatus,
     JobType,
-    MaxRetriesReachedError,
     QoroService,
+    QPUSystem,
+    SimulationMethod,
+    Simulator,
+    SimulatorCluster,
+    _qoro_service,
+)
+from divi.backends._qoro_service import (
+    MaxRetriesReachedError,
     _raise_with_details,
     is_valid_qasm,
 )
 from divi.backends._systems import (
-    QPUSystem,
-    SimulatorCluster,
     get_available_qpu_systems,
     get_available_simulator_clusters,
     get_qpu_system,

@@ -15,7 +15,7 @@ from qiskit.quantum_info import SparsePauliOp
 from divi.circuits import MetaCircuit
 from divi.pipeline import CircuitPipeline, PipelineEnv
 from divi.pipeline._compilation import _compile_batch
-from divi.pipeline._grouping import compute_measurement_groups
+from divi.pipeline._grouping import _compute_measurement_groups
 from divi.pipeline.abc import ChildResults, MetaCircuitBatch, ResultFormat, SpecStage
 from divi.pipeline.stages import MeasurementStage
 from divi.pipeline.stages._measurement_stage import (
@@ -874,7 +874,7 @@ class TestAllocatePerGroupShotsHelper:
 
     def test_returns_full_indices_when_disabled(self):
         meta = _three_group_meta()
-        groups, partition, _ = compute_measurement_groups(
+        groups, partition, _ = _compute_measurement_groups(
             meta.observable, "qwc", meta.n_qubits
         )
         env = PipelineEnv(backend=DummySimulator(shots=100))
@@ -893,7 +893,7 @@ class TestAllocatePerGroupShotsHelper:
 
     def test_returns_per_spec_shots_when_enabled(self):
         meta = _three_group_meta()
-        groups, partition, _ = compute_measurement_groups(
+        groups, partition, _ = _compute_measurement_groups(
             meta.observable, "qwc", meta.n_qubits
         )
         env = PipelineEnv(backend=DummySimulator(shots=300))
@@ -912,7 +912,7 @@ class TestAllocatePerGroupShotsHelper:
 
     def test_drops_zero_shot_groups(self):
         meta = _three_group_meta()  # norms 10:1:0.1
-        groups, partition, _ = compute_measurement_groups(
+        groups, partition, _ = _compute_measurement_groups(
             meta.observable, "qwc", meta.n_qubits
         )
         env = PipelineEnv(backend=DummySimulator(shots=11))

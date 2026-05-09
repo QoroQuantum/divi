@@ -14,14 +14,17 @@ from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter, ParameterExpression
 from qiskit.quantum_info import Operator, SparsePauliOp
 
+from divi.circuits import (
+    build_template,
+    dag_to_qasm_body,
+    qscript_to_meta,
+    render_template,
+)
 from divi.circuits._conversions import (
     _qscript_to_dag,
     _sympy_to_qiskit,
-    dag_to_qasm_body,
     observable_to_sparse_pauli_op,
-    qscript_to_meta,
 )
-from divi.circuits._qasm_template import build_template, render_template
 
 
 class TestSympyToQiskit:

@@ -17,6 +17,11 @@ from rich.console import Console
 from rich.panel import Panel
 
 from divi.backends import CircuitRunner
+
+# Direct import of ``BatchConfig``/``BatchMode`` from the defining module:
+# ``ensemble.py`` is itself loaded by ``divi.qprog.__init__`` to populate
+# those names, so ``from divi.qprog import BatchConfig, BatchMode`` would
+# fail with a partial-init ImportError.
 from divi.qprog._batch_coordinator import (
     BatchConfig,
     BatchMode,

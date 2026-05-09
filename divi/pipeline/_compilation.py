@@ -7,8 +7,7 @@
 from itertools import product
 from typing import Any
 
-from divi.circuits import MetaCircuit
-from divi.circuits._conversions import dag_to_qasm_body
+from divi.circuits import MetaCircuit, dag_to_qasm_body
 from divi.pipeline.abc import BranchKey, ChildResults
 
 

@@ -6,7 +6,7 @@ import numpy as np
 import pennylane as qp
 import pytest
 
-from divi.hamiltonians import _evaluate_binary_polynomial
+from divi.hamiltonians._polynomial import _evaluate_binary_polynomial
 from divi.pipeline.stages import CircuitSpecStage, ParameterBindingStage, PCECostStage
 from divi.pipeline.stages._pce_cost_stage import (
     _compute_hard_cvar_energy,

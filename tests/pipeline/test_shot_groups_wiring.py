@@ -18,10 +18,8 @@ import pennylane as qp
 import pytest
 from qiskit_aer import AerSimulator
 
-from divi.backends import CircuitRunner, ExecutionResult
-from divi.backends._qiskit_simulator import QiskitSimulator
-from divi.circuits import MetaCircuit
-from divi.circuits._conversions import qscript_to_meta
+from divi.backends import CircuitRunner, ExecutionResult, QiskitSimulator
+from divi.circuits import MetaCircuit, qscript_to_meta
 from divi.pipeline import CircuitPipeline, PipelineEnv
 from divi.pipeline._core import _build_shot_groups
 from divi.pipeline.stages import MeasurementStage

@@ -4,7 +4,7 @@
 
 """Tests for divi.circuits._qasm_template."""
 
-from divi.circuits._qasm_template import build_template, render_template
+from divi.circuits import build_template, render_template
 
 
 class TestBuildTemplate:

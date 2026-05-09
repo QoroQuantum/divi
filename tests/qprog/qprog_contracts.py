@@ -5,7 +5,7 @@
 import pytest
 
 from divi.circuits import MetaCircuit
-from divi.pipeline._grouping import compute_measurement_groups
+from divi.pipeline._grouping import _compute_measurement_groups
 from divi.qprog import (
     MonteCarloOptimizer,
     ProgramEnsemble,
@@ -76,7 +76,7 @@ def _get_n_obs_groups(meta: MetaCircuit, supports_expval: bool) -> int:
         return 1
 
     strategy = "_backend_expval" if supports_expval else "qwc"
-    groups, _, _ = compute_measurement_groups(meta.observable, strategy, meta.n_qubits)
+    groups, _, _ = _compute_measurement_groups(meta.observable, strategy, meta.n_qubits)
     return max(len(groups), 1)
 
 

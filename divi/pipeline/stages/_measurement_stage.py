@@ -10,19 +10,14 @@ from typing import Any, cast
 import numpy as np
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.circuits._conversions import (
-    measurement_qasms_from_groups,
-    sparse_pauli_op_to_ham_string,
-)
+from divi.circuits import measurement_qasms_from_groups
+from divi.circuits._conversions import sparse_pauli_op_to_ham_string
 from divi.circuits._core import flatten_observable_tuple
-from divi.pipeline._grouping import (
-    GroupingStrategy,
-    compute_measurement_groups,
-)
+from divi.pipeline import GroupingStrategy, ShotDistStrategy
+from divi.pipeline._grouping import _compute_measurement_groups
 from divi.pipeline._shot_distribution import (
-    ShotDistStrategy,
-    compute_group_l1_norms,
-    compute_shot_distribution,
+    _compute_group_l1_norms,
+    _compute_shot_distribution,
 )
 from divi.pipeline.abc import (
     BundleStage,
@@ -111,8 +106,8 @@ def _allocate_per_group_shots(
         return list(range(n_groups)), {}, None
 
     coefficients = np.asarray(observable.coeffs).real.astype(np.float64)
-    group_norms = compute_group_l1_norms(coefficients, partition_indices)
-    per_group_shots = compute_shot_distribution(
+    group_norms = _compute_group_l1_norms(coefficients, partition_indices)
+    per_group_shots = _compute_shot_distribution(
         group_norms,
         env.backend.shots,
         shot_distribution,
@@ -209,7 +204,7 @@ class MeasurementStage(BundleStage):
     - ``ResultFormat.COUNTS`` is never set here (reserved for PCE)
 
     During ``reduce``, combines measurement groups using the postprocessing
-    function from ``compute_measurement_groups``.
+    function from ``_compute_measurement_groups``.
     """
 
     @property
@@ -320,7 +315,7 @@ class MeasurementStage(BundleStage):
         """Analytic path: keep grouping + shot allocation, skip QASM rendering.
 
         Group count is the source of truth for the measurement fan-out, so
-        we always run ``compute_measurement_groups`` and
+        we always run ``_compute_measurement_groups`` and
         ``_allocate_per_group_shots`` (both cheap, pure numpy / analytic).
         Only the per-group QASM string generation is swapped for a
         placeholder so the emitted batch has correct shape without
@@ -461,7 +456,7 @@ class MeasurementStage(BundleStage):
             _warn_imag_coeffs(observable, key)
 
             measurement_groups, partition_indices, postprocessing_fn = (
-                compute_measurement_groups(observable, strategy, meta.n_qubits)
+                _compute_measurement_groups(observable, strategy, meta.n_qubits)
             )
             if strategy == "_backend_expval" and n_observable_terms is None:
                 n_observable_terms = sum(len(p) for p in partition_indices)

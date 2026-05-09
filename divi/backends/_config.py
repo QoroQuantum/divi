@@ -5,7 +5,7 @@
 from dataclasses import dataclass, field, fields
 from enum import IntEnum
 
-from divi.backends._systems import QPUSystem, SimulatorCluster
+from divi.backends import QPUSystem, SimulatorCluster
 
 
 class Simulator(IntEnum):

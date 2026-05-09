@@ -16,14 +16,14 @@ from divi.hamiltonians import (
     BinaryPolynomialProblem,
     HUBOProblemTypes,
     QUBOProblemTypes,
-    _evaluate_binary_polynomial,
     compile_problem,
     normalize_binary_polynomial_problem,
 )
+from divi.hamiltonians._polynomial import _evaluate_binary_polynomial
 from divi.pipeline import CircuitPipeline
 from divi.pipeline.stages import CircuitSpecStage, ParameterBindingStage, PCECostStage
+from divi.qprog.algorithms import VQE
 from divi.qprog.algorithms._numba_kernels import _popcount_parity_jit
-from divi.qprog.algorithms._vqe import VQE
 from divi.qprog.variational_quantum_algorithm import SolutionEntry
 
 

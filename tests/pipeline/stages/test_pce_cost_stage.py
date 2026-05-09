@@ -17,10 +17,11 @@ from qiskit import QuantumCircuit
 from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.circuits._core import MetaCircuit
+from divi.circuits import MetaCircuit
 from divi.hamiltonians import normalize_binary_polynomial_problem
 from divi.pipeline.abc import PipelineEnv, ResultFormat
-from divi.pipeline.stages._pce_cost_stage import PCE_MEAS_AXIS, PCECostStage
+from divi.pipeline.stages import PCECostStage
+from divi.pipeline.stages._pce_cost_stage import PCE_MEAS_AXIS
 from divi.qprog.algorithms._pce import _decode_parities
 
 # ---------------------------------------------------------------------------

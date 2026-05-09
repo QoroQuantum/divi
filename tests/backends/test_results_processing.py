@@ -5,6 +5,7 @@
 import numpy as np
 import pytest
 
+from divi.backends import convert_counts_to_probs, reverse_dict_endianness
 from divi.backends._numba_kernels import (
     _decompress_histogram_jit,
     _uleb128_decode_limbs_jit,
@@ -13,8 +14,6 @@ from divi.backends._results_processing import (
     _decode_qh1_b64,
     _decompress_histogram,
     _limbs_to_bitstring,
-    convert_counts_to_probs,
-    reverse_dict_endianness,
 )
 
 

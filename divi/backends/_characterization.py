@@ -14,7 +14,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from divi.backends._qoro_service import QoroService
+from divi.backends import QoroService
 
 logger = logging.getLogger(__name__)
 

@@ -13,10 +13,9 @@ import pytest
 
 from divi.backends import CircuitRunner, ExecutionResult
 from divi.exceptions import ExecutionCancelledError
+from divi.qprog import BatchConfig, BatchMode
 from divi.qprog._batch_coordinator import (
     _TAG_SEP,
-    BatchConfig,
-    BatchMode,
     _Batch,
     _BatchCoordinator,
     _fail_futures,

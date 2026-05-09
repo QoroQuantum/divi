@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from ._types import GraphProblemTypes
 from .algorithms import (
     PCE,
     QAOA,

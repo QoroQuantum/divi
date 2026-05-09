@@ -18,15 +18,17 @@ import pytest
 import scipy.sparse as sps
 
 from divi.hamiltonians import (
-    _compute_hard_cvar_energy_jit,
-    _eval_poly_1d_jit,
-    _eval_poly_2d_jit,
-    _evaluate_binary_polynomial,
     compile_problem,
     hubo_to_binary_polynomial,
     normalize_binary_polynomial_problem,
     qubo_to_binary_polynomial,
     qubo_to_matrix,
+)
+from divi.hamiltonians._polynomial import (
+    _compute_hard_cvar_energy_jit,
+    _eval_poly_1d_jit,
+    _eval_poly_2d_jit,
+    _evaluate_binary_polynomial,
 )
 from divi.pipeline.stages._pce_cost_stage import _compute_hard_cvar_energy
 

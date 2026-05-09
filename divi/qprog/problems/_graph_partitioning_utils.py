@@ -16,7 +16,7 @@ import scipy.sparse as sps
 from matplotlib import colormaps
 from sklearn.cluster import SpectralClustering
 
-from divi.qprog._types import GraphProblemTypes
+from divi.qprog import GraphProblemTypes
 
 # TODO: Make this dynamic through an interaction with usher
 # once a proper endpoint is exposed

@@ -23,8 +23,7 @@ from qiskit_aer import AerSimulator
 from qiskit_aer.library import SaveExpectationValue
 from qiskit_aer.noise import NoiseModel
 
-from divi.backends import CircuitRunner
-from divi.backends._execution_result import ExecutionResult
+from divi.backends import CircuitRunner, ExecutionResult
 from divi.backends._shot_allocation import (
     ShotRange,
     bucket_by_shots,

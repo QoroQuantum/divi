@@ -11,7 +11,7 @@ from qiskit.circuit import Parameter
 from qiskit.dagcircuit import DAGCircuit
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.circuits._types import QASMTag
+from divi.circuits import QASMTag
 
 
 def flatten_observable_tuple(

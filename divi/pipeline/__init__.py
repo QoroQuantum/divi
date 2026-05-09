@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from divi.pipeline._core import (
+from ._core import (
     BundleStage,
     CircuitPipeline,
     ExpansionResult,
@@ -13,23 +13,21 @@ from divi.pipeline._core import (
     Stage,
     format_pipeline_tree,
 )
-from divi.pipeline._dry_run import (
+from ._dry_run import (
     DryRunReport,
     StageInfo,
     dry_run_pipeline,
     format_dry_run,
 )
-from divi.pipeline._grouping import GroupingStrategy
-from divi.pipeline._shot_distribution import ShotDistStrategy
-from divi.pipeline.abc import (
+from ._grouping import GroupingStrategy
+from ._shot_distribution import ShotDistStrategy
+from .abc import (
     ContractViolation,
     DiviPerformanceWarning,
     NodeKey,
     ResultFormat,
 )
-from divi.pipeline.transformations import (
-    reduce_merge_histograms,
-)
+from .transformations import reduce_merge_histograms
 
 __all__ = [
     "BundleStage",

@@ -13,13 +13,14 @@ from rich.tree import Tree
 
 from divi.backends import JobStatus
 from divi.exceptions import ExecutionCancelledError
-from divi.pipeline._compilation import _collapse_to_parent_results, _compile_batch
-from divi.pipeline._postprocessing import (
+
+from ._compilation import _collapse_to_parent_results, _compile_batch
+from ._postprocessing import (
     _counts_to_expvals,
     _counts_to_probs,
     _expval_dicts_to_indexed,
 )
-from divi.pipeline.abc import (
+from .abc import (
     BundleStage,
     ChildResults,
     DiviPerformanceWarning,
@@ -32,7 +33,7 @@ from divi.pipeline.abc import (
     Stage,
     StageToken,
 )
-from divi.pipeline.transformations import FOREIGN_KEY_ATTR
+from .transformations import FOREIGN_KEY_ATTR
 
 logger = logging.getLogger(__name__)
 

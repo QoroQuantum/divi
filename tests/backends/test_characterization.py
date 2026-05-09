@@ -19,17 +19,15 @@ import requests
 
 from divi.backends import (
     CharacterizationOptions,
+    CharacterizationResult,
     ExecutionResult,
+    JobType,
+    QoroService,
     characterize_and_validate,
     get_characterization_result,
 )
-from divi.backends._characterization import (
-    CharacterizationResult,
-    _serialize_qubo_for_wire,
-    _wrap_response,
-)
-from divi.backends._qoro_service import JobType, QoroService
-from divi.qprog.problems._binary import BinaryOptimizationProblem
+from divi.backends._characterization import _serialize_qubo_for_wire, _wrap_response
+from divi.qprog.problems import BinaryOptimizationProblem
 
 
 def _is_number(val) -> bool:
