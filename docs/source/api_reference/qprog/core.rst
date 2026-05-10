@@ -19,6 +19,7 @@ uniform return type for decoded solutions.
    :skip: ScipyOptimizer, ScipyMethod, MonteCarloOptimizer, GridSearchOptimizer
    :skip: MoleculeTransformer, PartitioningProgramEnsemble, TimeEvolutionTrajectory, VQEHyperparameterSweep
    :skip: ProgramEnsemble, BatchConfig, BatchMode, EarlyStopping
+   :skip: ParamHistoryMode
 
 Type Aliases
 ~~~~~~~~~~~~

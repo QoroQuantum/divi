@@ -7,7 +7,6 @@ import networkx as nx
 import numpy as np
 import pytest
 
-import divi.qprog.algorithms._qaoa as qaoa_module
 from divi.circuits.qem import ZNE, LinearExtrapolator
 from divi.hamiltonians import (
     ExactTrotterization,
@@ -435,15 +434,13 @@ class TestCostMetaCircuitCache:
         assert qaoa._cost_meta_cache[(0, size)] is m1
         assert qaoa._cost_meta_cache[(1, size)] is m2
 
-    def test_stateless_skips_qscript_to_meta_on_cache_hit(
-        self, dummy_simulator, mocker
-    ):
+    def test_stateless_skips_circuit_build_on_cache_hit(self, dummy_simulator, mocker):
         qaoa = self._make_qaoa(ExactTrotterization(), dummy_simulator)
         spo = qaoa._cost_spo
 
         # Prime the cache, then start counting.
         qaoa._cost_meta_circuit_factory(spo, ham_id=0)
-        spy = mocker.spy(qaoa_module, "qscript_to_meta")
+        spy = mocker.spy(qaoa, "_build_qaoa_qiskit_circuit")
 
         for _ in range(3):
             qaoa._cost_meta_circuit_factory(spo, ham_id=0)

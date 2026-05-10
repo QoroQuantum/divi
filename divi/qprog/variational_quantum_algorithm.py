@@ -8,7 +8,7 @@ from abc import abstractmethod
 from datetime import datetime
 from pathlib import Path
 from queue import Queue
-from typing import Any, ClassVar, Literal, NamedTuple
+from typing import Any, ClassVar, Literal, NamedTuple, TypeAlias
 from warnings import warn
 
 import numpy as np
@@ -64,7 +64,7 @@ def _extract_param_set_idx(key: tuple) -> int:
 
 _RUN_INSTRUCTION = "Call run() to execute the optimization."
 
-ParamHistoryMode = Literal["all_evaluated", "best_per_iteration"]
+ParamHistoryMode: TypeAlias = Literal["all_evaluated", "best_per_iteration"]
 
 
 class SolutionEntry(NamedTuple):
@@ -1052,7 +1052,9 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         if name == "cost":
             return factories["cost_circuit"]
         if name == "measurement":
-            return factories.get("meas_circuit", factories["cost_circuit"])
+            if "meas_circuit" in factories:
+                return factories["meas_circuit"]
+            return factories["cost_circuit"]
         raise KeyError(f"No initial spec registered for pipeline {name!r}.")
 
     def _build_pipeline_env(self, **overrides) -> PipelineEnv:

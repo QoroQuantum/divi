@@ -7,18 +7,18 @@ import pickle
 from typing import Any, Literal
 
 import numpy as np
-import pennylane as qp
-from qiskit.circuit import ParameterVector
+from qiskit.circuit import ParameterVector, QuantumCircuit
+from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.circuits import MetaCircuit, qscript_to_meta
+from divi.circuits import MetaCircuit
 from divi.hamiltonians import (
     ExactTrotterization,
     TrotterizationStrategy,
 )
 from divi.hamiltonians._term_ops import (
-    _from_spo,
     _spo_to_basis_gate_ops,
+    _spo_to_qiskit_basis_gates,
     _spo_wires,
     _to_spo,
 )
@@ -34,6 +34,79 @@ logger = logging.getLogger(__name__)
 
 # Sentinel distinguishing 'run() not yet called' from a decoded solution of ``None``.
 _UNSET: Any = object()
+
+
+_LAZY_COST_CIRCUIT = object()
+
+
+def _emit_initial_state_qiskit(
+    qc: QuantumCircuit, pl_ops: list, wire_to_qubit: dict
+) -> None:
+    """Translate the small PL-op set used by built-in InitialState subclasses
+    to qiskit gates, in place on ``qc``.
+
+    Supports ``Hadamard``, ``PauliX``, ``CNOT``, and ``CRY`` — covers
+    :class:`SuperpositionState`, :class:`OnesState`, :class:`CustomPerQubitState`,
+    and :class:`WState`. ``wire_to_qubit`` maps PL wire labels (which may be
+    non-int graph node labels) to ``QuantumCircuit`` qubit indices.
+    """
+    for op in pl_ops:
+        name = op.name
+        qubits = [wire_to_qubit[w] for w in op.wires.labels]
+        if name == "Hadamard":
+            qc.h(qubits[0])
+        elif name == "PauliX":
+            qc.x(qubits[0])
+        elif name == "CNOT":
+            qc.cx(qubits[0], qubits[1])
+        elif name == "CRY":
+            qc.cry(float(op.parameters[0]), qubits[0], qubits[1])
+        else:
+            raise NotImplementedError(
+                f"_emit_initial_state_qiskit does not handle {name!r}; "
+                "extend the dispatcher or fall back to the qscript path."
+            )
+
+
+class _LazyCostCircuitDict(dict):
+    """Defers ``cost_circuit`` until first access.
+
+    For QAOA the cost-pipeline initial spec is the cost Hamiltonian, not a
+    pre-built MetaCircuit, so ``cost_circuit`` is only consumed by tests and
+    introspection — building it eagerly is dead work that dominates large-n
+    construction time. The key is pre-inserted with a sentinel so iteration
+    order matches the eager dict; access materialises the entry.
+    """
+
+    __slots__ = ("_build_cost_circuit",)
+
+    def __init__(self, build_cost_circuit, meas_circuit):
+        super().__init__(
+            [("cost_circuit", _LAZY_COST_CIRCUIT), ("meas_circuit", meas_circuit)]
+        )
+        self._build_cost_circuit = build_cost_circuit
+
+    def __getitem__(self, key):
+        value = super().__getitem__(key)
+        if value is _LAZY_COST_CIRCUIT:
+            value = self._build_cost_circuit()
+            super().__setitem__(key, value)
+        return value
+
+    def get(self, key, default=None):
+        if key in self:
+            return self[key]
+        return default
+
+    def values(self):
+        for k in super().keys():
+            self[k]  # trigger lazy materialisation
+        return super().values()
+
+    def items(self):
+        for k in super().keys():
+            self[k]  # trigger lazy materialisation
+        return super().items()
 
 
 class QAOA(VariationalQuantumAlgorithm):
@@ -222,7 +295,11 @@ class QAOA(VariationalQuantumAlgorithm):
         return self._solution_bitstring
 
     def _build_qaoa_ops(self, cost_spo: SparsePauliOp) -> list:
-        """Build QAOA layer ops for a given cost Hamiltonian (as SPO)."""
+        """Build QAOA layer ops for a given cost Hamiltonian (as SPO).
+
+        Returns PennyLane ops; used by the legacy qscript path for
+        introspection/lazy ``cost_circuit`` materialisation only.
+        """
         ops = self.initial_state.build(self._circuit_wires)
 
         for layer_params in self._params:
@@ -231,6 +308,36 @@ class QAOA(VariationalQuantumAlgorithm):
             ops.extend(_spo_to_basis_gate_ops(self._mixer_spo, beta, self._mixer_wires))
 
         return ops
+
+    def _build_qaoa_qiskit_circuit(self, cost_spo: SparsePauliOp) -> QuantumCircuit:
+        """Build the QAOA ansatz directly as a qiskit ``QuantumCircuit``.
+
+        Skips the PennyLane ops → qscript → DAG conversion roundtrip that
+        dominates large-n construction time. Initial-state preparation is
+        translated gate-for-gate from the PL ops emitted by
+        ``initial_state.build``; only the small set of gates the built-in
+        :class:`InitialState` subclasses produce is supported.
+
+        Wire labels (which may be graph node strings) are flattened to
+        ``range(n_qubits)`` indices via ``_circuit_wires``' positional
+        mapping — qubit ``i`` ↔ ``self._circuit_wires[i]``.
+        """
+        n_qubits = self.n_qubits
+        wire_to_qubit = {w: i for i, w in enumerate(self._circuit_wires)}
+        cost_qubits = list(range(n_qubits))
+        mixer_qubits = [wire_to_qubit[w] for w in self._mixer_wires]
+
+        qc = QuantumCircuit(n_qubits)
+        _emit_initial_state_qiskit(
+            qc, self.initial_state.build(self._circuit_wires), wire_to_qubit
+        )
+
+        for layer_params in self._params:
+            gamma, beta = layer_params
+            _spo_to_qiskit_basis_gates(qc, cost_spo, gamma, cost_qubits)
+            _spo_to_qiskit_basis_gates(qc, self._mixer_spo, beta, mixer_qubits)
+
+        return qc
 
     def _cost_meta_circuit_factory(
         self, processed_spo: SparsePauliOp, ham_id: int
@@ -243,16 +350,12 @@ class QAOA(VariationalQuantumAlgorithm):
         if stateless and cache_key in self._cost_meta_cache:
             return self._cost_meta_cache[cache_key]
 
-        # ``qp.expval`` requires a PennyLane observable.
-        processed_pl = _from_spo(processed_spo, self._circuit_wires, simplify=False)
-        tape = qp.tape.QuantumScript(
-            ops=self._build_qaoa_ops(processed_spo),
-            measurements=[qp.expval(processed_pl)],
-        )
-        meta = qscript_to_meta(
-            tape,
+        qc = self._build_qaoa_qiskit_circuit(processed_spo)
+        meta = MetaCircuit(
+            circuit_bodies=(((), circuit_to_dag(qc)),),
+            parameters=tuple(self._params.flatten()),
+            observable=processed_spo,
             precision=self._precision,
-            parameter_order=tuple(self._params.flatten()),
         )
         if stateless:
             self._cost_meta_cache[cache_key] = meta
@@ -260,23 +363,29 @@ class QAOA(VariationalQuantumAlgorithm):
 
     def _create_meta_circuit_factories(self) -> dict[str, MetaCircuit]:
         """Generate meta-circuit factories for the QAOA problem."""
-        ops = self._build_qaoa_ops(self._cost_spo)
         flat_params = tuple(self._params.flatten())
+        qc = self._build_qaoa_qiskit_circuit(self._cost_spo)
+        dag = circuit_to_dag(qc)
 
-        return {
-            "cost_circuit": qscript_to_meta(
-                qp.tape.QuantumScript(
-                    ops=ops, measurements=[qp.expval(self.cost_hamiltonian)]
-                ),
+        meas_circuit = MetaCircuit(
+            circuit_bodies=(((), dag),),
+            parameters=flat_params,
+            measured_wires=tuple(range(self.n_qubits)),
+            precision=self._precision,
+        )
+
+        def _build_cost_circuit() -> MetaCircuit:
+            return MetaCircuit(
+                circuit_bodies=(((), dag),),
+                parameters=flat_params,
+                observable=self._cost_spo,
                 precision=self._precision,
-                parameter_order=flat_params,
-            ),
-            "meas_circuit": qscript_to_meta(
-                qp.tape.QuantumScript(ops=ops, measurements=[qp.probs()]),
-                precision=self._precision,
-                parameter_order=flat_params,
-            ),
-        }
+            )
+
+        return _LazyCostCircuitDict(
+            build_cost_circuit=_build_cost_circuit,
+            meas_circuit=meas_circuit,
+        )
 
     def _perform_final_computation(self, **kwargs) -> None:
         """Run measurement circuits with the best parameters and decode the solution."""

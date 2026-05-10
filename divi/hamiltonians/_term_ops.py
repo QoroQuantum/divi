@@ -232,3 +232,53 @@ def _spo_to_basis_gate_ops(
             elif ch == "Y":
                 ops.append(qp.RX(-_HALF_PI, wires=w))
     return ops
+
+
+def _spo_to_qiskit_basis_gates(
+    qc, spo: SparsePauliOp, time, qubits: Sequence[int]
+) -> None:
+    """Append exp(-i * time * spo) gates to ``qc`` as qiskit basis gates.
+
+    Gate-for-gate equivalent of :func:`_spo_to_basis_gate_ops` but emits qiskit
+    instructions directly, skipping the PL→qiskit conversion roundtrip.
+    """
+    qubit_list = list(qubits)
+    for pauli_str, coeff in zip(spo.paulis.to_labels(), spo.coeffs):
+        c = float(np.real(coeff))
+        # Qiskit labels are big-endian: pauli_str[-(i+1)] is qubit i.
+        active = [
+            (qubit_list[i], ch) for i, ch in enumerate(reversed(pauli_str)) if ch != "I"
+        ]
+        if not active:
+            continue
+        theta = 2 * time * c
+
+        if len(active) == 1:
+            q, ch = active[0]
+            if ch == "Z":
+                qc.rz(theta, q)
+            elif ch == "X":
+                qc.rx(theta, q)
+            else:
+                qc.ry(theta, q)
+            continue
+
+        for q, ch in active:
+            if ch == "X":
+                qc.h(q)
+            elif ch == "Y":
+                qc.rx(_HALF_PI, q)
+
+        active_qubits = [q for q, _ in active]
+        n = len(active_qubits)
+        for i in range(n - 1, 0, -1):
+            qc.cx(active_qubits[i], active_qubits[i - 1])
+        qc.rz(theta, active_qubits[0])
+        for i in range(1, n):
+            qc.cx(active_qubits[i], active_qubits[i - 1])
+
+        for q, ch in active:
+            if ch == "X":
+                qc.h(q)
+            elif ch == "Y":
+                qc.rx(-_HALF_PI, q)

@@ -304,7 +304,7 @@ def observable_to_sparse_pauli_op(
     obs: qp.operation.Operator,
     wires,
 ) -> SparsePauliOp:
-    """Convert a PennyLane observable to a Qiskit :class:`SparsePauliOp`.
+    """Convert a PennyLane observable to a Qiskit :class:`~qiskit.quantum_info.SparsePauliOp`.
 
     Handles arbitrary wire labels (strings, tuples, non-contiguous ints)
     by resolving through the provided *wires* register.
@@ -349,7 +349,7 @@ def sparse_pauli_op_to_pl_observable(
     op: SparsePauliOp,
     wires,
 ) -> qp.operation.Operator:
-    """Convert a Qiskit :class:`SparsePauliOp` back into a PennyLane observable.
+    """Convert a Qiskit :class:`~qiskit.quantum_info.SparsePauliOp` back into a PennyLane observable.
 
     ``pennylane_qiskit.load_pauli_op`` exists but always produces complex
     coefficients (because ``SparsePauliOp`` stores ``complex128``), which
@@ -390,7 +390,7 @@ def sparse_pauli_op_to_pl_observable(
 
 
 def sparse_pauli_op_to_ham_string(op: SparsePauliOp) -> str:
-    """Render a :class:`SparsePauliOp` as the ``;``-separated dense Pauli
+    """Render a :class:`~qiskit.quantum_info.SparsePauliOp` as the ``;``-separated dense Pauli
     string format used by backend ``ham_ops`` artifacts.
 
     The backend contract is big-endian (qubit 0 on the left).  Coefficients
