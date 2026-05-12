@@ -11,7 +11,6 @@ from .algorithms import (
     CustomPerQubitState,
     CustomVQA,
     GenericLayerAnsatz,
-    HardwareEfficientAnsatz,
     HartreeFockAnsatz,
     InitialState,
     InterpolationStrategy,

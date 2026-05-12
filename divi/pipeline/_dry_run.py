@@ -92,12 +92,10 @@ def _two_qubit_depth(dag: DAGCircuit) -> int:
     the same walk.
     """
     qubit_depth: dict = {}
-    for node in dag.op_nodes():
-        if len(node.qargs) != 2:
-            continue
-        new_d = max((qubit_depth.get(q, 0) for q in node.qargs), default=0) + 1
-        for q in node.qargs:
-            qubit_depth[q] = new_d
+    for node in dag.two_qubit_ops():
+        qa, qb = node.qargs
+        d = max(qubit_depth.get(qa, 0), qubit_depth.get(qb, 0)) + 1
+        qubit_depth[qa] = qubit_depth[qb] = d
     return max(qubit_depth.values(), default=0)
 
 

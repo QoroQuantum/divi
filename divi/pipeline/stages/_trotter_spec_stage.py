@@ -5,15 +5,15 @@
 from collections.abc import Callable
 from typing import Any
 
-import pennylane as qp
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
+from divi.circuits._core import _assert_hermitian_spo
 from divi.hamiltonians import (
     ExactTrotterization,
     TrotterizationStrategy,
 )
-from divi.hamiltonians._term_ops import _clean_hamiltonian_spo, _to_spo
+from divi.hamiltonians._term_ops import _clean_hamiltonian_spo
 from divi.pipeline.abc import (
     ChildResults,
     MetaCircuitBatch,
@@ -28,12 +28,11 @@ from divi.pipeline.transformations import (
 )
 
 
-class TrotterSpecStage(SpecStage[qp.operation.Operator]):
+class TrotterSpecStage(SpecStage[SparsePauliOp]):
     """SpecStage that turns a Hamiltonian into a batch of MetaCircuits via a TrotterizationStrategy.
 
-    Converts the initial_spec (a PennyLane Hamiltonian) to a
-    :class:`~qiskit.quantum_info.SparsePauliOp`, runs the strategy to
-    obtain one or more SPO samples, and invokes
+    Accepts a :class:`~qiskit.quantum_info.SparsePauliOp`, runs the strategy
+    to obtain one or more SPO samples, and invokes
     ``meta_circuit_factory(processed_spo, ham_id)`` for each.
     """
 
@@ -65,7 +64,7 @@ class TrotterSpecStage(SpecStage[qp.operation.Operator]):
         self._meta_circuit_factory = meta_circuit_factory
 
     def _prepare(
-        self, items: qp.operation.Operator
+        self, items: SparsePauliOp
     ) -> tuple[SparsePauliOp, TrotterizationStrategy, int, dict]:
         """Validate input and compute the shared ``(spo, strategy, n_samples, token)`` tuple.
 
@@ -73,13 +72,13 @@ class TrotterSpecStage(SpecStage[qp.operation.Operator]):
         """
         hamiltonian = items
 
-        if not isinstance(hamiltonian, qp.operation.Operator):
+        if not isinstance(hamiltonian, SparsePauliOp):
             raise TypeError(
-                f"TrotterSpecStage expects a PennyLane Operator (Hamiltonian), got {type(hamiltonian).__name__}"
+                f"TrotterSpecStage expects a SparsePauliOp, got {type(hamiltonian).__name__}"
             )
 
-        spo = _to_spo(hamiltonian)
-        spo_clean, _ = _clean_hamiltonian_spo(spo)
+        _assert_hermitian_spo(hamiltonian)
+        spo_clean, _ = _clean_hamiltonian_spo(hamiltonian)
 
         if spo_clean.size == 0:
             raise ValueError("Hamiltonian contains only constant terms.")
@@ -96,7 +95,7 @@ class TrotterSpecStage(SpecStage[qp.operation.Operator]):
         return spo_clean, strategy, n_samples, token
 
     def expand(
-        self, batch: qp.operation.Operator, env: PipelineEnv
+        self, batch: SparsePauliOp, env: PipelineEnv
     ) -> tuple[MetaCircuitBatch, StageToken]:
         """Transform Hamiltonian into a keyed batch of MetaCircuits (one per strategy output)."""
         spo_clean, strategy, n_samples, token = self._prepare(batch)
@@ -110,7 +109,7 @@ class TrotterSpecStage(SpecStage[qp.operation.Operator]):
         return metas, token
 
     def dry_expand(
-        self, batch: qp.operation.Operator, env: PipelineEnv
+        self, batch: SparsePauliOp, env: PipelineEnv
     ) -> tuple[MetaCircuitBatch, StageToken]:
         """Analytic path: build one prototype MetaCircuit, fan it out ``n_samples`` times.
 

@@ -17,10 +17,10 @@ from divi.hamiltonians import (
     TrotterizationStrategy,
 )
 from divi.hamiltonians._term_ops import (
-    _spo_to_basis_gate_ops,
+    _n_qubits,
     _spo_to_qiskit_basis_gates,
     _spo_wires,
-    _to_spo,
+    to_spo,
 )
 from divi.pipeline.stages import TrotterSpecStage
 from divi.qprog.algorithms import InitialState
@@ -34,79 +34,6 @@ logger = logging.getLogger(__name__)
 
 # Sentinel distinguishing 'run() not yet called' from a decoded solution of ``None``.
 _UNSET: Any = object()
-
-
-_LAZY_COST_CIRCUIT = object()
-
-
-def _emit_initial_state_qiskit(
-    qc: QuantumCircuit, pl_ops: list, wire_to_qubit: dict
-) -> None:
-    """Translate the small PL-op set used by built-in InitialState subclasses
-    to qiskit gates, in place on ``qc``.
-
-    Supports ``Hadamard``, ``PauliX``, ``CNOT``, and ``CRY`` — covers
-    :class:`SuperpositionState`, :class:`OnesState`, :class:`CustomPerQubitState`,
-    and :class:`WState`. ``wire_to_qubit`` maps PL wire labels (which may be
-    non-int graph node labels) to ``QuantumCircuit`` qubit indices.
-    """
-    for op in pl_ops:
-        name = op.name
-        qubits = [wire_to_qubit[w] for w in op.wires.labels]
-        if name == "Hadamard":
-            qc.h(qubits[0])
-        elif name == "PauliX":
-            qc.x(qubits[0])
-        elif name == "CNOT":
-            qc.cx(qubits[0], qubits[1])
-        elif name == "CRY":
-            qc.cry(float(op.parameters[0]), qubits[0], qubits[1])
-        else:
-            raise NotImplementedError(
-                f"_emit_initial_state_qiskit does not handle {name!r}; "
-                "extend the dispatcher or fall back to the qscript path."
-            )
-
-
-class _LazyCostCircuitDict(dict):
-    """Defers ``cost_circuit`` until first access.
-
-    For QAOA the cost-pipeline initial spec is the cost Hamiltonian, not a
-    pre-built MetaCircuit, so ``cost_circuit`` is only consumed by tests and
-    introspection — building it eagerly is dead work that dominates large-n
-    construction time. The key is pre-inserted with a sentinel so iteration
-    order matches the eager dict; access materialises the entry.
-    """
-
-    __slots__ = ("_build_cost_circuit",)
-
-    def __init__(self, build_cost_circuit, meas_circuit):
-        super().__init__(
-            [("cost_circuit", _LAZY_COST_CIRCUIT), ("meas_circuit", meas_circuit)]
-        )
-        self._build_cost_circuit = build_cost_circuit
-
-    def __getitem__(self, key):
-        value = super().__getitem__(key)
-        if value is _LAZY_COST_CIRCUIT:
-            value = self._build_cost_circuit()
-            super().__setitem__(key, value)
-        return value
-
-    def get(self, key, default=None):
-        if key in self:
-            return self[key]
-        return default
-
-    def values(self):
-        for k in super().keys():
-            self[k]  # trigger lazy materialisation
-        return super().values()
-
-    def items(self):
-        for k in super().keys():
-            self[k]  # trigger lazy materialisation
-        return super().items()
 
 
 class QAOA(VariationalQuantumAlgorithm):
@@ -165,17 +92,21 @@ class QAOA(VariationalQuantumAlgorithm):
 
         super().__init__(**kwargs)
 
-        # Problem provides all domain-specific ingredients
+        # Coerce both Hamiltonians to ``SparsePauliOp`` at the input boundary.
         self.problem = problem
-        self.cost_hamiltonian = problem.cost_hamiltonian
+        self.cost_hamiltonian: SparsePauliOp = to_spo(problem.cost_hamiltonian)
+        self.mixer_hamiltonian: SparsePauliOp = to_spo(problem.mixer_hamiltonian)
         self._decode_solution_fn = problem.decode_fn
         self.loss_constant = problem.loss_constant
         self.initial_state = initial_state or problem.recommended_initial_state
         self.problem_metadata = getattr(problem, "metadata", {})
 
-        # Canonical wire mapping aligned with the cost SPO; ``op.wires``
-        # would be unreliable after ``simplify()``.
-        self._circuit_wires = _spo_wires(self.cost_hamiltonian)
+        # Canonical wire mapping aligned with the cost SPO; problems may
+        # surface domain-level labels (e.g. graph node names) via
+        # ``wire_labels``, otherwise we fall back to dense qubit indices.
+        self._circuit_wires = tuple(
+            getattr(problem, "wire_labels", None) or _spo_wires(self.cost_hamiltonian)
+        )
         self.n_qubits = len(self._circuit_wires)
 
         # Algorithm parameters
@@ -186,9 +117,6 @@ class QAOA(VariationalQuantumAlgorithm):
         self._decoded_solution: Any = _UNSET
         self._solution_bitstring: Any = _UNSET
         self._cost_meta_cache: dict[tuple[int, int], MetaCircuit] = {}
-        self._mixer_spo: SparsePauliOp = _to_spo(problem.mixer_hamiltonian)
-        self._mixer_wires = _spo_wires(problem.mixer_hamiltonian)
-        self._cost_spo: SparsePauliOp = _to_spo(self.cost_hamiltonian)
 
         # Circuit parameters — Qiskit ParameterVector, no sympy.
         betas = ParameterVector("β", self.n_layers)
@@ -196,6 +124,7 @@ class QAOA(VariationalQuantumAlgorithm):
         self._params = np.array([[b, g] for b, g in zip(betas, gammas)], dtype=object)
 
         self._pipelines = self._build_pipelines()
+        self._meta_circuit_factories: dict[str, MetaCircuit] | None = None
 
     @property
     def n_params_per_layer(self) -> int:
@@ -294,48 +223,26 @@ class QAOA(VariationalQuantumAlgorithm):
             )
         return self._solution_bitstring
 
-    def _build_qaoa_ops(self, cost_spo: SparsePauliOp) -> list:
-        """Build QAOA layer ops for a given cost Hamiltonian (as SPO).
-
-        Returns PennyLane ops; used by the legacy qscript path for
-        introspection/lazy ``cost_circuit`` materialisation only.
-        """
-        ops = self.initial_state.build(self._circuit_wires)
-
-        for layer_params in self._params:
-            gamma, beta = layer_params
-            ops.extend(_spo_to_basis_gate_ops(cost_spo, gamma, self._circuit_wires))
-            ops.extend(_spo_to_basis_gate_ops(self._mixer_spo, beta, self._mixer_wires))
-
-        return ops
-
     def _build_qaoa_qiskit_circuit(self, cost_spo: SparsePauliOp) -> QuantumCircuit:
         """Build the QAOA ansatz directly as a qiskit ``QuantumCircuit``.
-
-        Skips the PennyLane ops → qscript → DAG conversion roundtrip that
-        dominates large-n construction time. Initial-state preparation is
-        translated gate-for-gate from the PL ops emitted by
-        ``initial_state.build``; only the small set of gates the built-in
-        :class:`InitialState` subclasses produce is supported.
 
         Wire labels (which may be graph node strings) are flattened to
         ``range(n_qubits)`` indices via ``_circuit_wires``' positional
         mapping — qubit ``i`` ↔ ``self._circuit_wires[i]``.
         """
         n_qubits = self.n_qubits
-        wire_to_qubit = {w: i for i, w in enumerate(self._circuit_wires)}
         cost_qubits = list(range(n_qubits))
-        mixer_qubits = [wire_to_qubit[w] for w in self._mixer_wires]
+        # The mixer SPO is built over the same dense qubit space as the cost
+        # SPO; use straight 0..n-1 indexing.
+        mixer_qubits = list(range(_n_qubits(self.mixer_hamiltonian)))
 
         qc = QuantumCircuit(n_qubits)
-        _emit_initial_state_qiskit(
-            qc, self.initial_state.build(self._circuit_wires), wire_to_qubit
-        )
+        qc.compose(self.initial_state.build(self._circuit_wires), inplace=True)
 
         for layer_params in self._params:
             gamma, beta = layer_params
             _spo_to_qiskit_basis_gates(qc, cost_spo, gamma, cost_qubits)
-            _spo_to_qiskit_basis_gates(qc, self._mixer_spo, beta, mixer_qubits)
+            _spo_to_qiskit_basis_gates(qc, self.mixer_hamiltonian, beta, mixer_qubits)
 
         return qc
 
@@ -362,30 +269,24 @@ class QAOA(VariationalQuantumAlgorithm):
         return meta
 
     def _create_meta_circuit_factories(self) -> dict[str, MetaCircuit]:
-        """Generate meta-circuit factories for the QAOA problem."""
-        flat_params = tuple(self._params.flatten())
-        qc = self._build_qaoa_qiskit_circuit(self._cost_spo)
-        dag = circuit_to_dag(qc)
+        """Generate meta-circuit factories for the QAOA problem.
 
+        The cost circuit is built via :meth:`_cost_meta_circuit_factory` so
+        the cost and measurement pipelines share one
+        ``_build_qaoa_qiskit_circuit`` pass through :attr:`_cost_meta_cache`.
+        Stateful strategies (e.g. QDrift) bypass the cache and resample per
+        call; the cost circuit built here serves only as the structural
+        template for the measurement DAG.
+        """
+        flat_params = tuple(self._params.flatten())
+        cost_circuit = self._cost_meta_circuit_factory(self.cost_hamiltonian, 0)
         meas_circuit = MetaCircuit(
-            circuit_bodies=(((), dag),),
+            circuit_bodies=cost_circuit.circuit_bodies,
             parameters=flat_params,
             measured_wires=tuple(range(self.n_qubits)),
             precision=self._precision,
         )
-
-        def _build_cost_circuit() -> MetaCircuit:
-            return MetaCircuit(
-                circuit_bodies=(((), dag),),
-                parameters=flat_params,
-                observable=self._cost_spo,
-                precision=self._precision,
-            )
-
-        return _LazyCostCircuitDict(
-            build_cost_circuit=_build_cost_circuit,
-            meas_circuit=meas_circuit,
-        )
+        return {"cost_circuit": cost_circuit, "meas_circuit": meas_circuit}
 
     def _perform_final_computation(self, **kwargs) -> None:
         """Run measurement circuits with the best parameters and decode the solution."""

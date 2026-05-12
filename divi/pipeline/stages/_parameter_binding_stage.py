@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import warnings
+from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any
 
@@ -82,11 +83,30 @@ def _iterate_bodies_over_param_sets(
 # Fast-path (QASM-template) prepare/emit pair.
 # ---------------------------------------------------------------------------
 
+# Bounded LRU memo for ``dag_to_qasm_body``. Keyed on ``id(dag)`` because
+# ``DAGCircuit`` is unhashable; the tuple's DAG ref pins the object so
+# ``id()`` cannot collide via GC.
+_FAST_QASM_CACHE_MAXSIZE = 256
+_FAST_QASM_CACHE: OrderedDict[tuple[int, int], tuple[DAGCircuit, str]] = OrderedDict()
+
+
+def _qasm_body_cached(dag: DAGCircuit, precision: int) -> str:
+    key = (id(dag), precision)
+    cached = _FAST_QASM_CACHE.get(key)
+    if cached is not None and cached[0] is dag:
+        _FAST_QASM_CACHE.move_to_end(key)
+        return cached[1]
+    body = dag_to_qasm_body(dag, precision=precision)
+    _FAST_QASM_CACHE[key] = (dag, body)
+    if len(_FAST_QASM_CACHE) > _FAST_QASM_CACHE_MAXSIZE:
+        _FAST_QASM_CACHE.popitem(last=False)
+    return body
+
 
 def _fast_prepare(node: MetaCircuit, dag: DAGCircuit):
     """Build a parametric QASM template for one body DAG."""
     param_names = tuple(p.name for p in node.parameters)
-    return build_template(dag_to_qasm_body(dag, precision=node.precision), param_names)
+    return build_template(_qasm_body_cached(dag, node.precision), param_names)
 
 
 def _fast_emit(node: MetaCircuit, template, values: np.ndarray) -> str:
@@ -190,7 +210,7 @@ class ParameterBindingStage(BundleStage):
             if len(node.parameters) == 0:
                 # Non-parametric: serialise each body once, no param-set expansion.
                 bodies = tuple(
-                    (tag, dag_to_qasm_body(dag, precision=node.precision))
+                    (tag, _qasm_body_cached(dag, node.precision))
                     for tag, dag in node.circuit_bodies
                 )
                 out[key] = node.set_bound_bodies(bodies)

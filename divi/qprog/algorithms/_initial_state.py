@@ -11,7 +11,7 @@ prepends an initial-state layer to its circuit.
 Class-based API (preferred)::
 
     state = WState(block_size=3, n_blocks=4)
-    ops = state.build(wires=range(12))
+    sub_qc = state.build(wires=range(12))
 
 Pass instances directly to algorithm constructors (e.g. ``initial_state=WState(3, 4)``).
 """
@@ -21,7 +21,7 @@ from typing import Literal, Sequence
 
 import networkx as nx
 import numpy as np
-import pennylane as qp
+from qiskit.circuit import QuantumCircuit
 
 # ---------------------------------------------------------------------------
 # Abstract base class
@@ -31,19 +31,25 @@ import pennylane as qp
 class InitialState(ABC):
     """Abstract base class for initial quantum state preparation.
 
-    Subclasses implement :meth:`build` to return a list of PennyLane
-    operations that prepare the desired state on the given wires.
+    Subclasses implement :meth:`build` to return a :class:`~qiskit.circuit.QuantumCircuit`
+    of size ``len(wires)`` that prepares the desired state. Qubit ``i`` of
+    the returned circuit corresponds positionally to ``wires[i]`` — the
+    ``wires`` argument exists purely to let callers communicate domain-level
+    labels (e.g. graph node names) that subclasses may need for length /
+    shape validation.
     """
 
     @abstractmethod
-    def build(self, wires: Sequence[int]) -> list[qp.operation.Operator]:
-        """Return gate operations that prepare this state on *wires*.
+    def build(self, wires: Sequence) -> QuantumCircuit:
+        """Return a state-preparation circuit on ``len(wires)`` qubits.
 
         Args:
-            wires: Ordered sequence of wire labels.
+            wires: Ordered sequence of wire labels (qubit ``i`` ↔ ``wires[i]``).
+                May contain non-integer labels (e.g. graph node names);
+                only the *length* and ordering matter for circuit emission.
 
         Returns:
-            List of PennyLane operations.
+            A :class:`~qiskit.circuit.QuantumCircuit` with ``len(wires)`` qubits.
         """
 
     @property
@@ -60,22 +66,28 @@ class InitialState(ABC):
 class ZerosState(InitialState):
     r"""Computational basis state \|00…0⟩ (no gates needed)."""
 
-    def build(self, wires: Sequence[int]) -> list[qp.operation.Operator]:
-        return []
+    def build(self, wires: Sequence) -> QuantumCircuit:
+        return QuantumCircuit(len(wires))
 
 
 class OnesState(InitialState):
     r"""All-ones state \|11…1⟩ via PauliX on every qubit."""
 
-    def build(self, wires: Sequence[int]) -> list[qp.operation.Operator]:
-        return [qp.PauliX(wires=w) for w in wires]
+    def build(self, wires: Sequence) -> QuantumCircuit:
+        qc = QuantumCircuit(len(wires))
+        for q in range(len(wires)):
+            qc.x(q)
+        return qc
 
 
 class SuperpositionState(InitialState):
     """Equal superposition via Hadamard on every qubit."""
 
-    def build(self, wires: Sequence[int]) -> list[qp.operation.Operator]:
-        return [qp.Hadamard(wires=w) for w in wires]
+    def build(self, wires: Sequence) -> QuantumCircuit:
+        qc = QuantumCircuit(len(wires))
+        for q in range(len(wires)):
+            qc.h(q)
+        return qc
 
 
 class CustomPerQubitState(InitialState):
@@ -97,23 +109,23 @@ class CustomPerQubitState(InitialState):
             )
         self.state_string = state_string
 
-    def build(self, wires: Sequence[int]) -> list[qp.operation.Operator]:
-        wires = list(wires)
-        if len(wires) != len(self.state_string):
+    def build(self, wires: Sequence) -> QuantumCircuit:
+        n_wires = len(wires)
+        if n_wires != len(self.state_string):
             raise ValueError(
                 f"state_string length ({len(self.state_string)}) "
-                f"must match wire count ({len(wires)})."
+                f"must match wire count ({n_wires})."
             )
-        ops: list[qp.operation.Operator] = []
-        for w, char in zip(wires, self.state_string):
+        qc = QuantumCircuit(n_wires)
+        for qubit, char in enumerate(self.state_string):
             if char == "1":
-                ops.append(qp.PauliX(wires=w))
+                qc.x(qubit)
             elif char == "+":
-                ops.append(qp.Hadamard(wires=w))
+                qc.h(qubit)
             elif char == "-":
-                ops.append(qp.PauliX(wires=w))
-                ops.append(qp.Hadamard(wires=w))
-        return ops
+                qc.x(qubit)
+                qc.h(qubit)
+        return qc
 
 
 class WState(InitialState):
@@ -142,39 +154,41 @@ class WState(InitialState):
         self.block_size = block_size
         self.n_blocks = n_blocks
 
-    def build(self, wires: Sequence[int]) -> list[qp.operation.Operator]:
-        """Prepare W-states on each block of *wires*.
+    def build(self, wires: Sequence) -> QuantumCircuit:
+        """Prepare W-states on each block of qubits.
 
         Args:
             wires: Must have length ``block_size * n_blocks``.
+
+        Returns:
+            A :class:`~qiskit.circuit.QuantumCircuit` with ``block_size * n_blocks`` qubits.
         """
-        wires = list(wires)
+        n_wires = len(wires)
         expected = self.block_size * self.n_blocks
-        if len(wires) != expected:
+        if n_wires != expected:
             raise ValueError(
                 f"Expected {expected} wires ({self.block_size} × {self.n_blocks}), "
-                f"got {len(wires)}."
+                f"got {n_wires}."
             )
-        ops: list[qp.operation.Operator] = []
+        qc = QuantumCircuit(n_wires)
         for b in range(self.n_blocks):
             start = b * self.block_size
-            ops.extend(self._w_state(wires[start : start + self.block_size]))
-        return ops
+            self._w_state(qc, list(range(start, start + self.block_size)))
+        return qc
 
     @staticmethod
-    def _w_state(wires: list[int]) -> list[qp.operation.Operator]:
-        """CRY + CNOT ladder for a single W-state on *wires*."""
-        n = len(wires)
-        ops: list[qp.operation.Operator] = [qp.PauliX(wires=wires[0])]
+    def _w_state(qc: QuantumCircuit, qubits: list[int]) -> None:
+        """CRY + CNOT ladder for a single W-state on the given qubits."""
+        n = len(qubits)
+        qc.x(qubits[0])
         for k in range(n - 1):
             angle = 2 * np.arccos(np.sqrt(1.0 / (n - k)))
-            ops.append(qp.CRY(phi=angle, wires=[wires[k], wires[k + 1]]))
-            ops.append(qp.CNOT(wires=[wires[k + 1], wires[k]]))
-        return ops
+            qc.cry(angle, qubits[k], qubits[k + 1])
+            qc.cx(qubits[k + 1], qubits[k])
 
 
 # ---------------------------------------------------------------------------
-# Block-XY mixer graph (for use with pennylane.qaoa.xy_mixer)
+# Block-XY mixer graph (for use with ``xy_mixer_spo``)
 # ---------------------------------------------------------------------------
 
 
@@ -188,7 +202,8 @@ def build_block_xy_mixer_graph(
 
     Returns a ``networkx.Graph`` whose edges define the XY coupling
     terms within each qubit block.  Pass the result to
-    ``pennylane.qaoa.xy_mixer()`` to obtain the mixer Hamiltonian.
+    :func:`~divi.hamiltonians.xy_mixer_spo` to obtain the mixer
+    Hamiltonian as a :class:`~qiskit.quantum_info.SparsePauliOp`.
 
     Args:
         block_size: Qubits per block (≥ 2 for mixing to occur).
@@ -207,7 +222,7 @@ def build_block_xy_mixer_graph(
               connectivity, at the cost of a weaker spectral gap.
 
     Returns:
-        ``networkx.Graph`` for ``pennylane.qaoa.xy_mixer()``.
+        ``networkx.Graph`` for :func:`~divi.hamiltonians.xy_mixer_spo`.
     """
     wires = list(wires)
     expected = block_size * n_blocks

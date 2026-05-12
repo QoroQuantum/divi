@@ -6,7 +6,7 @@
 
 ``ham_ops`` is a semicolon-separated dense Pauli string (``;`` between terms,
 ``|`` between groups) produced upstream by
-:func:`~divi.circuits.sparse_pauli_op_to_ham_string`.  This module compresses
+:func:`~divi.circuits._sparse_pauli_op_to_ham_string`.  This module compresses
 that string for transport via sparse encoding + gzip + base64.  Not an
 operator encoding (Jordan-Wigner, Bravyi-Kitaev) — purely an I/O concern
 scoped to the Qoro backend.

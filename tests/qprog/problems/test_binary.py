@@ -5,13 +5,13 @@
 import dimod
 import hybrid
 import numpy as np
-import pennylane as qp
 import pytest
 import scipy.sparse as sps
+from qiskit.circuit.library import RYGate, RZGate
 
 import divi.qprog.problems._binary as binary_module
 from divi.backends import CircuitRunner
-from divi.hamiltonians import BinaryPolynomialProblem
+from divi.hamiltonians import BinaryPolynomialProblem, to_spo
 from divi.qprog import (
     PCE,
     QAOA,
@@ -117,7 +117,7 @@ class TestLazyIsingInit:
         spy.assert_not_called()
 
     def test_constructor_does_not_build_x_mixer(self, mocker):
-        spy = mocker.spy(binary_module.pqaoa, "x_mixer")
+        spy = mocker.spy(binary_module, "x_mixer_spo")
         BinaryOptimizationProblem(QUBO_MATRIX)
         spy.assert_not_called()
 
@@ -143,7 +143,7 @@ class TestLazyIsingInit:
         spy.assert_called_once()
 
     def test_mixer_cached_independently(self, mocker):
-        spy = mocker.spy(binary_module.pqaoa, "x_mixer")
+        spy = mocker.spy(binary_module, "x_mixer_spo")
         problem = BinaryOptimizationProblem(QUBO_MATRIX)
 
         first = problem.mixer_hamiltonian
@@ -620,16 +620,12 @@ class TestQUBOInput:
             (0, 1): 4.0,
         }
 
-        assert len(qaoa_problem.cost_hamiltonian) == 4
-        assert all(
-            isinstance(op, (qp.Z, qp.ops.Prod))
-            for op in qaoa_problem.cost_hamiltonian.terms()[1]
-        )
-        assert len(qaoa_problem.problem.mixer_hamiltonian) == 3
-        assert all(
-            isinstance(op, qp.X)
-            for op in qaoa_problem.problem.mixer_hamiltonian.terms()[1]
-        )
+        cost_spo = to_spo(qaoa_problem.cost_hamiltonian)
+        assert cost_spo.size == 4
+        assert all(set(label) <= {"I", "Z"} for label in cost_spo.paulis.to_labels())
+        mixer_spo = to_spo(qaoa_problem.problem.mixer_hamiltonian)
+        assert mixer_spo.size == 3
+        assert set(mixer_spo.paulis.to_labels()) == {"IIX", "IXI", "XII"}
 
         verify_metacircuit_dict(qaoa_problem, ["cost_circuit", "meas_circuit"])
 
@@ -822,15 +818,12 @@ class TestQUBOInput:
         assert isinstance(qaoa_problem.problem, BinaryOptimizationProblem)
         assert qaoa_problem.n_layers == 1
 
-        assert len(qaoa_problem.cost_hamiltonian) == 3
-        assert all(
-            isinstance(op, qp.Z) for op in qaoa_problem.cost_hamiltonian.terms()[1]
-        )
-        assert len(qaoa_problem.problem.mixer_hamiltonian) == 3
-        assert all(
-            isinstance(op, qp.X)
-            for op in qaoa_problem.problem.mixer_hamiltonian.terms()[1]
-        )
+        cost_spo = to_spo(qaoa_problem.cost_hamiltonian)
+        assert cost_spo.size == 3
+        assert all(set(label) <= {"I", "Z"} for label in cost_spo.paulis.to_labels())
+        mixer_spo = to_spo(qaoa_problem.problem.mixer_hamiltonian)
+        assert mixer_spo.size == 3
+        assert set(mixer_spo.paulis.to_labels()) == {"IIX", "IXI", "XII"}
 
         verify_metacircuit_dict(qaoa_problem, ["cost_circuit", "meas_circuit"])
 
@@ -969,7 +962,7 @@ class TestBinaryDecodeMapping:
 
 @pytest.fixture
 def basic_ansatz() -> GenericLayerAnsatz:
-    return GenericLayerAnsatz([qp.RY, qp.RZ])
+    return GenericLayerAnsatz([RYGate, RZGate])
 
 
 @pytest.fixture

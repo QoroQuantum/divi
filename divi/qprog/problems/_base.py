@@ -10,8 +10,9 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import Any
 
-import pennylane as qp
+from qiskit.quantum_info import SparsePauliOp
 
+from divi.hamiltonians._term_ops import _n_qubits
 from divi.qprog.algorithms import InitialState, SuperpositionState
 
 
@@ -26,12 +27,12 @@ class QAOAProblem(ABC):
 
     @property
     @abstractmethod
-    def cost_hamiltonian(self) -> qp.operation.Operator:
+    def cost_hamiltonian(self) -> SparsePauliOp:
         """The cost Hamiltonian encoding the optimization objective."""
 
     @property
     @abstractmethod
-    def mixer_hamiltonian(self) -> qp.operation.Operator:
+    def mixer_hamiltonian(self) -> SparsePauliOp:
         """The mixer Hamiltonian for exploring the solution space."""
 
     @property
@@ -56,6 +57,16 @@ class QAOAProblem(ABC):
         standard X mixer).
         """
         return SuperpositionState()
+
+    @property
+    def wire_labels(self) -> tuple:
+        """Qubit-position-ordered labels for the cost Hamiltonian.
+
+        Defaults to dense ``range(num_qubits)``. Override for problems whose
+        users expect domain-level identifiers (e.g. graph node names) at
+        ``QAOA._circuit_wires`` and through ``decode_fn``.
+        """
+        return tuple(range(_n_qubits(self.cost_hamiltonian)))
 
     def is_feasible(self, bitstring: str) -> bool:
         """Check whether a bitstring represents a feasible solution.

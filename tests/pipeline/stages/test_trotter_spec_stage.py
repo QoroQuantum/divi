@@ -6,13 +6,18 @@
 
 import pennylane as qp
 import pytest
+from qiskit.quantum_info import SparsePauliOp
 
-from divi.circuits import MetaCircuit, qscript_to_meta, sparse_pauli_op_to_pl_observable
+from divi.circuits import MetaCircuit, qscript_to_meta
 from divi.hamiltonians import ExactTrotterization
 from divi.pipeline import CircuitPipeline, PipelineEnv, PipelineTrace
 from divi.pipeline._compilation import _compile_batch
 from divi.pipeline.abc import ChildResults
 from divi.pipeline.stages import MeasurementStage, TrotterSpecStage
+
+_Z0 = SparsePauliOp.from_list([("Z", 1.0)])
+_Z0_Z1 = SparsePauliOp.from_list([("ZI", 1.0), ("IZ", 1.0)])
+_I0 = SparsePauliOp.from_list([("I", 1.0)])
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -31,11 +36,12 @@ class _DummyStrategy:
 
 
 def _meta_factory(processed_spo, ham_id):
-    """Test factory: SPO → PL observable for ``qp.expval`` at the boundary."""
-    obs = sparse_pauli_op_to_pl_observable(
-        processed_spo, range(processed_spo.num_qubits)
+    """Test factory: build a PL observable matching the SPO's single ``Z(0)`` term
+    so ``qscript_to_meta`` produces the same MetaCircuit shape that
+    TrotterSpecStage would otherwise emit on its own."""
+    qscript = qp.tape.QuantumScript(
+        ops=[qp.Hadamard(0)], measurements=[qp.expval(qp.Z(0))]
     )
-    qscript = qp.tape.QuantumScript(ops=[qp.Hadamard(0)], measurements=[qp.expval(obs)])
     return qscript_to_meta(qscript)
 
 
@@ -51,7 +57,7 @@ class TestExpand:
             _DummyStrategy(n=3), meta_circuit_factory=_meta_factory
         )
         env = PipelineEnv(backend=dummy_expval_backend)
-        batch, token = stage.expand(qp.Z(0), env)
+        batch, token = stage.expand(_Z0, env)
 
         assert len(batch) == 3
         for i in range(3):
@@ -65,7 +71,7 @@ class TestExpand:
             ExactTrotterization(), meta_circuit_factory=_meta_factory
         )
         env = PipelineEnv(backend=dummy_expval_backend)
-        batch, _ = stage.expand(qp.Z(0) + qp.Z(1), env)
+        batch, _ = stage.expand(_Z0_Z1, env)
         assert len(batch) == 1
 
     def test_raises_empty_hamiltonian(self, dummy_expval_backend):
@@ -74,13 +80,31 @@ class TestExpand:
         )
         env = PipelineEnv(backend=dummy_expval_backend)
         with pytest.raises(ValueError, match="only constant terms|empty"):
-            stage.expand(qp.I(0), env)
+            stage.expand(_I0, env)
 
     def test_raises_non_operator_input(self, dummy_expval_backend):
         stage = TrotterSpecStage(_DummyStrategy(), meta_circuit_factory=_meta_factory)
         env = PipelineEnv(backend=dummy_expval_backend)
-        with pytest.raises(TypeError, match="Operator"):
+        with pytest.raises(TypeError, match="SparsePauliOp"):
             stage.expand("not a hamiltonian", env)
+
+    def test_accepts_sparse_pauli_op_input(self, dummy_expval_backend):
+        stage = TrotterSpecStage(
+            _DummyStrategy(n=1), meta_circuit_factory=_meta_factory
+        )
+        env = PipelineEnv(backend=dummy_expval_backend)
+        batch, token = stage.expand(SparsePauliOp.from_list([("Z", 1.0)]), env)
+
+        assert len(batch) == 1
+        assert token["n_terms"] == 1
+
+    def test_rejects_non_hermitian_sparse_pauli_op(self, dummy_expval_backend):
+        stage = TrotterSpecStage(
+            _DummyStrategy(n=1), meta_circuit_factory=_meta_factory
+        )
+        env = PipelineEnv(backend=dummy_expval_backend)
+        with pytest.raises(ValueError, match="Hermitian"):
+            stage.expand(SparsePauliOp.from_list([("Z", 1.0j)]), env)
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +118,7 @@ class TestIntrospect:
             _DummyStrategy(n=3), meta_circuit_factory=_meta_factory
         )
         env = PipelineEnv(backend=dummy_expval_backend)
-        batch, token = stage.expand(qp.Z(0), env)
+        batch, token = stage.expand(_Z0, env)
 
         info = stage.introspect(batch, env, token)
         assert info["strategy"] == "_DummyStrategy"
@@ -110,7 +134,7 @@ class TestIntrospect:
             ExactTrotterization(), meta_circuit_factory=_meta_factory
         )
         env = PipelineEnv(backend=dummy_expval_backend)
-        batch, token = stage.expand(qp.Z(0), env)
+        batch, token = stage.expand(_Z0, env)
 
         info = stage.introspect(batch, env, token)
         assert info["strategy"] == "ExactTrotterization"
@@ -142,7 +166,7 @@ class TestReduce:
             branch_keys = sorted(lineage_by_label.values(), key=str)
             return {bk: 1.0 + i for i, bk in enumerate(branch_keys)}
 
-        reduced = pipeline.run(initial_spec=qp.Z(0), env=env, execute_fn=_execute_fn)
+        reduced = pipeline.run(initial_spec=_Z0, env=env, execute_fn=_execute_fn)
         assert len(reduced) >= 1
         assert any(v == pytest.approx([2.0]) for v in reduced.values())
 
@@ -203,7 +227,7 @@ class TestDryRun:
             ]
         )
         env = PipelineEnv(backend=dummy_expval_backend)
-        trace = pipeline.run_forward_pass(initial_spec=qp.Z(0), env=env)
+        trace = pipeline.run_forward_pass(initial_spec=_Z0, env=env)
 
         assert len(trace.final_batch) >= 2
         # All keys should contain the ham axis

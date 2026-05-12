@@ -257,13 +257,20 @@ def run_tutorial(
     print(f"[{name}] Starting (timeout {effective_timeout:.0f}s)", flush=True)
     start = time.monotonic()
 
+    # Force matplotlib's non-interactive Agg backend so ``plt.show()`` is a
+    # no-op (no GUI windows) when CI runs on a desktop with ``DISPLAY`` set.
+    # ``plt.savefig()`` still works; output files land in the temp tutorials
+    # dir and get cleaned up with ``shutil.rmtree``.
+    env = os.environ.copy()
+    env["MPLBACKEND"] = "Agg"
+
     proc = subprocess.Popen(
         [sys.executable, str(file_path)],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
-        env=os.environ.copy(),
+        env=env,
         cwd=str(REPO_ROOT),
     )
     try:

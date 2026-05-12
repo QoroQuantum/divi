@@ -5,6 +5,7 @@
 import numpy as np
 import pennylane as qp
 import pytest
+from qiskit.circuit.library import RYGate, RZGate
 
 from divi.qprog import VQE, GenericLayerAnsatz
 from divi.viz import GradientMethod, compute_hessian
@@ -12,7 +13,7 @@ from divi.viz import GradientMethod, compute_hessian
 
 @pytest.fixture
 def basic_ansatz():
-    return GenericLayerAnsatz([qp.RY, qp.RZ])
+    return GenericLayerAnsatz([RYGate, RZGate])
 
 
 @pytest.fixture

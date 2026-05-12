@@ -108,7 +108,7 @@ Divi offers specialized algorithms for different problem types:
    .. code-block:: python
 
       import numpy as np
-      import pennylane as qp
+      from qiskit.circuit.library import CXGate, RYGate, RZGate
       from divi.qprog import PCE, GenericLayerAnsatz
       from divi.backends import MaestroSimulator
 
@@ -116,8 +116,8 @@ Divi offers specialized algorithms for different problem types:
       pce = PCE(
           problem=qubo_matrix,
           ansatz=GenericLayerAnsatz(
-              gate_sequence=[qp.RY, qp.RZ],
-              entangler=qp.CNOT,
+              gate_sequence=[RYGate, RZGate],
+              entangler=CXGate,
               entangling_layout="all-to-all",
           ),
           backend=MaestroSimulator(),

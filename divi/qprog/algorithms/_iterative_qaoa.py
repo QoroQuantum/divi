@@ -275,10 +275,13 @@ class IterativeQAOA(QAOA):
         self.n_layers = depth
         betas = ParameterVector("β", depth)
         gammas = ParameterVector("γ", depth)
-        # Replaces the parent QAOA._params so _build_qaoa_ops and the
-        # meta-circuit factories pick up the new layer count.
+        # Replaces the parent QAOA._params so the meta-circuit factories
+        # pick up the new layer count.
         self._params = np.array([[b, g] for b, g in zip(betas, gammas)], dtype=object)
         self._pipelines = self._build_pipelines()
+        # Previous depth's factories embed wrong-shape DAGs; ``_cost_meta_cache``
+        # entries stay valid (keyed on ``params.size``).
+        self._meta_circuit_factories = None
 
     def _reset_optimization_state(self) -> None:
         """Reset VQA optimization tracking state for a fresh run."""

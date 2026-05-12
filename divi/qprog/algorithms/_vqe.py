@@ -8,13 +8,12 @@ from warnings import warn
 import numpy as np
 import numpy.typing as npt
 import pennylane as qp
-from qiskit.circuit import ParameterVector
+from qiskit.circuit import ParameterVector, QuantumCircuit
+from qiskit.converters import circuit_to_dag
+from qiskit.quantum_info import SparsePauliOp
 
-from divi.circuits import MetaCircuit, qscript_to_meta
-from divi.hamiltonians._term_ops import (
-    _clean_hamiltonian_via_spo,
-    _is_empty_hamiltonian,
-)
+from divi.circuits import MetaCircuit
+from divi.hamiltonians._term_ops import _clean_hamiltonian_spo, _n_qubits, to_spo
 from divi.pipeline.stages import CircuitSpecStage
 from divi.qprog.algorithms import (
     Ansatz,
@@ -54,7 +53,7 @@ class VQE(VariationalQuantumAlgorithm):
 
     def __init__(
         self,
-        hamiltonian: qp.operation.Operator | None = None,
+        hamiltonian: qp.operation.Operator | SparsePauliOp | None = None,
         molecule: qp.qchem.Molecule | None = None,
         n_electrons: int | None = None,
         n_layers: int = 1,
@@ -164,7 +163,11 @@ class VQE(VariationalQuantumAlgorithm):
             )
 
         if hamiltonian is not None:
-            self.n_qubits = len(hamiltonian.wires)
+            self.n_qubits = (
+                _n_qubits(hamiltonian)
+                if isinstance(hamiltonian, SparsePauliOp)
+                else len(hamiltonian.wires)
+            )
             self.n_electrons = n_electrons
 
         if molecule is not None:
@@ -180,17 +183,18 @@ class VQE(VariationalQuantumAlgorithm):
                     UserWarning,
                 )
 
-        self.cost_hamiltonian, self.loss_constant = _clean_hamiltonian_via_spo(
-            hamiltonian
-        )
-        if _is_empty_hamiltonian(self.cost_hamiltonian):
+        cost_spo = to_spo(hamiltonian)
+        self.cost_hamiltonian, self.loss_constant = _clean_hamiltonian_spo(cost_spo)
+        if self.cost_hamiltonian.size == 0:
             raise ValueError("Hamiltonian contains only constant terms.")
 
     def _create_meta_circuit_factories(self) -> dict[str, MetaCircuit]:
         """Create the meta-circuit factories for VQE.
 
-        Returns:
-            dict[str, MetaCircuit]: Dictionary containing cost and measurement circuit templates.
+        Builds a single ``QuantumCircuit`` (initial state + ansatz) and
+        wraps its DAG into both a cost ``MetaCircuit`` (carrying the
+        cost ``SparsePauliOp`` as observable) and a measurement
+        ``MetaCircuit`` (with all qubits measured).
         """
         n_params = self.ansatz.n_params_per_layer(
             self.n_qubits, n_electrons=self.n_electrons
@@ -200,27 +204,33 @@ class VQE(VariationalQuantumAlgorithm):
             dtype=object,
         )
 
-        ops = self.initial_state.build(list(range(self.n_qubits)))
-        ops += self.ansatz.build(
-            weights,
-            n_qubits=self.n_qubits,
-            n_layers=self.n_layers,
-            n_electrons=self.n_electrons,
+        wires = list(range(self.n_qubits))
+        qc = QuantumCircuit(self.n_qubits)
+        qc.compose(self.initial_state.build(wires), inplace=True)
+        qc.compose(
+            self.ansatz.build(
+                weights,
+                n_qubits=self.n_qubits,
+                n_layers=self.n_layers,
+                n_electrons=self.n_electrons,
+            ),
+            inplace=True,
         )
 
+        dag = circuit_to_dag(qc)
         flat_params = tuple(weights.flatten())
         return {
-            "cost_circuit": qscript_to_meta(
-                qp.tape.QuantumScript(
-                    ops=ops, measurements=[qp.expval(self.cost_hamiltonian)]
-                ),
+            "cost_circuit": MetaCircuit(
+                circuit_bodies=(((), dag),),
+                parameters=flat_params,
+                observable=self.cost_hamiltonian,
                 precision=self._precision,
-                parameter_order=flat_params,
             ),
-            "meas_circuit": qscript_to_meta(
-                qp.tape.QuantumScript(ops=ops, measurements=[qp.probs()]),
+            "meas_circuit": MetaCircuit(
+                circuit_bodies=(((), dag),),
+                parameters=flat_params,
+                measured_wires=tuple(range(self.n_qubits)),
                 precision=self._precision,
-                parameter_order=flat_params,
             ),
         }
 

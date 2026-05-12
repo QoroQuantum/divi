@@ -29,7 +29,7 @@ import dimod
 import hybrid
 import networkx as nx
 import numpy as np
-import pennylane as qp
+from qiskit.circuit.library import RYGate, RZGate
 
 from divi.qprog import EarlyStopping
 from divi.qprog.algorithms import GenericLayerAnsatz
@@ -274,7 +274,7 @@ if __name__ == "__main__":
             bqm=bqm,
             engine="pce",
             engine_kwargs={
-                "ansatz": GenericLayerAnsatz([qp.RY, qp.RZ]),
+                "ansatz": GenericLayerAnsatz([RYGate, RZGate]),
                 "encoding_type": "dense",
                 "alpha": 2.0,
             },

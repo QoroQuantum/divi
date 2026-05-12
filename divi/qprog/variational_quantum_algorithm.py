@@ -13,8 +13,8 @@ from warnings import warn
 
 import numpy as np
 import numpy.typing as npt
-import pennylane as qp
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+from qiskit.quantum_info import SparsePauliOp
 from scipy.optimize import OptimizeResult
 
 from divi.backends import CircuitRunner
@@ -269,7 +269,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
     current_iteration: int
     n_layers: int
     loss_constant: float
-    cost_hamiltonian: qp.operation.Operator
+    cost_hamiltonian: SparsePauliOp
     """The cost Hamiltonian for the variational problem."""
 
     _grouping_strategy: GroupingStrategy

@@ -7,6 +7,7 @@ import pennylane as qp
 import pytest
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
+from qiskit.quantum_info import SparsePauliOp
 
 from divi.qprog import CustomVQA
 from divi.qprog.checkpointing import CheckpointConfig
@@ -119,12 +120,12 @@ class TestInitialization:
         circuit = request.getfixturevalue(circuit_fixture)
         program = CustomVQA(qscript=circuit, backend=dummy_simulator)
 
-        assert isinstance(program.qscript, qp.tape.QuantumScript)
+        assert program.qscript is circuit
         assert program.n_qubits == expected_n_qubits
         assert program.n_layers == 1
         assert program.n_params_per_layer == 2
         assert program.param_shape == (2,)
-        assert isinstance(program.cost_hamiltonian, qp.operation.Operator)
+        assert isinstance(program.cost_hamiltonian, SparsePauliOp)
         verify_metacircuit_dict(program, ["cost_circuit"])
 
     @pytest.mark.parametrize(
@@ -174,7 +175,7 @@ class TestInitialization:
             )
 
         assert program.n_qubits == 1
-        assert isinstance(program.cost_hamiltonian, qp.operation.Operator)
+        assert isinstance(program.cost_hamiltonian, SparsePauliOp)
 
 
 class TestErrorCases:
@@ -307,15 +308,18 @@ class TestQiskitConversion:
     def test_qiskit_measurements_removed(
         self, qiskit_circuit_with_measurements, dummy_simulator
     ):
-        """Test that Qiskit measurements are removed before conversion."""
+        """Qiskit measurements are stripped before circuit construction."""
         program = CustomVQA(
             qscript=qiskit_circuit_with_measurements,
             backend=dummy_simulator,
         )
 
-        # The converted script should not have MidMeasureMP operations
-        assert len(program.qscript.measurements) == 1
-        assert hasattr(program.qscript.measurements[0], "obs")
+        # Measurements drive the observable, not the cost circuit; the
+        # stripped Qiskit circuit must carry no `measure` instructions.
+        assert program._qiskit_circuit is not None
+        op_names = {instr.operation.name for instr in program._qiskit_circuit.data}
+        assert "measure" not in op_names
+        assert program.measured_wires
 
     @pytest.mark.parametrize(
         "circuit_fixture,expected_n_qubits,expected_n_params,expected_measured_wires",
@@ -340,16 +344,8 @@ class TestQiskitConversion:
 
         assert program.n_qubits == expected_n_qubits
         assert program.n_params_per_layer == expected_n_params
-        assert isinstance(program.cost_hamiltonian, qp.operation.Operator)
-
-        if len(expected_measured_wires) > 1:
-            assert isinstance(program.cost_hamiltonian, qp.ops.Sum)
-            ops = program.cost_hamiltonian.operands
-            measured_wires = {op.wires[0] for op in ops if isinstance(op, qp.Z)}
-            assert measured_wires == expected_measured_wires
-        else:
-            assert isinstance(program.cost_hamiltonian, qp.Z)
-            assert program.cost_hamiltonian.wires[0] in expected_measured_wires
+        assert isinstance(program.cost_hamiltonian, SparsePauliOp)
+        assert set(program.measured_wires) == expected_measured_wires
 
 
 class TestOptimization:

@@ -21,9 +21,9 @@ from divi.circuits import (
     render_template,
 )
 from divi.circuits._conversions import (
+    _observable_to_sparse_pauli_op,
     _qscript_to_dag,
     _sympy_to_qiskit,
-    observable_to_sparse_pauli_op,
 )
 
 
@@ -207,33 +207,33 @@ class TestObservableToSparsePauliOp:
 
     def test_single_pauli(self):
         wires = qp.wires.Wires([0, 1, 2])
-        op = observable_to_sparse_pauli_op(qp.PauliZ(1), wires)
+        op = _observable_to_sparse_pauli_op(qp.PauliZ(1), wires)
         # SparsePauliOp on 3 qubits: Z on qubit 1 ⇒ "IZI" (qubit 0 rightmost).
         assert op == SparsePauliOp.from_list([("IZI", 1.0)])
 
     def test_tensor_product(self):
         wires = qp.wires.Wires([0, 1])
-        op = observable_to_sparse_pauli_op(qp.PauliZ(0) @ qp.PauliX(1), wires)
+        op = _observable_to_sparse_pauli_op(qp.PauliZ(0) @ qp.PauliX(1), wires)
         # qubit 0 → Z, qubit 1 → X, little-endian string: "XZ".
         assert op == SparsePauliOp.from_list([("XZ", 1.0)])
 
     def test_hamiltonian_sum_of_terms(self):
         wires = qp.wires.Wires([0, 1])
         obs = qp.Hamiltonian([0.5, -0.3], [qp.PauliZ(0), qp.PauliX(1)])
-        op = observable_to_sparse_pauli_op(obs, wires)
+        op = _observable_to_sparse_pauli_op(obs, wires)
         # {0.5 Z_0, -0.3 X_1} → {"IZ": 0.5, "XI": -0.3}
         expected = SparsePauliOp.from_list([("IZ", 0.5), ("XI", -0.3)])
         assert op.simplify() == expected.simplify()
 
     def test_identity(self):
         wires = qp.wires.Wires([0, 1])
-        op = observable_to_sparse_pauli_op(qp.Identity(0), wires)
+        op = _observable_to_sparse_pauli_op(qp.Identity(0), wires)
         assert op == SparsePauliOp.from_list([("II", 1.0)])
 
     def test_sum_of_single_qubit_terms(self):
         wires = qp.wires.Wires([0, 1, 2])
         obs = qp.sum(qp.PauliZ(0), qp.PauliZ(1), qp.PauliZ(2))
-        op = observable_to_sparse_pauli_op(obs, wires).simplify()
+        op = _observable_to_sparse_pauli_op(obs, wires).simplify()
         expected = SparsePauliOp.from_list(
             [("IIZ", 1.0), ("IZI", 1.0), ("ZII", 1.0)]
         ).simplify()
@@ -244,7 +244,7 @@ class TestObservableToSparsePauliOp:
         # via wires.index() rather than treating them as ints.
         wires = qp.wires.Wires(["a", "b", "c"])
         obs = qp.PauliZ("b")
-        op = observable_to_sparse_pauli_op(obs, wires)
+        op = _observable_to_sparse_pauli_op(obs, wires)
         # "b" is wires.index("b") = 1 → "IZI".
         assert op == SparsePauliOp.from_list([("IZI", 1.0)])
 
@@ -252,7 +252,7 @@ class TestObservableToSparsePauliOp:
         wires = qp.wires.Wires([0])
         herm = qp.Hermitian(np.array([[1.0, 0.0], [0.0, -1.0]]), wires=0)
         with pytest.raises(ValueError, match="no Pauli representation"):
-            observable_to_sparse_pauli_op(herm, wires)
+            _observable_to_sparse_pauli_op(herm, wires)
 
 
 class TestEndToEndEquivalence:

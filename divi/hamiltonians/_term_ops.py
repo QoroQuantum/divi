@@ -2,63 +2,24 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Low-level manipulation primitives for Hamiltonian operators.
-
-Defines a few PennyLane-typed helpers (``_get_terms_iterable``,
-``_is_empty_hamiltonian``, ``_is_multi_term_sum``) and their
-``SparsePauliOp``-native equivalents (``_to_spo``, ``_from_spo``,
-``_clean_hamiltonian_spo``, ``_sort_hamiltonian_terms_spo``,
-``_spo_to_basis_gate_ops``). The SPO siblings are the hot path; the
-PL helpers exist for boundary use.
-"""
+"""Low-level manipulation primitives for ``SparsePauliOp`` Hamiltonians."""
 
 import math
-import threading
-import weakref
+import numbers
 from collections.abc import Sequence
-from typing import Literal, TypeGuard, cast
+from typing import Literal, cast
 
 import numpy as np
 import pennylane as qp
+from qiskit.circuit.library import PauliEvolutionGate
 from qiskit.quantum_info import SparsePauliOp
+from qiskit.synthesis import LieTrotter
 
-from divi.circuits import sparse_pauli_op_to_pl_observable
-from divi.circuits._conversions import observable_to_sparse_pauli_op
-
-# Cache keyed on PL-op identity: {pl_op: (spo, canonical_wires)}.
-# Populated by ``_from_spo`` and read by ``_to_spo`` / ``_spo_wires``.
-# All access goes through ``_PL_TO_SPO_CACHE_LOCK``.
-_PL_TO_SPO_CACHE: (
-    "weakref.WeakKeyDictionary[qp.operation.Operator, tuple[SparsePauliOp, tuple]]"
-) = weakref.WeakKeyDictionary()
-_PL_TO_SPO_CACHE_LOCK = threading.Lock()
+from divi.circuits._conversions import _observable_to_sparse_pauli_op
+from divi.circuits._core import _assert_hermitian_spo
 
 
-def _is_multi_term_sum(
-    op: qp.operation.Operator,
-) -> TypeGuard[qp.Hamiltonian | qp.ops.Sum]:
-    """True if op is a multi-term Sum or Hamiltonian (has operands and len)."""
-    return isinstance(op, (qp.Hamiltonian, qp.ops.Sum))
-
-
-def _get_terms_iterable(
-    op: qp.operation.Operator,
-) -> Sequence[qp.operation.Operator]:
-    """Return terms as a sequence for iteration. Works for Sum/Hamiltonian and single-term."""
-    return op.operands if _is_multi_term_sum(op) else [op]
-
-
-def _is_empty_hamiltonian(op: qp.operation.Operator) -> bool:
-    """True if op is an empty Sum/Hamiltonian (only constant terms)."""
-    return _is_multi_term_sum(op) and len(op) == 0
-
-
-# --------------------------------------------------------------------------- #
-# SparsePauliOp-native siblings of the PL-typed helpers above.
-# --------------------------------------------------------------------------- #
-
-
-def _num_qubits(spo: SparsePauliOp) -> int:
+def _n_qubits(spo: SparsePauliOp) -> int:
     """SPO ``num_qubits`` narrowed to ``int`` (qiskit types it as ``int | None``)."""
     return cast(int, spo.num_qubits)
 
@@ -70,62 +31,25 @@ def _empty_spo(num_qubits: int) -> SparsePauliOp:
     ]
 
 
-def _to_spo(op: qp.operation.Operator | SparsePauliOp) -> SparsePauliOp:
-    """PennyLane operator → ``SparsePauliOp`` (passthrough if already SPO).
+def to_spo(op: qp.operation.Operator | SparsePauliOp) -> SparsePauliOp:
+    """Convert a PennyLane operator or ``SparsePauliOp`` to ``SparsePauliOp``.
 
-    Reuses the SPO cached by :func:`_from_spo` when ``op`` is its result.
+    Passthrough if *op* is already a ``SparsePauliOp``; validates Hermiticity
+    in both cases.
     """
     if isinstance(op, SparsePauliOp):
+        _assert_hermitian_spo(op)
         return op
-    with _PL_TO_SPO_CACHE_LOCK:
-        cached = _PL_TO_SPO_CACHE.get(op)
-    if cached is not None:
-        return cached[0]
-    return observable_to_sparse_pauli_op(op, op.wires)
+    spo = _observable_to_sparse_pauli_op(op, op.wires)
+    _assert_hermitian_spo(spo)
+    return spo
 
 
 def _spo_wires(op: qp.operation.Operator | SparsePauliOp) -> tuple:
-    """Wire mapping aligned with :func:`_to_spo` (qubit ``i`` ↔ ``wires[i]``).
-
-    Reads the cached canonical wires recorded by :func:`_from_spo` —
-    necessary because ``op.wires`` on a PL operator can drop or reorder
-    entries after ``simplify()``.
-    """
+    """Wire mapping aligned with :func:`to_spo` (qubit ``i`` ↔ ``wires[i]``)."""
     if isinstance(op, SparsePauliOp):
-        return tuple(range(_num_qubits(op)))
-    with _PL_TO_SPO_CACHE_LOCK:
-        cached = _PL_TO_SPO_CACHE.get(op)
-    if cached is not None:
-        return cached[1]
+        return tuple(range(_n_qubits(op)))
     return tuple(op.wires)
-
-
-def _from_spo(
-    spo: SparsePauliOp,
-    wires: Sequence,
-    *,
-    simplify: bool = True,
-) -> qp.operation.Operator:
-    """``SparsePauliOp`` → PennyLane operator.
-
-    Empty SPO maps to ``qp.Hamiltonian([], [])``. With ``simplify=True``
-    (default) a final ``.simplify()`` collapses trivial wrappers like
-    ``SProd(1.0, X)`` to their bare operator. The source SPO and the
-    wire mapping (qubit ``i`` ↔ ``wires[i]``) are recorded in
-    :data:`_PL_TO_SPO_CACHE` so :func:`_to_spo` / :func:`_spo_wires`
-    recover them on the result.
-    """
-    if spo.size == 0:
-        return qp.Hamiltonian([], [])
-    pl = sparse_pauli_op_to_pl_observable(spo, wires)
-    if simplify:
-        pl = pl.simplify()
-    try:
-        with _PL_TO_SPO_CACHE_LOCK:
-            _PL_TO_SPO_CACHE[pl] = (spo, tuple(wires))
-    except TypeError:
-        pass
-    return pl
 
 
 def _clean_hamiltonian_spo(spo: SparsePauliOp) -> tuple[SparsePauliOp, float]:
@@ -144,23 +68,6 @@ def _clean_hamiltonian_spo(spo: SparsePauliOp) -> tuple[SparsePauliOp, float]:
     if non_id_mask.any():
         cleaned = cleaned.simplify()
     return cleaned, constant
-
-
-def _clean_hamiltonian_via_spo(
-    hamiltonian: qp.operation.Operator,
-) -> tuple[qp.operation.Operator, float]:
-    """Partition constant (identity) terms from a PennyLane Hamiltonian.
-
-    Returns ``(non-identity Hamiltonian, summed constant)``. Empty input
-    maps to ``(qp.Hamiltonian([], []), constant)``. Routes through
-    ``SparsePauliOp`` so the non-identity result carries a canonical
-    qubit→wire mapping (qubit ``i`` ↔ ``wires[i]``).
-    """
-    spo = _to_spo(hamiltonian)
-    non_id, constant = _clean_hamiltonian_spo(spo)
-    if non_id.size == 0:
-        return qp.Hamiltonian([], []), constant
-    return _from_spo(non_id, _spo_wires(hamiltonian)), constant
 
 
 def _sort_hamiltonian_terms_spo(
@@ -184,11 +91,9 @@ def _spo_to_basis_gate_ops(
     time,
     wires: Sequence,
 ) -> list[qp.operation.Operator]:
-    """First-order Trotter decomposition of ``exp(-i * time * H)`` as basis gates.
+    """First-order Trotter decomposition of ``exp(-i * time * H)`` as PennyLane basis gates.
 
     Output matches ``qp.PauliRot`` → ``MultiRZ`` → CNOT/RZ decomposition.
-    Returns PennyLane ops rather than calling ``qiskit.synthesis.LieTrotter``
-    so the result composes with the surrounding PL-typed circuit pipeline.
     """
     wire_list = list(wires)
     ops: list[qp.operation.Operator] = []
@@ -237,21 +142,80 @@ def _spo_to_basis_gate_ops(
 def _spo_to_qiskit_basis_gates(
     qc, spo: SparsePauliOp, time, qubits: Sequence[int]
 ) -> None:
-    """Append exp(-i * time * spo) gates to ``qc`` as qiskit basis gates.
+    """Append first-order-Trotter ``exp(-i * time * spo)`` onto ``qc``.
 
-    Gate-for-gate equivalent of :func:`_spo_to_basis_gate_ops` but emits qiskit
-    instructions directly, skipping the PL→qiskit conversion roundtrip.
+    Dispatches on ``time`` — numeric → :func:`_spo_to_qiskit_basis_gates_numeric`;
+    symbolic (``Parameter`` / ``ParameterExpression``) →
+    :func:`_spo_to_qiskit_basis_gates_symbolic`. Exact when the SPO terms
+    pairwise commute (QAOA cost/mixer layers).
     """
+    if isinstance(time, numbers.Real):
+        _spo_to_qiskit_basis_gates_numeric(qc, spo, float(time), qubits)
+    else:
+        _spo_to_qiskit_basis_gates_symbolic(qc, spo, time, qubits)
+
+
+def _active_pauli_chars(x_row, z_row) -> tuple[np.ndarray, list[str]]:
+    """Return ``(active_qubit_indices, pauli_chars)`` for one SPO row.
+
+    Symplectic ``(x, z)`` decoding: ``(0,0) → I`` (skipped), ``(1,0) → X``,
+    ``(0,1) → Z``, ``(1,1) → Y``. Active indices are in ascending order.
+    """
+    active = np.flatnonzero(x_row | z_row)
+    chars: list[str] = []
+    for q in active:
+        xq = x_row[q]
+        zq = z_row[q]
+        if xq and zq:
+            chars.append("Y")
+        elif xq:
+            chars.append("X")
+        else:
+            chars.append("Z")
+    return active, chars
+
+
+def _spo_to_qiskit_basis_gates_numeric(
+    qc, spo: SparsePauliOp, time: float, qubits: Sequence[int]
+) -> None:
+    """Numeric-angle fast path; see :func:`_spo_to_qiskit_basis_gates`."""
+    _assert_hermitian_spo(spo)
     qubit_list = list(qubits)
-    for pauli_str, coeff in zip(spo.paulis.to_labels(), spo.coeffs):
-        c = float(np.real(coeff))
-        # Qiskit labels are big-endian: pauli_str[-(i+1)] is qubit i.
-        active = [
-            (qubit_list[i], ch) for i, ch in enumerate(reversed(pauli_str)) if ch != "I"
-        ]
-        if not active:
+
+    if len(qubit_list) == 0 or spo.size == 0:
+        return
+
+    sub = LieTrotter().synthesize(PauliEvolutionGate(spo, time=time))
+    # ``PauliEvolutionGate`` may synthesize to ``R{XX,YY,ZZ}Gate`` for
+    # two-qubit Pauli rotations — outside our QASM2 basis. ``decompose`` is
+    # a no-op on instructions whose names aren't listed.
+    sub = sub.decompose(["rxx", "ryy", "rzz"])
+    qc.compose(sub, qubits=qubit_list, inplace=True)
+
+
+def _spo_to_qiskit_basis_gates_symbolic(
+    qc, spo: SparsePauliOp, time, qubits: Sequence[int]
+) -> None:
+    """CX-RZ-CX ladder emitter for symbolic ``time``.
+
+    Qiskit's ``LieTrotter`` synthesizer only accepts numeric angles, so any
+    ``Parameter`` / ``ParameterExpression`` ``time`` comes through here.
+    """
+    _assert_hermitian_spo(spo)
+    qubit_list = list(qubits)
+    x_arr = spo.paulis.x  # bool[N_terms, n_qubits]
+    z_arr = spo.paulis.z
+    coeffs_real = spo.coeffs.real  # zero-copy view
+
+    for i in range(x_arr.shape[0]):
+        active_idx, chars = _active_pauli_chars(x_arr[i], z_arr[i])
+        if active_idx.size == 0:
             continue
-        theta = 2 * time * c
+
+        active: list[tuple[int, str]] = [
+            (qubit_list[q], ch) for q, ch in zip(active_idx, chars)
+        ]
+        theta = 2 * time * float(coeffs_real[i])
 
         if len(active) == 1:
             q, ch = active[0]
@@ -271,11 +235,11 @@ def _spo_to_qiskit_basis_gates(
 
         active_qubits = [q for q, _ in active]
         n = len(active_qubits)
-        for i in range(n - 1, 0, -1):
-            qc.cx(active_qubits[i], active_qubits[i - 1])
+        for j in range(n - 1, 0, -1):
+            qc.cx(active_qubits[j], active_qubits[j - 1])
         qc.rz(theta, active_qubits[0])
-        for i in range(1, n):
-            qc.cx(active_qubits[i], active_qubits[i - 1])
+        for j in range(1, n):
+            qc.cx(active_qubits[j], active_qubits[j - 1])
 
         for q, ch in active:
             if ch == "X":

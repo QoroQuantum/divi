@@ -6,19 +6,17 @@
 
 import math
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
 import numpy.typing as npt
-import pennylane as qp
-import pennylane.qaoa as pqaoa
-import sympy
+from qiskit.quantum_info import SparsePauliOp
 from scipy.optimize import linear_sum_assignment
 
-from divi.hamiltonians import qubo_to_ising
+from divi.hamiltonians import qubo_to_ising, x_mixer_spo, xy_mixer_spo
 from divi.qprog.algorithms import InitialState, SuperpositionState, WState
 from divi.qprog.algorithms._initial_state import build_block_xy_mixer_graph
 from divi.qprog.problems import QAOAProblem
@@ -1017,62 +1015,6 @@ def is_valid_binary_tsp(
     )
 
 
-def build_binary_superposition_ops(
-    config: BinaryBlockConfig,
-    wires: Sequence[int],
-) -> list[qp.operation.Operator]:
-    """Prepare a uniform superposition over valid slot values.
-
-    For each slot of ``bits_per_slot`` qubits, prepares a Hadamard
-    superposition. This initialises each slot in a uniform superposition
-    over all 2^B basis states. Values > n_customers represent "empty"
-    or invalid states; the cost Hamiltonian penalises these.
-
-    For the basic version, this is simply Hadamard on every qubit.
-    (A more refined version could use amplitude encoding to restrict
-    to values 0..n_customers only.)
-
-    Args:
-        config: Binary block configuration.
-        wires: Ordered sequence of wire labels.
-
-    Returns:
-        List of PennyLane operations.
-    """
-    ops: list[qp.operation.Operator] = []
-    for w in wires:
-        ops.append(qp.Hadamard(wires=w))
-    return ops
-
-
-def build_binary_mixer_ops(
-    beta: sympy.Expr | float,
-    config: BinaryBlockConfig,
-    wires: Sequence[int],
-) -> list[qp.operation.Operator]:
-    """Build a mixer for binary-encoded slots.
-
-    Uses an X-mixer (RX rotation) on every qubit. This is the standard
-    transverse-field mixer that explores the full binary space.
-
-    For a more structured mixer that respects the valid-value subspace
-    (0..n_customers), a Grover-style mixer could be used instead.
-
-    Args:
-        beta: Mixer angle parameter.
-        config: Binary block configuration.
-        wires: Ordered sequence of wire labels.
-
-    Returns:
-        List of PennyLane operations.
-    """
-    ops: list[qp.operation.Operator] = []
-    for w in wires:
-        # pyrefly: ignore[unsupported-operation]  # sympy stub fails on Expr * int
-        ops.append(qp.RX(phi=2 * beta, wires=w))
-    return ops
-
-
 def decode_binary_cvrp_solution(
     bitstring: str,
     config: BinaryBlockConfig,
@@ -1542,16 +1484,16 @@ class _RoutingProblemBase(QAOAProblem):
             graph = build_block_xy_mixer_graph(
                 block_size, n_blocks, range(self._ising.n_qubits)
             )
-            self._mixer_hamiltonian = pqaoa.xy_mixer(graph)
+            self._mixer_hamiltonian = xy_mixer_spo(graph, n_qubits=self._ising.n_qubits)
         else:
-            self._mixer_hamiltonian = pqaoa.x_mixer(range(self._ising.n_qubits))
+            self._mixer_hamiltonian = x_mixer_spo(self._ising.n_qubits)
 
     @property
-    def cost_hamiltonian(self) -> qp.operation.Operator:
+    def cost_hamiltonian(self) -> SparsePauliOp:
         return self._ising.cost_hamiltonian
 
     @property
-    def mixer_hamiltonian(self) -> qp.operation.Operator:
+    def mixer_hamiltonian(self) -> SparsePauliOp:
         return self._mixer_hamiltonian
 
     @property
@@ -1609,7 +1551,7 @@ class TSPProblem(_RoutingProblemBase):
                 hubo,
                 block_size=self._binary_config.bits_per_slot,
                 n_blocks=self._binary_config.n_slots,
-                hamiltonian_builder="quadratized",
+                hamiltonian_builder="native",
                 use_xy_mixer=False,
             )
         else:
@@ -1699,6 +1641,11 @@ class CVRPProblem(_RoutingProblemBase):
         constraint_penalty: Constraint penalty strength. Defaults to 4.0.
         objective_weight: Objective weight. Defaults to 1.0.
         capacity_penalty: Capacity penalty strength. Defaults to 4.0.
+        max_steps: Maximum route length per vehicle (``"binary"`` encoding
+            only). ``None`` (default) uses ``n_customers``. Qubit count and
+            HUBO term count both scale with ``n_vehicles * max_steps``;
+            lowering ``max_steps`` below a vehicle's actual stop count
+            renders the instance infeasible.
     """
 
     def __init__(
@@ -1713,6 +1660,7 @@ class CVRPProblem(_RoutingProblemBase):
         constraint_penalty: float = 4.0,
         objective_weight: float = 1.0,
         capacity_penalty: float = 4.0,
+        max_steps: int | None = None,
     ):
         self._cost_matrix = np.asarray(cost_matrix, dtype=np.float64)
         self._demands = demands
@@ -1735,15 +1683,18 @@ class CVRPProblem(_RoutingProblemBase):
                 constraint_penalty=constraint_penalty,
                 objective_weight=objective_weight,
                 capacity_penalty=capacity_penalty,
+                max_steps=max_steps,
             )
             self._init_ising(
                 hubo,
                 block_size=self._binary_config.bits_per_slot,
                 n_blocks=self._binary_config.n_slots,
-                hamiltonian_builder="quadratized",
+                hamiltonian_builder="native",
                 use_xy_mixer=False,
             )
         else:
+            if max_steps is not None:
+                raise ValueError("max_steps is only supported for encoding='binary'.")
             qubo = create_cvrp_qubo(
                 self._cost_matrix,
                 demands=demands,

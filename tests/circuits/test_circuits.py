@@ -53,6 +53,18 @@ class TestMetaCircuit:
         meta = MetaCircuit(circuit_bodies=(((), plain_dag),), observable=obs)
         assert meta.observable == (obs,)
 
+    def test_non_hermitian_observable_raises(self, plain_dag):
+        obs = SparsePauliOp.from_list([("Z", 1.0j)])
+        with pytest.raises(ValueError, match="Hermitian"):
+            MetaCircuit(circuit_bodies=(((), plain_dag),), observable=obs)
+
+    def test_tuple_observable_requires_sparse_pauli_ops(self, plain_dag):
+        with pytest.raises(TypeError, match="SparsePauliOp"):
+            MetaCircuit(
+                circuit_bodies=(((), plain_dag),),
+                observable=("not an observable",),  # type: ignore[arg-type]
+            )
+
     def test_with_measured_wires(self, plain_dag):
         meta = MetaCircuit(
             circuit_bodies=(((), plain_dag),),

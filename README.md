@@ -63,6 +63,10 @@ vqe.run()
 print(f"Ground state energy: {vqe.best_loss:.6f}")
 ```
 
+Hamiltonians and circuits accept either Qiskit (``SparsePauliOp``,
+``QuantumCircuit``) or PennyLane (``QuantumScript``, operators) inputs
+interchangeably.
+
 ## 🌐 Cloud Execution with Qoro Service
 
 Run the same programs on Qoro's cloud platform with tensor-network simulators — no code changes needed:

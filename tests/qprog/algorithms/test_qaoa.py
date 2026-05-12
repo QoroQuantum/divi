@@ -419,16 +419,14 @@ class TestCostMetaCircuitCache:
 
     def test_stateless_strategy_caches_by_ham_id(self, dummy_simulator):
         qaoa = self._make_qaoa(ExactTrotterization(), dummy_simulator)
-        spo = qaoa._cost_spo
-        m1 = qaoa._cost_meta_circuit_factory(spo, ham_id=0)
-        m2 = qaoa._cost_meta_circuit_factory(spo, ham_id=0)
+        m1 = qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=0)
+        m2 = qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=0)
         assert m1 is m2
 
     def test_stateless_distinct_ham_ids_cached_separately(self, dummy_simulator):
         qaoa = self._make_qaoa(ExactTrotterization(), dummy_simulator)
-        spo = qaoa._cost_spo
-        m1 = qaoa._cost_meta_circuit_factory(spo, ham_id=0)
-        m2 = qaoa._cost_meta_circuit_factory(spo, ham_id=1)
+        m1 = qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=0)
+        m2 = qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=1)
         assert m1 is not m2
         size = qaoa._params.size
         assert qaoa._cost_meta_cache[(0, size)] is m1
@@ -436,14 +434,13 @@ class TestCostMetaCircuitCache:
 
     def test_stateless_skips_circuit_build_on_cache_hit(self, dummy_simulator, mocker):
         qaoa = self._make_qaoa(ExactTrotterization(), dummy_simulator)
-        spo = qaoa._cost_spo
 
         # Prime the cache, then start counting.
-        qaoa._cost_meta_circuit_factory(spo, ham_id=0)
+        qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=0)
         spy = mocker.spy(qaoa, "_build_qaoa_qiskit_circuit")
 
         for _ in range(3):
-            qaoa._cost_meta_circuit_factory(spo, ham_id=0)
+            qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=0)
         spy.assert_not_called()
 
     def test_stateful_strategy_skips_cache(self, dummy_simulator):
@@ -453,19 +450,31 @@ class TestCostMetaCircuitCache:
             seed=42,
         )
         qaoa = self._make_qaoa(strategy, dummy_simulator)
-        spo = qaoa._cost_spo
-        m1 = qaoa._cost_meta_circuit_factory(spo, ham_id=0)
-        m2 = qaoa._cost_meta_circuit_factory(spo, ham_id=0)
+        m1 = qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=0)
+        m2 = qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=0)
         assert m1 is not m2
+        assert qaoa._cost_meta_cache == {}
+
+    def test_construction_does_not_eager_build(self, dummy_simulator):
+        """Construction leaves ``_meta_circuit_factories`` and ``_cost_meta_cache``
+        unpopulated; the heavy build runs on first access via the
+        ``meta_circuit_factories`` property."""
+        qaoa = self._make_qaoa(ExactTrotterization(), dummy_simulator)
+        assert qaoa._meta_circuit_factories is None
         assert qaoa._cost_meta_cache == {}
 
     def test_cache_independent_per_instance(self, dummy_simulator):
         qaoa1 = self._make_qaoa(ExactTrotterization(), dummy_simulator)
         qaoa2 = self._make_qaoa(ExactTrotterization(), dummy_simulator)
 
-        qaoa1._cost_meta_circuit_factory(qaoa1._cost_spo, ham_id=0)
-        assert qaoa1._cost_meta_cache  # populated
-        assert qaoa2._cost_meta_cache == {}
+        # Construction is now lazy (no eager build), so caches start empty.
+        # Seed each independently and verify they are isolated.
+        qaoa1._cost_meta_circuit_factory(qaoa1.cost_hamiltonian, ham_id=0)
+        qaoa2._cost_meta_circuit_factory(qaoa2.cost_hamiltonian, ham_id=0)
+        assert qaoa1._cost_meta_cache is not qaoa2._cost_meta_cache
+        qaoa1._cost_meta_cache.clear()
+        assert qaoa1._cost_meta_cache == {}
+        assert qaoa2._cost_meta_cache  # untouched
 
     def test_cache_self_invalidates_on_depth_rebuild(self, dummy_simulator):
         """IterativeQAOA mutates ``self._params`` per depth.  The cache key
@@ -479,15 +488,14 @@ class TestCostMetaCircuitCache:
             backend=dummy_simulator,
             max_iterations_per_depth=1,
         )
-        spo = qaoa._cost_spo
-        m_d1 = qaoa._cost_meta_circuit_factory(spo, ham_id=0)
+        m_d1 = qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=0)
         d1_size = qaoa._params.size
 
         qaoa._rebuild_for_depth(2)
         d2_size = qaoa._params.size
         assert d2_size != d1_size
 
-        m_d2 = qaoa._cost_meta_circuit_factory(spo, ham_id=0)
+        m_d2 = qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=0)
         assert m_d2 is not m_d1
         # Both entries coexist under distinct keys.
         assert qaoa._cost_meta_cache[(0, d1_size)] is m_d1

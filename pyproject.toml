@@ -24,7 +24,6 @@ classifiers = [
 dependencies = [
     # Quantum computing
     "pennylane>=0.44,<0.45",
-    "pennylane-qiskit>=0.44,<0.45",
     "qiskit>=2.3,<2.4",
     "qiskit-aer",
     "qiskit-ibm-runtime>=0.45,<0.46",

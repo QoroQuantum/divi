@@ -5,7 +5,6 @@
 from ._ansatze import (
     Ansatz,
     GenericLayerAnsatz,
-    HardwareEfficientAnsatz,
     HartreeFockAnsatz,
     QAOAAnsatz,
     QCCAnsatz,
@@ -31,7 +30,6 @@ __all__ = [
     "CustomPerQubitState",
     "CustomVQA",
     "GenericLayerAnsatz",
-    "HardwareEfficientAnsatz",
     "HartreeFockAnsatz",
     "InitialState",
     "InterpolationStrategy",

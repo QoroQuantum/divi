@@ -6,21 +6,25 @@ from typing import Any
 
 import numpy as np
 import pennylane as qp
-from qiskit.circuit import Parameter
+from qiskit import transpile
+from qiskit.circuit import Parameter, QuantumCircuit
+from qiskit.circuit.library import PauliEvolutionGate
+from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
+from qiskit.synthesis import LieTrotter, SuzukiTrotter
 
-from divi.circuits import MetaCircuit, qscript_to_meta, sparse_pauli_op_to_pl_observable
+from divi.circuits import MetaCircuit
+from divi.circuits._conversions import _QISKIT_TO_QASM2, _observable_to_sparse_pauli_op
 from divi.circuits.qem import _NoMitigation
 from divi.hamiltonians import (
     ExactTrotterization,
     TrotterizationStrategy,
 )
 from divi.hamiltonians._term_ops import (
-    _clean_hamiltonian_via_spo,
-    _get_terms_iterable,
-    _is_empty_hamiltonian,
-    _is_multi_term_sum,
-    _spo_wires,
+    _clean_hamiltonian_spo,
+    _n_qubits,
+    _spo_to_qiskit_basis_gates,
+    to_spo,
 )
 from divi.pipeline import CircuitPipeline
 from divi.pipeline.stages import (
@@ -45,7 +49,7 @@ class TimeEvolution(QuantumProgram):
 
     def __init__(
         self,
-        hamiltonian: qp.operation.Operator,
+        hamiltonian: qp.operation.Operator | SparsePauliOp,
         trotterization_strategy: TrotterizationStrategy | None = None,
         time: float = 1.0,
         n_steps: int = 1,
@@ -53,8 +57,9 @@ class TimeEvolution(QuantumProgram):
         initial_state: InitialState | None = None,
         observable: (
             qp.operation.Operator
-            | tuple[qp.operation.Operator, ...]
-            | list[qp.operation.Operator]
+            | SparsePauliOp
+            | tuple[qp.operation.Operator | SparsePauliOp, ...]
+            | list[qp.operation.Operator | SparsePauliOp]
             | None
         ) = None,
         _template_meta: MetaCircuit | None = None,
@@ -96,8 +101,9 @@ class TimeEvolution(QuantumProgram):
         if trotterization_strategy is None:
             trotterization_strategy = ExactTrotterization()
 
-        hamiltonian_clean, _ = _clean_hamiltonian_via_spo(hamiltonian)
-        if _is_empty_hamiltonian(hamiltonian_clean):
+        hamiltonian_spo = to_spo(hamiltonian)
+        hamiltonian_clean, _ = _clean_hamiltonian_spo(hamiltonian_spo)
+        if hamiltonian_clean.size == 0:
             raise ValueError("Hamiltonian contains only constant terms.")
 
         self._hamiltonian = hamiltonian_clean
@@ -107,9 +113,12 @@ class TimeEvolution(QuantumProgram):
         self.order = order
         if isinstance(observable, list):
             observable = tuple(observable)
-        self.observable = observable
-        self._circuit_wires = _spo_wires(hamiltonian_clean)
-        self.n_qubits = len(self._circuit_wires)
+        self.n_qubits = _n_qubits(hamiltonian_clean)
+        self._circuit_wires = tuple(range(self.n_qubits))
+        # Normalise observables to SparsePauliOp at the input boundary, aligning
+        # qubit count with the cost circuit (a 1-qubit ``qp.PauliZ(0)`` against
+        # a multi-qubit evolution must lift to ``Z ⊗ I ⊗ … ⊗ I``).
+        self.observable = self._normalise_observable(observable)
 
         if initial_state is None:
             initial_state = ZerosState()
@@ -231,24 +240,27 @@ class TimeEvolution(QuantumProgram):
         """Factory for TrotterSpecStage: build a MetaCircuit for one Hamiltonian sample (SPO)."""
         if self._template_meta is not None:
             return self._template_meta
-        # ``qp.TrotterProduct`` / ``qp.evolve`` need a PennyLane operator.
-        hamiltonian = sparse_pauli_op_to_pl_observable(
-            processed_spo, self._circuit_wires
-        )
-        ops = self._build_ops(hamiltonian)
-        # Ensure canonical wire ordering matches the Hamiltonian,
-        # regardless of which subset of terms QDrift sampled.
-        ops = [qp.Identity(w) for w in self._circuit_wires] + ops
+
+        qc = self._build_qiskit_circuit(processed_spo)
+        dag = circuit_to_dag(qc)
 
         if self.observable is None:
-            measurements = [qp.probs()]
-        elif isinstance(self.observable, tuple):
-            measurements = [qp.expval(o) for o in self.observable]
-        else:
-            measurements = [qp.expval(self.observable)]
-        return qscript_to_meta(
-            qp.tape.QuantumScript(ops=ops, measurements=measurements),
-            was_multi_obs=isinstance(self.observable, tuple),
+            return MetaCircuit(
+                circuit_bodies=(((), dag),),
+                measured_wires=tuple(range(self.n_qubits)),
+                precision=8,
+            )
+        if isinstance(self.observable, tuple):
+            return MetaCircuit(
+                circuit_bodies=(((), dag),),
+                observable=self.observable,
+                precision=8,
+                _was_multi_obs=True,
+            )
+        return MetaCircuit(
+            circuit_bodies=(((), dag),),
+            observable=(self.observable,),
+            precision=8,
         )
 
     def run(self, **kwargs) -> "TimeEvolution":
@@ -283,42 +295,87 @@ class TimeEvolution(QuantumProgram):
 
         return self
 
-    def _build_ops(self, hamiltonian: qp.operation.Operator) -> list:
-        """Build circuit ops: initial state, evolution, measurement."""
-        ops = self.initial_state.build(self._circuit_wires)
+    def _normalise_observable(self, observable):
+        """Convert observables to ``SparsePauliOp`` on the cost-circuit wires."""
+        if observable is None:
+            return None
+        if isinstance(observable, tuple):
+            return tuple(self._lift_observable(o) for o in observable)
+        return self._lift_observable(observable)
 
-        # Campbell's faithful QDrift: one evolution gate per sampled term,
-        # repeated ``n_steps`` times with ``time/n_steps`` per step.
+    def _lift_observable(self, op) -> SparsePauliOp:
+        if isinstance(op, SparsePauliOp):
+            if op.num_qubits != self.n_qubits:
+                raise ValueError(
+                    f"Observable has {op.num_qubits} qubits but the cost circuit "
+                    f"has {self.n_qubits}."
+                )
+            return op
+        # PennyLane operator: lift onto the full wire register.
+        return _observable_to_sparse_pauli_op(op, self._circuit_wires)
+
+    def _build_qiskit_circuit(self, processed_spo: SparsePauliOp) -> QuantumCircuit:
+        """Build initial-state preparation + Trotter evolution as a ``QuantumCircuit``.
+
+        Adjoint evolution is realized via negative time, matching the prior
+        PennyLane ``adjoint(TrotterProduct/evolve)`` path. Single-term
+        Hamiltonians use positive time to preserve ``qp.evolve(term, coeff=t)``
+        semantics.
+
+        QDrift sampled-term evolution uses
+        :func:`_spo_to_qiskit_basis_gates` directly so each sampled term
+        keeps its multiplicity. Standard Trotter uses
+        :class:`PauliEvolutionGate` with :class:`LieTrotter` /
+        :class:`SuzukiTrotter` synthesis; the circuit is then transpiled
+        down to the basis-gate set the QASM body emitter understands.
+        """
+        qc = QuantumCircuit(self.n_qubits)
+        qc.compose(self.initial_state.build(self._circuit_wires), inplace=True)
+        qubits = list(range(self.n_qubits))
+
         sampled_spo = getattr(self.trotterization_strategy, "_last_sampled_spo", None)
         if sampled_spo is not None:
-            # Skip simplify so sampling-with-replacement duplicates stay split.
-            sampled_pl_unsimplified = sparse_pauli_op_to_pl_observable(
-                sampled_spo, self._circuit_wires
-            )
-            sampled_terms = list(_get_terms_iterable(sampled_pl_unsimplified))
-            step_time = self.time / self.n_steps
+            # Faithful QDrift: one evolution gate per sampled term (preserving
+            # sampling-with-replacement multiplicities), repeated ``n_steps``
+            # times with ``time / n_steps`` per step. Adjoint via negative time.
+            step_time = -self.time / self.n_steps
             for _ in range(self.n_steps):
-                ops.extend(
-                    qp.adjoint(qp.evolve(term, coeff=step_time))
-                    for term in sampled_terms
-                )
-            return ops
+                _spo_to_qiskit_basis_gates(qc, sampled_spo, step_time, qubits)
+            return qc
 
-        # Standard Trotter-Suzuki for ExactTrotterization
-        n_terms = len(hamiltonian) if _is_multi_term_sum(hamiltonian) else 1
-        if n_terms >= 2:
-            evo = qp.adjoint(
-                qp.TrotterProduct(
-                    hamiltonian, time=self.time, n=self.n_steps, order=self.order
+        # Standard Trotter-Suzuki for ExactTrotterization.
+        if processed_spo.size >= 2:
+            evolution_time = -self.time
+            synthesis = (
+                LieTrotter(reps=self.n_steps, preserve_order=True)
+                if self.order == 1
+                else SuzukiTrotter(
+                    order=self.order, reps=self.n_steps, preserve_order=True
                 )
             )
-            ops.append(evo)
+            qc.append(
+                PauliEvolutionGate(
+                    processed_spo, time=evolution_time, synthesis=synthesis
+                ),
+                qubits,
+            )
+            # Transpile down to basis gates so the QASM body emitter and
+            # Clifford-only stages (e.g. QuEPP) can consume the result.
+            try:
+                qc = transpile(
+                    qc,
+                    basis_gates=list(_QISKIT_TO_QASM2.keys()),
+                    optimization_level=0,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "TimeEvolution failed to lower the Trotter-synthesised "
+                    "circuit to Divi's supported basis-gate set. This usually "
+                    "means PauliEvolutionGate synthesis emitted a gate Divi's "
+                    "QASM2 emitter does not handle. Supported gates: "
+                    f"{sorted(_QISKIT_TO_QASM2.keys())}."
+                ) from exc
         else:
-            term = (
-                hamiltonian
-                if not _is_multi_term_sum(hamiltonian)
-                else _get_terms_iterable(hamiltonian)[0]
-            )
-            ops.append(qp.evolve(term, coeff=self.time))
-
-        return ops
+            # Single-term Hamiltonian — positive-time convention.
+            _spo_to_qiskit_basis_gates(qc, processed_spo, self.time, qubits)
+        return qc
