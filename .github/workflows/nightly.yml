@@ -54,7 +54,7 @@ jobs:
           key: fastembed-jina-v2-base-code
 
       - name: Build divi-ai search index
-        run: uv run python -m divi.ai build --batch-size 8
+        run: uv run python -m divi.ai build --batch-size 4
 
       - name: Set nightly version
         run: |
