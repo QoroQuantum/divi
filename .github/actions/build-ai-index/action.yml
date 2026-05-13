@@ -1,0 +1,17 @@
+name: Build divi-ai index
+description: Cache the fastembed embedding model and build the divi-ai search index. Requires `uv sync --extra ai` to have run first.
+
+runs:
+  using: composite
+  steps:
+    - name: Cache embedding model
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/fastembed
+        key: fastembed-${{ runner.os }}-${{ hashFiles('divi/ai/_indexer.py') }}
+        restore-keys: |
+          fastembed-${{ runner.os }}-
+
+    - name: Build divi-ai search index
+      shell: bash
+      run: uv run python -m divi.ai build --batch-size 4 --threads $(nproc)

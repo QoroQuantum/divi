@@ -1,0 +1,25 @@
+name: Setup Divi
+description: Install uv, set up Python, and sync project dependencies.
+
+inputs:
+  python-version:
+    description: Python version to install.
+    required: true
+  sync-args:
+    description: Group/extra selectors passed to `uv sync` (e.g. "--group testing --extra ai"). `--no-default-groups` is always added.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install dependencies
+      shell: bash
+      run: uv sync --no-default-groups ${{ inputs.sync-args }}
