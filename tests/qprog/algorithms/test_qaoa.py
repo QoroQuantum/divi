@@ -6,6 +6,7 @@
 import networkx as nx
 import numpy as np
 import pytest
+from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits.qem import ZNE, LinearExtrapolator
 from divi.hamiltonians import (
@@ -18,11 +19,12 @@ from divi.qprog import (
     ScipyMethod,
     ScipyOptimizer,
 )
-from divi.qprog.algorithms import IterativeQAOA
+from divi.qprog.algorithms import IterativeQAOA, SuperpositionState
 from divi.qprog.problems import (
     BinaryOptimizationProblem,
     MaxCliqueProblem,
     MaxCutProblem,
+    QAOAProblem,
 )
 from tests.qprog.problems._helpers import QUBO_MATRIX, make_bull_graph
 from tests.qprog.qprog_contracts import (
@@ -399,6 +401,99 @@ class TestFinalComputationDecode:
         )
         with pytest.raises(RuntimeError, match="Call .run\\(\\) first"):
             _ = qaoa.solution_bitstring
+
+
+def _make_problem(cost: SparsePauliOp, mixer: SparsePauliOp, wire_labels=None):
+    _labels = wire_labels
+
+    class _Problem(QAOAProblem):
+        @property
+        def cost_hamiltonian(self):
+            return cost
+
+        @property
+        def mixer_hamiltonian(self):
+            return mixer
+
+        @property
+        def loss_constant(self):
+            return 0.0
+
+        @property
+        def decode_fn(self):
+            return lambda bs: bs
+
+        @property
+        def recommended_initial_state(self):
+            return SuperpositionState()
+
+        @property
+        def wire_labels(self):
+            return _labels if _labels is not None else super().wire_labels
+
+    return _Problem()
+
+
+class TestWireSpaceInvariant:
+    def test_mixer_wider_than_cost_raises(self, dummy_simulator):
+        prob = _make_problem(
+            cost=SparsePauliOp.from_list([("IZZ", 1.0), ("ZZI", 1.0)]),
+            mixer=SparsePauliOp.from_list(
+                [("IIIX", 1.0), ("IIXI", 1.0), ("IXII", 1.0), ("XIII", 1.0)]
+            ),
+        )
+        with pytest.raises(
+            ValueError,
+            match=r"wire_labels has 3 entries.*mixer_hamiltonian\.num_qubits is 4",
+        ):
+            QAOA(prob, backend=dummy_simulator)
+
+    def test_cost_wider_than_mixer_raises(self, dummy_simulator):
+        prob = _make_problem(
+            cost=SparsePauliOp.from_list([("IIZZ", 1.0), ("ZZII", 1.0)]),
+            mixer=SparsePauliOp.from_list([("IIX", 1.0), ("IXI", 1.0), ("XII", 1.0)]),
+        )
+        with pytest.raises(
+            ValueError,
+            match=r"wire_labels has 4 entries.*mixer_hamiltonian\.num_qubits is 3",
+        ):
+            QAOA(prob, backend=dummy_simulator)
+
+    def test_wire_labels_misaligned_with_hamiltonians_raises(self, dummy_simulator):
+        # cost & mixer both 3-qubit but wire_labels claims 4 — qubit `i` of
+        # the SPOs no longer maps to wire_labels[i].
+        prob = _make_problem(
+            cost=SparsePauliOp.from_list([("IZZ", 1.0), ("ZZI", 1.0)]),
+            mixer=SparsePauliOp.from_list([("IIX", 1.0), ("IXI", 1.0), ("XII", 1.0)]),
+            wire_labels=("a", "b", "c", "d"),
+        )
+        with pytest.raises(
+            ValueError,
+            match=r"wire_labels has 4 entries.*cost_hamiltonian\.num_qubits is 3",
+        ):
+            QAOA(prob, backend=dummy_simulator)
+
+    def test_isolated_node_graph_with_wire_labels_succeeds(self, dummy_simulator):
+        g = nx.Graph()
+        g.add_edges_from([(0, 1), (1, 2), (0, 2)])
+        g.add_node(3)
+        qaoa = QAOA(MaxCutProblem(g), backend=dummy_simulator)
+        assert qaoa.n_qubits == 4
+
+    def test_isolated_node_maxcut_runs_end_to_end(self, default_test_simulator):
+        g = nx.Graph()
+        g.add_edges_from([(0, 1), (1, 2), (0, 2)])
+        g.add_node(3)
+        qaoa = QAOA(
+            MaxCutProblem(g),
+            backend=default_test_simulator,
+            max_iterations=1,
+            n_layers=1,
+        )
+        qaoa.run()
+        assert len(qaoa.solution_bitstring) == 4
+        assert set(qaoa.solution_bitstring) <= {"0", "1"}
+        assert qaoa.solution is not None
 
 
 class TestCostMetaCircuitCache:

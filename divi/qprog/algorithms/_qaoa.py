@@ -109,6 +109,16 @@ class QAOA(VariationalQuantumAlgorithm):
         )
         self.n_qubits = len(self._circuit_wires)
 
+        cost_n = _n_qubits(self.cost_hamiltonian)
+        mixer_n = _n_qubits(self.mixer_hamiltonian)
+        if cost_n != self.n_qubits or mixer_n != self.n_qubits:
+            raise ValueError(
+                f"wire_labels has {self.n_qubits} entries but "
+                f"cost_hamiltonian.num_qubits is {cost_n} and "
+                f"mixer_hamiltonian.num_qubits is {mixer_n}. Each must "
+                f"equal len(wire_labels)."
+            )
+
         # Algorithm parameters
         self.n_layers = n_layers
         self.max_iterations = max_iterations
