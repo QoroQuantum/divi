@@ -94,7 +94,12 @@ class BinaryOptimizationProblem(QAOAProblem):
         quadratization_strength: Penalty strength for the quadratized
             builder. ``None`` (default) auto-picks
             ``2 * max(|hubo coeff|)``. Ignored when
-            ``hamiltonian_builder="native"``.
+            ``hamiltonian_builder="native"``. The auto default is sized
+            against a single worst-case term and may under-penalise dense
+            HUBOs where many constraints can be violated simultaneously;
+            pass an explicit value (or raise the multiplier on
+            :class:`~divi.hamiltonians.QuadratizedIsingConverter`) for
+            such instances.
         decomposer: Optional ``hybrid.traits.ProblemDecomposer`` that
             enables :meth:`decompose`.
         composer: Optional ``hybrid.traits.SubsamplesComposer`` for

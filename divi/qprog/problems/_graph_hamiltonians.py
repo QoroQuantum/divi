@@ -59,11 +59,7 @@ def _to_nx_digraph(graph: DiGraphLike) -> nx.DiGraph:
         nodes = list(graph.nodes())
         out = nx.DiGraph()
         out.add_nodes_from(nodes)
-        try:
-            edges_data = graph.weighted_edge_list()
-        except (AttributeError, TypeError):
-            edges_data = [(left, right, None) for left, right in graph.edge_list()]
-        for left, right, payload in edges_data:
+        for left, right, payload in graph.weighted_edge_list():
             kwargs: dict = {}
             if isinstance(payload, dict):
                 kwargs.update(payload)
@@ -169,18 +165,19 @@ def edges_to_wires(graph: DiGraphLike | GraphLike) -> dict[tuple, int]:
     """Map graph edges to dense 0-indexed wire positions.
 
     Mirrors :func:`pennylane.qaoa.cycle.edges_to_wires` for both ``nx`` and
-    ``rx`` graphs. For ``rx`` graphs the edge endpoints are remapped from
-    rustworkx internal indices to the user-facing node values.
+    ``rx`` graphs. Rustworkx inputs are routed through their networkx
+    equivalent so that every wire assignment in this module — including
+    the mappings returned by :func:`max_weight_cycle_hamiltonians` — is
+    derived from a single canonical edge order. Endpoints are reported
+    as the user-facing node values.
     """
     # nx.DiGraph is a subclass of nx.Graph; this catches both.
     if isinstance(graph, nx.Graph):
         return {edge: i for i, edge in enumerate(graph.edges())}
-    if isinstance(graph, (rx.PyGraph, rx.PyDiGraph)):
-        nodes = list(graph.nodes())
-        return {
-            (nodes[left], nodes[right]): i
-            for i, (left, right) in enumerate(sorted(graph.edge_list()))
-        }
+    if isinstance(graph, rx.PyDiGraph):
+        return edges_to_wires(_to_nx_digraph(graph))
+    if isinstance(graph, rx.PyGraph):
+        return edges_to_wires(_to_nx_graph(graph))
     raise TypeError(
         f"Expected nx.Graph / nx.DiGraph / rx.PyGraph / rx.PyDiGraph, got "
         f"{type(graph).__name__}."

@@ -192,6 +192,22 @@ def test_rustworkx_pygraph_matches_nx_for_maxcut():
     assert _spo_equal(rx_mixer, nx_mixer), "mixer SPO mismatch: rx.PyGraph vs nx.Graph"
 
 
+def test_wires_to_edges_consistent_with_max_weight_cycle_for_unsorted_rx():
+    """Wire-ordering consistency: ``wires_to_edges(rx_dg)`` must reproduce the
+    mapping returned by ``max_weight_cycle_hamiltonians(rx_dg)`` even when
+    ``rx_dg.edge_list()`` is not in lexicographic order."""
+    # Insert edges in an order whose lexicographic sort differs from
+    # insertion order — (1, 0) precedes (0, 1) in the rx graph but sorts
+    # after it.
+    unsorted_edges = [(1, 0, 0.5), (0, 1, 1.5), (2, 0, 1.0), (0, 2, 2.0)]
+    rx_graph = rx.PyDiGraph()
+    rx_graph.add_nodes_from([0, 1, 2])
+    rx_graph.add_edges_from(unsorted_edges)
+
+    _, _, mapping = max_weight_cycle_hamiltonians(rx_graph, constrained=True)
+    assert mapping == wires_to_edges(rx_graph)
+
+
 def test_rustworkx_pydigraph_matches_nx_for_max_weight_cycle():
     """``rx.PyDiGraph`` (weighted) input produces the same cost, mixer, and
     wire→edge mapping as the equivalent ``nx.DiGraph`` input."""

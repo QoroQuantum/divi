@@ -169,6 +169,17 @@ class QuadratizedIsingConverter(BinaryToIsingConverter):
     with the original HUBO's. When :attr:`strength` is ``None`` the
     converter picks ``strength_multiplier * max(|hubo coefficient|)``
     (with a floor of ``strength_multiplier``).
+
+    .. warning::
+
+       The adaptive default is sized to outweigh a *single* worst-case
+       term, not the sum of many simultaneously violated terms. For dense
+       HUBOs where the cumulative objective contribution scales with the
+       number of variables (e.g. fully-connected QUBOs with ``O(n²)``
+       active terms), the default may under-penalise constraint violations
+       and rank infeasible solutions above feasible ones. Override
+       :attr:`strength` or raise :attr:`strength_multiplier` for such
+       instances.
     """
 
     strength: float | None = None
@@ -178,7 +189,9 @@ class QuadratizedIsingConverter(BinaryToIsingConverter):
     strength_multiplier: float = 2.0
     """Multiplier applied to ``max(|hubo coefficient|)`` when
     :attr:`strength` is ``None``. Values ≥ 2 keep the penalty strictly
-    larger than the objective."""
+    larger than the worst single objective term — but not necessarily
+    larger than the sum of many simultaneously violated terms (see class
+    docstring)."""
 
     def _resolve_strength(self, problem: BinaryPolynomialProblem) -> float:
         if self.strength is not None:

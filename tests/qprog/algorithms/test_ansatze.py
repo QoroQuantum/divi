@@ -5,6 +5,7 @@
 import pytest
 from qiskit.circuit import ParameterVector, QuantumCircuit
 from qiskit.circuit.library import (
+    CRXGate,
     CXGate,
     CZGate,
     HGate,
@@ -61,12 +62,24 @@ class TestGenericLayerAnsatz:
             pytest.fail("GenericLayerAnsatz initialization failed with valid inputs.")
 
     def test_initialization_rejects_string_gate(self):
-        with pytest.raises(TypeError, match="Expected a Qiskit Gate subclass"):
+        with pytest.raises(TypeError, match="must be a Qiskit Gate subclass"):
             GenericLayerAnsatz(gate_sequence=[RXGate, "rx"])
 
     def test_initialization_rejects_gate_instance(self):
-        with pytest.raises(TypeError, match="Expected a Qiskit Gate subclass"):
+        with pytest.raises(TypeError, match="must be a Qiskit Gate subclass"):
             GenericLayerAnsatz(gate_sequence=[RXGate(0.0)])
+
+    def test_initialization_rejects_multi_qubit_in_gate_sequence(self):
+        with pytest.raises(ValueError, match="must be a 1-qubit gate"):
+            GenericLayerAnsatz(gate_sequence=[CXGate])
+
+    def test_initialization_rejects_single_qubit_entangler(self):
+        with pytest.raises(ValueError, match="must be a 2-qubit gate"):
+            GenericLayerAnsatz(gate_sequence=[RXGate], entangler=RYGate)
+
+    def test_initialization_rejects_parameterized_entangler(self):
+        with pytest.raises(ValueError, match="must take 0 parameters"):
+            GenericLayerAnsatz(gate_sequence=[RXGate], entangler=CRXGate)
 
     def test_initialization_invalid_layout_string(self):
         with pytest.raises(ValueError, match="Unknown entangling_layout:"):
@@ -147,26 +160,70 @@ class TestGenericLayerAnsatz:
 class TestQAOAAnsatz:
     """Tests for the QAOAAnsatz class."""
 
-    def test_n_params_per_layer(self):
-        # 2 * n_qubits per layer.
-        assert QAOAAnsatz().n_params_per_layer(n_qubits=4) == 8
+    @pytest.mark.parametrize(
+        "n_qubits, expected",
+        [(1, 1), (2, 3), (3, 6), (4, 8)],
+    )
+    def test_n_params_per_layer(self, n_qubits, expected):
+        """Per-layer param count: 1 / 3 / 2n for n=1 / 2 / >=3."""
+        assert QAOAAnsatz().n_params_per_layer(n_qubits=n_qubits) == expected
 
     def test_build_structure(self):
+        """Each layer = Hadamards + ZZ ring (CX-RZ-CX) + RY field; trailing Hadamards."""
         n_qubits, n_layers = 4, 3
         ansatz = QAOAAnsatz()
         n_params = n_layers * ansatz.n_params_per_layer(n_qubits)
         params = ParameterVector("p", n_params)
 
         qc = _build_circuit(ansatz, list(params), n_qubits, n_layers)
-
         names = _gate_names(qc)
-        # Initial Hadamards.
-        assert names[:n_qubits] == ["h"] * n_qubits
-        # RZZ decomposes to CX-RZ-CX (3 basis gates), so the cost layer emits
-        # 3 * (n_qubits - 1) + n_qubits gates; mixer adds n_qubits RY.
-        assert "cx" in names
-        assert "ry" in names
-        assert "rz" in names
+
+        # (n_layers + 1) Hadamard layers of size n_qubits.
+        assert names.count("h") == (n_layers + 1) * n_qubits
+        # Ring of n_qubits ZZ rotations per layer, each decomposed to CX-RZ-CX.
+        assert names.count("cx") == 2 * n_layers * n_qubits
+        assert names.count("rz") == n_layers * n_qubits
+        # One local-field RY per qubit per layer.
+        assert names.count("ry") == n_layers * n_qubits
+
+    def test_build_n_qubits_one(self):
+        """n=1 special case: only local-field rotations between Hadamards."""
+        ansatz = QAOAAnsatz()
+        n_qubits, n_layers = 1, 2
+        params = ParameterVector("p", n_layers * ansatz.n_params_per_layer(n_qubits))
+        qc = _build_circuit(ansatz, list(params), n_qubits, n_layers)
+        names = _gate_names(qc)
+        assert names.count("h") == n_layers + 1
+        assert names.count("ry") == n_layers
+        # No two-qubit interaction emitted for the single-qubit case.
+        assert "cx" not in names
+
+    def test_build_n_qubits_two(self):
+        """n=2 special case: one ZZ rotation (no wrap) and two RYs per layer."""
+        ansatz = QAOAAnsatz()
+        n_qubits, n_layers = 2, 2
+        params = ParameterVector("p", n_layers * ansatz.n_params_per_layer(n_qubits))
+        qc = _build_circuit(ansatz, list(params), n_qubits, n_layers)
+        names = _gate_names(qc)
+        assert names.count("h") == (n_layers + 1) * n_qubits
+        # One ZZ rotation per layer → CX-RZ-CX.
+        assert names.count("cx") == 2 * n_layers
+        assert names.count("rz") == n_layers
+        assert names.count("ry") == n_layers * n_qubits
+
+    def test_custom_local_field(self):
+        """``local_field=RXGate`` swaps RY for RX in the field layer."""
+        ansatz = QAOAAnsatz(local_field=RXGate)
+        n_qubits, n_layers = 3, 1
+        params = ParameterVector("p", n_layers * ansatz.n_params_per_layer(n_qubits))
+        qc = _build_circuit(ansatz, list(params), n_qubits, n_layers)
+        names = _gate_names(qc)
+        assert names.count("rx") == n_qubits
+        assert "ry" not in names
+
+    def test_invalid_local_field(self):
+        with pytest.raises(ValueError, match="local_field must be"):
+            QAOAAnsatz(local_field=HGate)
 
 
 # --- Test Chemistry Ansaetze ---

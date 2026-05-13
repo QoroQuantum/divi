@@ -32,10 +32,12 @@ def _empty_spo(num_qubits: int) -> SparsePauliOp:
 
 
 def to_spo(op: qp.operation.Operator | SparsePauliOp) -> SparsePauliOp:
-    """Convert a PennyLane operator or ``SparsePauliOp`` to ``SparsePauliOp``.
+    """Convert a PennyLane operator or ``SparsePauliOp`` to ``SparsePauliOp``,
+    validating Hermiticity in both cases.
 
-    Passthrough if *op* is already a ``SparsePauliOp``; validates Hermiticity
-    in both cases.
+    The PennyLane branch builds a new ``SparsePauliOp`` by walking the
+    operator tree. For repeated use on the same observable, convert once
+    at setup and reuse the returned ``SparsePauliOp``.
     """
     if isinstance(op, SparsePauliOp):
         _assert_hermitian_spo(op)

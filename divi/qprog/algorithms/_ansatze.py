@@ -13,13 +13,14 @@ always see Qiskit instructions.
 
 import inspect
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Literal
 from warnings import warn
 
 import numpy as np
 import pennylane as qp
 from qiskit.circuit import Gate, QuantumCircuit
+from qiskit.circuit.library import RXGate, RYGate, RZGate
 
 from divi.circuits._conversions import _qscript_to_dag
 from divi.hamiltonians._term_ops import _HALF_PI
@@ -96,6 +97,44 @@ def _gate_n_params(gate_cls: type[Gate]) -> int:
     )
 
 
+def _gate_n_qubits(gate_cls: type[Gate]) -> int:
+    """Qubit arity of a Qiskit ``Gate`` subclass via a zero-parameter probe."""
+    probe = gate_cls(*([0.0] * _gate_n_params(gate_cls)))  # type: ignore[bad-argument-type]
+    return probe.num_qubits
+
+
+def _validate_gate_cls(
+    cls,
+    *,
+    expected_qubits: int,
+    role: str,
+    example: str,
+    expected_params: int | None = None,
+) -> None:
+    """Reject anything that is not a Qiskit ``Gate`` subclass of the right arity.
+
+    If ``expected_params`` is provided, also reject gate classes whose
+    ``__init__`` requires a different number of positional parameters.
+    """
+    if not (isinstance(cls, type) and issubclass(cls, Gate)):
+        raise TypeError(
+            f"{role} must be a Qiskit Gate subclass ({example}), got {cls!r}."
+        )
+    n_q = _gate_n_qubits(cls)
+    if n_q != expected_qubits:
+        raise ValueError(
+            f"{role} must be a {expected_qubits}-qubit gate; "
+            f"{cls.__name__} acts on {n_q} qubits."
+        )
+    if expected_params is not None:
+        n_p = _gate_n_params(cls)
+        if n_p != expected_params:
+            raise ValueError(
+                f"{role} must take {expected_params} parameters; "
+                f"{cls.__name__} takes {n_p}."
+            )
+
+
 class GenericLayerAnsatz(Ansatz):
     """
     A flexible ansatz alternating single-qubit gates with optional entanglers.
@@ -121,11 +160,21 @@ class GenericLayerAnsatz(Ansatz):
                 ``CZGate``). If None, no entanglement is applied.
             entangling_layout (str): Layout for entangling layer ("linear", "all-to-all", etc.).
         """
-        for cls in (*gate_sequence, *([entangler] if entangler is not None else ())):
-            if not (isinstance(cls, type) and issubclass(cls, Gate)):
-                raise TypeError(
-                    f"Expected a Qiskit Gate subclass (e.g. RXGate, CXGate), got {cls!r}."
-                )
+        for cls in gate_sequence:
+            _validate_gate_cls(
+                cls,
+                expected_qubits=1,
+                role="gate_sequence entries",
+                example="e.g. RYGate, RZGate",
+            )
+        if entangler is not None:
+            _validate_gate_cls(
+                entangler,
+                expected_qubits=2,
+                role="entangler",
+                example="e.g. CXGate, CZGate",
+                expected_params=0,
+            )
         self.gate_sequence = list(gate_sequence)
         self._gate_param_counts = [_gate_n_params(g) for g in self.gate_sequence]
         self.entangler = entangler
@@ -200,50 +249,112 @@ class GenericLayerAnsatz(Ansatz):
         return qc
 
 
-class QAOAAnsatz(Ansatz):
-    """
-    QAOA-style ansatz using PennyLane's QAOAEmbedding.
+def _emit_rx(qc: QuantumCircuit, theta, q: int) -> None:
+    qc.rx(theta, q)
 
-    Implements a parameterized ansatz based on the Quantum Approximate Optimization
-    Algorithm structure, alternating between problem and mixer Hamiltonians.
+
+def _emit_ry(qc: QuantumCircuit, theta, q: int) -> None:
+    qc.ry(theta, q)
+
+
+def _emit_rz(qc: QuantumCircuit, theta, q: int) -> None:
+    qc.rz(theta, q)
+
+
+_QAOA_LOCAL_FIELDS: Mapping[
+    type[Gate], Callable[[QuantumCircuit, object, int], None]
+] = {
+    RXGate: _emit_rx,
+    RYGate: _emit_ry,
+    RZGate: _emit_rz,
+}
+
+
+class QAOAAnsatz(Ansatz):
+    """QAOA-style ansatz inspired by Killoran et al. (2020).
+
+    Each of the ``L`` layers consists of a Hadamard encoding layer followed
+    by a weight Hamiltonian:
+
+    * for ``n_qubits == 1`` — a single local-field rotation;
+    * for ``n_qubits == 2`` — one ``RZZ`` on the pair, then one local field
+      per qubit (no wrap-around);
+    * for ``n_qubits >= 3`` — ``RZZ`` gates on a closed ring (``i ↔ (i+1) %
+      n``), then one local field per qubit.
+
+    A trailing Hadamard layer is applied after the ``L``-th weight
+    Hamiltonian. The default local field is ``RYGate``.
+
+    Args:
+        local_field: Single-qubit rotation used as the local field. Must be
+            one of ``RXGate``, ``RYGate``, ``RZGate``. Defaults to ``RYGate``.
     """
+
+    def __init__(self, local_field: type[Gate] = RYGate) -> None:
+        if local_field not in _QAOA_LOCAL_FIELDS:
+            raise ValueError(
+                f"local_field must be one of RXGate, RYGate, RZGate; "
+                f"got {local_field!r}."
+            )
+        self.local_field = local_field
+        self._emit_local_field = _QAOA_LOCAL_FIELDS[local_field]
 
     @staticmethod
     def n_params_per_layer(n_qubits: int, **kwargs) -> int:
-        """``2 * n_qubits`` — one ``γ`` and one ``β`` per qubit per layer."""
-        return _require_trainable_params(2 * n_qubits, QAOAAnsatz.__name__)
+        """Per-layer parameter count.
+
+        * ``n_qubits == 1`` → ``1`` (single local-field rotation)
+        * ``n_qubits == 2`` → ``3`` (``RZZ`` + one local field per qubit)
+        * ``n_qubits >= 3`` → ``2 * n_qubits`` (ring of ``RZZ`` + per-qubit local field)
+        """
+        if n_qubits == 1:
+            n_params = 1
+        elif n_qubits == 2:
+            n_params = 3
+        else:
+            n_params = 2 * n_qubits
+        return _require_trainable_params(n_params, QAOAAnsatz.__name__)
 
     def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> QuantumCircuit:
-        """
-        Build the QAOA ansatz circuit.
+        """Build the QAOA ansatz circuit.
 
         Args:
-            params: Parameter array to use for the ansatz.
-            n_qubits (int): Number of qubits.
-            n_layers (int): Number of QAOA layers.
+            params: Flat parameter array of length
+                ``n_layers * n_params_per_layer(n_qubits)``.
+            n_qubits: Number of qubits.
+            n_layers: Number of QAOA layers.
             **kwargs: Additional unused arguments.
 
         Returns:
             QuantumCircuit: Qiskit circuit implementing the QAOA ansatz.
         """
+        per_layer = self.n_params_per_layer(n_qubits)
+        layered = np.asarray(params, dtype=object).reshape(n_layers, per_layer)
+
         qc = QuantumCircuit(n_qubits)
-        # Initial superposition.
+        for layer in range(n_layers):
+            # Encoding Hamiltonian: Hadamard on every qubit.
+            for q in range(n_qubits):
+                qc.h(q)
+            # Weight Hamiltonian.
+            weights = layered[layer]
+            if n_qubits == 1:
+                self._emit_local_field(qc, weights[0], 0)
+            elif n_qubits == 2:
+                _emit_two_qubit_pauli_rot(qc, "ZZ", weights[0], 0, 1)
+                self._emit_local_field(qc, weights[1], 0)
+                self._emit_local_field(qc, weights[2], 1)
+            else:
+                for q in range(n_qubits):
+                    _emit_two_qubit_pauli_rot(
+                        qc, "ZZ", weights[q], q, (q + 1) % n_qubits
+                    )
+                for q in range(n_qubits):
+                    self._emit_local_field(qc, weights[n_qubits + q], q)
+
+        # Trailing encoding layer.
         for q in range(n_qubits):
             qc.h(q)
-
-        params = np.asarray(params, dtype=object).reshape(n_layers, 2 * n_qubits)
-        for layer in range(n_layers):
-            layer_params = params[layer]
-            gammas = layer_params[:n_qubits]
-            betas = layer_params[n_qubits:]
-            # Cost: ZZ on adjacent pairs + RZ per qubit.
-            for q in range(n_qubits - 1):
-                _emit_two_qubit_pauli_rot(qc, "ZZ", gammas[q], q, q + 1)
-            for q in range(n_qubits):
-                qc.rz(gammas[q], q)
-            # Mixer.
-            for q in range(n_qubits):
-                qc.ry(betas[q], q)
 
         return qc
 
