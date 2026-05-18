@@ -4,6 +4,7 @@
 
 import time
 import warnings
+from contextlib import contextmanager
 from http import HTTPStatus
 from threading import Event, Thread
 
@@ -849,6 +850,65 @@ class TestQoroServiceMock:
 
         assert status == JobStatus.COMPLETED
         progress_callback.assert_called()
+
+    def test_poll_job_status_auto_cancels_remote_job_on_user_cancel(
+        self, mocker, qoro_service_factory
+    ):
+        """Direct callers (``loop_until_complete=True``, no caller-supplied
+        ``cancellation_event``) get an auto-installed SIGINT funnel plus
+        best-effort remote-job cleanup. We patch the scope helper to yield a
+        pre-set event so the loop exits on iteration one, then assert
+        ``cancel_job`` was invoked by the scope's cleanup path."""
+        service = qoro_service_factory(
+            auth_token="test_token", max_retries=10, polling_interval=0.01
+        )
+        mocker.patch.object(
+            service,
+            "_make_request",
+            return_value=make_mock_status_response(mocker, JobStatus.RUNNING),
+        )
+        cancel_spy = mocker.patch.object(service, "cancel_job")
+
+        @contextmanager
+        def preset_scope(backend, exec_result):
+            event = Event()
+            event.set()
+            try:
+                yield event
+            except ExecutionCancelledError:
+                backend.cancel_job(exec_result)
+                raise
+
+        mocker.patch(
+            "divi.backends._qoro_service._auto_cancellation_scope", preset_scope
+        )
+
+        result = make_execution_result()
+        with pytest.raises(ExecutionCancelledError):
+            service.poll_job_status(result, loop_until_complete=True)
+        cancel_spy.assert_called_once_with(result)
+
+    def test_poll_job_status_caller_event_skips_auto_scope(
+        self, mocker, qoro_service_factory
+    ):
+        """When the caller supplies their own ``cancellation_event``, the
+        service must NOT open ``_auto_cancellation_scope`` — the caller owns
+        cleanup. The existing cleanup path (in the pipeline) is what fires."""
+        service = qoro_service_factory(auth_token="test_token")
+        mocker.patch.object(
+            service,
+            "_make_request",
+            return_value=make_mock_status_response(mocker, JobStatus.COMPLETED),
+        )
+        scope_spy = mocker.patch("divi.backends._qoro_service._auto_cancellation_scope")
+
+        service.poll_job_status(
+            make_execution_result(),
+            loop_until_complete=True,
+            cancellation_event=Event(),
+        )
+
+        scope_spy.assert_not_called()
 
     def test_poll_job_status_cancellation_event_interrupts_sleep(
         self, mocker, qoro_service_factory

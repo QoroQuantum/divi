@@ -10,10 +10,9 @@ from typing import Any
 from warnings import warn
 
 from divi.backends import AsyncJobBackend, CircuitRunner
-from divi.backends._async_job_backend import _best_effort_cancel_job
+from divi.backends._cancellation import _best_effort_cancel_job, _sigint_to_event
 from divi.circuits.qem import _NoMitigation
 from divi.pipeline import CircuitPipeline, DryRunReport, PipelineEnv, dry_run_pipeline
-from divi.pipeline._core import _sigint_to_event
 from divi.reporting import (
     LoggingProgressReporter,
     ProgressReporter,

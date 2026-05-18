@@ -11,7 +11,7 @@ from threading import Event
 import pytest
 
 from divi.backends import AsyncJobBackend, ExecutionResult, JobStatus
-from divi.backends._async_job_backend import _best_effort_cancel_job
+from divi.backends._cancellation import _best_effort_cancel_job
 from divi.exceptions import ExecutionCancelledError
 from divi.pipeline import (
     CircuitPipeline,
@@ -620,6 +620,45 @@ class TestBestEffortCancelJob:
         # Must not propagate — the user's CTRL-C should not be masked by
         # network/server hiccups during the courtesy cancel.
         _best_effort_cancel_job(backend, ExecutionResult(job_id="job_z"))
+
+
+class TestAutoCancellationScope:
+    """Tests for ``_auto_cancellation_scope``: bundles the SIGINT funnel with
+    best-effort remote-job cleanup for direct callers of ``poll_job_status``."""
+
+    def test_cancels_backend_on_execution_cancelled(self, mocker):
+        from divi.backends._cancellation import _auto_cancellation_scope
+
+        backend = mocker.Mock(spec=AsyncJobBackend)
+        result = ExecutionResult(job_id="job_x")
+
+        with pytest.raises(ExecutionCancelledError):
+            with _auto_cancellation_scope(backend, result):
+                raise ExecutionCancelledError("polling cancelled")
+
+        backend.cancel_job.assert_called_once_with(result)
+
+    def test_does_not_cancel_on_unrelated_exceptions(self, mocker):
+        from divi.backends._cancellation import _auto_cancellation_scope
+
+        backend = mocker.Mock(spec=AsyncJobBackend)
+        result = ExecutionResult(job_id="job_x")
+
+        with pytest.raises(RuntimeError):
+            with _auto_cancellation_scope(backend, result):
+                raise RuntimeError("not a cancellation")
+
+        backend.cancel_job.assert_not_called()
+
+    def test_yields_a_fresh_unset_event(self, mocker):
+        from divi.backends._cancellation import _auto_cancellation_scope
+
+        backend = mocker.Mock(spec=AsyncJobBackend)
+        with _auto_cancellation_scope(
+            backend, ExecutionResult(job_id="job_x")
+        ) as event:
+            assert isinstance(event, Event)
+            assert not event.is_set()
 
 
 class TestSigintToCancellation:

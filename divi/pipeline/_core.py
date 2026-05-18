@@ -3,8 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
-import signal
-import threading
 import warnings
 from collections import Counter, defaultdict
 from collections.abc import Callable, Hashable, Sequence
@@ -16,7 +14,7 @@ from rich.console import Console
 from rich.tree import Tree
 
 from divi.backends import JobStatus
-from divi.backends._async_job_backend import _best_effort_cancel_job
+from divi.backends._cancellation import _best_effort_cancel_job, _sigint_to_event
 from divi.exceptions import ExecutionCancelledError
 
 from ._compilation import _collapse_to_parent_results, _compile_batch
@@ -257,37 +255,6 @@ def _default_execute_fn(
     raw_by_label = {r["label"]: r["results"] for r in result.results}
 
     return _collapse_to_parent_results(raw_by_label, lineage_by_label)
-
-
-@contextmanager
-def _sigint_to_event(event: Event):
-    """Funnel SIGINT into ``event``: first press sets the event, second
-    re-raises :class:`KeyboardInterrupt`. No-op outside the main thread
-    or when a non-default SIGINT handler is already installed."""
-    if threading.current_thread() is not threading.main_thread():
-        yield
-        return
-
-    existing = signal.getsignal(signal.SIGINT)
-    if existing not in (signal.default_int_handler, signal.SIG_DFL):
-        yield
-        return
-
-    press_count = 0
-
-    def _handler(signum, frame):
-        nonlocal press_count
-        press_count += 1
-        if press_count >= 2:
-            signal.signal(signal.SIGINT, existing)
-            raise KeyboardInterrupt
-        event.set()
-
-    signal.signal(signal.SIGINT, _handler)
-    try:
-        yield
-    finally:
-        signal.signal(signal.SIGINT, existing)
 
 
 @contextmanager

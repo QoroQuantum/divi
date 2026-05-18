@@ -9,7 +9,6 @@ work to a remote scheduler and return a job handle, then expose polling,
 result-fetching, and cancellation against that handle.
 """
 
-import logging
 from collections.abc import Callable, Mapping
 from threading import Event
 from typing import Protocol, runtime_checkable
@@ -17,8 +16,6 @@ from typing import Protocol, runtime_checkable
 import requests
 
 from divi.backends import ExecutionResult
-
-logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -111,25 +108,3 @@ class AsyncJobBackend(Protocol):
         exception that callers can ignore).
         """
         ...
-
-
-def _best_effort_cancel_job(backend, execution_result) -> None:
-    """Notify an async backend's scheduler that an in-flight job should stop.
-
-    No-op when ``backend`` is not an :class:`AsyncJobBackend` or when
-    ``execution_result`` lacks a ``job_id``. Swallows the predictable failure
-    modes (409 already-cancelled, network hiccups) at DEBUG so cancellation
-    cleanup never masks the user's original interrupt.
-    """
-    if not isinstance(backend, AsyncJobBackend):
-        return
-    if execution_result is None or getattr(execution_result, "job_id", None) is None:
-        return
-    try:
-        backend.cancel_job(execution_result)
-    except Exception:
-        logger.debug(
-            "Best-effort cancel_job failed for %s",
-            execution_result.job_id,
-            exc_info=True,
-        )

@@ -11,6 +11,7 @@ import os
 import time
 import warnings
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from dataclasses import replace
 from enum import Enum
 from http import HTTPStatus
@@ -31,6 +32,7 @@ from divi.backends import (
     QPUSystem,
     SimulatorCluster,
 )
+from divi.backends._cancellation import _auto_cancellation_scope
 from divi.backends._pauli_serde import compress_ham_ops
 from divi.backends._results_processing import _decode_qh1_b64
 from divi.backends._shot_allocation import (
@@ -877,6 +879,14 @@ class QoroService(CircuitRunner):
         """
         Get the status of a job and optionally execute a function on completion.
 
+        When ``loop_until_complete`` is ``True`` and the caller does not supply a
+        ``cancellation_event``, the service installs a SIGINT funnel for the
+        duration of the wait and best-effort cancels the remote job on Ctrl+C —
+        so direct callers (e.g. ``service.poll_job_status(..., loop_until_complete=True)``
+        in a script) get the same clean cancellation UX as pipeline-driven callers.
+        Wrappers that pass their own event (the pipeline) opt out and retain
+        cleanup ownership.
+
         Args:
             execution_result: An ExecutionResult instance with a job_id to check.
             loop_until_complete (bool): If True, polls until the job is complete or failed.
@@ -903,13 +913,19 @@ class QoroService(CircuitRunner):
         """
         job_id = self._extract_job_id(execution_result)
 
-        polling_status = None
+        # Take ownership of cancellation lifecycle for direct callers
+        # (loop wait, no caller event); otherwise pass the caller's event
+        # through unchanged via a no-op context.
+        scope = (
+            _auto_cancellation_scope(self, execution_result)
+            if loop_until_complete and cancellation_event is None
+            else nullcontext(cancellation_event)
+        )
 
-        # Decide once at the start which update function to use
+        polling_status = None
         if progress_callback:
             update_fn = progress_callback
         elif verbose:
-            # Use Rich's status for overwriting polling messages
             polling_status = Console(file=None).status("", spinner="aesthetic")
             polling_status.start()
 
@@ -925,45 +941,46 @@ class QoroService(CircuitRunner):
             update_fn = lambda _, __: None
 
         try:
-            if not loop_until_complete:
-                response = self._make_request(
-                    "get", f"job/{job_id}/status/", timeout=200
-                )
-                return JobStatus(response.json()["status"])
-
-            terminal_statuses = {
-                JobStatus.COMPLETED,
-                JobStatus.FAILED,
-                JobStatus.CANCELLED,
-            }
-
-            for retry_count in range(1, self.max_retries + 1):
-                if cancellation_event is not None and cancellation_event.is_set():
-                    raise ExecutionCancelledError(
-                        f"Polling cancelled for job {job_id}."
+            with scope as cancellation_event:
+                if not loop_until_complete:
+                    response = self._make_request(
+                        "get", f"job/{job_id}/status/", timeout=200
                     )
+                    return JobStatus(response.json()["status"])
 
-                response = self._make_request(
-                    "get", f"job/{job_id}/status/", timeout=200
-                )
-                status = JobStatus(response.json()["status"])
+                terminal_statuses = {
+                    JobStatus.COMPLETED,
+                    JobStatus.FAILED,
+                    JobStatus.CANCELLED,
+                }
 
-                if status in terminal_statuses:
-                    if on_complete:
-                        on_complete(response)
-                    return status
-
-                update_fn(retry_count, status.value)
-
-                if cancellation_event is not None:
-                    if cancellation_event.wait(self.polling_interval):
+                for retry_count in range(1, self.max_retries + 1):
+                    if cancellation_event is not None and cancellation_event.is_set():
                         raise ExecutionCancelledError(
                             f"Polling cancelled for job {job_id}."
                         )
-                else:
-                    time.sleep(self.polling_interval)
 
-            raise MaxRetriesReachedError(job_id, self.max_retries)
+                    response = self._make_request(
+                        "get", f"job/{job_id}/status/", timeout=200
+                    )
+                    status = JobStatus(response.json()["status"])
+
+                    if status in terminal_statuses:
+                        if on_complete:
+                            on_complete(response)
+                        return status
+
+                    update_fn(retry_count, status.value)
+
+                    if cancellation_event is not None:
+                        if cancellation_event.wait(self.polling_interval):
+                            raise ExecutionCancelledError(
+                                f"Polling cancelled for job {job_id}."
+                            )
+                    else:
+                        time.sleep(self.polling_interval)
+
+                raise MaxRetriesReachedError(job_id, self.max_retries)
         finally:
             if polling_status:
                 polling_status.stop()
