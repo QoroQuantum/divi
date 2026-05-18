@@ -8,6 +8,26 @@ import re
 from typing import NamedTuple
 
 
+class TemplateEntry(NamedTuple):
+    """One parametric circuit ready for backend-side substitution.
+
+    Carries the full QASM 2.0 source (preamble + parametric body +
+    measurement) with named-symbol placeholders, the ordered tuple of
+    placeholder names, and the per-parameter-set values labelled with the
+    pipeline-assigned circuit labels.  Produced by the pipeline's
+    compilation pass and consumed by backends that implement
+    :class:`~divi.backends.SupportsCircuitTemplates`.
+
+    The same ``parameter_sets`` rows generate one resolved circuit each on
+    the backend, labelled with the supplied ``label`` so that pipeline
+    result routing continues to work unchanged.
+    """
+
+    template_qasm: str
+    parameter_names: tuple[str, ...]
+    parameter_sets: tuple[tuple[str, tuple[float, ...]], ...]
+
+
 class QASMTemplate(NamedTuple):
     """Pre-split QASM body for fast parameter substitution.
 

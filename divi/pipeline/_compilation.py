@@ -4,11 +4,16 @@
 
 """Batch compilation: lower MetaCircuit batches to executable QASM payloads."""
 
+from collections.abc import Sequence
 from itertools import product
 from typing import Any
 
-from divi.circuits import MetaCircuit, dag_to_qasm_body
+import numpy as np
+
+from divi.circuits import MetaCircuit, TemplateEntry, dag_to_qasm_body
 from divi.pipeline.abc import BranchKey, ChildResults
+
+PARAM_SET_AXIS = "param_set"
 
 
 def _preamble(n_qubits: int) -> str:
@@ -76,6 +81,86 @@ def _compile_batch(
             lineage_by_label[label] = branch_key
 
     return circuits, lineage_by_label
+
+
+def _batch_has_templates(batch: dict[Any, MetaCircuit]) -> bool:
+    """True when any MetaCircuit carries parametric template bodies.
+
+    The carrier is populated by
+    :class:`~divi.pipeline.stages.ParameterBindingStage` when it selects the
+    template path; its presence is the signal for ``_default_execute_fn`` to
+    route through :func:`_compile_template_batch` and submit a
+    ``list[TemplateEntry]`` via the backend's template-aware path.
+    """
+    return any(node.template_circuit_bodies for node in batch.values())
+
+
+def _compile_template_batch(
+    batch: dict[Any, MetaCircuit],
+    param_sets: Sequence[Sequence[float]] | np.ndarray,
+) -> tuple[list[TemplateEntry], dict[str, BranchKey]]:
+    """Lower a templated MetaCircuit batch to a list of TemplateEntry payloads.
+
+    Mirrors :func:`_compile_batch` but produces one
+    :class:`~divi.circuits.TemplateEntry` per ``(body_tag, meas_tag)``
+    variant, sharing the per-row ``parameter_sets`` array across all
+    entries. The label of each parameter set matches the deterministic
+    ``BranchKey``-derived label that :func:`_compile_batch` would emit for
+    the equivalent bound circuit, so :func:`_collapse_to_parent_results`
+    routes results identically regardless of which compile path ran.
+    """
+    param_array = np.asarray(param_sets, dtype=float)
+    if param_array.ndim != 2:
+        raise ValueError(
+            "_compile_template_batch expects 2D param_sets; got shape "
+            f"{param_array.shape}."
+        )
+
+    entries: list[TemplateEntry] = []
+    lineage_by_label: dict[str, BranchKey] = {}
+
+    for batch_key, node in batch.items():
+        if not node.measurement_qasms:
+            raise ValueError(
+                f"MetaCircuit has no measurement_qasms for key '{batch_key}'. "
+                "Run MeasurementStage before execution."
+            )
+        if not node.template_circuit_bodies:
+            raise ValueError(
+                f"MetaCircuit has no template_circuit_bodies for key "
+                f"'{batch_key}'; expected ParameterBindingStage's template "
+                "path to populate it."
+            )
+
+        preamble = _preamble(node.n_qubits)
+        param_names = tuple(p.name for p in node.parameters)
+
+        for (body_tag, body_qasm), (meas_tag, meas_qasm) in product(
+            node.template_circuit_bodies, node.measurement_qasms
+        ):
+            template_qasm = preamble + body_qasm + meas_qasm
+            param_set_rows: list[tuple[str, tuple[float, ...]]] = []
+            for i, values in enumerate(param_array):
+                param_set_tag = (PARAM_SET_AXIS, i)
+                branch_key: BranchKey = (
+                    *batch_key,
+                    *body_tag,
+                    param_set_tag,
+                    *meas_tag,
+                )
+                label = "/".join(f"{ax}:{val}" for ax, val in branch_key)
+                param_set_rows.append((label, tuple(float(v) for v in values)))
+                lineage_by_label[label] = branch_key
+
+            entries.append(
+                TemplateEntry(
+                    template_qasm=template_qasm,
+                    parameter_names=param_names,
+                    parameter_sets=tuple(param_set_rows),
+                )
+            )
+
+    return entries, lineage_by_label
 
 
 def _collapse_to_parent_results(

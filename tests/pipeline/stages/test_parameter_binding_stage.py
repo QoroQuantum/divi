@@ -177,6 +177,122 @@ class TestFormatParam:
         assert _format_param(1e-20, 10) == "0"
 
 
+class _TemplateCapableBackend:
+    """Minimal expval-supporting backend that implements the
+    :class:`~divi.backends.SupportsCircuitTemplates` capability protocol."""
+
+    is_async = False
+    supports_expval = True
+    shots = 100
+
+    def submit_circuits(self, circuits, **kwargs):  # pragma: no cover - unused
+        raise AssertionError(
+            "submit_circuits should not be called on the template path"
+        )
+
+    def submit_circuit_templates(
+        self, templates, **kwargs
+    ):  # pragma: no cover - unused
+        raise AssertionError(
+            "submit_circuit_templates is not exercised by these stage tests"
+        )
+
+
+class TestParameterBindingStageTemplatePath:
+    """Spec: when env.backend.supports_circuit_templates is True, the fast
+    path defers parameter binding by parking parametric QASM in
+    ``template_circuit_bodies`` instead of pre-rendering per param set."""
+
+    def test_template_carrier_populated_when_backend_supports_templates(self):
+        """Backend opts in → template_circuit_bodies carries parametric QASM."""
+        meta = _parametric_meta()
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=meta),
+                MeasurementStage(),
+                ParameterBindingStage(),
+            ]
+        )
+        env = PipelineEnv(
+            backend=_TemplateCapableBackend(),
+            param_sets=np.array([[1.5, 2.7], [3.0, 4.0]]),
+        )
+        trace = pipeline.run_forward_pass("x", env)
+
+        for node in trace.final_batch.values():
+            assert (
+                node.template_circuit_bodies
+            ), "Template carrier should be populated when backend supports templates."
+            assert (
+                node.bound_circuit_bodies == ()
+            ), "Bound bodies must stay empty so compile takes the template path."
+            # Symbols survive: substitution is deferred to the backend.
+            for _tag, body in node.template_circuit_bodies:
+                assert "theta" in body
+                assert "phi" in body
+
+    def test_template_path_skipped_when_backend_does_not_support(
+        self, dummy_pipeline_env
+    ):
+        """Non-template backend → fast path renders bound QASM as before."""
+        meta = _parametric_meta()
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=meta),
+                MeasurementStage(),
+                ParameterBindingStage(),
+            ]
+        )
+        env = PipelineEnv(
+            backend=dummy_pipeline_env.backend,
+            param_sets=np.array([[1.5, 2.7]]),
+        )
+        trace = pipeline.run_forward_pass("x", env)
+        for node in trace.final_batch.values():
+            assert node.bound_circuit_bodies
+            assert node.template_circuit_bodies == ()
+
+    def test_template_path_skipped_when_slow_path_required(
+        self, suppress_pipeline_perf_warnings
+    ):
+        """Slow path (QEM enabled) must bind locally even on template-capable backend."""
+        meta = _parametric_meta()
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=meta),
+                ParameterBindingStage(),
+                QEMStage(),
+                MeasurementStage(),
+            ]
+        )
+        env = PipelineEnv(
+            backend=_TemplateCapableBackend(),
+            param_sets=np.array([[1.5, 2.7]]),
+        )
+        trace = pipeline.run_forward_pass("x", env)
+        for node in trace.final_batch.values():
+            assert node.template_circuit_bodies == ()
+
+    def test_non_parametric_falls_back_to_bound_emission(self):
+        """No parameters → no template needed; emit bound bodies as the fast path does."""
+        meta = two_group_meta()
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=meta),
+                MeasurementStage(),
+                ParameterBindingStage(),
+            ]
+        )
+        env = PipelineEnv(
+            backend=_TemplateCapableBackend(),
+            param_sets=np.array([[0.0]]),
+        )
+        trace = pipeline.run_forward_pass("x", env)
+        for node in trace.final_batch.values():
+            assert node.bound_circuit_bodies
+            assert node.template_circuit_bodies == ()
+
+
 class TestParameterBindingStageOrdering:
     """ParameterBindingStage can appear in any order relative to QEMStage."""
 

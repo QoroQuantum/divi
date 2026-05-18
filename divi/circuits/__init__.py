@@ -10,7 +10,12 @@ from ._conversions import (
     measurement_qasms_from_groups,
     qscript_to_meta,
 )
-from ._qasm_template import QASMTemplate, build_template, render_template
+from ._qasm_template import (
+    QASMTemplate,
+    TemplateEntry,
+    build_template,
+    render_template,
+)
 
 # isort: on
 
@@ -19,6 +24,7 @@ __all__ = [
     "MetaCircuit",
     "QASMTag",
     "QASMTemplate",
+    "TemplateEntry",
     "build_template",
     "dag_to_qasm_body",
     "measurement_qasms_from_groups",

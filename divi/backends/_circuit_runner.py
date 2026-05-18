@@ -5,10 +5,33 @@
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from threading import Event
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 
 from divi.backends import ExecutionResult
+from divi.circuits import TemplateEntry
+
+
+@runtime_checkable
+class SupportsCircuitTemplates(Protocol):
+    """Capability protocol for backends that resolve parametric QASM
+    templates server-side.
+
+    The pipeline's deferred-binding path is gated on
+    ``isinstance(backend, SupportsCircuitTemplates)``; a backend opts in
+    simply by implementing :meth:`submit_circuit_templates` — no inheritance
+    is required, and no capability flag has to be plumbed through the base
+    class for backends that have nothing else to share with the protocol.
+    """
+
+    def submit_circuit_templates(
+        self,
+        templates: list[TemplateEntry],
+        *,
+        cancellation_event: Event | None = None,
+        **kwargs,
+    ) -> ExecutionResult: ...
 
 
 class CircuitRunner(ABC):

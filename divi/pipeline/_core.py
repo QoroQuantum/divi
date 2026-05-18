@@ -13,11 +13,16 @@ from typing import Any
 from rich.console import Console
 from rich.tree import Tree
 
-from divi.backends import JobStatus
+from divi.backends import JobStatus, SupportsCircuitTemplates
 from divi.backends._cancellation import _best_effort_cancel_job, _sigint_to_event
 from divi.exceptions import ExecutionCancelledError
 
-from ._compilation import _collapse_to_parent_results, _compile_batch
+from ._compilation import (
+    _batch_has_templates,
+    _collapse_to_parent_results,
+    _compile_batch,
+    _compile_template_batch,
+)
 from ._postprocessing import (
     _counts_to_expvals,
     _counts_to_probs,
@@ -215,9 +220,17 @@ def _default_execute_fn(
     env: PipelineEnv,
 ) -> ChildResults:
     """Default execute: lower MetaCircuit batch to QASM circuits, then backend run."""
-    circuits, lineage_by_label = _compile_batch(trace.final_batch)
-
-    env.artifacts["circuit_count"] = len(circuits)
+    use_templates = _batch_has_templates(trace.final_batch)
+    templates = []
+    circuits: dict[str, str] = {}
+    if use_templates:
+        templates, lineage_by_label = _compile_template_batch(
+            trace.final_batch, env.param_sets
+        )
+        env.artifacts["circuit_count"] = sum(len(t.parameter_sets) for t in templates)
+    else:
+        circuits, lineage_by_label = _compile_batch(trace.final_batch)
+        env.artifacts["circuit_count"] = len(circuits)
 
     submit_kwargs = {}
     ham_ops = env.artifacts.get("ham_ops")
@@ -226,6 +239,14 @@ def _default_execute_fn(
 
     per_group_shots = env.artifacts.get("per_group_shots")
     if per_group_shots:
+        if use_templates:
+            # The templated submission ordering doesn't align with the bound
+            # flat-circuit indices that ``shot_groups`` references; fall back
+            # to the bound path for runs that need per-group shot allocation.
+            circuits, lineage_by_label = _compile_batch(trace.final_batch)
+            env.artifacts["circuit_count"] = len(circuits)
+            use_templates = False
+            templates = []
         shot_groups = _build_shot_groups(circuits, lineage_by_label, per_group_shots)
         if shot_groups is not None:
             submit_kwargs["shot_groups"] = shot_groups
@@ -233,9 +254,19 @@ def _default_execute_fn(
     if env.cancellation_event is not None and env.cancellation_event.is_set():
         raise ExecutionCancelledError("Pipeline execution cancelled before dispatch")
 
-    result = env.backend.submit_circuits(
-        circuits, cancellation_event=env.cancellation_event, **submit_kwargs
-    )
+    if use_templates:
+        # ParameterBindingStage only populates template_circuit_bodies when
+        # the backend implements SupportsCircuitTemplates, so this isinstance
+        # narrowing is a tautology at runtime — its job is to let the type
+        # checker see submit_circuit_templates without a base-class stub.
+        assert isinstance(env.backend, SupportsCircuitTemplates)
+        result = env.backend.submit_circuit_templates(
+            templates, cancellation_event=env.cancellation_event, **submit_kwargs
+        )
+    else:
+        result = env.backend.submit_circuits(
+            circuits, cancellation_event=env.cancellation_event, **submit_kwargs
+        )
 
     # Store for cancellation support (read by cancel_unfinished_job)
     env.artifacts["_current_execution_result"] = result

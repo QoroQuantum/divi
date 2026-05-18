@@ -12,8 +12,10 @@ import numpy as np
 from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit.dagcircuit import DAGCircuit
 
+from divi.backends import SupportsCircuitTemplates
 from divi.circuits import MetaCircuit, build_template, dag_to_qasm_body, render_template
 from divi.circuits._conversions import _format_bound_param
+from divi.pipeline._compilation import PARAM_SET_AXIS
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
@@ -25,8 +27,6 @@ from divi.pipeline.abc import (
     StageToken,
 )
 from divi.pipeline.stages import QEMStage
-
-PARAM_SET_AXIS = "param_set"
 
 
 def _validate_param_sets(env: PipelineEnv) -> np.ndarray:
@@ -199,7 +199,10 @@ class ParameterBindingStage(BundleStage):
         self, batch: MetaCircuitBatch, env: PipelineEnv
     ) -> tuple[ExpansionResult, StageToken]:
         param_sets = _validate_param_sets(env)
-        run = self._run_fast if self._fast_path else self._run_slow
+        if self._template_path_enabled(env):
+            run = self._run_template
+        else:
+            run = self._run_fast if self._fast_path else self._run_slow
         return ExpansionResult(batch=run(batch, param_sets)), None
 
     def dry_expand(
@@ -207,6 +210,17 @@ class ParameterBindingStage(BundleStage):
     ) -> tuple[ExpansionResult, StageToken]:
         param_sets = _validate_param_sets(env)
         return ExpansionResult(batch=self._run_dry(batch, param_sets)), None
+
+    def _template_path_enabled(self, env: PipelineEnv) -> bool:
+        """Whether to defer parameter binding to the backend for this run.
+
+        Requires both the fast-path condition (no downstream stage consumes
+        DAG bodies) and the active backend implementing the
+        :class:`~divi.backends.SupportsCircuitTemplates` capability protocol.
+        """
+        if not self._fast_path:
+            return False
+        return isinstance(env.backend, SupportsCircuitTemplates)
 
     def _run_fast(
         self, batch: MetaCircuitBatch, param_sets: np.ndarray
@@ -242,6 +256,38 @@ class ParameterBindingStage(BundleStage):
                 node, param_sets, prepare=_slow_prepare, emit=_slow_emit
             )
             out[key] = node.set_circuit_bodies(tuple(bound))
+        return out
+
+    def _run_template(
+        self, batch: MetaCircuitBatch, param_sets: np.ndarray
+    ) -> MetaCircuitBatch:
+        """Defer parameter substitution to a template-capable backend.
+
+        Serialises each body DAG once into parametric QASM (named symbol
+        placeholders preserved) and parks it in
+        :attr:`~divi.circuits.MetaCircuit.template_circuit_bodies`. The
+        compilation pass picks it up and emits a payload of
+        :class:`~divi.circuits.TemplateEntry` rows that the backend resolves
+        per parameter set, replacing N near-identical bound circuits with
+        one template plus N parameter vectors.
+        """
+        out: MetaCircuitBatch = {}
+        for key, node in batch.items():
+            if len(node.parameters) == 0:
+                # Non-parametric: nothing to defer; fall back to fast-path
+                # bound emission so compile takes its normal route.
+                bodies = tuple(
+                    (tag, _qasm_body_cached(dag, node.precision))
+                    for tag, dag in node.circuit_bodies
+                )
+                out[key] = node.set_bound_bodies(bodies)
+                continue
+
+            template_bodies = tuple(
+                (tag, _qasm_body_cached(dag, node.precision))
+                for tag, dag in node.circuit_bodies
+            )
+            out[key] = node.set_template_bodies(template_bodies)
         return out
 
     def _run_dry(
@@ -290,6 +336,7 @@ class ParameterBindingStage(BundleStage):
             "n_param_sets": len(param_sets),
             "n_params": n_params,
             "fast_path": self._fast_path,
+            "template_path": self._template_path_enabled(env),
         }
 
     def reduce(
