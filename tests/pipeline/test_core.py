@@ -4,11 +4,14 @@
 
 """Tests for divi.pipeline._core: validation, CircuitPipeline, compile_batch, format_pipeline_tree."""
 
+import signal
+import threading
 from threading import Event
 
 import pytest
 
-from divi.backends import ExecutionResult, JobStatus
+from divi.backends import AsyncJobBackend, ExecutionResult, JobStatus
+from divi.backends._async_job_backend import _best_effort_cancel_job
 from divi.exceptions import ExecutionCancelledError
 from divi.pipeline import (
     CircuitPipeline,
@@ -23,6 +26,7 @@ from divi.pipeline._compilation import (
 )
 from divi.pipeline._core import (
     _scope_token,
+    _sigint_to_cancellation,
     _validate_stage_order,
     _wait_for_async_result,
 )
@@ -443,7 +447,10 @@ class TestWaitForAsyncResult:
             _wait_for_async_result(mock_backend, execution_result, env)
 
     def test_cancelled_without_event_raises_runtime_error(self, mocker):
-        """When job is CANCELLED without cancellation event, raises RuntimeError."""
+        """Backend-reported CANCELLED without a local cancellation request
+        is a scheduler-side eviction, not a user cancel. It must surface as
+        ``RuntimeError`` so eviction-driven failures aren't disguised as
+        intentional shutdowns."""
         mock_backend = mocker.Mock()
         mock_backend.poll_job_status.return_value = JobStatus.CANCELLED
         mock_backend.max_retries = 100
@@ -452,7 +459,7 @@ class TestWaitForAsyncResult:
 
         execution_result = ExecutionResult(job_id="test_job")
 
-        with pytest.raises(RuntimeError, match="Job test_job was cancelled"):
+        with pytest.raises(RuntimeError, match="cancelled by the scheduler"):
             _wait_for_async_result(mock_backend, execution_result, env)
 
     def test_missing_job_id_raises_value_error(self):
@@ -513,7 +520,13 @@ class TestWaitForAsyncResult:
 
         # Capture the on_complete callback, then invoke it with a dict response
         def fake_poll(
-            er, *, loop_until_complete, on_complete, verbose, progress_callback
+            er,
+            *,
+            loop_until_complete,
+            on_complete,
+            verbose,
+            progress_callback,
+            cancellation_event=None,
         ):
             on_complete({"run_time": 3.5})
             return JobStatus.COMPLETED
@@ -526,6 +539,24 @@ class TestWaitForAsyncResult:
         _wait_for_async_result(mock_backend, execution_result, env)
 
         assert env.artifacts["run_time"] == 3.5
+
+    def test_cancellation_event_is_forwarded_to_backend(self, mocker):
+        """The env's cancellation_event must reach backend.poll_job_status
+        so the polling loop can exit promptly when the user signals cancel."""
+        mock_backend = mocker.Mock()
+        mock_backend.poll_job_status.return_value = JobStatus.COMPLETED
+        mock_backend.max_retries = 100
+        mock_backend.get_job_results.return_value = ExecutionResult(
+            results=[], job_id="job"
+        )
+
+        event = Event()
+        env = PipelineEnv(backend=mock_backend, cancellation_event=event)
+
+        _wait_for_async_result(mock_backend, ExecutionResult(job_id="job"), env)
+
+        _, kwargs = mock_backend.poll_job_status.call_args
+        assert kwargs["cancellation_event"] is event
 
     def test_runtime_tracking_list_response(self, mocker):
         """on_complete callback accumulates run_time from a list of responses."""
@@ -541,7 +572,13 @@ class TestWaitForAsyncResult:
         resp2.json.return_value = {"run_time": 2.0}
 
         def fake_poll(
-            er, *, loop_until_complete, on_complete, verbose, progress_callback
+            er,
+            *,
+            loop_until_complete,
+            on_complete,
+            verbose,
+            progress_callback,
+            cancellation_event=None,
         ):
             on_complete([resp1, resp2])
             return JobStatus.COMPLETED
@@ -554,6 +591,133 @@ class TestWaitForAsyncResult:
         _wait_for_async_result(mock_backend, execution_result, env)
 
         assert env.artifacts["run_time"] == 3.5
+
+
+def _noop_handler(signum, frame):
+    pass
+
+
+class TestBestEffortCancelJob:
+    """Tests for the helper that funnels in-flight async-job cancellation."""
+
+    def test_calls_backend_cancel_for_async_backend_with_job_id(self, mocker):
+        backend = mocker.Mock(spec=AsyncJobBackend)
+        _best_effort_cancel_job(backend, ExecutionResult(job_id="job_x"))
+        backend.cancel_job.assert_called_once()
+
+    def test_noop_for_sync_backend(self, mocker):
+        sync_backend = mocker.Mock(spec=[])
+        _best_effort_cancel_job(sync_backend, ExecutionResult(job_id="job_y"))
+
+    def test_noop_when_no_job_id(self, mocker):
+        backend = mocker.Mock(spec=AsyncJobBackend)
+        _best_effort_cancel_job(backend, ExecutionResult(results=[]))
+        backend.cancel_job.assert_not_called()
+
+    def test_swallows_cancel_job_exception(self, mocker):
+        backend = mocker.Mock(spec=AsyncJobBackend)
+        backend.cancel_job.side_effect = RuntimeError("server says no")
+        # Must not propagate — the user's CTRL-C should not be masked by
+        # network/server hiccups during the courtesy cancel.
+        _best_effort_cancel_job(backend, ExecutionResult(job_id="job_z"))
+
+
+class TestSigintToCancellation:
+    """Tests for the SIGINT → cancellation_event funnel."""
+
+    def test_noop_outside_main_thread(self):
+        """``signal.signal`` rejects non-main threads; the context manager
+        must yield without installing a handler."""
+        before = signal.getsignal(signal.SIGINT)
+        observed: dict = {}
+
+        def runner():
+            env = PipelineEnv(backend=object())
+            with _sigint_to_cancellation(env):
+                observed["installed"] = signal.getsignal(signal.SIGINT)
+
+        t = threading.Thread(target=runner)
+        t.start()
+        t.join()
+        assert observed["installed"] is before
+
+    def test_creates_event_when_missing(self):
+        env = PipelineEnv(backend=object())
+        with _sigint_to_cancellation(env):
+            assert env.cancellation_event is not None
+
+    def test_first_sigint_sets_event(self):
+        env = PipelineEnv(backend=object())
+        with _sigint_to_cancellation(env):
+            assert env.cancellation_event is not None
+            handler = signal.getsignal(signal.SIGINT)
+            handler(signal.SIGINT, None)
+            assert env.cancellation_event.is_set()
+
+    def test_second_sigint_raises_keyboard_interrupt(self):
+        env = PipelineEnv(backend=object())
+        with pytest.raises(KeyboardInterrupt):
+            with _sigint_to_cancellation(env):
+                handler = signal.getsignal(signal.SIGINT)
+                handler(signal.SIGINT, None)
+                handler(signal.SIGINT, None)
+
+    def test_defers_to_existing_non_default_handler(self):
+        env = PipelineEnv(backend=object())
+        prev = signal.signal(signal.SIGINT, _noop_handler)
+        try:
+            with _sigint_to_cancellation(env):
+                assert signal.getsignal(signal.SIGINT) is _noop_handler
+        finally:
+            signal.signal(signal.SIGINT, prev)
+
+
+class TestDefaultExecuteFnCancellation:
+    """End-to-end: when the poll loop raises, the backend is told to cancel."""
+
+    def _async_backend(self, mocker, *, raise_on_poll):
+        backend = mocker.Mock(spec=AsyncJobBackend)
+        backend.supports_expval = False
+        backend.max_retries = 1
+        backend.submit_circuits.return_value = ExecutionResult(job_id="job_42")
+        if raise_on_poll:
+            backend.poll_job_status.side_effect = ExecutionCancelledError(
+                "Polling cancelled for job job_42."
+            )
+        return backend
+
+    def test_cancel_during_poll_calls_backend_cancel_once(self, mocker):
+        backend = self._async_backend(mocker, raise_on_poll=True)
+        env = PipelineEnv(backend=backend, cancellation_event=Event())
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=two_group_meta()),
+                MeasurementStage(),
+            ]
+        )
+        with pytest.raises(ExecutionCancelledError):
+            pipeline.run(initial_spec="x", env=env)
+
+        # The submitted result should be passed back to cancel_job exactly once.
+        submitted = backend.submit_circuits.return_value
+        backend.cancel_job.assert_called_once_with(submitted)
+
+    def test_keyboard_interrupt_during_poll_also_cancels_backend(self, mocker):
+        """Hosts with their own SIGINT handler (Jupyter, debuggers) raise
+        plain KeyboardInterrupt mid-poll — the cleanup must still fire."""
+        backend = self._async_backend(mocker, raise_on_poll=False)
+        backend.poll_job_status.side_effect = KeyboardInterrupt
+        env = PipelineEnv(backend=backend, cancellation_event=Event())
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=two_group_meta()),
+                MeasurementStage(),
+            ]
+        )
+        with pytest.raises(KeyboardInterrupt):
+            pipeline.run(initial_spec="x", env=env)
+
+        backend.cancel_job.assert_called_once()
 
 
 class TestPipelineResultSqueeze:

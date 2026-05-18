@@ -531,7 +531,10 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         np.testing.assert_allclose(full[1], row1)
 
     def test_run_method_cancellation_handling(self, mocker):
-        """Test run method exits gracefully when a cancellation event is set."""
+        """Cancellation now halts the script at ``run()``: ``ExecutionCancelledError``
+        re-raises after the partial ``optimize_result`` is recorded, so any
+        downstream aggregate that depended on the return value never sees an
+        empty/half-set state."""
         program = self._create_program_with_mock_optimizer(mocker)
         program.max_iterations = 1
         mock_event = mocker.MagicMock()
@@ -541,11 +544,27 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
             "Cancellation requested"
         )
 
-        result = program.run()
+        with pytest.raises(ExecutionCancelledError, match="Cancelled by user"):
+            program.run()
 
-        assert result is program
-        assert program.total_circuit_count == program._total_circuit_count
-        assert program.total_run_time == program._total_run_time
+        # The bookkeeping side-effects (totals, the recorded partial result)
+        # still happen — only the return is replaced by the raise.
+        assert program.optimize_result is not None
+        assert program.optimize_result.success is False
+        assert program.optimize_result.message == "Cancelled by user"
+
+    def test_run_method_keyboard_interrupt_propagates_as_hard_abort(self, mocker):
+        """A KeyboardInterrupt escaping the optimizer (e.g. the documented
+        second-press hard-abort path, or a host with its own SIGINT handler)
+        must propagate unchanged. VQA only translates the cooperative
+        ExecutionCancelledError; KeyboardInterrupt is the user's request to
+        bypass graceful shutdown."""
+        program = self._create_program_with_mock_optimizer(mocker)
+        program.max_iterations = 1
+        program.optimizer.optimize.side_effect = KeyboardInterrupt()
+
+        with pytest.raises(KeyboardInterrupt):
+            program.run()
 
     def _setup_program_for_final_computation_test(self, mocker):
         """Helper to set up program with mocks for final computation tests."""

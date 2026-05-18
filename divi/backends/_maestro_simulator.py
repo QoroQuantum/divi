@@ -6,11 +6,13 @@ import logging
 import os
 import re
 import weakref
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, fields
-from threading import Lock
-from typing import TYPE_CHECKING
+from threading import Event, Lock
+from typing import TYPE_CHECKING, Any
+
+from divi.exceptions import ExecutionCancelledError
 
 if TYPE_CHECKING:
     # For type checkers, assume maestro is always available — runtime code
@@ -46,6 +48,39 @@ def _strip_id_gates(qasm: str) -> str:
     Since identity gates are no-ops, stripping them is safe.
     """
     return re.sub(r"id\s+q\[\d+\]\s*;\n?", "", qasm)
+
+
+def _run_with_cancellation(
+    executor: ThreadPoolExecutor,
+    fn: Callable[[Any], Any],
+    items: Iterable[Any],
+    cancellation_event: Event | None,
+) -> list:
+    """Run ``fn`` over ``items`` in order via ``executor`` with cancellation support.
+
+    When ``cancellation_event`` is set between completed items, ``Future.cancel()``
+    is called on every remaining future so unstarted ones never run — the
+    shared per-instance ThreadPoolExecutor doesn't keep draining orphan work
+    behind subsequent ``submit_circuits`` calls. Workers already in maestro's
+    native call cannot be interrupted.
+    """
+    if cancellation_event is None:
+        return list(executor.map(fn, items))
+    futures = [executor.submit(fn, item) for item in items]
+    out: list = []
+    for fut in futures:
+        if cancellation_event.is_set():
+            # Inline the cleanup so a worker exception (any type — including
+            # a hypothetical ExecutionCancelledError from a future Python
+            # callable) propagates from ``fut.result()`` below without being
+            # confused with our event-driven cancel.
+            for f in futures:
+                f.cancel()
+            raise ExecutionCancelledError(
+                "Maestro batch cancelled after partial completion"
+            )
+        out.append(fut.result())
+    return out
 
 
 def _strip_measurements(qasm: str) -> str:
@@ -342,7 +377,7 @@ class MaestroSimulator(CircuitRunner):
         """Maestro executes circuits synchronously."""
         return False
 
-    def set_seed(self, seed: int) -> None:  # noqa: ARG002 — CircuitRunner interface
+    def set_seed(self, seed: int) -> None:
         """No-op — maestro does not yet expose seeding from C++."""
 
     def _get_executor(self) -> ThreadPoolExecutor:
@@ -421,10 +456,12 @@ class MaestroSimulator(CircuitRunner):
     def submit_circuits(
         self,
         circuits: Mapping[str, str],
+        *,
         ham_ops: str | None = None,
         circuit_ham_map: list[list[int]] | None = None,
         shot_groups: list[list[int]] | None = None,
-        **kwargs,  # noqa: ARG002 — accepted for CircuitRunner interface compatibility
+        cancellation_event: Event | None = None,
+        **kwargs,
     ) -> ExecutionResult:
         """Submit quantum circuits for execution on the maestro simulator.
 
@@ -440,6 +477,9 @@ class MaestroSimulator(CircuitRunner):
                 mode only — ignored when ``ham_ops`` is provided because
                 maestro's ``simple_estimate`` computes expectation values
                 analytically.
+            cancellation_event: When set, aborts further dispatch and raises
+                :class:`~divi.exceptions.ExecutionCancelledError`. Workers
+                already in maestro's native call are not interrupted.
             **kwargs: Ignored — accepted so callers using the generic
                 :class:`~divi.backends.CircuitRunner` interface can forward
                 unrelated options without breaking.
@@ -447,6 +487,11 @@ class MaestroSimulator(CircuitRunner):
         Returns:
             ExecutionResult containing either counts (sampling) or expectation values.
         """
+        if cancellation_event is not None and cancellation_event.is_set():
+            raise ExecutionCancelledError(
+                "Maestro batch cancelled before any circuit was dispatched"
+            )
+
         if ham_ops is not None and shot_groups is not None:
             raise ValueError(
                 "shot_groups is incompatible with ham_ops: maestro's "
@@ -520,7 +565,9 @@ class MaestroSimulator(CircuitRunner):
                 (i, label, qasm)
                 for i, (label, qasm) in enumerate(zip(circuit_labels, qasm_strings))
             ]
-            results = list(executor.map(_run_sample, items))
+            results = _run_with_cancellation(
+                executor, _run_sample, items, cancellation_event
+            )
         else:
             # Expectation value mode — strip measurement gates so they don't
             # collapse the statevector before expectation values are computed.
@@ -570,6 +617,8 @@ class MaestroSimulator(CircuitRunner):
                 (i, label, qasm)
                 for i, (label, qasm) in enumerate(zip(circuit_labels, qasm_strings))
             ]
-            results = list(executor.map(_run_estimate, items))
+            results = _run_with_cancellation(
+                executor, _run_estimate, items, cancellation_event
+            )
 
         return ExecutionResult(results=results)

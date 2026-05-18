@@ -3,17 +3,17 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from abc import ABC, abstractmethod
-from http import HTTPStatus
+from contextlib import contextmanager
 from queue import Queue
 from threading import Event
 from typing import Any
 from warnings import warn
 
-import requests
-
 from divi.backends import AsyncJobBackend, CircuitRunner
+from divi.backends._async_job_backend import _best_effort_cancel_job
 from divi.circuits.qem import _NoMitigation
 from divi.pipeline import CircuitPipeline, DryRunReport, PipelineEnv, dry_run_pipeline
+from divi.pipeline._core import _sigint_to_event
 from divi.reporting import (
     LoggingProgressReporter,
     ProgressReporter,
@@ -105,6 +105,20 @@ class QuantumProgram(ABC):
         """
         self._cancellation_event = event
 
+    @contextmanager
+    def _install_cancellation_handler(self):
+        """Funnel SIGINT into :attr:`_cancellation_event` for the duration of ``run()``.
+
+        First Ctrl+C sets the event; second Ctrl+C hard-aborts via
+        ``KeyboardInterrupt``. No-op outside the main thread or when a
+        non-default SIGINT handler is already installed — defers to
+        debuggers, Jupyter, and enclosing ensemble handlers.
+        """
+        if self._cancellation_event is None:
+            self._cancellation_event = Event()
+        with _sigint_to_event(self._cancellation_event):
+            yield
+
     @property
     def total_circuit_count(self) -> int:
         """Get the total number of circuits executed.
@@ -151,26 +165,7 @@ class QuantumProgram(ABC):
             )
             return
 
-        try:
-            self.backend.cancel_job(result)
-        except requests.exceptions.HTTPError as e:
-            # Check if this is an expected error (job already completed/failed/cancelled)
-            if (
-                hasattr(e, "response")
-                and e.response is not None
-                and e.response.status_code == HTTPStatus.CONFLICT
-            ):
-                # 409 Conflict means job is already in a terminal state - this is expected
-                # in race conditions where job completes before we can cancel it.
-                self.reporter.info(
-                    f"Job {result.job_id} already completed or cancelled"
-                )
-            else:
-                # Unexpected error (403 Forbidden, 404 Not Found, etc.) - report it
-                self.reporter.info(f"Failed to cancel job {result.job_id}: {e}")
-        except Exception as e:
-            # Other unexpected errors - report them
-            self.reporter.info(f"Failed to cancel job {result.job_id}: {e}")
+        _best_effort_cancel_job(self.backend, result)
 
     # ------------------------------------------------------------------ #
     # Pipeline

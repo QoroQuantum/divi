@@ -3,15 +3,20 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+import signal
+import threading
 import warnings
 from collections import Counter, defaultdict
 from collections.abc import Callable, Hashable, Sequence
+from contextlib import contextmanager
+from threading import Event
 from typing import Any
 
 from rich.console import Console
 from rich.tree import Tree
 
 from divi.backends import JobStatus
+from divi.backends._async_job_backend import _best_effort_cancel_job
 from divi.exceptions import ExecutionCancelledError
 
 from ._compilation import _collapse_to_parent_results, _compile_batch
@@ -126,24 +131,30 @@ def _wait_for_async_result(backend, execution_result, env):
                 float(r.json()["run_time"]) for r in response
             )
 
-    # Poll until complete
     status = backend.poll_job_status(
         execution_result,
         loop_until_complete=True,
         on_complete=_track_runtime,
         verbose=progress_callback is None,
         progress_callback=progress_callback,
+        cancellation_event=env.cancellation_event,
     )
 
     if status == JobStatus.FAILED:
         raise RuntimeError(f"Job {job_id} has failed")
 
     if status == JobStatus.CANCELLED:
-        # If cancellation was requested (e.g., by ProgramEnsemble), raise ExecutionCancelledError
-        # so it's handled gracefully. Otherwise, raise RuntimeError for unexpected cancellation.
-        if env.cancellation_event and env.cancellation_event.is_set():
+        # Distinguish a local cancel (our event was set → user/coordinator
+        # asked) from a scheduler-side cancel (eviction, quota, admin stop).
+        # The former is the graceful user-cancellation path; the latter is
+        # an unexpected interruption that the caller should not confuse with
+        # an intentional shutdown.
+        if env.cancellation_event is not None and env.cancellation_event.is_set():
             raise ExecutionCancelledError(f"Job {job_id} was cancelled")
-        raise RuntimeError(f"Job {job_id} was cancelled")
+        raise RuntimeError(
+            f"Job {job_id} was cancelled by the scheduler "
+            "(no local cancellation requested)"
+        )
 
     if status != JobStatus.COMPLETED:
         raise RuntimeError("Job has not completed yet, cannot post-process results")
@@ -221,13 +232,24 @@ def _default_execute_fn(
         if shot_groups is not None:
             submit_kwargs["shot_groups"] = shot_groups
 
-    result = env.backend.submit_circuits(circuits, **submit_kwargs)
+    if env.cancellation_event is not None and env.cancellation_event.is_set():
+        raise ExecutionCancelledError("Pipeline execution cancelled before dispatch")
+
+    result = env.backend.submit_circuits(
+        circuits, cancellation_event=env.cancellation_event, **submit_kwargs
+    )
 
     # Store for cancellation support (read by cancel_unfinished_job)
     env.artifacts["_current_execution_result"] = result
 
-    if result.is_async():
-        result = _wait_for_async_result(env.backend, result, env)
+    try:
+        if result.is_async():
+            result = _wait_for_async_result(env.backend, result, env)
+    except (ExecutionCancelledError, KeyboardInterrupt):
+        # KeyboardInterrupt covers hosts where our SIGINT funnel cannot install
+        # (Jupyter, embedded). Without it the cloud job is orphaned.
+        _best_effort_cancel_job(env.backend, result)
+        raise
 
     if result.results is None:
         raise RuntimeError("Backend returned no results")
@@ -235,6 +257,47 @@ def _default_execute_fn(
     raw_by_label = {r["label"]: r["results"] for r in result.results}
 
     return _collapse_to_parent_results(raw_by_label, lineage_by_label)
+
+
+@contextmanager
+def _sigint_to_event(event: Event):
+    """Funnel SIGINT into ``event``: first press sets the event, second
+    re-raises :class:`KeyboardInterrupt`. No-op outside the main thread
+    or when a non-default SIGINT handler is already installed."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    existing = signal.getsignal(signal.SIGINT)
+    if existing not in (signal.default_int_handler, signal.SIG_DFL):
+        yield
+        return
+
+    press_count = 0
+
+    def _handler(signum, frame):
+        nonlocal press_count
+        press_count += 1
+        if press_count >= 2:
+            signal.signal(signal.SIGINT, existing)
+            raise KeyboardInterrupt
+        event.set()
+
+    signal.signal(signal.SIGINT, _handler)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, existing)
+
+
+@contextmanager
+def _sigint_to_cancellation(env: "PipelineEnv"):
+    """Pipeline-scoped wrapper around :func:`_sigint_to_event` that ensures
+    ``env.cancellation_event`` exists."""
+    if env.cancellation_event is None:
+        env.cancellation_event = Event()
+    with _sigint_to_event(env.cancellation_event):
+        yield
 
 
 def _has_custom_dry_expand(stage: Stage) -> bool:
@@ -407,7 +470,8 @@ class CircuitPipeline:
         # the spinner shows only execution/polling state from here on.
         _report_pipeline_stage(env, None)
 
-        raw = execute_fn(plan, env)
+        with _sigint_to_cancellation(env):
+            raw = execute_fn(plan, env)
 
         # Convert raw backend results into the canonical format declared
         # by the measurement stage during expand.  This runs *before* the
