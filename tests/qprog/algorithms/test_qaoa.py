@@ -6,6 +6,7 @@
 import networkx as nx
 import numpy as np
 import pytest
+from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits.qem import ZNE, LinearExtrapolator
 from divi.hamiltonians import (
@@ -18,11 +19,12 @@ from divi.qprog import (
     ScipyMethod,
     ScipyOptimizer,
 )
-from divi.qprog.algorithms import IterativeQAOA
+from divi.qprog.algorithms import IterativeQAOA, SuperpositionState
 from divi.qprog.problems import (
     BinaryOptimizationProblem,
     MaxCliqueProblem,
     MaxCutProblem,
+    QAOAProblem,
 )
 from tests.qprog.problems._helpers import QUBO_MATRIX, make_bull_graph
 from tests.qprog.qprog_contracts import (
@@ -401,6 +403,99 @@ class TestFinalComputationDecode:
             _ = qaoa.solution_bitstring
 
 
+def _make_problem(cost: SparsePauliOp, mixer: SparsePauliOp, wire_labels=None):
+    _labels = wire_labels
+
+    class _Problem(QAOAProblem):
+        @property
+        def cost_hamiltonian(self):
+            return cost
+
+        @property
+        def mixer_hamiltonian(self):
+            return mixer
+
+        @property
+        def loss_constant(self):
+            return 0.0
+
+        @property
+        def decode_fn(self):
+            return lambda bs: bs
+
+        @property
+        def recommended_initial_state(self):
+            return SuperpositionState()
+
+        @property
+        def wire_labels(self):
+            return _labels if _labels is not None else super().wire_labels
+
+    return _Problem()
+
+
+class TestWireSpaceInvariant:
+    def test_mixer_wider_than_cost_raises(self, dummy_simulator):
+        prob = _make_problem(
+            cost=SparsePauliOp.from_list([("IZZ", 1.0), ("ZZI", 1.0)]),
+            mixer=SparsePauliOp.from_list(
+                [("IIIX", 1.0), ("IIXI", 1.0), ("IXII", 1.0), ("XIII", 1.0)]
+            ),
+        )
+        with pytest.raises(
+            ValueError,
+            match=r"wire_labels has 3 entries.*mixer_hamiltonian\.num_qubits is 4",
+        ):
+            QAOA(prob, backend=dummy_simulator)
+
+    def test_cost_wider_than_mixer_raises(self, dummy_simulator):
+        prob = _make_problem(
+            cost=SparsePauliOp.from_list([("IIZZ", 1.0), ("ZZII", 1.0)]),
+            mixer=SparsePauliOp.from_list([("IIX", 1.0), ("IXI", 1.0), ("XII", 1.0)]),
+        )
+        with pytest.raises(
+            ValueError,
+            match=r"wire_labels has 4 entries.*mixer_hamiltonian\.num_qubits is 3",
+        ):
+            QAOA(prob, backend=dummy_simulator)
+
+    def test_wire_labels_misaligned_with_hamiltonians_raises(self, dummy_simulator):
+        # cost & mixer both 3-qubit but wire_labels claims 4 — qubit `i` of
+        # the SPOs no longer maps to wire_labels[i].
+        prob = _make_problem(
+            cost=SparsePauliOp.from_list([("IZZ", 1.0), ("ZZI", 1.0)]),
+            mixer=SparsePauliOp.from_list([("IIX", 1.0), ("IXI", 1.0), ("XII", 1.0)]),
+            wire_labels=("a", "b", "c", "d"),
+        )
+        with pytest.raises(
+            ValueError,
+            match=r"wire_labels has 4 entries.*cost_hamiltonian\.num_qubits is 3",
+        ):
+            QAOA(prob, backend=dummy_simulator)
+
+    def test_isolated_node_graph_with_wire_labels_succeeds(self, dummy_simulator):
+        g = nx.Graph()
+        g.add_edges_from([(0, 1), (1, 2), (0, 2)])
+        g.add_node(3)
+        qaoa = QAOA(MaxCutProblem(g), backend=dummy_simulator)
+        assert qaoa.n_qubits == 4
+
+    def test_isolated_node_maxcut_runs_end_to_end(self, default_test_simulator):
+        g = nx.Graph()
+        g.add_edges_from([(0, 1), (1, 2), (0, 2)])
+        g.add_node(3)
+        qaoa = QAOA(
+            MaxCutProblem(g),
+            backend=default_test_simulator,
+            max_iterations=1,
+            n_layers=1,
+        )
+        qaoa.run()
+        assert len(qaoa.solution_bitstring) == 4
+        assert set(qaoa.solution_bitstring) <= {"0", "1"}
+        assert qaoa.solution is not None
+
+
 class TestCostMetaCircuitCache:
     """``_cost_meta_circuit_factory`` memoizes built MetaCircuits per
     ``ham_id`` for stateless trotterization strategies, where the operator
@@ -419,16 +514,14 @@ class TestCostMetaCircuitCache:
 
     def test_stateless_strategy_caches_by_ham_id(self, dummy_simulator):
         qaoa = self._make_qaoa(ExactTrotterization(), dummy_simulator)
-        spo = qaoa._cost_spo
-        m1 = qaoa._cost_meta_circuit_factory(spo, ham_id=0)
-        m2 = qaoa._cost_meta_circuit_factory(spo, ham_id=0)
+        m1 = qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=0)
+        m2 = qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=0)
         assert m1 is m2
 
     def test_stateless_distinct_ham_ids_cached_separately(self, dummy_simulator):
         qaoa = self._make_qaoa(ExactTrotterization(), dummy_simulator)
-        spo = qaoa._cost_spo
-        m1 = qaoa._cost_meta_circuit_factory(spo, ham_id=0)
-        m2 = qaoa._cost_meta_circuit_factory(spo, ham_id=1)
+        m1 = qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=0)
+        m2 = qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=1)
         assert m1 is not m2
         size = qaoa._params.size
         assert qaoa._cost_meta_cache[(0, size)] is m1
@@ -436,14 +529,13 @@ class TestCostMetaCircuitCache:
 
     def test_stateless_skips_circuit_build_on_cache_hit(self, dummy_simulator, mocker):
         qaoa = self._make_qaoa(ExactTrotterization(), dummy_simulator)
-        spo = qaoa._cost_spo
 
         # Prime the cache, then start counting.
-        qaoa._cost_meta_circuit_factory(spo, ham_id=0)
+        qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=0)
         spy = mocker.spy(qaoa, "_build_qaoa_qiskit_circuit")
 
         for _ in range(3):
-            qaoa._cost_meta_circuit_factory(spo, ham_id=0)
+            qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=0)
         spy.assert_not_called()
 
     def test_stateful_strategy_skips_cache(self, dummy_simulator):
@@ -453,19 +545,31 @@ class TestCostMetaCircuitCache:
             seed=42,
         )
         qaoa = self._make_qaoa(strategy, dummy_simulator)
-        spo = qaoa._cost_spo
-        m1 = qaoa._cost_meta_circuit_factory(spo, ham_id=0)
-        m2 = qaoa._cost_meta_circuit_factory(spo, ham_id=0)
+        m1 = qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=0)
+        m2 = qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=0)
         assert m1 is not m2
+        assert qaoa._cost_meta_cache == {}
+
+    def test_construction_does_not_eager_build(self, dummy_simulator):
+        """Construction leaves ``_meta_circuit_factories`` and ``_cost_meta_cache``
+        unpopulated; the heavy build runs on first access via the
+        ``meta_circuit_factories`` property."""
+        qaoa = self._make_qaoa(ExactTrotterization(), dummy_simulator)
+        assert qaoa._meta_circuit_factories is None
         assert qaoa._cost_meta_cache == {}
 
     def test_cache_independent_per_instance(self, dummy_simulator):
         qaoa1 = self._make_qaoa(ExactTrotterization(), dummy_simulator)
         qaoa2 = self._make_qaoa(ExactTrotterization(), dummy_simulator)
 
-        qaoa1._cost_meta_circuit_factory(qaoa1._cost_spo, ham_id=0)
-        assert qaoa1._cost_meta_cache  # populated
-        assert qaoa2._cost_meta_cache == {}
+        # Construction is now lazy (no eager build), so caches start empty.
+        # Seed each independently and verify they are isolated.
+        qaoa1._cost_meta_circuit_factory(qaoa1.cost_hamiltonian, ham_id=0)
+        qaoa2._cost_meta_circuit_factory(qaoa2.cost_hamiltonian, ham_id=0)
+        assert qaoa1._cost_meta_cache is not qaoa2._cost_meta_cache
+        qaoa1._cost_meta_cache.clear()
+        assert qaoa1._cost_meta_cache == {}
+        assert qaoa2._cost_meta_cache  # untouched
 
     def test_cache_self_invalidates_on_depth_rebuild(self, dummy_simulator):
         """IterativeQAOA mutates ``self._params`` per depth.  The cache key
@@ -479,15 +583,14 @@ class TestCostMetaCircuitCache:
             backend=dummy_simulator,
             max_iterations_per_depth=1,
         )
-        spo = qaoa._cost_spo
-        m_d1 = qaoa._cost_meta_circuit_factory(spo, ham_id=0)
+        m_d1 = qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=0)
         d1_size = qaoa._params.size
 
         qaoa._rebuild_for_depth(2)
         d2_size = qaoa._params.size
         assert d2_size != d1_size
 
-        m_d2 = qaoa._cost_meta_circuit_factory(spo, ham_id=0)
+        m_d2 = qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=0)
         assert m_d2 is not m_d1
         # Both entries coexist under distinct keys.
         assert qaoa._cost_meta_cache[(0, d1_size)] is m_d1

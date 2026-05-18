@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
-import pennylane as qp
 import pytest
+from qiskit.circuit.library import RYGate, RZGate
 
 from divi.hamiltonians._polynomial import _evaluate_binary_polynomial
 from divi.pipeline.stages import CircuitSpecStage, ParameterBindingStage, PCECostStage
@@ -31,7 +31,7 @@ from tests.qprog.qprog_contracts import verify_metacircuit_dict
 
 @pytest.fixture
 def basic_ansatz() -> GenericLayerAnsatz:
-    return GenericLayerAnsatz([qp.RY, qp.RZ])
+    return GenericLayerAnsatz([RYGate, RZGate])
 
 
 @pytest.fixture

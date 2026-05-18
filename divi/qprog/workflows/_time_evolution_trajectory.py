@@ -9,13 +9,12 @@ from dataclasses import replace
 
 import matplotlib.pyplot as plt
 import pennylane as qp
-import pennylane.numpy as qnp
 from qiskit.circuit import Parameter
+from qiskit.quantum_info import SparsePauliOp
 
 from divi.backends import CircuitRunner
 from divi.circuits import MetaCircuit
-from divi.hamiltonians import ExactTrotterization, TrotterizationStrategy
-from divi.hamiltonians._term_ops import _to_spo
+from divi.hamiltonians import ExactTrotterization, TrotterizationStrategy, to_spo
 from divi.qprog.algorithms import InitialState, TimeEvolution
 from divi.qprog.ensemble import ProgramEnsemble
 
@@ -52,7 +51,7 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
 
     def __init__(
         self,
-        hamiltonian: qp.operation.Operator,
+        hamiltonian: qp.operation.Operator | SparsePauliOp,
         time_points: Sequence[float],
         *,
         backend: CircuitRunner,
@@ -60,7 +59,7 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
         n_steps: int = 1,
         order: int = 1,
         initial_state: InitialState | None = None,
-        observable: qp.operation.Operator | None = None,
+        observable: qp.operation.Operator | SparsePauliOp | None = None,
         seed: int | None = None,
     ):
         """Initialize TimeEvolutionTrajectory.
@@ -131,15 +130,6 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
         time points clears :data:`_CACHE_MIN_TIME_POINTS`. Any exception
         raised by the symbolic-time probe is logged at WARNING and the
         trajectory falls back to per-program circuit construction.
-
-        Implementation note: PennyLane's ``exp`` decomposition calls
-        ``math.real`` on the evolution time. Passing a bare Qiskit
-        :class:`Parameter` makes autoray look for a ``real`` function on
-        a non-existent ``qiskit`` backend; wrapping the parameter in a
-        ``pennylane.numpy`` tensor routes the call through numpy's
-        object-dtype path so the symbol survives the decomposition and
-        lands on the Qiskit DAG as ``coef * t`` ``ParameterExpression``
-        instances.
         """
         strategy = self._trotterization_strategy
         if strategy is not None and not isinstance(strategy, ExactTrotterization):
@@ -152,13 +142,7 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
             probe = TimeEvolution(
                 hamiltonian=self._hamiltonian,
                 trotterization_strategy=copy.deepcopy(self._trotterization_strategy),
-                # Wrap in pennylane.numpy tensor so autoray routes
-                # ``math.real`` through numpy's object-dtype path; a bare
-                # Parameter would trigger an autoray-vs-qiskit-backend
-                # ImportError inside ``exp.decomposition``.  ``requires_grad=False``
-                # keeps the wrapper off autograd's tape — we never differentiate
-                # the probe and don't want it holding a gradient reference.
-                time=qnp.array(t_param, requires_grad=False),
+                time=t_param,
                 n_steps=self._n_steps,
                 order=self._order,
                 initial_state=self._initial_state,
@@ -166,7 +150,7 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
                 backend=self.backend,
                 seed=self._seed,
             )
-            template = probe._meta_circuit_factory(_to_spo(self._hamiltonian), ham_id=0)
+            template = probe._meta_circuit_factory(to_spo(self._hamiltonian), ham_id=0)
         except Exception:
             logger.warning(
                 "TimeEvolutionTrajectory: parametric template build failed; "

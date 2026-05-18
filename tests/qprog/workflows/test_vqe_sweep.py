@@ -7,6 +7,7 @@ from itertools import product
 import numpy as np
 import pennylane as qp
 import pytest
+from qiskit.circuit.library import RYGate
 from scipy.spatial.distance import pdist, squareform
 
 from divi.qprog.algorithms import GenericLayerAnsatz, HartreeFockAnsatz, UCCSDAnsatz
@@ -311,7 +312,7 @@ class TestMoleculeTransformerGeneration:
 @pytest.fixture
 def vqe_sweep_ansatze():
     """Shared ansatze for VQE sweep tests."""
-    return [HartreeFockAnsatz(), GenericLayerAnsatz([qp.RY])]
+    return [HartreeFockAnsatz(), GenericLayerAnsatz([RYGate])]
 
 
 @pytest.fixture
@@ -527,7 +528,7 @@ class TestVQEHyperparameterSweep:
         mock_program_2.best_loss = -1.1
 
         uccsd_instance = UCCSDAnsatz()
-        generic_ry_instance = GenericLayerAnsatz([qp.RY])
+        generic_ry_instance = GenericLayerAnsatz([RYGate])
 
         vqe_sweep.programs = {
             (uccsd_instance, 0.9): mock_program_1,

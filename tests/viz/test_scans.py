@@ -7,6 +7,7 @@ import networkx as nx
 import numpy as np
 import pennylane as qp
 import pytest
+from qiskit.circuit.library import RYGate, RZGate
 from sklearn.decomposition import PCA
 
 from divi.qprog import (
@@ -26,7 +27,7 @@ from divi.viz import scan_1d, scan_2d, scan_interp_1d, scan_interp_2d, scan_pca
 
 @pytest.fixture
 def basic_ansatz():
-    return GenericLayerAnsatz([qp.RY, qp.RZ])
+    return GenericLayerAnsatz([RYGate, RZGate])
 
 
 @pytest.fixture

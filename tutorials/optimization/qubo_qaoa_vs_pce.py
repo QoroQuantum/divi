@@ -19,8 +19,8 @@ the variable-name → bit branching that QAOA's ``.solution`` exposes.
 """
 
 import dimod
-import pennylane as qp
 from dimod import ExactSolver
+from qiskit.circuit.library import CXGate, RYGate, RZGate
 
 from divi.hamiltonians import qubo_to_matrix
 from divi.qprog import PCE, QAOA, GenericLayerAnsatz
@@ -119,8 +119,8 @@ if __name__ == "__main__":
     pce_solver = PCE(
         problem=qubo_to_matrix(bqm),
         ansatz=GenericLayerAnsatz(
-            gate_sequence=[qp.RY, qp.RZ],
-            entangler=qp.CNOT,
+            gate_sequence=[RYGate, RZGate],
+            entangler=CXGate,
             entangling_layout="all-to-all",
         ),
         optimizer=PymooOptimizer(method=PymooMethod.DE, population_size=10),

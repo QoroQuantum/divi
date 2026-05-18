@@ -83,7 +83,10 @@ def cmd_build(args: argparse.Namespace) -> None:
     console.print(f"[bold]Output dir:[/bold] {DATA_DIR}\n")
 
     index, chunks = build_index(
-        [REPO_ROOT], output_dir=DATA_DIR, batch_size=args.batch_size
+        [REPO_ROOT],
+        output_dir=DATA_DIR,
+        batch_size=args.batch_size,
+        threads=args.threads,
     )
     build_project_meta(REPO_ROOT, output_dir=DATA_DIR)
 
@@ -230,6 +233,12 @@ def main() -> None:
         type=int,
         default=16,
         help="Embedding batch size; lower to reduce memory usage (default: 16).",
+    )
+    build_parser.add_argument(
+        "--threads",
+        type=int,
+        default=None,
+        help="Embedder thread count (default: cpu_count() - 2, min 1).",
     )
 
     search_parser = _add_command(

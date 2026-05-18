@@ -25,7 +25,7 @@ class TestComputeMeasurementGroupsSingle:
 
     def test_single_term_wires(self):
         obs = SparsePauliOp.from_list([("Z", 1.0)])
-        groups, partition, postproc = _compute_measurement_groups(
+        groups, partition, postproc, _ = _compute_measurement_groups(
             _wrap(obs), "wires", 1
         )
         assert len(groups) == 1
@@ -35,19 +35,19 @@ class TestComputeMeasurementGroupsSingle:
 
     def test_single_term_qwc(self):
         obs = SparsePauliOp.from_list([("Z", 1.0)])
-        groups, partition, _ = _compute_measurement_groups(_wrap(obs), "qwc", 1)
+        groups, partition, _, _ = _compute_measurement_groups(_wrap(obs), "qwc", 1)
         assert len(groups) == 1
         assert partition == [[0]]
 
     def test_single_term_default(self):
         obs = SparsePauliOp.from_list([("Z", 1.0)])
-        groups, partition, _ = _compute_measurement_groups(_wrap(obs), "default", 1)
+        groups, partition, _, _ = _compute_measurement_groups(_wrap(obs), "default", 1)
         assert len(groups) == 1
         assert partition == [[0]]
 
     def test_single_term_backend_expval(self):
         obs = SparsePauliOp.from_list([("Z", 1.0)])
-        groups, partition, _ = _compute_measurement_groups(
+        groups, partition, _, _ = _compute_measurement_groups(
             _wrap(obs), "_backend_expval", 1
         )
         assert groups == ((),)
@@ -55,13 +55,15 @@ class TestComputeMeasurementGroupsSingle:
 
     def test_single_term_none_strategy(self):
         obs = SparsePauliOp.from_list([("Z", 1.0)])
-        groups, partition, _ = _compute_measurement_groups(_wrap(obs), None, 1)
+        groups, partition, _, _ = _compute_measurement_groups(_wrap(obs), None, 1)
         assert len(groups) == 1
         assert partition == [[0]]
 
     def test_multi_term_postprocessing(self):
         obs = SparsePauliOp.from_list([("IZ", 0.5), ("ZI", 0.3)])
-        groups, partition, postproc = _compute_measurement_groups(_wrap(obs), None, 2)
+        groups, partition, postproc, _ = _compute_measurement_groups(
+            _wrap(obs), None, 2
+        )
         assert len(groups) == 2
         assert len(partition) == 2
         out = postproc([0.5, 0.3])
@@ -69,12 +71,12 @@ class TestComputeMeasurementGroupsSingle:
 
     def test_qwc_groups_commuting_terms(self):
         obs = SparsePauliOp.from_list([("IZ", 0.5), ("ZI", 0.3)])
-        groups, _, _ = _compute_measurement_groups(_wrap(obs), "qwc", 2)
+        groups, _, _, _ = _compute_measurement_groups(_wrap(obs), "qwc", 2)
         assert len(groups) == 1
 
     def test_qwc_splits_non_commuting(self):
         obs = SparsePauliOp.from_list([("IZ", 0.5), ("IX", 0.3)])
-        groups, _, _ = _compute_measurement_groups(_wrap(obs), "qwc", 2)
+        groups, _, _, _ = _compute_measurement_groups(_wrap(obs), "qwc", 2)
         assert len(groups) == 2
 
     def test_unknown_strategy_raises(self):
@@ -98,7 +100,7 @@ class TestComputeMeasurementGroupsMulti:
     def test_postprocessing_returns_list_in_input_order(self):
         obs1 = SparsePauliOp.from_list([("IZ", 1.0)])
         obs2 = SparsePauliOp.from_list([("ZI", 1.0)])
-        groups, partition, postproc = _compute_measurement_groups(
+        groups, partition, postproc, _ = _compute_measurement_groups(
             (obs1, obs2), "qwc", 2
         )
         assert len(groups) == 1
@@ -110,7 +112,7 @@ class TestComputeMeasurementGroupsMulti:
     def test_coefficients_applied_per_observable(self):
         obs1 = SparsePauliOp.from_list([("Z", 2.0), ("X", 0.5)])
         obs2 = SparsePauliOp.from_list([("Z", -1.0)])
-        groups, partition, postproc = _compute_measurement_groups(
+        groups, partition, postproc, _ = _compute_measurement_groups(
             (obs1, obs2), "qwc", 1
         )
         assert len(groups) == 2
@@ -131,7 +133,7 @@ class TestComputeMeasurementGroupsMulti:
     def test_duplicate_paulis_dedup_to_one_union_slot(self):
         obs1 = SparsePauliOp.from_list([("IZ", 1.0)])
         obs2 = SparsePauliOp.from_list([("IZ", 1.0)])
-        groups, partition, postproc = _compute_measurement_groups(
+        groups, partition, postproc, _ = _compute_measurement_groups(
             (obs1, obs2), "qwc", 2
         )
         assert len(groups) == 1
@@ -142,7 +144,7 @@ class TestComputeMeasurementGroupsMulti:
 
     def test_within_observable_duplicates_collapse(self):
         obs = SparsePauliOp.from_list([("Z", 0.5), ("Z", 0.25)])
-        groups, partition, postproc = _compute_measurement_groups((obs,), "qwc", 1)
+        groups, partition, postproc, _ = _compute_measurement_groups((obs,), "qwc", 1)
         assert sum(len(p) for p in partition) == 1
         out = postproc([{0: 0.8}])
         assert out == pytest.approx([(0.5 + 0.25) * 0.8])
@@ -151,13 +153,13 @@ class TestComputeMeasurementGroupsMulti:
         obs1 = SparsePauliOp.from_list([("IZ", 1.0)])
         obs2 = SparsePauliOp.from_list([("ZI", 1.0)])
         obs3 = SparsePauliOp.from_list([("ZZ", 1.0)])
-        groups, _, _ = _compute_measurement_groups((obs1, obs2, obs3), "qwc", 2)
+        groups, _, _, _ = _compute_measurement_groups((obs1, obs2, obs3), "qwc", 2)
         assert len(groups) == 1
 
     def test_wires_strategy_supported(self):
         obs1 = SparsePauliOp.from_list([("IZ", 0.5)])
         obs2 = SparsePauliOp.from_list([("ZI", 1.0)])
-        groups, _, postproc = _compute_measurement_groups((obs1, obs2), "wires", 2)
+        groups, _, postproc, _ = _compute_measurement_groups((obs1, obs2), "wires", 2)
         assert len(groups) == 1
         out = postproc([{0: 0.4, 1: -0.2}])
         assert out == pytest.approx([0.5 * 0.4, 1.0 * -0.2])
@@ -165,7 +167,7 @@ class TestComputeMeasurementGroupsMulti:
     def test_wrong_grouped_result_count_raises(self):
         obs1 = SparsePauliOp.from_list([("IZ", 1.0)])
         obs2 = SparsePauliOp.from_list([("IX", 1.0)])
-        groups, _, postproc = _compute_measurement_groups((obs1, obs2), "qwc", 2)
+        groups, _, postproc, _ = _compute_measurement_groups((obs1, obs2), "qwc", 2)
         assert len(groups) == 2
         with pytest.raises(RuntimeError, match="Expected 2"):
             postproc([0.5])
@@ -176,7 +178,7 @@ class TestComputeMeasurementGroupsMulti:
         union, _ = flatten_observable_tuple((obs1, obs2))
         assert float(np.real(union.coeffs[0])) == pytest.approx(2.0)
 
-        _, _, postproc = _compute_measurement_groups((obs1, obs2), "qwc", 1)
+        _, _, postproc, _ = _compute_measurement_groups((obs1, obs2), "qwc", 1)
         out = postproc([{0: 0.7}])
         assert out == pytest.approx([0.7, -0.7])
 
@@ -200,7 +202,7 @@ class TestComputeMeasurementGroupsMulti:
             SparsePauliOp.from_list([("IZZI", 1.0), ("ZZIZ", 1.0)]),
             SparsePauliOp.from_list([("ZIZZ", 1.0), ("IZZZ", 1.0)]),
         ]
-        groups, partition, postproc = _compute_measurement_groups(
+        groups, partition, postproc, _ = _compute_measurement_groups(
             tuple(observables), "qwc", 4
         )
         assert len(groups) == 1

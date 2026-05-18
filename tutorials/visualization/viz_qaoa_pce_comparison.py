@@ -10,7 +10,7 @@ wrapping and trajectory overlay.
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pennylane as qp
+from qiskit.circuit.library import CXGate, RYGate, RZGate
 
 from divi.qprog import PCE, QAOA, GenericLayerAnsatz
 from divi.qprog.optimizers import PymooMethod, PymooOptimizer
@@ -68,8 +68,8 @@ if __name__ == "__main__":
     pce = PCE(
         problem=problem,
         ansatz=GenericLayerAnsatz(
-            gate_sequence=[qp.RY, qp.RZ],
-            entangler=qp.CNOT,
+            gate_sequence=[RYGate, RZGate],
+            entangler=CXGate,
             entangling_layout="all-to-all",
         ),
         n_layers=1,

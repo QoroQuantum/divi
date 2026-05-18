@@ -571,7 +571,7 @@ One QUBO, one set of imports, and one helper for ``create_programs`` → ``run``
 
    import dimod
    import hybrid
-   import pennylane as qp
+   from qiskit.circuit.library import RYGate, RZGate
    from divi.qprog import InterpolationStrategy
    from divi.qprog.problems import BinaryOptimizationProblem
    from divi.qprog.workflows import PartitioningProgramEnsemble
@@ -609,7 +609,7 @@ One QUBO, one set of imports, and one helper for ``create_programs`` → ``run``
    ensemble = PartitioningProgramEnsemble(
        problem=problem,
        quantum_routine="pce",
-       ansatz=GenericLayerAnsatz([qp.RY, qp.RZ]),
+       ansatz=GenericLayerAnsatz([RYGate, RZGate]),
        n_layers=2,
        encoding_type="dense",
        alpha=2.0,

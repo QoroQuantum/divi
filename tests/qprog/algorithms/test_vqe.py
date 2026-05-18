@@ -7,11 +7,12 @@ import re
 import numpy as np
 import pennylane as qp
 import pytest
+from qiskit.circuit.library import RYGate, RZGate
+from qiskit.quantum_info import SparsePauliOp
 
 from divi.qprog import VQE
 from divi.qprog.algorithms import (
     GenericLayerAnsatz,
-    HardwareEfficientAnsatz,
     HartreeFockAnsatz,
     QAOAAnsatz,
     QCCAnsatz,
@@ -47,7 +48,7 @@ ANSAETZE_TO_TEST = {
         HartreeFockAnsatz(),
         UCCSDAnsatz(),
         QCCAnsatz(),
-        GenericLayerAnsatz([qp.RY, qp.RZ]),
+        GenericLayerAnsatz([RYGate, RZGate]),
         QAOAAnsatz(),
     ],
     "ids": ["HartreeFock", "UCCSD", "QCC", "Generic-RYRZ", "QAOA"],
@@ -69,7 +70,7 @@ def test_vqe_basic_initialization_with_molecule(default_test_simulator, h2_molec
     assert vqe_problem.n_electrons == 2
     assert vqe_problem.n_qubits == 4
 
-    assert isinstance(vqe_problem.cost_hamiltonian, qp.operation.Operator)
+    assert isinstance(vqe_problem.cost_hamiltonian, SparsePauliOp)
     verify_metacircuit_dict(vqe_problem, ["cost_circuit", "meas_circuit"])
 
 
@@ -90,7 +91,7 @@ def test_vqe_basic_initialization_with_hamiltonian(
     assert vqe_problem.n_electrons == 2
     assert vqe_problem.n_qubits == 4
 
-    assert isinstance(vqe_problem.cost_hamiltonian, qp.operation.Operator)
+    assert isinstance(vqe_problem.cost_hamiltonian, SparsePauliOp)
     verify_metacircuit_dict(vqe_problem, ["cost_circuit", "meas_circuit"])
 
 
@@ -111,10 +112,13 @@ def test_vqe_clean_hamiltonian_logic(h2_hamiltonian, dummy_simulator):
     expected_total_constant = original_constant + constant_value
     assert np.isclose(vqe_problem.loss_constant, expected_total_constant)
 
-    has_identity = any(
-        isinstance(op, qp.Identity) for op in vqe_problem.cost_hamiltonian.terms()[1]
-    )
-    assert not has_identity, "Identity operator should have been removed"
+    # ``_clean_hamiltonian_spo`` partitions identity rows out of the SPO and
+    # accumulates them into ``loss_constant``; verify no surviving identity
+    # row remains.
+    labels = vqe_problem.cost_hamiltonian.paulis.to_labels()
+    assert not any(
+        set(label) == {"I"} for label in labels
+    ), "Identity operator should have been removed"
 
 
 def test_vqe_fail_with_constant_only_hamiltonian(dummy_simulator):
@@ -179,18 +183,6 @@ def test_meta_circuit_qasm(ansatz_obj, n_layers, h2_molecule, dummy_simulator):
     assert len(set(matches)) // n_layers == ansatz_obj.n_params_per_layer(
         vqe_problem.n_qubits, n_electrons=vqe_problem.n_electrons
     )
-
-
-def test_vqe_fail_with_hw_efficient_ansatz(h2_molecule, dummy_simulator):
-    """Test that HW_EFFICIENT ansatz raises NotImplementedError."""
-
-    with pytest.raises(NotImplementedError):
-        # Need to access the meta_circuit_factories property to trigger the NotImplementedError
-        VQE(
-            molecule=h2_molecule,
-            ansatz=HardwareEfficientAnsatz(),
-            backend=dummy_simulator,
-        ).meta_circuit_factories
 
 
 @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)

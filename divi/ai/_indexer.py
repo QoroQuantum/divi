@@ -773,6 +773,7 @@ def build_index(
     source_dirs: list[Path],
     output_dir: Path,
     batch_size: int = 16,
+    threads: int | None = None,
 ) -> tuple[faiss.IndexFlatIP, list[ChunkMeta]]:
     """Build a FAISS index from source files and write it to *output_dir*.
 
@@ -853,8 +854,12 @@ def build_index(
         msg = "No documents found to index."
         raise RuntimeError(msg)
 
-    # Embed with progress bar — leave 2 cores free so the system stays usable
-    max_threads = max(1, (os.cpu_count() or 4) - 2)
+    # Default: leave 2 cores free so an interactive system stays usable.
+    # CI overrides this with --threads $(nproc) since nothing else runs.
+    if threads is not None:
+        max_threads = max(1, threads)
+    else:
+        max_threads = max(1, (os.cpu_count() or 4) - 2)
     print(
         f"Embedding {len(all_chunks)} chunks "
         f"({py_count} .py files, {doc_count} doc files) "

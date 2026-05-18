@@ -57,6 +57,7 @@ The standalone API is useful when you want to make the scan call explicit:
 
    import numpy as np
    import pennylane as qp
+   from qiskit.circuit.library import RYGate, RZGate
 
    from divi.backends import MaestroSimulator
    from divi.qprog import GenericLayerAnsatz, VQE
@@ -67,7 +68,7 @@ The standalone API is useful when you want to make the scan call explicit:
 
    vqe = VQE(
        hamiltonian=hamiltonian,
-       ansatz=GenericLayerAnsatz([qp.RY, qp.RZ]),
+       ansatz=GenericLayerAnsatz([RYGate, RZGate]),
        n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        max_iterations=12,

@@ -7,17 +7,20 @@
 import numpy as np
 import pennylane as qp
 import pytest
-from qiskit.quantum_info import SparsePauliOp
+from qiskit.circuit import Parameter, QuantumCircuit
+from qiskit.quantum_info import Operator, SparsePauliOp
 
+from divi.hamiltonians import _term_ops as term_ops_module
 from divi.hamiltonians._term_ops import (
     _clean_hamiltonian_spo,
-    _clean_hamiltonian_via_spo,
     _empty_spo,
-    _from_spo,
     _sort_hamiltonian_terms_spo,
     _spo_to_basis_gate_ops,
+    _spo_to_qiskit_basis_gates,
+    _spo_to_qiskit_basis_gates_numeric,
+    _spo_to_qiskit_basis_gates_symbolic,
     _spo_wires,
-    _to_spo,
+    to_spo,
 )
 
 
@@ -49,18 +52,23 @@ class TestEmptySpo:
 
 
 # ---------------------------------------------------------------------------
-# _to_spo / _spo_wires / _from_spo round-trip
+# to_spo / _spo_wires
 # ---------------------------------------------------------------------------
 
 
 class TestSpoConversion:
     def test_to_spo_passthrough(self, simple_spo):
         """An SPO input is returned as-is."""
-        assert _to_spo(simple_spo) is simple_spo
+        assert to_spo(simple_spo) is simple_spo
+
+    def test_to_spo_rejects_non_hermitian_spo(self):
+        """Direct SPO inputs cannot bypass observable validation."""
+        with pytest.raises(ValueError, match="Hermitian"):
+            to_spo(SparsePauliOp.from_list([("Y", 1.0j)]))
 
     def test_to_spo_from_pl(self, simple_pl_hamiltonian, simple_spo):
         """A PL Hamiltonian converts to the equivalent SPO (modulo simplify)."""
-        spo = _to_spo(simple_pl_hamiltonian)
+        spo = to_spo(simple_pl_hamiltonian)
         assert spo.simplify() == simple_spo.simplify()
 
     def test_spo_wires_for_spo(self, simple_spo):
@@ -68,45 +76,9 @@ class TestSpoConversion:
         assert _spo_wires(simple_spo) == (0, 1)
 
     def test_spo_wires_for_pl_uses_op_wires(self):
-        """A bare PL operator without cached wires falls back to ``op.wires``."""
+        """A PL operator's canonical wires are taken from ``op.wires``."""
         op = qp.PauliZ(2) @ qp.PauliX(5)
         assert _spo_wires(op) == tuple(op.wires)
-
-    def test_from_spo_records_canonical_mapping(self, simple_spo):
-        """``_from_spo`` records the SPO and canonical wires for round-trip recovery."""
-        pl = _from_spo(simple_spo, range(2))
-        assert _to_spo(pl) is simple_spo
-        assert _spo_wires(pl) == (0, 1)
-
-    def test_from_spo_to_spo_roundtrip_short_circuits(self, simple_spo):
-        """``_to_spo`` on a ``_from_spo`` result returns the original cached SPO."""
-        pl = _from_spo(simple_spo, range(2))
-        assert _to_spo(pl) is simple_spo
-
-    def test_from_spo_preserves_canonical_wires_after_simplify(self):
-        """Even when simplify reorders/drops wires, ``_spo_wires`` returns canonical."""
-        # SPO with qubit 0 carrying only identity; simplify drops it from .wires.
-        spo = SparsePauliOp.from_list([("ZI", 1.0), ("XI", 2.0)])
-        pl = _from_spo(spo, range(2))
-        assert _spo_wires(pl) == (0, 1)
-        # The simplified PL op may have a smaller .wires set:
-        assert set(pl.wires).issubset({0, 1})
-
-    def test_from_spo_empty_returns_pl_empty_hamiltonian(self):
-        """Empty SPO maps to ``qp.Hamiltonian([], [])``."""
-        pl = _from_spo(_empty_spo(3), range(3))
-        assert isinstance(pl, qp.Hamiltonian)
-        assert len(pl) == 0
-
-    def test_from_spo_simplify_false_skips_simplify(self):
-        """``simplify=False`` returns a non-simplified Sum/SProd structure."""
-        spo = SparsePauliOp.from_list([("Z", 1.0)])
-        # With simplify=True the trivial SProd(1, Z) collapses to bare Z.
-        simplified = _from_spo(spo, range(1))
-        assert isinstance(simplified, qp.PauliZ)
-        # With simplify=False the SProd wrapper survives.
-        unsimplified = _from_spo(spo, range(1), simplify=False)
-        assert not isinstance(unsimplified, qp.PauliZ)
 
 
 # ---------------------------------------------------------------------------
@@ -147,56 +119,6 @@ class TestCleanHamiltonianSpo:
         spo, constant = _clean_hamiltonian_spo(_empty_spo(3))
         assert spo.size == 0
         assert constant == 0.0
-
-
-# ---------------------------------------------------------------------------
-# _clean_hamiltonian_via_spo (PL boundary)
-# ---------------------------------------------------------------------------
-
-
-class TestCleanHamiltonianViaSpo:
-    @pytest.mark.parametrize(
-        "ham, expected_pl, expected_constant",
-        [
-            (
-                qp.sum(qp.s_prod(2, qp.PauliX(0)), qp.PauliZ(1)),
-                qp.sum(qp.s_prod(2, qp.PauliX(0)), qp.PauliZ(1)),
-                0.0,
-            ),
-            (
-                qp.sum(qp.s_prod(2.5, qp.Identity(0)), qp.s_prod(1.5, qp.Identity(1))),
-                qp.Hamiltonian([], []),
-                4.0,
-            ),
-            (
-                qp.sum(
-                    qp.s_prod(2, qp.PauliX(0)),
-                    qp.s_prod(3, qp.Identity(0)),
-                    qp.PauliZ(1),
-                ),
-                qp.sum(qp.s_prod(2, qp.PauliX(0)), qp.PauliZ(1)),
-                3.0,
-            ),
-            (qp.Identity(0), qp.Hamiltonian([], []), 1.0),
-            (qp.s_prod(5.0, qp.Identity(0)), qp.Hamiltonian([], []), 5.0),
-            (qp.PauliZ(0), qp.PauliZ(0), 0.0),
-            (qp.Hamiltonian([], []), qp.Hamiltonian([], []), 0.0),
-        ],
-    )
-    def test_partition_matches_expected(self, ham, expected_pl, expected_constant):
-        cleaned, constant = _clean_hamiltonian_via_spo(ham)
-        assert constant == pytest.approx(expected_constant)
-        # Compare via SPO equality so simplify/order differences don't bite.
-        if isinstance(expected_pl, qp.Hamiltonian) and len(expected_pl) == 0:
-            assert isinstance(cleaned, qp.Hamiltonian) and len(cleaned) == 0
-        else:
-            assert _to_spo(cleaned).simplify() == _to_spo(expected_pl).simplify()
-
-    def test_empty_input_carries_zero_constant(self):
-        cleaned, constant = _clean_hamiltonian_via_spo(qp.Hamiltonian([], []))
-        assert constant == 0.0
-        assert isinstance(cleaned, qp.Hamiltonian)
-        assert len(cleaned) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -297,3 +219,203 @@ class TestSpoToBasisGateOps:
             wire_order=wires,
         )
         assert np.allclose(actual, expected)
+
+
+# ---------------------------------------------------------------------------
+# _spo_to_qiskit_basis_gates and its numeric / legacy helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_numeric(
+    spo: SparsePauliOp, time: float, qubits, n_qubits: int
+) -> QuantumCircuit:
+    qc = QuantumCircuit(n_qubits)
+    _spo_to_qiskit_basis_gates_numeric(qc, spo, time, qubits)
+    return qc
+
+
+def _build_symbolic(spo: SparsePauliOp, time, qubits, n_qubits: int) -> QuantumCircuit:
+    qc = QuantumCircuit(n_qubits)
+    _spo_to_qiskit_basis_gates_symbolic(qc, spo, time, qubits)
+    return qc
+
+
+class TestSpoToQiskitBasisGatesDispatch:
+    """Verify the public dispatcher routes by ``time`` type."""
+
+    @pytest.fixture
+    def spo(self) -> SparsePauliOp:
+        return SparsePauliOp.from_list([("ZZ", 0.5)])
+
+    @pytest.mark.parametrize(
+        "time",
+        [0.5, 1, np.float32(0.3), np.float64(0.7), np.int64(2)],
+        ids=["python_float", "python_int", "np_float32", "np_float64", "np_int64"],
+    )
+    def test_numeric_time_routes_to_numeric_path(self, mocker, spo, time):
+        spy_numeric = mocker.spy(term_ops_module, "_spo_to_qiskit_basis_gates_numeric")
+        spy_legacy = mocker.spy(term_ops_module, "_spo_to_qiskit_basis_gates_symbolic")
+        qc = QuantumCircuit(2)
+        _spo_to_qiskit_basis_gates(qc, spo, time, [0, 1])
+        assert spy_numeric.call_count == 1
+        assert spy_legacy.call_count == 0
+
+    def test_parameter_routes_to_legacy_path(self, mocker, spo):
+        spy_numeric = mocker.spy(term_ops_module, "_spo_to_qiskit_basis_gates_numeric")
+        spy_legacy = mocker.spy(term_ops_module, "_spo_to_qiskit_basis_gates_symbolic")
+        qc = QuantumCircuit(2)
+        _spo_to_qiskit_basis_gates(qc, spo, Parameter("t"), [0, 1])
+        assert spy_numeric.call_count == 0
+        assert spy_legacy.call_count == 1
+
+    def test_parameter_expression_routes_to_legacy_path(self, mocker, spo):
+        spy_legacy = mocker.spy(term_ops_module, "_spo_to_qiskit_basis_gates_symbolic")
+        t = Parameter("t")
+        qc = QuantumCircuit(2)
+        _spo_to_qiskit_basis_gates(qc, spo, 2 * t + 1, [0, 1])
+        assert spy_legacy.call_count == 1
+
+
+class TestSpoToQiskitBasisGatesNumericEdgeCases:
+    """Edge cases for the numeric path."""
+
+    def test_empty_spo_is_noop(self):
+        qc = _build_numeric(_empty_spo(2), 0.5, [0, 1], n_qubits=2)
+        assert len(qc.data) == 0
+
+    def test_identity_only_row_is_skipped(self):
+        # II contributes only a global phase; gate emission should match a
+        # circuit built from the non-identity terms alone.
+        spo_with_identity = SparsePauliOp.from_list([("II", 1.0), ("ZZ", 0.5)])
+        spo_without = SparsePauliOp.from_list([("ZZ", 0.5)])
+        qc_with = _build_numeric(spo_with_identity, 0.3, [0, 1], n_qubits=2)
+        qc_without = _build_numeric(spo_without, 0.3, [0, 1], n_qubits=2)
+        assert Operator(qc_with).equiv(Operator(qc_without), atol=1e-10)
+
+    def test_zero_time_is_identity(self):
+        spo = SparsePauliOp.from_list([("ZZ", 0.5), ("XI", 1.0), ("IY", 0.3)])
+        qc = _build_numeric(spo, 0.0, [0, 1], n_qubits=2)
+        assert Operator(qc).equiv(Operator(QuantumCircuit(2)), atol=1e-10)
+
+    @pytest.mark.parametrize("pauli", ["X", "Y", "Z"])
+    def test_single_qubit_branches(self, pauli):
+        spo = SparsePauliOp.from_list([(pauli, 1.0)])
+        qc = _build_numeric(spo, 0.5, [0], n_qubits=1)
+        expected = QuantumCircuit(1)
+        method = {"X": expected.rx, "Y": expected.ry, "Z": expected.rz}[pauli]
+        method(2 * 0.5 * 1.0, 0)
+        assert Operator(qc).equiv(Operator(expected), atol=1e-10)
+
+    def test_non_contiguous_qubits(self):
+        # Place a ZZ rotation on qubits [3, 7] of a 10-qubit circuit.
+        spo = SparsePauliOp.from_list([("ZZ", 1.0)])
+        qc = _build_numeric(spo, 0.3, [3, 7], n_qubits=10)
+        # Every two-qubit gate in qc must straddle qubits 3 and 7 only.
+        for instr in qc.data:
+            if instr.operation.num_qubits == 2:
+                qubits = sorted(qc.find_bit(q).index for q in instr.qubits)
+                assert qubits == [3, 7]
+
+    def test_two_qubit_pauli_emits_basis_gates(self):
+        # ``pauli_evolution`` emits ``rxx``/``ryy``/``rzz`` for 2-qubit Paulis;
+        # the helper must decompose those into our QASM2 basis.
+        spo = SparsePauliOp.from_list([("XX", 1.0), ("YY", 1.0), ("ZZ", 1.0)])
+        qc = _build_numeric(spo, 0.3, [0, 1], n_qubits=2)
+        gate_names = {instr.operation.name for instr in qc.data}
+        assert "rxx" not in gate_names
+        assert "ryy" not in gate_names
+        assert "rzz" not in gate_names
+
+
+class TestSpoToQiskitBasisGatesParity:
+    """The numeric and symbolic paths must produce equivalent unitaries
+    on the same SPO + numeric time.
+
+    Cases are capped at 4 qubits — ``Operator(qc)`` materialises a
+    ``2^n × 2^n`` complex128 dense matrix, so wider cases pay
+    quadratic memory. If a wider case is genuinely needed, switch the
+    comparison to ``Statevector`` (2^n) on a fixed initial state.
+    """
+
+    _MAX_PARITY_QUBITS = 4
+
+    @pytest.mark.parametrize(
+        "spo, qubits",
+        [
+            (SparsePauliOp.from_list([("Z", 1.0)]), [0]),
+            (SparsePauliOp.from_list([("X", 1.0)]), [0]),
+            (SparsePauliOp.from_list([("Y", 1.0)]), [0]),
+            (SparsePauliOp.from_list([("ZZ", 0.5)]), [0, 1]),
+            (SparsePauliOp.from_list([("XX", 0.7), ("YY", 0.7), ("ZZ", 0.3)]), [0, 1]),
+            # X₀ and Z₀Z₁ anticommute on qubit 0 — a future change to
+            # ``pauli_evolution``'s internal term ordering would break this
+            # parity but pass the commuting cases above.
+            (SparsePauliOp.from_list([("IX", 0.3), ("ZZ", 0.5)]), [0, 1]),
+            (SparsePauliOp.from_list([("ZIZ", 0.5), ("XII", 0.4)]), [0, 1, 2]),
+            (SparsePauliOp.from_list([("YYY", 1.0)]), [0, 1, 2]),
+            (
+                SparsePauliOp.from_list([("ZIIZ", 0.5), ("IXIY", 0.3), ("YZIZ", -0.2)]),
+                [0, 1, 2, 3],
+            ),
+        ],
+        ids=[
+            "1q_Z",
+            "1q_X",
+            "1q_Y",
+            "2q_ZZ",
+            "2q_mixed_XYZ_commuting",
+            "2q_non_commuting_X_and_ZZ",
+            "3q_with_identity_gap",
+            "3q_all_Y",
+            "4q_mixed_full",
+        ],
+    )
+    def test_numeric_matches_symbolic(self, spo, qubits):
+        """Numeric path (Rust accelerator) and symbolic path (CX-RZ-CX) must
+        produce unitarily equivalent circuits on the same SPO + numeric time."""
+        assert len(qubits) <= self._MAX_PARITY_QUBITS, (
+            f"Parity test cases must stay ≤{self._MAX_PARITY_QUBITS} qubits "
+            f"so ``Operator.equiv`` doesn't materialise an oversized dense "
+            f"matrix. Got {len(qubits)} qubits."
+        )
+        n = len(qubits)
+        time = 0.37
+        qc_numeric = _build_numeric(spo, time, qubits, n_qubits=n)
+        qc_symbolic = _build_symbolic(spo, time, qubits, n_qubits=n)
+        assert Operator(qc_numeric).equiv(Operator(qc_symbolic), atol=1e-10)
+
+    def test_parity_with_non_contiguous_qubits(self):
+        spo = SparsePauliOp.from_list([("ZZ", 0.5), ("XI", 0.3)])
+        qc_numeric = _build_numeric(spo, 0.4, [1, 3], n_qubits=5)
+        qc_symbolic = _build_symbolic(spo, 0.4, [1, 3], n_qubits=5)
+        # 5-qubit dense matrix is 32×32 — still well within budget.
+        assert Operator(qc_numeric).equiv(Operator(qc_symbolic), atol=1e-10)
+
+
+class TestSpoToQiskitBasisGatesSymbolicEdgeCases:
+    """Edge cases specific to the symbolic-angle path."""
+
+    def test_empty_spo_is_noop(self):
+        qc = _build_symbolic(_empty_spo(2), Parameter("t"), [0, 1], n_qubits=2)
+        assert len(qc.data) == 0
+
+    def test_identity_only_row_is_skipped(self):
+        spo_with_identity = SparsePauliOp.from_list([("II", 1.0), ("ZZ", 0.5)])
+        spo_without = SparsePauliOp.from_list([("ZZ", 0.5)])
+        t = Parameter("t")
+        qc_with = _build_symbolic(spo_with_identity, t, [0, 1], n_qubits=2)
+        qc_without = _build_symbolic(spo_without, t, [0, 1], n_qubits=2)
+        # Bind ``t`` to a concrete value, then compare.
+        bound_with = qc_with.assign_parameters({t: 0.3})
+        bound_without = qc_without.assign_parameters({t: 0.3})
+        assert Operator(bound_with).equiv(Operator(bound_without), atol=1e-10)
+
+    def test_parameter_expression_threads_through_gates(self):
+        spo = SparsePauliOp.from_list([("Z", 1.0)])
+        t = Parameter("t")
+        qc = _build_symbolic(spo, 2 * t + 1, [0], n_qubits=1)
+        # The single emitted RZ should carry a ParameterExpression involving ``t``.
+        rz_instrs = [instr for instr in qc.data if instr.operation.name == "rz"]
+        assert len(rz_instrs) == 1
+        params = rz_instrs[0].operation.params
+        assert any(hasattr(p, "parameters") and t in p.parameters for p in params)

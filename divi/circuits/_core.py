@@ -9,9 +9,26 @@ from dataclasses import dataclass, replace
 import numpy as np
 from qiskit.circuit import Parameter
 from qiskit.dagcircuit import DAGCircuit
-from qiskit.quantum_info import SparsePauliOp
+from qiskit.quantum_info import PauliList, SparsePauliOp
 
 from divi.circuits import QASMTag
+
+
+def _assert_hermitian_spo(spo: SparsePauliOp, atol: float = 1e-10) -> None:
+    """Validate that a Pauli-basis observable has real coefficients.
+
+    Checks each coefficient's imaginary part directly. Pathological cases
+    where individually non-Hermitian Pauli terms cancel after summation
+    (e.g. ``+i X`` and ``-i X``) are not caught — callers that may produce
+    such inputs should pass an already-simplified ``SparsePauliOp``.
+    """
+    if spo.size == 0:
+        return
+    if np.any(np.abs(np.imag(spo.coeffs)) > atol):
+        raise ValueError(
+            "SparsePauliOp observables must be Hermitian; Pauli coefficients "
+            "must be real."
+        )
 
 
 def flatten_observable_tuple(
@@ -19,10 +36,10 @@ def flatten_observable_tuple(
 ) -> tuple[SparsePauliOp, list[list[int]]]:
     """Flatten a tuple of observables into a single union ``SparsePauliOp``.
 
-    Pauli labels that appear in multiple observables (or repeat within one)
-    collapse to a single union slot keyed on their little-endian label.
-    The union's coefficient on a slot is the sum of every owning
-    observable's *absolute* coefficient on that Pauli.
+    Pauli terms that appear in multiple observables (or repeat within one)
+    collapse to a single union slot. The union's coefficient on a slot is
+    the sum of every owning observable's *absolute* coefficient on that
+    Pauli (the weights used by shot allocation).
 
     Args:
         observable: Non-empty tuple of Hermitian ``SparsePauliOp``.
@@ -39,32 +56,42 @@ def flatten_observable_tuple(
     if not observable:
         raise ValueError("flatten_observable_tuple requires at least one observable.")
 
-    label_to_slot: dict[str, int] = {}
-    union_labels: list[str] = []
-    union_coeffs_real: list[float] = []
+    slot_by_key: dict[bytes, int] = {}
+    union_z_rows: list[np.ndarray] = []
+    union_x_rows: list[np.ndarray] = []
+    union_coeffs: list[float] = []
     per_obs_term_indices: list[list[int]] = []
 
     for obs in observable:
-        coeffs = np.abs(np.real(obs.coeffs)).astype(np.float64)
+        x_arr = obs.paulis.x  # bool[N_terms, n_qubits]
+        z_arr = obs.paulis.z
+        coeffs = np.abs(obs.coeffs.real)
         indices: list[int] = []
-        for label, c in zip(obs.paulis.to_labels(), coeffs):
-            slot = label_to_slot.get(label)
+        for i in range(x_arr.shape[0]):
+            key = z_arr[i].tobytes() + x_arr[i].tobytes()
+            slot = slot_by_key.get(key)
             if slot is None:
-                slot = len(union_labels)
-                label_to_slot[label] = slot
-                union_labels.append(label)
-                union_coeffs_real.append(float(c))
+                slot = len(union_z_rows)
+                slot_by_key[key] = slot
+                union_z_rows.append(z_arr[i])
+                union_x_rows.append(x_arr[i])
+                union_coeffs.append(float(coeffs[i]))
             else:
-                union_coeffs_real[slot] += float(c)
+                union_coeffs[slot] += float(coeffs[i])
             indices.append(slot)
         per_obs_term_indices.append(indices)
 
-    if not union_labels:
+    if not union_z_rows:
         raise ValueError(
             "flatten_observable_tuple: every observable in the tuple is empty."
         )
 
-    union = SparsePauliOp.from_list(list(zip(union_labels, union_coeffs_real)))
+    union_z = np.stack(union_z_rows)
+    union_x = np.stack(union_x_rows)
+    union = SparsePauliOp(
+        PauliList.from_symplectic(union_z, union_x),
+        coeffs=np.array(union_coeffs, dtype=complex),
+    )
     return union, per_obs_term_indices
 
 
@@ -140,6 +167,15 @@ class MetaCircuit:
         # Wrap a bare SparsePauliOp in a 1-tuple to match the canonical shape.
         if isinstance(self.observable, SparsePauliOp):
             object.__setattr__(self, "observable", (self.observable,))
+
+        if self.observable is not None:
+            for obs in self.observable:
+                if not isinstance(obs, SparsePauliOp):
+                    raise TypeError(
+                        "MetaCircuit.observable must be a SparsePauliOp or a "
+                        "tuple of SparsePauliOp instances."
+                    )
+                _assert_hermitian_spo(obs)
 
     @property
     def n_qubits(self) -> int:

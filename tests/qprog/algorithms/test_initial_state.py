@@ -6,9 +6,12 @@
 
 import networkx as nx
 import pennylane as qp
-import pennylane.qaoa as pqaoa
 import pytest
+import scipy.linalg
+from qiskit.circuit import QuantumCircuit
+from qiskit.quantum_info import Operator, Statevector
 
+from divi.hamiltonians import xy_mixer_spo
 from divi.qprog import QAOA, VQE, TimeEvolution
 from divi.qprog.algorithms import (
     CustomPerQubitState,
@@ -21,60 +24,65 @@ from divi.qprog.algorithms import (
 from divi.qprog.algorithms._initial_state import build_block_xy_mixer_graph
 from divi.qprog.problems import MaxCutProblem
 
+
+def _gate_names(qc: QuantumCircuit) -> list[str]:
+    return [instr.operation.name for instr in qc.data]
+
+
+def _gate_qubits(qc: QuantumCircuit) -> list[list[int]]:
+    return [[qc.find_bit(q).index for q in instr.qubits] for instr in qc.data]
+
+
 # ---------------------------------------------------------------------------
 # InitialState classes
 # ---------------------------------------------------------------------------
 
 
 class TestZerosState:
-    def test_build_returns_empty(self):
-        assert ZerosState().build([0, 1, 2]) == []
+    def test_build_emits_nothing(self):
+        qc = ZerosState().build([0, 1, 2])
+        assert _gate_names(qc) == []
 
     def test_name(self):
         assert ZerosState().name == "ZerosState"
 
 
 class TestOnesState:
-    def test_build_returns_paulix(self):
-        ops = OnesState().build([0, 1])
-        assert len(ops) == 2
-        assert all(isinstance(op, qp.PauliX) for op in ops)
-        assert [op.wires.tolist() for op in ops] == [[0], [1]]
+    def test_build_emits_x_per_qubit(self):
+        qc = OnesState().build([0, 1])
+        assert _gate_names(qc) == ["x", "x"]
+        assert _gate_qubits(qc) == [[0], [1]]
 
 
 class TestSuperpositionState:
-    def test_build_returns_hadamard(self):
-        ops = SuperpositionState().build([0, 1, 2])
-        assert len(ops) == 3
-        assert all(isinstance(op, qp.Hadamard) for op in ops)
+    def test_build_emits_hadamard_per_qubit(self):
+        qc = SuperpositionState().build([0, 1, 2])
+        assert _gate_names(qc) == ["h", "h", "h"]
+        assert _gate_qubits(qc) == [[0], [1], [2]]
 
 
 class TestCustomPerQubitState:
     def test_zeros_string_is_no_op(self):
-        assert CustomPerQubitState("00").build([0, 1]) == []
+        qc = CustomPerQubitState("00").build([0, 1])
+        assert _gate_names(qc) == []
 
-    def test_ones_string_is_paulix(self):
-        ops = CustomPerQubitState("11").build([0, 1])
-        assert len(ops) == 2
-        assert all(isinstance(op, qp.PauliX) for op in ops)
+    def test_ones_string_is_x(self):
+        qc = CustomPerQubitState("11").build([0, 1])
+        assert _gate_names(qc) == ["x", "x"]
 
     def test_plus_is_hadamard(self):
-        ops = CustomPerQubitState("++").build([0, 1])
-        assert all(isinstance(op, qp.Hadamard) for op in ops)
+        qc = CustomPerQubitState("++").build([0, 1])
+        assert _gate_names(qc) == ["h", "h"]
 
-    def test_minus_is_paulix_then_hadamard(self):
-        ops = CustomPerQubitState("-").build([0])
-        assert len(ops) == 2
-        assert isinstance(ops[0], qp.PauliX)
-        assert isinstance(ops[1], qp.Hadamard)
+    def test_minus_is_x_then_h(self):
+        qc = CustomPerQubitState("-").build([0])
+        assert _gate_names(qc) == ["x", "h"]
+        assert _gate_qubits(qc) == [[0], [0]]
 
     def test_mixed_string(self):
-        ops = CustomPerQubitState("01+-").build([0, 1, 2, 3])
-        assert len(ops) == 4
-        assert isinstance(ops[0], qp.PauliX) and ops[0].wires.tolist() == [1]
-        assert isinstance(ops[1], qp.Hadamard) and ops[1].wires.tolist() == [2]
-        assert isinstance(ops[2], qp.PauliX) and ops[2].wires.tolist() == [3]
-        assert isinstance(ops[3], qp.Hadamard) and ops[3].wires.tolist() == [3]
+        qc = CustomPerQubitState("01+-").build([0, 1, 2, 3])
+        assert _gate_names(qc) == ["x", "h", "x", "h"]
+        assert _gate_qubits(qc) == [[1], [2], [3], [3]]
 
     def test_wrong_length_raises(self):
         with pytest.raises(ValueError, match="wire count"):
@@ -121,41 +129,39 @@ class TestBlockXYMixer:
         """XY mixer applied to a W-state should produce only one-hot outputs."""
         n = 3
         wires = list(range(n))
-        init_ops = WState(n, 1).build(wires)
+
         xy_graph = build_block_xy_mixer_graph(n, 1, wires)
-        mixer_op = pqaoa.mixer_layer(1.5, pqaoa.xy_mixer(xy_graph))
+        mixer = xy_mixer_spo(xy_graph)
 
-        tape = qp.tape.QuantumScript(
-            ops=init_ops + [mixer_op], measurements=[qp.probs()]
-        )
-        dev = qp.device("default.qubit", wires=n)
-        result = qp.execute([tape], dev)[0]
+        qc = WState(n, 1).build(wires)
+        U = Operator(scipy.linalg.expm(-1j * 1.5 * mixer.to_matrix()))
+        probs = Statevector(qc).evolve(U).probabilities()
 
-        total_one_hot = sum(result[i] for i in [1, 2, 4])
+        one_hot_indices = [1 << i for i in range(n)]  # 001, 010, 100
+        total_one_hot = sum(probs[i] for i in one_hot_indices)
         assert total_one_hot == pytest.approx(1.0, abs=1e-10)
 
     def test_preserves_one_hot_multi_block(self):
         block_size, n_blocks = 3, 2
         wires = list(range(block_size * n_blocks))
-        init_ops = WState(block_size, n_blocks).build(wires)
-        xy_graph = build_block_xy_mixer_graph(block_size, n_blocks, wires)
-        mixer_op = pqaoa.mixer_layer(2.0, pqaoa.xy_mixer(xy_graph))
+        n = len(wires)
 
-        tape = qp.tape.QuantumScript(
-            ops=init_ops + [mixer_op], measurements=[qp.probs()]
-        )
-        dev = qp.device("default.qubit", wires=len(wires))
-        result = qp.execute([tape], dev)[0]
+        xy_graph = build_block_xy_mixer_graph(block_size, n_blocks, wires)
+        mixer = xy_mixer_spo(xy_graph)
+
+        qc = WState(block_size, n_blocks).build(wires)
+        U = Operator(scipy.linalg.expm(-1j * 2.0 * mixer.to_matrix()))
+        probs = Statevector(qc).evolve(U).probabilities()
 
         total_valid = 0.0
-        for idx in range(2 ** len(wires)):
-            bits = format(idx, f"0{len(wires)}b")
+        for idx in range(2**n):
+            bits = format(idx, f"0{n}b")
             valid = all(
                 sum(int(bits[b * block_size + j]) for j in range(block_size)) == 1
                 for b in range(n_blocks)
             )
             if valid:
-                total_valid += result[idx]
+                total_valid += probs[idx]
         assert total_valid == pytest.approx(1.0, abs=1e-10)
 
 

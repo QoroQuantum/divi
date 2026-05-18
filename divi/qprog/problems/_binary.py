@@ -10,10 +10,9 @@ from typing import Any, Literal
 import dimod
 import hybrid
 import numpy as np
-import pennylane as qp
-import pennylane.qaoa as pqaoa
 import scipy.sparse as sps
 from dimod import BinaryQuadraticModel
+from qiskit.quantum_info import SparsePauliOp
 
 from divi.hamiltonians import (
     HUBOProblemTypes,
@@ -21,6 +20,7 @@ from divi.hamiltonians import (
     QUBOProblemTypes,
     normalize_binary_polynomial_problem,
     qubo_to_ising,
+    x_mixer_spo,
 )
 from divi.qprog.problems import QAOAProblem
 
@@ -81,7 +81,8 @@ class BinaryOptimizationProblem(QAOAProblem):
       interactions that some simulators handle slowly.
     - ``"quadratized"``: introduces auxiliary qubits and penalty terms
       so every interaction becomes two-body. Penalty magnitude is
-      ``quadratization_strength``.
+      ``quadratization_strength``; ``None`` picks
+      ``2 * max(|hubo coeff|)``.
 
     Optionally accepts a ``dimod.hybrid`` decomposer/composer pair to
     enable partitioned solving via :meth:`decompose`. Without one, the
@@ -91,7 +92,14 @@ class BinaryOptimizationProblem(QAOAProblem):
         problem: QUBO matrix, BQM, HUBO dict, or BinaryPolynomial.
         hamiltonian_builder: ``"native"`` (default) or ``"quadratized"``.
         quadratization_strength: Penalty strength for the quadratized
-            builder. Ignored when ``hamiltonian_builder="native"``.
+            builder. ``None`` (default) auto-picks
+            ``2 * max(|hubo coeff|)``. Ignored when
+            ``hamiltonian_builder="native"``. The auto default is sized
+            against a single worst-case term and may under-penalise dense
+            HUBOs where many constraints can be violated simultaneously;
+            pass an explicit value (or raise the multiplier on
+            :class:`~divi.hamiltonians.QuadratizedIsingConverter`) for
+            such instances.
         decomposer: Optional ``hybrid.traits.ProblemDecomposer`` that
             enables :meth:`decompose`.
         composer: Optional ``hybrid.traits.SubsamplesComposer`` for
@@ -111,7 +119,7 @@ class BinaryOptimizationProblem(QAOAProblem):
         problem: QUBOProblemTypes | HUBOProblemTypes,
         *,
         hamiltonian_builder: Literal["native", "quadratized"] = "native",
-        quadratization_strength: float = 10.0,
+        quadratization_strength: float | None = None,
         decomposer: hybrid.traits.ProblemDecomposer | None = None,
         composer: hybrid.traits.SubsamplesComposer | None = None,
     ):
@@ -127,7 +135,7 @@ class BinaryOptimizationProblem(QAOAProblem):
         )
         self._quadratization_strength = quadratization_strength
         self._ising_cache: IsingResult | None = None
-        self._mixer_cache: qp.operation.Operator | None = None
+        self._mixer_cache: SparsePauliOp | None = None
 
         # Decomposition support (optional)
         self._decomposer = decomposer
@@ -157,15 +165,15 @@ class BinaryOptimizationProblem(QAOAProblem):
         return self._ising_cache
 
     @property
-    def cost_hamiltonian(self) -> qp.operation.Operator:
+    def cost_hamiltonian(self) -> SparsePauliOp:
         """Cost Hamiltonian derived from the Ising conversion of the QUBO/HUBO."""
         return self._ising.cost_hamiltonian
 
     @property
-    def mixer_hamiltonian(self) -> qp.operation.Operator:
+    def mixer_hamiltonian(self) -> SparsePauliOp:
         """Standard X-mixer over all qubits in the Ising encoding."""
         if self._mixer_cache is None:
-            self._mixer_cache = pqaoa.x_mixer(range(self._ising.n_qubits))
+            self._mixer_cache = x_mixer_spo(self._ising.n_qubits)
         return self._mixer_cache
 
     @property

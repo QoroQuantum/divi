@@ -8,29 +8,16 @@ permissions:
 jobs:
   wheel-build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - uses: ./.github/actions/setup-divi
         with:
           python-version: "3.11"
+          sync-args: --extra ai
 
-      - name: Install dependencies
-        run: uv sync --no-default-groups --extra ai
-
-      - name: Cache embedding model
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/fastembed
-          key: fastembed-jina-v2-base-code
-
-      - name: Build divi-ai search index
-        run: uv run python -m divi.ai build --batch-size 8
+      - uses: ./.github/actions/build-ai-index
 
       - name: Build wheel
         run: uv build

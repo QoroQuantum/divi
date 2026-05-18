@@ -612,14 +612,14 @@ class TestTSPProblem:
         state = problem.recommended_initial_state
         assert state.block_size == 2
         assert state.n_blocks == 2
-        assert len(problem.cost_hamiltonian.wires) == 4
+        assert problem.cost_hamiltonian.num_qubits == 4
 
     def test_four_cities(self, four_city_cost):
         problem = TSPProblem(four_city_cost, start_city=0)
         state = problem.recommended_initial_state
         assert state.block_size == 3
         assert state.n_blocks == 3
-        assert len(problem.cost_hamiltonian.wires) == 9
+        assert problem.cost_hamiltonian.num_qubits == 9
 
     def test_feasible_dimension(self, three_city_cost):
         assert TSPProblem(three_city_cost, start_city=0).feasible_dimension == 2
@@ -699,7 +699,7 @@ class TestTSPProblemBinary:
         assert cfg.bits_per_slot == 2
         assert cfg.n_qubits == 6
         # Quadratization adds ancillas; total physical qubits >= logical.
-        assert len(problem.cost_hamiltonian.wires) >= cfg.n_qubits
+        assert problem.cost_hamiltonian.num_qubits >= cfg.n_qubits
 
     def test_initial_state_is_superposition(self, four_city_cost):
         problem = TSPProblem(four_city_cost, encoding="binary")
@@ -987,6 +987,52 @@ class TestCVRPProblem:
         )
         qaoa.run()
         assert qaoa.total_circuit_count > 0
+
+    def test_binary_default_max_steps_matches_n_customers(self):
+        problem = CVRPProblem(
+            CVRP_COST,
+            demands=CVRP_DEMANDS,
+            capacity=6.0,
+            n_vehicles=2,
+            encoding="binary",
+        )
+        # CVRP_COST has 4 nodes (depot + 3 customers); default worst case
+        # is "all customers on one vehicle" → max_steps == n_customers.
+        assert problem.binary_config.max_steps == 3
+
+    def test_binary_max_steps_reduces_qubit_count(self):
+        baseline = CVRPProblem(
+            CVRP_COST,
+            demands=CVRP_DEMANDS,
+            capacity=6.0,
+            n_vehicles=2,
+            encoding="binary",
+        )
+        tightened = CVRPProblem(
+            CVRP_COST,
+            demands=CVRP_DEMANDS,
+            capacity=6.0,
+            n_vehicles=2,
+            encoding="binary",
+            max_steps=2,
+        )
+        assert tightened.binary_config.max_steps == 2
+        # n_qubits scales as n_vehicles * max_steps * bits_per_slot, so
+        # tightening from max_steps=3 to max_steps=2 must strictly reduce.
+        assert (
+            tightened.cost_hamiltonian.num_qubits < baseline.cost_hamiltonian.num_qubits
+        )
+
+    def test_one_hot_rejects_max_steps(self):
+        with pytest.raises(ValueError, match="max_steps.*binary"):
+            CVRPProblem(
+                CVRP_COST,
+                demands=CVRP_DEMANDS,
+                capacity=6.0,
+                n_vehicles=2,
+                encoding="one_hot",
+                max_steps=2,
+            )
 
 
 # ---------------------------------------------------------------------------

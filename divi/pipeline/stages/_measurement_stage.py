@@ -5,14 +5,13 @@
 import warnings
 from collections.abc import Callable, Hashable
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import measurement_qasms_from_groups
-from divi.circuits._conversions import sparse_pauli_op_to_ham_string
-from divi.circuits._core import flatten_observable_tuple
+from divi.circuits._conversions import _sparse_pauli_op_to_ham_string
 from divi.pipeline import GroupingStrategy, ShotDistStrategy
 from divi.pipeline._grouping import _compute_measurement_groups
 from divi.pipeline._shot_distribution import (
@@ -452,17 +451,21 @@ class MeasurementStage(BundleStage):
                     f"MeasurementStage (expval path): key '{key}' has no "
                     "observable set."
                 )
-            observable = cast(tuple[SparsePauliOp, ...], meta.observable)
+            # MetaCircuit.__post_init__ normalises a bare SparsePauliOp to a
+            # 1-tuple via object.__setattr__, which type checkers can't track.
+            assert isinstance(meta.observable, tuple)
+            observable = meta.observable
             _warn_imag_coeffs(observable, key)
 
-            measurement_groups, partition_indices, postprocessing_fn = (
+            measurement_groups, partition_indices, postprocessing_fn, union_obs = (
                 _compute_measurement_groups(observable, strategy, meta.n_qubits)
             )
             if strategy == "_backend_expval" and n_observable_terms is None:
                 n_observable_terms = sum(len(p) for p in partition_indices)
 
             # Shot allocation weights groups by the union's coefficient L1 norm.
-            union_obs, _ = flatten_observable_tuple(observable)
+            # ``_compute_measurement_groups`` already flattened the observable;
+            # reuse its union directly instead of redoing the symplectic dedup.
             if sample_union is None:
                 sample_union = union_obs
             surviving_indices, zero_shot_groups, surviving_shots = (
@@ -503,7 +506,7 @@ class MeasurementStage(BundleStage):
         # For expval-native backends, compute ham_ops from the SparsePauliOp
         # and store it in env.artifacts so _default_execute_fn can use it.
         if strategy == "_backend_expval" and sample_union is not None:
-            env.artifacts["ham_ops"] = sparse_pauli_op_to_ham_string(sample_union)
+            env.artifacts["ham_ops"] = _sparse_pauli_op_to_ham_string(sample_union)
         else:
             env.artifacts.pop("ham_ops", None)
 

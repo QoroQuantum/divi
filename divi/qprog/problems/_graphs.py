@@ -11,15 +11,9 @@ from warnings import warn
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
-import pennylane as qp
-import pennylane.qaoa as pqaoa
+from qiskit.quantum_info import SparsePauliOp
 
-from divi.hamiltonians._term_ops import (
-    _clean_hamiltonian_via_spo,
-    _get_terms_iterable,
-    _is_empty_hamiltonian,
-    _spo_wires,
-)
+from divi.hamiltonians._term_ops import _clean_hamiltonian_spo
 from divi.qprog import GraphProblemTypes
 from divi.qprog.algorithms import (
     InitialState,
@@ -28,17 +22,25 @@ from divi.qprog.algorithms import (
     ZerosState,
 )
 from divi.qprog.problems import GraphPartitioningConfig, QAOAProblem
+from divi.qprog.problems._graph_hamiltonians import (
+    max_clique_hamiltonians,
+    max_independent_set_hamiltonians,
+    max_weight_cycle_hamiltonians,
+    maxcut_hamiltonians,
+    min_vertex_cover_hamiltonians,
+)
 from divi.qprog.problems._graph_partitioning_utils import _node_partition_graph
 
 
 class _GraphProblemBase(QAOAProblem):
-    """Shared logic for PennyLane-backed graph problems.
+    """Shared logic for graph problems built directly from ``SparsePauliOp``.
 
-    Subclasses only need to set ``_pl_func_name`` and the two
-    ``_*_state_cls`` class attributes, then call ``super().__init__``.
+    Subclasses set ``_resolver`` (a function returning ``(cost_spo, mixer_spo)``
+    or ``(cost_spo, mixer_spo, metadata)``) and the two ``_*_state_cls`` class
+    attributes, then call ``super().__init__``.
     """
 
-    _pl_func_name: str
+    _resolver: staticmethod
     _constrained_state_cls: type[InitialState]
     _unconstrained_state_cls: type[InitialState]
 
@@ -52,17 +54,17 @@ class _GraphProblemBase(QAOAProblem):
         self._graph = graph
         self._is_constrained = is_constrained
 
-        cost_ham, self._mixer_hamiltonian, *self._metadata = self._resolve(
+        cost_spo, self._mixer_hamiltonian, *self._metadata = self._resolve(
             graph, is_constrained
         )
 
-        cleaned, ham_constant = _clean_hamiltonian_via_spo(cost_ham)
-        if _is_empty_hamiltonian(cleaned):
+        cleaned, ham_constant = _clean_hamiltonian_spo(cost_spo)
+        if cleaned.size == 0:
             raise ValueError("Hamiltonian contains only constant terms.")
 
         self._cost_hamiltonian = cleaned
         self._loss_constant = ham_constant
-        self._wire_labels = _spo_wires(cleaned)
+        self._wire_labels = self._compute_wire_labels(graph)
         self._initial_state = (
             self._constrained_state_cls
             if is_constrained
@@ -73,12 +75,20 @@ class _GraphProblemBase(QAOAProblem):
 
     @classmethod
     def _resolve(cls, graph, is_constrained):
-        """Call the PennyLane QAOA function for this problem type."""
-        pl_fn = getattr(pqaoa, cls._pl_func_name)
+        """Build cost/mixer SPOs for this problem type."""
         try:
-            return pl_fn(graph, constrained=is_constrained)
+            return cls._resolver(graph, constrained=is_constrained)
         except TypeError:
-            return pl_fn(graph)
+            return cls._resolver(graph)
+
+    @staticmethod
+    def _compute_wire_labels(graph: GraphProblemTypes) -> tuple:
+        """Map qubit positions back to original node values in node-iteration order."""
+        if isinstance(graph, nx.Graph):
+            return tuple(graph.nodes())
+        # rustworkx graph: edge_list() / node values; mirror the relabeling done
+        # inside the SPO builders.
+        return tuple(graph.nodes())
 
     @property
     def graph(self) -> GraphProblemTypes:
@@ -86,12 +96,16 @@ class _GraphProblemBase(QAOAProblem):
         return self._graph
 
     @property
-    def cost_hamiltonian(self) -> qp.operation.Operator:
+    def cost_hamiltonian(self) -> SparsePauliOp:
         return self._cost_hamiltonian
 
     @property
-    def mixer_hamiltonian(self) -> qp.operation.Operator:
+    def mixer_hamiltonian(self) -> SparsePauliOp:
         return self._mixer_hamiltonian
+
+    @property
+    def wire_labels(self) -> tuple:
+        return self._wire_labels
 
     @property
     def loss_constant(self) -> float:
@@ -186,24 +200,20 @@ class _GraphProblemBase(QAOAProblem):
         return extended
 
     def evaluate_global_solution(self, solution: list[int]) -> float:
-        hamiltonian = self.cost_hamiltonian
-        wire_to_bit = {w: solution[w] for w in hamiltonian.wires}
-
+        spo: SparsePauliOp = self.cost_hamiltonian
         energy = self.loss_constant
-        for term in _get_terms_iterable(hamiltonian):
-            coeff = 1.0
-            base_op = term
-
-            if isinstance(term, qp.ops.SProd):
-                coeff = float(term.scalar)
-                base_op = term.base
-
+        for label, coeff in zip(spo.paulis.to_labels(), spo.coeffs):
             eigenvalue = 1.0
-            for wire in base_op.wires:
-                eigenvalue *= 1 - 2 * wire_to_bit[wire]
-
-            energy += coeff * eigenvalue
-
+            for qubit, char in enumerate(reversed(label)):
+                if char == "I":
+                    continue
+                if char != "Z":
+                    raise ValueError(
+                        f"Cost Hamiltonian contains non-diagonal term {label!r}; "
+                        f"evaluate_global_solution requires Z-only operators."
+                    )
+                eigenvalue *= 1 - 2 * solution[qubit]
+            energy += float(np.real(coeff)) * eigenvalue
         return energy
 
     def finalize_solution(
@@ -224,7 +234,7 @@ class MaxCutProblem(_GraphProblemBase):
         graph: NetworkX or RustworkX graph.
     """
 
-    _pl_func_name = "maxcut"
+    _resolver = staticmethod(maxcut_hamiltonians)  # type: ignore[assignment, bad-override]
     _constrained_state_cls = SuperpositionState
     _unconstrained_state_cls = SuperpositionState
 
@@ -237,7 +247,7 @@ class MaxCliqueProblem(_GraphProblemBase):
         is_constrained: Use constrained mixer. Defaults to True.
     """
 
-    _pl_func_name = "max_clique"
+    _resolver = staticmethod(max_clique_hamiltonians)  # type: ignore[assignment, bad-override]
     _constrained_state_cls = ZerosState
     _unconstrained_state_cls = SuperpositionState
 
@@ -250,7 +260,7 @@ class MaxIndependentSetProblem(_GraphProblemBase):
         is_constrained: Use constrained mixer. Defaults to True.
     """
 
-    _pl_func_name = "max_independent_set"
+    _resolver = staticmethod(max_independent_set_hamiltonians)  # type: ignore[assignment, bad-override]
     _constrained_state_cls = ZerosState
     _unconstrained_state_cls = SuperpositionState
 
@@ -263,22 +273,29 @@ class MinVertexCoverProblem(_GraphProblemBase):
         is_constrained: Use constrained mixer. Defaults to True.
     """
 
-    _pl_func_name = "min_vertex_cover"
+    _resolver = staticmethod(min_vertex_cover_hamiltonians)  # type: ignore[assignment, bad-override]
     _constrained_state_cls = OnesState
     _unconstrained_state_cls = SuperpositionState
 
 
 class MaxWeightCycleProblem(_GraphProblemBase):
-    """Max weight cycle problem on a graph.
+    """Max weight cycle problem on a directed graph.
 
     Args:
-        graph: NetworkX or RustworkX graph.
-        is_constrained: Use constrained mixer. Defaults to True.
+        graph: NetworkX DiGraph or RustworkX PyDiGraph with weighted edges.
+        is_constrained: Use cycle-mixer (preserves valid cycles). Defaults to True.
     """
 
-    _pl_func_name = "max_weight_cycle"
+    _resolver = staticmethod(max_weight_cycle_hamiltonians)  # type: ignore[assignment, bad-override]
     _constrained_state_cls = SuperpositionState
     _unconstrained_state_cls = SuperpositionState
+
+    @staticmethod
+    def _compute_wire_labels(graph: GraphProblemTypes) -> tuple:
+        # Cycle problems use edge variables; wires are 0-indexed by edge count.
+        if hasattr(graph, "number_of_edges"):
+            return tuple(range(graph.number_of_edges()))
+        return tuple(range(len(graph.edge_list())))  # type: ignore[attr-defined]
 
 
 # Partitioning is most robust for cut-style objectives (e.g. MaxCut).

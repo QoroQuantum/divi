@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pennylane as qp
 import pytest
+from qiskit.circuit.library import RYGate, RZGate
 
 from divi.qprog import VQE, GenericLayerAnsatz
 from divi.viz import GradientMethod, run_neb
@@ -14,7 +15,7 @@ from divi.viz._gradients import _finite_difference_gradients, _parameter_shift_g
 
 @pytest.fixture
 def basic_ansatz():
-    return GenericLayerAnsatz([qp.RY, qp.RZ])
+    return GenericLayerAnsatz([RYGate, RZGate])
 
 
 @pytest.fixture

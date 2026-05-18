@@ -11,7 +11,6 @@ import numpy as np
 import pennylane as qp
 import sympy as sp
 from pennylane.tape import QuantumScript
-from pennylane_qiskit.converter import QISKIT_OPERATION_MAP
 from qiskit import transpile
 from qiskit.circuit import (
     Parameter,
@@ -19,18 +18,71 @@ from qiskit.circuit import (
     QuantumCircuit,
     QuantumRegister,
 )
+from qiskit.circuit.library import (
+    CCXGate,
+    CRXGate,
+    CRYGate,
+    CRZGate,
+    CSwapGate,
+    CXGate,
+    CZGate,
+    HGate,
+    IGate,
+    PhaseGate,
+    RXGate,
+    RYGate,
+    RZGate,
+    SdgGate,
+    SGate,
+    StatePreparation,
+    SwapGate,
+    SXdgGate,
+    SXGate,
+    TdgGate,
+    TGate,
+    U2Gate,
+    UGate,
+    UnitaryGate,
+    XGate,
+    YGate,
+    ZGate,
+)
 from qiskit.converters import circuit_to_dag
 from qiskit.dagcircuit import DAGCircuit
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
 
-# Supported PennyLane op.name set, taken from ``pennylane-qiskit``'s gate
-# table.  Using this directly (instead of maintaining our own mirror) means
-# any gate ``pennylane-qiskit`` adds is automatically supported here, and
-# stays symmetric with ``_qiskit_spec_stage.py`` which uses the inverse
-# direction via ``qp.from_qiskit``.
-_PL_TO_QISKIT_GATE = QISKIT_OPERATION_MAP
+# Supported PennyLane op.name set for local QuantumScript → Qiskit conversion.
+_PL_TO_QISKIT_GATE = {
+    "Identity": IGate,
+    "PauliX": XGate,
+    "PauliY": YGate,
+    "PauliZ": ZGate,
+    "Hadamard": HGate,
+    "S": SGate,
+    "Adjoint(S)": SdgGate,
+    "SX": SXGate,
+    "Adjoint(SX)": SXdgGate,
+    "T": TGate,
+    "Adjoint(T)": TdgGate,
+    "RX": RXGate,
+    "RY": RYGate,
+    "RZ": RZGate,
+    "PhaseShift": PhaseGate,
+    "U2": U2Gate,
+    "U3": UGate,
+    "CNOT": CXGate,
+    "CZ": CZGate,
+    "CRX": CRXGate,
+    "CRY": CRYGate,
+    "CRZ": CRZGate,
+    "SWAP": SwapGate,
+    "Toffoli": CCXGate,
+    "CSWAP": CSwapGate,
+    "QubitUnitary": UnitaryGate,
+    "StatePrep": StatePreparation,
+}
 
 # Wire-reversal applies to ops that take a (state)vector indexed by qubit
 # ordering — Qiskit and PennyLane disagree on endianness for these.
@@ -130,9 +182,8 @@ def _qscript_to_dag(
 ) -> tuple[DAGCircuit, tuple[Parameter, ...], dict | None]:
     """Convert a PennyLane ``QuantumScript`` into a Qiskit ``DAGCircuit``.
 
-    The qscript is first decomposed down to gates present in
-    :data:`pennylane_qiskit.converter.QISKIT_OPERATION_MAP`.  Sympy-parametric
-    gate parameters are converted to Qiskit
+    The qscript is first decomposed down to locally-supported Qiskit gates.
+    Sympy-parametric gate parameters are converted to Qiskit
     :class:`~qiskit.circuit.ParameterExpression` via :func:`_sympy_to_qiskit`.
 
     Returns:
@@ -171,10 +222,9 @@ def _qscript_to_dag(
     if ordered_sympy_symbols:
         param_map = {s: Parameter(str(s)) for s in ordered_sympy_symbols}
 
-    # Workaround: pennylane_qiskit's circuit_to_qiskit indexes into a
-    # QuantumRegister by wire label, which only accepts ints.  Non-integer
-    # wires (strings, tuples — common in graph problems) must be remapped
-    # to 0-indexed ints before the conversion call.
+    # Qiskit's QuantumRegister indexes only accept ints. Non-integer wires
+    # (strings, tuples — common in graph problems) must be remapped to
+    # 0-indexed ints before conversion.
     wires = qscript.wires
     needs_wire_map = any(not isinstance(w, int) for w in wires) or set(wires) != set(
         range(len(wires))
@@ -186,9 +236,8 @@ def _qscript_to_dag(
         qscript = mapped_qscripts[0]
 
     # Decompose gates outside the supported set.  Mirror of
-    # _circuit_body_to_qasm's qp.transforms.decompose call — pennylane-qiskit
-    # itself doesn't auto-decompose, so we do it up front so the subsequent
-    # circuit_to_qiskit call always sees gates it recognises.
+    # _circuit_body_to_qasm's qp.transforms.decompose call. Do it up front so
+    # the local mapper always sees gates it recognises.
     just_ops = QuantumScript(qscript.operations)
     [decomposed_qscript], _ = qp.transforms.decompose(
         just_ops, stopping_condition=lambda obj: obj.name in _PL_TO_QISKIT_GATE
@@ -300,7 +349,7 @@ def dag_to_qasm_body(dag: DAGCircuit, precision: int = 8) -> str:
     return "".join(parts)
 
 
-def observable_to_sparse_pauli_op(
+def _observable_to_sparse_pauli_op(
     obs: qp.operation.Operator,
     wires,
 ) -> SparsePauliOp:
@@ -308,8 +357,7 @@ def observable_to_sparse_pauli_op(
 
     Handles arbitrary wire labels (strings, tuples, non-contiguous ints)
     by resolving through the provided *wires* register.
-    ``pennylane_qiskit.mp_to_pauli`` assumes 0-indexed integer wires, so
-    we keep a custom implementation here for the general case.
+    Handles arbitrary wire labels without requiring external bridge packages.
 
     Coefficients are stored as real floats.  A warning is emitted if any
     coefficient has a non-negligible imaginary part (>1e-10), which would
@@ -345,59 +393,33 @@ def observable_to_sparse_pauli_op(
     return SparsePauliOp.from_sparse_list(sparse, num_qubits=num_qubits)
 
 
-def sparse_pauli_op_to_pl_observable(
-    op: SparsePauliOp,
-    wires,
-) -> qp.operation.Operator:
-    """Convert a Qiskit :class:`~qiskit.quantum_info.SparsePauliOp` back into a PennyLane observable.
-
-    ``pennylane_qiskit.load_pauli_op`` exists but always produces complex
-    coefficients (because ``SparsePauliOp`` stores ``complex128``), which
-    then propagate through the pipeline and break downstream code that
-    expects real floats.  We keep a custom implementation that extracts
-    real coefficients explicitly.
-    """
-    pauli_cls: dict[str, type[qp.operation.Operator]] = {
-        "I": qp.Identity,
-        "X": qp.PauliX,
-        "Y": qp.PauliY,
-        "Z": qp.PauliZ,
-    }
-    wire_list = list(wires)
-    terms: list[qp.operation.Operator] = []
-    for pauli_str, coeff in zip(op.paulis.to_labels(), op.coeffs):
-        ops_for_term = [
-            pauli_cls[char](wire_list[i])
-            for i, char in enumerate(reversed(pauli_str))
-            if char != "I"
-        ]
-        term: qp.operation.Operator
-        if not ops_for_term:
-            term = qp.Identity(wire_list[0])
-        elif len(ops_for_term) == 1:
-            term = ops_for_term[0]
-        else:
-            term = qp.ops.Prod(*ops_for_term)
-
-        c = float(np.real(coeff))
-        terms.append(qp.ops.SProd(c, term))
-
-    if not terms:
-        raise ValueError(
-            "sparse_pauli_op_to_pl_observable: SparsePauliOp has no terms."
-        )
-    return terms[0] if len(terms) == 1 else qp.sum(*terms)
+_PAULI_CHAR_LOOKUP = np.array(list("IXZY"), dtype="U1")
 
 
-def sparse_pauli_op_to_ham_string(op: SparsePauliOp) -> str:
+def _sparse_pauli_op_to_ham_string(op: SparsePauliOp) -> str:
     """Render a :class:`~qiskit.quantum_info.SparsePauliOp` as the ``;``-separated dense Pauli
     string format used by backend ``ham_ops`` artifacts.
 
     The backend contract is big-endian (qubit 0 on the left).  Coefficients
     are intentionally dropped — the backend computes ``<ψ|P|ψ>`` per term and
     the caller recombines with coefficients.
+
+    Builds the dense Pauli strings directly from the SPO's symplectic
+    ``(x, z)`` arrays — qubit ``q`` indexed as character ``q`` (big-endian).
+    Skips ``PauliList.to_labels`` (Python-level, ~3μs/term for wide
+    observables) and the subsequent per-string reverse.
     """
-    return ";".join(label[::-1] for label in op.paulis.to_labels())
+    x_arr = op.paulis.x  # bool[N_terms, n_qubits]
+    z_arr = op.paulis.z
+    n_terms, n_qubits = x_arr.shape
+    if n_terms == 0:
+        return ""
+    # I=0, X=1, Z=2, Y=3 — encoded as (z<<1 | x) so a single uint8 lookup
+    # yields the right character per (term, qubit) cell.
+    indices = (z_arr.astype(np.uint8) << 1) | x_arr.astype(np.uint8)
+    chars = np.ascontiguousarray(_PAULI_CHAR_LOOKUP[indices])
+    rows = chars.view(f"U{n_qubits}").reshape(-1)
+    return ";".join(rows)
 
 
 def qscript_to_meta(
@@ -462,7 +484,7 @@ def qscript_to_meta(
                 raise ValueError(
                     "ExpectationMP without an observable is not supported."
                 )
-            ops.append(observable_to_sparse_pauli_op(m.obs, qscript.wires))
+            ops.append(_observable_to_sparse_pauli_op(m.obs, qscript.wires))
         observable = tuple(ops)
     elif measurements:
         first = measurements[0]
@@ -530,13 +552,3 @@ def measurement_qasms_from_groups(
         measure_qasm = "".join(f"measure q[{q}] -> c[{q}];\n" for q in measured)
         qasms.append(diag_qasm + measure_qasm)
     return qasms
-
-
-__all__ = [
-    "dag_to_qasm_body",
-    "observable_to_sparse_pauli_op",
-    "sparse_pauli_op_to_pl_observable",
-    "sparse_pauli_op_to_ham_string",
-    "qscript_to_meta",
-    "measurement_qasms_from_groups",
-]

@@ -14,7 +14,7 @@ uniform return type for decoded solutions.
    :no-inherited-members:
    :include-all-objects:
    :skip: VQE, QAOA, IterativeQAOA, InterpolationStrategy, PCE, TimeEvolution, CustomVQA
-   :skip: Ansatz, HartreeFockAnsatz, UCCSDAnsatz, QCCAnsatz, QAOAAnsatz, HardwareEfficientAnsatz, GenericLayerAnsatz
+   :skip: Ansatz, HartreeFockAnsatz, UCCSDAnsatz, QCCAnsatz, QAOAAnsatz, GenericLayerAnsatz
    :skip: InitialState, ZerosState, OnesState, SuperpositionState, CustomPerQubitState, WState
    :skip: ScipyOptimizer, ScipyMethod, MonteCarloOptimizer, GridSearchOptimizer
    :skip: MoleculeTransformer, PartitioningProgramEnsemble, TimeEvolutionTrajectory, VQEHyperparameterSweep
