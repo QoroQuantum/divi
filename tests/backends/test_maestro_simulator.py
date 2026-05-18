@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import fields
 from threading import Event, Thread
 
@@ -10,7 +11,8 @@ import pytest
 
 import divi.backends._maestro_simulator as maestro_module
 from divi.backends import MaestroConfig, MaestroSimulator
-from divi.backends._maestro_simulator import _strip_measurements
+from divi.backends._maestro_simulator import _run_with_cancellation, _strip_measurements
+from divi.exceptions import ExecutionCancelledError
 from tests.backends import circuit_runner_contracts as contracts
 from tests.backends.circuit_runner_contracts import QASM_DEPTH_2, QASM_DEPTH_3
 
@@ -663,6 +665,120 @@ class TestParallelExecution:
 # ---------------------------------------------------------------------------
 # Expectation value mode
 # ---------------------------------------------------------------------------
+
+
+class TestRunWithCancellation:
+    """Direct unit tests for the cancellation-aware executor consumer.
+
+    Production callers (``MaestroSimulator.submit_circuits``) test it through
+    a ``ThreadPoolExecutor`` whose scheduling is non-deterministic; here we
+    exercise the helper with the real executor but synchronously, so the
+    event check between items is observable without timing races."""
+
+    def test_event_none_returns_all_results(self):
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            out = _run_with_cancellation(executor, lambda x: x * 2, [1, 2, 3], None)
+        assert out == [2, 4, 6]
+
+    def test_event_preset_raises_after_dispatch_with_no_results(self):
+        event = Event()
+        event.set()
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            with pytest.raises(ExecutionCancelledError):
+                _run_with_cancellation(executor, lambda x: x * 2, [1, 2, 3, 4], event)
+
+    def test_event_set_mid_batch_calls_cancel_on_remaining_futures(self, mocker):
+        """When the event flips between items, every remaining future has
+        :meth:`Future.cancel` called on it. Whether each ``cancel()`` actually
+        succeeds depends on whether the executor has already pulled the
+        future into a worker — that's an executor scheduling property, not
+        ours to control. The contract we own is: we always *ask* to cancel
+        every remaining future."""
+        event = Event()
+
+        def fn(x):
+            if x == 0:
+                event.set()
+            return x
+
+        executor = ThreadPoolExecutor(max_workers=1)
+        original_submit = executor.submit
+        submitted_futures: list = []
+
+        def tracking_submit(*args, **kwargs):
+            fut = original_submit(*args, **kwargs)
+            mocker.spy(fut, "cancel")
+            submitted_futures.append(fut)
+            return fut
+
+        mocker.patch.object(executor, "submit", side_effect=tracking_submit)
+
+        try:
+            with pytest.raises(ExecutionCancelledError):
+                _run_with_cancellation(executor, fn, list(range(5)), event)
+        finally:
+            executor.shutdown(wait=True)
+
+        assert len(submitted_futures) == 5
+        # Every future submitted should have had cancel() invoked on the
+        # cleanup path — even ones that were already done.
+        for fut in submitted_futures:
+            fut.cancel.assert_called()
+
+
+class TestCancellation:
+    """``cancellation_event`` is honored before dispatch and between items."""
+
+    def test_event_set_before_submit_aborts_without_dispatch(self, mocker):
+        fake = _make_fake_maestro(mocker)
+        sim = _make_simulator(mocker, fake)
+
+        event = Event()
+        event.set()
+
+        with pytest.raises(
+            ExecutionCancelledError, match="before any circuit was dispatched"
+        ):
+            sim.submit_circuits(
+                {"c0": QASM_DEPTH_2, "c1": QASM_DEPTH_3},
+                cancellation_event=event,
+            )
+
+        fake.simple_execute.assert_not_called()
+
+    def test_event_set_mid_batch_stops_consuming(self, mocker):
+        """When the event flips between item completions, the consumer
+        aborts and raises ExecutionCancelledError. Items the executor has
+        already pre-dispatched may still complete in the worker pool —
+        maestro itself has no mid-circuit cancel hook — but no more
+        results are appended to the batch output."""
+        fake = _make_fake_maestro(mocker, counts={"00": 1})
+        sim = _make_simulator(mocker, fake)
+
+        event = Event()
+        call_count = {"n": 0}
+        original_return = fake.simple_execute.return_value
+
+        def flip_then_return(*args, **kwargs):
+            # Set the event after the first item completes; the next
+            # consumer iteration will see it set.
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                event.set()
+            return original_return
+
+        fake.simple_execute.side_effect = flip_then_return
+
+        with pytest.raises(ExecutionCancelledError, match="partial completion"):
+            sim.submit_circuits(
+                {
+                    "c0": QASM_DEPTH_2,
+                    "c1": QASM_DEPTH_3,
+                    "c2": QASM_DEPTH_3,
+                    "c3": QASM_DEPTH_3,
+                },
+                cancellation_event=event,
+            )
 
 
 class TestExpvalSubmission:

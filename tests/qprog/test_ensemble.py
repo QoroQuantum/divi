@@ -12,10 +12,13 @@ from threading import Event as ThreadingEvent
 from threading import Lock, Thread
 
 import pytest
+from rich.panel import Panel
 from rich.progress import Progress
+from rich.traceback import Traceback
 
 import divi.qprog.ensemble as ensemble_module
 from divi.backends import AsyncJobBackend, ExecutionResult
+from divi.exceptions import ExecutionCancelledError
 from divi.qprog._batch_coordinator import _BatchCoordinator
 from divi.qprog.ensemble import BatchConfig, BatchMode, ProgramEnsemble
 from divi.qprog.quantum_program import QuantumProgram
@@ -552,6 +555,140 @@ class TestProgramEnsemble:
         assert "Cancelled by user" in messages
         assert "Finishing... ⏳" in messages
         assert "Stopped after current iteration" in messages
+
+    def test_failed_future_with_execution_cancelled_error_emits_cancelled(
+        self, program_ensemble, mocker
+    ):
+        """A future that finished with ``ExecutionCancelledError`` is the
+        cooperative result of a user cancel propagating from the worker,
+        not a real failure — it must show ``CANCELLED``, not ``FAILED``."""
+        program_ensemble.create_programs()
+        spy = mocker.spy(program_ensemble, "_emit_progress_message")
+        program_ensemble._pb_task_map = {"prog1": 1}
+        program_ensemble._cancellation_event = mocker.MagicMock()
+
+        failed_future = Future()
+        failed_future.set_exception(ExecutionCancelledError("Cancelled by user"))
+
+        program_ensemble.futures = [failed_future]
+        program_ensemble._future_to_program = {
+            failed_future: program_ensemble.programs["prog1"]
+        }
+        mocker.patch("divi.qprog.ensemble.as_completed", return_value=[])
+
+        program_ensemble._handle_cancellation()
+
+        cancelled_emits = [
+            call
+            for call in spy.call_args_list
+            if call.kwargs.get("final_status") is TerminalStatus.CANCELLED
+        ]
+        assert cancelled_emits, (
+            "expected at least one CANCELLED emit for an ExecutionCancelledError "
+            f"future, got {[c.kwargs for c in spy.call_args_list]}"
+        )
+
+    def test_failed_future_with_runtime_error_still_emits_failed(
+        self, program_ensemble, mocker
+    ):
+        """A future that crashed for a non-cancellation reason must still
+        show ``FAILED`` even when reaped during cancellation cleanup —
+        masking it as CANCELLED would hide real bugs from the user."""
+        program_ensemble.create_programs()
+        spy = mocker.spy(program_ensemble, "_emit_progress_message")
+        program_ensemble._pb_task_map = {"prog1": 1}
+        program_ensemble._cancellation_event = mocker.MagicMock()
+
+        failed_future = Future()
+        failed_future.set_exception(RuntimeError("boom"))
+
+        program_ensemble.futures = [failed_future]
+        program_ensemble._future_to_program = {
+            failed_future: program_ensemble.programs["prog1"]
+        }
+        mocker.patch("divi.qprog.ensemble.as_completed", return_value=[])
+
+        program_ensemble._handle_cancellation()
+
+        statuses = [
+            call.kwargs.get("final_status")
+            for call in spy.call_args_list
+            if call.kwargs.get("final_status") is not None
+        ]
+        assert TerminalStatus.FAILED in statuses
+        assert TerminalStatus.CANCELLED not in statuses
+
+    def test_failed_future_panel_printed_during_cancellation(
+        self, program_ensemble, mocker
+    ):
+        """When cancellation reaps a future that crashed for a non-
+        cancellation reason, the exception detail must still surface — a
+        red Rich panel with a traceback, mirroring the no-cancel failure
+        path. Otherwise the user only sees a red progress row and never
+        learns what went wrong."""
+        program_ensemble.create_programs()
+        program_ensemble._pb_task_map = {"prog1": 1, "prog2": 2}
+        program_ensemble._cancellation_event = mocker.MagicMock()
+        mock_progress_bar = mocker.MagicMock()
+        program_ensemble._progress_bar = mock_progress_bar
+
+        failed_future = Future()
+        failed_future.set_exception(RuntimeError("boom"))
+        cancelled_future = Future()
+        cancelled_future.set_exception(ExecutionCancelledError("Cancelled by user"))
+
+        program_ensemble.futures = [failed_future, cancelled_future]
+        program_ensemble._future_to_program = {
+            failed_future: program_ensemble.programs["prog1"],
+            cancelled_future: program_ensemble.programs["prog2"],
+        }
+        mocker.patch("divi.qprog.ensemble.as_completed", return_value=[])
+
+        program_ensemble._handle_cancellation()
+
+        printed = [
+            call.args[0] for call in mock_progress_bar.console.print.call_args_list
+        ]
+        panels = [p for p in printed if isinstance(p, Panel)]
+        tracebacks = [p for p in printed if isinstance(p, Traceback)]
+        # One failure → exactly one summary panel and one traceback render.
+        assert len(panels) == 1
+        assert len(tracebacks) == 1
+
+        panel_text = str(panels[0].renderable)
+        assert "RuntimeError" in panel_text
+        assert "boom" in panel_text
+        # The cancelled program is not rendered as a failure.
+        assert "ExecutionCancelledError" not in panel_text
+        # Failed program is identified by id.
+        prog1_id = program_ensemble.programs["prog1"].program_id
+        assert prog1_id in str(panels[0].title)
+
+    def test_cancellation_without_failures_prints_no_failure_panels(
+        self, program_ensemble, mocker
+    ):
+        """When every program either ran cleanly or cancelled cooperatively,
+        no Rich failure panels should be printed — only the existing
+        progress-row status updates."""
+        program_ensemble.create_programs()
+        program_ensemble._pb_task_map = {"prog1": 1}
+        program_ensemble._cancellation_event = mocker.MagicMock()
+        mock_progress_bar = mocker.MagicMock()
+        program_ensemble._progress_bar = mock_progress_bar
+
+        cancelled_future = Future()
+        cancelled_future.set_exception(ExecutionCancelledError("Cancelled by user"))
+
+        program_ensemble.futures = [cancelled_future]
+        program_ensemble._future_to_program = {
+            cancelled_future: program_ensemble.programs["prog1"]
+        }
+        mocker.patch("divi.qprog.ensemble.as_completed", return_value=[])
+
+        program_ensemble._handle_cancellation()
+
+        # No Panel/Traceback emission should have happened on the console.
+        assert mock_progress_bar.console.print.call_count == 0
 
     def test_handle_cancellation_unstoppable_futures(self, program_ensemble, mocker):
         """Test cancellation handling with unstoppable futures."""

@@ -4,6 +4,7 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
+from threading import Event
 
 import numpy as np
 
@@ -65,7 +66,13 @@ class CircuitRunner(ABC):
         """
 
     @abstractmethod
-    def submit_circuits(self, circuits: Mapping[str, str], **kwargs) -> ExecutionResult:
+    def submit_circuits(
+        self,
+        circuits: Mapping[str, str],
+        *,
+        cancellation_event: Event | None = None,
+        **kwargs,
+    ) -> ExecutionResult:
         """
         Submit quantum circuits for execution.
 
@@ -75,6 +82,10 @@ class CircuitRunner(ABC):
         Args:
             circuits (dict[str, str]): Dictionary mapping circuit labels to their
                 OpenQASM string representations.
+            cancellation_event: When set, the backend aborts the batch and
+                raises :class:`~divi.exceptions.ExecutionCancelledError`.
+                Sync backends honour it between items; async backends thread
+                it into their poll loop.
             **kwargs: Additional backend-specific parameters for circuit execution.
 
         Returns:

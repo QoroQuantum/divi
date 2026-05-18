@@ -1337,39 +1337,51 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         resolved_initial_params = self._resolve_initial_param_sets(initial_params)
 
-        try:
-            self.optimize_result = self.optimizer.optimize(
-                cost_fn=cost_fn,
-                initial_params=resolved_initial_params,
-                callback_fn=_iteration_counter,
-                jac=grad_fn,
-                max_iterations=self.max_iterations,
-                rng=self._rng,
-            )
-        except (ExecutionCancelledError, StopIteration) as exc:
-            if isinstance(exc, ExecutionCancelledError):
-                message = "Optimization cancelled."
-            else:
+        with self._install_cancellation_handler():
+            try:
+                self.optimize_result = self.optimizer.optimize(
+                    cost_fn=cost_fn,
+                    initial_params=resolved_initial_params,
+                    callback_fn=_iteration_counter,
+                    jac=grad_fn,
+                    max_iterations=self.max_iterations,
+                    rng=self._rng,
+                )
+            except StopIteration:
                 reason = self._stop_reason.value if self._stop_reason else "Stopped"
-                message = f"Early stopping: {reason}"
+                self.optimize_result = OptimizeResult(
+                    x=np.atleast_2d(self._best_params),
+                    fun=np.atleast_1d(self._best_loss),
+                    nit=self.current_iteration,
+                    success=False,
+                    message=f"Early stopping: {reason}",
+                )
+            except ExecutionCancelledError as exc:
+                # ``KeyboardInterrupt`` is deliberately NOT caught here:
+                # the second Ctrl+C re-raises ``KeyboardInterrupt`` from
+                # the signal handler as the documented hard-abort path,
+                # and intercepting it would defeat that.
+                message = "Cancelled by user"
+                self.optimize_result = OptimizeResult(
+                    x=np.atleast_2d(self._best_params),
+                    fun=np.atleast_1d(self._best_loss),
+                    nit=self.current_iteration,
+                    success=False,
+                    message=message,
+                )
+                # The pipeline already best-effort-cancelled the in-flight
+                # job when it raised; no redundant call needed here.
+                self.reporter.info(
+                    message=message, final_status=TerminalStatus.CANCELLED
+                )
+                raise ExecutionCancelledError(message) from exc
+            else:
+                self.optimize_result.success = True
+                self.optimize_result.message = "Optimization converged."
 
-            self.optimize_result = OptimizeResult(
-                x=np.atleast_2d(self._best_params),
-                fun=np.atleast_1d(self._best_loss),
-                nit=self.current_iteration,
-                success=False,
-                message=message,
-            )
-
-            if isinstance(exc, ExecutionCancelledError):
-                return self
-        else:
-            self.optimize_result.success = True
-            self.optimize_result.message = "Optimization converged."
-
-            # Set _best_params from final result (source of truth)
-            x = np.atleast_2d(self.optimize_result.x)
-            self._best_params = x[np.argmin(self.optimize_result.fun)].copy()
+                # Set _best_params from final result (source of truth)
+                x = np.atleast_2d(self.optimize_result.x)
+                self._best_params = x[np.argmin(self.optimize_result.fun)].copy()
 
         self._final_params = self.optimize_result.x
 

@@ -497,12 +497,14 @@ class QoroService(CircuitRunner):
     def submit_circuits(
         self,
         circuits: Mapping[str, str],
+        *,
         ham_ops: str | None = None,
         circuit_ham_map: list[list[int]] | None = None,
         shot_groups: list[list[int]] | None = None,
         job_type: JobType | None = None,
         override_execution_config: ExecutionConfig | None = None,
         override_job_config: JobConfig | None = None,
+        cancellation_event: Event | None = None,
         **kwargs,
     ) -> ExecutionResult:
         """
@@ -542,6 +544,10 @@ class QoroService(CircuitRunner):
             override_job_config (JobConfig | None, optional):
                 Configuration object to override the service's default settings.
                 If not provided, default values are used.
+            cancellation_event (Event | None, optional):
+                Accepted for :class:`~divi.backends.CircuitRunner` interface
+                parity; submission itself is unaffected. Pass the same Event
+                to :meth:`poll_job_status` to interrupt the polling loop.
             **kwargs:
                 Accepted to match the ``CircuitRunner.submit_circuits``
                 signature but not used by this backend. Any extra keyword

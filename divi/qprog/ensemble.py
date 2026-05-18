@@ -15,8 +15,10 @@ from warnings import warn
 
 from rich.console import Console
 from rich.panel import Panel
+from rich.traceback import Traceback
 
 from divi.backends import CircuitRunner
+from divi.exceptions import ExecutionCancelledError
 
 # Direct import of ``BatchConfig``/``BatchMode`` from the defining module:
 # ``ensemble.py`` is itself loaded by ``divi.qprog.__init__`` to populate
@@ -691,10 +693,20 @@ class ProgramEnsemble(ABC):
                     except Exception:
                         exc = True  # defensive; treat as failed
                     if exc is not None:
+                        # Workers that raised ExecutionCancelledError were
+                        # cooperating with the user's cancel; everything
+                        # else is a real failure.
+                        if isinstance(exc, ExecutionCancelledError):
+                            status, message = (
+                                TerminalStatus.CANCELLED,
+                                "Cancelled by user",
+                            )
+                        else:
+                            status, message = failed_status, failed_message
                         self._emit_progress_message(
                             program.program_id,
-                            final_status=failed_status,
-                            message=failed_message,
+                            final_status=status,
+                            message=message,
                         )
                 continue
 
@@ -752,6 +764,52 @@ class ProgramEnsemble(ABC):
             running_status=TerminalStatus.ABORTED,
             running_message="Stopped after current iteration",
         )
+        self._report_failed_programs()
+
+    def _report_failed_programs(self) -> None:
+        """Render a Rich panel + traceback for any future that finished with
+        a non-cancellation exception.
+
+        Called from the cancellation path so users still see what crashed
+        — otherwise the failure detail disappears into the progress row.
+        Failures that happened before the cancel was requested still get
+        the same panel treatment the no-cancel failure path produces.
+        """
+        failures: list[tuple[QuantumProgram, BaseException]] = []
+        for future, program in self._future_to_program.items():
+            if not future.done() or future.cancelled():
+                continue
+            try:
+                exc = future.exception()
+            except Exception:
+                continue
+            if exc is None or isinstance(exc, ExecutionCancelledError):
+                continue
+            failures.append((program, exc))
+
+        if not failures:
+            return
+
+        console = (
+            self._progress_bar.console
+            if self._progress_bar is not None
+            else Console(stderr=True)
+        )
+        for program, exc in failures:
+            label = (
+                f" (Program {program.program_id})"
+                if program.program_id is not None
+                else ""
+            )
+            console.print(
+                Panel(
+                    f"[bold]{type(exc).__name__}[/bold]: {exc}",
+                    title=f"[bold red]Program Failure{label}[/bold red]",
+                    subtitle="[dim]Traceback follows[/dim]",
+                    border_style="red",
+                )
+            )
+            console.print(Traceback.from_exception(type(exc), exc, exc.__traceback__))
 
     def _handle_failure(self, failed_future: Future | None) -> None:
         """Handle a program failure by stopping remaining programs.

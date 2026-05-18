@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import warnings
+from threading import Event
 
 import pytest
 from qiskit import QuantumCircuit
@@ -15,6 +16,7 @@ from divi.backends._qiskit_simulator import (
     _default_n_processes,
     _find_best_fake_backend,
 )
+from divi.exceptions import ExecutionCancelledError
 from tests.backends import circuit_runner_contracts as contracts
 
 
@@ -352,6 +354,34 @@ class TestQiskitSimulatorSubmitCircuits:
         assert result.results is not None
         assert len(result.results) == 1
         assert result.results[0]["label"] == "test_circuit"
+
+
+class TestQiskitSimulatorCancellation:
+    """Aer's underlying call enters native code and cannot be interrupted,
+    so QiskitSimulator only honors ``cancellation_event`` at the
+    submit boundary — that's enough to abort the next iteration of an
+    optimizer loop without dispatching a wasted batch."""
+
+    def test_pre_set_event_raises_before_dispatch(self, mocker):
+        mock_aer = mocker.Mock()
+        mocker.patch(
+            "divi.backends._qiskit_simulator.AerSimulator",
+            return_value=mock_aer,
+        )
+        sim = QiskitSimulator(shots=10)
+
+        event = Event()
+        event.set()
+
+        qasm = (
+            'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[1];\n'
+            "creg c[1];\nh q[0];\nmeasure q[0] -> c[0];\n"
+        )
+
+        with pytest.raises(ExecutionCancelledError, match="before dispatch"):
+            sim.submit_circuits({"c0": qasm}, cancellation_event=event)
+
+        mock_aer.run.assert_not_called()
 
 
 class TestQiskitSimulatorDepthTracker:

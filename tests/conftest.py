@@ -68,7 +68,7 @@ class DummySimulator(CircuitRunner):
     def supports_expval(self):
         return False
 
-    def submit_circuits(self, circuits):
+    def submit_circuits(self, circuits, **kwargs):
         res = []
         for label, qasm in circuits.items():
             match = re.search(r"qreg q\[(\d+)\]", qasm)

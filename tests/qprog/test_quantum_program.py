@@ -177,8 +177,11 @@ class TestQuantumProgramJobManagement:
             program._current_execution_result
         )
 
-    def test_cancel_unfinished_job_409_conflict(self, mocker):
-        """Test cancel_unfinished_job handles 409 Conflict gracefully."""
+    def test_cancel_unfinished_job_409_conflict_is_silently_swallowed(self, mocker):
+        """409 from the scheduler means the job already reached a terminal
+        state — a normal race outcome of CTRL-C arriving as the job finishes.
+        The error must not propagate and must not spam the user-facing
+        reporter; it is logged at DEBUG for developers only."""
         mock_backend = mocker.Mock(spec=AsyncJobBackend)
         mock_response = mocker.Mock()
         mock_response.status_code = HTTPStatus.CONFLICT
@@ -192,12 +195,14 @@ class TestQuantumProgramJobManagement:
 
         program.cancel_unfinished_job()
 
-        program.reporter.info.assert_called_once_with(
-            "Job test_job_123 already completed or cancelled"
-        )
+        mock_backend.cancel_job.assert_called_once()
+        program.reporter.info.assert_not_called()
 
-    def test_cancel_unfinished_job_other_error(self, mocker):
-        """Test cancel_unfinished_job reports other errors."""
+    def test_cancel_unfinished_job_other_error_is_silently_swallowed(self, mocker):
+        """Non-409 HTTP errors (403, 404, network) during cleanup are
+        diagnostic-only — they belong in ``logger.debug``, not on the
+        user-facing reporter that's currently displaying cancellation
+        status."""
         mock_backend = mocker.Mock(spec=AsyncJobBackend)
         mock_response = mocker.Mock()
         mock_response.status_code = HTTPStatus.FORBIDDEN
@@ -211,10 +216,8 @@ class TestQuantumProgramJobManagement:
 
         program.cancel_unfinished_job()
 
-        program.reporter.info.assert_called_once()
-        assert "Failed to cancel job test_job_123" in str(
-            program.reporter.info.call_args[0][0]
-        )
+        mock_backend.cancel_job.assert_called_once()
+        program.reporter.info.assert_not_called()
 
     def test_cancel_unfinished_job_no_reporter(self, mocker):
         """Test cancel_unfinished_job works without reporter."""

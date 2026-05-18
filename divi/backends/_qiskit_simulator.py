@@ -10,6 +10,7 @@ import threading
 from collections.abc import Mapping, Sequence
 from functools import partial
 from multiprocessing import Pool, current_process
+from threading import Event
 from typing import Any, Literal
 from warnings import warn
 
@@ -31,6 +32,7 @@ from divi.backends._shot_allocation import (
     per_circuit,
     validate,
 )
+from divi.exceptions import ExecutionCancelledError
 
 logger = logging.getLogger(__name__)
 
@@ -445,9 +447,11 @@ class QiskitSimulator(CircuitRunner):
     def submit_circuits(
         self,
         circuits: Mapping[str, str],
+        *,
         ham_ops: str | None = None,
         circuit_ham_map: list[list[int]] | None = None,
         shot_groups: list[list[int]] | None = None,
+        cancellation_event: Event | None = None,
         **kwargs,
     ) -> ExecutionResult:
         """Submit multiple circuits for parallel simulation using Qiskit's built-in parallelism.
@@ -464,11 +468,16 @@ class QiskitSimulator(CircuitRunner):
                 provided, overrides ``self.shots`` for each contiguous range
                 and triggers one ``aer_simulator.run`` call per range.
                 Sampling-mode only — ignored when ``ham_ops`` is provided.
+            cancellation_event: When set before this call, aborts dispatch.
+                Aer's ``.run().result()`` cannot be interrupted mid-batch.
             **kwargs: Additional parameters (unused, accepted for interface compatibility).
 
         Returns:
             ExecutionResult containing either counts (sampling) or expectation values.
         """
+        if cancellation_event is not None and cancellation_event.is_set():
+            raise ExecutionCancelledError("Qiskit batch cancelled before dispatch")
+
         logger.debug(
             f"Simulating {len(circuits)} circuits with {self.n_processes} processes"
         )
