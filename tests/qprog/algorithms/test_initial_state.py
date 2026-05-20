@@ -11,7 +11,7 @@ import scipy.linalg
 from qiskit.circuit import QuantumCircuit
 from qiskit.quantum_info import Operator, Statevector
 
-from divi.hamiltonians import xy_mixer_spo
+from divi.hamiltonians import xy_mixer
 from divi.qprog import QAOA, VQE, TimeEvolution
 from divi.qprog.algorithms import (
     CustomPerQubitState,
@@ -31,11 +31,6 @@ def _gate_names(qc: QuantumCircuit) -> list[str]:
 
 def _gate_qubits(qc: QuantumCircuit) -> list[list[int]]:
     return [[qc.find_bit(q).index for q in instr.qubits] for instr in qc.data]
-
-
-# ---------------------------------------------------------------------------
-# InitialState classes
-# ---------------------------------------------------------------------------
 
 
 class TestZerosState:
@@ -131,7 +126,7 @@ class TestBlockXYMixer:
         wires = list(range(n))
 
         xy_graph = build_block_xy_mixer_graph(n, 1, wires)
-        mixer = xy_mixer_spo(xy_graph)
+        mixer = xy_mixer(xy_graph)
 
         qc = WState(n, 1).build(wires)
         U = Operator(scipy.linalg.expm(-1j * 1.5 * mixer.to_matrix()))
@@ -147,7 +142,7 @@ class TestBlockXYMixer:
         n = len(wires)
 
         xy_graph = build_block_xy_mixer_graph(block_size, n_blocks, wires)
-        mixer = xy_mixer_spo(xy_graph)
+        mixer = xy_mixer(xy_graph)
 
         qc = WState(block_size, n_blocks).build(wires)
         U = Operator(scipy.linalg.expm(-1j * 2.0 * mixer.to_matrix()))
@@ -163,11 +158,6 @@ class TestBlockXYMixer:
             if valid:
                 total_valid += probs[idx]
         assert total_valid == pytest.approx(1.0, abs=1e-10)
-
-
-# ---------------------------------------------------------------------------
-# Integration: TimeEvolution with custom initial states
-# ---------------------------------------------------------------------------
 
 
 class TestTimeEvolutionCustomInitialState:
@@ -207,11 +197,6 @@ class TestTimeEvolutionCustomInitialState:
             )
 
 
-# ---------------------------------------------------------------------------
-# Integration: QAOA with custom initial states
-# ---------------------------------------------------------------------------
-
-
 class TestQAOACustomInitialState:
     """Test that QAOA accepts custom string initial states."""
 
@@ -225,11 +210,6 @@ class TestQAOACustomInitialState:
             max_iterations=1,
         )
         assert isinstance(qaoa.initial_state, CustomPerQubitState)
-
-
-# ---------------------------------------------------------------------------
-# Integration: VQE with initial_state
-# ---------------------------------------------------------------------------
 
 
 class TestVQEInitialState:

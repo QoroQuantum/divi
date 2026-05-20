@@ -32,10 +32,6 @@ from divi.hamiltonians._polynomial import (
 )
 from divi.pipeline.stages._pce_cost_stage import _compute_hard_cvar_energy
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _make_problem(qubo_matrix):
     """Build a BinaryPolynomialProblem from a QUBO matrix."""
@@ -45,11 +41,6 @@ def _make_problem(qubo_matrix):
 def _make_hubo_problem(hubo_dict):
     """Build a BinaryPolynomialProblem from a HUBO dict."""
     return normalize_binary_polynomial_problem(hubo_dict)
-
-
-# ---------------------------------------------------------------------------
-# qubo_to_matrix
-# ---------------------------------------------------------------------------
 
 
 class TestQuboToMatrixBQM:
@@ -112,11 +103,6 @@ class TestQuboToMatrixUnsupported:
         """An integer should raise ValueError."""
         with pytest.raises(ValueError, match="Unsupported QUBO type"):
             qubo_to_matrix(42)
-
-
-# ---------------------------------------------------------------------------
-# hubo_to_binary_polynomial / qubo_to_binary_polynomial
-# ---------------------------------------------------------------------------
 
 
 class TestHuboToBinaryPolynomial:
@@ -207,11 +193,6 @@ class TestNormalizeBinaryPolynomialProblem:
             normalize_binary_polynomial_problem(hubo, variable_order=("a", "a"))
 
 
-# ---------------------------------------------------------------------------
-# compile_problem
-# ---------------------------------------------------------------------------
-
-
 class TestCompileProblem:
     def test_diagonal_qubo(self):
         """Diagonal QUBO: only degree-1 terms."""
@@ -251,11 +232,6 @@ class TestCompileProblem:
 
         degrees = [to[t + 1] - to[t] for t in range(len(tc))]
         assert 3 in degrees  # cubic term present
-
-
-# ---------------------------------------------------------------------------
-# _eval_poly_1d_jit
-# ---------------------------------------------------------------------------
 
 
 class TestEvalPoly1dJit:
@@ -304,11 +280,6 @@ class TestEvalPoly1dJit:
         assert result == pytest.approx(expected, rel=1e-12)
 
 
-# ---------------------------------------------------------------------------
-# _eval_poly_2d_jit
-# ---------------------------------------------------------------------------
-
-
 class TestEvalPoly2dJit:
     def test_matches_python_loop(self):
         """JIT 2D result matches the Python fallback for batched assignments."""
@@ -347,11 +318,6 @@ class TestEvalPoly2dJit:
 
         assert result.shape == (5000,)
         assert np.all(np.isfinite(result))
-
-
-# ---------------------------------------------------------------------------
-# _compute_hard_cvar_energy_jit
-# ---------------------------------------------------------------------------
 
 
 class TestComputeHardCvarEnergyJit:

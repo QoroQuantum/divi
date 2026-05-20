@@ -39,10 +39,6 @@ def _is_number(val) -> bool:
     return isinstance(val, (int, float)) and not isinstance(val, bool)
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
 SAMPLE_REPORT = {
     "quality_score": 78.5,
     "concentration_ratio": 3.2,
@@ -156,11 +152,6 @@ def qoro_service_factory():
     return _factory
 
 
-# ---------------------------------------------------------------------------
-# _serialize_qubo_for_wire
-# ---------------------------------------------------------------------------
-
-
 class TestSerializeQuboForWire:
     """Tests for serializing a BinaryOptimizationProblem to wire format."""
 
@@ -183,11 +174,6 @@ class TestSerializeQuboForWire:
         assert wire["0"] == -1.0
         assert wire["0,1"] == 2.0
         assert wire["0,1,2"] == 3.0
-
-
-# ---------------------------------------------------------------------------
-# CharacterizationResult
-# ---------------------------------------------------------------------------
 
 
 class TestCharacterizationResult:
@@ -357,11 +343,6 @@ class TestCharacterizationResult:
         assert result.recommendations == recs
 
 
-# ---------------------------------------------------------------------------
-# QoroService.characterize_and_validate (mocked HTTP)
-# ---------------------------------------------------------------------------
-
-
 class TestQoroServiceCharacterize:
     """Tests for the consolidated submit + fetch flow in QoroService."""
 
@@ -489,11 +470,6 @@ class TestQoroServiceCharacterize:
         service = qoro_service_factory()
         with pytest.raises(ValueError, match="qubo.*or.*job_id"):
             service.characterize_and_validate()
-
-
-# ---------------------------------------------------------------------------
-# Top-level characterize_and_validate() function
-# ---------------------------------------------------------------------------
 
 
 class TestTopLevelCharacterize:
@@ -631,11 +607,6 @@ class TestTopLevelCharacterize:
         assert options["cost_qubo"]["0"] == -1.0
 
 
-# ---------------------------------------------------------------------------
-# JobType enum
-# ---------------------------------------------------------------------------
-
-
 class TestJobTypeCharacterize:
     """Tests for the CHARACTERIZE enum member."""
 
@@ -646,11 +617,6 @@ class TestJobTypeCharacterize:
     def test_member_in_all_values(self):
         values = [j.value for j in JobType]
         assert "VALIDATE" in values
-
-
-# ---------------------------------------------------------------------------
-# E2E tests for validation HTML feature (prod usher endpoints)
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture

@@ -17,9 +17,9 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.hamiltonians._term_ops import (
     _clean_hamiltonian_spo,
-    _empty_spo,
-    _n_qubits,
+    _require_qiskit_num_qubits,
     _sort_hamiltonian_terms_spo,
+    generate_empty_spo,
 )
 
 # Maximum number of distinct input SPOs cached per strategy instance.
@@ -170,7 +170,8 @@ class ExactTrotterization(TrotterizationStrategy):
         )
         if constant != 0:
             const_spo = SparsePauliOp.from_sparse_list(
-                [("", [], constant)], num_qubits=_n_qubits(spo)
+                [("", [], constant)],
+                num_qubits=_require_qiskit_num_qubits(spo.num_qubits),
             )
             return (kept_spo + const_spo).simplify()
         return kept_spo.simplify()
@@ -263,7 +264,9 @@ class QDrift(TrotterizationStrategy):
                 "No terms to sample; returning the kept Hamiltonian.",
                 UserWarning,
             )
-            return _empty_spo(_n_qubits(hamiltonian))
+            return generate_empty_spo(
+                _require_qiskit_num_qubits(hamiltonian.num_qubits)
+            )
 
         triggered_exact_trotterization = (
             self.keep_fraction is not None or self.keep_top_n is not None
@@ -322,7 +325,9 @@ class QDrift(TrotterizationStrategy):
                 UserWarning,
             )
             if keep_spo is None:
-                return _empty_spo(_n_qubits(hamiltonian))
+                return generate_empty_spo(
+                    _require_qiskit_num_qubits(hamiltonian.num_qubits)
+                )
             return keep_spo
 
         if to_sample_spo.size == 1:
@@ -336,7 +341,9 @@ class QDrift(TrotterizationStrategy):
                     UserWarning,
                 )
                 if keep_spo is None:
-                    return _empty_spo(_n_qubits(hamiltonian))
+                    return generate_empty_spo(
+                        _require_qiskit_num_qubits(hamiltonian.num_qubits)
+                    )
                 return keep_spo
             if self.sampling_strategy == "weighted":
                 probs = absolute_coeffs / coeff_sum

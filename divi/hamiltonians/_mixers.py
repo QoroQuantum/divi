@@ -48,7 +48,7 @@ def _validate_int_nodes(nodes: Iterable[int], builder: str) -> None:
             raise ValueError(f"{builder} requires non-negative qubit nodes.")
 
 
-def x_mixer_spo(n_qubits: int) -> SparsePauliOp:
+def x_mixer(n_qubits: int) -> SparsePauliOp:
     """Return the standard QAOA X mixer ``sum_i X_i``."""
     if n_qubits < 0:
         raise ValueError("n_qubits must be non-negative.")
@@ -59,7 +59,7 @@ def x_mixer_spo(n_qubits: int) -> SparsePauliOp:
     )
 
 
-def xy_mixer_spo(
+def xy_mixer(
     graph: nx.Graph | Iterable[tuple[int, int]], *, n_qubits: int | None = None
 ) -> SparsePauliOp:
     """Return the XY mixer ``0.5 * sum_(i,j) (X_i X_j + Y_i Y_j)``.
@@ -74,7 +74,7 @@ def xy_mixer_spo(
     else:
         edges = list(graph)
         nodes = {n for edge in edges for n in edge}
-    _validate_int_nodes(nodes, "xy_mixer_spo")
+    _validate_int_nodes(nodes, "xy_mixer")
 
     inferred = max(nodes, default=-1) + 1
     n_qubits = inferred if n_qubits is None else n_qubits
@@ -92,7 +92,7 @@ def xy_mixer_spo(
     return SparsePauliOp.from_list(terms)
 
 
-def bit_driver_spo(n_qubits: int, b: int) -> SparsePauliOp:
+def bit_driver(n_qubits: int, b: int) -> SparsePauliOp:
     """Bit-driver Hamiltonian ``(-1)^(b+1) * sum_i Z_i``.
 
     ``b=1`` returns ``+sum_i Z_i`` (rewards bitstrings with majority 1s);
@@ -110,7 +110,7 @@ def bit_driver_spo(n_qubits: int, b: int) -> SparsePauliOp:
     )
 
 
-def edge_driver_spo(
+def edge_driver(
     graph: nx.Graph | Iterable[tuple[int, int]],
     reward: list[str],
     *,
@@ -151,7 +151,7 @@ def edge_driver_spo(
     else:
         edges = list(graph)
         nodes = {n for edge in edges for n in edge}
-    _validate_int_nodes(nodes, "edge_driver_spo")
+    _validate_int_nodes(nodes, "edge_driver")
 
     inferred = max(nodes, default=-1) + 1
     n_qubits = inferred if n_qubits is None else n_qubits
@@ -192,7 +192,7 @@ def edge_driver_spo(
     return SparsePauliOp.from_list(terms)
 
 
-def bit_flip_mixer_spo(graph: nx.Graph, b: int) -> SparsePauliOp:
+def bit_flip_mixer(graph: nx.Graph, b: int) -> SparsePauliOp:
     """Bit-flip mixer over ``graph`` (per Hadfield et al. 2019).
 
     For each vertex ``v`` with neighbour set ``N(v)`` of degree ``d(v)``:
@@ -207,9 +207,9 @@ def bit_flip_mixer_spo(graph: nx.Graph, b: int) -> SparsePauliOp:
     if b not in (0, 1):
         raise ValueError(f"'b' must be either 0 or 1, got {b}")
     if not isinstance(graph, nx.Graph):
-        raise TypeError("bit_flip_mixer_spo requires a networkx.Graph.")
+        raise TypeError("bit_flip_mixer requires a networkx.Graph.")
     nodes = list(graph.nodes())
-    _validate_int_nodes(nodes, "bit_flip_mixer_spo")
+    _validate_int_nodes(nodes, "bit_flip_mixer")
 
     n_qubits = (max(nodes) + 1) if nodes else 0
     if n_qubits == 0:

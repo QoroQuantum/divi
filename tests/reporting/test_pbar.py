@@ -203,11 +203,6 @@ class TestMakeProgressBar:
         assert hasattr(progress, "add_task")
 
 
-# ---------------------------------------------------------------------------
-# Helpers for batch message tests
-# ---------------------------------------------------------------------------
-
-
 def _make_simple_progress() -> Progress:
     """A minimal Progress instance (no columns needed for state tests)."""
     return Progress(TextColumn("{task.fields[job_name]}"), auto_refresh=False)
@@ -220,11 +215,6 @@ def _task_fields(progress: Progress, task_id) -> dict:
 
 def _task_visible(progress: Progress, task_id) -> bool:
     return progress._tasks[task_id].visible
-
-
-# ---------------------------------------------------------------------------
-# handle_batch_message
-# ---------------------------------------------------------------------------
 
 
 class TestHandleBatchMessage:

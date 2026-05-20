@@ -667,11 +667,6 @@ class TestEvaluateSymbolicWeights:
             QuEPP.evaluate_symbolic_weights(ctx, [theta], np.array([0.0]))
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def _rx_qc(angle: float) -> QuantumCircuit:
     """Single-qubit Rx(angle) circuit."""
     qc = QuantumCircuit(1)
@@ -683,11 +678,6 @@ def _exact_expval(qc: QuantumCircuit, obs: SparsePauliOp) -> float:
     """Exact expectation value via statevector."""
     sv = Statevector.from_instruction(qc)
     return float(np.real(sv.expectation_value(obs)))
-
-
-# ---------------------------------------------------------------------------
-# CPT correctness tests
-# ---------------------------------------------------------------------------
 
 
 class TestCPTExpansion:
@@ -751,11 +741,6 @@ class TestCPTExpansion:
         assert float(entry["weights"] @ entry["classical_values"]) == pytest.approx(0.0)
 
 
-# ---------------------------------------------------------------------------
-# Additional decomposition tests
-# ---------------------------------------------------------------------------
-
-
 class TestDecomposeControlledRotationsExtended:
     """Additional controlled-rotation decomposition tests."""
 
@@ -779,11 +764,6 @@ class TestDecomposeControlledRotationsExtended:
         assert rots[1].axis == "y"
 
 
-# ---------------------------------------------------------------------------
-# Normalization accuracy
-# ---------------------------------------------------------------------------
-
-
 class TestNormalizeCircuitExtended:
     @pytest.mark.usefixtures("suppress_quepp_warnings")
     def test_cpt_accuracy_with_normalization(self):
@@ -797,11 +777,6 @@ class TestNormalizeCircuitExtended:
         entry = ctx["per_obs"][0]
         cpt = float(entry["weights"] @ entry["classical_values"])
         assert cpt == pytest.approx(np.cos(angle), abs=1e-6)
-
-
-# ---------------------------------------------------------------------------
-# Monte Carlo weights
-# ---------------------------------------------------------------------------
 
 
 class TestMCWeightsConvergence:
@@ -827,11 +802,6 @@ class TestMCWeightsConvergence:
         cv = _simulate_clifford_ensemble(path_dags, obs, 1)
         mc_estimate = float(weights @ cv)
         assert mc_estimate == pytest.approx(np.cos(angle), abs=0.05)
-
-
-# ---------------------------------------------------------------------------
-# Full protocol round-trip and noise correction
-# ---------------------------------------------------------------------------
 
 
 class TestQuEPPRoundTrip:
@@ -875,11 +845,6 @@ class TestQuEPPRoundTrip:
         entry = ctx["per_obs"][0]
         cpt = float(entry["weights"] @ entry["classical_values"])
         assert cpt == pytest.approx(_exact_expval(qc, obs), abs=1e-4)
-
-
-# ---------------------------------------------------------------------------
-# Signal destruction (extended)
-# ---------------------------------------------------------------------------
 
 
 class TestQuEPPSignalDestructionExtended:
@@ -956,11 +921,6 @@ class TestComputeEta:
         assert QuEPP.compute_eta(classical, noisy, min_eta=0.1) is None
 
 
-# ---------------------------------------------------------------------------
-# Shallow circuit warning
-# ---------------------------------------------------------------------------
-
-
 class TestShallowCircuitWarning:
     def test_shallow_circuit_warning_in_expand(self):
         """expand() warns when K / n_rotations > 0.33 (shallow circuit)."""
@@ -985,11 +945,6 @@ class TestShallowCircuitWarning:
             protocol.expand(circuit_to_dag(qc), obs)
 
 
-# ---------------------------------------------------------------------------
-# Symbolic hybrid normalization
-# ---------------------------------------------------------------------------
-
-
 class TestSymbolicHybridNormalization:
     @pytest.mark.usefixtures("suppress_quepp_warnings")
     def test_hybrid_normalization(self):
@@ -1007,22 +962,12 @@ class TestSymbolicHybridNormalization:
         assert ctx["n_rotations"] == 1
 
 
-# ---------------------------------------------------------------------------
-# Bind-before-mitigation flag
-# ---------------------------------------------------------------------------
-
-
 class TestBindBeforeMitigation:
     def test_default_is_false(self):
         assert QuEPP().bind_before_mitigation is False
 
     def test_stored_when_true(self):
         assert QuEPP(bind_before_mitigation=True).bind_before_mitigation is True
-
-
-# ---------------------------------------------------------------------------
-# Pipeline integration
-# ---------------------------------------------------------------------------
 
 
 class TestQuEPPPipelineIntegration:

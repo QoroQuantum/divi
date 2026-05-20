@@ -16,11 +16,11 @@ from ._ising import (
     qubo_to_ising,
 )
 from ._mixers import (
-    bit_driver_spo,
-    bit_flip_mixer_spo,
-    edge_driver_spo,
-    x_mixer_spo,
-    xy_mixer_spo,
+    bit_driver,
+    bit_flip_mixer,
+    edge_driver,
+    x_mixer,
+    xy_mixer,
 )
 from ._polynomial import (
     compile_problem,
@@ -57,16 +57,16 @@ __all__ = [
     "QUBOProblemTypes",
     "QuadratizedIsingConverter",
     "TrotterizationStrategy",
-    "bit_driver_spo",
+    "bit_driver",
     "to_spo",
-    "bit_flip_mixer_spo",
+    "bit_flip_mixer",
     "compile_problem",
-    "edge_driver_spo",
+    "edge_driver",
     "hubo_to_binary_polynomial",
     "normalize_binary_polynomial_problem",
     "qubo_to_binary_polynomial",
     "qubo_to_ising",
     "qubo_to_matrix",
-    "x_mixer_spo",
-    "xy_mixer_spo",
+    "x_mixer",
+    "xy_mixer",
 ]

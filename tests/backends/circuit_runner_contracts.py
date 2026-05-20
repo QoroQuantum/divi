@@ -14,10 +14,6 @@ import pytest
 
 from divi.backends import CircuitRunner
 
-# ---------------------------------------------------------------------------
-# Re-usable QASM snippets – callers may also supply their own.
-# ---------------------------------------------------------------------------
-
 # h + measure → depth 2
 QASM_DEPTH_2 = (
     'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[2];\ncreg c[2];\n'
@@ -29,11 +25,6 @@ QASM_DEPTH_3 = (
     'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[2];\ncreg c[2];\n'
     "h q[0];\ncx q[0],q[1];\nmeasure q[0] -> c[0];\nmeasure q[1] -> c[1];\n"
 )
-
-
-# ---------------------------------------------------------------------------
-# Contract functions
-# ---------------------------------------------------------------------------
 
 
 def verify_depth_tracking_disabled(runner: CircuitRunner, circuits: dict[str, str]):

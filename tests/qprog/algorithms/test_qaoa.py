@@ -341,11 +341,6 @@ class TestQAOAQDriftMultiSample:
         assert qaoa.best_loss < float("inf")
 
 
-# ---------------------------------------------------------------------------
-# Final computation with custom decode functions
-# ---------------------------------------------------------------------------
-
-
 class TestFinalComputationDecode:
     """Test that _perform_final_computation handles arbitrary decode returns."""
 

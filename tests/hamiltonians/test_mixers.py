@@ -12,11 +12,11 @@ import pytest
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.hamiltonians import (
-    bit_driver_spo,
-    bit_flip_mixer_spo,
-    edge_driver_spo,
-    x_mixer_spo,
-    xy_mixer_spo,
+    bit_driver,
+    bit_flip_mixer,
+    edge_driver,
+    x_mixer,
+    xy_mixer,
 )
 
 
@@ -40,18 +40,18 @@ def _assert_spo_equivalent(actual: SparsePauliOp, expected: SparsePauliOp) -> No
 
 
 def test_x_mixer_matches_pennylane_qaoa_x_mixer():
-    actual = x_mixer_spo(4)
+    actual = x_mixer(4)
     _assert_matches_pennylane(actual, pqaoa.x_mixer(range(4)))
 
 
 def test_xy_mixer_matches_pennylane_qaoa_xy_mixer():
     graph = nx.Graph([(0, 1), (1, 2)])
-    actual = xy_mixer_spo(graph)
+    actual = xy_mixer(graph)
     _assert_matches_pennylane(actual, pqaoa.xy_mixer(graph))
 
 
 def test_xy_mixer_preserves_trailing_isolated_qubits():
-    actual = xy_mixer_spo(nx.Graph([(0, 1)]), n_qubits=4)
+    actual = xy_mixer(nx.Graph([(0, 1)]), n_qubits=4)
 
     assert actual.num_qubits == 4
     _assert_spo_equivalent(
@@ -62,35 +62,25 @@ def test_xy_mixer_preserves_trailing_isolated_qubits():
 
 def test_xy_mixer_requires_integer_nodes():
     with pytest.raises(TypeError, match="integer"):
-        xy_mixer_spo(nx.Graph([("a", "b")]))
+        xy_mixer(nx.Graph([("a", "b")]))
 
 
 def test_xy_mixer_requires_integer_isolated_nodes():
     graph = nx.Graph()
     graph.add_node("a")
     with pytest.raises(TypeError, match="integer"):
-        xy_mixer_spo(graph)
-
-
-# ---------------------------------------------------------------------------
-# bit_driver_spo
-# ---------------------------------------------------------------------------
+        xy_mixer(graph)
 
 
 @pytest.mark.parametrize("b", [0, 1])
 def test_bit_driver_matches_pennylane(b):
-    actual = bit_driver_spo(n_qubits=5, b=b)
+    actual = bit_driver(n_qubits=5, b=b)
     _assert_matches_pennylane(actual, pqaoa.bit_driver(range(5), b=b))
 
 
 def test_bit_driver_rejects_invalid_b():
     with pytest.raises(ValueError, match="b"):
-        bit_driver_spo(n_qubits=3, b=2)
-
-
-# ---------------------------------------------------------------------------
-# edge_driver_spo
-# ---------------------------------------------------------------------------
+        bit_driver(n_qubits=3, b=2)
 
 
 @pytest.mark.parametrize(
@@ -99,13 +89,13 @@ def test_bit_driver_rejects_invalid_b():
 )
 def test_edge_driver_matches_pennylane(reward):
     graph = nx.Graph([(0, 1), (1, 2), (2, 3)])
-    actual = edge_driver_spo(graph, reward)
+    actual = edge_driver(graph, reward)
     _assert_matches_pennylane(actual, pqaoa.edge_driver(graph, reward))
 
 
 def test_edge_driver_constant_reward_set_matches_pennylane():
     graph = nx.Graph([(0, 1), (1, 2)])
-    actual = edge_driver_spo(graph, ["00", "01", "10", "11"])
+    actual = edge_driver(graph, ["00", "01", "10", "11"])
     _assert_matches_pennylane(
         actual, pqaoa.edge_driver(graph, ["00", "01", "10", "11"])
     )
@@ -113,12 +103,7 @@ def test_edge_driver_constant_reward_set_matches_pennylane():
 
 def test_edge_driver_rejects_unpaired_directed_bits():
     with pytest.raises(ValueError, match="01"):
-        edge_driver_spo(nx.Graph([(0, 1)]), ["10"])
-
-
-# ---------------------------------------------------------------------------
-# bit_flip_mixer_spo
-# ---------------------------------------------------------------------------
+        edge_driver(nx.Graph([(0, 1)]), ["10"])
 
 
 @pytest.mark.parametrize("b", [0, 1])
@@ -132,46 +117,41 @@ def test_edge_driver_rejects_unpaired_directed_bits():
 )
 def test_bit_flip_mixer_matches_pennylane(graph_factory, b):
     graph = graph_factory()
-    actual = bit_flip_mixer_spo(graph, b=b)
+    actual = bit_flip_mixer(graph, b=b)
     _assert_matches_pennylane(actual, pqaoa.bit_flip_mixer(graph, b=b))
 
 
 def test_bit_flip_mixer_rejects_invalid_b():
     with pytest.raises(ValueError, match="b"):
-        bit_flip_mixer_spo(nx.path_graph(3), b=2)
+        bit_flip_mixer(nx.path_graph(3), b=2)
 
 
 def test_bit_flip_mixer_rejects_non_nx_graph():
     with pytest.raises(TypeError, match="networkx"):
-        bit_flip_mixer_spo([(0, 1)], b=0)
-
-
-# ---------------------------------------------------------------------------
-# Edge cases: empty / isolated / negative-node inputs
-# ---------------------------------------------------------------------------
+        bit_flip_mixer([(0, 1)], b=0)
 
 
 def test_x_mixer_zero_qubits_returns_zero_operator():
-    spo = x_mixer_spo(0)
+    spo = x_mixer(0)
     assert spo.num_qubits == 0
     np.testing.assert_allclose(spo.coeffs, [0.0])
 
 
 def test_x_mixer_rejects_negative_qubits():
     with pytest.raises(ValueError, match="non-negative"):
-        x_mixer_spo(-1)
+        x_mixer(-1)
 
 
 def test_graph_builders_reject_negative_qubit_nodes():
-    """``xy_mixer_spo``, ``edge_driver_spo``, and ``bit_flip_mixer_spo`` share
+    """``xy_mixer``, ``edge_driver``, and ``bit_flip_mixer`` share
     the ``_validate_int_nodes`` helper — exercise it via one representative
     entry point."""
     with pytest.raises(ValueError, match="non-negative"):
-        bit_flip_mixer_spo(nx.Graph([(0, -1)]), b=0)
+        bit_flip_mixer(nx.Graph([(0, -1)]), b=0)
 
 
 def test_bit_flip_mixer_isolated_node_matches_pennylane():
     graph = nx.Graph()
     graph.add_nodes_from([0, 1, 2])  # all isolated, degree 0 everywhere
-    actual = bit_flip_mixer_spo(graph, b=0)
+    actual = bit_flip_mixer(graph, b=0)
     _assert_matches_pennylane(actual, pqaoa.bit_flip_mixer(graph, 0))

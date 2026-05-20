@@ -89,7 +89,7 @@ Tests within each file follow a layered structure, from isolated units to full i
 1. **Utility functions** — standalone helpers (QUBO construction, validation, decoding, repair)
 2. **Problem class** — construction, properties, input validation, error handling
 3. **QAOAProblem protocol hooks** — ``decompose``, ``extend_solution``, ``evaluate_global_solution``,
-   ``initial_solution_size``, ``finalize_solution``, ``format_top_solutions``
+   ``initial_solution_size``, ``postprocess_candidates``
 4. **QAOA integration** — Problem + QAOA together (initialization, e2e runs, checkpointing)
 5. **PartitioningProgramEnsemble integration** — Problem + ensemble (program creation, aggregation, e2e)
 

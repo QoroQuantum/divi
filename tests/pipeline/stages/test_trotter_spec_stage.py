@@ -19,10 +19,6 @@ _Z0 = SparsePauliOp.from_list([("Z", 1.0)])
 _Z0_Z1 = SparsePauliOp.from_list([("ZI", 1.0), ("IZ", 1.0)])
 _I0 = SparsePauliOp.from_list([("I", 1.0)])
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 class _DummyStrategy:
     """Trotterization strategy that returns the SPO unchanged N times."""
@@ -43,11 +39,6 @@ def _meta_factory(processed_spo, ham_id):
         ops=[qp.Hadamard(0)], measurements=[qp.expval(qp.Z(0))]
     )
     return qscript_to_meta(qscript)
-
-
-# ---------------------------------------------------------------------------
-# expand
-# ---------------------------------------------------------------------------
 
 
 class TestExpand:
@@ -107,11 +98,6 @@ class TestExpand:
             stage.expand(SparsePauliOp.from_list([("Z", 1.0j)]), env)
 
 
-# ---------------------------------------------------------------------------
-# introspect
-# ---------------------------------------------------------------------------
-
-
 class TestIntrospect:
     def test_returns_token_info(self, dummy_expval_backend):
         stage = TrotterSpecStage(
@@ -141,11 +127,6 @@ class TestIntrospect:
         assert "n_samples" not in info
         assert info["n_qubits"] == 1
         assert info["n_terms"] >= 1
-
-
-# ---------------------------------------------------------------------------
-# reduce
-# ---------------------------------------------------------------------------
 
 
 class TestReduce:
@@ -189,11 +170,6 @@ class TestReduce:
         assert merged["11"] == pytest.approx(60.0)
 
 
-# ---------------------------------------------------------------------------
-# Properties
-# ---------------------------------------------------------------------------
-
-
 class TestProperties:
     def test_axis_name(self):
         stage = TrotterSpecStage(_DummyStrategy(), meta_circuit_factory=_meta_factory)
@@ -208,11 +184,6 @@ class TestProperties:
         )
         assert stage_stateless.stateful is False
         assert stage_stateful.stateful is True
-
-
-# ---------------------------------------------------------------------------
-# Dry-run / forward pass
-# ---------------------------------------------------------------------------
 
 
 class TestDryRun:

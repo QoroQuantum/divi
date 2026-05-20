@@ -16,10 +16,10 @@ import rustworkx as rx
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.hamiltonians import (
-    bit_driver_spo,
-    bit_flip_mixer_spo,
-    edge_driver_spo,
-    x_mixer_spo,
+    bit_driver,
+    bit_flip_mixer,
+    edge_driver,
+    x_mixer,
 )
 from divi.hamiltonians._mixers import multi_pauli_label, single_pauli_label
 
@@ -100,10 +100,10 @@ def maxcut_hamiltonians(graph: GraphLike) -> tuple[SparsePauliOp, SparsePauliOp]
     """
     relabelled, _ = _node_to_qubit_undirected(graph)
     n_qubits = relabelled.number_of_nodes()
-    cost = edge_driver_spo(
+    cost = edge_driver(
         relabelled, ["10", "01"], n_qubits=n_qubits
     ) + SparsePauliOp.from_list([("I" * n_qubits, -0.5 * relabelled.number_of_edges())])
-    mixer = x_mixer_spo(n_qubits)
+    mixer = x_mixer(n_qubits)
     return cost, mixer
 
 
@@ -114,13 +114,13 @@ def max_independent_set_hamiltonians(
     relabelled, _ = _node_to_qubit_undirected(graph)
     n_qubits = relabelled.number_of_nodes()
     if constrained:
-        cost = bit_driver_spo(n_qubits, b=1)
-        mixer = bit_flip_mixer_spo(relabelled, b=0)
+        cost = bit_driver(n_qubits, b=1)
+        mixer = bit_flip_mixer(relabelled, b=0)
         return cost, mixer
-    cost = 3.0 * edge_driver_spo(
+    cost = 3.0 * edge_driver(
         relabelled, ["10", "01", "00"], n_qubits=n_qubits
-    ) + bit_driver_spo(n_qubits, b=1)
-    return cost, x_mixer_spo(n_qubits)
+    ) + bit_driver(n_qubits, b=1)
+    return cost, x_mixer(n_qubits)
 
 
 def min_vertex_cover_hamiltonians(
@@ -130,13 +130,13 @@ def min_vertex_cover_hamiltonians(
     relabelled, _ = _node_to_qubit_undirected(graph)
     n_qubits = relabelled.number_of_nodes()
     if constrained:
-        cost = bit_driver_spo(n_qubits, b=0)
-        mixer = bit_flip_mixer_spo(relabelled, b=1)
+        cost = bit_driver(n_qubits, b=0)
+        mixer = bit_flip_mixer(relabelled, b=1)
         return cost, mixer
-    cost = 3.0 * edge_driver_spo(
+    cost = 3.0 * edge_driver(
         relabelled, ["11", "10", "01"], n_qubits=n_qubits
-    ) + bit_driver_spo(n_qubits, b=0)
-    return cost, x_mixer_spo(n_qubits)
+    ) + bit_driver(n_qubits, b=0)
+    return cost, x_mixer(n_qubits)
 
 
 def max_clique_hamiltonians(
@@ -147,13 +147,13 @@ def max_clique_hamiltonians(
     n_qubits = relabelled.number_of_nodes()
     complement = nx.complement(relabelled)
     if constrained:
-        cost = bit_driver_spo(n_qubits, b=1)
-        mixer = bit_flip_mixer_spo(complement, b=0)
+        cost = bit_driver(n_qubits, b=1)
+        mixer = bit_flip_mixer(complement, b=0)
         return cost, mixer
-    cost = 3.0 * edge_driver_spo(
+    cost = 3.0 * edge_driver(
         complement, ["10", "01", "00"], n_qubits=n_qubits
-    ) + bit_driver_spo(n_qubits, b=1)
-    return cost, x_mixer_spo(n_qubits)
+    ) + bit_driver(n_qubits, b=1)
+    return cost, x_mixer(n_qubits)
 
 
 # ---------------------------------------------------------------------------
@@ -353,7 +353,7 @@ def max_weight_cycle_hamiltonians(
             + 3.0 * net_flow_constraint_spo(nx_dg)
             + 3.0 * out_flow_constraint_spo(nx_dg)
         )
-        mixer = x_mixer_spo(nx_dg.number_of_edges())
+        mixer = x_mixer(nx_dg.number_of_edges())
     cost = cost.simplify(atol=1e-12)
     mixer = mixer.simplify(atol=1e-12)
     return cost, mixer, mapping

@@ -35,10 +35,6 @@ from tests.qprog.problems._helpers import (
 )
 from tests.qprog.qprog_contracts import verify_metacircuit_dict
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
 
 @pytest.fixture
 def sample_qubo_matrix():
@@ -51,11 +47,6 @@ def sample_qubo_matrix():
             [0, 0, 3, -1],
         ]
     )
-
-
-# ---------------------------------------------------------------------------
-# BinaryOptimizationProblem construction / validation
-# ---------------------------------------------------------------------------
 
 
 class TestBinaryOptimizationProblem:
@@ -117,7 +108,7 @@ class TestLazyIsingInit:
         spy.assert_not_called()
 
     def test_constructor_does_not_build_x_mixer(self, mocker):
-        spy = mocker.spy(binary_module, "x_mixer_spo")
+        spy = mocker.spy(binary_module, "x_mixer")
         BinaryOptimizationProblem(QUBO_MATRIX)
         spy.assert_not_called()
 
@@ -143,7 +134,7 @@ class TestLazyIsingInit:
         spy.assert_called_once()
 
     def test_mixer_cached_independently(self, mocker):
-        spy = mocker.spy(binary_module, "x_mixer_spo")
+        spy = mocker.spy(binary_module, "x_mixer")
         problem = BinaryOptimizationProblem(QUBO_MATRIX)
 
         first = problem.mixer_hamiltonian
@@ -163,11 +154,6 @@ class TestLazyIsingInit:
 
         assert spy.call_args.kwargs["hamiltonian_builder"] == "quadratized"
         assert spy.call_args.kwargs["quadratization_strength"] == 7.5
-
-
-# ---------------------------------------------------------------------------
-# _sanitize_problem_input
-# ---------------------------------------------------------------------------
 
 
 class TestSanitizeProblemInput:
@@ -204,11 +190,6 @@ class TestSanitizeProblemInput:
         unsupported = {"a": 1, "b": 2}
         with pytest.raises(ValueError, match="Got an unsupported QUBO input format"):
             _sanitize_problem_input(unsupported)
-
-
-# ---------------------------------------------------------------------------
-# evaluate_global_solution
-# ---------------------------------------------------------------------------
 
 
 class TestEvaluateSolution:
@@ -274,11 +255,6 @@ class TestEvaluateSolution:
         assert optimal < all_ones
 
 
-# ---------------------------------------------------------------------------
-# _merge_substates
-# ---------------------------------------------------------------------------
-
-
 class TestMergeSubstates:
     """Tests for _merge_substates helper."""
 
@@ -300,11 +276,6 @@ class TestMergeSubstates:
         merged_vars = set(merged.subsamples.variables)
         assert "a" in merged_vars
         assert "b" in merged_vars
-
-
-# ---------------------------------------------------------------------------
-# decompose
-# ---------------------------------------------------------------------------
 
 
 class TestDecomposeQUBO:
@@ -355,22 +326,12 @@ class TestDecomposeQUBO:
         assert len(problem._trivial_program_ids) >= 1
 
 
-# ---------------------------------------------------------------------------
-# initial_solution_size
-# ---------------------------------------------------------------------------
-
-
 class TestInitialSolutionSizeQUBO:
     def test_returns_number_of_variables(self, sample_qubo_matrix):
         decomposer = hybrid.EnergyImpactDecomposer(size=2)
         problem = BinaryOptimizationProblem(sample_qubo_matrix, decomposer=decomposer)
 
         assert problem.initial_solution_size() == 4
-
-
-# ---------------------------------------------------------------------------
-# extend_solution
-# ---------------------------------------------------------------------------
 
 
 class TestExtendSolutionQUBO:
@@ -458,11 +419,6 @@ class TestExtendSolutionQUBO:
             assert result[idx] == 1
 
 
-# ---------------------------------------------------------------------------
-# _compose_solution
-# ---------------------------------------------------------------------------
-
-
 class TestComposeSolutionQUBO:
     """Tests for BinaryOptimizationProblem._compose_solution."""
 
@@ -531,48 +487,32 @@ class TestComposeSolutionQUBO:
             assert id(v) == state_ids_before[k]
 
 
-# ---------------------------------------------------------------------------
-# finalize_solution
-# ---------------------------------------------------------------------------
-
-
-class TestFinalizeSolutionQUBO:
+class TestPostprocessCandidatesQUBO:
     def test_returns_array_and_energy(self, sample_qubo_matrix):
         decomposer = hybrid.EnergyImpactDecomposer(size=2)
         problem = BinaryOptimizationProblem(sample_qubo_matrix, decomposer=decomposer)
         problem.decompose()
 
-        result = problem.finalize_solution(-1.0, [1, 1, 0, 0])
+        result = problem.postprocess_candidates([(-1.0, [1, 1, 0, 0])])[0]
 
         assert isinstance(result, tuple)
         assert len(result) == 2
         assert isinstance(result[0], np.ndarray)
         assert isinstance(result[1], float)
 
-
-# ---------------------------------------------------------------------------
-# format_top_solutions
-# ---------------------------------------------------------------------------
-
-
-class TestFormatTopSolutionsQUBO:
     def test_formats_and_sorts_by_energy(self, sample_qubo_matrix):
         decomposer = hybrid.EnergyImpactDecomposer(size=2)
         problem = BinaryOptimizationProblem(sample_qubo_matrix, decomposer=decomposer)
         problem.decompose()
 
         results = [(-1.0, [1, 1, 0, 0]), (-0.5, [0, 0, 1, 1])]
-        formatted = problem.format_top_solutions(results)
+        formatted = problem.postprocess_candidates(results)
 
         assert len(formatted) == 2
         # Should be sorted by energy (second element of each tuple)
         energies = [entry[1] for entry in formatted]
         assert energies == sorted(energies)
 
-
-# ---------------------------------------------------------------------------
-# QAOA + BinaryOptimizationProblem integration tests
-# ---------------------------------------------------------------------------
 
 QUBO_FORMATS_TO_TEST = {
     "argvalues": [
@@ -953,11 +893,6 @@ class TestBinaryDecodeMapping:
         assert list(decode_fn("010")) == [0, 1, 0]
         assert list(decode_fn("001")) == [0, 0, 1]
         assert list(decode_fn("111")) == [1, 1, 1]
-
-
-# ---------------------------------------------------------------------------
-# QUBO PartitioningProgramEnsemble integration tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture

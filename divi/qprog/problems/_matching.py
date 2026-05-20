@@ -4,6 +4,7 @@
 
 """Weighted matching problem for QAOA-based quantum optimization."""
 
+import warnings
 from collections.abc import Callable, Hashable
 from functools import partial
 from typing import Any, Literal
@@ -304,7 +305,7 @@ class MaxWeightMatchingProblem(QAOAProblem):
             ``"kernighan_lin"`` (default, weight-aware) or ``"spectral"``.
         use_classical_cleanup: If ``True`` (default), fill unmatched
             residual nodes via :func:`~networkx.algorithms.matching.max_weight_matching` during
-            :meth:`finalize_solution`.
+            :meth:`postprocess_candidates`.
         seed: Random seed for partitioning reproducibility.
 
     Example::
@@ -406,7 +407,7 @@ class MaxWeightMatchingProblem(QAOAProblem):
     # Decomposition hooks
     # ------------------------------------------------------------------
 
-    def decompose(self) -> dict[tuple[str, int], QAOAProblem]:
+    def decompose(self) -> dict[Hashable, QAOAProblem]:
         if self._max_edges_per_partition is None:
             raise ValueError(
                 "Cannot decompose: max_edges_per_partition was not set at construction."
@@ -420,7 +421,7 @@ class MaxWeightMatchingProblem(QAOAProblem):
         )
 
         self._edge_index_maps = {}
-        sub_problems: dict[tuple[str, int], QAOAProblem] = {}
+        sub_problems: dict[Hashable, QAOAProblem] = {}
 
         for i, subgraph in enumerate(subgraphs):
             prog_id = (f"P{i}", subgraph.size())
@@ -498,17 +499,53 @@ class MaxWeightMatchingProblem(QAOAProblem):
         weight = sum(self._graph[u][v].get("weight", 1.0) for u, v in matching)
         return _sort_matching(matching), weight
 
-    def finalize_solution(
-        self, score: float, solution: list[int]
+    def _decode_matching_without_repair(
+        self, solution: list[int]
     ) -> tuple[list[tuple], float]:
-        return self._postprocess_solution(solution)
+        """Decode a raw solution without repair or classical cleanup."""
+        matching = [self._edges[i] for i, bit in enumerate(solution) if bit]
+        weight = sum(self._graph[u][v].get("weight", 1.0) for u, v in matching)
+        return _sort_matching(matching), weight
 
-    def format_top_solutions(
-        self, results: list[tuple[float, list[int]]]
+    def postprocess_candidates(
+        self, candidates: list[tuple[float, list[int]]], *, strict: bool = False
     ) -> list[tuple[list[tuple], float]]:
-        formatted = [
-            self._postprocess_solution(solution) for _score, solution in results
-        ]
+        """Post-process matching candidates, optionally hard-filtering invalid ones.
+
+        With ``strict=False``, invalid raw candidates are repaired and may be
+        improved by classical cleanup. With ``strict=True``, invalid raw
+        candidates are discarded before repair or cleanup.
+        """
+        if strict:
+            formatted = []
+            for _, solution in candidates:
+                matching = [self._edges[i] for i, bit in enumerate(solution) if bit]
+                if is_valid_matching(matching):
+                    formatted.append(self._decode_matching_without_repair(solution))
+            if not formatted:
+                warnings.warn(
+                    "No valid matching candidates found under strict=True. "
+                    "Consider widening beam_width / n_partition_candidates, "
+                    "or running with strict=False to inspect repaired output.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+        else:
+            formatted = []
+            invalid_seen = False
+            for _score, solution in candidates:
+                matching = [self._edges[i] for i, bit in enumerate(solution) if bit]
+                if not is_valid_matching(matching):
+                    invalid_seen = True
+                formatted.append(self._postprocess_solution(solution))
+            if invalid_seen:
+                warnings.warn(
+                    "At least one partition aggregate was not a valid matching "
+                    "and was repaired. Use get_top_solutions(..., strict=True) "
+                    "to discard invalid raw candidates instead.",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
         # Sort by weight descending, then deduplicate
         formatted.sort(key=lambda x: x[1], reverse=True)

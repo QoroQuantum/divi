@@ -258,11 +258,6 @@ class TestTimeEvolutionTrajectoryE2E:
             assert probs.get("00", 0.0) >= 1.0 - _PROB_TOL
 
 
-# ---------------------------------------------------------------------------
-# Phase 0 / Phase 3 — parametric MetaCircuit cache
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture(scope="module")
 def cache_test_hamiltonian():
     """Multi-term H exercising both Z and XX terms — enough structural

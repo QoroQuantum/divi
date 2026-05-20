@@ -317,6 +317,12 @@ if __name__ == "__main__":
 
     matching_ensemble.run(blocking=True)
     matching, weight = matching_ensemble.aggregate_results(beam_width=3)
+    strict_top = matching_ensemble.get_top_solutions(
+        n=5,
+        beam_width=None,
+        n_partition_candidates=5,
+        strict=True,
+    )
 
     classical_match = nx.max_weight_matching(G_match, maxcardinality=False)
     classical_match_weight = sum(G_match[u][v]["weight"] for u, v in classical_match)
@@ -324,3 +330,4 @@ if __name__ == "__main__":
     _print_matching_summary(
         weight, classical_match_weight, matching, matching_ensemble.total_circuit_count
     )
+    print(f"{'Strict valid candidates':<28} {len(strict_top):>10}")

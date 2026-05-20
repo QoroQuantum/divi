@@ -32,10 +32,6 @@ from tests.qprog.qprog_contracts import (
     verify_metacircuit_dict,
 )
 
-# ---------------------------------------------------------------------------
-# evaluate_global_solution
-# ---------------------------------------------------------------------------
-
 
 class TestEvaluateSolution:
     """Tests for problem.evaluate_global_solution on graph problems.
@@ -104,11 +100,6 @@ class TestEvaluateSolution:
         partial_cut = problem.evaluate_global_solution([1, 1, 0, 0])
         perfect_cut = problem.evaluate_global_solution([1, 0, 1, 0])
         assert no_cut > partial_cut > perfect_cut
-
-
-# ---------------------------------------------------------------------------
-# extend_solution
-# ---------------------------------------------------------------------------
 
 
 class TestExtendSolutionGraph:
@@ -183,11 +174,6 @@ class TestExtendSolutionGraph:
         assert original == [0] * graph.number_of_nodes()
 
 
-# ---------------------------------------------------------------------------
-# decompose
-# ---------------------------------------------------------------------------
-
-
 class TestDecomposeGraph:
     def test_decompose_returns_correct_number_of_subproblems(self):
         graph = nx.cycle_graph(10)
@@ -244,11 +230,6 @@ class TestDecomposeGraph:
             assert type(sub_problem) == MaxCutProblem
 
 
-# ---------------------------------------------------------------------------
-# Partitioning warnings
-# ---------------------------------------------------------------------------
-
-
 class TestPartitioningWarnings:
     def test_warns_for_max_clique(self):
         graph = nx.cycle_graph(6)
@@ -292,11 +273,6 @@ class TestPartitioningWarnings:
             problem.decompose()
 
 
-# ---------------------------------------------------------------------------
-# initial_solution_size
-# ---------------------------------------------------------------------------
-
-
 class TestInitialSolutionSizeGraph:
     def test_returns_number_of_nodes(self):
         graph = nx.cycle_graph(7)
@@ -305,17 +281,12 @@ class TestInitialSolutionSizeGraph:
         assert problem.initial_solution_size() == graph.number_of_nodes()
 
 
-# ---------------------------------------------------------------------------
-# finalize_solution
-# ---------------------------------------------------------------------------
-
-
-class TestFinalizeSolutionGraph:
+class TestPostprocessCandidatesGraph:
     def test_returns_node_indices_and_energy(self):
         graph = nx.path_graph(4)
         problem = MaxCutProblem(graph)
 
-        nodes, energy = problem.finalize_solution(-5.0, [1, 0, 1, 0])
+        nodes, energy = problem.postprocess_candidates([(-5.0, [1, 0, 1, 0])])[0]
 
         assert nodes == [0, 2]
         assert energy == -5.0
@@ -324,31 +295,19 @@ class TestFinalizeSolutionGraph:
         graph = nx.path_graph(3)
         problem = MaxCutProblem(graph)
 
-        nodes, energy = problem.finalize_solution(0.0, [0, 0, 0])
+        nodes, energy = problem.postprocess_candidates([(0.0, [0, 0, 0])])[0]
 
         assert nodes == []
         assert energy == 0.0
 
-
-# ---------------------------------------------------------------------------
-# format_top_solutions
-# ---------------------------------------------------------------------------
-
-
-class TestFormatTopSolutionsGraph:
     def test_formats_multiple_results(self):
         graph = nx.path_graph(4)
         problem = MaxCutProblem(graph)
 
         results = [(-5.0, [1, 0, 1, 0]), (-3.0, [0, 1, 0, 1])]
-        formatted = problem.format_top_solutions(results)
+        formatted = problem.postprocess_candidates(results)
 
         assert formatted == [([0, 2], -5.0), ([1, 3], -3.0)]
-
-
-# ---------------------------------------------------------------------------
-# QAOA + Graph Problem integration tests
-# ---------------------------------------------------------------------------
 
 
 class TestGraphInput:
@@ -699,10 +658,6 @@ class TestGraphInput:
         assert all(isinstance(node, str) for node in qaoa_problem.solution)
         assert all(node in G.nodes() for node in qaoa_problem.solution)
 
-
-# ---------------------------------------------------------------------------
-# Graph PartitioningProgramEnsemble integration tests
-# ---------------------------------------------------------------------------
 
 _GRAPH = nx.erdos_renyi_graph(15, 0.2, seed=1997)
 _PARTITIONING_CONFIG = GraphPartitioningConfig(

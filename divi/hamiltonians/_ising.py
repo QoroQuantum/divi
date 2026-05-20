@@ -19,12 +19,16 @@ import scipy.sparse as sps
 from qiskit.quantum_info import PauliList, SparsePauliOp
 
 from ._polynomial import normalize_binary_polynomial_problem
-from ._term_ops import _clean_hamiltonian_spo, _empty_spo, _n_qubits
+from ._term_ops import (
+    _clean_hamiltonian_spo,
+    _require_qiskit_num_qubits,
+    generate_empty_spo,
+)
 from ._types import BinaryPolynomialProblem
 
 
 def _wires_from_spo(spo: SparsePauliOp) -> tuple:
-    return tuple(range(_n_qubits(spo)))
+    return tuple(range(_require_qiskit_num_qubits(spo.num_qubits)))
 
 
 def _make_decode(idx_map: dict, var_order: tuple) -> Callable[[str], np.ndarray]:
@@ -92,7 +96,7 @@ class NativeIsingConverter(BinaryToIsingConverter):
         n_qubits = problem.n_vars
         if n_qubits == 0:
             return IsingEncoding(
-                operator=_empty_spo(0),
+                operator=generate_empty_spo(0),
                 constant=problem.constant,
                 decode_fn=_empty_decode,
                 metadata={"strategy": "native", "term_count": 0},
@@ -137,7 +141,7 @@ class NativeIsingConverter(BinaryToIsingConverter):
             if abs(weight) > output_threshold
         ]
         if not filtered:
-            spo = _empty_spo(n_qubits)
+            spo = generate_empty_spo(n_qubits)
         else:
             n_terms = len(filtered)
             z_arr = np.zeros((n_terms, n_qubits), dtype=bool)
@@ -205,7 +209,7 @@ class QuadratizedIsingConverter(BinaryToIsingConverter):
     def convert(self, problem: BinaryPolynomialProblem) -> IsingEncoding:
         if problem.n_vars == 0:
             return IsingEncoding(
-                operator=_empty_spo(0),
+                operator=generate_empty_spo(0),
                 constant=problem.constant,
                 decode_fn=_empty_decode,
                 metadata={"strategy": "quadratized", "ancilla_count": 0},
@@ -312,7 +316,7 @@ def qubo_to_ising(
     return IsingResult(
         cost_hamiltonian=cleaned_spo,
         loss_constant=encoding.constant + ham_constant,
-        n_qubits=_n_qubits(encoding.operator),
+        n_qubits=_require_qiskit_num_qubits(encoding.operator.num_qubits),
         encoding=encoding,
     )
 
@@ -416,7 +420,7 @@ def _convert_qubo_matrix_to_ising_spo(
     n_1body = nonzero_linear.size
     n_terms = n_2body + n_1body
     if n_terms == 0:
-        return _empty_spo(n), constant_term
+        return generate_empty_spo(n), constant_term
 
     # Z-only Hamiltonian: x_arr stays all-False.
     z_arr = np.zeros((n_terms, n), dtype=bool)

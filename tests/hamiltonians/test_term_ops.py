@@ -13,13 +13,13 @@ from qiskit.quantum_info import Operator, SparsePauliOp
 from divi.hamiltonians import _term_ops as term_ops_module
 from divi.hamiltonians._term_ops import (
     _clean_hamiltonian_spo,
-    _empty_spo,
     _sort_hamiltonian_terms_spo,
     _spo_to_basis_gate_ops,
     _spo_to_qiskit_basis_gates,
     _spo_to_qiskit_basis_gates_numeric,
     _spo_to_qiskit_basis_gates_symbolic,
     _spo_wires,
+    generate_empty_spo,
     to_spo,
 )
 
@@ -37,23 +37,13 @@ def simple_spo() -> SparsePauliOp:
     return SparsePauliOp.from_list([("IZ", 1.0), ("ZI", 2.0), ("ZZ", 3.0)])
 
 
-# ---------------------------------------------------------------------------
-# _empty_spo
-# ---------------------------------------------------------------------------
-
-
 class TestEmptySpo:
     @pytest.mark.parametrize("num_qubits", [0, 1, 4, 17])
     def test_size_is_zero(self, num_qubits):
         """Returned SPO has no rows regardless of register size."""
-        spo = _empty_spo(num_qubits)
+        spo = generate_empty_spo(num_qubits)
         assert spo.size == 0
         assert spo.num_qubits == num_qubits
-
-
-# ---------------------------------------------------------------------------
-# to_spo / _spo_wires
-# ---------------------------------------------------------------------------
 
 
 class TestSpoConversion:
@@ -79,11 +69,6 @@ class TestSpoConversion:
         """A PL operator's canonical wires are taken from ``op.wires``."""
         op = qp.PauliZ(2) @ qp.PauliX(5)
         assert _spo_wires(op) == tuple(op.wires)
-
-
-# ---------------------------------------------------------------------------
-# _clean_hamiltonian_spo
-# ---------------------------------------------------------------------------
 
 
 class TestCleanHamiltonianSpo:
@@ -116,14 +101,9 @@ class TestCleanHamiltonianSpo:
 
     def test_returns_empty_for_empty_input(self):
         """Clean of an empty SPO is the empty SPO with zero constant."""
-        spo, constant = _clean_hamiltonian_spo(_empty_spo(3))
+        spo, constant = _clean_hamiltonian_spo(generate_empty_spo(3))
         assert spo.size == 0
         assert constant == 0.0
-
-
-# ---------------------------------------------------------------------------
-# _sort_hamiltonian_terms_spo
-# ---------------------------------------------------------------------------
 
 
 class TestSortHamiltonianTermsSpo:
@@ -150,11 +130,6 @@ class TestSortHamiltonianTermsSpo:
         spo = SparsePauliOp.from_list([("IZ", -2.0), ("ZI", 1.0)])
         result = _sort_hamiltonian_terms_spo(spo, order="absolute")
         assert list(result.coeffs.real) == [-2.0, 1.0]
-
-
-# ---------------------------------------------------------------------------
-# _spo_to_basis_gate_ops
-# ---------------------------------------------------------------------------
 
 
 class TestSpoToBasisGateOps:
@@ -221,11 +196,6 @@ class TestSpoToBasisGateOps:
         assert np.allclose(actual, expected)
 
 
-# ---------------------------------------------------------------------------
-# _spo_to_qiskit_basis_gates and its numeric / legacy helpers
-# ---------------------------------------------------------------------------
-
-
 def _build_numeric(
     spo: SparsePauliOp, time: float, qubits, n_qubits: int
 ) -> QuantumCircuit:
@@ -280,7 +250,7 @@ class TestSpoToQiskitBasisGatesNumericEdgeCases:
     """Edge cases for the numeric path."""
 
     def test_empty_spo_is_noop(self):
-        qc = _build_numeric(_empty_spo(2), 0.5, [0, 1], n_qubits=2)
+        qc = _build_numeric(generate_empty_spo(2), 0.5, [0, 1], n_qubits=2)
         assert len(qc.data) == 0
 
     def test_identity_only_row_is_skipped(self):
@@ -396,7 +366,7 @@ class TestSpoToQiskitBasisGatesSymbolicEdgeCases:
     """Edge cases specific to the symbolic-angle path."""
 
     def test_empty_spo_is_noop(self):
-        qc = _build_symbolic(_empty_spo(2), Parameter("t"), [0, 1], n_qubits=2)
+        qc = _build_symbolic(generate_empty_spo(2), Parameter("t"), [0, 1], n_qubits=2)
         assert len(qc.data) == 0
 
     def test_identity_only_row_is_skipped(self):

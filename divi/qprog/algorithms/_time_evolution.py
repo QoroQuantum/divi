@@ -22,7 +22,7 @@ from divi.hamiltonians import (
 )
 from divi.hamiltonians._term_ops import (
     _clean_hamiltonian_spo,
-    _n_qubits,
+    _require_qiskit_num_qubits,
     _spo_to_qiskit_basis_gates,
     to_spo,
 )
@@ -113,7 +113,7 @@ class TimeEvolution(QuantumProgram):
         self.order = order
         if isinstance(observable, list):
             observable = tuple(observable)
-        self.n_qubits = _n_qubits(hamiltonian_clean)
+        self.n_qubits = _require_qiskit_num_qubits(hamiltonian_clean.num_qubits)
         self._circuit_wires = tuple(range(self.n_qubits))
         # Normalise observables to SparsePauliOp at the input boundary, aligning
         # qubit count with the cost circuit (a 1-qubit ``qp.PauliZ(0)`` against

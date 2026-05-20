@@ -13,7 +13,11 @@ from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
-from divi.hamiltonians._term_ops import _clean_hamiltonian_spo, _n_qubits, to_spo
+from divi.hamiltonians._term_ops import (
+    _clean_hamiltonian_spo,
+    _require_qiskit_num_qubits,
+    to_spo,
+)
 from divi.pipeline.stages import CircuitSpecStage
 from divi.qprog.algorithms import (
     Ansatz,
@@ -164,7 +168,7 @@ class VQE(VariationalQuantumAlgorithm):
 
         if hamiltonian is not None:
             self.n_qubits = (
-                _n_qubits(hamiltonian)
+                _require_qiskit_num_qubits(hamiltonian.num_qubits)
                 if isinstance(hamiltonian, SparsePauliOp)
                 else len(hamiltonian.wires)
             )

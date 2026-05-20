@@ -90,6 +90,13 @@ Top-N Solutions
 
 This is useful when you want to inspect alternative solutions or post-process candidates with domain-specific constraints. The ``beam_width`` is automatically increased to at least ``n`` so the beam retains enough candidates.
 
+For constrained problems such as maximum-weight matching, partition boundaries
+can produce globally invalid raw candidates even when each partition candidate
+is locally valid. ``aggregate_results`` keeps the default forgiving behavior and
+repairs matching conflicts. To inspect only raw candidates that are already
+valid globally, use ``get_top_solutions(..., strict=True)``. The returned list
+may contain fewer than ``n`` entries.
+
 
 Custom Ensemble Workflows
 -------------------------

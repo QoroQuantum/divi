@@ -11,6 +11,9 @@ from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import (
     BinaryOptimizationProblem,
     MaxWeightMatchingProblem,
+)
+from divi.qprog.problems import _matching as _matching_module
+from divi.qprog.problems import (
     check_matching_matrix,
     is_valid_matching,
 )
@@ -24,10 +27,6 @@ from divi.qprog.problems._matching import (
     _sort_matching,
 )
 from divi.qprog.workflows import PartitioningProgramEnsemble
-
-# ------------------------------------------------------------------
-# Fixtures
-# ------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -70,11 +69,6 @@ def triangle_graph():
     G = nx.Graph()
     G.add_weighted_edges_from([(0, 1, 3.0), (1, 2, 5.0), (0, 2, 4.0)])
     return G
-
-
-# ------------------------------------------------------------------
-# _construct_matching_qubo
-# ------------------------------------------------------------------
 
 
 class TestConstructMatchingQubo:
@@ -137,11 +131,6 @@ class TestConstructMatchingQubo:
         np.testing.assert_array_almost_equal(qubo, qubo.T)
 
 
-# ------------------------------------------------------------------
-# _sort_matching / is_valid_matching
-# ------------------------------------------------------------------
-
-
 class TestSortMatching:
     def test_sorts_nodes_and_edges(self):
         assert _sort_matching([(2, 0), (3, 1)]) == [(0, 2), (1, 3)]
@@ -167,11 +156,6 @@ class TestIsValidMatching:
         assert is_valid_matching([(0, 1)]) is True
 
 
-# ------------------------------------------------------------------
-# _bitstring_to_matching
-# ------------------------------------------------------------------
-
-
 class TestBitstringToMatching:
     def test_decodes_correctly(self):
         """Qubit 0 = leftmost bit (left-to-right ordering)."""
@@ -191,11 +175,6 @@ class TestBitstringToMatching:
         assert result == []
 
 
-# ------------------------------------------------------------------
-# check_matching_matrix
-# ------------------------------------------------------------------
-
-
 class TestCheckMatchingMatrix:
     def test_valid_matching(self):
         A = np.array([[0, 1, 1], [1, 0, 1], [1, 1, 0]])
@@ -211,11 +190,6 @@ class TestCheckMatchingMatrix:
         A = np.array([[0, 1, 1], [1, 0, 1], [1, 1, 0]])
         M = np.array([[0, 1, 1], [1, 0, 0], [1, 0, 0]])
         assert check_matching_matrix(M, A) is False
-
-
-# ------------------------------------------------------------------
-# Edge partitioning
-# ------------------------------------------------------------------
 
 
 class TestPartitionGraphByEdges:
@@ -239,11 +213,6 @@ class TestPartitionGraphByEdges:
     def test_invalid_algorithm_raises(self, path_graph):
         with pytest.raises(ValueError, match="Unsupported"):
             _partition_graph_by_edges(path_graph, max_edges=2, algorithm="bogus")
-
-
-# ------------------------------------------------------------------
-# Internal helpers
-# ------------------------------------------------------------------
 
 
 class TestCountConflicts:
@@ -295,11 +264,6 @@ class TestClassicalCleanup:
         solution = [1, 1]
         result = _classical_cleanup(solution, G, edges, e2q)
         assert result == [1, 1]  # nothing to clean up
-
-
-# ------------------------------------------------------------------
-# MaxWeightMatchingProblem — unit tests
-# ------------------------------------------------------------------
 
 
 class TestMaxWeightMatchingProblem:
@@ -375,14 +339,15 @@ class TestMaxWeightMatchingProblem:
         sol[edges_map[(0, 1)]] = 1
         sol[edges_map[(1, 2)]] = 1
 
-        matching, weight = p.finalize_solution(-4.5, sol)
+        with pytest.warns(UserWarning, match="was not a valid matching"):
+            matching, weight = p.postprocess_candidates([(-4.5, sol)])[0]
         # Should be repaired and cleaned up
         assert is_valid_matching(matching)
         assert weight > 0
 
     def test_finalize_returns_tuple(self, path_graph):
         p = MaxWeightMatchingProblem(path_graph)
-        result = p.finalize_solution(-1.0, [1, 0, 0])
+        result = p.postprocess_candidates([(-1.0, [1, 0, 0])])[0]
         assert isinstance(result, tuple)
         assert len(result) == 2
         edges, weight = result
@@ -390,9 +355,111 @@ class TestMaxWeightMatchingProblem:
         assert isinstance(weight, float)
 
 
-# ------------------------------------------------------------------
-# MaxWeightMatchingProblem — E2E with QAOA
-# ------------------------------------------------------------------
+def _select_edges(problem: MaxWeightMatchingProblem, edges_to_select: list[tuple]):
+    """Return a bit vector with the given edges flagged."""
+    sol = [0] * len(problem._edges)
+    for u, v in edges_to_select:
+        key = (u, v) if (u, v) in problem._edge_to_qubit else (v, u)
+        sol[problem._edge_to_qubit[key]] = 1
+    return sol
+
+
+class TestMaxWeightMatchingProblemStrict:
+    def test_strict_valid_skips_repair_and_cleanup(self, mocker, path_graph):
+        p = MaxWeightMatchingProblem(path_graph, use_classical_cleanup=True)
+        repair_spy = mocker.spy(_matching_module, "_repair_matching")
+        cleanup_spy = mocker.spy(_matching_module, "_classical_cleanup")
+
+        sol = _select_edges(p, [(0, 1), (2, 3)])
+        edges, weight = p.postprocess_candidates([(-99.0, sol)], strict=True)[0]
+
+        assert is_valid_matching(edges)
+        assert weight == pytest.approx(2.0)
+        assert repair_spy.call_count == 0
+        assert cleanup_spy.call_count == 0
+
+    def test_strict_invalid_returns_empty_without_repair_or_cleanup(
+        self, mocker, path_graph
+    ):
+        p = MaxWeightMatchingProblem(path_graph, use_classical_cleanup=True)
+        repair_spy = mocker.spy(_matching_module, "_repair_matching")
+        cleanup_spy = mocker.spy(_matching_module, "_classical_cleanup")
+        sol = _select_edges(p, [(0, 1), (1, 2)])
+
+        with pytest.warns(UserWarning, match="No valid matching candidates"):
+            out = p.postprocess_candidates([(-99.0, sol)], strict=True)
+
+        assert out == []
+        assert repair_spy.call_count == 0
+        assert cleanup_spy.call_count == 0
+
+    def test_strict_empty_matching(self, path_graph):
+        p = MaxWeightMatchingProblem(path_graph)
+        edges, weight = p.postprocess_candidates(
+            [(0.0, [0] * len(p._edges))], strict=True
+        )[0]
+        assert edges == []
+        assert weight == 0.0
+
+    def test_strict_raw_weight_handles_signed_weights(self):
+        G = nx.Graph()
+        G.add_weighted_edges_from([(0, 1, 1e16), (2, 3, -1e16), (4, 5, 1.0)])
+        p = MaxWeightMatchingProblem(G)
+        sol = _select_edges(p, [(0, 1), (2, 3), (4, 5)])
+        edges, weight = p.postprocess_candidates([(0.0, sol)], strict=True)[0]
+        assert len(edges) == 3
+        assert weight == pytest.approx(1.0, abs=0.0)
+
+    def test_format_top_strict_filters_invalid_without_repair_or_cleanup(
+        self, mocker, path_graph
+    ):
+        p = MaxWeightMatchingProblem(path_graph, use_classical_cleanup=True)
+        repair_spy = mocker.spy(_matching_module, "_repair_matching")
+        cleanup_spy = mocker.spy(_matching_module, "_classical_cleanup")
+
+        invalid = _select_edges(p, [(0, 1), (1, 2)])
+        valid = _select_edges(p, [(0, 1), (2, 3)])
+        out = p.postprocess_candidates([(-99.0, invalid), (-2.0, valid)], strict=True)
+
+        assert repair_spy.call_count == 0
+        assert cleanup_spy.call_count == 0
+        assert out == [([(0, 1), (2, 3)], 2.0)]
+
+    def test_format_top_strict_all_valid(self, path_graph):
+        p = MaxWeightMatchingProblem(path_graph)
+        a = _select_edges(p, [(0, 1)])
+        b = _select_edges(p, [(2, 3)])
+        out = p.postprocess_candidates([(-1.0, a), (-1.0, b)], strict=True)
+        assert len(out) == 2
+        assert all(is_valid_matching(edges) for edges, _ in out)
+
+    def test_format_top_strict_all_invalid_returns_empty_with_warning(self, path_graph):
+        p = MaxWeightMatchingProblem(path_graph)
+        invalid = _select_edges(p, [(0, 1), (1, 2)])
+
+        with pytest.warns(UserWarning, match="No valid matching candidates"):
+            out = p.postprocess_candidates([(-99.0, invalid)], strict=True)
+
+        assert out == []
+
+    def test_format_top_strict_dedupes(self, path_graph):
+        p = MaxWeightMatchingProblem(path_graph)
+        sol = _select_edges(p, [(0, 1), (2, 3)])
+        out = p.postprocess_candidates([(-2.0, sol), (-2.0, sol[:])], strict=True)
+        assert len(out) == 1
+
+    def test_format_top_strict_does_not_backfill_beyond_given_results(self, path_graph):
+        p = MaxWeightMatchingProblem(path_graph)
+        invalid = _select_edges(p, [(0, 1), (1, 2)])
+        later_valid = _select_edges(p, [(0, 1), (2, 3)])
+
+        with pytest.warns(UserWarning, match="No valid matching candidates"):
+            out = p.postprocess_candidates([(-99.0, invalid)], strict=True)
+
+        assert out == []
+        assert p.postprocess_candidates(
+            [(-99.0, invalid), (-2.0, later_valid)], strict=True
+        ) == [([(0, 1), (2, 3)], 2.0)]
 
 
 @pytest.mark.e2e

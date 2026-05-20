@@ -96,11 +96,6 @@ def test_max_clique_matches_pennylane(name, factory, constrained):
     _assert_matches_pennylane(mixer, pl_mixer)
 
 
-# ---------------------------------------------------------------------------
-# Maximum-weighted cycle (DiGraph)
-# ---------------------------------------------------------------------------
-
-
 def _three_node_tournament() -> nx.DiGraph:
     """Weighted 3-node tournament (all ordered pairs)."""
     g = nx.DiGraph()
@@ -161,11 +156,6 @@ def test_net_flow_constraint_matches_pennylane(name, factory):
     _assert_matches_pennylane(
         net_flow_constraint_spo(g), pqaoa.cycle.net_flow_constraint(g)
     )
-
-
-# ---------------------------------------------------------------------------
-# rustworkx ingress
-# ---------------------------------------------------------------------------
 
 
 def _spo_equal(a: SparsePauliOp, b: SparsePauliOp) -> bool:

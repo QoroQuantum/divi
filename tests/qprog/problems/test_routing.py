@@ -39,10 +39,6 @@ from divi.qprog.problems._routing import (
     repair_tsp_solution,
 )
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
 
 @pytest.fixture
 def three_city_cost():
@@ -55,11 +51,6 @@ def four_city_cost():
         [[0, 10, 15, 20], [10, 0, 35, 25], [15, 35, 0, 30], [20, 25, 30, 0]],
         dtype=float,
     )
-
-
-# ---------------------------------------------------------------------------
-# TSP utilities
-# ---------------------------------------------------------------------------
 
 
 class TestCreateTspQubo:
@@ -143,10 +134,6 @@ class TestRepairTspSolution:
         repaired_bs, _, _ = repair_tsp_solution("110100010", 4, 0, cost)
         assert is_valid_tsp_tour(repaired_bs, 4)
 
-
-# ---------------------------------------------------------------------------
-# VRP parser
-# ---------------------------------------------------------------------------
 
 SAMPLE_VRP = """\
 # Comment line
@@ -518,11 +505,6 @@ class TestParseVrpSolution:
         assert len(all_customers) == 20
 
 
-# ---------------------------------------------------------------------------
-# Binary encoding
-# ---------------------------------------------------------------------------
-
-
 class TestBinaryBlockConfig:
     def test_small_instance(self):
         config = binary_block_config(3, 2)
@@ -599,11 +581,6 @@ class TestBinaryVsOneHotQubitCount:
     def test_paper_claim_133_qubits(self):
         assert binary_block_config(20, 4, max_steps=5).n_qubits == 100
         assert binary_block_config(20, 4, max_steps=7).n_qubits == 140
-
-
-# ---------------------------------------------------------------------------
-# TSPProblem
-# ---------------------------------------------------------------------------
 
 
 class TestTSPProblem:
@@ -801,15 +778,6 @@ class TestTSPProblemBinary:
         assert hubo_tsp == hubo_cvrp
 
 
-# ---------------------------------------------------------------------------
-# CVRPProblem
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# CVRP utilities
-# ---------------------------------------------------------------------------
-
 CVRP_COST = np.array(
     [[0, 10, 15, 20], [10, 0, 25, 30], [15, 25, 0, 12], [20, 30, 12, 0]],
     dtype=float,
@@ -897,11 +865,6 @@ class TestCvrpSolutionUtils:
         assert len(repaired_bs) == 18
         assert routes is not None
         assert all(r[0] == 0 and r[-1] == 0 for r in routes)
-
-
-# ---------------------------------------------------------------------------
-# CVRPProblem
-# ---------------------------------------------------------------------------
 
 
 class TestCVRPProblem:
@@ -1033,11 +996,6 @@ class TestCVRPProblem:
                 encoding="one_hot",
                 max_steps=2,
             )
-
-
-# ---------------------------------------------------------------------------
-# CVRP HOBO (binary encoding)
-# ---------------------------------------------------------------------------
 
 
 class TestCreateCvrpHuboBinary:

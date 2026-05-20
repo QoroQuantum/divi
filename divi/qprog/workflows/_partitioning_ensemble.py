@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import copy
+import warnings
 from functools import partial
 from typing import Literal
 
@@ -17,7 +18,7 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
     """Generic orchestrator for partition-solve-aggregate quantum optimization.
 
     Delegates all domain-specific logic to the :class:`~divi.qprog.problems.QAOAProblem` instance:
-    decomposition, solution extension, evaluation, and result formatting.
+    decomposition, solution extension, evaluation, and result post-processing.
     The ensemble handles program creation, execution, and beam search.
 
     Args:
@@ -115,45 +116,82 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
                 **self._make_program_args(prog_id),
             )
 
-    def aggregate_results(self, beam_width=1, n_partition_candidates=None):
-        """Aggregate partition results into a global solution via beam search.
-
-        Args:
-            beam_width: Width of the beam search. ``1`` is
-                greedy, ``None`` is exhaustive.
-            n_partition_candidates: Candidates to fetch per
-                partition. Defaults to *beam_width*.
-
-        Returns:
-            Problem-specific format (see ``QAOAProblem.finalize_solution``).
-        """
-        super().aggregate_results()
-        self._check_best_probs_available()
-
+    def _run_beam_search(self, *, beam_width, n_partition_candidates, top_n):
         def _extend_fn(current, prog_id, candidate):
             return self._problem.extend_solution(current, prog_id, candidate.decoded)
 
-        score, best_solution = _beam_search_aggregate_top_n(
+        return _beam_search_aggregate_top_n(
             programs=self._programs,
             initial_solution=[0] * self._problem.initial_solution_size(),
             extend_fn=_extend_fn,
             evaluate_fn=self._problem.evaluate_global_solution,
             beam_width=beam_width,
             n_partition_candidates=n_partition_candidates,
-        )[0]
+            top_n=top_n,
+        )
 
-        return self._problem.finalize_solution(score, best_solution)
+    def aggregate_results(
+        self,
+        beam_width=1,
+        n_partition_candidates=None,
+    ):
+        """Aggregate partition results into a global solution via beam search.
 
-    def get_top_solutions(self, n=10, *, beam_width=1, n_partition_candidates=None):
+        Args:
+            beam_width: Beam width. ``1`` is greedy; ``None`` is exhaustive.
+            n_partition_candidates: Candidates fetched per partition.
+                Defaults to *beam_width*.
+
+        Returns:
+            Problem-specific post-processed result (see
+            ``QAOAProblem.postprocess_candidates``), or ``None`` if
+            post-processing rejects all candidates.
+        """
+        super().aggregate_results()
+        self._check_best_probs_available()
+
+        candidates = self._run_beam_search(
+            beam_width=beam_width,
+            n_partition_candidates=n_partition_candidates,
+            top_n=1,
+        )
+        results = self._problem.postprocess_candidates(candidates)
+        if not results:
+            warnings.warn(
+                "aggregate_results produced no valid post-processed solution "
+                f"with beam_width={beam_width!r} and "
+                f"n_partition_candidates={n_partition_candidates!r}. "
+                "Pass wider beam search parameters to "
+                "get_top_solutions(..., strict=True).",
+                UserWarning,
+                stacklevel=2,
+            )
+            return None
+
+        return results[0]
+
+    def get_top_solutions(
+        self,
+        n=10,
+        *,
+        beam_width=1,
+        n_partition_candidates=None,
+        strict: bool = False,
+    ):
         """Get the top-N global solutions from beam search aggregation.
 
         Args:
-            n (int): Number of top solutions to return. Must be >= 1.
+            n: Number of top solutions to return (>= 1).
             beam_width: Beam search width.
             n_partition_candidates: Candidates per partition.
+            strict: Ask problem-specific post-processing to reject invalid raw
+                constrained solutions rather than repair them. The returned
+                list may contain fewer than *n* entries for constrained
+                problems.
 
         Returns:
-            Problem-specific format (see ``QAOAProblem.format_top_solutions``).
+            Problem-specific post-processed results (see
+            ``QAOAProblem.postprocess_candidates``).
         """
         if n < 1:
             raise ValueError(f"n must be >= 1, got {n}")
@@ -161,17 +199,10 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
         self._check_ready_for_aggregation()
         self._check_best_probs_available()
 
-        def _extend_fn(current, prog_id, candidate):
-            return self._problem.extend_solution(current, prog_id, candidate.decoded)
-
-        top_results = _beam_search_aggregate_top_n(
-            programs=self._programs,
-            initial_solution=[0] * self._problem.initial_solution_size(),
-            extend_fn=_extend_fn,
-            evaluate_fn=self._problem.evaluate_global_solution,
+        top_results = self._run_beam_search(
             beam_width=beam_width,
             n_partition_candidates=n_partition_candidates,
             top_n=n,
         )
 
-        return self._problem.format_top_solutions(top_results)
+        return self._problem.postprocess_candidates(top_results, strict=strict)

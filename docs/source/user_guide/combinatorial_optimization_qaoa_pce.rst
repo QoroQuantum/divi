@@ -14,10 +14,10 @@ contract between domain-specific problem logic and the QAOA algorithm — QAOA
 never knows about graphs, QUBOs, or routes directly; it only interacts with the
 interface that :class:`~divi.qprog.problems.QAOAProblem` provides.
 
-A subclass must implement four required properties — ``cost_hamiltonian``,
-``mixer_hamiltonian``, ``loss_constant``, and ``decode_fn`` — and may
-optionally override methods for initial state, feasibility checking, solution
-repair, and graph-partitioning decomposition.  See
+A subclass must implement three required properties — ``cost_hamiltonian``,
+``loss_constant``, and ``decode_fn`` — and may optionally override methods for
+the mixer Hamiltonian, initial state, feasibility checking, solution repair,
+and partitioned aggregation.  See
 :class:`~divi.qprog.problems.QAOAProblem` for the full interface specification.
 
 Divi ships several concrete subclasses — graph problems,
@@ -31,12 +31,13 @@ Custom Problems
 ^^^^^^^^^^^^^^^
 
 To solve a problem that doesn't fit the built-in classes, subclass
-:class:`~divi.qprog.problems.QAOAProblem` and implement the four required properties.  Here is a
+:class:`~divi.qprog.problems.QAOAProblem` and implement the three required properties.  Here is a
 minimal example that encodes a simple 2-qubit Hamiltonian:
 
 .. code-block:: python
 
-   import pennylane as qp
+   from qiskit.quantum_info import SparsePauliOp
+
    from divi.qprog import QAOA, ScipyOptimizer, ScipyMethod
    from divi.qprog.problems import QAOAProblem
    from divi.backends import MaestroSimulator
@@ -44,11 +45,7 @@ minimal example that encodes a simple 2-qubit Hamiltonian:
    class MyProblem(QAOAProblem):
        @property
        def cost_hamiltonian(self):
-           return -1.0 * qp.Z(0) @ qp.Z(1) + 0.5 * qp.Z(0)
-
-       @property
-       def mixer_hamiltonian(self):
-           return qp.X(0) + qp.X(1)
+           return SparsePauliOp.from_list([("ZZ", -1.0), ("IZ", 0.5)])
 
        @property
        def loss_constant(self):
@@ -69,10 +66,18 @@ minimal example that encodes a simple 2-qubit Hamiltonian:
    qaoa.run()
    print(qaoa.solution)
 
+By default, :class:`~divi.qprog.problems.QAOAProblem` uses the standard
+:func:`~divi.hamiltonians.x_mixer`, which is suitable for unconstrained binary
+optimization. Override ``mixer_hamiltonian`` for constrained feasible spaces or
+problem-specific mixers. Ready-made builders include
+:func:`~divi.hamiltonians.x_mixer`, :func:`~divi.hamiltonians.xy_mixer`,
+:func:`~divi.hamiltonians.bit_flip_mixer`, and
+:func:`~divi.hamiltonians.edge_driver`.
+
 Override ``is_feasible``, ``compute_energy``, or ``repair_infeasible_bitstring``
 to enable feasibility-aware post-processing via
 :meth:`~divi.qprog.algorithms.QAOA.get_top_solutions`.  Override the
-decomposition hooks to enable partitioned solving via
+partitioned aggregation hooks to enable partitioned solving via
 :class:`~divi.qprog.workflows.PartitioningProgramEnsemble`.
 See :class:`~divi.qprog.problems.QAOAProblem` for the full interface.
 

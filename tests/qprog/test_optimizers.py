@@ -1163,11 +1163,6 @@ class TestCopyOptimizer:
         assert copied._best_params is None  # fresh state
 
 
-# ---------------------------------------------------------------------------
-# GridSearchOptimizer
-# ---------------------------------------------------------------------------
-
-
 class TestGridSearchOptimizer:
     """Tests for GridSearchOptimizer."""
 

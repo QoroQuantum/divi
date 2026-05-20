@@ -17,7 +17,6 @@ from divi.hamiltonians import (
     TrotterizationStrategy,
 )
 from divi.hamiltonians._term_ops import (
-    _n_qubits,
     _spo_to_qiskit_basis_gates,
     _spo_wires,
     to_spo,
@@ -109,8 +108,8 @@ class QAOA(VariationalQuantumAlgorithm):
         )
         self.n_qubits = len(self._circuit_wires)
 
-        cost_n = _n_qubits(self.cost_hamiltonian)
-        mixer_n = _n_qubits(self.mixer_hamiltonian)
+        cost_n = self.cost_hamiltonian.num_qubits
+        mixer_n = self.mixer_hamiltonian.num_qubits
         if cost_n != self.n_qubits or mixer_n != self.n_qubits:
             raise ValueError(
                 f"wire_labels has {self.n_qubits} entries but "
@@ -244,7 +243,7 @@ class QAOA(VariationalQuantumAlgorithm):
         cost_qubits = list(range(n_qubits))
         # The mixer SPO is built over the same dense qubit space as the cost
         # SPO; use straight 0..n-1 indexing.
-        mixer_qubits = list(range(_n_qubits(self.mixer_hamiltonian)))
+        mixer_qubits = list(range(n_qubits))
 
         qc = QuantumCircuit(n_qubits)
         qc.compose(self.initial_state.build(self._circuit_wires), inplace=True)

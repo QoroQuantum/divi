@@ -16,7 +16,7 @@ import numpy.typing as npt
 from qiskit.quantum_info import SparsePauliOp
 from scipy.optimize import linear_sum_assignment
 
-from divi.hamiltonians import qubo_to_ising, x_mixer_spo, xy_mixer_spo
+from divi.hamiltonians import qubo_to_ising, x_mixer, xy_mixer
 from divi.qprog.algorithms import InitialState, SuperpositionState, WState
 from divi.qprog.algorithms._initial_state import build_block_xy_mixer_graph
 from divi.qprog.problems import QAOAProblem
@@ -1484,9 +1484,9 @@ class _RoutingProblemBase(QAOAProblem):
             graph = build_block_xy_mixer_graph(
                 block_size, n_blocks, range(self._ising.n_qubits)
             )
-            self._mixer_hamiltonian = xy_mixer_spo(graph, n_qubits=self._ising.n_qubits)
+            self._mixer_hamiltonian = xy_mixer(graph, n_qubits=self._ising.n_qubits)
         else:
-            self._mixer_hamiltonian = x_mixer_spo(self._ising.n_qubits)
+            self._mixer_hamiltonian = x_mixer(self._ising.n_qubits)
 
     @property
     def cost_hamiltonian(self) -> SparsePauliOp:

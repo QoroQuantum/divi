@@ -12,6 +12,10 @@ import sys
 import tomllib
 from datetime import datetime
 
+# Sphinx imports project modules through automodapi.  Disable numba JIT during
+# docs import so cached kernels do not try to initialize from generated stubs.
+os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
+
 # Load pyproject.toml to extract metadata
 with open("../../pyproject.toml", "rb") as f:
     pyproject = tomllib.load(f)

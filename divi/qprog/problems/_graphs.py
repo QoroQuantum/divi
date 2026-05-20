@@ -4,7 +4,7 @@
 
 """Graph problem classes for QAOA."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from typing import Any
 from warnings import warn
 
@@ -132,7 +132,7 @@ class _GraphProblemBase(QAOAProblem):
     def metadata(self) -> dict[str, Any]:
         return self._metadata[0] if self._metadata else {}
 
-    def decompose(self) -> dict[tuple[str, int], QAOAProblem]:
+    def decompose(self) -> dict[Hashable, QAOAProblem]:
         if self._config is None:
             raise ValueError(
                 "Cannot decompose: no config was provided at construction."
@@ -163,7 +163,7 @@ class _GraphProblemBase(QAOAProblem):
         )
 
         self._reverse_index_maps = {}
-        sub_problems: dict[tuple[str, int], QAOAProblem] = {}
+        sub_problems: dict[Hashable, QAOAProblem] = {}
 
         for i, (subgraph, cluster_ids) in enumerate(subgraphs):
             prog_id = (f"P{i}", len(subgraph))
@@ -182,7 +182,7 @@ class _GraphProblemBase(QAOAProblem):
     def extend_solution(
         self,
         current_solution: list[int],
-        prog_id: tuple[str, int],
+        prog_id: Hashable,
         candidate_decoded: list[int],
     ) -> list[int]:
         extended = list(current_solution)
@@ -216,15 +216,10 @@ class _GraphProblemBase(QAOAProblem):
             energy += float(np.real(coeff)) * eigenvalue
         return energy
 
-    def finalize_solution(
-        self, score: float, solution: list[int]
-    ) -> tuple[list[int], float]:
-        return list(np.where(solution)[0]), score
-
-    def format_top_solutions(
-        self, results: list[tuple[float, list[int]]]
+    def postprocess_candidates(
+        self, candidates: list[tuple[float, list[int]]], *, strict: bool = False
     ) -> list[tuple[list[int], float]]:
-        return [(list(np.where(solution)[0]), score) for score, solution in results]
+        return [(list(np.where(solution)[0]), score) for score, solution in candidates]
 
 
 class MaxCutProblem(_GraphProblemBase):

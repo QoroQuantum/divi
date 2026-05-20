@@ -31,10 +31,6 @@ _BELL_QASM = (
     "measure q[0] -> c[0];\nmeasure q[1] -> c[1];\n"
 )
 
-# ---------------------------------------------------------------------------
-# Helpers — build a fake ``maestro`` module that MaestroSimulator can import
-# ---------------------------------------------------------------------------
-
 
 def _make_fake_maestro(mocker, counts=None, expvals=None):
     """Return a mock ``maestro`` module with ``simple_execute`` and circuit API."""
@@ -112,22 +108,12 @@ def _submit_config_arg(call):
     return call[1]["config"]
 
 
-# ---------------------------------------------------------------------------
-# Import guard
-# ---------------------------------------------------------------------------
-
-
 class TestImportGuard:
     def test_import_error_without_maestro(self, mocker):
         """MaestroSimulator raises a helpful ImportError when maestro is missing."""
         mocker.patch("divi.backends._maestro_simulator.maestro", None)
         with pytest.raises(ImportError, match="qoro-maestro is required"):
             MaestroSimulator()
-
-
-# ---------------------------------------------------------------------------
-# MaestroConfig behaviors
-# ---------------------------------------------------------------------------
 
 
 class TestMaestroConfig:
@@ -178,11 +164,6 @@ class TestMaestroConfig:
             MaestroConfig(bogus_field=1)
 
 
-# ---------------------------------------------------------------------------
-# Properties & defaults
-# ---------------------------------------------------------------------------
-
-
 class TestProperties:
     def test_supports_expval(self, mocker):
         sim = _make_simulator(mocker, _make_fake_maestro(mocker))
@@ -217,10 +198,6 @@ class TestProperties:
         sim = _make_simulator(mocker, _make_fake_maestro(mocker), config=cfg)
         assert sim.config is cfg
 
-
-# ---------------------------------------------------------------------------
-# Automatic MPS threshold
-# ---------------------------------------------------------------------------
 
 # Minimal QASM templates for qubit-count tests (no real gates needed).
 _QASM_SMALL = (
@@ -340,11 +317,6 @@ class TestMpsThreshold:
 
         kwargs = _sim_config_call(fake)
         assert "max_bond_dimension" not in kwargs
-
-
-# ---------------------------------------------------------------------------
-# Sampling mode
-# ---------------------------------------------------------------------------
 
 
 class TestSamplingSubmission:
@@ -662,11 +634,6 @@ class TestParallelExecution:
         assert result.results[2]["results"] == {"ZI": 0.3}
 
 
-# ---------------------------------------------------------------------------
-# Expectation value mode
-# ---------------------------------------------------------------------------
-
-
 class TestRunWithCancellation:
     """Direct unit tests for the cancellation-aware executor consumer.
 
@@ -924,12 +891,6 @@ class TestExpvalSubmission:
         assert calls[0][1]["observables"] == "ZI"
         # Circuit 1 not in any group — falls back to full ham_ops
         assert calls[1][1]["observables"] == "ZI|XX"
-
-
-# ---------------------------------------------------------------------------
-# Noisy simulation: sampling (noisy_execute) and expval (noisy_estimate /
-# noisy_estimate_montecarlo) dispatch.
-# ---------------------------------------------------------------------------
 
 
 class TestMaestroConfigNoiseDefaults:
@@ -1195,11 +1156,6 @@ class TestNoisyExpvalSubmission:
         assert sorted(seeds_seen.values()) == [10, 11]
 
 
-# ---------------------------------------------------------------------------
-# _strip_measurements
-# ---------------------------------------------------------------------------
-
-
 class TestStripMeasurements:
     """Verify _strip_measurements preserves gates and removes only measurements."""
 
@@ -1241,11 +1197,6 @@ class TestStripMeasurements:
         assert "measure" not in result
         assert "h q[0]" in result
         assert "creg meas[2]" in result
-
-
-# ---------------------------------------------------------------------------
-# Depth tracking contracts
-# ---------------------------------------------------------------------------
 
 
 class TestDepthContracts:
@@ -1293,11 +1244,6 @@ class TestDepthContracts:
     def test_std_zero_single(self, _mocker, _fake_maestro):
         runner = self._sim(_mocker, _fake_maestro, track_depth=True)
         contracts.verify_std_depth_zero_for_single_value(runner, {"c0": QASM_DEPTH_2})
-
-
-# ---------------------------------------------------------------------------
-# shot_groups (per-circuit shot allocation)
-# ---------------------------------------------------------------------------
 
 
 class TestShotGroupsSampling:
@@ -1348,9 +1294,6 @@ class TestShotGroupsSampling:
             )
 
 
-# ---------------------------------------------------------------------------
-# Real-maestro integration — guards against upstream API drift
-# ---------------------------------------------------------------------------
 #
 # The mocked tests above rubber-stamp any kwargs MaestroSimulator hands off,
 # so a breaking change in ``maestro.SimulatorConfig`` slips through them.

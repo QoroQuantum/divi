@@ -4,7 +4,7 @@
 
 """Binary optimization (QUBO / HUBO) problem class for QAOA."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from typing import Any, Literal
 
 import dimod
@@ -20,7 +20,7 @@ from divi.hamiltonians import (
     QUBOProblemTypes,
     normalize_binary_polynomial_problem,
     qubo_to_ising,
-    x_mixer_spo,
+    x_mixer,
 )
 from divi.qprog.problems import QAOAProblem
 
@@ -173,7 +173,7 @@ class BinaryOptimizationProblem(QAOAProblem):
     def mixer_hamiltonian(self) -> SparsePauliOp:
         """Standard X-mixer over all qubits in the Ising encoding."""
         if self._mixer_cache is None:
-            self._mixer_cache = x_mixer_spo(self._ising.n_qubits)
+            self._mixer_cache = x_mixer(self._ising.n_qubits)
         return self._mixer_cache
 
     @property
@@ -219,7 +219,7 @@ class BinaryOptimizationProblem(QAOAProblem):
         """The original QUBO/HUBO input passed at construction time."""
         return self._raw_problem
 
-    def decompose(self) -> dict[tuple[str, int], QAOAProblem]:
+    def decompose(self) -> dict[Hashable, QAOAProblem]:
         """Partition the problem using the configured ``hybrid`` decomposer.
 
         Each non-trivial partition becomes its own
@@ -245,7 +245,7 @@ class BinaryOptimizationProblem(QAOAProblem):
         all_variables = list(self._bqm.variables)
         var_to_global_idx = {v: i for i, v in enumerate(all_variables)}
 
-        sub_problems: dict[tuple[str, int], QAOAProblem] = {}
+        sub_problems: dict[Hashable, QAOAProblem] = {}
 
         for i, partition in enumerate(_bqm_partitions):
             if i > 0:
@@ -300,7 +300,7 @@ class BinaryOptimizationProblem(QAOAProblem):
     def extend_solution(
         self,
         current_solution: list[int],
-        prog_id: tuple[str, int],
+        prog_id: Hashable,
         candidate_decoded: list[int],
     ) -> list[int]:
         """Splice a sub-problem's decoded bits into the global solution.
@@ -331,23 +331,17 @@ class BinaryOptimizationProblem(QAOAProblem):
         sample = dict(zip(variables, solution))
         return float(self._bqm.energy(sample))
 
-    def finalize_solution(
-        self, score: float, solution: list[int]
-    ) -> tuple[np.ndarray, float]:
-        """Run a global solution through the configured composer.
+    def postprocess_candidates(
+        self, candidates: list[tuple[float, list[int]]], *, strict: bool = False
+    ) -> list[tuple[np.ndarray, float]]:
+        """Run global candidate solutions through the configured composer.
 
         Returns:
-            Tuple ``(composed_solution, energy)`` where
+            Tuples ``(composed_solution, energy)`` where
             ``composed_solution`` is an ``int32`` ndarray of bits and
             ``energy`` is the objective value computed by the composer.
         """
-        return self._compose_solution(solution)
-
-    def format_top_solutions(
-        self, results: list[tuple[float, list[int]]]
-    ) -> list[tuple[np.ndarray, float]]:
-        """Compose each top beam-search result and sort by energy ascending."""
-        composed = [self._compose_solution(sol) for _score, sol in results]
+        composed = [self._compose_solution(sol) for _score, sol in candidates]
         composed.sort(key=lambda entry: entry[1])
         return composed
 

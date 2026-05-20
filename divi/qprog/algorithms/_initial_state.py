@@ -188,7 +188,7 @@ class WState(InitialState):
 
 
 # ---------------------------------------------------------------------------
-# Block-XY mixer graph (for use with ``xy_mixer_spo``)
+# Block-XY mixer graph (for use with ``xy_mixer``)
 # ---------------------------------------------------------------------------
 
 
@@ -202,7 +202,7 @@ def build_block_xy_mixer_graph(
 
     Returns a ``networkx.Graph`` whose edges define the XY coupling
     terms within each qubit block.  Pass the result to
-    :func:`~divi.hamiltonians.xy_mixer_spo` to obtain the mixer
+    :func:`~divi.hamiltonians.xy_mixer` to obtain the mixer
     Hamiltonian as a :class:`~qiskit.quantum_info.SparsePauliOp`.
 
     Args:
@@ -222,7 +222,7 @@ def build_block_xy_mixer_graph(
               connectivity, at the cost of a weaker spectral gap.
 
     Returns:
-        ``networkx.Graph`` for :func:`~divi.hamiltonians.xy_mixer_spo`.
+        ``networkx.Graph`` for :func:`~divi.hamiltonians.xy_mixer`.
     """
     wires = list(wires)
     expected = block_size * n_blocks

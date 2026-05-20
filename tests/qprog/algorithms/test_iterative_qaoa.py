@@ -27,10 +27,6 @@ from divi.qprog.problems import (
 )
 from tests.qprog.problems._helpers import QUBO_MATRIX, QUBO_SOLUTION, make_bull_graph
 
-# ---------------------------------------------------------------------------
-# Interpolation function tests
-# ---------------------------------------------------------------------------
-
 
 class TestInterp:
     def test_output_length(self):
@@ -140,11 +136,6 @@ class TestInterpolateQaoaParams:
         params = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6])  # depth=3
         result = interpolate_qaoa_params(params, 3, strategy)
         assert len(result) == 8  # depth=4
-
-
-# ---------------------------------------------------------------------------
-# IterativeQAOA tests
-# ---------------------------------------------------------------------------
 
 
 class TestIterativeQAOA:
@@ -337,11 +328,6 @@ class TestIterativeQAOA:
         )
         iterative.run()
         assert iterative.n_layers == iterative.best_depth
-
-
-# ---------------------------------------------------------------------------
-# End-to-end tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.e2e

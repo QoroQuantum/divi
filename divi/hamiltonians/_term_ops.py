@@ -7,7 +7,7 @@
 import math
 import numbers
 from collections.abc import Sequence
-from typing import Literal, cast
+from typing import Literal
 
 import numpy as np
 import pennylane as qp
@@ -19,12 +19,14 @@ from divi.circuits._conversions import _observable_to_sparse_pauli_op
 from divi.circuits._core import _assert_hermitian_spo
 
 
-def _n_qubits(spo: SparsePauliOp) -> int:
-    """SPO ``num_qubits`` narrowed to ``int`` (qiskit types it as ``int | None``)."""
-    return cast(int, spo.num_qubits)
+def _require_qiskit_num_qubits(num_qubits: int | None) -> int:
+    """Return Qiskit's nullable ``num_qubits`` value as Divi's required int."""
+    if num_qubits is None:
+        raise RuntimeError("SparsePauliOp must have a concrete qubit count.")
+    return num_qubits
 
 
-def _empty_spo(num_qubits: int) -> SparsePauliOp:
+def generate_empty_spo(num_qubits: int) -> SparsePauliOp:
     """Zero-row ``SparsePauliOp`` over ``num_qubits`` qubits (``size == 0``)."""
     return SparsePauliOp(["I" * num_qubits], coeffs=np.zeros(1, dtype=complex))[
         np.zeros(0, dtype=int)
@@ -50,7 +52,7 @@ def to_spo(op: qp.operation.Operator | SparsePauliOp) -> SparsePauliOp:
 def _spo_wires(op: qp.operation.Operator | SparsePauliOp) -> tuple:
     """Wire mapping aligned with :func:`to_spo` (qubit ``i`` ↔ ``wires[i]``)."""
     if isinstance(op, SparsePauliOp):
-        return tuple(range(_n_qubits(op)))
+        return tuple(range(_require_qiskit_num_qubits(op.num_qubits)))
     return tuple(op.wires)
 
 

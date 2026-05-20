@@ -7,22 +7,24 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from typing import Any
 
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.hamiltonians._term_ops import _n_qubits
+from divi.hamiltonians import x_mixer
+from divi.hamiltonians._term_ops import _require_qiskit_num_qubits
 from divi.qprog.algorithms import InitialState, SuperpositionState
 
 
 class QAOAProblem(ABC):
     """Base class for all QAOA-compatible problems.
 
-    Subclasses must implement the four abstract properties that provide
+    Subclasses must implement the abstract properties that provide
     the ingredients QAOA needs.  Default implementations of
-    ``recommended_initial_state``, ``is_feasible``, ``repair``, and
-    ``compute_energy`` are provided and can be overridden.
+    ``mixer_hamiltonian``, ``recommended_initial_state``, ``is_feasible``,
+    ``repair_infeasible_bitstring``, and ``compute_energy`` are provided and
+    can be overridden.
     """
 
     @property
@@ -31,9 +33,14 @@ class QAOAProblem(ABC):
         """The cost Hamiltonian encoding the optimization objective."""
 
     @property
-    @abstractmethod
     def mixer_hamiltonian(self) -> SparsePauliOp:
-        """The mixer Hamiltonian for exploring the solution space."""
+        """Mixer Hamiltonian for exploring the solution space.
+
+        Defaults to the standard X mixer over the cost Hamiltonian qubits,
+        suitable for unconstrained binary optimization. Override this for
+        constrained feasible subspaces or problem-specific mixers.
+        """
+        return x_mixer(_require_qiskit_num_qubits(self.cost_hamiltonian.num_qubits))
 
     @property
     @abstractmethod
@@ -66,7 +73,9 @@ class QAOAProblem(ABC):
         users expect domain-level identifiers (e.g. graph node names) at
         ``QAOA._circuit_wires`` and through ``decode_fn``.
         """
-        return tuple(range(_n_qubits(self.cost_hamiltonian)))
+        return tuple(
+            range(_require_qiskit_num_qubits(self.cost_hamiltonian.num_qubits))
+        )
 
     def is_feasible(self, bitstring: str) -> bool:
         """Check whether a bitstring represents a feasible solution.
@@ -104,11 +113,12 @@ class QAOAProblem(ABC):
     # Decomposition hooks (override to enable partitioned workflows)
     # ------------------------------------------------------------------
 
-    def decompose(self) -> dict[tuple[str, int], QAOAProblem]:
+    def decompose(self) -> dict[Hashable, QAOAProblem]:
         """Decompose this problem into sub-problems for partitioned solving.
 
-        Returns a dict mapping program IDs ``(name, size)`` to sub-Problems.
-        The decomposition strategy should be configured at construction time.
+        Returns a dict mapping program IDs to sub-problems. Program IDs must
+        be hashable and stable because later partitioning hooks receive the
+        same IDs when extending candidates into a global solution.
 
         Raises:
             NotImplementedError: If the subclass does not support decomposition.
@@ -127,11 +137,12 @@ class QAOAProblem(ABC):
     def extend_solution(
         self,
         current_solution: list[int],
-        prog_id: tuple[str, int],
+        prog_id: Hashable,
         candidate_decoded: list[int],
     ) -> list[int]:
         """Map a sub-solution's decoded bits into the global solution vector.
 
+        ``prog_id`` is one of the keys returned by :meth:`decompose`.
         Must return a **new** list — do not mutate *current_solution*.
         """
         raise NotImplementedError(
@@ -139,25 +150,33 @@ class QAOAProblem(ABC):
         )
 
     def evaluate_global_solution(self, solution: list[int]) -> float:
-        """Score a complete global solution. Lower is better."""
+        """Score a complete global solution for beam search.
+
+        Lower scores are better. Problems with maximization objectives should
+        usually return a negated score here, then expose the natural objective
+        value from :meth:`postprocess_candidates`.
+        """
         raise NotImplementedError(
             f"{type(self).__name__} does not implement evaluate_global_solution()."
         )
 
-    def finalize_solution(self, score: float, solution: list[int]) -> tuple[Any, float]:
-        """Post-process the best beam search result.
-
-        Returns:
-            A ``(result, energy)`` tuple.  Default: ``(solution, score)``.
-        """
-        return solution, score
-
-    def format_top_solutions(
-        self, results: list[tuple[float, list[int]]]
+    def postprocess_candidates(
+        self, candidates: list[tuple[float, list[int]]], *, strict: bool = False
     ) -> list[tuple[Any, float]]:
-        """Format beam search output for get_top_solutions().
+        """Post-process raw partition-aggregation candidates.
+
+        Args:
+            candidates: Beam-search ``(score, solution)`` pairs, where
+                ``score`` is the value returned by
+                :meth:`evaluate_global_solution` and lower is better.
+            strict: If supported by a constrained problem, reject invalid raw
+                solutions instead of repairing them. The default implementation
+                ignores this flag.
 
         Returns:
-            A list of ``(result, energy)`` tuples.  Default: ``(solution, score)``.
+            Problem-specific ``(result, objective_value)`` tuples ready to
+            return from partitioned aggregation APIs. The objective value uses
+            the problem's public convention, which may differ from the
+            beam-search score. Default: ``(solution, score)``.
         """
-        return [(solution, score) for score, solution in results]
+        return [(solution, score) for score, solution in candidates]

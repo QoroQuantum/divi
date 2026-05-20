@@ -24,10 +24,6 @@ from divi.pipeline.stages import PCECostStage
 from divi.pipeline.stages._pce_cost_stage import PCE_MEAS_AXIS
 from divi.qprog.algorithms._pce import _decode_parities
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _make_stage(
     qubo: np.ndarray,
@@ -88,11 +84,6 @@ def _make_sampling_backend():
     return type("MockBackend", (), {"supports_expval": False})()
 
 
-# ---------------------------------------------------------------------------
-# Tests: expand produces a single Z-basis circuit (no obs_group blowup)
-# ---------------------------------------------------------------------------
-
-
 class TestExpandSingleCircuit:
     """PCECostStage.expand should produce one measurement circuit per param_set."""
 
@@ -141,11 +132,6 @@ class TestExpandSingleCircuit:
         stage.expand(batch, env)
 
         assert "ham_ops" not in env.artifacts
-
-
-# ---------------------------------------------------------------------------
-# Tests: reduce — histogram processing and path routing
-# ---------------------------------------------------------------------------
 
 
 class TestReduceHistogram:
@@ -263,11 +249,6 @@ class TestReducePathRouting:
         result = stage.reduce({_meas_key(0): {"11": 50, "00": 50}}, env, token=None)
 
         assert list(result.values())[0][0] == pytest.approx(0.0)
-
-
-# ---------------------------------------------------------------------------
-# Tests: multi-param-set independence
-# ---------------------------------------------------------------------------
 
 
 class TestReduceMultiParamSet:

@@ -14,10 +14,6 @@ from qiskit.transpiler import PassManager
 
 from divi.circuits._qem_passes import GlobalFoldPass, LocalFoldPass, PauliTwirlPass
 
-# ---------------------------------------------------------------------------
-# GlobalFoldPass
-# ---------------------------------------------------------------------------
-
 
 class TestGlobalFoldPass:
     """Spec: GlobalFoldPass returns U · (U† · U)^k for scale = 1 + 2k."""
@@ -127,11 +123,6 @@ class TestGlobalFoldPass:
         assert Operator(folded.assign_parameters(binding)).equiv(
             Operator(qc.assign_parameters(binding))
         )
-
-
-# ---------------------------------------------------------------------------
-# LocalFoldPass
-# ---------------------------------------------------------------------------
 
 
 class TestLocalFoldPass:
@@ -346,11 +337,6 @@ class TestLocalFoldPass:
         qc = QuantumCircuit(2)
         folded = PassManager([LocalFoldPass(3.0)]).run(qc)
         assert folded.size() == 0
-
-
-# ---------------------------------------------------------------------------
-# PauliTwirlPass
-# ---------------------------------------------------------------------------
 
 
 class TestPauliTwirlPass:

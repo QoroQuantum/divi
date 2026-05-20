@@ -35,10 +35,6 @@ from divi.qprog.problems._graph_partitioning_utils import (
     _split_graph,
 )
 
-# ---------------------------------------------------------------------------
-# Shared helpers and graph-type parametrization fixtures
-# ---------------------------------------------------------------------------
-
 
 def _make_pygraph_cycle(n: int) -> rx.PyGraph:
     g: rx.PyGraph = rx.PyGraph()
@@ -125,11 +121,6 @@ def _assert_partitions_correct(
     for i in range(len(clusters)):
         for j in range(i + 1, len(clusters)):
             assert set(clusters[i][1]).isdisjoint(set(clusters[j][1]))
-
-
-# ---------------------------------------------------------------------------
-# GraphPartitioningConfig
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -584,11 +575,6 @@ class TestGraphPartitioningConfig:
         _assert_partitions_correct(G, partitions)
 
 
-# ---------------------------------------------------------------------------
-# rx.PyGraph end-to-end (decomposition path)
-# ---------------------------------------------------------------------------
-
-
 class TestPyGraphPartitioning:
     """Coverage for the rustworkx ``PyGraph`` end-to-end decomposition path.
 
@@ -620,11 +606,6 @@ class TestPyGraphPartitioning:
             all_orig_ids |= set(local_to_global.values())
         # Reverse maps collectively cover the original graph's node indices.
         assert all_orig_ids == set(g.node_indexes())
-
-
-# ---------------------------------------------------------------------------
-# _pygraph_to_nx — payload handling
-# ---------------------------------------------------------------------------
 
 
 class TestPyGraphToNxConversion:
@@ -689,11 +670,6 @@ class TestPyGraphToNxConversion:
 
         assert nx_g[a][b]["u_of_edge"] == "stored"
         assert nx_g[a][b]["v_of_edge"] == "stored"
-
-
-# ---------------------------------------------------------------------------
-# Recursive composition correctness for non-contiguous cluster ids
-# ---------------------------------------------------------------------------
 
 
 class TestBisectCompositionCorrectness:
@@ -778,11 +754,6 @@ class TestBisectCompositionCorrectness:
         # The upper-even leaf carries parent_ids[1,2,3,5,7] = [2, 4, 6, 10, 14].
         even_upper_leaf = next(ids for ids in leaf_ids if set(ids) == {2, 4, 6, 10, 14})
         assert sorted(even_upper_leaf) == [2, 4, 6, 10, 14]
-
-
-# ---------------------------------------------------------------------------
-# draw_partitions
-# ---------------------------------------------------------------------------
 
 
 class TestDrawPartitions:
