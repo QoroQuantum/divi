@@ -21,6 +21,11 @@
 > [!IMPORTANT]
 > Divi is under active development. Expect breaking changes between minor versions.
 
+<!-- -->
+
+> [!TIP]
+> **Using Claude Code, Cursor, or another LLM coding agent?** Divi is indexed on [Context7](https://context7.com/qoroquantum/divi) — point your agent at `/qoroquantum/divi` to pull current, version-specific Divi docs and snippets directly into its context.
+
 ## ⚡ Quick Start
 
 ```bash
