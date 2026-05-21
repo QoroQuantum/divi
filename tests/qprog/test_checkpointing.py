@@ -177,33 +177,48 @@ class TestCheckpointConfig:
         assert config_with_interval.checkpoint_dir is not None
         assert config_with_interval.checkpoint_interval == 5
 
-    def test_should_checkpoint_disabled(self):
-        """Test should_checkpoint when checkpointing is disabled."""
-        config = CheckpointConfig()
-        assert config._should_checkpoint(0) is False
-        assert config._should_checkpoint(1) is False
-        assert config._should_checkpoint(100) is False
-
-    def test_should_checkpoint_every_iteration(self, tmp_path):
-        """Test should_checkpoint with no interval (every iteration)."""
-        config = CheckpointConfig(checkpoint_dir=tmp_path / "checkpoint")
-        assert config._should_checkpoint(0) is True
-        assert config._should_checkpoint(1) is True
-        assert config._should_checkpoint(2) is True
-        assert config._should_checkpoint(100) is True
-
-    def test_should_checkpoint_with_interval(self, tmp_path):
-        """Test should_checkpoint with interval."""
-        config = CheckpointConfig(
-            checkpoint_dir=tmp_path / "checkpoint", checkpoint_interval=3
-        )
-        assert config._should_checkpoint(0) is True  # 0 % 3 == 0
-        assert config._should_checkpoint(1) is False
-        assert config._should_checkpoint(2) is False
-        assert config._should_checkpoint(3) is True  # 3 % 3 == 0
-        assert config._should_checkpoint(4) is False
-        assert config._should_checkpoint(5) is False
-        assert config._should_checkpoint(6) is True  # 6 % 3 == 0
+    @pytest.mark.parametrize(
+        "checkpoint_dir, checkpoint_interval, cases",
+        [
+            (
+                None,
+                None,
+                [(0, False), (1, False), (100, False)],
+            ),
+            (
+                "tmp",
+                None,
+                [(0, True), (1, True), (2, True), (100, True)],
+            ),
+            (
+                "tmp",
+                3,
+                [
+                    (0, True),
+                    (1, False),
+                    (2, False),
+                    (3, True),
+                    (4, False),
+                    (5, False),
+                    (6, True),
+                ],
+            ),
+        ],
+        ids=["disabled", "every_iteration", "with_interval"],
+    )
+    def test_should_checkpoint(
+        self, tmp_path, checkpoint_dir, checkpoint_interval, cases
+    ):
+        """Table-driven checks for ``CheckpointConfig._should_checkpoint``."""
+        if checkpoint_dir == "tmp":
+            config = CheckpointConfig(
+                checkpoint_dir=tmp_path / "checkpoint",
+                checkpoint_interval=checkpoint_interval,
+            )
+        else:
+            config = CheckpointConfig()
+        for iteration, expected in cases:
+            assert config._should_checkpoint(iteration) is expected
 
     def test_checkpoint_config_frozen(self, tmp_path):
         """Test that CheckpointConfig is frozen."""
@@ -420,6 +435,37 @@ class TestManagementUtilities:
         assert isinstance(info.size_bytes, int)
         assert isinstance(info.is_valid, bool)
 
+    @pytest.mark.parametrize(
+        "func, path_name",
+        [
+            (get_checkpoint_info, "checkpoint_001"),
+            (list_checkpoints, "checkpoints"),
+        ],
+    )
+    def test_path_is_file_raises(self, tmp_path, func, path_name):
+        file_path = tmp_path / path_name
+        file_path.write_text("not a directory")
+        with pytest.raises(CheckpointNotFoundError, match="not a directory"):
+            func(file_path)
+
+    def test_list_checkpoints_skips_files_inside_dir(self, tmp_path):
+        """list_checkpoints should skip non-directory entries inside main_dir."""
+        main_dir = tmp_path / "checkpoints"
+        main_dir.mkdir()
+
+        # Valid checkpoint
+        valid = main_dir / "checkpoint_001"
+        valid.mkdir()
+        (valid / PROGRAM_STATE_FILE).write_text('{"data": 1}')
+        (valid / OPTIMIZER_STATE_FILE).write_text('{"data": 1}')
+
+        # A file that looks like a checkpoint name
+        (main_dir / "checkpoint_002").write_text("i am a file")
+
+        checkpoints = list_checkpoints(main_dir)
+        assert len(checkpoints) == 1
+        assert checkpoints[0].iteration == 1
+
 
 class TestResolveCheckpointPath:
     """Tests for resolve_checkpoint_path covering L133-158."""
@@ -578,48 +624,11 @@ class TestValidationAndAtomicWrite:
             )
 
 
-class TestEdgeCases:
-    """Tests for edge cases in get_checkpoint_info, list_checkpoints, and error attributes."""
-
-    def test_get_checkpoint_info_on_file_raises(self, tmp_path):
-        """get_checkpoint_info raises when path is a file, not a directory."""
-        file_path = tmp_path / "checkpoint_001"
-        file_path.write_text("not a directory")
-
-        with pytest.raises(CheckpointNotFoundError, match="not a directory"):
-            get_checkpoint_info(file_path)
-
-    def test_list_checkpoints_on_file_raises(self, tmp_path):
-        """list_checkpoints raises when path is a file, not a directory."""
-        file_path = tmp_path / "checkpoints"
-        file_path.write_text("not a directory")
-
-        with pytest.raises(CheckpointNotFoundError, match="not a directory"):
-            list_checkpoints(file_path)
-
-    def test_checkpoint_corrupted_error_attributes(self):
-        """CheckpointCorruptedError stores file_path and details."""
-        err = CheckpointCorruptedError(
-            "test error", file_path=Path("/tmp/test.json"), details="bad data"
-        )
-        assert err.file_path == Path("/tmp/test.json")
-        assert err.details == "bad data"
-        assert str(err) == "test error"
-
-    def test_list_checkpoints_skips_files_inside_dir(self, tmp_path):
-        """list_checkpoints should skip non-directory entries inside main_dir."""
-        main_dir = tmp_path / "checkpoints"
-        main_dir.mkdir()
-
-        # Valid checkpoint
-        valid = main_dir / "checkpoint_001"
-        valid.mkdir()
-        (valid / PROGRAM_STATE_FILE).write_text('{"data": 1}')
-        (valid / OPTIMIZER_STATE_FILE).write_text('{"data": 1}')
-
-        # A file that looks like a checkpoint name
-        (main_dir / "checkpoint_002").write_text("i am a file")
-
-        checkpoints = list_checkpoints(main_dir)
-        assert len(checkpoints) == 1
-        assert checkpoints[0].iteration == 1
+def test_checkpoint_corrupted_error_attributes():
+    """CheckpointCorruptedError stores file_path and details."""
+    err = CheckpointCorruptedError(
+        "test error", file_path=Path("/tmp/test.json"), details="bad data"
+    )
+    assert err.file_path == Path("/tmp/test.json")
+    assert err.details == "bad data"
+    assert str(err) == "test error"

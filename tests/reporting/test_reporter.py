@@ -15,43 +15,38 @@ from divi.reporting import (
 )
 
 
-class TestAbstractProgressReporter:
+def test_abc_enforcement():
     """
-    Tests the abstract base class ProgressReporter.
+    Check that subclasses must implement the abstract methods.
     """
 
-    def test_abc_enforcement(self):
-        """
-        Check that subclasses must implement the abstract methods.
-        """
+    # A class that implements none of the abstract methods
+    class BadReporter(ProgressReporter):
+        pass
 
-        # A class that implements none of the abstract methods
-        class BadReporter(ProgressReporter):
+    with pytest.raises(TypeError):
+        BadReporter()
+
+    # A class that implements only one of the two abstract methods
+    class IncompleteReporter(ProgressReporter):
+        def update(self, **kwargs) -> None:
             pass
 
-        with pytest.raises(TypeError):
-            BadReporter()
+    with pytest.raises(TypeError):
+        IncompleteReporter()
 
-        # A class that implements only one of the two abstract methods
-        class IncompleteReporter(ProgressReporter):
-            def update(self, **kwargs) -> None:
-                pass
+    # A class that implements all abstract methods should instantiate without error
+    class GoodReporter(ProgressReporter):
+        def update(self, **kwargs) -> None:
+            pass
 
-        with pytest.raises(TypeError):
-            IncompleteReporter()
+        def info(self, message: str, **kwargs) -> None:
+            pass
 
-        # A class that implements all abstract methods should instantiate without error
-        class GoodReporter(ProgressReporter):
-            def update(self, **kwargs) -> None:
-                pass
-
-            def info(self, message: str, **kwargs) -> None:
-                pass
-
-        try:
-            GoodReporter()
-        except TypeError:
-            pytest.fail("Instantiating a complete subclass should not raise TypeError")
+    try:
+        GoodReporter()
+    except TypeError:
+        pytest.fail("Instantiating a complete subclass should not raise TypeError")
 
 
 class TestQueueProgressReporter:
@@ -415,33 +410,11 @@ class TestLoggingProgressReporter:
 
 
 class TestDisableProgress:
-    """Tests for DIVI_DISABLE_PROGRESS env var behaviour."""
+    """Reporter-specific progress suppression (beyond env-var parsing in test_pbar)."""
 
     @pytest.fixture(autouse=True)
     def _reset_logging_flag(self, monkeypatch):
-        """Ensure the module-level _logging_disabled flag is clean for each test."""
-
         monkeypatch.setattr(_qlogger, "_logging_disabled", False)
-
-    @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on", " True "])
-    def test_truthy_values_disable_progress(self, monkeypatch, value):
-        """Truthy env var values disable the progress spinner."""
-        monkeypatch.setenv("DIVI_DISABLE_PROGRESS", value)
-        reporter = LoggingProgressReporter()
-        assert reporter._should_disable_progress() is True
-
-    @pytest.mark.parametrize("value", ["0", "false", "no", "off", "", "random"])
-    def test_falsy_values_keep_progress_enabled(self, monkeypatch, value):
-        """Non-truthy env var values leave progress enabled."""
-        monkeypatch.setenv("DIVI_DISABLE_PROGRESS", value)
-        reporter = LoggingProgressReporter()
-        assert reporter._should_disable_progress() is False
-
-    def test_unset_env_var_keeps_progress_enabled(self, monkeypatch):
-        """When the env var is not set at all, progress is enabled."""
-        monkeypatch.delenv("DIVI_DISABLE_PROGRESS", raising=False)
-        reporter = LoggingProgressReporter()
-        assert reporter._should_disable_progress() is False
 
     def test_disabled_info_logs_instead_of_spinner(self, monkeypatch, caplog):
         """When progress is disabled, info() logs the message without creating a spinner."""

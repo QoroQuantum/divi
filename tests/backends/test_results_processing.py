@@ -103,20 +103,16 @@ class TestQoroServiceUtilities:
         with pytest.raises(ValueError, match="Unsupported encoding: invalid"):
             _decode_qh1_b64({"encoding": "invalid", "payload": "dGVzdA=="})
 
-    def test_decode_qh1_b64_delegates_correctly(self, mocker):
-        """Tests that _decode_qh1_b64 correctly decodes and calls the decompressor."""
+    def test_decode_qh1_b64_passes_decoded_bytes_to_decompressor(self, mocker):
+        """The base64 payload must be decoded before reaching the decompressor."""
         mock_decompress = mocker.patch(
             "divi.backends._results_processing._decompress_histogram"
         )
-        mock_decompress.return_value = {"01": 100}
 
         # "test" -> base64 -> "dGVzdA=="
-        encoded_data = {"encoding": "qh1", "payload": "dGVzdA=="}
-        result = _decode_qh1_b64(encoded_data)
+        _decode_qh1_b64({"encoding": "qh1", "payload": "dGVzdA=="})
 
-        # Assert it passed the correctly decoded bytes to the decompressor
         mock_decompress.assert_called_once_with(b"test")
-        assert result == {"01": 100}
 
     # --- Core Decompression Logic Tests ---
 

@@ -25,6 +25,7 @@ from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.problems import BinaryOptimizationProblem
 from divi.qprog.problems._binary import _merge_substates, _sanitize_problem_input
 from divi.qprog.workflows import PartitioningProgramEnsemble
+from tests.qprog._program_contracts import verify_metacircuit_dict
 from tests.qprog.problems._helpers import (
     HUBO_CUBIC,
     QUBO_MATRIX,
@@ -33,7 +34,6 @@ from tests.qprog.problems._helpers import (
     make_bqm_maximize,
     make_bqm_minimize,
 )
-from tests.qprog.qprog_contracts import verify_metacircuit_dict
 
 
 @pytest.fixture
@@ -255,27 +255,24 @@ class TestEvaluateSolution:
         assert optimal < all_ones
 
 
-class TestMergeSubstates:
-    """Tests for _merge_substates helper."""
+def test_merges_two_sample_sets():
+    """_merge_substates horizontally stacks subsamples from two states.
 
-    def test_merges_two_sample_sets(self):
-        """_merge_substates horizontally stacks subsamples from two states.
+    hstack_samplesets merges variables from both states into one sample,
+    not adding rows.
+    """
+    ss1 = dimod.SampleSet.from_samples({"a": 0}, "BINARY", -1.0)
+    ss2 = dimod.SampleSet.from_samples({"b": 1}, "BINARY", -0.5)
 
-        hstack_samplesets merges variables from both states into one sample,
-        not adding rows.
-        """
-        ss1 = dimod.SampleSet.from_samples({"a": 0}, "BINARY", -1.0)
-        ss2 = dimod.SampleSet.from_samples({"b": 1}, "BINARY", -0.5)
+    state1 = hybrid.State(subsamples=ss1)
+    state2 = hybrid.State(subsamples=ss2)
 
-        state1 = hybrid.State(subsamples=ss1)
-        state2 = hybrid.State(subsamples=ss2)
+    merged = _merge_substates(None, (state1, state2))
 
-        merged = _merge_substates(None, (state1, state2))
-
-        # hstack merges variables: result has both 'a' and 'b'
-        merged_vars = set(merged.subsamples.variables)
-        assert "a" in merged_vars
-        assert "b" in merged_vars
+    # hstack merges variables: result has both 'a' and 'b'
+    merged_vars = set(merged.subsamples.variables)
+    assert "a" in merged_vars
+    assert "b" in merged_vars
 
 
 class TestDecomposeQUBO:
@@ -326,12 +323,11 @@ class TestDecomposeQUBO:
         assert len(problem._trivial_program_ids) >= 1
 
 
-class TestInitialSolutionSizeQUBO:
-    def test_returns_number_of_variables(self, sample_qubo_matrix):
-        decomposer = hybrid.EnergyImpactDecomposer(size=2)
-        problem = BinaryOptimizationProblem(sample_qubo_matrix, decomposer=decomposer)
+def test_returns_number_of_variables(sample_qubo_matrix):
+    decomposer = hybrid.EnergyImpactDecomposer(size=2)
+    problem = BinaryOptimizationProblem(sample_qubo_matrix, decomposer=decomposer)
 
-        assert problem.initial_solution_size() == 4
+    assert problem.initial_solution_size() == 4
 
 
 class TestExtendSolutionQUBO:

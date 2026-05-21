@@ -12,7 +12,6 @@ formulations.
 
 import networkx as nx
 import numpy as np
-import pennylane as qp
 import pennylane.qaoa as pqaoa
 import pytest
 import rustworkx as rx
@@ -31,15 +30,7 @@ from divi.qprog.problems._graph_hamiltonians import (
     out_flow_constraint_spo,
     wires_to_edges,
 )
-
-
-def _assert_matches_pennylane(actual: SparsePauliOp, expected_pl) -> None:
-    """Matrix-equality check against a PennyLane operator (see
-    ``tests/hamiltonians/test_mixers.py`` for the reversed wire_order)."""
-    n = actual.num_qubits
-    expected_mat = qp.matrix(expected_pl, wire_order=list(reversed(range(n))))
-    np.testing.assert_allclose(actual.to_matrix(), expected_mat, atol=1e-10)
-
+from tests.hamiltonians._helpers import assert_matches_pennylane
 
 # Graphs chosen to exercise: small (bull, triangle), regular (cycle),
 # degree-asymmetric (star), and non-trivial complement (bull).
@@ -59,8 +50,8 @@ def test_maxcut_matches_pennylane(name, factory):
     cost, mixer = maxcut_hamiltonians(graph)
     pl_cost, pl_mixer = pqaoa.cost.maxcut(graph)
 
-    _assert_matches_pennylane(cost, pl_cost)
-    _assert_matches_pennylane(mixer, pl_mixer)
+    assert_matches_pennylane(cost, pl_cost)
+    assert_matches_pennylane(mixer, pl_mixer)
 
 
 @pytest.mark.parametrize("constrained", [True, False])
@@ -70,8 +61,8 @@ def test_max_independent_set_matches_pennylane(name, factory, constrained):
     cost, mixer = max_independent_set_hamiltonians(graph, constrained=constrained)
     pl_cost, pl_mixer = pqaoa.cost.max_independent_set(graph, constrained=constrained)
 
-    _assert_matches_pennylane(cost, pl_cost)
-    _assert_matches_pennylane(mixer, pl_mixer)
+    assert_matches_pennylane(cost, pl_cost)
+    assert_matches_pennylane(mixer, pl_mixer)
 
 
 @pytest.mark.parametrize("constrained", [True, False])
@@ -81,8 +72,8 @@ def test_min_vertex_cover_matches_pennylane(name, factory, constrained):
     cost, mixer = min_vertex_cover_hamiltonians(graph, constrained=constrained)
     pl_cost, pl_mixer = pqaoa.cost.min_vertex_cover(graph, constrained=constrained)
 
-    _assert_matches_pennylane(cost, pl_cost)
-    _assert_matches_pennylane(mixer, pl_mixer)
+    assert_matches_pennylane(cost, pl_cost)
+    assert_matches_pennylane(mixer, pl_mixer)
 
 
 @pytest.mark.parametrize("constrained", [True, False])
@@ -92,8 +83,8 @@ def test_max_clique_matches_pennylane(name, factory, constrained):
     cost, mixer = max_clique_hamiltonians(graph, constrained=constrained)
     pl_cost, pl_mixer = pqaoa.cost.max_clique(graph, constrained=constrained)
 
-    _assert_matches_pennylane(cost, pl_cost)
-    _assert_matches_pennylane(mixer, pl_mixer)
+    assert_matches_pennylane(cost, pl_cost)
+    assert_matches_pennylane(mixer, pl_mixer)
 
 
 def _three_node_tournament() -> nx.DiGraph:
@@ -133,19 +124,19 @@ def test_edges_to_wires_inverse_of_wires_to_edges():
 @pytest.mark.parametrize("name,factory", _DIGRAPHS, ids=_DIGRAPH_IDS)
 def test_loss_hamiltonian_matches_pennylane(name, factory):
     g = factory()
-    _assert_matches_pennylane(loss_hamiltonian_spo(g), pqaoa.cycle.loss_hamiltonian(g))
+    assert_matches_pennylane(loss_hamiltonian_spo(g), pqaoa.cycle.loss_hamiltonian(g))
 
 
 @pytest.mark.parametrize("name,factory", _DIGRAPHS, ids=_DIGRAPH_IDS)
 def test_cycle_mixer_matches_pennylane(name, factory):
     g = factory()
-    _assert_matches_pennylane(cycle_mixer_spo(g), pqaoa.cycle.cycle_mixer(g))
+    assert_matches_pennylane(cycle_mixer_spo(g), pqaoa.cycle.cycle_mixer(g))
 
 
 @pytest.mark.parametrize("name,factory", _DIGRAPHS, ids=_DIGRAPH_IDS)
 def test_out_flow_constraint_matches_pennylane(name, factory):
     g = factory()
-    _assert_matches_pennylane(
+    assert_matches_pennylane(
         out_flow_constraint_spo(g), pqaoa.cycle.out_flow_constraint(g)
     )
 
@@ -153,7 +144,7 @@ def test_out_flow_constraint_matches_pennylane(name, factory):
 @pytest.mark.parametrize("name,factory", _DIGRAPHS, ids=_DIGRAPH_IDS)
 def test_net_flow_constraint_matches_pennylane(name, factory):
     g = factory()
-    _assert_matches_pennylane(
+    assert_matches_pennylane(
         net_flow_constraint_spo(g), pqaoa.cycle.net_flow_constraint(g)
     )
 
@@ -236,14 +227,14 @@ def test_max_weight_cycle_composite(name, factory, constrained):
 
     pl_loss = pqaoa.cycle.loss_hamiltonian(g)
     if constrained:
-        _assert_matches_pennylane(cost, pl_loss)
-        _assert_matches_pennylane(mixer, pqaoa.cycle.cycle_mixer(g))
+        assert_matches_pennylane(cost, pl_loss)
+        assert_matches_pennylane(mixer, pqaoa.cycle.cycle_mixer(g))
     else:
         pl_cost = (
             pl_loss
             + 3.0 * pqaoa.cycle.net_flow_constraint(g)
             + 3.0 * pqaoa.cycle.out_flow_constraint(g)
         )
-        _assert_matches_pennylane(cost, pl_cost)
+        assert_matches_pennylane(cost, pl_cost)
         # Unconstrained variant uses an X mixer over all wires.
-        _assert_matches_pennylane(mixer, pqaoa.x_mixer(range(g.number_of_edges())))
+        assert_matches_pennylane(mixer, pqaoa.x_mixer(range(g.number_of_edges())))

@@ -8,7 +8,6 @@ import networkx as nx
 import pennylane as qp
 import pytest
 import scipy.linalg
-from qiskit.circuit import QuantumCircuit
 from qiskit.quantum_info import Operator, Statevector
 
 from divi.hamiltonians import xy_mixer
@@ -23,61 +22,52 @@ from divi.qprog.algorithms import (
 )
 from divi.qprog.algorithms._initial_state import build_block_xy_mixer_graph
 from divi.qprog.problems import MaxCutProblem
-
-
-def _gate_names(qc: QuantumCircuit) -> list[str]:
-    return [instr.operation.name for instr in qc.data]
-
-
-def _gate_qubits(qc: QuantumCircuit) -> list[list[int]]:
-    return [[qc.find_bit(q).index for q in instr.qubits] for instr in qc.data]
+from tests.qprog.algorithms._helpers import gate_names, gate_qubits
 
 
 class TestZerosState:
     def test_build_emits_nothing(self):
         qc = ZerosState().build([0, 1, 2])
-        assert _gate_names(qc) == []
+        assert gate_names(qc) == []
 
     def test_name(self):
         assert ZerosState().name == "ZerosState"
 
 
-class TestOnesState:
-    def test_build_emits_x_per_qubit(self):
-        qc = OnesState().build([0, 1])
-        assert _gate_names(qc) == ["x", "x"]
-        assert _gate_qubits(qc) == [[0], [1]]
+def test_build_emits_x_per_qubit():
+    qc = OnesState().build([0, 1])
+    assert gate_names(qc) == ["x", "x"]
+    assert gate_qubits(qc) == [[0], [1]]
 
 
-class TestSuperpositionState:
-    def test_build_emits_hadamard_per_qubit(self):
-        qc = SuperpositionState().build([0, 1, 2])
-        assert _gate_names(qc) == ["h", "h", "h"]
-        assert _gate_qubits(qc) == [[0], [1], [2]]
+def test_build_emits_hadamard_per_qubit():
+    qc = SuperpositionState().build([0, 1, 2])
+    assert gate_names(qc) == ["h", "h", "h"]
+    assert gate_qubits(qc) == [[0], [1], [2]]
 
 
 class TestCustomPerQubitState:
     def test_zeros_string_is_no_op(self):
         qc = CustomPerQubitState("00").build([0, 1])
-        assert _gate_names(qc) == []
+        assert gate_names(qc) == []
 
     def test_ones_string_is_x(self):
         qc = CustomPerQubitState("11").build([0, 1])
-        assert _gate_names(qc) == ["x", "x"]
+        assert gate_names(qc) == ["x", "x"]
 
     def test_plus_is_hadamard(self):
         qc = CustomPerQubitState("++").build([0, 1])
-        assert _gate_names(qc) == ["h", "h"]
+        assert gate_names(qc) == ["h", "h"]
 
     def test_minus_is_x_then_h(self):
         qc = CustomPerQubitState("-").build([0])
-        assert _gate_names(qc) == ["x", "h"]
-        assert _gate_qubits(qc) == [[0], [0]]
+        assert gate_names(qc) == ["x", "h"]
+        assert gate_qubits(qc) == [[0], [0]]
 
     def test_mixed_string(self):
         qc = CustomPerQubitState("01+-").build([0, 1, 2, 3])
-        assert _gate_names(qc) == ["x", "h", "x", "h"]
-        assert _gate_qubits(qc) == [[1], [2], [3], [3]]
+        assert gate_names(qc) == ["x", "h", "x", "h"]
+        assert gate_qubits(qc) == [[1], [2], [3], [3]]
 
     def test_wrong_length_raises(self):
         with pytest.raises(ValueError, match="wire count"):
@@ -197,19 +187,16 @@ class TestTimeEvolutionCustomInitialState:
             )
 
 
-class TestQAOACustomInitialState:
-    """Test that QAOA accepts custom string initial states."""
-
-    def test_custom_string_accepted(self, default_test_simulator):
-        """QAOA with initial_state=CustomPerQubitState('00') should behave like ZerosState."""
-        graph = nx.Graph([(0, 1)])
-        qaoa = QAOA(
-            MaxCutProblem(graph),
-            initial_state=CustomPerQubitState("00"),
-            backend=default_test_simulator,
-            max_iterations=1,
-        )
-        assert isinstance(qaoa.initial_state, CustomPerQubitState)
+def test_custom_string_accepted(default_test_simulator):
+    """QAOA with initial_state=CustomPerQubitState('00') should behave like ZerosState."""
+    graph = nx.Graph([(0, 1)])
+    qaoa = QAOA(
+        MaxCutProblem(graph),
+        initial_state=CustomPerQubitState("00"),
+        backend=default_test_simulator,
+        max_iterations=1,
+    )
+    assert isinstance(qaoa.initial_state, CustomPerQubitState)
 
 
 class TestVQEInitialState:

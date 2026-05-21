@@ -27,9 +27,8 @@
 
 ## Testing
 
-- Run full suite: `uv run pytest`
-- Coverage: `uv run pytest --cov=divi`
-- Parallel (CI/large suites): `uv run pytest -n auto`
+- Run full suite: `uv run pytest -n auto`
+- Coverage: `uv run pytest -n auto --cov=divi`
 - Write spec-driven tests first (behavior-focused) before adding critical low-level mocking.
 - Use pytest ecosystem tools (e.g., `pytest-mock`) only; avoid `unittest` unless no alternative exists and the human agrees.
 - Markers:
@@ -37,10 +36,17 @@
   - `algo` for algorithm tests
   - `e2e` for slow integration tests (avoid during development; run only when explicitly requested)
 - API tests require a Qoro API key:
-  - `QORO_API_KEY=... uv run pytest --run-api-tests`
-  - or `uv run pytest --run-api-tests --api-key your-key-here`
+  - `QORO_API_KEY=... uv run pytest -n auto --run-api-tests`
+  - or `uv run pytest -n auto --run-api-tests --api-key your-key-here`
 - Never inline imports nor classes in test functions. If you are facing errors due to circular imports, ask for approval before inlining imports to fix it.
+- Do not leave meta comments in source or tests that explain where other code moved (e.g. "tests live in …", "keep one smoke here"). Relocations should be obvious from module layout and test names; use docstrings only when they document behaviour under test.
 - Use simulator fixtures from `tests/conftest.py`: `dummy_simulator` when a real backend is not needed (returns fake counts), `default_test_simulator` for actual circuit execution (QASM→shots), `dummy_expval_backend` for expval-mode tests. Do not create new `QiskitSimulator` instances in tests.
+- **Test layout mirrors `divi/`** — one `test_<module>.py` per source module (see `docs/source/development/testing.rst`).
+- **Shared test infrastructure** (do not mix roles):
+  - `conftest.py` — pytest **fixtures** and hooks only (`@pytest.fixture`, `pytest_addoption`). Auto-discovered; never import from conftest in test code.
+  - `_helpers.py` — **explicit-import** builders, assertion helpers, constants, and shared test doubles (e.g. `DummySpecStage`, backend spies). Use `from tests.<pkg>._helpers import …`.
+  - `_contracts.py` — shared **`verify_*`** behavioural checks imported across multiple `test_*.py` files in the same package. Use a descriptive name such as `_circuit_runner_contracts.py` when the scope is narrower than the whole package.
+  - Fixtures used by a **single** test file may stay in that file; promote to `conftest.py` when reused within the package or subtree.
 
 ## Documentation
 

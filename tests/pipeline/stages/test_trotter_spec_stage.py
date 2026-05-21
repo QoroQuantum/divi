@@ -186,22 +186,19 @@ class TestProperties:
         assert stage_stateful.stateful is True
 
 
-class TestDryRun:
-    def test_forward_pass_produces_ham_keyed_trace(self, dummy_expval_backend):
-        """Forward pass produces a trace with ham-keyed MetaCircuits."""
-        pipeline = CircuitPipeline(
-            stages=[
-                TrotterSpecStage(
-                    _DummyStrategy(n=2), meta_circuit_factory=_meta_factory
-                ),
-                MeasurementStage(),
-            ]
-        )
-        env = PipelineEnv(backend=dummy_expval_backend)
-        trace = pipeline.run_forward_pass(initial_spec=_Z0, env=env)
+def test_forward_pass_produces_ham_keyed_trace(dummy_expval_backend):
+    """Forward pass produces a trace with ham-keyed MetaCircuits."""
+    pipeline = CircuitPipeline(
+        stages=[
+            TrotterSpecStage(_DummyStrategy(n=2), meta_circuit_factory=_meta_factory),
+            MeasurementStage(),
+        ]
+    )
+    env = PipelineEnv(backend=dummy_expval_backend)
+    trace = pipeline.run_forward_pass(initial_spec=_Z0, env=env)
 
-        assert len(trace.final_batch) >= 2
-        # All keys should contain the ham axis
-        for key in trace.final_batch:
-            ham_axes = [axis for axis in key if axis[0] == "ham"]
-            assert len(ham_axes) == 1
+    assert len(trace.final_batch) >= 2
+    # All keys should contain the ham axis
+    for key in trace.final_batch:
+        ham_axes = [axis for axis in key if axis[0] == "ham"]
+        assert len(ham_axes) == 1

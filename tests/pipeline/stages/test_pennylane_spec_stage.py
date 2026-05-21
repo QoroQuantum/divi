@@ -264,17 +264,15 @@ class TestPennyLaneSpecStageMeasurementValidation:
         assert len(batch) == 1
 
 
-class TestPennyLaneSpecStageReduce:
+def test_strip_circuit_axis(dummy_pipeline_env):
     """Reduce is inherited from CircuitSpecStage."""
+    stage = PennyLaneSpecStage()
+    results = {(("circuit", 0), ("obs_group", 0)): 1.5}
 
-    def test_strip_circuit_axis(self, dummy_pipeline_env):
-        stage = PennyLaneSpecStage()
-        results = {(("circuit", 0), ("obs_group", 0)): 1.5}
+    reduced = stage.reduce(results, dummy_pipeline_env, token="single")
 
-        reduced = stage.reduce(results, dummy_pipeline_env, token="single")
-
-        assert (("obs_group", 0),) in reduced
-        assert reduced[(("obs_group", 0),)] == 1.5
+    assert (("obs_group", 0),) in reduced
+    assert reduced[(("obs_group", 0),)] == 1.5
 
 
 class TestPennyLaneSpecStageProperties:

@@ -20,7 +20,7 @@ from divi.pipeline.stages import (
     PauliTwirlStage,
     QEMStage,
 )
-from tests.pipeline.helpers import DummySpecStage
+from tests.pipeline._helpers import DummySpecStage
 
 
 def _two_qubit_parametric_meta() -> MetaCircuit:
@@ -157,47 +157,41 @@ class TestPathSelection:
             assert not dag_to_circuit(body).parameters
 
 
-class TestFastPathZeroCopy:
+def test_original_dag_identity_preserved(dummy_pipeline_env, meta, param_sets):
     """Spec: fast path does not rewrite the symbolic ``circuit_bodies`` DAGs."""
+    original_dag = meta.circuit_bodies[0][1]
+    pipeline = CircuitPipeline(
+        stages=[
+            DummySpecStage(meta=meta),
+            ParameterBindingStage(),
+            MeasurementStage(),
+        ]
+    )
+    env = PipelineEnv(backend=dummy_pipeline_env.backend, param_sets=param_sets)
+    trace = pipeline.run_forward_pass("x", env)
 
-    def test_original_dag_identity_preserved(
-        self, dummy_pipeline_env, meta, param_sets
-    ):
-        original_dag = meta.circuit_bodies[0][1]
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=meta),
-                ParameterBindingStage(),
-                MeasurementStage(),
-            ]
-        )
-        env = PipelineEnv(backend=dummy_pipeline_env.backend, param_sets=param_sets)
-        trace = pipeline.run_forward_pass("x", env)
-
-        node = _param_bind_output(trace)
-        assert len(node.circuit_bodies) == 1
-        assert node.circuit_bodies[0][1] is original_dag
+    node = _param_bind_output(trace)
+    assert len(node.circuit_bodies) == 1
+    assert node.circuit_bodies[0][1] is original_dag
 
 
-class TestSlowPathValidation:
+def test_param_count_mismatch_raises(dummy_pipeline_env, meta):
     """Spec: slow-path expand validates param-set shape."""
-
-    def test_param_count_mismatch_raises(self, dummy_pipeline_env, meta):
-        stage = ParameterBindingStage()
-        CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=meta),
-                stage,
-                PauliTwirlStage(n_twirls=1, seed=0),
-                MeasurementStage(),
-            ]
-        )
-        env = PipelineEnv(
-            backend=dummy_pipeline_env.backend,
-            param_sets=np.array([[1.0]]),  # meta expects 2 parameters
-        )
-        with pytest.raises(ValueError, match="expected 2 parameters"):
-            stage.expand({(("spec", "circ"),): meta}, env)
+    stage = ParameterBindingStage()
+    CircuitPipeline(
+        stages=[
+            DummySpecStage(meta=meta),
+            stage,
+            PauliTwirlStage(n_twirls=1, seed=0),
+            MeasurementStage(),
+        ]
+    )
+    env = PipelineEnv(
+        backend=dummy_pipeline_env.backend,
+        param_sets=np.array([[1.0]]),  # meta expects 2 parameters
+    )
+    with pytest.raises(ValueError, match="expected 2 parameters"):
+        stage.expand({(("spec", "circ"),): meta}, env)
 
 
 class TestFastSlowEquivalence:

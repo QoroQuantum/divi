@@ -20,13 +20,13 @@ from divi.qprog.algorithms._pce import (
     _masks_to_ham_ops,
 )
 from divi.qprog.checkpointing import CheckpointConfig
+from tests.qprog._program_contracts import verify_metacircuit_dict
 from tests.qprog.problems._helpers import (
     HUBO_CUBIC,
     PCE_QUBO_MATRIX,
     PCE_QUBO_SOLUTION,
     exact_hubo_minima,
 )
-from tests.qprog.qprog_contracts import verify_metacircuit_dict
 
 
 @pytest.fixture
@@ -92,6 +92,15 @@ def test_pce_cost_pipeline_uses_custom_stage_stack(dummy_simulator, basic_ansatz
 
 
 def test_pce_hubo_quadratized_objective_helpers(dummy_simulator, basic_ansatz):
+    """Soft HUBO energy for a cubic term via parity expectations.
+
+    hubo = -x0 + 0.25*x1 + 1.5*x0*x1*x2, alpha = 1, histogram (100 shots):
+      "000" count=30, "001"=10, "010"=20, "011"=40.
+    Parities (x0, x1, x2): 000→[0,0,0], 001→[1,0,1], 010→[0,1,1], 011→[1,1,0].
+    mean_parity = [0.5, 0.6, 0.3] → z = [0, -0.2, 0.4].
+    x = 0.5*(1 + tanh(z)); linear terms use x² (soft de-linearization).
+    energy = -x0² + 0.25*x1² + 1.5*x0*x1*x2.
+    """
     hubo = {
         ("x0",): -1.0,
         ("x1",): 0.25,
@@ -111,7 +120,10 @@ def test_pce_hubo_quadratized_objective_helpers(dummy_simulator, basic_ansatz):
     parities = _decode_parities(state_strings, pce._variable_masks_u64)
 
     energy = _compute_soft_energy(parities, probs, pce.alpha, pce.problem)
-    assert isinstance(energy, float)
+
+    x0, x1, x2 = (0.5 * (1.0 + np.tanh(z)) for z in (0.0, -0.2, 0.4))
+    expected = -1.0 * x0**2 + 0.25 * x1**2 + 1.5 * x0 * x1 * x2
+    assert energy == pytest.approx(expected)
 
 
 def test_pce_n_qubits_validation_and_warning(dummy_simulator, basic_ansatz):

@@ -4,6 +4,7 @@
 
 """Tests for divi.pipeline.stages._qem_stage."""
 
+import warnings
 from collections.abc import Sequence
 from typing import Any
 
@@ -24,11 +25,16 @@ from divi.circuits.qem import (
     _NoMitigation,
 )
 from divi.circuits.quepp import QuEPP
-from divi.pipeline import CircuitPipeline, ContractViolation
+from divi.pipeline import CircuitPipeline, ContractViolation, DiviPerformanceWarning
 from divi.pipeline._compilation import _compile_batch
-from divi.pipeline.stages import MeasurementStage, PauliTwirlStage, QEMStage
+from divi.pipeline.stages import (
+    MeasurementStage,
+    ParameterBindingStage,
+    PauliTwirlStage,
+    QEMStage,
+)
 from divi.pipeline.transformations import FOREIGN_KEY_ATTR
-from tests.pipeline.helpers import DummySpecStage, ones_execute_fn, two_group_meta
+from tests.pipeline._helpers import DummySpecStage, ones_execute_fn, two_group_meta
 
 
 class _DummyQEMProtocol(QEMProtocol):
@@ -237,17 +243,15 @@ class TestPipelineOutputMetaCircuitWithQEM:
             assert meta.measurement_qasms
 
 
-class TestQEMStageValidate:
+def test_quepp_before_measurement_passes():
     """Spec: QEMStage.validate enforces QuEPP-before-measurement and twirl-after constraints."""
-
-    def test_quepp_before_measurement_passes(self):
-        CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=two_group_meta()),
-                QEMStage(protocol=QuEPP(truncation_order=1, n_twirls=0)),
-                MeasurementStage(),
-            ]
-        )
+    CircuitPipeline(
+        stages=[
+            DummySpecStage(meta=two_group_meta()),
+            QEMStage(protocol=QuEPP(truncation_order=1, n_twirls=0)),
+            MeasurementStage(),
+        ]
+    )
 
 
 class TestQuEPPLocalEffectiveness:
@@ -484,6 +488,92 @@ class TestQuEPPLocalEffectiveness:
                 MeasurementStage(),
             ]
         )
+
+
+class TestExhaustiveQuEPPWarning:
+    """Spec: QuEPP with sampling='exhaustive' emits DiviPerformanceWarning."""
+
+    def test_exhaustive_sampling_warns(self):
+        with pytest.warns(DiviPerformanceWarning, match="exhaustive"):
+            CircuitPipeline(
+                stages=[
+                    DummySpecStage(meta=two_group_meta()),
+                    QEMStage(
+                        protocol=QuEPP(
+                            sampling="exhaustive",
+                            truncation_order=1,
+                            n_twirls=1,
+                        )
+                    ),
+                    PauliTwirlStage(n_twirls=1, seed=0),
+                    ParameterBindingStage(),
+                    MeasurementStage(),
+                ]
+            )
+
+    def test_montecarlo_sampling_does_not_warn(self):
+        stages = [
+            DummySpecStage(meta=two_group_meta()),
+            QEMStage(
+                protocol=QuEPP(
+                    sampling="montecarlo",
+                    truncation_order=1,
+                    n_twirls=1,
+                )
+            ),
+            PauliTwirlStage(n_twirls=1, seed=0),
+            ParameterBindingStage(),
+            MeasurementStage(),
+        ]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DiviPerformanceWarning)
+            CircuitPipeline(stages=stages)
+
+    def test_suppress_performance_warnings_kwarg_silences_exhaustive(self):
+        """``suppress_performance_warnings=True`` silences the exhaustive-sampling warning."""
+        stages = [
+            DummySpecStage(meta=two_group_meta()),
+            QEMStage(
+                protocol=QuEPP(
+                    sampling="exhaustive",
+                    truncation_order=1,
+                    n_twirls=1,
+                )
+            ),
+            PauliTwirlStage(n_twirls=1, seed=0),
+            ParameterBindingStage(),
+            MeasurementStage(),
+        ]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DiviPerformanceWarning)
+            CircuitPipeline(stages=stages, suppress_performance_warnings=True)
+
+
+def test_exhaustive_and_param_bind_before_qem_warns_both():
+    """When both footguns are present, both DiviPerformanceWarnings fire in
+    a single ``CircuitPipeline.__init__`` — neither short-circuits the other."""
+    stages = [
+        DummySpecStage(meta=two_group_meta()),
+        ParameterBindingStage(),
+        QEMStage(
+            protocol=QuEPP(
+                sampling="exhaustive",
+                truncation_order=1,
+                n_twirls=1,
+            )
+        ),
+        PauliTwirlStage(n_twirls=1, seed=0),
+        MeasurementStage(),
+    ]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", DiviPerformanceWarning)
+        CircuitPipeline(stages=stages)
+
+    messages = [
+        str(w.message) for w in caught if issubclass(w.category, DiviPerformanceWarning)
+    ]
+    assert any("exhaustive" in m for m in messages)
+    assert any("ParameterBindingStage" in m for m in messages)
 
 
 def test_pauli_twirl_sample_unique_labels_deduplicates_repeated_vectors(mocker):

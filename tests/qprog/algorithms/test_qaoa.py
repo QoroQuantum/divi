@@ -26,15 +26,11 @@ from divi.qprog.problems import (
     MaxCutProblem,
     QAOAProblem,
 )
+from tests.qprog._program_contracts import verify_correct_circuit_count
 from tests.qprog.problems._helpers import QUBO_MATRIX, make_bull_graph
-from tests.qprog.qprog_contracts import (
-    OPTIMIZERS_TO_TEST,
-    verify_correct_circuit_count,
-)
 
 
 class TestGeneralQAOA:
-    @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
     def test_qaoa_optimization_runs_cost_pipeline(
         self, mocker, optimizer, default_test_simulator
     ):
@@ -44,7 +40,6 @@ class TestGeneralQAOA:
         pipeline. The behavioral outcomes (losses, circuit counts) are verified
         by dedicated end-to-end tests.
         """
-        optimizer = optimizer()  # Create fresh instance
         qaoa_problem = QAOA(
             MaxCliqueProblem(nx.bull_graph(), is_constrained=True),
             n_layers=1,
@@ -83,7 +78,6 @@ class TestGeneralQAOA:
 
         assert spy.call_args.kwargs["initial_spec"] is qaoa_problem.cost_hamiltonian
 
-    @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
     def test_qaoa_final_computation_runs_measurement_pipeline(
         self, mocker, optimizer, default_test_simulator
     ):
@@ -93,7 +87,6 @@ class TestGeneralQAOA:
         pipeline. The behavioral outcomes (solution extraction) are verified
         by dedicated end-to-end tests.
         """
-        optimizer = optimizer()  # Create fresh instance
         qaoa_problem = QAOA(
             MaxCliqueProblem(nx.bull_graph(), is_constrained=True),
             n_layers=1,
@@ -113,11 +106,9 @@ class TestGeneralQAOA:
         # Measurement pipeline should be called once
         assert spy.call_count == 1
 
-    @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
     def test_graph_correct_circuits_count_and_energies(
         self, optimizer, dummy_simulator
     ):
-        optimizer = optimizer()  # Create fresh instance
         qaoa_problem = QAOA(
             MaxCliqueProblem(nx.bull_graph(), is_constrained=True),
             n_layers=1,

@@ -4,26 +4,29 @@
 
 import os
 import threading
-import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from multiprocessing import Event
-from queue import Queue
 from threading import Event as ThreadingEvent
-from threading import Lock, Thread
+from threading import Thread
 
 import pytest
 from rich.panel import Panel
-from rich.progress import Progress
 from rich.traceback import Traceback
 
 import divi.qprog.ensemble as ensemble_module
 from divi.backends import AsyncJobBackend, ExecutionResult
 from divi.exceptions import ExecutionCancelledError
 from divi.qprog._batch_coordinator import _BatchCoordinator
-from divi.qprog.ensemble import BatchConfig, BatchMode, ProgramEnsemble
+from divi.qprog.ensemble import (
+    BatchConfig,
+    BatchMode,
+    ProgramEnsemble,
+    _beam_search_aggregate_top_n,
+)
 from divi.qprog.quantum_program import QuantumProgram
-from divi.reporting import TerminalStatus, queue_listener
-from tests.qprog.qprog_contracts import verify_basic_program_ensemble_behaviour
+from divi.qprog.variational_quantum_algorithm import SolutionEntry
+from divi.reporting import TerminalStatus
+from tests.qprog._program_contracts import verify_basic_program_ensemble_behaviour
 
 
 class _FakeRunResult:
@@ -121,7 +124,7 @@ class TestProgramEnsemble:
 
     def test_basic_program_ensemble_behaviour(self, program_ensemble, mocker):
         """Uses the contract to verify basic error handling and state checks."""
-        verify_basic_program_ensemble_behaviour(mocker, program_ensemble)
+        verify_basic_program_ensemble_behaviour(program_ensemble, mocker)
 
     def test_programs_dict_is_correct(self, program_ensemble):
         program_ensemble.create_programs()
@@ -183,10 +186,6 @@ class TestProgramEnsemble:
         program_ensemble.create_programs()
         program_ensemble.run()
         assert len(program_ensemble.futures) == 2
-
-    def test_run_fails_if_no_programs(self, program_ensemble):
-        with pytest.raises(RuntimeError, match="No programs to run."):
-            program_ensemble.run()
 
     def test_run_fails_if_already_running(self, mocker, program_ensemble):
         program_ensemble.create_programs()
@@ -346,67 +345,6 @@ class TestProgramEnsemble:
         result = program_ensemble.aggregate_results()
 
         assert result == 15  # 10 + 5
-
-    def testqueue_listener_exception_handling(self, mocker):
-        """Test queue listener handles unexpected exceptions."""
-        mock_queue = mocker.MagicMock()
-        mock_progress_bar = mocker.MagicMock()
-        mock_done_event = Event()
-        pb_task_map = {}
-        lock = Lock()
-        mock_queue.get.side_effect = Exception("Unexpected queue error")
-        mock_console = mocker.MagicMock()
-        mock_progress_bar.console = mock_console
-
-        listener_thread = Thread(
-            target=queue_listener,
-            args=(mock_queue, mock_progress_bar, pb_task_map, mock_done_event, lock),
-        )
-        listener_thread.start()
-        time.sleep(0.2)
-        mock_done_event.set()
-        listener_thread.join(timeout=1)
-
-        mock_console.log.assert_called()
-        assert "queue.get failed" in str(mock_console.log.call_args)
-
-    def testqueue_listener_optional_message_fields(self, mocker):
-        """Test queue listener handles all optional message fields."""
-        mock_queue = Queue()
-        mock_progress_bar = mocker.MagicMock()
-        mock_done_event = Event()
-        pb_task_map = {"job1": 1}
-        lock = Lock()
-
-        mock_queue.put(
-            {
-                "job_id": "job1",
-                "progress": 1,
-                "poll_attempt": 3,
-                "max_retries": 5,
-                "service_job_id": "service_123",
-                "job_status": "running",
-                "message": "Processing...",
-                "final_status": "completed",
-                "loss": -0.321,
-            }
-        )
-        listener_thread = Thread(
-            target=queue_listener,
-            args=(mock_queue, mock_progress_bar, pb_task_map, mock_done_event, lock),
-        )
-        listener_thread.start()
-        time.sleep(0.1)
-        mock_done_event.set()
-        listener_thread.join(timeout=1)
-
-        mock_progress_bar.update.assert_called_once()
-        call_kwargs = mock_progress_bar.update.call_args[1]
-        assert call_kwargs["poll_attempt"] == 3
-        assert call_kwargs["max_retries"] == 5
-        assert call_kwargs["service_job_id"] == "service_123"
-        assert call_kwargs["job_status"] == "running"
-        assert call_kwargs["loss"] == -0.321
 
     def test_reset_listener_thread_timeout(self, program_ensemble, mocker):
         """Test reset handles listener thread timeout warning."""
@@ -1190,36 +1128,30 @@ class TestRegistrationFailureCleanup:
         assert ensemble.aggregate_results() == 15
 
 
-class TestSharedCancellationEvent:
-    """Regression for fix #1.5: ``ProgramEnsemble._cancellation_event`` and
-    ``_BatchCoordinator._cancelled`` must reference the same Event so a
-    signal on either side is observed by the other.
-    """
-
-    def test_cancellation_event_is_shared_with_coordinator(self, dummy_simulator):
-        """When the ensemble's cancellation event is set, the coordinator's
-        ``_cancelled`` Event must also report ``is_set()``."""
-        ensemble = SampleProgramEnsemble(backend=dummy_simulator)
-        ensemble.create_programs()
-        try:
-            ensemble.run(blocking=False)
-            assert (
-                ensemble._coordinator is not None
-            ), "expected coordinator under default BatchMode.MERGED"
-            # Same identity, not just same value.
-            assert ensemble._cancellation_event is ensemble._coordinator._cancelled
-            # Setting the ensemble side propagates to the coordinator.
-            ensemble._cancellation_event.set()
-            assert ensemble._coordinator._cancelled.is_set()
-        finally:
-            ensemble.join()
+def test_cancellation_event_is_shared_with_coordinator(dummy_simulator):
+    """When the ensemble's cancellation event is set, the coordinator's
+    ``_cancelled`` Event must also report ``is_set()``."""
+    ensemble = SampleProgramEnsemble(backend=dummy_simulator)
+    ensemble.create_programs()
+    try:
+        ensemble.run(blocking=False)
+        assert (
+            ensemble._coordinator is not None
+        ), "expected coordinator under default BatchMode.MERGED"
+        # Same identity, not just same value.
+        assert ensemble._cancellation_event is ensemble._coordinator._cancelled
+        # Setting the ensemble side propagates to the coordinator.
+        ensemble._cancellation_event.set()
+        assert ensemble._coordinator._cancelled.is_set()
+    finally:
+        ensemble.join()
 
 
 class TestBatchConfig:
-    def test_default_values(self):
-        config = BatchConfig()
-        assert config.mode is BatchMode.MERGED
-        assert config.max_batch_size is None
+    """Ensemble-side smoke tests covering BatchConfig values used directly in
+    ``ProgramEnsemble.run()``. Validation and defaults are owned by
+    ``tests/qprog/test_batch_coordinator.py::TestBatchConfig``.
+    """
 
     def test_valid_max_batch_size(self):
         config = BatchConfig(max_batch_size=10)
@@ -1228,18 +1160,6 @@ class TestBatchConfig:
     def test_max_batch_size_one(self):
         config = BatchConfig(max_batch_size=1)
         assert config.max_batch_size == 1
-
-    def test_rejects_zero(self):
-        with pytest.raises(ValueError, match="max_batch_size must be >= 1"):
-            BatchConfig(max_batch_size=0)
-
-    def test_rejects_negative(self):
-        with pytest.raises(ValueError, match="max_batch_size must be >= 1"):
-            BatchConfig(max_batch_size=-5)
-
-    def test_rejects_max_batch_size_with_off_mode(self):
-        with pytest.raises(ValueError, match="max_batch_size has no effect"):
-            BatchConfig(mode=BatchMode.OFF, max_batch_size=10)
 
     def test_off_mode(self):
         config = BatchConfig(mode=BatchMode.OFF)
@@ -1615,37 +1535,656 @@ class TestExecutorSizing:
         assert soft_cap_warnings == []
 
 
-def testqueue_listener(mocker):
-    """Unit test for the queue_listener function."""
-    mock_queue = Queue()
-    mock_progress_bar = mocker.MagicMock(spec=Progress)
-    mock_done_event = Event()
-    lock = Lock()
-    pb_task_map = {"job1": 1, "job2": 2}
+def beam_search_aggregate(
+    programs,
+    initial_solution,
+    extend_fn,
+    evaluate_fn,
+    beam_width=None,
+    n_partition_candidates=None,
+):
+    """Test-local shorthand wrapping _beam_search_aggregate_top_n for top_n=1."""
+    return _beam_search_aggregate_top_n(
+        programs,
+        initial_solution,
+        extend_fn,
+        evaluate_fn,
+        beam_width,
+        n_partition_candidates,
+        top_n=1,
+    )[0][1]
 
-    mock_queue.put(
-        {
-            "job_id": "job1",
-            "progress": 1,
-            "message": "step 1",
-            "final_status": "running",
+
+# ──────────────────────────────────────────────────────────────────────
+#  Helpers: lightweight mock VQA programs for testing
+# ──────────────────────────────────────────────────────────────────────
+
+
+class _MockProgram:
+    """Minimal mock that implements get_top_solutions."""
+
+    def __init__(self, candidates: list[SolutionEntry]):
+        self._candidates = candidates
+
+    def get_top_solutions(self, n=10, *, include_decoded=False):
+        return self._candidates[:n]
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Simple extend / evaluate functions for testing
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _sum_evaluate(solution):
+    """Simple evaluator: sum of the solution vector (lower is better)."""
+    return sum(solution)
+
+
+def _neg_sum_evaluate(solution):
+    """Evaluator where higher sums are better: returns -sum (lower is better)."""
+    return -sum(solution)
+
+
+def _write_extend(variable_maps):
+    """Returns an extend_fn that writes decoded bits into global positions."""
+
+    def extend(current, prog_id, candidate):
+        result = list(current)
+        for local_idx, global_idx in enumerate(variable_maps[prog_id]):
+            result[global_idx] = int(candidate.decoded[local_idx])
+        return result
+
+    return extend
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Tests
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestBeamSearchAggregateValidation:
+    def test_beam_width_zero_raises(self):
+        with pytest.raises(ValueError, match="beam_width must be >= 1"):
+            beam_search_aggregate(
+                programs={},
+                initial_solution=[0],
+                extend_fn=lambda c, p, s: c,
+                evaluate_fn=lambda s: 0.0,
+                beam_width=0,
+            )
+
+    def test_beam_width_negative_raises(self):
+        with pytest.raises(ValueError, match="beam_width must be >= 1"):
+            beam_search_aggregate(
+                programs={},
+                initial_solution=[0],
+                extend_fn=lambda c, p, s: c,
+                evaluate_fn=lambda s: 0.0,
+                beam_width=-1,
+            )
+
+    def test_n_partition_candidates_zero_raises(self):
+        with pytest.raises(ValueError, match="n_partition_candidates must be >= 1"):
+            beam_search_aggregate(
+                programs={},
+                initial_solution=[0],
+                extend_fn=lambda c, p, s: c,
+                evaluate_fn=lambda s: 0.0,
+                beam_width=1,
+                n_partition_candidates=0,
+            )
+
+    def test_n_partition_candidates_negative_raises(self):
+        with pytest.raises(ValueError, match="n_partition_candidates must be >= 1"):
+            beam_search_aggregate(
+                programs={},
+                initial_solution=[0],
+                extend_fn=lambda c, p, s: c,
+                evaluate_fn=lambda s: 0.0,
+                beam_width=1,
+                n_partition_candidates=-3,
+            )
+
+    def test_n_partition_candidates_less_than_beam_width_raises(self):
+        with pytest.raises(
+            ValueError, match="n_partition_candidates.*must be >= beam_width"
+        ):
+            beam_search_aggregate(
+                programs={},
+                initial_solution=[0],
+                extend_fn=lambda c, p, s: c,
+                evaluate_fn=lambda s: 0.0,
+                beam_width=5,
+                n_partition_candidates=2,
+            )
+
+
+class TestBeamSearchAggregateGreedy:
+    """Test greedy mode (beam_width=1)."""
+
+    def test_single_partition_single_candidate(self):
+        """Greedy with one partition and one candidate returns that candidate."""
+        candidates = [SolutionEntry(bitstring="10", prob=0.8, decoded=[1, 0])]
+        programs = {"A": _MockProgram(candidates)}
+        var_maps = {"A": [0, 1]}
+
+        result = beam_search_aggregate(
+            programs=programs,
+            initial_solution=[0, 0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_neg_sum_evaluate,
+            beam_width=1,
+        )
+
+        assert result == [1, 0]
+
+    def test_two_partitions_greedy_picks_best_per_partition(self):
+        """Greedy picks the single best candidate from each partition."""
+        # Partition A: variables 0,1 — candidates: [1,0] (prob=0.9)
+        candidates_a = [
+            SolutionEntry(bitstring="10", prob=0.9, decoded=[1, 0]),
+        ]
+        # Partition B: variables 2,3 — candidates: [1,1] (prob=0.7)
+        candidates_b = [
+            SolutionEntry(bitstring="11", prob=0.7, decoded=[1, 1]),
+        ]
+        programs = {"A": _MockProgram(candidates_a), "B": _MockProgram(candidates_b)}
+        var_maps = {"A": [0, 1], "B": [2, 3]}
+
+        result = beam_search_aggregate(
+            programs=programs,
+            initial_solution=[0, 0, 0, 0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_neg_sum_evaluate,
+            beam_width=1,
+        )
+
+        # Greedy: After A, only [1,0,0,0]. After B, only [1,0,1,1].
+        assert result == [1, 0, 1, 1]
+
+
+class TestBeamSearchAggregateBeam:
+    """Test standard beam search (beam_width > 1)."""
+
+    def test_beam_width_2_explores_combinations(self):
+        """Beam width 2 keeps two partial solutions and finds the best."""
+        # Partition A (vars 0,1):
+        candidates_a = [
+            SolutionEntry(bitstring="10", prob=0.6, decoded=[1, 0]),
+            SolutionEntry(bitstring="01", prob=0.4, decoded=[0, 1]),
+        ]
+        # Partition B (vars 2,3):
+        candidates_b = [
+            SolutionEntry(bitstring="10", prob=0.7, decoded=[1, 0]),
+            SolutionEntry(bitstring="01", prob=0.3, decoded=[0, 1]),
+        ]
+        programs = {"A": _MockProgram(candidates_a), "B": _MockProgram(candidates_b)}
+        var_maps = {"A": [0, 1], "B": [2, 3]}
+
+        result = beam_search_aggregate(
+            programs=programs,
+            initial_solution=[0, 0, 0, 0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_neg_sum_evaluate,
+            beam_width=2,
+        )
+
+        # With beam_width=2, both A candidates are kept.
+        # Expanding B: 4 combinations. All have sum=2, so any is optimal.
+        assert sum(result) == 2
+
+    def test_beam_finds_better_than_greedy(self):
+        """Beam search can find a solution that greedy misses."""
+        weights = [10, 1, 1, 10]
+
+        def weighted_evaluate(solution):
+            return sum(s * w for s, w in zip(solution, weights))
+
+        # Partition A (vars 0,1): beam_width=1 only sees first candidate
+        candidates_a = [
+            SolutionEntry(bitstring="10", prob=0.9, decoded=[1, 0]),
+            SolutionEntry(bitstring="01", prob=0.1, decoded=[0, 1]),
+        ]
+        # Partition B (vars 2,3):
+        candidates_b = [
+            SolutionEntry(bitstring="01", prob=0.9, decoded=[0, 1]),
+            SolutionEntry(bitstring="10", prob=0.1, decoded=[1, 0]),
+        ]
+        programs = {"A": _MockProgram(candidates_a), "B": _MockProgram(candidates_b)}
+        var_maps = {"A": [0, 1], "B": [2, 3]}
+
+        # Greedy (beam_width=1): only sees 1 candidate per partition
+        greedy_result = beam_search_aggregate(
+            programs=programs,
+            initial_solution=[0, 0, 0, 0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=weighted_evaluate,
+            beam_width=1,
+        )
+
+        # Beam (beam_width=2): sees 2 candidates per partition
+        beam_result = beam_search_aggregate(
+            programs=programs,
+            initial_solution=[0, 0, 0, 0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=weighted_evaluate,
+            beam_width=2,
+        )
+
+        greedy_cost = weighted_evaluate(greedy_result)
+        beam_cost = weighted_evaluate(beam_result)
+
+        # Beam should find an equal or better solution
+        assert beam_cost <= greedy_cost
+
+
+class TestBeamSearchAggregateExhaustive:
+    """Test exhaustive mode (beam_width=None)."""
+
+    def test_exhaustive_explores_all_combinations(self):
+        """With beam_width=None, all combinations are evaluated."""
+        candidates_a = [
+            SolutionEntry(bitstring="1", prob=0.6, decoded=[1]),
+            SolutionEntry(bitstring="0", prob=0.4, decoded=[0]),
+        ]
+        candidates_b = [
+            SolutionEntry(bitstring="1", prob=0.7, decoded=[1]),
+            SolutionEntry(bitstring="0", prob=0.3, decoded=[0]),
+        ]
+        programs = {"A": _MockProgram(candidates_a), "B": _MockProgram(candidates_b)}
+        var_maps = {"A": [0], "B": [1]}
+
+        result = beam_search_aggregate(
+            programs=programs,
+            initial_solution=[0, 0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_sum_evaluate,
+            beam_width=None,
+        )
+
+        # _sum_evaluate minimizes sum → best is [0, 0]
+        assert result == [0, 0]
+
+    def test_exhaustive_finds_global_optimum(self):
+        """Exhaustive must find the true global optimum."""
+
+        def tricky_evaluate(solution):
+            """Only [0,1,0] has cost -100, everything else is >= 0."""
+            if solution == [0, 1, 0]:
+                return -100.0
+            return sum(solution)
+
+        candidates_a = [
+            SolutionEntry(bitstring="1", prob=0.9, decoded=[1]),
+            SolutionEntry(bitstring="0", prob=0.1, decoded=[0]),
+        ]
+        candidates_b = [
+            SolutionEntry(bitstring="1", prob=0.9, decoded=[1]),
+            SolutionEntry(bitstring="0", prob=0.1, decoded=[0]),
+        ]
+        candidates_c = [
+            SolutionEntry(bitstring="1", prob=0.9, decoded=[1]),
+            SolutionEntry(bitstring="0", prob=0.1, decoded=[0]),
+        ]
+        programs = {
+            "A": _MockProgram(candidates_a),
+            "B": _MockProgram(candidates_b),
+            "C": _MockProgram(candidates_c),
         }
-    )
-    mock_queue.put({"job_id": "job2", "progress": 1, "poll_attempt": 3})
+        var_maps = {"A": [0], "B": [1], "C": [2]}
 
-    listener_thread = Thread(
-        target=queue_listener,
-        args=(mock_queue, mock_progress_bar, pb_task_map, mock_done_event, lock),
-    )
-    listener_thread.start()
-    time.sleep(0.1)
-    mock_done_event.set()
-    listener_thread.join(timeout=1)
-    assert not listener_thread.is_alive()
+        result = beam_search_aggregate(
+            programs=programs,
+            initial_solution=[0, 0, 0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=tricky_evaluate,
+            beam_width=None,
+        )
 
-    expected_calls = [
-        mocker.call(1, advance=1, message="step 1", final_status="running"),
-        mocker.call(2, advance=1, poll_attempt=3),
-    ]
-    mock_progress_bar.update.assert_has_calls(expected_calls, any_order=True)
-    assert mock_queue.empty()
+        assert result == [0, 1, 0]
+
+
+class TestBeamSearchAggregateEdgeCases:
+    """Test edge cases."""
+
+    def test_single_partition(self):
+        """Single partition still works correctly."""
+        candidates = [
+            SolutionEntry(bitstring="01", prob=0.9, decoded=[0, 1]),
+            SolutionEntry(bitstring="10", prob=0.1, decoded=[1, 0]),
+        ]
+        programs = {"A": _MockProgram(candidates)}
+        var_maps = {"A": [0, 1]}
+
+        # beam_width=2 sees both candidates, picks highest sum
+        result = beam_search_aggregate(
+            programs=programs,
+            initial_solution=[0, 0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_neg_sum_evaluate,
+            beam_width=2,
+        )
+
+        assert result == [0, 1]
+
+    def test_empty_programs_returns_initial(self):
+        """No programs at all returns the initial solution."""
+        result = beam_search_aggregate(
+            programs={},
+            initial_solution=[0, 0, 0],
+            extend_fn=lambda c, p, s: c,
+            evaluate_fn=_sum_evaluate,
+            beam_width=1,
+        )
+
+        assert result == [0, 0, 0]
+
+    def test_program_with_no_candidates_skipped(self):
+        """A program returning no candidates is skipped without error."""
+        programs = {"A": _MockProgram([])}
+
+        result = beam_search_aggregate(
+            programs=programs,
+            initial_solution=[0, 0],
+            extend_fn=lambda c, p, s: c,
+            evaluate_fn=_sum_evaluate,
+            beam_width=1,
+        )
+
+        assert result == [0, 0]
+
+    def test_beam_width_limits_extraction(self):
+        """beam_width limits both candidates extracted and beam size."""
+        many_candidates = [
+            SolutionEntry(bitstring="1", prob=0.9, decoded=[1]),
+            SolutionEntry(bitstring="0", prob=0.1, decoded=[0]),
+        ]
+        programs = {"A": _MockProgram(many_candidates)}
+        var_maps = {"A": [0]}
+
+        # beam_width=1 should only consider 1 candidate: [1]
+        result = beam_search_aggregate(
+            programs=programs,
+            initial_solution=[0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_sum_evaluate,
+            beam_width=1,
+        )
+
+        # Only candidate [1] is considered (beam_width=1), so result is [1]
+        assert result == [1]
+
+    def test_non_zero_initial_solution_preserved(self):
+        """Positions not touched by any partition retain their initial values."""
+        # Partition only covers position 1; positions 0 and 2 should stay as-is
+        candidates = [SolutionEntry(bitstring="1", prob=0.9, decoded=[1])]
+        programs = {"A": _MockProgram(candidates)}
+        var_maps = {"A": [1]}
+
+        result = beam_search_aggregate(
+            programs=programs,
+            initial_solution=[1, 0, 1],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_neg_sum_evaluate,
+            beam_width=1,
+        )
+
+        assert result == [1, 1, 1]
+
+    def test_overlapping_partitions(self):
+        """Partitions writing to overlapping global positions work correctly."""
+        # Both partitions write to position 0; partition B overwrites A's value
+        candidates_a = [SolutionEntry(bitstring="1", prob=0.9, decoded=[1])]
+        candidates_b = [SolutionEntry(bitstring="0", prob=0.9, decoded=[0])]
+        programs = {"A": _MockProgram(candidates_a), "B": _MockProgram(candidates_b)}
+        var_maps = {"A": [0], "B": [0]}
+
+        result = beam_search_aggregate(
+            programs=programs,
+            initial_solution=[0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_sum_evaluate,
+            beam_width=1,
+        )
+
+        # B runs after A and overwrites position 0 → final value is 0
+        assert result == [0]
+
+    def test_tie_breaking_is_stable(self):
+        """When candidates have identical scores, a valid result is returned."""
+        candidates_a = [
+            SolutionEntry(bitstring="1", prob=0.5, decoded=[1]),
+            SolutionEntry(bitstring="0", prob=0.5, decoded=[0]),
+        ]
+        programs = {"A": _MockProgram(candidates_a)}
+        var_maps = {"A": [0]}
+
+        # Both candidates have |sum|=1 or 0 under _sum_evaluate — either is valid
+        result = beam_search_aggregate(
+            programs=programs,
+            initial_solution=[0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_sum_evaluate,
+            beam_width=2,
+        )
+
+        assert result in ([0], [1])
+
+
+class TestBeamSearchAggregatePruning:
+    """Test that beam pruning behaves correctly."""
+
+    def test_beam_prunes_to_width(self):
+        """After each partition step, at most beam_width solutions are kept."""
+        # 3 partitions × 3 candidates each.  With beam_width=2, the beam
+        # should never exceed 2 partial solutions between steps, which limits
+        # the total work and may exclude some global combinations.
+        candidates = [
+            SolutionEntry(bitstring="1", prob=0.5, decoded=[1]),
+            SolutionEntry(bitstring="0", prob=0.3, decoded=[0]),
+            SolutionEntry(bitstring="1", prob=0.2, decoded=[1]),
+        ]
+        programs = {
+            "A": _MockProgram(candidates),
+            "B": _MockProgram(candidates),
+            "C": _MockProgram(candidates),
+        }
+        var_maps = {"A": [0], "B": [1], "C": [2]}
+
+        result = beam_search_aggregate(
+            programs=programs,
+            initial_solution=[0, 0, 0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_sum_evaluate,
+            beam_width=2,
+        )
+
+        # With _sum_evaluate (minimize sum), the optimal is [0,0,0]
+        assert result == [0, 0, 0]
+
+    def test_monotonicity_exhaustive_leq_beam_leq_greedy(self):
+        """Wider beam should always find equal or better solutions.
+
+        Verifies the invariant: cost(exhaustive) <= cost(beam) <= cost(greedy).
+        """
+        weights = [10, 1, 1, 10, 5, 2]
+
+        def weighted_evaluate(solution):
+            return sum(s * w for s, w in zip(solution, weights))
+
+        candidates_a = [
+            SolutionEntry(bitstring="10", prob=0.8, decoded=[1, 0]),
+            SolutionEntry(bitstring="01", prob=0.15, decoded=[0, 1]),
+            SolutionEntry(bitstring="00", prob=0.05, decoded=[0, 0]),
+        ]
+        candidates_b = [
+            SolutionEntry(bitstring="01", prob=0.7, decoded=[0, 1]),
+            SolutionEntry(bitstring="10", prob=0.2, decoded=[1, 0]),
+            SolutionEntry(bitstring="00", prob=0.1, decoded=[0, 0]),
+        ]
+        candidates_c = [
+            SolutionEntry(bitstring="11", prob=0.6, decoded=[1, 1]),
+            SolutionEntry(bitstring="10", prob=0.3, decoded=[1, 0]),
+            SolutionEntry(bitstring="00", prob=0.1, decoded=[0, 0]),
+        ]
+        programs = {
+            "A": _MockProgram(candidates_a),
+            "B": _MockProgram(candidates_b),
+            "C": _MockProgram(candidates_c),
+        }
+        var_maps = {"A": [0, 1], "B": [2, 3], "C": [4, 5]}
+
+        kwargs = dict(
+            programs=programs,
+            initial_solution=[0] * 6,
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=weighted_evaluate,
+        )
+
+        greedy_cost = weighted_evaluate(beam_search_aggregate(**kwargs, beam_width=1))
+        beam_cost = weighted_evaluate(beam_search_aggregate(**kwargs, beam_width=2))
+        exhaustive_cost = weighted_evaluate(
+            beam_search_aggregate(**kwargs, beam_width=None)
+        )
+
+        assert exhaustive_cost <= beam_cost <= greedy_cost
+
+    def test_n_partition_candidates_widens_search(self):
+        """More candidates per partition can find better solutions with narrow beam."""
+
+        def weighted_evaluate(solution):
+            return sum(solution) * 10
+
+        # 3 candidates; greedy (beam_width=1) only sees the first one ([1])
+        candidates = [
+            SolutionEntry(bitstring="1", prob=0.6, decoded=[1]),
+            SolutionEntry(bitstring="0", prob=0.3, decoded=[0]),
+            SolutionEntry(bitstring="1", prob=0.1, decoded=[1]),
+        ]
+        programs = {"A": _MockProgram(candidates)}
+        var_maps = {"A": [0]}
+
+        # beam_width=1, default n_partition_candidates (=1): only sees [1]
+        greedy_result = beam_search_aggregate(
+            programs=programs,
+            initial_solution=[0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=weighted_evaluate,
+            beam_width=1,
+        )
+
+        # beam_width=1, n_partition_candidates=3: sees all 3, picks best ([0])
+        wider_result = beam_search_aggregate(
+            programs=programs,
+            initial_solution=[0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=weighted_evaluate,
+            beam_width=1,
+            n_partition_candidates=3,
+        )
+
+        assert weighted_evaluate(wider_result) <= weighted_evaluate(greedy_result)
+
+
+class TestBeamSearchAggregateTopN:
+    """Test _beam_search_aggregate_top_n returning multiple ranked solutions."""
+
+    def _make_two_partition_setup(self):
+        candidates_a = [
+            SolutionEntry(bitstring="10", prob=0.6, decoded=[1, 0]),
+            SolutionEntry(bitstring="01", prob=0.3, decoded=[0, 1]),
+            SolutionEntry(bitstring="00", prob=0.1, decoded=[0, 0]),
+        ]
+        candidates_b = [
+            SolutionEntry(bitstring="10", prob=0.7, decoded=[1, 0]),
+            SolutionEntry(bitstring="01", prob=0.2, decoded=[0, 1]),
+            SolutionEntry(bitstring="00", prob=0.1, decoded=[0, 0]),
+        ]
+        programs = {"A": _MockProgram(candidates_a), "B": _MockProgram(candidates_b)}
+        var_maps = {"A": [0, 1], "B": [2, 3]}
+        return programs, var_maps
+
+    def test_top_n_returns_n_results(self):
+        programs, var_maps = self._make_two_partition_setup()
+        results = _beam_search_aggregate_top_n(
+            programs=programs,
+            initial_solution=[0, 0, 0, 0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_sum_evaluate,
+            beam_width=3,
+            top_n=3,
+        )
+        assert len(results) == 3
+        assert all(isinstance(r, tuple) and len(r) == 2 for r in results)
+
+    def test_top_n_sorted_ascending(self):
+        programs, var_maps = self._make_two_partition_setup()
+        results = _beam_search_aggregate_top_n(
+            programs=programs,
+            initial_solution=[0, 0, 0, 0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_sum_evaluate,
+            beam_width=3,
+            top_n=3,
+        )
+        scores = [score for score, _sol in results]
+        assert scores == sorted(scores)
+
+    def test_top_n_1_matches_original(self):
+        programs, var_maps = self._make_two_partition_setup()
+        kwargs = dict(
+            programs=programs,
+            initial_solution=[0, 0, 0, 0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_sum_evaluate,
+            beam_width=2,
+        )
+        original = beam_search_aggregate(**kwargs)
+        top_1 = _beam_search_aggregate_top_n(**kwargs, top_n=1)
+        assert top_1[0][1] == original
+
+    def test_beam_width_bumped_to_n(self):
+        """top_n=3 with beam_width=1 still returns 3 results."""
+        programs, var_maps = self._make_two_partition_setup()
+        results = _beam_search_aggregate_top_n(
+            programs=programs,
+            initial_solution=[0, 0, 0, 0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_sum_evaluate,
+            beam_width=1,
+            top_n=3,
+        )
+        assert len(results) == 3
+
+    def test_top_n_bump_validates_against_n_partition_candidates(self):
+        """n_partition_candidates must be >= beam_width *after* the top_n bump."""
+        with pytest.raises(
+            ValueError, match="n_partition_candidates.*must be >= beam_width"
+        ):
+            _beam_search_aggregate_top_n(
+                programs={},
+                initial_solution=[0],
+                extend_fn=lambda c, p, s: c,
+                evaluate_fn=lambda s: 0.0,
+                beam_width=2,
+                n_partition_candidates=3,
+                top_n=5,
+            )
+
+    def test_top_n_greater_than_beam_capped(self):
+        """When fewer solutions exist than top_n, returns all available."""
+        candidates = [SolutionEntry(bitstring="1", prob=0.9, decoded=[1])]
+        programs = {"A": _MockProgram(candidates)}
+        var_maps = {"A": [0]}
+        results = _beam_search_aggregate_top_n(
+            programs=programs,
+            initial_solution=[0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_sum_evaluate,
+            beam_width=1,
+            top_n=10,
+        )
+        # Only 1 candidate per partition × 1 partition = at most beam_width solutions
+        # beam_width bumped to 10 but only 1 candidate exists
+        assert len(results) >= 1
+        assert len(results) <= 10

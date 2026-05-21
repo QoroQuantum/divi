@@ -6,7 +6,6 @@
 
 import networkx as nx
 import numpy as np
-import pennylane as qp
 import pennylane.qaoa as pqaoa
 import pytest
 from qiskit.quantum_info import SparsePauliOp
@@ -18,17 +17,7 @@ from divi.hamiltonians import (
     x_mixer,
     xy_mixer,
 )
-
-
-def _assert_matches_pennylane(actual: SparsePauliOp, expected_pl) -> None:
-    """Matrix-equality check against a PennyLane operator.
-
-    ``wire_order=reversed(range(n))`` reconciles PennyLane's big-endian
-    wire convention with Qiskit's little-endian ``to_matrix()`` output.
-    """
-    n = actual.num_qubits
-    expected_mat = qp.matrix(expected_pl, wire_order=list(reversed(range(n))))
-    np.testing.assert_allclose(actual.to_matrix(), expected_mat, atol=1e-10)
+from tests.hamiltonians._helpers import assert_matches_pennylane
 
 
 def _assert_spo_equivalent(actual: SparsePauliOp, expected: SparsePauliOp) -> None:
@@ -41,13 +30,13 @@ def _assert_spo_equivalent(actual: SparsePauliOp, expected: SparsePauliOp) -> No
 
 def test_x_mixer_matches_pennylane_qaoa_x_mixer():
     actual = x_mixer(4)
-    _assert_matches_pennylane(actual, pqaoa.x_mixer(range(4)))
+    assert_matches_pennylane(actual, pqaoa.x_mixer(range(4)))
 
 
 def test_xy_mixer_matches_pennylane_qaoa_xy_mixer():
     graph = nx.Graph([(0, 1), (1, 2)])
     actual = xy_mixer(graph)
-    _assert_matches_pennylane(actual, pqaoa.xy_mixer(graph))
+    assert_matches_pennylane(actual, pqaoa.xy_mixer(graph))
 
 
 def test_xy_mixer_preserves_trailing_isolated_qubits():
@@ -75,7 +64,7 @@ def test_xy_mixer_requires_integer_isolated_nodes():
 @pytest.mark.parametrize("b", [0, 1])
 def test_bit_driver_matches_pennylane(b):
     actual = bit_driver(n_qubits=5, b=b)
-    _assert_matches_pennylane(actual, pqaoa.bit_driver(range(5), b=b))
+    assert_matches_pennylane(actual, pqaoa.bit_driver(range(5), b=b))
 
 
 def test_bit_driver_rejects_invalid_b():
@@ -90,15 +79,13 @@ def test_bit_driver_rejects_invalid_b():
 def test_edge_driver_matches_pennylane(reward):
     graph = nx.Graph([(0, 1), (1, 2), (2, 3)])
     actual = edge_driver(graph, reward)
-    _assert_matches_pennylane(actual, pqaoa.edge_driver(graph, reward))
+    assert_matches_pennylane(actual, pqaoa.edge_driver(graph, reward))
 
 
 def test_edge_driver_constant_reward_set_matches_pennylane():
     graph = nx.Graph([(0, 1), (1, 2)])
     actual = edge_driver(graph, ["00", "01", "10", "11"])
-    _assert_matches_pennylane(
-        actual, pqaoa.edge_driver(graph, ["00", "01", "10", "11"])
-    )
+    assert_matches_pennylane(actual, pqaoa.edge_driver(graph, ["00", "01", "10", "11"]))
 
 
 def test_edge_driver_rejects_unpaired_directed_bits():
@@ -118,7 +105,7 @@ def test_edge_driver_rejects_unpaired_directed_bits():
 def test_bit_flip_mixer_matches_pennylane(graph_factory, b):
     graph = graph_factory()
     actual = bit_flip_mixer(graph, b=b)
-    _assert_matches_pennylane(actual, pqaoa.bit_flip_mixer(graph, b=b))
+    assert_matches_pennylane(actual, pqaoa.bit_flip_mixer(graph, b=b))
 
 
 def test_bit_flip_mixer_rejects_invalid_b():
@@ -154,4 +141,4 @@ def test_bit_flip_mixer_isolated_node_matches_pennylane():
     graph = nx.Graph()
     graph.add_nodes_from([0, 1, 2])  # all isolated, degree 0 everywhere
     actual = bit_flip_mixer(graph, b=0)
-    _assert_matches_pennylane(actual, pqaoa.bit_flip_mixer(graph, 0))
+    assert_matches_pennylane(actual, pqaoa.bit_flip_mixer(graph, 0))

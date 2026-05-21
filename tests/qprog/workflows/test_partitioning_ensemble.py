@@ -12,7 +12,7 @@ from divi.qprog.variational_quantum_algorithm import (
     VariationalQuantumAlgorithm,
 )
 from divi.qprog.workflows import PartitioningProgramEnsemble
-from tests.qprog.qprog_contracts import verify_basic_program_ensemble_behaviour
+from tests.qprog._program_contracts import verify_basic_program_ensemble_behaviour
 
 _DEFAULT_OPTIMIZER = ScipyOptimizer(method=ScipyMethod.NELDER_MEAD)
 
@@ -88,34 +88,6 @@ class TestPartitioningProgramEnsemble:
         assert results[0][0] == [1, 1]
         assert results[0][1] == -2.0
 
-    def test_aggregate_results_raises_if_no_programs(self, mocker, dummy_simulator):
-        problem = _make_stub_problem(mocker)
-        ensemble = PartitioningProgramEnsemble(
-            problem=problem,
-            n_layers=1,
-            backend=dummy_simulator,
-            optimizer=_DEFAULT_OPTIMIZER,
-        )
-        with pytest.raises(RuntimeError, match="No programs to aggregate"):
-            ensemble.aggregate_results()
-
-    def test_aggregate_results_raises_if_not_run(self, mocker, dummy_simulator):
-        problem = _make_stub_problem(mocker)
-        ensemble = PartitioningProgramEnsemble(
-            problem=problem,
-            n_layers=1,
-            backend=dummy_simulator,
-            optimizer=_DEFAULT_OPTIMIZER,
-        )
-        ensemble.create_programs()
-
-        prog = mocker.MagicMock(spec=VariationalQuantumAlgorithm)
-        prog.has_results.return_value = False
-        ensemble._programs["A"] = prog
-
-        with pytest.raises(RuntimeError, match="Some/All programs have no results"):
-            ensemble.aggregate_results()
-
     def test_aggregate_raises_if_no_best_probs(self, mocker, dummy_simulator):
         problem = _make_stub_problem(mocker)
         ensemble = PartitioningProgramEnsemble(
@@ -175,7 +147,7 @@ class TestPartitioningProgramEnsemble:
             backend=dummy_simulator,
             optimizer=_DEFAULT_OPTIMIZER,
         )
-        verify_basic_program_ensemble_behaviour(mocker, ensemble)
+        verify_basic_program_ensemble_behaviour(ensemble, mocker)
 
 
 def _attach_program_with_candidates(ensemble, mocker, decoded_candidates):

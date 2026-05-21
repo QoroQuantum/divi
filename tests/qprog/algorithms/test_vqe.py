@@ -19,9 +19,7 @@ from divi.qprog.algorithms import (
     UCCSDAnsatz,
 )
 from divi.qprog.checkpointing import CheckpointConfig
-from tests.qprog.qprog_contracts import (
-    CHECKPOINTING_OPTIMIZERS,
-    OPTIMIZERS_TO_TEST,
+from tests.qprog._program_contracts import (
     verify_correct_circuit_count,
     verify_metacircuit_dict,
 )
@@ -185,12 +183,10 @@ def test_meta_circuit_qasm(ansatz_obj, n_layers, h2_molecule, dummy_simulator):
     )
 
 
-@pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
 def test_vqe_correct_circuits_count_and_energies(
     optimizer, dummy_simulator, h2_molecule
 ):
     """Test circuit counts and energy calculations after a VQE run."""
-    optimizer = optimizer()  # Create fresh instance
     vqe_problem = VQE(
         molecule=h2_molecule,
         ansatz=HartreeFockAnsatz(),
@@ -205,7 +201,6 @@ def test_vqe_correct_circuits_count_and_energies(
 
 
 @pytest.mark.e2e
-@pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
 def test_vqe_h2_molecule_e2e_solution(optimizer, default_test_simulator, h2_molecule):
     """Test that VQE finds the correct ground state for the H2 molecule."""
 
@@ -215,7 +210,7 @@ def test_vqe_h2_molecule_e2e_solution(optimizer, default_test_simulator, h2_mole
         molecule=h2_molecule,
         ansatz=HartreeFockAnsatz(),
         n_layers=1,
-        optimizer=optimizer(),
+        optimizer=optimizer,
         max_iterations=5,
         backend=default_test_simulator,
         seed=1997,
@@ -240,17 +235,14 @@ def test_vqe_h2_molecule_e2e_solution(optimizer, default_test_simulator, h2_mole
 
 
 @pytest.mark.e2e
-@pytest.mark.parametrize("optimizer", **CHECKPOINTING_OPTIMIZERS)
 def test_vqe_h2_molecule_e2e_checkpointing_resume(
-    optimizer, default_test_simulator, h2_molecule, tmp_path
+    checkpointing_optimizer, default_test_simulator, h2_molecule, tmp_path
 ):
     """Test VQE e2e with checkpointing and multiple resume cycles.
 
     Tests checkpoint infrastructure (multiple save/load cycles) with all checkpointing-capable
     optimizers to verify their nuanced checkpoint handling (CMAES generator reinit, DE pop handling).
     """
-    optimizer = optimizer()  # Create fresh instance
-
     checkpoint_dir = tmp_path / "checkpoint_test"
     default_test_simulator.set_seed(1997)
 
@@ -259,7 +251,7 @@ def test_vqe_h2_molecule_e2e_checkpointing_resume(
         molecule=h2_molecule,
         ansatz=HartreeFockAnsatz(),
         n_layers=1,
-        optimizer=optimizer,
+        optimizer=checkpointing_optimizer,
         max_iterations=2,
         backend=default_test_simulator,
         seed=1997,

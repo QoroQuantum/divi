@@ -44,149 +44,18 @@ from divi.backends._systems import (
 from divi.circuits import TemplateEntry
 from divi.exceptions import ExecutionCancelledError
 from divi.qasm import validate_qasm
-from tests.backends import circuit_runner_contracts as contracts
-
-# --- Test Fixtures ---
-
-
-@pytest.fixture
-def qoro_service(api_key):
-    """Provides a QoroService instance with a real API token for integration tests."""
-    return QoroService(auth_token=api_key)
-
-
-@pytest.fixture
-def qoro_service_factory():
-    """Provides a factory to create mocked QoroService instances.
-
-    Temporarily replaces ``_make_request`` during construction so that
-    ``fetch_qpu_systems`` and ``fetch_simulator_clusters`` receive empty
-    responses. The original method is restored immediately after construction,
-    so tests can set up their own mocks freely.
-    """
-
-    class _EmptyResponse:
-        @staticmethod
-        def json():
-            return []
-
-    def _factory(**kwargs):
-        config = {
-            "auth_token": "mock_token",
-            "max_retries": 3,
-            "polling_interval": 0.01,
-        }
-        config.update(kwargs)
-
-        original = QoroService._make_request
-        QoroService._make_request = lambda self, *a, **kw: _EmptyResponse()
-        try:
-            service = QoroService(**config)
-        finally:
-            QoroService._make_request = original
-        return service
-
-    return _factory
-
-
-@pytest.fixture
-def submit_circuits_mock(mocker, qoro_service_factory):
-    """Mocks the dependencies for submit_circuits and returns the make_request mock."""
-    mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=True)
-
-    mock_init_response = mocker.MagicMock()
-    mock_init_response.status_code = HTTPStatus.CREATED
-    mock_init_response.json.return_value = {"job_id": "mock_job_id"}
-
-    mock_add_response = mocker.MagicMock()
-    mock_add_response.status_code = HTTPStatus.OK
-
-    service_instance = qoro_service_factory()
-    mock_make_request = mocker.patch.object(
-        service_instance,
-        "_make_request",
-        side_effect=[mock_init_response, mock_add_response, mock_add_response],
-    )
-
-    return service_instance, mock_make_request
-
-
-@pytest.fixture
-def circuits():
-    """Provides a dictionary of test circuits."""
-    test_qasm = (
-        'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[4];\ncreg c[4];\n'
-        "x q[0];\nx q[1];\nry(0) q[2];\ncx q[2],q[3];\ncx q[2],q[0];"
-        "cx q[3],q[1];\nmeasure q[0] -> c[0];\nmeasure q[1] -> c[1];"
-        "\nmeasure q[2] -> c[2];\nmeasure q[3] -> c[3];\n"
-    )
-    return {f"circuit_{i}": test_qasm for i in range(10)}
-
-
-# --- Helper Functions ---
-
-
-def make_execution_result(job_id: str = "test_job") -> ExecutionResult:
-    """Helper to create ExecutionResult instances."""
-    return ExecutionResult(job_id=job_id)
-
-
-def make_mock_init_response(mocker, job_id: str = "mock_job_id"):
-    """Helper to create mock init response."""
-    mock = mocker.MagicMock()
-    mock.status_code = HTTPStatus.CREATED
-    mock.json.return_value = {"job_id": job_id}
-    return mock
-
-
-def make_mock_add_response(mocker, status_code: int = HTTPStatus.OK):
-    """Helper to create mock add_circuits response."""
-    mock = mocker.MagicMock()
-    mock.status_code = status_code
-    return mock
-
-
-def make_mock_status_response(mocker, status: JobStatus):
-    """Helper to create mock status response."""
-    return mocker.MagicMock(json=lambda: {"status": status.value})
-
-
-def assert_delete_successful(service, result):
-    """Helper to assert successful job deletion."""
-    res = service.delete_job(result)
-    assert res.status_code == 204, "Deletion should be successful"
-
-
-def create_failed_job(service):
-    """Create a job pre-marked as FAILED via the create_failed endpoint.
-
-    This is a test-only helper; the endpoint is not part of the public SDK.
-    """
-    response = service._make_request(
-        "post", "job/create_failed/", json={"tag": "test"}, timeout=10
-    )
-    job_id = response.json()["job_id"]
-    return ExecutionResult(job_id=job_id)
-
-
-def make_template_entry(
-    n_param_sets: int = 2, n_params: int = 2, label_prefix: str = "iter"
-) -> TemplateEntry:
-    """Build a TemplateEntry whose parameter values are derived from the
-    set/param indices, making per-set assertions deterministic."""
-    param_names = tuple(f"theta_{i}" for i in range(n_params))
-    sets = tuple(
-        (f"{label_prefix}_{i}", tuple(float(i + j) for j in range(n_params)))
-        for i in range(n_param_sets)
-    )
-    return TemplateEntry(
-        template_qasm=(
-            'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[1];\ncreg c[1];\n'
-            "ry(theta_0) q[0];\nrz(theta_1) q[0];\nmeasure q[0] -> c[0];\n"
-        ),
-        parameter_names=param_names,
-        parameter_sets=sets,
-    )
+from tests.backends._circuit_runner_contracts import (
+    CONTRACT_TEST_SHOTS,
+    AsyncRunnerContractsBase,
+)
+from tests.backends._helpers import (
+    create_failed_job,
+    make_execution_result,
+    make_mock_add_response,
+    make_mock_init_response,
+    make_mock_status_response,
+    make_template_entry,
+)
 
 
 class TestQoroServiceMock:
@@ -236,267 +105,6 @@ class TestQoroServiceMock:
 
         service = qoro_service_factory(auth_token="explicit_key")
         assert service.auth_token == "Bearer explicit_key"
-
-    @pytest.mark.parametrize(
-        "input_value, expected_stored_value",
-        [
-            ("my_qpu_system", "my_qpu_system"),  # Strings remain strings in JobConfig
-            (
-                QPUSystem(name="qpu_from_object"),
-                QPUSystem(name="qpu_from_object"),
-            ),
-            (None, None),
-        ],
-        ids=["string_input", "QPUSystem_object_input", "None_input"],
-    )
-    def test_job_config_qpu_system_success(
-        self, input_value, expected_stored_value, mocker
-    ):
-        """
-        Tests that JobConfig correctly handles valid qpu_system types.
-        Note: JobConfig stores strings as-is; resolution happens in QoroService.__init__.
-        """
-        config = JobConfig(qpu_system=input_value)
-        assert config.qpu_system == expected_stored_value
-
-    @pytest.mark.parametrize(
-        "invalid_input",
-        [123, ["a", "list"], {"a": "dict"}],
-        ids=["integer_input", "list_input", "dict_input"],
-    )
-    def test_job_config_qpu_system_failure(self, invalid_input):
-        """
-        Tests that JobConfig raises a TypeError for invalid qpu_system types.
-        """
-        with pytest.raises(TypeError):
-            JobConfig(qpu_system=invalid_input)
-
-    def test_job_config_simulator_cluster_accepts_valid_types(self):
-        """Tests that JobConfig accepts string, SimulatorCluster, and None."""
-        assert (
-            JobConfig(simulator_cluster="my_cluster").simulator_cluster == "my_cluster"
-        )
-        cluster = SimulatorCluster(name="c")
-        assert JobConfig(simulator_cluster=cluster).simulator_cluster == cluster
-        assert JobConfig(simulator_cluster=None).simulator_cluster is None
-
-    def test_job_config_simulator_cluster_rejects_invalid_types(self):
-        """Tests that JobConfig raises a TypeError for invalid simulator_cluster types."""
-        for invalid in (123, ["a"], {"a": "b"}):
-            with pytest.raises(TypeError):
-                JobConfig(simulator_cluster=invalid)
-
-    def test_job_config_rejects_both_targets(self):
-        """Tests that JobConfig raises ValueError when both targets are set."""
-        with pytest.raises(ValueError, match="not both"):
-            JobConfig(
-                simulator_cluster=SimulatorCluster(name="cluster"),
-                qpu_system=QPUSystem(name="qpu"),
-            )
-
-    def test_job_config_shots_validation(self):
-        """Tests that JobConfig validates shots values."""
-        # Valid shots
-        config = JobConfig(shots=100)
-        assert config.shots == 100
-
-        # Invalid: shots <= 0
-        with pytest.raises(ValueError, match="Shots must be a positive integer"):
-            JobConfig(shots=0)
-
-        with pytest.raises(ValueError, match="Shots must be a positive integer"):
-            JobConfig(shots=-1)
-
-    def test_job_config_use_circuit_packing_type_validation(self):
-        """Tests that JobConfig validates use_circuit_packing type."""
-        # Valid boolean
-        config = JobConfig(use_circuit_packing=True)
-        assert config.use_circuit_packing is True
-
-        # Invalid: not a bool
-        with pytest.raises(TypeError, match="Expected a bool"):
-            JobConfig(use_circuit_packing="true")
-
-        with pytest.raises(TypeError, match="Expected a bool"):
-            JobConfig(use_circuit_packing=1)
-
-    def test_job_config_override_basic(self):
-        """Tests that JobConfig.override() method works correctly."""
-        base = JobConfig(shots=1000, tag="base", use_circuit_packing=False)
-        override = JobConfig(shots=500, tag="override")
-
-        result = base.override(override)
-        assert result.shots == 500
-        assert result.tag == "override"
-        assert result.use_circuit_packing is False  # Not overridden
-
-    def test_job_config_override_none_values_ignored(self):
-        """Tests that None values in override config are ignored."""
-        base = JobConfig(
-            shots=1000, tag="base", qpu_system=QPUSystem(name="qoro_maestro")
-        )
-        override = JobConfig(shots=None, tag="override", qpu_system=None)
-
-        result = base.override(override)
-        assert result.shots == 1000  # Not overridden
-        assert result.tag == "override"  # Overridden
-        assert result.qpu_system == QPUSystem(name="qoro_maestro")  # Not overridden
-
-    def test_job_config_override_immutability(self):
-        """Tests that JobConfig.override() returns a new instance."""
-        base = JobConfig(shots=1000)
-        override = JobConfig(shots=500)
-
-        result = base.override(override)
-
-        # Original should be unchanged
-        assert base.shots == 1000
-        # Result should have new value
-        assert result.shots == 500
-        # Should be different objects
-        assert result is not base
-        assert result is not override
-
-    def test_job_config_override_all_fields(self, mocker):
-        """Tests overriding all fields."""
-        base = JobConfig(
-            shots=1000,
-            tag="base",
-            qpu_system=QPUSystem(name="system1"),
-            use_circuit_packing=False,
-        )
-
-        # Populate the cache before creating the JobConfig that uses a string
-        update_qpu_systems_cache([QPUSystem(name="system2")])
-
-        override = JobConfig(
-            shots=2000,
-            tag="override",
-            qpu_system="system2",
-            use_circuit_packing=True,
-        )
-
-        result = base.override(override)
-        assert result.shots == 2000
-        assert result.tag == "override"
-        # JobConfig stores strings as-is; resolution happens in QoroService.__init__
-        assert result.qpu_system == "system2"
-        assert result.use_circuit_packing is True
-
-    def test_job_config_override_with_qpu_system_object(self, mocker):
-        """Tests overriding with a QPUSystem object (not just string)."""
-        base = JobConfig(
-            shots=1000,
-            tag="base",
-            qpu_system=QPUSystem(name="system1", supports_expval=True),
-        )
-
-        override_qpu = QPUSystem(name="system2", supports_expval=False)
-        # Explicitly preserve tag to test QPUSystem override only
-        override = JobConfig(qpu_system=override_qpu, tag="base")
-
-        result = base.override(override)
-        assert result.shots == 1000  # Not overridden
-        assert result.tag == "base"  # Explicitly preserved
-        assert result.qpu_system == override_qpu  # Overridden with QPUSystem object
-        assert result.qpu_system.name == "system2"
-
-    def test_job_config_override_with_empty_config(self):
-        """Tests overriding with a config containing only None values preserves base."""
-        base = JobConfig(
-            shots=1000,
-            tag="base",
-            qpu_system=QPUSystem(name="qoro_maestro"),
-            use_circuit_packing=True,
-        )
-
-        # Create override with explicit None values (not using defaults)
-        empty_override = JobConfig(
-            shots=None,
-            tag=None,  # Explicitly None to test None preservation
-            qpu_system=None,
-            use_circuit_packing=None,
-        )
-
-        result = base.override(empty_override)
-
-        # All None values should be preserved from base (per spec: None values don't override)
-        assert result.shots == 1000
-        assert result.tag == "base"
-        assert result.qpu_system == QPUSystem(name="qoro_maestro")
-        assert result.use_circuit_packing is True
-
-    def test_job_config_override_boolean_false(self):
-        """Tests that explicit False values override correctly (not treated as None)."""
-        base = JobConfig(
-            shots=1000,
-            use_circuit_packing=True,  # Base has True
-        )
-
-        override = JobConfig(use_circuit_packing=False)  # Explicit False override
-
-        result = base.override(override)
-        assert result.shots == 1000  # Not overridden
-        assert result.use_circuit_packing is False  # Explicitly overridden to False
-
-    def test_job_config_override_chained(self):
-        """Tests chained overrides (override of an override) preserves non-None values."""
-        base = JobConfig(
-            shots=1000,
-            tag="base",
-            use_circuit_packing=False,
-        )
-
-        override1 = JobConfig(shots=500, tag="override1")
-        # override2 only overrides shots and use_circuit_packing, tag is None
-        override2 = JobConfig(shots=250, tag=None, use_circuit_packing=True)
-
-        # Chain the overrides
-        result = base.override(override1).override(override2)
-
-        assert result.shots == 250  # From override2
-        assert (
-            result.tag == "override1"
-        )  # Preserved from override1 (override2 has None)
-        assert result.use_circuit_packing is True  # From override2
-
-    def test_job_config_override_preserves_base_when_override_has_none(self):
-        """Tests that base values are preserved when override explicitly sets None."""
-        # Base with custom tag
-        base = JobConfig(tag="custom_tag", shots=1000, use_circuit_packing=True)
-
-        # Override with explicit None for tag (should preserve base tag per spec)
-        override = JobConfig(shots=500, tag=None, use_circuit_packing=None)
-
-        result = base.override(override)
-        assert result.shots == 500  # Overridden (non-None value)
-        assert result.tag == "custom_tag"  # Preserved (override has None)
-        assert result.use_circuit_packing is True  # Preserved (override has None)
-
-        # Test that non-None values do override
-        override_with_values = JobConfig(
-            shots=300, tag="new_tag", use_circuit_packing=False
-        )
-        result_overridden = base.override(override_with_values)
-        assert result_overridden.shots == 300  # Overridden
-        assert result_overridden.tag == "new_tag"  # Overridden
-        assert result_overridden.use_circuit_packing is False  # Overridden
-
-    def test_job_config_override_validation_after_override(self):
-        """Tests that overridden config still validates correctly."""
-        base = JobConfig(shots=1000)
-
-        # Override with invalid shots (should raise validation error)
-        with pytest.raises(ValueError, match="Shots must be a positive integer"):
-            base.override(JobConfig(shots=-1))
-
-        # Override with invalid shots (zero)
-        with pytest.raises(ValueError, match="Shots must be a positive integer"):
-            base.override(JobConfig(shots=0))
-
-        # Valid override should work
-        result = base.override(JobConfig(shots=500))
-        assert result.shots == 500
 
     def test_submit_circuits_with_override_job_config_qpu_system_object(
         self, mocker, qoro_service_factory
@@ -873,6 +481,21 @@ class TestQoroServiceMock:
 
         assert status == JobStatus.COMPLETED
         progress_callback.assert_called()
+
+        # Test 6: Loop until cancelled
+        mock_responses = [
+            make_mock_status_response(mocker, JobStatus.RUNNING),
+            make_mock_status_response(mocker, JobStatus.CANCELLED),
+        ]
+        mocker.patch.object(service, "_make_request", side_effect=mock_responses)
+        on_complete_callback = mocker.MagicMock()
+        status = service.poll_job_status(
+            make_execution_result(),
+            loop_until_complete=True,
+            on_complete=on_complete_callback,
+        )
+        assert status == JobStatus.CANCELLED
+        on_complete_callback.assert_called_once()
 
     def test_poll_job_status_auto_cancels_remote_job_on_user_cancel(
         self, mocker, qoro_service_factory
@@ -2295,134 +1918,6 @@ class TestQoroServiceMock:
         with pytest.raises(requests.exceptions.HTTPError, match="409 Conflict"):
             qoro_service_mock.cancel_job(make_execution_result("job_1"))
 
-    # --- Tests for poll_job_status ---
-
-    def test_poll_job_status_success_mock(self, mocker, qoro_service_factory):
-        """Tests successful polling of job status until completion."""
-        qoro_service_mock = qoro_service_factory()
-        mock_make_request = mocker.patch.object(
-            qoro_service_mock,
-            "_make_request",
-            side_effect=[
-                make_mock_status_response(mocker, JobStatus.PENDING),
-                make_mock_status_response(mocker, JobStatus.COMPLETED),
-            ],
-        )
-
-        status = qoro_service_mock.poll_job_status(
-            make_execution_result("mock_job_id"),
-            loop_until_complete=True,
-            verbose=False,
-        )
-        assert mock_make_request.call_count == 2
-        assert status == JobStatus.COMPLETED
-
-    def test_poll_job_status_failure_mock(self, mocker, qoro_service_factory):
-        """Tests polling that results in a FAILED status."""
-        qoro_service_mock = qoro_service_factory()
-        mock_make_request = mocker.patch.object(
-            qoro_service_mock,
-            "_make_request",
-            return_value=make_mock_status_response(mocker, JobStatus.PENDING),
-        )
-        with pytest.raises(
-            MaxRetriesReachedError, match="Maximum retries reached: 3 retries attempted"
-        ):
-            qoro_service_mock.poll_job_status(
-                make_execution_result("mock_job_id"),
-                loop_until_complete=True,
-                verbose=False,
-            )
-        assert mock_make_request.call_count == 3
-
-    def test_poll_job_status_no_loop_mock(self, mocker, qoro_service_factory):
-        """Tests polling without looping."""
-        qoro_service_mock = qoro_service_factory()
-        mock_make_request = mocker.patch.object(
-            qoro_service_mock,
-            "_make_request",
-            return_value=make_mock_status_response(mocker, JobStatus.RUNNING),
-        )
-        status = qoro_service_mock.poll_job_status(
-            make_execution_result("job_1"), loop_until_complete=False
-        )
-        mock_make_request.assert_called_once()
-        assert status == JobStatus.RUNNING
-
-    def test_poll_job_status_on_complete_callback_mock(
-        self, mocker, qoro_service_factory
-    ):
-        """Tests the on_complete callback functionality."""
-        qoro_service_mock = qoro_service_factory()
-        mock_response_completed = mocker.MagicMock(
-            json=lambda: {"status": JobStatus.COMPLETED.value, "data": "results"}
-        )
-        mocker.patch.object(
-            qoro_service_mock, "_make_request", return_value=mock_response_completed
-        )
-        callback_mock = mocker.MagicMock()
-        status = qoro_service_mock.poll_job_status(
-            make_execution_result("job_1"),
-            loop_until_complete=True,
-            on_complete=callback_mock,
-        )
-
-        assert status == JobStatus.COMPLETED
-        callback_mock.assert_called_once_with(mock_response_completed)
-
-    def test_poll_job_status_pbar_update_fn_mock(self, mocker, qoro_service_factory):
-        """Tests the progress bar update function."""
-        qoro_service_mock = qoro_service_factory()
-        mocker.patch.object(
-            qoro_service_mock,
-            "_make_request",
-            side_effect=[
-                make_mock_status_response(mocker, JobStatus.PENDING),
-                make_mock_status_response(mocker, JobStatus.PENDING),
-                make_mock_status_response(mocker, JobStatus.COMPLETED),
-            ],
-        )
-
-        pbar_mock = mocker.MagicMock()
-        qoro_service_mock.poll_job_status(
-            make_execution_result("job_1"),
-            loop_until_complete=True,
-            progress_callback=pbar_mock,
-            verbose=True,
-        )
-
-        assert pbar_mock.call_count == 2
-        pbar_mock.assert_has_calls(
-            [
-                mocker.call.__bool__(),
-                mocker.call(1, "PENDING"),
-                mocker.call(2, "PENDING"),
-            ]
-        )
-
-    def test_poll_job_status_cancelled_mock(self, mocker, qoro_service_factory):
-        """Tests polling that detects CANCELLED status."""
-        qoro_service_mock = qoro_service_factory()
-        mock_make_request = mocker.patch.object(
-            qoro_service_mock,
-            "_make_request",
-            side_effect=[
-                make_mock_status_response(mocker, JobStatus.PENDING),
-                make_mock_status_response(mocker, JobStatus.CANCELLED),
-            ],
-        )
-
-        callback_mock = mocker.MagicMock()
-        status = qoro_service_mock.poll_job_status(
-            make_execution_result("mock_job_id"),
-            loop_until_complete=True,
-            on_complete=callback_mock,
-            verbose=False,
-        )
-        assert mock_make_request.call_count == 2
-        assert status == JobStatus.CANCELLED
-        callback_mock.assert_called_once()
-
     # --- Tests for execution config ---
 
     def test_set_execution_config_success(self, mocker, qoro_service_factory):
@@ -2665,72 +2160,52 @@ class TestQoroServiceMock:
         )
 
 
-# --- Depth Tracking Tests ---
+# --- CircuitRunner contract tests ---
 
 
-class TestQoroServiceDepthTracker:
-    """Tests for QoroService depth tracking via shared CircuitRunner contracts."""
+def _contract_qoro_runner(
+    mocker,
+    qoro_service_factory,
+    *,
+    track_depth: bool = False,
+    shots: int = CONTRACT_TEST_SHOTS,
+):
+    """Create a QoroService with mocked API calls for contract tests."""
+    service = qoro_service_factory(
+        track_depth=track_depth,
+        job_config=JobConfig(
+            shots=shots,
+            simulator_cluster=SimulatorCluster(name="qoro_maestro"),
+        ),
+    )
 
-    def _make_runner(self, mocker, qoro_service_factory, *, track_depth):
-        """Create a QoroService with mocked API calls, ready for depth-tracking tests."""
-        service = qoro_service_factory(track_depth=track_depth)
+    mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=True)
 
-        mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=True)
+    mock_init = mocker.MagicMock()
+    mock_init.status_code = HTTPStatus.CREATED
+    mock_init.json.return_value = {"job_id": "contract_test_job"}
 
-        mock_init = mocker.MagicMock()
-        mock_init.status_code = HTTPStatus.CREATED
-        mock_init.json.return_value = {"job_id": "depth_test_job"}
+    mock_add = mocker.MagicMock()
+    mock_add.status_code = HTTPStatus.OK
 
-        mock_add = mocker.MagicMock()
-        mock_add.status_code = HTTPStatus.OK
+    mocker.patch.object(
+        service,
+        "_make_request",
+        side_effect=[mock_init, mock_add] * 20,
+    )
+    return service
 
-        mocker.patch.object(
-            service,
-            "_make_request",
-            side_effect=[mock_init, mock_add] * 10,
-        )
-        return service
 
-    def test_track_depth_defaults_to_false(self, qoro_service_factory):
-        """track_depth defaults to False."""
-        service = qoro_service_factory()
-        assert service.track_depth is False
+class TestContracts(AsyncRunnerContractsBase):
+    """Shared :class:`~divi.backends.CircuitRunner` behavioural contracts."""
 
-    def test_depth_tracking_disabled(self, mocker, qoro_service_factory):
-        runner = self._make_runner(mocker, qoro_service_factory, track_depth=False)
-        contracts.verify_depth_tracking_disabled(runner, {"c1": contracts.QASM_DEPTH_2})
+    @pytest.fixture()
+    def contract_runner_disabled(self, mocker, qoro_service_factory):
+        return _contract_qoro_runner(mocker, qoro_service_factory, track_depth=False)
 
-    def test_depth_tracking_records(self, mocker, qoro_service_factory):
-        runner = self._make_runner(mocker, qoro_service_factory, track_depth=True)
-        contracts.verify_depth_tracking_records(
-            runner,
-            {"c1": contracts.QASM_DEPTH_2, "c2": contracts.QASM_DEPTH_3},
-            expected_depths_sorted=[2, 3],
-        )
-
-    def test_depth_history_accumulates(self, mocker, qoro_service_factory):
-        runner = self._make_runner(mocker, qoro_service_factory, track_depth=True)
-        contracts.verify_depth_history_accumulates(
-            runner,
-            {"c1": contracts.QASM_DEPTH_2},
-            {"c2": contracts.QASM_DEPTH_3, "c3": contracts.QASM_DEPTH_3},
-        )
-
-    def test_clear_depth_history(self, mocker, qoro_service_factory):
-        runner = self._make_runner(mocker, qoro_service_factory, track_depth=True)
-        contracts.verify_clear_depth_history(runner, {"c1": contracts.QASM_DEPTH_2})
-
-    def test_depth_history_returns_copy(self, mocker, qoro_service_factory):
-        runner = self._make_runner(mocker, qoro_service_factory, track_depth=True)
-        contracts.verify_depth_history_returns_copy(
-            runner, {"c1": contracts.QASM_DEPTH_2}
-        )
-
-    def test_std_depth_zero_for_single_value(self, mocker, qoro_service_factory):
-        runner = self._make_runner(mocker, qoro_service_factory, track_depth=True)
-        contracts.verify_std_depth_zero_for_single_value(
-            runner, {"c1": contracts.QASM_DEPTH_2}
-        )
+    @pytest.fixture()
+    def contract_runner_enabled(self, mocker, qoro_service_factory):
+        return _contract_qoro_runner(mocker, qoro_service_factory, track_depth=True)
 
 
 # --- Integration Tests (require API key) ---

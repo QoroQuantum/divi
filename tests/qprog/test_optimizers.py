@@ -8,7 +8,6 @@ import numpy as np
 import pytest
 from scipy.optimize import OptimizeResult
 
-from divi.qprog.checkpointing import CheckpointNotFoundError
 from divi.qprog.optimizers import (
     GridSearchOptimizer,
     MonteCarloOptimizer,
@@ -19,7 +18,13 @@ from divi.qprog.optimizers import (
     ScipyOptimizer,
     copy_optimizer,
 )
-from tests.qprog.qprog_contracts import CHECKPOINTING_OPTIMIZERS, OPTIMIZERS_TO_TEST
+from tests.qprog._optimizer_contracts import (
+    verify_load_state_raises_file_not_found,
+    verify_save_creates_checkpoint_file,
+    verify_save_creates_directory_if_needed,
+    verify_save_load_round_trip,
+    verify_save_without_prior_run_raises,
+)
 
 
 def sphere_cost_fn_population(params: np.ndarray) -> np.ndarray:
@@ -44,27 +49,35 @@ def sphere_cost_fn_single(params: np.ndarray) -> float:
     return float(np.sum(params**2))
 
 
-@pytest.fixture(
-    params=[
-        # Use OPTIMIZERS_TO_TEST as base, converting to (name, factory) tuples
-        *[
-            (opt_id.lower().replace("_", "-"), factory)
-            for factory, opt_id in zip(
-                OPTIMIZERS_TO_TEST["argvalues"], OPTIMIZERS_TO_TEST["ids"]
-            )
-        ],
-        # Add extra variant not in OPTIMIZERS_TO_TEST
-        (
-            "monte-carlo-keep-best",
-            lambda: MonteCarloOptimizer(
-                population_size=10, n_best_sets=3, keep_best_params=True
-            ),
+# Locally extends the conftest variants with a MonteCarlo "keep best" mode that
+# only the optimizer-contract suite exercises.
+_CONTRACT_OPTIMIZER_VARIANTS = [
+    ("monte-carlo", lambda: MonteCarloOptimizer(population_size=5, n_best_sets=2)),
+    ("l-bfgs-b", lambda: ScipyOptimizer(method=ScipyMethod.L_BFGS_B)),
+    ("cobyla", lambda: ScipyOptimizer(method=ScipyMethod.COBYLA)),
+    ("nelder-mead", lambda: ScipyOptimizer(method=ScipyMethod.NELDER_MEAD)),
+    ("cmaes", lambda: PymooOptimizer(method=PymooMethod.CMAES, population_size=10)),
+    ("de", lambda: PymooOptimizer(method=PymooMethod.DE, population_size=5)),
+    (
+        "monte-carlo-keep-best",
+        lambda: MonteCarloOptimizer(
+            population_size=10, n_best_sets=3, keep_best_params=True
         ),
-    ],
+    ),
+]
+
+
+@pytest.fixture(
+    params=_CONTRACT_OPTIMIZER_VARIANTS,
     ids=lambda param: param[0],
 )
-def optimizer(request):
-    """Provides various optimizer instances to be tested against the contract."""
+def contract_optimizer(request):
+    """Optimizer-contract variants (extends the conftest set with ``monte-carlo-keep-best``).
+
+    Named distinctly from the conftest-level ``optimizer`` fixture to avoid a
+    silent shadow — the contract suite needs the extra variant that the
+    cross-suite conftest fixture does not provide.
+    """
     _, factory = request.param
     return factory()
 
@@ -82,16 +95,16 @@ class TestOptimizerContract:
         shape = (optimizer.n_param_sets, self.n_params)
         return self.rng.random(shape) * 2 * np.pi
 
-    def test_final_result_is_consistent(self, optimizer: Optimizer):
+    def test_final_result_is_consistent(self, contract_optimizer: Optimizer):
         """Verify that the final returned parameters match the final cost."""
-        initial_params = self._get_initial_params(optimizer)
+        initial_params = self._get_initial_params(contract_optimizer)
         cost_fn = (
             sphere_cost_fn_single
-            if optimizer.n_param_sets == 1
+            if contract_optimizer.n_param_sets == 1
             else sphere_cost_fn_population
         )
 
-        result = optimizer.optimize(cost_fn, initial_params, max_iterations=5)
+        result = contract_optimizer.optimize(cost_fn, initial_params, max_iterations=5)
 
         assert isinstance(result, OptimizeResult)
         assert result.x.shape == (self.n_params,)
@@ -100,12 +113,12 @@ class TestOptimizerContract:
             result.fun, recalculated_fun
         ), "Final cost value should correspond to the final parameters."
 
-    def test_callback_provides_consistent_results(self, optimizer: Optimizer):
+    def test_callback_provides_consistent_results(self, contract_optimizer: Optimizer):
         """Verify that parameters and costs are consistent in each callback call."""
-        initial_params = self._get_initial_params(optimizer)
+        initial_params = self._get_initial_params(contract_optimizer)
         cost_fn = (
             sphere_cost_fn_single
-            if optimizer.n_param_sets == 1
+            if contract_optimizer.n_param_sets == 1
             else sphere_cost_fn_population
         )
 
@@ -114,17 +127,17 @@ class TestOptimizerContract:
         def callback(intermediate_result: OptimizeResult):
             callback_results.append(intermediate_result)
 
-        optimizer.optimize(
+        contract_optimizer.optimize(
             cost_fn, initial_params, callback_fn=callback, max_iterations=5
         )
 
         assert len(callback_results) > 0
         for res in callback_results:
             assert isinstance(res, OptimizeResult)
-            assert res.x.shape == (optimizer.n_param_sets, self.n_params)
-            assert res.fun.shape == (optimizer.n_param_sets,)
+            assert res.x.shape == (contract_optimizer.n_param_sets, self.n_params)
+            assert res.fun.shape == (contract_optimizer.n_param_sets,)
 
-            if optimizer.n_param_sets == 1:
+            if contract_optimizer.n_param_sets == 1:
                 recalculated_fun = sphere_cost_fn_single(res.x)
             else:
                 recalculated_fun = sphere_cost_fn_population(res.x)
@@ -134,30 +147,30 @@ class TestOptimizerContract:
             # to confirm the loss is a valid number, but not that it's perfectly
             # in sync with the parameters, as that would require re-computation.
             if (
-                isinstance(optimizer, ScipyOptimizer)
-                and optimizer.method == ScipyMethod.L_BFGS_B
+                isinstance(contract_optimizer, ScipyOptimizer)
+                and contract_optimizer.method == ScipyMethod.L_BFGS_B
             ):
                 assert np.isfinite(res.fun).all()
             else:
                 assert np.allclose(res.fun, recalculated_fun)
 
-    def test_reset_allows_reusing_optimizer(self, optimizer: Optimizer):
+    def test_reset_allows_reusing_optimizer(self, contract_optimizer: Optimizer):
         """Verify that reset() allows reusing an optimizer for fresh optimization runs."""
-        initial_params = self._get_initial_params(optimizer)
+        initial_params = self._get_initial_params(contract_optimizer)
         cost_fn = (
             sphere_cost_fn_single
-            if optimizer.n_param_sets == 1
+            if contract_optimizer.n_param_sets == 1
             else sphere_cost_fn_population
         )
 
         # Run first optimization
-        result1 = optimizer.optimize(cost_fn, initial_params, max_iterations=3)
+        result1 = contract_optimizer.optimize(cost_fn, initial_params, max_iterations=3)
         assert isinstance(result1, OptimizeResult)
 
         # Reset and run second optimization with different initial params
-        optimizer.reset()
-        different_initial_params = self._get_initial_params(optimizer)
-        result2 = optimizer.optimize(
+        contract_optimizer.reset()
+        different_initial_params = self._get_initial_params(contract_optimizer)
+        result2 = contract_optimizer.optimize(
             cost_fn, different_initial_params, max_iterations=3
         )
         assert isinstance(result2, OptimizeResult)
@@ -168,60 +181,62 @@ class TestOptimizerContract:
         assert np.isfinite(result1.fun)
         assert np.isfinite(result2.fun)
 
-    def test_reset_preserves_optimizer_configuration(self, optimizer: Optimizer):
+    def test_reset_preserves_optimizer_configuration(
+        self, contract_optimizer: Optimizer
+    ):
         """Verify that reset() does not affect optimizer configuration."""
         # Store original configuration
-        if isinstance(optimizer, ScipyOptimizer):
-            original_method = optimizer.method
-        elif isinstance(optimizer, PymooOptimizer):
-            original_method = optimizer.method
-            original_pop_size = optimizer.population_size
-        elif isinstance(optimizer, MonteCarloOptimizer):
-            original_pop_size = optimizer.population_size
-            original_n_best = optimizer.n_best_sets
-            original_keep_best = optimizer.keep_best_params
+        if isinstance(contract_optimizer, ScipyOptimizer):
+            original_method = contract_optimizer.method
+        elif isinstance(contract_optimizer, PymooOptimizer):
+            original_method = contract_optimizer.method
+            original_pop_size = contract_optimizer.population_size
+        elif isinstance(contract_optimizer, MonteCarloOptimizer):
+            original_pop_size = contract_optimizer.population_size
+            original_n_best = contract_optimizer.n_best_sets
+            original_keep_best = contract_optimizer.keep_best_params
 
         # Run optimization to set state
-        initial_params = self._get_initial_params(optimizer)
+        initial_params = self._get_initial_params(contract_optimizer)
         cost_fn = (
             sphere_cost_fn_single
-            if optimizer.n_param_sets == 1
+            if contract_optimizer.n_param_sets == 1
             else sphere_cost_fn_population
         )
-        optimizer.optimize(cost_fn, initial_params, max_iterations=2)
+        contract_optimizer.optimize(cost_fn, initial_params, max_iterations=2)
 
         # Reset and verify configuration is unchanged
-        optimizer.reset()
+        contract_optimizer.reset()
 
-        if isinstance(optimizer, ScipyOptimizer):
-            assert optimizer.method == original_method
-        elif isinstance(optimizer, PymooOptimizer):
-            assert optimizer.method == original_method
-            assert optimizer.population_size == original_pop_size
-        elif isinstance(optimizer, MonteCarloOptimizer):
-            assert optimizer.population_size == original_pop_size
-            assert optimizer.n_best_sets == original_n_best
-            assert optimizer.keep_best_params == original_keep_best
+        if isinstance(contract_optimizer, ScipyOptimizer):
+            assert contract_optimizer.method == original_method
+        elif isinstance(contract_optimizer, PymooOptimizer):
+            assert contract_optimizer.method == original_method
+            assert contract_optimizer.population_size == original_pop_size
+        elif isinstance(contract_optimizer, MonteCarloOptimizer):
+            assert contract_optimizer.population_size == original_pop_size
+            assert contract_optimizer.n_best_sets == original_n_best
+            assert contract_optimizer.keep_best_params == original_keep_best
 
-    def test_reset_can_be_called_multiple_times(self, optimizer: Optimizer):
+    def test_reset_can_be_called_multiple_times(self, contract_optimizer: Optimizer):
         """Verify that reset() can be called multiple times safely."""
-        initial_params = self._get_initial_params(optimizer)
+        initial_params = self._get_initial_params(contract_optimizer)
         cost_fn = (
             sphere_cost_fn_single
-            if optimizer.n_param_sets == 1
+            if contract_optimizer.n_param_sets == 1
             else sphere_cost_fn_population
         )
 
         # Run optimization
-        optimizer.optimize(cost_fn, initial_params, max_iterations=2)
+        contract_optimizer.optimize(cost_fn, initial_params, max_iterations=2)
 
         # Call reset multiple times
-        optimizer.reset()
-        optimizer.reset()
-        optimizer.reset()
+        contract_optimizer.reset()
+        contract_optimizer.reset()
+        contract_optimizer.reset()
 
         # Should still be able to optimize after multiple resets
-        result = optimizer.optimize(cost_fn, initial_params, max_iterations=2)
+        result = contract_optimizer.optimize(cost_fn, initial_params, max_iterations=2)
         assert isinstance(result, OptimizeResult)
         assert result.x.shape == (self.n_params,)
 
@@ -367,18 +382,14 @@ class TestMonteCarloOptimizer:
         """Test that save_state() creates the expected checkpoint file."""
         optimizer = self._create_optimizer(keep_best_params=False)
         initial_params = self._create_initial_params()
-
-        # Run optimization to set state
-        optimizer.optimize(
-            sphere_cost_fn_population, initial_params, max_iterations=2, rng=self.rng
+        verify_save_creates_checkpoint_file(
+            optimizer,
+            initial_params,
+            sphere_cost_fn_population,
+            self.rng,
+            tmp_path,
+            MonteCarloOptimizer.load_state,
         )
-
-        checkpoint_dir = str(tmp_path / "checkpoint")
-        optimizer.save_state(checkpoint_dir)
-
-        # Verify checkpoint file exists
-        state_file = tmp_path / "checkpoint" / "optimizer_state.json"
-        assert state_file.exists(), "Checkpoint file should be created"
 
     def test_save_state_preserves_configuration(self, tmp_path):
         """Test that save_state() saves optimizer configuration correctly."""
@@ -436,50 +447,29 @@ class TestMonteCarloOptimizer:
         """Test that saving and loading state preserves optimizer functionality."""
         optimizer = self._create_optimizer(keep_best_params=False)
         initial_params = self._create_initial_params()
-
-        # Run partial optimization
-        optimizer.optimize(
-            sphere_cost_fn_population, initial_params, max_iterations=2, rng=self.rng
+        verify_save_load_round_trip(
+            optimizer,
+            initial_params,
+            sphere_cost_fn_population,
+            self.rng,
+            tmp_path,
+            MonteCarloOptimizer.load_state,
+            self.n_params,
         )
-
-        checkpoint_dir = str(tmp_path / "checkpoint")
-        optimizer.save_state(checkpoint_dir)
-
-        # Load and continue optimization
-        loaded_optimizer = MonteCarloOptimizer.load_state(checkpoint_dir)
-        result = loaded_optimizer.optimize(
-            sphere_cost_fn_population, initial_params, max_iterations=5, rng=self.rng
-        )
-
-        # Verify optimization completed successfully
-        assert isinstance(result, OptimizeResult)
-        assert result.x.shape == (self.n_params,)
-        assert np.isfinite(result.fun)
 
     def test_load_state_raises_file_not_found(self, tmp_path):
         """Test that load_state() raises CheckpointNotFoundError for missing checkpoint."""
-        checkpoint_dir = str(tmp_path / "nonexistent_checkpoint")
-
-        with pytest.raises(CheckpointNotFoundError, match="Checkpoint file not found"):
-            MonteCarloOptimizer.load_state(checkpoint_dir)
+        verify_load_state_raises_file_not_found(
+            MonteCarloOptimizer.load_state, tmp_path
+        )
 
     def test_save_state_creates_directory_if_needed(self, tmp_path):
         """Test that save_state() creates the checkpoint directory if it doesn't exist."""
         optimizer = self._create_optimizer(keep_best_params=False)
         initial_params = self._create_initial_params()
-
-        # Run optimization to set state
-        optimizer.optimize(
-            sphere_cost_fn_population, initial_params, max_iterations=2, rng=self.rng
+        verify_save_creates_directory_if_needed(
+            optimizer, initial_params, sphere_cost_fn_population, self.rng, tmp_path
         )
-
-        # Save to a non-existent nested directory
-        checkpoint_dir = str(tmp_path / "nested" / "checkpoint")
-        optimizer.save_state(checkpoint_dir)
-
-        # Verify directory and file were created
-        state_file = tmp_path / "nested" / "checkpoint" / "optimizer_state.json"
-        assert state_file.exists(), "Checkpoint directory and file should be created"
 
     @pytest.mark.parametrize("keep_best_params", [True, False])
     def test_compute_new_parameters_preserves_population_size(
@@ -572,13 +562,11 @@ class TestPopulationOptimizerCheckpointing:
         shape = (optimizer.n_param_sets, self.n_params)
         return self.rng.random(shape) * 2 * np.pi
 
-    @pytest.mark.parametrize("optimizer_factory", **CHECKPOINTING_OPTIMIZERS)
-    def test_checkpoint_dir_without_checkpointing(self, optimizer_factory):
+    def test_checkpoint_dir_without_checkpointing(self, checkpointing_optimizer):
         """Optimization should work normally when no checkpoint_dir is provided."""
-        optimizer = optimizer_factory()
-        initial_params = self._initial_params(optimizer)
+        initial_params = self._initial_params(checkpointing_optimizer)
 
-        result = optimizer.optimize(
+        result = checkpointing_optimizer.optimize(
             sphere_cost_fn_population, initial_params, max_iterations=3, rng=self.rng
         )
 
@@ -586,25 +574,20 @@ class TestPopulationOptimizerCheckpointing:
         assert result.x.shape == (self.n_params,)
         assert np.isfinite(result.fun)
 
-    @pytest.mark.parametrize(
-        "optimizer_factory",
-        **CHECKPOINTING_OPTIMIZERS,
-    )
     def test_resume_with_max_iterations_less_than_completed(
-        self, tmp_path, optimizer_factory
+        self, tmp_path, checkpointing_optimizer
     ):
         """Resuming with fewer total iterations should exit immediately."""
-        optimizer = optimizer_factory()
-        load_state_func = type(optimizer).load_state
+        load_state_func = type(checkpointing_optimizer).load_state
 
-        initial_params = self._initial_params(optimizer)
+        initial_params = self._initial_params(checkpointing_optimizer)
 
-        optimizer.optimize(
+        checkpointing_optimizer.optimize(
             sphere_cost_fn_population, initial_params, max_iterations=5, rng=self.rng
         )
 
         checkpoint_dir = tmp_path / "checkpoint"
-        optimizer.save_state(str(checkpoint_dir))
+        checkpointing_optimizer.save_state(str(checkpoint_dir))
 
         loaded_optimizer = load_state_func(str(checkpoint_dir))
         result = loaded_optimizer.optimize(
@@ -615,25 +598,22 @@ class TestPopulationOptimizerCheckpointing:
         assert result.x.shape == (self.n_params,)
         assert np.isfinite(result.fun)
 
-    @pytest.mark.parametrize(
-        "optimizer_factory",
-        **CHECKPOINTING_OPTIMIZERS,
-    )
-    def test_resume_with_different_initial_params(self, tmp_path, optimizer_factory):
+    def test_resume_with_different_initial_params(
+        self, tmp_path, checkpointing_optimizer
+    ):
         """Checkpoints should ignore newly provided initial parameters when resuming."""
-        optimizer = optimizer_factory()
-        load_state_func = type(optimizer).load_state
-        initial_params = self._initial_params(optimizer)
+        load_state_func = type(checkpointing_optimizer).load_state
+        initial_params = self._initial_params(checkpointing_optimizer)
 
-        optimizer.optimize(
+        checkpointing_optimizer.optimize(
             sphere_cost_fn_population, initial_params, max_iterations=2, rng=self.rng
         )
 
         checkpoint_dir = tmp_path / "checkpoint"
-        optimizer.save_state(str(checkpoint_dir))
+        checkpointing_optimizer.save_state(str(checkpoint_dir))
 
         loaded_optimizer = load_state_func(str(checkpoint_dir))
-        different_initial_params = self._initial_params(optimizer)
+        different_initial_params = self._initial_params(checkpointing_optimizer)
 
         result = loaded_optimizer.optimize(
             sphere_cost_fn_population,
@@ -676,26 +656,19 @@ class TestPymooOptimizer:
         """Test that save_state() creates the expected checkpoint file."""
         optimizer = PymooOptimizer(method=PymooMethod.CMAES, population_size=10)
         initial_params = self.rng.random((10, self.n_params)) * 2 * np.pi
-
-        # Run optimization to set state
-        optimizer.optimize(
-            sphere_cost_fn_population, initial_params, max_iterations=2, rng=self.rng
+        verify_save_creates_checkpoint_file(
+            optimizer,
+            initial_params,
+            sphere_cost_fn_population,
+            self.rng,
+            tmp_path,
+            PymooOptimizer.load_state,
         )
-
-        checkpoint_dir = str(tmp_path / "checkpoint")
-        optimizer.save_state(checkpoint_dir)
-
-        # Verify checkpoint file exists
-        state_file = tmp_path / "checkpoint" / "optimizer_state.json"
-        assert state_file.exists(), "Checkpoint file should be created"
 
     def test_save_state_without_prior_run_raises(self, tmp_path):
         """Saving without having run optimize should raise a clear error."""
         optimizer = PymooOptimizer(method=PymooMethod.CMAES, population_size=5)
-        checkpoint_dir = tmp_path / "checkpoint"
-
-        with pytest.raises(RuntimeError, match="optimization has not been run"):
-            optimizer.save_state(str(checkpoint_dir))
+        verify_save_without_prior_run_raises(optimizer, tmp_path)
 
     def test_save_state_preserves_configuration(self, tmp_path):
         """Test that save_state() saves optimizer configuration correctly."""
@@ -745,50 +718,27 @@ class TestPymooOptimizer:
         """Test that saving and loading state preserves optimizer functionality."""
         optimizer = PymooOptimizer(method=PymooMethod.CMAES, population_size=10)
         initial_params = self.rng.random((10, self.n_params)) * 2 * np.pi
-
-        # Run partial optimization
-        optimizer.optimize(
-            sphere_cost_fn_population, initial_params, max_iterations=2, rng=self.rng
+        verify_save_load_round_trip(
+            optimizer,
+            initial_params,
+            sphere_cost_fn_population,
+            self.rng,
+            tmp_path,
+            PymooOptimizer.load_state,
+            self.n_params,
         )
-
-        checkpoint_dir = str(tmp_path / "checkpoint")
-        optimizer.save_state(checkpoint_dir)
-
-        # Load and continue optimization
-        loaded_optimizer = PymooOptimizer.load_state(checkpoint_dir)
-        result = loaded_optimizer.optimize(
-            sphere_cost_fn_population, max_iterations=5, rng=self.rng
-        )
-
-        # Verify optimization completed successfully
-        assert isinstance(result, OptimizeResult)
-        assert result.x.shape == (self.n_params,)
-        assert np.isfinite(result.fun)
 
     def test_load_state_raises_file_not_found(self, tmp_path):
         """Test that load_state() raises CheckpointNotFoundError for missing checkpoint."""
-        checkpoint_dir = str(tmp_path / "nonexistent_checkpoint")
-
-        with pytest.raises(CheckpointNotFoundError, match="Checkpoint file not found"):
-            PymooOptimizer.load_state(checkpoint_dir)
+        verify_load_state_raises_file_not_found(PymooOptimizer.load_state, tmp_path)
 
     def test_save_state_creates_directory_if_needed(self, tmp_path):
         """Test that save_state() creates the checkpoint directory if it doesn't exist."""
         optimizer = PymooOptimizer(method=PymooMethod.CMAES, population_size=10)
         initial_params = self.rng.random((10, self.n_params)) * 2 * np.pi
-
-        # Run optimization to set state
-        optimizer.optimize(
-            sphere_cost_fn_population, initial_params, max_iterations=2, rng=self.rng
+        verify_save_creates_directory_if_needed(
+            optimizer, initial_params, sphere_cost_fn_population, self.rng, tmp_path
         )
-
-        # Save to a non-existent nested directory
-        checkpoint_dir = str(tmp_path / "nested" / "checkpoint")
-        optimizer.save_state(checkpoint_dir)
-
-        # Verify directory and file were created
-        state_file = tmp_path / "nested" / "checkpoint" / "optimizer_state.json"
-        assert state_file.exists(), "Checkpoint directory and file should be created"
 
     def test_resume_extends_iteration_budget(self, tmp_path):
         """Resuming with a higher max_iterations should continue running iterations."""
@@ -1006,23 +956,19 @@ class TestScipyOptimizer:
         assert result.x.shape == (self.n_params,)
 
     def test_save_state_raises_not_implemented(self, tmp_path):
-        """Test that ScipyOptimizer.save_state() raises NotImplementedError."""
+        """ScipyOptimizer.save_state is not supported."""
         optimizer = ScipyOptimizer(method=ScipyMethod.L_BFGS_B)
-        checkpoint_dir = str(tmp_path / "checkpoint")
-
         with pytest.raises(
             NotImplementedError, match="ScipyOptimizer does not support"
         ):
-            optimizer.save_state(checkpoint_dir)
+            optimizer.save_state(str(tmp_path / "checkpoint"))
 
-    def test_load_state_raises_not_implemented(self, tmp_path):
-        """Test that ScipyOptimizer.load_state() raises NotImplementedError."""
-        checkpoint_dir = str(tmp_path / "checkpoint")
-
+    def test_load_state_raises_not_implemented(self):
+        """ScipyOptimizer.load_state is not supported."""
         with pytest.raises(
             NotImplementedError, match="ScipyOptimizer does not support"
         ):
-            ScipyOptimizer.load_state(checkpoint_dir)
+            ScipyOptimizer.load_state("/nonexistent/checkpoint")
 
     def test_optimize_without_initial_params_raises(self):
         """ScipyOptimizer cannot resume, so initial_params is always required."""

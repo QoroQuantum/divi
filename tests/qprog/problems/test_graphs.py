@@ -25,12 +25,8 @@ from divi.qprog.problems import (
     MinVertexCoverProblem,
 )
 from divi.qprog.workflows import PartitioningProgramEnsemble
+from tests.qprog._program_contracts import verify_metacircuit_dict
 from tests.qprog.problems._helpers import make_bull_graph, make_string_node_graph
-from tests.qprog.qprog_contracts import (
-    CHECKPOINTING_OPTIMIZERS,
-    OPTIMIZERS_TO_TEST,
-    verify_metacircuit_dict,
-)
 
 
 class TestEvaluateSolution:
@@ -273,12 +269,11 @@ class TestPartitioningWarnings:
             problem.decompose()
 
 
-class TestInitialSolutionSizeGraph:
-    def test_returns_number_of_nodes(self):
-        graph = nx.cycle_graph(7)
-        problem = MaxCutProblem(graph)
+def test_returns_number_of_nodes():
+    graph = nx.cycle_graph(7)
+    problem = MaxCutProblem(graph)
 
-        assert problem.initial_solution_size() == graph.number_of_nodes()
+    assert problem.initial_solution_size() == graph.number_of_nodes()
 
 
 class TestPostprocessCandidatesGraph:
@@ -399,10 +394,7 @@ class TestGraphInput:
         assert qaoa_problem.solution == [0, 1, 4]
 
     @pytest.mark.e2e
-    @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
     def test_graph_qaoa_e2e_solution(self, optimizer, default_test_simulator):
-        optimizer = optimizer()  # Create fresh instance
-
         G = nx.bull_graph()
 
         # L-BFGS-B needs more layers for sufficient circuit expressibility
@@ -436,17 +428,14 @@ class TestGraphInput:
         assert set(qaoa_problem.solution) == nx.algorithms.approximation.max_clique(G)
 
     @pytest.mark.e2e
-    @pytest.mark.parametrize("optimizer", **CHECKPOINTING_OPTIMIZERS)
     def test_graph_qaoa_e2e_checkpointing_resume(
-        self, optimizer, default_test_simulator, tmp_path
+        self, checkpointing_optimizer, default_test_simulator, tmp_path
     ):
         """Test QAOA e2e with checkpointing and multiple resume cycles.
 
         Tests checkpoint infrastructure (multiple save/load cycles) with all checkpointing-capable
         optimizers to verify their nuanced checkpoint handling (CMAES generator reinit, DE pop handling).
         """
-        optimizer = optimizer()  # Create fresh instance
-
         G = nx.bull_graph()
         checkpoint_dir = tmp_path / "checkpoint_test"
         default_test_simulator.set_seed(1997)
@@ -457,7 +446,7 @@ class TestGraphInput:
         qaoa_problem1 = QAOA(
             max_clique_problem,
             n_layers=1,
-            optimizer=optimizer,
+            optimizer=checkpointing_optimizer,
             max_iterations=3,
             backend=default_test_simulator,
             seed=1997,

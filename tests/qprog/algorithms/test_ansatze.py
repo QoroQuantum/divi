@@ -23,18 +23,11 @@ from divi.qprog import (
     QCCAnsatz,
     UCCSDAnsatz,
 )
+from tests.qprog.algorithms._helpers import gate_names, gate_qubits
 
 
 def _build_circuit(ansatz, params, n_qubits, n_layers, **kwargs) -> QuantumCircuit:
     return ansatz.build(params, n_qubits, n_layers, **kwargs)
-
-
-def _gate_names(qc: QuantumCircuit) -> list[str]:
-    return [instr.operation.name for instr in qc.data]
-
-
-def _gate_qubits(qc: QuantumCircuit) -> list[list[int]]:
-    return [[qc.find_bit(q).index for q in instr.qubits] for instr in qc.data]
 
 
 # --- Test GenericLayerAnsatz ---
@@ -121,7 +114,7 @@ class TestGenericLayerAnsatz:
 
         qc = _build_circuit(ansatz, list(params), n_qubits, n_layers)
 
-        names = _gate_names(qc)
+        names = gate_names(qc)
         # 2 qubits * 2 layers * 2 gates = 8 gates
         assert len(names) == 8
         assert all(name in ("rx", "ry") for name in names)
@@ -140,8 +133,8 @@ class TestGenericLayerAnsatz:
         qc = _build_circuit(ansatz, list(params), n_qubits, n_layers)
 
         # 3 RX + 2 CNOTs for linear layout on 3 qubits
-        assert _gate_names(qc) == ["rx", "rx", "rx", "cx", "cx"]
-        assert _gate_qubits(qc)[3:] == [[0, 1], [1, 2]]
+        assert gate_names(qc) == ["rx", "rx", "rx", "cx", "cx"]
+        assert gate_qubits(qc)[3:] == [[0, 1], [1, 2]]
 
     def test_build_with_swap_entangler(self):
         """Non-CX/CZ 2-qubit entanglers work — SwapGate isn't in any whitelist."""
@@ -153,7 +146,7 @@ class TestGenericLayerAnsatz:
         qc = _build_circuit(
             ansatz, list(ParameterVector("p", n_params)), n_qubits, n_layers
         )
-        assert _gate_names(qc) == ["rx", "rx", "rx", "swap", "swap"]
+        assert gate_names(qc) == ["rx", "rx", "rx", "swap", "swap"]
 
 
 # --- Test QAOAAnsatz ---
@@ -176,7 +169,7 @@ class TestQAOAAnsatz:
         params = ParameterVector("p", n_params)
 
         qc = _build_circuit(ansatz, list(params), n_qubits, n_layers)
-        names = _gate_names(qc)
+        names = gate_names(qc)
 
         # (n_layers + 1) Hadamard layers of size n_qubits.
         assert names.count("h") == (n_layers + 1) * n_qubits
@@ -192,7 +185,7 @@ class TestQAOAAnsatz:
         n_qubits, n_layers = 1, 2
         params = ParameterVector("p", n_layers * ansatz.n_params_per_layer(n_qubits))
         qc = _build_circuit(ansatz, list(params), n_qubits, n_layers)
-        names = _gate_names(qc)
+        names = gate_names(qc)
         assert names.count("h") == n_layers + 1
         assert names.count("ry") == n_layers
         # No two-qubit interaction emitted for the single-qubit case.
@@ -204,7 +197,7 @@ class TestQAOAAnsatz:
         n_qubits, n_layers = 2, 2
         params = ParameterVector("p", n_layers * ansatz.n_params_per_layer(n_qubits))
         qc = _build_circuit(ansatz, list(params), n_qubits, n_layers)
-        names = _gate_names(qc)
+        names = gate_names(qc)
         assert names.count("h") == (n_layers + 1) * n_qubits
         # One ZZ rotation per layer → CX-RZ-CX.
         assert names.count("cx") == 2 * n_layers
@@ -217,7 +210,7 @@ class TestQAOAAnsatz:
         n_qubits, n_layers = 3, 1
         params = ParameterVector("p", n_layers * ansatz.n_params_per_layer(n_qubits))
         qc = _build_circuit(ansatz, list(params), n_qubits, n_layers)
-        names = _gate_names(qc)
+        names = gate_names(qc)
         assert names.count("rx") == n_qubits
         assert "ry" not in names
 
@@ -287,7 +280,7 @@ class TestQCCAnsatz:
             ansatz, list(params), n_qubits, n_layers, n_electrons=n_electrons
         )
 
-        names = _gate_names(qc)
+        names = gate_names(qc)
         # Hartree-Fock prep: 2 X gates (n_electrons=2 bits set in hf_state).
         # Then 4 RY rotations, then 9 two-qubit Pauli rotations
         # (XX/YY/ZZ for each adjacent pair) each emitted as basis gates.
@@ -314,7 +307,7 @@ class TestQCCAnsatz:
             ansatz, list(params), n_qubits, n_layers, n_electrons=n_electrons
         )
 
-        names = _gate_names(qc)
+        names = gate_names(qc)
         # 2 X (HF prep, once total) + 2 layers × (4 RY + 51 entangler basis gates).
         assert len(names) == 2 + 2 * (4 + 51)
         assert names.count("ry") == 8

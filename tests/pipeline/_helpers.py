@@ -4,14 +4,16 @@
 
 """Shared test helpers for pipeline tests (stages, execute fn, meta circuit factory)."""
 
+import re
 from typing import cast
 
 from qiskit import QuantumCircuit
 from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
+from divi.backends import CircuitRunner, ExecutionResult
 from divi.circuits import MetaCircuit
-from divi.pipeline import PipelineEnv, PipelineTrace
+from divi.pipeline import CircuitPipeline, PipelineEnv, PipelineTrace
 from divi.pipeline._compilation import _compile_batch
 from divi.pipeline.abc import (
     BundleStage,
@@ -120,3 +122,97 @@ def ones_execute_fn(
         return {branch_key: 1 for branch_key in lineage_by_label.values()}
     except (ValueError, AttributeError):
         return {key: 1 for key in trace.final_batch}
+
+
+def build_pipeline_with_shots(
+    meta: MetaCircuit,
+    distribution: str | None,
+    backend: CircuitRunner,
+    **stage_kw,
+) -> tuple[CircuitPipeline, PipelineEnv]:
+    """Build a pipeline with optional shot distribution."""
+    env = PipelineEnv(backend=backend)
+    pipeline = CircuitPipeline(
+        stages=[
+            DummySpecStage(meta=meta),
+            MeasurementStage(shot_distribution=distribution, **stage_kw),
+        ],
+    )
+    return pipeline, env
+
+
+class ExpvalBackendSpy(CircuitRunner):
+    """Backend that records kwargs and returns per-Pauli expectation values."""
+
+    def __init__(self, shots=100):
+        super().__init__(shots=shots)
+        self.last_ham_ops: str | None = None
+
+    @property
+    def is_async(self):
+        return False
+
+    @property
+    def supports_expval(self):
+        return True
+
+    def submit_circuits(self, circuits, **kwargs):
+        self.last_ham_ops = kwargs.get("ham_ops")
+        results = []
+        if self.last_ham_ops is not None:
+            terms = self.last_ham_ops.split(";")
+            for label in circuits:
+                pauli_dict = {term: 0.1 * (i + 1) for i, term in enumerate(terms)}
+                results.append({"label": label, "results": pauli_dict})
+        return ExecutionResult(results=results)
+
+
+class ShotsBackendSpy(CircuitRunner):
+    """Shots-based backend (supports_expval=False) for probs tests."""
+
+    @property
+    def is_async(self):
+        return False
+
+    @property
+    def supports_expval(self):
+        return False
+
+    def submit_circuits(self, circuits, **kwargs):
+        results = []
+        for label, qasm in circuits.items():
+            match = re.search(r"qreg q\[(\d+)\]", qasm)
+            n_qubits = int(match.group(1))
+            results.append(
+                {
+                    "label": label,
+                    "results": {"0" * n_qubits: 80, "1" * n_qubits: 20},
+                }
+            )
+        return ExecutionResult(results=results)
+
+
+class RecordingBackend(CircuitRunner):
+    """Captures kwargs passed to ``submit_circuits`` by ``_default_execute_fn``."""
+
+    def __init__(self, shots: int = 1000) -> None:
+        super().__init__(shots=shots)
+        self.last_circuits: dict[str, str] | None = None
+        self.last_kwargs: dict = {}
+
+    @property
+    def is_async(self) -> bool:
+        return False
+
+    @property
+    def supports_expval(self) -> bool:
+        return False
+
+    def submit_circuits(self, circuits, **kwargs):
+        self.last_circuits = dict(circuits)
+        self.last_kwargs = dict(kwargs)
+        results = [
+            {"label": label, "results": {"0": kwargs.get("shots_for_label", 100)}}
+            for label in circuits
+        ]
+        return ExecutionResult(results=results)

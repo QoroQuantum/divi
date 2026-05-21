@@ -538,91 +538,86 @@ class TestCacheGating:
             assert prog._template_param is None
 
 
-class TestCachedBoundAnglesMatchUncached:
+@pytest.mark.parametrize(
+    "n_steps, order",
+    [(1, 1), (2, 1), (1, 2), (2, 2), (3, 2)],
+)
+def test_bound_angles_match_fresh_at_third_t(
+    cache_test_hamiltonian, dummy_simulator, n_steps, order
+):
     """Deterministic numeric parity: bound template angles must equal
     un-cached numeric angles bit-for-bit across Trotter configurations.
 
     This complements the stochastic regression test below: the
     shots-based equivalence check has shot noise above any sub-1e-8 angle
-    drift, so we verify circuit-level numeric agreement here directly.
-    """
-
-    @pytest.mark.parametrize(
-        "n_steps, order",
-        [(1, 1), (2, 1), (1, 2), (2, 2), (3, 2)],
+    drift, so we verify circuit-level numeric agreement here directly."""
+    H = cache_test_hamiltonian
+    obs = qp.PauliZ(0)
+    # Build the trajectory's parametric template at this (n_steps, order).
+    traj = TimeEvolutionTrajectory(
+        hamiltonian=H,
+        time_points=[0.1 * (i + 1) for i in range(workflow._CACHE_MIN_TIME_POINTS)],
+        observable=obs,
+        backend=dummy_simulator,
+        n_steps=n_steps,
+        order=order,
     )
-    def test_bound_angles_match_fresh_at_third_t(
-        self, cache_test_hamiltonian, dummy_simulator, n_steps, order
+    template, t_param = traj._maybe_build_template()
+    assert template is not None and t_param is not None
+
+    t_test = 0.7
+    m_fresh = _build_meta_at(
+        H, obs, t_test, dummy_simulator, n_steps=n_steps, order=order
+    )
+    for (_, dag_t), (_, dag_f) in zip(
+        template.circuit_bodies, m_fresh.circuit_bodies, strict=True
     ):
-        H = cache_test_hamiltonian
-        obs = qp.PauliZ(0)
-        # Build the trajectory's parametric template at this (n_steps, order).
-        traj = TimeEvolutionTrajectory(
-            hamiltonian=H,
-            time_points=[0.1 * (i + 1) for i in range(workflow._CACHE_MIN_TIME_POINTS)],
-            observable=obs,
-            backend=dummy_simulator,
-            n_steps=n_steps,
-            order=order,
-        )
-        template, t_param = traj._maybe_build_template()
-        assert template is not None and t_param is not None
-
-        t_test = 0.7
-        m_fresh = _build_meta_at(
-            H, obs, t_test, dummy_simulator, n_steps=n_steps, order=order
-        )
-        for (_, dag_t), (_, dag_f) in zip(
-            template.circuit_bodies, m_fresh.circuit_bodies, strict=True
-        ):
-            qc = dag_to_circuit(dag_t)
-            bound = qc.assign_parameters({t_param: t_test}, inplace=False)
-            fresh = dag_to_circuit(dag_f)
-            assert len(bound.data) == len(fresh.data)
-            for inst_b, inst_f in zip(bound.data, fresh.data, strict=True):
-                assert inst_b.operation.name == inst_f.operation.name
-                for pb, pf in zip(
-                    inst_b.operation.params, inst_f.operation.params, strict=True
-                ):
-                    assert abs(float(pb) - float(pf)) < 1e-12
+        qc = dag_to_circuit(dag_t)
+        bound = qc.assign_parameters({t_param: t_test}, inplace=False)
+        fresh = dag_to_circuit(dag_f)
+        assert len(bound.data) == len(fresh.data)
+        for inst_b, inst_f in zip(bound.data, fresh.data, strict=True):
+            assert inst_b.operation.name == inst_f.operation.name
+            for pb, pf in zip(
+                inst_b.operation.params, inst_f.operation.params, strict=True
+            ):
+                assert abs(float(pb) - float(pf)) < 1e-12
 
 
-class TestCachedRunMatchesUncached:
+def test_cached_and_uncached_results_agree(
+    cache_test_hamiltonian, default_test_simulator, monkeypatch
+):
     """Phase 3 regression test: the trajectory's *results* must be
     identical whether the cache is on or off."""
+    time_points = [0.0, 0.2, 0.4, 0.6, 0.8]
 
-    def test_cached_and_uncached_results_agree(
-        self, cache_test_hamiltonian, default_test_simulator, monkeypatch
-    ):
-        time_points = [0.0, 0.2, 0.4, 0.6, 0.8]
+    # NOTE: ``traj_cached`` is built and run BEFORE the monkeypatch so
+    # the cache engages for it. Do not hoist the patch above this block.
+    traj_cached = TimeEvolutionTrajectory(
+        hamiltonian=cache_test_hamiltonian,
+        time_points=time_points,
+        observable=qp.PauliZ(0),
+        backend=default_test_simulator,
+    )
+    traj_cached.create_programs()
+    assert all(p._template_meta is not None for p in traj_cached.programs.values())
+    traj_cached.run(blocking=True)
+    cached = traj_cached.aggregate_results()
 
-        # NOTE: ``traj_cached`` is built and run BEFORE the monkeypatch so
-        # the cache engages for it. Do not hoist the patch above this block.
-        traj_cached = TimeEvolutionTrajectory(
-            hamiltonian=cache_test_hamiltonian,
-            time_points=time_points,
-            observable=qp.PauliZ(0),
-            backend=default_test_simulator,
-        )
-        traj_cached.create_programs()
-        assert all(p._template_meta is not None for p in traj_cached.programs.values())
-        traj_cached.run(blocking=True)
-        cached = traj_cached.aggregate_results()
+    # Force the un-cached path by raising the threshold.
+    monkeypatch.setattr(workflow, "_CACHE_MIN_TIME_POINTS", 999)
+    traj_un = TimeEvolutionTrajectory(
+        hamiltonian=cache_test_hamiltonian,
+        time_points=time_points,
+        observable=qp.PauliZ(0),
+        backend=default_test_simulator,
+    )
+    traj_un.create_programs()
+    assert all(p._template_meta is None for p in traj_un.programs.values())
+    traj_un.run(blocking=True)
+    uncached = traj_un.aggregate_results()
 
-        # Force the un-cached path by raising the threshold.
-        monkeypatch.setattr(workflow, "_CACHE_MIN_TIME_POINTS", 999)
-        traj_un = TimeEvolutionTrajectory(
-            hamiltonian=cache_test_hamiltonian,
-            time_points=time_points,
-            observable=qp.PauliZ(0),
-            backend=default_test_simulator,
-        )
-        traj_un.create_programs()
-        assert all(p._template_meta is None for p in traj_un.programs.values())
-        traj_un.run(blocking=True)
-        uncached = traj_un.aggregate_results()
+    for t in time_points:
+        assert abs(cached[t] - uncached[t]) < 1e-9
 
-        for t in time_points:
-            assert abs(cached[t] - uncached[t]) < 1e-9
-
-        assert traj_cached.total_circuit_count == traj_un.total_circuit_count
+    assert traj_cached.total_circuit_count == traj_un.total_circuit_count

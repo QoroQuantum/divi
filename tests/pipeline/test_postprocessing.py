@@ -18,7 +18,7 @@ from divi.pipeline._postprocessing import (
 )
 from divi.pipeline.abc import ChildResults
 from divi.pipeline.stages import MeasurementStage
-from tests.pipeline.helpers import DummySpecStage, two_group_meta
+from tests.pipeline._helpers import DummySpecStage, two_group_meta
 
 
 class TestCountsToExpvals:

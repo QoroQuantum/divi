@@ -39,7 +39,7 @@ from divi.pipeline.stages import (
 )
 from divi.qprog import VQE, HartreeFockAnsatz
 from divi.qprog.algorithms import TimeEvolution
-from tests.pipeline.helpers import DummySpecStage, two_group_meta
+from tests.pipeline._helpers import DummySpecStage, two_group_meta
 
 
 def _parametric_twirlable_meta() -> MetaCircuit:

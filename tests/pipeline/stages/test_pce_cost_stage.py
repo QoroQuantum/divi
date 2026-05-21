@@ -251,23 +251,20 @@ class TestReducePathRouting:
         assert list(result.values())[0][0] == pytest.approx(0.0)
 
 
-class TestReduceMultiParamSet:
-    """Each param_set is reduced independently."""
+def test_two_param_sets_independent():
+    """Two param_sets with different histograms produce different energies."""
+    qubo = np.diag([1.0, 2.0])
+    stage = _make_stage(qubo, alpha=1.0, soft=True)
+    env = _make_env(ResultFormat.COUNTS)
 
-    def test_two_param_sets_independent(self):
-        """Two param_sets with different histograms produce different energies."""
-        qubo = np.diag([1.0, 2.0])
-        stage = _make_stage(qubo, alpha=1.0, soft=True)
-        env = _make_env(ResultFormat.COUNTS)
+    results = {
+        _meas_key(0): {"00": 100},  # all parities 0
+        _meas_key(1): {"11": 100},  # all parities 1
+    }
 
-        results = {
-            _meas_key(0): {"00": 100},  # all parities 0
-            _meas_key(1): {"11": 100},  # all parities 1
-        }
+    reduced = stage.reduce(results, env, token=None)
 
-        reduced = stage.reduce(results, env, token=None)
-
-        assert len(reduced) == 2
-        energies = [v[0] for v in reduced.values()]
-        # Different histograms must yield different energies
-        assert energies[0] != pytest.approx(energies[1])
+    assert len(reduced) == 2
+    energies = [v[0] for v in reduced.values()]
+    # Different histograms must yield different energies
+    assert energies[0] != pytest.approx(energies[1])

@@ -105,8 +105,16 @@ class DummyExpvalBackend(CircuitRunner):
 
 
 @pytest.fixture
-def dummy_simulator():
-    return DummySimulator(shots=1)
+def make_dummy_simulator():
+    def _make(shots, seed=42):
+        return DummySimulator(shots=shots, seed=seed)
+
+    return _make
+
+
+@pytest.fixture
+def dummy_simulator(make_dummy_simulator):
+    return make_dummy_simulator(1)
 
 
 @pytest.fixture

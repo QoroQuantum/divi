@@ -217,18 +217,17 @@ class TestComputeMeasurementGroupsMulti:
             assert v == pytest.approx(2.0)
 
 
-class TestMetaCircuitWithGrouping:
-    def test_wires_and_empty_group_produce_same_measurement_qasm(self):
-        circuit = qp.tape.QuantumScript(
-            ops=[qp.Hadamard(0), qp.CNOT(wires=[0, 1])],
-            measurements=[qp.probs()],
-        )
-        meta = qscript_to_meta(circuit)
-        n_qubits = meta.n_qubits
+def test_wires_and_empty_group_produce_same_measurement_qasm():
+    circuit = qp.tape.QuantumScript(
+        ops=[qp.Hadamard(0), qp.CNOT(wires=[0, 1])],
+        measurements=[qp.probs()],
+    )
+    meta = qscript_to_meta(circuit)
+    n_qubits = meta.n_qubits
 
-        qasms_explicit = measurement_qasms_from_groups(((),), n_qubits)
-        assert len(qasms_explicit) == 1
-        assert "measure" in qasms_explicit[0]
+    qasms_explicit = measurement_qasms_from_groups(((),), n_qubits)
+    assert len(qasms_explicit) == 1
+    assert "measure" in qasms_explicit[0]
 
 
 class TestWireGroupingFromLabels:

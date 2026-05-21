@@ -185,18 +185,16 @@ class TestNoMitigationTupleObservable:
         assert out == [0.7, -0.3]
 
 
-class TestZNETupleObservable:
+def test_reduce_with_per_obs_list(bell_dag):
     """ZNE on a tuple observable extrapolates per-observable element-wise."""
-
-    def test_reduce_with_per_obs_list(self, bell_dag):
-        # y_obs1 = 2 - s → 2; y_obs2 = 4 - 2s → 4.
-        zne = ZNE(scale_factors=[1.0, 3.0], extrapolator=LinearExtrapolator())
-        _, ctx = zne.expand(bell_dag, observable=("a", "b"))
-        rows = [[1.0, 2.0], [-1.0, -2.0]]
-        out = zne.reduce(rows, ctx)
-        assert isinstance(out, list)
-        assert out[0] == pytest.approx(2.0)
-        assert out[1] == pytest.approx(4.0)
+    # y_obs1 = 2 - s → 2; y_obs2 = 4 - 2s → 4.
+    zne = ZNE(scale_factors=[1.0, 3.0], extrapolator=LinearExtrapolator())
+    _, ctx = zne.expand(bell_dag, observable=("a", "b"))
+    rows = [[1.0, 2.0], [-1.0, -2.0]]
+    out = zne.reduce(rows, ctx)
+    assert isinstance(out, list)
+    assert out[0] == pytest.approx(2.0)
+    assert out[1] == pytest.approx(4.0)
 
 
 class TestRichardsonExtrapolator:

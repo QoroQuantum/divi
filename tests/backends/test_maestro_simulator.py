@@ -13,8 +13,12 @@ import divi.backends._maestro_simulator as maestro_module
 from divi.backends import MaestroConfig, MaestroSimulator
 from divi.backends._maestro_simulator import _run_with_cancellation, _strip_measurements
 from divi.exceptions import ExecutionCancelledError
-from tests.backends import circuit_runner_contracts as contracts
-from tests.backends.circuit_runner_contracts import QASM_DEPTH_2, QASM_DEPTH_3
+from tests.backends._circuit_runner_contracts import (
+    CONTRACT_TEST_SHOTS,
+    QASM_DEPTH_2,
+    QASM_DEPTH_3,
+    SyncRunnerContractsBase,
+)
 
 try:
     import maestro as _real_maestro
@@ -108,12 +112,11 @@ def _submit_config_arg(call):
     return call[1]["config"]
 
 
-class TestImportGuard:
-    def test_import_error_without_maestro(self, mocker):
-        """MaestroSimulator raises a helpful ImportError when maestro is missing."""
-        mocker.patch("divi.backends._maestro_simulator.maestro", None)
-        with pytest.raises(ImportError, match="qoro-maestro is required"):
-            MaestroSimulator()
+def test_import_error_without_maestro(mocker):
+    """MaestroSimulator raises a helpful ImportError when maestro is missing."""
+    mocker.patch("divi.backends._maestro_simulator.maestro", None)
+    with pytest.raises(ImportError, match="qoro-maestro is required"):
+        MaestroSimulator()
 
 
 class TestMaestroConfig:
@@ -693,59 +696,39 @@ class TestRunWithCancellation:
             fut.cancel.assert_called()
 
 
-class TestCancellation:
-    """``cancellation_event`` is honored before dispatch and between items."""
+def test_event_set_mid_batch_stops_consuming(mocker):
+    """When the event flips between item completions, the consumer
+    aborts and raises ExecutionCancelledError. Items the executor has
+    already pre-dispatched may still complete in the worker pool —
+    maestro itself has no mid-circuit cancel hook — but no more
+    results are appended to the batch output."""
+    fake = _make_fake_maestro(mocker, counts={"00": 1})
+    sim = _make_simulator(mocker, fake)
 
-    def test_event_set_before_submit_aborts_without_dispatch(self, mocker):
-        fake = _make_fake_maestro(mocker)
-        sim = _make_simulator(mocker, fake)
+    event = Event()
+    call_count = {"n": 0}
+    original_return = fake.simple_execute.return_value
 
-        event = Event()
-        event.set()
+    def flip_then_return(*args, **kwargs):
+        # Set the event after the first item completes; the next
+        # consumer iteration will see it set.
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            event.set()
+        return original_return
 
-        with pytest.raises(
-            ExecutionCancelledError, match="before any circuit was dispatched"
-        ):
-            sim.submit_circuits(
-                {"c0": QASM_DEPTH_2, "c1": QASM_DEPTH_3},
-                cancellation_event=event,
-            )
+    fake.simple_execute.side_effect = flip_then_return
 
-        fake.simple_execute.assert_not_called()
-
-    def test_event_set_mid_batch_stops_consuming(self, mocker):
-        """When the event flips between item completions, the consumer
-        aborts and raises ExecutionCancelledError. Items the executor has
-        already pre-dispatched may still complete in the worker pool —
-        maestro itself has no mid-circuit cancel hook — but no more
-        results are appended to the batch output."""
-        fake = _make_fake_maestro(mocker, counts={"00": 1})
-        sim = _make_simulator(mocker, fake)
-
-        event = Event()
-        call_count = {"n": 0}
-        original_return = fake.simple_execute.return_value
-
-        def flip_then_return(*args, **kwargs):
-            # Set the event after the first item completes; the next
-            # consumer iteration will see it set.
-            call_count["n"] += 1
-            if call_count["n"] == 1:
-                event.set()
-            return original_return
-
-        fake.simple_execute.side_effect = flip_then_return
-
-        with pytest.raises(ExecutionCancelledError, match="partial completion"):
-            sim.submit_circuits(
-                {
-                    "c0": QASM_DEPTH_2,
-                    "c1": QASM_DEPTH_3,
-                    "c2": QASM_DEPTH_3,
-                    "c3": QASM_DEPTH_3,
-                },
-                cancellation_event=event,
-            )
+    with pytest.raises(ExecutionCancelledError, match="partial completion"):
+        sim.submit_circuits(
+            {
+                "c0": QASM_DEPTH_2,
+                "c1": QASM_DEPTH_3,
+                "c2": QASM_DEPTH_3,
+                "c3": QASM_DEPTH_3,
+            },
+            cancellation_event=event,
+        )
 
 
 class TestExpvalSubmission:
@@ -1199,51 +1182,33 @@ class TestStripMeasurements:
         assert "creg meas[2]" in result
 
 
-class TestDepthContracts:
-    """Run all depth-tracking contracts from circuit_runner_contracts."""
+def _contract_maestro_runner(mocker, fake_maestro, *, track_depth: bool = False):
+    return _make_simulator(
+        mocker,
+        fake_maestro,
+        shots=CONTRACT_TEST_SHOTS,
+        track_depth=track_depth,
+    )
+
+
+class TestContracts(SyncRunnerContractsBase):
+    """Shared :class:`~divi.backends.CircuitRunner` behavioural contracts."""
 
     @pytest.fixture()
     def _fake_maestro(self, mocker):
         return _make_fake_maestro(mocker)
 
     @pytest.fixture()
-    def _mocker(self, mocker):
-        return mocker
+    def contract_runner_disabled(self, mocker, _fake_maestro):
+        return _contract_maestro_runner(mocker, _fake_maestro, track_depth=False)
 
-    def _sim(self, mocker, fake, **kwargs):
-        return _make_simulator(mocker, fake, **kwargs)
+    @pytest.fixture()
+    def contract_runner_enabled(self, mocker, _fake_maestro):
+        return _contract_maestro_runner(mocker, _fake_maestro, track_depth=True)
 
-    def test_disabled(self, _mocker, _fake_maestro):
-        runner = self._sim(_mocker, _fake_maestro, track_depth=False)
-        contracts.verify_depth_tracking_disabled(
-            runner, {"c0": QASM_DEPTH_2, "c1": QASM_DEPTH_3}
-        )
-
-    def test_records(self, _mocker, _fake_maestro):
-        runner = self._sim(_mocker, _fake_maestro, track_depth=True)
-        contracts.verify_depth_tracking_records(
-            runner, {"c0": QASM_DEPTH_2, "c1": QASM_DEPTH_3}, [2, 3]
-        )
-
-    def test_accumulates(self, _mocker, _fake_maestro):
-        runner = self._sim(_mocker, _fake_maestro, track_depth=True)
-        contracts.verify_depth_history_accumulates(
-            runner,
-            {"c0": QASM_DEPTH_2},
-            {"c1": QASM_DEPTH_3},
-        )
-
-    def test_clear(self, _mocker, _fake_maestro):
-        runner = self._sim(_mocker, _fake_maestro, track_depth=True)
-        contracts.verify_clear_depth_history(runner, {"c0": QASM_DEPTH_2})
-
-    def test_returns_copy(self, _mocker, _fake_maestro):
-        runner = self._sim(_mocker, _fake_maestro, track_depth=True)
-        contracts.verify_depth_history_returns_copy(runner, {"c0": QASM_DEPTH_2})
-
-    def test_std_zero_single(self, _mocker, _fake_maestro):
-        runner = self._sim(_mocker, _fake_maestro, track_depth=True)
-        contracts.verify_std_depth_zero_for_single_value(runner, {"c0": QASM_DEPTH_2})
+    @pytest.fixture()
+    def contract_runner_default(self, mocker, _fake_maestro):
+        return _contract_maestro_runner(mocker, _fake_maestro)
 
 
 class TestShotGroupsSampling:

@@ -111,17 +111,16 @@ class TestFailFutures:
         assert batch["a"].future.result() == "ok"
 
 
-class TestFlushGroup:
-    def test_program_keys_from_futures(self):
-        fg = _FlushGroup(
-            futures={"prog_a": Future(), "prog_b": Future()},
-            color="green",
-            label="expval",
-        )
-        assert fg.program_keys == {"prog_a", "prog_b"}
-        assert fg.color == "green"
-        assert fg.label == "expval"
-        assert fg.execution_result is None
+def test_program_keys_from_futures():
+    fg = _FlushGroup(
+        futures={"prog_a": Future(), "prog_b": Future()},
+        color="green",
+        label="expval",
+    )
+    assert fg.program_keys == {"prog_a", "prog_b"}
+    assert fg.color == "green"
+    assert fg.label == "expval"
+    assert fg.execution_result is None
 
 
 class TestBatchConfig:

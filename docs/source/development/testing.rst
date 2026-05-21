@@ -12,13 +12,13 @@ To run all tests:
 
 .. code-block:: bash
 
-   uv run pytest
+   uv run pytest -n auto
 
 To run tests with coverage:
 
 .. code-block:: bash
 
-   uv run pytest --cov=divi
+   uv run pytest -n auto --cov=divi
 
 To run specific test files:
 
@@ -71,6 +71,65 @@ non-obvious split is within ``tests/qprog/``:
 - ``tests/qprog/problems/`` - one file per ``QAOAProblem`` subclass
 - ``tests/qprog/algorithms/`` - algorithm-generic behavior (QAOA pipeline, QDrift, VQE, PCE)
 - ``tests/qprog/workflows/`` - workflow orchestrators (``PartitioningProgramEnsemble``, ``VQEHyperparameterSweep``)
+
+Shared test infrastructure
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Besides ``test_*.py`` files, packages use three supporting module types.
+Keep their roles separate — do not put fixtures in ``_helpers.py`` or
+import from ``conftest.py`` in test code.
+
+``conftest.py``
+   Pytest **fixtures** and hooks (``@pytest.fixture``, ``pytest_addoption``).
+   Discovered automatically; scoped by directory (``tests/conftest.py`` is
+   global, ``tests/backends/conftest.py`` is backend-only, etc.).
+
+``_helpers.py``
+   **Explicit-import** utilities: factories, constants, assertion helpers,
+   and shared test doubles (e.g. ``DummySpecStage``, ``ExpvalBackendSpy``).
+   Import with ``from tests.<pkg>._helpers import …``.
+
+``_contracts.py`` (or ``_<domain>_contracts.py`` when more specific)
+   Shared **`verify_*`** behavioural checks used across multiple test
+   modules in the same package (e.g. ``verify_basic_program_ensemble_behaviour``,
+   ``verify_depth_tracking_*`` for ``CircuitRunner``). Use a descriptive
+   module name when ``_contracts.py`` would be too vague.
+
+Fixtures that only one test file needs may stay in that file. Promote them
+to ``conftest.py`` when a second consumer appears in the same subtree.
+
+Current locations:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Path
+     - Role
+   * - ``tests/conftest.py``
+     - Global simulators, API key, warning suppression
+   * - ``tests/backends/conftest.py``
+     - Qoro service fixtures
+   * - ``tests/backends/_helpers.py``
+     - Qoro mock/result factories
+   * - ``tests/backends/_circuit_runner_contracts.py``
+     - ``CircuitRunner`` depth-tracking ``verify_*``
+   * - ``tests/pipeline/_helpers.py``
+     - Stage doubles, meta builders, backend spies
+   * - ``tests/qprog/_program_contracts.py``
+     - ``QuantumProgram`` / VQA / ensemble behavioural contracts
+   * - ``tests/qprog/_optimizer_contracts.py``
+     - Optimizer save/load behavioural contracts
+   * - ``tests/qprog/conftest.py``
+     - ``optimizer`` / ``checkpointing_optimizer`` parametrized fixtures
+   * - ``tests/qprog/problems/_helpers.py``
+     - Shared QUBO/graph test data
+   * - ``tests/hamiltonians/_helpers.py``
+     - PennyLane parity assertions
+   * - ``tests/qprog/algorithms/_helpers.py``
+     - Circuit gate introspection helpers
+   * - ``tests/ai/conftest.py``
+     - Doc/indexer/LLM fixtures
 
 **Key Fixtures Available:**
 
@@ -146,6 +205,8 @@ Writing Tests
 3. **Test both success and failure cases**
 4. **Use appropriate fixtures** for common test data
 5. **Mark slow tests**: Use ``@pytest.mark.e2e`` for integration tests
+6. **Keep infrastructure roles separate**: fixtures in ``conftest.py``,
+   explicit helpers in ``_helpers.py``, shared ``verify_*`` in ``_contracts.py``
 
 **Example Test with Fixtures:**
 

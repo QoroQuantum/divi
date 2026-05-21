@@ -575,37 +575,29 @@ class TestGraphPartitioningConfig:
         _assert_partitions_correct(G, partitions)
 
 
-class TestPyGraphPartitioning:
-    """Coverage for the rustworkx ``PyGraph`` end-to-end decomposition path.
+@pytest.mark.usefixtures("_raise_qubit_ceiling")
+def test_decompose_with_pygraph_input():
+    """End-to-end: ``_GraphProblemBase.decompose`` honours rx.PyGraph input."""
+    g = _make_pygraph_cycle(6)
+    problem = MaxCutProblem(
+        g,
+        config=GraphPartitioningConfig(
+            minimum_n_clusters=2, partitioning_algorithm="spectral"
+        ),
+    )
 
-    Algorithm-level coverage (apply_split / partition_with_*) is parametrized
-    across graph types in ``TestGraphPartitioningConfig`` above; this class
-    holds only the rx-specific end-to-end test that has no nx counterpart.
-    """
+    sub_problems = problem.decompose()
 
-    @pytest.mark.usefixtures("_raise_qubit_ceiling")
-    def test_decompose_with_pygraph_input(self):
-        """End-to-end: ``_GraphProblemBase.decompose`` honours rx.PyGraph input."""
-        g = _make_pygraph_cycle(6)
-        problem = MaxCutProblem(
-            g,
-            config=GraphPartitioningConfig(
-                minimum_n_clusters=2, partitioning_algorithm="spectral"
-            ),
-        )
-
-        sub_problems = problem.decompose()
-
-        assert len(sub_problems) >= 2
-        # Each sub-problem must be backed by a rx.PyGraph relabeled to 0..M-1.
-        all_orig_ids: set = set()
-        for prog_id, sub in sub_problems.items():
-            assert isinstance(sub.graph, rx.PyGraph)
-            local_to_global = problem._reverse_index_maps[prog_id]
-            assert set(local_to_global) == set(range(sub.graph.num_nodes()))
-            all_orig_ids |= set(local_to_global.values())
-        # Reverse maps collectively cover the original graph's node indices.
-        assert all_orig_ids == set(g.node_indexes())
+    assert len(sub_problems) >= 2
+    # Each sub-problem must be backed by a rx.PyGraph relabeled to 0..M-1.
+    all_orig_ids: set = set()
+    for prog_id, sub in sub_problems.items():
+        assert isinstance(sub.graph, rx.PyGraph)
+        local_to_global = problem._reverse_index_maps[prog_id]
+        assert set(local_to_global) == set(range(sub.graph.num_nodes()))
+        all_orig_ids |= set(local_to_global.values())
+    # Reverse maps collectively cover the original graph's node indices.
+    assert all_orig_ids == set(g.node_indexes())
 
 
 class TestPyGraphToNxConversion:
@@ -672,88 +664,86 @@ class TestPyGraphToNxConversion:
         assert nx_g[a][b]["v_of_edge"] == "stored"
 
 
-class TestBisectCompositionCorrectness:
+def test_composes_non_contiguous_cluster_ids_across_two_depths(mocker):
     """Exercises ``[parent_ids[i] for i in child_local_ids]`` under non-trivial
     input shapes — the existing tests use contiguous halves where the
     composition formula is degenerate."""
+    G = nx.path_graph(16)
 
-    def test_composes_non_contiguous_cluster_ids_across_two_depths(self, mocker):
-        G = nx.path_graph(16)
+    # Top-level split: even/odd indices (non-contiguous in the original frame).
+    # Each child relabels its 8 selected nodes to local 0..7.
+    even_ids = list(range(0, 16, 2))  # [0, 2, 4, 6, 8, 10, 12, 14]
+    odd_ids = list(range(1, 16, 2))  # [1, 3, 5, 7, 9, 11, 13, 15]
+    even_sub = nx.relabel_nodes(
+        G.subgraph(even_ids).copy(), {n: i for i, n in enumerate(even_ids)}
+    )
+    odd_sub = nx.relabel_nodes(
+        G.subgraph(odd_ids).copy(), {n: i for i, n in enumerate(odd_ids)}
+    )
 
-        # Top-level split: even/odd indices (non-contiguous in the original frame).
-        # Each child relabels its 8 selected nodes to local 0..7.
-        even_ids = list(range(0, 16, 2))  # [0, 2, 4, 6, 8, 10, 12, 14]
-        odd_ids = list(range(1, 16, 2))  # [1, 3, 5, 7, 9, 11, 13, 15]
-        even_sub = nx.relabel_nodes(
-            G.subgraph(even_ids).copy(), {n: i for i, n in enumerate(even_ids)}
-        )
-        odd_sub = nx.relabel_nodes(
-            G.subgraph(odd_ids).copy(), {n: i for i, n in enumerate(odd_ids)}
-        )
+    # Recursive split of the even subgraph: pick parent-frame indices
+    # [0, 4, 6] and [1, 2, 3, 5, 7] (non-contiguous, out-of-order in the
+    # second cluster).
+    even_lower_local = [0, 4, 6]
+    even_upper_local = [1, 2, 3, 5, 7]
+    even_lower = nx.relabel_nodes(
+        even_sub.subgraph(even_lower_local).copy(),
+        {n: i for i, n in enumerate(even_lower_local)},
+    )
+    even_upper = nx.relabel_nodes(
+        even_sub.subgraph(even_upper_local).copy(),
+        {n: i for i, n in enumerate(even_upper_local)},
+    )
 
-        # Recursive split of the even subgraph: pick parent-frame indices
-        # [0, 4, 6] and [1, 2, 3, 5, 7] (non-contiguous, out-of-order in the
-        # second cluster).
-        even_lower_local = [0, 4, 6]
-        even_upper_local = [1, 2, 3, 5, 7]
-        even_lower = nx.relabel_nodes(
-            even_sub.subgraph(even_lower_local).copy(),
-            {n: i for i, n in enumerate(even_lower_local)},
-        )
-        even_upper = nx.relabel_nodes(
-            even_sub.subgraph(even_upper_local).copy(),
-            {n: i for i, n in enumerate(even_upper_local)},
-        )
+    call_count = {"n": 0}
 
-        call_count = {"n": 0}
+    def fake_split(graph, config):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return ((even_sub, even_ids), (odd_sub, odd_ids))
+        if call_count["n"] == 2:
+            return (
+                (even_lower, even_lower_local),
+                (even_upper, even_upper_local),
+            )
+        return ()
 
-        def fake_split(graph, config):
-            call_count["n"] += 1
-            if call_count["n"] == 1:
-                return ((even_sub, even_ids), (odd_sub, odd_ids))
-            if call_count["n"] == 2:
-                return (
-                    (even_lower, even_lower_local),
-                    (even_upper, even_upper_local),
-                )
-            return ()
+    seen_top = {"v": False}
+    seen_even = {"v": False}
 
-        seen_top = {"v": False}
-        seen_even = {"v": False}
+    def predicate(subgraph, _):
+        if not seen_top["v"]:
+            seen_top["v"] = True
+            return True
+        if not seen_even["v"] and subgraph is even_sub:
+            seen_even["v"] = True
+            return True
+        return False
 
-        def predicate(subgraph, _):
-            if not seen_top["v"]:
-                seen_top["v"] = True
-                return True
-            if not seen_even["v"] and subgraph is even_sub:
-                seen_even["v"] = True
-                return True
-            return False
+    mocker.patch(
+        f"{_split_graph.__module__}.{_split_graph.__name__}", side_effect=fake_split
+    )
 
-        mocker.patch(
-            f"{_split_graph.__module__}.{_split_graph.__name__}", side_effect=fake_split
-        )
+    config = GraphPartitioningConfig(minimum_n_clusters=2)
+    initial = [(-G.number_of_nodes(), 0, G, list(G.nodes()))]
+    result = _bisect_with_predicate(initial, predicate, config)
 
-        config = GraphPartitioningConfig(minimum_n_clusters=2)
-        initial = [(-G.number_of_nodes(), 0, G, list(G.nodes()))]
-        result = _bisect_with_predicate(initial, predicate, config)
+    leaf_ids = [r[3] for r in result]
+    all_ids: set = set()
+    for ids in leaf_ids:
+        all_ids |= set(ids)
+    # Coverage and disjointness across the original graph.
+    assert all_ids == set(range(16))
+    for i in range(len(leaf_ids)):
+        for j in range(i + 1, len(leaf_ids)):
+            assert set(leaf_ids[i]).isdisjoint(set(leaf_ids[j]))
 
-        leaf_ids = [r[3] for r in result]
-        all_ids: set = set()
-        for ids in leaf_ids:
-            all_ids |= set(ids)
-        # Coverage and disjointness across the original graph.
-        assert all_ids == set(range(16))
-        for i in range(len(leaf_ids)):
-            for j in range(i + 1, len(leaf_ids)):
-                assert set(leaf_ids[i]).isdisjoint(set(leaf_ids[j]))
-
-        # The lower-even leaf carries parent_ids[0]=0, parent_ids[4]=8, parent_ids[6]=12.
-        even_lower_leaf = next(ids for ids in leaf_ids if 0 in ids)
-        assert sorted(even_lower_leaf) == [0, 8, 12]
-        # The upper-even leaf carries parent_ids[1,2,3,5,7] = [2, 4, 6, 10, 14].
-        even_upper_leaf = next(ids for ids in leaf_ids if set(ids) == {2, 4, 6, 10, 14})
-        assert sorted(even_upper_leaf) == [2, 4, 6, 10, 14]
+    # The lower-even leaf carries parent_ids[0]=0, parent_ids[4]=8, parent_ids[6]=12.
+    even_lower_leaf = next(ids for ids in leaf_ids if 0 in ids)
+    assert sorted(even_lower_leaf) == [0, 8, 12]
+    # The upper-even leaf carries parent_ids[1,2,3,5,7] = [2, 4, 6, 10, 14].
+    even_upper_leaf = next(ids for ids in leaf_ids if set(ids) == {2, 4, 6, 10, 14})
+    assert sorted(even_upper_leaf) == [2, 4, 6, 10, 14]
 
 
 class TestDrawPartitions:

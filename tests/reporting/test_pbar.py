@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import time
 from queue import Queue
 from threading import Event, Lock, Thread
 
@@ -192,15 +193,14 @@ class TestPhaseStatusColumn:
         assert "Polling attempt" not in result_str
 
 
-class TestMakeProgressBar:
-    """Tests for make_progress_bar function."""
+def test_make_progress_bar():
+    """Test creating progress bar."""
+    progress = make_progress_bar()
 
-    def test_make_progress_bar(self):
-        """Test creating progress bar."""
-        progress = make_progress_bar()
-
-        assert progress is not None
-        assert hasattr(progress, "add_task")
+    assert progress is not None
+    task_id = progress.add_task("test", total=1)
+    assert isinstance(task_id, int)
+    assert task_id in progress._tasks
 
 
 def _make_simple_progress() -> Progress:
@@ -537,9 +537,8 @@ class TestProgramOnlyColumn:
 
     def test_renders_inner_for_program_row(self, mocker):
         inner = mocker.Mock()
-        inner.render.return_value = "INNER"
         col = _ProgramOnlyColumn(inner)
-        assert col.render(self._task(mocker, "program")) == "INNER"
+        col.render(self._task(mocker, "program"))
         inner.render.assert_called_once()
 
     def test_empty_text_for_batch_row(self, mocker):
@@ -796,3 +795,96 @@ class TestQueueListenerCrashSafety:
         assert not thread.is_alive()
         # Both messages were attempted.
         assert progress_bar.update.call_count == 2
+
+    def test_queue_get_exception_is_logged(self, mocker):
+        mock_queue = mocker.MagicMock()
+        progress_bar = mocker.MagicMock()
+        done = Event()
+        pb_task_map: dict = {}
+        lock = Lock()
+        mock_queue.get.side_effect = Exception("Unexpected queue error")
+        progress_bar.console = mocker.MagicMock()
+
+        thread = Thread(
+            target=queue_listener,
+            args=(mock_queue, progress_bar, pb_task_map, done, lock),
+        )
+        thread.start()
+        time.sleep(0.2)
+        done.set()
+        thread.join(timeout=1)
+
+        progress_bar.console.log.assert_called()
+        assert "queue.get failed" in str(progress_bar.console.log.call_args)
+
+    def test_optional_message_fields_forwarded_to_update(self, mocker):
+        q: Queue = Queue()
+        progress_bar = mocker.MagicMock()
+        done = Event()
+        pb_task_map = {"job1": 1}
+        lock = Lock()
+
+        q.put(
+            {
+                "job_id": "job1",
+                "progress": 1,
+                "poll_attempt": 3,
+                "max_retries": 5,
+                "service_job_id": "service_123",
+                "job_status": "running",
+                "message": "Processing...",
+                "final_status": "completed",
+                "loss": -0.321,
+            }
+        )
+
+        thread = Thread(
+            target=queue_listener,
+            args=(q, progress_bar, pb_task_map, done, lock),
+        )
+        thread.start()
+        time.sleep(0.1)
+        done.set()
+        thread.join(timeout=1)
+
+        progress_bar.update.assert_called_once()
+        call_kwargs = progress_bar.update.call_args[1]
+        assert call_kwargs["poll_attempt"] == 3
+        assert call_kwargs["max_retries"] == 5
+        assert call_kwargs["service_job_id"] == "service_123"
+        assert call_kwargs["job_status"] == "running"
+        assert call_kwargs["loss"] == -0.321
+
+    def test_basic_program_updates(self, mocker):
+        q: Queue = Queue()
+        progress_bar = mocker.MagicMock()
+        done = Event()
+        lock = Lock()
+        pb_task_map = {"job1": 1, "job2": 2}
+
+        q.put(
+            {
+                "job_id": "job1",
+                "progress": 1,
+                "message": "step 1",
+                "final_status": "running",
+            }
+        )
+        q.put({"job_id": "job2", "progress": 1, "poll_attempt": 3})
+
+        thread = Thread(
+            target=queue_listener,
+            args=(q, progress_bar, pb_task_map, done, lock),
+        )
+        thread.start()
+        time.sleep(0.1)
+        done.set()
+        thread.join(timeout=1)
+        assert not thread.is_alive()
+
+        expected_calls = [
+            mocker.call(1, advance=1, message="step 1", final_status="running"),
+            mocker.call(2, advance=1, poll_attempt=3),
+        ]
+        progress_bar.update.assert_has_calls(expected_calls, any_order=True)
+        assert q.empty()

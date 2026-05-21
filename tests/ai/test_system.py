@@ -9,24 +9,23 @@ import pytest
 from divi.ai._system import detect_arch, detect_ram_gb
 
 
-class TestDetectArch:
-    @pytest.mark.parametrize(
-        "machine,system,expected",
-        [
-            ("arm64", "Darwin", "apple_silicon"),
-            ("aarch64", "Darwin", "apple_silicon"),
-            ("aarch64", "Linux", "arm64"),
-            ("arm64", "Linux", "arm64"),
-            ("x86_64", "Linux", "x86_64"),
-            ("x86_64", "Darwin", "x86_64"),
-            ("amd64", "Windows", "x86_64"),
-            ("riscv64", "Linux", "riscv64"),
-        ],
-    )
-    def test_arch_detection(self, mocker, machine, system, expected):
-        mocker.patch("divi.ai._system.platform.machine", return_value=machine)
-        mocker.patch("divi.ai._system.platform.system", return_value=system)
-        assert detect_arch() == expected
+@pytest.mark.parametrize(
+    "machine,system,expected",
+    [
+        ("arm64", "Darwin", "apple_silicon"),
+        ("aarch64", "Darwin", "apple_silicon"),
+        ("aarch64", "Linux", "arm64"),
+        ("arm64", "Linux", "arm64"),
+        ("x86_64", "Linux", "x86_64"),
+        ("x86_64", "Darwin", "x86_64"),
+        ("amd64", "Windows", "x86_64"),
+        ("riscv64", "Linux", "riscv64"),
+    ],
+)
+def test_arch_detection(mocker, machine, system, expected):
+    mocker.patch("divi.ai._system.platform.machine", return_value=machine)
+    mocker.patch("divi.ai._system.platform.system", return_value=system)
+    assert detect_arch() == expected
 
 
 class TestDetectRamGb:

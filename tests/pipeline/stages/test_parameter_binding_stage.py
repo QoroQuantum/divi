@@ -4,6 +4,8 @@
 
 """Tests for divi.pipeline.stages._parameter_binding_stage."""
 
+import warnings
+
 import numpy as np
 import pytest
 from qiskit import QuantumCircuit
@@ -13,9 +15,15 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
 from divi.circuits._conversions import _format_bound_param as _format_param
-from divi.pipeline import CircuitPipeline, PipelineEnv
-from divi.pipeline.stages import MeasurementStage, ParameterBindingStage, QEMStage
-from tests.pipeline.helpers import DummySpecStage, two_group_meta
+from divi.circuits.quepp import QuEPP
+from divi.pipeline import CircuitPipeline, DiviPerformanceWarning, PipelineEnv
+from divi.pipeline.stages import (
+    MeasurementStage,
+    ParameterBindingStage,
+    PauliTwirlStage,
+    QEMStage,
+)
+from tests.pipeline._helpers import DummySpecStage, two_group_meta
 
 
 def _parametric_meta(symbol_names: tuple[str, ...] = ("theta", "phi")) -> MetaCircuit:
@@ -315,3 +323,73 @@ class TestParameterBindingStageOrdering:
                 MeasurementStage(),
             ]
         )
+
+
+class TestParamBindBeforeQEMWarning:
+    """Spec: ParameterBindingStage placed before QEMStage emits DiviPerformanceWarning."""
+
+    def test_param_bind_before_qem_warns(self):
+        with pytest.warns(DiviPerformanceWarning, match="ParameterBindingStage"):
+            CircuitPipeline(
+                stages=[
+                    DummySpecStage(meta=two_group_meta()),
+                    ParameterBindingStage(),
+                    QEMStage(
+                        protocol=QuEPP(
+                            sampling="montecarlo",
+                            truncation_order=1,
+                            n_twirls=1,
+                        )
+                    ),
+                    PauliTwirlStage(n_twirls=1, seed=0),
+                    MeasurementStage(),
+                ]
+            )
+
+    def test_param_bind_after_qem_does_not_warn(self):
+        stages = [
+            DummySpecStage(meta=two_group_meta()),
+            QEMStage(
+                protocol=QuEPP(
+                    sampling="montecarlo",
+                    truncation_order=1,
+                    n_twirls=1,
+                )
+            ),
+            PauliTwirlStage(n_twirls=1, seed=0),
+            ParameterBindingStage(),
+            MeasurementStage(),
+        ]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DiviPerformanceWarning)
+            CircuitPipeline(stages=stages)
+
+    def test_no_mitigation_qem_does_not_warn(self):
+        stages = [
+            DummySpecStage(meta=two_group_meta()),
+            ParameterBindingStage(),
+            QEMStage(),
+            MeasurementStage(),
+        ]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DiviPerformanceWarning)
+            CircuitPipeline(stages=stages)
+
+    def test_suppress_performance_warnings_kwarg_silences_ordering(self):
+        """``suppress_performance_warnings=True`` silences the ordering warning."""
+        stages = [
+            DummySpecStage(meta=two_group_meta()),
+            ParameterBindingStage(),
+            QEMStage(
+                protocol=QuEPP(
+                    sampling="montecarlo",
+                    truncation_order=1,
+                    n_twirls=1,
+                )
+            ),
+            PauliTwirlStage(n_twirls=1, seed=0),
+            MeasurementStage(),
+        ]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DiviPerformanceWarning)
+            CircuitPipeline(stages=stages, suppress_performance_warnings=True)

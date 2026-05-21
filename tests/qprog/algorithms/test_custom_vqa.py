@@ -12,9 +12,7 @@ from qiskit.quantum_info import SparsePauliOp
 from divi.qprog import CustomVQA
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-from tests.qprog.qprog_contracts import (
-    CHECKPOINTING_OPTIMIZERS,
-    OPTIMIZERS_TO_TEST,
+from tests.qprog._program_contracts import (
     verify_correct_circuit_count,
     verify_metacircuit_dict,
 )
@@ -177,8 +175,23 @@ class TestInitialization:
         assert program.n_qubits == 1
         assert isinstance(program.cost_hamiltonian, SparsePauliOp)
 
+    @pytest.mark.parametrize(
+        "observable",
+        [0.5 * qp.Z(0), qp.Z(0)],
+        ids=["sprod", "bare_pauli"],
+    )
+    def test_single_term_observable_succeeds(self, dummy_simulator, observable):
+        """Single-term observables (SProd, bare Pauli) initialize without operands error."""
+        ops = [qp.RX(0.0, wires=0)]
+        measurements = [qp.expval(observable)]
+        qscript = qp.tape.QuantumScript(ops=ops, measurements=measurements)
 
-class TestErrorCases:
+        vqa = CustomVQA(qscript=qscript, backend=dummy_simulator)
+        assert vqa.cost_hamiltonian is not None
+        assert vqa.n_qubits == 1
+
+
+class TestConstructionValidation:
     """Test suite for error handling."""
 
     def test_invalid_input_type(self, dummy_simulator):
@@ -220,21 +233,6 @@ class TestErrorCases:
 
         with pytest.raises(ValueError, match="only constant terms"):
             CustomVQA(qscript=qscript, backend=dummy_simulator)
-
-    @pytest.mark.parametrize(
-        "observable",
-        [0.5 * qp.Z(0), qp.Z(0)],
-        ids=["sprod", "bare_pauli"],
-    )
-    def test_single_term_observable_succeeds(self, dummy_simulator, observable):
-        """Single-term observables (SProd, bare Pauli) initialize without operands error."""
-        ops = [qp.RX(0.0, wires=0)]
-        measurements = [qp.expval(observable)]
-        qscript = qp.tape.QuantumScript(ops=ops, measurements=measurements)
-
-        vqa = CustomVQA(qscript=qscript, backend=dummy_simulator)
-        assert vqa.cost_hamiltonian is not None
-        assert vqa.n_qubits == 1
 
     def test_no_trainable_parameters_fails(self, dummy_simulator):
         """Test that QuantumScript without trainable parameters fails."""
@@ -351,11 +349,8 @@ class TestQiskitConversion:
 class TestOptimization:
     """Test suite for optimization functionality."""
 
-    @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
     def test_optimization_runs(self, optimizer, simple_quantum_script, dummy_simulator):
         """Test that optimization runs with various optimizers."""
-        optimizer = optimizer()
-
         program = CustomVQA(
             qscript=simple_quantum_script,
             optimizer=optimizer,
@@ -366,7 +361,6 @@ class TestOptimization:
         program.run(perform_final_computation=False)
         verify_correct_circuit_count(program)
 
-    @pytest.mark.parametrize("optimizer", **OPTIMIZERS_TO_TEST)
     @pytest.mark.parametrize(
         "circuit_fixture",
         [
@@ -379,8 +373,6 @@ class TestOptimization:
         self, optimizer, circuit_fixture, dummy_simulator, request
     ):
         """Test that optimization runs with various Qiskit circuit configurations."""
-        optimizer = optimizer()
-
         circuit = request.getfixturevalue(circuit_fixture)
         program = CustomVQA(
             qscript=circuit,
@@ -433,53 +425,48 @@ class TestOptimization:
         assert program.best_params.shape == (program.n_params_per_layer,)
 
 
-class TestCheckpointing:
-    """Test suite for checkpointing functionality."""
+@pytest.mark.e2e
+def test_checkpointing_resume(
+    checkpointing_optimizer, simple_quantum_script, default_test_simulator, tmp_path
+):
+    """Test checkpointing and resume functionality."""
+    checkpoint_dir = tmp_path / "checkpoint_test"
+    default_test_simulator.set_seed(1997)
 
-    @pytest.mark.e2e
-    @pytest.mark.parametrize("optimizer", **CHECKPOINTING_OPTIMIZERS)
-    def test_checkpointing_resume(
-        self, optimizer, simple_quantum_script, default_test_simulator, tmp_path
-    ):
-        """Test checkpointing and resume functionality."""
-        optimizer = optimizer()
-        checkpoint_dir = tmp_path / "checkpoint_test"
-        default_test_simulator.set_seed(1997)
+    # First run: iterations 1-2
+    program1 = CustomVQA(
+        qscript=simple_quantum_script,
+        optimizer=checkpointing_optimizer,
+        max_iterations=2,
+        backend=default_test_simulator,
+        seed=1997,
+    )
+    program1.run(checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir))
+    assert program1.current_iteration == 2
 
-        # First run: iterations 1-2
-        program1 = CustomVQA(
-            qscript=simple_quantum_script,
-            optimizer=optimizer,
-            max_iterations=2,
-            backend=default_test_simulator,
-            seed=1997,
-        )
-        program1.run(checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir))
-        assert program1.current_iteration == 2
+    # Verify checkpoint was created
+    checkpoint_path = checkpoint_dir / "checkpoint_002"
+    assert checkpoint_path.exists()
+    assert (checkpoint_path / "program_state.json").exists()
 
-        # Verify checkpoint was created
-        checkpoint_path = checkpoint_dir / "checkpoint_002"
-        assert checkpoint_path.exists()
-        assert (checkpoint_path / "program_state.json").exists()
+    # Store state from first run
+    first_run_iteration = program1.current_iteration
+    first_run_losses_count = len(program1.losses_history)
+    first_run_best_loss = program1.best_loss
 
-        # Store state from first run
-        first_run_iteration = program1.current_iteration
-        first_run_losses_count = len(program1.losses_history)
-        first_run_best_loss = program1.best_loss
+    # Second run: resume and run iterations 3-4
+    program2 = CustomVQA.load_state(
+        checkpoint_dir,
+        backend=default_test_simulator,
+        qscript=simple_quantum_script,
+    )
 
-        # Second run: resume and run iterations 3-4
-        program2 = CustomVQA.load_state(
-            checkpoint_dir,
-            backend=default_test_simulator,
-            qscript=simple_quantum_script,
-        )
+    # Verify loaded state matches first run
+    assert program2.current_iteration == first_run_iteration
+    assert len(program2.losses_history) == first_run_losses_count
+    assert program2.best_loss == pytest.approx(first_run_best_loss)
 
-        # Verify loaded state matches first run
-        assert program2.current_iteration == first_run_iteration
-        assert len(program2.losses_history) == first_run_losses_count
-        assert program2.best_loss == pytest.approx(first_run_best_loss)
-
-        program2.max_iterations = 4
-        program2.run(checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir))
-        assert program2.current_iteration == 4
-        assert (checkpoint_dir / "checkpoint_004").exists()
+    program2.max_iterations = 4
+    program2.run(checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir))
+    assert program2.current_iteration == 4
+    assert (checkpoint_dir / "checkpoint_004").exists()

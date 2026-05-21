@@ -28,7 +28,7 @@ from divi.qprog.workflows._vqe_sweep import (
     _zmatrix_to_cartesian,
     _ZMatrixEntry,
 )
-from tests.qprog.qprog_contracts import verify_basic_program_ensemble_behaviour
+from tests.qprog._program_contracts import verify_basic_program_ensemble_behaviour
 
 
 @pytest.fixture
@@ -390,9 +390,9 @@ def vqe_sweep_hamiltonian(
 class TestVQEHyperparameterSweep:
     """A test class to group all tests for the VQEHyperparameterSweep."""
 
-    def test_verify_basic_behaviour(self, mocker, vqe_sweep):
+    def test_verify_basic_behaviour(self, vqe_sweep, mocker):
         """Test that the sweep conforms to basic batch program behavior."""
-        verify_basic_program_ensemble_behaviour(mocker, vqe_sweep)
+        verify_basic_program_ensemble_behaviour(vqe_sweep, mocker)
 
     def test_correct_number_of_programs_created_molecule_transformer(
         self, mocker, vqe_sweep, vqe_sweep_max_iterations
@@ -681,95 +681,95 @@ class TestVQEHyperparameterSweep:
         mock_join.assert_called_once()
 
 
-class TestHelperFunctions:
-    """Tests for helper functions in _vqe_sweep module."""
+def test_safe_normalize_edge_cases():
+    """Test _safe_normalize with edge cases."""
+    # Test with zero vector
+    zero_vec = np.array([0.0, 0.0, 0.0])
+    result = _safe_normalize(zero_vec)
+    expected = np.array([1.0, 0.0, 0.0])
+    np.testing.assert_array_almost_equal(result, expected)
 
-    def test_safe_normalize_edge_cases(self):
-        """Test _safe_normalize with edge cases."""
-        # Test with zero vector
-        zero_vec = np.array([0.0, 0.0, 0.0])
-        result = _safe_normalize(zero_vec)
-        expected = np.array([1.0, 0.0, 0.0])
-        np.testing.assert_array_almost_equal(result, expected)
+    # Test with very small vector
+    small_vec = np.array([1e-8, 1e-8, 1e-8])
+    result = _safe_normalize(small_vec)
+    np.testing.assert_array_almost_equal(result, expected)
 
-        # Test with very small vector
-        small_vec = np.array([1e-8, 1e-8, 1e-8])
-        result = _safe_normalize(small_vec)
-        np.testing.assert_array_almost_equal(result, expected)
+    # Test with custom fallback
+    custom_fallback = np.array([0.0, 1.0, 0.0])
+    result = _safe_normalize(zero_vec, fallback=custom_fallback)
+    np.testing.assert_array_almost_equal(result, custom_fallback)
 
-        # Test with custom fallback
-        custom_fallback = np.array([0.0, 1.0, 0.0])
-        result = _safe_normalize(zero_vec, fallback=custom_fallback)
-        np.testing.assert_array_almost_equal(result, custom_fallback)
+    # Test with normal vector
+    normal_vec = np.array([3.0, 4.0, 0.0])
+    result = _safe_normalize(normal_vec)
+    expected = np.array([0.6, 0.8, 0.0])
+    np.testing.assert_array_almost_equal(result, expected)
 
-        # Test with normal vector
-        normal_vec = np.array([3.0, 4.0, 0.0])
-        result = _safe_normalize(normal_vec)
-        expected = np.array([0.6, 0.8, 0.0])
-        np.testing.assert_array_almost_equal(result, expected)
 
-    def test_compute_angle_edge_cases(self):
-        """Test _compute_angle with edge cases."""
-        # Test with parallel vectors
-        v1 = np.array([1.0, 0.0, 0.0])
-        v2 = np.array([2.0, 0.0, 0.0])
-        angle = _compute_angle(v1, v2)
-        assert np.isclose(angle, 0.0)
+def test_compute_angle_edge_cases():
+    """Test _compute_angle with edge cases."""
+    # Test with parallel vectors
+    v1 = np.array([1.0, 0.0, 0.0])
+    v2 = np.array([2.0, 0.0, 0.0])
+    angle = _compute_angle(v1, v2)
+    assert np.isclose(angle, 0.0)
 
-        # Test with antiparallel vectors
-        v2 = np.array([-2.0, 0.0, 0.0])
-        angle = _compute_angle(v1, v2)
-        assert np.isclose(angle, 180.0)
+    # Test with antiparallel vectors
+    v2 = np.array([-2.0, 0.0, 0.0])
+    angle = _compute_angle(v1, v2)
+    assert np.isclose(angle, 180.0)
 
-        # Test with perpendicular vectors
-        v2 = np.array([0.0, 1.0, 0.0])
-        angle = _compute_angle(v1, v2)
-        assert np.isclose(angle, 90.0)
+    # Test with perpendicular vectors
+    v2 = np.array([0.0, 1.0, 0.0])
+    angle = _compute_angle(v1, v2)
+    assert np.isclose(angle, 90.0)
 
-        # Test with very small vectors
-        v1 = np.array([1e-8, 1e-8, 0.0])
-        v2 = np.array([1e-8, 0.0, 0.0])
-        angle = _compute_angle(v1, v2)
-        assert 0 <= angle <= 180
+    # Test with very small vectors
+    v1 = np.array([1e-8, 1e-8, 0.0])
+    v2 = np.array([1e-8, 0.0, 0.0])
+    angle = _compute_angle(v1, v2)
+    assert 0 <= angle <= 180
 
-    def test_compute_dihedral_edge_cases(self):
-        """Test _compute_dihedral with edge cases."""
-        # Test with collinear vectors
-        b0 = np.array([1.0, 0.0, 0.0])
-        b1 = np.array([2.0, 0.0, 0.0])
-        b2 = np.array([3.0, 0.0, 0.0])
-        dihedral = _compute_dihedral(b0, b1, b2)
-        assert np.isclose(dihedral, 0.0)
 
-        # Test with very small vectors
-        b0 = np.array([1e-8, 1e-8, 0.0])
-        b1 = np.array([1e-8, 0.0, 0.0])
-        b2 = np.array([0.0, 1e-8, 0.0])
-        dihedral = _compute_dihedral(b0, b1, b2)
-        assert np.isclose(dihedral, 0.0)
+def test_compute_dihedral_edge_cases():
+    """Test _compute_dihedral with edge cases."""
+    # Test with collinear vectors
+    b0 = np.array([1.0, 0.0, 0.0])
+    b1 = np.array([2.0, 0.0, 0.0])
+    b2 = np.array([3.0, 0.0, 0.0])
+    dihedral = _compute_dihedral(b0, b1, b2)
+    assert np.isclose(dihedral, 0.0)
 
-        # Test with normal case
-        b0 = np.array([1.0, 0.0, 0.0])
-        b1 = np.array([0.0, 1.0, 0.0])
-        b2 = np.array([0.0, 0.0, 1.0])
-        dihedral = _compute_dihedral(b0, b1, b2)
-        assert isinstance(dihedral, float)
+    # Test with very small vectors
+    b0 = np.array([1e-8, 1e-8, 0.0])
+    b1 = np.array([1e-8, 0.0, 0.0])
+    b2 = np.array([0.0, 1e-8, 0.0])
+    dihedral = _compute_dihedral(b0, b1, b2)
+    assert np.isclose(dihedral, 0.0)
 
-    def test_find_refs_edge_cases(self):
-        """Test _find_refs with edge cases."""
-        # Test with no valid references
-        adj = [[2], [2], [0, 1]]
-        placed = {0, 1}
-        gp, ggp = _find_refs(adj, placed, 1, 2)
-        assert gp is None  # No valid references
-        assert ggp is None
+    # Test with normal case
+    b0 = np.array([1.0, 0.0, 0.0])
+    b1 = np.array([0.0, 1.0, 0.0])
+    b2 = np.array([0.0, 0.0, 1.0])
+    dihedral = _compute_dihedral(b0, b1, b2)
+    assert isinstance(dihedral, float)
 
-        # Test with valid references
-        adj = [[1], [0, 2], [1]]
-        placed = {0, 1, 2}
-        gp, ggp = _find_refs(adj, placed, 1, 2)
-        assert gp == 0  # 0 is in adj[1] and in placed
-        assert ggp is None  # No grandparent found
+
+def test_find_refs_edge_cases():
+    """Test _find_refs with edge cases."""
+    # Test with no valid references
+    adj = [[2], [2], [0, 1]]
+    placed = {0, 1}
+    gp, ggp = _find_refs(adj, placed, 1, 2)
+    assert gp is None  # No valid references
+    assert ggp is None
+
+    # Test with valid references
+    adj = [[1], [0, 2], [1]]
+    placed = {0, 1, 2}
+    gp, ggp = _find_refs(adj, placed, 1, 2)
+    assert gp == 0  # 0 is in adj[1] and in placed
+    assert ggp is None  # No grandparent found
 
 
 class TestZMatrixConversion:
@@ -962,25 +962,32 @@ class TestZMatrixConversion:
         recovered_dists = get_pairwise_distances(recovered)
         np.testing.assert_array_almost_equal(recovered_dists, original_dists, decimal=8)
 
-
-class TestBondTransformation:
-    """Tests for bond transformation functions."""
-
-    def test_transform_bonds_zero_length_error(self):
-        """Test _transform_bonds raises RuntimeError for zero bond length."""
+    def test_zero_bond_length_raises(self):
+        """Z-matrix entries with zero bond length are rejected as unphysical."""
         zmatrix = [
             _ZMatrixEntry(None, None, None, None, None, None),
-            _ZMatrixEntry(0, None, None, 1.0, None, None),
+            _ZMatrixEntry(0, None, None, 0.0, None, None),  # Zero bond length!
         ]
-        bonds_to_transform = [(0, 1)]
 
-        # Test scale mode that results in zero length
-        with pytest.raises(RuntimeError, match="New bond length can't be zero"):
-            _transform_bonds(zmatrix, bonds_to_transform, 0.0, "scale")
+        with pytest.raises(ValueError, match="Bond length for atom 1 must be positive"):
+            _zmatrix_to_cartesian(zmatrix)
 
-        # Test delta mode that results in zero length
-        with pytest.raises(RuntimeError, match="New bond length can't be zero"):
-            _transform_bonds(zmatrix, bonds_to_transform, -1.0, "delta")
+
+def test_transform_bonds_zero_length_error():
+    """Test _transform_bonds raises RuntimeError for zero bond length."""
+    zmatrix = [
+        _ZMatrixEntry(None, None, None, None, None, None),
+        _ZMatrixEntry(0, None, None, 1.0, None, None),
+    ]
+    bonds_to_transform = [(0, 1)]
+
+    # Test scale mode that results in zero length
+    with pytest.raises(RuntimeError, match="New bond length can't be zero"):
+        _transform_bonds(zmatrix, bonds_to_transform, 0.0, "scale")
+
+    # Test delta mode that results in zero length
+    with pytest.raises(RuntimeError, match="New bond length can't be zero"):
+        _transform_bonds(zmatrix, bonds_to_transform, -1.0, "delta")
 
 
 class TestKabschAlignment:
@@ -1029,12 +1036,8 @@ class TestKabschAlignment:
         # Third atom should be transformed but not necessarily aligned
         assert aligned.shape == P.shape
 
-
-class TestMathematicalCorrectnessIssues:
-    """Test cases for confirmed mathematical issues that were fixed."""
-
-    def test_kabsch_reflection_handling_fixed(self):
-        """Test that Kabsch algorithm finds the best rotation, not a reflection."""
+    def test_kabsch_align_avoids_reflection(self):
+        """Kabsch returns a proper rotation (det=+1), not a reflection (det=-1)."""
         # Create a right-handed coordinate system for P (non-planar)
         P = np.array(
             [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
@@ -1062,16 +1065,3 @@ class TestMathematicalCorrectnessIssues:
         assert (
             rmsd > 0.1
         ), f"Expected non-zero RMSD when avoiding reflection, but got {rmsd}"
-
-    def test_physical_validation_fixed(self):
-        """Test that zero bond lengths are now properly rejected."""
-        # Create Z-matrix with physically impossible geometry
-        # Bond length of 0.0 should be invalid
-        zmatrix = [
-            _ZMatrixEntry(None, None, None, None, None, None),
-            _ZMatrixEntry(0, None, None, 0.0, None, None),  # Zero bond length!
-        ]
-
-        # This should raise an error for physically impossible geometry
-        with pytest.raises(ValueError, match="Bond length for atom 1 must be positive"):
-            _zmatrix_to_cartesian(zmatrix)

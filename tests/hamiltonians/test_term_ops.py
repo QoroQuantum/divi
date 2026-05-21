@@ -37,13 +37,12 @@ def simple_spo() -> SparsePauliOp:
     return SparsePauliOp.from_list([("IZ", 1.0), ("ZI", 2.0), ("ZZ", 3.0)])
 
 
-class TestEmptySpo:
-    @pytest.mark.parametrize("num_qubits", [0, 1, 4, 17])
-    def test_size_is_zero(self, num_qubits):
-        """Returned SPO has no rows regardless of register size."""
-        spo = generate_empty_spo(num_qubits)
-        assert spo.size == 0
-        assert spo.num_qubits == num_qubits
+@pytest.mark.parametrize("num_qubits", [0, 1, 4, 17])
+def test_size_is_zero(num_qubits):
+    """Returned SPO has no rows regardless of register size."""
+    spo = generate_empty_spo(num_qubits)
+    assert spo.size == 0
+    assert spo.num_qubits == num_qubits
 
 
 class TestSpoConversion:

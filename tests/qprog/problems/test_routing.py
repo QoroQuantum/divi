@@ -72,58 +72,44 @@ class TestCreateTspQubo:
 
 
 class TestIsValidTspTour:
-    def test_valid_permutation_3cities(self):
+    def test_accepts_feasible_assignments(self):
         assert is_valid_tsp_tour("1001", 3) is True
-
-    def test_valid_permutation_swap(self):
         assert is_valid_tsp_tour("0110", 3) is True
 
-    def test_invalid_double_assignment(self):
+    def test_rejects_infeasible_assignments(self):
         assert is_valid_tsp_tour("1100", 3) is False
-
-    def test_invalid_no_assignment(self):
         assert is_valid_tsp_tour("0000", 3) is False
-
-    def test_wrong_length(self):
         assert is_valid_tsp_tour("101", 3) is False
 
 
 class TestDecodeTspSolution:
-    def test_identity_3cities(self):
-        tour = decode_tsp_solution("1001", 3, start_city=0)
-        assert tour is not None
-        assert tour[0] == 0 and tour[-1] == 0
-        assert set(tour[1:-1]) == {1, 2}
+    def test_decodes_feasible_tours(self):
+        identity = decode_tsp_solution("1001", 3, start_city=0)
+        assert identity is not None
+        assert identity[0] == 0 and identity[-1] == 0
+        assert set(identity[1:-1]) == {1, 2}
 
-    def test_swap_3cities(self):
-        tour = decode_tsp_solution("0110", 3, start_city=0)
-        assert tour is not None
-        assert tour[0] == 0 and tour[-1] == 0
+        swapped = decode_tsp_solution("0110", 3, start_city=0)
+        assert swapped is not None
+        assert swapped[0] == 0 and swapped[-1] == 0
 
     def test_infeasible_returns_none(self):
         assert decode_tsp_solution("1100", 3, start_city=0) is None
 
 
-class TestTourCost:
-    def test_simple_tour(self):
-        cost = np.array([[0, 10, 15], [10, 0, 20], [15, 20, 0]])
-        assert tour_cost([0, 1, 2, 0], cost) == 45.0
-
-    def test_reverse_tour(self):
-        cost = np.array([[0, 10, 15], [10, 0, 20], [15, 20, 0]])
-        assert tour_cost([0, 2, 1, 0], cost) == 45.0
+def test_undirected_matrix_same_cost_both_directions(three_city_cost):
+    assert tour_cost([0, 1, 2, 0], three_city_cost) == 45.0
+    assert tour_cost([0, 2, 1, 0], three_city_cost) == 45.0
 
 
 class TestRepairTspSolution:
-    def test_feasible_unchanged(self):
-        cost = np.array([[0, 10, 15], [10, 0, 20], [15, 20, 0]])
-        repaired_bs, tour, _ = repair_tsp_solution("1001", 3, 0, cost)
+    def test_feasible_unchanged(self, three_city_cost):
+        repaired_bs, tour, _ = repair_tsp_solution("1001", 3, 0, three_city_cost)
         assert is_valid_tsp_tour(repaired_bs, 3)
         assert tour[0] == 0 and tour[-1] == 0
 
-    def test_infeasible_repaired(self):
-        cost = np.array([[0, 10, 15], [10, 0, 20], [15, 20, 0]])
-        repaired_bs, tour, cost_val = repair_tsp_solution("0000", 3, 0, cost)
+    def test_infeasible_repaired(self, three_city_cost):
+        repaired_bs, tour, cost_val = repair_tsp_solution("0000", 3, 0, three_city_cost)
         assert is_valid_tsp_tour(repaired_bs, 3)
         assert cost_val > 0
 
@@ -183,7 +169,7 @@ def sol_file(tmp_path):
 
 
 class TestParseVrpFile:
-    def test_basic_fields(self, vrp_file):
+    def test_sample_vrp_parses_all_fields(self, vrp_file):
         inst = parse_tsplib_file(vrp_file)
         assert inst.name == "TEST-n4-k2-01"
         assert inst.problem_type == "CVRP"
@@ -191,30 +177,17 @@ class TestParseVrpFile:
         assert inst.capacity == 10
         assert inst.n_vehicles == 2
         assert inst.depot == 0
-
-    def test_optimal_cost_extracted(self, vrp_file):
-        assert parse_tsplib_file(vrp_file).optimal_cost == 100.0
-
-    def test_coordinates(self, vrp_file):
-        inst = parse_tsplib_file(vrp_file)
+        assert inst.optimal_cost == 100.0
+        assert inst.n_customers == 4
         assert inst.coords.shape == (5, 2)
         np.testing.assert_array_equal(inst.coords[0], [0, 0])
-
-    def test_demands(self, vrp_file):
-        inst = parse_tsplib_file(vrp_file)
         assert inst.demands.shape == (5,)
         assert inst.demands[0] == 0
-
-    def test_cost_matrix_euclidean(self, vrp_file):
-        inst = parse_tsplib_file(vrp_file)
         assert inst.cost_matrix.shape == (5, 5)
         assert inst.cost_matrix[0, 1] == 3.0
         assert inst.cost_matrix[0, 2] == 4.0
         assert inst.cost_matrix[0, 3] == 5.0
         assert inst.cost_matrix[1, 0] == inst.cost_matrix[0, 1]
-
-    def test_n_customers(self, vrp_file):
-        assert parse_tsplib_file(vrp_file).n_customers == 4
 
     def test_qoblib_instance(self):
         qoblib_path = Path(__file__).parent / "fixtures" / "XSH-n20-k4-01.vrp"
@@ -343,37 +316,23 @@ EOF
             pytest.skip("burma14.tsp fixture not available")
         return path
 
-    def test_explicit_lower_diag_row(self, explicit_lower_diag):
-        inst = parse_tsplib_file(explicit_lower_diag)
-        expected = np.array(
-            [[0, 10, 20, 40], [10, 0, 30, 50], [20, 30, 0, 60], [40, 50, 60, 0]],
-            dtype=float,
-        )
-        np.testing.assert_array_equal(inst.cost_matrix, expected)
+    _SYMMETRIC_4X4 = np.array(
+        [[0, 10, 20, 40], [10, 0, 30, 50], [20, 30, 0, 60], [40, 50, 60, 0]],
+        dtype=float,
+    )
 
-    def test_explicit_upper_row(self, explicit_upper_row):
-        inst = parse_tsplib_file(explicit_upper_row)
-        expected = np.array(
-            [[0, 10, 20, 40], [10, 0, 30, 50], [20, 30, 0, 60], [40, 50, 60, 0]],
-            dtype=float,
-        )
-        np.testing.assert_array_equal(inst.cost_matrix, expected)
-
-    def test_explicit_lower_row(self, explicit_lower_row):
-        inst = parse_tsplib_file(explicit_lower_row)
-        expected = np.array(
-            [[0, 10, 20, 40], [10, 0, 30, 50], [20, 30, 0, 60], [40, 50, 60, 0]],
-            dtype=float,
-        )
-        np.testing.assert_array_equal(inst.cost_matrix, expected)
-
-    def test_explicit_upper_diag_row(self, explicit_upper_diag_row):
-        inst = parse_tsplib_file(explicit_upper_diag_row)
-        expected = np.array(
-            [[0, 10, 20, 40], [10, 0, 30, 50], [20, 30, 0, 60], [40, 50, 60, 0]],
-            dtype=float,
-        )
-        np.testing.assert_array_equal(inst.cost_matrix, expected)
+    @pytest.mark.parametrize(
+        "fixture_name",
+        [
+            "explicit_lower_diag",
+            "explicit_upper_row",
+            "explicit_lower_row",
+            "explicit_upper_diag_row",
+        ],
+    )
+    def test_explicit_formats_reconstruct_symmetric_matrix(self, fixture_name, request):
+        inst = parse_tsplib_file(request.getfixturevalue(fixture_name))
+        np.testing.assert_array_equal(inst.cost_matrix, self._SYMMETRIC_4X4)
 
     def test_explicit_full_matrix(self, explicit_full_matrix):
         inst = parse_tsplib_file(explicit_full_matrix)
@@ -467,24 +426,22 @@ EOF
         assert parse_tsplib_file(p).optimal_cost == expected
 
 
-class TestNint:
+@pytest.mark.parametrize(
+    "x, expected",
+    [
+        (2.5, 3),
+        (3.5, 4),  # Python round(3.5) -> 4; round(2.5) -> 2 (banker's)
+        (-2.5, -3),
+        (-3.5, -4),
+        (0.0, 0),
+        (0.49999, 0),
+        (0.5, 1),
+        (-0.5, -1),
+    ],
+)
+def test_half_away_from_zero(x, expected):
     """``_nint`` mirrors TSPLIB's half-away-from-zero rounding."""
-
-    @pytest.mark.parametrize(
-        "x, expected",
-        [
-            (2.5, 3),
-            (3.5, 4),  # Python round(3.5) -> 4; round(2.5) -> 2 (banker's)
-            (-2.5, -3),
-            (-3.5, -4),
-            (0.0, 0),
-            (0.49999, 0),
-            (0.5, 1),
-            (-0.5, -1),
-        ],
-    )
-    def test_half_away_from_zero(self, x, expected):
-        assert _nint(x) == expected
+    assert _nint(x) == expected
 
 
 class TestParseVrpSolution:
@@ -546,31 +503,24 @@ class TestIsValidBinaryCvrp:
             "01" + "10" + "00" + "11" + "00" + "00", config, demands, 10.0, depot=0
         )
 
-    def test_missing_customer(self):
+    def test_rejects_invalid_solutions(self):
         config = binary_block_config(3, 2)
         demands = np.array([0, 3, 4, 2], dtype=float)
         assert not is_valid_binary_cvrp(
             "01" + "10" + "00" + "00" + "00" + "00", config, demands, 10.0, depot=0
         )
-
-    def test_duplicate_customer(self):
-        config = binary_block_config(3, 2)
-        demands = np.array([0, 3, 4, 2], dtype=float)
         assert not is_valid_binary_cvrp(
             "01" + "01" + "00" + "11" + "00" + "00", config, demands, 10.0, depot=0
         )
-
-    def test_capacity_violation(self):
-        config = binary_block_config(3, 2)
-        demands = np.array([0, 3, 4, 2], dtype=float)
         assert not is_valid_binary_cvrp(
             "01" + "10" + "11" + "00" + "00" + "00", config, demands, 5.0, depot=0
         )
 
-    def test_out_of_range_value(self):
-        config = binary_block_config(2, 1)
-        demands = np.array([0, 3, 4], dtype=float)
-        assert not is_valid_binary_cvrp("01" + "11", config, demands, 10.0, depot=0)
+        small_config = binary_block_config(2, 1)
+        small_demands = np.array([0, 3, 4], dtype=float)
+        assert not is_valid_binary_cvrp(
+            "01" + "11", small_config, small_demands, 10.0, depot=0
+        )
 
 
 class TestBinaryVsOneHotQubitCount:
@@ -806,11 +756,10 @@ class TestCreateCvrpQubo:
             create_cvrp_qubo(CVRP_COST, np.array([0, 1]), 10.0, 2)
 
 
-class TestCvrpBlockStructure:
-    def test_basic(self):
-        bs, nb = cvrp_block_structure(3, 2)
-        assert bs == 3
-        assert nb == 6  # 2 vehicles * 3 steps
+def test_basic():
+    bs, nb = cvrp_block_structure(3, 2)
+    assert bs == 3
+    assert nb == 6  # 2 vehicles * 3 steps
 
 
 class TestCvrpSolutionUtils:
@@ -825,22 +774,23 @@ class TestCvrpSolutionUtils:
         bitstring = "".join(str(x) for x in bits.flatten())
         assert is_valid_cvrp_solution(bitstring, 3, 2, CVRP_DEMANDS, 10.0, depot=0)
 
-    def test_invalid_missing_customer(self):
+    def test_invalid_assignments(self):
         bits = np.zeros((2, 3, 3), dtype=int)
         bits[0, 0, 0] = 1
         bits[0, 1, 1] = 1
-        # customer 2 not visited
-        bitstring = "".join(str(x) for x in bits.flatten())
-        assert not is_valid_cvrp_solution(bitstring, 3, 2, CVRP_DEMANDS, 10.0, depot=0)
+        missing_customer = "".join(str(x) for x in bits.flatten())
+        assert not is_valid_cvrp_solution(
+            missing_customer, 3, 2, CVRP_DEMANDS, 10.0, depot=0
+        )
 
-    def test_invalid_capacity_violation(self):
-        # All 3 customers on vehicle 0: demand = 3+4+2 = 9, capacity = 5
-        bits = np.zeros((2, 3, 3), dtype=int)
-        bits[0, 0, 0] = 1
-        bits[0, 1, 1] = 1
-        bits[0, 2, 2] = 1
-        bitstring = "".join(str(x) for x in bits.flatten())
-        assert not is_valid_cvrp_solution(bitstring, 3, 2, CVRP_DEMANDS, 5.0, depot=0)
+        overloaded = np.zeros((2, 3, 3), dtype=int)
+        overloaded[0, 0, 0] = 1
+        overloaded[0, 1, 1] = 1
+        overloaded[0, 2, 2] = 1
+        capacity_violation = "".join(str(x) for x in overloaded.flatten())
+        assert not is_valid_cvrp_solution(
+            capacity_violation, 3, 2, CVRP_DEMANDS, 5.0, depot=0
+        )
 
     def test_decode_wrong_length(self):
         assert decode_cvrp_solution("010", 3, 2, depot=0) is None

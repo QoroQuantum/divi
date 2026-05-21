@@ -2,6 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+"""Behavioural contracts for ``QuantumProgram``, ``VariationalQuantumAlgorithm``,
+and ``ProgramEnsemble``.
+
+``verify_correct_circuit_count`` recomputes expected counts using the same
+measurement-grouping logic as production code. It catches accidental changes
+to pipeline fan-out (regression guard), but does not prove numerical or
+algorithmic correctness.
+"""
+
 import pytest
 
 from divi.circuits import MetaCircuit
@@ -14,44 +23,9 @@ from divi.qprog import (
     ScipyOptimizer,
     VariationalQuantumAlgorithm,
 )
-from divi.qprog.optimizers import PymooMethod, PymooOptimizer
-
-OPTIMIZERS_TO_TEST = {
-    "argvalues": [
-        lambda: MonteCarloOptimizer(population_size=5, n_best_sets=2),
-        lambda: ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
-        lambda: ScipyOptimizer(method=ScipyMethod.COBYLA),
-        lambda: ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
-        lambda: PymooOptimizer(method=PymooMethod.CMAES, population_size=10),
-        lambda: PymooOptimizer(method=PymooMethod.DE, population_size=5),
-    ],
-    "ids": ["MonteCarlo", "L_BFGS_B", "COBYLA", "NELDER_MEAD", "CMAES", "DE"],
-}
-
-# Optimizers that support checkpointing - derived from OPTIMIZERS_TO_TEST
-# Filters out ScipyOptimizer which doesn't support checkpointing
-CHECKPOINTING_OPTIMIZERS = {
-    "argvalues": [
-        factory
-        for factory, opt_id in zip(
-            OPTIMIZERS_TO_TEST["argvalues"], OPTIMIZERS_TO_TEST["ids"]
-        )
-        if opt_id
-        not in ["L_BFGS_B", "COBYLA", "NELDER_MEAD"]  # ScipyOptimizer variants
-    ],
-    "ids": [
-        opt_id
-        for opt_id in OPTIMIZERS_TO_TEST["ids"]
-        if opt_id not in ["L_BFGS_B", "COBYLA", "NELDER_MEAD"]
-    ],
-}
 
 
 def verify_metacircuit_dict(obj: QuantumProgram, expected_keys: list[str]):
-    assert isinstance(obj.meta_circuit_factories, dict)
-    assert hasattr(
-        obj, "meta_circuit_factories"
-    ), "Meta circuits attribute does not exist"
     assert isinstance(
         obj.meta_circuit_factories, dict
     ), "Meta circuits object not a dict"
@@ -138,8 +112,7 @@ def verify_correct_circuit_count(obj: QuantumProgram):
             )
 
 
-def verify_basic_program_ensemble_behaviour(mocker, obj: ProgramEnsemble):
-
+def verify_basic_program_ensemble_behaviour(obj: ProgramEnsemble, mocker) -> None:
     with pytest.raises(RuntimeError, match="No programs to run"):
         obj.run()
 

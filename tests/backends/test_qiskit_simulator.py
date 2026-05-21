@@ -3,10 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import warnings
-from threading import Event
 
 import pytest
 from qiskit import QuantumCircuit
+from qiskit_aer import AerSimulator
 from qiskit_aer.noise import NoiseModel
 from qiskit_ibm_runtime.fake_provider import FakeQuitoV2
 
@@ -16,8 +16,12 @@ from divi.backends._qiskit_simulator import (
     _default_n_processes,
     _find_best_fake_backend,
 )
-from divi.exceptions import ExecutionCancelledError
-from tests.backends import circuit_runner_contracts as contracts
+from tests.backends._circuit_runner_contracts import (
+    CONTRACT_TEST_SHOTS,
+    QASM_DEPTH_2,
+    QASM_DEPTH_3,
+    SyncRunnerContractsBase,
+)
 
 
 class TestFindBestFakeBackend:
@@ -356,97 +360,56 @@ class TestQiskitSimulatorSubmitCircuits:
         assert result.results[0]["label"] == "test_circuit"
 
 
-class TestQiskitSimulatorCancellation:
-    """Aer's underlying call enters native code and cannot be interrupted,
-    so QiskitSimulator only honors ``cancellation_event`` at the
-    submit boundary — that's enough to abort the next iteration of an
-    optimizer loop without dispatching a wasted batch."""
+def _setup_qiskit_contract_mocks(mocker):
+    """Mock AerSimulator/transpile for shared CircuitRunner contract tests."""
+    mock_aer = mocker.Mock()
+    mock_result = mocker.Mock()
+    mock_result.get_counts.return_value = {"0": 50, "1": 50}
+    mock_result.metadata = {"parallel_experiments": 1, "omp_nested": False}
+    mock_aer.run.return_value.result.return_value = mock_result
+    mocker.patch(
+        "divi.backends._qiskit_simulator.AerSimulator",
+        return_value=mock_aer,
+    )
 
-    def test_pre_set_event_raises_before_dispatch(self, mocker):
-        mock_aer = mocker.Mock()
-        mocker.patch(
-            "divi.backends._qiskit_simulator.AerSimulator",
-            return_value=mock_aer,
-        )
-        sim = QiskitSimulator(shots=10)
+    def _transpile_side_effect(circuits, *args, **kwargs):
+        return [
+            QuantumCircuit.from_qasm_str(QASM_DEPTH_2 if i == 0 else QASM_DEPTH_3)
+            for i in range(len(circuits))
+        ]
 
-        event = Event()
-        event.set()
-
-        qasm = (
-            'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[1];\n'
-            "creg c[1];\nh q[0];\nmeasure q[0] -> c[0];\n"
-        )
-
-        with pytest.raises(ExecutionCancelledError, match="before dispatch"):
-            sim.submit_circuits({"c0": qasm}, cancellation_event=event)
-
-        mock_aer.run.assert_not_called()
+    mocker.patch(
+        "divi.backends._qiskit_simulator.transpile",
+        side_effect=_transpile_side_effect,
+    )
+    return mock_aer
 
 
-class TestQiskitSimulatorDepthTracker:
-    """Tests for QiskitSimulator depth tracking via shared CircuitRunner contracts."""
+def _contract_qiskit_runner(*, track_depth: bool = False):
+    return QiskitSimulator(
+        track_depth=track_depth,
+        shots=CONTRACT_TEST_SHOTS,
+    )
 
-    def _setup_mock_submit(self, mocker, num_circuits=2):
-        """Helper to mock AerSimulator and transpile for submit_circuits."""
-        mock_aer = mocker.Mock()
-        mock_result = mocker.Mock()
-        mock_result.get_counts.return_value = {"00": 50, "01": 50}
-        mock_result.metadata = {"parallel_experiments": 1, "omp_nested": False}
-        mock_aer.run.return_value.result.return_value = mock_result
-        mocker.patch(
-            "divi.backends._qiskit_simulator.AerSimulator",
-            return_value=mock_aer,
-        )
-        mocker.patch(
-            "divi.backends._qiskit_simulator.transpile",
-            return_value=[QuantumCircuit.from_qasm_str(contracts.QASM_DEPTH_2)]
-            * num_circuits,
-        )
 
-    def test_depth_tracking_disabled(self, mocker):
-        self._setup_mock_submit(mocker)
-        simulator = QiskitSimulator(track_depth=False, shots=10)
-        contracts.verify_depth_tracking_disabled(
-            simulator, {"c1": contracts.QASM_DEPTH_2}
-        )
+class TestContracts(SyncRunnerContractsBase):
+    """Shared :class:`~divi.backends.CircuitRunner` behavioural contracts."""
 
-    def test_depth_tracking_records(self, mocker):
-        self._setup_mock_submit(mocker)
-        simulator = QiskitSimulator(track_depth=True, shots=10)
-        contracts.verify_depth_tracking_records(
-            simulator,
-            {"c1": contracts.QASM_DEPTH_2, "c2": contracts.QASM_DEPTH_3},
-            expected_depths_sorted=[2, 3],
-        )
+    @pytest.fixture(autouse=True)
+    def _qiskit_contract_mocks(self, mocker):
+        return _setup_qiskit_contract_mocks(mocker)
 
-    def test_depth_history_accumulates(self, mocker):
-        self._setup_mock_submit(mocker, num_circuits=2)
-        simulator = QiskitSimulator(track_depth=True, shots=10)
-        contracts.verify_depth_history_accumulates(
-            simulator,
-            {"c1": contracts.QASM_DEPTH_2},
-            {"c2": contracts.QASM_DEPTH_3, "c3": contracts.QASM_DEPTH_3},
-        )
+    @pytest.fixture()
+    def contract_runner_disabled(self):
+        return _contract_qiskit_runner(track_depth=False)
 
-    def test_clear_depth_history(self, mocker):
-        self._setup_mock_submit(mocker)
-        simulator = QiskitSimulator(track_depth=True, shots=10)
-        contracts.verify_clear_depth_history(simulator, {"c1": contracts.QASM_DEPTH_2})
+    @pytest.fixture()
+    def contract_runner_enabled(self):
+        return _contract_qiskit_runner(track_depth=True)
 
-    def test_depth_history_returns_copy(self, mocker):
-        self._setup_mock_submit(mocker)
-        simulator = QiskitSimulator(track_depth=True, shots=10)
-        contracts.verify_depth_history_returns_copy(
-            simulator, {"c1": contracts.QASM_DEPTH_2}
-        )
-
-    def test_std_depth_zero_for_single_value(self, mocker):
-        self._setup_mock_submit(mocker)
-        simulator = QiskitSimulator(track_depth=True, shots=10)
-        contracts.verify_std_depth_zero_for_single_value(
-            simulator, {"c1": contracts.QASM_DEPTH_2}
-        )
+    @pytest.fixture()
+    def contract_runner_default(self):
+        return _contract_qiskit_runner()
 
 
 class TestExpvalSubmission:
@@ -764,41 +727,98 @@ class TestDefaultNProcesses:
         assert _default_n_processes() == 3
 
 
-class TestQiskitSimulatorShotGroupsMutualExclusion:
+_IDENTITY_QASM = (
+    "OPENQASM 2.0;\n"
+    'include "qelib1.inc";\n'
+    "qreg q[1];\n"
+    "creg c[1];\n"
+    "measure q[0] -> c[0];\n"
+)
+
+
+def test_both_provided_raises_value_error():
     """Spec: ham_ops + shot_groups together is rejected at the API boundary."""
-
-    def test_both_provided_raises_value_error(self):
-        sim = QiskitSimulator(shots=100)
-        with pytest.raises(ValueError, match="incompatible with ham_ops"):
-            sim.submit_circuits(
-                {"c0": "OPENQASM 2.0;\nqreg q[1];\n"},
-                ham_ops="Z",
-                shot_groups=[[0, 1, 100]],
-            )
+    sim = QiskitSimulator(shots=100)
+    with pytest.raises(ValueError, match="incompatible with ham_ops"):
+        sim.submit_circuits(
+            {"c0": "OPENQASM 2.0;\nqreg q[1];\n"},
+            ham_ops="Z",
+            shot_groups=[[0, 1, 100]],
+        )
 
 
-class TestQiskitSimulatorShotGroupsDeterministic:
+def test_deterministic_path_honors_per_group_shots():
     """Spec: shot_groups is respected even with _deterministic_execution=True.
 
     Without this, the deterministic short-circuit would silently use
-    self.shots for every circuit and ignore the per-group allocation.
-    """
+    self.shots for every circuit and ignore the per-group allocation."""
+    sim = QiskitSimulator(shots=999, _deterministic_execution=True)
+    circuits = {
+        "c0": _IDENTITY_QASM,
+        "c1": _IDENTITY_QASM,
+        "c2": _IDENTITY_QASM,
+    }
+    result = sim.submit_circuits(circuits, shot_groups=[[0, 1, 50], [1, 3, 200]])
+    per_circuit_totals = [sum(r["results"].values()) for r in result.results]
+    assert per_circuit_totals == [50, 200, 200]
 
-    _IDENTITY_QASM = (
-        "OPENQASM 2.0;\n"
-        'include "qelib1.inc";\n'
-        "qreg q[1];\n"
-        "creg c[1];\n"
-        "measure q[0] -> c[0];\n"
-    )
 
-    def test_deterministic_path_honors_per_group_shots(self):
-        sim = QiskitSimulator(shots=999, _deterministic_execution=True)
-        circuits = {
-            "c0": self._IDENTITY_QASM,
-            "c1": self._IDENTITY_QASM,
-            "c2": self._IDENTITY_QASM,
-        }
-        result = sim.submit_circuits(circuits, shot_groups=[[0, 1, 50], [1, 3, 200]])
+def test_returned_counts_sum_matches_per_group_shots():
+    """Spec: QiskitSimulator runs each range with the assigned shot count."""
+    sim = QiskitSimulator(shots=100)
+    circuits = {
+        "c0": _IDENTITY_QASM,
+        "c1": _IDENTITY_QASM,
+        "c2": _IDENTITY_QASM,
+    }
+    result = sim.submit_circuits(circuits, shot_groups=[[0, 1, 50], [1, 3, 200]])
+    per_circuit_totals = [sum(r["results"].values()) for r in result.results]
+    assert per_circuit_totals == [50, 200, 200]
+
+
+def test_partial_coverage_raises():
+    """Implementation detail: shot_groups must cover every circuit."""
+    sim = QiskitSimulator(shots=100)
+    circuits = {
+        "c0": _IDENTITY_QASM,
+        "c1": _IDENTITY_QASM,
+        "c2": _IDENTITY_QASM,
+    }
+    with pytest.raises(ValueError, match="do not cover every circuit"):
+        sim.submit_circuits(circuits, shot_groups=[[0, 2, 100]])
+
+
+class TestQiskitSimulatorShotGroupsBatching:
+    """Spec: one Aer run per distinct shot count."""
+
+    def test_single_aer_run_when_all_shots_equal(self, mocker):
+        sim = QiskitSimulator(shots=100)
+        circuits = {f"c{i}": _IDENTITY_QASM for i in range(4)}
+        spy = mocker.spy(AerSimulator, "run")
+        sim.submit_circuits(
+            circuits,
+            shot_groups=[[0, 1, 50], [1, 2, 50], [2, 3, 50], [3, 4, 50]],
+        )
+        assert spy.call_count == 1
+
+    def test_distinct_shot_counts_get_distinct_runs(self, mocker):
+        sim = QiskitSimulator(shots=100)
+        circuits = {f"c{i}": _IDENTITY_QASM for i in range(3)}
+        spy = mocker.spy(AerSimulator, "run")
+        sim.submit_circuits(
+            circuits,
+            shot_groups=[[0, 1, 50], [1, 2, 100], [2, 3, 50]],
+        )
+        assert spy.call_count == 2
+
+    def test_results_returned_in_original_circuit_order(self):
+        sim = QiskitSimulator(shots=100)
+        circuits = {f"c{i}": _IDENTITY_QASM for i in range(4)}
+        result = sim.submit_circuits(
+            circuits,
+            shot_groups=[[0, 1, 50], [1, 2, 200], [2, 3, 50], [3, 4, 200]],
+        )
+        labels = [r["label"] for r in result.results]
         per_circuit_totals = [sum(r["results"].values()) for r in result.results]
-        assert per_circuit_totals == [50, 200, 200]
+        assert labels == ["c0", "c1", "c2", "c3"]
+        assert per_circuit_totals == [50, 200, 50, 200]

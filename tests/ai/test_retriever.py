@@ -30,13 +30,14 @@ class TestRetrieve:
         results = retrieve("test query", index, chunks, embedder, top_k=3)
         assert len(results) == 3
 
-    def test_results_are_retrieved_chunks(self, mini_faiss_index):
+    def test_results_are_retrieved_chunks_sorted_by_score(self, mini_faiss_index):
         index, chunks = mini_faiss_index
         embedder = self._make_mock_embedder(index.d)
         results = retrieve("test", index, chunks, embedder, top_k=2)
         for r in results:
             assert isinstance(r, RetrievedChunk)
-            assert r.dense_score == r.score  # score equals dense_score
+        for i in range(len(results) - 1):
+            assert results[i].score >= results[i + 1].score
 
     def test_top_k_larger_than_index(self, mini_faiss_index):
         index, chunks = mini_faiss_index

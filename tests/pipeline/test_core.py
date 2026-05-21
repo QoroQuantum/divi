@@ -6,6 +6,7 @@
 
 import signal
 import threading
+import warnings
 from threading import Event
 
 import pytest
@@ -21,6 +22,7 @@ from divi.circuits._conversions import _format_bound_param
 from divi.exceptions import ExecutionCancelledError
 from divi.pipeline import (
     CircuitPipeline,
+    DiviPerformanceWarning,
     PipelineEnv,
     PipelineResult,
     PipelineTrace,
@@ -33,14 +35,20 @@ from divi.pipeline._compilation import (
     _compile_template_batch,
 )
 from divi.pipeline._core import (
+    _build_shot_groups,
     _scope_token,
     _sigint_to_cancellation,
     _validate_stage_order,
     _wait_for_async_result,
 )
-from divi.pipeline.stages import MeasurementStage, ParameterBindingStage
+from divi.pipeline.abc import BundleStage, ExpansionResult
+from divi.pipeline.stages import (
+    MeasurementStage,
+    ParameterBindingStage,
+    PauliTwirlStage,
+)
 
-from .helpers import (
+from ._helpers import (
     DummySpecStage,
     FanoutAndSumStage,
     StatefulFanoutStage,
@@ -677,30 +685,25 @@ class TestMultiMeasurementTemplatePathEndToEnd:
             assert templated_lineage[label] == bound_lineage[label]
 
 
-class TestDefaultExecuteFnTemplateDispatch:
-    """Spec: _default_execute_fn calls submit_circuit_templates when the
-    batch carries templates and the backend supports them; otherwise it
-    falls back to submit_circuits."""
+def test_dispatch_calls_submit_circuit_templates():
+    """A template-capable backend receives a template payload when the
+    program is parametric and the fast path applies."""
+    backend = _RecordingTemplateBackend()
+    pipeline = CircuitPipeline(
+        stages=[
+            DummySpecStage(meta=_parametric_meta_one_body()),
+            MeasurementStage(),
+            ParameterBindingStage(),
+        ]
+    )
+    env = PipelineEnv(backend=backend, param_sets=[[1.5, 2.7], [3.0, 4.0]])
+    pipeline.run(initial_spec="x", env=env)
 
-    def test_dispatch_calls_submit_circuit_templates(self):
-        """A template-capable backend receives a template payload when the
-        program is parametric and the fast path applies."""
-        backend = _RecordingTemplateBackend()
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_parametric_meta_one_body()),
-                MeasurementStage(),
-                ParameterBindingStage(),
-            ]
-        )
-        env = PipelineEnv(backend=backend, param_sets=[[1.5, 2.7], [3.0, 4.0]])
-        pipeline.run(initial_spec="x", env=env)
-
-        assert len(backend.template_calls) == 1
-        assert backend.circuit_calls == []
-        templates, _ = backend.template_calls[0]
-        assert len(templates) == 1  # single (body, meas) variant
-        assert len(templates[0].parameter_sets) == 2
+    assert len(backend.template_calls) == 1
+    assert backend.circuit_calls == []
+    templates, _ = backend.template_calls[0]
+    assert len(templates) == 1  # single (body, meas) variant
+    assert len(templates[0].parameter_sets) == 2
 
 
 class TestCollapseToParentResults:
@@ -1218,3 +1221,153 @@ class TestPipelineResultSqueeze:
         result = PipelineResult({(): probs})
         result._squeeze = False
         assert result.value == probs
+
+
+class TestBuildShotGroupsPure:
+    """Spec: _build_shot_groups maps lineage + per-spec shot dicts to ranges."""
+
+    def test_returns_none_when_no_circuits_match(self):
+        circuits = {"a": "qasm", "b": "qasm"}
+        lineage = {
+            "a": (("circuit", 0), ("obs_group", 0)),
+            "b": (("circuit", 0), ("obs_group", 1)),
+        }
+        per_group = {(("other", 0),): {0: 100, 1: 200}}
+        assert _build_shot_groups(circuits, lineage, per_group) is None
+
+    def test_single_spec_consecutive_groups_collapsed(self):
+        circuits = {"a": "x", "b": "x", "c": "x"}
+        lineage = {
+            "a": (("circuit", 0), ("obs_group", 0)),
+            "b": (("circuit", 0), ("obs_group", 1)),
+            "c": (("circuit", 0), ("obs_group", 2)),
+        }
+        per_group = {(("circuit", 0),): {0: 50, 1: 50, 2: 200}}
+        assert _build_shot_groups(circuits, lineage, per_group) == [
+            [0, 2, 50],
+            [2, 3, 200],
+        ]
+
+    def test_distinct_shots_create_separate_ranges(self):
+        circuits = {"a": "x", "b": "x", "c": "x"}
+        lineage = {
+            "a": (("circuit", 0), ("obs_group", 0)),
+            "b": (("circuit", 0), ("obs_group", 1)),
+            "c": (("circuit", 0), ("obs_group", 2)),
+        }
+        per_group = {(("circuit", 0),): {0: 100, 1: 200, 2: 300}}
+        assert _build_shot_groups(circuits, lineage, per_group) == [
+            [0, 1, 100],
+            [1, 2, 200],
+            [2, 3, 300],
+        ]
+
+    def test_two_specs_independent_allocations(self):
+        circuits = {"a": "x", "b": "x", "c": "x", "d": "x"}
+        lineage = {
+            "a": (("circuit", 0), ("obs_group", 0)),
+            "b": (("circuit", 0), ("obs_group", 1)),
+            "c": (("circuit", 1), ("obs_group", 0)),
+            "d": (("circuit", 1), ("obs_group", 1)),
+        }
+        per_group = {
+            (("circuit", 0),): {0: 100, 1: 200},
+            (("circuit", 1),): {0: 300, 1: 400},
+        }
+        assert _build_shot_groups(circuits, lineage, per_group) == [
+            [0, 1, 100],
+            [1, 2, 200],
+            [2, 3, 300],
+            [3, 4, 400],
+        ]
+
+    def test_missing_obs_group_for_a_circuit_raises(self):
+        circuits = {"a": "x", "b": "x"}
+        lineage = {
+            "a": (("circuit", 0), ("obs_group", 0)),
+            "b": (("circuit", 0), ("obs_group", 1)),
+        }
+        per_group = {(("circuit", 0),): {0: 100}}
+        with pytest.raises(ValueError, match="no per-group shot allocation"):
+            _build_shot_groups(circuits, lineage, per_group)
+
+    def test_extra_axes_in_branch_key_dont_break_matching(self):
+        circuits = {"a": "x", "b": "x"}
+        lineage = {
+            "a": (("circuit", 0), ("param_set", 5), ("obs_group", 0)),
+            "b": (("circuit", 0), ("param_set", 5), ("obs_group", 1)),
+        }
+        per_group = {(("circuit", 0),): {0: 100, 1: 200}}
+        assert _build_shot_groups(circuits, lineage, per_group) == [
+            [0, 1, 100],
+            [1, 2, 200],
+        ]
+
+
+class TestMeasurementExclusivity:
+    """Spec: at most one measurement-handling stage per pipeline."""
+
+    def test_single_measurement_stage_passes(self):
+        CircuitPipeline(
+            stages=[DummySpecStage(meta=two_group_meta()), MeasurementStage()]
+        )
+
+    def test_duplicate_measurement_stages_raises(self):
+        with pytest.raises(
+            ValueError,
+            match="Multiple measurement-handling stages",
+        ):
+            CircuitPipeline(
+                stages=[
+                    DummySpecStage(meta=two_group_meta()),
+                    MeasurementStage(),
+                    MeasurementStage(),
+                ]
+            )
+
+
+def test_pauli_twirl_without_qem_passes():
+    """Spec: PauliTwirlStage works without QEMStage."""
+    CircuitPipeline(
+        stages=[
+            DummySpecStage(meta=two_group_meta()),
+            PauliTwirlStage(n_twirls=5),
+            MeasurementStage(),
+        ]
+    )
+
+
+class _PerfWarningStage(BundleStage):
+    """Synthetic stage that emits a ``DiviPerformanceWarning`` during validate.
+
+    Decouples the suppression test from any concrete protocol (e.g. QuEPP) —
+    the warning's *trigger* is not the spec under test here; the kwarg's
+    silencing behaviour is.
+    """
+
+    def __init__(self):
+        super().__init__(name=type(self).__name__)
+
+    def validate(self, before, after):
+        warnings.warn(
+            "synthetic performance issue", DiviPerformanceWarning, stacklevel=3
+        )
+
+    def expand(self, batch, env):
+        return ExpansionResult(batch=batch), None
+
+    def reduce(self, results, env, token):
+        return results
+
+
+def test_suppress_performance_warnings_kwarg_silences_warning():
+    """``suppress_performance_warnings=True`` silences ``DiviPerformanceWarning``
+    emitted by any stage during pipeline construction."""
+    stages = [
+        DummySpecStage(meta=two_group_meta()),
+        _PerfWarningStage(),
+        MeasurementStage(),
+    ]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DiviPerformanceWarning)
+        CircuitPipeline(stages=stages, suppress_performance_warnings=True)
