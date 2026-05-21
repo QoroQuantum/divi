@@ -5,8 +5,8 @@ The Quantum Approximate Optimization Algorithm (QAOA) is designed to solve combi
 
 Divi offers two QAOA modes: single-instance mode for individual problems, and partitioning mode for large, intractable problems.
 
-The :class:`~divi.qprog.problems.QAOAProblem` interface
--------------------------------------------------------
+The QAOAProblem Interface
+-------------------------
 
 Every problem solved with QAOA in Divi is represented as a
 :class:`~divi.qprog.problems.QAOAProblem` subclass.  This base class defines the
@@ -659,4 +659,6 @@ Next Steps
 - :doc:`routing` — TSP and CVRP with constraint-preserving encodings
 - :doc:`optimizers` — optimizer choice and ``run(initial_params=...)``
 - :doc:`backends` — simulators and services
+- :doc:`../tools/qubo_characterization` — diagnose a QUBO and find good
+  ``γ`` / ``β`` before running QAOA
 - :doc:`../api_reference/qprog/problems` — full :class:`~divi.qprog.problems.QAOAProblem` API

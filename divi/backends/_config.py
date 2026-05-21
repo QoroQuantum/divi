@@ -71,7 +71,17 @@ class ExecutionConfig:
     """Simulation method."""
 
     api_meta: dict | None = field(default=None)
-    """Runtime pass-through metadata."""
+    """Runtime pass-through metadata. Forwarded to the cloud runtime;
+    unknown keys are rejected server-side. Allowed keys and value types:
+
+    * ``optimization_level`` (``int``)
+    * ``resilience_level`` (``int``)
+    * ``max_execution_time`` (``int``) — seconds
+    * ``transpilation_seed`` (``int``)
+    * ``layout_method`` (``str``)
+    * ``routing_method`` (``str``)
+    * ``approximation_degree`` (``int`` or ``float``)
+    """
 
     def override(self, other: "ExecutionConfig") -> "ExecutionConfig":
         """Creates a new config by overriding attributes with non-None values.

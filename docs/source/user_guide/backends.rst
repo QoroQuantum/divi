@@ -86,7 +86,7 @@ MaestroSimulator
 
 * **Native C++ Core**: Backed by ``qoro-maestro``, a compiled simulator designed for low per-circuit overhead.
 * **Auto Method Selection**: Switches from Statevector to MatrixProductState for circuits exceeding 22 qubits (configurable via :class:`~divi.backends.MaestroConfig`'s ``mps_qubit_threshold``), so a single backend handles both narrow and wide registers.
-* **Multiple Simulation Methods**: Statevector, MatrixProductState, Stabilizer, TensorNetwork, PauliPropagator.
+* **Multiple Simulation Methods**: Statevector, MatrixProductState, Stabilizer, ExtendedStabilizer, TensorNetwork, PauliPropagator.
 * **Pauli-channel noise**: Analytical exact-mean expectation values or Monte-Carlo sampling under a ``maestro.NoiseModel``, configured directly on :class:`~divi.backends.MaestroConfig` — see :ref:`noisy-simulation-maestro`.
 
 
@@ -242,10 +242,6 @@ QiskitSimulator
 ------------------
 
 :class:`~divi.backends.QiskitSimulator` wraps Qiskit's ``AerSimulator`` with thread-count control and Qiskit-native noise configuration.  Use it when you need device-calibrated noise from a Qiskit fake backend, or when you have an existing ``qiskit_aer.noise.NoiseModel`` you want to run as-is.  For Pauli-channel noise written from scratch, :ref:`MaestroSimulator's noisy paths <noisy-simulation-maestro>` are usually faster.
-
-
-Examples
-^^^^^^^^
 
 .. code-block:: python
 

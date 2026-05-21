@@ -24,7 +24,7 @@ SciPy Optimizers
 Divi provides several SciPy-based optimizers through the :class:`~divi.qprog.optimizers.ScipyOptimizer` class:
 
 Nelder-Mead
------------
+^^^^^^^^^^^
 
 Nelder-Mead [#nelder1965]_ is a gradient-free, simplex-based optimization algorithm. It is ideal for local optimization in low to moderate dimensional spaces. The method iteratively refines a simplex (a geometrical figure defined by a set of parameter vectors) by evaluating cost function values and applying operations such as reflection, expansion, and contraction.
 
@@ -41,7 +41,7 @@ Use Nelder-Mead when:
    optimizer = ScipyOptimizer(method=ScipyMethod.NELDER_MEAD)
 
 L-BFGS-B
---------
+^^^^^^^^
 
 L-BFGS-B (Limited-memory Broyden–Fletcher–Goldfarb–Shanno with Bound constraints) [#zhu1997]_ is a quasi-Newton method that leverages gradient information to efficiently converge to a local minimum. In Divi, gradient calculation is performed using the parameter shift rule, a technique well-suited to quantum circuits that allows for analytical gradient computation by evaluating the function at shifted parameter values.
 
@@ -57,7 +57,7 @@ Use L-BFGS-B when:
    optimizer = ScipyOptimizer(method=ScipyMethod.L_BFGS_B)
 
 COBYLA
-------
+^^^^^^
 
 COBYLA (Constrained Optimization BY Linear Approximations) [#powell1994]_ is a gradient-free, local optimization method—like Nelder-Mead—that supports nonlinear inequality constraints. It constructs successive linear approximations of the objective function and constraints, iteratively refining the solution within a trust region.
 

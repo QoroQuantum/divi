@@ -13,10 +13,11 @@ quantum amplitude concentrated on the feasible (permutation) subspace.
 Why CE-QAOA?
 ------------
 
-Standard penalty-QAOA wastes most of its measurement shots on infeasible
-bitstrings — the feasible set (e.g. permutations) is an exponentially
-small fraction of the full Hilbert space.  CE-QAOA avoids this by
-co-designing the encoding, initial state, and mixer:
+For routing problems like TSP and CVRP, standard penalty-QAOA wastes
+most of its measurement shots on infeasible bitstrings — the feasible
+set (e.g. valid tours, or permutations more generally) is an
+exponentially small fraction of the full Hilbert space.  CE-QAOA avoids
+this by co-designing the encoding, initial state, and mixer:
 
 - **W-state initialization**: starts each qubit block in a uniform
   superposition over one-hot basis states (exactly one city per slot).
@@ -121,12 +122,12 @@ Feasibility, Repair, and Energy
 
 Both problem classes implement:
 
-- :meth:`~divi.qprog.problems._routing.TSPProblem.is_feasible` — check
+- :meth:`~divi.qprog.problems.TSPProblem.is_feasible` — check
   whether a bitstring represents a valid tour/route.
-- :meth:`~divi.qprog.problems._routing.TSPProblem.repair_infeasible_bitstring` — project an
+- :meth:`~divi.qprog.problems.TSPProblem.repair_infeasible_bitstring` — project an
   infeasible bitstring to the nearest valid solution using the
   **Hungarian algorithm** (``scipy.optimize.linear_sum_assignment``).
-- :meth:`~divi.qprog.problems._routing.TSPProblem.compute_energy` —
+- :meth:`~divi.qprog.problems.TSPProblem.compute_energy` —
   evaluate the actual travel cost.
 
 These are used by QAOA's ``get_top_solutions`` with the ``feasibility``

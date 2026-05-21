@@ -100,6 +100,7 @@ Or pin a specific nightly by date:
    :caption: Tools
 
    tools/divi_ai
+   tools/qubo_characterization
 
 .. toctree::
    :maxdepth: 1
