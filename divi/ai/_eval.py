@@ -16,7 +16,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
-from ._chat import build_prompt
+from ._chat import build_prompt, strip_scope_preamble
 from ._indexer import load_search_stack
 from ._models import CACHE_DIR, load_llm
 from ._retriever import enrich_chunks, retrieve
@@ -73,7 +73,7 @@ EVAL_QUERIES: list[dict] = [
     },
     {
         "id": "sim_vs_service",
-        "query": "What is the difference between ParallelSimulator and QoroService?",
+        "query": "What is the difference between MaestroSimulator and QoroService?",
         "tags": ["api_lookup"],
     },
     {
@@ -174,8 +174,8 @@ def run_eval(
 
     # Load stack
     console.print("[dim]Loading search stack...[/dim]")
-    index, chunks, embedder = load_search_stack()
-    console.print(f"[dim]Index: {len(chunks)} chunks[/dim]")
+    stack = load_search_stack()
+    console.print(f"[dim]Index: {len(stack.chunks)} chunks[/dim]")
 
     console.print("[dim]Loading LLM...[/dim]")
     llm = load_llm(model_path, n_ctx=n_ctx, debug=debug)
@@ -187,7 +187,7 @@ def run_eval(
     for i, q in enumerate(EVAL_QUERIES, 1):
         console.print(f"  [{i}/{len(EVAL_QUERIES)}] {q['id']}: {q['query'][:60]}")
 
-        relevant = retrieve(q["query"], index, chunks, embedder, top_k=top_k)
+        relevant = retrieve(q["query"], stack, top_k=top_k)
         relevant = enrich_chunks(relevant)
         messages = build_prompt(relevant, history=[], user_query=q["query"], llm=llm)
 
@@ -200,7 +200,7 @@ def run_eval(
         )
         elapsed = time.monotonic() - t0
 
-        answer = response["choices"][0]["message"]["content"]
+        answer = strip_scope_preamble(response["choices"][0]["message"]["content"])
 
         results.append(
             {
@@ -232,7 +232,7 @@ def run_eval(
         for turn_idx, user_msg in enumerate(seq["turns"]):
             console.print(f"    Turn {turn_idx + 1}: {user_msg[:60]}")
 
-            relevant = retrieve(user_msg, index, chunks, embedder, top_k=top_k)
+            relevant = retrieve(user_msg, stack, top_k=top_k)
             relevant = enrich_chunks(relevant)
             messages = build_prompt(relevant, history, user_query=user_msg, llm=llm)
 
@@ -245,7 +245,7 @@ def run_eval(
             )
             elapsed = time.monotonic() - t0
 
-            answer = response["choices"][0]["message"]["content"]
+            answer = strip_scope_preamble(response["choices"][0]["message"]["content"])
             history.append({"role": "user", "content": user_msg})
             history.append({"role": "assistant", "content": answer})
 
@@ -274,7 +274,7 @@ def run_eval(
         "label": label,
         "model": model_path.name,
         "timestamp": datetime.now(tz=timezone.utc).isoformat(),
-        "num_chunks_in_index": len(chunks),
+        "num_chunks_in_index": len(stack.chunks),
         "top_k": top_k,
         "max_tokens": max_tokens,
         "results": results,

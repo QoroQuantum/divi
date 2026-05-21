@@ -97,10 +97,10 @@ def cmd_build(args: argparse.Namespace) -> None:
 
 def cmd_search(args: argparse.Namespace) -> None:
     """Search the index with a text query and display the top-k chunks."""
-    index, chunks, embedder = load_search_stack()
+    stack = load_search_stack()
 
     console.print(
-        f"[dim]Loaded {len(chunks)} chunks. Type a query (Ctrl-C to quit).[/dim]\n"
+        f"[dim]Loaded {len(stack.chunks)} chunks. Type a query (Ctrl-C to quit).[/dim]\n"
     )
 
     while True:
@@ -113,7 +113,7 @@ def cmd_search(args: argparse.Namespace) -> None:
         if not query:
             continue
 
-        results = retrieve(query, index, chunks, embedder, top_k=args.top_k)
+        results = retrieve(query, stack, top_k=args.top_k)
 
         table = Table(title=f"Top {len(results)} results", show_lines=True)
         table.add_column("#", style="bold", width=3)
@@ -141,12 +141,12 @@ def cmd_search(args: argparse.Namespace) -> None:
 
 def cmd_inspect(args: argparse.Namespace) -> None:
     """Assemble prompts for sample queries and print them (no LLM)."""
-    index, chunks, embedder = load_search_stack()
+    stack = load_search_stack()
 
     queries = [args.query] if args.query else _SAMPLE_QUERIES
 
     for query in queries:
-        relevant = retrieve(query, index, chunks, embedder, top_k=args.top_k)
+        relevant = retrieve(query, stack, top_k=args.top_k)
         relevant = enrich_chunks(relevant)
         messages = build_prompt(relevant, history=[], user_query=query, llm=None)
         system = messages[0]["content"]
@@ -231,8 +231,8 @@ def main() -> None:
     build_parser.add_argument(
         "--batch-size",
         type=int,
-        default=16,
-        help="Embedding batch size; lower to reduce memory usage (default: 16).",
+        default=4,
+        help="Embedding batch size; raise for more throughput at higher peak RAM (default: 4).",
     )
     build_parser.add_argument(
         "--threads",

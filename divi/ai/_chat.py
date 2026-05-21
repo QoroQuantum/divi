@@ -25,28 +25,57 @@ _SYSTEM_PROMPT_BASE = """\
 You are **divi-ai**, a helpful coding assistant for the Divi quantum \
 computing library by Qoro Quantum.
 
-SCOPE — Answer only about Divi, quantum computing with Divi, or related \
-Python. If the question is off-topic (unrelated to Divi), reply only: \
-"I can only help with the Divi quantum computing library." \
-If the question is about Divi but CONTEXT does not contain the answer, \
-say you don't have enough information and point to \
-https://divi.readthedocs.io or github.com/QoroQuantum/divi/issues.
+PROCESS — Internally classify each query as one of three scopes before \
+responding:
+  - IN-SCOPE: the question is about a Divi feature whose details appear \
+in CONTEXT. Answer using CONTEXT.
+  - WRONG-TOOL: the question asks how to use a Divi algorithm for a \
+problem that algorithm doesn't fit (e.g. "VQE for graph coloring" — VQE \
+is for chemistry, QAOA is for graphs). Reply with one short paragraph \
+pointing the user at the correct algorithm; do NOT generate code for the \
+wrong combination.
+  - OUT-OF-SCOPE: the question is unrelated to Divi (installing third-\
+party libraries, comparing Divi to other frameworks, language-spec \
+questions). Reply only: "I can only help with the Divi quantum computing \
+library." — nothing more.
 
-ACCURACY — Base answers ONLY on the CONTEXT below. Do not invent APIs. \
-Only name algorithms, features, or backends that appear in CONTEXT; do not \
-add names that are not mentioned there. Answer directly without echoing the \
-question. Use clear, complete sentences; when listing items, introduce them \
-briefly (e.g. "Divi supports the following optimizers: …") rather than \
-bare comma-separated fragments. For "what does Divi support?" style \
-questions, list only the main items from CONTEXT, not every class or config. \
-When asked specifically for **algorithms**, list only the top-level algorithm \
-names: VQE, QAOA, and time evolution. Do not list ansatzes (e.g. Hartree-Fock, \
-UCCSD), optimizers (e.g. Monte Carlo, PCE), or other building blocks.
+Algorithm-for-problem fit in Divi:
+  - VQE → chemistry / ground-state energy
+  - QAOA → combinatorial optimization (graphs, QUBOs, routing)
+  - Time evolution → Hamiltonian dynamics
+
+ACCURACY — When answering an IN-SCOPE query, base your answer ONLY on \
+the CONTEXT below. Do not invent APIs. Only name algorithms, features, or \
+backends that appear in CONTEXT. Answer directly without echoing the \
+question. Use clear, complete sentences; when listing items, introduce \
+them briefly (e.g. "Divi supports the following optimizers: …") rather \
+than bare comma-separated fragments. For "what does Divi support?" style \
+questions, list only the main items from CONTEXT, not every class or \
+config. When asked specifically for **algorithms**, list only the \
+top-level algorithm names: VQE, QAOA, and time evolution.
+
+If the question is IN-SCOPE but CONTEXT doesn't have the answer, say so \
+and point to https://divi.readthedocs.io or \
+github.com/QoroQuantum/divi/issues.
 
 REDIRECT — For questions about real hardware or third-party quantum cloud \
 providers, direct the user to **QoroService** (Divi's cloud offering) and \
 suggest they contact Qoro. Do not provide setup or code for other providers.
 """
+
+
+# The LLM occasionally leaks the internal scope label as a "SCOPE: IN" /
+# "**SCOPE: REDIRECT**" preamble line. Strip those before showing the
+# response to users.
+_SCOPE_PREFIX_RE = re.compile(
+    r"\A\**\s*SCOPE\s*:\s*(IN|OUT|REDIRECT|WRONG[- ]?TOOL)\**\s*\n+",
+    re.IGNORECASE,
+)
+
+
+def strip_scope_preamble(response: str) -> str:
+    """Remove any leading ``SCOPE: …`` scaffolding from an LLM response."""
+    return _SCOPE_PREFIX_RE.sub("", response, count=1)
 
 
 def _build_system_prompt() -> str:
@@ -80,11 +109,6 @@ def _build_system_prompt() -> str:
 
 
 SYSTEM_PROMPT = _build_system_prompt()
-
-# Chunks with raw cosine similarity below this threshold are dropped.
-# Off-topic queries ("What is a cat?") peak around 0.54-0.58;
-# the lowest valid query ("QAOA max clique") hits 0.59.
-MIN_DENSE_SCORE = 0.55
 
 # Fraction of the model's context window reserved for conversation history.
 # The rest goes to the system prompt + RAG chunks + the current query.
@@ -215,15 +239,16 @@ def _filter_chunks_for_overview(chunks: list[RetrievedChunk]) -> list[RetrievedC
 
 
 def _format_context(chunks: list[RetrievedChunk]) -> str:
-    """Format retrieved chunks into a numbered context block."""
-    # Drop chunks whose cosine similarity is below threshold.
-    relevant = [c for c in chunks if c.dense_score >= MIN_DENSE_SCORE]
+    """Format retrieved chunks into a numbered context block.
 
-    if not relevant:
+    Confidence gating is done by the retriever (see
+    :func:`divi.ai._retriever.retrieve`); an empty list means off-topic.
+    """
+    if not chunks:
         return "(No relevant documentation found.)"
 
     parts: list[str] = []
-    for i, chunk in enumerate(relevant, start=1):
+    for i, chunk in enumerate(chunks, start=1):
         source = display_path(chunk.source_file)
         parts.append(f"[{i}] {source}:\n{chunk.text}")
 

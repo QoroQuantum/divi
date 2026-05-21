@@ -6,7 +6,6 @@ import pytest
 
 from divi.ai._chat import (
     HARDWARE_REDIRECT_MESSAGE,
-    MIN_DENSE_SCORE,
     _filter_chunks_for_overview,
     _format_context,
     _is_overview_query,
@@ -14,8 +13,49 @@ from divi.ai._chat import (
     build_prompt,
     generate_stream,
     get_hardware_redirect_response,
+    strip_scope_preamble,
 )
 from divi.ai._retriever import RetrievedChunk
+
+
+class TestStripScopePreamble:
+    def test_strips_scope_in(self):
+        assert (
+            strip_scope_preamble("SCOPE: IN\n\nHere is the answer.")
+            == "Here is the answer."
+        )
+
+    def test_strips_bold_scope_redirect(self):
+        assert strip_scope_preamble("**SCOPE: REDIRECT**\n\nUse QAOA.") == "Use QAOA."
+
+    def test_strips_scope_out(self):
+        assert (
+            strip_scope_preamble(
+                "SCOPE: OUT\nI can only help with the Divi quantum computing library."
+            )
+            == "I can only help with the Divi quantum computing library."
+        )
+
+    def test_strips_wrong_tool_variants(self):
+        for variant in (
+            "SCOPE: WRONG-TOOL",
+            "SCOPE: WRONG TOOL",
+            "**SCOPE: WRONG-TOOL**",
+        ):
+            assert (
+                strip_scope_preamble(f"{variant}\n\nUse QAOA instead.")
+                == "Use QAOA instead."
+            )
+
+    def test_passes_through_when_no_preamble(self):
+        text = "To configure ZNE, use the ZNE class."
+        assert strip_scope_preamble(text) == text
+
+    def test_ignores_mid_response_scope(self):
+        """A SCOPE: marker that isn't anchored to the start of the response
+        must NOT be stripped — only the leading preamble line is removed."""
+        text = "Here is the answer.\n\nSCOPE: IN was the original classification."
+        assert strip_scope_preamble(text) == text
 
 
 class TestHardwareRedirect:
@@ -155,35 +195,22 @@ class TestFilterChunksForOverview:
 
 
 class TestFormatContext:
+    """Confidence gating is now the retriever's job (see
+    :func:`divi.ai._retriever.retrieve`); _format_context just formats
+    whatever it gets, and shows "(No relevant documentation found.)"
+    for an empty list (meaning the retriever filtered everything out)."""
+
     def test_numbers_chunks(self, sample_retrieved_chunks):
         result = _format_context(sample_retrieved_chunks)
         assert "[1]" in result
         assert "[2]" in result
 
-    def test_filters_below_min_dense_score(self, sample_retrieved_chunks):
-        result = _format_context(sample_retrieved_chunks)
-        # The third chunk (score 0.50) is below MIN_DENSE_SCORE (0.55)
-        assert sample_retrieved_chunks[2].dense_score < MIN_DENSE_SCORE
-        assert "cats" not in result
-
-    def test_keeps_above_threshold(self, sample_retrieved_chunks):
+    def test_includes_all_chunks(self, sample_retrieved_chunks):
+        # All three sample chunks are included — no in-chat filtering.
         result = _format_context(sample_retrieved_chunks)
         assert "VQE" in result
         assert "QAOA" in result
-
-    def test_all_below_threshold(self):
-        below = MIN_DENSE_SCORE - 0.1
-        chunks = [
-            RetrievedChunk(
-                text="irrelevant",
-                source_file="f.py",
-                start_line=1,
-                end_line=1,
-                score=below,
-                dense_score=below,
-            ),
-        ]
-        assert _format_context(chunks) == "(No relevant documentation found.)"
+        assert "cats" in result
 
     def test_empty_chunks(self):
         assert _format_context([]) == "(No relevant documentation found.)"

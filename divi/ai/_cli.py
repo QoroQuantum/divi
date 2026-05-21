@@ -76,18 +76,16 @@ def main(argv: list[str] | None = None) -> None:
 
     # ── Load index + retrieval stack ─────────────────────────────────────
     console.print("[dim]Loading search index...[/dim]")
-    index, chunks, embedder = load_search_stack()
+    stack = load_search_stack()
     if args.debug:
-        console.print(f"[dim]Index: {len(chunks)} chunks loaded[/dim]")
+        console.print(f"[dim]Index: {len(stack.chunks)} chunks loaded[/dim]")
 
     # ── Launch TUI ────────────────────────────────────────────────────
     from ._tui import DiviAIApp
 
     app = DiviAIApp(
         llm=llm,
-        index=index,
-        chunks=chunks,
-        embedder=embedder,
+        stack=stack,
         model_name=spec.label,
         top_k=args.top_k,
         max_tokens=args.max_tokens,

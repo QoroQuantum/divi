@@ -28,6 +28,7 @@ import tomllib
 from dataclasses import asdict
 from pathlib import Path
 
+import bm25s
 import faiss
 import numpy as np
 from docutils.frontend import get_default_settings
@@ -38,6 +39,8 @@ from fastembed import TextEmbedding
 from rich.console import Console
 from rich.progress import track
 
+from ._retriever import SearchStack
+from ._retriever import tokenize as _bm25_tokenize
 from ._types import ChunkMeta, display_path
 
 # ---------------------------------------------------------------------------
@@ -85,16 +88,36 @@ _DOCUTILS_NOISE_RE = re.compile(
     re.MULTILINE,
 )
 # Chunk prefix lines added for display: [Source: ...] or [Module: ...]
-_EMBED_PREFIX_RE = re.compile(r"^\[(Source|Module|Function|Class): [^\]]+\]\n?")
+_EMBED_PREFIX_RE = re.compile(r"^\[(Source|Module|Function|Class): ([^\]]+)\]\n?")
 
 
 def _strip_embed_prefix(text: str) -> str:
-    """Remove the ``[Source: ...]`` / ``[Module: ...]`` prefix before embedding.
+    """Strip the structural prefix label but keep the discriminating identifier.
 
-    The prefix is useful for display but inflates cosine similarity — the
-    generic structural tokens match loosely against any query.
+    Replaces ``[Label: <identifier>]`` with just ``<identifier>``. The label
+    words (``Source``, ``Module``, ``Function``, ``Class``) and the brackets
+    are uniform across all chunks — they inflated cosine similarity for any
+    query against any chunk. The *identifier* (qualified symbol name or
+    section title) is the actually-discriminating part and binds the chunk
+    to topic-specific queries (e.g. ``ZNE`` for a chunk about Zero Noise
+    Extrapolation). For Source chunks with a section, the file path is
+    dropped — its leading components (``docs``, ``source``, ``user_guide``)
+    are themselves uniform across all docs and only the section title
+    discriminates.
     """
-    return _EMBED_PREFIX_RE.sub("", text).strip()
+    m = _EMBED_PREFIX_RE.match(text)
+    if not m:
+        return text.strip()
+    label = m.group(1)
+    inside = m.group(2)
+
+    if label == "Source" and " § " in inside:
+        kept = inside.split(" § ", 1)[1]
+    else:
+        kept = inside
+
+    rest = text[m.end() :]
+    return f"{kept}\n{rest}".strip() if rest else kept.strip()
 
 
 def _chunk_text(text: str, source_file: str) -> list[ChunkMeta]:
@@ -865,7 +888,15 @@ def build_index(
         f"({py_count} .py files, {doc_count} doc files) "
         f"using {max_threads} threads …"
     )
-    embedder = TextEmbedding(model_name=EMBEDDING_MODEL, threads=max_threads)
+    # Disable ONNX Runtime's CPU memory arena: it never returns memory to the OS,
+    # which OOMs late in the embed loop on larger corpora / higher thread counts.
+    embedder = TextEmbedding(
+        model_name=EMBEDDING_MODEL,
+        threads=max_threads,
+        extra_session_options={"enable_cpu_mem_arena": False},
+    )
+
+    all_chunks.sort(key=lambda c: len(_strip_embed_prefix(c.text)), reverse=True)
 
     # Embed the body text only — strip [Source: ...] / [Module: ...] prefix
     # lines that inflate cosine similarity for every chunk.
@@ -901,6 +932,12 @@ def build_index(
     index = faiss.IndexFlatIP(dim)
     index.add(embeddings)
 
+    # Build BM25 index over the *unstripped* chunk text — the prefix carries
+    # the qualified name / section title, which is the strongest BM25 signal.
+    print("Building BM25 index …")
+    bm25 = bm25s.BM25()
+    bm25.index([_bm25_tokenize(c.text) for c in all_chunks], show_progress=False)
+
     # Persist
     output_dir.mkdir(parents=True, exist_ok=True)
     faiss.write_index(index, str(output_dir / "vectors.faiss"))
@@ -908,6 +945,14 @@ def build_index(
         json.dumps([asdict(c) for c in all_chunks], ensure_ascii=False),
         encoding="utf-8",
     )
+    bm25_dir = output_dir / "bm25_index"
+    if bm25_dir.exists():
+        # Clean out stale files from a previous build so size shrinks too.
+        for p in bm25_dir.iterdir():
+            p.unlink()
+    else:
+        bm25_dir.mkdir(parents=True)
+    bm25.save(str(bm25_dir), show_progress=False)
     print(f"Index built: {len(all_chunks)} chunks → {output_dir}")
 
     return index, all_chunks
@@ -979,21 +1024,21 @@ def load_index(index_dir: Path) -> tuple[faiss.IndexFlatIP, list[ChunkMeta]]:
     return index, chunks
 
 
-def load_search_stack() -> tuple[faiss.IndexFlatIP, list[ChunkMeta], "TextEmbedding"]:
+def load_search_stack() -> "SearchStack":
     """Load the full retrieval stack from the bundled index, or exit on failure.
 
-    Returns
-    -------
-    tuple
-        ``(index, chunks, embedder)`` ready for
-        :func:`_retriever.retrieve`.
+    Returns a :class:`divi.ai._retriever.SearchStack` bundling the FAISS
+    index, chunk metadata, dense embedder, and BM25 index. The cross-encoder
+    reranker is *not* loaded here — it's lazy-loaded on first
+    :func:`divi.ai._retriever.retrieve` call.
 
     Raises
     ------
     SystemExit
-        If the index files are missing from :data:`DATA_DIR`.
+        If any required index file is missing from :data:`DATA_DIR`.
     """
-    if not (DATA_DIR / "vectors.faiss").exists():
+    bm25_dir = DATA_DIR / "bm25_index"
+    if not (DATA_DIR / "vectors.faiss").exists() or not bm25_dir.is_dir():
         msg = (
             _DEV_INDEX_MISSING_MSG
             if (_REPO_ROOT / ".git").exists()
@@ -1005,7 +1050,8 @@ def load_search_stack() -> tuple[faiss.IndexFlatIP, list[ChunkMeta], "TextEmbedd
     _check_index_staleness()
     index, chunks = load_index(DATA_DIR)
     embedder = TextEmbedding(model_name=EMBEDDING_MODEL)
-    return index, chunks, embedder
+    bm25 = bm25s.BM25.load(str(bm25_dir))
+    return SearchStack(index=index, chunks=chunks, embedder=embedder, bm25=bm25)
 
 
 # ---------------------------------------------------------------------------

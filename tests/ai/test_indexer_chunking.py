@@ -12,21 +12,32 @@ from divi.ai._indexer import (
 
 
 class TestStripEmbedPrefix:
-    def test_strips_source_prefix(self):
+    """``_strip_embed_prefix`` keeps the discriminating identifier (qualified
+    symbol name or section title) and drops only the structural label
+    (``[Source:`` / ``[Class:`` / brackets / ``§`` separator). For Source
+    chunks with a section, the file path is dropped because its leading
+    components (``docs``, ``source``, ``user_guide``) are uniform across
+    all docs and only the section title discriminates."""
+
+    def test_source_with_section_keeps_section_title(self):
         text = "[Source: foo.py § Bar]\ncontent here"
-        assert _strip_embed_prefix(text) == "content here"
+        assert _strip_embed_prefix(text) == "Bar\ncontent here"
 
-    def test_strips_module_prefix(self):
+    def test_source_without_section_keeps_path(self):
+        text = "[Source: foo.py]\ncontent here"
+        assert _strip_embed_prefix(text) == "foo.py\ncontent here"
+
+    def test_module_keeps_qualified_name(self):
         text = "[Module: divi.core]\nmodule docs"
-        assert _strip_embed_prefix(text) == "module docs"
+        assert _strip_embed_prefix(text) == "divi.core\nmodule docs"
 
-    def test_strips_function_prefix(self):
+    def test_function_keeps_qualified_name(self):
         text = "[Function: divi.core.foo]\ndef foo(): pass"
-        assert _strip_embed_prefix(text) == "def foo(): pass"
+        assert _strip_embed_prefix(text) == "divi.core.foo\ndef foo(): pass"
 
-    def test_strips_class_prefix(self):
+    def test_class_keeps_qualified_name(self):
         text = "[Class: divi.core.Bar]\nclass Bar: pass"
-        assert _strip_embed_prefix(text) == "class Bar: pass"
+        assert _strip_embed_prefix(text) == "divi.core.Bar\nclass Bar: pass"
 
     def test_no_prefix_unchanged(self):
         text = "plain text content"
@@ -35,9 +46,11 @@ class TestStripEmbedPrefix:
     def test_empty_string(self):
         assert _strip_embed_prefix("") == ""
 
-    def test_prefix_only(self):
+    def test_prefix_only_keeps_identifier(self):
+        """When the chunk is *just* the prefix line (no body), the kept
+        identifier is returned standalone — empty was the old behavior."""
         text = "[Source: foo.py]"
-        assert _strip_embed_prefix(text) == ""
+        assert _strip_embed_prefix(text) == "foo.py"
 
 
 class TestChunkMarkdown:

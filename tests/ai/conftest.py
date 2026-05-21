@@ -178,7 +178,13 @@ def sample_chunks():
 
 @pytest.fixture()
 def sample_retrieved_chunks():
-    """Retrieved chunks with varying scores for filtering tests."""
+    """Three sample retrieved chunks with mixed source types and scores.
+
+    Used by chat-side tests (``_format_context``, ``_filter_chunks_for_overview``)
+    to exercise rendering and filter behavior. Score variation is preserved
+    even though the chat layer no longer gates on ``dense_score`` (gating
+    moved into the retriever) — downstream tests still inspect the field.
+    """
     return [
         RetrievedChunk(
             text="High relevance chunk about VQE.",

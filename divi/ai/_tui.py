@@ -16,9 +16,7 @@ import time
 import webbrowser
 from pathlib import Path
 
-import faiss
 import pyperclip
-from fastembed import TextEmbedding
 from llama_cpp import Llama
 from rich.console import Group
 from rich.markdown import Markdown
@@ -34,9 +32,10 @@ from ._chat import (
     generate_stream,
     get_hardware_redirect_response,
     is_history_trimmed,
+    strip_scope_preamble,
 )
-from ._retriever import enrich_chunks, retrieve
-from ._types import ChunkMeta, display_path
+from ._retriever import SearchStack, enrich_chunks, retrieve
+from ._types import display_path
 
 
 class ChatInput(Input):
@@ -79,9 +78,15 @@ def _safe_display(text: str) -> str:
 
 
 def _format_assistant_response(text: str) -> Group:
-    """Render an assistant response as 'Assistant:' label + markdown body."""
+    """Render an assistant response as 'Assistant:' label + markdown body.
+
+    Strips the internal ``SCOPE: …`` preamble (see
+    :func:`divi.ai._chat.strip_scope_preamble`) before rendering so users
+    don't see the scope-classification scaffolding the LLM is asked to
+    output internally.
+    """
     label = Text.from_markup("[bold #FF93FA]Assistant:[/bold #FF93FA]")
-    body = Markdown(text)
+    body = Markdown(strip_scope_preamble(text))
     return Group(label, body)
 
 
@@ -312,9 +317,7 @@ class DiviAIApp(App):
     def __init__(
         self,
         llm: Llama,
-        index: faiss.IndexFlatIP,
-        chunks: list[ChunkMeta],
-        embedder: TextEmbedding,
+        stack: "SearchStack",
         *,
         model_name: str = "",
         top_k: int = 8,
@@ -323,9 +326,7 @@ class DiviAIApp(App):
     ) -> None:
         super().__init__()
         self.llm = llm
-        self.index = index
-        self.chunks = chunks
-        self.embedder = embedder
+        self.stack = stack
         self.model_name = model_name
         self.top_k = top_k
         self.max_tokens = max_tokens
@@ -343,7 +344,7 @@ class DiviAIApp(App):
     def compose(self) -> ComposeResult:
         model_info = self.model_name
         if self.dev_mode:
-            model_info += f"  |  {len(self.chunks)} chunks"
+            model_info += f"  |  {len(self.stack.chunks)} chunks"
         disclaimer = (
             "Experimental local assistant — responses may be inaccurate. "
             "[@click='app.open_link(\"https://divi.readthedocs.io/\")']"
@@ -735,9 +736,7 @@ class DiviAIApp(App):
             else user_input
         )
 
-        relevant = retrieve(
-            search_query, self.index, self.chunks, self.embedder, top_k=self.top_k
-        )
+        relevant = retrieve(search_query, self.stack, top_k=self.top_k)
         return enrich_chunks(relevant)
 
     def _stream_response(
