@@ -325,10 +325,11 @@ def test_pce_perform_final_computation_sets_solution(
         backend=dummy_simulator,
     )
 
+    pce._best_params = np.zeros(pce.n_layers * pce.n_params_per_layer)
     pce._best_probs = {"0_NoMitigation:0_0": {"01": 1.0}}
     mocker.patch.object(pce, "_run_solution_measurement_for")
 
-    pce._perform_final_computation()
+    pce.compute_solution()
 
     with pytest.warns(UserWarning, match="PCE.solution returns the decoded"):
         np.testing.assert_array_equal(pce.solution, np.array([0, 1]))
@@ -658,7 +659,7 @@ def test_pce_qem_protocol_raises(dummy_simulator, basic_ansatz):
 def test_pce_custom_decode_parities_fn_perform_final_computation(
     mocker, dummy_simulator, basic_ansatz, qubo_identity
 ):
-    """Custom decode_parities_fn is used in _perform_final_computation."""
+    """Custom decode_parities_fn is used in compute_solution."""
 
     # Decoder that returns parities [0, 1] for any input -> solution = 1 - [0,1] = [1, 0]
     def fixed_decoder(state_strings, variable_masks_u64):
@@ -675,10 +676,11 @@ def test_pce_custom_decode_parities_fn_perform_final_computation(
         decode_parities_fn=fixed_decoder,
     )
 
+    pce._best_params = np.zeros(pce.n_layers * pce.n_params_per_layer)
     pce._best_probs = {"0_NoMitigation:0_0": {"01": 1.0}}
     mocker.patch.object(pce, "_run_solution_measurement_for")
 
-    pce._perform_final_computation()
+    pce.compute_solution()
 
     # Fixed decoder returns parities [0, 1] -> solution = [1, 0]
     with pytest.warns(UserWarning, match="PCE.solution returns the decoded"):
@@ -927,20 +929,20 @@ class TestMasksToHamOps:
 def test_pce_perform_final_computation_none_eigenstate(
     mocker, dummy_simulator, basic_ansatz, qubo_identity
 ):
-    """When _eigenstate is None, _final_vector is set to None (L286-288)."""
+    """When _eigenstate is None, _final_vector is set to None."""
     pce = PCE(
         problem=qubo_identity,
         ansatz=basic_ansatz,
         backend=dummy_simulator,
     )
-    # Mock the parent's _perform_final_computation so _eigenstate stays None
-    mocker.patch(
-        "divi.qprog.algorithms._pce.VQE._perform_final_computation",
-    )
-    pce._eigenstate = None
+    # Stub the measurement step so _best_probs stays empty; VQE then leaves
+    # _eigenstate unset, and PCE's compute_solution must handle that path.
+    pce._best_params = np.zeros(pce.n_layers * pce.n_params_per_layer)
+    mocker.patch.object(pce, "_run_solution_measurement_for")
 
-    pce._perform_final_computation()
+    pce.compute_solution()
 
+    assert pce._eigenstate is None
     assert pce._final_vector is None
 
 

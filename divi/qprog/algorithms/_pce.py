@@ -278,19 +278,24 @@ class PCE(VQE):
             ),
         }
 
-    def _perform_final_computation(self, **kwargs) -> None:
+    def compute_solution(
+        self,
+        params: npt.NDArray[np.float64] | None = None,
+        **kwargs,
+    ) -> "PCE":
         """Compute the final eigenstate and decode it into a PCE vector."""
-        super()._perform_final_computation(**kwargs)
+        super().compute_solution(params, **kwargs)
 
         if self._eigenstate is None:
             self._final_vector = None
-            return
+            return self
 
         best_bitstring = "".join(str(x) for x in self._eigenstate)
         parities = self._decode_parities_fn(
             [best_bitstring], self._variable_masks_u64
         ).flatten()
         self._final_vector = 1 - parities
+        return self
 
     def get_top_solutions(
         self,

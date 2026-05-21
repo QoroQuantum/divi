@@ -184,10 +184,31 @@ For deeper variational workflow details, use these focused guides:
           perform_final_computation=False,
       )
 
-      # When you need the solution probabilities, run with final computation:
+      # When you already have trained parameters and only need to sample the
+      # circuit (extract the solution distribution), use ``compute_solution``
+      # to skip the optimization loop entirely — no EXPECTATION job is
+      # dispatched, only a single EXECUTE/measurement round:
       vqe4 = VQE(molecule=molecule, n_layers=2, backend=MaestroSimulator(),
                  optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA))
-      vqe4.run(initial_params=best_params.reshape(1, -1))
+      vqe4.compute_solution(best_params)
+
+**Sampling from Pre-Trained Parameters**
+   Any :class:`~divi.qprog.VariationalQuantumAlgorithm` exposes
+   :meth:`~divi.qprog.VariationalQuantumAlgorithm.compute_solution`, which runs
+   only the final measurement step with a user-supplied parameter set. This is
+   the cheapest way to re-sample a circuit when parameters are already known
+   (e.g. loaded from a checkpoint or produced by an external training routine).
+   Unlike ``run()``, it does not dispatch any expectation-value jobs and does
+   not mutate optimizer-side state (``best_params``, ``losses_history``,
+   ``current_iteration``).
+
+   .. code-block:: python
+
+      # Skip the training loop entirely — just sample with the known-good
+      # parameters and decode the result.
+      vqe_sample = VQE(molecule=molecule, n_layers=2, backend=MaestroSimulator())
+      vqe_sample.compute_solution(best_params)
+      print(vqe_sample.eigenstate)
 
 Analyzing Solution Distributions
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

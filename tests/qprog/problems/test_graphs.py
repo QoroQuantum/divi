@@ -379,7 +379,8 @@ class TestGraphInput:
             backend=dummy_simulator,
         )
 
-        # Simulate measurement results
+        # Simulate post-run state: trained params + measurement results
+        qaoa_problem._best_params = np.zeros(qaoa_problem.n_layers * 2)
         qaoa_problem._best_probs = {
             "0_NoMitigation:0_0": {"11001": 0.1444, "00101": 0.0526}
         }
@@ -387,7 +388,7 @@ class TestGraphInput:
         # Patch measurement to do nothing (since we set probs manually)
         mocker.patch.object(qaoa_problem, "_run_solution_measurement_for")
 
-        qaoa_problem._perform_final_computation()
+        qaoa_problem.compute_solution()
 
         # Should extract bitstring "11001"
         assert qaoa_problem._decoded_solution == [0, 1, 4]
@@ -568,10 +569,11 @@ class TestGraphInput:
             backend=dummy_simulator,
         )
 
+        qaoa_problem._best_params = np.zeros(qaoa_problem.n_layers * 2)
         qaoa_problem._best_probs = {"0_NoMitigation:0_0": {"101": 0.6, "010": 0.4}}
         mocker.patch.object(qaoa_problem, "_run_solution_measurement_for")
 
-        qaoa_problem._perform_final_computation()
+        qaoa_problem.compute_solution()
 
         assert all(isinstance(node, str) for node in qaoa_problem.solution)
         assert len(qaoa_problem.solution) == 2
@@ -613,10 +615,11 @@ class TestGraphInput:
         assert len(qaoa_problem._circuit_wires) == G.number_of_nodes()
         assert all(wire in G.nodes() for wire in qaoa_problem._circuit_wires)
 
+        qaoa_problem._best_params = np.zeros(qaoa_problem.n_layers * 2)
         qaoa_problem._best_probs = {"0_NoMitigation:0_0": {"1010": 0.5, "0101": 0.5}}
         mocker.patch.object(qaoa_problem, "_run_solution_measurement_for")
 
-        qaoa_problem._perform_final_computation()
+        qaoa_problem.compute_solution()
 
         assert len(qaoa_problem.solution) == 2
         assert all(node in G.nodes() for node in qaoa_problem.solution)

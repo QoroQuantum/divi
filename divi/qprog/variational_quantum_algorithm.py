@@ -1167,22 +1167,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         neg_shifts = exp_vals_arr[1::2]
         return 0.5 * (pos_shifts - neg_shifts)
 
-    def _perform_final_computation(self, **kwargs) -> None:
-        """
-        Perform final computations after optimization is complete.
-
-        This is an optional hook method that subclasses can override to perform
-        any post-optimization processing, such as extracting solutions, running
-        final measurements, or computing additional metrics.
-
-        Args:
-            **kwargs: Additional keyword arguments for subclasses.
-
-        Note:
-            The default implementation does nothing. Subclasses should override
-            this method if they need post-optimization processing.
-        """
-
     def run(
         self,
         initial_params: npt.NDArray[np.float64] | None = None,
@@ -1386,12 +1370,84 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         self._final_params = self.optimize_result.x
 
         if perform_final_computation:
-            self._perform_final_computation(**kwargs)
+            self.compute_solution(**kwargs)
 
         self.reporter.info(
             message="Finished successfully!", final_status=TerminalStatus.SUCCESS
         )
 
+        return self
+
+    def compute_solution(
+        self,
+        params: npt.NDArray[np.float64] | None = None,
+        **kwargs,
+    ) -> "VariationalQuantumAlgorithm":
+        """Run the final measurement and decode the solution.
+
+        Called by ``run()`` (with ``params=None``, falling back to
+        ``self._best_params``) after optimization completes. It can also
+        be called directly with externally-provided ``params`` when you
+        already have trained parameters (e.g. from a prior ``run()``,
+        a checkpoint, or external training) and only need to sample the
+        circuit — skipping the EXPECTATION jobs that ``run()`` would
+        otherwise dispatch during optimization.
+
+        When called with explicit ``params``, this method does NOT mutate
+        ``self._best_params`` or any optimizer state (``optimize_result``,
+        ``_losses_history``, ``_param_history``, ``current_iteration``).
+        Only the measurement-side attributes are updated: ``_best_probs``,
+        ``_total_circuit_count``, ``_total_run_time``, and subclass-specific
+        solution fields (e.g. ``solution_bitstring`` for QAOA, ``_eigenstate``
+        for VQE).
+
+        Args:
+            params: Optional parameter set to evaluate. Must have shape
+                ``(n_layers * n_params_per_layer,)`` for a single set or
+                ``(n_param_sets, n_layers * n_params_per_layer)`` for a
+                batch. When ``None`` (the default), uses ``self._best_params``.
+            **kwargs: Subclass-specific keyword arguments.
+
+        Returns:
+            VariationalQuantumAlgorithm: Returns ``self`` for method chaining.
+
+        Raises:
+            ValueError: If ``params`` does not have the expected number of
+                parameters per set.
+            RuntimeError: If ``params=None`` and ``self._best_params`` is
+                empty (i.e. ``run()`` has not been called yet).
+
+        Note:
+            Subclasses override this method to add their algorithm-specific
+            decoding step. They should call ``super().compute_solution(params)``
+            to perform parameter validation and the measurement-pipeline
+            dispatch, then read from ``self._best_probs`` to extract
+            algorithm-specific solution state.
+        """
+        if self._measurement_pipeline is None:
+            # Algorithm has no measurement pipeline (e.g. CustomVQA) — there is
+            # nothing to sample. Subclasses that need a final step override
+            # this method.
+            return self
+
+        if params is None:
+            if len(self._best_params) == 0:
+                raise RuntimeError(
+                    "compute_solution() was called without explicit `params` "
+                    "but no trained parameters are available. Either pass "
+                    "`params=...` or call run() first."
+                )
+            params_arr = self._best_params
+        else:
+            params_arr = np.asarray(params, dtype=np.float64)
+            expected = self.n_layers * self.n_params_per_layer
+            if params_arr.shape[-1] != expected:
+                raise ValueError(
+                    f"params last-axis size ({params_arr.shape[-1]}) does not "
+                    f"match n_layers * n_params_per_layer ({expected})."
+                )
+
+        self._run_solution_measurement_for(np.atleast_2d(params_arr))
         return self
 
     def _run_solution_measurement_for(

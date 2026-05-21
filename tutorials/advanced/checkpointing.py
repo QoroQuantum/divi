@@ -9,6 +9,7 @@ This example shows how to:
 - Resume optimization from a checkpoint
 - Adjust iteration targets after loading
 - List and inspect checkpoints
+- Sample directly from a checkpoint's parameters via ``compute_solution``
 """
 
 import shutil
@@ -126,6 +127,24 @@ if __name__ == "__main__":
         print(f"Checkpoints saved (every 2 iterations): {len(checkpoints_interval)}")
         for cp in checkpoints_interval:
             print(f"  Iteration {cp.iteration}")
+
+        # Sample directly from a checkpoint without re-running optimization.
+        # ``compute_solution`` runs only the final measurement step with the
+        # trained parameters — no EXPECTATION jobs are dispatched.
+        print("\n" + "=" * 60)
+        print("Step 5: Sample from a checkpoint without retraining")
+        print("=" * 60)
+
+        vqe4 = VQE.load_state(
+            checkpoint_dir=checkpoint_dir,
+            backend=get_backend(),
+            molecule=mol,
+            ansatz=HartreeFockAnsatz(),
+            n_layers=1,
+        )
+        vqe4.compute_solution(vqe4.best_params)
+        print(f"Eigenstate from checkpoint: {vqe4.eigenstate}")
+        print(f"Circuits used (measurement only): {vqe4.total_circuit_count}")
 
         print("\n" + "=" * 60)
         print("Checkpointing demo complete!")

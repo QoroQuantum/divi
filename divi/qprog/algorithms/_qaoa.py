@@ -7,6 +7,7 @@ import pickle
 from typing import Any, Literal
 
 import numpy as np
+import numpy.typing as npt
 from qiskit.circuit import ParameterVector, QuantumCircuit
 from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
@@ -297,17 +298,23 @@ class QAOA(VariationalQuantumAlgorithm):
         )
         return {"cost_circuit": cost_circuit, "meas_circuit": meas_circuit}
 
-    def _perform_final_computation(self, **kwargs) -> None:
-        """Run measurement circuits with the best parameters and decode the solution."""
+    def compute_solution(
+        self,
+        params: npt.NDArray[np.float64] | None = None,
+        **kwargs,
+    ) -> "QAOA":
+        """Run measurement circuits with the given parameters and decode the solution."""
         self.reporter.info(message="🏁 Computing Final Solution 🏁", overwrite=True)
 
-        self._run_solution_measurement_for(np.atleast_2d(self._best_params))
+        super().compute_solution(params, **kwargs)
+
         best_probs = next(iter(self._best_probs.values()))
         best_bitstring = max(best_probs, key=best_probs.get)
         self._solution_bitstring = best_bitstring
         self._decoded_solution = self._decode_solution_fn(best_bitstring)
 
         self.reporter.info(message="🏁 Computed Final Solution! 🏁")
+        return self
 
     def get_top_solutions(
         self,

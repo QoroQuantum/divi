@@ -238,11 +238,15 @@ class VQE(VariationalQuantumAlgorithm):
             ),
         }
 
-    def _perform_final_computation(self, **kwargs) -> None:
+    def compute_solution(
+        self,
+        params: npt.NDArray[np.float64] | None = None,
+        **kwargs,
+    ) -> "VQE":
         """Extract the eigenstate corresponding to the lowest energy found."""
         self.reporter.info(message="🏁 Computing Final Eigenstate 🏁", overwrite=True)
 
-        self._run_solution_measurement_for(np.atleast_2d(self._best_params))
+        super().compute_solution(params, **kwargs)
 
         if self._best_probs:
             best_measurement_probs = next(iter(self._best_probs.values()))
@@ -252,6 +256,7 @@ class VQE(VariationalQuantumAlgorithm):
             self._eigenstate = np.fromiter(eigenstate_bitstring, dtype=np.int32)
 
         self.reporter.info(message="🏁 Computed Final Eigenstate! 🏁")
+        return self
 
     def _save_subclass_state(self) -> dict[str, Any]:
         """Save VQE-specific runtime state."""
