@@ -1299,8 +1299,11 @@ class QoroService(CircuitRunner):
         ``hardness`` field of the response.
 
         Args:
-            qubo: Wire-format QUBO dict (e.g. ``{"0,0": -1.0}``).
-                Required in submit mode.
+            qubo: Wire-format QUBO payload. Either a legacy comma-key
+                dict (``{"0,0": -1.0, "0,1": 2.0}``) or the
+                bandwidth-efficient ``factored_v1`` envelope
+                (``{"_format": "factored_v1", "n": N, "k": K, "F": <hex>,
+                "signs": [...], "diag": <hex>}``). Required in submit mode.
             target_states: Bitstrings to evaluate against. Defaults to
                 ``[]`` when submitting (e.g. for hardness-only runs).
             options: Optional dict forwarded to ``submit_qubo``. Keys

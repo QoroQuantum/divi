@@ -4,11 +4,13 @@
 
 """QUBO/HUBO characterization: serialization, result container, and public API."""
 
+import json
 import logging
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+import numpy as np
 import requests
 from rich.console import Console
 from rich.panel import Panel
@@ -22,21 +24,152 @@ if TYPE_CHECKING:
     from divi.qprog.problems import BinaryOptimizationProblem
 
 
-def _serialize_qubo_for_wire(
-    problem: "BinaryOptimizationProblem",
-) -> dict[str, float]:
-    """Serialize a :class:`BinaryOptimizationProblem` to the Usher wire format.
+# Smallest QUBO size at which the factored encoding is even probed.
+# Below this, the legacy comma-key dict is always smaller on the wire,
+# so the two eigendecomposition probes would be pure overhead.
+_FACTORED_PROBE_MIN_QUBITS = 64
 
-    The wire format uses comma-joined string keys (``"0,1"``) mapping to
-    float coefficients. Iteration goes through ``problem.canonical_problem``
-    so the input may be any QUBO / HUBO shape supported by
-    ``BinaryOptimizationProblem``'s constructor.
+# Minimum relative tolerance for treating an eigenvalue as zero.
+# Combined with ``n · eps_machine`` at use sites; for an ``n × n``
+# matrix the effective threshold is
+# ``max(_EIGVAL_TOL_REL, n · eps) · |λ_max|``, which stays above the
+# backward-error floor of ``eigh`` at all matrix sizes.
+_EIGVAL_TOL_REL = 1e-12
+
+
+def _serialize_qubo_legacy(canonical) -> dict[str, float]:
+    """Serialize to the comma-key dict format, e.g. ``{"0": -1.0, "0,1": 2.0}``.
+
+    Accepts terms of any degree, so it is the only valid path for HUBO
+    inputs.
     """
     return {
         ",".join(str(idx) for idx in term_key): float(coeff)
-        for term_key, coeff in problem.canonical_problem.terms.items()
+        for term_key, coeff in canonical.terms.items()
         if coeff != 0
     }
+
+
+def _qubo_to_dense(canonical) -> np.ndarray:
+    """Build the symmetric dense QUBO matrix from canonical polynomial terms.
+
+    Off-diagonal coefficients are split half-and-half between ``Q[i,j]`` and
+    ``Q[j,i]`` so the result is exactly symmetric. ``(i,)`` and ``(i, i)``
+    terms both write to the diagonal, since ``x_i² = x_i`` for binary
+    variables.
+    """
+    n = canonical.n_vars
+    Q = np.zeros((n, n), dtype=np.float64)
+    for term_key, coeff in canonical.terms.items():
+        if coeff == 0:
+            continue
+        if len(term_key) == 1:
+            i = term_key[0]
+            Q[i, i] += float(coeff)
+        else:
+            i, j = term_key
+            if i == j:
+                Q[i, i] += float(coeff)
+            else:
+                Q[i, j] += float(coeff) / 2.0
+                Q[j, i] += float(coeff) / 2.0
+    return Q
+
+
+def _factored_from_eigh(matrix: np.ndarray, residual: np.ndarray) -> dict:
+    """Eigendecompose a symmetric ``matrix`` and emit a ``factored_v1`` payload.
+
+    The decomposition encodes ``matrix = F · diag(signs) · Fᵀ`` and the
+    independent ``residual`` vector as ``diag(residual)``. Eigenvalues at or
+    below the dimension-scaled tolerance are dropped so ``k`` reflects the
+    effective rank rather than ``eigh``'s noise floor.
+    """
+    eigvals, V = np.linalg.eigh(matrix)
+    if eigvals.size:
+        max_abs = float(np.abs(eigvals).max())
+        if max_abs > 0.0:
+            n_dim = eigvals.size
+            tol = max(_EIGVAL_TOL_REL, n_dim * np.finfo(np.float64).eps) * max_abs
+            mask = np.abs(eigvals) > tol
+            eigvals = eigvals[mask]
+            V = V[:, mask]
+        else:
+            eigvals = eigvals[:0]
+            V = V[:, :0]
+
+    k = int(eigvals.size)
+    # ``signs`` must be strictly ±1.0 — build explicitly so a future change
+    # to the eigenvalue mask can never leak a ``0.0`` from ``np.sign``.
+    signs = np.where(eigvals >= 0.0, 1.0, -1.0).astype(np.float64)
+    F = np.ascontiguousarray(V * np.sqrt(np.abs(eigvals)), dtype=np.float64)
+    residual_c = np.ascontiguousarray(residual, dtype=np.float64)
+    n = int(residual_c.shape[0])
+
+    return {
+        "_format": "factored_v1",
+        "n": n,
+        "k": k,
+        "F": F.tobytes().hex(),
+        "signs": signs.tolist(),
+        "diag": residual_c.tobytes().hex(),
+    }
+
+
+def _serialize_qubo_factored(canonical) -> dict:
+    """Encode a QUBO as ``Q = F · diag(signs) · Fᵀ + diag(residual)``.
+
+    Two decompositions are computed and the one with smaller ``k`` is
+    returned:
+
+    1. ``residual = Q.diagonal()``, decompose ``Q − diag(Q.diag())``.
+       Yields ``k = 0`` for purely diagonal QUBOs.
+    2. ``residual = 0``, decompose ``Q`` itself.
+       Yields ``k = rank(Q)`` for low-rank QUBOs (e.g. ``Q = U · Uᵀ``).
+
+    Stripping the diagonal destroys low-rank structure (``u·uᵀ`` minus its
+    diagonal is full rank); keeping the diagonal turns a pure-diagonal QUBO
+    into a full-rank decomposition. Trying both and picking the smaller
+    ``k`` covers both regimes.
+
+    Only handles degree ≤ 2 terms — HUBO inputs must use the legacy form.
+    """
+    n = canonical.n_vars
+    Q = _qubo_to_dense(canonical)
+
+    diag = Q.diagonal().copy()
+    cand_a = _factored_from_eigh(Q - np.diag(diag), diag)
+    cand_b = _factored_from_eigh(Q, np.zeros(n, dtype=np.float64))
+
+    # Ties favour candidate B: one fewer additive channel and no diagonal
+    # subtraction in the eigendecomposition path.
+    return cand_b if cand_b["k"] <= cand_a["k"] else cand_a
+
+
+def _payload_size(payload) -> int:
+    """Byte length of ``payload`` as it would appear on the JSON wire."""
+    return len(json.dumps(payload, separators=(",", ":")))
+
+
+def _serialize_qubo_for_wire(problem: "BinaryOptimizationProblem") -> dict:
+    """Serialize a QUBO/HUBO to whichever wire format is smaller.
+
+    Compares the JSON byte sizes of the legacy comma-key dict and the
+    factored decomposition, returning the smaller. HUBO inputs (any term of
+    degree > 2) skip the factored path because the format is strictly
+    quadratic. QUBOs with fewer than :data:`_FACTORED_PROBE_MIN_QUBITS`
+    variables skip the eigendecomposition probe — legacy always wins at
+    that scale.
+    """
+    canonical = problem.canonical_problem
+    has_hubo = any(len(k) > 2 for k in canonical.terms.keys())
+    legacy = _serialize_qubo_legacy(canonical)
+    if has_hubo or canonical.n_vars < _FACTORED_PROBE_MIN_QUBITS:
+        return legacy
+
+    factored = _serialize_qubo_factored(canonical)
+    if _payload_size(factored) < _payload_size(legacy):
+        return factored
+    return legacy
 
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
@@ -623,10 +756,18 @@ def characterize_and_validate(
         Credit cost scales with QUBO size.
     """
     options = options or CharacterizationOptions()
+    wire_qubo = _serialize_qubo_for_wire(problem)
+    wire_options = options._to_wire()
+    # The factored payload encodes indices into opaque byte arrays, so the
+    # qubit count must be passed alongside it for accurate credit billing.
+    if isinstance(wire_qubo, dict) and wire_qubo.get("_format") == "factored_v1":
+        if wire_options is None:
+            wire_options = {}
+        wire_options.setdefault("n_qubits", wire_qubo["n"])
     data = service.characterize_and_validate(
-        qubo=_serialize_qubo_for_wire(problem),
+        qubo=wire_qubo,
         target_states=target_states,
-        options=options._to_wire(),
+        options=wire_options,
     )
     return _wrap_response(data, service)
 

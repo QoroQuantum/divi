@@ -26,7 +26,13 @@ from divi.backends import (
     characterize_and_validate,
     get_characterization_result,
 )
-from divi.backends._characterization import _serialize_qubo_for_wire, _wrap_response
+from divi.backends._characterization import (
+    _FACTORED_PROBE_MIN_QUBITS,
+    _serialize_qubo_factored,
+    _serialize_qubo_for_wire,
+    _serialize_qubo_legacy,
+    _wrap_response,
+)
 from divi.qprog.problems import BinaryOptimizationProblem
 
 
@@ -153,13 +159,12 @@ def qoro_service_factory():
 
 
 class TestSerializeQuboForWire:
-    """Tests for serializing a BinaryOptimizationProblem to wire format."""
+    """Wire-format dispatch between legacy and factored encodings."""
 
-    def test_ndarray_input(self):
-        """Diagonal entries become single-index keys, off-diagonals tuple keys."""
+    def test_small_qubo_uses_legacy(self):
+        """``n`` below the probe threshold serializes as the comma-key dict."""
         problem = BinaryOptimizationProblem(np.array([[-1.0, 2.0], [0.0, -1.0]]))
         wire = _serialize_qubo_for_wire(problem)
-        assert all(isinstance(k, str) for k in wire)
         assert wire == {"0": -1.0, "0,1": 2.0, "1": -1.0}
 
     def test_zero_coefficients_skipped(self):
@@ -167,13 +172,118 @@ class TestSerializeQuboForWire:
         wire = _serialize_qubo_for_wire(problem)
         assert "0,1" not in wire
 
-    def test_hubo_input(self):
-        """HUBO terms (degree > 2) serialize with multi-index keys."""
-        problem = BinaryOptimizationProblem({(0,): -1.0, (0, 1): 2.0, (0, 1, 2): 3.0})
+    def test_hubo_routes_to_legacy(self):
+        """Any term of degree > 2 forces legacy regardless of qubit count."""
+        n = _FACTORED_PROBE_MIN_QUBITS + 4
+        terms = {(i,): -1.0 for i in range(n)}
+        terms[(0, 1, 2)] = 3.0
+        problem = BinaryOptimizationProblem(terms)
         wire = _serialize_qubo_for_wire(problem)
-        assert wire["0"] == -1.0
-        assert wire["0,1"] == 2.0
+        assert isinstance(wire, dict) and "_format" not in wire
         assert wire["0,1,2"] == 3.0
+
+    def test_low_rank_qubo_uses_factored(self):
+        """``Q = u·uᵀ`` serializes as a rank-1 factored payload."""
+        n = _FACTORED_PROBE_MIN_QUBITS
+        rng = np.random.default_rng(seed=0)
+        u = rng.standard_normal(n)
+        Q = np.outer(u, u)
+        terms = {}
+        for i in range(n):
+            terms[(i,)] = float(Q[i, i])
+            for j in range(i + 1, n):
+                terms[(i, j)] = float(Q[i, j] + Q[j, i])
+        problem = BinaryOptimizationProblem(terms)
+        wire = _serialize_qubo_for_wire(problem)
+        assert wire["_format"] == "factored_v1"
+        assert wire["n"] == n
+        assert wire["k"] == 1
+        assert len(wire["F"]) == 2 * n * wire["k"] * 8
+        assert len(wire["diag"]) == 2 * n * 8
+        # ``u·uᵀ`` is positive semidefinite, so the single sign is +1.
+        assert wire["signs"] == [1.0]
+
+    def test_full_rank_random_qubo_falls_back_to_legacy(self):
+        """Random dense QUBOs are smaller as legacy and the dispatcher honours that."""
+        n = _FACTORED_PROBE_MIN_QUBITS
+        rng = np.random.default_rng(seed=1)
+        terms = {}
+        for i in range(n):
+            terms[(i,)] = float(rng.standard_normal())
+            for j in range(i + 1, n):
+                terms[(i, j)] = float(rng.standard_normal())
+        problem = BinaryOptimizationProblem(terms)
+        wire = _serialize_qubo_for_wire(problem)
+        assert isinstance(wire, dict) and "_format" not in wire
+
+    def test_pure_diagonal_qubo_encodes_with_k_zero(self):
+        """A diagonal-only QUBO yields ``k=0`` via the factored helper.
+
+        Exercises the encoder directly because the top-level dispatcher
+        may still pick legacy when the diagonal coefficients have short
+        JSON representations.
+        """
+        n = _FACTORED_PROBE_MIN_QUBITS
+        rng = np.random.default_rng(seed=4)
+        coeffs = rng.standard_normal(n).astype(np.float64)
+        problem = BinaryOptimizationProblem({(i,): float(coeffs[i]) for i in range(n)})
+        wire = _serialize_qubo_factored(problem.canonical_problem)
+        assert wire["k"] == 0
+        assert wire["signs"] == []
+        diag = np.frombuffer(bytes.fromhex(wire["diag"]), dtype=np.float64)
+        np.testing.assert_allclose(diag, coeffs)
+
+    def test_factored_decoding_reconstructs_qubo(self):
+        """``F · diag(signs) · Fᵀ + diag(diag)`` round-trips back to ``Q``."""
+        n = _FACTORED_PROBE_MIN_QUBITS
+        rng = np.random.default_rng(seed=2)
+        U = rng.standard_normal((n, 5))
+        signs = rng.choice([-1.0, 1.0], size=5)
+        Q = U @ np.diag(signs) @ U.T
+        terms: dict = {}
+        for i in range(n):
+            if Q[i, i] != 0:
+                terms[(i,)] = float(Q[i, i])
+            for j in range(i + 1, n):
+                if Q[i, j] != 0:
+                    terms[(i, j)] = float(Q[i, j] + Q[j, i])
+        problem = BinaryOptimizationProblem(terms)
+        wire = _serialize_qubo_for_wire(problem)
+        assert wire["_format"] == "factored_v1"
+
+        F = np.frombuffer(bytes.fromhex(wire["F"]), dtype=np.float64).reshape(
+            n, wire["k"]
+        )
+        diag = np.frombuffer(bytes.fromhex(wire["diag"]), dtype=np.float64)
+        signs_arr = np.asarray(wire["signs"], dtype=np.float64)
+        Q_decoded = F @ np.diag(signs_arr) @ F.T + np.diag(diag)
+        # Tolerance tracks ``eigh``'s ``O(n · eps · ‖Q‖)`` backward error.
+        np.testing.assert_allclose(
+            Q_decoded, Q, rtol=1e-10, atol=1e-12 * max(1.0, float(np.abs(Q).max()))
+        )
+
+    def test_legacy_helper_directly(self):
+        """``_serialize_qubo_legacy`` accepts HUBO of any degree."""
+        problem = BinaryOptimizationProblem({(0,): -1.0, (0, 1): 2.0, (0, 1, 2): 3.0})
+        wire = _serialize_qubo_legacy(problem.canonical_problem)
+        assert wire == {"0": -1.0, "0,1": 2.0, "0,1,2": 3.0}
+
+    def test_factored_helper_picks_smaller_k(self):
+        """Encoder picks the residual=0 decomposition for a rank-1 ``u·uᵀ``."""
+        rng = np.random.default_rng(seed=3)
+        n = 16
+        u = rng.standard_normal(n)
+        Q = np.outer(u, u)
+        terms = {}
+        for i in range(n):
+            terms[(i,)] = float(Q[i, i])
+            for j in range(i + 1, n):
+                terms[(i, j)] = float(Q[i, j] + Q[j, i])
+        problem = BinaryOptimizationProblem(terms)
+        wire = _serialize_qubo_factored(problem.canonical_problem)
+        assert wire["_format"] == "factored_v1"
+        assert wire["n"] == n
+        assert wire["k"] == 1
 
 
 class TestCharacterizationResult:
@@ -564,6 +674,91 @@ class TestTopLevelCharacterize:
         assert analysis["gamma"] == 1.0
         assert analysis["beta"] == 0.5
 
+    def test_factored_payload_auto_attaches_n_qubits(
+        self, mocker, qoro_service_factory
+    ):
+        """Factored submissions ship ``options['n_qubits']`` alongside the payload."""
+        service = qoro_service_factory()
+
+        mock_init = mocker.MagicMock()
+        mock_init.json.return_value = {"job_id": "fac-123"}
+        mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
+        mock_result = mocker.MagicMock()
+        mock_result.json.return_value = SAMPLE_RESPONSE
+
+        mock_req = mocker.patch.object(
+            service,
+            "_make_request",
+            side_effect=[mock_init, mock_submit, mock_result],
+        )
+        mocker.patch.object(
+            service, "_fetch_characterization_html", return_value="<div/>"
+        )
+
+        # Rank-1 dense QUBO at the probe threshold encodes with k=1,
+        # forcing the dispatcher to pick factored.
+        n = _FACTORED_PROBE_MIN_QUBITS
+        rng = np.random.default_rng(seed=5)
+        u = rng.standard_normal(n)
+        Q = np.outer(u, u)
+        terms = {(i,): float(Q[i, i]) for i in range(n)}
+        for i in range(n):
+            for j in range(i + 1, n):
+                terms[(i, j)] = float(Q[i, j] + Q[j, i])
+
+        characterize_and_validate(
+            BinaryOptimizationProblem(terms),
+            target_states=[],
+            service=service,
+        )
+
+        submit_json = mock_req.call_args_list[1].kwargs["json"]
+        assert submit_json["qubo"]["_format"] == "factored_v1"
+        assert submit_json["options"]["n_qubits"] == n
+
+    def test_factored_n_qubits_does_not_clobber_user_option(
+        self, mocker, qoro_service_factory
+    ):
+        """A user-supplied ``options['n_qubits']`` survives the auto-attach pass."""
+        service = qoro_service_factory()
+
+        mock_init = mocker.MagicMock()
+        mock_init.json.return_value = {"job_id": "fac-2"}
+        mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
+        mock_result = mocker.MagicMock()
+        mock_result.json.return_value = SAMPLE_RESPONSE
+
+        mock_req = mocker.patch.object(
+            service,
+            "_make_request",
+            side_effect=[mock_init, mock_submit, mock_result],
+        )
+        mocker.patch.object(
+            service, "_fetch_characterization_html", return_value="<div/>"
+        )
+
+        n = _FACTORED_PROBE_MIN_QUBITS
+        rng = np.random.default_rng(seed=5)
+        u = rng.standard_normal(n)
+        Q = np.outer(u, u)
+        terms = {(i,): float(Q[i, i]) for i in range(n)}
+        for i in range(n):
+            for j in range(i + 1, n):
+                terms[(i, j)] = float(Q[i, j] + Q[j, i])
+
+        options = CharacterizationOptions()
+        mocker.patch.object(options, "_to_wire", return_value={"n_qubits": 999})
+
+        characterize_and_validate(
+            BinaryOptimizationProblem(terms),
+            target_states=[],
+            service=service,
+            options=options,
+        )
+
+        submit_json = mock_req.call_args_list[1].kwargs["json"]
+        assert submit_json["options"]["n_qubits"] == 999
+
     def test_parameter_sweep_with_fixed_gamma_raises(self):
         with pytest.raises(ValueError, match="mutually exclusive"):
             CharacterizationOptions(parameter_sweep=True, gamma=1.0)
@@ -603,7 +798,7 @@ class TestTopLevelCharacterize:
         options = mock_req.call_args_list[1].kwargs["json"]["options"]
         assert "cost_qubo" in options
         assert "penalty_qubo" in options
-        # Diagonal terms serialize as single-index keys via the canonical form.
+        # n=2 routes to legacy. Diagonal entries serialize as single-index keys.
         assert options["cost_qubo"]["0"] == -1.0
 
 
