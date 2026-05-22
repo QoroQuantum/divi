@@ -97,6 +97,52 @@ repairs matching conflicts. To inspect only raw candidates that are already
 valid globally, use ``get_top_solutions(..., strict=True)``. The returned list
 may contain fewer than ``n`` entries.
 
+.. _ensemble-sample-solution:
+
+Sampling from Pre-Trained Parameters
+------------------------------------
+
+:meth:`~divi.qprog.ensemble.ProgramEnsemble.sample_solution` mirrors the
+standalone
+:meth:`~divi.qprog.VariationalQuantumAlgorithm.sample_solution` across every
+sub-program in one call. Use it when you already have trained parameters for
+each partition (e.g. from a prior ``run()``, a loaded checkpoint, or an
+external training routine) and only need to re-sample — no EXPECTATION jobs
+are dispatched.
+
+Two usage paths:
+
+* ``params_per_program=None`` — each sub-program uses its own
+  ``_best_params``. After a prior ``run()`` on the same ensemble, just call
+  ``ensemble.sample_solution(blocking=True)``.
+* ``params_per_program={program_id: params, ...}`` — pass explicit
+  per-partition parameters. Unknown program IDs raise :class:`ValueError`;
+  program IDs present in the ensemble but missing from the dict fall back to
+  that program's own ``_best_params`` and emit a single
+  :class:`UserWarning` listing all fallbacks (silence with
+  ``suppress_strict_warning=True``).
+
+.. skip: next
+
+.. code-block:: python
+
+   # Re-sample a previously trained partitioning ensemble and aggregate
+   # the global solution — without re-paying for the optimizer.
+   ensemble.sample_solution(blocking=True)
+   solution, energy = ensemble.aggregate_results(beam_width=3)
+
+   # Or: bring trained parameters in from elsewhere (per partition).
+   ensemble.sample_solution(
+       params_per_program={pid: params[pid] for pid in pids},
+       blocking=True,
+   )
+
+The full lifecycle infrastructure (executor pool, merged batching,
+progress UI, cancellation, ``blocking`` / non-blocking semantics) is
+shared with :meth:`~divi.qprog.ensemble.ProgramEnsemble.run`. No sub-program
+mutates its own optimizer-side state (``best_params``, ``losses_history``,
+``current_iteration``).
+
 
 Custom Ensemble Workflows
 -------------------------

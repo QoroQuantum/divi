@@ -3,12 +3,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import re
 import threading
+import warnings
 from concurrent.futures import Future, ThreadPoolExecutor
 from multiprocessing import Event
 from threading import Event as ThreadingEvent
 from threading import Thread
 
+import networkx as nx
+import numpy as np
 import pytest
 from rich.panel import Panel
 from rich.traceback import Traceback
@@ -23,8 +27,11 @@ from divi.qprog.ensemble import (
     ProgramEnsemble,
     _beam_search_aggregate_top_n,
 )
+from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from divi.qprog.problems import GraphPartitioningConfig, MaxCutProblem
 from divi.qprog.quantum_program import QuantumProgram
 from divi.qprog.variational_quantum_algorithm import SolutionEntry
+from divi.qprog.workflows import PartitioningProgramEnsemble
 from divi.reporting import TerminalStatus
 from tests.qprog._program_contracts import verify_basic_program_ensemble_behaviour
 
@@ -2188,3 +2195,167 @@ class TestBeamSearchAggregateTopN:
         # beam_width bumped to 10 but only 1 candidate exists
         assert len(results) >= 1
         assert len(results) <= 10
+
+
+@pytest.fixture
+def small_partitioning_ensemble(dummy_simulator):
+    """A real PartitioningProgramEnsemble with two QAOA partitions."""
+    graph = nx.path_graph(4)
+    problem = MaxCutProblem(
+        graph,
+        config=GraphPartitioningConfig(
+            minimum_n_clusters=2, partitioning_algorithm="spectral"
+        ),
+    )
+    ensemble = PartitioningProgramEnsemble(
+        problem=problem,
+        n_layers=1,
+        optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+        max_iterations=2,
+        backend=dummy_simulator,
+    )
+    ensemble.create_programs()
+    yield ensemble
+    try:
+        ensemble.reset()
+    except Exception:
+        pass
+
+
+def _seed_best_params(ensemble):
+    """Populate _best_params on every sub-program with a zero array of the right shape."""
+    for program in ensemble.programs.values():
+        program._best_params = np.zeros(program.n_layers * program.n_params_per_layer)
+
+
+class TestEnsembleSampleSolutionPreflight:
+    """Validation that fires before any executor / coordinator setup."""
+
+    def test_no_programs_raises(self, program_ensemble):
+        """sample_solution() with no programs raises ``RuntimeError``."""
+        with pytest.raises(RuntimeError, match="No programs"):
+            program_ensemble.sample_solution()
+
+    def test_non_vqa_subprogram_raises(self, program_ensemble):
+        """Sub-programs that are not VQAs raise ``TypeError``."""
+        program_ensemble.create_programs()
+        with pytest.raises(TypeError, match="VariationalQuantumAlgorithm"):
+            program_ensemble.sample_solution()
+
+    def test_unknown_key_raises(self, small_partitioning_ensemble):
+        """Keys not in ``self._programs`` are rejected upfront."""
+        with pytest.raises(ValueError, match="not in this ensemble"):
+            small_partitioning_ensemble.sample_solution(
+                params_per_program={"unknown_prog_id": np.zeros(2)}
+            )
+
+    def test_shape_mismatch_raises(self, small_partitioning_ensemble):
+        """Wrong-shape params for any program raise ``ValueError``."""
+        any_pid = next(iter(small_partitioning_ensemble.programs.keys()))
+        with pytest.raises(ValueError, match="does not match"):
+            small_partitioning_ensemble.sample_solution(
+                params_per_program={any_pid: np.zeros(99)}
+            )
+
+    def test_empty_best_params_raises(self, small_partitioning_ensemble):
+        """No dict + no trained params per program raises ``RuntimeError``."""
+        with pytest.raises(RuntimeError, match="no parameters available"):
+            small_partitioning_ensemble.sample_solution()
+
+
+class TestEnsembleSampleSolution:
+    """End-to-end behavior of the new sampling-only entry point."""
+
+    def test_full_dict_populates_best_probs(self, small_partitioning_ensemble):
+        """Full dict path runs measurement on every program."""
+        params_per_program = {
+            pid: np.zeros(p.n_layers * p.n_params_per_layer)
+            for pid, p in small_partitioning_ensemble.programs.items()
+        }
+        small_partitioning_ensemble.sample_solution(
+            params_per_program=params_per_program, blocking=True
+        )
+        for program in small_partitioning_ensemble.programs.values():
+            assert program._best_probs
+        assert small_partitioning_ensemble.total_circuit_count > 0
+
+    def test_none_path_uses_existing_best_params(self, small_partitioning_ensemble):
+        """params_per_program=None reads each sub-program's _best_params."""
+        _seed_best_params(small_partitioning_ensemble)
+        small_partitioning_ensemble.sample_solution(blocking=True)
+        for program in small_partitioning_ensemble.programs.values():
+            assert program._best_probs
+
+    def test_partial_dict_warns_about_fallbacks(self, small_partitioning_ensemble):
+        """Permissive subset emits a UserWarning naming the fallback program IDs."""
+        _seed_best_params(small_partitioning_ensemble)
+        pids = list(small_partitioning_ensemble.programs.keys())
+        first = small_partitioning_ensemble.programs[pids[0]]
+        partial = {pids[0]: np.zeros(first.n_layers * first.n_params_per_layer)}
+        fallback_id = pids[1]
+        with pytest.warns(
+            UserWarning, match=rf"missing keys.*{re.escape(repr(fallback_id))}"
+        ):
+            small_partitioning_ensemble.sample_solution(
+                params_per_program=partial, blocking=True
+            )
+
+    def test_suppress_strict_warning(self, small_partitioning_ensemble):
+        """suppress_strict_warning=True silences the fallback warning."""
+        _seed_best_params(small_partitioning_ensemble)
+        pids = list(small_partitioning_ensemble.programs.keys())
+        first = small_partitioning_ensemble.programs[pids[0]]
+        partial = {pids[0]: np.zeros(first.n_layers * first.n_params_per_layer)}
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            small_partitioning_ensemble.sample_solution(
+                params_per_program=partial,
+                blocking=True,
+                suppress_strict_warning=True,
+            )
+
+    def test_does_not_mutate_best_params(self, small_partitioning_ensemble):
+        """Explicit params do not overwrite each sub-program's _best_params."""
+        _seed_best_params(small_partitioning_ensemble)
+        original = {
+            pid: program._best_params.copy()
+            for pid, program in small_partitioning_ensemble.programs.items()
+        }
+        params_per_program = {
+            pid: np.ones(p.n_layers * p.n_params_per_layer)
+            for pid, p in small_partitioning_ensemble.programs.items()
+        }
+        small_partitioning_ensemble.sample_solution(
+            params_per_program=params_per_program, blocking=True
+        )
+        for pid, program in small_partitioning_ensemble.programs.items():
+            np.testing.assert_array_equal(program._best_params, original[pid])
+
+    def test_run_then_sample_solution(self, small_partitioning_ensemble):
+        """After run(blocking=True), sample_solution() repopulates _best_probs."""
+        small_partitioning_ensemble.run(blocking=True)
+        circuits_after_run = small_partitioning_ensemble.total_circuit_count
+        for program in small_partitioning_ensemble.programs.values():
+            program._best_probs = {}
+
+        small_partitioning_ensemble.sample_solution(blocking=True)
+
+        circuits_delta = (
+            small_partitioning_ensemble.total_circuit_count - circuits_after_run
+        )
+        assert circuits_delta >= len(small_partitioning_ensemble.programs)
+        for program in small_partitioning_ensemble.programs.values():
+            assert program._best_probs
+
+    def test_aggregate_results_after_sample_solution_only(
+        self, small_partitioning_ensemble
+    ):
+        """sample_solution() alone makes the ensemble ready for aggregate_results."""
+        params_per_program = {
+            pid: np.zeros(p.n_layers * p.n_params_per_layer)
+            for pid, p in small_partitioning_ensemble.programs.items()
+        }
+        small_partitioning_ensemble.sample_solution(
+            params_per_program=params_per_program, blocking=True
+        )
+        small_partitioning_ensemble.aggregate_results()

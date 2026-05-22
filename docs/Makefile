@@ -3,7 +3,7 @@
 
 # You can set these variables from the command line, and also
 # from the environment for the first two.
-SPHINXOPTS    ?=
+SPHINXOPTS    ?= -W
 # Use the venv's sphinx-build if available, otherwise fall back to PATH
 SPHINXBUILD   ?= $(shell if [ -x "../.venv/bin/sphinx-build" ]; then echo "../.venv/bin/sphinx-build"; else echo "sphinx-build"; fi)
 SOURCEDIR     = source

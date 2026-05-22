@@ -9,7 +9,7 @@ This example shows how to:
 - Resume optimization from a checkpoint
 - Adjust iteration targets after loading
 - List and inspect checkpoints
-- Sample directly from a checkpoint's parameters via ``compute_solution``
+- Sample directly from a checkpoint's parameters via ``sample_solution``
 """
 
 import shutil
@@ -129,7 +129,7 @@ if __name__ == "__main__":
             print(f"  Iteration {cp.iteration}")
 
         # Sample directly from a checkpoint without re-running optimization.
-        # ``compute_solution`` runs only the final measurement step with the
+        # ``sample_solution`` runs only the final measurement step with the
         # trained parameters — no EXPECTATION jobs are dispatched.
         print("\n" + "=" * 60)
         print("Step 5: Sample from a checkpoint without retraining")
@@ -142,7 +142,7 @@ if __name__ == "__main__":
             ansatz=HartreeFockAnsatz(),
             n_layers=1,
         )
-        vqe4.compute_solution(vqe4.best_params)
+        vqe4.sample_solution(vqe4.best_params)
         print(f"Eigenstate from checkpoint: {vqe4.eigenstate}")
         print(f"Circuits used (measurement only): {vqe4.total_circuit_count}")
 

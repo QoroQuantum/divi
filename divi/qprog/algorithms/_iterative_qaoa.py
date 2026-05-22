@@ -391,7 +391,7 @@ class IterativeQAOA(QAOA):
         self._best_loss = best_entry["best_loss"]
 
         if perform_final_computation:
-            self.compute_solution(**kwargs)
+            self.sample_solution(**kwargs)
 
         self._total_circuit_count = total_circuits
         self._total_run_time = total_time

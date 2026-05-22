@@ -572,7 +572,7 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         mocker.patch.object(
             program, "_evaluate_cost_param_sets", return_value={0: -0.5}
         )
-        mock_final_computation = mocker.spy(program, "compute_solution")
+        mock_final_computation = mocker.spy(program, "sample_solution")
 
         final_params = np.array([[0.1, 0.2, 0.3, 0.4]])
         final_loss = -0.5
@@ -591,7 +591,7 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
     def test_run_perform_final_computation(
         self, mocker, perform_final_computation, should_call
     ):
-        """Test that compute_solution is called/not called based on the run() flag."""
+        """Test that sample_solution is called/not called based on the run() flag."""
         program, mock_final_computation = (
             self._setup_program_for_final_computation_test(mocker)
         )
@@ -1456,7 +1456,7 @@ class TestEarlyStoppingIntegration(BaseVariationalQuantumAlgorithmTest):
         assert program.stop_reason is None
 
     def test_final_computation_still_runs_after_early_stop(self, mocker):
-        """Verify compute_solution is called after early stopping."""
+        """Verify sample_solution is called after early stopping."""
         es = EarlyStopping(patience=2, min_delta=0.0)
         program = self._create_program_with_mock_optimizer(
             mocker, seed=42, early_stopping=es
@@ -1467,7 +1467,7 @@ class TestEarlyStoppingIntegration(BaseVariationalQuantumAlgorithmTest):
             program, "_evaluate_cost_param_sets", return_value={0: -0.5}
         )
         self._setup_optimizer_with_flat_losses(program, mocker, n_iterations=100)
-        mock_final = mocker.spy(program, "compute_solution")
+        mock_final = mocker.spy(program, "sample_solution")
 
         program.run()
 

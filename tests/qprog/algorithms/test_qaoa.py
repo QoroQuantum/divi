@@ -54,7 +54,7 @@ class TestGeneralQAOA:
         spy = mocker.spy(qaoa_problem._cost_pipeline, "run")
 
         # Mock final computation to isolate optimization phase
-        mocker.patch.object(qaoa_problem, "compute_solution")
+        mocker.patch.object(qaoa_problem, "sample_solution")
 
         qaoa_problem.run()
 
@@ -74,7 +74,7 @@ class TestGeneralQAOA:
         )
 
         spy = mocker.spy(qaoa_problem._cost_pipeline, "run")
-        mocker.patch.object(qaoa_problem, "compute_solution")
+        mocker.patch.object(qaoa_problem, "sample_solution")
 
         qaoa_problem.run()
 
@@ -103,7 +103,7 @@ class TestGeneralQAOA:
         # Spy on measurement pipeline
         spy = mocker.spy(qaoa_problem._measurement_pipeline, "run")
 
-        qaoa_problem.compute_solution()
+        qaoa_problem.sample_solution()
 
         # Measurement pipeline should be called once
         assert spy.call_count == 1
@@ -159,7 +159,7 @@ class TestQAOAQDriftMultiSample:
 
         # Spy on the TrotterSpecStage.expand to inspect how many ham samples are produced
         spy = mocker.spy(trotter_stage, "expand")
-        mocker.patch.object(qaoa, "compute_solution")
+        mocker.patch.object(qaoa, "sample_solution")
         qaoa.run()
 
         # Check that expand produced only 1 ham sample (ham_id=0)
@@ -191,7 +191,7 @@ class TestQAOAQDriftMultiSample:
         trotter_stage = self._find_trotter_stage(qaoa)
 
         spy = mocker.spy(trotter_stage, "expand")
-        mocker.patch.object(qaoa, "compute_solution")
+        mocker.patch.object(qaoa, "sample_solution")
         qaoa.run()
 
         # Check that expand produced 3 ham samples
@@ -335,7 +335,7 @@ class TestQAOAQDriftMultiSample:
 
 
 class TestFinalComputationDecode:
-    """Test that compute_solution handles arbitrary decode returns."""
+    """Test that sample_solution handles arbitrary decode returns."""
 
     def test_decode_returns_none(self, default_test_simulator):
         """When decode_fn returns None, solution is None."""
@@ -391,8 +391,8 @@ class TestFinalComputationDecode:
             _ = qaoa.solution_bitstring
 
 
-class TestComputeSolution:
-    """Tests for ``compute_solution(params)`` — sampling without training."""
+class TestSampleSolution:
+    """Tests for ``sample_solution(params)`` — sampling without training."""
 
     def _make_qaoa(self, backend, n_layers=1):
         return QAOA(
@@ -403,11 +403,11 @@ class TestComputeSolution:
         )
 
     def test_populates_solution_and_bitstring(self, default_test_simulator):
-        """``compute_solution`` produces the same kind of outputs as ``run()``'s final step."""
+        """``sample_solution`` produces the same kind of outputs as ``run()``'s final step."""
         qaoa = self._make_qaoa(default_test_simulator)
         params = np.array([0.1, 0.2])
 
-        qaoa.compute_solution(params)
+        qaoa.sample_solution(params)
 
         assert qaoa.solution_bitstring is not None
         assert isinstance(qaoa.solution_bitstring, str)
@@ -416,24 +416,24 @@ class TestComputeSolution:
         assert qaoa.total_circuit_count > 0
 
     def test_skips_cost_pipeline(self, mocker, default_test_simulator):
-        """``compute_solution`` must not dispatch any EXPECTATION job."""
+        """``sample_solution`` must not dispatch any EXPECTATION job."""
         qaoa = self._make_qaoa(default_test_simulator)
         cost_spy = mocker.spy(qaoa._cost_pipeline, "run")
         meas_spy = mocker.spy(qaoa._measurement_pipeline, "run")
 
-        qaoa.compute_solution(np.array([0.1, 0.2]))
+        qaoa.sample_solution(np.array([0.1, 0.2]))
 
         assert cost_spy.call_count == 0
         assert meas_spy.call_count == 1
 
     def test_does_not_mutate_best_params(self, default_test_simulator):
-        """After ``run()`` then ``compute_solution(other_params)``, ``best_params`` is unchanged."""
+        """After ``run()`` then ``sample_solution(other_params)``, ``best_params`` is unchanged."""
         qaoa = self._make_qaoa(default_test_simulator)
         qaoa.run()
         trained = qaoa.best_params.copy()
 
         other = trained + 1.0
-        qaoa.compute_solution(other)
+        qaoa.sample_solution(other)
 
         np.testing.assert_array_equal(qaoa.best_params, trained)
 
@@ -442,25 +442,25 @@ class TestComputeSolution:
         qaoa = self._make_qaoa(default_test_simulator, n_layers=2)  # expects 4 params
 
         with pytest.raises(ValueError, match="does not match"):
-            qaoa.compute_solution(np.array([0.1, 0.2, 0.3]))  # 3 != 4
+            qaoa.sample_solution(np.array([0.1, 0.2, 0.3]))  # 3 != 4
 
     def test_no_args_before_run_raises(self, default_test_simulator):
-        """``compute_solution()`` before ``run()`` raises a clear ``RuntimeError``."""
+        """``sample_solution()`` before ``run()`` raises a clear ``RuntimeError``."""
         qaoa = self._make_qaoa(default_test_simulator)
 
         with pytest.raises(RuntimeError, match="call run\\(\\) first"):
-            qaoa.compute_solution()
+            qaoa.sample_solution()
 
     def test_returns_self(self, default_test_simulator):
-        """``compute_solution`` returns the program for method chaining."""
+        """``sample_solution`` returns the program for method chaining."""
         qaoa = self._make_qaoa(default_test_simulator)
-        assert qaoa.compute_solution(np.array([0.1, 0.2])) is qaoa
+        assert qaoa.sample_solution(np.array([0.1, 0.2])) is qaoa
 
     def test_does_not_mutate_optimizer_state(self, default_test_simulator):
-        """``compute_solution`` leaves optimizer-side state (losses, iterations) untouched."""
+        """``sample_solution`` leaves optimizer-side state (losses, iterations) untouched."""
         qaoa = self._make_qaoa(default_test_simulator)
 
-        qaoa.compute_solution(np.array([0.1, 0.2]))
+        qaoa.sample_solution(np.array([0.1, 0.2]))
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
@@ -469,9 +469,9 @@ class TestComputeSolution:
         assert qaoa.optimize_result is None
 
     def test_followed_by_run_works(self, default_test_simulator):
-        """Calling ``run()`` after ``compute_solution()`` produces a normal training run."""
+        """Calling ``run()`` after ``sample_solution()`` produces a normal training run."""
         qaoa = self._make_qaoa(default_test_simulator)
-        qaoa.compute_solution(np.array([0.1, 0.2]))
+        qaoa.sample_solution(np.array([0.1, 0.2]))
 
         qaoa.run()
 

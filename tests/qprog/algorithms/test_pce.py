@@ -329,7 +329,7 @@ def test_pce_perform_final_computation_sets_solution(
     pce._best_probs = {"0_NoMitigation:0_0": {"01": 1.0}}
     mocker.patch.object(pce, "_run_solution_measurement_for")
 
-    pce.compute_solution()
+    pce.sample_solution()
 
     with pytest.warns(UserWarning, match="PCE.solution returns the decoded"):
         np.testing.assert_array_equal(pce.solution, np.array([0, 1]))
@@ -659,7 +659,7 @@ def test_pce_qem_protocol_raises(dummy_simulator, basic_ansatz):
 def test_pce_custom_decode_parities_fn_perform_final_computation(
     mocker, dummy_simulator, basic_ansatz, qubo_identity
 ):
-    """Custom decode_parities_fn is used in compute_solution."""
+    """Custom decode_parities_fn is used in sample_solution."""
 
     # Decoder that returns parities [0, 1] for any input -> solution = 1 - [0,1] = [1, 0]
     def fixed_decoder(state_strings, variable_masks_u64):
@@ -680,7 +680,7 @@ def test_pce_custom_decode_parities_fn_perform_final_computation(
     pce._best_probs = {"0_NoMitigation:0_0": {"01": 1.0}}
     mocker.patch.object(pce, "_run_solution_measurement_for")
 
-    pce.compute_solution()
+    pce.sample_solution()
 
     # Fixed decoder returns parities [0, 1] -> solution = [1, 0]
     with pytest.warns(UserWarning, match="PCE.solution returns the decoded"):
@@ -936,11 +936,11 @@ def test_pce_perform_final_computation_none_eigenstate(
         backend=dummy_simulator,
     )
     # Stub the measurement step so _best_probs stays empty; VQE then leaves
-    # _eigenstate unset, and PCE's compute_solution must handle that path.
+    # _eigenstate unset, and PCE's sample_solution must handle that path.
     pce._best_params = np.zeros(pce.n_layers * pce.n_params_per_layer)
     mocker.patch.object(pce, "_run_solution_measurement_for")
 
-    pce.compute_solution()
+    pce.sample_solution()
 
     assert pce._eigenstate is None
     assert pce._final_vector is None

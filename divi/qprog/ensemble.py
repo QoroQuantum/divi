@@ -13,17 +13,14 @@ from threading import Event, Lock, Thread
 from typing import Any
 from warnings import warn
 
+import numpy as np
+import numpy.typing as npt
 from rich.console import Console
 from rich.panel import Panel
 from rich.traceback import Traceback
 
 from divi.backends import CircuitRunner
 from divi.exceptions import ExecutionCancelledError
-
-# Direct import of ``BatchConfig``/``BatchMode`` from the defining module:
-# ``ensemble.py`` is itself loaded by ``divi.qprog.__init__`` to populate
-# those names, so ``from divi.qprog import BatchConfig, BatchMode`` would
-# fail with a partial-init ImportError.
 from divi.qprog._batch_coordinator import (
     BatchConfig,
     BatchMode,
@@ -89,7 +86,6 @@ class ProgramEnsemble(ABC):
 
         self.backend = backend
         self._executor = None
-        self._task_fn = _default_task_function
         self._programs = {}
         self._coordinator: _BatchCoordinator | None = None
         self._program_key_map: dict[QuantumProgram, str] = {}
@@ -101,7 +97,6 @@ class ProgramEnsemble(ABC):
         self._progress_bar = None
         self._listener_thread = None
         self._hide_program_rows = False
-        self._prep_task_id = None
 
         self._is_jupyter = Console().is_jupyter
 
@@ -246,7 +241,11 @@ class ProgramEnsemble(ABC):
             )
             self.reset()
 
-    def _add_program_to_executor(self, program: QuantumProgram) -> Future:
+    def _add_program_to_executor(
+        self,
+        program: QuantumProgram,
+        task_fn: Callable[..., Any],
+    ) -> Future:
         """
         Add a quantum program to the thread pool executor for execution.
 
@@ -256,6 +255,9 @@ class ProgramEnsemble(ABC):
 
         Args:
             program (QuantumProgram): The quantum program to execute.
+            task_fn: The callable that consumes the program and produces the
+                per-program result. Provided by the caller (e.g. ``run()`` or
+                ``sample_solution()``).
 
         Returns:
             Future: A Future object representing the program's execution.
@@ -286,7 +288,6 @@ class ProgramEnsemble(ABC):
 
         coordinator = self._coordinator
         program_key = self._program_key_map.get(program)
-        task_fn = self._task_fn
 
         def _coordinated_task(prog):
             try:
@@ -344,15 +345,36 @@ class ProgramEnsemble(ABC):
             In non-blocking mode, call `join()` later to wait for completion and
             collect results.
         """
+        return self._dispatch(
+            task_fn=_default_task_function,
+            blocking=blocking,
+            batch_config=batch_config,
+        )
+
+    def _dispatch(
+        self,
+        task_fn: Callable[..., Any],
+        blocking: bool,
+        batch_config: BatchConfig,
+    ):
+        """Drive the ensemble lifecycle using ``task_fn`` per sub-program.
+
+        Shared by :meth:`run` (training) and :meth:`sample_solution` (sampling).
+        Owns the executor, ``_BatchCoordinator``, progress UI, listener thread,
+        submission loop, error cleanup, and the blocking/non-blocking return.
+        """
         if self._executor is not None:
             raise RuntimeError("An ensemble is already being run.")
 
         if len(self._programs) == 0:
             raise RuntimeError("No programs to run.")
 
+        self._queue = Queue()
+        self._done_event = Event()
+
         self._progress_bar = None
         self._live_display = None
-        self._prep_task_id = None
+        prep_task_id = None
         batching_enabled = batch_config.mode is BatchMode.MERGED
         self._hide_program_rows = (
             batching_enabled and len(self._programs) > _HIDE_PROGRAM_ROWS_THRESHOLD
@@ -372,7 +394,7 @@ class ProgramEnsemble(ABC):
                 # per program on its first ``submit`` call, ticking this
                 # row up until it reaches len(programs) — at which point
                 # the merged backend submission fires.
-                self._prep_task_id = self._progress_bar.add_task(
+                prep_task_id = self._progress_bar.add_task(
                     "",
                     job_name="Submitting circuits",
                     total=len(self._programs),
@@ -486,7 +508,6 @@ class ProgramEnsemble(ABC):
                 done_event = self._done_event
                 pb_lock = self._pb_lock
                 hide_program_rows = self._hide_program_rows
-                prep_task_id = self._prep_task_id
 
                 def _listener_runner():
                     # Spawn-side guard: if ``queue_listener`` dies for any
@@ -512,7 +533,7 @@ class ProgramEnsemble(ABC):
                 self._listener_thread.start()
 
             for program in self._programs.values():
-                future = self._add_program_to_executor(program)
+                future = self._add_program_to_executor(program, task_fn)
                 self.futures.append(future)
                 self._future_to_program[future] = program
 
@@ -554,6 +575,131 @@ class ProgramEnsemble(ABC):
             self.join()
 
         return self
+
+    def sample_solution(
+        self,
+        params_per_program: dict[Any, npt.NDArray[np.float64]] | None = None,
+        *,
+        blocking: bool = False,
+        batch_config: BatchConfig = BatchConfig(),
+        suppress_strict_warning: bool = False,
+    ) -> "ProgramEnsemble":
+        """Sample every sub-program's circuit with trained parameters.
+
+        Runs only the final measurement step on each sub-program — no
+        EXPECTATION jobs are dispatched. Two usage paths:
+
+        * ``params_per_program=None``: each sub-program uses its own
+          ``_best_params`` (typically populated by a prior ``run()`` or a
+          loaded checkpoint). A program with no trained parameters raises
+          :class:`RuntimeError` upfront with the program ID.
+        * ``params_per_program={program_id: params, ...}``: per-program
+          parameter sets. Unknown program IDs raise :class:`ValueError`.
+          Program IDs that are present in the ensemble but missing from
+          the dict fall back to that program's own ``_best_params`` and
+          emit a :class:`UserWarning` listing the fallbacks (silence with
+          ``suppress_strict_warning=True``).
+
+        Mirrors :meth:`run` for everything else — executor pool sizing,
+        merged batching via :class:`_BatchCoordinator`, progress UI,
+        cancellation, and the blocking / non-blocking return contract.
+        No optimizer state on any sub-program is mutated.
+
+        Args:
+            params_per_program: Optional mapping from program ID to
+                parameter set. See above for resolution semantics.
+            blocking: If ``True``, waits for all programs to complete
+                before returning. Defaults to ``False``.
+            batch_config: Same semantics as :meth:`run`.
+            suppress_strict_warning: When ``True``, silences the
+                fallback warning emitted when ``params_per_program`` is
+                missing entries for some programs.
+
+        Returns:
+            ProgramEnsemble: ``self`` for method chaining.
+
+        Raises:
+            RuntimeError: If the ensemble has no programs, if it is
+                already running, or if a sub-program has no parameters
+                available (no dict entry and empty ``_best_params``).
+            ValueError: If ``params_per_program`` contains unknown program
+                IDs, or any resolved parameter set has the wrong shape
+                for its sub-program's ``n_layers * n_params_per_layer``.
+            TypeError: If any sub-program is not a
+                :class:`~divi.qprog.VariationalQuantumAlgorithm`.
+        """
+        if len(self._programs) == 0:
+            raise RuntimeError("No programs to sample.")
+
+        for prog_id, program in self._programs.items():
+            if not isinstance(program, VariationalQuantumAlgorithm):
+                raise TypeError(
+                    f"Program {prog_id!r} is {type(program).__name__}; "
+                    f"sample_solution requires VariationalQuantumAlgorithm "
+                    f"sub-programs."
+                )
+
+        if params_per_program is not None:
+            unknown = set(params_per_program) - set(self._programs)
+            if unknown:
+                raise ValueError(
+                    f"params_per_program contains keys not in this ensemble: "
+                    f"{list(unknown)!r}. Valid program IDs: "
+                    f"{list(self._programs.keys())!r}."
+                )
+
+        resolved: dict[Any, npt.NDArray[np.float64]] = {}
+        fallbacks: list[Any] = []
+        for prog_id, program in self._programs.items():
+            if params_per_program is not None and prog_id in params_per_program:
+                arr = np.asarray(params_per_program[prog_id], dtype=np.float64)
+            else:
+                arr = np.asarray(
+                    getattr(program, "_best_params", np.array([], dtype=np.float64)),
+                    dtype=np.float64,
+                )
+                if params_per_program is not None:
+                    fallbacks.append(prog_id)
+
+            if arr.size == 0:
+                raise RuntimeError(
+                    f"Program {prog_id!r}: no parameters available. "
+                    f"Pass params_per_program[{prog_id!r}]=... or call "
+                    f"run() on the ensemble first."
+                )
+
+            n_layers = getattr(program, "n_layers", None)
+            n_params_per_layer = getattr(program, "n_params_per_layer", None)
+            if n_layers is not None and n_params_per_layer is not None:
+                expected = n_layers * n_params_per_layer
+                if arr.shape[-1] != expected:
+                    raise ValueError(
+                        f"Program {prog_id!r}: params last-axis size "
+                        f"({arr.shape[-1]}) does not match "
+                        f"n_layers * n_params_per_layer ({expected})."
+                    )
+
+            resolved[prog_id] = arr
+
+        if fallbacks and not suppress_strict_warning:
+            warn(
+                f"params_per_program is missing keys for programs "
+                f"{list(fallbacks)!r}; falling back to each program's "
+                f"_best_params. Pass suppress_strict_warning=True to silence.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+        program_to_id = {program: pid for pid, program in self._programs.items()}
+
+        def _sample_solution_task(program: VariationalQuantumAlgorithm):
+            return program.sample_solution(resolved[program_to_id[program]])
+
+        return self._dispatch(
+            task_fn=_sample_solution_task,
+            blocking=blocking,
+            batch_config=batch_config,
+        )
 
     def check_all_done(self) -> bool:
         """
@@ -995,9 +1141,10 @@ class ProgramEnsemble(ABC):
             self.join()
 
         for program in self._programs.values():
-            if not program.has_results():
+            if not program.has_results() and not getattr(program, "_best_probs", None):
                 raise RuntimeError(
-                    "Some/All programs have no results. Did you call run()?"
+                    "Some/All programs have no results. "
+                    "Did you call run() or sample_solution()?"
                 )
 
     @abstractmethod

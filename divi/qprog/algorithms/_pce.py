@@ -278,13 +278,13 @@ class PCE(VQE):
             ),
         }
 
-    def compute_solution(
+    def sample_solution(
         self,
         params: npt.NDArray[np.float64] | None = None,
         **kwargs,
     ) -> "PCE":
         """Compute the final eigenstate and decode it into a PCE vector."""
-        super().compute_solution(params, **kwargs)
+        super().sample_solution(params, **kwargs)
 
         if self._eigenstate is None:
             self._final_vector = None

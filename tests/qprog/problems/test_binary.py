@@ -626,7 +626,7 @@ class TestQUBOInput:
         qaoa_problem._best_probs = {"0_NoMitigation:0_0": {best_bitstring: 1.0}}
         mocker.patch.object(qaoa_problem, "_run_solution_measurement_for")
 
-        qaoa_problem.compute_solution()
+        qaoa_problem.sample_solution()
 
         sol = qaoa_problem.solution
         assert isinstance(sol, dict)

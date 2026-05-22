@@ -298,7 +298,7 @@ class QAOA(VariationalQuantumAlgorithm):
         )
         return {"cost_circuit": cost_circuit, "meas_circuit": meas_circuit}
 
-    def compute_solution(
+    def sample_solution(
         self,
         params: npt.NDArray[np.float64] | None = None,
         **kwargs,
@@ -306,7 +306,7 @@ class QAOA(VariationalQuantumAlgorithm):
         """Run measurement circuits with the given parameters and decode the solution."""
         self.reporter.info(message="🏁 Computing Final Solution 🏁", overwrite=True)
 
-        super().compute_solution(params, **kwargs)
+        super().sample_solution(params, **kwargs)
 
         best_probs = next(iter(self._best_probs.values()))
         best_bitstring = max(best_probs, key=best_probs.get)

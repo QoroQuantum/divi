@@ -1370,7 +1370,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         self._final_params = self.optimize_result.x
 
         if perform_final_computation:
-            self.compute_solution(**kwargs)
+            self.sample_solution(**kwargs)
 
         self.reporter.info(
             message="Finished successfully!", final_status=TerminalStatus.SUCCESS
@@ -1378,7 +1378,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         return self
 
-    def compute_solution(
+    def sample_solution(
         self,
         params: npt.NDArray[np.float64] | None = None,
         **kwargs,
@@ -1419,7 +1419,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         Note:
             Subclasses override this method to add their algorithm-specific
-            decoding step. They should call ``super().compute_solution(params)``
+            decoding step. They should call ``super().sample_solution(params)``
             to perform parameter validation and the measurement-pipeline
             dispatch, then read from ``self._best_probs`` to extract
             algorithm-specific solution state.
@@ -1433,7 +1433,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         if params is None:
             if len(self._best_params) == 0:
                 raise RuntimeError(
-                    "compute_solution() was called without explicit `params` "
+                    "sample_solution() was called without explicit `params` "
                     "but no trained parameters are available. Either pass "
                     "`params=...` or call run() first."
                 )

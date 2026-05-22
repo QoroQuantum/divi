@@ -238,7 +238,7 @@ class VQE(VariationalQuantumAlgorithm):
             ),
         }
 
-    def compute_solution(
+    def sample_solution(
         self,
         params: npt.NDArray[np.float64] | None = None,
         **kwargs,
@@ -246,7 +246,7 @@ class VQE(VariationalQuantumAlgorithm):
         """Extract the eigenstate corresponding to the lowest energy found."""
         self.reporter.info(message="🏁 Computing Final Eigenstate 🏁", overwrite=True)
 
-        super().compute_solution(params, **kwargs)
+        super().sample_solution(params, **kwargs)
 
         if self._best_probs:
             best_measurement_probs = next(iter(self._best_probs.values()))

@@ -185,16 +185,16 @@ For deeper variational workflow details, use these focused guides:
       )
 
       # When you already have trained parameters and only need to sample the
-      # circuit (extract the solution distribution), use ``compute_solution``
+      # circuit (extract the solution distribution), use ``sample_solution``
       # to skip the optimization loop entirely — no EXPECTATION job is
       # dispatched, only a single EXECUTE/measurement round:
       vqe4 = VQE(molecule=molecule, n_layers=2, backend=MaestroSimulator(),
                  optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA))
-      vqe4.compute_solution(best_params)
+      vqe4.sample_solution(best_params)
 
 **Sampling from Pre-Trained Parameters**
    Any :class:`~divi.qprog.VariationalQuantumAlgorithm` exposes
-   :meth:`~divi.qprog.VariationalQuantumAlgorithm.compute_solution`, which runs
+   :meth:`~divi.qprog.VariationalQuantumAlgorithm.sample_solution`, which runs
    only the final measurement step with a user-supplied parameter set. This is
    the cheapest way to re-sample a circuit when parameters are already known
    (e.g. loaded from a checkpoint or produced by an external training routine).
@@ -207,8 +207,12 @@ For deeper variational workflow details, use these focused guides:
       # Skip the training loop entirely — just sample with the known-good
       # parameters and decode the result.
       vqe_sample = VQE(molecule=molecule, n_layers=2, backend=MaestroSimulator())
-      vqe_sample.compute_solution(best_params)
+      vqe_sample.sample_solution(best_params)
       print(vqe_sample.eigenstate)
+
+   For the ensemble variant — one call to re-sample every partition of a
+   trained :class:`~divi.qprog.workflows.PartitioningProgramEnsemble` —
+   see :ref:`ensemble-sample-solution`.
 
 Analyzing Solution Distributions
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
