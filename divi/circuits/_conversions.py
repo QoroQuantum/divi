@@ -50,7 +50,7 @@ from qiskit.converters import circuit_to_dag
 from qiskit.dagcircuit import DAGCircuit
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.circuits import MetaCircuit
+from divi.circuits import DEFAULT_PRECISION, MetaCircuit
 from divi.hamiltonians._term_ops import to_spo
 
 # Supported PennyLane op.name set for local QuantumScript → Qiskit conversion.
@@ -305,7 +305,7 @@ def _format_bound_param(value: float, precision: int) -> str:
     return "0" if s in {"-0", ""} else s
 
 
-def dag_to_qasm_body(dag: DAGCircuit, precision: int = 8) -> str:
+def dag_to_qasm_body(dag: DAGCircuit, precision: int = DEFAULT_PRECISION) -> str:
     """Emit a body-only parametric OpenQASM 2.0 string from a DAG.
 
     No preamble, no ``qreg``/``creg`` declarations — just gate instructions,
@@ -380,7 +380,7 @@ def _sparse_pauli_op_to_ham_string(op: SparsePauliOp) -> str:
 
 def qscript_to_meta(
     qscript: QuantumScript,
-    precision: int = 8,
+    precision: int = DEFAULT_PRECISION,
     parameter_order: tuple[Parameter, ...] | None = None,
     was_multi_obs: bool | None = None,
 ):

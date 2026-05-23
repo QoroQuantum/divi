@@ -4,7 +4,7 @@
 
 # isort: off
 from ._types import AxisLabel, QASMTag
-from ._core import MetaCircuit
+from ._core import DEFAULT_PRECISION, MetaCircuit
 from ._conversions import (
     dag_to_qasm_body,
     measurement_qasms_from_groups,
@@ -20,6 +20,7 @@ from ._qasm_template import (
 # isort: on
 
 __all__ = [
+    "DEFAULT_PRECISION",
     "AxisLabel",
     "MetaCircuit",
     "QASMTag",

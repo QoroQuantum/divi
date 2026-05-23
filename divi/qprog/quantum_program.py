@@ -11,6 +11,7 @@ from warnings import warn
 
 from divi.backends import AsyncJobBackend, CircuitRunner
 from divi.backends._cancellation import _best_effort_cancel_job, _sigint_to_event
+from divi.circuits import DEFAULT_PRECISION
 from divi.circuits.qem import _NoMitigation
 from divi.pipeline import CircuitPipeline, DryRunReport, PipelineEnv, dry_run_pipeline
 from divi.reporting import (
@@ -38,6 +39,7 @@ class QuantumProgram(ABC):
         seed: int | None = None,
         progress_queue: Queue | None = None,
         program_id: str | None = None,
+        precision: int = DEFAULT_PRECISION,
         **kwargs,
     ):
         """Initialize the QuantumProgram.
@@ -49,6 +51,10 @@ class QuantumProgram(ABC):
             program_id (str | None): Program identifier for progress reporting in
                 batch operations. If provided along with progress_queue, enables
                 queue-based progress reporting.
+            precision (int): Decimal places for numeric parameter values in
+                QASM emission.  Higher values produce longer QASM strings;
+                lower values shrink them at the cost of parameter resolution.
+                Defaults to :data:`~divi.circuits._core.DEFAULT_PRECISION`.
         """
         if backend is None:
             raise ValueError("QuantumProgram requires a backend.")
@@ -56,6 +62,7 @@ class QuantumProgram(ABC):
         self.backend = backend
         self._seed = seed
         self._progress_queue = progress_queue
+        self._precision = precision
 
         qem_protocol = kwargs.pop("qem_protocol", None)
         self._qem_protocol = _NoMitigation() if qem_protocol is None else qem_protocol
@@ -77,6 +84,23 @@ class QuantumProgram(ABC):
             self.reporter = QueueProgressReporter(self.program_id, progress_queue)
         else:
             self.reporter = LoggingProgressReporter()
+
+    @property
+    def precision(self) -> int:
+        """Decimal places used for numeric parameter values in QASM emission."""
+        return self._precision
+
+    @property
+    def total_circuit_count(self) -> int:
+        """Cumulative count of circuits submitted for execution across all
+        runs of this program."""
+        return self._total_circuit_count
+
+    @property
+    def total_run_time(self) -> float:
+        """Cumulative backend execution time in seconds across all runs of
+        this program."""
+        return self._total_run_time
 
     @abstractmethod
     def run(self, **kwargs) -> "QuantumProgram":

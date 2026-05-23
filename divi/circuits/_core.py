@@ -95,6 +95,12 @@ def flatten_observable_tuple(
     return union, per_obs_term_indices
 
 
+# Canonical decimal-precision for QASM parameter rendering, threaded
+# through every MetaCircuit-producing path. Users override per-program
+# via ``QuantumProgram(precision=...)``.
+DEFAULT_PRECISION = 8
+
+
 @dataclass(frozen=True)
 class MetaCircuit:
     """Logical circuit IR.
@@ -161,7 +167,7 @@ class MetaCircuit:
     """Cached grouped observables set by
     :class:`~divi.pipeline.stages.MeasurementStage`."""
 
-    precision: int = 8
+    precision: int = DEFAULT_PRECISION
     """Number of decimal places for numeric parameter values in QASM conversion."""
 
     _was_multi_obs: bool = False

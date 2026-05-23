@@ -348,15 +348,12 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 (``grouping_strategy="_backend_expval"``) is rejected because
                 shots are ignored in that mode. Defaults to ``None`` (every
                 group receives the full shot budget).
-            precision (int): Number of decimal places for parameter values in QASM conversion.
-                Defaults to 8.
-
-                Note: Higher precision values result in longer QASM strings, which increases
-                the amount of data sent to cloud backends. For most use cases, the default
-                precision of 8 decimal places provides sufficient accuracy while keeping
-                QASM sizes manageable. Consider reducing precision if you need to minimize
-                data transfer overhead, or increase it only if you require higher numerical
-                precision in your circuit parameters.
+            precision (int): Forwarded to
+                :class:`~divi.qprog.QuantumProgram` — decimal places for
+                numeric parameter values in QASM conversion. Higher values
+                produce longer QASM strings (more data sent to cloud
+                backends); lower values trade resolution for compactness.
+                Defaults to :data:`~divi.circuits._core.DEFAULT_PRECISION`.
             decode_solution_fn: Function to decode bitstrings
                 into problem-specific solution representations. Called during final computation
                 and when `get_top_solutions(include_decoded=True)` is used. The function should
@@ -370,7 +367,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         _UNSET = object()
         grouping_strategy = kwargs.pop("grouping_strategy", _UNSET)
         shot_distribution = kwargs.pop("shot_distribution", None)
-        precision = kwargs.pop("precision", 8)
         decode_solution_fn = kwargs.pop(
             "decode_solution_fn", lambda bitstring: bitstring
         )
@@ -449,7 +445,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
             )
 
         self._shot_distribution = shot_distribution
-        self._precision = precision
 
         # --- Solution Decoding ---
         self._decode_solution_fn = decode_solution_fn
@@ -459,24 +454,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
 
         # --- Control Flow ---
         self._cancellation_event = None
-
-    @property
-    def total_circuit_count(self) -> int:
-        """Get the total number of circuits executed.
-
-        Returns:
-            int: Cumulative count of circuits submitted for execution.
-        """
-        return self._total_circuit_count
-
-    @property
-    def total_run_time(self) -> float:
-        """Get the total runtime across all circuit executions.
-
-        Returns:
-            float: Cumulative execution time in seconds.
-        """
-        return self._total_run_time
 
     def _has_run_optimization(self) -> bool:
         """Check if optimization has been run at least once.
