@@ -6,6 +6,7 @@
 
 import math
 import numbers
+import warnings
 from collections.abc import Sequence
 from typing import Literal
 
@@ -15,7 +16,6 @@ from qiskit.circuit.library import PauliEvolutionGate
 from qiskit.quantum_info import SparsePauliOp
 from qiskit.synthesis import LieTrotter
 
-from divi.circuits._conversions import _observable_to_sparse_pauli_op
 from divi.circuits._core import _assert_hermitian_spo
 
 
@@ -90,8 +90,53 @@ def _spo_from_pauli_dict(terms: dict[str, float]) -> SparsePauliOp:
     return SparsePauliOp.from_list(items)
 
 
+def _observable_to_sparse_pauli_op(
+    obs: qp.operation.Operator,
+    wires,
+) -> SparsePauliOp:
+    """Convert a PennyLane observable to a Qiskit :class:`~qiskit.quantum_info.SparsePauliOp`.
+
+    Handles arbitrary wire labels (strings, tuples, non-contiguous ints)
+    by resolving through the provided *wires* register.
+
+    Coefficients are stored as real floats.  A warning is emitted if any
+    coefficient has a non-negligible imaginary part (>1e-10), which would
+    indicate a non-Hermitian observable.
+    """
+    pauli_rep = obs.pauli_rep
+    if pauli_rep is None:
+        raise ValueError(
+            f"Observable {obs!r} has no Pauli representation; cannot "
+            f"convert to SparsePauliOp."
+        )
+    wire_list = list(wires)
+    num_qubits = len(wire_list)
+
+    sparse: list[tuple[str, list[int], float]] = []
+    for pauli_word, coeff in pauli_rep.items():
+        c = complex(coeff)
+        if abs(c.imag) > 1e-10:
+            warnings.warn(
+                f"Observable coefficient {c} has non-negligible imaginary "
+                f"part ({c.imag:.2e}); dropping it. This may indicate a "
+                f"non-Hermitian observable.",
+                stacklevel=2,
+            )
+        pw_items = list(dict(pauli_word).items())
+        if not pw_items:
+            sparse.append(("", [], c.real))
+        else:
+            pauli_chars = "".join(ch for _, ch in pw_items)
+            qubit_indices = [wire_list.index(w) for w, _ in pw_items]
+            sparse.append((pauli_chars, qubit_indices, c.real))
+
+    return SparsePauliOp.from_sparse_list(sparse, num_qubits=num_qubits)
+
+
 def to_spo(
     op: qp.operation.Operator | SparsePauliOp | dict[str, float],
+    *,
+    wires=None,
 ) -> SparsePauliOp:
     """Convert a PennyLane operator, ``SparsePauliOp``, or Pauli-string
     dict to ``SparsePauliOp``, validating Hermiticity in every case.
@@ -112,6 +157,16 @@ def to_spo(
         and the labels you read back will look reversed — the symplectic
         representation is what stays consistent across both forms.
 
+    Args:
+        op: Operator to convert.
+        wires: Optional wire register to resolve a PennyLane operator
+            against. When ``None`` (default), falls back to ``op.wires``,
+            which yields an SPO whose qubit count equals the operator's
+            own wire count. Pass an explicit wires register when the
+            surrounding circuit is wider than the operator's own support
+            (e.g. a single-qubit observable inside an n-qubit script).
+            Ignored for ``SparsePauliOp`` and dict inputs.
+
     For repeated use on the same observable, convert once at setup and
     reuse the returned ``SparsePauliOp``.
     """
@@ -122,7 +177,7 @@ def to_spo(
         spo = _spo_from_pauli_dict(op)
         _assert_hermitian_spo(spo)
         return spo
-    spo = _observable_to_sparse_pauli_op(op, op.wires)
+    spo = _observable_to_sparse_pauli_op(op, wires if wires is not None else op.wires)
     _assert_hermitian_spo(spo)
     return spo
 
@@ -166,59 +221,6 @@ def _sort_hamiltonian_terms_spo(
 
 
 _HALF_PI = float(np.pi / 2)
-
-
-def _spo_to_basis_gate_ops(
-    spo: SparsePauliOp,
-    time,
-    wires: Sequence,
-) -> list[qp.operation.Operator]:
-    """First-order Trotter decomposition of ``exp(-i * time * H)`` as PennyLane basis gates.
-
-    Output matches ``qp.PauliRot`` → ``MultiRZ`` → CNOT/RZ decomposition.
-    """
-    wire_list = list(wires)
-    ops: list[qp.operation.Operator] = []
-    for pauli_str, coeff in zip(spo.paulis.to_labels(), spo.coeffs):
-        c = float(np.real(coeff))
-        # Qiskit labels are big-endian: pauli_str[-(i+1)] is qubit i.
-        active = [
-            (wire_list[i], ch) for i, ch in enumerate(reversed(pauli_str)) if ch != "I"
-        ]
-        if not active:
-            continue
-        theta = 2 * time * c
-
-        if len(active) == 1:
-            w, ch = active[0]
-            if ch == "Z":
-                ops.append(qp.RZ(theta, wires=w))
-            elif ch == "X":
-                ops.append(qp.RX(theta, wires=w))
-            else:
-                ops.append(qp.RY(theta, wires=w))
-            continue
-
-        for w, ch in active:
-            if ch == "X":
-                ops.append(qp.Hadamard(wires=w))
-            elif ch == "Y":
-                ops.append(qp.RX(_HALF_PI, wires=w))
-
-        active_wires = [w for w, _ in active]
-        n = len(active_wires)
-        for i in range(n - 1, 0, -1):
-            ops.append(qp.CNOT(wires=(active_wires[i], active_wires[i - 1])))
-        ops.append(qp.RZ(theta, wires=active_wires[0]))
-        for i in range(1, n):
-            ops.append(qp.CNOT(wires=(active_wires[i], active_wires[i - 1])))
-
-        for w, ch in active:
-            if ch == "X":
-                ops.append(qp.Hadamard(wires=w))
-            elif ch == "Y":
-                ops.append(qp.RX(-_HALF_PI, wires=w))
-    return ops
 
 
 def _spo_to_qiskit_basis_gates(

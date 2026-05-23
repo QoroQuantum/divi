@@ -4,7 +4,6 @@
 
 """PennyLane QuantumScript → Qiskit DAGCircuit conversion and DAG → parametric QASM2 emission."""
 
-import warnings
 from collections.abc import Mapping
 
 import numpy as np
@@ -52,6 +51,7 @@ from qiskit.dagcircuit import DAGCircuit
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
+from divi.hamiltonians._term_ops import to_spo
 
 # Supported PennyLane op.name set for local QuantumScript → Qiskit conversion.
 _PL_TO_QISKIT_GATE = {
@@ -349,50 +349,6 @@ def dag_to_qasm_body(dag: DAGCircuit, precision: int = 8) -> str:
     return "".join(parts)
 
 
-def _observable_to_sparse_pauli_op(
-    obs: qp.operation.Operator,
-    wires,
-) -> SparsePauliOp:
-    """Convert a PennyLane observable to a Qiskit :class:`~qiskit.quantum_info.SparsePauliOp`.
-
-    Handles arbitrary wire labels (strings, tuples, non-contiguous ints)
-    by resolving through the provided *wires* register.
-    Handles arbitrary wire labels without requiring external bridge packages.
-
-    Coefficients are stored as real floats.  A warning is emitted if any
-    coefficient has a non-negligible imaginary part (>1e-10), which would
-    indicate a non-Hermitian observable.
-    """
-    pauli_rep = obs.pauli_rep
-    if pauli_rep is None:
-        raise ValueError(
-            f"Observable {obs!r} has no Pauli representation; cannot "
-            f"convert to SparsePauliOp."
-        )
-    wire_list = list(wires)
-    num_qubits = len(wire_list)
-
-    sparse: list[tuple[str, list[int], float]] = []
-    for pauli_word, coeff in pauli_rep.items():
-        c = complex(coeff)
-        if abs(c.imag) > 1e-10:
-            warnings.warn(
-                f"Observable coefficient {c} has non-negligible imaginary "
-                f"part ({c.imag:.2e}); dropping it. This may indicate a "
-                f"non-Hermitian observable.",
-                stacklevel=2,
-            )
-        pw_items = list(dict(pauli_word).items())
-        if not pw_items:
-            sparse.append(("", [], c.real))
-        else:
-            pauli_chars = "".join(ch for _, ch in pw_items)
-            qubit_indices = [wire_list.index(w) for w, _ in pw_items]
-            sparse.append((pauli_chars, qubit_indices, c.real))
-
-    return SparsePauliOp.from_sparse_list(sparse, num_qubits=num_qubits)
-
-
 _PAULI_CHAR_LOOKUP = np.array(list("IXZY"), dtype="U1")
 
 
@@ -484,7 +440,7 @@ def qscript_to_meta(
                 raise ValueError(
                     "ExpectationMP without an observable is not supported."
                 )
-            ops.append(_observable_to_sparse_pauli_op(m.obs, qscript.wires))
+            ops.append(to_spo(m.obs, wires=qscript.wires))
         observable = tuple(ops)
     elif measurements:
         first = measurements[0]

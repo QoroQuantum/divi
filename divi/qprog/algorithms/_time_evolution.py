@@ -14,7 +14,7 @@ from qiskit.quantum_info import SparsePauliOp
 from qiskit.synthesis import LieTrotter, SuzukiTrotter
 
 from divi.circuits import MetaCircuit
-from divi.circuits._conversions import _QISKIT_TO_QASM2, _observable_to_sparse_pauli_op
+from divi.circuits._conversions import _QISKIT_TO_QASM2
 from divi.circuits.qem import _NoMitigation
 from divi.hamiltonians import (
     ExactTrotterization,
@@ -311,8 +311,9 @@ class TimeEvolution(QuantumProgram):
                     f"has {self.n_qubits}."
                 )
             return op
-        # PennyLane operator: lift onto the full wire register.
-        return _observable_to_sparse_pauli_op(op, self._circuit_wires)
+        # Non-SPO input (PL operator, Pauli-string dict): lift onto the
+        # full wire register so a narrow observable matches the cost circuit.
+        return to_spo(op, wires=self._circuit_wires)
 
     def _build_qiskit_circuit(self, processed_spo: SparsePauliOp) -> QuantumCircuit:
         """Build initial-state preparation + Trotter evolution as a ``QuantumCircuit``.

@@ -13,8 +13,8 @@ from qiskit.quantum_info import Operator, SparsePauliOp
 from divi.hamiltonians import _term_ops as term_ops_module
 from divi.hamiltonians._term_ops import (
     _clean_hamiltonian_spo,
+    _observable_to_sparse_pauli_op,
     _sort_hamiltonian_terms_spo,
-    _spo_to_basis_gate_ops,
     _spo_to_qiskit_basis_gates,
     _spo_to_qiskit_basis_gates_numeric,
     _spo_to_qiskit_basis_gates_symbolic,
@@ -193,56 +193,6 @@ class TestSortHamiltonianTermsSpo:
         """A single-row SPO is returned unchanged (identity short-circuit)."""
         spo = SparsePauliOp.from_list([("Z", 7.0)])
         assert _sort_hamiltonian_terms_spo(spo) is spo
-
-
-class TestSpoToBasisGateOps:
-    @pytest.mark.parametrize(
-        "pauli, expected_gate",
-        [("Z", qp.RZ), ("X", qp.RX), ("Y", qp.RY)],
-    )
-    def test_single_qubit_pauli_emits_matching_rotation(self, pauli, expected_gate):
-        """``RZ/RX/RY`` is emitted on the configured wire with ``θ = 2·t·c``."""
-        spo = SparsePauliOp.from_list([(pauli, 0.5)])
-        ops = _spo_to_basis_gate_ops(spo, time=0.7, wires=[2])
-        assert len(ops) == 1
-        assert isinstance(ops[0], expected_gate)
-        assert ops[0].wires.tolist() == [2]
-        assert float(ops[0].parameters[0]) == pytest.approx(2 * 0.7 * 0.5)
-
-    def test_zz_decomposes_to_cnot_staircase(self):
-        """A two-qubit ZZ term decomposes to CNOT–RZ–CNOT."""
-        spo = SparsePauliOp.from_list([("ZZ", 1.0)])
-        ops = _spo_to_basis_gate_ops(spo, time=0.3, wires=[0, 1])
-        assert [op.name for op in ops] == ["CNOT", "RZ", "CNOT"]
-
-    def test_identity_term_skipped(self):
-        """All-identity rows produce no gates."""
-        spo = SparsePauliOp.from_list([("II", 1.0)])
-        assert _spo_to_basis_gate_ops(spo, time=0.3, wires=[0, 1]) == []
-
-    @pytest.mark.parametrize(
-        "label,coeff,time,wires",
-        [
-            ("Y", 0.7, 0.3, [0]),
-            ("YZ", 0.4, 0.5, [0, 1]),
-            ("YY", 0.3, 0.5, [0, 1]),
-            ("XYZ", 0.2, 0.25, [0, 1, 2]),
-        ],
-    )
-    def test_unitary_matches_pauli_rot(self, label, coeff, time, wires):
-        """Emitted basis-gate sequence matches ``qp.PauliRot`` unitary."""
-        spo = SparsePauliOp.from_list([(label, coeff)])
-        ops = _spo_to_basis_gate_ops(spo, time=time, wires=wires)
-        actual = np.eye(2 ** len(wires), dtype=complex)
-        for op in ops:
-            actual = qp.matrix(op, wire_order=wires) @ actual
-        # Qiskit big-endian: rightmost char is qubit 0; PauliRot reads left-to-right.
-        pl_label = label[::-1]
-        expected = qp.matrix(
-            qp.PauliRot(2 * time * coeff, pl_label, wires=wires),
-            wire_order=wires,
-        )
-        assert np.allclose(actual, expected)
 
 
 def _build_numeric(
@@ -439,3 +389,66 @@ class TestSpoToQiskitBasisGatesSymbolicEdgeCases:
         assert len(rz_instrs) == 1
         params = rz_instrs[0].operation.params
         assert any(hasattr(p, "parameters") and t in p.parameters for p in params)
+
+
+class TestObservableToSparsePauliOp:
+    """Conversion of PennyLane observables into Qiskit SparsePauliOp."""
+
+    def test_single_pauli(self):
+        wires = qp.wires.Wires([0, 1, 2])
+        op = _observable_to_sparse_pauli_op(qp.PauliZ(1), wires)
+        # SparsePauliOp on 3 qubits: Z on qubit 1 ⇒ "IZI" (qubit 0 rightmost).
+        assert op == SparsePauliOp.from_list([("IZI", 1.0)])
+
+    def test_tensor_product(self):
+        wires = qp.wires.Wires([0, 1])
+        op = _observable_to_sparse_pauli_op(qp.PauliZ(0) @ qp.PauliX(1), wires)
+        # qubit 0 → Z, qubit 1 → X, little-endian string: "XZ".
+        assert op == SparsePauliOp.from_list([("XZ", 1.0)])
+
+    def test_hamiltonian_sum_of_terms(self):
+        wires = qp.wires.Wires([0, 1])
+        obs = qp.Hamiltonian([0.5, -0.3], [qp.PauliZ(0), qp.PauliX(1)])
+        op = _observable_to_sparse_pauli_op(obs, wires)
+        # {0.5 Z_0, -0.3 X_1} → {"IZ": 0.5, "XI": -0.3}
+        expected = SparsePauliOp.from_list([("IZ", 0.5), ("XI", -0.3)])
+        assert op.simplify() == expected.simplify()
+
+    def test_identity(self):
+        wires = qp.wires.Wires([0, 1])
+        op = _observable_to_sparse_pauli_op(qp.Identity(0), wires)
+        assert op == SparsePauliOp.from_list([("II", 1.0)])
+
+    def test_sum_of_single_qubit_terms(self):
+        wires = qp.wires.Wires([0, 1, 2])
+        obs = qp.sum(qp.PauliZ(0), qp.PauliZ(1), qp.PauliZ(2))
+        op = _observable_to_sparse_pauli_op(obs, wires).simplify()
+        expected = SparsePauliOp.from_list(
+            [("IIZ", 1.0), ("IZI", 1.0), ("ZII", 1.0)]
+        ).simplify()
+        assert op == expected
+
+    def test_non_sequential_wire_labels(self):
+        # PennyLane wire labels can be arbitrary hashables — we resolve
+        # via wires.index() rather than treating them as ints.
+        wires = qp.wires.Wires(["a", "b", "c"])
+        obs = qp.PauliZ("b")
+        op = _observable_to_sparse_pauli_op(obs, wires)
+        # "b" is wires.index("b") = 1 → "IZI".
+        assert op == SparsePauliOp.from_list([("IZI", 1.0)])
+
+    def test_non_pauli_observable_raises(self):
+        wires = qp.wires.Wires([0])
+        herm = qp.Hermitian(np.array([[1.0, 0.0], [0.0, -1.0]]), wires=0)
+        with pytest.raises(ValueError, match="no Pauli representation"):
+            _observable_to_sparse_pauli_op(herm, wires)
+
+    def test_to_spo_threads_wires_kwarg(self):
+        """The public ``to_spo`` API routes its ``wires`` kwarg through
+        to the private converter, producing the same SPO as a direct
+        call to the helper."""
+        wires = qp.wires.Wires([0, 1, 2])
+        obs = qp.PauliZ(1)
+        via_public = to_spo(obs, wires=wires)
+        via_private = _observable_to_sparse_pauli_op(obs, wires)
+        assert via_public == via_private
