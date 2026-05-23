@@ -49,16 +49,23 @@ def test_xy_mixer_preserves_trailing_isolated_qubits():
     )
 
 
-def test_xy_mixer_requires_integer_nodes():
-    with pytest.raises(TypeError, match="integer"):
-        xy_mixer(nx.Graph([("a", "b")]))
+def _graph_with_string_isolated_node() -> nx.Graph:
+    g = nx.Graph()
+    g.add_node("a")
+    return g
 
 
-def test_xy_mixer_requires_integer_isolated_nodes():
-    graph = nx.Graph()
-    graph.add_node("a")
+@pytest.mark.parametrize(
+    "graph_factory",
+    [
+        lambda: nx.Graph([("a", "b")]),
+        _graph_with_string_isolated_node,
+    ],
+    ids=["string_edge", "string_isolated_node"],
+)
+def test_xy_mixer_requires_integer_nodes(graph_factory):
     with pytest.raises(TypeError, match="integer"):
-        xy_mixer(graph)
+        xy_mixer(graph_factory())
 
 
 @pytest.mark.parametrize("b", [0, 1])

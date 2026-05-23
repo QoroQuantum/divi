@@ -31,21 +31,35 @@ Custom Problems
 ^^^^^^^^^^^^^^^
 
 To solve a problem that doesn't fit the built-in classes, subclass
-:class:`~divi.qprog.problems.QAOAProblem` and implement the three required properties.  Here is a
-minimal example that encodes a simple 2-qubit Hamiltonian:
+:class:`~divi.qprog.problems.QAOAProblem` and implement the three required
+properties. The cost Hamiltonian is a
+:class:`~qiskit.quantum_info.SparsePauliOp`; you can build one with the
+helpers in :mod:`divi.hamiltonians` (see below) or hand it in directly if
+you already have one.
 
 .. code-block:: python
 
-   from qiskit.quantum_info import SparsePauliOp
+   import pennylane as qp
 
+   from divi.hamiltonians import to_spo
    from divi.qprog import QAOA, ScipyOptimizer, ScipyMethod
    from divi.qprog.problems import QAOAProblem
    from divi.backends import MaestroSimulator
 
+   # Build the cost Hamiltonian however suits you. Here we lift a
+   # PennyLane operator via to_spo; see the section below for the
+   # dict and QUBO entry points.
+   cost = to_spo(
+       -1.0 * (qp.PauliZ(0) @ qp.PauliZ(1)) + 0.5 * qp.PauliZ(0)
+   )
+
    class MyProblem(QAOAProblem):
+       def __init__(self, cost_hamiltonian):
+           self._cost = cost_hamiltonian
+
        @property
        def cost_hamiltonian(self):
-           return SparsePauliOp.from_list([("ZZ", -1.0), ("IZ", 0.5)])
+           return self._cost
 
        @property
        def loss_constant(self):
@@ -57,7 +71,7 @@ minimal example that encodes a simple 2-qubit Hamiltonian:
            return lambda bs: [i for i, b in enumerate(bs) if b == "1"]
 
    qaoa = QAOA(
-       MyProblem(),
+       MyProblem(cost),
        n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        max_iterations=10,
@@ -65,6 +79,34 @@ minimal example that encodes a simple 2-qubit Hamiltonian:
    )
    qaoa.run()
    print(qaoa.solution)
+
+Two helpers in :mod:`divi.hamiltonians` build the cost
+:class:`~qiskit.quantum_info.SparsePauliOp` from common starting points:
+
+* :func:`~divi.hamiltonians.to_spo` accepts a PennyLane operator (shown
+  above), a :class:`~qiskit.quantum_info.SparsePauliOp` (pass-through), or
+  a ``{pauli_string: coeff}`` dict. Pauli-string keys follow divi
+  convention: the **leftmost** character is qubit 0, so ``"XIY"`` means
+  ``X(0) I(1) Y(2)``.
+* :func:`~divi.hamiltonians.qubo_to_spo` collapses a QUBO/HUBO dict,
+  numpy matrix, or :class:`dimod.BinaryQuadraticModel` into a single
+  cost-Hamiltonian SPO. The Ising-encoding loss constant is folded into
+  the operator as an identity term, so the SPO's expectation value on any
+  bitstring equals the QUBO energy directly — no separate offset to
+  bookkeep. Reach for :func:`~divi.hamiltonians.qubo_to_ising` instead
+  when you need the bitstring decoder or encoding metadata.
+
+.. code-block:: python
+
+   from divi.hamiltonians import to_spo, qubo_to_spo
+
+   # divi-convention Pauli-string dict — "XI" puts X on qubit 0.
+   cost_from_dict = to_spo({"XI": 1.0, "IZ": 0.5})
+
+   # QUBO → SparsePauliOp with the loss constant baked in. Pass directly
+   # as MyProblem(cost_from_qubo) and leave loss_constant at 0.0 — the
+   # offset is already inside the operator.
+   cost_from_qubo = qubo_to_spo({(0,): -1.0, (1,): -1.0, (0, 1): 2.0})
 
 By default, :class:`~divi.qprog.problems.QAOAProblem` uses the standard
 :func:`~divi.hamiltonians.x_mixer`, which is suitable for unconstrained binary

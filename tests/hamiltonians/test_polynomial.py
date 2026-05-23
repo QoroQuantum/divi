@@ -94,15 +94,14 @@ class TestQuboToMatrixSparse:
 class TestQuboToMatrixUnsupported:
     """Cover the unsupported-type fallback."""
 
-    def test_unsupported_type_raises(self):
-        """A string (or any unsupported type) should raise ValueError."""
+    @pytest.mark.parametrize(
+        "bad_input",
+        ["not a matrix", 42],
+        ids=["str", "int"],
+    )
+    def test_unsupported_type_raises(self, bad_input):
         with pytest.raises(ValueError, match="Unsupported QUBO type"):
-            qubo_to_matrix("not a matrix")
-
-    def test_unsupported_type_int_raises(self):
-        """An integer should raise ValueError."""
-        with pytest.raises(ValueError, match="Unsupported QUBO type"):
-            qubo_to_matrix(42)
+            qubo_to_matrix(bad_input)
 
 
 class TestHuboToBinaryPolynomial:

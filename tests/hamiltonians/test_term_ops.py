@@ -60,115 +60,165 @@ class TestSpoConversion:
         spo = to_spo(simple_pl_hamiltonian)
         assert spo.simplify() == simple_spo.simplify()
 
-    def test_spo_wires_for_spo(self, simple_spo):
-        """Wires for an SPO input are ``range(num_qubits)``."""
-        assert _spo_wires(simple_spo) == (0, 1)
+    def test_to_spo_dict_uses_divi_convention_and_matches_pennylane(self):
+        """Dict input reads leftmost char as qubit 0 and matches the PL form.
 
-    def test_spo_wires_for_pl_uses_op_wires(self):
-        """A PL operator's canonical wires are taken from ``op.wires``."""
-        op = qp.PauliZ(2) @ qp.PauliX(5)
-        assert _spo_wires(op) == tuple(op.wires)
+        Probes the convention from two angles: the symplectic
+        representation puts X at column 0 (so ``"XI"`` really means
+        ``X(0) I(1)``), and a divi-convention dict reproduces the SPO
+        built from the equivalent ``qp.Pauli...`` operators.
+        """
+        spo_dict = to_spo({"XI": 1.0, "IZ": 0.5})
+        spo_pl = to_spo(
+            (1.0 * (qp.PauliX(0) @ qp.Identity(1)))
+            + (0.5 * (qp.Identity(0) @ qp.PauliZ(1)))
+        )
+        # X must land on column 0 (qubit 0), not column 1.
+        x_row = to_spo({"XI": 1.0}).paulis.x[0]
+        assert bool(x_row[0]) and not bool(x_row[1])
+        # Semantic equality with the PL form.
+        assert spo_dict.simplify() == spo_pl.simplify()
+
+    @pytest.mark.parametrize(
+        ("bad_input", "match"),
+        [
+            ({}, "empty dict"),
+            ({"ZZ": 1.0, "Z": 1.0}, "share a length"),
+            ({"ZA": 1.0}, r"\{I, X, Y, Z\}"),
+            ({"Z": 1.0j}, "must be real"),
+        ],
+        ids=["empty", "length_mismatch", "non_pauli_char", "complex_coeff"],
+    )
+    def test_to_spo_from_dict_validation(self, bad_input, match):
+        """Dict input rejects malformed keys and non-real coefficients."""
+        with pytest.raises(ValueError, match=match):
+            to_spo(bad_input)
+
+    @pytest.mark.parametrize(
+        "op_factory, expected",
+        [
+            (lambda spo: spo, (0, 1)),
+            (lambda _: qp.PauliZ(2) @ qp.PauliX(5), (2, 5)),
+        ],
+        ids=["spo_input_uses_range", "pl_input_uses_op_wires"],
+    )
+    def test_spo_wires(self, simple_spo, op_factory, expected):
+        """SPO inputs map to ``range(num_qubits)``; PL inputs take ``op.wires``."""
+        assert _spo_wires(op_factory(simple_spo)) == expected
 
 
 class TestCleanHamiltonianSpo:
-    def test_no_identity_returns_input_with_zero_constant(self, simple_spo):
-        """A purely non-identity SPO is returned unchanged with constant 0."""
-        spo, constant = _clean_hamiltonian_spo(simple_spo)
-        assert spo.simplify() == simple_spo.simplify()
-        assert constant == 0.0
-
-    def test_identity_only_returns_empty_with_constant(self):
-        """An all-identity SPO yields an empty SPO and the summed constant."""
-        spo = SparsePauliOp.from_list([("II", 2.5), ("II", 1.5)])
+    @pytest.mark.parametrize(
+        "spo, expected_constant, expected_remaining",
+        [
+            # No identity rows survive unchanged with zero constant.
+            (
+                SparsePauliOp.from_list([("IZ", 1.0), ("ZI", 2.0), ("ZZ", 3.0)]),
+                0.0,
+                SparsePauliOp.from_list([("IZ", 1.0), ("ZI", 2.0), ("ZZ", 3.0)]),
+            ),
+            # All-identity rows collapse to the summed constant + empty SPO.
+            (
+                SparsePauliOp.from_list([("II", 2.5), ("II", 1.5)]),
+                4.0,
+                None,
+            ),
+            # Mixed input: identity rows fold into the constant; non-identity stay.
+            (
+                SparsePauliOp.from_list([("IX", 2.0), ("II", 3.0), ("ZI", 1.0)]),
+                3.0,
+                SparsePauliOp.from_list([("IX", 2.0), ("ZI", 1.0)]),
+            ),
+            # Complex identity coefficient: only the real part contributes.
+            (
+                SparsePauliOp.from_list([("II", 4.0 + 0.0j), ("ZI", 1.0)]),
+                4.0,
+                SparsePauliOp.from_list([("ZI", 1.0)]),
+            ),
+            # Empty SPO: empty SPO + zero constant.
+            (generate_empty_spo(3), 0.0, None),
+        ],
+        ids=[
+            "no_identity",
+            "all_identity",
+            "mixed",
+            "complex_identity_coeff",
+            "empty_input",
+        ],
+    )
+    def test_clean_partitions_identity_constant(
+        self, spo, expected_constant, expected_remaining
+    ):
+        """``_clean_hamiltonian_spo`` splits identity contributions into a
+        real constant and a non-identity remainder."""
         cleaned, constant = _clean_hamiltonian_spo(spo)
-        assert cleaned.size == 0
-        assert constant == pytest.approx(4.0)
-
-    def test_mixed_partitions_constant_from_non_identity(self):
-        """Mixed input: constant is summed, non-identity rows survive."""
-        spo = SparsePauliOp.from_list([("IX", 2.0), ("II", 3.0), ("ZI", 1.0)])
-        cleaned, constant = _clean_hamiltonian_spo(spo)
-        assert constant == pytest.approx(3.0)
-        expected = SparsePauliOp.from_list([("IX", 2.0), ("ZI", 1.0)])
-        assert cleaned.simplify() == expected.simplify()
-
-    def test_complex_imaginary_constant_dropped(self):
-        """Identity rows with imaginary coefficient: only the real part is kept."""
-        spo = SparsePauliOp.from_list([("II", 4.0 + 0.0j), ("ZI", 1.0)])
-        _, constant = _clean_hamiltonian_spo(spo)
-        assert constant == pytest.approx(4.0)
-
-    def test_returns_empty_for_empty_input(self):
-        """Clean of an empty SPO is the empty SPO with zero constant."""
-        spo, constant = _clean_hamiltonian_spo(generate_empty_spo(3))
-        assert spo.size == 0
-        assert constant == 0.0
+        assert constant == pytest.approx(expected_constant)
+        if expected_remaining is None:
+            assert cleaned.size == 0
+        else:
+            assert cleaned.simplify() == expected_remaining.simplify()
 
 
 class TestSortHamiltonianTermsSpo:
-    def test_absolute_order_sorts_by_signed_coefficient(self):
-        """``order='absolute'`` sorts by the literal coefficient (ascending)."""
-        spo = SparsePauliOp.from_list([("IIZ", 0.5), ("IZI", -0.3), ("ZII", 0.1)])
-        result = _sort_hamiltonian_terms_spo(spo, order="absolute")
-        assert list(result.coeffs.real) == pytest.approx([-0.3, 0.1, 0.5])
-
-    def test_magnitude_order_sorts_by_absolute_value(self):
-        """``order='magnitude'`` sorts by ``|coeff|`` (ascending)."""
-        spo = SparsePauliOp.from_list([("IIZ", 0.5), ("IZI", -0.3), ("ZII", 0.1)])
-        result = _sort_hamiltonian_terms_spo(spo, order="magnitude")
-        assert [abs(c) for c in result.coeffs.real] == pytest.approx([0.1, 0.3, 0.5])
+    @pytest.mark.parametrize(
+        "spo, order, key, expected",
+        [
+            (
+                SparsePauliOp.from_list([("IIZ", 0.5), ("IZI", -0.3), ("ZII", 0.1)]),
+                "absolute",
+                lambda c: c,
+                [-0.3, 0.1, 0.5],
+            ),
+            (
+                SparsePauliOp.from_list([("IIZ", 0.5), ("IZI", -0.3), ("ZII", 0.1)]),
+                "magnitude",
+                abs,
+                [0.1, 0.3, 0.5],
+            ),
+            # Sign is preserved in signed-ascending order.
+            (
+                SparsePauliOp.from_list([("IZ", -2.0), ("ZI", 1.0)]),
+                "absolute",
+                lambda c: c,
+                [-2.0, 1.0],
+            ),
+        ],
+        ids=["absolute_signed", "magnitude_abs", "absolute_preserves_sign"],
+    )
+    def test_sort_produces_expected_coefficient_order(self, spo, order, key, expected):
+        result = _sort_hamiltonian_terms_spo(spo, order=order)
+        assert [key(c) for c in result.coeffs.real] == pytest.approx(expected)
 
     def test_single_row_passes_through(self):
-        """A single-row SPO is returned unchanged."""
+        """A single-row SPO is returned unchanged (identity short-circuit)."""
         spo = SparsePauliOp.from_list([("Z", 7.0)])
-        result = _sort_hamiltonian_terms_spo(spo)
-        assert result is spo
-
-    def test_negative_coefficients_preserved(self):
-        """Sorting preserves coefficient signs in signed-ascending order."""
-        spo = SparsePauliOp.from_list([("IZ", -2.0), ("ZI", 1.0)])
-        result = _sort_hamiltonian_terms_spo(spo, order="absolute")
-        assert list(result.coeffs.real) == [-2.0, 1.0]
+        assert _sort_hamiltonian_terms_spo(spo) is spo
 
 
 class TestSpoToBasisGateOps:
-    def test_single_z_emits_rz(self):
-        """A single ``Z`` term emits one ``RZ`` rotation on the right wire."""
-        spo = SparsePauliOp.from_list([("Z", 0.5)])
-        ops = _spo_to_basis_gate_ops(spo, time=0.7, wires=[3])
+    @pytest.mark.parametrize(
+        "pauli, expected_gate",
+        [("Z", qp.RZ), ("X", qp.RX), ("Y", qp.RY)],
+    )
+    def test_single_qubit_pauli_emits_matching_rotation(self, pauli, expected_gate):
+        """``RZ/RX/RY`` is emitted on the configured wire with ``θ = 2·t·c``."""
+        spo = SparsePauliOp.from_list([(pauli, 0.5)])
+        ops = _spo_to_basis_gate_ops(spo, time=0.7, wires=[2])
         assert len(ops) == 1
-        assert isinstance(ops[0], qp.RZ)
-        assert ops[0].wires.tolist() == [3]
-        # PauliRot decomposition uses theta = 2 * time * c.
+        assert isinstance(ops[0], expected_gate)
+        assert ops[0].wires.tolist() == [2]
         assert float(ops[0].parameters[0]) == pytest.approx(2 * 0.7 * 0.5)
-
-    def test_single_x_emits_rx(self):
-        spo = SparsePauliOp.from_list([("X", 1.0)])
-        ops = _spo_to_basis_gate_ops(spo, time=0.4, wires=[0])
-        assert len(ops) == 1
-        assert isinstance(ops[0], qp.RX)
 
     def test_zz_decomposes_to_cnot_staircase(self):
         """A two-qubit ZZ term decomposes to CNOT–RZ–CNOT."""
         spo = SparsePauliOp.from_list([("ZZ", 1.0)])
         ops = _spo_to_basis_gate_ops(spo, time=0.3, wires=[0, 1])
-        gate_names = [op.name for op in ops]
-        assert gate_names == ["CNOT", "RZ", "CNOT"]
+        assert [op.name for op in ops] == ["CNOT", "RZ", "CNOT"]
 
     def test_identity_term_skipped(self):
         """All-identity rows produce no gates."""
         spo = SparsePauliOp.from_list([("II", 1.0)])
-        ops = _spo_to_basis_gate_ops(spo, time=0.3, wires=[0, 1])
-        assert ops == []
-
-    def test_single_y_emits_ry(self):
-        """A single ``Y`` term emits one ``RY`` rotation on the right wire."""
-        spo = SparsePauliOp.from_list([("Y", 0.5)])
-        ops = _spo_to_basis_gate_ops(spo, time=0.7, wires=[2])
-        assert len(ops) == 1
-        assert isinstance(ops[0], qp.RY)
-        assert ops[0].wires.tolist() == [2]
-        assert float(ops[0].parameters[0]) == pytest.approx(2 * 0.7 * 0.5)
+        assert _spo_to_basis_gate_ops(spo, time=0.3, wires=[0, 1]) == []
 
     @pytest.mark.parametrize(
         "label,coeff,time,wires",
@@ -229,19 +279,20 @@ class TestSpoToQiskitBasisGatesDispatch:
         assert spy_numeric.call_count == 1
         assert spy_legacy.call_count == 0
 
-    def test_parameter_routes_to_legacy_path(self, mocker, spo):
+    @pytest.mark.parametrize(
+        "time_factory",
+        [
+            lambda: Parameter("t"),
+            lambda: 2 * Parameter("t") + 1,
+        ],
+        ids=["parameter", "parameter_expression"],
+    )
+    def test_symbolic_time_routes_to_legacy_path(self, mocker, spo, time_factory):
         spy_numeric = mocker.spy(term_ops_module, "_spo_to_qiskit_basis_gates_numeric")
         spy_legacy = mocker.spy(term_ops_module, "_spo_to_qiskit_basis_gates_symbolic")
         qc = QuantumCircuit(2)
-        _spo_to_qiskit_basis_gates(qc, spo, Parameter("t"), [0, 1])
+        _spo_to_qiskit_basis_gates(qc, spo, time_factory(), [0, 1])
         assert spy_numeric.call_count == 0
-        assert spy_legacy.call_count == 1
-
-    def test_parameter_expression_routes_to_legacy_path(self, mocker, spo):
-        spy_legacy = mocker.spy(term_ops_module, "_spo_to_qiskit_basis_gates_symbolic")
-        t = Parameter("t")
-        qc = QuantumCircuit(2)
-        _spo_to_qiskit_basis_gates(qc, spo, 2 * t + 1, [0, 1])
         assert spy_legacy.call_count == 1
 
 

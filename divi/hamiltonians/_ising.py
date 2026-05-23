@@ -276,6 +276,57 @@ class IsingResult:
         return _wires_from_spo(self.cost_hamiltonian)
 
 
+def qubo_to_spo(
+    qubo,
+    *,
+    hamiltonian_builder: Literal["native", "quadratized"] = "native",
+    quadratization_strength: float | None = None,
+) -> SparsePauliOp:
+    """Convert a QUBO/HUBO directly to its cost-Hamiltonian ``SparsePauliOp``.
+
+    The Ising encoding's additive loss constant is baked into the returned
+    SPO as an identity term, so the expectation value of the SPO on any
+    computational-basis state equals the QUBO's energy on the corresponding
+    bitstring — no separate offset bookkeeping required at the call site.
+    Downstream consumers that strip identity terms (e.g. VQE,
+    :class:`~divi.qprog.algorithms.CustomVQA`,
+    :class:`~divi.pipeline.stages.TrotterSpecStage`) will recover the
+    constant automatically; consumers that don't (e.g. the QAOA cost
+    pipeline) pick it up via the pipeline's pure-identity expectation-value
+    rule.
+
+    The decoder, encoding metadata, and a separately-addressable loss
+    constant are dropped. If you need any of those, call
+    :func:`qubo_to_ising` directly.
+
+    Args:
+        qubo: QUBO dict, HUBO dict, numpy matrix, BQM, or BinaryPolynomial.
+        hamiltonian_builder: ``"native"`` or ``"quadratized"``.
+        quadratization_strength: Penalty for quadratization. ``None``
+            (default) picks an adaptive strength — see
+            :class:`QuadratizedIsingConverter`. Ignored when
+            ``hamiltonian_builder="native"``.
+
+    Returns:
+        ``SparsePauliOp`` over ``IsingResult.n_qubits`` qubits. Includes a
+        single identity term carrying the Ising-encoding loss constant
+        when that constant is non-zero.
+    """
+    result = qubo_to_ising(
+        qubo,
+        hamiltonian_builder=hamiltonian_builder,
+        quadratization_strength=quadratization_strength,
+    )
+    cost = result.cost_hamiltonian
+    if result.loss_constant == 0.0:
+        return cost
+    offset = SparsePauliOp(
+        ["I" * result.n_qubits],
+        coeffs=np.array([result.loss_constant], dtype=complex),
+    )
+    return (cost + offset).simplify()
+
+
 def qubo_to_ising(
     qubo,
     *,

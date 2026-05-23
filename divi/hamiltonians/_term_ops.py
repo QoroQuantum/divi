@@ -33,17 +33,95 @@ def generate_empty_spo(num_qubits: int) -> SparsePauliOp:
     ]
 
 
-def to_spo(op: qp.operation.Operator | SparsePauliOp) -> SparsePauliOp:
-    """Convert a PennyLane operator or ``SparsePauliOp`` to ``SparsePauliOp``,
-    validating Hermiticity in both cases.
+_PAULI_CHARS = frozenset("IXYZ")
+
+
+def _spo_from_pauli_dict(terms: dict[str, float]) -> SparsePauliOp:
+    """Build a ``SparsePauliOp`` from a ``{pauli_string: coefficient}`` mapping.
+
+    Pauli strings are read in divi convention: the **leftmost** character is
+    qubit 0. ``{"XXIY": 1.0}`` therefore means ``X(0) X(1) I(2) Y(3)``.
+    Internally each key is reversed before handing to
+    :meth:`qiskit.quantum_info.SparsePauliOp.from_list`, which expects qubit 0
+    on the right — so the produced SPO's ``.to_labels()`` output is the
+    *reverse* of the input keys, but the symplectic representation
+    (``spo.paulis.x[:, qubit]``, ``spo.paulis.z[:, qubit]``) lines up with
+    the qubit indices the user specified.
+
+    Validates that every key is a non-empty string of equal length composed
+    only of ``I``, ``X``, ``Y``, ``Z`` and that every coefficient is real.
+    Dict keys are unique by construction, so the cancellation gap noted on
+    :func:`~divi.circuits._core._assert_hermitian_spo` (where ``+i X`` and
+    ``-i X`` could cancel to a hermitian sum despite individually being
+    non-hermitian) cannot arise on this path.
+    """
+    if not terms:
+        raise ValueError(
+            "to_spo: cannot build a SparsePauliOp from an empty dict — "
+            "qubit count is undefined."
+        )
+
+    first_len: int | None = None
+    items: list[tuple[str, float]] = []
+    for key, coeff in terms.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError(
+                f"to_spo: Pauli-string keys must be non-empty strings, got {key!r}."
+            )
+        if not set(key).issubset(_PAULI_CHARS):
+            raise ValueError(
+                f"to_spo: key {key!r} contains characters outside {{I, X, Y, Z}}."
+            )
+        if first_len is None:
+            first_len = len(key)
+        elif len(key) != first_len:
+            raise ValueError(
+                f"to_spo: all Pauli-string keys must share a length; "
+                f"got {first_len} and {len(key)}."
+            )
+        if isinstance(coeff, complex) and coeff.imag != 0:
+            raise ValueError(
+                f"to_spo: coefficient for {key!r} must be real, got {coeff!r}."
+            )
+        # Reverse: divi convention puts qubit 0 leftmost; Qiskit's parser
+        # puts qubit 0 rightmost.
+        items.append((key[::-1], float(np.real(coeff))))
+
+    return SparsePauliOp.from_list(items)
+
+
+def to_spo(
+    op: qp.operation.Operator | SparsePauliOp | dict[str, float],
+) -> SparsePauliOp:
+    """Convert a PennyLane operator, ``SparsePauliOp``, or Pauli-string
+    dict to ``SparsePauliOp``, validating Hermiticity in every case.
 
     The PennyLane branch builds a new ``SparsePauliOp`` by walking the
-    operator tree. For repeated use on the same observable, convert once
-    at setup and reuse the returned ``SparsePauliOp``.
+    operator tree. The dict branch accepts ``{pauli_string: coefficient}``
+    mappings such as ``{"XXIY": 1.0, "ZIII": -0.5}`` — every key must be a
+    non-empty string over ``{I, X, Y, Z}``, all keys must share a length,
+    and coefficients must be real.
+
+    .. note::
+
+        Pauli strings are read in **divi convention**: the leftmost
+        character is qubit 0 (so ``"XXIY"`` means ``X(0) X(1) I(2) Y(3)``).
+        Qiskit's native :meth:`~qiskit.quantum_info.SparsePauliOp.from_list`
+        and the ``.to_labels()`` output of the returned SPO use the
+        opposite convention (qubit 0 rightmost), so dict keys you type in
+        and the labels you read back will look reversed — the symplectic
+        representation is what stays consistent across both forms.
+
+    For repeated use on the same observable, convert once at setup and
+    reuse the returned ``SparsePauliOp``.
     """
     if isinstance(op, SparsePauliOp):
         _assert_hermitian_spo(op)
         return op
+    if isinstance(op, dict):
+        spo = _spo_from_pauli_dict(op)
+        _assert_hermitian_spo(spo)
+        return spo
     spo = _observable_to_sparse_pauli_op(op, op.wires)
     _assert_hermitian_spo(spo)
     return spo

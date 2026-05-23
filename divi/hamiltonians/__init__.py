@@ -14,6 +14,7 @@ from ._ising import (
     NativeIsingConverter,
     QuadratizedIsingConverter,
     qubo_to_ising,
+    qubo_to_spo,
 )
 from ._mixers import (
     bit_driver,
@@ -67,6 +68,7 @@ __all__ = [
     "qubo_to_binary_polynomial",
     "qubo_to_ising",
     "qubo_to_matrix",
+    "qubo_to_spo",
     "x_mixer",
     "xy_mixer",
 ]

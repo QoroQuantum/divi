@@ -20,6 +20,7 @@ from divi.hamiltonians import (
     QuadratizedIsingConverter,
     normalize_binary_polynomial_problem,
     qubo_to_ising,
+    qubo_to_spo,
     to_spo,
 )
 from divi.hamiltonians._ising import (
@@ -472,16 +473,20 @@ class TestBinaryToIsingConverters:
 class TestResolveIsingConverter:
     """Tests for _resolve_ising_converter."""
 
-    def test_native_returns_native_converter(self):
-        """'native' returns a NativeIsingConverter instance."""
-        converter = _resolve_ising_converter("native", quadratization_strength=10.0)
-        assert isinstance(converter, NativeIsingConverter)
-
-    def test_quadratized_returns_quadratized_converter(self):
-        """'quadratized' returns a QuadratizedIsingConverter with the given strength."""
-        converter = _resolve_ising_converter("quadratized", quadratization_strength=5.0)
-        assert isinstance(converter, QuadratizedIsingConverter)
-        assert converter.strength == 5.0
+    @pytest.mark.parametrize(
+        "builder, strength, expected_cls",
+        [
+            ("native", 10.0, NativeIsingConverter),
+            ("quadratized", 5.0, QuadratizedIsingConverter),
+        ],
+    )
+    def test_known_builder_returns_matching_converter(
+        self, builder, strength, expected_cls
+    ):
+        converter = _resolve_ising_converter(builder, quadratization_strength=strength)
+        assert isinstance(converter, expected_cls)
+        if expected_cls is QuadratizedIsingConverter:
+            assert converter.strength == strength
 
     def test_invalid_builder_raises(self):
         """An unrecognized builder string raises ValueError."""
@@ -492,19 +497,29 @@ class TestResolveIsingConverter:
 class TestQuboToIsing:
     """Tests for the qubo_to_ising helper."""
 
-    # -- Happy path: dict QUBO --
-
-    def test_dict_qubo_returns_ising_result(self):
-        qubo = {(0,): -1.0, (1,): -1.0, (0, 1): 2.0}
-        result = qubo_to_ising(qubo)
+    @pytest.mark.parametrize(
+        "qubo_factory, expected_n_qubits",
+        [
+            (lambda: {(0,): -1.0, (1,): -1.0, (0, 1): 2.0}, 2),
+            (lambda: np.array([[-1.0, 2.0], [0.0, -1.0]]), 2),
+            (lambda: sps.csr_matrix(np.array([[-1.0, 2.0], [0.0, -1.0]])), 2),
+            (
+                lambda: dimod.BinaryQuadraticModel(
+                    {0: -1.0, 1: -1.0}, {(0, 1): 2.0}, 0.0, vartype="BINARY"
+                ),
+                2,
+            ),
+            (lambda: {(0,): -3.0}, 1),
+        ],
+        ids=["dict_qubo", "numpy_matrix", "scipy_sparse", "dimod_bqm", "single_var"],
+    )
+    def test_returns_ising_result_with_expected_n_qubits(
+        self, qubo_factory, expected_n_qubits
+    ):
+        """Every accepted input form normalises into an IsingResult."""
+        result = qubo_to_ising(qubo_factory())
         assert isinstance(result, IsingResult)
-        assert result.n_qubits == 2
-        assert result.cost_hamiltonian is not None
-
-    def test_loss_constant_includes_encoding_and_ham_constants(self):
-        qubo = {(0,): -1.0, (1,): -1.0, (0, 1): 2.0}
-        result = qubo_to_ising(qubo)
-        # The loss_constant should be a finite number (sum of encoding.constant + ham_constant)
+        assert result.n_qubits == expected_n_qubits
         assert np.isfinite(result.loss_constant)
 
     def test_decode_fn_returns_binary_array(self):
@@ -513,63 +528,35 @@ class TestQuboToIsing:
         decoded = result.encoding.decode_fn("11")
         assert all(b in (0, 1) for b in decoded)
 
-    # -- Numpy matrix input --
-
-    def test_numpy_matrix_qubo(self):
-        Q = np.array([[-1.0, 2.0], [0.0, -1.0]])
-        result = qubo_to_ising(Q)
-        assert result.n_qubits == 2
-
-    # -- Sparse matrix input --
-
-    def test_sparse_matrix_qubo(self):
-        Q = sps.csr_matrix(np.array([[-1.0, 2.0], [0.0, -1.0]]))
-        result = qubo_to_ising(Q)
-        assert result.n_qubits == 2
-
-    # -- HUBO (higher-order) with quadratization --
-
-    def test_hubo_native(self):
+    @pytest.mark.parametrize(
+        "hamiltonian_builder, kwargs",
+        [
+            ("native", {}),
+            ("quadratized", {"quadratization_strength": 5.0}),
+        ],
+    )
+    def test_hubo_input_produces_sized_register(self, hamiltonian_builder, kwargs):
+        """HUBO inputs work with both builder strategies; quadratization may
+        add auxiliaries, so we only require ``n_qubits >= 3``."""
         hubo = {(0, 1, 2): 1.0, (0,): -1.0, (1,): -1.0, (2,): -1.0}
-        result = qubo_to_ising(hubo, hamiltonian_builder="native")
+        result = qubo_to_ising(hubo, hamiltonian_builder=hamiltonian_builder, **kwargs)
         assert result.n_qubits >= 3
-
-    def test_hubo_quadratized(self):
-        hubo = {(0, 1, 2): 1.0, (0,): -1.0, (1,): -1.0, (2,): -1.0}
-        result = qubo_to_ising(
-            hubo, hamiltonian_builder="quadratized", quadratization_strength=5.0
-        )
-        # Quadratization adds auxiliary qubits
-        assert result.n_qubits >= 3
-
-    # -- Cost hamiltonian is cleaned (no identity terms) --
 
     def test_cost_hamiltonian_has_no_identity(self):
+        """Pure-identity rows fold into ``loss_constant``, never the SPO."""
         qubo = {(0,): -1.0, (1,): -1.0, (0, 1): 2.0}
         result = qubo_to_ising(qubo)
-        # The cleaned hamiltonian should not contain pure-identity rows
-        # (constant terms are absorbed into loss_constant)
         assert all(
             set(label) != {"I"} for label in result.cost_hamiltonian.paulis.to_labels()
         )
-
-    # -- n_qubits matches wire count --
 
     def test_n_qubits_matches_wires(self):
         qubo = {(0,): -1.0, (1,): -1.0, (2,): -1.0, (0, 1): 1.0, (1, 2): 1.0}
         result = qubo_to_ising(qubo)
         assert result.n_qubits == result.cost_hamiltonian.num_qubits
 
-    # -- Edge cases --
-
-    def test_single_variable(self):
-        qubo = {(0,): -3.0}
-        result = qubo_to_ising(qubo)
-        assert result.n_qubits == 1
-
     def test_constant_only_raises(self):
-        """A QUBO that produces only constant terms should raise."""
-        # An empty QUBO dict normalises to a trivial problem
+        """A QUBO that normalises to constant-only terms must raise."""
         with pytest.raises((ValueError, Exception)):
             qubo_to_ising({})
 
@@ -578,11 +565,75 @@ class TestQuboToIsing:
         with pytest.raises(ValueError, match="native.*quadratized"):
             qubo_to_ising(qubo, hamiltonian_builder="invalid")
 
-    # -- BQM input --
 
-    def test_dimod_bqm(self):
-        bqm = dimod.BinaryQuadraticModel(
-            {0: -1.0, 1: -1.0}, {(0, 1): 2.0}, 0.0, vartype="BINARY"
+class TestQuboToSpo:
+    """Tests for the qubo_to_spo convenience wrapper."""
+
+    def test_returns_sparse_pauli_op(self):
+        spo = qubo_to_spo({(0,): -1.0, (1,): -1.0, (0, 1): 2.0})
+        assert isinstance(spo, SparsePauliOp)
+
+    def test_z_basis_eigenvalues_equal_qubo_energies(self):
+        """SPO computational-basis eigenvalues match the QUBO objective.
+
+        This is the contract that justifies returning a single SPO instead
+        of forcing the caller to track a separate offset: the returned
+        operator's expectation value on any bitstring equals the QUBO's
+        energy on that bitstring.
+        """
+        qubo = {(0,): -1.0, (1,): -1.0, (0, 1): 2.0}
+        spo = qubo_to_spo(qubo)
+        diag = np.real(np.diag(spo.to_matrix()))
+        # Bitstring ordering: Qiskit uses qubit 0 rightmost, so diag[i]
+        # corresponds to bits = reversed(binary(i, n_qubits)).
+        n = spo.num_qubits
+        for state_idx, energy in enumerate(diag):
+            bits = [(state_idx >> q) & 1 for q in range(n)]
+            qubo_energy = sum(
+                coeff for term, coeff in qubo.items() if all(bits[i] == 1 for i in term)
+            )
+            assert np.isclose(
+                energy, qubo_energy
+            ), f"state {bits}: SPO={energy}, QUBO={qubo_energy}"
+
+    def test_bakes_loss_constant_as_identity_term(self):
+        """The Ising-encoding loss constant appears as a pure-identity row."""
+        qubo = {(0,): -1.0, (1,): -1.0, (0, 1): 2.0}
+        ising = qubo_to_ising(qubo)
+        spo = qubo_to_spo(qubo)
+        identity_label = "I" * spo.num_qubits
+        identity_rows = [
+            (label, coeff) for label, coeff in spo.to_list() if label == identity_label
+        ]
+        assert len(identity_rows) == 1
+        assert np.isclose(identity_rows[0][1], ising.loss_constant)
+
+    def test_round_trip_through_to_spo_pauli_dict(self):
+        """``qubo_to_spo`` agrees with ``to_spo`` of the equivalent Pauli dict.
+
+        :meth:`SparsePauliOp.to_list` emits Qiskit-convention labels
+        (qubit 0 rightmost) but :func:`to_spo` reads divi convention
+        (qubit 0 leftmost), so labels are reversed when feeding them back
+        through ``to_spo``.
+        """
+        qubo = {(0,): -1.0, (1,): -1.0, (0, 1): 2.0}
+        spo_q = qubo_to_spo(qubo)
+        pauli_dict = {
+            label[::-1]: float(np.real(coeff)) for label, coeff in spo_q.to_list()
+        }
+        spo_r = to_spo(pauli_dict)
+        assert spo_q.simplify() == spo_r.simplify()
+
+    def test_numpy_matrix_input(self):
+        Q = np.array([[-1.0, 2.0], [0.0, -1.0]])
+        spo = qubo_to_spo(Q)
+        assert spo.num_qubits == 2
+
+    def test_quadratized_path_passes_strength(self):
+        """The ``quadratization_strength`` kwarg threads through to the
+        underlying converter selection."""
+        hubo = {(0, 1, 2): 1.0, (0,): -1.0, (1,): -1.0, (2,): -1.0}
+        spo = qubo_to_spo(
+            hubo, hamiltonian_builder="quadratized", quadratization_strength=5.0
         )
-        result = qubo_to_ising(bqm)
-        assert result.n_qubits == 2
+        assert spo.num_qubits >= 3
