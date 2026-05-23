@@ -200,11 +200,10 @@ class PCE(VQE):
             [("Z", [i], 1.0) for i in range(self.n_qubits)],
             num_qubits=self.n_qubits,
         )
-        # PCE replaces the cost pipeline with PCECostStage (a standalone
-        # BundleStage), so VQE's grouping_strategy is irrelevant for cost
-        # evaluation.  Pop it to avoid the "overriding grouping_strategy"
-        # warning from VQE.__init__ when the backend supports expval.
-        kwargs.pop("grouping_strategy", None)
+        # ``grouping_strategy`` does not affect PCE's cost pipeline
+        # (PCECostStage replaces MeasurementStage there), but it still
+        # configures the measurement pipeline used by ``sample_solution``,
+        # so it flows through unchanged.
         super().__init__(hamiltonian=placeholder_hamiltonian, **kwargs)
 
     def _build_pipelines(self) -> dict:

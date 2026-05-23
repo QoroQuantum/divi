@@ -48,6 +48,81 @@ class TestTimeEvolutionTrajectoryInit:
                 backend=dummy_simulator,
             )
 
+    @pytest.mark.parametrize("reserved", ["program_id", "progress_queue"])
+    def test_reserved_kwargs_in_extra_raise(
+        self, two_qubit_hamiltonian, dummy_simulator, reserved
+    ):
+        """``program_id`` and ``progress_queue`` are set internally by the
+        trajectory; passing them via kwargs would collide with the per-time-
+        point program construction."""
+        with pytest.raises(TypeError, match="sets .* internally"):
+            TimeEvolutionTrajectory(
+                hamiltonian=two_qubit_hamiltonian,
+                time_points=[0.0, 0.5],
+                backend=dummy_simulator,
+                **{reserved: "stub"},
+            )
+
+
+class TestTimeEvolutionTrajectoryKwargForwarding:
+    """``**kwargs`` reach every per-time-point ``TimeEvolution``."""
+
+    def test_precision_forwarded_to_programs(
+        self, two_qubit_hamiltonian, dummy_simulator
+    ):
+        traj = TimeEvolutionTrajectory(
+            hamiltonian=two_qubit_hamiltonian,
+            time_points=[0.1, 0.5, 1.0],
+            backend=dummy_simulator,
+            precision=4,
+        )
+        traj.create_programs()
+        assert all(prog.precision == 4 for prog in traj.programs.values())
+
+    def test_grouping_strategy_forwarded_to_programs(
+        self, two_qubit_hamiltonian, dummy_simulator
+    ):
+        traj = TimeEvolutionTrajectory(
+            hamiltonian=two_qubit_hamiltonian,
+            time_points=[0.1, 0.5, 1.0],
+            backend=dummy_simulator,
+            observable=two_qubit_hamiltonian,
+            grouping_strategy="wires",
+        )
+        traj.create_programs()
+        assert all(
+            prog._grouping_strategy == "wires" for prog in traj.programs.values()
+        )
+
+    def test_shot_distribution_forwarded_to_programs(
+        self, two_qubit_hamiltonian, dummy_simulator
+    ):
+        traj = TimeEvolutionTrajectory(
+            hamiltonian=two_qubit_hamiltonian,
+            time_points=[0.1, 0.5, 1.0],
+            backend=dummy_simulator,
+            observable=two_qubit_hamiltonian,
+            shot_distribution="weighted",
+        )
+        traj.create_programs()
+        assert all(
+            prog._shot_distribution == "weighted" for prog in traj.programs.values()
+        )
+
+    def test_invalid_kwarg_rejected_at_program_construction(
+        self, two_qubit_hamiltonian, dummy_simulator
+    ):
+        """``**kwargs`` are forwarded verbatim; invalid values surface when
+        the first per-time-point program is constructed."""
+        traj = TimeEvolutionTrajectory(
+            hamiltonian=two_qubit_hamiltonian,
+            time_points=[0.1, 0.5],
+            backend=dummy_simulator,
+            grouping_strategy="_backend_expval",
+        )
+        with pytest.raises(ValueError, match="Invalid grouping_strategy"):
+            traj.create_programs()
+
 
 class TestTimeEvolutionTrajectoryCreatePrograms:
     def test_creates_correct_number_of_programs(

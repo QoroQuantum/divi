@@ -28,7 +28,10 @@ from divi.qprog.problems import (
     MaxCutProblem,
     QAOAProblem,
 )
-from tests.qprog._program_contracts import verify_correct_circuit_count
+from tests.qprog._program_contracts import (
+    ObservableMeasuringContractsBase,
+    verify_correct_circuit_count,
+)
 from tests.qprog.problems._helpers import QUBO_MATRIX, make_bull_graph
 
 
@@ -672,3 +675,16 @@ class TestCostMetaCircuitCache:
         # Both entries coexist under distinct keys.
         assert qaoa._cost_meta_cache[(0, d1_size)] is m_d1
         assert qaoa._cost_meta_cache[(0, d2_size)] is m_d2
+
+
+class TestObservableMeasuringContracts(ObservableMeasuringContractsBase):
+    @pytest.fixture
+    def make_program(self, dummy_simulator):
+        def _make(**kwargs):
+            return QAOA(
+                MaxCliqueProblem(nx.bull_graph(), is_constrained=True),
+                backend=dummy_simulator,
+                **kwargs,
+            )
+
+        return _make

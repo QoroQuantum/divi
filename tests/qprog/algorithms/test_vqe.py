@@ -20,6 +20,7 @@ from divi.qprog.algorithms import (
 )
 from divi.qprog.checkpointing import CheckpointConfig
 from tests.qprog._program_contracts import (
+    ObservableMeasuringContractsBase,
     verify_correct_circuit_count,
     verify_metacircuit_dict,
 )
@@ -314,3 +315,18 @@ def test_vqe_h2_molecule_e2e_checkpointing_resume(
     assert vqe_problem3.best_loss == pytest.approx(expected_best_loss, abs=0.5)
     expected_eigenstate = np.array([1, 1, 0, 0])
     np.testing.assert_array_equal(vqe_problem3.eigenstate, expected_eigenstate)
+
+
+class TestObservableMeasuringContracts(ObservableMeasuringContractsBase):
+    @pytest.fixture
+    def make_program(self, h2_hamiltonian, dummy_simulator):
+        def _make(**kwargs):
+            return VQE(
+                hamiltonian=h2_hamiltonian,
+                n_electrons=2,
+                ansatz=HartreeFockAnsatz(),
+                backend=dummy_simulator,
+                **kwargs,
+            )
+
+        return _make

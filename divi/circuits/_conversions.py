@@ -51,7 +51,7 @@ from qiskit.dagcircuit import DAGCircuit
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import DEFAULT_PRECISION, MetaCircuit
-from divi.hamiltonians._term_ops import to_spo
+from divi.hamiltonians import to_spo
 
 # Supported PennyLane op.name set for local QuantumScript → Qiskit conversion.
 _PL_TO_QISKIT_GATE = {

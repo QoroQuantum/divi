@@ -54,7 +54,7 @@ class QuantumProgram(ABC):
             precision (int): Decimal places for numeric parameter values in
                 QASM emission.  Higher values produce longer QASM strings;
                 lower values shrink them at the cost of parameter resolution.
-                Defaults to :data:`~divi.circuits._core.DEFAULT_PRECISION`.
+                Defaults to :data:`~divi.circuits.DEFAULT_PRECISION`.
         """
         if backend is None:
             raise ValueError("QuantumProgram requires a backend.")

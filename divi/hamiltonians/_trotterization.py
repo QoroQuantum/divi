@@ -81,6 +81,18 @@ class TrotterizationStrategy(Protocol):
         """
         ...
 
+    @property
+    def last_sampled_spo(self) -> SparsePauliOp | None:
+        """SPO from the most recent sampling pass, or ``None`` when the
+        strategy does not sample (e.g. :class:`ExactTrotterization`).
+
+        Sampling strategies (e.g. :class:`QDrift`) populate this on every
+        ``process_hamiltonian`` call with a faithful concatenation of the
+        drawn terms — duplicates preserved so callers can emit one
+        evolution gate per draw without recomputing multiplicities.
+        """
+        ...
+
     def process_hamiltonian(self, hamiltonian: SparsePauliOp) -> SparsePauliOp:
         """Trotterize the Hamiltonian (SPO in, SPO out)."""
         ...
@@ -123,6 +135,13 @@ class ExactTrotterization(TrotterizationStrategy):
         # Despite having a _cache, this strategy is stateless because it only
         # uses the cache as memoization, not as state.
         return False
+
+    @property
+    def last_sampled_spo(self) -> SparsePauliOp | None:
+        # ExactTrotterization never samples; the strategy contract returns
+        # ``None`` so callers can branch on the presence of sampled terms
+        # without duck-typing.
+        return None
 
     def process_hamiltonian(self, hamiltonian: SparsePauliOp) -> SparsePauliOp:
         """Truncate the Hamiltonian to its top-magnitude terms."""
@@ -200,7 +219,7 @@ class QDrift(TrotterizationStrategy):
     _rng: np.random.Generator = field(init=False, compare=False, hash=False)
     # Sampled SPO from the most recent call, preserving duplicates from
     # sampling-with-replacement; concatenated with deterministically-kept terms.
-    _last_sampled_spo: SparsePauliOp | None = field(
+    last_sampled_spo: SparsePauliOp | None = field(
         default=None, init=False, compare=False, hash=False
     )
 
@@ -377,7 +396,7 @@ class QDrift(TrotterizationStrategy):
             faithful_spo = sampled_spo + keep_spo
         else:
             faithful_spo = sampled_spo
-        object.__setattr__(self, "_last_sampled_spo", faithful_spo)
+        object.__setattr__(self, "last_sampled_spo", faithful_spo)
 
         if keep_spo is not None:
             return (sampled_spo + keep_spo).simplify()

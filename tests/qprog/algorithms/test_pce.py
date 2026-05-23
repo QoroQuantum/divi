@@ -20,7 +20,10 @@ from divi.qprog.algorithms._pce import (
     _masks_to_ham_ops,
 )
 from divi.qprog.checkpointing import CheckpointConfig
-from tests.qprog._program_contracts import verify_metacircuit_dict
+from tests.qprog._program_contracts import (
+    ObservableMeasuringContractsBase,
+    verify_metacircuit_dict,
+)
 from tests.qprog.problems._helpers import (
     HUBO_CUBIC,
     PCE_QUBO_MATRIX,
@@ -1032,3 +1035,18 @@ class TestGetTopSolutionsSortBy:
         """Invalid sort_by value raises ValueError."""
         with pytest.raises(ValueError, match="sort_by must be"):
             pce_with_probs.get_top_solutions(n=4, sort_by="invalid")
+
+
+class TestObservableMeasuringContracts(ObservableMeasuringContractsBase):
+    @pytest.fixture
+    def make_program(self, basic_ansatz, dummy_simulator):
+        def _make(**kwargs):
+            return PCE(
+                problem=np.array([[1.0, 0.2], [0.2, 2.0]]),
+                ansatz=basic_ansatz,
+                n_layers=1,
+                backend=dummy_simulator,
+                **kwargs,
+            )
+
+        return _make

@@ -8,7 +8,6 @@ from collections.abc import Sequence
 from dataclasses import replace
 
 import matplotlib.pyplot as plt
-import pennylane as qp
 from qiskit.circuit import Parameter
 from qiskit.quantum_info import SparsePauliOp
 
@@ -37,7 +36,7 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
     Example::
 
         trajectory = TimeEvolutionTrajectory(
-            hamiltonian=qp.PauliX(0) + qp.PauliX(1),
+            hamiltonian=to_spo({"XI": 1.0, "IX": 1.0}),
             time_points=[0.0, 0.5, 1.0, 1.5],
             backend=backend,
         )
@@ -51,7 +50,7 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
 
     def __init__(
         self,
-        hamiltonian: qp.operation.Operator | SparsePauliOp,
+        hamiltonian: SparsePauliOp,
         time_points: Sequence[float],
         *,
         backend: CircuitRunner,
@@ -59,8 +58,9 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
         n_steps: int = 1,
         order: int = 1,
         initial_state: InitialState | None = None,
-        observable: qp.operation.Operator | SparsePauliOp | None = None,
+        observable: SparsePauliOp | None = None,
         seed: int | None = None,
+        **kwargs,
     ):
         """Initialize TimeEvolutionTrajectory.
 
@@ -78,6 +78,13 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
                 Defaults to ``ZerosState()`` if None.
             observable: If None, measure probabilities; else expectation value.
             seed: Random seed for reproducible results.
+            **kwargs: Forwarded verbatim to every per-time-point
+                :class:`~divi.qprog.algorithms.TimeEvolution`.  Use this for
+                ``grouping_strategy``, ``shot_distribution``, ``precision``,
+                and any other ``QuantumProgram`` / ``ObservableMeasuringMixin``
+                kwarg that should apply uniformly across the trajectory.
+                ``program_id`` and ``progress_queue`` are set internally and
+                must not be passed here.
         """
         super().__init__(backend=backend)
 
@@ -87,6 +94,13 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
         if len(set(time_points)) != len(time_points):
             raise ValueError("time_points must not contain duplicates.")
 
+        for reserved in ("program_id", "progress_queue"):
+            if reserved in kwargs:
+                raise TypeError(
+                    f"TimeEvolutionTrajectory sets {reserved!r} internally; "
+                    f"do not pass it via kwargs."
+                )
+
         self._hamiltonian = hamiltonian
         self._time_points = time_points
         self._trotterization_strategy = trotterization_strategy
@@ -95,6 +109,7 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
         self._initial_state = initial_state
         self._observable = observable
         self._seed = seed
+        self._extra_kwargs = kwargs
 
     def create_programs(self):
         """Create one TimeEvolution program per time point."""
@@ -118,6 +133,7 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
                 progress_queue=self._queue,
                 _template_meta=template_meta,
                 _template_param=t_param,
+                **self._extra_kwargs,
             )
 
     def _maybe_build_template(self) -> tuple[MetaCircuit | None, Parameter | None]:
@@ -149,6 +165,7 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
                 observable=self._observable,
                 backend=self.backend,
                 seed=self._seed,
+                **self._extra_kwargs,
             )
             template = probe._meta_circuit_factory(to_spo(self._hamiltonian), ham_id=0)
         except Exception:

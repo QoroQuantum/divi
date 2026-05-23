@@ -28,6 +28,7 @@ from divi.pipeline.stages import (
     PauliTwirlStage,
     QEMStage,
 )
+from divi.qprog import ObservableMeasuringMixin
 from divi.qprog.checkpointing import (
     PROGRAM_STATE_FILE,
     CheckpointConfig,
@@ -223,7 +224,7 @@ def _compute_parameter_shift_mask(n_params: int) -> npt.NDArray[np.float64]:
     return binary_matrix
 
 
-class VariationalQuantumAlgorithm(QuantumProgram):
+class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
     """Base class for variational quantum algorithms.
 
     This class provides the foundation for implementing variational quantum
@@ -353,7 +354,7 @@ class VariationalQuantumAlgorithm(QuantumProgram):
                 numeric parameter values in QASM conversion. Higher values
                 produce longer QASM strings (more data sent to cloud
                 backends); lower values trade resolution for compactness.
-                Defaults to :data:`~divi.circuits._core.DEFAULT_PRECISION`.
+                Defaults to :data:`~divi.circuits.DEFAULT_PRECISION`.
             decode_solution_fn: Function to decode bitstrings
                 into problem-specific solution representations. Called during final computation
                 and when `get_top_solutions(include_decoded=True)` is used. The function should
@@ -363,10 +364,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         """
 
         program_id = kwargs.pop("program_id", None)
-
-        _UNSET = object()
-        grouping_strategy = kwargs.pop("grouping_strategy", _UNSET)
-        shot_distribution = kwargs.pop("shot_distribution", None)
         decode_solution_fn = kwargs.pop(
             "decode_solution_fn", lambda bitstring: bitstring
         )
@@ -398,7 +395,6 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         See :class:`scipy.optimize.OptimizeResult` for the full specification.
         """
         # --- Random Number Generation ---
-        self._seed = seed
         self._rng = np.random.default_rng(self._seed)
 
         # --- Optimizer Configuration ---
@@ -408,52 +404,11 @@ class VariationalQuantumAlgorithm(QuantumProgram):
         self._early_stopping = early_stopping
         self._stop_reason: StopReason | None = None
 
-        # --- Backend & Circuit Configuration ---
-        # Adaptive shot allocation requires sampling-based execution. When
-        # the user requests it, suppress the auto-fallback to
-        # ``_backend_expval`` so the configured grouping strategy (defaulting
-        # to "qwc") is honoured.
-        auto_to_backend_expval = (
-            self.backend.supports_expval
-            and shot_distribution is None
-            and grouping_strategy not in (None, "_backend_expval")
-        )
-        if auto_to_backend_expval:
-            if grouping_strategy is not _UNSET:
-                warn(
-                    "Backend supports direct expectation value calculation, but a "
-                    "grouping_strategy was provided. Overriding to use the "
-                    "backend's native expval support.",
-                    UserWarning,
-                    stacklevel=2,
-                )
-            self._grouping_strategy = "_backend_expval"
-        else:
-            self._grouping_strategy = (
-                grouping_strategy if grouping_strategy is not _UNSET else "qwc"
-            )
-
-        if (
-            shot_distribution is not None
-            and self._grouping_strategy == "_backend_expval"
-        ):
-            raise ValueError(
-                "shot_distribution is incompatible with grouping_strategy="
-                "'_backend_expval': the backend computes expectation values "
-                "analytically and ignores shots. Set grouping_strategy to "
-                "'qwc', 'wires', or None."
-            )
-
-        self._shot_distribution = shot_distribution
-
         # --- Solution Decoding ---
         self._decode_solution_fn = decode_solution_fn
 
         # --- Circuit Factory & Templates ---
         self._meta_circuit_factories = None
-
-        # --- Control Flow ---
-        self._cancellation_event = None
 
     def _has_run_optimization(self) -> bool:
         """Check if optimization has been run at least once.

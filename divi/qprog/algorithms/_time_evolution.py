@@ -2,10 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
-import pennylane as qp
 from qiskit import transpile
 from qiskit.circuit import Parameter, QuantumCircuit
 from qiskit.circuit.library import PauliEvolutionGate
@@ -34,12 +34,13 @@ from divi.pipeline.stages import (
     QEMStage,
     TrotterSpecStage,
 )
+from divi.qprog import ObservableMeasuringMixin
 from divi.qprog.algorithms import InitialState, ZerosState
 from divi.qprog.quantum_program import QuantumProgram
 from divi.reporting import TerminalStatus
 
 
-class TimeEvolution(QuantumProgram):
+class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
     """Quantum program for Hamiltonian time evolution.
 
     Simulates the evolution of a quantum state under a Hamiltonian using
@@ -49,19 +50,13 @@ class TimeEvolution(QuantumProgram):
 
     def __init__(
         self,
-        hamiltonian: qp.operation.Operator | SparsePauliOp,
+        hamiltonian: SparsePauliOp,
         trotterization_strategy: TrotterizationStrategy | None = None,
         time: float = 1.0,
         n_steps: int = 1,
         order: int = 1,
         initial_state: InitialState | None = None,
-        observable: (
-            qp.operation.Operator
-            | SparsePauliOp
-            | tuple[qp.operation.Operator | SparsePauliOp, ...]
-            | list[qp.operation.Operator | SparsePauliOp]
-            | None
-        ) = None,
+        observable: SparsePauliOp | Sequence[SparsePauliOp] | None = None,
         _template_meta: MetaCircuit | None = None,
         _template_param: Parameter | None = None,
         **kwargs,
@@ -69,7 +64,9 @@ class TimeEvolution(QuantumProgram):
         """Initialize TimeEvolution.
 
         Args:
-            hamiltonian: Hamiltonian to evolve under.
+            hamiltonian: Hamiltonian to evolve under. Accepts anything
+                :func:`~divi.hamiltonians.to_spo` consumes (``SparsePauliOp``,
+                PennyLane operator, or a divi-convention Pauli-string dict).
             trotterization_strategy: Strategy for term selection (``ExactTrotterization``, ``QDrift``).
                 Defaults to ExactTrotterization().
             time: Evolution time t (e^(-iHt)).
@@ -80,11 +77,12 @@ class TimeEvolution(QuantumProgram):
                 Defaults to ``ZerosState()`` if None.
             observable: One of:
 
-                * ``None`` — measure ``qp.probs()``.
-                * Single :class:`~pennylane.operation.Operator` — one
-                  ``qp.expval(observable)`` measurement; ``self.results`` is
-                  a ``float``.
-                * ``Sequence[Operator]`` — multiple ``qp.expval(O_i)``
+                * ``None`` — measure computational-basis probabilities over
+                  all qubits.
+                * Single observable accepted by
+                  :func:`~divi.hamiltonians.to_spo` — one expectation-value
+                  measurement; ``self.results`` is a ``float``.
+                * Sequence of such observables — multiple expectation-value
                   measurements from the same circuit; ``self.results`` is a
                   ``list[float]`` (one mitigated value per observable).
                   Commuting observables are measured from a shared shot
@@ -97,6 +95,11 @@ class TimeEvolution(QuantumProgram):
                 ``observable`` to be set, since QEM operates on expectation values).
         """
         super().__init__(**kwargs)
+
+        if not isinstance(n_steps, int) or n_steps < 1:
+            raise ValueError(f"n_steps must be a positive integer, got {n_steps!r}.")
+        if order != 1 and (not isinstance(order, int) or order < 2 or order % 2 != 0):
+            raise ValueError(f"order must be 1 or an even integer >= 2, got {order!r}.")
 
         if trotterization_strategy is None:
             trotterization_strategy = ExactTrotterization()
@@ -111,12 +114,12 @@ class TimeEvolution(QuantumProgram):
         self.time = time
         self.n_steps = n_steps
         self.order = order
-        if isinstance(observable, list):
+        if isinstance(observable, Sequence) and not isinstance(observable, tuple):
             observable = tuple(observable)
         self.n_qubits = _require_qiskit_num_qubits(hamiltonian_clean.num_qubits)
         self._circuit_wires = tuple(range(self.n_qubits))
         # Normalise observables to SparsePauliOp at the input boundary, aligning
-        # qubit count with the cost circuit (a 1-qubit ``qp.PauliZ(0)`` against
+        # qubit count with the cost circuit (a 1-qubit ``Z`` on qubit 0 against
         # a multi-qubit evolution must lift to ``Z ⊗ I ⊗ … ⊗ I``).
         self.observable = self._normalise_observable(observable)
 
@@ -129,8 +132,12 @@ class TimeEvolution(QuantumProgram):
         self.initial_state = initial_state
 
         if (_template_meta is None) != (_template_param is None):
+            missing = (
+                "_template_param" if _template_meta is not None else "_template_meta"
+            )
             raise ValueError(
-                "_template_meta and _template_param must be provided together."
+                f"_template_meta and _template_param must be provided together; "
+                f"got {missing}=None."
             )
         self._template_meta = _template_meta
         self._template_param = _template_param
@@ -212,7 +219,12 @@ class TimeEvolution(QuantumProgram):
             if n_twirls > 0:
                 stages.append(PauliTwirlStage(n_twirls=n_twirls))
 
-        stages.append(MeasurementStage())
+        stages.append(
+            MeasurementStage(
+                grouping_strategy=self._grouping_strategy,
+                shot_distribution=self._shot_distribution,
+            )
+        )
         if self._template_meta is not None:
             # ParameterBindingStage binds the trajectory template's
             # ``t`` parameter to ``self.time`` via ``env.param_sets``.
@@ -248,19 +260,19 @@ class TimeEvolution(QuantumProgram):
             return MetaCircuit(
                 circuit_bodies=(((), dag),),
                 measured_wires=tuple(range(self.n_qubits)),
-                precision=8,
+                precision=self._precision,
             )
         if isinstance(self.observable, tuple):
             return MetaCircuit(
                 circuit_bodies=(((), dag),),
                 observable=self.observable,
-                precision=8,
+                precision=self._precision,
                 _was_multi_obs=True,
             )
         return MetaCircuit(
             circuit_bodies=(((), dag),),
             observable=(self.observable,),
-            precision=8,
+            precision=self._precision,
         )
 
     def run(self, **kwargs) -> "TimeEvolution":
@@ -318,10 +330,10 @@ class TimeEvolution(QuantumProgram):
     def _build_qiskit_circuit(self, processed_spo: SparsePauliOp) -> QuantumCircuit:
         """Build initial-state preparation + Trotter evolution as a ``QuantumCircuit``.
 
-        Adjoint evolution is realized via negative time, matching the prior
-        PennyLane ``adjoint(TrotterProduct/evolve)`` path. Single-term
-        Hamiltonians use positive time to preserve ``qp.evolve(term, coeff=t)``
-        semantics.
+        Adjoint evolution is realized via negative time. Single-term
+        Hamiltonians use positive time to preserve the standard
+        ``exp(-i t H)`` sign convention even when ``H`` carries its own
+        coefficient sign.
 
         QDrift sampled-term evolution uses
         :func:`_spo_to_qiskit_basis_gates` directly so each sampled term
@@ -334,7 +346,7 @@ class TimeEvolution(QuantumProgram):
         qc.compose(self.initial_state.build(self._circuit_wires), inplace=True)
         qubits = list(range(self.n_qubits))
 
-        sampled_spo = getattr(self.trotterization_strategy, "_last_sampled_spo", None)
+        sampled_spo = self.trotterization_strategy.last_sampled_spo
         if sampled_spo is not None:
             # Faithful QDrift: one evolution gate per sampled term (preserving
             # sampling-with-replacement multiplicities), repeated ``n_steps``
@@ -360,8 +372,10 @@ class TimeEvolution(QuantumProgram):
                 ),
                 qubits,
             )
-            # Transpile down to basis gates so the QASM body emitter and
-            # Clifford-only stages (e.g. QuEPP) can consume the result.
+            # Lower to the gate set ``dag_to_qasm_body`` accepts.  Qiskit's
+            # Trotter synthesis can emit ``rxx``/``ryy``/``rzz``-style compound
+            # rotations that the QASM2 emitter raises on; ``optimization_level=0``
+            # keeps it to a cheap gate-by-gate substitution.
             try:
                 qc = transpile(
                     qc,

@@ -112,6 +112,50 @@ def verify_correct_circuit_count(obj: QuantumProgram):
             )
 
 
+def verify_precision_kwarg_threads_through(make_program) -> None:
+    """``precision=`` reaches ``QuantumProgram._precision`` regardless of
+    the subclass's own ``__init__`` shape."""
+    program = make_program(precision=4)
+    assert program.precision == 4
+    assert program._precision == 4
+
+
+def verify_grouping_strategy_kwarg_threads_through(make_program) -> None:
+    """``grouping_strategy=`` reaches the ``ObservableMeasuringMixin``
+    field on the constructed program."""
+    program = make_program(grouping_strategy="wires")
+    assert program._grouping_strategy == "wires"
+
+
+def verify_shot_distribution_kwarg_threads_through(make_program) -> None:
+    """``shot_distribution=`` reaches the ``ObservableMeasuringMixin``
+    field on the constructed program."""
+    program = make_program(shot_distribution="weighted")
+    assert program._shot_distribution == "weighted"
+
+
+OBSERVABLE_MEASURING_CONTRACTS = [
+    (verify_precision_kwarg_threads_through, "precision"),
+    (verify_grouping_strategy_kwarg_threads_through, "grouping_strategy"),
+    (verify_shot_distribution_kwarg_threads_through, "shot_distribution"),
+]
+
+
+class ObservableMeasuringContractsBase:
+    """Base class wiring ``OBSERVABLE_MEASURING_CONTRACTS`` to a program
+    test class. Subclasses must provide a ``make_program`` fixture returning
+    a callable ``make_program(**kwargs) -> QuantumProgram`` that builds the
+    program type under test with arbitrary mixin kwargs.
+    """
+
+    @pytest.mark.parametrize(
+        "contract", OBSERVABLE_MEASURING_CONTRACTS, ids=lambda c: c[1]
+    )
+    def test_contract(self, contract, make_program):
+        verify, _ = contract
+        verify(make_program)
+
+
 def verify_basic_program_ensemble_behaviour(obj: ProgramEnsemble, mocker) -> None:
     with pytest.raises(RuntimeError, match="No programs to run"):
         obj.run()

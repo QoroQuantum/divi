@@ -13,6 +13,7 @@ from divi.qprog import CustomVQA
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from tests.qprog._program_contracts import (
+    ObservableMeasuringContractsBase,
     verify_correct_circuit_count,
     verify_metacircuit_dict,
 )
@@ -470,3 +471,16 @@ def test_checkpointing_resume(
     program2.run(checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir))
     assert program2.current_iteration == 4
     assert (checkpoint_dir / "checkpoint_004").exists()
+
+
+class TestObservableMeasuringContracts(ObservableMeasuringContractsBase):
+    @pytest.fixture
+    def make_program(self, simple_quantum_script, dummy_simulator):
+        def _make(**kwargs):
+            return CustomVQA(
+                qscript=simple_quantum_script,
+                backend=dummy_simulator,
+                **kwargs,
+            )
+
+        return _make

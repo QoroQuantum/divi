@@ -588,6 +588,9 @@ class TestQuantumProgramDryRun:
         spec_alloc = next(iter(cost_report.env_artifacts["per_group_shots"].values()))
         assert any(shots > 0 for shots in spec_alloc.values())
 
+    @pytest.mark.filterwarnings(
+        "ignore:Backend supports analytic expectation values:UserWarning"
+    )
     def test_default_and_forced_match_non_qem(self, default_test_simulator):
         """Parity between analytic and ``force_circuit_generation=True`` must
         also hold for programs without any QEM stage — the ``TimeEvolution``

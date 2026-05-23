@@ -3,15 +3,19 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import math
+import warnings
 
 import pennylane as qp
 import pytest
 
 from divi.backends import ExecutionResult, QiskitSimulator
+from divi.circuits import DEFAULT_PRECISION
 from divi.circuits.qem import ZNE, RichardsonExtrapolator
 from divi.circuits.quepp import QuEPP
 from divi.hamiltonians import ExactTrotterization, QDrift
+from divi.pipeline.stages import MeasurementStage
 from divi.qprog import OnesState, SuperpositionState, TimeEvolution, ZerosState
+from tests.qprog._program_contracts import ObservableMeasuringContractsBase
 
 # Tolerance for probability checks (5000 shots: ~0.02 std for p=0.5)
 _PROB_TOL = 0.05
@@ -881,3 +885,191 @@ class TestTimeEvolutionQEM:
         )
         reports = te.dry_run()
         assert "evolution" in reports
+
+
+@pytest.mark.filterwarnings(
+    "ignore:Backend supports analytic expectation values:UserWarning"
+)
+class TestTimeEvolutionMeasurementConfig:
+    """``grouping_strategy`` and ``shot_distribution`` kwargs flow into
+    the :class:`~divi.pipeline.stages.MeasurementStage` of the program's
+    evolution pipeline."""
+
+    @staticmethod
+    def _measurement_stage(te: TimeEvolution):
+        return next(
+            stage
+            for stage in te._pipeline.stages
+            if isinstance(stage, MeasurementStage)
+        )
+
+    def test_grouping_strategy_threaded_to_measurement_stage(
+        self, two_qubit_hamiltonian, default_test_simulator
+    ):
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            observable=qp.PauliZ(0),
+            grouping_strategy="wires",
+            backend=default_test_simulator,
+        )
+        assert self._measurement_stage(te)._grouping_strategy == "wires"
+
+    def test_shot_distribution_threaded_to_measurement_stage(
+        self, two_qubit_hamiltonian, default_test_simulator
+    ):
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            observable=qp.PauliZ(0),
+            shot_distribution="weighted",
+            backend=default_test_simulator,
+        )
+        assert self._measurement_stage(te)._shot_distribution == "weighted"
+
+    def test_explicit_backend_expval_rejected(
+        self, two_qubit_hamiltonian, default_test_simulator
+    ):
+        """``"_backend_expval"`` is not a valid user-facing strategy."""
+        with pytest.raises(ValueError, match="Invalid grouping_strategy"):
+            TimeEvolution(
+                hamiltonian=two_qubit_hamiltonian,
+                observable=qp.PauliZ(0),
+                grouping_strategy="_backend_expval",
+                backend=default_test_simulator,
+            )
+
+    def test_sampling_mode_accepts_grouping_kwargs(
+        self, two_qubit_hamiltonian, default_test_simulator
+    ):
+        """Sampling mode (``observable=None``) stores the kwargs verbatim
+        and runs; MeasurementStage's probs branch ignores them."""
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            observable=None,
+            grouping_strategy="wires",
+            backend=default_test_simulator,
+        )
+        assert te._grouping_strategy == "wires"
+        te.run()
+        assert isinstance(te.results, dict)
+
+    def test_multi_observable_with_expval_backend(
+        self, two_qubit_hamiltonian, dummy_expval_backend, mocker
+    ):
+        """Multi-observable circuits stay on ``"qwc"`` and run end-to-end
+        on an analytic-expval backend (no auto-flip to ``"_backend_expval"``,
+        which only supports single-observable batches)."""
+
+        def _deterministic_submit(circuits, **kwargs):
+            ham_ops = kwargs.get("ham_ops", "")
+            ops = ham_ops.split(";") if ham_ops else []
+            payload = {op: 1.0 for op in ops}
+            return ExecutionResult(
+                results=[
+                    {"label": label, "results": payload.copy()}
+                    for label in circuits.keys()
+                ]
+            )
+
+        mocker.patch.object(
+            dummy_expval_backend,
+            "submit_circuits",
+            side_effect=_deterministic_submit,
+        )
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            observable=(qp.PauliZ(0), qp.PauliZ(1)),
+            backend=dummy_expval_backend,
+        )
+        te.run()
+        assert isinstance(te.results, list)
+        assert len(te.results) == 2
+
+    def test_qwc_with_single_obs_auto_flips_at_runtime(
+        self, two_qubit_hamiltonian, dummy_expval_backend, mocker
+    ):
+        """Regression guard for the runtime auto-flip: explicit
+        ``grouping_strategy="qwc"`` + single observable + expval-capable
+        backend must execute through the backend's analytic path
+        (``ham_ops`` kwarg present on submit), not via shot-based
+        measurement QASMs."""
+
+        submitted_kwargs = []
+
+        def _capture_submit(circuits, **kwargs):
+            submitted_kwargs.append(kwargs)
+            ham_ops = kwargs.get("ham_ops", "")
+            ops = ham_ops.split(";") if ham_ops else []
+            payload = {op: 1.0 for op in ops}
+            return ExecutionResult(
+                results=[
+                    {"label": label, "results": payload.copy()}
+                    for label in circuits.keys()
+                ]
+            )
+
+        mocker.patch.object(
+            dummy_expval_backend,
+            "submit_circuits",
+            side_effect=_capture_submit,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            te = TimeEvolution(
+                hamiltonian=two_qubit_hamiltonian,
+                observable=qp.PauliZ(0),
+                grouping_strategy="qwc",
+                backend=dummy_expval_backend,
+            )
+            te.run()
+
+        assert te._grouping_strategy == "qwc"
+        assert any("ham_ops" in kw for kw in submitted_kwargs)
+
+
+class TestTimeEvolutionPrecision:
+    """``precision`` is read from :class:`~divi.qprog.QuantumProgram` and
+    propagated into the produced ``MetaCircuit``."""
+
+    def test_precision_defaults_to_module_default(
+        self, two_qubit_hamiltonian, default_test_simulator
+    ):
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian, backend=default_test_simulator
+        )
+        assert te._precision == DEFAULT_PRECISION
+        assert te.precision == DEFAULT_PRECISION
+
+    def test_explicit_precision_stored(
+        self, two_qubit_hamiltonian, default_test_simulator
+    ):
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            backend=default_test_simulator,
+            precision=4,
+        )
+        assert te._precision == 4
+        assert te.precision == 4
+
+    def test_precision_propagates_to_meta_circuit(
+        self, two_qubit_hamiltonian, default_test_simulator
+    ):
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            backend=default_test_simulator,
+            precision=3,
+        )
+        meta = te._meta_circuit_factory(te._hamiltonian, ham_id=0)
+        assert meta.precision == 3
+
+
+class TestObservableMeasuringContracts(ObservableMeasuringContractsBase):
+    @pytest.fixture
+    def make_program(self, two_qubit_hamiltonian, dummy_simulator):
+        def _make(**kwargs):
+            return TimeEvolution(
+                hamiltonian=two_qubit_hamiltonian,
+                backend=dummy_simulator,
+                **kwargs,
+            )
+
+        return _make

@@ -12,23 +12,7 @@ from qiskit.dagcircuit import DAGCircuit
 from qiskit.quantum_info import PauliList, SparsePauliOp
 
 from divi.circuits import QASMTag
-
-
-def _assert_hermitian_spo(spo: SparsePauliOp, atol: float = 1e-10) -> None:
-    """Validate that a Pauli-basis observable has real coefficients.
-
-    Checks each coefficient's imaginary part directly. Pathological cases
-    where individually non-Hermitian Pauli terms cancel after summation
-    (e.g. ``+i X`` and ``-i X``) are not caught — callers that may produce
-    such inputs should pass an already-simplified ``SparsePauliOp``.
-    """
-    if spo.size == 0:
-        return
-    if np.any(np.abs(np.imag(spo.coeffs)) > atol):
-        raise ValueError(
-            "SparsePauliOp observables must be Hermitian; Pauli coefficients "
-            "must be real."
-        )
+from divi.hamiltonians._term_ops import _assert_hermitian_spo
 
 
 def flatten_observable_tuple(

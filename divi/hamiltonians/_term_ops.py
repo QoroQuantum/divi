@@ -16,7 +16,22 @@ from qiskit.circuit.library import PauliEvolutionGate
 from qiskit.quantum_info import SparsePauliOp
 from qiskit.synthesis import LieTrotter
 
-from divi.circuits._core import _assert_hermitian_spo
+
+def _assert_hermitian_spo(spo: SparsePauliOp, atol: float = 1e-10) -> None:
+    """Validate that a Pauli-basis observable has real coefficients.
+
+    Checks each coefficient's imaginary part directly. Pathological cases
+    where individually non-Hermitian Pauli terms cancel after summation
+    (e.g. ``+i X`` and ``-i X``) are not caught — callers that may produce
+    such inputs should pass an already-simplified ``SparsePauliOp``.
+    """
+    if spo.size == 0:
+        return
+    if np.any(np.abs(np.imag(spo.coeffs)) > atol):
+        raise ValueError(
+            "SparsePauliOp observables must be Hermitian; Pauli coefficients "
+            "must be real."
+        )
 
 
 def _require_qiskit_num_qubits(num_qubits: int | None) -> int:

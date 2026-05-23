@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from ._observable_measuring_mixin import ObservableMeasuringMixin
 from ._types import GraphProblemTypes
 from .algorithms import (
     PCE,

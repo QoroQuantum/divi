@@ -23,16 +23,12 @@ from divi.qprog.variational_quantum_algorithm import (
     VariationalQuantumAlgorithm,
     _compute_parameter_shift_mask,
 )
+from tests.conftest import DummyExpvalBackend, DummySimulator
 
 
 @pytest.fixture
-def mock_backend(mocker):
-    """Create a mock backend with required properties."""
-    backend = mocker.MagicMock()
-    backend.shots = 1000
-    backend.is_async = False
-    backend.supports_expval = False
-    return backend
+def mock_backend():
+    return DummySimulator(shots=1000)
 
 
 class SampleVQAProgram(VariationalQuantumAlgorithm):
@@ -104,12 +100,13 @@ class TestProgram:
         return SampleVQAProgram(10, 5.5, seed=1997, **kwargs)
 
     def _create_mock_backend(self, mocker, shots=100, supports_expval=False):
-        """Helper to create a mock backend with standard properties."""
-        backend = mocker.MagicMock()
-        backend.shots = shots
-        backend.is_async = False
-        backend.supports_expval = supports_expval
-        return backend
+        """Helper to create a real ``CircuitRunner`` fake.
+
+        ``mocker`` is accepted for call-site compatibility but unused.
+        """
+        if supports_expval:
+            return DummyExpvalBackend(shots=shots)
+        return DummySimulator(shots=shots)
 
     def _create_mock_optimizer(self, mocker, n_param_sets=1):
         """Helper to create a mock optimizer."""
@@ -135,21 +132,6 @@ class TestProgram:
             AssertionError, np.testing.assert_array_equal, first_init, second_init
         )
 
-    def test_grouping_strategy_warning_with_expval_backend(self, mocker):
-        """Test that a warning is issued when grouping_strategy is provided but backend supports expval."""
-        mock_backend = self._create_mock_backend(mocker, supports_expval=True)
-
-        with pytest.warns(
-            UserWarning,
-            match="Backend supports direct expectation value calculation, but a grouping_strategy was provided",
-        ):
-            program = self._create_sample_program(
-                mocker, grouping_strategy="qwc", backend=mock_backend
-            )
-
-        # Verify that the grouping strategy was overridden to "_backend_expval"
-        assert program._grouping_strategy == "_backend_expval"
-
     def test_shot_distribution_default_is_none(self, mocker):
         """Spec: omitting shot_distribution leaves the field unset (None)."""
         program = self._create_sample_program(mocker)
@@ -160,12 +142,12 @@ class TestProgram:
         program = self._create_sample_program(mocker, shot_distribution="weighted")
         assert program._shot_distribution == "weighted"
 
-    def test_shot_distribution_suppresses_backend_expval_autoswitch(self, mocker):
-        """Spec: setting shot_distribution prevents the auto-fallback to
-        _backend_expval that normally happens on expval-supporting backends."""
+    def test_shot_distribution_with_grouping_stored_verbatim_no_warning(self, mocker):
+        """Spec: ``shot_distribution`` declares sampling intent, so the
+        override warning is suppressed even on an expval-capable backend;
+        both kwargs are stored verbatim."""
         mock_backend = self._create_mock_backend(mocker, supports_expval=True)
 
-        # No warning should be emitted: shot_distribution implies sampling intent.
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             program = self._create_sample_program(
@@ -177,16 +159,26 @@ class TestProgram:
         assert program._grouping_strategy == "qwc"
         assert program._shot_distribution == "uniform"
 
-    def test_shot_distribution_with_explicit_backend_expval_raises(self, mocker):
-        """Spec: combining shot_distribution with grouping_strategy='_backend_expval'
-        raises ValueError because the backend ignores shots in that mode."""
+    def test_grouping_strategy_warns_on_expval_backend(self, mocker):
+        """Spec: explicit ``grouping_strategy="qwc"`` on an expval-capable
+        backend emits a UserWarning that MeasurementStage will auto-
+        override at runtime. The strategy is stored verbatim (the override
+        happens at the stage, not the program)."""
         mock_backend = self._create_mock_backend(mocker, supports_expval=True)
-        with pytest.raises(ValueError, match="incompatible with grouping_strategy"):
+
+        with pytest.warns(UserWarning, match="may be auto-overridden"):
+            program = self._create_sample_program(
+                mocker, grouping_strategy="qwc", backend=mock_backend
+            )
+
+        assert program._grouping_strategy == "qwc"
+
+    def test_explicit_backend_expval_rejected(self, mocker):
+        """Spec: ``"_backend_expval"`` is not a valid user-facing strategy."""
+        mock_backend = self._create_mock_backend(mocker, supports_expval=True)
+        with pytest.raises(ValueError, match="Invalid grouping_strategy"):
             self._create_sample_program(
-                mocker,
-                grouping_strategy="_backend_expval",
-                shot_distribution="weighted",
-                backend=mock_backend,
+                mocker, grouping_strategy="_backend_expval", backend=mock_backend
             )
 
     def test_shot_distribution_threaded_to_measurement_stage(self, mocker):
@@ -273,11 +265,7 @@ class BaseVariationalQuantumAlgorithmTest:
         if "optimizer" not in kwargs:
             kwargs["optimizer"] = self._create_mock_optimizer(mocker, n_param_sets=1)
         if "backend" not in kwargs:
-            backend = mocker.MagicMock()
-            backend.shots = 1000
-            backend.is_async = False
-            backend.supports_expval = False
-            kwargs["backend"] = backend
+            kwargs["backend"] = DummySimulator(shots=1000)
         return SampleVQAProgram(circ_count=1, run_time=0.1, **kwargs)
 
     def _setup_program_with_probs(self, mocker, probs_dict: dict[str, float], **kwargs):
@@ -1533,10 +1521,7 @@ class TestGradientFunction(BaseVariationalQuantumAlgorithmTest):
     def _create_lbfgsb_program(self, mocker, n_params_per_layer=4, **kwargs):
         """Create a SampleVQAProgram with L-BFGS-B optimizer."""
         optimizer = ScipyOptimizer(method=ScipyMethod.L_BFGS_B)
-        backend = mocker.MagicMock()
-        backend.shots = 1000
-        backend.is_async = False
-        backend.supports_expval = False
+        backend = DummySimulator(shots=1000)
         program = SampleVQAProgram(
             circ_count=1,
             run_time=0.1,
@@ -1638,10 +1623,7 @@ class TestLBFGSBGradientIntegration(BaseVariationalQuantumAlgorithmTest):
     def test_lbfgsb_evaluates_gradient(self, mocker):
         """L-BFGS-B calls the gradient function, producing 2*n_params shifted param sets."""
         optimizer = ScipyOptimizer(method=ScipyMethod.L_BFGS_B)
-        backend = mocker.MagicMock()
-        backend.shots = 1000
-        backend.is_async = False
-        backend.supports_expval = False
+        backend = DummySimulator(shots=1000)
 
         program = SampleVQAProgram(
             circ_count=1,
