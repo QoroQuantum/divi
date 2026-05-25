@@ -36,6 +36,24 @@ _FACTORED_PROBE_MIN_QUBITS = 64
 # backward-error floor of ``eigh`` at all matrix sizes.
 _EIGVAL_TOL_REL = 1e-12
 
+# Minimum eigenvalue magnitude (relative to ``|λ_max|``) retained by
+# the truncated decomposition. Eigenvalues below this threshold are
+# treated as a baseline plateau and dropped into the diagonal residual.
+# Choosing the cut by absolute magnitude — rather than by gap ratio or
+# Frobenius energy — preserves structurally significant modes even when
+# a single penalty eigenvalue dominates ``‖Q‖_F``.
+_TRUNCATED_MAGNITUDE_THRESHOLD = 1e-2
+
+# Hard upper bound on the JSON payload size emitted by the truncated
+# candidate. Kept well under typical reverse-proxy body-size limits
+# (e.g. nginx ``client_max_body_size 10m``).
+_TRUNCATED_PAYLOAD_BUDGET_BYTES = 950_000
+
+# Maximum acceptable ``‖Q_recon − Q‖_max / ‖Q‖_max`` from the truncated
+# candidate. If reconstruction error exceeds this the candidate is
+# discarded and a lossless encoding (or legacy) is shipped instead.
+_TRUNCATED_REL_ERROR_MAX = 1e-3
+
 
 def _serialize_qubo_legacy(canonical) -> dict[str, float]:
     """Serialize to the comma-key dict format, e.g. ``{"0": -1.0, "0,1": 2.0}``.
@@ -76,73 +94,178 @@ def _qubo_to_dense(canonical) -> np.ndarray:
     return Q
 
 
-def _factored_from_eigh(matrix: np.ndarray, residual: np.ndarray) -> dict:
-    """Eigendecompose a symmetric ``matrix`` and emit a ``factored_v1`` payload.
+def _eigh_drop_noise(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """``eigh(matrix)`` with eigenvalues below the backward-error noise floor masked out.
 
-    The decomposition encodes ``matrix = F · diag(signs) · Fᵀ`` and the
-    independent ``residual`` vector as ``diag(residual)``. Eigenvalues at or
-    below the dimension-scaled tolerance are dropped so ``k`` reflects the
-    effective rank rather than ``eigh``'s noise floor.
+    Returns ``(eigvals, V)`` where every retained ``|λ|`` exceeds
+    ``max(_EIGVAL_TOL_REL, n · eps) · |λ_max|``.
     """
     eigvals, V = np.linalg.eigh(matrix)
-    if eigvals.size:
-        max_abs = float(np.abs(eigvals).max())
-        if max_abs > 0.0:
-            n_dim = eigvals.size
-            tol = max(_EIGVAL_TOL_REL, n_dim * np.finfo(np.float64).eps) * max_abs
-            mask = np.abs(eigvals) > tol
-            eigvals = eigvals[mask]
-            V = V[:, mask]
-        else:
-            eigvals = eigvals[:0]
-            V = V[:, :0]
+    if not eigvals.size:
+        return eigvals, V
+    max_abs = float(np.abs(eigvals).max())
+    if max_abs == 0.0:
+        return eigvals[:0], V[:, :0]
+    tol = max(_EIGVAL_TOL_REL, eigvals.size * float(np.finfo(np.float64).eps)) * max_abs
+    mask = np.abs(eigvals) > tol
+    return eigvals[mask], V[:, mask]
 
-    k = int(eigvals.size)
-    # ``signs`` must be strictly ±1.0 — build explicitly so a future change
-    # to the eigenvalue mask can never leak a ``0.0`` from ``np.sign``.
+
+def _payload_from_eigh(
+    eigvals: np.ndarray, V: np.ndarray, residual: np.ndarray, n: int
+) -> dict:
+    """Assemble a ``factored_v1`` payload from a (truncated) eigendecomposition.
+
+    ``F = V · diag(√|λ|)``, ``signs = sign(λ)`` (strict ±1.0). ``F`` and
+    ``residual`` are emitted as hex-encoded float64 byte arrays.
+    """
     signs = np.where(eigvals >= 0.0, 1.0, -1.0).astype(np.float64)
     F = np.ascontiguousarray(V * np.sqrt(np.abs(eigvals)), dtype=np.float64)
     residual_c = np.ascontiguousarray(residual, dtype=np.float64)
-    n = int(residual_c.shape[0])
-
     return {
         "_format": "factored_v1",
-        "n": n,
-        "k": k,
+        "n": int(n),
+        "k": int(eigvals.size),
         "F": F.tobytes().hex(),
         "signs": signs.tolist(),
         "diag": residual_c.tobytes().hex(),
     }
 
 
+def _factored_truncated(
+    eigvals: np.ndarray, V: np.ndarray, diag_orig: np.ndarray, Q: np.ndarray
+) -> dict | None:
+    """Truncate the off-diagonal eigendecomposition with diagonal absorption.
+
+    Sorts eigenvalues of ``Q_off = Q − diag(Q)`` by ``|λ|`` descending, keeps
+    every eigenvalue with ``|λ| ≥ _TRUNCATED_MAGNITUDE_THRESHOLD · |λ_max|``,
+    and absorbs the diagonal contribution of the dropped eigencomponents into
+    the residual. The diagonal of the reconstructed matrix matches ``Q``
+    exactly; off-diagonal entries pick up a bounded error.
+
+    Returns ``None`` when truncation does not apply (no eigenvalues, ``k ≥ n``
+    after both magnitude and budget checks) or when the reconstruction
+    relative error exceeds :data:`_TRUNCATED_REL_ERROR_MAX`.
+    """
+    n = Q.shape[0]
+    if not eigvals.size:
+        return None
+
+    # Sort by |λ| descending so the magnitude cut and truncation both proceed
+    # from the most-informative end.
+    order = np.argsort(np.abs(eigvals))[::-1]
+    eigvals_s = eigvals[order]
+    V_s = V[:, order]
+    abs_s = np.abs(eigvals_s)
+
+    lambda_max = float(abs_s[0])
+    if lambda_max == 0.0:
+        return None
+    # Magnitude cut: keep every eigenvalue at least ε·|λ_max|.
+    k_mag = int(np.sum(abs_s >= _TRUNCATED_MAGNITUDE_THRESHOLD * lambda_max))
+
+    # Payload-budget cap. JSON cost per kept column ≈ n·16 hex chars for F
+    # plus ≈5 chars for the corresponding ``signs`` entry; envelope + diag
+    # are fixed costs.
+    budget_for_F = _TRUNCATED_PAYLOAD_BUDGET_BYTES - n * 16 - 200
+    if budget_for_F <= 0:
+        return None
+    k_budget = max(1, budget_for_F // (n * 16 + 5))
+
+    k = min(k_mag, k_budget, n)
+    if k >= n:
+        return None  # nothing to truncate
+
+    keep_eigvals = eigvals_s[:k]
+    keep_V = V_s[:, :k]
+    # Re-apply the noise-floor mask in case any kept eigenvalue is now
+    # below tolerance (would emit zero-magnitude columns of F otherwise).
+    # Any eigenvalues demoted here must also be absorbed into the diagonal
+    # residual to preserve the diagonal-exact property.
+    max_abs_kept = float(np.abs(keep_eigvals).max())
+    if max_abs_kept > 0.0:
+        tol = (
+            max(_EIGVAL_TOL_REL, keep_eigvals.size * float(np.finfo(np.float64).eps))
+            * max_abs_kept
+        )
+        mask = np.abs(keep_eigvals) > tol
+        demoted_eigvals = keep_eigvals[~mask]
+        demoted_V = keep_V[:, ~mask]
+        keep_eigvals = keep_eigvals[mask]
+        keep_V = keep_V[:, mask]
+    else:
+        demoted_eigvals = eigvals_s[:0]
+        demoted_V = V_s[:, :0]
+
+    # Diagonal absorption: drop_diag[i] = Σ_{j∈dropped} λ_j · v_{i,j}².
+    # Folds both the magnitude-cut drops and any noise-floor-demoted
+    # eigenpairs, so ``(F · diag(signs) · Fᵀ + diag(diag_orig + drop_diag))[i,i]``
+    # matches ``Q[i,i]`` exactly — only off-diagonal entries are lossy.
+    drop_eigvals = np.concatenate([eigvals_s[k:], demoted_eigvals])
+    drop_V = np.concatenate([V_s[:, k:], demoted_V], axis=1)
+    drop_diag = (drop_V**2) @ drop_eigvals
+
+    residual = diag_orig + drop_diag
+    payload = _payload_from_eigh(keep_eigvals, keep_V, residual, n)
+
+    # Sanity-check reconstruction error against the original Q before
+    # accepting the lossy candidate.
+    F = np.frombuffer(bytes.fromhex(payload["F"]), dtype=np.float64).reshape(
+        n, payload["k"]
+    )
+    signs = np.asarray(payload["signs"], dtype=np.float64)
+    Q_recon = F @ np.diag(signs) @ F.T + np.diag(residual)
+    abs_Q_max = float(np.abs(Q).max())
+    err_max = float(np.abs(Q_recon - Q).max())
+    rel_err = err_max if abs_Q_max == 0.0 else err_max / abs_Q_max
+    if rel_err > _TRUNCATED_REL_ERROR_MAX:
+        return None
+    # Belt-and-suspenders against the budget formula understating reality.
+    if _payload_size(payload) > _TRUNCATED_PAYLOAD_BUDGET_BYTES:
+        return None
+    return payload
+
+
 def _serialize_qubo_factored(canonical) -> dict:
     """Encode a QUBO as ``Q = F · diag(signs) · Fᵀ + diag(residual)``.
 
-    Two decompositions are computed and the one with smaller ``k`` is
-    returned:
+    Up to three candidate decompositions are computed and the
+    smallest-payload one is returned (tie-breaking lossless over lossy):
 
-    1. ``residual = Q.diagonal()``, decompose ``Q − diag(Q.diag())``.
-       Yields ``k = 0`` for purely diagonal QUBOs.
-    2. ``residual = 0``, decompose ``Q`` itself.
-       Yields ``k = rank(Q)`` for low-rank QUBOs (e.g. ``Q = U · Uᵀ``).
-
-    Stripping the diagonal destroys low-rank structure (``u·uᵀ`` minus its
-    diagonal is full rank); keeping the diagonal turns a pure-diagonal QUBO
-    into a full-rank decomposition. Trying both and picking the smaller
-    ``k`` covers both regimes.
+    A. ``residual = Q.diagonal()``, eigendecompose ``Q − diag(Q.diag())``.
+       Lossless. Yields ``k = 0`` for pure-diagonal QUBOs.
+    B. ``residual = 0``, eigendecompose ``Q`` itself.
+       Lossless. Yields ``k = rank(Q)`` for low-rank QUBOs (e.g. ``u·uᵀ``).
+    C. Truncate candidate A's eigendecomposition at the
+       :data:`_TRUNCATED_MAGNITUDE_THRESHOLD` magnitude cutoff (or the
+       payload-budget cap), absorbing the dropped eigencomponents' diagonal
+       contribution into the residual. Lossy. Discarded if reconstruction
+       error exceeds :data:`_TRUNCATED_REL_ERROR_MAX`.
 
     Only handles degree ≤ 2 terms — HUBO inputs must use the legacy form.
     """
     n = canonical.n_vars
     Q = _qubo_to_dense(canonical)
-
     diag = Q.diagonal().copy()
-    cand_a = _factored_from_eigh(Q - np.diag(diag), diag)
-    cand_b = _factored_from_eigh(Q, np.zeros(n, dtype=np.float64))
 
-    # Ties favour candidate B: one fewer additive channel and no diagonal
-    # subtraction in the eigendecomposition path.
-    return cand_b if cand_b["k"] <= cand_a["k"] else cand_a
+    # Strategy A: eigendecompose the diagonal-stripped matrix.
+    eigvals_off, V_off = _eigh_drop_noise(Q - np.diag(diag))
+    cand_a = _payload_from_eigh(eigvals_off, V_off, diag, n)
+
+    # Strategy B: eigendecompose Q itself with zero residual.
+    eigvals_full, V_full = _eigh_drop_noise(Q)
+    cand_b = _payload_from_eigh(eigvals_full, V_full, np.zeros(n, dtype=np.float64), n)
+
+    # Strategy C: truncated A with diagonal absorption (reuses Strategy A's eigh).
+    cand_c = _factored_truncated(eigvals_off, V_off, diag, Q)
+
+    candidates: list[tuple[dict, bool]] = [(cand_a, False), (cand_b, False)]
+    if cand_c is not None:
+        candidates.append((cand_c, True))
+
+    # Sort by (payload size, lossy?) so ties favour lossless candidates.
+    candidates.sort(key=lambda item: (_payload_size(item[0]), 1 if item[1] else 0))
+    return candidates[0][0]
 
 
 def _payload_size(payload) -> int:

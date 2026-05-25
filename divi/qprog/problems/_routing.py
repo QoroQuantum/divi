@@ -30,7 +30,7 @@ def create_tsp_qubo(
     constraint_penalty: float = 4.0,
     objective_weight: float = 1.0,
     reduced: bool = True,
-) -> npt.NDArray[np.float64]:
+) -> npt.NDArray[np.floating]:
     """Generate a QUBO for TSP with a fixed start city.
 
     Uses the standard node-ordering (assignment) encoding where binary
@@ -250,7 +250,7 @@ def create_cvrp_qubo(
     constraint_penalty: float = 4.0,
     objective_weight: float = 1.0,
     capacity_penalty: float = 4.0,
-) -> npt.NDArray[np.float64]:
+) -> npt.NDArray[np.floating]:
     """Generate a QUBO for CVRP with a fixed depot.
 
     Uses one-hot block encoding where each vehicle *v* has a block of

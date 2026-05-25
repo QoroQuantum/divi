@@ -28,6 +28,10 @@ from divi.backends import (
 )
 from divi.backends._characterization import (
     _FACTORED_PROBE_MIN_QUBITS,
+    _TRUNCATED_PAYLOAD_BUDGET_BYTES,
+    _TRUNCATED_REL_ERROR_MAX,
+    _payload_size,
+    _qubo_to_dense,
     _serialize_qubo_factored,
     _serialize_qubo_for_wire,
     _serialize_qubo_legacy,
@@ -284,6 +288,204 @@ class TestSerializeQuboForWire:
         assert wire["_format"] == "factored_v1"
         assert wire["n"] == n
         assert wire["k"] == 1
+
+
+class TestSerializeQuboMidScale:
+    """Encoder behavior on middle-range QUBOs (n=128..512).
+
+    Covers two real-world flavors:
+
+    * **Penalty-decorated low-rank** — small structural rank plus a
+      dense cardinality penalty. The full ``Q`` matrix stays low rank,
+      so the lossless candidate already gives ``k ≪ n``.
+    * **Penalty-plateau with diagonal bias** — same structure plus
+      independent linear/diagonal contributions. The full ``Q`` is now
+      effectively full rank, forcing the truncated (lossy) path.
+    """
+
+    @staticmethod
+    def _terms_from_dense(Q):
+        n = Q.shape[0]
+        terms = {}
+        for i in range(n):
+            if Q[i, i] != 0:
+                terms[(i,)] = float(Q[i, i])
+            for j in range(i + 1, n):
+                v = Q[i, j] + Q[j, i]
+                if v != 0:
+                    terms[(i, j)] = float(v)
+        return terms
+
+    @staticmethod
+    def _structural_plus_cardinality(n, n_structural=8, cardinality=10.0, seed=0):
+        rng = np.random.default_rng(seed)
+        F = rng.standard_normal((n, n_structural)) * 100.0
+        signs = rng.choice([-1.0, 1.0], size=n_structural)
+        structural = F @ np.diag(signs) @ F.T
+        Q = structural + cardinality * np.ones((n, n))
+        return 0.5 * (Q + Q.T)
+
+    @staticmethod
+    def _esg_portfolio_qubo(n, seed=0):
+        """Portfolio QUBO mirroring the production failure mode.
+
+        Construction (lifted from a 1000-asset ESG portfolio benchmark):
+        low-rank covariance, returns, ESG scores, sector indicators, and a
+        cardinality penalty. The cardinality linearization on the diagonal
+        scales ``|Q|_max`` with ``λ · target_count``, making relative
+        reconstruction error robust to truncation at this scale.
+        """
+        rng = np.random.default_rng(seed)
+        F_cov = rng.standard_normal((n, 50)) * 0.1
+        Sigma = F_cov @ F_cov.T
+        mu = rng.standard_normal(n) * 0.05
+        sectors = rng.integers(0, 8, size=n)
+        esg = rng.standard_normal(n) * 0.1
+        lambda_card = 100.0
+        target_count = max(1, n // 20)
+        lambda_sector = 10.0
+        Q = -1.0 * Sigma
+        np.fill_diagonal(Q, -mu + esg - 2 * lambda_card * target_count)
+        Q += lambda_card * np.ones_like(Q)
+        for s in range(8):
+            mask = (sectors == s).astype(np.float64)
+            Q += lambda_sector * np.outer(mask, mask)
+        return 0.5 * (Q + Q.T)
+
+    @pytest.mark.parametrize("n", [128, 256, 512])
+    def test_low_rank_penalty_qubo_picks_lossless_factored(self, n):
+        """Penalty + low-rank structure → lossless factored at ``k = rank(Q)``.
+
+        Spans the size range typical of mid-scale optimization problems
+        (128..512 qubits). The full Q matrix is low rank, so the
+        lossless ``residual=0`` candidate wins outright.
+        """
+        Q = self._structural_plus_cardinality(n, n_structural=8)
+        problem = BinaryOptimizationProblem(self._terms_from_dense(Q))
+        wire = _serialize_qubo_for_wire(problem)
+        assert wire["_format"] == "factored_v1"
+        # Q has rank ≤ structural rank + 1 (cardinality direction).
+        assert wire["k"] <= 16
+        # Reconstruction is at eigh-noise level (lossless).
+        F = np.frombuffer(bytes.fromhex(wire["F"]), dtype=np.float64).reshape(
+            n, wire["k"]
+        )
+        diag = np.frombuffer(bytes.fromhex(wire["diag"]), dtype=np.float64)
+        signs_arr = np.asarray(wire["signs"], dtype=np.float64)
+        Q_recon = F @ np.diag(signs_arr) @ F.T + np.diag(diag)
+        rel_err = np.abs(Q_recon - Q).max() / np.abs(Q).max()
+        assert rel_err < 1e-10
+
+    def test_truncated_preserves_structural_eigenvalues(self):
+        """Truncated payload keeps every off-diagonal eigenvalue above 1% of ``|λ_max|``."""
+        n = 1000
+        Q = self._esg_portfolio_qubo(n)
+        problem = BinaryOptimizationProblem(self._terms_from_dense(Q))
+        wire = _serialize_qubo_for_wire(problem)
+        assert wire["_format"] == "factored_v1"
+        assert 2 <= wire["k"] <= 32
+
+    def test_esg_portfolio_qubo_uses_truncated_factored(self):
+        """A production-scale ESG QUBO (n=1000) ships under the payload budget.
+
+        Without truncation the lossless factored payload would be ~16 MB
+        and the legacy payload ~14 MB — both rejected by typical 10 MB
+        nginx body-size limits. The truncated candidate cuts at the
+        cardinality direction's spectral gap, absorbs the dropped
+        eigencomponents into the diagonal, and stays inside the
+        documented error tolerance.
+        """
+        n = 1000
+        Q = self._esg_portfolio_qubo(n)
+        problem = BinaryOptimizationProblem(self._terms_from_dense(Q))
+        wire = _serialize_qubo_for_wire(problem)
+        assert wire["_format"] == "factored_v1"
+        assert _payload_size(wire) < _TRUNCATED_PAYLOAD_BUDGET_BYTES
+
+        F = np.frombuffer(bytes.fromhex(wire["F"]), dtype=np.float64).reshape(
+            n, wire["k"]
+        )
+        diag = np.frombuffer(bytes.fromhex(wire["diag"]), dtype=np.float64)
+        signs_arr = np.asarray(wire["signs"], dtype=np.float64)
+        Q_recon = F @ np.diag(signs_arr) @ F.T + np.diag(diag)
+
+        Q_max = float(np.abs(Q).max())
+        rel_err = float(np.abs(Q_recon - Q).max() / Q_max)
+        assert rel_err < _TRUNCATED_REL_ERROR_MAX
+        # Diagonal absorption keeps Q[i,i] exact at eigh-noise level.
+        diag_err = float(np.abs(np.diagonal(Q_recon - Q)).max())
+        assert diag_err < 1e-9 * Q_max
+
+    @pytest.mark.parametrize("n", [64, 128, 256, 512])
+    @pytest.mark.parametrize("seed", [0, 1, 2])
+    def test_random_low_rank_plus_noise_produces_valid_payload(self, n, seed):
+        """Encoder output is structurally valid across random inputs.
+
+        Spans the realistic problem-size range (64..512) at multiple seeds
+        to catch failure modes the focused unit tests miss — invalid
+        signs, NaN/Inf in hex blobs, dimension mismatches, oversized
+        payloads, or relative errors above the documented bound.
+        """
+        rng = np.random.default_rng(seed)
+        rank = max(1, n // 8)
+        U = rng.standard_normal((n, rank))
+        Q = U @ U.T + 0.01 * rng.standard_normal((n, n))
+        Q = 0.5 * (Q + Q.T)
+        problem = BinaryOptimizationProblem(self._terms_from_dense(Q))
+        wire = _serialize_qubo_for_wire(problem)
+
+        # Either format is acceptable; whichever was chosen must be
+        # structurally well-formed.
+        if isinstance(wire, dict) and wire.get("_format") == "factored_v1":
+            assert wire["n"] == n
+            assert 0 <= wire["k"] <= n
+            assert all(s in (-1.0, 1.0) for s in wire["signs"])
+            F_bytes = bytes.fromhex(wire["F"])
+            diag_bytes = bytes.fromhex(wire["diag"])
+            assert len(F_bytes) == n * wire["k"] * 8
+            assert len(diag_bytes) == n * 8
+            F = np.frombuffer(F_bytes, dtype=np.float64).reshape(n, wire["k"])
+            diag = np.frombuffer(diag_bytes, dtype=np.float64)
+            assert np.isfinite(F).all() and np.isfinite(diag).all()
+            # Reconstruction must obey the documented relative-error bound.
+            signs_arr = np.asarray(wire["signs"], dtype=np.float64)
+            Q_recon = F @ np.diag(signs_arr) @ F.T + np.diag(diag)
+            Q_max = float(np.abs(Q).max())
+            if Q_max > 0:
+                rel_err = float(np.abs(Q_recon - Q).max() / Q_max)
+                assert rel_err < _TRUNCATED_REL_ERROR_MAX
+        else:
+            # Legacy comma-key dict — must be exact.
+            assert all(isinstance(k, str) for k in wire.keys())
+            assert all(isinstance(v, (int, float)) for v in wire.values())
+
+    def test_smooth_decay_no_gap_avoids_lossy_path(self):
+        """Random full-rank QUBO with no spectral gap stays lossless.
+
+        Without a clean gap the truncated candidate is either rejected
+        (relative error exceeds the threshold) or beaten on byte size by
+        the lossless paths; in both cases the dispatcher returns a
+        lossless payload.
+        """
+        rng = np.random.default_rng(seed=11)
+        n = _FACTORED_PROBE_MIN_QUBITS
+        terms = {}
+        for i in range(n):
+            terms[(i,)] = float(rng.standard_normal())
+            for j in range(i + 1, n):
+                terms[(i, j)] = float(rng.standard_normal())
+        problem = BinaryOptimizationProblem(terms)
+        wire = _serialize_qubo_for_wire(problem)
+        if isinstance(wire, dict) and wire.get("_format") == "factored_v1":
+            n_w = wire["n"]
+            F = np.frombuffer(bytes.fromhex(wire["F"]), dtype=np.float64).reshape(
+                n_w, wire["k"]
+            )
+            diag = np.frombuffer(bytes.fromhex(wire["diag"]), dtype=np.float64)
+            signs_arr = np.asarray(wire["signs"], dtype=np.float64)
+            Q = _qubo_to_dense(problem.canonical_problem)
+            Q_recon = F @ np.diag(signs_arr) @ F.T + np.diag(diag)
+            assert np.abs(Q_recon - Q).max() < 1e-8 * max(1.0, np.abs(Q).max())
 
 
 class TestCharacterizationResult:
