@@ -158,6 +158,26 @@ class TestCleanHamiltonianSpo:
         else:
             assert cleaned.simplify() == expected_remaining.simplify()
 
+    def test_raise_on_constant_rejects_constant_only(self):
+        """``raise_on_constant=True`` rejects an operator with no non-identity terms."""
+        const_only = SparsePauliOp.from_list([("II", 2.5), ("II", 1.5)])
+        with pytest.raises(ValueError, match="only constant terms"):
+            _clean_hamiltonian_spo(const_only, raise_on_constant=True)
+
+    def test_raise_on_constant_passes_through_when_terms_remain(self):
+        """With non-identity terms present, the flag is a no-op on the result."""
+        spo = SparsePauliOp.from_list([("II", 3.0), ("ZI", 1.0)])
+        cleaned, constant = _clean_hamiltonian_spo(spo, raise_on_constant=True)
+        assert constant == pytest.approx(3.0)
+        assert cleaned.simplify() == SparsePauliOp.from_list([("ZI", 1.0)]).simplify()
+
+    def test_default_tolerates_constant_only(self):
+        """The default (no flag) returns an empty SPO for a constant-only operator."""
+        const_only = SparsePauliOp.from_list([("II", 4.0)])
+        cleaned, constant = _clean_hamiltonian_spo(const_only)
+        assert cleaned.size == 0
+        assert constant == pytest.approx(4.0)
+
 
 class TestSortHamiltonianTermsSpo:
     @pytest.mark.parametrize(

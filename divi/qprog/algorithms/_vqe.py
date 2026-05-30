@@ -188,9 +188,9 @@ class VQE(VariationalQuantumAlgorithm):
                 )
 
         cost_spo = to_spo(hamiltonian)
-        self.cost_hamiltonian, self.loss_constant = _clean_hamiltonian_spo(cost_spo)
-        if self.cost_hamiltonian.size == 0:
-            raise ValueError("Hamiltonian contains only constant terms.")
+        self.cost_hamiltonian, self.loss_constant = _clean_hamiltonian_spo(
+            cost_spo, raise_on_constant=True
+        )
 
     def _create_meta_circuit_factories(self) -> dict[str, MetaCircuit]:
         """Create the meta-circuit factories for VQE.
