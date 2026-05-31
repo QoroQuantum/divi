@@ -147,6 +147,20 @@ class MetaCircuit:
     backend and drastically reducing wire payload for variational loops.
     """
 
+    parametric_qasm_bodies: tuple[tuple[QASMTag, str], ...] = ()
+    """Per-body parametric QASM strings provided by an upstream stage.
+
+    When non-empty, downstream stages should prefer these pre-rendered
+    bodies over re-deriving them from ``circuit_bodies`` via
+    :func:`~divi.circuits.dag_to_qasm_body`. Used by
+    :class:`~divi.pipeline.stages.DataBindingStage`'s template fast path
+    to ship per-sample partial bodies (data substituted, weight
+    placeholders preserved) without materialising N distinct bound DAGs;
+    :class:`~divi.pipeline.stages.ParameterBindingStage`'s fast path
+    consults this field, keyed by ``body_tag``, before falling back to
+    DAG-derived templates.
+    """
+
     measurement_groups: tuple[tuple[object, ...], ...] = ()
     """Cached grouped observables set by
     :class:`~divi.pipeline.stages.MeasurementStage`."""
@@ -206,6 +220,12 @@ class MetaCircuit:
     ) -> MetaCircuit:
         """Return a new MetaCircuit with updated parametric template QASMs."""
         return replace(self, template_circuit_bodies=bodies)
+
+    def set_parametric_qasm_bodies(
+        self, bodies: tuple[tuple[QASMTag, str], ...]
+    ) -> MetaCircuit:
+        """Return a new MetaCircuit with updated per-body parametric QASMs."""
+        return replace(self, parametric_qasm_bodies=bodies)
 
     def set_measurement_groups(
         self, measurement_groups: tuple[tuple[object, ...], ...]

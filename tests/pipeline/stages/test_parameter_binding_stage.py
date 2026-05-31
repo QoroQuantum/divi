@@ -23,6 +23,7 @@ from divi.pipeline.stages import (
     PauliTwirlStage,
     QEMStage,
 )
+from divi.pipeline.stages._parameter_binding_stage import _validate_param_sets
 from tests.pipeline._helpers import DummySpecStage, two_group_meta
 
 
@@ -54,6 +55,14 @@ class TestParameterBindingStage:
         env = PipelineEnv(backend=dummy_pipeline_env.backend, param_sets=[1.0, 2.0])
         with pytest.raises(ValueError, match="param_sets to be 2D"):
             pipeline.run_forward_pass("x", env)
+
+    @pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
+    def test_rejects_non_finite_param_sets(self, bad):
+        """Non-finite weights are rejected at the binding boundary, before any
+        render path runs."""
+        env = PipelineEnv(backend=None, param_sets=[[1.0, bad]])
+        with pytest.raises(ValueError, match="non-finite gate parameters"):
+            _validate_param_sets(env)
 
     def test_passthrough_when_no_symbols(self, dummy_pipeline_env):
         meta = two_group_meta()
@@ -122,6 +131,109 @@ class TestParameterBindingStage:
                     if axis_name == "param_set":
                         param_set_indices.add(axis_value)
             assert param_set_indices == {0, 1, 2}
+
+    def test_fast_path_consumes_pre_populated_parametric_qasm_bodies(
+        self, dummy_pipeline_env
+    ):
+        """If ``parametric_qasm_bodies`` is set, the fast path uses it
+        instead of deriving a body from the DAG.
+
+        We construct a MetaCircuit whose ``parametric_qasm_bodies`` entry
+        contains a marker (``"// SENTINEL\\n"`` plus an ``rx(theta) q[0];``
+        gate) that the DAG itself does NOT emit. If PB consults the
+        pre-populated body, the marker survives into ``bound_circuit_bodies``.
+        """
+        # Real parametric DAG: 2 params, RX + RZ.
+        meta = _parametric_meta()
+        sentinel_body = "// SENTINEL\nrx(theta) q[0];\nrz(phi) q[0];\n"
+        meta_with_pre = meta.set_parametric_qasm_bodies(((((), sentinel_body),)))
+
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=meta_with_pre),
+                MeasurementStage(),
+                ParameterBindingStage(),
+            ]
+        )
+        env = PipelineEnv(
+            backend=dummy_pipeline_env.backend,
+            param_sets=np.array([[1.5, 2.7]]),
+        )
+        trace = pipeline.run_forward_pass("x", env)
+
+        for node in trace.final_batch.values():
+            for _tag, body in node.bound_circuit_bodies:
+                assert "// SENTINEL" in body, (
+                    "PB fast path did not consume the pre-populated "
+                    "parametric_qasm_bodies; sentinel marker missing."
+                )
+                # Weight substitution should still have happened.
+                assert "theta" not in body
+                assert "phi" not in body
+
+    def test_zero_param_fast_path_consumes_parked_data_bodies(self, dummy_pipeline_env):
+        """A weight-less circuit (every parameter bound by DataBindingStage)
+        must still emit the per-sample data bodies parked in
+        ``parametric_qasm_bodies`` — not re-serialise the shared DAG, which
+        would silently drop the feature batch (identical bodies)."""
+        qc = QuantumCircuit(1)
+        qc.h(0)
+        meta = MetaCircuit(
+            circuit_bodies=(((), circuit_to_dag(qc)),),
+            parameters=(),
+            observable=SparsePauliOp.from_list([("Z", 1.0)]),
+        )
+        sentinel_body = "// DATA-BAKED\nrx(0.5) q[0];\n"
+        meta_with_pre = meta.set_parametric_qasm_bodies(((((), sentinel_body),)))
+
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=meta_with_pre),
+                MeasurementStage(),
+                ParameterBindingStage(),
+            ]
+        )
+        env = PipelineEnv(
+            backend=dummy_pipeline_env.backend, param_sets=np.zeros((1, 0))
+        )
+        trace = pipeline.run_forward_pass("x", env)
+
+        for node in trace.final_batch.values():
+            assert node.bound_circuit_bodies
+            for _tag, body in node.bound_circuit_bodies:
+                assert "// DATA-BAKED" in body, (
+                    "zero-weight fast path ignored parked data bodies; "
+                    "the feature batch would be silently dropped."
+                )
+
+    def test_fast_path_falls_back_to_dag_when_tag_missing(self, dummy_pipeline_env):
+        """A ``parametric_qasm_bodies`` entry for a different tag does not
+        affect bodies whose tags are not in the lookup — those fall back
+        to ``_qasm_body_cached(dag, ...)``."""
+        meta = _parametric_meta()
+        # Pre-populated entry uses a tag that doesn't match the body's tag.
+        meta_with_pre = meta.set_parametric_qasm_bodies(
+            (((("unrelated_axis", 0),), "// WRONG\n"),)
+        )
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=meta_with_pre),
+                MeasurementStage(),
+                ParameterBindingStage(),
+            ]
+        )
+        env = PipelineEnv(
+            backend=dummy_pipeline_env.backend,
+            param_sets=np.array([[1.5, 2.7]]),
+        )
+        trace = pipeline.run_forward_pass("x", env)
+
+        for node in trace.final_batch.values():
+            for _tag, body in node.bound_circuit_bodies:
+                assert "// WRONG" not in body
+                # Bodies derived from the DAG retain rx / rz instructions.
+                assert "rx(" in body
+                assert "rz(" in body
 
     def test_param_count_mismatch_raises(self, dummy_pipeline_env):
         """Providing wrong number of parameters for a circuit raises ValueError."""

@@ -156,6 +156,14 @@ class PipelineEnv:
     param_sets: Sequence[Sequence[float]] | npt.NDArray[np.floating] = ()
     """Parameter sets for binding — strictly 2D (list-of-lists or 2D ndarray)."""
 
+    feature_batch: npt.NDArray[np.floating] | None = None
+    """Classical feature batch for the data axis, shape ``(n_samples, n_data)``.
+    Read by :class:`~divi.pipeline.stages.DataBindingStage`; ``None`` otherwise."""
+
+    labels: npt.NDArray[np.floating] | None = None
+    """Optional per-sample supervised targets, shape ``(n_samples,)``, aligned
+    with ``feature_batch``. Read by :class:`~divi.pipeline.stages.DataBindingStage`."""
+
     artifacts: dict = field(default_factory=dict)
     """Mutable output dict populated during execution (e.g. ``circuit_count``)."""
 

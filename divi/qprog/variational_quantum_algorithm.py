@@ -267,6 +267,15 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
     # (or override as a property) or the corresponding methods will raise
     # AttributeError.
     _supports_fixed_param_scans: ClassVar[bool] = True
+    #: Set ``True`` by subclasses that hand ``loss_constant`` to a cost-pipeline
+    #: sub-component which folds it in itself (e.g. QNN / CustomVQA-with-data-
+    #: binding delegate to :class:`~divi.pipeline.stages.DataBindingStage`,
+    #: which adds it per-sample before reducing). When ``True``,
+    #: :meth:`_evaluate_cost_param_sets` skips its post-hoc add to avoid
+    #: double-counting. Defaults ``False`` — the constant is added once
+    #: post-reduction for vanilla VQE/QAOA/CustomVQA. Set per-instance because
+    #: CustomVQA only consumes the constant when a data axis is active.
+    _loss_constant_consumed: bool = False
     current_iteration: int
     n_layers: int
     loss_constant: float
@@ -997,10 +1006,15 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             overrides["rng"] = self._rng
         return super()._build_pipeline_env(**overrides)
 
-    def _build_cost_pipeline(self, spec_stage: Stage) -> CircuitPipeline:
+    def _build_cost_pipeline(
+        self,
+        spec_stage: Stage,
+        extra_stages: tuple[Stage, ...] = (),
+    ) -> CircuitPipeline:
         """Build the cost-evaluation pipeline.
 
-        Default ordering: spec → QEM (→ PauliTwirl) → Measurement → ParamBinding.
+        Default ordering: spec → [extra_stages] → QEM (→ PauliTwirl)
+        → Measurement → ParamBinding.
 
         ParameterBinding is placed last because it is a cheap string-template
         operation, whereas QEM/PauliTwirl/Measurement are expensive structural
@@ -1015,10 +1029,15 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         Args:
             spec_stage: A SpecStage producing MetaCircuit(s) from the
                 cost Hamiltonian (e.g. TrotterSpecStage).
+            extra_stages: Subclass-supplied stages to insert *between* the
+                spec and the (optional) early-bind ParameterBindingStage.
+                Data-binding subclasses (QNN, CustomVQA) inject
+                :class:`~divi.pipeline.stages.DataBindingStage` here so the
+                data axis fans out before QEM/twirling sees it.
         """
         bind_early = getattr(self._qem_protocol, "bind_before_mitigation", False)
 
-        stages: list[Stage] = [spec_stage]
+        stages: list[Stage] = [spec_stage, *extra_stages]
         if bind_early:
             stages.append(ParameterBindingStage())
 
@@ -1078,8 +1097,9 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         self._total_run_time += env.artifacts.get("run_time", 0.0)
         self._current_execution_result = env.artifacts.get("_current_execution_result")
 
+        constant = 0.0 if self._loss_constant_consumed else self.loss_constant
         indexed = {
-            _extract_param_set_idx(key): float(value[0]) + self.loss_constant
+            _extract_param_set_idx(key): float(value[0]) + constant
             for key, value in result.items()
         }
         return dict(sorted(indexed.items()))

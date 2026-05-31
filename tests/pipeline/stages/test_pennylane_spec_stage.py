@@ -323,3 +323,50 @@ class TestPennyLaneSpecStagePipeline:
         # RX(0) RZ(0) |0> = |0>, so <Z> ≈ 1.0
         expval = next(iter(result.values()))
         assert expval == pytest.approx([1.0], abs=0.05)
+
+    def test_concrete_tape_with_trainable_subset_binds(self, default_test_simulator):
+        """A concrete-valued tape with an explicit trainable_params subset
+        binds those slots from param_sets; non-trainable slots stay fixed.
+
+        Tape: RX(0), RY(0.7 fixed), RZ(0); train slots 0 and 2.
+        At [0.3, 0.9]: <Z> = cos(0.3) * cos(0.7), not cos(0.7) (params ignored).
+        """
+        qs = qp.tape.QuantumScript(
+            ops=[qp.RX(0.0, wires=0), qp.RY(0.7, wires=0), qp.RZ(0.0, wires=0)],
+            measurements=[qp.expval(qp.Z(0))],
+        )
+        qs.trainable_params = [0, 2]
+
+        pipeline = CircuitPipeline(
+            stages=[
+                PennyLaneSpecStage(),
+                MeasurementStage(),
+                ParameterBindingStage(),
+            ]
+        )
+        env = PipelineEnv(
+            backend=default_test_simulator, param_sets=np.array([[0.3, 0.9]])
+        )
+        result = pipeline.run(initial_spec=qs, env=env)
+        expval = float(np.atleast_1d(next(iter(result.values())))[0])
+        assert expval == pytest.approx(np.cos(0.3) * np.cos(0.7), abs=0.05)
+
+    def test_concrete_tape_with_param_columns_raises(self, default_test_simulator):
+        """A concrete tape with no bindable parameters must reject param_sets
+        loudly rather than silently ignore them."""
+        qs = qp.tape.QuantumScript(
+            ops=[qp.RX(0.0, wires=0), qp.RZ(0.0, wires=0)],
+            measurements=[qp.expval(qp.Z(0))],
+        )
+        pipeline = CircuitPipeline(
+            stages=[
+                PennyLaneSpecStage(),
+                MeasurementStage(),
+                ParameterBindingStage(),
+            ]
+        )
+        env = PipelineEnv(
+            backend=default_test_simulator, param_sets=np.array([[0.3, 0.9]])
+        )
+        with pytest.raises(ValueError, match="no bindable parameters"):
+            pipeline.run(initial_spec=qs, env=env)

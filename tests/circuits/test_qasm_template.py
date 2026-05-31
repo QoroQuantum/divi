@@ -45,6 +45,40 @@ class TestBuildTemplate:
         template = build_template(body, ("x", "y"))
         assert len(template.fragments) == len(template.slot_indices) + 1
 
+    def test_short_symbol_does_not_match_inside_keyword(self):
+        """A parameter named ``x`` must not match the ``x`` in ``cx``,
+        ``rx``, or any other QASM identifier where it is a substring."""
+        body = "rx(x) q[0];\ncx q[0],q[1];\n"
+        template = build_template(body, ("x",))
+        rendered = render_template(template, ("1.5",))
+        # Only the parametric slot in `rx(x)` should be replaced; the
+        # `x` inside `rx` and `cx` must survive verbatim.
+        assert rendered == "rx(1.5) q[0];\ncx q[0],q[1];\n"
+
+    def test_symbol_with_brackets_does_not_match_qubit_index(self):
+        """A parameter named ``x[0]`` must not match the ``[0]`` in
+        ``q[0]`` qubit indexing."""
+        body = "rx(x[0]) q[0];\nry(x[1]) q[1];\n"
+        template = build_template(body, ("x[0]", "x[1]"))
+        rendered = render_template(template, ("1.0", "2.0"))
+        assert rendered == "rx(1.0) q[0];\nry(2.0) q[1];\n"
+
+    def test_short_symbol_does_not_match_inside_other_identifier(self):
+        """A parameter named ``h`` must not match the ``h`` in
+        identifier-continuation contexts (e.g., hypothetical names like
+        ``theta`` should be untouched)."""
+        body = "rx(theta) q[0];\nh q[0];\n"
+        template = build_template(body, ("h",))
+        rendered = render_template(template, ("1.5",))
+        # `h` inside `theta` must NOT match; the standalone `h q[0]`
+        # also has `h` as a gate name — it would match here because the
+        # surrounding chars (start-of-line / space) are non-identifier.
+        # We accept that — naming a parameter ``h`` is user error and
+        # would shadow the H gate; we just guarantee no false hits inside
+        # other identifiers.
+        assert "thetA" not in rendered  # 'h' inside 'theta' not touched
+        assert "theta" in rendered
+
 
 class TestRenderTemplate:
     def test_render_replaces_all_symbols_with_values(self):

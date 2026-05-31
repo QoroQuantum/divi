@@ -64,7 +64,9 @@ def build_template(qasm_body: str, symbol_names: tuple[str, ...]) -> QASMTemplat
     """Split a QASM string at symbol boundaries into a :class:`QASMTemplate`.
 
     Symbol names are matched longest-first to avoid partial-match issues
-    (e.g., ``w_1`` matching inside ``w_10``).
+    (e.g., ``w_1`` matching inside ``w_10``). Matches require
+    non-identifier characters on both sides, so a parameter named ``x``
+    does NOT match the ``x`` inside ``cx q[0],q[1];``.
 
     Args:
         qasm_body: The QASM body string containing symbolic parameter names.
@@ -80,7 +82,9 @@ def build_template(qasm_body: str, symbol_names: tuple[str, ...]) -> QASMTemplat
     name_to_idx = {name: i for i, name in enumerate(symbol_names)}
 
     escaped = sorted((re.escape(name) for name in symbol_names), key=len, reverse=True)
-    pattern = re.compile("|".join(escaped))
+    pattern = re.compile(
+        r"(?<![A-Za-z0-9_])(?:" + "|".join(escaped) + r")(?![A-Za-z0-9_])"
+    )
 
     fragments: list[str] = []
     slot_indices: list[int] = []

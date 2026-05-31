@@ -9,7 +9,7 @@ import threading
 from qiskit import QuantumCircuit
 from qiskit.converters import circuit_to_dag
 
-from divi.pipeline.stages._parameter_binding_stage import (
+from divi.pipeline.stages._qasm_cache import (
     _FAST_QASM_CACHE,
     _FAST_QASM_CACHE_MAXSIZE,
     _qasm_body_cached,
