@@ -73,8 +73,8 @@ class DryRunReport(NamedTuple):
 
 
 def _effective_bodies(mc: MetaCircuit) -> tuple:
-    # Mirrors _compile_batch: bound bodies take priority over parametric DAGs.
-    return mc.bound_circuit_bodies or mc.circuit_bodies or ()
+    # Mirrors _compile_batch: rendered QASM bodies take priority over DAGs.
+    return mc.qasm_bodies or mc.circuit_bodies or ()
 
 
 def _two_qubit_depth(dag: DAGCircuit) -> int:
@@ -112,12 +112,8 @@ def _aggregate_circuit_stats(batch: MetaCircuitBatch) -> dict[str, float]:
     twoq_depths: list[int] = []
     widths: list[int] = []
     for mc in batch.values():
-        # bound_circuit_bodies are QASM strings — re-parsing them only to
-        # measure depth would be expensive, and in practice their structure
-        # mirrors ``circuit_bodies`` modulo concrete parameter substitution,
-        # which doesn't change depth or width.  Iterate the parametric DAGs
-        # when available; fall back to nothing when a body has only bound
-        # QASM (parameter-binding fast path stripped DAGs).
+        # Stats come from the DAGs; qasm_bodies (QASM strings) are skipped —
+        # binding doesn't change depth or width, so re-parsing them is wasteful.
         for _tag, dag in mc.circuit_bodies:
             depths.append(dag.depth())
             twoq_depths.append(_two_qubit_depth(dag))

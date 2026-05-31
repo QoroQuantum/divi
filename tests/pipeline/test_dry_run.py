@@ -140,7 +140,7 @@ class TestAnalyticDryRun:
             assert real_stage.factor == dry_stage.factor
 
     def test_param_binding_fast_path_counts_correctly(self, dummy_pipeline_env):
-        """Fast-path ParameterBindingStage populates bound_circuit_bodies; dry-run
+        """Fast-path ParameterBindingStage populates qasm_bodies; dry-run
         counter must read from there (not from the untouched circuit_bodies)."""
         meta = _parametric_twirlable_meta()
         dummy_pipeline_env.param_sets = np.asarray([[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]])

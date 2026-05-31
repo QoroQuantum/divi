@@ -79,7 +79,7 @@ def test_expand_emits_one_body_per_sample(composed):
 
 def test_template_path_renders_partial_bodies_with_data_substituted(composed):
     """Template path: per-sample partial bodies are populated in
-    ``parametric_qasm_bodies``, with data names absent and weight names
+    ``qasm_bodies``, with data names absent and weight names
     preserved as placeholders."""
     qc, data_params, weight_params = composed
     feature_batch = np.array([[1.5, -0.5]])
@@ -89,8 +89,8 @@ def test_template_path_renders_partial_bodies_with_data_substituted(composed):
     meta = _make_meta(qc, data_params, weight_params)
     result, _ = stage.expand({(): meta}, env=_env(feature_batch=feature_batch))
     out_meta = result.batch[()]
-    assert len(out_meta.parametric_qasm_bodies) == feature_batch.shape[0]
-    for _, partial_body in out_meta.parametric_qasm_bodies:
+    assert len(out_meta.qasm_bodies) == feature_batch.shape[0]
+    for _, partial_body in out_meta.qasm_bodies:
         for d in data_params:
             assert (
                 d.name not in partial_body
@@ -117,7 +117,7 @@ def test_template_tags_map_each_sample_to_its_row_index(composed):
         env=_env(feature_batch=feature_batch),
     )
     out = result.batch[()]
-    for i, (tag, body) in enumerate(out.parametric_qasm_bodies):
+    for i, (tag, body) in enumerate(out.qasm_bodies):
         assert tag[-1] == (DATA_AXIS, i)
         expected = _format_bound_param(float(feature_batch[i][0]), out.precision)
         assert expected in body, f"row {i} data {expected!r} missing from its body"
@@ -179,9 +179,9 @@ def test_eager_path_substitutes_data_into_dag(composed):
         for sym in getattr(param, "parameters", set())
     }
     assert remaining_params == set(weight_params)
-    # Eager path does NOT populate parametric_qasm_bodies — that's a
+    # Eager path does NOT populate qasm_bodies — that's a
     # template-path-only artifact.
-    assert result.batch[()].parametric_qasm_bodies == ()
+    assert result.batch[()].qasm_bodies == ()
 
 
 @pytest.mark.parametrize(
@@ -554,7 +554,7 @@ def test_eager_path_builds_fresh_dags_each_call(composed):
 
 def test_validate_picks_template_path_when_only_pb_downstream(composed):
     """With only ParameterBindingStage downstream, the template path is
-    chosen — its fast-path lookup consumes ``parametric_qasm_bodies``."""
+    chosen — its fast-path lookup consumes ``qasm_bodies``."""
     qc, data_params, weight_params = composed
     stage = DataBindingStage(data_params=data_params, loss_reduction=_mean)
     stage.validate(before=(), after=(ParameterBindingStage(),))

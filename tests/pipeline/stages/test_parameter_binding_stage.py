@@ -24,7 +24,11 @@ from divi.pipeline.stages import (
     QEMStage,
 )
 from divi.pipeline.stages._parameter_binding_stage import _validate_param_sets
-from tests.pipeline._helpers import DummySpecStage, two_group_meta
+from tests.pipeline._helpers import (
+    DummySpecStage,
+    run_binding_pipeline,
+    two_group_meta,
+)
 
 
 def _parametric_meta(symbol_names: tuple[str, ...] = ("theta", "phi")) -> MetaCircuit:
@@ -44,17 +48,12 @@ class TestParameterBindingStage:
     """Spec: ParameterBindingStage expand binds env.param_sets into circuit body QASMs; reduce is identity."""
 
     def test_requires_2d_param_sets(self, dummy_pipeline_env):
-        meta = two_group_meta()
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=meta),
-                MeasurementStage(),
-                ParameterBindingStage(),
-            ]
-        )
-        env = PipelineEnv(backend=dummy_pipeline_env.backend, param_sets=[1.0, 2.0])
         with pytest.raises(ValueError, match="param_sets to be 2D"):
-            pipeline.run_forward_pass("x", env)
+            run_binding_pipeline(
+                two_group_meta(),
+                backend=dummy_pipeline_env.backend,
+                param_sets=[1.0, 2.0],
+            )
 
     @pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
     def test_rejects_non_finite_param_sets(self, bad):
@@ -65,42 +64,26 @@ class TestParameterBindingStage:
             _validate_param_sets(env)
 
     def test_passthrough_when_no_symbols(self, dummy_pipeline_env):
-        meta = two_group_meta()
-        env = PipelineEnv(
+        trace = run_binding_pipeline(
+            two_group_meta(),
             backend=dummy_pipeline_env.backend,
             param_sets=np.array([[0.0]]),
         )
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=meta),
-                MeasurementStage(),
-                ParameterBindingStage(),
-            ]
-        )
-        trace = pipeline.run_forward_pass("x", env)
         for node in trace.final_batch.values():
             # Non-parametric pass-through still serialises each DAG body once.
-            assert node.bound_circuit_bodies
+            assert node.qasm_bodies
 
     def test_binds_parameters_into_qasm(self, dummy_pipeline_env):
         """Core spec: parameter names in the template are replaced by formatted values."""
-        meta = _parametric_meta()
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=meta),
-                MeasurementStage(),
-                ParameterBindingStage(),
-            ]
-        )
-        env = PipelineEnv(
+        trace = run_binding_pipeline(
+            _parametric_meta(),
             backend=dummy_pipeline_env.backend,
             param_sets=np.array([[1.5, 2.7]]),
         )
-        trace = pipeline.run_forward_pass("x", env)
 
         # All bound bodies should contain the formatted values, not the param names.
         for node in trace.final_batch.values():
-            for _tag, body in node.bound_circuit_bodies:
+            for _tag, body in node.qasm_bodies:
                 assert "theta" not in body
                 assert "phi" not in body
                 assert "1.5" in body
@@ -108,64 +91,46 @@ class TestParameterBindingStage:
 
     def test_multiple_param_sets_produce_multiple_bodies(self, dummy_pipeline_env):
         """Each param set produces a separate body variant tagged with param_set axis."""
-        meta = _parametric_meta()
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=meta),
-                MeasurementStage(),
-                ParameterBindingStage(),
-            ]
-        )
-        params = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
-        env = PipelineEnv(
+        trace = run_binding_pipeline(
+            _parametric_meta(),
             backend=dummy_pipeline_env.backend,
-            param_sets=params,
+            param_sets=np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]),
         )
-        trace = pipeline.run_forward_pass("x", env)
 
         # The param_set axis appears on the bound-body tags.
         for node in trace.final_batch.values():
             param_set_indices = set()
-            for tag, _body in node.bound_circuit_bodies:
+            for tag, _body in node.qasm_bodies:
                 for axis_name, axis_value in tag:
                     if axis_name == "param_set":
                         param_set_indices.add(axis_value)
             assert param_set_indices == {0, 1, 2}
 
-    def test_fast_path_consumes_pre_populated_parametric_qasm_bodies(
-        self, dummy_pipeline_env
-    ):
-        """If ``parametric_qasm_bodies`` is set, the fast path uses it
+    def test_fast_path_consumes_pre_populated_qasm_bodies(self, dummy_pipeline_env):
+        """If ``qasm_bodies`` is set, the fast path uses it
         instead of deriving a body from the DAG.
 
-        We construct a MetaCircuit whose ``parametric_qasm_bodies`` entry
+        We construct a MetaCircuit whose ``qasm_bodies`` entry
         contains a marker (``"// SENTINEL\\n"`` plus an ``rx(theta) q[0];``
         gate) that the DAG itself does NOT emit. If PB consults the
-        pre-populated body, the marker survives into ``bound_circuit_bodies``.
+        pre-populated body, the marker survives into ``qasm_bodies``.
         """
         # Real parametric DAG: 2 params, RX + RZ.
         meta = _parametric_meta()
         sentinel_body = "// SENTINEL\nrx(theta) q[0];\nrz(phi) q[0];\n"
-        meta_with_pre = meta.set_parametric_qasm_bodies(((((), sentinel_body),)))
+        meta_with_pre = meta.set_qasm_bodies(((((), sentinel_body),)))
 
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=meta_with_pre),
-                MeasurementStage(),
-                ParameterBindingStage(),
-            ]
-        )
-        env = PipelineEnv(
+        trace = run_binding_pipeline(
+            meta_with_pre,
             backend=dummy_pipeline_env.backend,
             param_sets=np.array([[1.5, 2.7]]),
         )
-        trace = pipeline.run_forward_pass("x", env)
 
         for node in trace.final_batch.values():
-            for _tag, body in node.bound_circuit_bodies:
+            for _tag, body in node.qasm_bodies:
                 assert "// SENTINEL" in body, (
                     "PB fast path did not consume the pre-populated "
-                    "parametric_qasm_bodies; sentinel marker missing."
+                    "qasm_bodies; sentinel marker missing."
                 )
                 # Weight substitution should still have happened.
                 assert "theta" not in body
@@ -174,7 +139,7 @@ class TestParameterBindingStage:
     def test_zero_param_fast_path_consumes_parked_data_bodies(self, dummy_pipeline_env):
         """A weight-less circuit (every parameter bound by DataBindingStage)
         must still emit the per-sample data bodies parked in
-        ``parametric_qasm_bodies`` — not re-serialise the shared DAG, which
+        ``qasm_bodies`` — not re-serialise the shared DAG, which
         would silently drop the feature batch (identical bodies)."""
         qc = QuantumCircuit(1)
         qc.h(0)
@@ -184,52 +149,39 @@ class TestParameterBindingStage:
             observable=SparsePauliOp.from_list([("Z", 1.0)]),
         )
         sentinel_body = "// DATA-BAKED\nrx(0.5) q[0];\n"
-        meta_with_pre = meta.set_parametric_qasm_bodies(((((), sentinel_body),)))
+        meta_with_pre = meta.set_qasm_bodies(((((), sentinel_body),)))
 
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=meta_with_pre),
-                MeasurementStage(),
-                ParameterBindingStage(),
-            ]
+        trace = run_binding_pipeline(
+            meta_with_pre,
+            backend=dummy_pipeline_env.backend,
+            param_sets=np.zeros((1, 0)),
         )
-        env = PipelineEnv(
-            backend=dummy_pipeline_env.backend, param_sets=np.zeros((1, 0))
-        )
-        trace = pipeline.run_forward_pass("x", env)
 
         for node in trace.final_batch.values():
-            assert node.bound_circuit_bodies
-            for _tag, body in node.bound_circuit_bodies:
+            assert node.qasm_bodies
+            for _tag, body in node.qasm_bodies:
                 assert "// DATA-BAKED" in body, (
                     "zero-weight fast path ignored parked data bodies; "
                     "the feature batch would be silently dropped."
                 )
 
     def test_fast_path_falls_back_to_dag_when_tag_missing(self, dummy_pipeline_env):
-        """A ``parametric_qasm_bodies`` entry for a different tag does not
+        """A ``qasm_bodies`` entry for a different tag does not
         affect bodies whose tags are not in the lookup — those fall back
         to ``_qasm_body_cached(dag, ...)``."""
         meta = _parametric_meta()
         # Pre-populated entry uses a tag that doesn't match the body's tag.
-        meta_with_pre = meta.set_parametric_qasm_bodies(
+        meta_with_pre = meta.set_qasm_bodies(
             (((("unrelated_axis", 0),), "// WRONG\n"),)
         )
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=meta_with_pre),
-                MeasurementStage(),
-                ParameterBindingStage(),
-            ]
-        )
-        env = PipelineEnv(
+        trace = run_binding_pipeline(
+            meta_with_pre,
             backend=dummy_pipeline_env.backend,
             param_sets=np.array([[1.5, 2.7]]),
         )
-        trace = pipeline.run_forward_pass("x", env)
 
         for node in trace.final_batch.values():
-            for _tag, body in node.bound_circuit_bodies:
+            for _tag, body in node.qasm_bodies:
                 assert "// WRONG" not in body
                 # Bodies derived from the DAG retain rx / rz instructions.
                 assert "rx(" in body
@@ -237,20 +189,12 @@ class TestParameterBindingStage:
 
     def test_param_count_mismatch_raises(self, dummy_pipeline_env):
         """Providing wrong number of parameters for a circuit raises ValueError."""
-        meta = _parametric_meta()  # expects 2 symbols
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=meta),
-                MeasurementStage(),
-                ParameterBindingStage(),
-            ]
-        )
-        env = PipelineEnv(
-            backend=dummy_pipeline_env.backend,
-            param_sets=np.array([[1.0]]),  # only 1 value for 2 symbols
-        )
         with pytest.raises(ValueError, match="expected 2 parameters"):
-            pipeline.run_forward_pass("x", env)
+            run_binding_pipeline(
+                _parametric_meta(),  # expects 2 symbols
+                backend=dummy_pipeline_env.backend,
+                param_sets=np.array([[1.0]]),  # only 1 value for 2 symbols
+            )
 
     def test_reduce_is_identity(self):
         """Reduce returns its input unchanged."""
@@ -321,33 +265,25 @@ class _TemplateCapableBackend:
 class TestParameterBindingStageTemplatePath:
     """Spec: when env.backend.supports_circuit_templates is True, the fast
     path defers parameter binding by parking parametric QASM in
-    ``template_circuit_bodies`` instead of pre-rendering per param set."""
+    ``qasm_bodies`` instead of pre-rendering per param set."""
 
     def test_template_carrier_populated_when_backend_supports_templates(self):
-        """Backend opts in → template_circuit_bodies carries parametric QASM."""
-        meta = _parametric_meta()
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=meta),
-                MeasurementStage(),
-                ParameterBindingStage(),
-            ]
-        )
-        env = PipelineEnv(
+        """Backend opts in → qasm_bodies carries parametric QASM."""
+        trace = run_binding_pipeline(
+            _parametric_meta(),
             backend=_TemplateCapableBackend(),
             param_sets=np.array([[1.5, 2.7], [3.0, 4.0]]),
         )
-        trace = pipeline.run_forward_pass("x", env)
 
         for node in trace.final_batch.values():
             assert (
-                node.template_circuit_bodies
-            ), "Template carrier should be populated when backend supports templates."
+                node.qasm_bodies
+            ), "qasm_bodies should be populated when backend supports templates."
             assert (
-                node.bound_circuit_bodies == ()
-            ), "Bound bodies must stay empty so compile takes the template path."
+                node.parameters
+            ), "Parameters must remain unbound so compile takes the template path."
             # Symbols survive: substitution is deferred to the backend.
-            for _tag, body in node.template_circuit_bodies:
+            for _tag, body in node.qasm_bodies:
                 assert "theta" in body
                 assert "phi" in body
 
@@ -355,22 +291,14 @@ class TestParameterBindingStageTemplatePath:
         self, dummy_pipeline_env
     ):
         """Non-template backend → fast path renders bound QASM as before."""
-        meta = _parametric_meta()
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=meta),
-                MeasurementStage(),
-                ParameterBindingStage(),
-            ]
-        )
-        env = PipelineEnv(
+        trace = run_binding_pipeline(
+            _parametric_meta(),
             backend=dummy_pipeline_env.backend,
             param_sets=np.array([[1.5, 2.7]]),
         )
-        trace = pipeline.run_forward_pass("x", env)
         for node in trace.final_batch.values():
-            assert node.bound_circuit_bodies
-            assert node.template_circuit_bodies == ()
+            assert node.qasm_bodies
+            assert node.parameters == ()
 
     def test_template_path_skipped_when_slow_path_required(
         self, suppress_pipeline_perf_warnings
@@ -391,26 +319,21 @@ class TestParameterBindingStageTemplatePath:
         )
         trace = pipeline.run_forward_pass("x", env)
         for node in trace.final_batch.values():
-            assert node.template_circuit_bodies == ()
+            assert node.parameters == ()  # bound locally, not deferred
+            # Slow path binds into DAGs, so the QASM-string slot stays empty;
+            # a template firing here would populate it.
+            assert node.qasm_bodies == ()
 
     def test_non_parametric_falls_back_to_bound_emission(self):
         """No parameters → no template needed; emit bound bodies as the fast path does."""
-        meta = two_group_meta()
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=meta),
-                MeasurementStage(),
-                ParameterBindingStage(),
-            ]
-        )
-        env = PipelineEnv(
+        trace = run_binding_pipeline(
+            two_group_meta(),
             backend=_TemplateCapableBackend(),
             param_sets=np.array([[0.0]]),
         )
-        trace = pipeline.run_forward_pass("x", env)
         for node in trace.final_batch.values():
-            assert node.bound_circuit_bodies
-            assert node.template_circuit_bodies == ()
+            assert node.qasm_bodies
+            assert node.parameters == ()
 
 
 class TestParameterBindingStageOrdering:

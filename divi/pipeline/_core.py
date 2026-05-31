@@ -31,6 +31,7 @@ from ._postprocessing import (
 from .abc import (
     BundleStage,
     ChildResults,
+    ContractViolation,
     DiviPerformanceWarning,
     ExpansionResult,
     PipelineEnv,
@@ -221,6 +222,13 @@ def _default_execute_fn(
 ) -> ChildResults:
     """Default execute: lower MetaCircuit batch to QASM circuits, then backend run."""
     use_templates = _batch_has_templates(trace.final_batch)
+    if use_templates and not isinstance(env.backend, SupportsCircuitTemplates):
+        raise ContractViolation(
+            "Batch still carries free parameters at execution, so it would be "
+            "submitted as backend templates, but this backend does not support "
+            "them. Ensure ParameterBindingStage ran and bound the parameters, "
+            "or use a backend implementing SupportsCircuitTemplates."
+        )
     templates = []
     circuits: dict[str, str] = {}
     if use_templates:
@@ -255,10 +263,7 @@ def _default_execute_fn(
         raise ExecutionCancelledError("Pipeline execution cancelled before dispatch")
 
     if use_templates:
-        # ParameterBindingStage only populates template_circuit_bodies when
-        # the backend implements SupportsCircuitTemplates, so this isinstance
-        # narrowing is a tautology at runtime — its job is to let the type
-        # checker see submit_circuit_templates without a base-class stub.
+        # A template batch is only produced for a template-capable backend.
         assert isinstance(env.backend, SupportsCircuitTemplates)
         result = env.backend.submit_circuit_templates(
             templates, cancellation_event=env.cancellation_event, **submit_kwargs

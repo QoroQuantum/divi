@@ -22,6 +22,7 @@ from divi.circuits._conversions import _format_bound_param
 from divi.exceptions import ExecutionCancelledError
 from divi.pipeline import (
     CircuitPipeline,
+    ContractViolation,
     DiviPerformanceWarning,
     PipelineEnv,
     PipelineResult,
@@ -36,6 +37,7 @@ from divi.pipeline._compilation import (
 )
 from divi.pipeline._core import (
     _build_shot_groups,
+    _default_execute_fn,
     _scope_token,
     _sigint_to_cancellation,
     _validate_stage_order,
@@ -53,6 +55,7 @@ from ._helpers import (
     FanoutAndSumStage,
     StatefulFanoutStage,
     ones_execute_fn,
+    run_binding_pipeline,
     two_group_meta,
     two_group_pipeline_stages,
 )
@@ -362,15 +365,9 @@ def _run_pipeline_with_templates(
     meta: MetaCircuit, param_sets: list[list[float]]
 ) -> PipelineTrace:
     """Drive a parametric MetaCircuit through the template-mode pipeline."""
-    pipeline = CircuitPipeline(
-        stages=[
-            DummySpecStage(meta=meta),
-            MeasurementStage(),
-            ParameterBindingStage(),
-        ]
+    return run_binding_pipeline(
+        meta, backend=_TemplateOnlyBackend(), param_sets=param_sets
     )
-    env = PipelineEnv(backend=_TemplateOnlyBackend(), param_sets=param_sets)
-    return pipeline.run_forward_pass("x", env)
 
 
 class TestCompileTemplateBatch:
@@ -431,13 +428,31 @@ class TestCompileTemplateBatch:
         )
         assert _batch_has_templates(trace.final_batch)
 
-        bound_pipeline = CircuitPipeline(
-            stages=[DummySpecStage(meta=two_group_meta()), MeasurementStage()]
-        )
-        bound_trace = bound_pipeline.run_forward_pass(
-            "x", PipelineEnv(backend=_NonTemplateExpvalBackend())
+        # Negative: ParameterBindingStage's fast path clears parameters on full
+        # bind, so a previously-parametric circuit is no longer a template batch.
+        bound_trace = run_binding_pipeline(
+            _parametric_meta_one_body(),
+            backend=_NonTemplateExpvalBackend(),
+            param_sets=self.PARAM_SETS,
         )
         assert not _batch_has_templates(bound_trace.final_batch)
+
+    def test_execute_rejects_unbound_batch_on_non_template_backend(self):
+        """Reaching execute with free parameters still present (e.g. no
+        ParameterBindingStage ran) on a backend without template support is a
+        directed contract violation, not a bare AssertionError."""
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=_parametric_meta_one_body()),
+                MeasurementStage(),
+            ]
+        )
+        env = PipelineEnv(
+            backend=_NonTemplateExpvalBackend(), param_sets=self.PARAM_SETS
+        )
+        trace = pipeline.run_forward_pass("x", env)
+        with pytest.raises(ContractViolation, match="free parameters"):
+            _default_execute_fn(trace, env)
 
     def test_multi_body_multi_measurement_emits_cartesian_product(self):
         """N bodies × M measurements → N*M TemplateEntry rows, each with the
@@ -447,8 +462,8 @@ class TestCompileTemplateBatch:
         # onto the post-MeasurementStage MetaCircuit, then ask compile to lower it.
         trace = _run_pipeline_with_templates(meta, self.PARAM_SETS)
         node = next(iter(trace.final_batch.values()))
-        # template_circuit_bodies has one (tag, qasm); fan it out into 2 variants.
-        body_tag, body_qasm = node.template_circuit_bodies[0]
+        # qasm_bodies has one (tag, qasm); fan it out into 2 variants.
+        body_tag, body_qasm = node.qasm_bodies[0]
         body_variants = (
             ((*body_tag, ("body_id", 0)), body_qasm),
             ((*body_tag, ("body_id", 1)), body_qasm.replace("theta", "theta")),
@@ -459,9 +474,7 @@ class TestCompileTemplateBatch:
             ((("obs_group", 0),), "measure q[0] -> c[0];\n"),
             ((("obs_group", 1),), "measure q[0] -> c[0];\n"),
         )
-        node = node.set_template_bodies(body_variants).set_measurement_bodies(
-            meas_variants
-        )
+        node = node.set_qasm_bodies(body_variants).set_measurement_bodies(meas_variants)
         batch = {next(iter(trace.final_batch.keys())): node}
 
         entries, lineage = _compile_template_batch(batch, self.PARAM_SETS)
@@ -640,7 +653,7 @@ class TestMultiMeasurementTemplatePathEndToEnd:
         assert len(node.measurement_qasms) == 2
         # ParameterBindingStage selected the template path.
         assert _batch_has_templates(trace.final_batch)
-        assert len(node.template_circuit_bodies) == 1
+        assert len(node.qasm_bodies) == 1
 
         entries, lineage = _compile_template_batch(trace.final_batch, self.PARAM_SETS)
         # 1 body × 2 measurement groups → 2 TemplateEntry rows.

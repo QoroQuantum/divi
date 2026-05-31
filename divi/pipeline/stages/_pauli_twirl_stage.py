@@ -21,8 +21,8 @@ Two output paths:
   share an identical gate sequence; we parametrise the rotation angles,
   twirl the parametric DAG once per ``twirl_idx``, and render the resulting
   QASM template against each variant's concrete angles — populating
-  ``bound_circuit_bodies`` directly so that :func:`_compile_batch` skips
-  its per-variant ``dag_to_qasm_body`` pass.
+  ``qasm_bodies`` directly so that :func:`_compile_batch` skips its
+  per-variant ``dag_to_qasm_body`` pass.
 
 * **Structural path** — used whenever the parametric path's preconditions
   aren't met.  Bodies are grouped by structural tag, sampled
@@ -278,7 +278,7 @@ class PauliTwirlStage(BundleStage):
         Skips label sampling, topology grouping, deep-copying, and QASM
         rendering entirely — twirling is a purely multiplicative fan-out, so
         the circuit count is exact from ``n_twirls`` alone. Matches the output
-        slot (``bound_circuit_bodies`` vs ``circuit_bodies``) of the real path
+        slot (``qasm_bodies`` vs ``circuit_bodies``) of the real path
         so downstream dry stages and ``_compile_batch``-aware counters see the
         right shape.
         """
@@ -290,13 +290,13 @@ class PauliTwirlStage(BundleStage):
     def _expand_dry(self, meta: MetaCircuit) -> MetaCircuit:
         """Produce placeholder twirled bodies matching the real path's shape."""
         if self._fast_path:
-            # Fast path emits pre-rendered QASM strings into bound_circuit_bodies.
+            # Fast path emits pre-rendered QASM strings into qasm_bodies.
             placeholders = tuple(
                 (_twirl_tag(variant_tag, self.axis_name, twirl_idx), "")
                 for variant_tag, _ in meta.circuit_bodies
                 for twirl_idx in range(self._n_twirls)
             )
-            return meta.set_bound_bodies(placeholders)
+            return meta.set_qasm_bodies(placeholders)
 
         # Structural path replaces circuit_bodies with twirled DAGs.  The
         # source DAG is shared across placeholders — nothing in the dry
@@ -362,7 +362,7 @@ class PauliTwirlStage(BundleStage):
 
     def _expand_fast(self, meta: MetaCircuit) -> MetaCircuit:
         """Parametric fast path — emits rendered QASM strings into
-        ``bound_circuit_bodies``, bypassing ``dag_to_qasm_body`` for the
+        ``qasm_bodies``, bypassing ``dag_to_qasm_body`` for the
         K param_set variants of each upstream body.
 
         Only fires when ParameterBindingStage is upstream (so variants
@@ -422,7 +422,7 @@ class PauliTwirlStage(BundleStage):
                         )
                     )
 
-        return meta.set_bound_bodies(tuple(bound_bodies))
+        return meta.set_qasm_bodies(tuple(bound_bodies))
 
     def introspect(
         self, batch: MetaCircuitBatch, env: PipelineEnv, token: StageToken

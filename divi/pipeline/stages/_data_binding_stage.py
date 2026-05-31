@@ -148,7 +148,7 @@ class DataBindingStage(BundleStage):
       downstream): builds the parametric QASM body from the incoming DAG
       once (cached), renders per-sample partial bodies as strings (data
       substituted, weight placeholders preserved), and parks them on
-      ``MetaCircuit.parametric_qasm_bodies`` keyed by ``body_tag``. All
+      ``MetaCircuit.qasm_bodies`` keyed by ``body_tag``. All
       variants share the incoming parametric DAG ref in ``circuit_bodies``
       (~O(1) DAG memory regardless of batch size).
       :class:`~divi.pipeline.stages.ParameterBindingStage`'s fast path
@@ -252,7 +252,7 @@ class DataBindingStage(BundleStage):
         no-op:
 
         * :class:`~divi.pipeline.stages.ParameterBindingStage` is
-          transparent — its fast path reads ``parametric_qasm_bodies``
+          transparent — its fast path reads the parked ``qasm_bodies``
           and never touches the shared DAG.
         * :class:`~divi.pipeline.stages.QEMStage` with the default
           :class:`~divi.circuits.qem._NoMitigation` protocol is
@@ -312,7 +312,7 @@ class DataBindingStage(BundleStage):
 
         All variants share the incoming body DAG reference in
         ``circuit_bodies``; the per-sample data substitution lives in
-        ``parametric_qasm_bodies`` keyed by ``body_tag``.
+        ``qasm_bodies`` keyed by ``body_tag``.
         :meth:`ParameterBindingStage._fast_prepare` consults that field
         before falling back to deriving a body from the DAG.
         """
@@ -336,7 +336,7 @@ class DataBindingStage(BundleStage):
                 mc,
                 circuit_bodies=tuple(fanned_bodies),
                 parameters=weight_params,
-                parametric_qasm_bodies=tuple(partial_bodies),
+                qasm_bodies=tuple(partial_bodies),
             )
         return ExpansionResult(batch=out), None
 
