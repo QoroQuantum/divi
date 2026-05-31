@@ -335,6 +335,18 @@ class TestParameterBindingStageTemplatePath:
             assert node.qasm_bodies
             assert node.parameters == ()
 
+    def test_template_path_disabled_when_per_group_shots_active(self):
+        """Per-group shot allocation attaches shots to concrete flat circuits,
+        which the deferred template payload can't express — so the template
+        path is disabled even on a template-capable backend."""
+        stage = ParameterBindingStage()
+        stage._fast_path = True
+        env = PipelineEnv(backend=_TemplateCapableBackend())
+        assert stage._template_path_enabled(env) is True
+
+        env.artifacts["per_group_shots"] = {(("spec", "c"),): {0: 100}}
+        assert stage._template_path_enabled(env) is False
+
 
 class TestParameterBindingStageOrdering:
     """ParameterBindingStage can appear in any order relative to QEMStage."""

@@ -278,11 +278,14 @@ class ParameterBindingStage(BundleStage):
     def _template_path_enabled(self, env: PipelineEnv) -> bool:
         """Whether to defer parameter binding to the backend for this run.
 
-        Requires both the fast-path condition (no downstream stage consumes
-        DAG bodies) and the active backend implementing the
-        :class:`~divi.backends.SupportsCircuitTemplates` capability protocol.
+        Requires the fast-path condition (no downstream stage consumes DAG
+        bodies) and a backend implementing
+        :class:`~divi.backends.SupportsCircuitTemplates`. Disabled when
+        per-group shot allocation is active: that attaches shots to concrete
+        flat circuits (one per parameter set), which the deferred template
+        payload (one template plus a parameter matrix) cannot express.
         """
-        if not self._fast_path:
+        if not self._fast_path or env.artifacts.get("per_group_shots"):
             return False
         return isinstance(env.backend, SupportsCircuitTemplates)
 

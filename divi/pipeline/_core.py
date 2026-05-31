@@ -247,14 +247,9 @@ def _default_execute_fn(
 
     per_group_shots = env.artifacts.get("per_group_shots")
     if per_group_shots:
-        if use_templates:
-            # The templated submission ordering doesn't align with the bound
-            # flat-circuit indices that ``shot_groups`` references; fall back
-            # to the bound path for runs that need per-group shot allocation.
-            circuits, lineage_by_label = _compile_batch(trace.final_batch)
-            env.artifacts["circuit_count"] = len(circuits)
-            use_templates = False
-            templates = []
+        # ParameterBindingStage takes the bound path when per-group shots are
+        # active (see ParameterBindingStage._template_path_enabled), so these
+        # are concrete flat circuits and use_templates is False here.
         shot_groups = _build_shot_groups(circuits, lineage_by_label, per_group_shots)
         if shot_groups is not None:
             submit_kwargs["shot_groups"] = shot_groups
