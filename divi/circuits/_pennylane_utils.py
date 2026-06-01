@@ -240,9 +240,11 @@ def _detect_batch_input_argnames(qnode: QNode) -> list[str]:
     """Return the argument names a ``@qml.batch_input`` transform batches.
 
     Reads the QNode's ``transform_program``, matching the batch_input transform
-    by identity against ``qml.batch_input.tape_transform`` (falling back to its
-    ``__name__``), and maps each batched ``argnum`` to its argument name. Any
-    failure to introspect the transform program yields ``[]``.
+    by identity against ``qml.batch_input.tape_transform`` and mapping each
+    batched ``argnum`` to its argument name. On older PennyLane that does not
+    expose ``tape_transform``, it falls back to matching a PennyLane-owned
+    transform named ``batch_input``. Any failure to introspect the transform
+    program yields ``[]``.
     """
     try:
         program = qnode.transform_program
@@ -256,9 +258,14 @@ def _detect_batch_input_argnames(qnode: QNode) -> list[str]:
         fn = getattr(container, "transform", None)
         if fn is None:
             return False
-        if target is not None and fn is target:
-            return True
-        return getattr(fn, "__name__", None) == "batch_input"
+        if target is not None:
+            return fn is target
+        # Older PennyLane without ``tape_transform``: match by name, but only
+        # PennyLane's own transform, so a like-named third-party transform
+        # cannot be mistaken for it.
+        return getattr(fn, "__name__", None) == "batch_input" and getattr(
+            fn, "__module__", ""
+        ).startswith("pennylane")
 
     batched: list[str] = []
     for container in program:

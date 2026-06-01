@@ -9,6 +9,13 @@ batching, error mitigation, parameter optimization, and result aggregation.
 Why Divi?
 ---------
 
+* **Batteries-included algorithms** — ready-to-run
+  :class:`~divi.qprog.algorithms.VQE` for chemistry,
+  :class:`~divi.qprog.algorithms.QAOA` / :class:`~divi.qprog.algorithms.PCE` for
+  combinatorial optimization, :class:`~divi.qprog.algorithms.TimeEvolution` for
+  dynamics, and :class:`~divi.qprog.algorithms.QNN` for quantum machine
+  learning — or bring your own circuit with
+  :class:`~divi.qprog.algorithms.CustomVQA`.
 * **Structured pipelines** — an *expand → execute → reduce* model automates the
   path from a high-level program to executed circuits, with inspectable stages for
   compilation, batching, and error mitigation. See :doc:`user_guide/pipelines`.
@@ -25,8 +32,9 @@ Why Divi?
   directly into the variational loop, not as a post-processing step. See
   :doc:`user_guide/improving_results_qem`.
 
-New to Divi? Start with the :doc:`quickstart` for a five-minute VQE example,
-then work through the :guilabel:`User Guide` in the sidebar.
+New to Divi? Start with the :doc:`quickstart` for a five-minute VQE example and
+a tour of the built-in algorithms, then work through the :guilabel:`User Guide`
+in the sidebar.
 
 Installation
 ============
@@ -86,6 +94,8 @@ Or pin a specific nightly by date:
    user_guide/ground_state_energy_estimation_vqe
    user_guide/combinatorial_optimization_qaoa_pce
    user_guide/hamiltonian_time_evolution
+   user_guide/quantum_neural_networks
+   user_guide/framework_integration
    user_guide/routing
    user_guide/backends
    user_guide/optimizers

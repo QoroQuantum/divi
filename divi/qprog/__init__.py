@@ -7,10 +7,13 @@ from ._types import GraphProblemTypes
 from .algorithms import (
     PCE,
     QAOA,
+    QNN,
     VQE,
+    AngleEmbedding,
     Ansatz,
     CustomPerQubitState,
     CustomVQA,
+    FeatureMap,
     GenericLayerAnsatz,
     HartreeFockAnsatz,
     InitialState,
@@ -24,6 +27,7 @@ from .algorithms import (
     UCCSDAnsatz,
     WState,
     ZerosState,
+    ZZFeatureMap,
 )
 from .early_stopping import EarlyStopping
 from .ensemble import BatchConfig, BatchMode, ProgramEnsemble

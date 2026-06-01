@@ -1096,7 +1096,7 @@ class TestDataBindingConstruction:
     ):
         qc, x, _ = qiskit_data_circuit
         data_idx = [list(qc.parameters).index(x)]
-        with pytest.raises(ValueError, match="data_param_indices declares 1"):
+        with pytest.raises(ValueError, match="binds 1 data parameters"):
             CustomVQA(
                 qscript=qc,
                 data_param_indices=data_idx,
@@ -1120,10 +1120,36 @@ class TestDataBindingConstruction:
         )
         weights = np.array([0.5, 1.0])  # two trainable weights (w0, w1)
         labels = program.predict(feature_batch_4x1, params=weights)
-        readout = program.predict_readout(feature_batch_4x1, params=weights)
+        readout = program.predict(feature_batch_4x1, params=weights, return_scores=True)
         assert labels.shape == (feature_batch_4x1.shape[0],)
         assert set(np.unique(labels)).issubset({-1.0, 1.0})
         np.testing.assert_array_equal(labels, np.where(readout >= 0.0, 1.0, -1.0))
+
+    def test_predict_without_data_axis_raises(
+        self, qiskit_data_circuit, dummy_simulator
+    ):
+        # predict() is only meaningful when a data axis was configured; a plain
+        # CustomVQA (no feature_batch) must fail with a clear error, not a bare
+        # AttributeError on the unset _data_symbols.
+        qc, _, _ = qiskit_data_circuit
+        program = CustomVQA(qscript=qc, backend=dummy_simulator)
+        with pytest.raises(RuntimeError, match="requires a data axis"):
+            program.predict(np.array([[0.1]]))
+
+    def test_loss_fn_without_labels_warns_at_caller(
+        self, qiskit_data_circuit, dummy_simulator
+    ):
+        # loss_fn is ignored without labels; the warning must be attributed to
+        # the user's constructor call, not to a frame inside divi.
+        qc, _, _ = qiskit_data_circuit
+        with pytest.warns(UserWarning, match="loss_fn is ignored") as record:
+            CustomVQA(
+                qscript=qc,
+                backend=dummy_simulator,
+                loss_fn=lambda pred, label: (pred - label) ** 2,
+            )
+        ignored = [w for w in record if "loss_fn is ignored" in str(w.message)]
+        assert ignored and ignored[0].filename == __file__
 
 
 class TestDataBindingDryRun:

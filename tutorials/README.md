@@ -76,10 +76,11 @@ Two scaling axes: solver choice (QAOA vs PCE) and problem size (single program v
 
 ### `advanced/`
 
-Escape hatches for users who need to step outside the built-in algorithm classes: run circuits without a `QuantumProgram`, plug your own circuit into a VQA loop, or save and resume long-running optimizations.
+Escape hatches and specialized algorithms beyond the core QAOA/VQE flow: run circuits without a `QuantumProgram`, plug your own circuit into a VQA loop, train a quantum neural network, or save and resume long-running optimizations.
 
 - **`standalone_pipeline.py`** — One-shot execution of PennyLane / Qiskit circuits through `CircuitPipeline` directly (no `QuantumProgram` wrapper, no optimization loop)
-- **`custom_vqa.py`** — Full variational optimization over a user-supplied parametric circuit via `CustomVQA`
+- **`custom_vqa.py`** — Bring your own circuit (PennyLane `QNode`/`QuantumScript` or Qiskit) to a VQA loop via `CustomVQA`, building from a toy observable up to data binding (`data_param_indices`) and multi-argument QNNs (template feature maps + ansatz via `arg_shapes`/`data_arg`, including nonlinear `IQPEmbedding`)
+- **`qnn_classifier.py`** — Train a supervised quantum classifier with `QNN`: an `AngleEmbedding` feature map plus a `GenericLayerAnsatz`, scored by mean-squared error over a labeled feature batch
 - **`checkpointing.py`** — Save and resume optimization runs
 
 ### `backends/`

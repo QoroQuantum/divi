@@ -15,7 +15,7 @@ from pennylane.measurements import ExpectationMP
 from pennylane.workflow.qnode import QNode
 from qiskit import QuantumCircuit
 from qiskit.circuit import ParameterExpression
-from qiskit.converters import circuit_to_dag, dag_to_circuit
+from qiskit.converters import dag_to_circuit
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import (
@@ -30,13 +30,11 @@ from divi.circuits._pennylane_utils import (
 )
 from divi.hamiltonians._mixers import single_pauli_label
 from divi.hamiltonians._term_ops import _clean_hamiltonian_spo
-from divi.pipeline.stages import (
-    CircuitSpecStage,
-    LossReductionFn,
-    SampleLossFn,
-    resolve_loss_reduction,
+from divi.pipeline.stages import CircuitSpecStage, LossReductionFn, SampleLossFn
+from divi.qprog.algorithms._data_binding import (
+    _LOSS_FN_IGNORED_MSG,
+    DataBindingMixin,
 )
-from divi.qprog.algorithms._data_binding import DataBindingMixin
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 
 
@@ -229,7 +227,11 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
             shapes = dict(arg_shapes) if arg_shapes else {}
             if data_arg is not None:
                 if feature_batch is None:
-                    raise ValueError("data_arg requires feature_batch.")
+                    raise ValueError(
+                        "data_arg requires feature_batch; pass feature_batch "
+                        "(data_arg may have been inferred from an "
+                        "@qml.batch_input decorator)."
+                    )
                 n_features = np.atleast_2d(np.asarray(feature_batch)).shape[1]
                 shapes.setdefault(data_arg, (n_features,))
             qscript = _qnode_to_symbolic_qscript(
@@ -282,6 +284,8 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
             labels=labels,
             loss_fn=loss_fn,
         )
+        if labels is None and loss_fn != "squared_error":
+            warn(_LOSS_FN_IGNORED_MSG, UserWarning, stacklevel=2)
 
         self._pipelines = self._build_pipelines()
 
@@ -471,14 +475,12 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
         self.feature_batch = self._validate_feature_batch(
             cast(npt.ArrayLike, feature_batch), len(self._data_symbols)
         )
-        self._loss_reduction_fn = resolve_loss_reduction(loss_reduction)
-        self.loss_reduction = loss_reduction
+        self._set_loss_reduction(loss_reduction)
         self.labels, self._sample_loss_fn = self._resolve_supervision(
             labels, loss_fn, self.feature_batch.shape[0]
         )
         self._param_shape = (len(self._weight_symbols),)
         self._param_symbols = np.asarray(self._weight_symbols, dtype=object)
-        self._loss_constant_consumed = True
 
     @staticmethod
     def _validate_data_indices(
@@ -505,25 +507,6 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
                     f"circuit with {n_params} parameters."
                 )
         return indices
-
-    @staticmethod
-    def _validate_feature_batch(
-        feature_batch: npt.ArrayLike, n_data_params: int
-    ) -> np.ndarray:
-        arr = np.asarray(feature_batch, dtype=np.float64)
-        if arr.ndim != 2:
-            raise ValueError(
-                f"feature_batch must be 2D (n_samples, n_data_params); got "
-                f"shape {arr.shape}."
-            )
-        if arr.shape[1] != n_data_params:
-            raise ValueError(
-                f"feature_batch has {arr.shape[1]} columns but "
-                f"data_param_indices declares {n_data_params}."
-            )
-        if arr.shape[0] == 0:
-            raise ValueError("feature_batch must contain at least one sample.")
-        return arr
 
     def _resolve_param_shape(
         self, param_shape: tuple[int, ...] | int | None, n_params: int
@@ -558,11 +541,4 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
         active, swaps the data parameters out into per-sample variants
         downstream.
         """
-        return {
-            "cost_circuit": MetaCircuit(
-                circuit_bodies=(((), circuit_to_dag(self._composed_circuit)),),
-                parameters=tuple(self._base_params),
-                observable=self.cost_hamiltonian,
-                precision=self._precision,
-            )
-        }
+        return {"cost_circuit": self._cost_meta_circuit(self._base_params)}

@@ -187,12 +187,6 @@ class DataBindingStage(BundleStage):
     def handles_measurement(self) -> bool:
         return False
 
-    @property
-    def consumes_dag_bodies(self) -> bool:
-        # Each variant carries a DAG whose data parameters have been
-        # substituted away — downstream stages still walk the DAG.
-        return True
-
     def __init__(
         self,
         data_params: tuple[Parameter, ...],
@@ -261,6 +255,7 @@ class DataBindingStage(BundleStage):
           protocols, :class:`~divi.pipeline.stages.PauliTwirlStage`,
           user-defined DAG-mutating stages) forces the eager fallback.
         """
+        super().validate(before, after)
 
         def _walks_dag(stage: Stage) -> bool:
             if not getattr(stage, "consumes_dag_bodies", False):

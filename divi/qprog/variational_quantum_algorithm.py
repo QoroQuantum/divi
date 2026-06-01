@@ -267,15 +267,6 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
     # (or override as a property) or the corresponding methods will raise
     # AttributeError.
     _supports_fixed_param_scans: ClassVar[bool] = True
-    #: Set ``True`` by subclasses that hand ``loss_constant`` to a cost-pipeline
-    #: sub-component which folds it in itself (e.g. QNN / CustomVQA-with-data-
-    #: binding delegate to :class:`~divi.pipeline.stages.DataBindingStage`,
-    #: which adds it per-sample before reducing). When ``True``,
-    #: :meth:`_evaluate_cost_param_sets` skips its post-hoc add to avoid
-    #: double-counting. Defaults ``False`` — the constant is added once
-    #: post-reduction for vanilla VQE/QAOA/CustomVQA. Set per-instance because
-    #: CustomVQA only consumes the constant when a data axis is active.
-    _loss_constant_consumed: bool = False
     current_iteration: int
     n_layers: int
     loss_constant: float
@@ -1005,6 +996,16 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         if "rng" not in overrides:
             overrides["rng"] = self._rng
         return super()._build_pipeline_env(**overrides)
+
+    @property
+    def _loss_constant_consumed(self) -> bool:
+        """Whether a cost-pipeline component already folds ``loss_constant`` in.
+
+        When ``True``, :meth:`_evaluate_cost_param_sets` skips its post-reduction
+        add to avoid double-counting. ``False`` for vanilla VQE/QAOA/CustomVQA;
+        data-binding subclasses override it.
+        """
+        return False
 
     def _build_cost_pipeline(
         self,

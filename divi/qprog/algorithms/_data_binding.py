@@ -17,8 +17,8 @@ Each subclass still builds its own data/weight parameter split and composed
 circuit; the mixin only orchestrates the data axis on top of that state.
 """
 
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
-from warnings import warn
 
 import numpy as np
 import numpy.typing as npt
@@ -30,9 +30,9 @@ from divi.pipeline.abc import Stage
 from divi.pipeline.stages import (
     CircuitSpecStage,
     DataBindingStage,
-    MeasurementStage,
-    ParameterBindingStage,
+    LossReductionFn,
     SampleLossFn,
+    resolve_loss_reduction,
     resolve_sample_loss,
 )
 from divi.qprog.variational_quantum_algorithm import _extract_param_set_idx
@@ -49,6 +49,13 @@ if TYPE_CHECKING:
     _MixinBase = VariationalQuantumAlgorithm
 else:
     _MixinBase = object
+
+
+# Emitted by QNN/CustomVQA when a supervised loss_fn is set without labels.
+_LOSS_FN_IGNORED_MSG = (
+    "loss_fn was provided but labels is None, so loss_fn is ignored. Pass "
+    "labels (with a feature_batch) to train a supervised loss."
+)
 
 
 def build_data_binding_stage(program) -> DataBindingStage:
@@ -87,9 +94,8 @@ class DataBindingMixin(_MixinBase):
     coordinate.
     """
 
-    # Data-binding state each subclass populates during its own construction
-    # (the rest of the host interface comes from VariationalQuantumAlgorithm
-    # via ``_MixinBase`` under TYPE_CHECKING).
+    # Data-binding state each subclass populates; the rest of the host interface
+    # comes from VariationalQuantumAlgorithm (resolved via ``_MixinBase``).
     _data_symbols: tuple["Parameter", ...]
     _weight_symbols: tuple["Parameter", ...]
     _composed_circuit: "QuantumCircuit"
@@ -110,6 +116,12 @@ class DataBindingMixin(_MixinBase):
                 f"{shadowers[0].__name__}, which otherwise shadows the mixin's "
                 f"_build_cost_pipeline and silently disables data binding."
             )
+
+    @property
+    def _loss_constant_consumed(self) -> bool:
+        # DataBindingStage folds loss_constant into each per-sample value, so
+        # the base cost path must not re-add it.
+        return getattr(self, "feature_batch", None) is not None
 
     def _build_cost_pipeline(
         self,
@@ -148,21 +160,14 @@ class DataBindingMixin(_MixinBase):
     ) -> tuple[np.ndarray | None, "object | None"]:
         """Validate optional supervised labels and resolve the per-sample loss.
 
-        Returns ``(None, None)`` for the unsupervised case (and warns if a
-        non-default ``loss_fn`` was supplied without labels, since it is
-        ignored). Otherwise returns the ``(n_samples,)`` label array and the
-        resolved per-sample loss callable, raising if the label count does not
-        match the sample count.
+        Returns ``(None, None)`` for the unsupervised case. Otherwise returns the
+        ``(n_samples,)`` label array and the resolved per-sample loss callable,
+        raising if the label count does not match the sample count.
+
+        Does not warn about an ignored ``loss_fn``: each constructor emits that
+        warning itself so its ``stacklevel`` points at the user's call.
         """
         if labels is None:
-            if loss_fn != "squared_error":
-                warn(
-                    "loss_fn was provided but labels is None, so loss_fn is "
-                    "ignored. Pass labels (with a feature_batch) to train a "
-                    "supervised loss.",
-                    UserWarning,
-                    stacklevel=2,
-                )
             return None, None
         arr = np.asarray(labels, dtype=np.float64).reshape(-1)
         if arr.shape[0] != n_samples:
@@ -172,18 +177,65 @@ class DataBindingMixin(_MixinBase):
             )
         return arr, resolve_sample_loss(loss_fn)
 
+    @staticmethod
+    def _validate_feature_batch(
+        feature_batch: npt.ArrayLike, n_data_params: int
+    ) -> np.ndarray:
+        """Coerce ``feature_batch`` to a 2D ``(n_samples, n_data_params)`` array."""
+        arr = np.asarray(feature_batch, dtype=np.float64)
+        if arr.ndim != 2:
+            raise ValueError(
+                f"feature_batch must be 2D (n_samples, n_data_params); "
+                f"got shape {arr.shape}."
+            )
+        if arr.shape[1] != n_data_params:
+            raise ValueError(
+                f"feature_batch has {arr.shape[1]} columns but the circuit "
+                f"binds {n_data_params} data parameters."
+            )
+        if arr.shape[0] == 0:
+            raise ValueError("feature_batch must contain at least one sample.")
+        return arr
+
+    def _set_loss_reduction(self, loss_reduction: LossReductionFn) -> None:
+        """Store the user-facing reduction and its resolved callable."""
+        self.loss_reduction = loss_reduction
+        self._loss_reduction_fn = resolve_loss_reduction(loss_reduction)
+
+    def _cost_meta_circuit(self, parameters: Iterable["Parameter"]) -> MetaCircuit:
+        """Cost MetaCircuit for the composed circuit in the given parameter order.
+
+        The (composed circuit, observable, precision) construction lives here;
+        the parameter *order* stays subclass-owned (QNN: data+weights; CustomVQA:
+        the original circuit order). The composed DAG is converted once.
+        """
+        dag = getattr(self, "_composed_dag", None)
+        if dag is None:
+            dag = circuit_to_dag(self._composed_circuit)
+            self._composed_dag = dag
+        return MetaCircuit(
+            circuit_bodies=(((), dag),),
+            parameters=tuple(parameters),
+            observable=self.cost_hamiltonian,
+            precision=self._precision,
+        )
+
     def predict(
         self,
         features: npt.ArrayLike,
         params: npt.NDArray[np.float64] | None = None,
+        *,
+        return_scores: bool = False,
     ) -> np.ndarray:
-        """Predict class labels for a feature batch with trained weights.
+        """Predict for a feature batch with trained weights.
 
         Each row of ``features`` is bound into the composed circuit alongside the
-        weights, the cost observable's expectation is estimated from shots (the
-        same readout the loss optimizes), and its sign is the class label:
-        ``+1`` for a non-negative readout, ``-1`` otherwise. The readout includes
-        ``loss_constant`` so it matches the full observable.
+        weights and the cost observable's expectation is estimated from shots —
+        the same score the loss optimizes, including ``loss_constant`` so it
+        matches the full observable. By default the sign of that score is the
+        class label: ``+1`` for a non-negative score, ``-1`` otherwise. Pass
+        ``return_scores=True`` to get the continuous scores instead (e.g. for a
+        custom decision threshold or a regression-style output).
 
         This works for any observable (the expectation is measured directly,
         with no computational-basis decoding), and shares the measurement
@@ -191,32 +243,27 @@ class DataBindingMixin(_MixinBase):
 
         Args:
             features: Shape ``(n_samples, n_data_params)`` (or a single
-                ``(n_data_params,)`` row) feature batch to classify.
+                ``(n_data_params,)`` row) feature batch.
             params: Trained weights of shape ``(n_layers * n_params_per_layer,)``.
                 Defaults to ``self.best_params``.
+            return_scores: When ``True``, return the continuous per-sample score
+                ``⟨H⟩ + loss_constant`` instead of the sign-thresholded label.
 
         Returns:
-            numpy.ndarray: Shape ``(n_samples,)`` class labels in ``{-1.0, +1.0}``.
+            numpy.ndarray: Shape ``(n_samples,)`` — class labels in
+                ``{-1.0, +1.0}`` by default, or continuous scores when
+                ``return_scores`` is ``True``.
 
         Raises:
-            RuntimeError: If ``params`` is ``None`` and the program has not been
-                trained yet.
+            RuntimeError: If the program has no data axis, or if ``params`` is
+                ``None`` and the program has not been trained yet.
             ValueError: On a feature-column or weight-length mismatch.
         """
-        readouts = self.predict_readout(features, params=params)
-        return np.where(readouts >= 0.0, 1.0, -1.0)
-
-    def predict_readout(
-        self,
-        features: npt.ArrayLike,
-        params: npt.NDArray[np.float64] | None = None,
-    ) -> np.ndarray:
-        """Per-sample cost-observable expectation (the raw, unthresholded readout).
-
-        Same contract as :meth:`predict` but returns the continuous
-        ``⟨H⟩ + loss_constant`` per sample instead of the sign-thresholded class,
-        for callers that want a score (e.g. a custom decision threshold).
-        """
+        if getattr(self, "_data_symbols", None) is None:
+            raise RuntimeError(
+                "predict() requires a data axis, but this program was created "
+                "without a feature_batch."
+            )
         feature_arr = np.atleast_2d(np.asarray(features, dtype=np.float64))
         n_data = len(self._data_symbols)
         if feature_arr.shape[1] != n_data:
@@ -248,36 +295,27 @@ class DataBindingMixin(_MixinBase):
         # space — no DataBindingStage, no reduction. Columns follow the spec's
         # parameter order: data symbols first, then weights.
         joined = np.hstack([feature_arr, np.tile(weights, (feature_arr.shape[0], 1))])
-        readouts = self._measure_observable_for(joined)
-        return readouts + self.loss_constant
+        scores = self._measure_observable_for(joined) + self.loss_constant
+        if return_scores:
+            return scores
+        return np.where(scores >= 0.0, 1.0, -1.0)
 
     def _measure_observable_for(
         self, param_sets: npt.NDArray[np.float64]
     ) -> np.ndarray:
-        """Run a one-shot measurement pipeline and return per-row ``⟨H⟩``.
+        """Run the cost pipeline for the given rows and return per-row ``⟨H⟩``.
 
-        Mirrors the cost pipeline's measurement (observable expectation via
-        shots) but without the data-binding stage or sample-axis reduction: the
-        joined ``(data, weights)`` rows are bound directly, so each row's result
-        is that sample's prediction. Does not mutate optimizer/solution state.
+        Builds the same pipeline training uses (QEM, twirling, measurement,
+        binding) minus the data-binding fan-out and sample-axis reduction, so
+        the measurement model matches training exactly: each joined
+        ``(data, weights)`` row is bound directly, and that row's result is the
+        sample's prediction. Does not mutate optimizer/solution state.
         """
-        spec = MetaCircuit(
-            circuit_bodies=(((), circuit_to_dag(self._composed_circuit)),),
-            parameters=self._data_symbols + self._weight_symbols,
-            observable=self.cost_hamiltonian,
-            precision=self._precision,
-        )
-        pipeline = CircuitPipeline(
-            stages=[
-                CircuitSpecStage(),
-                MeasurementStage(
-                    grouping_strategy=self._grouping_strategy,
-                    shot_distribution=self._shot_distribution,
-                ),
-                ParameterBindingStage(),
-            ]
-        )
-        env = self._build_pipeline_env(param_sets=np.atleast_2d(param_sets))
+        spec = self._cost_meta_circuit(self._data_symbols + self._weight_symbols)
+        pipeline = super()._build_cost_pipeline(CircuitSpecStage())
+        # Base env, not the mixin override: the predict pipeline has no
+        # DataBindingStage, so feature_batch/labels must not enter the env.
+        env = super()._build_pipeline_env(param_sets=np.atleast_2d(param_sets))
         result = pipeline.run(initial_spec=spec, env=env)
         self._total_circuit_count += env.artifacts.get("circuit_count", 0)
         self._total_run_time += env.artifacts.get("run_time", 0.0)
