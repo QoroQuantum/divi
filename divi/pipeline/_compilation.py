@@ -35,10 +35,9 @@ def _compile_batch(
 
     1. The QASM preamble (``OPENQASM 2.0``, ``qelib1.inc``, ``qreg``,
        ``creg``), computed from the DAG's qubit count.
-    2. The body string — taken from ``bound_circuit_bodies`` when the
-       pipeline ran :class:`ParameterBindingStage`, otherwise serialised
-       from the non-parametric DAG on the fly via
-       :func:`dag_to_qasm_body`.
+    2. The body string — taken from ``qasm_bodies`` when the pipeline ran
+       :class:`ParameterBindingStage`, otherwise serialised from the
+       non-parametric DAG on the fly via :func:`dag_to_qasm_body`.
     3. The measurement QASM from ``measurement_qasms``.
 
     Each MetaCircuit's ``bodies × measurements`` Cartesian product becomes
@@ -62,10 +61,10 @@ def _compile_batch(
         # they don't alter the register).  Use the first DAG for the preamble.
         preamble = _preamble(node.n_qubits)
 
-        # Bound bodies take precedence when populated (parametric path);
+        # Rendered bodies take precedence when populated (binding-stage output);
         # otherwise serialise the DAGs on demand (non-parametric path).
-        if node.bound_circuit_bodies:
-            body_items = node.bound_circuit_bodies
+        if node.qasm_bodies:
+            body_items = node.qasm_bodies
         else:
             body_items = tuple(
                 (tag, dag_to_qasm_body(dag, precision=node.precision))
@@ -84,15 +83,17 @@ def _compile_batch(
 
 
 def _batch_has_templates(batch: dict[Any, MetaCircuit]) -> bool:
-    """True when any MetaCircuit carries parametric template bodies.
+    """True when any MetaCircuit still carries free parameters to bind.
 
-    The carrier is populated by
-    :class:`~divi.pipeline.stages.ParameterBindingStage` when it selects the
-    template path; its presence is the signal for ``_default_execute_fn`` to
-    route through :func:`_compile_template_batch` and submit a
-    ``list[TemplateEntry]`` via the backend's template-aware path.
+    After :class:`~divi.pipeline.stages.ParameterBindingStage`, a body is a
+    backend template iff free symbols remain: its fast path renders fully bound
+    bodies and clears ``parameters``; its template path leaves the placeholders
+    in and keeps ``parameters``. A non-empty ``parameters`` on any node is the
+    signal for ``_default_execute_fn`` to route through
+    :func:`_compile_template_batch` and submit a ``list[TemplateEntry]`` via the
+    backend's template-aware path.
     """
-    return any(node.template_circuit_bodies for node in batch.values())
+    return any(node.parameters for node in batch.values())
 
 
 def _compile_template_batch(
@@ -125,18 +126,18 @@ def _compile_template_batch(
                 f"MetaCircuit has no measurement_qasms for key '{batch_key}'. "
                 "Run MeasurementStage before execution."
             )
-        if not node.template_circuit_bodies:
+        if not node.parameters or not node.qasm_bodies:
             raise ValueError(
-                f"MetaCircuit has no template_circuit_bodies for key "
-                f"'{batch_key}'; expected ParameterBindingStage's template "
-                "path to populate it."
+                f"MetaCircuit for key '{batch_key}' is not a template: expected "
+                "ParameterBindingStage's template path to leave free parameters "
+                "and populate qasm_bodies."
             )
 
         preamble = _preamble(node.n_qubits)
         param_names = tuple(p.name for p in node.parameters)
 
         for (body_tag, body_qasm), (meas_tag, meas_qasm) in product(
-            node.template_circuit_bodies, node.measurement_qasms
+            node.qasm_bodies, node.measurement_qasms
         ):
             template_qasm = preamble + body_qasm + meas_qasm
             param_set_rows: list[tuple[str, tuple[float, ...]]] = []

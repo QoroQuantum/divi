@@ -10,6 +10,7 @@ from ._conversions import (
     measurement_qasms_from_groups,
     qscript_to_meta,
 )
+from ._pennylane_utils import qnode_to_meta
 from ._qasm_template import (
     QASMTemplate,
     TemplateEntry,
@@ -29,6 +30,7 @@ __all__ = [
     "build_template",
     "dag_to_qasm_body",
     "measurement_qasms_from_groups",
+    "qnode_to_meta",
     "qscript_to_meta",
     "render_template",
 ]

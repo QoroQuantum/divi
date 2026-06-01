@@ -21,9 +21,78 @@ from divi.circuits import (
     render_template,
 )
 from divi.circuits._conversions import (
+    _assert_finite,
+    _format_bound_param,
+    _format_gate_param,
+    _fresh_symbols,
     _qscript_to_dag,
+    _symbolize_trainable_subset,
     _sympy_to_qiskit,
 )
+
+
+class TestFormatBoundParam:
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            (0.0, "0"),
+            (-0.0, "0"),
+            (4.9e-9, "0"),  # sub-precision radian angle rounds toward 0
+            (np.pi, "3.14159265"),
+            (1234567.891, "1234567.891"),  # large angle keeps integer digits
+        ],
+    )
+    def test_renders_finite_angles(self, value, expected):
+        assert _format_bound_param(value, 8) == expected
+
+
+class TestAssertFinite:
+    """Finiteness is enforced at the value-ingestion boundary, not the render leaf."""
+
+    @pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
+    def test_rejects_non_finite(self, bad):
+        values = np.array([[0.0, bad], [1.0, 2.0]])
+        with pytest.raises(ValueError, match="non-finite gate parameters"):
+            _assert_finite(values, source="env.param_sets")
+
+    def test_passes_finite_matrix(self):
+        _assert_finite(np.array([[0.0, 1.0], [2.0, 3.0]]), source="env.feature_batch")
+
+
+@pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
+def test_format_gate_param_rejects_non_finite(bad):
+    """The DAG-serialisation leaf guards non-finite numeric angles, so the
+    finiteness check is uniform across the binding/serialisation paths."""
+    with pytest.raises(ValueError, match="non-finite gate parameter"):
+        _format_gate_param(bad, 8)
+
+
+class TestSymbolizeTrainableSubset:
+    """A proper-subset ``trainable_params`` symbolizes only operation slots."""
+
+    def test_leaves_observable_coefficient_untouched(self):
+        """Observable/Hamiltonian coefficients must never be symbolized, or the
+        measured operator would silently change."""
+        ops = [qp.RX(0.1, wires=0), qp.RY(0.2, wires=0)]
+        hamiltonian = qp.Hamiltonian([0.7], [qp.Z(0)])
+        qs = qp.tape.QuantumScript(ops, [qp.expval(hamiltonian)])
+        # Trainable subset points only at the observable coefficient (index 2,
+        # after the two gate params), a proper subset of all parameters.
+        qs.trainable_params = [2]
+
+        out = _symbolize_trainable_subset(qs)
+
+        # The coefficient stays concrete; the operation angles are unchanged.
+        assert out.get_parameters(trainable_only=False)[2] == 0.7
+
+    def test_fresh_symbols_avoid_name_collision(self):
+        """Injected symbols skip names already present so they are not merged
+        with a pre-existing parameter by the template renderer."""
+        existing = [sp.Symbol("p0") + sp.Symbol("p2")]
+        fresh = _fresh_symbols(2, existing)
+        names = {s.name for s in fresh}
+        assert names.isdisjoint({"p0", "p2"})
+        assert len(names) == 2
 
 
 class TestSympyToQiskit:

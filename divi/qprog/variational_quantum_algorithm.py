@@ -997,10 +997,25 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             overrides["rng"] = self._rng
         return super()._build_pipeline_env(**overrides)
 
-    def _build_cost_pipeline(self, spec_stage: Stage) -> CircuitPipeline:
+    @property
+    def _loss_constant_consumed(self) -> bool:
+        """Whether a cost-pipeline component already folds ``loss_constant`` in.
+
+        When ``True``, :meth:`_evaluate_cost_param_sets` skips its post-reduction
+        add to avoid double-counting. ``False`` for vanilla VQE/QAOA/CustomVQA;
+        data-binding subclasses override it.
+        """
+        return False
+
+    def _build_cost_pipeline(
+        self,
+        spec_stage: Stage,
+        extra_stages: tuple[Stage, ...] = (),
+    ) -> CircuitPipeline:
         """Build the cost-evaluation pipeline.
 
-        Default ordering: spec → QEM (→ PauliTwirl) → Measurement → ParamBinding.
+        Default ordering: spec → [extra_stages] → QEM (→ PauliTwirl)
+        → Measurement → ParamBinding.
 
         ParameterBinding is placed last because it is a cheap string-template
         operation, whereas QEM/PauliTwirl/Measurement are expensive structural
@@ -1015,10 +1030,15 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         Args:
             spec_stage: A SpecStage producing MetaCircuit(s) from the
                 cost Hamiltonian (e.g. TrotterSpecStage).
+            extra_stages: Subclass-supplied stages to insert *between* the
+                spec and the (optional) early-bind ParameterBindingStage.
+                Data-binding subclasses (QNN, CustomVQA) inject
+                :class:`~divi.pipeline.stages.DataBindingStage` here so the
+                data axis fans out before QEM/twirling sees it.
         """
         bind_early = getattr(self._qem_protocol, "bind_before_mitigation", False)
 
-        stages: list[Stage] = [spec_stage]
+        stages: list[Stage] = [spec_stage, *extra_stages]
         if bind_early:
             stages.append(ParameterBindingStage())
 
@@ -1078,8 +1098,9 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         self._total_run_time += env.artifacts.get("run_time", 0.0)
         self._current_execution_result = env.artifacts.get("_current_execution_result")
 
+        constant = 0.0 if self._loss_constant_consumed else self.loss_constant
         indexed = {
-            _extract_param_set_idx(key): float(value[0]) + self.loss_constant
+            _extract_param_set_idx(key): float(value[0]) + constant
             for key, value in result.items()
         }
         return dict(sorted(indexed.items()))

@@ -142,6 +142,37 @@ Divi offers specialized algorithms for different problem types:
       te.run()
       print(te.results)  # basis-state probabilities or expectation value
 
+**QNN – Quantum Machine Learning**
+   Use :class:`~divi.qprog.algorithms.QNN` to train a variational classifier on a
+   classical feature batch: a feature map encodes each sample, a trainable ansatz
+   supplies the weights, and Divi composes and binds the circuit for you. See
+   :doc:`user_guide/quantum_neural_networks`. To bring your own PennyLane or
+   Qiskit circuit instead, use :class:`~divi.qprog.algorithms.CustomVQA`
+   (:doc:`user_guide/framework_integration`).
+
+   .. code-block:: python
+
+      import numpy as np
+      from qiskit.circuit.library import CXGate, RYGate, RZGate
+      from divi.qprog import QNN, AngleEmbedding, GenericLayerAnsatz
+      from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+      from divi.backends import MaestroSimulator
+
+      qnn = QNN(
+          n_qubits=2,
+          feature_map=AngleEmbedding(rotation="Y"),
+          ansatz=GenericLayerAnsatz(
+              gate_sequence=[RYGate, RZGate],
+              entangler=CXGate,
+              entangling_layout="linear",
+          ),
+          feature_batch=np.array([[0.1, 0.2], [2.0, 2.1]]),
+          max_iterations=5,
+          optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+          backend=MaestroSimulator(),
+      )
+      qnn.run(perform_final_computation=False)
+
 Backend Options
 ---------------
 
@@ -179,6 +210,7 @@ What to read next
 Now that you have a VQE run working, dig into the user guide:
 
 * **Deepen your understanding of the algorithms** — :doc:`user_guide/ground_state_energy_estimation_vqe`, :doc:`user_guide/combinatorial_optimization_qaoa_pce`, :doc:`user_guide/hamiltonian_time_evolution`.
+* **Train a quantum model** — build a quantum neural network with :doc:`user_guide/quantum_neural_networks`, or bring your own PennyLane/Qiskit circuit via :doc:`user_guide/framework_integration`.
 * **Scale up** — run many programs in parallel with :doc:`user_guide/program_ensembles`.
 * **Improve noisy results** — mitigate errors with :doc:`user_guide/improving_results_qem`.
 * **Tune the optimizer** — see :doc:`user_guide/optimizers`.

@@ -70,7 +70,7 @@ def param_sets() -> np.ndarray:
 
 
 class TestPathSelection:
-    """Spec: fast path populates ``bound_circuit_bodies`` with QASM strings;
+    """Spec: fast path populates ``qasm_bodies`` with QASM strings;
     slow path replaces ``circuit_bodies`` with bound DAGs.  Choice is driven
     by whether any downstream stage declares ``consumes_dag_bodies=True``.
     """
@@ -91,8 +91,8 @@ class TestPathSelection:
         trace = pipeline.run_forward_pass("x", env)
 
         node = _param_bind_output(trace)
-        assert len(node.bound_circuit_bodies) == len(param_sets)
-        for _tag, body in node.bound_circuit_bodies:
+        assert len(node.qasm_bodies) == len(param_sets)
+        for _tag, body in node.qasm_bodies:
             assert isinstance(body, str)
 
     def test_fast_path_when_only_measurement_follows(
@@ -110,8 +110,8 @@ class TestPathSelection:
         trace = pipeline.run_forward_pass("x", env)
 
         node = _param_bind_output(trace)
-        assert len(node.bound_circuit_bodies) == len(param_sets)
-        for _tag, body in node.bound_circuit_bodies:
+        assert len(node.qasm_bodies) == len(param_sets)
+        for _tag, body in node.qasm_bodies:
             assert isinstance(body, str)
 
     def test_slow_path_when_pauli_twirl_follows(
@@ -130,7 +130,7 @@ class TestPathSelection:
         trace = pipeline.run_forward_pass("x", env)
 
         node = _param_bind_output(trace)
-        assert node.bound_circuit_bodies == ()
+        assert node.qasm_bodies == ()
         assert len(node.circuit_bodies) == len(param_sets)
         for _tag, body in node.circuit_bodies:
             assert isinstance(body, DAGCircuit)
@@ -150,7 +150,7 @@ class TestPathSelection:
         trace = pipeline.run_forward_pass("x", env)
 
         node = _param_bind_output(trace)
-        assert node.bound_circuit_bodies == ()
+        assert node.qasm_bodies == ()
         assert len(node.circuit_bodies) == len(param_sets)
         for _tag, body in node.circuit_bodies:
             assert isinstance(body, DAGCircuit)
@@ -221,7 +221,7 @@ class TestFastSlowEquivalence:
         for ps_idx in range(len(param_sets)):
             fast_body = next(
                 body
-                for tag, body in fast_node.bound_circuit_bodies
+                for tag, body in fast_node.qasm_bodies
                 if ("param_set", ps_idx) in tag
             )
             slow_dag = next(
@@ -266,7 +266,7 @@ class TestFastSlowEquivalence:
         qreg_header = 'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[2];\ncreg c[2];\n'
         fast_ops = {
             tag: Operator(qasm2.loads(qreg_header + body))
-            for tag, body in fast_twirl_meta.bound_circuit_bodies
+            for tag, body in fast_twirl_meta.qasm_bodies
         }
         structural_ops = {
             tag: Operator(dag_to_circuit(dag))

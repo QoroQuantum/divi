@@ -52,6 +52,7 @@ SKIP = [
 NO_PATCHES = [
     "backends/backend_properties_conversion.py",
     "advanced/custom_vqa.py",
+    "advanced/qnn_classifier.py",
     "advanced/standalone_pipeline.py",
     "visualization/viz_qaoa_pce_comparison.py",
     "chemistry/vqe_h2_molecule.py",

@@ -58,9 +58,7 @@ class _GraphProblemBase(QAOAProblem):
             graph, is_constrained
         )
 
-        cleaned, ham_constant = _clean_hamiltonian_spo(cost_spo)
-        if cleaned.size == 0:
-            raise ValueError("Hamiltonian contains only constant terms.")
+        cleaned, ham_constant = _clean_hamiltonian_spo(cost_spo, raise_on_constant=True)
 
         self._cost_hamiltonian = cleaned
         self._loss_constant = ham_constant

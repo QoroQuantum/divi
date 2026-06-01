@@ -166,9 +166,7 @@ class ExactTrotterization(TrotterizationStrategy):
 
     def _truncate_spo(self, spo: SparsePauliOp) -> SparsePauliOp:
         """Sort by |coeff|, slice to the kept tail, and re-attach the constant."""
-        non_id_spo, constant = _clean_hamiltonian_spo(spo)
-        if non_id_spo.size == 0:
-            raise ValueError("Hamiltonian contains only constant terms.")
+        non_id_spo, constant = _clean_hamiltonian_spo(spo, raise_on_constant=True)
         sorted_spo = _sort_hamiltonian_terms_spo(non_id_spo, order="magnitude")
 
         if self.keep_fraction is not None:

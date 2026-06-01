@@ -341,56 +341,16 @@ Concrete circuits
    grouping, and optional error-mitigation stages happen inside the
    pipeline; see :doc:`pipelines` for details.
 
-Creating Custom Quantum Circuits
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Bringing Your Own Circuit
+^^^^^^^^^^^^^^^^^^^^^^^^^
 
-In Divi, built-in algorithms like :class:`~divi.qprog.algorithms.VQE`, :class:`~divi.qprog.algorithms.QAOA`, and
-:class:`~divi.qprog.algorithms.TimeEvolution` generate quantum circuits automatically - you don't need to
-create circuits manually for most use cases.
-
-If you need a **custom ansatz or circuit**, use :class:`~divi.qprog.algorithms.CustomVQA`. It lets you
-define your own PennyLane circuit template and Hamiltonian while Divi handles
-compilation, execution, and optimization:
-
-Under the hood, this behavior is the same pipeline-stage machinery used
-throughout Divi. Circuit specs are converted by spec stages such as
-:class:`~divi.pipeline.stages.PennyLaneSpecStage` and
-:class:`~divi.pipeline.stages.QiskitSpecStage`, then flow through the remaining
-pipeline stages for binding, execution, and reduction. See :doc:`pipelines` for
-the full stage-by-stage view. For a complete runnable example, see
-`standalone_pipeline.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/advanced/standalone_pipeline.py>`_.
-
-.. code-block:: python
-
-   import pennylane as qp
-   from divi.qprog import CustomVQA
-   from divi.backends import MaestroSimulator
-
-   qscript = qp.tape.QuantumScript(
-       ops=[
-           qp.RY(0.0, wires=0),
-           qp.RX(0.0, wires=1),
-           qp.CNOT(wires=[0, 1]),
-       ],
-       measurements=[qp.expval(qp.Z(0) @ qp.Z(1) + 0.5 * qp.X(0))],
-   )
-
-   # Freeze the Hamiltonian coefficient so only gate parameters are trainable
-   qscript.trainable_params = [0, 1]
-
-   program = CustomVQA(
-       qscript=qscript,
-       param_shape=(2,),
-       backend=MaestroSimulator(),
-   )
-   program.run(perform_final_computation=False)
-
-In this example, the ``0.0`` values in ``ops`` are placeholders. ``CustomVQA``
-replaces trainable slots with internal symbols and optimizes them.
-``param_shape`` defines the shape of one parameter set and must match the number
-of trainable parameters in ``qscript`` (here: 2).
-
-For the full tutorial, see `custom_vqa.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/advanced/custom_vqa.py>`_.
+Built-in algorithms generate their circuits for you. When you need a **custom
+ansatz or circuit**, author it in PennyLane or Qiskit and wrap it with
+:class:`~divi.qprog.algorithms.CustomVQA` — see :doc:`framework_integration`,
+which also covers QML-style **data binding**. For a curated quantum-neural-network
+workflow (feature map + ansatz composed for you), use the
+:class:`~divi.qprog.algorithms.QNN` primitive — see
+:doc:`quantum_neural_networks`.
 
 Backend Abstraction
 -------------------
@@ -448,6 +408,7 @@ Next Steps
 ----------
 
 - :doc:`ground_state_energy_estimation_vqe` and :doc:`combinatorial_optimization_qaoa_pce` — algorithm-specific guides
+- :doc:`framework_integration` — bring your own PennyLane/Qiskit circuit and QNN data binding
 - :doc:`backends` — execution environments and results
 - :doc:`../api_reference/qprog/index` — custom algorithms and the full API
 - `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ — runnable walkthroughs

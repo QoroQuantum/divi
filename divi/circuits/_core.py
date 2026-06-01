@@ -129,22 +129,18 @@ class MetaCircuit:
     (diagonalising gates + ``measure`` instructions), one per commuting
     observable group. Populated by ``MeasurementStage.set_measurement_bodies``."""
 
-    bound_circuit_bodies: tuple[tuple[QASMTag, str], ...] = ()
-    """Bound (parameter-free) OpenQASM 2.0 body strings produced by
-    :class:`~divi.pipeline.stages.ParameterBindingStage`.  When non-empty,
-    the pipeline's compilation pass consumes these instead of re-serialising
-    ``circuit_bodies`` per submission."""
+    qasm_bodies: tuple[tuple[QASMTag, str], ...] = ()
+    """OpenQASM 2.0 body strings at the current binding level.
 
-    template_circuit_bodies: tuple[tuple[QASMTag, str], ...] = ()
-    """Parametric OpenQASM 2.0 body strings carrying named-symbol placeholders.
-
-    Populated by :class:`~divi.pipeline.stages.ParameterBindingStage` when
-    the active backend implements
-    :class:`~divi.backends.SupportsCircuitTemplates` and no downstream
-    stage requires bound DAGs. When non-empty, the pipeline's compilation
-    pass emits a list of :class:`~divi.circuits.TemplateEntry` rows rather
-    than fully bound circuits, deferring parameter substitution to the
-    backend and drastically reducing wire payload for variational loops.
+    One slot carries a body through progressive binding by the parameter-binding
+    stages: :class:`~divi.pipeline.stages.DataBindingStage` parks per-sample
+    *partial* bodies (data substituted, weight placeholders kept), which
+    :class:`~divi.pipeline.stages.ParameterBindingStage` consults by ``body_tag``
+    prefix before falling back to serialising ``circuit_bodies`` via
+    :func:`~divi.circuits.dag_to_qasm_body`; that stage then renders either
+    *fully bound* bodies (no placeholders) or *template* bodies (placeholders
+    preserved for backend substitution). The compilation pass reads this slot
+    when non-empty, else serialises ``circuit_bodies`` on the fly.
     """
 
     measurement_groups: tuple[tuple[object, ...], ...] = ()
@@ -197,15 +193,9 @@ class MetaCircuit:
         """Return a new MetaCircuit with updated measurement QASMs."""
         return replace(self, measurement_qasms=bodies)
 
-    def set_bound_bodies(self, bodies: tuple[tuple[QASMTag, str], ...]) -> MetaCircuit:
-        """Return a new MetaCircuit with updated bound body QASMs."""
-        return replace(self, bound_circuit_bodies=bodies)
-
-    def set_template_bodies(
-        self, bodies: tuple[tuple[QASMTag, str], ...]
-    ) -> MetaCircuit:
-        """Return a new MetaCircuit with updated parametric template QASMs."""
-        return replace(self, template_circuit_bodies=bodies)
+    def set_qasm_bodies(self, bodies: tuple[tuple[QASMTag, str], ...]) -> MetaCircuit:
+        """Return a new MetaCircuit with updated QASM body strings."""
+        return replace(self, qasm_bodies=bodies)
 
     def set_measurement_groups(
         self, measurement_groups: tuple[tuple[object, ...], ...]

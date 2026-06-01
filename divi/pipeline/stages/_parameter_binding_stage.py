@@ -2,10 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import threading
+import functools
 import warnings
-from collections import OrderedDict
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 import numpy as np
@@ -13,8 +13,8 @@ from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit.dagcircuit import DAGCircuit
 
 from divi.backends import SupportsCircuitTemplates
-from divi.circuits import MetaCircuit, build_template, dag_to_qasm_body, render_template
-from divi.circuits._conversions import _format_bound_param
+from divi.circuits import MetaCircuit, render_template
+from divi.circuits._conversions import _assert_finite, _format_bound_param
 from divi.pipeline._compilation import PARAM_SET_AXIS
 from divi.pipeline.abc import (
     BundleStage,
@@ -27,13 +27,20 @@ from divi.pipeline.abc import (
     StageToken,
 )
 from divi.pipeline.stages import QEMStage
+from divi.pipeline.stages._qasm_cache import _qasm_body_cached, _template_cached
 
 
-def _validate_param_sets(env: PipelineEnv) -> np.ndarray:
-    """Coerce ``env.param_sets`` to a 2D float array, raising on invalid shape."""
+def _validate_param_sets(env: PipelineEnv, *, assert_finite: bool = True) -> np.ndarray:
+    """Coerce ``env.param_sets`` to a 2D float array, raising on invalid shape.
+
+    ``assert_finite`` is turned off by the dry/analytic path, which uses only
+    the param-set count and never renders the values into circuits.
+    """
     param_sets = np.asarray(env.param_sets, dtype=float)
     if param_sets.ndim != 2:
         raise ValueError("ParameterBindingStage expects env.param_sets to be 2D.")
+    if assert_finite:
+        _assert_finite(param_sets, source="env.param_sets")
     return param_sets
 
 
@@ -41,7 +48,7 @@ def _iterate_bodies_over_param_sets(
     node: MetaCircuit,
     param_sets: np.ndarray,
     *,
-    prepare: Callable[[MetaCircuit, DAGCircuit], Any],
+    prepare: Callable[[MetaCircuit, tuple, DAGCircuit], Any],
     emit: Callable[[MetaCircuit, Any, np.ndarray], Any],
 ) -> list[tuple[tuple, Any]]:
     """Shared parametric loop for the real (non-dry) paths.
@@ -52,13 +59,18 @@ def _iterate_bodies_over_param_sets(
     Both the fast (QASM-template) and slow (DAG assign) paths plug into this
     helper via different ``prepare`` / ``emit`` callables.
 
+    ``prepare`` receives ``(node, body_tag, body_dag)`` so it can consult
+    per-tag state on the MetaCircuit (e.g. the ``qasm_bodies`` partials
+    pre-rendered by :class:`~divi.pipeline.stages.DataBindingStage`'s
+    template fast path).
+
     Dry mode skips this helper entirely: there is no per-variant state to
     cache, only shape-correct placeholders to emit — see
     :meth:`ParameterBindingStage._run_dry`.
     """
     n_params = len(node.parameters)
     prepared = tuple(
-        (body_tag, prepare(node, body_dag))
+        (body_tag, prepare(node, body_tag, body_dag))
         for body_tag, body_dag in node.circuit_bodies
     )
 
@@ -84,35 +96,74 @@ def _iterate_bodies_over_param_sets(
 # Fast-path (QASM-template) prepare/emit pair.
 # ---------------------------------------------------------------------------
 
-# Bounded LRU memo for ``dag_to_qasm_body``. Keyed on ``id(dag)`` because
-# ``DAGCircuit`` is unhashable; the tuple's DAG ref pins the object so
-# ``id()`` cannot collide via GC.
-_FAST_QASM_CACHE_MAXSIZE = 256
-_FAST_QASM_CACHE: OrderedDict[tuple[int, int], tuple[DAGCircuit, str]] = OrderedDict()
-_FAST_QASM_CACHE_LOCK = threading.Lock()
+# A prefix index over ``qasm_bodies``: a ``{stored_tag: body}`` map plus its
+# distinct tag lengths (descending). Built once per node and reused across that
+# node's bodies.
+PrefixIndex = tuple[dict[tuple, str], tuple[int, ...]]
 
 
-def _qasm_body_cached(dag: DAGCircuit, precision: int) -> str:
-    key = (id(dag), precision)
-    with _FAST_QASM_CACHE_LOCK:
-        cached = _FAST_QASM_CACHE.get(key)
-        if cached is not None and cached[0] is dag:
-            _FAST_QASM_CACHE.move_to_end(key)
-            return cached[1]
-    # ``dag_to_qasm_body`` runs unlocked: it is CPU-heavy and idempotent, so
-    # two threads racing on a cold key duplicate work but never corrupt state.
-    body = dag_to_qasm_body(dag, precision=precision)
-    with _FAST_QASM_CACHE_LOCK:
-        _FAST_QASM_CACHE[key] = (dag, body)
-        if len(_FAST_QASM_CACHE) > _FAST_QASM_CACHE_MAXSIZE:
-            _FAST_QASM_CACHE.popitem(last=False)
-    return body
+def _build_prefix_index(
+    qasm_bodies: tuple[tuple[tuple, str], ...],
+) -> PrefixIndex:
+    index = {stored_tag: body for stored_tag, body in qasm_bodies}
+    lengths = tuple(sorted({len(tag) for tag in index}, reverse=True))
+    return index, lengths
 
 
-def _fast_prepare(node: MetaCircuit, dag: DAGCircuit):
-    """Build a parametric QASM template for one body DAG."""
+def _prefix_index_for(node: MetaCircuit) -> PrefixIndex | None:
+    """Build the prefix index over ``node.qasm_bodies`` (an upstream stage's
+    parked partials), or ``None`` when none are present."""
+    if node.qasm_bodies:
+        return _build_prefix_index(node.qasm_bodies)
+    return None
+
+
+def _lookup_or_serialize(
+    prefix_index: PrefixIndex | None,
+    body_tag: tuple,
+    dag: DAGCircuit,
+    precision: int,
+) -> str:
+    """Find the pre-rendered parametric body for ``body_tag``, or serialize the DAG.
+
+    Upstream stages park their partial body at the tag they had when they
+    ran; later stages (QEM, MeasurementStage, …) may extend ``body_tag``
+    with additional axes, so the lookup probes ``body_tag`` truncated to each
+    stored tag length.
+
+    Falls back to :func:`_qasm_body_cached` when no entry matches. This is
+    safe: :class:`~divi.pipeline.stages.DataBindingStage` parks one entry per
+    fanned body at that body's exact data tag, and every fanned body reaches
+    here with that tag as a prefix — so a data-fanned body always matches. A
+    non-match means a body that was never data-fanned, whose ``dag`` is fully
+    parametric and serializes correctly.
+    """
+    if prefix_index is not None:
+        index, lengths = prefix_index
+        for n in lengths:
+            body = index.get(body_tag[:n])
+            if body is not None:
+                return body
+    return _qasm_body_cached(dag, precision)
+
+
+def _fast_prepare(
+    node: MetaCircuit,
+    body_tag: tuple,
+    dag: DAGCircuit,
+    *,
+    prefix_index: PrefixIndex | None = None,
+):
+    """Build a parametric QASM template for one body.
+
+    Prefers the per-sample partial body parked in
+    :attr:`~divi.circuits.MetaCircuit.qasm_bodies` (populated by upstream
+    stages such as :class:`~divi.pipeline.stages.DataBindingStage`'s template
+    fast path), falling back to deriving from the body DAG otherwise.
+    """
     param_names = tuple(p.name for p in node.parameters)
-    return build_template(_qasm_body_cached(dag, node.precision), param_names)
+    body = _lookup_or_serialize(prefix_index, body_tag, dag, node.precision)
+    return _template_cached(body, param_names)
 
 
 def _fast_emit(node: MetaCircuit, template, values: np.ndarray) -> str:
@@ -126,8 +177,12 @@ def _fast_emit(node: MetaCircuit, template, values: np.ndarray) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _slow_prepare(node: MetaCircuit, dag: DAGCircuit):
-    """Convert a body DAG to a QuantumCircuit once, before the param-set loop."""
+def _slow_prepare(node: MetaCircuit, _body_tag: tuple, dag: DAGCircuit):
+    """Convert a body DAG to a QuantumCircuit once, before the param-set loop.
+
+    ``_body_tag`` is accepted for signature symmetry with :func:`_fast_prepare`
+    but unused — the slow path always derives from the DAG.
+    """
     return dag_to_circuit(dag)
 
 
@@ -148,14 +203,21 @@ class ParameterBindingStage(BundleStage):
       ``consumes_dag_bodies=False``). Each body DAG is serialised once to
       a parametric QASM string, wrapped in a
       :class:`~divi.circuits.QASMTemplate`, and rendered per parameter
-      set into ``meta.bound_circuit_bodies``.  The pipeline's compilation
-      pass then reads the bound strings directly.
+      set into ``meta.qasm_bodies`` with ``parameters`` cleared.  The
+      pipeline's compilation pass then reads the bound strings directly.
     * **Slow path** — when any downstream stage consumes body DAGs (e.g.
       ``PauliTwirlStage`` or ``QEMStage``). For each body variant and
       parameter set, :meth:`qiskit.circuit.QuantumCircuit.assign_parameters`
       emits a bound :class:`~qiskit.dagcircuit.DAGCircuit` written back to
-      ``meta.circuit_bodies``. Slower, but preserves the DAG IR so
-      downstream stages see concrete gate angles.
+      ``meta.circuit_bodies`` (``parameters`` cleared). Slower, but preserves
+      the DAG IR so downstream stages see concrete gate angles.
+
+    A third **template** path (:meth:`_run_template`, when the backend
+    implements :class:`~divi.backends.SupportsCircuitTemplates`) renders the
+    parametric body into ``meta.qasm_bodies`` *without* binding, leaving
+    ``parameters`` intact so the compilation pass defers substitution to the
+    backend. Bound vs. template is therefore decided downstream by whether
+    ``parameters`` survives, not by a dedicated field.
 
     :meth:`dry_expand` skips the prepare/emit helper entirely and emits
     shape-correct placeholders directly — the analytic path has no per-
@@ -208,17 +270,22 @@ class ParameterBindingStage(BundleStage):
     def dry_expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
     ) -> tuple[ExpansionResult, StageToken]:
-        param_sets = _validate_param_sets(env)
+        # Analytic path: only the param-set count matters, so skip the
+        # finiteness check on values that are never rendered.
+        param_sets = _validate_param_sets(env, assert_finite=False)
         return ExpansionResult(batch=self._run_dry(batch, param_sets)), None
 
     def _template_path_enabled(self, env: PipelineEnv) -> bool:
         """Whether to defer parameter binding to the backend for this run.
 
-        Requires both the fast-path condition (no downstream stage consumes
-        DAG bodies) and the active backend implementing the
-        :class:`~divi.backends.SupportsCircuitTemplates` capability protocol.
+        Requires the fast-path condition (no downstream stage consumes DAG
+        bodies) and a backend implementing
+        :class:`~divi.backends.SupportsCircuitTemplates`. Disabled when
+        per-group shot allocation is active: that attaches shots to concrete
+        flat circuits (one per parameter set), which the deferred template
+        payload (one template plus a parameter matrix) cannot express.
         """
-        if not self._fast_path:
+        if not self._fast_path or env.artifacts.get("per_group_shots"):
             return False
         return isinstance(env.backend, SupportsCircuitTemplates)
 
@@ -228,18 +295,28 @@ class ParameterBindingStage(BundleStage):
         out: MetaCircuitBatch = {}
         for key, node in batch.items():
             if len(node.parameters) == 0:
-                # Non-parametric: serialise each body once, no param-set expansion.
+                # No weights to bind, but bodies may still carry per-sample data
+                # baked in by DataBindingStage (parked in qasm_bodies), so
+                # consult those before serialising the shared DAG. Parameters are
+                # already empty here.
+                prefix_index = _prefix_index_for(node)
                 bodies = tuple(
-                    (tag, _qasm_body_cached(dag, node.precision))
+                    (tag, _lookup_or_serialize(prefix_index, tag, dag, node.precision))
                     for tag, dag in node.circuit_bodies
                 )
-                out[key] = node.set_bound_bodies(bodies)
+                out[key] = node.set_qasm_bodies(bodies)
                 continue
 
+            prefix_index = _prefix_index_for(node)
             bound = _iterate_bodies_over_param_sets(
-                node, param_sets, prepare=_fast_prepare, emit=_fast_emit
+                node,
+                param_sets,
+                prepare=functools.partial(_fast_prepare, prefix_index=prefix_index),
+                emit=_fast_emit,
             )
-            out[key] = node.set_bound_bodies(tuple(bound))
+            # Fully bound: clear parameters so compile routes this to the bound
+            # path (empty parameters == bound).
+            out[key] = replace(node, qasm_bodies=tuple(bound), parameters=())
         return out
 
     def _run_slow(
@@ -255,7 +332,8 @@ class ParameterBindingStage(BundleStage):
             bound = _iterate_bodies_over_param_sets(
                 node, param_sets, prepare=_slow_prepare, emit=_slow_emit
             )
-            out[key] = node.set_circuit_bodies(tuple(bound))
+            # Fully bound into DAGs; clear parameters (empty == bound at compile).
+            out[key] = replace(node, circuit_bodies=tuple(bound), parameters=())
         return out
 
     def _run_template(
@@ -265,29 +343,34 @@ class ParameterBindingStage(BundleStage):
 
         Serialises each body DAG once into parametric QASM (named symbol
         placeholders preserved) and parks it in
-        :attr:`~divi.circuits.MetaCircuit.template_circuit_bodies`. The
-        compilation pass picks it up and emits a payload of
-        :class:`~divi.circuits.TemplateEntry` rows that the backend resolves
-        per parameter set, replacing N near-identical bound circuits with
-        one template plus N parameter vectors.
+        :attr:`~divi.circuits.MetaCircuit.qasm_bodies`, leaving ``parameters``
+        intact. The compilation pass sees the surviving parameters and emits a
+        payload of :class:`~divi.circuits.TemplateEntry` rows that the backend
+        resolves per parameter set, replacing N near-identical bound circuits
+        with one template plus N parameter vectors.
         """
         out: MetaCircuitBatch = {}
         for key, node in batch.items():
             if len(node.parameters) == 0:
-                # Non-parametric: nothing to defer; fall back to fast-path
-                # bound emission so compile takes its normal route.
+                # No weights to defer. Emit bound bodies (consulting any
+                # data-baked partials DataBindingStage parked) so compile takes
+                # its normal bound route. Parameters already empty.
+                prefix_index = _prefix_index_for(node)
                 bodies = tuple(
-                    (tag, _qasm_body_cached(dag, node.precision))
+                    (tag, _lookup_or_serialize(prefix_index, tag, dag, node.precision))
                     for tag, dag in node.circuit_bodies
                 )
-                out[key] = node.set_bound_bodies(bodies)
+                out[key] = node.set_qasm_bodies(bodies)
                 continue
 
+            prefix_index = _prefix_index_for(node)
             template_bodies = tuple(
-                (tag, _qasm_body_cached(dag, node.precision))
+                (tag, _lookup_or_serialize(prefix_index, tag, dag, node.precision))
                 for tag, dag in node.circuit_bodies
             )
-            out[key] = node.set_template_bodies(template_bodies)
+            # Keep parameters: their presence is the "this is a template" signal
+            # and supplies the payload's parameter_names.
+            out[key] = node.set_qasm_bodies(template_bodies)
         return out
 
     def _run_dry(
@@ -295,10 +378,12 @@ class ParameterBindingStage(BundleStage):
     ) -> MetaCircuitBatch:
         """Analytic path: emit shape-correct placeholders, no per-variant work.
 
-        Fast-path emits empty QASM strings into ``bound_circuit_bodies``;
-        slow-path emits shared DAG references into ``circuit_bodies``.  The
-        slot choice mirrors the real path so downstream stages (dry-aware
-        or not) see the attribute they expect populated.
+        Fast-path emits empty QASM strings into ``qasm_bodies``; slow-path emits
+        shared DAG references into ``circuit_bodies``.  The slot choice mirrors
+        the real path so downstream stages (dry-aware or not) see the attribute
+        they expect populated. ``parameters`` is left intact (unlike the real
+        bound paths): :meth:`introspect` reports ``n_params`` from it, and dry
+        traces are never routed through ``_batch_has_templates``.
         """
         n_param_sets = len(param_sets)
         out: MetaCircuitBatch = {}
@@ -313,7 +398,7 @@ class ParameterBindingStage(BundleStage):
                         for i in range(n_param_sets)
                         for body_tag, _ in node.circuit_bodies
                     )
-                out[key] = node.set_bound_bodies(bodies)
+                out[key] = node.set_qasm_bodies(bodies)
             else:
                 if n_params == 0:
                     out[key] = node

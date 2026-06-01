@@ -5,6 +5,7 @@
 """PennyLane QuantumScript → Qiskit DAGCircuit conversion and DAG → parametric QASM2 emission."""
 
 from collections.abc import Mapping
+from typing import cast
 
 import numpy as np
 import pennylane as qp
@@ -177,6 +178,65 @@ def _sympy_to_qiskit(
         ) from e
 
 
+def _symbolize_trainable_subset(qscript: QuantumScript) -> QuantumScript:
+    """Symbolize concrete gate slots named by an explicit, proper-subset
+    ``trainable_params`` so the conversion treats them as bindable.
+
+    PennyLane defaults ``trainable_params`` to *all* gate-data slots; a proper
+    subset is a deliberate signal that only those slots are the knobs. When such
+    a subset points at concrete (non-symbolic) values, those slots are replaced
+    with sympy symbols (``p0``, ``p1``, ...) in trainable-index order so the
+    downstream conversion exposes them as bindable parameters.
+
+    Full-default trainable sets and already-symbolic slots are left untouched,
+    so concrete tapes intended to be evaluated as-is are unaffected.
+    """
+    all_values = qscript.get_parameters(trainable_only=False)
+    trainable = list(qscript.trainable_params)
+    if not trainable or len(trainable) >= len(all_values):
+        return qscript
+    # Operation parameters occupy the leading slots of the flat parameter list;
+    # measured-observable (Hamiltonian) coefficients follow them. Only gate
+    # slots are bindable knobs — never symbolize an observable's coefficient, or
+    # the measured operator would silently change.
+    n_op_params = len(
+        qscript.get_parameters(trainable_only=False, operations_only=True)
+    )
+    concrete = [
+        i
+        for i in trainable
+        if i < n_op_params
+        and not isinstance(all_values[i], (sp.Expr, ParameterExpression))
+    ]
+    if not concrete:
+        return qscript
+    symbols = _fresh_symbols(len(concrete), all_values)
+    # PennyLane's bind_new_parameters stub types params as TensorLike; divi binds
+    # sympy symbols here — a supported runtime path the stub does not model.
+    return qscript.bind_new_parameters(cast(list, symbols), concrete)
+
+
+def _fresh_symbols(n: int, existing_values: list) -> list[sp.Symbol]:
+    """Return ``n`` sympy symbols named ``p0``, ``p1``, … skipping any name
+    already present among ``existing_values`` (sympy expressions or Qiskit
+    ``ParameterExpression``), so injected symbols never alias a pre-existing
+    parameter and get merged into one column by the template renderer."""
+    taken: set[str] = set()
+    for value in existing_values:
+        if isinstance(value, sp.Expr):
+            taken |= {str(s) for s in value.free_symbols}
+        elif isinstance(value, ParameterExpression):
+            taken |= {p.name for p in value.parameters}
+    fresh: list[sp.Symbol] = []
+    counter = 0
+    while len(fresh) < n:
+        name = f"p{counter}"
+        if name not in taken:
+            fresh.append(sp.Symbol(name))
+        counter += 1
+    return fresh
+
+
 def _qscript_to_dag(
     qscript: QuantumScript,
 ) -> tuple[DAGCircuit, tuple[Parameter, ...], dict | None]:
@@ -286,23 +346,99 @@ def _format_gate_param(
     param: ParameterExpression | float | int,
     precision: int,
 ) -> str:
-    """Format a gate parameter for a body-only parametric QASM2 string."""
+    """Format a gate parameter for a body-only parametric QASM2 string.
+
+    Numeric values are rejected if non-finite — this is the universal leaf for
+    DAG-to-QASM serialisation (the slow/eager binding paths and circuit-literal
+    angles), so guarding here makes finiteness enforcement uniform alongside the
+    ingestion-boundary :func:`_assert_finite`.
+    """
     if isinstance(param, ParameterExpression):
         # str() gives Qiskit's own serialisation, which renders bare
         # Parameters as their name and composite expressions using standard
         # arithmetic syntax (QASM2-compatible: +, -, *, /, **, sin, cos…).
         return str(param)
-    return f"{float(param):.{precision}f}"
+    value = float(param)
+    if not np.isfinite(value):
+        raise ValueError(
+            f"Cannot serialise non-finite gate parameter {value!r} to QASM; "
+            f"check the circuit for NaN or Inf angles."
+        )
+    return f"{value:.{precision}f}"
+
+
+def _assert_finite(values: np.ndarray, *, source: str) -> None:
+    """Reject NaN/Inf gate parameters at the value-ingestion boundary.
+
+    Run on a binding stage's incoming value matrix (``env.param_sets`` or
+    ``env.feature_batch``) before it is fanned across circuit bodies. Validating
+    here — rather than in any single render leaf — means every downstream path
+    (template, fast, slow/eager DAG, and backend templates) rejects non-finite
+    gate parameters uniformly.
+    """
+    if not np.isfinite(values).all():
+        raise ValueError(
+            f"Cannot bind non-finite gate parameters: {source} contains NaN or "
+            f"Inf. Check the feature batch / parameter values for missing data, "
+            f"divide-by-zero, or overflow in preprocessing."
+        )
 
 
 def _format_bound_param(value: float, precision: int) -> str:
-    """Format a bound numeric parameter for QASM template substitution.
+    """Format a bound numeric gate parameter (a radian angle) for QASM substitution.
 
-    Formats to *precision* decimal places, strips trailing zeros and dots,
-    and normalises negative zero to ``"0"``.
+    Renders to *precision* decimal places, strips trailing zeros and dots, and
+    normalises negative zero to ``"0"``. Angles below ``10 ** -precision`` round
+    toward ``"0"`` (≈5e-9 rad at the default 8 places — physically negligible);
+    scale features to O(1) if sub-precision magnitudes must be represented.
+
+    Finiteness is enforced at the binding-stage ingestion boundary
+    (:func:`_assert_finite` over ``param_sets``/``feature_batch``), so the
+    env-sourced values this renders are finite; it adds no per-value guard of
+    its own. DAG-serialised values are guarded separately in
+    :func:`_format_gate_param`.
     """
-    s = f"{float(value):.{precision}f}".rstrip("0").rstrip(".")
+    value = float(value)
+    s = f"{value:.{precision}f}".rstrip("0").rstrip(".")
     return "0" if s in {"-0", ""} else s
+
+
+def _bind_op_params(op, substitution: dict):
+    """Return ``op`` with any of ``substitution``'s parameters bound in its
+    expressions; the original is returned untouched when none appear."""
+    if not op.params:
+        return op
+    changed = False
+    new_params = []
+    for param in op.params:
+        if isinstance(param, ParameterExpression):
+            shared = substitution.keys() & set(param.parameters)
+            if shared:
+                param = param.bind({k: substitution[k] for k in shared})
+                changed = True
+        new_params.append(param)
+    if not changed:
+        return op
+    bound_op = op.copy()
+    bound_op.params = new_params
+    return bound_op
+
+
+def bind_parameters_in_dag(dag: DAGCircuit, substitution: dict) -> DAGCircuit:
+    """Rebuild ``dag`` with the parameters in ``substitution`` bound to values,
+    leaving every other parameter symbolic.
+
+    Walks the DAG node-by-node and binds each gate's
+    :class:`~qiskit.circuit.ParameterExpression` in place — no round-trip
+    through a :class:`~qiskit.circuit.QuantumCircuit`. ``substitution`` maps
+    :class:`~qiskit.circuit.Parameter` to the value to bind.
+    """
+    bound = dag.copy_empty_like()
+    for node in dag.topological_op_nodes():
+        bound.apply_operation_back(
+            _bind_op_params(node.op, substitution), node.qargs, node.cargs
+        )
+    return bound
 
 
 def dag_to_qasm_body(dag: DAGCircuit, precision: int = DEFAULT_PRECISION) -> str:
@@ -418,6 +554,7 @@ def qscript_to_meta(
     """
     measurements = list(qscript.measurements)
 
+    qscript = _symbolize_trainable_subset(qscript)
     dag, inferred_params, _ = _qscript_to_dag(qscript)
 
     params = parameter_order if parameter_order is not None else inferred_params

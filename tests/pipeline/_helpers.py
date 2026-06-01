@@ -24,7 +24,7 @@ from divi.pipeline.abc import (
     Stage,
     StageToken,
 )
-from divi.pipeline.stages import MeasurementStage
+from divi.pipeline.stages import MeasurementStage, ParameterBindingStage
 
 
 class DummySpecStage(SpecStage[str]):
@@ -84,6 +84,27 @@ class StatefulFanoutStage(FanoutAndSumStage):
     @property
     def stateful(self) -> bool:
         return True
+
+
+def run_binding_pipeline(
+    meta: MetaCircuit,
+    *,
+    backend,
+    param_sets,
+    input_key: str = "x",
+) -> PipelineTrace:
+    """Drive ``meta`` through the canonical spec → measure → param-bind forward
+    pass and return the trace. Covers the dominant per-test pipeline shape;
+    tests that vary the stage order (path-selection) build their own list."""
+    pipeline = CircuitPipeline(
+        stages=[
+            DummySpecStage(meta=meta),
+            MeasurementStage(),
+            ParameterBindingStage(),
+        ]
+    )
+    env = PipelineEnv(backend=backend, param_sets=param_sets)
+    return pipeline.run_forward_pass(input_key, env)
 
 
 def two_group_meta() -> MetaCircuit:
