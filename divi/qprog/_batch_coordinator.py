@@ -246,6 +246,10 @@ class _BatchCoordinator:
         self._in_flight: list[_FlushGroup] = []
         self._in_flight_lock = Lock()
 
+        # Flush thread handles, joined in ``shutdown``. Guarded by
+        # ``_in_flight_lock``.
+        self._flush_threads: list[Thread] = []
+
         # Cumulative runtime tracked from async backend responses.
         self._total_runtime = 0.0
 
@@ -381,6 +385,9 @@ class _BatchCoordinator:
             args=(batch, flush_group),
             daemon=True,
         )
+        with self._in_flight_lock:
+            self._flush_threads = [t for t in self._flush_threads if t.is_alive()]
+            self._flush_threads.append(thread)
         thread.start()
 
     def _send_batch_progress(
@@ -609,7 +616,9 @@ class _BatchCoordinator:
             _fail_futures(
                 batch, ExecutionCancelledError("Batch coordinator has been cancelled.")
             )
-        except Exception as exc:
+        except BaseException as exc:
+            # BaseException, not Exception: any failure here must fail the
+            # waiting futures, else their ``result()`` blocks forever.
             self._send_batch_progress(flush_group, final_status="Failed")
             _fail_futures(batch, exc)
         finally:
@@ -670,6 +679,16 @@ class _BatchCoordinator:
                 {"label": original_label, "results": item["results"]}
             )
 
+        # Credit runtime *before* resolving futures.  The flush runs on a
+        # daemon thread, and resolving a future unblocks the waiting program,
+        # which lets the ensemble's join() proceed and read ``total_runtime``.
+        # Crediting after resolution races that read and can drop this flush's
+        # runtime.  Crediting per successful sub-batch also means a later
+        # sub-batch failing within the same flush does not erase this credit.
+        if runtime:
+            with self._lock:
+                self._total_runtime += runtime
+
         # --- Resolve futures ---
         per_program_runtime = runtime / n_programs if n_programs > 0 else 0.0
         for prog_key, entry in sub_batch.items():
@@ -677,13 +696,6 @@ class _BatchCoordinator:
                 entry.future.set_result(
                     (program_results.get(prog_key, []), per_program_runtime)
                 )
-
-        # Credit runtime per successful sub-batch so that partial-success
-        # flushes don't drop the work that did complete.  Lock window is
-        # narrow — never held across the network call above.
-        if runtime:
-            with self._lock:
-                self._total_runtime += runtime
 
         return runtime
 
@@ -822,6 +834,14 @@ class _BatchCoordinator:
         don't reach into ``cancel`` directly.
         """
         self.cancel()
+
+        # Join the flush threads (bounded) so none resolves a future or emits
+        # progress after the caller tears down its listener and executor.
+        with self._in_flight_lock:
+            threads = list(self._flush_threads)
+            self._flush_threads.clear()
+        for thread in threads:
+            thread.join(timeout=5)
 
     @property
     def total_runtime(self) -> float:

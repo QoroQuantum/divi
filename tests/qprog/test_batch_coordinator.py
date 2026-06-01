@@ -532,6 +532,46 @@ class TestFlushWithSyncBackend:
         assert len(backend.submitted) == 1
         assert len(backend.submitted[0]) == 3
 
+    def test_base_exception_in_flush_fails_futures(self, mocker):
+        backend = FakeSyncBackend()
+        mocker.patch.object(
+            backend,
+            "submit_circuits",
+            lambda circuits, **kw: ExecutionResult(results=None, job_id="fake"),
+        )
+        coord = _BatchCoordinator(backend)
+
+        def raise_base(self, *a, **k):
+            raise SystemExit("backend died")
+
+        mocker.patch.object(_BatchCoordinator, "_poll_and_get_results", raise_base)
+
+        batch = {"p1": _make_entry({"c1": "q"}, {})}
+        flush_group = _FlushGroup(
+            futures={k: e.future for k, e in batch.items()}, color="green"
+        )
+        with coord._in_flight_lock:
+            coord._in_flight.append(flush_group)
+
+        coord._do_flush(batch, flush_group)
+
+        future = batch["p1"].future
+        assert future.done()
+        with pytest.raises(SystemExit):
+            future.result()
+
+    def test_shutdown_joins_and_clears_flush_threads(self):
+        backend = FakeSyncBackend()
+        coord = _BatchCoordinator(backend)
+        coord.register_program("p1")
+        coord.submit("p1", {f"p1{_TAG_SEP}c1": "q"})
+
+        assert coord._flush_threads
+
+        coord.shutdown()
+
+        assert coord._flush_threads == []
+
     def test_three_programs_single_flush(self):
         """Three programs all reach the barrier together."""
         backend = FakeSyncBackend()
@@ -986,6 +1026,51 @@ class TestTotalRuntime:
         coord._do_flush(batch, flush_group)
 
         assert coord.total_runtime == 7.5
+
+    def test_runtime_credited_before_futures_resolved(self, mocker):
+        """The flush runs on a daemon thread, and resolving a program's future
+        unblocks it — which lets the ensemble's join() read ``total_runtime``.
+        So the credit must land *before* the futures resolve; otherwise that
+        read races the credit and can drop the flush's runtime.
+        """
+        backend = FakeSyncBackend()
+        mocker.patch.object(
+            backend,
+            "submit_circuits",
+            lambda circuits, **kw: ExecutionResult(results=None, job_id="fake"),
+        )
+        coord = _BatchCoordinator(backend)
+
+        runtime_seen_at_resolution = []
+
+        class _RecordingFuture(Future):
+            def set_result(self, result):
+                runtime_seen_at_resolution.append(coord.total_runtime)
+                super().set_result(result)
+
+        batch = {
+            "p1": _PendingEntry({"c1": "q"}, {}, _RecordingFuture()),
+            "p2": _PendingEntry({"c2": "q"}, {}, _RecordingFuture()),
+        }
+
+        def fake_poll(self, execution_result, flush_group, n_circuits, n_programs):
+            return [], 6.0
+
+        mocker.patch.object(_BatchCoordinator, "_poll_and_get_results", fake_poll)
+
+        flush_group = _FlushGroup(
+            futures={k: e.future for k, e in batch.items()}, color="green"
+        )
+        with coord._in_flight_lock:
+            coord._in_flight.append(flush_group)
+
+        coord._do_flush(batch, flush_group)
+
+        # Both futures observed the full runtime already credited when they
+        # resolved — never 0.0 (which is what a resolve-then-credit order
+        # would record).
+        assert runtime_seen_at_resolution == [6.0, 6.0]
+        assert coord.total_runtime == 6.0
 
 
 class TestProxyBackend:

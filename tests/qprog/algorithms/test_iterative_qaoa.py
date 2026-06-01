@@ -180,6 +180,43 @@ class TestIterativeQAOA:
         assert len(history[0]["best_params"]) == 2  # depth 1: 2 params
         assert len(history[1]["best_params"]) == 4  # depth 2: 4 params
 
+    def test_total_circuit_count_matches_circuits_submitted(
+        self, default_test_simulator, mocker
+    ):
+        graph = make_bull_graph()
+        iterative = IterativeQAOA(
+            MaxCutProblem(graph),
+            max_depth=3,
+            max_iterations_per_depth=2,
+            backend=default_test_simulator,
+            optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
+        )
+        spy = mocker.spy(default_test_simulator, "submit_circuits")
+
+        iterative.run()
+
+        submitted = sum(len(call.args[0]) for call in spy.call_args_list)
+        assert iterative.total_circuit_count == submitted
+
+    def test_total_circuit_count_accumulates_across_runs(
+        self, default_test_simulator, mocker
+    ):
+        graph = make_bull_graph()
+        iterative = IterativeQAOA(
+            MaxCutProblem(graph),
+            max_depth=2,
+            max_iterations_per_depth=2,
+            backend=default_test_simulator,
+            optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
+        )
+        spy = mocker.spy(default_test_simulator, "submit_circuits")
+
+        iterative.run()
+        iterative.run()
+
+        submitted = sum(len(call.args[0]) for call in spy.call_args_list)
+        assert iterative.total_circuit_count == submitted
+
     def test_best_depth_matches_lowest_loss(self, default_test_simulator):
         graph = make_bull_graph()
         iterative = IterativeQAOA(

@@ -20,7 +20,7 @@ from rich.traceback import Traceback
 import divi.qprog.ensemble as ensemble_module
 from divi.backends import AsyncJobBackend, ExecutionResult
 from divi.exceptions import ExecutionCancelledError
-from divi.qprog._batch_coordinator import _BatchCoordinator
+from divi.qprog._batch_coordinator import _BatchCoordinator, _ProxyBackend
 from divi.qprog.ensemble import (
     BatchConfig,
     BatchMode,
@@ -44,13 +44,15 @@ class _FakeRunResult:
         self._total_run_time = run_time
 
 
-class SimpleTestProgram(QuantumProgram):
-    """A simple mock program for testing ProgramEnsemble execution."""
+class _StubProgram(QuantumProgram):
+    """Base for ProgramEnsemble test programs.
 
-    def __init__(self, circ_count: int, run_time: float, *, backend, **kwargs):
+    Stubs the abstract methods and tracks a ``_ran`` flag; subclasses
+    implement only ``run()`` (and any extra constructor args they need).
+    """
+
+    def __init__(self, *, backend, **kwargs):
         super().__init__(backend=backend, **kwargs)
-        self.circ_count = circ_count
-        self.run_time = run_time
         self._ran = False
 
     def _build_pipelines(self) -> None:
@@ -59,19 +61,26 @@ class SimpleTestProgram(QuantumProgram):
     def has_results(self) -> bool:
         return self._ran
 
+    def _generate_circuits(self, **kwargs):
+        return []
+
+    def _post_process_results(self, results):
+        pass
+
+
+class SimpleTestProgram(_StubProgram):
+    """A simple mock program whose ``run()`` assigns preset counter values."""
+
+    def __init__(self, circ_count: int, run_time: float, *, backend, **kwargs):
+        super().__init__(backend=backend, **kwargs)
+        self.circ_count = circ_count
+        self.run_time = run_time
+
     def run(self):
-        """A mock run that sets the preset values on the instance."""
         self._total_circuit_count = self.circ_count
         self._total_run_time = self.run_time
         self._ran = True
         return self
-
-    def _generate_circuits(self, **kwargs):
-        """Dummy implementation for the abstract method."""
-        return []
-
-    def _post_process_results(self, results: dict):
-        """Dummy implementation for the abstract method."""
 
 
 class SampleProgramEnsemble(ProgramEnsemble):
@@ -139,13 +148,17 @@ class TestProgramEnsemble:
         assert "prog1" in program_ensemble.programs
         assert "prog2" in program_ensemble.programs
         assert hasattr(program_ensemble._queue, "get")  # Check if it's queue-like
-        assert isinstance(program_ensemble._done_event, ThreadingEvent)
+        # create_programs() only sets up the progress queue (sub-programs bind
+        # to it at construction). _done_event is created per-run by run().
+        assert not hasattr(program_ensemble, "_done_event")
 
     def test_reset_cleans_up_all_resources(self, program_ensemble, mocker):
         """Tests that reset() correctly shuts down and cleans up all resources."""
         # First, create programs to initialize the manager, queue, etc.
         program_ensemble.create_programs()
-        # Now, simulate a running state by creating an executor and futures
+        # Now, simulate a running state by creating an executor and futures.
+        # run() creates _done_event per-run, so set it up here to mirror that.
+        program_ensemble._done_event = ThreadingEvent()
         program_ensemble._executor = mocker.MagicMock(spec=ThreadPoolExecutor)
         program_ensemble._listener_thread = mocker.MagicMock(spec=Thread)
         program_ensemble._progress_bar = mocker.MagicMock()
@@ -1201,23 +1214,16 @@ class _ParameterizedEnsemble(ProgramEnsemble):
         return None
 
 
-class _SubmittingProgram(QuantumProgram):
+class _SubmittingProgram(_StubProgram):
     """Test program whose ``run()`` actually submits circuits through its
     backend — used to exercise the end-to-end ensemble → coordinator → flush
     pipeline (so flush-size assertions reflect real backend calls)."""
 
+    _MINIMAL_QASM = 'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[1];\ncreg c[1];\nh q[0];\nmeasure q[0] -> c[0];\n'
+
     def __init__(self, *, n_circuits: int = 1, backend, **kwargs):
         super().__init__(backend=backend, **kwargs)
         self.n_circuits = n_circuits
-        self._ran = False
-
-    def _build_pipelines(self) -> None:
-        pass
-
-    def has_results(self) -> bool:
-        return self._ran
-
-    _MINIMAL_QASM = 'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[1];\ncreg c[1];\nh q[0];\nmeasure q[0] -> c[0];\n'
 
     def run(self):
         circuits = {f"c{i}": self._MINIMAL_QASM for i in range(self.n_circuits)}
@@ -1226,12 +1232,6 @@ class _SubmittingProgram(QuantumProgram):
         self._total_run_time = 0.0
         self._ran = True
         return self
-
-    def _generate_circuits(self, **kwargs):
-        return []
-
-    def _post_process_results(self, results):
-        pass
 
 
 class _SubmittingEnsemble(ProgramEnsemble):
@@ -1253,6 +1253,53 @@ class _SubmittingEnsemble(ProgramEnsemble):
                 program_id=f"prog_{i}",
             )
             for i in range(self._n_programs)
+        }
+
+    def aggregate_results(self):
+        super().aggregate_results()
+        return None
+
+
+class _AccumulatingProgram(_StubProgram):
+    """Program whose run() *accumulates* fixed per-call increments into
+    ``_total_circuit_count`` / ``_total_run_time``.
+
+    Mirrors how real VQAs grow their counters monotonically across every
+    dispatch they take part in (unlike :class:`SimpleTestProgram`, which
+    assigns) — so re-dispatch exercises the ensemble's delta accounting.
+    """
+
+    def __init__(self, *, circ_per_call: int, time_per_call: float, backend, **kwargs):
+        super().__init__(backend=backend, **kwargs)
+        self._circ_per_call = circ_per_call
+        self._time_per_call = time_per_call
+
+    def run(self):
+        self._total_circuit_count += self._circ_per_call
+        self._total_run_time += self._time_per_call
+        self._ran = True
+        return self
+
+
+class _AccumulatingEnsemble(ProgramEnsemble):
+    """Ensemble of :class:`_AccumulatingProgram` with configurable per-program
+    ``(circuits, runtime)`` increments, for exact count-accounting assertions.
+    """
+
+    def __init__(self, backend, specs: dict):
+        super().__init__(backend)
+        self._specs = specs
+
+    def create_programs(self):
+        super().create_programs()
+        self.programs = {
+            pid: _AccumulatingProgram(
+                circ_per_call=circ,
+                time_per_call=runtime,
+                backend=self.backend,
+                program_id=pid,
+            )
+            for pid, (circ, runtime) in self._specs.items()
         }
 
     def aggregate_results(self):
@@ -2359,3 +2406,150 @@ class TestEnsembleSampleSolution:
             params_per_program=params_per_program, blocking=True
         )
         small_partitioning_ensemble.aggregate_results()
+
+
+class TestEnsembleRedispatchLifecycle:
+    """Per-dispatch state must be reset/restored so a second dispatch (e.g.
+    a MERGED ``run`` followed by an un-batched ``sample_solution``) does not
+    inherit stale state from the first.
+    """
+
+    def test_merged_run_restores_program_backends(self, small_partitioning_ensemble):
+        """After a batched dispatch each program's real backend is restored.
+
+        Batched dispatch swaps in a ``_ProxyBackend``; leaving it in place
+        would make the program submit into a shut-down coordinator later.
+        """
+        ensemble = small_partitioning_ensemble
+        originals = {pid: p.backend for pid, p in ensemble.programs.items()}
+
+        ensemble.run(blocking=True)  # default BatchMode.MERGED
+
+        for pid, program in ensemble.programs.items():
+            assert not isinstance(program.backend, _ProxyBackend)
+            assert program.backend is originals[pid]
+
+    def test_merged_run_then_unbatched_sample_solution(
+        self, small_partitioning_ensemble
+    ):
+        """A MERGED ``run`` then an OFF ``sample_solution`` must not submit
+        through the (by then shut-down) coordinator via a dangling proxy.
+        """
+        ensemble = small_partitioning_ensemble
+        ensemble.run(blocking=True)  # MERGED; coordinator shut down in join()
+
+        ensemble.sample_solution(
+            blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF)
+        )
+
+        for program in ensemble.programs.values():
+            assert program._best_probs
+
+    def test_unbatched_dispatch_clears_stale_program_keys(
+        self, small_partitioning_ensemble
+    ):
+        """An un-batched dispatch following a batched one must not inherit the
+        ``_program_key_map`` populated by the batched dispatch.
+        """
+        ensemble = small_partitioning_ensemble
+        ensemble.run(blocking=True)  # MERGED populates _program_key_map
+
+        ensemble.sample_solution(
+            blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF)
+        )
+
+        assert ensemble._program_key_map == {}
+
+
+class TestEnsembleCountAccounting:
+    """Exact circuit-count and run-time accounting across dispatches.
+
+    Programs accumulate their ``_total_*`` counters monotonically, so the
+    ensemble must add only each dispatch's *delta* — never the program's
+    cumulative total — or repeated dispatches over-count.
+    """
+
+    @pytest.fixture
+    def _reset_after(self):
+        created = []
+        yield created.append
+        for ensemble in created:
+            try:
+                ensemble.reset()
+            except Exception:
+                pass
+
+    def test_single_off_dispatch_counts_exactly(self, dummy_simulator, _reset_after):
+        """First dispatch: baseline is zero, so totals equal the increments."""
+        ensemble = _AccumulatingEnsemble(
+            backend=dummy_simulator, specs={"a": (10, 2.0), "b": (5, 3.0)}
+        )
+        _reset_after(ensemble)
+        ensemble.create_programs()
+
+        ensemble.run(blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF))
+
+        assert ensemble.total_circuit_count == 15
+        assert ensemble.total_run_time == 5.0
+
+    def test_repeated_off_dispatches_accumulate_exact_counts(
+        self, dummy_simulator, _reset_after
+    ):
+        """Three OFF dispatches: ensemble totals grow by the per-dispatch
+        delta each time (15 circuits / 5.0s per dispatch), never doubling.
+        """
+        ensemble = _AccumulatingEnsemble(
+            backend=dummy_simulator, specs={"a": (10, 2.0), "b": (5, 3.0)}
+        )
+        _reset_after(ensemble)
+        ensemble.create_programs()
+
+        for dispatch in range(1, 4):
+            ensemble.run(blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF))
+
+            assert ensemble.total_circuit_count == 15 * dispatch
+            assert ensemble.total_run_time == 5.0 * dispatch
+            # Invariant: ensemble total == sum of program lifetime totals.
+            assert ensemble.total_circuit_count == sum(
+                p._total_circuit_count for p in ensemble.programs.values()
+            )
+            assert ensemble.total_run_time == sum(
+                p._total_run_time for p in ensemble.programs.values()
+            )
+
+    def test_first_dispatch_excludes_preexisting_program_counts(
+        self, dummy_simulator, _reset_after
+    ):
+        """A program that already carries counts from prior standalone work
+        contributes only its in-ensemble delta, not its pre-existing totals.
+        """
+        ensemble = _AccumulatingEnsemble(
+            backend=dummy_simulator, specs={"a": (10, 2.0)}
+        )
+        _reset_after(ensemble)
+        ensemble.create_programs()
+        program = next(iter(ensemble.programs.values()))
+        program._total_circuit_count = 100
+        program._total_run_time = 50.0
+
+        ensemble.run(blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF))
+
+        # Only the +10 / +2.0 increment from this dispatch is credited.
+        assert ensemble.total_circuit_count == 10
+        assert ensemble.total_run_time == 2.0
+
+    def test_mixed_mode_dispatches_count_exactly(self, dummy_simulator, _reset_after):
+        """Switching modes between dispatches must not perturb the delta
+        accounting (MERGED then OFF).
+        """
+        ensemble = _AccumulatingEnsemble(
+            backend=dummy_simulator, specs={"a": (10, 2.0), "b": (5, 3.0)}
+        )
+        _reset_after(ensemble)
+        ensemble.create_programs()
+
+        ensemble.run(blocking=True)  # MERGED
+        ensemble.run(blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF))
+
+        assert ensemble.total_circuit_count == 30
+        assert ensemble.total_run_time == 10.0

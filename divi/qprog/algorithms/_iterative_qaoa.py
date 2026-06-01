@@ -332,8 +332,6 @@ class IterativeQAOA(QAOA):
 
         depth_history: list[dict] = []
         prev_best_params: npt.NDArray[np.float64] | None = None
-        total_circuits = 0
-        total_time = 0.0
 
         for depth in range(1, self._max_depth + 1):
             self.reporter.info(message=f"Depth {depth}/{self._max_depth}")
@@ -359,8 +357,6 @@ class IterativeQAOA(QAOA):
                 checkpoint_config=checkpoint_config,
                 **kwargs,
             )
-            total_circuits += self._total_circuit_count
-            total_time += self._total_run_time
 
             depth_history.append(
                 {
@@ -393,8 +389,6 @@ class IterativeQAOA(QAOA):
         if perform_final_computation:
             self.sample_solution(**kwargs)
 
-        self._total_circuit_count = total_circuits
-        self._total_run_time = total_time
         return self
 
     @property

@@ -89,6 +89,10 @@ class ProgramEnsemble(ABC):
         self._programs = {}
         self._coordinator: _BatchCoordinator | None = None
         self._program_key_map: dict[QuantumProgram, str] = {}
+        # Real backend per program, saved before batching swaps in a proxy.
+        self._program_original_backend: dict[QuantumProgram, CircuitRunner] = {}
+        # Per-program counter values captured at the start of each dispatch.
+        self._dispatch_count_baseline: dict[QuantumProgram, tuple[int, float]] = {}
         self.futures: list[Future] = []
 
         self._total_circuit_count = 0
@@ -150,8 +154,8 @@ class ProgramEnsemble(ABC):
         program identifiers to `QuantumProgram` instances.
 
         Implementation Notes:
-            - Subclasses should call `super().create_programs()` first to initialize
-              internal state (queue, events, etc.) and validate that no programs
+            - Subclasses should call `super().create_programs()` first to
+              initialize the progress queue and validate that no programs
               already exist.
             - After calling super(), subclasses should populate `self.programs` or
               `self._programs` with their program instances.
@@ -161,8 +165,10 @@ class ProgramEnsemble(ABC):
 
         Side Effects:
             - Populates `self._programs` with program instances.
-            - Initializes `self._queue` for progress reporting.
-            - Initializes `self._done_event` if `max_iterations` attribute exists.
+            - Initializes `self._queue` for progress reporting. Sub-programs
+              bind to this exact queue at construction, so ``run()`` reuses it
+              rather than re-creating it. ``self._done_event`` is created later,
+              per-run, by ``run()``/``sample_solution()``.
 
         Raises:
             RuntimeError: If programs already exist (should call `reset()` first).
@@ -182,7 +188,6 @@ class ProgramEnsemble(ABC):
             )
 
         self._queue = Queue()
-        self._done_event: Event | None = Event()
 
     def reset(self):
         """
@@ -204,11 +209,14 @@ class ProgramEnsemble(ABC):
 
         self._programs.clear()
 
-        # Stop any active executor
+        # Stop the executor before restoring backends so an in-flight worker
+        # hits the cancelled proxy rather than the restored real backend.
         if self._executor is not None:
             self._executor.shutdown(wait=False)
             self._executor = None
             self.futures.clear()
+
+        self._restore_program_backends()
 
         # Signal and wait for listener thread to stop
         if hasattr(self, "_done_event") and self._done_event is not None:
@@ -230,6 +238,20 @@ class ProgramEnsemble(ABC):
             self._live_display = None
             self._progress_bar = None
             self._pb_task_map.clear()
+
+    def _restore_program_backends(self) -> None:
+        """Undo the ``_ProxyBackend`` swap done for batched dispatch.
+
+        Batched dispatch replaces each sub-program's ``backend`` with a
+        ``_ProxyBackend`` bound to the coordinator. Once that coordinator is
+        shut down the proxy is dead, so restore the original backend —
+        symmetric with coordinator teardown — to keep each program usable
+        directly or in a later un-batched dispatch. Idempotent: the snapshot
+        is cleared after restoring.
+        """
+        for program, backend in self._program_original_backend.items():
+            program.backend = backend
+        self._program_original_backend.clear()
 
     def _atexit_cleanup_hook(self):
         # This hook is only registered for non-blocking runs.
@@ -369,7 +391,13 @@ class ProgramEnsemble(ABC):
         if len(self._programs) == 0:
             raise RuntimeError("No programs to run.")
 
-        self._queue = Queue()
+        # Reuse the queue from create_programs() — sub-programs bind their
+        # reporters to it at construction, so re-creating it here would orphan
+        # every per-program update.
+        if getattr(self, "_queue", None) is None:
+            raise RuntimeError("Call create_programs() before run().")
+        # Clear any messages left on the persistent queue by a prior dispatch.
+        _drain_queue_quietly(self._queue)
         self._done_event = Event()
 
         self._progress_bar = None
@@ -461,6 +489,12 @@ class ProgramEnsemble(ABC):
         self._cancellation_event = Event()
         self.futures.clear()
         self._future_to_program = {}
+        self._program_key_map = {}
+        # Per-program counter values at dispatch start; join() adds the delta.
+        self._dispatch_count_baseline = {
+            program: (program._total_circuit_count, program._total_run_time)
+            for program in self._programs.values()
+        }
         self._pb_task_map = {}
         # Guards ``_pb_task_map`` mutations and the snapshot taken when
         # iterating ``progress_bar._tasks`` for batch coloring.  Any
@@ -487,11 +521,11 @@ class ProgramEnsemble(ABC):
                     n_workers=n_workers,
                     cancellation_event=self._cancellation_event,
                 )
-                self._program_key_map = {}
                 for idx, (prog_id, program) in enumerate(self._programs.items()):
                     program_key = str(idx)
                     self._program_key_map[program] = program_key
                     self._coordinator.register_program(program_key)
+                    self._program_original_backend[program] = program.backend
                     program.backend = _ProxyBackend(
                         self.backend, self._coordinator, program_key
                     )
@@ -564,6 +598,7 @@ class ProgramEnsemble(ABC):
             if self._executor is not None:
                 self._executor.shutdown(wait=False)
                 self._executor = None
+            self._restore_program_backends()
             self.futures.clear()
             self._future_to_program = {}
             raise
@@ -1087,8 +1122,10 @@ class ProgramEnsemble(ABC):
             # Aggregate results from completed program instances.
             # run() returns self, so completed_futures contains programs.
             if completed_futures:
+                baseline = self._dispatch_count_baseline
                 self._total_circuit_count += sum(
-                    p._total_circuit_count for p in completed_futures
+                    p._total_circuit_count - baseline.get(p, (0, 0.0))[0]
+                    for p in completed_futures
                 )
                 # For async backends the individual programs don't track runtime
                 # (the proxy returns sync results). Use the coordinator's total
@@ -1100,7 +1137,8 @@ class ProgramEnsemble(ABC):
                     self._total_run_time += self._coordinator.total_runtime
                 else:
                     self._total_run_time += sum(
-                        p._total_run_time for p in completed_futures
+                        p._total_run_time - baseline.get(p, (0, 0.0))[1]
+                        for p in completed_futures
                     )
                 self.futures.clear()
 
@@ -1114,6 +1152,8 @@ class ProgramEnsemble(ABC):
             if self._executor is not None:
                 self._executor.shutdown(wait=True)
                 self._executor = None
+
+            self._restore_program_backends()
 
             if (
                 self._progress_bar is not None
