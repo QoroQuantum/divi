@@ -142,6 +142,48 @@ class TestZNE:
             zne.expand(bell_dag)
 
 
+class TestZNEDryExpand:
+    """ZNE's analytic dry path: same fan-out/context as expand, zero mutation."""
+
+    def test_emits_one_dag_per_scale_without_folding(self, bell_dag):
+        zne = ZNE(scale_factors=[1.0, 3.0, 5.0])
+        base = bell_dag.size()
+        dags, ctx = zne.dry_expand(bell_dag)
+        assert len(dags) == 3
+        # No folding: every output aliases the unmodified input.
+        assert all(d is bell_dag for d in dags)
+        assert bell_dag.size() == base
+        assert ctx["dag_indices"] == [0, 1, 2]
+
+    def test_effective_scales_match_expand(self, bell_dag):
+        """The analytic effective scales agree with the real fold's."""
+        import copy
+
+        zne = ZNE(scale_factors=[1.0, 3.0, 5.0])
+        _, dry_ctx = zne.dry_expand(copy.deepcopy(bell_dag))
+        _, real_ctx = zne.expand(bell_dag)
+        assert dry_ctx["effective_scales"] == real_ctx["effective_scales"]
+
+    def test_aliased_batch_does_not_compound(self, bell_dag):
+        """Regression: dry batches may alias ONE dag across many entries
+        (DataBindingStage's shared-template fan-out). expand's absorb-the-
+        input fold compounded exponentially across aliases — dry_expand
+        must leave the shared dag untouched no matter how often it runs."""
+        zne = ZNE(scale_factors=[1.0, 3.0, 5.0])
+        base = bell_dag.size()
+        shared_entries = [bell_dag] * 10  # 10 "samples", one shared dag
+        for dag in shared_entries:
+            zne.dry_expand(dag)
+        assert bell_dag.size() == base
+
+    def test_warns_when_scales_collapse(self, bell_dag):
+        """The dry path surfaces the same granularity warning as expand —
+        dry-run is exactly when a user wants to learn about it."""
+        zne = ZNE(scale_factors=[1.5, 2.5, 3.0])
+        with pytest.warns(UserWarning, match="collapse to effective scales"):
+            zne.dry_expand(bell_dag)
+
+
 class TestLinearExtrapolator:
     def test_fits_line_through_two_points(self):
         e = LinearExtrapolator()

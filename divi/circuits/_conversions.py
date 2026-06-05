@@ -155,26 +155,28 @@ def _sympy_to_qiskit(
     Qiskit's ``ParameterExpression`` constructor accepts a string
     expression and resolves parameter names via a symbol map.
     ``str(sympy_expr)`` produces syntax that Qiskit's internal parser
-    (backed by symengine) understands — arithmetic, powers, and
-    transcendentals all round-trip cleanly.
+    understands — arithmetic, powers, and transcendentals all
+    round-trip cleanly.
     """
     if isinstance(expr, (int, float, np.floating, np.integer)):
         return float(expr)
-    if not expr.free_symbols:
+    free_symbols = cast(set[sp.Symbol], expr.free_symbols)
+    if not free_symbols:
         return float(expr)
-    missing = expr.free_symbols - mapping.keys()
-    if missing:
+    try:
+        name_map = {mapping[s].name: mapping[s] for s in free_symbols}
+    except KeyError:
+        missing = free_symbols - mapping.keys()
         raise ValueError(
             f"Unmapped sympy symbol(s) {missing!r}; mapping covers "
             f"{list(mapping.keys())}"
-        )
-    name_map = {p.name: p for s, p in mapping.items() if s in expr.free_symbols}
+        ) from None
     try:
         return ParameterExpression(name_map, str(expr))
     except (RuntimeError, TypeError) as e:
         raise NotImplementedError(
             f"Cannot convert sympy expression {expr!r} to a Qiskit "
-            f"ParameterExpression — symengine rejected it: {e}"
+            f"ParameterExpression — its parser rejected it: {e}"
         ) from e
 
 

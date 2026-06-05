@@ -441,6 +441,35 @@ class ZNE(QEMProtocol):
             "dag_indices": list(range(len(folded_dags))),
         }
 
+    def dry_expand(
+        self,
+        dag: DAGCircuit,
+        observable: tuple[SparsePauliOp, ...] | None = None,
+    ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
+        """One unfolded alias of ``dag`` per scale factor; never mutates the
+        input (dry batches may alias one DAG across entries)."""
+        scales = tuple(self._scale_factors)
+        n_foldable = _count_foldable_gates(dag)
+        effective_scales = tuple(
+            float(_compute_effective_scale(n_foldable, s)) for s in scales
+        )
+
+        if len(set(effective_scales)) < len(effective_scales):
+            warnings.warn(
+                f"ZNE: requested scale factors {list(scales)} collapse to "
+                f"effective scales {list(effective_scales)} — the foldable "
+                f"gate count is too small for the requested granularity. "
+                f"Extrapolation may fail or be biased; consider fewer scale "
+                f"factors, integer scales only, or a circuit with more "
+                f"foldable gates.",
+                stacklevel=2,
+            )
+
+        return tuple(dag for _ in scales), {
+            "effective_scales": effective_scales,
+            "dag_indices": list(range(len(scales))),
+        }
+
     def reduce(
         self,
         quantum_results: Sequence[Any],
