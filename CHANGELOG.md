@@ -7,6 +7,85 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0](https://github.com/QoroQuantum/divi/compare/v0.11.1...v0.12.0) (2026-06-05)
+
+
+### ✨ Added
+
+* **backends:** expose Maestro noise models in divi; multi-observable QEM support ([0caeaf6](https://github.com/QoroQuantum/divi/commit/0caeaf6342a55aa684e9d03b6cb1fa769a77c4a9), [42775ab](https://github.com/QoroQuantum/divi/commit/42775abb2ecfa1069f314138b8cac39d04d84172))
+* **backends:** adaptive shot allocation across measurement groups via `shot_distribution` on `MeasurementStage` ([f6d5a89](https://github.com/QoroQuantum/divi/commit/f6d5a8938dd6c25354826f09c31686ec43572c57))
+* **backends:** parallel observable grouping in QEM ([d70c44d](https://github.com/QoroQuantum/divi/commit/d70c44d54721969d2d95d24ab0a30e137d54e8dd))
+* **dry-run:** surface shot budget, per-stage depth/width stats, and QEM variance signal in dry-run output ([2724cd6](https://github.com/QoroQuantum/divi/commit/2724cd6073fd986e017924bcc22c8b7d87ee1a45))
+* **hamiltonians:** `to_spo` now accepts PennyLane operators and `{pauli_string: coeff}` dicts in addition to `SparsePauliOp` pass-through ([d2c5858](https://github.com/QoroQuantum/divi/commit/d2c5858b3c355cf6b86f4a32357b898bae46f9d1))
+* **hamiltonians:** new `qubo_to_spo` helper converts a QUBO matrix to `SparsePauliOp` with the loss constant folded in as an identity term ([d2c5858](https://github.com/QoroQuantum/divi/commit/d2c5858b3c355cf6b86f4a32357b898bae46f9d1))
+* **pipeline:** analytic dry runs with exact fan-out counts via `Stage.dry_expand()` ([05ef63f](https://github.com/QoroQuantum/divi/commit/05ef63f183f0b166251ee8ce56ab4ca12289f620))
+* **qprog:** QNN algorithm with feature-map encoders (`AngleEmbedding`, `ZZFeatureMap`) for supervised quantum machine learning ([0af2213](https://github.com/QoroQuantum/divi/commit/0af2213f16604b65789592596b9e85ad33bc0d15))
+* **qprog:** `sample_solution()` runs only the final measurement step so trained parameters can be reused without re-running optimization; extended to `ProgramEnsemble` and replaces `compute_solution()` ([c33468a](https://github.com/QoroQuantum/divi/commit/c33468a18e9e48506e4bb0e04be3f8772a96a4ae), [ad0beee](https://github.com/QoroQuantum/divi/commit/ad0beeeb7b1780ef1972734d26a2fbb9a2b7b792))
+* **qprog:** strict partition ensemble postprocessing via `get_top_solutions(..., strict=True)` ([4e8fe6e](https://github.com/QoroQuantum/divi/commit/4e8fe6edab950fbc47db1088afa75eb1cd73341b))
+* **qprog:** data-binding pipeline for `CustomVQA` and PennyLane circuit ingestion via `qnode_to_meta`/`qscript_to_meta` ([fc8e371](https://github.com/QoroQuantum/divi/commit/fc8e371e2b4aea333808347644347f810edb73a3))
+* **qprog:** `max_concurrent_programs` on `BatchConfig` caps ensemble concurrency and prevents batch-coordinator thread exhaustion ([f05386e](https://github.com/QoroQuantum/divi/commit/f05386e77c8c806baf351c2c6bab60a8e5206edf))
+* **qprog:** `create_tsp_qubo` is now importable from `divi.qprog.problems` ([425f963](https://github.com/QoroQuantum/divi/commit/425f9630a847518d9f855592ed0d0b5ed73be6c7))
+* **routing:** extended TSPLIB parser — supports EXPLICIT and GEO edge-weight types with conformant rounding ([7dcfe78](https://github.com/QoroQuantum/divi/commit/7dcfe788e34e12d0c04643e4746bd07c62031ded))
+* **routing:** binary CE-QAOA encoding for TSP via `encoding="binary"` on `TSPProblem` ([7dcfe78](https://github.com/QoroQuantum/divi/commit/7dcfe788e34e12d0c04643e4746bd07c62031ded))
+
+
+### 🐛 Fixed
+
+* **qprog:** `BatchConfig(max_batch_size=N)` was silently ignored — executor pool now correctly caps at `min(max_batch_size, len(programs))`, preventing both undersized batches and thread exhaustion on large ensembles ([79ebbb9](https://github.com/QoroQuantum/divi/commit/79ebbb99d86537792fcf291ee8b36355430dd1cc))
+* **hamiltonians:** wire-permutation bug that mis-decoded dict-input BQM solutions ([9c33a03](https://github.com/QoroQuantum/divi/commit/9c33a037e0a97949d88d1bd8afb5321f6f43d3c1))
+* **qprog:** harden `ProgramEnsemble` re-dispatch and coordinator concurrency ([a3ecdba](https://github.com/QoroQuantum/divi/commit/a3ecdbaecbe07afac148d0e6ee341b984f925d6e))
+* **qaoa:** enforce cost/mixer/wire_labels qubit-count alignment at construction time ([d996899](https://github.com/QoroQuantum/divi/commit/d996899289a6f514d628068681dc63e46b708a80))
+* **pipeline:** restore imag-coeff warning accidentally dropped via the tuple-flatten path ([99696c1](https://github.com/QoroQuantum/divi/commit/99696c12d8f062fd3534b8787904a43a5ffc5f1f))
+* **pipeline:** surface warning when QuEPP's zero-path no-op would silently pass through noisy results ([99696c1](https://github.com/QoroQuantum/divi/commit/99696c12d8f062fd3534b8787904a43a5ffc5f1f))
+* **pipeline:** take the bound path under per-group shot allocation ([1ff4275](https://github.com/QoroQuantum/divi/commit/1ff42758cfdb6605dafcd77472b7d15f0e2ef718))
+* **backends:** magnitude-based truncation for factored QUBO payloads ([91061a5](https://github.com/QoroQuantum/divi/commit/91061a56e39c90c113f4acb2c43631a53e31a3fd))
+* guard `shot_groups` merge kwargs and custom shot-distribution truncation ([905d3c8](https://github.com/QoroQuantum/divi/commit/905d3c888ba3b145f18d979246f409a7b1ef3455))
+* `noisy_execute` should not strip measurements ([7cb2cb3](https://github.com/QoroQuantum/divi/commit/7cb2cb3b2019eaa8b1eda83732f74a8a64632774))
+* set seed in `noisy_estimate_montecarlo` ([5442fe2](https://github.com/QoroQuantum/divi/commit/5442fe2790d53e0710d9bc340cc02f4286163ec7))
+* stress-test hardening for ensembles, QAOA, QUBO, and reporting ([19b0e76](https://github.com/QoroQuantum/divi/commit/19b0e76a03c20b69686404c7ed79c3ea1641e2eb))
+* **ZNE:** implement missing dry-run feature ([1256650](https://github.com/QoroQuantum/divi/commit/125665024befee8773b174a666791c6ce5f17dfc))
+
+
+### 🔄 Changed
+
+* **hamiltonians:** migrate Hamiltonian arithmetic to `SparsePauliOp` across trotterization, Ising-conversion, and QAOA cost-layer paths; adds thread-safe PL↔SPO cache with LRU cap ([9c33a03](https://github.com/QoroQuantum/divi/commit/9c33a037e0a97949d88d1bd8afb5321f6f43d3c1))
+* **hamiltonians:** `qubo_to_ising` rewrites Pauli-sum construction from O(N²) to O(N) ([d050730](https://github.com/QoroQuantum/divi/commit/d05073098f547bfb72f1b711fecf806e16c50d7d))
+* **qprog:** Qiskit-native internals for QAOA/VQE/TimeEvolution ([99ba3a6](https://github.com/QoroQuantum/divi/commit/99ba3a6214a5dbf8984e82de436a6d3d94ccd675))
+* **qprog:** cancellation unified across single-program, pipeline, and ensemble run paths ([76c7b4e](https://github.com/QoroQuantum/divi/commit/76c7b4e503cab74bd9cb367f651e25706ec51fd2), [415d7e4](https://github.com/QoroQuantum/divi/commit/415d7e4e53a4ac2c96827c4da8feab4d34713441), [53c5c9f](https://github.com/QoroQuantum/divi/commit/53c5c9fe448942b5f9f196dd9bd64a1e18205eeb))
+* **qprog:** introduce `ObservableMeasuringMixin` across observable-measuring programs ([41b7b70](https://github.com/QoroQuantum/divi/commit/41b7b708bcb1aaf6f7f36cec7914d2dc51a7b485))
+* **qprog:** cache parametric `MetaCircuit` across `TimeEvolutionTrajectory` time points ([fa786c1](https://github.com/QoroQuantum/divi/commit/fa786c153dd62b6561c2df82c13950571a140d22))
+* **qprog:** standardize precision and hoist `QuantumProgram` properties ([981657e](https://github.com/QoroQuantum/divi/commit/981657e8e7ca1ed54f9542628365e7fe2bd54290))
+* **qprog:** tighten QAOA ansatz, cache safety, and doc notes ([4ae1056](https://github.com/QoroQuantum/divi/commit/4ae1056a309e2d7a570e53894a899d0771eefc66))
+* **qaoa:** emit Qiskit gates directly in cost circuit construction ([83f558e](https://github.com/QoroQuantum/divi/commit/83f558e460dfe4cde3a7563ee66c2b6ee0445e70))
+* **QoroService:** defer parameter binding via template submissions ([8443228](https://github.com/QoroQuantum/divi/commit/84432284e3c42fe21403054ddc06687bec9a639e))
+* **maestro:** consolidate noise knobs into `MaestroConfig` ([3037c9e](https://github.com/QoroQuantum/divi/commit/3037c9e86abd8f8b5dd4448f0488794e14f4739c))
+* **backends:** bandwidth-adaptive QUBO wire format for validation ([b2e5b72](https://github.com/QoroQuantum/divi/commit/b2e5b7256d6556cf67e7604c2c09a3f38c648259))
+* **pipeline:** measurement grouping reported as a ÷K reduction factor in dry-run output ([115545c](https://github.com/QoroQuantum/divi/commit/115545cb991f572f3f10bbc1c68a128667ed87cb))
+* **pipeline:** unify circuit-body QASM into one `MetaCircuit` field ([b7e79e9](https://github.com/QoroQuantum/divi/commit/b7e79e9b1ab19443bb3b0d3807917ba1b11b52e5))
+* **reporting:** single Progress display, queue-only update lane, terminal-status enum ([51ce865](https://github.com/QoroQuantum/divi/commit/51ce8656cf750f72d503e14bf9897a8b72f1eb63))
+* **ai:** hybrid retrieval with cross-encoder rerank and LLM scope classifier ([a5bfbf2](https://github.com/QoroQuantum/divi/commit/a5bfbf24ccabf67f11e139f69702e1b92252f030))
+* **tutorials:** consolidate, reorganize, and de-noise tutorial notebooks ([cb3bc55](https://github.com/QoroQuantum/divi/commit/cb3bc55267598356af12e10eec8efa2ae44c864a), [bf1e468](https://github.com/QoroQuantum/divi/commit/bf1e4689aa331839ccf5de62f8c3324c16603a02))
+* consolidate multi-observable handling, dedupe QuEPP/grouping paths ([4558ceb](https://github.com/QoroQuantum/divi/commit/4558cebcf2f37ce05b107609a79f0cdc5170a105))
+* rename PennyLane import alias `qml` → `qp` across source, tutorials, and docs ([fcf6c08](https://github.com/QoroQuantum/divi/commit/fcf6c08ba8eb0b2062652e666f5d8e605552cedc))
+
+
+### 🔧 Internal
+
+* adopt pyrefly type checker; three-pass cleanup with tutorial-driven API hardening and type-native graph partitioning ([c278a2b](https://github.com/QoroQuantum/divi/commit/c278a2bdd9ec928c58cf3a33d52a2708d1e26dce), [a22504a](https://github.com/QoroQuantum/divi/commit/a22504ab25455c2a48906a15328b996679652ede), [000af2c](https://github.com/QoroQuantum/divi/commit/000af2c8b9b5eac184658131763256c566303286))
+* add style-check workflow and pyrefly pre-commit hook ([8e14f84](https://github.com/QoroQuantum/divi/commit/8e14f841856e8886da992f48d70f92d78a58a05b))
+* factor CI workflow setup into composite actions ([8a2fdf6](https://github.com/QoroQuantum/divi/commit/8a2fdf619fc351377d32ca82c76ca564efc10d19))
+* **backends:** add `MaestroConfig` unit tests ([a86a27e](https://github.com/QoroQuantum/divi/commit/a86a27ed55fd048ea23e4877e06e34192cb41ce0))
+* **tests:** reorganize test suite around per-package shared modules ([d263828](https://github.com/QoroQuantum/divi/commit/d2638288e1c49ae407cfc9b9e1d335a91461d5fa))
+* tighten import boundaries ([0b32295](https://github.com/QoroQuantum/divi/commit/0b32295a6f28189e6d630cd835292df13f510c23))
+* reduce batch size to avoid OOM issues ([394343e](https://github.com/QoroQuantum/divi/commit/394343ea0c3474c5e2e49abecec2523b1102509f))
+
+
+### 📝 Documentation
+
+* add QUBO characterization page and audit fixes ([02fc14f](https://github.com/QoroQuantum/divi/commit/02fc14f0aa8e49dbbfafda64a1164995f89557b1))
+* **readme:** add Context7 callout for LLM coding agents ([9c69374](https://github.com/QoroQuantum/divi/commit/9c69374889cd812dd15cc31b0232e94f009d9e03))
+* **ai:** fix llama-cpp-python install troubleshooting ([9657d84](https://github.com/QoroQuantum/divi/commit/9657d846bb1a4592eb2a8543d150f74993db70c4))
+
 ## [0.11.1](https://github.com/QoroQuantum/divi/compare/v0.11.0...v0.11.1) (2026-04-21)
 
 

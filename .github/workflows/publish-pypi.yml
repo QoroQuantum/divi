@@ -22,6 +22,8 @@ jobs:
           sync-args: --extra ai
 
       - uses: ./.github/actions/build-ai-index
+        with:
+          hf-token: ${{ secrets.HF_TOKEN }}
 
       - name: Build package
         run: uv build

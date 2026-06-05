@@ -1,6 +1,12 @@
 name: Build divi-ai index
 description: Cache the fastembed embedding model and build the divi-ai search index. Requires `uv sync --extra ai` to have run first.
 
+inputs:
+  hf-token:
+    description: HuggingFace token to avoid rate-limiting when downloading the embedding model on a cold cache.
+    required: false
+    default: ""
+
 runs:
   using: composite
   steps:
@@ -14,4 +20,6 @@ runs:
 
     - name: Build divi-ai search index
       shell: bash
+      env:
+        HF_TOKEN: ${{ inputs.hf-token }}
       run: uv run python -m divi.ai build --batch-size 4 --threads $(nproc)
