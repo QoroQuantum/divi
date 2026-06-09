@@ -169,6 +169,18 @@ class MaestroConfig:
     """If ``True``, use the non-collapsing MPS measurement algorithm; if
     ``False``, use the collapsing one."""
 
+    pp_coefficient_threshold: float | None = None
+    """Pauli-propagation coefficient truncation threshold.  ``None`` uses
+    maestro's default."""
+
+    pp_pauli_weight_threshold: int | None = None
+    """Pauli-propagation maximum Pauli weight retained.  ``None`` uses maestro's
+    default."""
+
+    pp_steps_between_trims: int | None = None
+    """Pauli-propagation steps between truncation passes.  ``None`` uses
+    maestro's default."""
+
     mps_qubit_threshold: int = 22
     """Qubit count above which automatic MPS selection kicks in.  Only active
     when :attr:`simulation_type` is ``None``; has no effect when
@@ -298,6 +310,15 @@ class MaestroConfig:
 
         if not self.mps_measure_no_collapse:
             kwargs["mps_measure_no_collapse"] = False
+
+        if self.pp_coefficient_threshold is not None:
+            kwargs["pp_coefficient_threshold"] = self.pp_coefficient_threshold
+
+        if self.pp_pauli_weight_threshold is not None:
+            kwargs["pp_pauli_weight_threshold"] = self.pp_pauli_weight_threshold
+
+        if self.pp_steps_between_trims is not None:
+            kwargs["pp_steps_between_trims"] = self.pp_steps_between_trims
 
         return maestro.SimulatorConfig(**kwargs)
 

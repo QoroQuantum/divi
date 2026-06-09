@@ -3009,7 +3009,7 @@ requires-dist = [
     { name = "qiskit", specifier = ">=2.3,<2.4" },
     { name = "qiskit-aer" },
     { name = "qiskit-ibm-runtime", specifier = ">=0.45,<0.46" },
-    { name = "qoro-maestro", specifier = "==0.2.11" },
+    { name = "qoro-maestro", specifier = "==0.2.14" },
     { name = "requests", specifier = ">=2.32,<3.0" },
     { name = "rich", specifier = ">=14.0,<15.0" },
     { name = "scikit-learn", specifier = ">=1.7,<2.0" },
@@ -3053,19 +3053,19 @@ testing = [
 
 [[package]]
 name = "qoro-maestro"
-version = "0.2.11"
+version = "0.2.14"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/0d/91/df02c192308e9730101f1c057e003fd8597cb8e6bcd708837a24f6e9d234/qoro_maestro-0.2.11.tar.gz", hash = "sha256:aef39be9af1e8b2502c17149f7e38a16b3e776390304377ebcab45c7ba89bcb5", size = 355633, upload-time = "2026-04-20T13:53:48.163Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7a/4c/9570ca7f3804bcfe4dd3a47b3d467e9db086c73d6eb0061a1215b985173d/qoro_maestro-0.2.14.tar.gz", hash = "sha256:68a32a67d679dcf5c72b4ca56ca01c6e845ac0621ffb07ac37e2d53f891aaef9", size = 410450, upload-time = "2026-06-07T15:44:06.511Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c7/6e/bfaec88a08a468b7f1df8d1f4620a0550cc6c2daa8e2f050072bae41682a/qoro_maestro-0.2.11-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:42bb571a7f6653c291cbe5b6777d687762ef5835edf6b7e5bdfb78389c0f3ff7", size = 4846479, upload-time = "2026-04-20T13:53:25.56Z" },
-    { url = "https://files.pythonhosted.org/packages/88/38/487e3c365a3a1e053c2f416fe831beeef0e6f8cb2dda1a851f30751faa6f/qoro_maestro-0.2.11-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:43390e4cab2c5d1eaab8071e22dc0550fafda8fa220e3fe68c6bb45d99556302", size = 4964392, upload-time = "2026-04-20T13:53:27.413Z" },
-    { url = "https://files.pythonhosted.org/packages/a4/e4/50be20cbcd0e3665462d98a966a368c686b45685b6f0c78fe78d64eab95b/qoro_maestro-0.2.11-cp311-cp311-win_amd64.whl", hash = "sha256:bb0a584f1e9112bab7e8d248a10d59cd84931fd6f4896432b312fe60d0066c0c", size = 6372128, upload-time = "2026-04-20T13:53:29.186Z" },
-    { url = "https://files.pythonhosted.org/packages/e1/bb/bbae42efa821ae06ab3d197d722efcbf5cddc8db5c01cb9bd54bd1cfde78/qoro_maestro-0.2.11-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:f87ca898038768eaedbf99b67b31974bed3f3520e653b9603b1d574684701631", size = 4845558, upload-time = "2026-04-20T13:53:30.769Z" },
-    { url = "https://files.pythonhosted.org/packages/7b/fa/ebef4b9f25d8d954192a5ed4058ff73694b0db2e76bafc4fb24d39deaab3/qoro_maestro-0.2.11-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:11ee4d46552f32b9be41659cfe11b067619870a78dc07b5c7cb4267aefac2dd4", size = 4964036, upload-time = "2026-04-20T13:53:32.815Z" },
-    { url = "https://files.pythonhosted.org/packages/44/c0/57db373081d8a3eeb9e16c6bb2ce6aa3def8262cdcd2c278c7ba89dc1288/qoro_maestro-0.2.11-cp312-cp312-win_amd64.whl", hash = "sha256:d88d475fa6564d1faaddbe46577979072843f3de42fb408130304c7ba453b234", size = 6371449, upload-time = "2026-04-20T13:53:35.032Z" },
-    { url = "https://files.pythonhosted.org/packages/ab/de/2529078460b2c138e830e11d78551fa486bc727abbad014f2f813eedccc6/qoro_maestro-0.2.11-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:11e17334283ae50cce048e2cf0af36f6be41d66fdb52be53f5b59be11de94a35", size = 4845552, upload-time = "2026-04-20T13:53:37.134Z" },
-    { url = "https://files.pythonhosted.org/packages/7a/6b/fae3d9ae8412b980984b9ddc0017735f80d31d40984f89e4aad0b40ad9d3/qoro_maestro-0.2.11-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:d7319afba0c33cc2757378c2050ba528fa137f8359b877b3f0f2296200c63721", size = 4964033, upload-time = "2026-04-20T13:53:38.701Z" },
-    { url = "https://files.pythonhosted.org/packages/e0/76/b3db4861faa99618f04a7530c0f5f576613be99f54d59999279bee72274b/qoro_maestro-0.2.11-cp313-cp313-win_amd64.whl", hash = "sha256:868b6ebfb5e458746fd7734aad97de6b638f3c9def13857ebd18938fa7e06d39", size = 6371468, upload-time = "2026-04-20T13:53:40.7Z" },
+    { url = "https://files.pythonhosted.org/packages/fa/e2/fe4a2d6dd7f2c31f3f79378cfc91790af77e0aa032a710c01572fcdb8466/qoro_maestro-0.2.14-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:fa15371bf69854c28d9b851686dbbfde77ab093455277c910cb06830478e65bc", size = 4912184, upload-time = "2026-06-07T15:43:47.831Z" },
+    { url = "https://files.pythonhosted.org/packages/df/29/b54150718a63cdad89f66f56d57ab78de1d919fbeeaeaa0770dda13b9dd3/qoro_maestro-0.2.14-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b146002fae29e5e60bc691bb334507a13cf4de15d8d2107659a785dfd305c4d3", size = 5034651, upload-time = "2026-06-07T15:43:49.53Z" },
+    { url = "https://files.pythonhosted.org/packages/08/4a/f872ba641208c1b5575f6d2420990658a4e54d2cdc7637d51fcd5af94800/qoro_maestro-0.2.14-cp311-cp311-win_amd64.whl", hash = "sha256:54db4a9832f2f5e98ff59b947bbfd95fd84ef59ab2d649f15c258cdc5337d505", size = 6449196, upload-time = "2026-06-07T15:43:51.206Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/98/c78c3677bc20179752557e6cf12b185d9b1701ae40a578c0a9f8d14d5dd6/qoro_maestro-0.2.14-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:f069cec2820cc29e47c143c0669760e07ca047b3b3d6d432ee333593057fb0b9", size = 4911282, upload-time = "2026-06-07T15:43:52.633Z" },
+    { url = "https://files.pythonhosted.org/packages/c8/7f/5fb5e5858b8d9b3afc98d60f0c535665d876035f5c9631710ba98ab868b9/qoro_maestro-0.2.14-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:4e9141d72d49b8bca902683604ac8137fdf8b5223926c4de8aad29af2e8f3e05", size = 5034344, upload-time = "2026-06-07T15:43:54.372Z" },
+    { url = "https://files.pythonhosted.org/packages/11/ce/2f9f7d0d7b85e6e858c16072afe6833b71076bcaa8d6569ef31369f55380/qoro_maestro-0.2.14-cp312-cp312-win_amd64.whl", hash = "sha256:b2d59d7016e8e5c75b74f741ed994771e3e8d84ae0d5799e4891571faa7dd540", size = 6449076, upload-time = "2026-06-07T15:43:55.812Z" },
+    { url = "https://files.pythonhosted.org/packages/3d/52/80ef71162574512ac8e9e33bd51fa7d8215a080822a9b66aafb74c38d6ef/qoro_maestro-0.2.14-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:be0c9c721a592abadaba1ccb7bf767e0e533a80a0c24deae8f81788a9ee3a306", size = 4911231, upload-time = "2026-06-07T15:43:57.345Z" },
+    { url = "https://files.pythonhosted.org/packages/33/0d/83fc27e2dfe279d0c1a080c8aeee1d3f644643c4fd16409195237c0a96f0/qoro_maestro-0.2.14-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:2dfacb2f85faeb845ec6d6825ea259675dc55380f79c7721e1895f8a46808932", size = 5034338, upload-time = "2026-06-07T15:43:58.779Z" },
+    { url = "https://files.pythonhosted.org/packages/1d/ba/3ec739d46b97a6834c7215d37b38baa8766dd6e0519e368486958c02de51/qoro_maestro-0.2.14-cp313-cp313-win_amd64.whl", hash = "sha256:1cc76a166923826393b87f23e7cb67e165112bc244ec35c86cfdc3848daeb66f", size = 6449085, upload-time = "2026-06-07T15:44:00.396Z" },
 ]
 
 [[package]]

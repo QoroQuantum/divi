@@ -124,6 +124,13 @@ class TestOverride:
         merged = MaestroConfig().override(MaestroConfig())
         assert isinstance(merged, MaestroConfig)
 
+    def test_override_handles_pauli_propagation_knobs(self):
+        base = MaestroConfig(pp_coefficient_threshold=1e-3)
+        # Default (None) override leaves the base value; a non-default replaces.
+        assert base.override(MaestroConfig()).pp_coefficient_threshold == 1e-3
+        merged = base.override(MaestroConfig(pp_coefficient_threshold=1e-6))
+        assert merged.pp_coefficient_threshold == 1e-6
+
     def test_field_list_has_no_unknown_keys(self):
         """If a field is ever added, this asserts the test suite covers it."""
         known = {
@@ -135,6 +142,9 @@ class TestOverride:
             "disable_optimized_swapping",
             "lookahead_depth",
             "mps_measure_no_collapse",
+            "pp_coefficient_threshold",
+            "pp_pauli_weight_threshold",
+            "pp_steps_between_trims",
             "mps_qubit_threshold",
             "noise_model",
             "noise_seed",

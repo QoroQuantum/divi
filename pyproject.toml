@@ -35,7 +35,7 @@ dependencies = [
     # Graph operations and partitioning
     "networkx>=3.5,<4.0",
     "pymetis>=2025.1.1,<2026.0.0; sys_platform != 'win32'",
-    "qoro-maestro==0.2.11",
+    "qoro-maestro==0.2.14",
     # Optimization algorithms
     "pymoo>=0.6,<0.7",
     "dwave-hybrid>=0.6.14,<0.7.0",
