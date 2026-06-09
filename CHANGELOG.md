@@ -7,6 +7,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.1](https://github.com/QoroQuantum/divi/compare/v0.12.0...v0.12.1) (2026-06-09)
+
+
+### 🐛 Fixed
+
+* **reporting:** predict() no longer leaks a progress spinner in notebooks ([3ed90f7](https://github.com/QoroQuantum/divi/commit/3ed90f770349c565e73e3449ee5968288d06a634))
+
+
+### 🔧 Internal
+
+* **deps:** bump qoro-maestro to 0.2.14 ([728c39c](https://github.com/QoroQuantum/divi/commit/728c39c2962a53f1f3a846feb2925989d2e8e2df))
+
 ## [0.12.0](https://github.com/QoroQuantum/divi/compare/v0.11.1...v0.12.0) (2026-06-05)
 
 
