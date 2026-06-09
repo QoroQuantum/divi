@@ -451,44 +451,51 @@ class CircuitPipeline:
             result directly.
         """
 
-        plan = self.run_forward_pass(
-            initial_spec, env, force_forward_sweep=force_forward_sweep
-        )
+        try:
+            plan = self.run_forward_pass(
+                initial_spec, env, force_forward_sweep=force_forward_sweep
+            )
 
-        # Restore result_format and stage-produced artifacts from the
-        # cached trace onto the (possibly fresh) PipelineEnv.  When the
-        # forward pass is cached, expand() doesn't re-run, so these
-        # env fields would otherwise be empty/None.
-        if plan.result_format is not None:
-            env.result_format = plan.result_format
+            # Restore result_format and stage-produced artifacts from the
+            # cached trace onto the (possibly fresh) PipelineEnv.  When the
+            # forward pass is cached, expand() doesn't re-run, so these
+            # env fields would otherwise be empty/None.
+            if plan.result_format is not None:
+                env.result_format = plan.result_format
 
-        env.artifacts.update(plan.env_artifacts)
+            env.artifacts.update(plan.env_artifacts)
 
-        # Forward pass is done — clear the classical-pipeline indicator so
-        # the spinner shows only execution/polling state from here on.
-        _report_pipeline_stage(env, None)
+            # Forward pass is done — clear the classical-pipeline indicator so
+            # the spinner shows only execution/polling state from here on.
+            _report_pipeline_stage(env, None)
 
-        with _sigint_to_cancellation(env):
-            raw = execute_fn(plan, env)
+            with _sigint_to_cancellation(env):
+                raw = execute_fn(plan, env)
 
-        # Convert raw backend results into the canonical format declared
-        # by the measurement stage during expand.  This runs *before* the
-        # reduce chain so that downstream stages (QEM, etc.) receive
-        # values in the expected type.
-        if env.result_format is not None:
-            if env.result_format is ResultFormat.PROBS:
-                raw = _counts_to_probs(raw, env.backend.shots)
-            elif env.result_format is ResultFormat.EXPVALS:
-                ham_ops = env.artifacts.get("ham_ops")
-                if ham_ops is not None:
-                    raw = _expval_dicts_to_indexed(raw, ham_ops)
-                else:
-                    raw = _counts_to_expvals(raw, plan.final_batch)
+            # Convert raw backend results into the canonical format declared
+            # by the measurement stage during expand.  This runs *before* the
+            # reduce chain so that downstream stages (QEM, etc.) receive
+            # values in the expected type.
+            if env.result_format is not None:
+                if env.result_format is ResultFormat.PROBS:
+                    raw = _counts_to_probs(raw, env.backend.shots)
+                elif env.result_format is ResultFormat.EXPVALS:
+                    ham_ops = env.artifacts.get("ham_ops")
+                    if ham_ops is not None:
+                        raw = _expval_dicts_to_indexed(raw, ham_ops)
+                    else:
+                        raw = _counts_to_expvals(raw, plan.final_batch)
 
-        result = PipelineResult(self._reduce(raw, env, plan.stage_tokens))
-        if any(meta._was_multi_obs for meta in plan.initial_batch.values()):
-            result._squeeze = False
-        return result
+            result = PipelineResult(self._reduce(raw, env, plan.stage_tokens))
+            if any(meta._was_multi_obs for meta in plan.initial_batch.values()):
+                result._squeeze = False
+            return result
+        finally:
+            # A pipeline run owns only its transient stage/polling status;
+            # clear it so no run leaks a live spinner. The iteration-level
+            # message, owned by the optimizer loop, is preserved.
+            if env.reporter is not None:
+                env.reporter.end_pipeline_run()
 
     def run_forward_pass(
         self,

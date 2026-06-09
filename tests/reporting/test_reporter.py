@@ -169,8 +169,10 @@ class TestLoggingProgressReporter:
 
     @pytest.fixture(autouse=True)
     def _reset_logging_flag(self, monkeypatch):
-        """Ensure the module-level _logging_disabled flag is clean for each test."""
+        """Ensure progress is enabled for each test, regardless of the ambient
+        environment: clear the module flag and DIVI_DISABLE_PROGRESS."""
         monkeypatch.setattr(_qlogger, "_logging_disabled", False)
+        monkeypatch.delenv("DIVI_DISABLE_PROGRESS", raising=False)
 
     def test_update(self, mocker):
         """
@@ -407,6 +409,64 @@ class TestLoggingProgressReporter:
         assert "PENDING" in update_msg
         assert "Polling attempt 4 / 5000" in update_msg
         assert " - " in update_msg  # Should be concatenated with separator
+
+    def test_end_pipeline_run_closes_orphaned_status(self, mocker):
+        """A pipeline-stage spinner with no surrounding iteration message must
+        be closed by end_pipeline_run, not left open to hijack stdout."""
+        mock_console_class = mocker.patch("divi.reporting._reporter.Console")
+        mock_status = mocker.MagicMock()
+        mock_console_class.return_value.status.return_value = mock_status
+
+        reporter = LoggingProgressReporter()
+        reporter.info("", pipeline_stage="MeasurementStage")  # opens the spinner
+        assert reporter._status is mock_status
+
+        reporter.end_pipeline_run()
+        mock_status.__exit__.assert_called_once()
+        assert reporter._status is None
+
+    def test_end_pipeline_run_preserves_iteration_status(self, mocker):
+        """Inside an optimizer loop the iteration message owns the spinner;
+        end_pipeline_run only drops the per-run stage slot, keeping it alive."""
+        mock_console_class = mocker.patch("divi.reporting._reporter.Console")
+        mock_status = mocker.MagicMock()
+        mock_console_class.return_value.status.return_value = mock_status
+
+        reporter = LoggingProgressReporter()
+        reporter.info("Computing Cost", iteration=0)
+        reporter.info("", pipeline_stage="MeasurementStage")
+
+        reporter.end_pipeline_run()
+        mock_status.__exit__.assert_not_called()
+        assert reporter._status is mock_status
+        update_msg = mock_status.update.call_args[0][0]
+        assert "Computing Cost" in update_msg
+        assert "Pipeline:" not in update_msg
+
+    def test_end_pipeline_run_clears_polling_slot(self, mocker):
+        """A run's polling status is transient too — end_pipeline_run drops it
+        while keeping the surrounding iteration message."""
+        mock_console_class = mocker.patch("divi.reporting._reporter.Console")
+        mock_status = mocker.MagicMock()
+        mock_console_class.return_value.status.return_value = mock_status
+
+        reporter = LoggingProgressReporter()
+        reporter.info("Computing Cost", iteration=0)
+        reporter.info(
+            "",
+            poll_attempt=1,
+            max_retries=100,
+            service_job_id="abc-123",
+            job_status="PENDING",
+        )
+
+        reporter.end_pipeline_run()
+        assert reporter._polling_msg is None
+        assert reporter._pipeline_msg is None
+        mock_status.__exit__.assert_not_called()  # iteration message keeps it alive
+        update_msg = mock_status.update.call_args[0][0]
+        assert "Computing Cost" in update_msg
+        assert "Polling attempt" not in update_msg
 
 
 class TestDisableProgress:

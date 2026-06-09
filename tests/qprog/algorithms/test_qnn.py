@@ -880,6 +880,34 @@ class TestPredict:
         assert single.shape == (1,)
         assert set(np.unique(single)).issubset({-1.0, 1.0})
 
+    def test_predict_does_not_drive_progress_reporter(
+        self,
+        simple_feature_map,
+        simple_ansatz,
+        two_qubit_observable,
+        feature_batch_2x2,
+        default_test_simulator,
+        mocker,
+    ):
+        # predict() runs a pipeline outside the optimizer loop; it must stay
+        # silent. A spinner opened here is never closed and hijacks stdout in
+        # notebooks, recursing on the next print().
+        program = _make_qnn(
+            simple_feature_map,
+            simple_ansatz,
+            two_qubit_observable,
+            feature_batch_2x2,
+            default_test_simulator,
+        )
+        info_spy = mocker.spy(program.reporter, "info")
+        update_spy = mocker.spy(program.reporter, "update")
+
+        program.predict(feature_batch_2x2, params=np.array([0.5, 1.0, 1.5, 2.0]))
+
+        assert info_spy.call_count == 0
+        assert update_spy.call_count == 0
+        assert program.reporter._status is None
+
 
 class TestObservableMeasuringContracts(ObservableMeasuringContractsBase):
     @pytest.fixture
@@ -912,3 +940,23 @@ def test_data_binding_mixin_wrong_mro_order_rejected():
 
         class _BadOrder(VariationalQuantumAlgorithm, DataBindingMixin):
             pass
+
+
+def test_build_pipeline_env_honors_reporter_override(
+    simple_feature_map,
+    simple_ansatz,
+    two_qubit_observable,
+    feature_batch_2x2,
+    dummy_simulator,
+):
+    """A caller-supplied ``reporter=None`` must win over ``self.reporter`` — the
+    mechanism that lets predict() run silently."""
+    program = _make_qnn(
+        simple_feature_map,
+        simple_ansatz,
+        two_qubit_observable,
+        feature_batch_2x2,
+        dummy_simulator,
+    )
+    assert program._build_pipeline_env().reporter is program.reporter
+    assert program._build_pipeline_env(reporter=None).reporter is None

@@ -265,9 +265,10 @@ class QuantumProgram(ABC):
         Subclasses may override to inject additional fields (e.g. ``param_sets``
         in :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm`).
         """
-        return PipelineEnv(
-            backend=self.backend,
-            reporter=self.reporter,
-            cancellation_event=self._cancellation_event,
-            **overrides,
-        )
+        env_kwargs = {
+            "backend": self.backend,
+            "reporter": self.reporter,
+            "cancellation_event": self._cancellation_event,
+        }
+        env_kwargs.update(overrides)  # caller-supplied values win
+        return PipelineEnv(**env_kwargs)

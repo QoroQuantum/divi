@@ -40,6 +40,9 @@ class ProgressReporter(ABC):
             **kwargs: Additional keyword arguments for subclasses.
         """
 
+    def end_pipeline_run(self) -> None:
+        """Hook called when a single pipeline run finishes. Default no-op."""
+
 
 class QueueProgressReporter(ProgressReporter):
     """Reports progress by putting structured dictionaries onto a Queue."""
@@ -126,6 +129,18 @@ class LoggingProgressReporter(ProgressReporter):
         self._pipeline_msg = None
         self._polling_msg = None
 
+    def end_pipeline_run(self) -> None:
+        """Drop this run's transient pipeline/polling status.
+
+        The optimizer's iteration message (``_current_msg``) is left intact so
+        the spinner persists across a loop; only this run's own stage/polling
+        indicators are cleared, and the spinner is closed when nothing else
+        remains to show.
+        """
+        self._pipeline_msg = None
+        self._polling_msg = None
+        self._update_or_create_status()
+
     def _build_status_msg(self) -> str:
         """Build combined status message from current message, pipeline stage, and polling info."""
         parts = []
@@ -143,6 +158,9 @@ class LoggingProgressReporter(ProgressReporter):
             return
         status_msg = self._build_status_msg()
         if not status_msg:
+            # Nothing left to show — close any live spinner instead of leaving
+            # it open (an orphaned Rich Status hijacks stdout in notebooks).
+            self._close_status()
             return
         self._ensure_atexit_hook()
         if self._status:

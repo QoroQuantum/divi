@@ -853,6 +853,31 @@ class TestPipelineReporterHooks:
         trace = pipeline.run_forward_pass("x", dummy_pipeline_env)
         assert trace.final_batch  # forward pass succeeded
 
+    def test_run_clears_transient_status_on_success(self, dummy_pipeline_env, mocker):
+        """run() ends with end_pipeline_run() so a one-shot run can't leak a
+        live spinner."""
+        reporter = mocker.MagicMock()
+        dummy_pipeline_env.reporter = reporter
+
+        pipeline = CircuitPipeline(stages=two_group_pipeline_stages())
+        pipeline.run(
+            initial_spec="x", env=dummy_pipeline_env, execute_fn=ones_execute_fn
+        )
+        reporter.end_pipeline_run.assert_called_once()
+
+    def test_run_clears_transient_status_on_exception(self, dummy_pipeline_env, mocker):
+        """The cleanup must run even when execution raises mid-pipeline."""
+        reporter = mocker.MagicMock()
+        dummy_pipeline_env.reporter = reporter
+
+        def boom(trace, env):
+            raise RuntimeError("backend exploded")
+
+        pipeline = CircuitPipeline(stages=two_group_pipeline_stages())
+        with pytest.raises(RuntimeError, match="backend exploded"):
+            pipeline.run(initial_spec="x", env=dummy_pipeline_env, execute_fn=boom)
+        reporter.end_pipeline_run.assert_called_once()
+
 
 def test_run_with_default_execute_fn_and_shots_backend_auto_converts_counts(
     dummy_simulator,
