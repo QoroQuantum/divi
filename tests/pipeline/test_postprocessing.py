@@ -44,10 +44,39 @@ class TestCountsToExpvals:
             else:
                 assert isinstance(v, (int, float))
 
-    def test_multi_obs_group_returns_dict(self, dummy_pipeline_env):
+    @pytest.mark.parametrize("obs_qubit, expected", [(0, -1.0), (1, -1.0), (2, 1.0)])
+    def test_single_qubit_term_maps_to_correct_qubit(
+        self, dummy_pipeline_env, obs_qubit, expected
+    ):
+        # Little-endian backend counts (qubit 0 rightmost): "011" -> q0=1, q1=1,
+        # q2=0, so <Z0>=<Z1>=-1 and <Z2>=+1. Three qubits (not two) so a partial
+        # reversal is distinguishable from a full one: a 0<->2 swap would flip
+        # <Z0> and <Z2> and be caught here.
         qscript = qp.tape.QuantumScript(
-            ops=[qp.Hadamard(0), qp.Hadamard(1)],
-            measurements=[qp.expval(0.5 * qp.Z(0) + 0.3 * qp.Z(1))],
+            ops=[qp.Identity(0), qp.Identity(1), qp.Identity(2)],
+            measurements=[qp.expval(qp.Z(obs_qubit))],
+        )
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=qscript_to_meta(qscript)),
+                MeasurementStage(grouping_strategy="wires"),
+            ]
+        )
+        trace = pipeline.run_forward_pass("x", dummy_pipeline_env)
+        _, lineage_by_label = _compile_batch(trace.final_batch)
+        raw: ChildResults = {bk: {"011": 100} for bk in lineage_by_label.values()}
+
+        result = _counts_to_expvals(raw, trace.final_batch)
+
+        assert result
+        for value in result.values():
+            assert value == pytest.approx(expected)
+
+    def test_multi_obs_group_returns_dict_in_term_order(self, dummy_pipeline_env):
+        # Three wire-disjoint terms -> per-term <Z_q> keyed by term index.
+        qscript = qp.tape.QuantumScript(
+            ops=[qp.Identity(0), qp.Identity(1), qp.Identity(2)],
+            measurements=[qp.expval(0.5 * qp.Z(0) + 0.3 * qp.Z(1) + 0.2 * qp.Z(2))],
         )
         meta = qscript_to_meta(qscript)
 
@@ -60,8 +89,11 @@ class TestCountsToExpvals:
         trace = pipeline.run_forward_pass("x", dummy_pipeline_env)
         _, lineage_by_label = _compile_batch(trace.final_batch)
 
+        # Little-endian backend counts giving distinct <Z0>=0.4, <Z1>=0.6,
+        # <Z2>=0.8, so any qubit permutation (not just a full reversal) is caught
+        # by an order-sensitive (per-index) assertion.
         raw: ChildResults = {
-            bk: {"00": 70, "01": 5, "10": 15, "11": 10}
+            bk: {"000": 40, "001": 30, "010": 20, "100": 10}
             for bk in lineage_by_label.values()
         }
 
@@ -71,21 +103,20 @@ class TestCountsToExpvals:
         assert len(dict_results) >= 1
 
         for d in dict_results:
-            assert len(d) == 2
-            assert all(isinstance(k, int) for k in d.keys())
-            assert sorted(d.values()) == pytest.approx([0.5, 0.7])
+            assert len(d) == 3
+            assert d[0] == pytest.approx(0.4)  # <Z0>
+            assert d[1] == pytest.approx(0.6)  # <Z1>
+            assert d[2] == pytest.approx(0.8)  # <Z2>
 
 
 class TestBatchedExpectation:
     """Tests for _batched_expectation with big-endian Pauli label strings."""
 
     def test_single_z_observable(self):
-        """Z on qubit 0 (big-endian "ZI...I"): all-0 → +1, all-1 → -1."""
-        histogram = {"00": 70, "11": 30}
-        # big-endian: "ZI" means Z on qubit 0 (leftmost bit in bitstring)
-        result = _batched_expectation([histogram], ["ZI"], n_qubits=2)
-        # bitstring "00": qubit 0 = 0 → eigenval +1; "11": qubit 0 = 1 → eigenval -1
-        expected = (70 * 1 + 30 * (-1)) / 100
+        """Z on qubit 0 (big-endian "ZII"); position 0 must map to qubit 0."""
+        histogram = {"000": 70, "100": 30}  # qubit 0 = 1 only in "100"
+        result = _batched_expectation([histogram], ["ZII"], n_qubits=3)
+        expected = (70 * 1 + 30 * (-1)) / 100  # 0.4
         assert result[0, 0] == pytest.approx(expected)
 
     def test_identity_returns_one(self):
@@ -94,46 +125,38 @@ class TestBatchedExpectation:
         assert result[0, 0] == pytest.approx(1.0)
 
     def test_product_observable(self):
-        """ZZ on 2 qubits: eigenvalue is product of individual Z eigenvalues."""
-        histogram = {"00": 100}
-        result = _batched_expectation([histogram], ["ZZ"], n_qubits=2)
-        # "00" → both qubits 0 → (+1)(+1) = +1
-        assert result[0, 0] == pytest.approx(1.0)
+        """ZIZ on 3 qubits: product of the qubit-0 and qubit-2 Z eigenvalues.
 
-        histogram2 = {"01": 100}
-        result2 = _batched_expectation([histogram2], ["ZZ"], n_qubits=2)
-        # "01" → qubit 0 = 0 (+1), qubit 1 = 1 (-1) → -1
-        assert result2[0, 0] == pytest.approx(-1.0)
+        Acting on qubits 0 and 2 (not 0 and 1) so a reversal that swaps them is
+        distinguishable from the identity.
+        """
+        # "000" → (+1)(+1) = +1
+        assert _batched_expectation([{"000": 100}], ["ZIZ"], n_qubits=3)[
+            0, 0
+        ] == pytest.approx(1.0)
+        # "001" → qubit 0 = 0 (+1), qubit 2 = 1 (-1) → -1
+        assert _batched_expectation([{"001": 100}], ["ZIZ"], n_qubits=3)[
+            0, 0
+        ] == pytest.approx(-1.0)
 
     def test_multiple_histograms(self):
-        hist_1 = {"00": 100}
-        hist_2 = {"11": 50}
-        hist_3 = {"01": 25, "10": 75}
-        labels = ["ZI", "IZ", "ZZ"]
+        hist_1 = {"000": 100}
+        hist_2 = {"101": 50}  # qubit 0 = 1, qubit 2 = 1
+        hist_3 = {"001": 25, "100": 75}  # qubit 2 = 1 (25%); qubit 0 = 1 (75%)
+        labels = ["ZII", "IIZ", "ZIZ"]  # <Z0>, <Z2>, <Z0 Z2>
 
-        result = _batched_expectation([hist_1, hist_2, hist_3], labels, n_qubits=2)
+        result = _batched_expectation([hist_1, hist_2, hist_3], labels, n_qubits=3)
 
         assert result.shape == (3, 3)
-        # hist_1 "00": all eigenvalues +1
+        # hist_1 "000": all eigenvalues +1
         np.testing.assert_allclose(result[:, 0], [1.0, 1.0, 1.0])
-        # hist_2 "11": ZI→-1, IZ→-1, ZZ→+1
+        # hist_2 "101": Z0→-1, Z2→-1, Z0Z2→+1
         np.testing.assert_allclose(result[:, 1], [-1.0, -1.0, 1.0])
-        # hist_3 "01"(25%) "10"(75%):
-        #   ZI: q0=0→+1(25%), q0=1→-1(75%) = -0.5
-        #   IZ: q1=1→-1(25%), q1=0→+1(75%) = +0.5
-        #   ZZ: (+1)(-1)(25%), (-1)(+1)(75%) = -1.0
+        # hist_3:
+        #   Z0: q0=0→+1(25%), q0=1→-1(75%) = -0.5
+        #   Z2: q2=1→-1(25%), q2=0→+1(75%) = +0.5
+        #   Z0Z2: (+1)(-1)(25%), (-1)(+1)(75%) = -1.0
         np.testing.assert_allclose(result[:, 2], [-0.5, 0.5, -1.0])
-
-    def test_multiple_histograms_exact(self):
-        """Carefully hand-computed multi-histogram test."""
-        hist_1 = {"00": 100}  # all +1 for any Z observable
-        hist_2 = {"11": 100}  # Z on any qubit → -1
-        labels = ["ZI", "IZ"]
-
-        result = _batched_expectation([hist_1, hist_2], labels, n_qubits=2)
-        assert result.shape == (2, 2)
-        np.testing.assert_allclose(result[:, 0], [1.0, 1.0])  # hist_1
-        np.testing.assert_allclose(result[:, 1], [-1.0, -1.0])  # hist_2
 
     @pytest.mark.parametrize(
         "n_qubits",
@@ -221,21 +244,22 @@ class TestCountsToProbs:
         assert result[("obs",)] == {"001": 0.3, "010": 0.7}
 
     def test_non_dict_values_pass_through(self):
-        raw = {("a",): 0.42, ("b",): {"11": 5, "00": 5}}
+        # Asymmetric 3-qubit bitstrings so the endianness reversal is visible.
+        raw = {("a",): 0.42, ("b",): {"110": 5, "001": 5}}
         result = _counts_to_probs(raw, shots=10)
         assert result[("a",)] == 0.42
-        assert result[("b",)] == {"11": 0.5, "00": 0.5}
+        assert result[("b",)] == {"011": 0.5, "100": 0.5}
 
     def test_empty_input(self):
         assert _counts_to_probs({}, shots=100) == {}
 
     def test_multiple_branch_keys(self):
         raw = {
-            ("x",): {"10": 4, "01": 6},
+            ("x",): {"100": 4, "001": 6},
             ("y",): {"110": 2, "001": 8},
         }
         result = _counts_to_probs(raw, shots=10)
-        assert result[("x",)] == {"01": 0.4, "10": 0.6}
+        assert result[("x",)] == {"001": 0.4, "100": 0.6}
         assert result[("y",)] == {"011": 0.2, "100": 0.8}
 
 
@@ -243,21 +267,21 @@ class TestExpvalDictsToIndexed:
     """Tests for _expval_dicts_to_indexed."""
 
     def test_multi_op_returns_indexed_dict(self):
-        raw = {("k",): {"XI": 0.5, "IZ": -0.3, "XZ": 0.2}}
-        result = _expval_dicts_to_indexed(raw, "XI;IZ;XZ")
+        raw = {("k",): {"XII": 0.5, "IZI": -0.3, "IIX": 0.2}}
+        result = _expval_dicts_to_indexed(raw, "XII;IZI;IIX")
         assert result[("k",)] == {0: 0.5, 1: -0.3, 2: 0.2}
 
     def test_single_op_returns_float(self):
-        raw = {("k",): {"ZI": 0.7}}
-        result = _expval_dicts_to_indexed(raw, "ZI")
+        raw = {("k",): {"ZII": 0.7}}
+        result = _expval_dicts_to_indexed(raw, "ZII")
         assert result[("k",)] == pytest.approx(0.7)
 
     def test_preserves_ham_ops_ordering(self):
-        raw = {("k",): {"IZ": -0.3, "XZ": 0.2, "XI": 0.5}}
-        result = _expval_dicts_to_indexed(raw, "XI;IZ;XZ")
+        raw = {("k",): {"IZI": -0.3, "IIX": 0.2, "XII": 0.5}}
+        result = _expval_dicts_to_indexed(raw, "XII;IZI;IIX")
         assert result[("k",)] == {0: 0.5, 1: -0.3, 2: 0.2}
 
     def test_non_dict_passthrough(self):
         raw = {("k",): 1.5}
-        result = _expval_dicts_to_indexed(raw, "XI;IZ")
+        result = _expval_dicts_to_indexed(raw, "XII;IZI")
         assert result[("k",)] == 1.5

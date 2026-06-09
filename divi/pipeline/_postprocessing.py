@@ -159,6 +159,10 @@ def _counts_to_expvals(
         group_labels = labels_by_bk[bk][obs_group_idx]
         n_qubits = nq_by_bk[bk]
 
+        # Little-endian backend counts → big-endian, matching the labels.
+        if isinstance(counts, dict):
+            counts = {bitstring[::-1]: count for bitstring, count in counts.items()}
+
         expvals = _batched_expectation(
             [counts], [str(p) for p in group_labels], n_qubits
         )
