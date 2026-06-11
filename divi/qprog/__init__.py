@@ -2,6 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from ._metrics import (
+    FubiniStudyMetricEstimator,
+    MetricEstimator,
+    PullbackMetricEstimator,
+)
 from ._observable_measuring_mixin import ObservableMeasuringMixin
 from ._solution_sampling_mixin import SolutionEntry, SolutionSamplingMixin
 from ._types import GraphProblemTypes
@@ -35,6 +40,7 @@ from .ensemble import BatchConfig, BatchMode, ProgramEnsemble
 from .optimizers import (
     GridSearchOptimizer,
     MonteCarloOptimizer,
+    QNGOptimizer,
     ScipyMethod,
     ScipyOptimizer,
 )
