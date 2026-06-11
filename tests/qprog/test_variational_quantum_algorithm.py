@@ -14,12 +14,14 @@ from scipy.optimize import OptimizeResult
 from divi.circuits import dag_to_qasm_body, qscript_to_meta
 from divi.circuits._conversions import _qscript_to_dag
 from divi.exceptions import ExecutionCancelledError
+from divi.pipeline import PipelineSet
 from divi.pipeline.stages import CircuitSpecStage, MeasurementStage
+from divi.qprog._solution_sampling_mixin import SolutionEntry, SolutionSamplingMixin
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.early_stopping import EarlyStopping, StopReason
 from divi.qprog.optimizers import MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
+from divi.qprog.quantum_program import QuantumProgram
 from divi.qprog.variational_quantum_algorithm import (
-    SolutionEntry,
     VariationalQuantumAlgorithm,
     _compute_parameter_shift_mask,
 )
@@ -31,7 +33,7 @@ def mock_backend():
     return DummySimulator(shots=1000)
 
 
-class SampleVQAProgram(VariationalQuantumAlgorithm):
+class SampleVQAProgram(SolutionSamplingMixin, VariationalQuantumAlgorithm):
     def __init__(self, circ_count, run_time, n_params_per_layer=4, **kwargs):
         self.circ_count = circ_count
         self.run_time = run_time
@@ -53,9 +55,6 @@ class SampleVQAProgram(VariationalQuantumAlgorithm):
     def n_params_per_layer(self) -> int:
         return self._n_params_per_layer
 
-    def _build_pipelines(self) -> dict:
-        return {"cost": self._build_cost_pipeline(CircuitSpecStage())}
-
     def _create_meta_circuit_factories(self):
         symbols = [sp.Symbol("beta"), *sp.symarray("theta", 3)]
         ops = [
@@ -68,6 +67,13 @@ class SampleVQAProgram(VariationalQuantumAlgorithm):
         )
         meta_circuit = qscript_to_meta(tape, precision=self._precision)
         return {"cost_circuit": meta_circuit}
+
+    def _run_solution_measurement_for(self, param_sets):
+        # This double's circuit measures an expectation value, not a sampling
+        # distribution, so the real PROBS pipeline would yield malformed
+        # ``_best_probs``. Sampling-distribution behavior is exercised by the
+        # concrete VQE/QAOA suites; here it is inert.
+        return
 
     def run(
         self,
@@ -86,6 +92,80 @@ class SampleVQAProgram(VariationalQuantumAlgorithm):
     def _load_subclass_state(self, state: dict[str, Any]) -> None:
         """Load SampleVQAProgram-specific state."""
         ...
+
+
+class TestSolutionSamplingMixinGuard:
+    """``__init_subclass__`` rejects compositions where the mixin can't work."""
+
+    def test_wrong_order_raises_at_class_definition(self):
+        with pytest.raises(TypeError, match="must list SolutionSamplingMixin before"):
+
+            class _WrongOrder(VariationalQuantumAlgorithm, SolutionSamplingMixin):
+                pass
+
+    def test_correct_order_succeeds(self):
+        # SampleVQAProgram itself is the happy path; assert the MRO invariant.
+        mro = SampleVQAProgram.__mro__
+        assert mro.index(SolutionSamplingMixin) < mro.index(VariationalQuantumAlgorithm)
+
+
+class _BaseSampler(QuantumProgram):
+    """Minimal non-VQA host providing the cooperative pipeline registry."""
+
+    def _build_pipelines(self) -> PipelineSet:
+        return PipelineSet({})
+
+    def has_results(self) -> bool:
+        return bool(self._best_probs)
+
+    def run(self):
+        return self
+
+
+class _NonVQASampler(SolutionSamplingMixin, _BaseSampler):
+    """A solution sampler that is NOT a VariationalQuantumAlgorithm.
+
+    Provides only the documented host contract: ``meta_circuit_factories``,
+    ``_coerce_sample_params``, and a cooperative ``_build_pipelines`` (via
+    ``_BaseSampler``). It carries no variational parameter model.
+    """
+
+    def __init__(self, backend, **kwargs):
+        super().__init__(backend=backend, **kwargs)
+        tape = qp.tape.QuantumScript(
+            ops=[qp.Hadamard(0), qp.CNOT(wires=[0, 1])],
+            measurements=[qp.probs(wires=[0, 1])],
+        )
+        self._meta = qscript_to_meta(tape, precision=self._precision)
+        self._pipelines = self._build_pipelines()
+
+    @property
+    def meta_circuit_factories(self):
+        return {"cost_circuit": self._meta}
+
+    def _coerce_sample_params(self, params):
+        return np.asarray(params, dtype=np.float64)
+
+
+def test_solution_sampling_mixin_works_on_non_vqa_host(dummy_simulator):
+    """The mixin samples successfully on a plain QuantumProgram host.
+
+    Guards the host-agnostic contract: the mixin must not reach for any
+    variational-only attribute (``n_layers``, ``_best_params``, ...).
+    """
+    host = _NonVQASampler(backend=dummy_simulator)
+
+    # State owned by the mixin's __init__, not inherited from any VQA.
+    assert host._best_probs == {}
+    assert host._decode_solution_fn("0101") == "0101"
+    assert "sample" in host._pipelines
+
+    # No trainable parameters: one empty parameter set.
+    host.sample_solution(params=np.empty((1, 0), dtype=np.float64))
+
+    assert host._best_probs  # populated by the real PROBS sample pipeline
+    top = host.get_top_solutions(n=2)
+    assert top and isinstance(top[0], SolutionEntry)
 
 
 class TestProgram:
@@ -182,8 +262,8 @@ class TestProgram:
             )
 
     def test_shot_distribution_threaded_to_measurement_stage(self, mocker):
-        """Implementation detail: _build_cost_pipeline forwards shot_distribution
-        to MeasurementStage's constructor."""
+        """Implementation detail: the cost-pipeline assembler forwards
+        shot_distribution to MeasurementStage's constructor."""
         program = self._create_sample_program(
             mocker, shot_distribution="weighted_random"
         )
@@ -223,13 +303,13 @@ class TestProgram:
         assert env.rng is program._rng
 
     def test_evaluate_cost_param_sets_uses_initial_spec_hook(self, mocker):
-        """Cost evaluation should delegate to the initial-spec hook."""
+        """Cost evaluation should delegate to the registered initial-spec factory."""
         program = self._create_sample_program(mocker)
         program._pipelines = program._build_pipelines()
         program.loss_constant = 10.0
 
-        initial_spec_mock = mocker.patch.object(
-            program, "_get_initial_spec", return_value="hook_spec"
+        spec_for_mock = mocker.patch.object(
+            program._pipelines, "spec_for", return_value="hook_spec"
         )
         pipeline_run = mocker.patch.object(
             program._cost_pipeline,
@@ -243,7 +323,7 @@ class TestProgram:
         param_sets = np.array([[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]])
         losses = program._evaluate_cost_param_sets(param_sets)
 
-        initial_spec_mock.assert_called_once_with("cost")
+        spec_for_mock.assert_called_once_with("cost")
         np.testing.assert_array_equal(
             pipeline_run.call_args.kwargs["env"].param_sets, param_sets
         )

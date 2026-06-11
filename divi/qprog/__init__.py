@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from ._observable_measuring_mixin import ObservableMeasuringMixin
+from ._solution_sampling_mixin import SolutionEntry, SolutionSamplingMixin
 from ._types import GraphProblemTypes
 from .algorithms import (
     PCE,
@@ -40,7 +41,6 @@ from .optimizers import (
 from .quantum_program import QuantumProgram
 from .variational_quantum_algorithm import (
     ParamHistoryMode,
-    SolutionEntry,
     VariationalQuantumAlgorithm,
 )
 from .workflows import (

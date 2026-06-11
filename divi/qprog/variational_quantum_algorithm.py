@@ -8,7 +8,7 @@ from abc import abstractmethod
 from datetime import datetime
 from pathlib import Path
 from queue import Queue
-from typing import Any, ClassVar, Literal, NamedTuple, TypeAlias
+from typing import Any, ClassVar, Literal, TypeAlias
 from warnings import warn
 
 import numpy as np
@@ -20,15 +20,23 @@ from scipy.optimize import OptimizeResult
 from divi.backends import CircuitRunner
 from divi.circuits import MetaCircuit
 from divi.exceptions import ExecutionCancelledError
-from divi.pipeline import CircuitPipeline, GroupingStrategy, PipelineEnv, Stage
+from divi.pipeline import (
+    CircuitPipeline,
+    GroupingStrategy,
+    PipelineEnv,
+    PipelineSet,
+    ResultFormat,
+    ShotDistStrategy,
+    Stage,
+)
+from divi.pipeline._compilation import _extract_param_set_idx
 from divi.pipeline.stages import (
     CircuitSpecStage,
     MeasurementStage,
     ParameterBindingStage,
-    PauliTwirlStage,
-    QEMStage,
 )
 from divi.qprog import ObservableMeasuringMixin
+from divi.qprog._solution_sampling_mixin import SolutionSamplingMixin
 from divi.qprog.checkpointing import (
     PROGRAM_STATE_FILE,
     CheckpointConfig,
@@ -52,36 +60,9 @@ from divi.viz import ProgramViz
 
 logger = logging.getLogger(__name__)
 
-PARAM_SET_AXIS = "param_set"
-
-
-def _extract_param_set_idx(key: tuple) -> int:
-    """Extract the param_set index from a pipeline result key."""
-    for axis_name, idx in key:
-        if axis_name == PARAM_SET_AXIS:
-            return idx
-    raise KeyError(f"No '{PARAM_SET_AXIS}' axis found in pipeline result key: {key}")
-
-
 _RUN_INSTRUCTION = "Call run() to execute the optimization."
 
 ParamHistoryMode: TypeAlias = Literal["all_evaluated", "best_per_iteration"]
-
-
-class SolutionEntry(NamedTuple):
-    """A solution entry with bitstring, probability, and optional decoded value.
-
-    Args:
-        bitstring: Binary string representing a computational basis state.
-        prob: Measured probability in range [0.0, 1.0].
-        decoded: Optional problem-specific decoded representation. Defaults to None.
-        energy: Optional objective energy for this solution. Defaults to None.
-    """
-
-    bitstring: str
-    prob: float
-    decoded: Any | None = None
-    energy: float | None = None
 
 
 class SubclassState(BaseModel):
@@ -115,7 +96,10 @@ class ProgramState(BaseModel):
         default_factory=list, validation_alias="_param_history"
     )
     best_loss: float = Field(validation_alias="_best_loss")
-    best_probs: dict[str, float] = Field(validation_alias="_best_probs")
+    # Only solution-sampling programs (SolutionSamplingMixin) carry _best_probs.
+    best_probs: dict[str, float] = Field(
+        default_factory=dict, validation_alias="_best_probs"
+    )
     total_circuit_count: int = Field(validation_alias="_total_circuit_count")
     total_run_time: float = Field(validation_alias="_total_run_time")
     seed: int | None = Field(validation_alias="_seed")
@@ -274,6 +258,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
     """The cost Hamiltonian for the variational problem."""
 
     _grouping_strategy: GroupingStrategy
+    _shot_distribution: ShotDistStrategy | None
     _best_params: npt.NDArray[np.float64]
     _final_params: npt.NDArray[np.float64]
     _meta_circuit_factories: dict[str, MetaCircuit] | None
@@ -355,18 +340,14 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                 produce longer QASM strings (more data sent to cloud
                 backends); lower values trade resolution for compactness.
                 Defaults to :data:`~divi.circuits.DEFAULT_PRECISION`.
-            decode_solution_fn: Function to decode bitstrings
-                into problem-specific solution representations. Called during final computation
-                and when `get_top_solutions(include_decoded=True)` is used. The function should
-                take a binary string (e.g., "0101") and return a decoded representation
-                (e.g., a list of indices, numpy array, or custom object). Defaults to
-                `lambda bitstring: bitstring` (identity function).
+
+        Note:
+            Solution-extracting subclasses (VQE/QAOA/PCE) also accept
+            ``decode_solution_fn`` via
+            :class:`~divi.qprog.SolutionSamplingMixin`.
         """
 
         program_id = kwargs.pop("program_id", None)
-        decode_solution_fn = kwargs.pop(
-            "decode_solution_fn", lambda bitstring: bitstring
-        )
 
         super().__init__(
             backend=backend,
@@ -382,7 +363,6 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         self._best_params = np.array([], dtype=np.float64)
         self._final_params = np.array([], dtype=np.float64)
         self._best_loss = float("inf")
-        self._best_probs = {}
         self.optimize_result: OptimizeResult | None = None
         """Raw result object returned by the underlying optimizer, or ``None``
         before :meth:`run` is called.
@@ -403,9 +383,6 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         # --- Early Stopping ---
         self._early_stopping = early_stopping
         self._stop_reason: StopReason | None = None
-
-        # --- Solution Decoding ---
-        self._decode_solution_fn = decode_solution_fn
 
         # --- Circuit Factory & Templates ---
         self._meta_circuit_factories = None
@@ -592,156 +569,6 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             ProgramViz: Convenience wrapper bound to this program instance.
         """
         return ProgramViz(self)
-
-    @property
-    def best_probs(self) -> dict[str, dict[str, float]]:
-        """Get normalized probabilities for the best parameters.
-
-        This property provides access to the probability distribution computed
-        by running measurement circuits with the best parameters found during
-        optimization. The distribution maps bitstrings (computational basis states)
-        to their measured probabilities.
-
-        The probabilities are normalized and have deterministic ordering when
-        iterated (dictionary insertion order is preserved in Python 3.7+).
-
-        Returns:
-            dict[str, dict[str, float]]: Dictionary mapping parameter-set keys to
-                bitstring probability dictionaries. Bitstrings are binary strings
-                (e.g., "0101"), values are probabilities in range [0.0, 1.0].
-                Returns an empty dict if final computation has not been performed.
-
-        Raises:
-            RuntimeError: If attempting to access probabilities before running
-                the algorithm with final computation enabled.
-
-        Note:
-            To populate this distribution, you must run the algorithm with
-            `perform_final_computation=True` (the default):
-
-            >>> program.run(perform_final_computation=True)
-            >>> probs = program.best_probs
-
-        Example:
-            >>> program.run()
-            >>> probs = program.best_probs
-            >>> for bitstring, prob in probs.items():
-            ...     print(f"{bitstring}: {prob:.2%}")
-            0101: 42.50%
-            1010: 31.20%
-            ...
-        """
-        if not self._best_probs:
-            warn(
-                "best_probs is empty. Either optimization has not been run yet, "
-                f"or final computation was not performed. {_RUN_INSTRUCTION}",
-                UserWarning,
-                stacklevel=2,
-            )
-        return self._best_probs.copy()
-
-    def get_top_solutions(
-        self, n: int = 10, *, min_prob: float = 0.0, include_decoded: bool = False
-    ) -> list[SolutionEntry]:
-        """Get the top-N solutions sorted by probability.
-
-        This method extracts the most probable solutions from the measured
-        probability distribution. Solutions are sorted by probability (descending)
-        with deterministic tie-breaking using lexicographic ordering of bitstrings.
-
-        Args:
-            n (int): Maximum number of solutions to return. Must be non-negative.
-                If n is 0 or negative, returns an empty list. If n exceeds the
-                number of available solutions (after filtering), returns all
-                available solutions. Defaults to 10.
-            min_prob (float): Minimum probability threshold for including solutions.
-                Only solutions with probability >= min_prob will be included.
-                Must be in range [0.0, 1.0]. Defaults to 0.0 (no filtering).
-            include_decoded (bool): Whether to populate the `decoded` field of
-                each SolutionEntry by calling the `decode_solution_fn` provided
-                in the constructor. If False, the decoded field will be None.
-                Defaults to False.
-
-        Returns:
-            list[SolutionEntry]: List of solution entries sorted by probability
-                (descending), then by bitstring (lexicographically ascending)
-                for deterministic tie-breaking. Returns an empty list if no
-                probability distribution is available or n <= 0.
-
-        Raises:
-            RuntimeError: If probability distribution is not available because
-                optimization has not been run or final computation was not performed.
-            ValueError: If min_prob is not in range [0.0, 1.0] or n is negative.
-
-        Note:
-            The probability distribution must be computed by running the algorithm
-            with `perform_final_computation=True` (the default):
-
-            >>> program.run(perform_final_computation=True)
-            >>> top_10 = program.get_top_solutions(n=10)
-
-        Example:
-            >>> # Get top 5 solutions with probability >= 5%
-            >>> program.run()
-            >>> solutions = program.get_top_solutions(n=5, min_prob=0.05)
-            >>> for sol in solutions:
-            ...     print(f"{sol.bitstring}: {sol.prob:.2%}")
-            1010: 42.50%
-            0101: 31.20%
-            1100: 15.30%
-            0011: 8.50%
-            1111: 2.50%
-
-            >>> # Get solutions with decoding
-            >>> solutions = program.get_top_solutions(n=3, include_decoded=True)
-            >>> for sol in solutions:
-            ...     print(f"{sol.bitstring} -> {sol.decoded}")
-            1010 -> [0, 2]
-            0101 -> [1, 3]
-            ...
-        """
-        # Validate inputs
-        if n < 0:
-            raise ValueError(f"n must be non-negative, got {n}")
-        if not (0.0 <= min_prob <= 1.0):
-            raise ValueError(f"min_prob must be in range [0.0, 1.0], got {min_prob}")
-
-        # Handle edge case: n == 0
-        if n == 0:
-            return []
-
-        # Require probability distribution to exist
-        if not self._best_probs:
-            raise RuntimeError(
-                "No probability distribution available. The final computation step "
-                "must be performed to compute the probability distribution. "
-                "Call run(perform_final_computation=True) to execute optimization "
-                "and compute the distribution."
-            )
-        # Extract the probability distribution (nested by parameter set)
-        # _best_probs structure: {tag: {bitstring: prob}}
-        probs_dict = next(iter(self._best_probs.values()))
-
-        # Filter by minimum probability and get top n sorted by probability (descending),
-        # then bitstring (ascending) for deterministic tie-breaking
-        top_items = sorted(
-            filter(
-                lambda bitstring_prob: bitstring_prob[1] >= min_prob, probs_dict.items()
-            ),
-            key=lambda bitstring_prob: (-bitstring_prob[1], bitstring_prob[0]),
-        )[:n]
-
-        # Build result list (decode on demand)
-        return [
-            SolutionEntry(
-                bitstring=bitstring,
-                prob=prob,
-                decoded=(
-                    self._decode_solution_fn(bitstring) if include_decoded else None
-                ),
-            )
-            for bitstring, prob in top_items
-        ]
 
     # --- Serialization Adapters (For Pydantic) ---
     @property
@@ -960,34 +787,8 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
 
     @property
     def _cost_pipeline(self) -> CircuitPipeline:
-        """The cost-evaluation pipeline built by :meth:`_build_pipelines`."""
+        """The cost-evaluation pipeline that drives optimization."""
         return self._pipelines["cost"]
-
-    @property
-    def _measurement_pipeline(self) -> CircuitPipeline | None:
-        """The final-measurement pipeline, or ``None`` if this algorithm has none."""
-        return self._pipelines.get("measurement")
-
-    def _get_initial_spec(self, name: str) -> Any:
-        """Resolve the initial spec for pipeline ``name`` (lazy).
-
-        Default VQA mapping:
-
-        * ``"cost"``        → ``meta_circuit_factories["cost_circuit"]``
-        * ``"measurement"`` → ``meta_circuit_factories["meas_circuit"]``,
-                             falling back to ``"cost_circuit"``.
-
-        Subclasses override to change either entry (e.g. QAOA's cost
-        pipeline uses a Hamiltonian, not a MetaCircuit, as initial spec).
-        """
-        factories = self.meta_circuit_factories
-        if name == "cost":
-            return factories["cost_circuit"]
-        if name == "measurement":
-            if "meas_circuit" in factories:
-                return factories["meas_circuit"]
-            return factories["cost_circuit"]
-        raise KeyError(f"No initial spec registered for pipeline {name!r}.")
 
     def _build_pipeline_env(self, **overrides) -> PipelineEnv:
         """Construct a PipelineEnv for the provided parameter sets."""
@@ -1007,72 +808,63 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         """
         return False
 
-    def _build_cost_pipeline(
+    # ------------------------------------------------------------------ #
+    # Pipeline assembly — one generic builder shared by every named pipeline.
+    # ------------------------------------------------------------------ #
+
+    def _assemble_pipeline(
         self,
         spec_stage: Stage,
+        terminal_stage: Stage,
+        *,
+        result_format: ResultFormat,
         extra_stages: tuple[Stage, ...] = (),
     ) -> CircuitPipeline:
-        """Build the cost-evaluation pipeline.
-
-        Default ordering: spec → [extra_stages] → QEM (→ PauliTwirl)
-        → Measurement → ParamBinding.
-
-        ParameterBinding is placed last because it is a cheap string-template
-        operation, whereas QEM/PauliTwirl/Measurement are expensive structural
-        transforms that are independent of parameter values.  Binding last
-        avoids redundantly repeating structural work for each parameter set.
-
-        When ``QuEPP(bind_before_mitigation=True)`` is set, binding moves
-        before QEM so that QuEPP receives concrete angles and can normalize
-        rotations — producing fewer Pauli paths at the cost of repeating
-        structural work per parameter set.
-
-        Args:
-            spec_stage: A SpecStage producing MetaCircuit(s) from the
-                cost Hamiltonian (e.g. TrotterSpecStage).
-            extra_stages: Subclass-supplied stages to insert *between* the
-                spec and the (optional) early-bind ParameterBindingStage.
-                Data-binding subclasses (QNN, CustomVQA) inject
-                :class:`~divi.pipeline.stages.DataBindingStage` here so the
-                data axis fans out before QEM/twirling sees it.
-        """
-        bind_early = getattr(self._qem_protocol, "bind_before_mitigation", False)
+        """Assemble a variational pipeline with parameter binding."""
+        mitigation_stages = self._mitigation_stages(result_format)
+        bind_early = (
+            bool(mitigation_stages) and self._qem_protocol.requires_bound_params
+        )
 
         stages: list[Stage] = [spec_stage, *extra_stages]
         if bind_early:
             stages.append(ParameterBindingStage())
+        stages.extend(mitigation_stages)
+        stages.append(terminal_stage)
+        if not bind_early:
+            stages.append(ParameterBindingStage())
+        return CircuitPipeline(stages=stages)
 
-        stages.append(QEMStage(protocol=self._qem_protocol))
-        n_twirls = getattr(self._qem_protocol, "n_twirls", 0)
-        if n_twirls > 0:
-            stages.append(PauliTwirlStage(n_twirls=n_twirls))
-        stages.append(
+    def _expectation_pipeline(self) -> CircuitPipeline:
+        """The canonical pipeline measuring an arbitrary observable-carrying
+        MetaCircuit as expectation values on this program's ansatz.
+
+        Used both as the default ``"cost"`` pipeline (VQE/CustomVQA) and, on
+        demand, by natural-gradient metric estimators (which supply their own
+        MetaCircuit). QAOA/PCE replace ``"cost"`` with a specialized pipeline but
+        still expose this for the metric.
+        """
+        return self._assemble_pipeline(
+            CircuitSpecStage(),
             MeasurementStage(
                 grouping_strategy=self._grouping_strategy,
                 shot_distribution=self._shot_distribution,
-            )
+            ),
+            result_format=ResultFormat.EXPVALS,
         )
 
-        if not bind_early:
-            stages.append(ParameterBindingStage())
-
-        return CircuitPipeline(stages=stages)
-
-    def _build_measurement_pipeline(self) -> CircuitPipeline:
-        """Build the measurement pipeline for solution extraction.
-
-        Stages: SingleCircuitSpec → Measurement → ParameterBinding.
-
-        Note: QEM is intentionally excluded — ZNE error mitigation applies
-        only to cost evaluation (expectation values), not probability extraction.
+    def _build_pipelines(self) -> PipelineSet:
+        """Register the ``"cost"`` pipeline (an expectation measurement of the cost
+        ansatz). ``"sample"`` is added by :class:`SolutionSamplingMixin`; QAOA/PCE
+        replace ``"cost"`` — all via cooperative ``super()._build_pipelines().with_(...)``.
         """
-
-        return CircuitPipeline(
-            stages=[
-                CircuitSpecStage(),
-                MeasurementStage(),
-                ParameterBindingStage(),
-            ]
+        return PipelineSet(
+            {
+                "cost": (
+                    self._expectation_pipeline(),
+                    lambda: self.meta_circuit_factories["cost_circuit"],
+                ),
+            }
         )
 
     # ------------------------------------------------------------------ #
@@ -1087,16 +879,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         Subclasses should prefer overriding the initial-spec hook over
         replacing the full evaluator.
         """
-        normalized_param_sets = np.atleast_2d(param_sets)
-
-        env = self._build_pipeline_env(param_sets=normalized_param_sets)
-        result = self._cost_pipeline.run(
-            initial_spec=self._get_initial_spec("cost"),
-            env=env,
-        )
-        self._total_circuit_count += env.artifacts.get("circuit_count", 0)
-        self._total_run_time += env.artifacts.get("run_time", 0.0)
-        self._current_execution_result = env.artifacts.get("_current_execution_result")
+        result = self._run_pipeline("cost", param_sets=np.atleast_2d(param_sets))
 
         constant = 0.0 if self._loss_constant_consumed else self.loss_constant
         indexed = {
@@ -1119,6 +902,34 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         pos_shifts = exp_vals_arr[::2]
         neg_shifts = exp_vals_arr[1::2]
         return 0.5 * (pos_shifts - neg_shifts)
+
+    def _coerce_sample_params(
+        self, params: npt.NDArray[np.float64] | None
+    ) -> npt.NDArray[np.float64]:
+        """Resolve and validate parameters for :meth:`SolutionSamplingMixin.sample_solution`.
+
+        With ``params=None`` falls back to the trained ``_best_params`` (raising if
+        optimization has not run); otherwise validates the trailing axis against
+        ``n_layers * n_params_per_layer``. Supplies the variational parameter-model
+        knowledge that :class:`SolutionSamplingMixin` is agnostic to.
+        """
+        if params is None:
+            if len(self._best_params) == 0:
+                raise RuntimeError(
+                    "sample_solution() was called without explicit `params` "
+                    "but no trained parameters are available. Either pass "
+                    "`params=...` or call run() first."
+                )
+            return self._best_params
+
+        params_arr = np.asarray(params, dtype=np.float64)
+        expected = self.n_layers * self.n_params_per_layer
+        if params_arr.shape[-1] != expected:
+            raise ValueError(
+                f"params last-axis size ({params_arr.shape[-1]}) does not "
+                f"match n_layers * n_params_per_layer ({expected})."
+            )
+        return params_arr
 
     def run(
         self,
@@ -1158,6 +969,8 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                 f"Using checkpoint directory: {checkpoint_config.checkpoint_dir}"
             )
 
+        self.optimizer.validate_program(self)
+
         # Extract max_iterations from kwargs if present (for compatibility with subclasses)
         max_iterations = kwargs.pop("max_iterations", self.max_iterations)
         if max_iterations != self.max_iterations:
@@ -1193,6 +1006,12 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             self.n_layers * self.n_params_per_layer
         )
 
+        # Let the optimizer contribute any extra evaluators it needs (e.g. a
+        # metric-based optimizer binds its metric estimator to this program and
+        # returns a fused gradient + ``metric_fn``).
+        extra_evaluators = self.optimizer.build_evaluators(self)
+        jac_fn = extra_evaluators.get("jac")
+
         last_grad_norm: float | None = None
 
         def grad_fn(params):
@@ -1202,7 +1021,10 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                 message="📈 Computing Gradients 📈", iteration=self.current_iteration
             )
 
-            grads = self._evaluate_gradient_at(params, **kwargs)
+            if jac_fn is not None:
+                grads = jac_fn(params)
+            else:
+                grads = self._evaluate_gradient_at(params, **kwargs)
 
             last_grad_norm = float(np.linalg.norm(grads))
 
@@ -1274,16 +1096,20 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
 
         resolved_initial_params = self._resolve_initial_param_sets(initial_params)
 
+        optimize_kwargs: dict[str, Any] = dict(
+            cost_fn=cost_fn,
+            initial_params=resolved_initial_params,
+            callback_fn=_iteration_counter,
+            jac=grad_fn,
+            max_iterations=self.max_iterations,
+            rng=self._rng,
+        )
+        if "metric_fn" in extra_evaluators:
+            optimize_kwargs["metric_fn"] = extra_evaluators["metric_fn"]
+
         with self._install_cancellation_handler():
             try:
-                self.optimize_result = self.optimizer.optimize(
-                    cost_fn=cost_fn,
-                    initial_params=resolved_initial_params,
-                    callback_fn=_iteration_counter,
-                    jac=grad_fn,
-                    max_iterations=self.max_iterations,
-                    rng=self._rng,
-                )
+                self.optimize_result = self.optimizer.optimize(**optimize_kwargs)
             except StopIteration:
                 reason = self._stop_reason.value if self._stop_reason else "Stopped"
                 self.optimize_result = OptimizeResult(
@@ -1322,7 +1148,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
 
         self._final_params = self.optimize_result.x
 
-        if perform_final_computation:
+        if perform_final_computation and isinstance(self, SolutionSamplingMixin):
             self.sample_solution(**kwargs)
 
         self.reporter.info(
@@ -1330,96 +1156,3 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         )
 
         return self
-
-    def sample_solution(
-        self,
-        params: npt.NDArray[np.float64] | None = None,
-        **kwargs,
-    ) -> "VariationalQuantumAlgorithm":
-        """Run the final measurement and decode the solution.
-
-        Called by ``run()`` (with ``params=None``, falling back to
-        ``self._best_params``) after optimization completes. It can also
-        be called directly with externally-provided ``params`` when you
-        already have trained parameters (e.g. from a prior ``run()``,
-        a checkpoint, or external training) and only need to sample the
-        circuit — skipping the EXPECTATION jobs that ``run()`` would
-        otherwise dispatch during optimization.
-
-        When called with explicit ``params``, this method does NOT mutate
-        ``self._best_params`` or any optimizer state (``optimize_result``,
-        ``_losses_history``, ``_param_history``, ``current_iteration``).
-        Only the measurement-side attributes are updated: ``_best_probs``,
-        ``_total_circuit_count``, ``_total_run_time``, and subclass-specific
-        solution fields (e.g. ``solution_bitstring`` for QAOA, ``_eigenstate``
-        for VQE).
-
-        Args:
-            params: Optional parameter set to evaluate. Must have shape
-                ``(n_layers * n_params_per_layer,)`` for a single set or
-                ``(n_param_sets, n_layers * n_params_per_layer)`` for a
-                batch. When ``None`` (the default), uses ``self._best_params``.
-            **kwargs: Subclass-specific keyword arguments.
-
-        Returns:
-            VariationalQuantumAlgorithm: Returns ``self`` for method chaining.
-
-        Raises:
-            ValueError: If ``params`` does not have the expected number of
-                parameters per set.
-            RuntimeError: If ``params=None`` and ``self._best_params`` is
-                empty (i.e. ``run()`` has not been called yet).
-
-        Note:
-            Subclasses override this method to add their algorithm-specific
-            decoding step. They should call ``super().sample_solution(params)``
-            to perform parameter validation and the measurement-pipeline
-            dispatch, then read from ``self._best_probs`` to extract
-            algorithm-specific solution state.
-        """
-        if self._measurement_pipeline is None:
-            # Algorithm has no measurement pipeline (e.g. CustomVQA) — there is
-            # nothing to sample. Subclasses that need a final step override
-            # this method.
-            return self
-
-        if params is None:
-            if len(self._best_params) == 0:
-                raise RuntimeError(
-                    "sample_solution() was called without explicit `params` "
-                    "but no trained parameters are available. Either pass "
-                    "`params=...` or call run() first."
-                )
-            params_arr = self._best_params
-        else:
-            params_arr = np.asarray(params, dtype=np.float64)
-            expected = self.n_layers * self.n_params_per_layer
-            if params_arr.shape[-1] != expected:
-                raise ValueError(
-                    f"params last-axis size ({params_arr.shape[-1]}) does not "
-                    f"match n_layers * n_params_per_layer ({expected})."
-                )
-
-        self._run_solution_measurement_for(np.atleast_2d(params_arr))
-        return self
-
-    def _run_solution_measurement_for(
-        self, param_sets: npt.NDArray[np.float64]
-    ) -> None:
-        """Execute measurement circuits via the pipeline for the provided parameter sets."""
-        if (pipeline := self._measurement_pipeline) is None:
-            raise RuntimeError(
-                "This algorithm does not have a measurement pipeline; "
-                "_run_solution_measurement_for cannot be called."
-            )
-        env = self._build_pipeline_env(param_sets=np.atleast_2d(param_sets))
-        result = pipeline.run(
-            initial_spec=self._get_initial_spec("measurement"),
-            env=env,
-        )
-        self._total_circuit_count += env.artifacts.get("circuit_count", 0)
-        self._total_run_time += env.artifacts.get("run_time", 0.0)
-        self._current_execution_result = env.artifacts.get("_current_execution_result")
-
-        indexed = {_extract_param_set_idx(key): value for key, value in result.items()}
-        self._best_probs = dict(sorted(indexed.items()))

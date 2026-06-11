@@ -70,7 +70,7 @@ def test_vqe_basic_initialization_with_molecule(default_test_simulator, h2_molec
     assert vqe_problem.n_qubits == 4
 
     assert isinstance(vqe_problem.cost_hamiltonian, SparsePauliOp)
-    verify_metacircuit_dict(vqe_problem, ["cost_circuit", "meas_circuit"])
+    verify_metacircuit_dict(vqe_problem, ["cost_circuit", "sample_circuit"])
 
 
 def test_vqe_basic_initialization_with_hamiltonian(
@@ -91,7 +91,7 @@ def test_vqe_basic_initialization_with_hamiltonian(
     assert vqe_problem.n_qubits == 4
 
     assert isinstance(vqe_problem.cost_hamiltonian, SparsePauliOp)
-    verify_metacircuit_dict(vqe_problem, ["cost_circuit", "meas_circuit"])
+    verify_metacircuit_dict(vqe_problem, ["cost_circuit", "sample_circuit"])
 
 
 def test_vqe_clean_hamiltonian_logic(h2_hamiltonian, dummy_simulator):

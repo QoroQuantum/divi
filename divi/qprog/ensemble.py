@@ -27,11 +27,9 @@ from divi.qprog._batch_coordinator import (
     _BatchCoordinator,
     _ProxyBackend,
 )
+from divi.qprog._solution_sampling_mixin import SolutionEntry
 from divi.qprog.quantum_program import QuantumProgram
-from divi.qprog.variational_quantum_algorithm import (
-    SolutionEntry,
-    VariationalQuantumAlgorithm,
-)
+from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from divi.reporting import (
     TerminalStatus,
     disable_logging,

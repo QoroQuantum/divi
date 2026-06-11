@@ -28,7 +28,7 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
 from divi.hamiltonians._term_ops import _clean_hamiltonian_spo
-from divi.pipeline.stages import CircuitSpecStage, LossReductionFn, SampleLossFn
+from divi.pipeline.stages import LossReductionFn, SampleLossFn
 from divi.qprog.algorithms._ansatze import Ansatz
 from divi.qprog.algorithms._data_binding import (
     _LOSS_FN_IGNORED_MSG,
@@ -242,9 +242,6 @@ class QNN(DataBindingMixin, VariationalQuantumAlgorithm):
     # ------------------------------------------------------------------ #
     # Plumbing
     # ------------------------------------------------------------------ #
-
-    def _build_pipelines(self) -> dict:
-        return {"cost": self._build_cost_pipeline(CircuitSpecStage())}
 
     def _create_meta_circuit_factories(self) -> dict[str, MetaCircuit]:
         """Single MetaCircuit carrying both parameter groups.

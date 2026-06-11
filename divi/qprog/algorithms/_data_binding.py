@@ -25,17 +25,18 @@ import numpy.typing as npt
 from qiskit.converters import circuit_to_dag
 
 from divi.circuits import MetaCircuit
-from divi.pipeline import CircuitPipeline
+from divi.pipeline import CircuitPipeline, ResultFormat
+from divi.pipeline._compilation import _extract_param_set_idx
 from divi.pipeline.abc import Stage
 from divi.pipeline.stages import (
     CircuitSpecStage,
     DataBindingStage,
     LossReductionFn,
+    MeasurementStage,
     SampleLossFn,
     resolve_loss_reduction,
     resolve_sample_loss,
 )
-from divi.qprog.variational_quantum_algorithm import _extract_param_set_idx
 
 if TYPE_CHECKING:
     from qiskit import QuantumCircuit
@@ -81,7 +82,7 @@ class DataBindingMixin(_MixinBase):
     """Shared data-axis behavior for VQA subclasses that fan a feature batch out.
 
     Mixed in *before* :class:`~divi.qprog.VariationalQuantumAlgorithm` so its
-    :meth:`_build_cost_pipeline` cooperatively wraps the base one (mirroring how
+    :meth:`_assemble_pipeline` cooperatively wraps the base one (mirroring how
     :class:`~divi.qprog.ObservableMeasuringMixin` sits ahead of
     ``QuantumProgram``). It owns the orchestration common to
     :class:`~divi.qprog.algorithms.QNN` and
@@ -104,17 +105,17 @@ class DataBindingMixin(_MixinBase):
         super().__init_subclass__(**kwargs)
         # The cooperative super() calls below only run if DataBindingMixin
         # precedes the host VQA base in the MRO. A base that defines
-        # ``_build_cost_pipeline`` placed *ahead* of the mixin would shadow it
+        # ``_assemble_pipeline`` placed *ahead* of the mixin would shadow it
         # and silently skip data binding (training on a data-free circuit), so
         # reject that ordering loudly at class-definition time.
         mro = cls.__mro__
         mixin_idx = mro.index(DataBindingMixin)
-        shadowers = [c for c in mro[1:mixin_idx] if "_build_cost_pipeline" in vars(c)]
+        shadowers = [c for c in mro[1:mixin_idx] if "_assemble_pipeline" in vars(c)]
         if shadowers:
             raise TypeError(
                 f"{cls.__name__} must list DataBindingMixin before "
                 f"{shadowers[0].__name__}, which otherwise shadows the mixin's "
-                f"_build_cost_pipeline and silently disables data binding."
+                f"_assemble_pipeline and silently disables data binding."
             )
 
     @property
@@ -123,23 +124,27 @@ class DataBindingMixin(_MixinBase):
         # the base cost path must not re-add it.
         return getattr(self, "feature_batch", None) is not None
 
-    def _build_cost_pipeline(
+    def _assemble_pipeline(
         self,
         spec_stage: Stage,
+        terminal_stage: Stage,
+        *,
+        result_format: ResultFormat,
         extra_stages: tuple[Stage, ...] = (),
     ) -> CircuitPipeline:
-        """Insert :class:`DataBindingStage` ahead of the base pipeline when active.
-
-        When ``feature_batch`` is set, the data axis is fanned out before any
-        stage that walks ``circuit_bodies`` (QEM/twirling/measurement) sees the
-        bodies. With no feature batch (a plain ``CustomVQA``) this is a no-op and
-        delegates straight to the base pipeline.
+        """Insert :class:`DataBindingStage` ahead of mitigation when a data axis is
+        active, so the data axis fans out before any stage that walks
+        ``circuit_bodies`` (QEM/twirling/measurement) sees the bodies. With no
+        feature batch (a plain ``CustomVQA``) this is a no-op delegating to the
+        base assembler. Applies to every pipeline assembled — cost and metric alike.
         """
-        if getattr(self, "feature_batch", None) is None:
-            return super()._build_cost_pipeline(spec_stage, extra_stages=extra_stages)
-        return super()._build_cost_pipeline(
+        if getattr(self, "feature_batch", None) is not None:
+            extra_stages = (build_data_binding_stage(self), *extra_stages)
+        return super()._assemble_pipeline(
             spec_stage,
-            extra_stages=(build_data_binding_stage(self), *extra_stages),
+            terminal_stage,
+            result_format=result_format,
+            extra_stages=extra_stages,
         )
 
     def _build_pipeline_env(self, **overrides):
@@ -312,7 +317,19 @@ class DataBindingMixin(_MixinBase):
         sample's prediction. Does not mutate optimizer/solution state.
         """
         spec = self._cost_meta_circuit(self._data_symbols + self._weight_symbols)
-        pipeline = super()._build_cost_pipeline(CircuitSpecStage())
+        # super() (not self) skips the mixin's data-binding injection: the predict
+        # pipeline binds each joined (data, weights) row directly, with no data fan-out.
+        # Data-bound programs measure expectation values; the predict pipeline
+        # mirrors the cost terminal (a plain MeasurementStage) without the
+        # data-binding fan-out.
+        pipeline = super()._assemble_pipeline(
+            CircuitSpecStage(),
+            MeasurementStage(
+                grouping_strategy=self._grouping_strategy,
+                shot_distribution=self._shot_distribution,
+            ),
+            result_format=ResultFormat.EXPVALS,
+        )
         # Base env (not the mixin override): the predict pipeline has no
         # DataBindingStage, so feature_batch/labels must not enter the env.
         # reporter=None keeps inference silent — no progress spinner.

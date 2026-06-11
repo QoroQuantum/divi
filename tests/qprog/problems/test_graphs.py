@@ -326,7 +326,7 @@ class TestGraphInput:
         assert qaoa_problem.problem.graph == G
         assert qaoa_problem.n_layers == 1
 
-        verify_metacircuit_dict(qaoa_problem, ["cost_circuit", "meas_circuit"])
+        verify_metacircuit_dict(qaoa_problem, ["cost_circuit", "sample_circuit"])
 
     def test_graph_unsuppported_initial_state(self, dummy_simulator):
         with pytest.raises(TypeError):

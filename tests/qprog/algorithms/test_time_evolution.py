@@ -10,8 +10,8 @@ import pytest
 
 from divi.backends import ExecutionResult, QiskitSimulator
 from divi.circuits import DEFAULT_PRECISION
-from divi.circuits.qem import ZNE, RichardsonExtrapolator
 from divi.circuits.quepp import QuEPP
+from divi.circuits.zne import ZNE, RichardsonExtrapolator
 from divi.hamiltonians import ExactTrotterization, QDrift
 from divi.pipeline.stages import MeasurementStage
 from divi.qprog import OnesState, SuperpositionState, TimeEvolution, ZerosState
@@ -843,6 +843,31 @@ class TestTimeEvolutionQEM:
         stage_names = [type(s).__name__ for s in te._pipeline.stages]
         assert "QEMStage" in stage_names
         assert "PauliTwirlStage" not in stage_names
+
+    def test_zne_excluded_in_sampling_mode(self, default_test_simulator):
+        """With no observable the pipeline samples probabilities; ZNE (expval-only)
+        must not ride it."""
+        te = TimeEvolution(
+            hamiltonian=qp.PauliX(0) + qp.PauliZ(0),
+            observable=None,
+            backend=default_test_simulator,
+            qem_protocol=ZNE(scale_factors=[1.0, 3.0]),
+        )
+        stage_names = [type(s).__name__ for s in te._pipeline.stages]
+        assert "QEMStage" not in stage_names
+
+    def test_non_variational_pipeline_has_no_param_binding(
+        self, default_test_simulator
+    ):
+        """A plain (non-templated) TimeEvolution binds no parameters: the base
+        assembler default is off for non-variational programs."""
+        te = TimeEvolution(
+            hamiltonian=qp.PauliX(0) + qp.PauliZ(0),
+            observable=qp.PauliZ(0),
+            backend=default_test_simulator,
+        )
+        stage_names = [type(s).__name__ for s in te._pipeline.stages]
+        assert "ParameterBindingStage" not in stage_names
 
     def test_quepp_run_produces_mitigated_result(self):
         """QuEPP on TimeEvolution produces a scalar result."""

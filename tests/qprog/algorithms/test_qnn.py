@@ -550,6 +550,48 @@ class TestDryRun:
         assert reports["cost"].total_circuits == expected
 
 
+class TestQNNPipelines:
+    def test_no_sample_pipeline(
+        self,
+        simple_feature_map,
+        simple_ansatz,
+        two_qubit_observable,
+        feature_batch_2x2,
+        dummy_simulator,
+    ):
+        program = _make_qnn(
+            simple_feature_map,
+            simple_ansatz,
+            two_qubit_observable,
+            feature_batch_2x2,
+            dummy_simulator,
+        )
+        assert "sample" not in program._pipelines
+        assert "metric" not in program._pipelines  # built on demand
+        assert "cost" in program._pipelines
+
+    def test_data_binding_injected_into_cost_and_expectation_pipeline(
+        self,
+        simple_feature_map,
+        simple_ansatz,
+        two_qubit_observable,
+        feature_batch_2x2,
+        dummy_simulator,
+    ):
+        program = _make_qnn(
+            simple_feature_map,
+            simple_ansatz,
+            two_qubit_observable,
+            feature_batch_2x2,
+            dummy_simulator,
+        )
+        # The data axis fans out in both the cost pipeline and the on-demand
+        # expectation (metric) pipeline.
+        for pipeline in (program._pipelines["cost"], program._expectation_pipeline()):
+            types = [type(s).__name__ for s in pipeline.stages]
+            assert "DataBindingStage" in types
+
+
 @pytest.mark.e2e
 def test_batch_loss_matches_per_sample_mean(
     simple_feature_map,
@@ -934,7 +976,7 @@ class TestObservableMeasuringContracts(ObservableMeasuringContractsBase):
 
 def test_data_binding_mixin_wrong_mro_order_rejected():
     """DataBindingMixin must precede the VQA base; the reverse order would let
-    the base shadow the mixin's _build_cost_pipeline and silently skip data
+    the base shadow the mixin's _assemble_pipeline and silently skip data
     binding, so it is rejected at class-definition time."""
     with pytest.raises(TypeError, match="DataBindingMixin before"):
 

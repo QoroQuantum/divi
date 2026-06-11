@@ -237,31 +237,50 @@ pipeline no longer sees it as unsafe.
 How Existing Algorithms Build Pipelines
 ---------------------------------------
 
-Every algorithm constructs its pipelines in a ``_build_pipelines`` method.  For
-example, :class:`~divi.qprog.algorithms.VQE` builds two pipelines:
+Every program builds its named pipelines in a ``_build_pipelines`` method,
+returning a :class:`~divi.pipeline.PipelineSet` (a ``name → (pipeline,
+seed_factory)`` registry).  Each pipeline is built by one generic helper —
+``_assemble_pipeline`` — so every routine shares the same stage ordering and
+error-mitigation logic.  :class:`~divi.qprog.algorithms.VQE` registers a
+``"cost"`` pipeline; solution-extracting programs gain a ``"sample"`` pipeline
+from :class:`~divi.qprog.SolutionSamplingMixin`.  Subclasses and mixins extend
+the set cooperatively with :meth:`~divi.pipeline.PipelineSet.with_`:
 
 .. code-block:: python
 
    # Simplified from variational_quantum_algorithm.py
-   def _build_cost_pipeline(self, spec_stage):
-       return CircuitPipeline(stages=[
-           spec_stage,              # SpecStage  →  MetaCircuit batch
-           QEMStage(protocol=...),  # Apply error mitigation variants
-           PauliTwirlStage(...),    # Randomised Pauli twirls (if requested)
-           MeasurementStage(...),   # Split observables into groups
-           ParameterBindingStage(), # Bind symbolic params → numeric (last!)
-       ])
+   def _assemble_pipeline(self, spec_stage, terminal_stage, *, result_format):
+       # spec  →  [error mitigation (+ Pauli twirls) when the QEM protocol
+       #           applies to result_format]  →  terminal  →  parameter
+       #           binding (last)
+       ...
 
-   def _build_measurement_pipeline(self):
-       return CircuitPipeline(stages=[
-           CircuitSpecStage(),       # Single-circuit spec
-           MeasurementStage(),       # Probability measurement
-           ParameterBindingStage(),  # Bind best params
-       ])
+   def _build_pipelines(self):
+       return PipelineSet({
+           "cost": (
+               self._assemble_pipeline(
+                   CircuitSpecStage(),     # SpecStage → MetaCircuit batch
+                   MeasurementStage(...),  # group observables
+                   result_format=ResultFormat.EXPVALS,
+               ),
+               lambda: self.meta_circuit_factories["cost_circuit"],  # lazy seed
+           ),
+       })
 
-The **cost pipeline** evaluates expectation values during optimization (with
-optional error mitigation), while the **measurement pipeline** samples the
-probability distribution after optimization to extract the solution.
+   # SolutionSamplingMixin / QAOA / PCE extend or replace one entry:
+   def _build_pipelines(self):
+       # .with_(name, pipeline, seed_factory) — here a probability-sampling pipeline
+       return super()._build_pipelines().with_("sample", ..., lambda: ...)
+
+The **cost pipeline** evaluates expectation values (or a classical objective)
+during optimization, and the **sample pipeline** (when present) samples the
+probability distribution after optimization to extract the solution.  Whether
+error mitigation rides a given pipeline is decided by the QEM protocol itself
+(:meth:`~divi.circuits.qem.QEMProtocol.applies_to`), so extrapolation-style
+mitigation rides the expectation-value pipelines but not the
+probability-sampling one.  Natural-gradient optimizers measure their metric
+through ``_expectation_pipeline`` — a canonical expectation-value measurement
+the program builds on demand — so it is never a registered pipeline.
 
 **Stage ordering affects performance.**  Because each stage in the expand pass
 fans out the batch it receives, any work-multiplying stage placed early forces
@@ -272,10 +291,10 @@ The most concrete example is ``ParameterBindingStage``.  By default it runs
 last — structural stages process the symbolic circuit once instead of repeating
 work per parameter set.  When using
 :class:`~divi.circuits.quepp.QuEPP`, this means QuEPP cannot normalize rotation
-angles, which may produce more Pauli paths.  If this is a concern (check with
-``dry_run()``), set ``QuEPP(bind_before_mitigation=True)`` to bind parameters
-first — fewer paths per circuit, but more total mitigation work across parameter
-sets.
+angles, which may produce more Pauli paths. ``QuEPP(sampling="exhaustive")``
+binds parameters first — fewer paths per circuit, but more total mitigation work
+across parameter sets. ``QuEPP(sampling="montecarlo")`` keeps the cheaper
+symbolic ordering.
 
 
 Example 1: Custom Algorithm with CustomVQA

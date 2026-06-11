@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.circuits.qem import ZNE, LinearExtrapolator
+from divi.circuits.zne import ZNE, LinearExtrapolator
 from divi.hamiltonians import (
     ExactTrotterization,
     QDrift,
@@ -83,10 +83,10 @@ class TestGeneralQAOA:
 
         assert spy.call_args.kwargs["initial_spec"] is qaoa_problem.cost_hamiltonian
 
-    def test_qaoa_final_computation_runs_measurement_pipeline(
+    def test_qaoa_final_computation_runs_sample_pipeline(
         self, mocker, optimizer, default_test_simulator
     ):
-        """The measurement pipeline is invoked during final computation.
+        """The sample pipeline is invoked during final computation.
 
         Note: this is an implementation-coupling test that spies on an internal
         pipeline. The behavioral outcomes (solution extraction) are verified
@@ -103,12 +103,12 @@ class TestGeneralQAOA:
         qaoa_problem._final_params = np.array([[0.1, 0.2]])
         qaoa_problem._best_params = np.array([[0.1, 0.2]])
 
-        # Spy on measurement pipeline
-        spy = mocker.spy(qaoa_problem._measurement_pipeline, "run")
+        # Spy on sample pipeline
+        spy = mocker.spy(qaoa_problem._sample_pipeline, "run")
 
         qaoa_problem.sample_solution()
 
-        # Measurement pipeline should be called once
+        # Sample pipeline should be called once
         assert spy.call_count == 1
 
     def test_graph_correct_circuits_count_and_energies(
@@ -422,7 +422,7 @@ class TestSampleSolution:
         """``sample_solution`` must not dispatch any EXPECTATION job."""
         qaoa = self._make_qaoa(default_test_simulator)
         cost_spy = mocker.spy(qaoa._cost_pipeline, "run")
-        meas_spy = mocker.spy(qaoa._measurement_pipeline, "run")
+        meas_spy = mocker.spy(qaoa._sample_pipeline, "run")
 
         qaoa.sample_solution(np.array([0.1, 0.2]))
 

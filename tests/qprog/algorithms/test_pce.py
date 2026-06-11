@@ -55,7 +55,7 @@ def test_pce_basic_initialization(dummy_simulator, basic_ansatz):
     assert pce.n_vars == 2
     assert pce.n_qubits == 2  # ceil(log2(2 + 1)) = 2
     assert pce.alpha == 2.0
-    verify_metacircuit_dict(pce, ["cost_circuit", "meas_circuit"])
+    verify_metacircuit_dict(pce, ["cost_circuit", "sample_circuit"])
 
 
 def test_pce_hubo_basic_initialization(dummy_simulator, basic_ansatz):
@@ -75,7 +75,7 @@ def test_pce_hubo_basic_initialization(dummy_simulator, basic_ansatz):
 
     assert pce.n_vars == 3
     assert pce.problem.constant == pytest.approx(0.25)
-    verify_metacircuit_dict(pce, ["cost_circuit", "meas_circuit"])
+    verify_metacircuit_dict(pce, ["cost_circuit", "sample_circuit"])
 
 
 def test_pce_cost_pipeline_uses_custom_stage_stack(dummy_simulator, basic_ansatz):

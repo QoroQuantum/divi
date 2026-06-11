@@ -22,13 +22,12 @@ from divi.hamiltonians._term_ops import (
     _spo_wires,
     to_spo,
 )
-from divi.pipeline.stages import TrotterSpecStage
+from divi.pipeline import PipelineSet, ResultFormat
+from divi.pipeline.stages import MeasurementStage, TrotterSpecStage
+from divi.qprog._solution_sampling_mixin import SolutionEntry, SolutionSamplingMixin
 from divi.qprog.algorithms import InitialState
 from divi.qprog.problems import QAOAProblem
-from divi.qprog.variational_quantum_algorithm import (
-    SolutionEntry,
-    VariationalQuantumAlgorithm,
-)
+from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +35,7 @@ logger = logging.getLogger(__name__)
 _UNSET: Any = object()
 
 
-class QAOA(VariationalQuantumAlgorithm):
+class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
     """Quantum Approximate Optimization Algorithm (QAOA) implementation.
 
     QAOA is a hybrid quantum-classical algorithm designed to solve combinatorial
@@ -140,24 +139,29 @@ class QAOA(VariationalQuantumAlgorithm):
     def n_params_per_layer(self) -> int:
         return 2
 
-    def _build_pipelines(self) -> dict:
-        return {
-            "cost": self._build_cost_pipeline(
-                TrotterSpecStage(
-                    trotterization_strategy=self.trotterization_strategy,
-                    meta_circuit_factory=self._cost_meta_circuit_factory,
-                )
-            ),
-            "measurement": self._build_measurement_pipeline(),
-        }
-
-    def _get_initial_spec(self, name: str) -> Any:
-        # QAOA's cost pipeline is driven by a TrotterSpecStage, which expects
-        # a Hamiltonian (not a MetaCircuit) as its initial spec.  Measurement
-        # keeps the default (a pre-built MetaCircuit).
-        if name == "cost":
-            return self.cost_hamiltonian
-        return super()._get_initial_spec(name)
+    def _build_pipelines(self) -> PipelineSet:
+        # QAOA's cost pipeline trotterizes the cost Hamiltonian into the ansatz:
+        # a TrotterSpecStage seeded with the Hamiltonian (not a pre-built
+        # MetaCircuit). Sample is added by the mixin; replace only "cost".
+        return (
+            super()
+            ._build_pipelines()
+            .with_(
+                "cost",
+                self._assemble_pipeline(
+                    TrotterSpecStage(
+                        trotterization_strategy=self.trotterization_strategy,
+                        meta_circuit_factory=self._cost_meta_circuit_factory,
+                    ),
+                    MeasurementStage(
+                        grouping_strategy=self._grouping_strategy,
+                        shot_distribution=self._shot_distribution,
+                    ),
+                    result_format=ResultFormat.EXPVALS,
+                ),
+                lambda: self.cost_hamiltonian,
+            )
+        )
 
     def _save_subclass_state(self) -> dict[str, Any]:
         """Save QAOA-specific runtime state."""
@@ -290,13 +294,13 @@ class QAOA(VariationalQuantumAlgorithm):
         """
         flat_params = tuple(self._params.flatten())
         cost_circuit = self._cost_meta_circuit_factory(self.cost_hamiltonian, 0)
-        meas_circuit = MetaCircuit(
+        sample_circuit = MetaCircuit(
             circuit_bodies=cost_circuit.circuit_bodies,
             parameters=flat_params,
             measured_wires=tuple(range(self.n_qubits)),
             precision=self._precision,
         )
-        return {"cost_circuit": cost_circuit, "meas_circuit": meas_circuit}
+        return {"cost_circuit": cost_circuit, "sample_circuit": sample_circuit}
 
     def sample_solution(
         self,

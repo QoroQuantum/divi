@@ -5,12 +5,10 @@
 import networkx as nx
 import pytest
 
+from divi.qprog import QAOA
+from divi.qprog._solution_sampling_mixin import SolutionEntry
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import MaxWeightMatchingProblem, is_valid_matching
-from divi.qprog.variational_quantum_algorithm import (
-    SolutionEntry,
-    VariationalQuantumAlgorithm,
-)
 from divi.qprog.workflows import PartitioningProgramEnsemble
 from tests.qprog._program_contracts import verify_basic_program_ensemble_behaviour
 
@@ -34,7 +32,7 @@ def _make_stub_problem(mocker, solution_size=4):
 
 def _make_mock_program(mocker, best_probs, top_solutions):
     """Create a mock VQA program with the given best_probs and top_solutions."""
-    prog = mocker.MagicMock(spec=VariationalQuantumAlgorithm)
+    prog = mocker.MagicMock(spec=QAOA)
     prog.best_probs = best_probs
     prog.losses_history = [1.0]
     prog.results = {"some": "result"}
@@ -98,7 +96,7 @@ class TestPartitioningProgramEnsemble:
         )
         ensemble.create_programs()
 
-        prog = mocker.MagicMock(spec=VariationalQuantumAlgorithm)
+        prog = mocker.MagicMock(spec=QAOA)
         prog.has_results.return_value = True
         prog.best_probs = {}
         ensemble._programs["A"] = prog
@@ -132,7 +130,7 @@ class TestPartitioningProgramEnsemble:
         )
         ensemble.create_programs()
 
-        prog = mocker.MagicMock(spec=VariationalQuantumAlgorithm)
+        prog = mocker.MagicMock(spec=QAOA)
         prog.has_results.return_value = False
         ensemble._programs["A"] = prog
 

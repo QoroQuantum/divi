@@ -20,7 +20,9 @@ from rich.traceback import Traceback
 import divi.qprog.ensemble as ensemble_module
 from divi.backends import AsyncJobBackend, ExecutionResult
 from divi.exceptions import ExecutionCancelledError
+from divi.pipeline import PipelineSet
 from divi.qprog._batch_coordinator import _BatchCoordinator, _ProxyBackend
+from divi.qprog._solution_sampling_mixin import SolutionEntry
 from divi.qprog.ensemble import (
     BatchConfig,
     BatchMode,
@@ -30,7 +32,6 @@ from divi.qprog.ensemble import (
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import GraphPartitioningConfig, MaxCutProblem
 from divi.qprog.quantum_program import QuantumProgram
-from divi.qprog.variational_quantum_algorithm import SolutionEntry
 from divi.qprog.workflows import PartitioningProgramEnsemble
 from divi.reporting import TerminalStatus
 from tests.qprog._program_contracts import verify_basic_program_ensemble_behaviour
@@ -55,8 +56,8 @@ class _StubProgram(QuantumProgram):
         super().__init__(backend=backend, **kwargs)
         self._ran = False
 
-    def _build_pipelines(self) -> None:
-        pass
+    def _build_pipelines(self) -> PipelineSet:
+        return PipelineSet({})
 
     def has_results(self) -> bool:
         return self._ran

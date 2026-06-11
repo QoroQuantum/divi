@@ -193,8 +193,8 @@ For deeper variational workflow details, use these focused guides:
       vqe4.sample_solution(best_params)
 
 **Sampling from Pre-Trained Parameters**
-   Any :class:`~divi.qprog.VariationalQuantumAlgorithm` exposes
-   :meth:`~divi.qprog.VariationalQuantumAlgorithm.sample_solution`, which runs
+   Any solution-extracting algorithm (VQE, QAOA, PCE) exposes
+   :meth:`~divi.qprog.SolutionSamplingMixin.sample_solution`, which runs
    only the final measurement step with a user-supplied parameter set. This is
    the cheapest way to re-sample a circuit when parameters are already known
    (e.g. loaded from a checkpoint or produced by an external training routine).
@@ -219,7 +219,7 @@ Analyzing Solution Distributions
 
 After running optimization with any variational quantum algorithm, you can
 analyze the probability distribution of solutions using the
-:meth:`~divi.qprog.VariationalQuantumAlgorithm.get_top_solutions`
+:meth:`~divi.qprog.SolutionSamplingMixin.get_top_solutions`
 method. This is particularly useful for understanding solution quality and
 exploring alternative solutions beyond the single best one.
 
@@ -244,7 +244,7 @@ problem-specific formats:
 - **Custom decoders**: You can provide your own decoding function when creating the algorithm
 
 Set ``include_decoded=True`` when calling
-:meth:`~divi.qprog.VariationalQuantumAlgorithm.get_top_solutions`
+:meth:`~divi.qprog.SolutionSamplingMixin.get_top_solutions`
 to include decoded solutions in the results.
 
 **Example**
