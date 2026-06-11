@@ -20,6 +20,7 @@ from ._dry_run import (
     format_dry_run,
 )
 from ._grouping import GroupingStrategy
+from ._pipeline_set import PipelineSet
 from ._shot_distribution import ShotDistStrategy
 from .abc import (
     ContractViolation,
@@ -39,6 +40,7 @@ __all__ = [
     "GroupingStrategy",
     "PipelineEnv",
     "PipelineResult",
+    "PipelineSet",
     "PipelineTrace",
     "ShotDistStrategy",
     "SpecStage",

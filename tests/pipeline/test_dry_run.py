@@ -272,7 +272,7 @@ class TestAnalyticDryRun:
     def test_env_artifacts_surface_on_dry_run_report(self, dummy_pipeline_env):
         """``DryRunReport.env_artifacts`` is the canonical introspection surface
         for stage-produced state — callers should not need to drop into
-        ``_build_pipeline_env`` or private ``_get_initial_spec`` hooks to read
+        ``_build_pipeline_env`` or a pipeline's private spec factory to read
         shot allocations or other forward-pass artifacts."""
         meta = two_group_meta()
         pipeline = CircuitPipeline(

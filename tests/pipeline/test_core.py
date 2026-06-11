@@ -1364,7 +1364,7 @@ class TestMeasurementExclusivity:
             )
 
 
-def test_pauli_twirl_without_qem_passes():
+def test_pauli_twirl_without_qem_stage():
     """Spec: PauliTwirlStage works without QEMStage."""
     CircuitPipeline(
         stages=[

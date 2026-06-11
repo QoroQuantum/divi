@@ -16,6 +16,24 @@ from divi.pipeline.abc import BranchKey, ChildResults
 PARAM_SET_AXIS = "param_set"
 
 
+def _extract_param_set_idx(key: tuple, default: int | None = None) -> int:
+    """Extract the param_set index from a pipeline result key.
+
+    Raises ``KeyError`` when no ``param_set`` axis is present, unless ``default``
+    is given — a parameter-free body (e.g. an empty Fubini-Study prefix on the
+    ``|0>`` state) carries no such axis and is the sole set, so callers pass
+    ``default=0``.
+    """
+    for axis_name, idx in key:
+        if axis_name == PARAM_SET_AXIS:
+            return idx
+    if default is None:
+        raise KeyError(
+            f"No '{PARAM_SET_AXIS}' axis found in pipeline result key: {key}"
+        )
+    return default
+
+
 def _preamble(n_qubits: int) -> str:
     """Build the OpenQASM 2.0 header + register declarations."""
     return (

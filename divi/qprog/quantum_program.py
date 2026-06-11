@@ -13,7 +13,16 @@ from divi.backends import AsyncJobBackend, CircuitRunner
 from divi.backends._cancellation import _best_effort_cancel_job, _sigint_to_event
 from divi.circuits import DEFAULT_PRECISION
 from divi.circuits.qem import _NoMitigation
-from divi.pipeline import CircuitPipeline, DryRunReport, PipelineEnv, dry_run_pipeline
+from divi.pipeline import (
+    CircuitPipeline,
+    DryRunReport,
+    PipelineEnv,
+    PipelineSet,
+    ResultFormat,
+    Stage,
+    dry_run_pipeline,
+)
+from divi.pipeline.stages import PauliTwirlStage, QEMStage
 from divi.reporting import (
     LoggingProgressReporter,
     ProgressReporter,
@@ -195,29 +204,49 @@ class QuantumProgram(ABC):
     # ------------------------------------------------------------------ #
 
     @abstractmethod
-    def _build_pipelines(self) -> dict[str, CircuitPipeline]:
-        """Build and return this program's pipelines keyed by stable name.
+    def _build_pipelines(self) -> PipelineSet:
+        """Build this program's named pipeline registry.
 
-        The returned dict is the **single source of truth** for which
-        pipelines this program owns — :meth:`dry_run` and every other
-        introspection surface iterate it, using the dict key as the
-        pipeline's label.  Subclasses call this method from ``__init__``
-        and assign the result to ``self._pipelines``.
-
-        Pipelines should be **pure structural** here (stage composition
-        only); anything that depends on program state resolved at run
-        time — observables, parameter-bound meta-circuits, Hamiltonians —
-        belongs in :meth:`_get_initial_spec`, which is called lazily.
+        Subclasses and mixins extend a base set cooperatively via
+        ``super()._build_pipelines().with_(name, pipeline, seed_factory)``.
         """
         ...
 
-    def _get_initial_spec(self, name: str) -> Any:
-        """Return the ``initial_spec`` for pipeline ``name`` — typed to match
-        the input expected by that pipeline's :class:`~divi.pipeline.abc.SpecStage`."""
-        raise NotImplementedError(
-            f"{type(self).__name__} must implement _get_initial_spec() "
-            f"to support dry_run()."
-        )
+    def _assemble_pipeline(
+        self,
+        spec_stage: Stage,
+        terminal_stage: Stage,
+        *,
+        result_format: ResultFormat,
+        extra_stages: tuple[Stage, ...] = (),
+    ) -> CircuitPipeline:
+        """Assemble one pipeline from this program's shared error-mitigation config.
+
+        Ordering: ``spec_stage`` → ``extra_stages`` → [QEM (→ PauliTwirl) when
+        applicable] → ``terminal_stage``.
+
+        Parameter-binding policy belongs to parameterized program classes, not
+        this shared assembler.
+        """
+        stages = [
+            spec_stage,
+            *extra_stages,
+            *self._mitigation_stages(result_format),
+            terminal_stage,
+        ]
+        return CircuitPipeline(stages=stages)
+
+    def _mitigation_stages(self, result_format: ResultFormat) -> tuple[Stage, ...]:
+        """Build the QEM and optional Pauli-twirling stages for a result format."""
+        if isinstance(self._qem_protocol, _NoMitigation):
+            return ()
+        if not self._qem_protocol.applies_to(result_format):
+            return ()
+
+        stages: list[Stage] = [QEMStage(protocol=self._qem_protocol)]
+        if self._qem_protocol.n_twirls > 0:
+            stages.append(PauliTwirlStage(n_twirls=self._qem_protocol.n_twirls))
+        return tuple(stages)
 
     def dry_run(
         self, *, force_circuit_generation: bool = False
@@ -251,7 +280,7 @@ class QuantumProgram(ABC):
         for name, pipeline in self._pipelines.items():
             env = self._build_pipeline_env()
             trace = pipeline.run_forward_pass(
-                self._get_initial_spec(name),
+                self._pipelines.spec_for(name),
                 env,
                 force_forward_sweep=True,
                 dry=not force_circuit_generation,
@@ -272,3 +301,24 @@ class QuantumProgram(ABC):
         }
         env_kwargs.update(overrides)  # caller-supplied values win
         return PipelineEnv(**env_kwargs)
+
+    def _execute(self, pipeline: CircuitPipeline, initial_spec: Any, **env_overrides):
+        """Run ``pipeline`` and fold its execution artifacts into program totals.
+
+        The shared run+accounting core. ``env_overrides`` are forwarded to
+        :meth:`_build_pipeline_env`. Returns the raw pipeline result.
+        """
+        env = self._build_pipeline_env(**env_overrides)
+        result = pipeline.run(initial_spec=initial_spec, env=env)
+        self._total_circuit_count += env.artifacts.get("circuit_count", 0)
+        self._total_run_time += env.artifacts.get("run_time", 0.0)
+        self._current_execution_result = env.artifacts.get("_current_execution_result")
+        return result
+
+    def _run_pipeline(self, name: str, *, initial_spec: Any = None, **env_overrides):
+        """Run a registered pipeline by ``name`` (resolving its seed from the
+        registry unless ``initial_spec`` is given). Thin wrapper over :meth:`_execute`.
+        """
+        if initial_spec is None:
+            initial_spec = self._pipelines.spec_for(name)
+        return self._execute(self._pipelines[name], initial_spec, **env_overrides)
