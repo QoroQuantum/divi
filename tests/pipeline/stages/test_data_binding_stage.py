@@ -11,7 +11,7 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
 from divi.circuits._conversions import _format_bound_param
-from divi.circuits.qem import ZNE
+from divi.circuits.zne import ZNE
 from divi.pipeline import CircuitPipeline, PipelineEnv
 from divi.pipeline.stages import (
     CircuitSpecStage,

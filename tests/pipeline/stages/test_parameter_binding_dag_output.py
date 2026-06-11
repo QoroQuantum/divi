@@ -13,6 +13,7 @@ from qiskit.dagcircuit import DAGCircuit
 from qiskit.quantum_info import Operator, SparsePauliOp
 
 from divi.circuits import MetaCircuit
+from divi.circuits.zne import ZNE
 from divi.pipeline import CircuitPipeline, PipelineEnv, PipelineTrace
 from divi.pipeline.stages import (
     MeasurementStage,
@@ -136,13 +137,15 @@ class TestPathSelection:
             assert isinstance(body, DAGCircuit)
             assert not dag_to_circuit(body).parameters
 
-    def test_slow_path_when_qem_follows(self, dummy_pipeline_env, meta, param_sets):
+    def test_slow_path_when_qem_follows(
+        self, dummy_pipeline_env, meta, param_sets, suppress_pipeline_perf_warnings
+    ):
         """QEMStage reads ``circuit_bodies`` — ParamBind emits bound DAGs."""
         pipeline = CircuitPipeline(
             stages=[
                 DummySpecStage(meta=meta),
                 ParameterBindingStage(),
-                QEMStage(),  # _NoMitigation protocol — no perf warnings
+                QEMStage(ZNE(scale_factors=[1.0, 3.0])),  # active QEM consumes the DAG
                 MeasurementStage(),
             ]
         )
@@ -234,7 +237,7 @@ class TestFastSlowEquivalence:
             assert Operator(fast_qc).equiv(Operator(slow_qc))
 
     def test_pauli_twirl_fast_and_structural_outputs_match(
-        self, dummy_pipeline_env, meta, param_sets
+        self, dummy_pipeline_env, meta, param_sets, suppress_pipeline_perf_warnings
     ):
         twirl_seed = 9
         n_twirls = 3
@@ -252,7 +255,7 @@ class TestFastSlowEquivalence:
                 DummySpecStage(meta=meta),
                 ParameterBindingStage(),
                 PauliTwirlStage(n_twirls=n_twirls, seed=twirl_seed),
-                QEMStage(),
+                QEMStage(ZNE(scale_factors=[1.0, 3.0])),  # active QEM → structural path
                 MeasurementStage(),
             ]
         )

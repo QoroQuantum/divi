@@ -233,6 +233,10 @@ class ParameterBindingStage(BundleStage):
     def stateful(self) -> bool:
         return True
 
+    @property
+    def consumes_dag_bodies(self) -> bool:
+        return False
+
     def __init__(self) -> None:
         super().__init__(name=type(self).__name__)
 

@@ -43,12 +43,17 @@ class QEMStage(BundleStage):
     def stateful(self) -> bool:
         return False
 
+    @property
+    def consumes_dag_bodies(self) -> bool:
+        return self._consumes_dag_bodies
+
     def __init__(self, protocol: QEMProtocol | None = None) -> None:
-        super().__init__(name=type(self).__name__)
         self.protocol = protocol if protocol is not None else _NoMitigation()
+        self._consumes_dag_bodies = not isinstance(self.protocol, _NoMitigation)
+        super().__init__(name=type(self).__name__)
 
     def validate(self, before: tuple[Stage, ...], after: tuple[Stage, ...]) -> None:
-        if isinstance(self.protocol, _NoMitigation):
+        if not self.consumes_dag_bodies:
             return
 
         # QuEPP's reduce uses classical simulation tied to the full
@@ -63,14 +68,14 @@ class QEMStage(BundleStage):
                     "recombined before QEM reduction."
                 )
 
-        if isinstance(self.protocol, QuEPP) and self.protocol.n_twirls > 0:
+        if self.protocol.n_twirls > 0:
             if not any(isinstance(s, PauliTwirlStage) for s in after):
                 raise ContractViolation(
                     f"QEMStage with n_twirls={self.protocol.n_twirls} "
                     "requires a PauliTwirlStage after it in the pipeline."
                 )
 
-        if isinstance(self.protocol, QuEPP) and self.protocol._sampling == "exhaustive":
+        if isinstance(self.protocol, QuEPP) and self.protocol.requires_bound_params:
             warnings.warn(
                 "QuEPP with sampling='exhaustive' enumerates all Pauli "
                 "paths and scales poorly with truncation_order and circuit "
@@ -132,7 +137,7 @@ class QEMStage(BundleStage):
 
         The default :meth:`~divi.circuits.qem.QEMProtocol.dry_expand` falls
         back to ``expand`` so simple / cheap protocols (e.g.
-        ``_NoMitigation``, :class:`~divi.circuits.qem.ZNE`) stay correct
+        ``_NoMitigation``, :class:`~divi.circuits.zne.ZNE`) stay correct
         unchanged. Expensive protocols such as
         :class:`~divi.circuits.quepp.QuEPP` override ``dry_expand`` to skip
         Clifford simulation + per-path DAG cloning while preserving the

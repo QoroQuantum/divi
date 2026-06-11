@@ -31,6 +31,15 @@ inherit from :class:`~divi.circuits.qem.QEMProtocol`.
    :no-inherited-members:
    :include-all-objects:
 
+Zero Noise Extrapolation (ZNE)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodapi:: divi.circuits.zne
+   :no-heading:
+   :no-inheritance-diagram:
+   :no-inherited-members:
+   :include-all-objects:
+
 Quantum Enhanced Pauli Propagation (QuEPP)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

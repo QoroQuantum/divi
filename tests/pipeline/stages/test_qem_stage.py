@@ -18,13 +18,12 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
 from divi.circuits.qem import (
-    ZNE,
-    LinearExtrapolator,
     QEMContext,
     QEMProtocol,
     _NoMitigation,
 )
 from divi.circuits.quepp import QuEPP
+from divi.circuits.zne import ZNE, LinearExtrapolator
 from divi.pipeline import CircuitPipeline, ContractViolation, DiviPerformanceWarning
 from divi.pipeline._compilation import _compile_batch
 from divi.pipeline.stages import (
@@ -87,6 +86,13 @@ def parametric_meta() -> MetaCircuit:
 
 class TestQEMStage:
     """Spec: QEMStage expand applies protocol to body QASMs (fan-out); reduce postprocesses."""
+
+    def test_no_mitigation_declares_no_dag_consumption(self):
+        stage = QEMStage(protocol=_NoMitigation())
+        assert stage.consumes_dag_bodies is False
+
+    def test_active_protocol_declares_dag_consumption(self, default_zne_protocol):
+        assert QEMStage(protocol=default_zne_protocol).consumes_dag_bodies is True
 
     def test_qem_fanout_and_reduce(self, dummy_pipeline_env):
         class _ScaleFactorProtocol(_DummyQEMProtocol):

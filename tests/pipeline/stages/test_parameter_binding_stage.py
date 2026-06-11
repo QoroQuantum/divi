@@ -16,6 +16,7 @@ from qiskit.quantum_info import SparsePauliOp
 from divi.circuits import MetaCircuit
 from divi.circuits._conversions import _format_bound_param as _format_param
 from divi.circuits.quepp import QuEPP
+from divi.circuits.zne import ZNE
 from divi.pipeline import CircuitPipeline, DiviPerformanceWarning, PipelineEnv
 from divi.pipeline.stages import (
     MeasurementStage,
@@ -208,6 +209,9 @@ class TestParameterBindingStage:
     def test_stateful_is_true(self):
         assert ParameterBindingStage().stateful is True
 
+    def test_does_not_force_upstream_dag_materialization(self):
+        assert ParameterBindingStage().consumes_dag_bodies is False
+
 
 class TestFormatParam:
     """Spec: _format_param formats floats for QASM, strips trailing zeros, normalises negative zero."""
@@ -309,7 +313,7 @@ class TestParameterBindingStageTemplatePath:
             stages=[
                 DummySpecStage(meta=meta),
                 ParameterBindingStage(),
-                QEMStage(),
+                QEMStage(ZNE(scale_factors=[1.0, 3.0])),  # active QEM → slow path
                 MeasurementStage(),
             ]
         )

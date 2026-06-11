@@ -2,7 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Hashable, Sequence
 from dataclasses import dataclass, field
@@ -333,27 +332,7 @@ class BundleStage(Stage[MetaCircuitBatch, ExpansionResult], ABC):
       sets :attr:`~divi.pipeline.PipelineEnv.result_format`.
     - :attr:`consumes_dag_bodies` — this stage reads (and typically mutates)
       ``meta.circuit_bodies`` during ``expand``.
-
-    The pipeline is transformative by design: every ``BundleStage`` is
-    expected to either handle measurement or consume body DAGs (or both).
-    Declaring neither is almost always a misuse of the abstraction —
-    metadata-only or logging passes belong outside the ``Stage`` ABC —
-    so constructing such a stage emits a ``UserWarning`` at instantiation
-    time.
     """
-
-    def __init__(self, name: str) -> None:
-        super().__init__(name=name)
-        if not self.handles_measurement and not self.consumes_dag_bodies:
-            warnings.warn(
-                f"BundleStage {type(self).__name__!r} declares neither "
-                "measurement handling nor DAG consumption; it is a no-op "
-                "in the pipeline. If this is intentional, set one of "
-                "handles_measurement / consumes_dag_bodies to True; "
-                "otherwise use a non-Stage mechanism (hook, middleware).",
-                UserWarning,
-                stacklevel=3,
-            )
 
     @property
     def handles_measurement(self) -> bool:

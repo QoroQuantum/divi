@@ -4,21 +4,8 @@
 
 """Tests for divi.pipeline.abc: PipelineEnv, PipelineTrace, ExpansionResult."""
 
-import warnings
-
-import pytest
-
 from divi.pipeline import CircuitPipeline, PipelineEnv
-from divi.pipeline.abc import (
-    BundleStage,
-    ExpansionResult,
-    MetaCircuitBatch,
-)
-from divi.pipeline.abc import PipelineEnv as ABCPipelineEnv
-from divi.pipeline.abc import (
-    StageToken,
-)
-from divi.pipeline.stages import MeasurementStage, ParameterBindingStage
+from divi.pipeline.stages import MeasurementStage
 
 from ._helpers import (
     DummySpecStage,
@@ -70,35 +57,3 @@ def test_plain_bundle_stages_pass():
             MeasurementStage(),
         ]
     )
-
-
-class TestNoOpStageGuard:
-    """Spec: a BundleStage with no work declared emits a UserWarning at instantiation."""
-
-    def test_no_op_stage_warns_on_init(self):
-        class NoOpStage(BundleStage):
-            @property
-            def handles_measurement(self) -> bool:
-                return False
-
-            @property
-            def consumes_dag_bodies(self) -> bool:
-                return False
-
-            def expand(
-                self, batch: MetaCircuitBatch, env: ABCPipelineEnv
-            ) -> tuple[ExpansionResult, StageToken]:
-                return ExpansionResult(batch=batch), None
-
-        with pytest.warns(UserWarning, match="no-op"):
-            NoOpStage(name="NoOpStage")
-
-    def test_measurement_stage_does_not_warn(self):
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", UserWarning)
-            MeasurementStage()
-
-    def test_dag_consuming_stage_does_not_warn(self):
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", UserWarning)
-            ParameterBindingStage()
