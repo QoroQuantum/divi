@@ -15,13 +15,14 @@ from divi.circuits import dag_to_qasm_body, qscript_to_meta
 from divi.circuits._conversions import _qscript_to_dag
 from divi.exceptions import ExecutionCancelledError
 from divi.pipeline import PipelineSet
-from divi.pipeline.stages import CircuitSpecStage, MeasurementStage
+from divi.pipeline.stages import MeasurementStage
 from divi.qprog._solution_sampling_mixin import SolutionEntry, SolutionSamplingMixin
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.early_stopping import EarlyStopping, StopReason
 from divi.qprog.optimizers import MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
 from divi.qprog.quantum_program import QuantumProgram
 from divi.qprog.variational_quantum_algorithm import (
+    ProgramState,
     VariationalQuantumAlgorithm,
     _compute_parameter_shift_mask,
 )
@@ -825,6 +826,20 @@ class TestCheckpointing:
             tmp_path / "checkpoint" / "checkpoint_001" / "optimizer_state.json"
         ).exists()
 
+    def test_save_state_serializes_populated_best_probs(self, sample_program, mocker):
+        # Regression: _best_probs is dict[int, dict[str, float]] (a param-set
+        # index to its bitstring distribution), so ProgramState.best_probs must
+        # accept nested dicts rather than a flat dict[str, float].
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(sample_program, n_iterations=1)
+        )
+        sample_program.run(max_iterations=1)
+        sample_program._best_probs = {0: {"01": 0.5, "10": 0.5}}
+
+        state = ProgramState.model_validate(sample_program)
+
+        assert state.best_probs == {0: {"01": 0.5, "10": 0.5}}
+
     def test_save_state_auto_generates_directory(
         self, sample_program, tmp_path, mocker
     ):
@@ -1176,6 +1191,19 @@ class TestTopSolutionsAPI(BaseVariationalQuantumAlgorithmTest):
         # For tied probabilities (0.1), lexicographic order: "00" < "11"
         assert result[2].bitstring == "00"
         assert result[2].prob == 0.1
+
+    def test_get_top_solutions_warns_and_uses_first_of_multiple_param_sets(
+        self, mocker
+    ):
+        """With several sampled sets, ranking uses the first and warns."""
+        program = self._setup_program_with_probs(mocker, {"00": 0.6, "11": 0.4})
+        program._best_probs = {
+            0: {"00": 0.6, "11": 0.4},
+            1: {"01": 0.9, "10": 0.1},
+        }
+        with pytest.warns(UserWarning, match="ranks only the first"):
+            result = program.get_top_solutions(n=2)
+        assert [s.bitstring for s in result] == ["00", "11"]
 
     def test_get_top_solutions_deterministic_tie_breaking(self, mocker):
         """Test that get_top_solutions uses lexicographic tie-breaking for equal probabilities."""

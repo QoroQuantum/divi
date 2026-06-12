@@ -160,7 +160,10 @@ def _counts_to_expvals(
         n_qubits = nq_by_bk[bk]
 
         # Little-endian backend counts → big-endian, matching the labels.
-        if isinstance(counts, dict):
+        # Any bitstring→count mapping (incl. qiskit's dict-subclass Counts) is
+        # reversed; a non-mapping value crashes loudly below in
+        # _batched_expectation rather than silently skipping the reversal.
+        if isinstance(counts, Mapping):
             counts = {bitstring[::-1]: count for bitstring, count in counts.items()}
 
         expvals = _batched_expectation(

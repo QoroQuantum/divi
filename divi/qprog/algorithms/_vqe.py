@@ -245,7 +245,7 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         if self._best_probs:
             best_measurement_probs = next(iter(self._best_probs.values()))
             eigenstate_bitstring = max(
-                best_measurement_probs, key=best_measurement_probs.get
+                best_measurement_probs, key=best_measurement_probs.__getitem__
             )
             self._eigenstate = np.fromiter(eigenstate_bitstring, dtype=np.int32)
 

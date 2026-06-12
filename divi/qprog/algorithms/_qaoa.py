@@ -313,7 +313,7 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         super().sample_solution(params, **kwargs)
 
         best_probs = next(iter(self._best_probs.values()))
-        best_bitstring = max(best_probs, key=best_probs.get)
+        best_bitstring = max(best_probs, key=best_probs.__getitem__)
         self._solution_bitstring = best_bitstring
         self._decoded_solution = self._decode_solution_fn(best_bitstring)
 

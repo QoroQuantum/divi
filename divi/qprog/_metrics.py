@@ -300,10 +300,10 @@ def _fs_blocks(
             blocks.append((cur_prefix, cur))
         cur, cur_wires, cur_prefix = [], set(), []
 
-    # Walk in original circuit order (node ids increase with insertion), not the
-    # default topological order, which ASAP-reschedules and would split a layer's
-    # parallel rotations across the entangler staircase that precedes them.
-    for node in dag.topological_op_nodes(key=lambda nd: f"{nd._node_id:08d}"):
+    # Walk in original circuit insertion order: ``dag.op_nodes()`` yields nodes in
+    # insertion order, whereas ``topological_op_nodes()`` ASAP-reschedules and would
+    # split a layer's parallel rotations across the entangler staircase before them.
+    for node in dag.op_nodes():
         parametric = [p for p in node.op.params if isinstance(p, ParameterExpression)]
         wires = [dag.find_bit(q).index for q in node.qargs]
         if parametric:
@@ -349,8 +349,7 @@ def _fs_block_covariance(
     needed: set[str] = set()
 
     def collect(spo: SparsePauliOp) -> None:
-        for pauli, coeff in zip(spo.paulis, spo.coeffs):
-            label = pauli.to_label()
+        for label, coeff in zip(spo.paulis.to_labels(), spo.coeffs):
             if abs(coeff) > 1e-12 and set(label) != {"I"}:
                 needed.add(label)
 
@@ -372,10 +371,9 @@ def _fs_block_covariance(
 
     def spo_exp(spo: SparsePauliOp) -> float:
         total = 0.0
-        for pauli, coeff in zip(spo.paulis, spo.coeffs):
+        for label, coeff in zip(spo.paulis.to_labels(), spo.coeffs):
             if abs(coeff) <= 1e-12:
                 continue
-            label = pauli.to_label()
             total += float(np.real(coeff)) * (
                 1.0 if set(label) == {"I"} else exp[label]
             )

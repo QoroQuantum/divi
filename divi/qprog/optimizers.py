@@ -195,6 +195,17 @@ class Optimizer(ABC):
         """
         raise NotImplementedError("This method should be implemented by subclasses.")
 
+    @property
+    def supports_checkpointing(self) -> bool:
+        """Whether this optimizer can persist and restore its state mid-run.
+
+        Programs guard on this before checkpointing so an optimizer that cannot
+        save state fails upfront rather than mid-optimization. Optimizers whose
+        :meth:`save_state` raises :class:`NotImplementedError` override this to
+        return ``False``.
+        """
+        return True
+
     def validate_program(self, program: "VariationalQuantumAlgorithm") -> None:
         """Check that this optimizer can be applied to ``program``.
 
@@ -610,6 +621,11 @@ class ScipyOptimizer(Optimizer):
         self.method = method
 
     @property
+    def supports_checkpointing(self) -> bool:
+        """``False`` — scipy.optimize exposes no mid-minimization state to save."""
+        return False
+
+    @property
     def n_param_sets(self) -> int:
         """
         Get the number of parameter sets used by this optimizer.
@@ -853,6 +869,12 @@ class QNGOptimizer(Optimizer):
         return self.metric_estimator.bind(program)
 
     @property
+    def supports_checkpointing(self) -> bool:
+        """``False`` — QNG's only state is the parameter vector, already persisted
+        by the variational algorithm's program state."""
+        return False
+
+    @property
     def n_param_sets(self) -> int:
         """Number of parameter sets per step — always ``1`` (single-point)."""
         return 1
@@ -876,7 +898,16 @@ class QNGOptimizer(Optimizer):
             if self.scale_regularization:
                 lam *= max(1.0, float(np.mean(np.diag(metric))))
             damped = metric + lam * np.eye(metric.shape[0])
-            delta = _solve_linear_system(damped, grad, assume_a="pos")
+            try:
+                delta = _solve_linear_system(damped, grad, assume_a="pos")
+            except np.linalg.LinAlgError as exc:
+                raise np.linalg.LinAlgError(
+                    "QNGOptimizer's tikhonov solve failed: the damped metric "
+                    "(G + λI) is not positive-definite. The pullback metric is "
+                    "rank-deficient and regularization is too small to lift it "
+                    "(λ=0 leaves it singular). Raise `regularization` or use "
+                    "solver='pinv'."
+                ) from exc
 
         update = self.step_size * delta
         if not np.all(np.isfinite(update)):

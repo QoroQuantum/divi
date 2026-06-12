@@ -101,7 +101,7 @@ class SolutionSamplingMixin(_SamplingMixinBase):
                 host program).
         """
         super().__init__(*args, **kwargs)
-        self._best_probs: dict[str, dict[str, float]] = {}
+        self._best_probs: dict[int, dict[str, float]] = {}
         self._decode_solution_fn = decode_solution_fn or (lambda bitstring: bitstring)
 
     def __init_subclass__(cls, **kwargs):
@@ -147,22 +147,22 @@ class SolutionSamplingMixin(_SamplingMixinBase):
         return self._pipelines["sample"]
 
     @property
-    def best_probs(self) -> dict[str, dict[str, float]]:
+    def best_probs(self) -> dict[int, dict[str, float]]:
         """Get normalized probabilities for the best parameters.
 
         This property provides access to the probability distribution computed
         by running measurement circuits with the best parameters found during
-        optimization. The distribution maps bitstrings (computational basis states)
-        to their measured probabilities.
+        optimization. It maps each parameter-set index to that set's distribution
+        over bitstrings (computational basis states).
 
-        The probabilities are normalized and have deterministic ordering when
-        iterated (dictionary insertion order is preserved in Python 3.7+).
+        The probabilities are normalized and iterate in a deterministic order.
 
         Returns:
-            dict[str, dict[str, float]]: Dictionary mapping parameter-set keys to
-                bitstring probability dictionaries. Bitstrings are binary strings
-                (e.g., "0101"), values are probabilities in range [0.0, 1.0].
-                Returns an empty dict if final computation has not been performed.
+            dict[int, dict[str, float]]: Dictionary mapping each parameter-set
+                index to a bitstring probability dictionary. Bitstrings are binary
+                strings (e.g., "0101"), values are probabilities in range
+                [0.0, 1.0]. Returns an empty dict if final computation has not
+                been performed.
 
         Raises:
             RuntimeError: If attempting to access probabilities before running
@@ -234,6 +234,11 @@ class SolutionSamplingMixin(_SamplingMixinBase):
             >>> program.run(perform_final_computation=True)
             >>> top_10 = program.get_top_solutions(n=10)
 
+            If several parameter sets were sampled (an explicit multi-row
+            ``sample_solution(params=...)``), ranking uses only the first
+            (lowest-index) set and emits a warning; use :attr:`best_probs` to
+            access every set's distribution.
+
         Example:
             >>> # Get top 5 solutions with probability >= 5%
             >>> program.run()
@@ -272,8 +277,18 @@ class SolutionSamplingMixin(_SamplingMixinBase):
                 "Call run(perform_final_computation=True) to execute optimization "
                 "and compute the distribution."
             )
-        # Extract the probability distribution (nested by parameter set)
-        # _best_probs structure: {tag: {bitstring: prob}}
+        # Ranking is over a single parameter set's distribution. The usual flow
+        # samples one set (the trained best params); only an explicit multi-row
+        # sample_solution() leaves several, in which case we rank the first and
+        # point users to best_probs for the rest.
+        if len(self._best_probs) > 1:
+            warn(
+                f"{len(self._best_probs)} parameter sets were sampled; "
+                "get_top_solutions ranks only the first (lowest-index) set. "
+                "Access best_probs for the per-set distributions.",
+                UserWarning,
+                stacklevel=2,
+            )
         probs_dict = next(iter(self._best_probs.values()))
 
         # Filter by minimum probability and get top n sorted by probability (descending),

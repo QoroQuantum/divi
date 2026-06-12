@@ -17,11 +17,11 @@ from divi.qprog import PCE, VQE, CustomVQA, FubiniStudyMetricEstimator
 from divi.qprog._metrics import (
     PullbackMetricEstimator,
     _cost_ansatz_meta,
-    _fs_blocks,
     _run_metric,
     _split_into_terms,
 )
 from divi.qprog.algorithms import GenericLayerAnsatz, HartreeFockAnsatz
+from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.optimizers import QNGOptimizer
 from divi.qprog.variational_quantum_algorithm import _compute_parameter_shift_mask
 
@@ -51,6 +51,15 @@ def test_natural_gradient_pinv_solver_handles_singular_metric():
     metric = np.outer([1.0, 0.0], [1.0, 0.0])
     delta = opt._natural_gradient(grad, metric)
     np.testing.assert_allclose(delta, [1.0, 0.0])
+
+
+def test_natural_gradient_tikhonov_singular_metric_raises_actionably():
+    # tikhonov + λ=0 on a rank-deficient metric must surface an actionable error,
+    # not an opaque scipy LinAlgError. (Full-rank λ=0 still works — see above.)
+    opt = QNGOptimizer(regularization=0.0, scale_regularization=False)
+    singular = np.outer([1.0, 0.0], [1.0, 0.0])
+    with pytest.raises(np.linalg.LinAlgError, match="rank-deficient"):
+        opt._natural_gradient(np.array([1.0, 1.0]), singular)
 
 
 def test_max_step_norm_clips_update():
@@ -163,6 +172,11 @@ def test_checkpointing_is_not_supported(tmp_path):
 def test_invalid_constructor_args(kwargs):
     with pytest.raises(ValueError):
         QNGOptimizer(**kwargs)
+
+
+def test_qng_reports_no_checkpointing_support():
+    # QNG's only state is the parameter vector, already persisted by the program.
+    assert QNGOptimizer().supports_checkpointing is False
 
 
 # --------------------------------------------------------------------------- #
@@ -365,6 +379,14 @@ def test_vqe_runs_under_fubini_study_qng(toy_vqe):
     toy_vqe.max_iterations = 5
     toy_vqe.run(perform_final_computation=False)
     assert len(toy_vqe.losses_history) >= 1
+
+
+def test_qng_run_with_checkpointing_raises_upfront(toy_vqe, tmp_path):
+    # A non-checkpointable optimizer + a checkpoint_dir must fail before any
+    # optimization, not mid-run at the first checkpoint attempt.
+    toy_vqe.optimizer = QNGOptimizer(metric_estimator=FubiniStudyMetricEstimator())
+    with pytest.raises(ValueError, match="does not support checkpointing"):
+        toy_vqe.run(checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path))
 
 
 def test_pce_runs_under_fubini_study_qng(default_test_simulator):

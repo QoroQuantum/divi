@@ -53,6 +53,25 @@ class TestGlobalFoldPass:
         folded = PassManager([GlobalFoldPass(3.0)]).run(two_qubit_qc)
         assert folded.size() == 3 * two_qubit_qc.size()
 
+    def test_barriers_not_duplicated_in_fold(self):
+        # Non-unitary instructions are excluded from the inverse and the tail;
+        # the k-fold forward pass must exclude them too, or the barrier gets
+        # re-applied inside every fold body.
+        qc = QuantumCircuit(2)
+        qc.h(0)
+        qc.barrier()
+        qc.cx(0, 1)
+
+        folded = PassManager([GlobalFoldPass(3.0)]).run(qc)
+
+        n_barriers = sum(
+            1 for instr in folded.data if instr.operation.name == "barrier"
+        )
+        n_unitary = sum(1 for instr in folded.data if instr.operation.name != "barrier")
+        assert n_barriers == 1
+        assert n_unitary == 6  # two unitary gates folded to 3x
+        assert Operator(folded).equiv(Operator(qc))
+
     @pytest.mark.parametrize("scale", [1.0, 3.0, 5.0, 7.0])
     def test_folded_unitary_equals_original(self, scale):
         qc = QuantumCircuit(2)
@@ -376,6 +395,15 @@ class TestZNE:
     def test_rejects_scale_factor_below_one(self):
         with pytest.raises(ValueError, match="≥ 1"):
             ZNE(scale_factors=[0.5, 1.0])
+
+    @pytest.mark.parametrize("bad_scale", [[], [1.0]])
+    def test_rejects_fewer_than_two_scale_factors(self, bad_scale):
+        with pytest.raises(ValueError, match="at least two points"):
+            ZNE(scale_factors=bad_scale)
+
+    def test_rejects_duplicate_scale_factors(self):
+        with pytest.raises(ValueError, match="unique"):
+            ZNE(scale_factors=[1.0, 1.0, 3.0])
 
     def test_rejects_non_extrapolator(self):
         with pytest.raises(ValueError, match="ZNEExtrapolator"):

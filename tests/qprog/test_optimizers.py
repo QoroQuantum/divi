@@ -113,6 +113,17 @@ class TestOptimizerContract:
             result.fun, recalculated_fun
         ), "Final cost value should correspond to the final parameters."
 
+    def test_supports_checkpointing_matches_get_config(
+        self, contract_optimizer: Optimizer
+    ):
+        """``supports_checkpointing`` must agree with whether the optimizer can
+        actually serialize its config (get_config raises for those that cannot)."""
+        if contract_optimizer.supports_checkpointing:
+            assert isinstance(contract_optimizer.get_config(), dict)
+        else:
+            with pytest.raises(NotImplementedError):
+                contract_optimizer.get_config()
+
     def test_callback_provides_consistent_results(self, contract_optimizer: Optimizer):
         """Verify that parameters and costs are consistent in each callback call."""
         initial_params = self._get_initial_params(contract_optimizer)

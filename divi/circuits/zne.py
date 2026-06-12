@@ -124,7 +124,7 @@ class GlobalFoldPass(TransformationPass):
         for _ in range(k):
             for op, qargs, cargs in inv_ops:
                 dag.apply_operation_back(op, qargs, cargs)
-            for op, qargs, cargs in all_ops:
+            for op, qargs, cargs in unitary_ops:
                 dag.apply_operation_back(op, qargs, cargs)
 
         if n > 0:
@@ -430,8 +430,18 @@ class ZNE(QEMProtocol):
             isinstance(e, (int, float)) for e in scale_factors
         ):
             raise ValueError("scale_factors must be a sequence of real numbers.")
+        if len(scale_factors) < 2:
+            raise ValueError(
+                "scale_factors must contain at least two points to extrapolate "
+                f"to the zero-noise limit; got {list(scale_factors)}."
+            )
         if not all(e >= 1.0 for e in scale_factors):
             raise ValueError("All scale factors must be ≥ 1.0.")
+        if len(set(scale_factors)) != len(scale_factors):
+            raise ValueError(
+                "scale_factors must be unique; got duplicates in "
+                f"{list(scale_factors)}."
+            )
 
         if extrapolator is not None and not isinstance(extrapolator, ZNEExtrapolator):
             raise ValueError(

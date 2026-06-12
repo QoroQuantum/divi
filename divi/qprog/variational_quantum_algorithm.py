@@ -96,8 +96,9 @@ class ProgramState(BaseModel):
         default_factory=list, validation_alias="_param_history"
     )
     best_loss: float = Field(validation_alias="_best_loss")
-    # Only solution-sampling programs (SolutionSamplingMixin) carry _best_probs.
-    best_probs: dict[str, float] = Field(
+    # Only solution-sampling programs (SolutionSamplingMixin) carry _best_probs;
+    # it maps a parameter-set index to that set's {bitstring: probability} dict.
+    best_probs: dict[int, dict[str, float]] = Field(
         default_factory=dict, validation_alias="_best_probs"
     )
     total_circuit_count: int = Field(validation_alias="_total_circuit_count")
@@ -970,6 +971,17 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             )
 
         self.optimizer.validate_program(self)
+
+        if (
+            checkpoint_config.checkpoint_dir is not None
+            and not self.optimizer.supports_checkpointing
+        ):
+            raise ValueError(
+                f"{type(self.optimizer).__name__} does not support checkpointing, "
+                "but checkpoint_config.checkpoint_dir was set. Remove the "
+                "checkpoint directory or use a checkpointing-capable optimizer "
+                "(e.g. MonteCarloOptimizer, PymooOptimizer, GridSearchOptimizer)."
+            )
 
         # Extract max_iterations from kwargs if present (for compatibility with subclasses)
         max_iterations = kwargs.pop("max_iterations", self.max_iterations)
