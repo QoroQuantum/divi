@@ -9,7 +9,11 @@ from typing import Literal
 
 from divi.backends import CircuitRunner
 from divi.qprog.algorithms import PCE, QAOA, IterativeQAOA
-from divi.qprog.ensemble import ProgramEnsemble, _beam_search_aggregate_top_n
+from divi.qprog.ensemble import (
+    ProgramEnsemble,
+    _beam_search_aggregate_top_n,
+    _hierarchical_aggregate_top_n,
+)
 from divi.qprog.optimizers import Optimizer, copy_optimizer
 from divi.qprog.problems import BinaryOptimizationProblem, QAOAProblem
 
@@ -130,17 +134,49 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
             top_n=top_n,
         )
 
+    def _run_hierarchical(
+        self, *, top_n, group_size=4, k_per_partition=20, max_per_group=200
+    ):
+        def _extend_fn(current, prog_id, candidate):
+            return self._problem.extend_solution(current, prog_id, candidate.decoded)
+
+        return _hierarchical_aggregate_top_n(
+            programs=self._programs,
+            initial_solution=[0] * self._problem.initial_solution_size(),
+            extend_fn=_extend_fn,
+            evaluate_fn=self._problem.evaluate_global_solution,
+            top_n=top_n,
+            group_size=group_size,
+            k_per_partition=k_per_partition,
+            max_per_group=max_per_group,
+        )
+
     def aggregate_results(
         self,
         beam_width=1,
         n_partition_candidates=None,
+        *,
+        strategy: Literal["beam_search", "hierarchical"] = "beam_search",
+        group_size: int = 4,
+        k_per_partition: int = 20,
+        max_per_group: int = 200,
     ):
-        """Aggregate partition results into a global solution via beam search.
+        """Aggregate partition results into a global solution.
 
         Args:
-            beam_width: Beam width. ``1`` is greedy; ``None`` is exhaustive.
-            n_partition_candidates: Candidates fetched per partition.
-                Defaults to *beam_width*.
+            beam_width: Beam width (beam search only). ``1`` is greedy;
+                ``None`` is exhaustive.
+            n_partition_candidates: Candidates fetched per partition
+                (beam search only). Defaults to *beam_width*.
+            strategy: Aggregation strategy.
+                ``"beam_search"`` (default) — greedy beam search.
+                ``"hierarchical"`` — hierarchical Cartesian-product
+                aggregation that enumerates combinations within small groups
+                and merges pairwise, better preserving solution validity.
+            group_size: (Hierarchical only) max partitions per group.
+            k_per_partition: (Hierarchical only) candidates per partition.
+            max_per_group: (Hierarchical only) max solutions retained per
+                group.
 
         Returns:
             Problem-specific post-processed result (see
@@ -150,18 +186,25 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
         super().aggregate_results()
         self._check_best_probs_available()
 
-        candidates = self._run_beam_search(
-            beam_width=beam_width,
-            n_partition_candidates=n_partition_candidates,
-            top_n=1,
-        )
+        if strategy == "hierarchical":
+            candidates = self._run_hierarchical(
+                top_n=1,
+                group_size=group_size,
+                k_per_partition=k_per_partition,
+                max_per_group=max_per_group,
+            )
+        else:
+            candidates = self._run_beam_search(
+                beam_width=beam_width,
+                n_partition_candidates=n_partition_candidates,
+                top_n=1,
+            )
         results = self._problem.postprocess_candidates(candidates)
         if not results:
             warnings.warn(
                 "aggregate_results produced no valid post-processed solution "
-                f"with beam_width={beam_width!r} and "
-                f"n_partition_candidates={n_partition_candidates!r}. "
-                "Pass wider beam search parameters to "
+                f"with strategy={strategy!r}. "
+                "Try wider parameters or "
                 "get_top_solutions(..., strict=True).",
                 UserWarning,
                 stacklevel=2,
@@ -177,17 +220,29 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
         beam_width=1,
         n_partition_candidates=None,
         strict: bool = False,
+        strategy: Literal["beam_search", "hierarchical"] = "beam_search",
+        group_size: int = 4,
+        k_per_partition: int = 20,
+        max_per_group: int = 200,
     ):
-        """Get the top-N global solutions from beam search aggregation.
+        """Get the top-N global solutions from partition aggregation.
 
         Args:
             n: Number of top solutions to return (>= 1).
-            beam_width: Beam search width.
-            n_partition_candidates: Candidates per partition.
+            beam_width: Beam search width (beam search only).
+            n_partition_candidates: Candidates per partition (beam search only).
             strict: Ask problem-specific post-processing to reject invalid raw
                 constrained solutions rather than repair them. The returned
                 list may contain fewer than *n* entries for constrained
                 problems.
+            strategy: Aggregation strategy.
+                ``"beam_search"`` (default) — greedy beam search.
+                ``"hierarchical"`` — hierarchical Cartesian-product
+                aggregation.
+            group_size: (Hierarchical only) max partitions per group.
+            k_per_partition: (Hierarchical only) candidates per partition.
+            max_per_group: (Hierarchical only) max solutions retained per
+                group.
 
         Returns:
             Problem-specific post-processed results (see
@@ -199,10 +254,18 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
         self._check_ready_for_aggregation()
         self._check_best_probs_available()
 
-        top_results = self._run_beam_search(
-            beam_width=beam_width,
-            n_partition_candidates=n_partition_candidates,
-            top_n=n,
-        )
+        if strategy == "hierarchical":
+            top_results = self._run_hierarchical(
+                top_n=n,
+                group_size=group_size,
+                k_per_partition=k_per_partition,
+                max_per_group=max_per_group,
+            )
+        else:
+            top_results = self._run_beam_search(
+                beam_width=beam_width,
+                n_partition_candidates=n_partition_candidates,
+                top_n=n,
+            )
 
         return self._problem.postprocess_candidates(top_results, strict=strict)

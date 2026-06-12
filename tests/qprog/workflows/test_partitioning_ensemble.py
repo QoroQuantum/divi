@@ -208,8 +208,8 @@ class TestStrictAggregation:
         with pytest.warns(
             UserWarning,
             match=(
-                r"beam_width=3 and n_partition_candidates=5.*"
-                r"Pass wider beam search parameters to "
+                r"strategy='beam_search'.*"
+                r"Try wider parameters or "
                 r"get_top_solutions\(\.\.\., strict=True\)"
             ),
         ):
@@ -238,8 +238,8 @@ class TestStrictAggregation:
         with pytest.warns(
             UserWarning,
             match=(
-                r"beam_width=3 and n_partition_candidates=None.*"
-                r"Pass wider beam search parameters to "
+                r"strategy='beam_search'.*"
+                r"Try wider parameters or "
                 r"get_top_solutions\(\.\.\., strict=True\)"
             ),
         ):
@@ -356,3 +356,133 @@ class TestStrictAggregation:
 
         assert is_valid_matching(matching)
         assert weight == pytest.approx(10.0)
+
+
+class TestHierarchicalStrategy:
+    """Test strategy='hierarchical' through the PartitioningProgramEnsemble API."""
+
+    def test_aggregate_results_hierarchical(self, mocker, dummy_simulator):
+        problem = _make_stub_problem(mocker, solution_size=2)
+        ensemble = PartitioningProgramEnsemble(
+            problem=problem,
+            n_layers=1,
+            backend=dummy_simulator,
+            optimizer=_DEFAULT_OPTIMIZER,
+        )
+        ensemble.create_programs()
+
+        candidate = SolutionEntry(bitstring="11", prob=0.8, decoded=[1, 1])
+        prog = _make_mock_program(
+            mocker, best_probs={"11": 0.8}, top_solutions=[candidate]
+        )
+        ensemble._programs["A"] = prog
+
+        result = ensemble.aggregate_results(strategy="hierarchical")
+
+        assert result == ([1, 1], -2)
+        problem.evaluate_global_solution.assert_called()
+        problem.postprocess_candidates.assert_called_once()
+
+    def test_get_top_solutions_hierarchical(self, mocker, dummy_simulator):
+        problem = _make_stub_problem(mocker, solution_size=2)
+        ensemble = PartitioningProgramEnsemble(
+            problem=problem,
+            n_layers=1,
+            backend=dummy_simulator,
+            optimizer=_DEFAULT_OPTIMIZER,
+        )
+        ensemble.create_programs()
+
+        candidate = SolutionEntry(bitstring="11", prob=0.8, decoded=[1, 1])
+        prog = _make_mock_program(
+            mocker, best_probs={"11": 0.8}, top_solutions=[candidate]
+        )
+        ensemble._programs["A"] = prog
+
+        results = ensemble.get_top_solutions(n=1, strategy="hierarchical")
+
+        assert len(results) == 1
+        assert results[0][0] == [1, 1]
+        assert results[0][1] == -2.0
+
+    def test_get_top_solutions_hierarchical_passes_strict(
+        self, mocker, dummy_simulator
+    ):
+        problem = _make_stub_problem(mocker, solution_size=2)
+        ensemble = PartitioningProgramEnsemble(
+            problem=problem,
+            n_layers=1,
+            backend=dummy_simulator,
+            optimizer=_DEFAULT_OPTIMIZER,
+        )
+        ensemble.create_programs()
+        _attach_program_with_candidates(ensemble, mocker, [[1, 1], [1, 0]])
+
+        ensemble.get_top_solutions(n=2, strategy="hierarchical", strict=True)
+
+        problem.postprocess_candidates.assert_called_once()
+        assert problem.postprocess_candidates.call_args.kwargs == {"strict": True}
+
+    def test_aggregate_results_hierarchical_warns_on_empty(
+        self, mocker, dummy_simulator
+    ):
+        problem = _make_stub_problem(mocker, solution_size=2)
+        problem.postprocess_candidates.side_effect = None
+        problem.postprocess_candidates.return_value = []
+        ensemble = PartitioningProgramEnsemble(
+            problem=problem,
+            n_layers=1,
+            backend=dummy_simulator,
+            optimizer=_DEFAULT_OPTIMIZER,
+        )
+        ensemble.create_programs()
+        _attach_program_with_candidates(ensemble, mocker, [[1, 1]])
+
+        with pytest.warns(
+            UserWarning,
+            match=(
+                r"strategy='hierarchical'.*"
+                r"Try wider parameters or "
+                r"get_top_solutions\(\.\.\., strict=True\)"
+            ),
+        ):
+            result = ensemble.aggregate_results(strategy="hierarchical")
+
+        assert result is None
+
+    def test_matching_hierarchical_strict_filters_conflict(
+        self, mocker, dummy_simulator
+    ):
+        """Hierarchical strategy with strict=True filters cross-partition conflicts."""
+        graph = nx.Graph()
+        graph.add_weighted_edges_from([(0, 1, 10.0), (1, 2, 10.0)])
+        problem = MaxWeightMatchingProblem(graph)
+        problem._edge_index_maps = {
+            "A": [problem._edge_to_qubit[(0, 1)]],
+            "B": [problem._edge_to_qubit[(1, 2)]],
+        }
+        ensemble = PartitioningProgramEnsemble(
+            problem=problem,
+            n_layers=1,
+            backend=dummy_simulator,
+            optimizer=_DEFAULT_OPTIMIZER,
+        )
+        ensemble._programs["A"] = _make_mock_program(
+            mocker,
+            best_probs={"1": 0.9, "0": 0.1},
+            top_solutions=[
+                SolutionEntry(bitstring="1", prob=0.9, decoded=[1]),
+                SolutionEntry(bitstring="0", prob=0.1, decoded=[0]),
+            ],
+        )
+        ensemble._programs["B"] = _make_mock_program(
+            mocker,
+            best_probs={"1": 0.9, "0": 0.1},
+            top_solutions=[
+                SolutionEntry(bitstring="1", prob=0.9, decoded=[1]),
+                SolutionEntry(bitstring="0", prob=0.1, decoded=[0]),
+            ],
+        )
+
+        results = ensemble.get_top_solutions(n=3, strategy="hierarchical", strict=True)
+        assert results == [([(0, 1)], 10.0), ([(1, 2)], 10.0)]

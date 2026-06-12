@@ -26,6 +26,7 @@ from divi.qprog.ensemble import (
     BatchMode,
     ProgramEnsemble,
     _beam_search_aggregate_top_n,
+    _hierarchical_aggregate_top_n,
 )
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import GraphPartitioningConfig, MaxCutProblem
@@ -2242,6 +2243,344 @@ class TestBeamSearchAggregateTopN:
         # beam_width bumped to 10 but only 1 candidate exists
         assert len(results) >= 1
         assert len(results) <= 10
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Hierarchical aggregation tests
+# ──────────────────────────────────────────────────────────────────────
+
+
+def hierarchical_aggregate(
+    programs,
+    initial_solution,
+    extend_fn,
+    evaluate_fn,
+    group_size=4,
+    k_per_partition=20,
+    max_per_group=200,
+):
+    """Test-local shorthand wrapping _hierarchical_aggregate_top_n for top_n=1."""
+    return _hierarchical_aggregate_top_n(
+        programs,
+        initial_solution,
+        extend_fn,
+        evaluate_fn,
+        top_n=1,
+        group_size=group_size,
+        k_per_partition=k_per_partition,
+        max_per_group=max_per_group,
+    )[0][1]
+
+
+class TestHierarchicalAggregateValidation:
+    def test_top_n_zero_raises(self):
+        with pytest.raises(ValueError, match="top_n must be >= 1"):
+            _hierarchical_aggregate_top_n(
+                programs={},
+                initial_solution=[0],
+                extend_fn=lambda c, p, s: c,
+                evaluate_fn=lambda s: 0.0,
+                top_n=0,
+            )
+
+    def test_group_size_zero_raises(self):
+        with pytest.raises(ValueError, match="group_size must be >= 1"):
+            _hierarchical_aggregate_top_n(
+                programs={},
+                initial_solution=[0],
+                extend_fn=lambda c, p, s: c,
+                evaluate_fn=lambda s: 0.0,
+                group_size=0,
+            )
+
+    def test_k_per_partition_zero_raises(self):
+        with pytest.raises(ValueError, match="k_per_partition must be >= 1"):
+            _hierarchical_aggregate_top_n(
+                programs={},
+                initial_solution=[0],
+                extend_fn=lambda c, p, s: c,
+                evaluate_fn=lambda s: 0.0,
+                k_per_partition=0,
+            )
+
+    def test_max_per_group_zero_raises(self):
+        with pytest.raises(ValueError, match="max_per_group must be >= 1"):
+            _hierarchical_aggregate_top_n(
+                programs={},
+                initial_solution=[0],
+                extend_fn=lambda c, p, s: c,
+                evaluate_fn=lambda s: 0.0,
+                max_per_group=0,
+            )
+
+
+class TestHierarchicalAggregateBasic:
+    """Test basic hierarchical aggregation functionality."""
+
+    def test_single_partition_single_candidate(self):
+        """Single partition with one candidate returns that candidate."""
+        candidates = [SolutionEntry(bitstring="10", prob=0.8, decoded=[1, 0])]
+        programs = {"A": _MockProgram(candidates)}
+        var_maps = {"A": [0, 1]}
+
+        result = hierarchical_aggregate(
+            programs=programs,
+            initial_solution=[0, 0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_neg_sum_evaluate,
+        )
+
+        assert result == [1, 0]
+
+    def test_two_partitions_picks_best(self):
+        """Two partitions should combine to produce best solution."""
+        candidates_a = [
+            SolutionEntry(bitstring="10", prob=0.9, decoded=[1, 0]),
+        ]
+        candidates_b = [
+            SolutionEntry(bitstring="11", prob=0.7, decoded=[1, 1]),
+        ]
+        programs = {"A": _MockProgram(candidates_a), "B": _MockProgram(candidates_b)}
+        var_maps = {"A": [0, 1], "B": [2, 3]}
+
+        result = hierarchical_aggregate(
+            programs=programs,
+            initial_solution=[0, 0, 0, 0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_neg_sum_evaluate,
+        )
+
+        assert result == [1, 0, 1, 1]
+
+    def test_empty_programs_returns_initial(self):
+        """No programs returns the initial solution."""
+        result = hierarchical_aggregate(
+            programs={},
+            initial_solution=[0, 0, 0],
+            extend_fn=lambda c, p, s: c,
+            evaluate_fn=_sum_evaluate,
+        )
+
+        assert result == [0, 0, 0]
+
+    def test_program_with_no_candidates_skipped(self):
+        """A program returning no candidates is effectively skipped."""
+        programs = {"A": _MockProgram([])}
+
+        result = hierarchical_aggregate(
+            programs=programs,
+            initial_solution=[0, 0],
+            extend_fn=lambda c, p, s: c,
+            evaluate_fn=_sum_evaluate,
+        )
+
+        assert result == [0, 0]
+
+
+class TestHierarchicalAggregateGrouping:
+    """Test the grouping and pairwise merge logic."""
+
+    def test_group_size_1_processes_each_partition_separately(self):
+        """group_size=1 creates one group per partition, then merges pairwise."""
+        candidates_a = [SolutionEntry(bitstring="1", prob=0.9, decoded=[1])]
+        candidates_b = [SolutionEntry(bitstring="1", prob=0.7, decoded=[1])]
+        programs = {"A": _MockProgram(candidates_a), "B": _MockProgram(candidates_b)}
+        var_maps = {"A": [0], "B": [1]}
+
+        result = hierarchical_aggregate(
+            programs=programs,
+            initial_solution=[0, 0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_neg_sum_evaluate,
+            group_size=1,
+        )
+
+        assert result == [1, 1]
+
+    def test_group_size_larger_than_partitions(self):
+        """group_size larger than the number of partitions is fine."""
+        candidates_a = [SolutionEntry(bitstring="1", prob=0.9, decoded=[1])]
+        candidates_b = [SolutionEntry(bitstring="1", prob=0.7, decoded=[1])]
+        programs = {"A": _MockProgram(candidates_a), "B": _MockProgram(candidates_b)}
+        var_maps = {"A": [0], "B": [1]}
+
+        result = hierarchical_aggregate(
+            programs=programs,
+            initial_solution=[0, 0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_neg_sum_evaluate,
+            group_size=100,
+        )
+
+        assert result == [1, 1]
+
+    def test_odd_number_of_groups_last_carried_forward(self):
+        """An odd number of groups carries the last group forward unpaired."""
+        candidates_a = [SolutionEntry(bitstring="1", prob=0.9, decoded=[1])]
+        candidates_b = [SolutionEntry(bitstring="1", prob=0.7, decoded=[1])]
+        candidates_c = [SolutionEntry(bitstring="1", prob=0.5, decoded=[1])]
+        programs = {
+            "A": _MockProgram(candidates_a),
+            "B": _MockProgram(candidates_b),
+            "C": _MockProgram(candidates_c),
+        }
+        var_maps = {"A": [0], "B": [1], "C": [2]}
+
+        result = hierarchical_aggregate(
+            programs=programs,
+            initial_solution=[0, 0, 0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_neg_sum_evaluate,
+            group_size=1,
+        )
+
+        assert result == [1, 1, 1]
+
+
+class TestHierarchicalAggregateFindsOptimal:
+    """Test that hierarchical aggregation finds global optima."""
+
+    def test_finds_global_optimum(self):
+        """Should find the true global optimum across all combinations."""
+
+        def tricky_evaluate(solution):
+            if solution == [0, 1, 0]:
+                return -100.0
+            return sum(solution)
+
+        candidates_a = [
+            SolutionEntry(bitstring="1", prob=0.9, decoded=[1]),
+            SolutionEntry(bitstring="0", prob=0.1, decoded=[0]),
+        ]
+        candidates_b = [
+            SolutionEntry(bitstring="1", prob=0.9, decoded=[1]),
+            SolutionEntry(bitstring="0", prob=0.1, decoded=[0]),
+        ]
+        candidates_c = [
+            SolutionEntry(bitstring="1", prob=0.9, decoded=[1]),
+            SolutionEntry(bitstring="0", prob=0.1, decoded=[0]),
+        ]
+        programs = {
+            "A": _MockProgram(candidates_a),
+            "B": _MockProgram(candidates_b),
+            "C": _MockProgram(candidates_c),
+        }
+        var_maps = {"A": [0], "B": [1], "C": [2]}
+
+        result = hierarchical_aggregate(
+            programs=programs,
+            initial_solution=[0, 0, 0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=tricky_evaluate,
+            group_size=4,
+        )
+
+        assert result == [0, 1, 0]
+
+    def test_finds_better_than_greedy_beam(self):
+        """Hierarchical can find solutions that beam_width=1 misses."""
+        weights = [10, 1, 1, 10]
+
+        def weighted_evaluate(solution):
+            return sum(s * w for s, w in zip(solution, weights))
+
+        candidates_a = [
+            SolutionEntry(bitstring="10", prob=0.9, decoded=[1, 0]),
+            SolutionEntry(bitstring="01", prob=0.1, decoded=[0, 1]),
+        ]
+        candidates_b = [
+            SolutionEntry(bitstring="01", prob=0.9, decoded=[0, 1]),
+            SolutionEntry(bitstring="10", prob=0.1, decoded=[1, 0]),
+        ]
+        programs = {"A": _MockProgram(candidates_a), "B": _MockProgram(candidates_b)}
+        var_maps = {"A": [0, 1], "B": [2, 3]}
+
+        greedy_result = beam_search_aggregate(
+            programs=programs,
+            initial_solution=[0, 0, 0, 0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=weighted_evaluate,
+            beam_width=1,
+        )
+
+        hierarchical_result = hierarchical_aggregate(
+            programs=programs,
+            initial_solution=[0, 0, 0, 0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=weighted_evaluate,
+        )
+
+        greedy_cost = weighted_evaluate(greedy_result)
+        hierarchical_cost = weighted_evaluate(hierarchical_result)
+
+        assert hierarchical_cost <= greedy_cost
+
+
+class TestHierarchicalAggregateTopN:
+    """Test _hierarchical_aggregate_top_n returning multiple ranked solutions."""
+
+    def test_returns_multiple_solutions(self):
+        """Should return up to top_n solutions."""
+        candidates = [
+            SolutionEntry(bitstring="1", prob=0.6, decoded=[1]),
+            SolutionEntry(bitstring="0", prob=0.4, decoded=[0]),
+        ]
+        programs = {"A": _MockProgram(candidates)}
+        var_maps = {"A": [0]}
+
+        results = _hierarchical_aggregate_top_n(
+            programs=programs,
+            initial_solution=[0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_sum_evaluate,
+            top_n=3,
+        )
+
+        assert len(results) >= 1
+        assert len(results) <= 3
+        # Results sorted ascending (best first)
+        for i in range(len(results) - 1):
+            assert results[i][0] <= results[i + 1][0]
+
+    def test_top_n_caps_output(self):
+        """Even with many combinations, only top_n are returned."""
+        candidates_a = [
+            SolutionEntry(bitstring="1", prob=0.6, decoded=[1]),
+            SolutionEntry(bitstring="0", prob=0.4, decoded=[0]),
+        ]
+        candidates_b = [
+            SolutionEntry(bitstring="1", prob=0.7, decoded=[1]),
+            SolutionEntry(bitstring="0", prob=0.3, decoded=[0]),
+        ]
+        programs = {"A": _MockProgram(candidates_a), "B": _MockProgram(candidates_b)}
+        var_maps = {"A": [0], "B": [1]}
+
+        results = _hierarchical_aggregate_top_n(
+            programs=programs,
+            initial_solution=[0, 0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_sum_evaluate,
+            top_n=2,
+        )
+
+        assert len(results) == 2
+        # Best (lowest sum) first
+        assert results[0][0] <= results[1][0]
+
+    def test_non_zero_initial_solution_preserved(self):
+        """Positions not touched by any partition keep initial values."""
+        candidates = [SolutionEntry(bitstring="1", prob=0.9, decoded=[1])]
+        programs = {"A": _MockProgram(candidates)}
+        var_maps = {"A": [1]}
+
+        result = hierarchical_aggregate(
+            programs=programs,
+            initial_solution=[1, 0, 1],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_neg_sum_evaluate,
+        )
+
+        assert result == [1, 1, 1]
 
 
 @pytest.fixture
