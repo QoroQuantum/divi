@@ -2492,6 +2492,19 @@ class TestQoroServiceWithApiKey:
         assert retrieved.simulation_method == SimulationMethod.MatrixProductState
         assert retrieved.api_meta == {"optimization_level": 1}
 
+    @pytest.mark.xfail(reason="server-side noise fields not yet deployed", strict=True)
+    def test_set_and_get_noise_config(self, qoro_service, circuits):
+        """Noise fields (noisy_device, noise_realizations) round-trip."""
+        single_circuit = {"circuit_1": circuits["circuit_0"]}
+        result = qoro_service.submit_circuits(single_circuit)
+
+        config = ExecutionConfig(noisy_device="ibm_fake_fez", noise_realizations=4)
+        qoro_service.set_execution_config(result, config)
+
+        retrieved = qoro_service.get_execution_config(result)
+        assert retrieved.noisy_device == "ibm_fake_fez"
+        assert retrieved.noise_realizations == 4
+
     def test_submit_with_inline_execution_config(self, qoro_service, circuits):
         """Tests attaching execution config directly in submit_circuits."""
         single_circuit = {"circuit_1": circuits["circuit_0"]}
