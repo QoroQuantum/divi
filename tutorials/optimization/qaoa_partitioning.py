@@ -31,7 +31,11 @@ import networkx as nx
 import numpy as np
 from qiskit.circuit.library import RYGate, RZGate
 
-from divi.qprog import EarlyStopping
+from divi.qprog import (
+    BeamSearchStrategy,
+    EarlyStopping,
+    HierarchicalStrategy,
+)
 from divi.qprog.algorithms import GenericLayerAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import (
@@ -106,13 +110,13 @@ def _run_qubo_partitioning(
     ensemble.run().join()
 
     greedy_solution, greedy_energy = ensemble.aggregate_results(
-        beam_width=1, n_partition_candidates=5
+        strategy=BeamSearchStrategy(beam_width=1, n_partition_candidates=5)
     )
     beam_solution, beam_energy = ensemble.aggregate_results(
-        beam_width=3, n_partition_candidates=5
+        strategy=BeamSearchStrategy(beam_width=3, n_partition_candidates=5)
     )
     top_solutions = ensemble.get_top_solutions(
-        n=5, beam_width=5, n_partition_candidates=5
+        n=5, strategy=BeamSearchStrategy(beam_width=5, n_partition_candidates=5)
     )
 
     return {
@@ -129,6 +133,7 @@ def _print_maxcut_results(
     total_circuits: int,
     greedy_sol,
     beam_sol,
+    hierarchical_sol,
     top_solutions,
     classical_cut_size: int,
     graph: nx.Graph,
@@ -137,10 +142,12 @@ def _print_maxcut_results(
 
     greedy_ratio = _cut_ratio(greedy_sol, classical_cut_size, graph)
     beam_ratio = _cut_ratio(beam_sol, classical_cut_size, graph)
+    hierarchical_ratio = _cut_ratio(hierarchical_sol, classical_cut_size, graph)
     print(f"\n{'Method':<32} {'Cut/Classical':>14}")
     print("-" * 48)
     print(f"{'Greedy (beam_width=1, n=5)':<32} {greedy_ratio:>14.6f}")
     print(f"{'Beam (beam_width=3, n=5)':<32} {beam_ratio:>14.6f}")
+    print(f"{'Hierarchical (group_size=2)':<32} {hierarchical_ratio:>14.6f}")
 
     print("\nTop-5 solutions:")
     for i, sol in enumerate(top_solutions, 1):
@@ -241,17 +248,25 @@ if __name__ == "__main__":
     classical_cut_size, _ = nx.approximation.one_exchange(graph, seed=1)
 
     greedy_sol = maxcut_ensemble.aggregate_results(
-        beam_width=1, n_partition_candidates=5
+        strategy=BeamSearchStrategy(beam_width=1, n_partition_candidates=5)
     )
-    beam_sol = maxcut_ensemble.aggregate_results(beam_width=3, n_partition_candidates=5)
+    beam_sol = maxcut_ensemble.aggregate_results(
+        strategy=BeamSearchStrategy(beam_width=3, n_partition_candidates=5)
+    )
+    # Hierarchical aggregation: solve groups of partitions independently, then
+    # merge pairwise — useful when a global left-to-right beam commits too early.
+    hierarchical_sol = maxcut_ensemble.aggregate_results(
+        strategy=HierarchicalStrategy(group_size=2, k_per_partition=5)
+    )
     top_solutions = maxcut_ensemble.get_top_solutions(
-        n=5, beam_width=5, n_partition_candidates=5
+        n=5, strategy=BeamSearchStrategy(beam_width=5, n_partition_candidates=5)
     )
 
     _print_maxcut_results(
         maxcut_ensemble.total_circuit_count,
         greedy_sol,
         beam_sol,
+        hierarchical_sol,
         top_solutions,
         classical_cut_size,
         graph,
@@ -316,11 +331,12 @@ if __name__ == "__main__":
     print(f"Created {len(matching_ensemble.programs)} sub-programs")
 
     matching_ensemble.run(blocking=True)
-    matching, weight = matching_ensemble.aggregate_results(beam_width=3)
+    matching, weight = matching_ensemble.aggregate_results(
+        strategy=BeamSearchStrategy(beam_width=3)
+    )
     strict_top = matching_ensemble.get_top_solutions(
         n=5,
-        beam_width=None,
-        n_partition_candidates=5,
+        strategy=BeamSearchStrategy(beam_width=None, n_partition_candidates=5),
         strict=True,
     )
 

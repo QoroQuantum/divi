@@ -6,7 +6,7 @@ import atexit
 import os
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from queue import Queue
 from threading import Event, Lock, Thread
@@ -28,10 +28,7 @@ from divi.qprog._batch_coordinator import (
     _ProxyBackend,
 )
 from divi.qprog.quantum_program import QuantumProgram
-from divi.qprog.variational_quantum_algorithm import (
-    SolutionEntry,
-    VariationalQuantumAlgorithm,
-)
+from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from divi.reporting import (
     TerminalStatus,
     disable_logging,
@@ -1212,18 +1209,17 @@ class ProgramEnsemble(ABC):
         """
         self._check_ready_for_aggregation()
 
-    def get_top_solutions(self, n=10, *, beam_width=1, n_partition_candidates=None):
-        """Get the top-N global solutions from beam search aggregation.
+    def get_top_solutions(self, n=10, *, strategy=None):
+        """Get the top-N global solutions from partition aggregation.
 
-        Available on subclasses that use beam-search-based aggregation
+        Available on subclasses that aggregate per-partition results
         (e.g., ``PartitioningProgramEnsemble``).
 
         Args:
             n (int): Number of top solutions to return. Must be >= 1.
-            beam_width: Beam search width. Internally bumped
-                to at least ``n`` so the beam retains enough candidates.
-            n_partition_candidates: Candidates per partition.
-                Defaults to ``beam_width``.
+            strategy: An :class:`~divi.qprog.AggregationStrategy` controlling how
+                per-partition candidates are combined. Defaults to
+                :class:`~divi.qprog.BeamSearchStrategy`.
 
         Returns:
             Subclass-specific format. See subclass documentation.
@@ -1234,225 +1230,3 @@ class ProgramEnsemble(ABC):
         raise NotImplementedError(
             f"{type(self).__name__} does not support get_top_solutions."
         )
-
-
-def _beam_search_aggregate_top_n(
-    programs: dict[Any, VariationalQuantumAlgorithm],
-    initial_solution: Sequence[int],
-    extend_fn: Callable[[list[int], Any, SolutionEntry], list[int]],
-    evaluate_fn: Callable[[list[int]], float],
-    beam_width: int | None = None,
-    n_partition_candidates: int | None = None,
-    top_n: int = 1,
-) -> list[tuple[float, list[int]]]:
-    """Core beam search returning the top-N ``(score, solution)`` pairs.
-
-    Args:
-        programs: Dictionary mapping program IDs to executed
-            ``VariationalQuantumAlgorithm`` instances.
-        initial_solution: Starting solution vector.
-        extend_fn: ``(current_solution, prog_id, candidate) -> extended_solution``.
-        evaluate_fn: ``(solution) -> float``.  Lower is better.
-        beam_width: Maximum candidates to retain per partition step.
-            ``None`` means keep all (exhaustive).
-        n_partition_candidates: Candidates to fetch per partition.
-            Defaults to ``beam_width`` (or all when exhaustive).
-        top_n: Number of top solutions to return.
-
-    Returns:
-        List of ``(score, solution)`` tuples sorted ascending by score
-        (best first), with at most ``top_n`` entries.
-    """
-    if beam_width is not None and beam_width < 1:
-        raise ValueError(f"beam_width must be >= 1 or None, got {beam_width}")
-
-    if n_partition_candidates is not None and n_partition_candidates < 1:
-        raise ValueError(
-            f"n_partition_candidates must be >= 1 or None, got {n_partition_candidates}"
-        )
-
-    # Ensure the beam retains enough candidates for top_n
-    if beam_width is not None and beam_width < top_n:
-        beam_width = top_n
-
-    if (
-        beam_width is not None
-        and n_partition_candidates is not None
-        and n_partition_candidates < beam_width
-    ):
-        raise ValueError(
-            f"n_partition_candidates ({n_partition_candidates}) must be >= "
-            f"beam_width ({beam_width}). Extracting fewer candidates than the "
-            f"beam width wastes beam capacity."
-        )
-
-    # Resolve the number of candidates to fetch per partition
-    if n_partition_candidates is not None:
-        n_fetch = n_partition_candidates
-    elif beam_width is not None:
-        n_fetch = beam_width
-    else:
-        n_fetch = 2**20  # exhaustive
-
-    initial_list = list(initial_solution)
-    beam: list[tuple[float, list[int]]] = [(evaluate_fn(initial_list), initial_list)]
-
-    for prog_id, program in programs.items():
-        candidates = program.get_top_solutions(n=n_fetch, include_decoded=True)
-        if not candidates:
-            continue
-
-        new_beam: list[tuple[float, list[int]]] = []
-        for _, partial_solution in beam:
-            for candidate in candidates:
-                extended = extend_fn(partial_solution, prog_id, candidate)
-                new_beam.append((evaluate_fn(extended), extended))
-
-        new_beam.sort(key=lambda entry: entry[0])
-        beam = new_beam[:beam_width] if beam_width is not None else new_beam
-
-    beam.sort(key=lambda entry: entry[0])
-    return beam[:top_n]
-
-
-def _hierarchical_aggregate_top_n(
-    programs: dict[Any, VariationalQuantumAlgorithm],
-    initial_solution: Sequence[int],
-    extend_fn: Callable[[list[int], Any, SolutionEntry], list[int]],
-    evaluate_fn: Callable[[list[int]], float],
-    top_n: int = 1,
-    group_size: int = 4,
-    k_per_partition: int = 20,
-    max_per_group: int = 200,
-) -> list[tuple[float, list[int]]]:
-    """Hierarchical Cartesian-product aggregation returning top-N solutions.
-
-    Instead of beam search (which greedily commits to a narrow set of partial
-    solutions at each partition step and can miss globally valid combinations),
-    this strategy:
-
-    1. Groups partitions into small batches (``group_size``).
-    2. Enumerates **all** candidate combinations within each group, scoring
-       with ``evaluate_fn`` and keeping the top ``max_per_group``.
-    3. Merges group pools pairwise, again scoring and pruning.
-
-    Because ``evaluate_fn`` sees more-complete partial solutions at each merge
-    level, penalty-based validity signals are stronger, and valid combinations
-    that beam search's greedy pruning would discard are retained.
-
-    The output format is identical to :func:`_beam_search_aggregate_top_n`:
-    ``(score, solution)`` pairs sorted ascending (lower is better).
-
-    Args:
-        programs: Dictionary mapping program IDs to executed
-            ``VariationalQuantumAlgorithm`` instances.
-        initial_solution: Starting solution vector (typically all zeros).
-        extend_fn: ``(current_solution, prog_id, candidate) -> extended_solution``.
-        evaluate_fn: ``(solution) -> float``.  Lower is better.
-        top_n: Number of top solutions to return.
-        group_size: Maximum partitions per group.  Controls the Cartesian
-            product size within each group — larger values enumerate more
-            combinations but grow exponentially.
-        k_per_partition: Number of candidates to fetch from each partition's
-            ``get_top_solutions``.
-        max_per_group: Maximum solutions retained per group after scoring
-            and pruning.  Acts as a beam-like cap within each hierarchy level.
-
-    Returns:
-        List of ``(score, solution)`` tuples sorted ascending by score
-        (best first), with at most ``top_n`` entries.
-    """
-    if top_n < 1:
-        raise ValueError(f"top_n must be >= 1, got {top_n}")
-    if group_size < 1:
-        raise ValueError(f"group_size must be >= 1, got {group_size}")
-    if k_per_partition < 1:
-        raise ValueError(f"k_per_partition must be >= 1, got {k_per_partition}")
-    if max_per_group < 1:
-        raise ValueError(f"max_per_group must be >= 1, got {max_per_group}")
-
-    initial_list = list(initial_solution)
-
-    # 1. Fetch per-partition candidates
-    prog_ids = list(programs.keys())
-    candidates_by_prog: dict[Any, list[SolutionEntry]] = {}
-    for pid in prog_ids:
-        program = programs[pid]
-        cands = program.get_top_solutions(n=k_per_partition, include_decoded=True)
-        candidates_by_prog[pid] = cands
-
-    if not prog_ids:
-        return [(evaluate_fn(initial_list), initial_list)][:top_n]
-
-    # 2. Group partitions into chunks of group_size
-    groups: list[list] = [
-        prog_ids[i : i + group_size] for i in range(0, len(prog_ids), group_size)
-    ]
-
-    def _extend_group_pool(
-        base_pool: list[tuple[float, list[int]]],
-        pid: Any,
-    ) -> list[tuple[float, list[int]]]:
-        """Extend each base solution with every candidate from *pid*.
-
-        Scores each extension with ``evaluate_fn`` and returns the top
-        ``max_per_group`` results.
-        """
-        extended: list[tuple[float, list[int]]] = []
-        cands = candidates_by_prog[pid]
-        if not cands:
-            return base_pool
-
-        for _, partial_solution in base_pool:
-            for candidate in cands:
-                new_sol = extend_fn(partial_solution, pid, candidate)
-                extended.append((evaluate_fn(new_sol), new_sol))
-
-        extended.sort(key=lambda x: x[0])
-        return extended[:max_per_group]
-
-    # 3. Process each group: sequentially extend within the group
-    group_pools: list[list[tuple[float, list[int]]]] = []
-    for group in groups:
-        pool: list[tuple[float, list[int]]] = [
-            (evaluate_fn(initial_list), initial_list)
-        ]
-        for pid in group:
-            pool = _extend_group_pool(pool, pid)
-            if not pool:
-                break
-        group_pools.append(pool)
-
-    # 4. Hierarchical pairwise merge
-    while len(group_pools) > 1:
-        next_level: list[list[tuple[float, list[int]]]] = []
-        for i in range(0, len(group_pools), 2):
-            if i + 1 >= len(group_pools):
-                next_level.append(group_pools[i])
-                continue
-
-            pool_a = group_pools[i]
-            pool_b = group_pools[i + 1]
-
-            if not pool_a or not pool_b:
-                next_level.append(pool_a or pool_b)
-                continue
-
-            # Merge: overlay non-zero bits from sol_b onto sol_a
-            merged: list[tuple[float, list[int]]] = []
-            for _, sol_a in pool_a:
-                for _, sol_b in pool_b:
-                    combined = list(sol_a)
-                    for idx, bit in enumerate(sol_b):
-                        if bit:
-                            combined[idx] = bit
-                    merged.append((evaluate_fn(combined), combined))
-
-            merged.sort(key=lambda x: x[0])
-            next_level.append(merged[:max_per_group])
-
-        group_pools = next_level
-
-    final = group_pools[0] if group_pools else []
-    final.sort(key=lambda x: x[0])
-    return final[:top_n]

@@ -4,6 +4,11 @@
 
 from ._observable_measuring_mixin import ObservableMeasuringMixin
 from ._types import GraphProblemTypes
+from .aggregation import (
+    AggregationStrategy,
+    BeamSearchStrategy,
+    HierarchicalStrategy,
+)
 from .algorithms import (
     PCE,
     QAOA,

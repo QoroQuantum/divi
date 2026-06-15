@@ -6,7 +6,7 @@
 
 import warnings
 from collections.abc import Callable, Hashable
-from functools import partial
+from functools import cached_property, partial
 from typing import Any, Literal
 
 import networkx as nx
@@ -384,7 +384,13 @@ class MaxWeightMatchingProblem(QAOAProblem):
 
     @property
     def graph(self) -> nx.Graph:
-        """The input graph."""
+        """The input graph.
+
+        Treat as read-only: edge weights are read into cached state at
+        construction. Changing edge weights or structure afterwards will not
+        update the cached average-weight penalty, so ``evaluate_global_solution``
+        would return stale scores. Build a new problem instead.
+        """
         return self._graph
 
     def is_feasible(self, bitstring: str) -> bool:
@@ -459,6 +465,13 @@ class MaxWeightMatchingProblem(QAOAProblem):
             extended[global_idx] = int(candidate_decoded[local_idx])
         return extended
 
+    @cached_property
+    def _avg_weight(self) -> float:
+        """Mean edge weight of the (immutable) graph; the conflict penalty."""
+        return sum(
+            d.get("weight", 1.0) for _, _, d in self._graph.edges(data=True)
+        ) / max(self._graph.number_of_edges(), 1)
+
     def evaluate_global_solution(self, solution: list[int]) -> float:
         """Score a solution: negative (weight - conflict_penalty * conflicts).
 
@@ -472,12 +485,9 @@ class MaxWeightMatchingProblem(QAOAProblem):
                 weight += self._graph[u][v].get("weight", 1.0)
 
         conflicts = _count_conflicts(solution, self._edges)
-        avg_weight = sum(
-            d.get("weight", 1.0) for _, _, d in self._graph.edges(data=True)
-        ) / max(self._graph.number_of_edges(), 1)
 
         # Negate: beam search keeps lowest scores
-        return -(weight - avg_weight * conflicts)
+        return -(weight - self._avg_weight * conflicts)
 
     def _postprocess_solution(self, solution: list[int]) -> tuple[list[tuple], float]:
         """Repair conflicts, apply cleanup, compute weight."""
@@ -525,7 +535,7 @@ class MaxWeightMatchingProblem(QAOAProblem):
             if not formatted:
                 warnings.warn(
                     "No valid matching candidates found under strict=True. "
-                    "Consider widening beam_width / n_partition_candidates, "
+                    "Consider widening the aggregation strategy parameters, "
                     "or running with strict=False to inspect repaired output.",
                     UserWarning,
                     stacklevel=2,

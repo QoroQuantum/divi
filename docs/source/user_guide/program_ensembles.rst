@@ -25,19 +25,29 @@ detail on its own page — this section gives a quick overview and links.
 **Problem Decomposition (Graph / QUBO / Matching)**
    :class:`~divi.qprog.workflows.PartitioningProgramEnsemble` decomposes a
    large :class:`~divi.qprog.problems.QAOAProblem` into sub-problems, solves
-   each partition with QAOA (or PCE / IterativeQAOA), and stitches results
-   via beam search.  Graph partitioning, QUBO partitioning, and matching
-   partitioning are all covered in
+   each partition with QAOA (or PCE / IterativeQAOA), and stitches the
+   per-partition results into a global solution using a configurable
+   aggregation strategy (see `Aggregation Strategies`_).  Graph, QUBO, and
+   matching partitioning are all covered in
    :doc:`combinatorial_optimization_qaoa_pce`.
 
-Beam Search Aggregation
------------------------
+Aggregation Strategies
+----------------------
 
-When aggregating partition results, each partition has multiple candidate bitstrings ranked by probability. By default, aggregation picks only the **single best** candidate from each partition (greedy). Beam search explores multiple candidates per partition to find better global combinations.
+After each partition is solved, its quantum program returns several candidate
+bitstrings ranked by probability. An *aggregation strategy* stitches these
+per-partition candidates into a single global solution — the choice of strategy
+controls the quality/cost trade-off across the full problem. ``aggregate_results``
+and ``get_top_solutions`` accept a ``strategy`` — an
+:class:`~divi.qprog.AggregationStrategy` — and default to
+:class:`~divi.qprog.BeamSearchStrategy`.
 
-**How it works**
+Beam search
+~~~~~~~~~~~
 
-The ``aggregate_results`` method accepts two parameters:
+:class:`~divi.qprog.BeamSearchStrategy` explores candidates left-to-right across
+partitions, keeping the best partial solutions at each step. It takes two
+parameters:
 
 - ``beam_width`` — how many partial solutions are kept after each partition step.
 - ``n_partition_candidates`` — how many candidates to extract from each partition (defaults to ``beam_width``).
@@ -46,18 +56,28 @@ The ``aggregate_results`` method accepts two parameters:
 
 .. code-block:: python
 
-   # Greedy (default): single best candidate per partition
-   solution, energy = qaoa_partition.aggregate_results(beam_width=1)
+   from divi.qprog import BeamSearchStrategy
 
-   # Beam search: keep top 5 partial solutions, consider 5 candidates per partition
-   solution, energy = qaoa_partition.aggregate_results(beam_width=5)
+   # Greedy (default): single best candidate per partition
+   solution, energy = qaoa_partition.aggregate_results(
+       strategy=BeamSearchStrategy(beam_width=1)
+   )
+
+   # Beam search: keep the top 5 partial solutions after each partition step
+   solution, energy = qaoa_partition.aggregate_results(
+       strategy=BeamSearchStrategy(beam_width=5)
+   )
 
    # Wider candidate pool with narrow beam: consider 10 candidates per partition
    # but only keep the best 3 partial solutions after each step
-   solution, energy = qaoa_partition.aggregate_results(beam_width=3, n_partition_candidates=10)
+   solution, energy = qaoa_partition.aggregate_results(
+       strategy=BeamSearchStrategy(beam_width=3, n_partition_candidates=10)
+   )
 
    # Exhaustive: try all candidate combinations (expensive for many partitions)
-   solution, energy = qaoa_partition.aggregate_results(beam_width=None)
+   solution, energy = qaoa_partition.aggregate_results(
+       strategy=BeamSearchStrategy(beam_width=None)
+   )
 
 **When to use beam search**
 
@@ -69,17 +89,64 @@ The ``aggregate_results`` method accepts two parameters:
 
    Setting ``n_partition_candidates`` higher than ``beam_width`` is useful when you want each partition to propose many alternatives (wider local search) while keeping memory usage controlled (narrow beam).
 
-Top-N Solutions
----------------
+Hierarchical aggregation
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-:class:`~divi.qprog.workflows.PartitioningProgramEnsemble` exposes a ``get_top_solutions`` method that returns multiple ranked global solutions using beam search.
+:class:`~divi.qprog.HierarchicalStrategy` is a divide-and-conquer alternative:
+partitions are split into groups of ``group_size``, each group is solved
+independently with a beam of width ``max_per_group``, and the resulting group
+pools are combined in a pairwise merge tree. Deferring cross-group commitment
+lets each group keep prefixes that a single left-to-right beam would prune
+early. The trade-off is that interactions spanning partitions in *different*
+groups are only scored at merge time, not during per-group pruning.
+
+The knobs trade solution quality against cost:
+
+- ``group_size`` — partitions per group (larger groups defer more commitment).
+- ``k_per_partition`` — candidates fetched from each partition.
+- ``max_per_group`` — solutions kept per group and per merge level; the main quality/cost dial.
+- ``merge_width`` — limits how many solutions from each group are paired during a merge step, capping each merge's cost to ``merge_width`` squared. Lower it to tame cost on problems with many partitions; the default (``None``) uses all ``max_per_group`` entries.
+
+Unlike beam search, ``top_n`` does **not** widen the search for the hierarchical
+strategy — it only sets how many of the final solutions are returned. Calling
+:meth:`~divi.qprog.workflows.PartitioningProgramEnsemble.get_top_solutions` with a
+larger ``n`` never inflates the search cost.
 
 .. skip: next
 
 .. code-block:: python
 
+   from divi.qprog import HierarchicalStrategy
+
+   solution, energy = qaoa_partition.aggregate_results(
+       strategy=HierarchicalStrategy(
+           group_size=4, k_per_partition=20, max_per_group=200, merge_width=50
+       )
+   )
+
+**When to use hierarchical aggregation**
+
+- **Many partitions with localized coupling**: when strongly-coupled partitions can land in the same group, each group explores more alternatives before committing to a cross-group assignment — recovering combinations a greedy left-to-right beam would prune early.
+- **Finer cost control**: ``merge_width`` caps per-merge cost independently of ``max_per_group``, a knob beam search does not offer.
+- **Prefer beam search** when coupling is global or unpredictable across partition boundaries: groups are formed in partition order, so the grouping then provides little benefit over a wider beam.
+
+.. _ensemble-top-n:
+
+Top-N Solutions
+---------------
+
+:class:`~divi.qprog.workflows.PartitioningProgramEnsemble` exposes a
+``get_top_solutions`` method that returns multiple ranked global solutions. It
+accepts the same ``strategy`` argument.
+
+.. skip: next
+
+.. code-block:: python
+
+   from divi.qprog import BeamSearchStrategy
+
    top_solutions = qaoa_partition.get_top_solutions(
-       n=5, beam_width=5, n_partition_candidates=10
+       n=5, strategy=BeamSearchStrategy(beam_width=5, n_partition_candidates=10)
    )
 
    # Return type is problem-dependent:
@@ -88,7 +155,10 @@ Top-N Solutions
    for rank, (solution, energy) in enumerate(top_solutions, 1):
        print(f"{rank}. Energy: {energy:.6f}, Solution: {solution}")
 
-This is useful when you want to inspect alternative solutions or post-process candidates with domain-specific constraints. The ``beam_width`` is automatically increased to at least ``n`` so the beam retains enough candidates.
+This is useful when you want to inspect alternative solutions or post-process
+candidates with domain-specific constraints. Beam search widens its beam to at
+least ``n`` when needed; hierarchical returns the ``n`` best from its final
+merged pool (without widening the search, as noted above).
 
 For constrained problems such as maximum-weight matching, partition boundaries
 can produce globally invalid raw candidates even when each partition candidate
@@ -129,7 +199,9 @@ Two usage paths:
    # Re-sample a previously trained partitioning ensemble and aggregate
    # the global solution — without re-paying for the optimizer.
    ensemble.sample_solution(blocking=True)
-   solution, energy = ensemble.aggregate_results(beam_width=3)
+   solution, energy = ensemble.aggregate_results(
+       strategy=BeamSearchStrategy(beam_width=3)
+   )
 
    # Or: bring trained parameters in from elsewhere (per partition).
    ensemble.sample_solution(
