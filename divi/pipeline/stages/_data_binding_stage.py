@@ -40,10 +40,10 @@ from divi.circuits._conversions import (
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
-    ExpansionResult,
     MetaCircuitBatch,
     PipelineEnv,
     Stage,
+    StageOutput,
     StageToken,
 )
 from divi.pipeline.stages._qasm_cache import _qasm_body_cached, _template_cached
@@ -229,7 +229,7 @@ class DataBindingStage(BundleStage):
 
     def expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         feature_batch = self._feature_batch(env)
         if self._use_template_path:
             return self._expand_template(batch, feature_batch)
@@ -237,7 +237,7 @@ class DataBindingStage(BundleStage):
 
     def _expand_template(
         self, batch: MetaCircuitBatch, feature_batch: np.ndarray
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         """Fast path: per-sample partial QASM bodies + shared parametric DAG.
 
         All variants share the incoming body DAG reference in
@@ -268,11 +268,11 @@ class DataBindingStage(BundleStage):
                 parameters=weight_params,
                 qasm_bodies=tuple(partial_bodies),
             )
-        return ExpansionResult(batch=out), None
+        return StageOutput(batch=out)
 
     def _expand_eager(
         self, batch: MetaCircuitBatch, feature_batch: np.ndarray
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         """Fallback path: one bound DAG per sample.
 
         Used when a DAG-walking stage (e.g. QEM, Pauli twirl) sits
@@ -291,11 +291,11 @@ class DataBindingStage(BundleStage):
                 for sample_idx, sample in enumerate(feature_batch)
             )
             out[key] = replace(mc, circuit_bodies=fanned, parameters=weight_params)
-        return ExpansionResult(batch=out), None
+        return StageOutput(batch=out)
 
     def dry_expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         """Dry path: share the incoming parametric DAG across all sample
         variants. Per-sample data substitution is skipped — dry-run only
         needs correct circuit counts and depth/width stats, both of which
@@ -311,7 +311,7 @@ class DataBindingStage(BundleStage):
                 for sample_idx in range(n_samples)
             )
             out[key] = replace(mc, circuit_bodies=fanned, parameters=weight_params)
-        return ExpansionResult(batch=out), None
+        return StageOutput(batch=out)
 
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken

@@ -94,7 +94,7 @@ class TestExpandSingleCircuit:
         stage = _make_stage(np.eye(n_qubits), alpha=1.0, soft=True)
 
         env = PipelineEnv(backend=_make_expval_backend())
-        result, _ = stage.expand(batch, env)
+        result = stage.expand(batch, env)
 
         expanded = list(result.batch.values())[0]
         assert len(expanded.measurement_qasms) == 1
@@ -106,7 +106,7 @@ class TestExpandSingleCircuit:
         stage = _make_stage(np.eye(n_qubits), alpha=1.0, soft=True)
 
         env = PipelineEnv(backend=_make_sampling_backend())
-        result, _ = stage.expand(batch, env)
+        result = stage.expand(batch, env)
 
         expanded = list(result.batch.values())[0]
         assert len(expanded.measurement_qasms) == 1

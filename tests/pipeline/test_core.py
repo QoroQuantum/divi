@@ -43,7 +43,7 @@ from divi.pipeline._core import (
     _validate_stage_order,
     _wait_for_async_result,
 )
-from divi.pipeline.abc import BundleStage, ExpansionResult
+from divi.pipeline.abc import BundleStage, StageOutput
 from divi.pipeline.stages import (
     MeasurementStage,
     ParameterBindingStage,
@@ -1392,7 +1392,7 @@ class _PerfWarningStage(BundleStage):
         )
 
     def expand(self, batch, env):
-        return ExpansionResult(batch=batch), None
+        return StageOutput(batch=batch)
 
     def reduce(self, results, env, token):
         return results

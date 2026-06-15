@@ -26,9 +26,9 @@ from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
     DiviPerformanceWarning,
-    ExpansionResult,
     MetaCircuitBatch,
     PipelineEnv,
+    StageOutput,
     StageToken,
 )
 from divi.pipeline.stages import (
@@ -644,8 +644,8 @@ class _NonDryDagConsumerStage(BundleStage):
 
     def expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
-    ) -> tuple[ExpansionResult, StageToken]:
-        return ExpansionResult(batch=dict(batch)), None
+    ) -> StageOutput[MetaCircuitBatch]:
+        return StageOutput(batch=dict(batch))
 
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken

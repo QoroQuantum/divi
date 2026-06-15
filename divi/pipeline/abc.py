@@ -7,7 +7,7 @@ from collections.abc import Hashable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from threading import Event
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, NamedTuple, TypeVar
 
 import numpy as np
 import numpy.typing as npt
@@ -28,6 +28,7 @@ __all__ = [
     "ResultFormat",
     "SpecStage",
     "Stage",
+    "StageOutput",
 ]
 
 NodeKey = tuple[AxisLabel, ...]  # Batch key: sequence of (axis_name, value) pairs.
@@ -116,6 +117,13 @@ class ExpansionResult:
     batch: MetaCircuitBatch
     stage_name: str | None = None
     """Stage name attached by planner for forward-pass traceability."""
+
+
+class StageOutput(NamedTuple, Generic[OutT]):
+    """Complete, cacheable output of one stage expansion."""
+
+    batch: OutT
+    token: StageToken = None
 
 
 @dataclass(frozen=True)
@@ -250,11 +258,11 @@ class Stage(ABC, Generic[InT, OutT]):
         """
 
     @abstractmethod
-    def expand(self, batch: InT, env: PipelineEnv) -> tuple[OutT, StageToken]:
+    def expand(self, batch: InT, env: PipelineEnv) -> StageOutput[OutT]:
         """Transform input for the forward pass and return a reduction token."""
         ...
 
-    def dry_expand(self, batch: InT, env: PipelineEnv) -> tuple[OutT, StageToken]:
+    def dry_expand(self, batch: InT, env: PipelineEnv) -> StageOutput[OutT]:
         """Analytic forward pass for dry runs.
 
         Must emit a batch with the **same shape** as :meth:`expand` (same keys,
@@ -310,9 +318,7 @@ class SpecStage(Stage[InT, MetaCircuitBatch], ABC):
     """
 
     @abstractmethod
-    def expand(
-        self, batch: InT, env: PipelineEnv
-    ) -> tuple[MetaCircuitBatch, StageToken]:
+    def expand(self, batch: InT, env: PipelineEnv) -> StageOutput[MetaCircuitBatch]:
         """Transform input (e.g. Hamiltonian) into a keyed batch of MetaCircuits."""
         ...
 
@@ -323,7 +329,7 @@ class SpecStage(Stage[InT, MetaCircuitBatch], ABC):
         return results
 
 
-class BundleStage(Stage[MetaCircuitBatch, ExpansionResult], ABC):
+class BundleStage(Stage[MetaCircuitBatch, MetaCircuitBatch], ABC):
     """Abstract stage that transforms a keyed MetaCircuit batch.
 
     Subclasses declare two orthogonal contracts via class properties:
@@ -359,7 +365,7 @@ class BundleStage(Stage[MetaCircuitBatch, ExpansionResult], ABC):
     @abstractmethod
     def expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         """Transform keyed MetaCircuit batch and return expansion lineage plus token."""
         ...
 

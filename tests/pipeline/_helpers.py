@@ -18,10 +18,10 @@ from divi.pipeline._compilation import _compile_batch
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
-    ExpansionResult,
     MetaCircuitBatch,
     SpecStage,
     Stage,
+    StageOutput,
     StageToken,
 )
 from divi.pipeline.stages import MeasurementStage, ParameterBindingStage
@@ -34,10 +34,8 @@ class DummySpecStage(SpecStage[str]):
         super().__init__(name=type(self).__name__)
         self._meta = meta or cast(MetaCircuit, object())
 
-    def expand(
-        self, items: str, env: PipelineEnv
-    ) -> tuple[MetaCircuitBatch, StageToken]:
-        return {(("spec", "circ"),): self._meta}, None
+    def expand(self, items: str, env: PipelineEnv) -> StageOutput[MetaCircuitBatch]:
+        return StageOutput(batch={(("spec", "circ"),): self._meta})
 
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken
@@ -55,13 +53,13 @@ class FanoutAndSumStage(BundleStage):
 
     def expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         out: MetaCircuitBatch = {}
         for parent_key, meta in batch.items():
             for idx in range(self._n_children):
                 child_key = parent_key + ((self._branch_prefix, idx),)
                 out[child_key] = meta
-        return ExpansionResult(batch=out), None
+        return StageOutput(batch=out)
 
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken

@@ -40,6 +40,7 @@ from .abc import (
     ResultFormat,
     SpecStage,
     Stage,
+    StageOutput,
     StageToken,
 )
 from .transformations import FOREIGN_KEY_ATTR
@@ -528,14 +529,14 @@ class CircuitPipeline:
         # would otherwise mutate shared DAG references.  Keeping stage and
         # callable zipped together eliminates any index-drift footgun when
         # the list is sliced below.
-        plan: list[
-            tuple[Stage, Callable[[Any, PipelineEnv], tuple[Any, StageToken]]]
-        ] = list(zip(self._stages, self._resolve_expand_fns(dry=dry)))
+        plan: list[tuple[Stage, Callable[[Any, PipelineEnv], StageOutput]]] = list(
+            zip(self._stages, self._resolve_expand_fns(dry=dry))
+        )
 
         def run_bundle_stages(
             data: Any,
             bundle_plan: Sequence[
-                tuple[Stage, Callable[[Any, PipelineEnv], tuple[Any, StageToken]]]
+                tuple[Stage, Callable[[Any, PipelineEnv], StageOutput]]
             ],
         ) -> tuple[Any, list[StageToken], list[ExpansionResult]]:
             tokens: list[StageToken] = []
@@ -543,12 +544,12 @@ class CircuitPipeline:
 
             for stage, stage_expand in bundle_plan:
                 _report_pipeline_stage(env, stage.name)
-                expansion_result, token = stage_expand(data, env)
-                data = expansion_result.batch
-                tokens.append(token)
+                output = stage_expand(data, env)
+                data = output.batch
+                tokens.append(output.token)
                 expansions.append(
                     ExpansionResult(
-                        batch=expansion_result.batch,
+                        batch=output.batch,
                         stage_name=stage.name,
                     )
                 )
@@ -638,7 +639,7 @@ class CircuitPipeline:
 
     def _resolve_expand_fns(
         self, *, dry: bool
-    ) -> list[Callable[[Any, PipelineEnv], tuple[Any, StageToken]]]:
+    ) -> list[Callable[[Any, PipelineEnv], StageOutput]]:
         """Build the per-stage expand callables for one forward pass.
 
         Real runs always route through :meth:`Stage.expand`.  Dry runs route
@@ -652,7 +653,7 @@ class CircuitPipeline:
         if not dry:
             return [stage.expand for stage in self._stages]
 
-        fns: list[Callable[[Any, PipelineEnv], tuple[Any, StageToken]]] = []
+        fns: list[Callable[[Any, PipelineEnv], StageOutput]] = []
         for idx, stage in enumerate(self._stages):
             if not _has_custom_dry_expand(stage):
                 # No analytic override — the default ``dry_expand`` already

@@ -156,8 +156,9 @@ nitpick_ignore_regex = [
     (r"py:class", r"hybrid\..*"),
     # qoro-maestro does not publish a sphinx inventory.
     (r"py:class", r"maestro\..*"),
-    # TypeVars in ``Generic[InT, OutT]`` — not documentable by Sphinx.
-    (r"py:obj", r"divi\.pipeline\.abc\.(InT|OutT)"),
+    # TypeVars in ``Generic[InT, OutT]`` — autodoc emits both object and
+    # class roles for them, but TypeVars are not documentable Sphinx targets.
+    (r"py:(obj|class)", r"divi\.pipeline\.abc\.(InT|OutT)"),
     # ``numpy.float64`` is ``py:attribute`` in numpy's inventory, but
     # ``sphinx-autodoc-typehints`` emits ``py:class``. Domain mismatch.
     (r"py:class", r"numpy\.(float|int|uint)\d+"),

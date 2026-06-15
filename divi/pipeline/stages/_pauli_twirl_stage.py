@@ -51,10 +51,10 @@ from divi.circuits._conversions import _format_bound_param
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
-    ExpansionResult,
     MetaCircuitBatch,
     PipelineEnv,
     Stage,
+    StageOutput,
     StageToken,
 )
 from divi.pipeline.transformations import group_by_base_key, strip_axis_from_label
@@ -340,7 +340,7 @@ class PauliTwirlStage(BundleStage):
 
     def expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         out: MetaCircuitBatch = {}
 
         for parent_key, meta in batch.items():
@@ -349,11 +349,11 @@ class PauliTwirlStage(BundleStage):
             else:
                 out[parent_key] = self._expand_structural(meta)
 
-        return ExpansionResult(batch=out), None
+        return StageOutput(batch=out)
 
     def dry_expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         """Analytic path: emit ``n_bodies × n_twirls`` shape-correct placeholders.
 
         Skips label sampling, topology grouping, deep-copying, and QASM
@@ -366,7 +366,7 @@ class PauliTwirlStage(BundleStage):
         out: MetaCircuitBatch = {}
         for parent_key, meta in batch.items():
             out[parent_key] = self._expand_dry(meta)
-        return ExpansionResult(batch=out), None
+        return StageOutput(batch=out)
 
     def _expand_dry(self, meta: MetaCircuit) -> MetaCircuit:
         """Produce placeholder twirled bodies matching the real path's shape."""

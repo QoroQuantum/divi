@@ -437,7 +437,8 @@ when the built-in spec stages don't cover your circuit-generation logic.
 A ``SpecStage`` must implement two methods:
 
 - ``expand(spec, env)`` — Convert an input specification into a keyed batch of
-  :class:`~divi.circuits.MetaCircuit` objects and return a token for later use.
+  :class:`~divi.circuits.MetaCircuit` objects, returned in a
+  :class:`~divi.pipeline.StageOutput` (with an optional reduce token).
 - ``reduce(results, env, token)`` — Aggregate the per-key results back into a
   single output using the stored token.
 
@@ -450,7 +451,7 @@ Bell-state circuit and measures its probabilities:
    from qiskit.converters import circuit_to_dag
 
    from divi.circuits import MetaCircuit
-   from divi.pipeline import CircuitPipeline, PipelineEnv, SpecStage
+   from divi.pipeline import CircuitPipeline, PipelineEnv, SpecStage, StageOutput
    from divi.pipeline.abc import MetaCircuitBatch
    from divi.pipeline.stages import MeasurementStage
    from divi.backends import MaestroSimulator
@@ -485,7 +486,7 @@ Bell-state circuit and measures its probabilities:
 
            # NodeKey: tuple of (axis_name, value); one entry for a single circuit
            batch: MetaCircuitBatch = {(("bell", 0),): meta}
-           return batch, None   # No reduce token needed
+           return StageOutput(batch=batch)   # No reduce token needed
 
        def reduce(self, results, env, token):
            return results       # Pass results through unchanged

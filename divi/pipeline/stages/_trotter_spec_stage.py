@@ -19,6 +19,7 @@ from divi.pipeline.abc import (
     MetaCircuitBatch,
     PipelineEnv,
     SpecStage,
+    StageOutput,
     StageToken,
 )
 from divi.pipeline.transformations import (
@@ -96,7 +97,7 @@ class TrotterSpecStage(SpecStage[SparsePauliOp]):
 
     def expand(
         self, batch: SparsePauliOp, env: PipelineEnv
-    ) -> tuple[MetaCircuitBatch, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         """Transform Hamiltonian into a keyed batch of MetaCircuits (one per strategy output)."""
         spo_clean, strategy, n_samples, token = self._prepare(batch)
 
@@ -106,11 +107,11 @@ class TrotterSpecStage(SpecStage[SparsePauliOp]):
             meta = self._meta_circuit_factory(processed, ham_id)
             metas[(("ham", ham_id),)] = meta
 
-        return metas, token
+        return StageOutput(batch=metas, token=token)
 
     def dry_expand(
         self, batch: SparsePauliOp, env: PipelineEnv
-    ) -> tuple[MetaCircuitBatch, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         """Analytic path: build one prototype MetaCircuit, fan it out ``n_samples`` times.
 
         For stochastic strategies (e.g. QDrift) each sample would in
@@ -128,7 +129,7 @@ class TrotterSpecStage(SpecStage[SparsePauliOp]):
         metas: MetaCircuitBatch = {
             (("ham", ham_id),): prototype for ham_id in range(n_samples)
         }
-        return metas, token
+        return StageOutput(batch=metas, token=token)
 
     def introspect(
         self, batch: MetaCircuitBatch, env: PipelineEnv, token: StageToken

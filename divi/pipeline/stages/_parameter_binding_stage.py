@@ -20,10 +20,10 @@ from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
     DiviPerformanceWarning,
-    ExpansionResult,
     MetaCircuitBatch,
     PipelineEnv,
     Stage,
+    StageOutput,
     StageToken,
 )
 from divi.pipeline.stages import QEMStage
@@ -263,21 +263,21 @@ class ParameterBindingStage(BundleStage):
 
     def expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         param_sets = _validate_param_sets(env)
         if self._template_path_enabled(env):
             run = self._run_template
         else:
             run = self._run_fast if self._fast_path else self._run_slow
-        return ExpansionResult(batch=run(batch, param_sets)), None
+        return StageOutput(batch=run(batch, param_sets))
 
     def dry_expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         # Analytic path: only the param-set count matters, so skip the
         # finiteness check on values that are never rendered.
         param_sets = _validate_param_sets(env, assert_finite=False)
-        return ExpansionResult(batch=self._run_dry(batch, param_sets)), None
+        return StageOutput(batch=self._run_dry(batch, param_sets))
 
     def _template_path_enabled(self, env: PipelineEnv) -> bool:
         """Whether to defer parameter binding to the backend for this run.

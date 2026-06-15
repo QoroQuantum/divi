@@ -21,10 +21,10 @@ from divi.pipeline._shot_distribution import (
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
-    ExpansionResult,
     MetaCircuitBatch,
     PipelineEnv,
     ResultFormat,
+    StageOutput,
     StageToken,
 )
 from divi.pipeline.transformations import group_by_base_key, reduce_postprocess_ordered
@@ -299,7 +299,7 @@ class MeasurementStage(BundleStage):
 
     def expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         """Set up measurements and declare the result format on env."""
         return self._dispatch(
             batch,
@@ -310,7 +310,7 @@ class MeasurementStage(BundleStage):
 
     def dry_expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         """Analytic path: keep grouping + shot allocation, skip QASM rendering.
 
         Group count is the source of truth for the measurement fan-out, so
@@ -334,7 +334,7 @@ class MeasurementStage(BundleStage):
         *,
         expval_qasm_factory: Callable,
         probs_qasm_factory: Callable,
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         """Shared front-end for both real and dry paths.
 
         Picks the expval vs probs branch from the first MetaCircuit's shape
@@ -368,7 +368,7 @@ class MeasurementStage(BundleStage):
         batch: MetaCircuitBatch,
         env: PipelineEnv,
         qasm_factory: Callable[[tuple[int, ...]], str],
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         """Generate measurement QASM for ``probs()`` / ``counts()`` circuits."""
         env.result_format = ResultFormat.PROBS
 
@@ -388,7 +388,7 @@ class MeasurementStage(BundleStage):
             out[key] = meta.set_measurement_bodies(tagged_measurement_qasms)
 
         token = MeasurementToken(is_probs=True)
-        return ExpansionResult(batch=out), token
+        return StageOutput(batch=out, token=token)
 
     # ------------------------------------------------------------------ #
     # Expval path
@@ -399,7 +399,7 @@ class MeasurementStage(BundleStage):
         batch: MetaCircuitBatch,
         env: PipelineEnv,
         qasm_factory: Callable[[tuple[tuple[object, ...], ...], int], tuple[str, ...]],
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         """Group observables and generate measurement QASM (or ham_ops).
 
         ``qasm_factory`` turns ``(surviving_groups, n_qubits)`` into a tuple of
@@ -516,7 +516,7 @@ class MeasurementStage(BundleStage):
             n_observable_terms=n_observable_terms,
             zero_shot_groups_by_spec=zero_shot_groups_by_spec,
         )
-        return ExpansionResult(batch=result), token
+        return StageOutput(batch=result, token=token)
 
     # ------------------------------------------------------------------ #
     def introspect(

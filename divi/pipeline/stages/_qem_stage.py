@@ -15,10 +15,10 @@ from divi.pipeline.abc import (
     ChildResults,
     ContractViolation,
     DiviPerformanceWarning,
-    ExpansionResult,
     MetaCircuitBatch,
     PipelineEnv,
     Stage,
+    StageOutput,
     StageToken,
 )
 from divi.pipeline.stages import PauliTwirlStage
@@ -112,7 +112,7 @@ class QEMStage(BundleStage):
 
     def _expand_with(
         self, batch: MetaCircuitBatch, protocol_fn
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         """Shared outer pass: applies ``protocol_fn`` per parent key."""
         out: MetaCircuitBatch = {}
         contexts: dict[tuple, QEMContext] = {}
@@ -123,16 +123,16 @@ class QEMStage(BundleStage):
                 contexts[parent_key + tag] = ctx
             out[parent_key] = meta.set_circuit_bodies(bodies)
 
-        return ExpansionResult(batch=out), contexts
+        return StageOutput(batch=out, token=contexts)
 
     def expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         return self._expand_with(batch, self.protocol.expand)
 
     def dry_expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         """Analytic path: delegates each body to ``protocol.dry_expand``.
 
         The default :meth:`~divi.circuits.qem.QEMProtocol.dry_expand` falls

@@ -27,6 +27,7 @@ from .abc import (
     DiviPerformanceWarning,
     NodeKey,
     ResultFormat,
+    StageOutput,
 )
 from .transformations import reduce_merge_histograms
 
@@ -46,6 +47,7 @@ __all__ = [
     "SpecStage",
     "Stage",
     "StageInfo",
+    "StageOutput",
     "dry_run_pipeline",
     "format_dry_run",
     "format_pipeline_tree",
