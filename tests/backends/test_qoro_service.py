@@ -2492,7 +2492,6 @@ class TestQoroServiceWithApiKey:
         assert retrieved.simulation_method == SimulationMethod.MatrixProductState
         assert retrieved.api_meta == {"optimization_level": 1}
 
-    @pytest.mark.xfail(reason="server-side noise fields not yet deployed", strict=True)
     def test_set_and_get_noise_config(self, qoro_service, circuits):
         """Noise fields (noisy_device, noise_realizations) round-trip."""
         single_circuit = {"circuit_1": circuits["circuit_0"]}
