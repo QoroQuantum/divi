@@ -6,7 +6,7 @@ import atexit
 import os
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from queue import Queue
 from threading import Event, Lock, Thread
@@ -27,7 +27,7 @@ from divi.qprog._batch_coordinator import (
     _BatchCoordinator,
     _ProxyBackend,
 )
-from divi.qprog._solution_sampling_mixin import SolutionEntry, SolutionSamplingMixin
+from divi.qprog._solution_sampling_mixin import SolutionSamplingMixin
 from divi.qprog.quantum_program import QuantumProgram
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from divi.reporting import (
@@ -1212,18 +1212,17 @@ class ProgramEnsemble(ABC):
         """
         self._check_ready_for_aggregation()
 
-    def get_top_solutions(self, n=10, *, beam_width=1, n_partition_candidates=None):
-        """Get the top-N global solutions from beam search aggregation.
+    def get_top_solutions(self, n=10, *, strategy=None):
+        """Get the top-N global solutions from partition aggregation.
 
-        Available on subclasses that use beam-search-based aggregation
+        Available on subclasses that aggregate per-partition results
         (e.g., ``PartitioningProgramEnsemble``).
 
         Args:
             n (int): Number of top solutions to return. Must be >= 1.
-            beam_width: Beam search width. Internally bumped
-                to at least ``n`` so the beam retains enough candidates.
-            n_partition_candidates: Candidates per partition.
-                Defaults to ``beam_width``.
+            strategy: An :class:`~divi.qprog.AggregationStrategy` controlling how
+                per-partition candidates are combined. Defaults to
+                :class:`~divi.qprog.BeamSearchStrategy`.
 
         Returns:
             Subclass-specific format. See subclass documentation.
@@ -1234,84 +1233,3 @@ class ProgramEnsemble(ABC):
         raise NotImplementedError(
             f"{type(self).__name__} does not support get_top_solutions."
         )
-
-
-def _beam_search_aggregate_top_n(
-    programs: dict[Any, VariationalQuantumAlgorithm],
-    initial_solution: Sequence[int],
-    extend_fn: Callable[[list[int], Any, SolutionEntry], list[int]],
-    evaluate_fn: Callable[[list[int]], float],
-    beam_width: int | None = None,
-    n_partition_candidates: int | None = None,
-    top_n: int = 1,
-) -> list[tuple[float, list[int]]]:
-    """Core beam search returning the top-N ``(score, solution)`` pairs.
-
-    Args:
-        programs: Dictionary mapping program IDs to executed
-            ``VariationalQuantumAlgorithm`` instances.
-        initial_solution: Starting solution vector.
-        extend_fn: ``(current_solution, prog_id, candidate) -> extended_solution``.
-        evaluate_fn: ``(solution) -> float``.  Lower is better.
-        beam_width: Maximum candidates to retain per partition step.
-            ``None`` means keep all (exhaustive).
-        n_partition_candidates: Candidates to fetch per partition.
-            Defaults to ``beam_width`` (or all when exhaustive).
-        top_n: Number of top solutions to return.
-
-    Returns:
-        List of ``(score, solution)`` tuples sorted ascending by score
-        (best first), with at most ``top_n`` entries.
-    """
-    if beam_width is not None and beam_width < 1:
-        raise ValueError(f"beam_width must be >= 1 or None, got {beam_width}")
-
-    if n_partition_candidates is not None and n_partition_candidates < 1:
-        raise ValueError(
-            f"n_partition_candidates must be >= 1 or None, got {n_partition_candidates}"
-        )
-
-    # Ensure the beam retains enough candidates for top_n
-    if beam_width is not None and beam_width < top_n:
-        beam_width = top_n
-
-    if (
-        beam_width is not None
-        and n_partition_candidates is not None
-        and n_partition_candidates < beam_width
-    ):
-        raise ValueError(
-            f"n_partition_candidates ({n_partition_candidates}) must be >= "
-            f"beam_width ({beam_width}). Extracting fewer candidates than the "
-            f"beam width wastes beam capacity."
-        )
-
-    # Resolve the number of candidates to fetch per partition
-    if n_partition_candidates is not None:
-        n_fetch = n_partition_candidates
-    elif beam_width is not None:
-        n_fetch = beam_width
-    else:
-        n_fetch = 2**20  # exhaustive
-
-    initial_list = list(initial_solution)
-    beam: list[tuple[float, list[int]]] = [(evaluate_fn(initial_list), initial_list)]
-
-    for prog_id, program in programs.items():
-        candidates = cast(SolutionSamplingMixin, program).get_top_solutions(
-            n=n_fetch, include_decoded=True
-        )
-        if not candidates:
-            continue
-
-        new_beam: list[tuple[float, list[int]]] = []
-        for _, partial_solution in beam:
-            for candidate in candidates:
-                extended = extend_fn(partial_solution, prog_id, candidate)
-                new_beam.append((evaluate_fn(extended), extended))
-
-        new_beam.sort(key=lambda entry: entry[0])
-        beam = new_beam[:beam_width] if beam_width is not None else new_beam
-
-    beam.sort(key=lambda entry: entry[0])
-    return beam[:top_n]

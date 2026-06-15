@@ -4,6 +4,8 @@
 
 """Unit tests for :mod:`divi.backends._config`."""
 
+import dataclasses
+
 import pytest
 
 from divi.backends import (
@@ -281,6 +283,9 @@ class TestExecutionConfigOverride:
         assert result.truncation_threshold is None
         assert result.simulator is None
         assert result.simulation_method is None
+        assert result.noisy_device is None
+        assert result.noise_realizations is None
+        assert result.noise_scaling_factor is None
         assert result.api_meta is None
 
     def test_override_api_meta(self):
@@ -301,6 +306,9 @@ class TestExecutionConfigPayload:
             truncation_threshold=1e-8,
             simulator=Simulator.QCSim,
             simulation_method=SimulationMethod.MatrixProductState,
+            noisy_device="ibm_fake_fez",
+            noise_realizations=10,
+            noise_scaling_factor=0.5,
             api_meta={"optimization_level": 2},
         )
         payload = config.to_payload()
@@ -309,6 +317,9 @@ class TestExecutionConfigPayload:
             "truncation_threshold": 1e-8,
             "simulator_type": int(Simulator.QCSim),
             "simulation_type": int(SimulationMethod.MatrixProductState),
+            "noisy_device": "ibm_fake_fez",
+            "noise_realizations": 10,
+            "noise_scaling_factor": 0.5,
             "api_meta": {"optimization_level": 2},
         }
 
@@ -330,7 +341,10 @@ class TestExecutionConfigPayload:
             bond_dimension=128,
             truncation_threshold=1e-6,
             simulator=Simulator.GpuSim,
-            simulation_method=SimulationMethod.TensorNetwork,
+            simulation_method=SimulationMethod.MatrixProductState,
+            noisy_device="ibm_fake_fez",
+            noise_realizations=5,
+            noise_scaling_factor=0.25,
             api_meta={"max_execution_time": 300},
         )
         reconstructed = ExecutionConfig.from_response(original.to_payload())
@@ -343,6 +357,118 @@ class TestExecutionConfigPayload:
         assert config.bond_dimension == 64
         assert config.simulator is None
         assert config.simulation_method is None
+
+
+@pytest.mark.parametrize("invalid_value", [0, -1, -10])
+def test_bond_dimension_rejects_non_positive(invalid_value):
+    """bond_dimension must be a positive integer."""
+    with pytest.raises(ValueError, match="bond_dimension must be a positive integer"):
+        ExecutionConfig(bond_dimension=invalid_value)
+
+
+@pytest.mark.parametrize("invalid_value", [-1e-8, -0.5, -10])
+def test_truncation_threshold_rejects_negative(invalid_value):
+    """truncation_threshold must be non-negative."""
+    with pytest.raises(ValueError, match="truncation_threshold must be non-negative"):
+        ExecutionConfig(truncation_threshold=invalid_value)
+
+
+@pytest.mark.parametrize("invalid_value", [0, -1, -10])
+def test_noise_realizations_rejects_non_positive(invalid_value):
+    """noise_realizations must be a positive integer."""
+    with pytest.raises(
+        ValueError, match="noise_realizations must be a positive integer"
+    ):
+        ExecutionConfig(noise_realizations=invalid_value)
+
+
+@pytest.mark.parametrize("field", ["bond_dimension", "truncation_threshold"])
+def test_mps_only_fields_warn_with_non_mps_method(field):
+    """MPS-only fields warn when paired with an explicit non-MPS method."""
+    value = 64 if field == "bond_dimension" else 1e-8
+    with pytest.warns(UserWarning, match="only apply to MatrixProductState"):
+        ExecutionConfig(
+            simulation_method=SimulationMethod.Statevector, **{field: value}
+        )
+
+
+def test_mps_only_fields_silent_with_mps_method(recwarn):
+    """No warning when MPS-only fields pair with MatrixProductState."""
+    ExecutionConfig(
+        bond_dimension=64,
+        truncation_threshold=1e-8,
+        simulation_method=SimulationMethod.MatrixProductState,
+    )
+    assert len(recwarn) == 0
+
+
+def test_mps_only_fields_silent_with_no_method(recwarn):
+    """No warning when simulation_method is unset (server auto-picks)."""
+    ExecutionConfig(bond_dimension=64, truncation_threshold=1e-8)
+    assert len(recwarn) == 0
+
+
+@pytest.mark.parametrize("invalid_value", [-0.1, 1.1, 2.0, -5])
+def test_noise_scaling_factor_rejects_out_of_range(invalid_value):
+    """noise_scaling_factor must lie between 0 and 1."""
+    with pytest.raises(
+        ValueError, match="noise_scaling_factor must be between 0 and 1"
+    ):
+        ExecutionConfig(noise_scaling_factor=invalid_value)
+
+
+@pytest.mark.parametrize("valid_value", [0, 0.5, 1])
+def test_noise_scaling_factor_accepts_unit_interval(valid_value):
+    """Boundary and interior values in [0, 1] are accepted."""
+    assert (
+        ExecutionConfig(noise_scaling_factor=valid_value).noise_scaling_factor
+        == valid_value
+    )
+
+
+def test_noise_scaling_factor_zero_with_device_warns():
+    """Scaling a named device's noise to zero warns about the noiseless run."""
+    with pytest.warns(UserWarning, match="cancels all noise from noisy_device"):
+        ExecutionConfig(noisy_device="ibm_fake_fez", noise_scaling_factor=0)
+
+
+def test_noise_scaling_factor_zero_without_device_is_silent(recwarn):
+    """Scaling to zero with no device set is a valid baseline, no warning."""
+    ExecutionConfig(noise_scaling_factor=0)
+    assert len(recwarn) == 0
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"bond_dimension": 0},
+        {"noise_realizations": 0},
+        {"truncation_threshold": -1e-8},
+        {"noise_scaling_factor": 2.0},
+    ],
+)
+def test_from_response_skips_input_validation(data):
+    """Reading server state must round-trip even if it predates a guard."""
+    config = ExecutionConfig.from_response(data)
+    field, value = next(iter(data.items()))
+    assert getattr(config, field) == value
+
+
+def test_override_skips_validation_and_warnings(recwarn):
+    """Merging two individually-valid configs neither raises nor warns."""
+    base = ExecutionConfig(bond_dimension=64)
+    other = ExecutionConfig(simulation_method=SimulationMethod.Statevector)
+    result = base.override(other)
+    assert result.bond_dimension == 64
+    assert result.simulation_method == SimulationMethod.Statevector
+    assert len(recwarn) == 0
+
+
+def test_validate_input_flag_excluded_from_fields_and_payload():
+    """The private _validate_input InitVar must not leak into fields or payload."""
+    field_names = {f.name for f in dataclasses.fields(ExecutionConfig)}
+    assert "_validate_input" not in field_names
+    assert "_validate_input" not in ExecutionConfig(bond_dimension=64).to_payload()
 
 
 def test_frozen():

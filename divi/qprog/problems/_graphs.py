@@ -5,6 +5,7 @@
 """Graph problem classes for QAOA."""
 
 from collections.abc import Callable, Hashable
+from functools import cached_property
 from typing import Any
 from warnings import warn
 
@@ -90,7 +91,13 @@ class _GraphProblemBase(QAOAProblem):
 
     @property
     def graph(self) -> GraphProblemTypes:
-        """The underlying graph."""
+        """The underlying graph.
+
+        Treat as read-only: the cost Hamiltonian is fixed at construction, and
+        ``evaluate_global_solution`` caches the Pauli term list on first call.
+        Mutating this graph (adding nodes/edges, changing weights) regenerates
+        neither, so scores would go stale. Build a new problem instead.
+        """
         return self._graph
 
     @property
@@ -197,11 +204,18 @@ class _GraphProblemBase(QAOAProblem):
 
         return extended
 
-    def evaluate_global_solution(self, solution: list[int]) -> float:
+    @cached_property
+    def _diagonal_terms(self) -> list[tuple[float, tuple[int, ...]]]:
+        """``(coeff, z_qubit_indices)`` per cost-Hamiltonian term.
+
+        Computed once from the (immutable) cost Hamiltonian so
+        :meth:`evaluate_global_solution` need not rebuild Pauli labels on every
+        call. Validates the Hamiltonian is diagonal (Z/I only) up front.
+        """
         spo: SparsePauliOp = self.cost_hamiltonian
-        energy = self.loss_constant
+        terms: list[tuple[float, tuple[int, ...]]] = []
         for label, coeff in zip(spo.paulis.to_labels(), spo.coeffs):
-            eigenvalue = 1.0
+            z_qubits = []
             for qubit, char in enumerate(reversed(label)):
                 if char == "I":
                     continue
@@ -210,8 +224,17 @@ class _GraphProblemBase(QAOAProblem):
                         f"Cost Hamiltonian contains non-diagonal term {label!r}; "
                         f"evaluate_global_solution requires Z-only operators."
                     )
+                z_qubits.append(qubit)
+            terms.append((float(np.real(coeff)), tuple(z_qubits)))
+        return terms
+
+    def evaluate_global_solution(self, solution: list[int]) -> float:
+        energy = self.loss_constant
+        for coeff, z_qubits in self._diagonal_terms:
+            eigenvalue = 1.0
+            for qubit in z_qubits:
                 eigenvalue *= 1 - 2 * solution[qubit]
-            energy += float(np.real(coeff)) * eigenvalue
+            energy += coeff * eigenvalue
         return energy
 
     def postprocess_candidates(

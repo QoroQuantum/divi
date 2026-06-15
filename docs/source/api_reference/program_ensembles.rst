@@ -34,6 +34,22 @@ steps to build a trajectory.
    :no-inherited-members:
    :include-all-objects:
 
+Aggregation Strategies
+----------------------
+
+:class:`~divi.qprog.workflows.PartitioningProgramEnsemble` combines per-partition
+candidates into global solutions using an
+:class:`~divi.qprog.AggregationStrategy`.
+:class:`~divi.qprog.BeamSearchStrategy` (the default) explores candidates
+left-to-right across partitions; :class:`~divi.qprog.HierarchicalStrategy` solves
+groups of partitions independently and merges them pairwise.
+
+.. automodapi:: divi.qprog.aggregation
+   :no-heading:
+   :no-inheritance-diagram:
+   :no-inherited-members:
+   :include-all-objects:
+
 Partitioning Configuration
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 

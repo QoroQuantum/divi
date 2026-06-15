@@ -11,6 +11,8 @@ import pytest
 from divi.backends import CircuitRunner
 from divi.qprog import (
     QAOA,
+    BeamSearchStrategy,
+    HierarchicalStrategy,
     ScipyMethod,
     ScipyOptimizer,
     SuperpositionState,
@@ -26,7 +28,29 @@ from divi.qprog.problems import (
 )
 from divi.qprog.workflows import PartitioningProgramEnsemble
 from tests.qprog._program_contracts import verify_metacircuit_dict
-from tests.qprog.problems._helpers import make_bull_graph, make_string_node_graph
+from tests.qprog.problems._helpers import (
+    make_bull_graph,
+    make_string_node_graph,
+    seed_zero_one_best_probs,
+)
+
+
+def _naive_diagonal_energy(problem, solution):
+    """Reference evaluate: sum Z-eigenvalues by parsing Pauli labels each call.
+
+    Mirrors the pre-hoist implementation exactly (same term order, qubit order,
+    and accumulation order) so equality with the cached path is bit-for-bit.
+    """
+    spo = problem.cost_hamiltonian
+    energy = problem.loss_constant
+    for label, coeff in zip(spo.paulis.to_labels(), spo.coeffs):
+        eigenvalue = 1.0
+        for qubit, char in enumerate(reversed(label)):
+            if char == "I":
+                continue
+            eigenvalue *= 1 - 2 * solution[qubit]
+        energy += float(np.real(coeff)) * eigenvalue
+    return energy
 
 
 class TestEvaluateSolution:
@@ -40,6 +64,32 @@ class TestEvaluateSolution:
     def _make_problem(graph, problem_cls=MaxCutProblem):
         """Create a MaxCutProblem with partitioning config for unit-testing."""
         return problem_cls(graph, config=GraphPartitioningConfig(minimum_n_clusters=1))
+
+    def test_evaluate_is_bit_exact_with_naive_label_sum(self):
+        """The cached evaluate must equal the naive label-sum *exactly*.
+
+        Guards the accumulation order that makes scores bit-identical (and hence
+        tie-breaking deterministic). A future vectorisation that reorders the
+        float ops would break this even though ``pytest.approx`` would not catch
+        it. A tie-heavy symmetric graph maximises the determinism stakes.
+        """
+        problem = self._make_problem(nx.cycle_graph(6))
+        rng = np.random.default_rng(0)
+        for _ in range(200):
+            solution = rng.integers(0, 2, 6).tolist()
+            assert problem.evaluate_global_solution(solution) == _naive_diagonal_energy(
+                problem, solution
+            )
+
+    def test_evaluate_bit_exact_for_non_maxcut_subclass(self):
+        """The shared cached evaluate path is correct for non-MaxCut problems too."""
+        problem = self._make_problem(nx.cycle_graph(5), MaxIndependentSetProblem)
+        rng = np.random.default_rng(1)
+        for _ in range(200):
+            solution = rng.integers(0, 2, 5).tolist()
+            assert problem.evaluate_global_solution(solution) == _naive_diagonal_energy(
+                problem, solution
+            )
 
     def test_perfect_maxcut_on_4_cycle(self):
         """A bipartite 4-cycle has a perfect cut of 4 edges."""
@@ -674,6 +724,21 @@ def graph_ensemble(ensemble_args):
     return PartitioningProgramEnsemble(**ensemble_args)
 
 
+def _seed_second_partition_all_ones(ensemble):
+    """Seed partition 1 with all-ones and every other partition with all-zeros.
+
+    Returns the set of global node indices owned by partition 1 (the expected
+    aggregated solution).
+    """
+    prog_keys = list(ensemble.programs.keys())
+    for i, key in enumerate(prog_keys):
+        n_qubits = ensemble.programs[key].n_qubits
+        bit = "1" if i == 1 else "0"
+        ensemble.programs[key]._best_probs = {"tag": {bit * n_qubits: 1.0}}
+        ensemble.programs[key]._losses_history = [{"dummy_loss": 0.0}]
+    return set(ensemble._problem._reverse_index_maps[prog_keys[1]].values())
+
+
 class TestGraphPartitioningEnsemble:
     def test_correct_number_of_programs_created(self, mocker, graph_ensemble):
         mocker.patch("divi.qprog.QAOA")
@@ -684,32 +749,7 @@ class TestGraphPartitioningEnsemble:
 
     def test_results_aggregated_correctly(self, graph_ensemble):
         graph_ensemble.create_programs()
-
-        prog_keys = list(graph_ensemble.programs.keys())
-        prog_1_key, prog_2_key = prog_keys[0], prog_keys[1]
-
-        n_qubits_1 = graph_ensemble.programs[prog_1_key].n_qubits
-        n_qubits_2 = graph_ensemble.programs[prog_2_key].n_qubits
-
-        all_zeros_bitstring = "0" * n_qubits_1
-        all_ones_bitstring = "1" * n_qubits_2
-
-        graph_ensemble.programs[prog_1_key]._best_probs = {
-            "tag": {all_zeros_bitstring: 1.0}
-        }
-        graph_ensemble.programs[prog_2_key]._best_probs = {
-            "tag": {all_ones_bitstring: 1.0}
-        }
-
-        for key in prog_keys[2:]:
-            n_qubits = graph_ensemble.programs[key].n_qubits
-            graph_ensemble.programs[key]._best_probs = {"tag": {"0" * n_qubits: 1.0}}
-
-        for program in graph_ensemble.programs.values():
-            program._losses_history = [{"dummy_loss": 0.0}]
-
-        problem = graph_ensemble._problem
-        expected_nodes = set(problem._reverse_index_maps[prog_2_key].values())
+        expected_nodes = _seed_second_partition_all_ones(graph_ensemble)
 
         solution, energy = graph_ensemble.aggregate_results()
 
@@ -719,21 +759,15 @@ class TestGraphPartitioningEnsemble:
     def test_get_top_solutions_numerical_correctness(self, graph_ensemble):
         """Verify that get_top_solutions returns correctly ranked, distinct solutions."""
         graph_ensemble.create_programs()
-        prog_keys = list(graph_ensemble.programs.keys())
-        _GRAPH.number_of_nodes()
+        seed_zero_one_best_probs(graph_ensemble, 0.3, 0.7)
 
-        for key in prog_keys:
-            n_qubits = graph_ensemble.programs[key].n_qubits
-            graph_ensemble.programs[key]._best_probs = {
-                "tag": {"0" * n_qubits: 0.3, "1" * n_qubits: 0.7}
-            }
-            graph_ensemble.programs[key]._losses_history = [{"dummy_loss": 0.0}]
-
-        n_partitions = len(prog_keys)
-        n_expected = min(2**n_partitions, 2**n_partitions)
+        n_expected = 2 ** len(graph_ensemble.programs)
 
         results = graph_ensemble.get_top_solutions(
-            n=n_expected, beam_width=n_expected, n_partition_candidates=n_expected
+            n=n_expected,
+            strategy=BeamSearchStrategy(
+                beam_width=n_expected, n_partition_candidates=n_expected
+            ),
         )
 
         assert len(results) == n_expected
@@ -754,30 +788,39 @@ class TestGraphPartitioningEnsemble:
     def test_get_top_solutions_matches_aggregate_results(self, graph_ensemble):
         """The best solution from get_top_solutions matches aggregate_results."""
         graph_ensemble.create_programs()
+        expected_nodes = _seed_second_partition_all_ones(graph_ensemble)
 
-        prog_keys = list(graph_ensemble.programs.keys())
-        prog_1_key, prog_2_key = prog_keys[0], prog_keys[1]
-
-        n_qubits_1 = graph_ensemble.programs[prog_1_key].n_qubits
-        n_qubits_2 = graph_ensemble.programs[prog_2_key].n_qubits
-
-        graph_ensemble.programs[prog_1_key]._best_probs = {
-            "tag": {"0" * n_qubits_1: 1.0}
-        }
-        graph_ensemble.programs[prog_2_key]._best_probs = {
-            "tag": {"1" * n_qubits_2: 1.0}
-        }
-        for key in prog_keys[2:]:
-            n_qubits = graph_ensemble.programs[key].n_qubits
-            graph_ensemble.programs[key]._best_probs = {"tag": {"0" * n_qubits: 1.0}}
-        for program in graph_ensemble.programs.values():
-            program._losses_history = [{"dummy_loss": 0.0}]
-
-        problem = graph_ensemble._problem
-        expected_nodes = set(problem._reverse_index_maps[prog_2_key].values())
-
-        results = graph_ensemble.get_top_solutions(n=1, beam_width=1)
+        results = graph_ensemble.get_top_solutions(
+            n=1, strategy=BeamSearchStrategy(beam_width=1)
+        )
         assert len(results) == 1
         solution, energy = results[0]
         assert set(solution) == expected_nodes
         assert isinstance(energy, float)
+
+    def test_get_top_solutions_hierarchical_matches_beam(self, graph_ensemble):
+        """HierarchicalStrategy runs through the graph post-processing path and, on
+        the (disjoint) partitions divi produces, returns the same ranked solutions
+        as beam search."""
+        graph_ensemble.create_programs()
+        seed_zero_one_best_probs(graph_ensemble, 0.3, 0.7)
+
+        n_expected = 2 ** len(graph_ensemble.programs)
+
+        beam = graph_ensemble.get_top_solutions(
+            n=n_expected,
+            strategy=BeamSearchStrategy(
+                beam_width=n_expected, n_partition_candidates=n_expected
+            ),
+        )
+        hier = graph_ensemble.get_top_solutions(
+            n=n_expected,
+            strategy=HierarchicalStrategy(
+                group_size=2, k_per_partition=n_expected, max_per_group=n_expected
+            ),
+        )
+
+        assert [sorted(nodes) for nodes, _ in hier] == [
+            sorted(nodes) for nodes, _ in beam
+        ]
+        assert [e for _, e in hier] == pytest.approx([e for _, e in beam])

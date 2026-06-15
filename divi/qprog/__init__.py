@@ -10,6 +10,11 @@ from ._metrics import (
 from ._observable_measuring_mixin import ObservableMeasuringMixin
 from ._solution_sampling_mixin import SolutionEntry, SolutionSamplingMixin
 from ._types import GraphProblemTypes
+from .aggregation import (
+    AggregationStrategy,
+    BeamSearchStrategy,
+    HierarchicalStrategy,
+)
 from .algorithms import (
     PCE,
     QAOA,

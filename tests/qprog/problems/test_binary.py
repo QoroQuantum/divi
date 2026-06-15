@@ -16,6 +16,8 @@ from divi.qprog import (
     PCE,
     QAOA,
     BatchConfig,
+    BeamSearchStrategy,
+    HierarchicalStrategy,
     MonteCarloOptimizer,
     ScipyMethod,
     ScipyOptimizer,
@@ -33,6 +35,10 @@ from tests.qprog.problems._helpers import (
     exact_hubo_minima,
     make_bqm_maximize,
     make_bqm_minimize,
+    make_decomposed_problem,
+    make_known_qubo_bqm,
+    make_zero_offset_bqm,
+    seed_zero_one_best_probs,
 )
 
 
@@ -195,59 +201,28 @@ class TestSanitizeProblemInput:
 class TestEvaluateSolution:
     """Tests for BinaryOptimizationProblem.evaluate_global_solution."""
 
-    @staticmethod
-    def _make_problem(qubo):
-        """Create a minimal BinaryOptimizationProblem for unit-testing only."""
-        decomposer = hybrid.EnergyImpactDecomposer(size=2)
-        return BinaryOptimizationProblem(qubo, decomposer=decomposer)
-
     def test_known_qubo_optimal(self):
         """Verify energy for the known optimal solution [1,1,0,0]."""
-        qubo = {
-            (0, 0): -0.5,
-            (1, 1): 1,
-            (0, 1): -2,
-            (2, 2): 1,
-            (3, 3): 1,
-            (2, 3): 2,
-        }
-        bqm = dimod.BinaryQuadraticModel.from_qubo(qubo)
-        problem = self._make_problem(bqm)
+        problem = make_decomposed_problem(make_known_qubo_bqm())
         energy = problem.evaluate_global_solution([1, 1, 0, 0])
         assert energy == pytest.approx(-1.5)
 
     def test_all_zeros(self):
         """All-zero solution has energy 0 for a QUBO with no constant offset."""
-        qubo = {
-            (0, 0): -0.5,
-            (1, 1): 1,
-            (0, 1): -2,
-        }
-        bqm = dimod.BinaryQuadraticModel.from_qubo(qubo)
-        problem = self._make_problem(bqm)
+        problem = make_decomposed_problem(make_zero_offset_bqm())
         energy = problem.evaluate_global_solution([0, 0])
         assert energy == pytest.approx(0.0)
 
     def test_diagonal_qubo(self):
         """Diagonal QUBO (only linear terms): energy = sum of selected biases."""
-        qubo = np.diag([-1.0, 2.0, -3.0])
-        problem = self._make_problem(qubo)
+        problem = make_decomposed_problem(np.diag([-1.0, 2.0, -3.0]))
         # x = [1,0,1] -> energy = -1 + 0 + (-3) = -4
         energy = problem.evaluate_global_solution([1, 0, 1])
         assert energy == pytest.approx(-4.0)
 
     def test_lower_energy_is_better(self):
         """Verify that optimal solution has lowest energy."""
-        qubo = {
-            (0, 0): -0.5,
-            (1, 1): 1,
-            (0, 1): -2,
-            (2, 2): 1,
-            (3, 3): 1,
-            (2, 3): 2,
-        }
-        bqm = dimod.BinaryQuadraticModel.from_qubo(qubo)
-        problem = self._make_problem(bqm)
+        problem = make_decomposed_problem(make_known_qubo_bqm())
         optimal = problem.evaluate_global_solution([1, 1, 0, 0])
         suboptimal = problem.evaluate_global_solution([1, 0, 0, 0])
         all_ones = problem.evaluate_global_solution([1, 1, 1, 1])
@@ -275,14 +250,14 @@ def test_merges_two_sample_sets():
     assert "b" in merged_vars
 
 
-class TestDecomposeQUBO:
-    @staticmethod
-    def _make_problem(qubo, decomposer=None):
-        return BinaryOptimizationProblem(qubo, decomposer=decomposer)
+TRIVIAL_QUBO = np.diag([-1, -1, -1, -1])
+# Diagonal QUBO: every variable decouples, so decomposition yields trivial
+# (no-interaction) subproblems.
 
+
+class TestDecomposeQUBO:
     def test_decompose_returns_sub_problems(self, sample_qubo_matrix):
-        decomposer = hybrid.EnergyImpactDecomposer(size=2)
-        problem = self._make_problem(sample_qubo_matrix, decomposer=decomposer)
+        problem = make_decomposed_problem(sample_qubo_matrix)
 
         sub_problems = problem.decompose()
 
@@ -291,8 +266,7 @@ class TestDecomposeQUBO:
             assert isinstance(sub_problem, BinaryOptimizationProblem)
 
     def test_decompose_populates_variable_maps(self, sample_qubo_matrix):
-        decomposer = hybrid.EnergyImpactDecomposer(size=2)
-        problem = self._make_problem(sample_qubo_matrix, decomposer=decomposer)
+        problem = make_decomposed_problem(sample_qubo_matrix)
 
         problem.decompose()
 
@@ -301,22 +275,13 @@ class TestDecomposeQUBO:
             assert isinstance(problem._variable_maps[prog_id], list)
 
     def test_decompose_raises_without_decomposer(self, sample_qubo_matrix):
-        problem = self._make_problem(sample_qubo_matrix)
+        problem = BinaryOptimizationProblem(sample_qubo_matrix)
 
         with pytest.raises(ValueError, match="Cannot decompose"):
             problem.decompose()
 
     def test_decompose_identifies_trivial_subproblems(self):
-        trivial_qubo = np.array(
-            [
-                [-1, 0, 0, 0],
-                [0, -1, 0, 0],
-                [0, 0, -1, 0],
-                [0, 0, 0, -1],
-            ]
-        )
-        decomposer = hybrid.EnergyImpactDecomposer(size=2)
-        problem = self._make_problem(trivial_qubo, decomposer=decomposer)
+        problem = make_decomposed_problem(TRIVIAL_QUBO)
 
         problem.decompose()
 
@@ -324,8 +289,7 @@ class TestDecomposeQUBO:
 
 
 def test_returns_number_of_variables(sample_qubo_matrix):
-    decomposer = hybrid.EnergyImpactDecomposer(size=2)
-    problem = BinaryOptimizationProblem(sample_qubo_matrix, decomposer=decomposer)
+    problem = make_decomposed_problem(sample_qubo_matrix)
 
     assert problem.initial_solution_size() == 4
 
@@ -333,23 +297,9 @@ def test_returns_number_of_variables(sample_qubo_matrix):
 class TestExtendSolutionQUBO:
     """Tests for BinaryOptimizationProblem.extend_solution."""
 
-    @staticmethod
-    def _make_problem(qubo):
-        decomposer = hybrid.EnergyImpactDecomposer(size=2)
-        return BinaryOptimizationProblem(qubo, decomposer=decomposer)
-
     def test_maps_local_bits_to_global_positions(self):
         """Candidate's decoded bits appear at the correct global indices."""
-        qubo = {
-            (0, 0): -0.5,
-            (1, 1): 1,
-            (0, 1): -2,
-            (2, 2): 1,
-            (3, 3): 1,
-            (2, 3): 2,
-        }
-        bqm = dimod.BinaryQuadraticModel.from_qubo(qubo)
-        problem = self._make_problem(bqm)
+        problem = make_decomposed_problem(make_known_qubo_bqm())
         problem.decompose()
 
         prog_id = list(problem._variable_maps.keys())[0]
@@ -369,8 +319,7 @@ class TestExtendSolutionQUBO:
 
     def test_does_not_mutate_input(self):
         """extend_solution returns a new list, not a mutation of the input."""
-        qubo = np.diag([-1.0, -1.0, -1.0])
-        problem = self._make_problem(qubo)
+        problem = make_decomposed_problem(np.diag([-1.0, -1.0, -1.0]))
         problem.decompose()
 
         prog_id = list(problem._variable_maps.keys())[0]
@@ -386,16 +335,7 @@ class TestExtendSolutionQUBO:
 
     def test_overwrites_previous_partition_values(self):
         """Extending with zeros overwrites previous ones at mapped positions."""
-        qubo = {
-            (0, 0): -0.5,
-            (1, 1): 1,
-            (0, 1): -2,
-            (2, 2): 1,
-            (3, 3): 1,
-            (2, 3): 2,
-        }
-        bqm = dimod.BinaryQuadraticModel.from_qubo(qubo)
-        problem = self._make_problem(bqm)
+        problem = make_decomposed_problem(make_known_qubo_bqm())
         problem.decompose()
 
         prog_id = list(problem._variable_maps.keys())[0]
@@ -418,23 +358,9 @@ class TestExtendSolutionQUBO:
 class TestComposeSolutionQUBO:
     """Tests for BinaryOptimizationProblem._compose_solution."""
 
-    @staticmethod
-    def _make_problem(qubo):
-        decomposer = hybrid.EnergyImpactDecomposer(size=2)
-        return BinaryOptimizationProblem(qubo, decomposer=decomposer)
-
     def test_optimal_solution_has_correct_energy(self):
         """_compose_solution returns (solution, energy) matching the QUBO energy."""
-        qubo = {
-            (0, 0): -0.5,
-            (1, 1): 1,
-            (0, 1): -2,
-            (2, 2): 1,
-            (3, 3): 1,
-            (2, 3): 2,
-        }
-        bqm = dimod.BinaryQuadraticModel.from_qubo(qubo)
-        problem = self._make_problem(bqm)
+        problem = make_decomposed_problem(make_known_qubo_bqm())
         problem.decompose()
 
         # [1,1,0,0] is the optimal solution with energy -1.5
@@ -446,13 +372,7 @@ class TestComposeSolutionQUBO:
 
     def test_all_zeros_returns_zero_energy(self):
         """All-zero solution has zero energy for a QUBO with no constant offset."""
-        qubo = {
-            (0, 0): -0.5,
-            (1, 1): 1,
-            (0, 1): -2,
-        }
-        bqm = dimod.BinaryQuadraticModel.from_qubo(qubo)
-        problem = self._make_problem(bqm)
+        problem = make_decomposed_problem(make_zero_offset_bqm())
         problem.decompose()
 
         solution_array, energy = problem._compose_solution([0, 0])
@@ -461,16 +381,7 @@ class TestComposeSolutionQUBO:
 
     def test_does_not_mutate_subproblem_states(self):
         """_compose_solution operates on copies and doesn't alter shared state."""
-        qubo = {
-            (0, 0): -0.5,
-            (1, 1): 1,
-            (0, 1): -2,
-            (2, 2): 1,
-            (3, 3): 1,
-            (2, 3): 2,
-        }
-        bqm = dimod.BinaryQuadraticModel.from_qubo(qubo)
-        problem = self._make_problem(bqm)
+        problem = make_decomposed_problem(make_known_qubo_bqm())
         problem.decompose()
 
         # Snapshot subproblem state identities before call
@@ -485,8 +396,7 @@ class TestComposeSolutionQUBO:
 
 class TestPostprocessCandidatesQUBO:
     def test_returns_array_and_energy(self, sample_qubo_matrix):
-        decomposer = hybrid.EnergyImpactDecomposer(size=2)
-        problem = BinaryOptimizationProblem(sample_qubo_matrix, decomposer=decomposer)
+        problem = make_decomposed_problem(sample_qubo_matrix)
         problem.decompose()
 
         result = problem.postprocess_candidates([(-1.0, [1, 1, 0, 0])])[0]
@@ -497,8 +407,7 @@ class TestPostprocessCandidatesQUBO:
         assert isinstance(result[1], float)
 
     def test_formats_and_sorts_by_energy(self, sample_qubo_matrix):
-        decomposer = hybrid.EnergyImpactDecomposer(size=2)
-        problem = BinaryOptimizationProblem(sample_qubo_matrix, decomposer=decomposer)
+        problem = make_decomposed_problem(sample_qubo_matrix)
         problem.decompose()
 
         results = [(-1.0, [1, 1, 0, 0]), (-0.5, [0, 0, 1, 1])]
@@ -900,10 +809,8 @@ def basic_ansatz() -> GenericLayerAnsatz:
 @pytest.fixture
 def qubo_ensemble_qaoa(sample_qubo_matrix, default_test_simulator):
     """Provides a PartitioningProgramEnsemble with BinaryOptimizationProblem for testing."""
-    decomposer = hybrid.EnergyImpactDecomposer(size=2)
-    problem = BinaryOptimizationProblem(sample_qubo_matrix, decomposer=decomposer)
     return PartitioningProgramEnsemble(
-        problem=problem,
+        problem=make_decomposed_problem(sample_qubo_matrix),
         n_layers=1,
         optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
         max_iterations=10,
@@ -914,10 +821,8 @@ def qubo_ensemble_qaoa(sample_qubo_matrix, default_test_simulator):
 @pytest.fixture
 def qubo_ensemble_pce(sample_qubo_matrix, basic_ansatz, default_test_simulator):
     """Provides a PartitioningProgramEnsemble configured to use PCE partitions."""
-    decomposer = hybrid.EnergyImpactDecomposer(size=2)
-    problem = BinaryOptimizationProblem(sample_qubo_matrix, decomposer=decomposer)
     return PartitioningProgramEnsemble(
-        problem=problem,
+        problem=make_decomposed_problem(sample_qubo_matrix),
         n_layers=1,
         quantum_routine="pce",
         ansatz=basic_ansatz,
@@ -952,11 +857,9 @@ class TestQUBOPartitioningEnsemble:
         )
 
     def test_invalid_engine_raises(self, sample_qubo_matrix, dummy_simulator):
-        decomposer = hybrid.EnergyImpactDecomposer(size=2)
-        problem = BinaryOptimizationProblem(sample_qubo_matrix, decomposer=decomposer)
         with pytest.raises(ValueError, match="Unsupported quantum_routine"):
             PartitioningProgramEnsemble(
-                problem=problem,
+                problem=make_decomposed_problem(sample_qubo_matrix),
                 n_layers=1,
                 optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
                 quantum_routine="invalid",
@@ -964,17 +867,7 @@ class TestQUBOPartitioningEnsemble:
             )
 
     def test_trivial_subproblem_is_identified_and_skipped(self, dummy_simulator):
-        trivial_qubo = np.array(
-            [
-                [-1, 0, 0, 0],
-                [0, -1, 0, 0],
-                [0, 0, -1, 0],
-                [0, 0, 0, -1],
-            ]
-        )
-
-        decomposer = hybrid.EnergyImpactDecomposer(size=2)
-        problem = BinaryOptimizationProblem(trivial_qubo, decomposer=decomposer)
+        problem = make_decomposed_problem(TRIVIAL_QUBO)
 
         ensemble = PartitioningProgramEnsemble(
             problem=problem,
@@ -1012,33 +905,19 @@ class TestQUBOPartitioningEnsemble:
 
     def test_get_top_solutions_numerical_correctness(self, dummy_simulator):
         """Verify exact solutions and energies for a known QUBO problem."""
-        qubo = {
-            (0, 0): -0.5,
-            (1, 1): 1,
-            (0, 1): -2,
-            (2, 2): 1,
-            (3, 3): 1,
-            (2, 3): 2,
-        }
-        bqm = dimod.BinaryQuadraticModel.from_qubo(qubo)
-        decomposer = hybrid.EnergyImpactDecomposer(size=2)
-        problem = BinaryOptimizationProblem(bqm, decomposer=decomposer)
-
         ensemble = PartitioningProgramEnsemble(
-            problem=problem,
+            problem=make_decomposed_problem(make_known_qubo_bqm()),
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=1,
             backend=dummy_simulator,
         )
         ensemble.create_programs()
-
-        for program in ensemble.programs.values():
-            program._best_probs = {"tag": {"00": 0.3, "11": 0.7}}
-            program._losses_history = [{"dummy_loss": 0.0}]
+        seed_zero_one_best_probs(ensemble, 0.3, 0.7)
 
         results = ensemble.get_top_solutions(
-            n=4, beam_width=4, n_partition_candidates=4
+            n=4,
+            strategy=BeamSearchStrategy(beam_width=4, n_partition_candidates=4),
         )
 
         assert len(results) == 4
@@ -1058,25 +937,49 @@ class TestQUBOPartitioningEnsemble:
         assert solutions[3] == (0, 0, 1, 1)
         assert energies[3] == pytest.approx(4.0)
 
+    def test_get_top_solutions_hierarchical_matches_beam(self, dummy_simulator):
+        """HierarchicalStrategy runs through the QUBO compose path and, on the
+        (disjoint) decomposition divi produces, returns the same ranked solutions
+        as beam search."""
+        ensemble = PartitioningProgramEnsemble(
+            problem=make_decomposed_problem(make_known_qubo_bqm()),
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=1,
+            backend=dummy_simulator,
+        )
+        ensemble.create_programs()
+        seed_zero_one_best_probs(ensemble, 0.3, 0.7)
+
+        beam = ensemble.get_top_solutions(
+            n=4, strategy=BeamSearchStrategy(beam_width=4, n_partition_candidates=4)
+        )
+        hier = ensemble.get_top_solutions(
+            n=4,
+            strategy=HierarchicalStrategy(
+                group_size=2, k_per_partition=4, max_per_group=50
+            ),
+        )
+
+        assert [tuple(sol.tolist()) for sol, _ in hier] == [
+            tuple(sol.tolist()) for sol, _ in beam
+        ]
+        assert [e for _, e in hier] == pytest.approx([e for _, e in beam])
+
     def test_get_top_solutions_best_matches_aggregate(self, qubo_ensemble_qaoa):
         """The best solution from get_top_solutions matches aggregate_results."""
         qubo_ensemble_qaoa.create_programs()
-
-        for program in qubo_ensemble_qaoa.programs.values():
-            n_qubits = program.n_qubits
-            program._best_probs = {"tag": {"0" * n_qubits: 0.6, "1" * n_qubits: 0.4}}
-            program._losses_history = [{"dummy_loss": 0.0}]
+        seed_zero_one_best_probs(qubo_ensemble_qaoa, 0.6, 0.4)
 
         agg_solution, agg_energy = qubo_ensemble_qaoa.aggregate_results()
 
         qubo_ensemble_qaoa.reset()
         qubo_ensemble_qaoa.create_programs()
-        for program in qubo_ensemble_qaoa.programs.values():
-            n_qubits = program.n_qubits
-            program._best_probs = {"tag": {"0" * n_qubits: 0.6, "1" * n_qubits: 0.4}}
-            program._losses_history = [{"dummy_loss": 0.0}]
+        seed_zero_one_best_probs(qubo_ensemble_qaoa, 0.6, 0.4)
 
-        results = qubo_ensemble_qaoa.get_top_solutions(n=1, beam_width=1)
+        results = qubo_ensemble_qaoa.get_top_solutions(
+            n=1, strategy=BeamSearchStrategy(beam_width=1)
+        )
         assert len(results) == 1
         top_solution, top_energy = results[0]
 
@@ -1086,16 +989,14 @@ class TestQUBOPartitioningEnsemble:
     def test_get_top_solutions_does_not_mutate_state(self, qubo_ensemble_qaoa):
         """get_top_solutions does not mutate _bqm_subproblem_states."""
         qubo_ensemble_qaoa.create_programs()
-
-        for program in qubo_ensemble_qaoa.programs.values():
-            n_qubits = program.n_qubits
-            program._best_probs = {"tag": {"0" * n_qubits: 1.0}}
-            program._losses_history = [{"dummy_loss": 0.0}]
+        seed_zero_one_best_probs(qubo_ensemble_qaoa, 1.0)
 
         problem = qubo_ensemble_qaoa._problem
         state_ids_before = {k: id(v) for k, v in problem._bqm_subproblem_states.items()}
 
-        qubo_ensemble_qaoa.get_top_solutions(n=2, beam_width=2)
+        qubo_ensemble_qaoa.get_top_solutions(
+            n=2, strategy=BeamSearchStrategy(beam_width=2)
+        )
 
         for k, v in problem._bqm_subproblem_states.items():
             assert id(v) == state_ids_before[k]
@@ -1103,23 +1004,10 @@ class TestQUBOPartitioningEnsemble:
     @pytest.mark.e2e
     def test_qubo_partitioning_e2e(self, default_test_simulator):
         """An end-to-end test solving a small QUBO."""
-        qubo = {
-            (0, 0): -0.5,
-            (1, 1): 1,
-            (0, 1): -2,
-            (2, 2): 1,
-            (3, 3): 1,
-            (2, 3): 2,
-        }
-        bqm = dimod.BinaryQuadraticModel.from_qubo(qubo)
-
-        decomposer = hybrid.EnergyImpactDecomposer(size=2)
-        problem = BinaryOptimizationProblem(bqm, decomposer=decomposer)
-
         default_test_simulator.set_seed(1997)
 
         ensemble = PartitioningProgramEnsemble(
-            problem=problem,
+            problem=make_decomposed_problem(make_known_qubo_bqm()),
             n_layers=2,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             max_iterations=15,
@@ -1140,22 +1028,10 @@ class TestQUBOPartitioningEnsemble:
     @pytest.mark.e2e
     def test_qubo_partitioning_pce_e2e(self, default_test_simulator, basic_ansatz):
         """An end-to-end test solving a small QUBO with PCE engine."""
-        qubo = {
-            (0, 0): -0.5,
-            (1, 1): 1,
-            (0, 1): -2,
-            (2, 2): 1,
-            (3, 3): 1,
-            (2, 3): 2,
-        }
-        bqm = dimod.BinaryQuadraticModel.from_qubo(qubo)
-        decomposer = hybrid.EnergyImpactDecomposer(size=2)
-        problem = BinaryOptimizationProblem(bqm, decomposer=decomposer)
-
         default_test_simulator.set_seed(1997)
 
         ensemble = PartitioningProgramEnsemble(
-            problem=problem,
+            problem=make_decomposed_problem(make_known_qubo_bqm()),
             n_layers=2,
             quantum_routine="pce",
             ansatz=basic_ansatz,
