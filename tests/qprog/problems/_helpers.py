@@ -5,8 +5,11 @@
 """Shared problem constants and helpers for QAOA/PCE e2e-style tests."""
 
 import dimod
+import hybrid
 import networkx as nx
 import numpy as np
+
+from divi.qprog.problems import BinaryOptimizationProblem
 
 QUBO_MATRIX = np.array(
     [
@@ -43,6 +46,54 @@ HUBO_CUBIC = {
     (0, 1, 2): 2.0,
 }
 # 3-variable cubic HUBO. Optimal solutions found via brute-force exact_hubo_minima.
+
+KNOWN_QUBO = {
+    (0, 0): -0.5,
+    (1, 1): 1,
+    (0, 1): -2,
+    (2, 2): 1,
+    (3, 3): 1,
+    (2, 3): 2,
+}
+# 4-variable QUBO. Optimal solution [1, 1, 0, 0] with energy -1.5.
+
+
+def make_known_qubo_bqm() -> dimod.BinaryQuadraticModel:
+    """BQM for :data:`KNOWN_QUBO` (optimal [1, 1, 0, 0], energy -1.5)."""
+    return dimod.BinaryQuadraticModel.from_qubo(KNOWN_QUBO)
+
+
+ZERO_OFFSET_QUBO = {(0, 0): -0.5, (1, 1): 1, (0, 1): -2}
+# 2-variable QUBO with no constant offset; the all-zeros solution has energy 0.
+
+
+def make_zero_offset_bqm() -> dimod.BinaryQuadraticModel:
+    """BQM for :data:`ZERO_OFFSET_QUBO` (all-zeros has energy 0)."""
+    return dimod.BinaryQuadraticModel.from_qubo(ZERO_OFFSET_QUBO)
+
+
+def make_decomposed_problem(source, *, decomposer_size: int = 2):
+    """A ``BinaryOptimizationProblem`` wired with an ``EnergyImpactDecomposer``.
+
+    ``source`` may be any input the problem accepts (BQM, QUBO matrix, …).
+    Used by partition-aggregation tests that need a decomposable problem.
+    """
+    return BinaryOptimizationProblem(
+        source, decomposer=hybrid.EnergyImpactDecomposer(size=decomposer_size)
+    )
+
+
+def seed_zero_one_best_probs(ensemble, zeros_prob, ones_prob=None):
+    """Seed every program in ``ensemble`` with all-zeros (and optional all-ones)
+    ``best_probs``, bypassing circuit execution for aggregation tests.
+    """
+    for program in ensemble.programs.values():
+        n_qubits = program.n_qubits
+        probs = {"0" * n_qubits: zeros_prob}
+        if ones_prob is not None:
+            probs["1" * n_qubits] = ones_prob
+        program._best_probs = {"tag": probs}
+        program._losses_history = [{"dummy_loss": 0.0}]
 
 
 def exact_hubo_minima(hubo: dict[tuple[int, ...], float], n_vars: int):

@@ -8,8 +8,9 @@ from functools import partial
 from typing import Literal
 
 from divi.backends import CircuitRunner
+from divi.qprog.aggregation import AggregationStrategy, BeamSearchStrategy
 from divi.qprog.algorithms import PCE, QAOA, IterativeQAOA
-from divi.qprog.ensemble import ProgramEnsemble, _beam_search_aggregate_top_n
+from divi.qprog.ensemble import ProgramEnsemble
 from divi.qprog.optimizers import Optimizer, copy_optimizer
 from divi.qprog.problems import BinaryOptimizationProblem, QAOAProblem
 
@@ -19,7 +20,7 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
 
     Delegates all domain-specific logic to the :class:`~divi.qprog.problems.QAOAProblem` instance:
     decomposition, solution extension, evaluation, and result post-processing.
-    The ensemble handles program creation, execution, and beam search.
+    The ensemble handles program creation, execution, and result aggregation.
 
     Args:
         problem: A :class:`~divi.qprog.problems.QAOAProblem` configured for decomposition
@@ -116,31 +117,25 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
                 **self._make_program_args(prog_id),
             )
 
-    def _run_beam_search(self, *, beam_width, n_partition_candidates, top_n):
+    def _aggregate(self, strategy, top_n):
         def _extend_fn(current, prog_id, candidate):
             return self._problem.extend_solution(current, prog_id, candidate.decoded)
 
-        return _beam_search_aggregate_top_n(
+        return strategy.aggregate(
             programs=self._programs,
             initial_solution=[0] * self._problem.initial_solution_size(),
             extend_fn=_extend_fn,
             evaluate_fn=self._problem.evaluate_global_solution,
-            beam_width=beam_width,
-            n_partition_candidates=n_partition_candidates,
             top_n=top_n,
         )
 
-    def aggregate_results(
-        self,
-        beam_width=1,
-        n_partition_candidates=None,
-    ):
-        """Aggregate partition results into a global solution via beam search.
+    def aggregate_results(self, strategy: AggregationStrategy | None = None):
+        """Aggregate partition results into a global solution.
 
         Args:
-            beam_width: Beam width. ``1`` is greedy; ``None`` is exhaustive.
-            n_partition_candidates: Candidates fetched per partition.
-                Defaults to *beam_width*.
+            strategy: An :class:`~divi.qprog.AggregationStrategy` controlling how
+                per-partition candidates are combined. Defaults to
+                :class:`~divi.qprog.BeamSearchStrategy`.
 
         Returns:
             Problem-specific post-processed result (see
@@ -150,18 +145,16 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
         super().aggregate_results()
         self._check_best_probs_available()
 
-        candidates = self._run_beam_search(
-            beam_width=beam_width,
-            n_partition_candidates=n_partition_candidates,
-            top_n=1,
-        )
+        if strategy is None:
+            strategy = BeamSearchStrategy()
+
+        candidates = self._aggregate(strategy, top_n=1)
         results = self._problem.postprocess_candidates(candidates)
         if not results:
             warnings.warn(
                 "aggregate_results produced no valid post-processed solution "
-                f"with beam_width={beam_width!r} and "
-                f"n_partition_candidates={n_partition_candidates!r}. "
-                "Pass wider beam search parameters to "
+                f"with {type(strategy).__name__}. "
+                "Try wider parameters or "
                 "get_top_solutions(..., strict=True).",
                 UserWarning,
                 stacklevel=2,
@@ -174,16 +167,16 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
         self,
         n=10,
         *,
-        beam_width=1,
-        n_partition_candidates=None,
+        strategy: AggregationStrategy | None = None,
         strict: bool = False,
     ):
-        """Get the top-N global solutions from beam search aggregation.
+        """Get the top-N global solutions from partition aggregation.
 
         Args:
             n: Number of top solutions to return (>= 1).
-            beam_width: Beam search width.
-            n_partition_candidates: Candidates per partition.
+            strategy: An :class:`~divi.qprog.AggregationStrategy` controlling how
+                per-partition candidates are combined. Defaults to
+                :class:`~divi.qprog.BeamSearchStrategy`.
             strict: Ask problem-specific post-processing to reject invalid raw
                 constrained solutions rather than repair them. The returned
                 list may contain fewer than *n* entries for constrained
@@ -199,10 +192,9 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
         self._check_ready_for_aggregation()
         self._check_best_probs_available()
 
-        top_results = self._run_beam_search(
-            beam_width=beam_width,
-            n_partition_candidates=n_partition_candidates,
-            top_n=n,
-        )
+        if strategy is None:
+            strategy = BeamSearchStrategy()
+
+        top_results = self._aggregate(strategy, top_n=n)
 
         return self._problem.postprocess_candidates(top_results, strict=strict)
