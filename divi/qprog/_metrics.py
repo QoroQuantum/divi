@@ -397,12 +397,11 @@ class StochasticFidelityMetricEstimator(MetricEstimator):
     estimated as the all-zeros probability of the compute-uncompute circuit
     :math:`U(\theta_1)\,U(\theta_2)^\dagger`. Like the Fubini–Study metric it is
     the geometry of the ansatz state — independent of the *loss observable* — so
-    it applies to any qiskit-invertible ansatz. It is built from the cost-ansatz
-    realization captured at construction (``meta_circuit_factories["cost_circuit"]``)
-    and does not re-sample with a per-evaluation stochastic trotterization, so for
-    QDrift QAOA the metric is the geometry of that one fixed realization
-    (intentionally decoupled from the per-evaluation cost cohort) and stays
-    consistent across the run.
+    it applies to any qiskit-invertible ansatz. The overlap circuits are built
+    from the *current* cost source cohort (``_cost_source_metas``) and averaged,
+    exactly as the pullback / Fubini–Study estimators do, so under a stochastic
+    trotterization (QDrift QAOA) the metric conditions the SPSA gradient with the
+    geometry of the same sampled Hamiltonians used for the current cost evaluation.
     """
 
     def check_compatible(self, program: "VariationalQuantumAlgorithm") -> None:
@@ -422,16 +421,18 @@ class StochasticFidelityMetricEstimator(MetricEstimator):
             )
 
     def bind(self, program: "VariationalQuantumAlgorithm") -> Evaluators:
-        overlap_meta = build_overlap_meta(
-            program.meta_circuit_factories["cost_circuit"]
-        )
-
         def fidelity_fn(
             theta: npt.NDArray[np.float64],
             perturbations: list[npt.NDArray[np.float64]],
         ) -> npt.NDArray[np.float64]:
-            """Fidelities ``F(theta, theta + p)`` for each ``p`` in ``perturbations``,
-            measured in a single batched submission (one row per overlap point)."""
+            """Fidelities ``F(theta, theta + p)`` for each ``p`` in ``perturbations``.
+
+            The overlap circuit is rebuilt from each member of the current cost
+            source cohort (so it tracks the per-evaluation sampled Hamiltonians,
+            not a stale construction-time circuit) and the overlaps are averaged
+            across the cohort. Each cohort member runs one batched submission,
+            one row per overlap point.
+            """
             theta = np.asarray(theta, dtype=np.float64).reshape(-1)
             rows = np.vstack(
                 [
@@ -439,8 +440,16 @@ class StochasticFidelityMetricEstimator(MetricEstimator):
                     for p in perturbations
                 ]
             )
-            indexed = _run_overlap(program, overlap_meta, rows)
-            return np.array([indexed[i] for i in range(len(perturbations))])
+            runs = [
+                _run_overlap(program, build_overlap_meta(source_meta), rows)
+                for source_meta in _cost_source_metas(program)
+            ]
+            return np.array(
+                [
+                    float(np.mean([run[i] for run in runs]))
+                    for i in range(len(perturbations))
+                ]
+            )
 
         return {"fidelity_fn": fidelity_fn}
 

@@ -1076,7 +1076,9 @@ class QNGOptimizer(Optimizer):
         Returns:
             OptimizeResult: Best evaluated iterate over the run.
         """
-        max_iterations = kwargs.pop("max_iterations", None) or 50
+        max_iterations = kwargs.pop("max_iterations", None)
+        if max_iterations is None:  # preserve an explicit 0 (e.g. dry-run / resume)
+            max_iterations = 50
         jac = kwargs.pop("jac", None)
         metric_fn = kwargs.pop("metric_fn", None)
         kwargs.pop("rng", None)  # QNG is deterministic; ignore any provided RNG.
@@ -1121,7 +1123,9 @@ class QNGOptimizer(Optimizer):
             theta = theta - self.step_size * delta
 
         return OptimizeResult(
-            x=np.atleast_2d(best_x),
+            # 1-D best iterate, consistent with every other optimizer (the callback
+            # x is 2-D as the iteration contract requires; the final result is not).
+            x=best_x,
             fun=np.atleast_1d(best_fun),
             nit=max_iterations,
             success=True,
@@ -1412,7 +1416,9 @@ class SPSAOptimizer(_SPSAConfigMixin, Optimizer):
                 ``jac`` and ``metric_fn`` are accepted and ignored (SPSA is
                 gradient-free).
         """
-        max_iterations = kwargs.pop("max_iterations", None) or 50
+        max_iterations = kwargs.pop("max_iterations", None)
+        if max_iterations is None:  # preserve an explicit 0 (e.g. dry-run / resume)
+            max_iterations = 50
         rng = kwargs.pop("rng", None) or np.random.default_rng()
         kwargs.pop("jac", None)
         kwargs.pop("metric_fn", None)
@@ -1614,7 +1620,9 @@ class QNSPSAOptimizer(_SPSAConfigMixin, Optimizer):
                 default) or ``metric_fn`` (an exact estimator). ``jac`` is accepted
                 and ignored (QN-SPSA's gradient is the SPSA estimate).
         """
-        max_iterations = kwargs.pop("max_iterations", None) or 50
+        max_iterations = kwargs.pop("max_iterations", None)
+        if max_iterations is None:  # preserve an explicit 0 (e.g. dry-run / resume)
+            max_iterations = 50
         rng = kwargs.pop("rng", None) or np.random.default_rng()
         kwargs.pop("jac", None)
         fidelity_fn = kwargs.pop("fidelity_fn", None)
@@ -1634,6 +1642,7 @@ class QNSPSAOptimizer(_SPSAConfigMixin, Optimizer):
         A = self.A if self.A is not None else 0.1 * max_iterations
 
         g_bar = np.eye(n_params)
+        metric_samples = 1  # the identity seed counts as the first metric sample
         best_x = theta.copy()
         best_fun = np.inf
         recent: deque[float] = deque(maxlen=self.blocking_history)
@@ -1673,7 +1682,13 @@ class QNSPSAOptimizer(_SPSAConfigMixin, Optimizer):
             )
 
             if fidelity_fn is not None:
-                g_bar = (k * g_bar + np.mean(raws, axis=0)) / (k + 1.0)
+                # Fold the raw sample into the running average, keeping the
+                # identity seed as the first sample so it conditions the early
+                # (noisy, low-rank) solves instead of being discarded at k=0.
+                g_bar = (metric_samples * g_bar + np.mean(raws, axis=0)) / (
+                    metric_samples + 1.0
+                )
+                metric_samples += 1
             else:
                 g_bar = np.asarray(metric_fn(theta), dtype=np.float64)
 
