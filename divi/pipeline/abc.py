@@ -220,8 +220,9 @@ class Stage(ABC, Generic[InT, OutT]):
         return self._name
 
     @property
-    def stateful(self) -> bool:
-        """Whether this stage invalidates forward-pass reuse from this point."""
+    def volatile(self) -> bool:
+        """Whether this stage's output must be recomputed on every forward pass
+        (rather than reused from cache), invalidating reuse from this point on."""
         return False
 
     def cache_key_extras(self, env: "PipelineEnv") -> tuple[Hashable, ...]:

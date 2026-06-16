@@ -281,8 +281,8 @@ class TestPennyLaneSpecStageProperties:
     def test_axis_name(self):
         assert PennyLaneSpecStage().axis_name == "circuit"
 
-    def test_stateful_is_false(self):
-        assert PennyLaneSpecStage().stateful is False
+    def test_volatile_is_false(self):
+        assert PennyLaneSpecStage().volatile is False
 
 
 class TestPennyLaneSpecStagePipeline:

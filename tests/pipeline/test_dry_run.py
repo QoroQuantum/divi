@@ -122,10 +122,10 @@ class TestAnalyticDryRun:
             )
 
         real_trace = _build().run_forward_pass(
-            "ignored", dummy_pipeline_env, force_forward_sweep=True
+            "ignored", dummy_pipeline_env, bypass_cache=True
         )
         dry_trace = _build().run_forward_pass(
-            "ignored", dummy_pipeline_env, force_forward_sweep=True, dry=True
+            "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
         )
 
         real_report = dry_run_pipeline(
@@ -153,7 +153,7 @@ class TestAnalyticDryRun:
             ]
         )
         dry_trace = pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, force_forward_sweep=True, dry=True
+            "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
         )
         dry_report = dry_run_pipeline(
             "dry", dry_trace, pipeline.stages, dummy_pipeline_env
@@ -181,7 +181,7 @@ class TestAnalyticDryRun:
             ]
         )
         pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, force_forward_sweep=True, dry=True
+            "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
         )
         assert spy.call_count == 0, "dry path must skip twirl DAG substitution"
 
@@ -201,7 +201,7 @@ class TestAnalyticDryRun:
             ]
         )
         pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, force_forward_sweep=True, dry=False
+            "ignored", dummy_pipeline_env, bypass_cache=True, dry=False
         )
         assert spy.call_count > 0, "real path must apply twirl DAG substitution"
 
@@ -215,7 +215,7 @@ class TestAnalyticDryRun:
             ]
         )
         trace = pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, force_forward_sweep=True, dry=True
+            "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
         )
         assert "per_group_shots" in trace.env_artifacts
 
@@ -240,7 +240,7 @@ class TestAnalyticDryRun:
             ]
         )
         trace = pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, force_forward_sweep=True, dry=True
+            "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
         )
         report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
 
@@ -282,7 +282,7 @@ class TestAnalyticDryRun:
             ]
         )
         trace = pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, force_forward_sweep=True, dry=True
+            "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
         )
         report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
         assert "per_group_shots" in report.env_artifacts
@@ -363,7 +363,7 @@ class TestMeasurementStageReduction:
             ]
         )
         trace = pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, force_forward_sweep=True, dry=True
+            "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
         )
         report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
 
@@ -397,7 +397,7 @@ class TestMeasurementStageReduction:
             ]
         )
         trace = pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, force_forward_sweep=True, dry=True
+            "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
         )
         report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
 
@@ -426,7 +426,7 @@ class TestMeasurementStageReduction:
             stages=[DummySpecStage(meta=meta), MeasurementStage()]
         )
         trace = pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, force_forward_sweep=True, dry=True
+            "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
         )
         report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
 
@@ -453,7 +453,7 @@ class TestMeasurementStageReduction:
             stages=[DummySpecStage(meta=meta), MeasurementStage()]
         )
         trace = pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, force_forward_sweep=True, dry=True
+            "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
         )
         report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
 
@@ -490,10 +490,10 @@ class TestQuEPPDryExpand:
         real_pipeline = _build()
         dry_pipeline = _build()
         real_trace = real_pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, force_forward_sweep=True
+            "ignored", dummy_pipeline_env, bypass_cache=True
         )
         dry_trace = dry_pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, force_forward_sweep=True, dry=True
+            "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
         )
         real_report = dry_run_pipeline(
             "r", real_trace, real_pipeline.stages, dummy_pipeline_env
@@ -533,7 +533,7 @@ class TestQuEPPDryExpand:
             suppress_performance_warnings=True,
         )
         pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, force_forward_sweep=True, dry=True
+            "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
         )
         assert spy.call_count == 0, "dry QuEPP must skip Clifford simulation"
 
@@ -683,7 +683,7 @@ class TestDrySafetyFallback:
         pipeline = self._build(_parametric_twirlable_meta())
         with pytest.warns(DiviPerformanceWarning) as record:
             pipeline.run_forward_pass(
-                "ignored", dummy_pipeline_env, force_forward_sweep=True, dry=True
+                "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
             )
 
         messages = [str(w.message) for w in record.list]
@@ -710,7 +710,7 @@ class TestDrySafetyFallback:
         )
         with pytest.warns(DiviPerformanceWarning) as record:
             pipeline.run_forward_pass(
-                "ignored", dummy_pipeline_env, force_forward_sweep=True, dry=True
+                "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
             )
 
         messages = [str(w.message) for w in record.list]
@@ -731,7 +731,7 @@ class TestDrySafetyFallback:
         pipeline = self._build(_parametric_twirlable_meta())
         with pytest.warns(DiviPerformanceWarning):
             pipeline.run_forward_pass(
-                "ignored", dummy_pipeline_env, force_forward_sweep=True, dry=True
+                "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
             )
         assert spy.call_count > 0, (
             "Fallback should have run the real PauliTwirl expand, which "
@@ -748,10 +748,10 @@ class TestDrySafetyFallback:
 
         with pytest.warns(DiviPerformanceWarning):
             dry_trace = dry_pipeline.run_forward_pass(
-                "ignored", dummy_pipeline_env, force_forward_sweep=True, dry=True
+                "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
             )
         real_trace = real_pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, force_forward_sweep=True, dry=False
+            "ignored", dummy_pipeline_env, bypass_cache=True, dry=False
         )
 
         dry_report = dry_run_pipeline(
@@ -778,7 +778,7 @@ class TestDrySafetyFallback:
         with warnings.catch_warnings():
             warnings.simplefilter("error", DiviPerformanceWarning)
             pipeline.run_forward_pass(
-                "ignored", dummy_pipeline_env, force_forward_sweep=True, dry=True
+                "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
             )
 
 
@@ -838,7 +838,7 @@ class TestCircuitStatsAggregate:
             ]
         )
         trace = pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, force_forward_sweep=True, dry=True
+            "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
         )
         report = dry_run_pipeline("t", trace, pipeline.stages, dummy_pipeline_env)
         stats = report.circuit_stats

@@ -221,7 +221,7 @@ class MeasurementStage(BundleStage):
         return False
 
     @property
-    def stateful(self) -> bool:
+    def volatile(self) -> bool:
         """True only for genuinely non-deterministic shot-distribution strategies.
 
         ``"weighted_random"`` and user-supplied callables draw from ``env.rng``

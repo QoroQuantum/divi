@@ -263,7 +263,7 @@ class PauliTwirlStage(BundleStage):
         return TWIRL_AXIS
 
     @property
-    def stateful(self) -> bool:
+    def volatile(self) -> bool:
         return False
 
     def __init__(self, n_twirls: int = 100, seed: int | None = None) -> None:

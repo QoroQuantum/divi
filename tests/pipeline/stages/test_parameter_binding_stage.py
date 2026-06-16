@@ -206,8 +206,8 @@ class TestParameterBindingStage:
     def test_axis_name_is_param_set(self):
         assert ParameterBindingStage().axis_name == "param_set"
 
-    def test_stateful_is_true(self):
-        assert ParameterBindingStage().stateful is True
+    def test_volatile_is_true(self):
+        assert ParameterBindingStage().volatile is True
 
     def test_does_not_force_upstream_dag_materialization(self):
         assert ParameterBindingStage().consumes_dag_bodies is False

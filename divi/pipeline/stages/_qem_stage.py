@@ -40,7 +40,7 @@ class QEMStage(BundleStage):
         return f"{QEM_AXIS}_{self.protocol.name}"
 
     @property
-    def stateful(self) -> bool:
+    def volatile(self) -> bool:
         return False
 
     @property

@@ -230,7 +230,7 @@ class ParameterBindingStage(BundleStage):
         return PARAM_SET_AXIS
 
     @property
-    def stateful(self) -> bool:
+    def volatile(self) -> bool:
         return True
 
     @property

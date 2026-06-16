@@ -77,10 +77,10 @@ class FanoutAndSumStage(BundleStage):
 
 
 class StatefulFanoutStage(FanoutAndSumStage):
-    """Like FanoutAndSumStage but stateful=True to exercise run_forward_pass cache/partial rerun."""
+    """Like FanoutAndSumStage but volatile=True to exercise run_forward_pass cache/partial rerun."""
 
     @property
-    def stateful(self) -> bool:
+    def volatile(self) -> bool:
         return True
 
 

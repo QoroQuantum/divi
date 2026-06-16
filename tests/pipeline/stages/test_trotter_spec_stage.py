@@ -175,15 +175,15 @@ class TestProperties:
         stage = TrotterSpecStage(_DummyStrategy(), meta_circuit_factory=_meta_factory)
         assert stage.axis_name == "ham"
 
-    def test_stateful_delegates_to_strategy(self):
+    def test_volatile_delegates_to_strategy(self):
         stage_stateless = TrotterSpecStage(
             _DummyStrategy(stateful=False), meta_circuit_factory=_meta_factory
         )
         stage_stateful = TrotterSpecStage(
             _DummyStrategy(stateful=True), meta_circuit_factory=_meta_factory
         )
-        assert stage_stateless.stateful is False
-        assert stage_stateful.stateful is True
+        assert stage_stateless.volatile is False
+        assert stage_stateful.volatile is True
 
 
 def test_forward_pass_produces_ham_keyed_trace(dummy_expval_backend):

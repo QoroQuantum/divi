@@ -42,7 +42,7 @@ class TrotterSpecStage(SpecStage[SparsePauliOp]):
         return "ham"
 
     @property
-    def stateful(self) -> bool:
+    def volatile(self) -> bool:
         return self._trotterization_strategy.stateful
 
     def __init__(

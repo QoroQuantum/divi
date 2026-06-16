@@ -282,7 +282,7 @@ class QuantumProgram(ABC):
             trace = pipeline.run_forward_pass(
                 self._pipelines.spec_for(name),
                 env,
-                force_forward_sweep=True,
+                bypass_cache=True,
                 dry=not force_circuit_generation,
             )
             reports[name] = dry_run_pipeline(name, trace, pipeline.stages, env)

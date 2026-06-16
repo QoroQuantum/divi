@@ -251,10 +251,10 @@ class TestQAOAQDriftMultiSample:
         for sol in optimal_solutions:
             assert all(node in G.nodes() for node in sol.decoded)
 
-    def test_multi_sample_trotter_stage_is_stateful_for_qdrift(
+    def test_multi_sample_trotter_stage_is_volatile_for_qdrift(
         self, default_test_simulator
     ):
-        """TrotterSpecStage is correctly marked stateful for QDrift (ensures cache invalidation)."""
+        """TrotterSpecStage is correctly marked volatile for QDrift (ensures cache invalidation)."""
         strategy = QDrift(
             keep_fraction=0.5,
             sampling_budget=4,
@@ -271,7 +271,7 @@ class TestQAOAQDriftMultiSample:
         )
 
         trotter_stage = self._find_trotter_stage(qaoa)
-        assert trotter_stage.stateful is True
+        assert trotter_stage.volatile is True
 
     def test_multi_sample_final_computation_merges_histograms(
         self, default_test_simulator

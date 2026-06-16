@@ -291,21 +291,21 @@ class TestCircuitPipelineRunForwardPass:
         assert len(reduced) == 1
         assert list(reduced.values())[0] == pytest.approx([3.9])
 
-    def test_force_forward_sweep_recomputes_even_with_cache(self, dummy_pipeline_env):
+    def test_bypass_cache_recomputes_even_with_cache(self, dummy_pipeline_env):
         pipeline = CircuitPipeline(stages=two_group_pipeline_stages())
         trace1 = pipeline.run_forward_pass(
             initial_spec="ignored", env=dummy_pipeline_env
         )
         trace2 = pipeline.run_forward_pass(
-            initial_spec="ignored", env=dummy_pipeline_env, force_forward_sweep=True
+            initial_spec="ignored", env=dummy_pipeline_env, bypass_cache=True
         )
         assert trace1.final_batch.keys() == trace2.final_batch.keys()
         assert id(trace1) != id(trace2) or trace1 is trace2
 
-    def test_stateful_bundle_stage_triggers_partial_rerun_from_cache(
+    def test_volatile_bundle_stage_triggers_partial_rerun_from_cache(
         self, dummy_pipeline_env
     ):
-        """When a bundle stage is stateful, second run_forward_pass reuses cache and reruns from that stage."""
+        """When a bundle stage is volatile, second run_forward_pass reuses cache and reruns from that stage."""
         pipeline = CircuitPipeline(
             stages=[
                 DummySpecStage(meta=two_group_meta()),

@@ -193,8 +193,8 @@ class TestQiskitSpecStageProperties:
     def test_axis_name(self):
         assert QiskitSpecStage().axis_name == "circuit"
 
-    def test_stateful_is_false(self):
-        assert QiskitSpecStage().stateful is False
+    def test_volatile_is_false(self):
+        assert QiskitSpecStage().volatile is False
 
 
 class TestQiskitSpecStagePipeline:

@@ -423,7 +423,7 @@ class CircuitPipeline:
         initial_spec: Any,
         env: PipelineEnv,
         *,
-        force_forward_sweep: bool = False,
+        bypass_cache: bool = False,
         execute_fn: Callable[
             [PipelineTrace, PipelineEnv], ChildResults
         ] = _default_execute_fn,
@@ -440,7 +440,7 @@ class CircuitPipeline:
         Args:
             initial_spec: Input for the spec stage (typically a Hamiltonian).
             env: Pipeline environment (backend, reporter, etc.).
-            force_forward_sweep: When True, ignore any cached forward trace and
+            bypass_cache: When True, ignore any cached forward trace and
                 recompute the full forward pass from the beginning.
             execute_fn: (trace, env) → raw_results. Defaults to the built-in
                 lowering of tagged MetaCircuit body/measurement QASMs and
@@ -453,9 +453,7 @@ class CircuitPipeline:
         """
 
         try:
-            plan = self.run_forward_pass(
-                initial_spec, env, force_forward_sweep=force_forward_sweep
-            )
+            plan = self.run_forward_pass(initial_spec, env, bypass_cache=bypass_cache)
 
             # Restore result_format and stage-produced artifacts from the
             # cached trace onto the (possibly fresh) PipelineEnv.  When the
@@ -503,7 +501,7 @@ class CircuitPipeline:
         initial_spec: Any,
         env: PipelineEnv,
         *,
-        force_forward_sweep: bool = False,
+        bypass_cache: bool = False,
         dry: bool = False,
     ) -> PipelineTrace:
         """Run only the forward expansion pass and return lineage metadata.
@@ -561,16 +559,14 @@ class CircuitPipeline:
 
         # Dry traces carry placeholder bodies — never cache them, and never
         # serve a real-run request from a dry trace (or vice versa).
-        cached = (
-            None if (force_forward_sweep or dry) else self._forward_cache.get(cache_key)
-        )
+        cached = None if (bypass_cache or dry) else self._forward_cache.get(cache_key)
 
-        first_stateful_idx = next(
-            (idx for idx, stage in enumerate(self._stages) if stage.stateful),
+        recompute_from_idx = next(
+            (idx for idx, stage in enumerate(self._stages) if stage.volatile),
             None,
         )
 
-        if cached is not None and first_stateful_idx is None:
+        if cached is not None and recompute_from_idx is None:
             # Replay the cached trace's env side-effects onto the live env so
             # downstream consumers (e.g. _default_execute_fn reading
             # ``env.artifacts["per_group_shots"]``) see the same state as on
@@ -586,7 +582,7 @@ class CircuitPipeline:
                 env.result_format = cached.result_format
             return cached
 
-        if cached is None or first_stateful_idx == 0:
+        if cached is None or recompute_from_idx == 0:
             spec_stage, spec_expand = plan[0]
             _report_pipeline_stage(env, spec_stage.name)
             data, spec_token = spec_expand(initial_spec, env)
@@ -606,19 +602,21 @@ class CircuitPipeline:
                 self._forward_cache[cache_key] = trace
             return trace
 
-        if first_stateful_idx is None or first_stateful_idx <= 0:
-            raise ValueError("stateful stage index must be >= 1 for partial rerun.")
+        if recompute_from_idx is None or recompute_from_idx <= 0:
+            raise ValueError(
+                "first volatile stage must be at index >= 1 for partial rerun."
+            )
 
-        if first_stateful_idx == 1:
+        if recompute_from_idx == 1:
             data = cached.initial_batch
         else:
-            data = cached.stage_expansions[first_stateful_idx - 2].batch
+            data = cached.stage_expansions[recompute_from_idx - 2].batch
 
         final_batch, rerun_tokens, rerun_expansions = run_bundle_stages(
-            data, plan[first_stateful_idx:]
+            data, plan[recompute_from_idx:]
         )
-        prefix_tokens = list(cached.stage_tokens[:first_stateful_idx])
-        prefix_expansions = list(cached.stage_expansions[: first_stateful_idx - 1])
+        prefix_tokens = list(cached.stage_tokens[:recompute_from_idx])
+        prefix_expansions = list(cached.stage_expansions[: recompute_from_idx - 1])
 
         trace = PipelineTrace(
             initial_batch=cached.initial_batch,
@@ -626,8 +624,8 @@ class CircuitPipeline:
             stage_expansions=tuple([*prefix_expansions, *rerun_expansions]),
             stage_tokens=tuple([*prefix_tokens, *rerun_tokens]),
             # Carry forward result_format and env_artifacts from the cached
-            # trace — pre-stateful stages didn't re-run, so their env
-            # side-effects aren't on this env.
+            # trace — the earlier (non-recomputed) stages didn't re-run, so
+            # their env side-effects aren't on this env.
             result_format=cached.result_format,
             env_artifacts={**cached.env_artifacts, **env.artifacts},
         )

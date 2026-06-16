@@ -703,9 +703,7 @@ class TestMeasurementStageShotDistributionReproducibility:
         env_a = PipelineEnv(backend=backend)
         env_b = PipelineEnv(backend=backend)
         pipeline.run_forward_pass(initial_spec="ignored", env=env_a)
-        pipeline.run_forward_pass(
-            initial_spec="ignored", env=env_b, force_forward_sweep=True
-        )
+        pipeline.run_forward_pass(initial_spec="ignored", env=env_b, bypass_cache=True)
         # We can't assert inequality strictly (multinomial may collide), but
         # the shape and keys should match.
         assert (
@@ -795,16 +793,16 @@ class TestMeasurementStageShotDistributionPipelineRerun:
         second = dict(env_b.artifacts["per_group_shots"][(("spec", "circ"),)])
         assert sum(second.values()) == 600
 
-    def test_stateful_only_for_random_strategies(self):
+    def test_volatile_only_for_random_strategies(self):
         """Implementation detail: only random/callable strategies mark the
-        stage stateful. Deterministic strategies ("uniform", "weighted") rely
+        stage volatile. Deterministic strategies ("uniform", "weighted") rely
         on cache_key_extras for invalidation and stay cacheable."""
-        assert MeasurementStage().stateful is False
-        assert MeasurementStage(shot_distribution="uniform").stateful is False
-        assert MeasurementStage(shot_distribution="weighted").stateful is False
-        assert MeasurementStage(shot_distribution="weighted_random").stateful is True
+        assert MeasurementStage().volatile is False
+        assert MeasurementStage(shot_distribution="uniform").volatile is False
+        assert MeasurementStage(shot_distribution="weighted").volatile is False
+        assert MeasurementStage(shot_distribution="weighted_random").volatile is True
         assert (
-            MeasurementStage(shot_distribution=lambda *a, **kw: None).stateful is True
+            MeasurementStage(shot_distribution=lambda *a, **kw: None).volatile is True
         )
 
     def test_cache_key_extras_tracks_backend_shots(self, dummy_simulator):
