@@ -142,11 +142,9 @@ class PipelineTrace:
     stage_tokens: tuple[StageToken, ...]
     """Per-stage opaque tokens returned by each BundleStage's expand."""
 
-    result_format: "ResultFormat | None" = None
-    """Result format declared by the measurement stage during expand."""
-
-    env_artifacts: dict = field(default_factory=dict)
-    """Stage-produced artifacts (e.g. ham_ops) captured for cache restore."""
+    env_artifacts: dict[str, Any] = field(default_factory=dict)
+    """Measurement artifacts (``ham_ops``, ``per_group_shots``) reconstructed
+    from the final batch for backend submission and dry-run reporting."""
 
 
 @dataclass
@@ -173,9 +171,6 @@ class PipelineEnv:
 
     artifacts: dict = field(default_factory=dict)
     """Mutable output dict populated during execution (e.g. ``circuit_count``)."""
-
-    result_format: ResultFormat | None = None
-    """Canonical result format, set by the measurement stage during expand."""
 
     reporter: ProgressReporter | None = None
     """Progress reporter for async polling feedback."""
@@ -336,7 +331,7 @@ class BundleStage(Stage[MetaCircuitBatch, MetaCircuitBatch], ABC):
     Subclasses declare two orthogonal contracts via class properties:
 
     - :attr:`handles_measurement` — this stage emits measurement QASMs and
-      sets :attr:`~divi.pipeline.PipelineEnv.result_format`.
+      records ``result_format`` on each circuit.
     - :attr:`consumes_dag_bodies` — this stage reads (and typically mutates)
       ``meta.circuit_bodies`` during ``expand``.
     """

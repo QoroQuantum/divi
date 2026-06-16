@@ -265,7 +265,7 @@ class ParameterBindingStage(BundleStage):
         self, batch: MetaCircuitBatch, env: PipelineEnv
     ) -> StageOutput[MetaCircuitBatch]:
         param_sets = _validate_param_sets(env)
-        if self._template_path_enabled(env):
+        if self._template_path_enabled(batch, env):
             run = self._run_template
         else:
             run = self._run_fast if self._fast_path else self._run_slow
@@ -279,7 +279,7 @@ class ParameterBindingStage(BundleStage):
         param_sets = _validate_param_sets(env, assert_finite=False)
         return StageOutput(batch=self._run_dry(batch, param_sets))
 
-    def _template_path_enabled(self, env: PipelineEnv) -> bool:
+    def _template_path_enabled(self, batch: MetaCircuitBatch, env: PipelineEnv) -> bool:
         """Whether to defer parameter binding to the backend for this run.
 
         Requires the fast-path condition (no downstream stage consumes DAG
@@ -289,7 +289,7 @@ class ParameterBindingStage(BundleStage):
         flat circuits (one per parameter set), which the deferred template
         payload (one template plus a parameter matrix) cannot express.
         """
-        if not self._fast_path or env.artifacts.get("per_group_shots"):
+        if not self._fast_path or any(meta.group_shots for meta in batch.values()):
             return False
         return isinstance(env.backend, SupportsCircuitTemplates)
 
@@ -425,7 +425,7 @@ class ParameterBindingStage(BundleStage):
             "n_param_sets": len(param_sets),
             "n_params": n_params,
             "fast_path": self._fast_path,
-            "template_path": self._template_path_enabled(env),
+            "template_path": self._template_path_enabled(batch, env),
         }
 
     def reduce(

@@ -144,7 +144,7 @@ def _allocate_per_group_shots(
             f"``backend.shots``, switch to the deterministic "
             f"``shot_distribution='weighted'`` strategy, or accept it if "
             f"the fraction is negligible. Per-group allocations are "
-            f"available in ``env.artifacts['per_group_shots']``.",
+            f"recorded on each circuit's ``group_shots``.",
             UserWarning,
             stacklevel=2,
         )
@@ -195,8 +195,8 @@ class MeasurementStage(BundleStage):
     observables using the configured strategy (or delegates to expval-native
     backends via ``ham_ops``).
 
-    During ``expand``, sets ``env.result_format`` to communicate the expected
-    result format to ``pipeline.run()``:
+    During ``expand``, records ``result_format`` on each circuit to communicate
+    the expected result format to ``pipeline.run()``:
 
     - ``ResultFormat.PROBS`` for ``probs()`` measurements
     - ``ResultFormat.EXPVALS`` for ``expval(H)`` measurements
@@ -354,10 +354,14 @@ class MeasurementStage(BundleStage):
                 "nor measured_wires set. Did the spec stage run?"
             )
 
-        if self._result_format_override is not None:
-            env.result_format = self._result_format_override
-
-        return result
+        if self._result_format_override is None:
+            return result
+        return result._replace(
+            batch={
+                key: meta.set_result_format(self._result_format_override)
+                for key, meta in result.batch.items()
+            }
+        )
 
     # ------------------------------------------------------------------ #
     # Probs path
@@ -370,8 +374,6 @@ class MeasurementStage(BundleStage):
         qasm_factory: Callable[[tuple[int, ...]], str],
     ) -> StageOutput[MetaCircuitBatch]:
         """Generate measurement QASM for ``probs()`` / ``counts()`` circuits."""
-        env.result_format = ResultFormat.PROBS
-
         out: MetaCircuitBatch = {}
 
         for key, meta in batch.items():
@@ -385,7 +387,9 @@ class MeasurementStage(BundleStage):
                 )
             measure_qasm = qasm_factory(wires)
             tagged_measurement_qasms = ((((PROBS_MEAS_AXIS, 0),), measure_qasm),)
-            out[key] = meta.set_measurement_bodies(tagged_measurement_qasms)
+            out[key] = meta.set_measurement_bodies(
+                tagged_measurement_qasms
+            ).set_result_format(ResultFormat.PROBS)
 
         token = MeasurementToken(is_probs=True)
         return StageOutput(batch=out, token=token)
@@ -408,8 +412,6 @@ class MeasurementStage(BundleStage):
         placeholder factory so the batch shape is preserved without
         serialising diagonalising gates + ``measure`` instructions.
         """
-        env.result_format = ResultFormat.EXPVALS
-
         strategy = self._grouping_strategy
         all_single_obs = all(
             meta.observable is not None and len(meta.observable) == 1
@@ -442,7 +444,6 @@ class MeasurementStage(BundleStage):
         postprocess_fn_by_spec: dict[object, Callable] = {}
         n_observable_terms: int | None = None
         zero_shot_groups_by_spec: dict[object, dict[int, object]] = {}
-        per_group_shots_by_spec: dict[object, dict[int, int]] = {}
         sample_union: SparsePauliOp | None = None
 
         for key, meta in batch.items():
@@ -480,8 +481,6 @@ class MeasurementStage(BundleStage):
             )
             if zero_shot_groups:
                 zero_shot_groups_by_spec[key] = zero_shot_groups
-            if surviving_shots is not None:
-                per_group_shots_by_spec[key] = surviving_shots
 
             surviving_groups = tuple(measurement_groups[i] for i in surviving_indices)
             measurement_qasms = qasm_factory(surviving_groups, meta.n_qubits)
@@ -493,22 +492,21 @@ class MeasurementStage(BundleStage):
             # Keep the *full* measurement_groups on the MetaCircuit so that
             # _counts_to_expvals can index into it by the original obs_group
             # tag carried on each surviving label.
-            result[key] = meta.set_measurement_bodies(
-                tagged_measurement_qasms
-            ).set_measurement_groups(measurement_groups)
+            new_meta = (
+                meta.set_measurement_bodies(tagged_measurement_qasms)
+                .set_measurement_groups(measurement_groups)
+                .set_result_format(ResultFormat.EXPVALS)
+            )
+            if surviving_shots is not None:
+                new_meta = new_meta.set_group_shots(surviving_shots)
+            result[key] = new_meta
             postprocess_fn_by_spec[key] = postprocessing_fn
 
-        if per_group_shots_by_spec:
-            env.artifacts["per_group_shots"] = per_group_shots_by_spec
-        else:
-            env.artifacts.pop("per_group_shots", None)
-
-        # For expval-native backends, compute ham_ops from the SparsePauliOp
-        # and store it in env.artifacts so _default_execute_fn can use it.
         if strategy == "_backend_expval" and sample_union is not None:
-            env.artifacts["ham_ops"] = _sparse_pauli_op_to_ham_string(sample_union)
-        else:
-            env.artifacts.pop("ham_ops", None)
+            ham_ops = _sparse_pauli_op_to_ham_string(sample_union)
+            result = {
+                key: meta.set_backend_ham_ops(ham_ops) for key, meta in result.items()
+            }
 
         token = MeasurementToken(
             postprocess_fn_by_spec=postprocess_fn_by_spec,
@@ -568,8 +566,9 @@ class MeasurementStage(BundleStage):
         # billed for (or how the budget was distributed across QWC groups).
         backend_shots = getattr(env.backend, "shots", None)
         if backend_shots is not None:
-            per_group_shots = env.artifacts.get("per_group_shots") or {}
-            spec_pgs = next(iter(per_group_shots.values()), None)
+            spec_pgs = next(
+                (m.group_shots for m in batch.values() if m.group_shots), None
+            )
             if spec_pgs:
                 # Shot-distribution strategy active — each group gets its
                 # own slice; surface the range so users see the spread.
@@ -589,7 +588,7 @@ class MeasurementStage(BundleStage):
         """Combine measurement groups (expval) or strip meas axis (probs)."""
         if token.is_probs:
             return self._reduce_probs(results)
-        if env.result_format in (ResultFormat.COUNTS, ResultFormat.PROBS):
+        if self._result_format_override in (ResultFormat.COUNTS, ResultFormat.PROBS):
             return self._reduce_raw(results)
         return self._reduce_expval(results, token)
 

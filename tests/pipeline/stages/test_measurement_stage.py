@@ -14,7 +14,11 @@ from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit, qscript_to_meta
-from divi.pipeline import CircuitPipeline, PipelineEnv
+from divi.pipeline import (
+    CircuitPipeline,
+    PipelineEnv,
+    StageOutput,
+)
 from divi.pipeline._compilation import _compile_batch
 from divi.pipeline._grouping import _compute_measurement_groups
 from divi.pipeline.abc import ChildResults, MetaCircuitBatch, ResultFormat, SpecStage
@@ -77,9 +81,9 @@ class TestMeasurementStageExpvalBackendReduce:
             stages=[DummySpecStage(meta=meta), MeasurementStage()],
         )
 
-        pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
-        assert "ham_ops" in env.artifacts
+        assert "ham_ops" in trace.env_artifacts
 
     def test_reduce_indexed_dicts_from_expval_backend(self):
         """_reduce_expval handles {int: float} dicts (normalised by _core.py).
@@ -156,9 +160,12 @@ class TestMeasurementStageResultFormatOverride:
             stages=[DummySpecStage(meta=meta), stage],
         )
 
-        pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
-        assert env.result_format is ResultFormat.COUNTS
+        assert all(
+            meta.result_format is ResultFormat.COUNTS
+            for meta in trace.final_batch.values()
+        )
 
     def test_reduce_returns_raw_for_counts_override(self):
         """With COUNTS override, reduce strips obs_group axis without postprocessing."""
@@ -232,7 +239,7 @@ def test_no_shot_distribution_skips_per_group_allocation(dummy_simulator):
         warnings.simplefilter("error")
         trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
-    assert "per_group_shots" not in env.artifacts
+    assert "per_group_shots" not in trace.env_artifacts
     meas_token = trace.stage_tokens[1]
     assert isinstance(meas_token, MeasurementToken)
     assert meas_token.zero_shot_groups_by_spec == {}
@@ -251,9 +258,9 @@ class TestMeasurementStageShotDistributionUniform:
                 MeasurementStage(shot_distribution="uniform"),
             ],
         )
-        pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
-        per_group = env.artifacts["per_group_shots"]
+        per_group = trace.env_artifacts["per_group_shots"]
         spec_key = (("spec", "circ"),)
         assert spec_key in per_group
         # 300 / 3 groups = 100 per group.
@@ -269,9 +276,9 @@ class TestMeasurementStageShotDistributionUniform:
                 MeasurementStage(shot_distribution="uniform"),
             ],
         )
-        pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
-        per_group = env.artifacts["per_group_shots"][(("spec", "circ"),)]
+        per_group = trace.env_artifacts["per_group_shots"][(("spec", "circ"),)]
         assert sum(per_group.values()) == 10
         assert all(s in (3, 4) for s in per_group.values())
 
@@ -289,9 +296,9 @@ class TestMeasurementStageShotDistributionWeighted:
                 MeasurementStage(shot_distribution="weighted"),
             ],
         )
-        pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
-        per_group = env.artifacts["per_group_shots"][(("spec", "circ"),)]
+        per_group = trace.env_artifacts["per_group_shots"][(("spec", "circ"),)]
         # L1 norms 10:1:0.1 -> total 11.1
         assert per_group[0] > per_group[1] > per_group[2]
         assert sum(per_group.values()) == 1000
@@ -307,9 +314,9 @@ class TestMeasurementStageShotDistributionWeighted:
                 MeasurementStage(shot_distribution="weighted"),
             ],
         )
-        pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
-        per_group = env.artifacts["per_group_shots"][(("spec", "circ"),)]
+        per_group = trace.env_artifacts["per_group_shots"][(("spec", "circ"),)]
         # Two groups: {Z(0), Z(1)} with L1=2.0 and {X(0)} with L1=0.5.
         # Allocation 2.0 : 0.5 -> 800 : 200
         assert sum(per_group.values()) == 1000
@@ -328,9 +335,9 @@ def test_wires_strategy_per_group_shots(make_dummy_simulator):
             MeasurementStage(grouping_strategy="wires", shot_distribution="uniform"),
         ],
     )
-    pipeline.run_forward_pass(initial_spec="ignored", env=env)
+    trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
-    per_group = env.artifacts["per_group_shots"][(("spec", "circ"),)]
+    per_group = trace.env_artifacts["per_group_shots"][(("spec", "circ"),)]
     # All three observables share wire 0 -> one group per observable.
     assert sum(per_group.values()) == 300
     assert len(per_group) == 3
@@ -347,9 +354,9 @@ def test_none_strategy_per_group_shots(make_dummy_simulator):
             MeasurementStage(grouping_strategy=None, shot_distribution="weighted"),
         ],
     )
-    pipeline.run_forward_pass(initial_spec="ignored", env=env)
+    trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
-    per_group = env.artifacts["per_group_shots"][(("spec", "circ"),)]
+    per_group = trace.env_artifacts["per_group_shots"][(("spec", "circ"),)]
     assert len(per_group) == 3
     assert sum(per_group.values()) == 1000
 
@@ -382,9 +389,9 @@ class TestMeasurementStageShotDistributionDropZeroGroups:
         )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            pipeline.run_forward_pass(initial_spec="ignored", env=env)
+            trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
-        per_group = env.artifacts["per_group_shots"][(("spec", "circ"),)]
+        per_group = trace.env_artifacts["per_group_shots"][(("spec", "circ"),)]
         # Group 2 (norm 0.1) should be dropped; group 0 and 1 survive.
         assert 2 not in per_group
         assert 0 in per_group and 1 in per_group
@@ -591,9 +598,9 @@ class TestMeasurementStageShotDistributionBackendExpval:
                 MeasurementStage(grouping_strategy="qwc", shot_distribution="uniform"),
             ],
         )
-        pipeline.run_forward_pass(initial_spec="ignored", env=env)
-        assert "per_group_shots" in env.artifacts
-        assert "ham_ops" not in env.artifacts
+        trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        assert "per_group_shots" in trace.env_artifacts
+        assert "ham_ops" not in trace.env_artifacts
 
     def test_qwc_with_non_expval_backend_works(self, make_dummy_simulator):
         """qwc + non-expval backend doesn't auto-switch -> shot_distribution OK."""
@@ -607,8 +614,8 @@ class TestMeasurementStageShotDistributionBackendExpval:
         # Should not raise or warn.
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            pipeline.run_forward_pass(initial_spec="ignored", env=env)
-        assert "per_group_shots" in env.artifacts
+            trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        assert "per_group_shots" in trace.env_artifacts
 
     def test_no_ham_ops_when_shot_distribution_used(self, make_dummy_simulator):
         """env.artifacts should not have ham_ops set in QWC + shot_distribution mode."""
@@ -621,8 +628,8 @@ class TestMeasurementStageShotDistributionBackendExpval:
         )
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            pipeline.run_forward_pass(initial_spec="ignored", env=env)
-        assert "ham_ops" not in env.artifacts
+            trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        assert "ham_ops" not in trace.env_artifacts
 
     def test_shot_distribution_on_qwc_counts_backend(self, make_dummy_simulator):
         """qwc + sampling backend honours per_group_shots and skips ham_ops."""
@@ -635,9 +642,9 @@ class TestMeasurementStageShotDistributionBackendExpval:
         )
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            pipeline.run_forward_pass(initial_spec="ignored", env=env)
-        assert "per_group_shots" in env.artifacts
-        assert "ham_ops" not in env.artifacts
+            trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        assert "per_group_shots" in trace.env_artifacts
+        assert "ham_ops" not in trace.env_artifacts
 
 
 def test_callable_strategy(make_dummy_simulator):
@@ -657,9 +664,9 @@ def test_callable_strategy(make_dummy_simulator):
     )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
-    per_group = env.artifacts["per_group_shots"][(("spec", "circ"),)]
+    per_group = trace.env_artifacts["per_group_shots"][(("spec", "circ"),)]
     assert per_group == {0: 500}
 
 
@@ -684,9 +691,12 @@ class TestMeasurementStageShotDistributionReproducibility:
         )
         env_a = PipelineEnv(backend=backend, rng=rng_a)
         env_b = PipelineEnv(backend=backend, rng=rng_b)
-        pipeline_a.run_forward_pass(initial_spec="ignored", env=env_a)
-        pipeline_b.run_forward_pass(initial_spec="ignored", env=env_b)
-        assert env_a.artifacts["per_group_shots"] == env_b.artifacts["per_group_shots"]
+        trace_a = pipeline_a.run_forward_pass(initial_spec="ignored", env=env_a)
+        trace_b = pipeline_b.run_forward_pass(initial_spec="ignored", env=env_b)
+        assert (
+            trace_a.env_artifacts["per_group_shots"]
+            == trace_b.env_artifacts["per_group_shots"]
+        )
 
     def test_unseeded_rng_can_drift_between_pipelines(self, make_dummy_simulator):
         """Sanity check: without an env.rng, allocations CAN differ — proving
@@ -702,13 +712,15 @@ class TestMeasurementStageShotDistributionReproducibility:
         # No explicit rng -> falls back to a fresh default_rng each call.
         env_a = PipelineEnv(backend=backend)
         env_b = PipelineEnv(backend=backend)
-        pipeline.run_forward_pass(initial_spec="ignored", env=env_a)
-        pipeline.run_forward_pass(initial_spec="ignored", env=env_b, bypass_cache=True)
+        trace_a = pipeline.run_forward_pass(initial_spec="ignored", env=env_a)
+        # weighted_random is volatile, so the second run recomputes its
+        # allocation (the cached prefix stops at the volatile stage).
+        trace_b = pipeline.run_forward_pass(initial_spec="ignored", env=env_b)
         # We can't assert inequality strictly (multinomial may collide), but
         # the shape and keys should match.
         assert (
-            env_a.artifacts["per_group_shots"].keys()
-            == env_b.artifacts["per_group_shots"].keys()
+            trace_a.env_artifacts["per_group_shots"].keys()
+            == trace_b.env_artifacts["per_group_shots"].keys()
         )
 
 
@@ -727,7 +739,7 @@ def test_two_specs_both_get_their_own_allocations(make_dummy_simulator):
                 (("spec", "a"),): meta_a,
                 (("spec", "b"),): meta_b,
             }
-            return batch, None
+            return StageOutput(batch=batch)
 
         def reduce(self, results, env, token):
             return results
@@ -737,9 +749,9 @@ def test_two_specs_both_get_their_own_allocations(make_dummy_simulator):
     pipeline = CircuitPipeline(
         stages=[TwoSpecStage(), MeasurementStage(shot_distribution="weighted")],
     )
-    pipeline.run_forward_pass(initial_spec="ignored", env=env)
+    trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
-    per_group = env.artifacts["per_group_shots"]
+    per_group = trace.env_artifacts["per_group_shots"]
     assert (("spec", "a"),) in per_group
     assert (("spec", "b"),) in per_group
     # Each spec independently sums to 1000.
@@ -762,18 +774,18 @@ class TestMeasurementStageShotDistributionPipelineRerun:
                 MeasurementStage(shot_distribution="uniform"),
             ],
         )
-        pipeline.run_forward_pass(initial_spec="ignored", env=env)
-        first = dict(env.artifacts["per_group_shots"])
+        trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        first = dict(trace.env_artifacts["per_group_shots"])
 
         env2 = PipelineEnv(backend=backend)
-        pipeline.run_forward_pass(initial_spec="ignored", env=env2)
-        second = dict(env2.artifacts["per_group_shots"])
+        trace2 = pipeline.run_forward_pass(initial_spec="ignored", env=env2)
+        second = dict(trace2.env_artifacts["per_group_shots"])
         assert first == second
 
     def test_shots_change_between_runs_picked_up(self, make_dummy_simulator):
         """Bumping backend.shots between runs should produce a NEW allocation,
         not restore the cached one. Cache invalidation comes from
-        ``MeasurementStage.cache_key_extras`` seeing the new shot count."""
+        ``MeasurementStage.cache_key`` seeing the new shot count."""
         backend = make_dummy_simulator(300)
         pipeline = CircuitPipeline(
             stages=[
@@ -782,21 +794,18 @@ class TestMeasurementStageShotDistributionPipelineRerun:
             ],
         )
         env_a = PipelineEnv(backend=backend)
-        pipeline.run_forward_pass(initial_spec="ignored", env=env_a)
-        first = dict(env_a.artifacts["per_group_shots"][(("spec", "circ"),)])
+        trace_a = pipeline.run_forward_pass(initial_spec="ignored", env=env_a)
+        first = dict(trace_a.env_artifacts["per_group_shots"][(("spec", "circ"),)])
         assert sum(first.values()) == 300
 
         # Bump the backend's shot count and re-run — allocation must follow.
         backend._shots = 600
         env_b = PipelineEnv(backend=backend)
-        pipeline.run_forward_pass(initial_spec="ignored", env=env_b)
-        second = dict(env_b.artifacts["per_group_shots"][(("spec", "circ"),)])
+        trace_b = pipeline.run_forward_pass(initial_spec="ignored", env=env_b)
+        second = dict(trace_b.env_artifacts["per_group_shots"][(("spec", "circ"),)])
         assert sum(second.values()) == 600
 
-    def test_volatile_only_for_random_strategies(self):
-        """Implementation detail: only random/callable strategies mark the
-        stage volatile. Deterministic strategies ("uniform", "weighted") rely
-        on cache_key_extras for invalidation and stay cacheable."""
+    def test_only_random_strategies_are_volatile(self):
         assert MeasurementStage().volatile is False
         assert MeasurementStage(shot_distribution="uniform").volatile is False
         assert MeasurementStage(shot_distribution="weighted").volatile is False
@@ -805,9 +814,7 @@ class TestMeasurementStageShotDistributionPipelineRerun:
             MeasurementStage(shot_distribution=lambda *a, **kw: None).volatile is True
         )
 
-    def test_cache_key_extras_tracks_backend_shots(self, dummy_simulator):
-        """Deterministic shot-distribution strategies must fold backend.shots
-        into cache_key_extras so a shots change invalidates the cached trace."""
+    def test_cache_key_extras_track_backend_shots(self, dummy_simulator):
         env = PipelineEnv(backend=dummy_simulator)
         none_stage = MeasurementStage()
         uniform_stage = MeasurementStage(shot_distribution="uniform")
@@ -829,8 +836,10 @@ class TestMeasurementStageShotDistributionPipelineRerun:
                 MeasurementStage(shot_distribution="uniform"),
             ],
         )
-        pipeline_with.run_forward_pass(initial_spec="ignored", env=env_with)
-        assert "per_group_shots" in env_with.artifacts
+        trace_with = pipeline_with.run_forward_pass(
+            initial_spec="ignored", env=env_with
+        )
+        assert "per_group_shots" in trace_with.env_artifacts
 
         env_without = PipelineEnv(backend=backend)
         pipeline_without = CircuitPipeline(
@@ -839,8 +848,10 @@ class TestMeasurementStageShotDistributionPipelineRerun:
                 MeasurementStage(),
             ],
         )
-        pipeline_without.run_forward_pass(initial_spec="ignored", env=env_without)
-        assert "per_group_shots" not in env_without.artifacts
+        trace_without = pipeline_without.run_forward_pass(
+            initial_spec="ignored", env=env_without
+        )
+        assert "per_group_shots" not in trace_without.env_artifacts
 
 
 # --------------------------------------------------------------------------- #
@@ -962,8 +973,8 @@ class TestMeasurementStageTupleObservable:
                 MeasurementStage(),
             ],
         )
-        pipeline.run_forward_pass(initial_spec="ignored", env=env)
-        assert "ham_ops" not in env.artifacts
+        trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        assert "ham_ops" not in trace.env_artifacts
 
     def test_explicit_backend_expval_strategy_raises_for_multi(
         self, dummy_expval_backend
@@ -992,8 +1003,8 @@ class TestMeasurementStageTupleObservable:
             ],
         )
         # No raise: the union has well-defined coefficients for shot weighting.
-        pipeline.run_forward_pass(initial_spec="ignored", env=env)
-        assert "per_group_shots" in env.artifacts
+        trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        assert "per_group_shots" in trace.env_artifacts
 
     def test_shot_distribution_with_sign_canceling_observables(
         self, make_dummy_simulator
@@ -1017,8 +1028,8 @@ class TestMeasurementStageTupleObservable:
                 MeasurementStage(shot_distribution="weighted"),
             ],
         )
-        pipeline.run_forward_pass(initial_spec="ignored", env=env)
-        per_group_shots = env.artifacts["per_group_shots"]
+        trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        per_group_shots = trace.env_artifacts["per_group_shots"]
         spec_key = (("spec", "circ"),)
         shots = per_group_shots[spec_key]
         assert all(
@@ -1083,9 +1094,9 @@ class TestHamOpsExpvalBackend:
                 MeasurementStage(),
             ]
         )
-        pipeline.run_forward_pass(initial_spec="x", env=env)
-        assert "ham_ops" in env.artifacts
-        terms = env.artifacts["ham_ops"].split(";")
+        trace = pipeline.run_forward_pass(initial_spec="x", env=env)
+        assert "ham_ops" in trace.env_artifacts
+        terms = trace.env_artifacts["ham_ops"].split(";")
         assert len(terms) == 2
         assert "ZI" in terms
         assert "IZ" in terms
@@ -1129,8 +1140,8 @@ class TestHamOpsExpvalBackend:
                 MeasurementStage(),
             ]
         )
-        pipeline.run_forward_pass(initial_spec="x", env=env)
-        assert "ham_ops" not in env.artifacts
+        trace = pipeline.run_forward_pass(initial_spec="x", env=env)
+        assert "ham_ops" not in trace.env_artifacts
 
 
 class TestProbsMeasurementReduce:

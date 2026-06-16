@@ -162,15 +162,15 @@ class PCECostStage(BundleStage):
         Generates "measure all qubits" QASM and sets the result format to
         COUNTS so raw shot histograms reach reduce.
         """
-        env.result_format = ResultFormat.COUNTS
-
         out = {}
         for key, meta in batch.items():
             measure_qasm = "".join(
                 f"measure q[{i}] -> c[{i}];\n" for i in range(meta.n_qubits)
             )
             tagged = ((((PCE_MEAS_AXIS, 0),), measure_qasm),)
-            out[key] = meta.set_measurement_bodies(tagged)
+            out[key] = meta.set_measurement_bodies(tagged).set_result_format(
+                ResultFormat.COUNTS
+            )
 
         return StageOutput(batch=out)
 

@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
 
 import numpy as np
 from qiskit.circuit import Parameter
@@ -13,6 +15,9 @@ from qiskit.quantum_info import PauliList, SparsePauliOp
 
 from divi.circuits import QASMTag
 from divi.hamiltonians._term_ops import _assert_hermitian_spo
+
+if TYPE_CHECKING:
+    from divi.pipeline.abc import ResultFormat
 
 
 def flatten_observable_tuple(
@@ -147,6 +152,18 @@ class MetaCircuit:
     """Cached grouped observables set by
     :class:`~divi.pipeline.stages.MeasurementStage`."""
 
+    result_format: ResultFormat | None = None
+    """Canonical format the raw backend results should be converted into.
+    Set by a measurement stage; read by ``pipeline.run()``."""
+
+    group_shots: Mapping[int, int] | None = None
+    """Per-observable-group shot allocation (``group_index -> shots``) when a
+    ``shot_distribution`` is active; ``None`` otherwise."""
+
+    backend_ham_ops: str | None = None
+    """Observable string handed to the backend for analytic expectation
+    values (``_backend_expval`` grouping); ``None`` for counts-based paths."""
+
     precision: int = DEFAULT_PRECISION
     """Number of decimal places for numeric parameter values in QASM conversion."""
 
@@ -202,3 +219,15 @@ class MetaCircuit:
     ) -> MetaCircuit:
         """Return a new MetaCircuit with updated measurement groups."""
         return replace(self, measurement_groups=measurement_groups)
+
+    def set_result_format(self, result_format: ResultFormat) -> MetaCircuit:
+        """Return a new MetaCircuit with the result format set."""
+        return replace(self, result_format=result_format)
+
+    def set_group_shots(self, group_shots: Mapping[int, int]) -> MetaCircuit:
+        """Return a new MetaCircuit with per-group shot allocation set."""
+        return replace(self, group_shots=group_shots)
+
+    def set_backend_ham_ops(self, ham_ops: str) -> MetaCircuit:
+        """Return a new MetaCircuit with the backend observable string set."""
+        return replace(self, backend_ham_ops=ham_ops)

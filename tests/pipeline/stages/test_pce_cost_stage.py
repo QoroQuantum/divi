@@ -94,9 +94,9 @@ class TestExpandSingleCircuit:
         stage = _make_stage(np.eye(n_qubits), alpha=1.0, soft=True)
 
         env = PipelineEnv(backend=_make_expval_backend())
-        result = stage.expand(batch, env)
+        output = stage.expand(batch, env)
 
-        expanded = list(result.batch.values())[0]
+        expanded = list(output.batch.values())[0]
         assert len(expanded.measurement_qasms) == 1
 
     def test_expand_one_circuit_per_param_set_sampling_backend(self):
@@ -106,9 +106,9 @@ class TestExpandSingleCircuit:
         stage = _make_stage(np.eye(n_qubits), alpha=1.0, soft=True)
 
         env = PipelineEnv(backend=_make_sampling_backend())
-        result = stage.expand(batch, env)
+        output = stage.expand(batch, env)
 
-        expanded = list(result.batch.values())[0]
+        expanded = list(output.batch.values())[0]
         assert len(expanded.measurement_qasms) == 1
 
     def test_expand_result_format_is_counts(self):
@@ -118,9 +118,11 @@ class TestExpandSingleCircuit:
         stage = _make_stage(np.eye(n_qubits), alpha=1.0, soft=True)
 
         env = PipelineEnv(backend=_make_expval_backend())
-        stage.expand(batch, env)
+        output = stage.expand(batch, env)
 
-        assert env.result_format == ResultFormat.COUNTS
+        assert all(
+            meta.result_format is ResultFormat.COUNTS for meta in output.batch.values()
+        )
 
     def test_expand_no_ham_ops_artifact(self):
         """ham_ops must NOT be set — PCE never uses the backend expval path."""
@@ -129,9 +131,9 @@ class TestExpandSingleCircuit:
         stage = _make_stage(np.eye(n_qubits), alpha=1.0, soft=True)
 
         env = PipelineEnv(backend=_make_expval_backend())
-        stage.expand(batch, env)
+        output = stage.expand(batch, env)
 
-        assert "ham_ops" not in env.artifacts
+        assert all(meta.backend_ham_ops is None for meta in output.batch.values())
 
 
 class TestReduceHistogram:

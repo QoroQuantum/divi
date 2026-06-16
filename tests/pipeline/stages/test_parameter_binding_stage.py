@@ -17,7 +17,11 @@ from divi.circuits import MetaCircuit
 from divi.circuits._conversions import _format_bound_param as _format_param
 from divi.circuits.quepp import QuEPP
 from divi.circuits.zne import ZNE
-from divi.pipeline import CircuitPipeline, DiviPerformanceWarning, PipelineEnv
+from divi.pipeline import (
+    CircuitPipeline,
+    DiviPerformanceWarning,
+    PipelineEnv,
+)
 from divi.pipeline.stages import (
     MeasurementStage,
     ParameterBindingStage,
@@ -206,7 +210,7 @@ class TestParameterBindingStage:
     def test_axis_name_is_param_set(self):
         assert ParameterBindingStage().axis_name == "param_set"
 
-    def test_volatile_is_true(self):
+    def test_is_volatile(self):
         assert ParameterBindingStage().volatile is True
 
     def test_does_not_force_upstream_dag_materialization(self):
@@ -346,10 +350,12 @@ class TestParameterBindingStageTemplatePath:
         stage = ParameterBindingStage()
         stage._fast_path = True
         env = PipelineEnv(backend=_TemplateCapableBackend())
-        assert stage._template_path_enabled(env) is True
+        meta = two_group_meta()
+        batch = {(("spec", "c"),): meta}
+        assert stage._template_path_enabled(batch, env) is True
 
-        env.artifacts["per_group_shots"] = {(("spec", "c"),): {0: 100}}
-        assert stage._template_path_enabled(env) is False
+        batch_with_shots = {(("spec", "c"),): meta.set_group_shots({0: 100})}
+        assert stage._template_path_enabled(batch_with_shots, env) is False
 
 
 class TestParameterBindingStageOrdering:

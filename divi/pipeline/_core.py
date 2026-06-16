@@ -34,6 +34,7 @@ from .abc import (
     ContractViolation,
     DiviPerformanceWarning,
     ExpansionResult,
+    MetaCircuitBatch,
     PipelineEnv,
     PipelineResult,
     PipelineTrace,
@@ -217,6 +218,28 @@ def _build_shot_groups(
     return shot_groups
 
 
+def _measurement_artifacts(batch: MetaCircuitBatch) -> dict[str, Any]:
+    """Reconstruct ``ham_ops`` / ``per_group_shots`` from circuit-level metadata.
+
+    The measurement stage records these on each :class:`MetaCircuit`; this
+    gathers them back into the artifact shape used for backend submission and
+    dry-run reporting.
+    """
+    artifacts: dict[str, Any] = {}
+    per_group_shots = {
+        key: meta.group_shots for key, meta in batch.items() if meta.group_shots
+    }
+    if per_group_shots:
+        artifacts["per_group_shots"] = per_group_shots
+    ham_ops = next(
+        (m.backend_ham_ops for m in batch.values() if m.backend_ham_ops is not None),
+        None,
+    )
+    if ham_ops is not None:
+        artifacts["ham_ops"] = ham_ops
+    return artifacts
+
+
 def _default_execute_fn(
     trace: PipelineTrace,
     env: PipelineEnv,
@@ -242,11 +265,12 @@ def _default_execute_fn(
         env.artifacts["circuit_count"] = len(circuits)
 
     submit_kwargs = {}
-    ham_ops = env.artifacts.get("ham_ops")
+    artifacts = trace.env_artifacts
+    ham_ops = artifacts.get("ham_ops")
     if ham_ops is not None:
         submit_kwargs["ham_ops"] = ham_ops
 
-    per_group_shots = env.artifacts.get("per_group_shots")
+    per_group_shots = artifacts.get("per_group_shots")
     if per_group_shots:
         # ParameterBindingStage takes the bound path when per-group shots are
         # active (see ParameterBindingStage._template_path_enabled), so these
@@ -434,7 +458,7 @@ class CircuitPipeline:
         1. Run ``expand`` on the single spec stage: input any (e.g. Hamiltonian), output batch of MetaCircuits.
         2. Run ``expand`` on each bundle stage: each takes a MetaCircuit batch, modifies body/measurement, returns MetaCircuit batch.
         3. Execute: ``execute_fn(meta_circuit_batch, env)`` (or default: param substitution + backend run) → raw results.
-        4. Convert raw results according to ``env.result_format`` (set by the measurement stage).
+        4. Convert raw results according to the result format recorded on the circuits.
         5. Run ``reduce`` on each stage in reverse order.
 
         Args:
@@ -455,15 +479,6 @@ class CircuitPipeline:
         try:
             plan = self.run_forward_pass(initial_spec, env, bypass_cache=bypass_cache)
 
-            # Restore result_format and stage-produced artifacts from the
-            # cached trace onto the (possibly fresh) PipelineEnv.  When the
-            # forward pass is cached, expand() doesn't re-run, so these
-            # env fields would otherwise be empty/None.
-            if plan.result_format is not None:
-                env.result_format = plan.result_format
-
-            env.artifacts.update(plan.env_artifacts)
-
             # Forward pass is done — clear the classical-pipeline indicator so
             # the spinner shows only execution/polling state from here on.
             _report_pipeline_stage(env, None)
@@ -471,15 +486,29 @@ class CircuitPipeline:
             with _sigint_to_cancellation(env):
                 raw = execute_fn(plan, env)
 
-            # Convert raw backend results into the canonical format declared
-            # by the measurement stage during expand.  This runs *before* the
-            # reduce chain so that downstream stages (QEM, etc.) receive
-            # values in the expected type.
-            if env.result_format is not None:
-                if env.result_format is ResultFormat.PROBS:
+            # Convert raw backend results into the canonical format the
+            # measurement stage recorded on the circuits.  This runs *before*
+            # the reduce chain so downstream stages receive the expected type.
+            result_format = next(
+                (
+                    meta.result_format
+                    for meta in plan.final_batch.values()
+                    if meta.result_format is not None
+                ),
+                None,
+            )
+            if result_format is not None:
+                if result_format is ResultFormat.PROBS:
                     raw = _counts_to_probs(raw, env.backend.shots)
-                elif env.result_format is ResultFormat.EXPVALS:
-                    ham_ops = env.artifacts.get("ham_ops")
+                elif result_format is ResultFormat.EXPVALS:
+                    ham_ops = next(
+                        (
+                            meta.backend_ham_ops
+                            for meta in plan.final_batch.values()
+                            if meta.backend_ham_ops is not None
+                        ),
+                        None,
+                    )
                     if ham_ops is not None:
                         raw = _expval_dicts_to_indexed(raw, ham_ops)
                     else:
@@ -527,14 +556,14 @@ class CircuitPipeline:
         # would otherwise mutate shared DAG references.  Keeping stage and
         # callable zipped together eliminates any index-drift footgun when
         # the list is sliced below.
-        plan: list[tuple[Stage, Callable[[Any, PipelineEnv], StageOutput]]] = list(
+        plan: list[tuple[Stage, Callable[[Any, PipelineEnv], StageOutput[Any]]]] = list(
             zip(self._stages, self._resolve_expand_fns(dry=dry))
         )
 
         def run_bundle_stages(
             data: Any,
             bundle_plan: Sequence[
-                tuple[Stage, Callable[[Any, PipelineEnv], StageOutput]]
+                tuple[Stage, Callable[[Any, PipelineEnv], StageOutput[Any]]]
             ],
         ) -> tuple[Any, list[StageToken], list[ExpansionResult]]:
             tokens: list[StageToken] = []
@@ -546,10 +575,7 @@ class CircuitPipeline:
                 data = output.batch
                 tokens.append(output.token)
                 expansions.append(
-                    ExpansionResult(
-                        batch=output.batch,
-                        stage_name=stage.name,
-                    )
+                    ExpansionResult(batch=output.batch, stage_name=stage.name)
                 )
             return data, tokens, expansions
 
@@ -566,20 +592,10 @@ class CircuitPipeline:
             None,
         )
 
+        # Measurement metadata (ham_ops / per-group shots / result format) now
+        # rides on each MetaCircuit, so a cached trace replays it verbatim —
+        # nothing to restore onto the live env.
         if cached is not None and recompute_from_idx is None:
-            # Replay the cached trace's env side-effects onto the live env so
-            # downstream consumers (e.g. _default_execute_fn reading
-            # ``env.artifacts["per_group_shots"]``) see the same state as on
-            # the original run. Caller mutations win on collision.
-            env.artifacts.update(
-                {
-                    k: v
-                    for k, v in cached.env_artifacts.items()
-                    if k not in env.artifacts
-                }
-            )
-            if env.result_format is None:
-                env.result_format = cached.result_format
             return cached
 
         if cached is None or recompute_from_idx == 0:
@@ -595,8 +611,7 @@ class CircuitPipeline:
                 final_batch=final_batch,
                 stage_expansions=tuple(expansions),
                 stage_tokens=tuple([spec_token, *bundle_tokens]),
-                result_format=env.result_format,
-                env_artifacts=dict(env.artifacts),
+                env_artifacts=_measurement_artifacts(final_batch),
             )
             if not dry:
                 self._forward_cache[cache_key] = trace
@@ -623,11 +638,7 @@ class CircuitPipeline:
             final_batch=final_batch,
             stage_expansions=tuple([*prefix_expansions, *rerun_expansions]),
             stage_tokens=tuple([*prefix_tokens, *rerun_tokens]),
-            # Carry forward result_format and env_artifacts from the cached
-            # trace — the earlier (non-recomputed) stages didn't re-run, so
-            # their env side-effects aren't on this env.
-            result_format=cached.result_format,
-            env_artifacts={**cached.env_artifacts, **env.artifacts},
+            env_artifacts=_measurement_artifacts(final_batch),
         )
 
         if not dry:
@@ -637,7 +648,7 @@ class CircuitPipeline:
 
     def _resolve_expand_fns(
         self, *, dry: bool
-    ) -> list[Callable[[Any, PipelineEnv], StageOutput]]:
+    ) -> list[Callable[[Any, PipelineEnv], StageOutput[Any]]]:
         """Build the per-stage expand callables for one forward pass.
 
         Real runs always route through :meth:`Stage.expand`.  Dry runs route
@@ -651,7 +662,7 @@ class CircuitPipeline:
         if not dry:
             return [stage.expand for stage in self._stages]
 
-        fns: list[Callable[[Any, PipelineEnv], StageOutput]] = []
+        fns: list[Callable[[Any, PipelineEnv], StageOutput[Any]]] = []
         for idx, stage in enumerate(self._stages):
             if not _has_custom_dry_expand(stage):
                 # No analytic override — the default ``dry_expand`` already
