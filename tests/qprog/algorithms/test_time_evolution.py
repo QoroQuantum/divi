@@ -1083,7 +1083,8 @@ class TestTimeEvolutionPrecision:
             backend=default_test_simulator,
             precision=3,
         )
-        meta = te._meta_circuit_factory(te._hamiltonian, ham_id=0)
+        result = te.trotterization_strategy.process_hamiltonian(te._hamiltonian)
+        meta = te._meta_circuit_factory(result, ham_id=0)
         assert meta.precision == 3
 
 

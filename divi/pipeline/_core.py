@@ -646,6 +646,29 @@ class CircuitPipeline:
 
         return trace
 
+    def run_spec_stage(
+        self,
+        initial_spec: Any,
+        env: PipelineEnv,
+    ) -> StageOutput[MetaCircuitBatch]:
+        """Expand only the pipeline's spec stage.
+
+        Reuses the spec output of a forward pass already cached under the
+        current key (e.g. the cost evaluation that precedes the metric within
+        one optimizer step), so the metric measures on the cost's sampled
+        batch. With no cached trace it expands directly; deterministic
+        per-evaluation seeding means that recompute reproduces the same batch.
+        """
+        stage = self._stages[0]
+        stage_ids = tuple(id(s) for s in self._stages)
+        stage_extras = tuple(s.cache_key_extras(env) for s in self._stages)
+        cache_key = (id(initial_spec), stage_ids, stage_extras)
+        cached = self._forward_cache.get(cache_key)
+        if cached is not None:
+            return StageOutput(cached.initial_batch, cached.stage_tokens[0])
+        _report_pipeline_stage(env, stage.name)
+        return stage.expand(initial_spec, env)
+
     def _resolve_expand_fns(
         self, *, dry: bool
     ) -> list[Callable[[Any, PipelineEnv], StageOutput[Any]]]:

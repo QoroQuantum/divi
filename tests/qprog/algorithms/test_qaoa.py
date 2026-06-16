@@ -251,10 +251,10 @@ class TestQAOAQDriftMultiSample:
         for sol in optimal_solutions:
             assert all(node in G.nodes() for node in sol.decoded)
 
-    def test_multi_sample_trotter_stage_is_volatile_for_qdrift(
+    def test_multi_sample_trotter_stage_is_evaluation_scoped_for_qdrift(
         self, default_test_simulator
     ):
-        """TrotterSpecStage is correctly marked volatile for QDrift (ensures cache invalidation)."""
+        """QDrift samples are reused within, but not across, evaluations."""
         strategy = QDrift(
             keep_fraction=0.5,
             sampling_budget=4,
@@ -271,7 +271,8 @@ class TestQAOAQDriftMultiSample:
         )
 
         trotter_stage = self._find_trotter_stage(qaoa)
-        assert trotter_stage.volatile is True
+        env = qaoa._build_pipeline_env()
+        assert trotter_stage.cache_key_extras(env) == (env.evaluation_counter,)
 
     def test_multi_sample_final_computation_merges_histograms(
         self, default_test_simulator
@@ -576,11 +577,8 @@ class TestWireSpaceInvariant:
         assert qaoa.solution is not None
 
 
-class TestCostMetaCircuitCache:
-    """``_cost_meta_circuit_factory`` memoizes built MetaCircuits per
-    ``ham_id`` for stateless trotterization strategies, where the operator
-    is deterministic across calls.  Stateful strategies (e.g. QDrift) must
-    bypass the cache because their operator is resampled each call."""
+class TestCostPipelineCache:
+    """QAOA cost-circuit construction reuses each pipeline's forward cache."""
 
     @staticmethod
     def _make_qaoa(strategy, backend):
@@ -592,89 +590,89 @@ class TestCostMetaCircuitCache:
             max_iterations=1,
         )
 
-    def test_stateless_strategy_caches_by_ham_id(self, dummy_simulator):
-        qaoa = self._make_qaoa(ExactTrotterization(), dummy_simulator)
-        m1 = qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=0)
-        m2 = qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=0)
-        assert m1 is m2
+    @staticmethod
+    def _forward(qaoa):
+        return qaoa._cost_pipeline.run_forward_pass(
+            qaoa.cost_hamiltonian,
+            qaoa._build_pipeline_env(),
+        )
 
-    def test_stateless_distinct_ham_ids_cached_separately(self, dummy_simulator):
+    def test_deterministic_strategy_reuses_stage_output(self, dummy_simulator, mocker):
         qaoa = self._make_qaoa(ExactTrotterization(), dummy_simulator)
-        m1 = qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=0)
-        m2 = qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=1)
-        assert m1 is not m2
-        size = qaoa._params.size
-        assert qaoa._cost_meta_cache[(0, size)] is m1
-        assert qaoa._cost_meta_cache[(1, size)] is m2
-
-    def test_stateless_skips_circuit_build_on_cache_hit(self, dummy_simulator, mocker):
-        qaoa = self._make_qaoa(ExactTrotterization(), dummy_simulator)
-
-        # Prime the cache, then start counting.
-        qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=0)
         spy = mocker.spy(qaoa, "_build_qaoa_qiskit_circuit")
 
-        for _ in range(3):
-            qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=0)
-        spy.assert_not_called()
+        first = self._forward(qaoa)
+        second = self._forward(qaoa)
 
-    def test_stateful_strategy_skips_cache(self, dummy_simulator):
+        assert second.initial_batch is first.initial_batch
+        assert spy.call_count == 1
+
+    def test_qdrift_reuses_only_within_evaluation(self, dummy_simulator):
         strategy = QDrift(
             sampling_budget=2,
             n_hamiltonians_per_iteration=1,
             seed=42,
         )
         qaoa = self._make_qaoa(strategy, dummy_simulator)
-        m1 = qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=0)
-        m2 = qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=0)
-        assert m1 is not m2
-        assert qaoa._cost_meta_cache == {}
+        first = self._forward(qaoa)
+        same_evaluation = self._forward(qaoa)
+        qaoa._evaluation_counter += 1
+        next_evaluation = self._forward(qaoa)
+
+        assert same_evaluation.initial_batch is first.initial_batch
+        assert next_evaluation.initial_batch is not first.initial_batch
+
+    def test_qdrift_resamples_for_non_qng_optimizer(self, dummy_simulator, mocker):
+        qaoa = QAOA(
+            MaxCutProblem(make_bull_graph()),
+            n_layers=1,
+            trotterization_strategy=QDrift(
+                sampling_budget=2,
+                n_hamiltonians_per_iteration=1,
+                seed=42,
+            ),
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            max_iterations=2,
+            backend=dummy_simulator,
+        )
+        trotter_stage = next(
+            stage
+            for stage in qaoa._cost_pipeline.stages
+            if isinstance(stage, TrotterSpecStage)
+        )
+        expand_spy = mocker.spy(trotter_stage, "expand")
+
+        qaoa.run(perform_final_computation=False)
+
+        assert expand_spy.call_count >= 2
 
     def test_construction_does_not_eager_build(self, dummy_simulator):
-        """Construction leaves ``_meta_circuit_factories`` and ``_cost_meta_cache``
-        unpopulated; the heavy build runs on first access via the
-        ``meta_circuit_factories`` property."""
+        """Construction leaves the compatibility factory unpopulated."""
         qaoa = self._make_qaoa(ExactTrotterization(), dummy_simulator)
         assert qaoa._meta_circuit_factories is None
-        assert qaoa._cost_meta_cache == {}
 
     def test_cache_independent_per_instance(self, dummy_simulator):
         qaoa1 = self._make_qaoa(ExactTrotterization(), dummy_simulator)
         qaoa2 = self._make_qaoa(ExactTrotterization(), dummy_simulator)
 
-        # Construction is now lazy (no eager build), so caches start empty.
-        # Seed each independently and verify they are isolated.
-        qaoa1._cost_meta_circuit_factory(qaoa1.cost_hamiltonian, ham_id=0)
-        qaoa2._cost_meta_circuit_factory(qaoa2.cost_hamiltonian, ham_id=0)
-        assert qaoa1._cost_meta_cache is not qaoa2._cost_meta_cache
-        qaoa1._cost_meta_cache.clear()
-        assert qaoa1._cost_meta_cache == {}
-        assert qaoa2._cost_meta_cache  # untouched
+        assert (
+            qaoa1._cost_pipeline._forward_cache
+            is not qaoa2._cost_pipeline._forward_cache
+        )
 
-    def test_cache_self_invalidates_on_depth_rebuild(self, dummy_simulator):
-        """IterativeQAOA mutates ``self._params`` per depth.  The cache key
-        embeds the parameter size, so the depth-2 lookup misses, builds a
-        new MetaCircuit, and stores it under a distinct key — without the
-        subclass needing to clear the cache.
-        """
+    def test_depth_rebuild_invalidates_persistent_entries(self, dummy_simulator):
         qaoa = IterativeQAOA(
             MaxCutProblem(make_bull_graph()),
             max_depth=2,
             backend=dummy_simulator,
             max_iterations_per_depth=1,
         )
-        m_d1 = qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=0)
-        d1_size = qaoa._params.size
+        first = self._forward(qaoa)
 
         qaoa._rebuild_for_depth(2)
-        d2_size = qaoa._params.size
-        assert d2_size != d1_size
+        second = self._forward(qaoa)
 
-        m_d2 = qaoa._cost_meta_circuit_factory(qaoa.cost_hamiltonian, ham_id=0)
-        assert m_d2 is not m_d1
-        # Both entries coexist under distinct keys.
-        assert qaoa._cost_meta_cache[(0, d1_size)] is m_d1
-        assert qaoa._cost_meta_cache[(0, d2_size)] is m_d2
+        assert second.initial_batch is not first.initial_batch
 
 
 class TestObservableMeasuringContracts(ObservableMeasuringContractsBase):

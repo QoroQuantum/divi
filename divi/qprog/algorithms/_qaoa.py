@@ -15,6 +15,7 @@ from qiskit.quantum_info import SparsePauliOp
 from divi.circuits import MetaCircuit
 from divi.hamiltonians import (
     ExactTrotterization,
+    TrotterizationResult,
     TrotterizationStrategy,
 )
 from divi.hamiltonians._term_ops import (
@@ -125,8 +126,6 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         self.trotterization_strategy = trotterization_strategy or ExactTrotterization()
         self._decoded_solution: Any = _UNSET
         self._solution_bitstring: Any = _UNSET
-        self._cost_meta_cache: dict[tuple[int, int], MetaCircuit] = {}
-
         # Circuit parameters — Qiskit ParameterVector, no sympy.
         betas = ParameterVector("β", self.n_layers)
         gammas = ParameterVector("γ", self.n_layers)
@@ -261,39 +260,30 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         return qc
 
     def _cost_meta_circuit_factory(
-        self, processed_spo: SparsePauliOp, ham_id: int
+        self, result: TrotterizationResult, ham_id: int
     ) -> MetaCircuit:
         """Build a cost MetaCircuit for a given (possibly QDrift-sampled) SPO."""
-        stateless = not self.trotterization_strategy.stateful
-        # Cache key includes the parameter count so a depth change
-        # (IterativeQAOA) self-invalidates without external bookkeeping.
-        cache_key = (ham_id, self._params.size)
-        if stateless and cache_key in self._cost_meta_cache:
-            return self._cost_meta_cache[cache_key]
-
+        processed_spo = result.effective_hamiltonian
         qc = self._build_qaoa_qiskit_circuit(processed_spo)
-        meta = MetaCircuit(
+        return MetaCircuit(
             circuit_bodies=(((), circuit_to_dag(qc)),),
             parameters=tuple(self._params.flatten()),
             observable=processed_spo,
             precision=self._precision,
         )
-        if stateless:
-            self._cost_meta_cache[cache_key] = meta
-        return meta
 
     def _create_meta_circuit_factories(self) -> dict[str, MetaCircuit]:
-        """Generate meta-circuit factories for the QAOA problem.
+        """Generate compatibility templates for the QAOA problem.
 
-        The cost circuit is built via :meth:`_cost_meta_circuit_factory` so
-        the cost and measurement pipelines share one
-        ``_build_qaoa_qiskit_circuit`` pass through :attr:`_cost_meta_cache`.
-        Stateful strategies (e.g. QDrift) bypass the cache and resample per
-        call; the cost circuit built here serves only as the structural
-        template for the measurement DAG.
+        Executed cost, metric, and sample circuits come from the cost
+        pipeline's cached spec-stage cohort. These templates support callers
+        that inspect ``meta_circuit_factories`` without driving a pipeline.
         """
         flat_params = tuple(self._params.flatten())
-        cost_circuit = self._cost_meta_circuit_factory(self.cost_hamiltonian, 0)
+        cost_result = self.trotterization_strategy.process_hamiltonian(
+            self.cost_hamiltonian
+        )
+        cost_circuit = self._cost_meta_circuit_factory(cost_result, 0)
         sample_circuit = MetaCircuit(
             circuit_bodies=cost_circuit.circuit_bodies,
             parameters=flat_params,

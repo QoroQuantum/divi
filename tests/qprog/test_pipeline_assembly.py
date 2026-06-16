@@ -44,7 +44,8 @@ def mitigated_vqe(dummy_simulator):
 
 
 def test_vqe_exposes_cost_and_sample(vqe):
-    assert {"cost", "sample"} <= set(vqe._pipelines)
+    assert "cost" in vqe._pipelines
+    assert "sample" in vqe._pipelines
     # The metric pipeline is not registered — it is built on demand by the
     # natural-gradient estimator via ``_expectation_pipeline``.
     assert "metric" not in vqe._pipelines

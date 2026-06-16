@@ -121,12 +121,8 @@ class TestAnalyticDryRun:
                 ]
             )
 
-        real_trace = _build().run_forward_pass(
-            "ignored", dummy_pipeline_env, bypass_cache=True
-        )
-        dry_trace = _build().run_forward_pass(
-            "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
-        )
+        real_trace = _build().run_forward_pass("ignored", dummy_pipeline_env)
+        dry_trace = _build().run_forward_pass("ignored", dummy_pipeline_env, dry=True)
 
         real_report = dry_run_pipeline(
             "real", real_trace, _build().stages, dummy_pipeline_env
@@ -152,9 +148,7 @@ class TestAnalyticDryRun:
                 MeasurementStage(shot_distribution="weighted"),
             ]
         )
-        dry_trace = pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
-        )
+        dry_trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
         dry_report = dry_run_pipeline(
             "dry", dry_trace, pipeline.stages, dummy_pipeline_env
         )
@@ -180,9 +174,7 @@ class TestAnalyticDryRun:
                 MeasurementStage(),
             ]
         )
-        pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
-        )
+        pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
         assert spy.call_count == 0, "dry path must skip twirl DAG substitution"
 
     def test_real_path_uses_pauli_twirl_deepcopy(self, dummy_pipeline_env, mocker):
@@ -200,9 +192,7 @@ class TestAnalyticDryRun:
                 MeasurementStage(),
             ]
         )
-        pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, bypass_cache=True, dry=False
-        )
+        pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=False)
         assert spy.call_count > 0, "real path must apply twirl DAG substitution"
 
     def test_dry_preserves_per_group_shots_artifact(self, dummy_pipeline_env):
@@ -214,9 +204,7 @@ class TestAnalyticDryRun:
                 MeasurementStage(shot_distribution="weighted"),
             ]
         )
-        trace = pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
-        )
+        trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
         assert "per_group_shots" in trace.env_artifacts
 
     def test_introspect_metadata_survives_dry(self, dummy_pipeline_env):
@@ -239,9 +227,7 @@ class TestAnalyticDryRun:
                 MeasurementStage(shot_distribution="weighted"),
             ]
         )
-        trace = pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
-        )
+        trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
         report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
 
         by_name = {s.name: s for s in report.stages}
@@ -281,9 +267,7 @@ class TestAnalyticDryRun:
                 MeasurementStage(shot_distribution="weighted"),
             ]
         )
-        trace = pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
-        )
+        trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
         report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
         assert "per_group_shots" in report.env_artifacts
         assert (
@@ -291,34 +275,29 @@ class TestAnalyticDryRun:
             == trace.env_artifacts["per_group_shots"]
         )
 
-    def test_dry_trace_not_cached(self, dummy_pipeline_env):
+    def test_dry_trace_not_cached(self, dummy_pipeline_env, mocker):
         """Dry traces must never be cached nor served from the forward-pass cache."""
         meta = two_group_meta()
-        pipeline = CircuitPipeline(
-            stages=[DummySpecStage(meta=meta), MeasurementStage()]
-        )
+        spec_stage = DummySpecStage(meta=meta)
+        pipeline = CircuitPipeline(stages=[spec_stage, MeasurementStage()])
+        expand_spy = mocker.spy(spec_stage, "expand")
+
         pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
-        assert (
-            pipeline._forward_cache == {}
-        ), "dry traces must not populate the real forward-pass cache"
+        pipeline.run_forward_pass("ignored", dummy_pipeline_env)
+        pipeline.run_forward_pass("ignored", dummy_pipeline_env)
+
+        assert expand_spy.call_count == 2
 
     def test_real_run_after_dry_writes_real_trace(self, dummy_pipeline_env):
-        """The critical invariant beyond ``_forward_cache == {}``: a real
-        forward pass that follows a dry pass on the same pipeline object
-        must (a) actually populate the cache, and (b) store a real trace —
-        never inherit the dry pass's placeholder bodies."""
+        """A real pass after a dry pass never inherits placeholder bodies."""
         meta = two_group_meta()
         pipeline = CircuitPipeline(
             stages=[DummySpecStage(meta=meta), MeasurementStage()]
         )
 
         pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
-        assert pipeline._forward_cache == {}
 
         real_trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env)
-        assert len(pipeline._forward_cache) == 1
-        cached = next(iter(pipeline._forward_cache.values()))
-        assert cached is real_trace
 
         # Dry mode's measurement placeholders are empty strings; the real
         # pass must emit actual ``measure q[...] -> c[...]`` QASM.
@@ -362,9 +341,7 @@ class TestMeasurementStageReduction:
                 MeasurementStage(shot_distribution="weighted"),
             ]
         )
-        trace = pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
-        )
+        trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
         report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
 
         spec, meas = report.stages
@@ -396,9 +373,7 @@ class TestMeasurementStageReduction:
                 MeasurementStage(shot_distribution="weighted"),
             ]
         )
-        trace = pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
-        )
+        trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
         report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
 
         spec, param, meas = report.stages
@@ -425,9 +400,7 @@ class TestMeasurementStageReduction:
         pipeline = CircuitPipeline(
             stages=[DummySpecStage(meta=meta), MeasurementStage()]
         )
-        trace = pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
-        )
+        trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
         report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
 
         spec, meas = report.stages
@@ -452,9 +425,7 @@ class TestMeasurementStageReduction:
         pipeline = CircuitPipeline(
             stages=[DummySpecStage(meta=meta), MeasurementStage()]
         )
-        trace = pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
-        )
+        trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
         report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
 
         spec, meas = report.stages
@@ -489,11 +460,9 @@ class TestQuEPPDryExpand:
 
         real_pipeline = _build()
         dry_pipeline = _build()
-        real_trace = real_pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, bypass_cache=True
-        )
+        real_trace = real_pipeline.run_forward_pass("ignored", dummy_pipeline_env)
         dry_trace = dry_pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
+            "ignored", dummy_pipeline_env, dry=True
         )
         real_report = dry_run_pipeline(
             "r", real_trace, real_pipeline.stages, dummy_pipeline_env
@@ -532,9 +501,7 @@ class TestQuEPPDryExpand:
             ],
             suppress_performance_warnings=True,
         )
-        pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
-        )
+        pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
         assert spy.call_count == 0, "dry QuEPP must skip Clifford simulation"
 
 
@@ -682,9 +649,7 @@ class TestDrySafetyFallback:
         the downstream non-dry-aware DAG consumer(s)."""
         pipeline = self._build(_parametric_twirlable_meta())
         with pytest.warns(DiviPerformanceWarning) as record:
-            pipeline.run_forward_pass(
-                "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
-            )
+            pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
 
         messages = [str(w.message) for w in record.list]
         assert any(
@@ -709,9 +674,7 @@ class TestDrySafetyFallback:
             ]
         )
         with pytest.warns(DiviPerformanceWarning) as record:
-            pipeline.run_forward_pass(
-                "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
-            )
+            pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
 
         messages = [str(w.message) for w in record.list]
         # Both distinct culprit class names must appear in a single warning,
@@ -730,9 +693,7 @@ class TestDrySafetyFallback:
 
         pipeline = self._build(_parametric_twirlable_meta())
         with pytest.warns(DiviPerformanceWarning):
-            pipeline.run_forward_pass(
-                "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
-            )
+            pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
         assert spy.call_count > 0, (
             "Fallback should have run the real PauliTwirl expand, which "
             "invokes _apply_twirl_substitute"
@@ -748,10 +709,10 @@ class TestDrySafetyFallback:
 
         with pytest.warns(DiviPerformanceWarning):
             dry_trace = dry_pipeline.run_forward_pass(
-                "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
+                "ignored", dummy_pipeline_env, dry=True
             )
         real_trace = real_pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, bypass_cache=True, dry=False
+            "ignored", dummy_pipeline_env, dry=False
         )
 
         dry_report = dry_run_pipeline(
@@ -777,9 +738,7 @@ class TestDrySafetyFallback:
         # test fails loudly rather than needing to inspect a record list.
         with warnings.catch_warnings():
             warnings.simplefilter("error", DiviPerformanceWarning)
-            pipeline.run_forward_pass(
-                "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
-            )
+            pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
 
 
 class TestTwoQubitDepth:
@@ -837,9 +796,7 @@ class TestCircuitStatsAggregate:
                 MeasurementStage(),
             ]
         )
-        trace = pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, bypass_cache=True, dry=True
-        )
+        trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
         report = dry_run_pipeline("t", trace, pipeline.stages, dummy_pipeline_env)
         stats = report.circuit_stats
         assert stats, "circuit_stats should be populated when DAG bodies exist"

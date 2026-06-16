@@ -16,6 +16,7 @@ from divi.circuits import MetaCircuit
 from divi.circuits._conversions import _QISKIT_TO_QASM2
 from divi.hamiltonians import (
     ExactTrotterization,
+    TrotterizationResult,
     TrotterizationStrategy,
 )
 from divi.hamiltonians._term_ops import (
@@ -250,13 +251,16 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
         return self._pipelines["evolution"]
 
     def _meta_circuit_factory(
-        self, processed_spo: SparsePauliOp, ham_id: int
+        self, result: TrotterizationResult, ham_id: int
     ) -> MetaCircuit:
-        """Factory for TrotterSpecStage: build a MetaCircuit for one Hamiltonian sample (SPO)."""
+        """Build a MetaCircuit from one explicit trotterization result."""
         if self._template_meta is not None:
             return self._template_meta
 
-        qc = self._build_qiskit_circuit(processed_spo)
+        qc = self._build_qiskit_circuit(
+            result.effective_hamiltonian,
+            sampled_terms=result.sampled_terms,
+        )
         dag = circuit_to_dag(qc)
 
         if self.observable is None:
@@ -325,7 +329,12 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
         # full wire register so a narrow observable matches the cost circuit.
         return to_spo(op, wires=self._circuit_wires)
 
-    def _build_qiskit_circuit(self, processed_spo: SparsePauliOp) -> QuantumCircuit:
+    def _build_qiskit_circuit(
+        self,
+        processed_spo: SparsePauliOp,
+        *,
+        sampled_terms: SparsePauliOp | None = None,
+    ) -> QuantumCircuit:
         """Build initial-state preparation + Trotter evolution as a ``QuantumCircuit``.
 
         Adjoint evolution is realized via negative time. Single-term
@@ -344,14 +353,13 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
         qc.compose(self.initial_state.build(self._circuit_wires), inplace=True)
         qubits = list(range(self.n_qubits))
 
-        sampled_spo = self.trotterization_strategy.last_sampled_spo
-        if sampled_spo is not None:
+        if sampled_terms is not None:
             # Faithful QDrift: one evolution gate per sampled term (preserving
             # sampling-with-replacement multiplicities), repeated ``n_steps``
             # times with ``time / n_steps`` per step. Adjoint via negative time.
             step_time = -self.time / self.n_steps
             for _ in range(self.n_steps):
-                _spo_to_qiskit_basis_gates(qc, sampled_spo, step_time, qubits)
+                _spo_to_qiskit_basis_gates(qc, sampled_terms, step_time, qubits)
             return qc
 
         # Standard Trotter-Suzuki for ExactTrotterization.

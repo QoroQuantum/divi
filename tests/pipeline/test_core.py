@@ -27,6 +27,7 @@ from divi.pipeline import (
     PipelineEnv,
     PipelineResult,
     PipelineTrace,
+    StageOutput,
     format_pipeline_tree,
 )
 from divi.pipeline._compilation import (
@@ -43,7 +44,7 @@ from divi.pipeline._core import (
     _validate_stage_order,
     _wait_for_async_result,
 )
-from divi.pipeline.abc import BundleStage, StageOutput
+from divi.pipeline.abc import BundleStage
 from divi.pipeline.stages import (
     MeasurementStage,
     ParameterBindingStage,
@@ -291,21 +292,8 @@ class TestCircuitPipelineRunForwardPass:
         assert len(reduced) == 1
         assert list(reduced.values())[0] == pytest.approx([3.9])
 
-    def test_bypass_cache_recomputes_even_with_cache(self, dummy_pipeline_env):
-        pipeline = CircuitPipeline(stages=two_group_pipeline_stages())
-        trace1 = pipeline.run_forward_pass(
-            initial_spec="ignored", env=dummy_pipeline_env
-        )
-        trace2 = pipeline.run_forward_pass(
-            initial_spec="ignored", env=dummy_pipeline_env, bypass_cache=True
-        )
-        assert trace1.final_batch.keys() == trace2.final_batch.keys()
-        assert id(trace1) != id(trace2) or trace1 is trace2
-
-    def test_volatile_bundle_stage_triggers_partial_rerun_from_cache(
-        self, dummy_pipeline_env
-    ):
-        """When a bundle stage is volatile, second run_forward_pass reuses cache and reruns from that stage."""
+    def test_evaluation_scoped_stage_reuses_then_invalidates(self, dummy_pipeline_env):
+        """Evaluation-scoped output is reused until the evaluation advances."""
         pipeline = CircuitPipeline(
             stages=[
                 DummySpecStage(meta=two_group_meta()),
@@ -331,6 +319,13 @@ class TestCircuitPipelineRunForwardPass:
         assert trace2.initial_batch == trace1.initial_batch
         assert set(trace2.final_batch.keys()) == set(trace1.final_batch.keys())
         assert trace2.stage_expansions[0].batch == trace1.stage_expansions[0].batch
+        assert trace2.final_batch is trace1.final_batch
+
+        dummy_pipeline_env.evaluation_counter += 1
+        trace3 = pipeline.run_forward_pass(
+            initial_spec="ignored", env=dummy_pipeline_env
+        )
+        assert trace3.final_batch is not trace1.final_batch
 
 
 class TestCompileBatch:

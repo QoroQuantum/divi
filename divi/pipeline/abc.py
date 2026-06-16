@@ -26,16 +26,15 @@ __all__ = [
     "PipelineResult",
     "PipelineTrace",
     "ResultFormat",
+    "StageOutput",
     "SpecStage",
     "Stage",
-    "StageOutput",
 ]
 
 NodeKey = tuple[AxisLabel, ...]  # Batch key: sequence of (axis_name, value) pairs.
 
 MetaCircuitBatch = dict[NodeKey, MetaCircuit]
 BranchKey = tuple[AxisLabel, ...]  # Full branch key: (axis_name, value) pairs.
-ParentBranchResults = dict[NodeKey, dict[BranchKey, Any]]
 ChildResults = dict[Any, Any]
 
 StageToken = Any
@@ -183,6 +182,11 @@ class PipelineEnv:
     shot allocation). When ``None``, stages that need randomness construct a
     fresh, unseeded generator, which means they are not reproducible."""
 
+    evaluation_counter: int = 0
+    """Index of the current optimizer evaluation, bumped once per cost call.
+    Stochastic spec stages (e.g. QDrift) seed deterministically from it so the
+    cost and metric pipelines sample the same batch within one evaluation."""
+
 
 class ContractViolation(ValueError):
     """Raised when a stage's positional requirements are not met."""
@@ -228,9 +232,9 @@ class Stage(ABC, Generic[InT, OutT]):
         ``cache_key_extras``.  Override this method to declare any live env
         state your stage reads during ``expand`` (for example
         ``env.backend.shots`` when shot allocation depends on the budget, or
-        a timestamp when the stage depends on external context).  Values not
-        listed here won't trigger cache invalidation when they change.  The
-        return value must be hashable; defaults to an empty tuple.
+        ``env.evaluation_counter`` for per-evaluation stochastic sampling).
+        Values not listed here won't trigger cache invalidation when they
+        change.  The return value must be hashable; defaults to an empty tuple.
         """
         return ()
 
@@ -255,7 +259,7 @@ class Stage(ABC, Generic[InT, OutT]):
 
     @abstractmethod
     def expand(self, batch: InT, env: PipelineEnv) -> StageOutput[OutT]:
-        """Transform input for the forward pass and return a reduction token."""
+        """Transform input and return all cacheable outputs and effects."""
         ...
 
     def dry_expand(self, batch: InT, env: PipelineEnv) -> StageOutput[OutT]:

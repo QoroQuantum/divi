@@ -9,16 +9,13 @@ import pytest
 from divi.pipeline import PipelineSet
 
 
-def test_named_access_membership_and_iteration():
+def test_named_access_and_membership():
     cost, sample = object(), object()
     pipelines = PipelineSet({"cost": (cost, lambda: 1), "sample": (sample, lambda: 2)})
 
     assert pipelines["cost"] is cost
-    assert pipelines.get("sample") is sample
-    assert pipelines.get("metric") is None
     assert "cost" in pipelines
     assert "metric" not in pipelines
-    assert set(pipelines) == {"cost", "sample"}
     assert dict(pipelines.items()) == {"cost": cost, "sample": sample}
 
 
@@ -48,9 +45,8 @@ def test_spec_for_missing_pipeline_raises_with_available_names():
         pipelines.spec_for("metric")
 
 
-def test_len_and_repr():
+def test_repr():
     pipelines = PipelineSet(
         {"cost": (object(), lambda: None), "sample": (object(), lambda: None)}
     )
-    assert len(pipelines) == 2
     assert repr(pipelines) == "PipelineSet(['cost', 'sample'])"

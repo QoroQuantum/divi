@@ -351,7 +351,8 @@ def _build_meta_at(H, observable, time, backend, *, n_steps=1, order=1):
         observable=observable,
         backend=backend,
     )
-    return prog._meta_circuit_factory(to_spo(H), ham_id=0)
+    result = prog.trotterization_strategy.process_hamiltonian(to_spo(H))
+    return prog._meta_circuit_factory(result, ham_id=0)
 
 
 def _dag_signature(meta):

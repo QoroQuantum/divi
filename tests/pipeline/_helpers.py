@@ -13,7 +13,12 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.backends import CircuitRunner, ExecutionResult
 from divi.circuits import MetaCircuit
-from divi.pipeline import CircuitPipeline, PipelineEnv, PipelineTrace
+from divi.pipeline import (
+    CircuitPipeline,
+    PipelineEnv,
+    PipelineTrace,
+    StageOutput,
+)
 from divi.pipeline._compilation import _compile_batch
 from divi.pipeline.abc import (
     BundleStage,
@@ -21,7 +26,6 @@ from divi.pipeline.abc import (
     MetaCircuitBatch,
     SpecStage,
     Stage,
-    StageOutput,
     StageToken,
 )
 from divi.pipeline.stages import MeasurementStage, ParameterBindingStage
@@ -77,11 +81,14 @@ class FanoutAndSumStage(BundleStage):
 
 
 class StatefulFanoutStage(FanoutAndSumStage):
-    """Like FanoutAndSumStage but volatile=True to exercise run_forward_pass cache/partial rerun."""
+    """Fan-out stage whose output is keyed to one evaluation.
 
-    @property
-    def volatile(self) -> bool:
-        return True
+    Folds ``env.evaluation_counter`` into the cache key so its output is
+    reused across forward passes of one evaluation, then recomputed once the
+    counter advances — mirroring QDrift's per-evaluation resampling."""
+
+    def cache_key_extras(self, env):
+        return (env.evaluation_counter,)
 
 
 def run_binding_pipeline(

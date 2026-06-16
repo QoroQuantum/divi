@@ -5,12 +5,14 @@
 from collections.abc import Callable
 from typing import Any
 
+import numpy as np
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
 from divi.circuits._core import _assert_hermitian_spo
 from divi.hamiltonians import (
     ExactTrotterization,
+    QDrift,
     TrotterizationStrategy,
 )
 from divi.hamiltonians._term_ops import _clean_hamiltonian_spo
@@ -41,9 +43,19 @@ class TrotterSpecStage(SpecStage[SparsePauliOp]):
     def axis_name(self) -> str:
         return "ham"
 
-    @property
-    def volatile(self) -> bool:
-        return self._trotterization_strategy.stateful
+    def cache_key_extras(self, env):
+        """Invalidate the forward-pass cache per evaluation for QDrift.
+
+        QDrift re-samples a fresh batch each optimizer evaluation, seeded
+        deterministically from ``env.evaluation_counter``; folding the counter
+        into the cache key reuses one sample across the cost and gradient
+        passes of a single evaluation, then resamples on the next. Deterministic
+        strategies (e.g. ``ExactTrotterization``) declare no extras and stay
+        cached for the pipeline's lifetime.
+        """
+        if isinstance(self._trotterization_strategy, QDrift):
+            return (env.evaluation_counter,)
+        return ()
 
     def __init__(
         self,
@@ -53,7 +65,8 @@ class TrotterSpecStage(SpecStage[SparsePauliOp]):
         """
         Args:
             trotterization_strategy: Strategy for term selection/sampling (e.g. ``ExactTrotterization``, ``QDrift``).
-            meta_circuit_factory: Factory callable ``(hamiltonian, ham_id) -> MetaCircuit``.
+            meta_circuit_factory: Factory callable
+                ``(TrotterizationResult, ham_id) -> MetaCircuit``.
         """
         super().__init__(name=type(self).__name__)
 
@@ -102,9 +115,10 @@ class TrotterSpecStage(SpecStage[SparsePauliOp]):
         spo_clean, strategy, n_samples, token = self._prepare(batch)
 
         metas: MetaCircuitBatch = {}
+        rng = self._rng_for_evaluation(strategy, env)
         for ham_id in range(n_samples):
-            processed = strategy.process_hamiltonian(spo_clean)
-            meta = self._meta_circuit_factory(processed, ham_id)
+            result = strategy.process_hamiltonian(spo_clean, rng=rng)
+            meta = self._meta_circuit_factory(result, ham_id)
             metas[(("ham", ham_id),)] = meta
 
         return StageOutput(batch=metas, token=token)
@@ -124,12 +138,33 @@ class TrotterSpecStage(SpecStage[SparsePauliOp]):
         spo_clean, strategy, n_samples, token = self._prepare(batch)
 
         prototype = self._meta_circuit_factory(
-            strategy.process_hamiltonian(spo_clean), 0
+            strategy.process_hamiltonian(
+                spo_clean, rng=self._rng_for_evaluation(strategy, env)
+            ),
+            0,
         )
         metas: MetaCircuitBatch = {
             (("ham", ham_id),): prototype for ham_id in range(n_samples)
         }
         return StageOutput(batch=metas, token=token)
+
+    @staticmethod
+    def _rng_for_evaluation(
+        strategy: TrotterizationStrategy,
+        env: PipelineEnv,
+    ):
+        if not isinstance(strategy, QDrift):
+            return None
+        if strategy.seed is None:
+            if env.rng is None:
+                return None
+            seed = int(env.rng.integers(0, 2**63))
+            return np.random.default_rng(seed)
+        if env.evaluation_counter == 0:
+            return np.random.default_rng(strategy.seed)
+        return np.random.default_rng(
+            np.random.SeedSequence([strategy.seed, env.evaluation_counter])
+        )
 
     def introspect(
         self, batch: MetaCircuitBatch, env: PipelineEnv, token: StageToken

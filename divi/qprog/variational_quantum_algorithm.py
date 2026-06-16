@@ -998,6 +998,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             )
 
         def cost_fn(params):
+            self._evaluation_counter += 1
             self.reporter.info(
                 message="💸 Computing Cost 💸", iteration=self.current_iteration
             )

@@ -115,7 +115,6 @@ class PullbackMetricEstimator(MetricEstimator):
             )
 
     def bind(self, program: "VariationalQuantumAlgorithm") -> Evaluators:
-        observables, coeffs = _split_into_terms(program.cost_hamiltonian)
         shift_mask = program._grad_shift_mask
         supports_expval = bool(getattr(program.backend, "supports_expval", False))
         cache: dict[str, Any] = {"key": None, "value": None}
@@ -123,14 +122,37 @@ class PullbackMetricEstimator(MetricEstimator):
         def grad_and_metric(
             params: npt.NDArray[np.float64],
         ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-            key = np.asarray(params, dtype=np.float64).tobytes()
+            key = (
+                program._evaluation_counter,
+                np.asarray(params, dtype=np.float64).tobytes(),
+            )
             if cache["key"] != key:
-                exp_vals = _term_expectations(
-                    program, observables, supports_expval, shift_mask + params
-                )
-                jacobian = 0.5 * (exp_vals[0::2] - exp_vals[1::2])  # (m, v): d_i <P_r>
-                grad = jacobian @ coeffs
-                metric = (jacobian * coeffs**2) @ jacobian.T
+                gradients = []
+                metrics = []
+                for source_meta in _cost_source_metas(program):
+                    if (
+                        source_meta.observable is None
+                        or len(source_meta.observable) != 1
+                    ):
+                        raise ContractViolation(
+                            "The pullback metric requires each cost circuit to "
+                            "carry exactly one loss observable."
+                        )
+                    observables, coeffs = _split_into_terms(source_meta.observable[0])
+                    exp_vals = _term_expectations(
+                        program,
+                        observables,
+                        supports_expval,
+                        shift_mask + params,
+                        source_meta=source_meta,
+                    )
+                    jacobian = 0.5 * (
+                        exp_vals[0::2] - exp_vals[1::2]
+                    )  # (m, v): d_i <P_r>
+                    gradients.append(jacobian @ coeffs)
+                    metrics.append((jacobian * coeffs**2) @ jacobian.T)
+                grad = np.mean(gradients, axis=0)
+                metric = np.mean(metrics, axis=0)
                 cache["key"] = key
                 cache["value"] = (grad, metric)
             return cache["value"]
@@ -167,6 +189,8 @@ def _term_expectations(
     observables: tuple[SparsePauliOp, ...],
     supports_expval: bool,
     param_sets: npt.NDArray[np.float64],
+    *,
+    source_meta: MetaCircuit | None = None,
 ) -> npt.NDArray[np.float64]:
     """``(n_sets, n_terms)`` per-term expectations on the cost ansatz.
 
@@ -177,14 +201,63 @@ def _term_expectations(
     if supports_expval:
         columns = []
         for obs in observables:
-            indexed = _run_metric(
-                program, _cost_ansatz_meta(program, (obs,)), param_sets
+            indexed = _average_metric_runs(
+                [
+                    _run_metric(program, meta, param_sets)
+                    for meta in _cost_ansatz_metas(
+                        program, (obs,), source_meta=source_meta
+                    )
+                ]
             )
             columns.append(np.array([indexed[k][0] for k in sorted(indexed)]))
         return np.column_stack(columns)
 
-    indexed = _run_metric(program, _cost_ansatz_meta(program, observables), param_sets)
+    indexed = _average_metric_runs(
+        [
+            _run_metric(program, meta, param_sets)
+            for meta in _cost_ansatz_metas(
+                program, observables, source_meta=source_meta
+            )
+        ]
+    )
     return np.vstack([indexed[k] for k in sorted(indexed)])
+
+
+def _average_metric_runs(
+    runs: list[dict[int, npt.NDArray[np.float64]]],
+) -> dict[int, npt.NDArray[np.float64]]:
+    """Average identically-indexed metric results across a source cohort."""
+    if not runs:
+        raise RuntimeError("Metric source cohort cannot be empty.")
+    keys = runs[0].keys()
+    if any(run.keys() != keys for run in runs[1:]):
+        raise ContractViolation("Metric source cohort returned inconsistent indices.")
+    return {key: np.mean([run[key] for run in runs], axis=0) for key in keys}
+
+
+def _cost_source_metas(
+    program: "VariationalQuantumAlgorithm",
+) -> tuple[MetaCircuit, ...]:
+    """Return the cost pipeline's cached spec-stage circuit cohort."""
+    return tuple(program._pipeline_source_batch("cost").values())
+
+
+def _cost_ansatz_metas(
+    program: "VariationalQuantumAlgorithm",
+    observables: tuple[SparsePauliOp, ...],
+    *,
+    source_meta: MetaCircuit | None = None,
+) -> tuple[MetaCircuit, ...]:
+    """Cost ansatz cohort with each member measuring ``observables``."""
+    sources = (source_meta,) if source_meta is not None else _cost_source_metas(program)
+    return tuple(
+        replace(
+            meta,
+            observable=tuple(observables),
+            _was_multi_obs=True,
+        )
+        for meta in sources
+    )
 
 
 def _cost_ansatz_meta(
@@ -193,11 +266,7 @@ def _cost_ansatz_meta(
 ) -> MetaCircuit:
     """The cost ansatz MetaCircuit with its observable replaced by ``observables``
     — the per-term set the pullback metric measures on the full ansatz."""
-    return replace(
-        program.meta_circuit_factories["cost_circuit"],
-        observable=tuple(observables),
-        _was_multi_obs=True,
-    )
+    return _cost_ansatz_metas(program, observables)[0]
 
 
 #: Hermitian generator of each supported single-parameter rotation gate, as the
@@ -243,31 +312,31 @@ class FubiniStudyMetricEstimator(MetricEstimator):
             )
 
     def bind(self, program: "VariationalQuantumAlgorithm") -> Evaluators:
-        blocks, full_params, n_qubits = _fs_blocks(
-            program.meta_circuit_factories["cost_circuit"]
-        )
-        n_params = len(full_params)
         supports_expval = bool(getattr(program.backend, "supports_expval", False))
 
         def metric_fn(params: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
             theta = np.asarray(params, dtype=np.float64).reshape(-1)
-            metric = np.zeros((n_params, n_params))
-            for prefix_ops, gens in blocks:
-                indices = [pidx for pidx, _ in gens]
-                generators = [g for _, g in gens]
-                block = _fs_block_covariance(
-                    program,
-                    prefix_ops,
-                    full_params,
-                    n_qubits,
-                    theta,
-                    generators,
-                    supports_expval,
-                )
-                for a, ia in enumerate(indices):
-                    for b, ib in enumerate(indices):
-                        metric[ia, ib] = block[a, b]
-            return metric
+            cohort_metrics = []
+            for source_meta in _cost_source_metas(program):
+                blocks, full_params, n_qubits = _fs_blocks(source_meta)
+                metric = np.zeros((len(full_params), len(full_params)))
+                for prefix_ops, gens in blocks:
+                    indices = [pidx for pidx, _ in gens]
+                    generators = [g for _, g in gens]
+                    block = _fs_block_covariance(
+                        program,
+                        prefix_ops,
+                        full_params,
+                        n_qubits,
+                        theta,
+                        generators,
+                        supports_expval,
+                    )
+                    for a, ia in enumerate(indices):
+                        for b, ib in enumerate(indices):
+                            metric[ia, ib] = block[a, b]
+                cohort_metrics.append(metric)
+            return np.mean(cohort_metrics, axis=0)
 
         return {"metric_fn": metric_fn}
 

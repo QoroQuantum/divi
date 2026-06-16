@@ -85,6 +85,7 @@ class QuantumProgram(ABC):
         self._curr_circuits = []
         self._current_execution_result = None
         self._cancellation_event = None
+        self._evaluation_counter = 0
 
         # --- Progress Reporting ---
         self.program_id = program_id
@@ -298,6 +299,7 @@ class QuantumProgram(ABC):
             "backend": self.backend,
             "reporter": self.reporter,
             "cancellation_event": self._cancellation_event,
+            "evaluation_counter": self._evaluation_counter,
         }
         env_kwargs.update(overrides)  # caller-supplied values win
         return PipelineEnv(**env_kwargs)
@@ -322,3 +324,13 @@ class QuantumProgram(ABC):
         if initial_spec is None:
             initial_spec = self._pipelines.spec_for(name)
         return self._execute(self._pipelines[name], initial_spec, **env_overrides)
+
+    def _pipeline_source_batch(self, name: str):
+        """Return a registered pipeline's spec-stage circuit batch.
+
+        Recomputed deterministically from ``env.evaluation_counter`` so it
+        reproduces the cost pipeline's sampled batch for the current evaluation.
+        """
+        pipeline = self._pipelines[name]
+        env = self._build_pipeline_env()
+        return pipeline.run_spec_stage(self._pipelines.spec_for(name), env).batch

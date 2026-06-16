@@ -192,6 +192,15 @@ Example: QAOA with QDrift:
    )
    qaoa.run()
 
+.. note::
+
+   With ``QDrift``, the final solution distribution (``best_probs`` and
+   ``get_top_solutions``) is measured on a freshly sampled set of Hamiltonian terms —
+   not the specific sample that produced the best loss during optimization — so it is a
+   stochastic estimate of the solution. Set ``QDrift(seed=...)`` to make the term
+   sampling reproducible across runs; note that the distribution from ``run()`` and a
+   later ``sample_solution()`` are drawn from different term samples and will not match.
+
 For a full comparison of Exact Trotterization vs QDrift (including circuit depth and
 count), see the `qaoa_qdrift.py
 <https://github.com/QoroQuantum/divi/blob/main/tutorials/optimization/qaoa_qdrift.py>`_

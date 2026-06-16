@@ -40,10 +40,6 @@ class QEMStage(BundleStage):
         return f"{QEM_AXIS}_{self.protocol.name}"
 
     @property
-    def volatile(self) -> bool:
-        return False
-
-    @property
     def consumes_dag_bodies(self) -> bool:
         return self._consumes_dag_bodies
 

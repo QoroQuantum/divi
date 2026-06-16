@@ -4,6 +4,7 @@
 
 """Tests for the Quantum Natural Gradient optimizer and its pullback metric."""
 
+import networkx as nx
 import numpy as np
 import pennylane as qp
 import pytest
@@ -12,8 +13,10 @@ from qiskit.circuit import Parameter
 from qiskit.circuit.library import RYGate, RZGate
 from qiskit.quantum_info import SparsePauliOp
 
+from divi.hamiltonians import QDrift
 from divi.pipeline.abc import ContractViolation
-from divi.qprog import PCE, VQE, CustomVQA, FubiniStudyMetricEstimator
+from divi.pipeline.stages import TrotterSpecStage
+from divi.qprog import PCE, QAOA, VQE, CustomVQA, FubiniStudyMetricEstimator
 from divi.qprog._metrics import (
     PullbackMetricEstimator,
     _cost_ansatz_meta,
@@ -23,6 +26,7 @@ from divi.qprog._metrics import (
 from divi.qprog.algorithms import GenericLayerAnsatz, HartreeFockAnsatz
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.optimizers import QNGOptimizer
+from divi.qprog.problems import MaxCutProblem
 from divi.qprog.variational_quantum_algorithm import _compute_parameter_shift_mask
 
 # --------------------------------------------------------------------------- #
@@ -379,6 +383,33 @@ def test_vqe_runs_under_fubini_study_qng(toy_vqe):
     toy_vqe.max_iterations = 5
     toy_vqe.run(perform_final_computation=False)
     assert len(toy_vqe.losses_history) >= 1
+
+
+def test_qaoa_qdrift_qng_reuses_cost_cohort(dummy_simulator, mocker):
+    """Cost, gradient, and metric share one QDrift cohort per QNG evaluation."""
+    qaoa = QAOA(
+        MaxCutProblem(nx.bull_graph()),
+        n_layers=1,
+        trotterization_strategy=QDrift(
+            sampling_budget=2,
+            n_hamiltonians_per_iteration=3,
+            seed=42,
+        ),
+        optimizer=QNGOptimizer(),
+        max_iterations=1,
+        backend=dummy_simulator,
+    )
+    trotter_stage = next(
+        stage
+        for stage in qaoa._cost_pipeline.stages
+        if isinstance(stage, TrotterSpecStage)
+    )
+    expand_spy = mocker.spy(trotter_stage, "expand")
+
+    qaoa.run()
+
+    assert expand_spy.call_count == 1
+    assert qaoa.best_probs
 
 
 def test_qng_run_with_checkpointing_raises_upfront(toy_vqe, tmp_path):

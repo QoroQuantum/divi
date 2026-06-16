@@ -30,6 +30,7 @@ fallback to the trained ``_best_params``.
 """
 
 from collections.abc import Callable
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, NamedTuple
 from warnings import warn
 
@@ -357,10 +358,41 @@ class SolutionSamplingMixin(_SamplingMixinBase):
         self, param_sets: npt.NDArray[np.float64]
     ) -> None:
         """Execute sample circuits via the pipeline for the provided parameter sets."""
-        result = self._run_pipeline("sample", param_sets=np.atleast_2d(param_sets))
+        initial_spec = None
+        if "cost" in self._pipelines:
+            initial_spec = [
+                replace(
+                    meta,
+                    observable=None,
+                    measured_wires=tuple(range(meta.n_qubits)),
+                    measurement_qasms=(),
+                    measurement_groups=(),
+                )
+                for meta in self._pipeline_source_batch("cost").values()
+            ]
+        result = self._run_pipeline(
+            "sample",
+            initial_spec=initial_spec,
+            param_sets=np.atleast_2d(param_sets),
+        )
 
         indexed = {
-            _extract_param_set_idx(key, default=0): value
+            _extract_param_set_idx(key, default=0): _average_probabilities(value)
             for key, value in result.items()
         }
         self._best_probs = dict(sorted(indexed.items()))
+
+
+def _average_probabilities(
+    value: dict[str, float] | list[dict[str, float]],
+) -> dict[str, float]:
+    """Average one or more probability distributions."""
+    if isinstance(value, dict):
+        return value
+    if not value:
+        return {}
+    bitstrings = set().union(*(probs.keys() for probs in value))
+    return {
+        bitstring: sum(probs.get(bitstring, 0.0) for probs in value) / len(value)
+        for bitstring in sorted(bitstrings)
+    }
