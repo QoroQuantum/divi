@@ -11,6 +11,7 @@ import requests
 
 from divi.backends import AsyncJobBackend, ExecutionResult
 from divi.circuits import DEFAULT_PRECISION
+from divi.pipeline import PipelineSet
 from divi.qprog.quantum_program import QuantumProgram
 from tests.conftest import DummySimulator
 
@@ -24,8 +25,8 @@ class ConcreteQuantumProgram(QuantumProgram):
         self._total_run_time = 0.0
         self._ran = False
 
-    def _build_pipelines(self) -> None:
-        pass
+    def _build_pipelines(self) -> PipelineSet:
+        return PipelineSet({})
 
     def has_results(self) -> bool:
         return self._ran
@@ -93,7 +94,7 @@ class TestQuantumProgramBase:
         assert program.backend == mock_backend
 
     def test_abstract_methods_must_be_implemented(self, mocker):
-        """Test that run() must be implemented in subclasses."""
+        """Test that abstract methods must be implemented in subclasses."""
         mock_backend = DummySimulator(shots=1)
 
         # Test missing abstract methods (run and _build_pipelines)
@@ -102,6 +103,11 @@ class TestQuantumProgramBase:
 
         with pytest.raises(TypeError, match="Can't instantiate abstract class"):
             IncompleteProgram(backend=mock_backend)
+
+    def test_build_pipelines_returns_pipeline_set(self):
+        program = ConcreteQuantumProgram(backend=DummySimulator(shots=1))
+
+        assert isinstance(program._build_pipelines(), PipelineSet)
 
     def test_cancellation_event(self, mocker):
         """Test _set_cancellation_event method."""

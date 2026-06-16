@@ -2,7 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from ._metrics import (
+    FubiniStudyMetricEstimator,
+    MetricEstimator,
+    PullbackMetricEstimator,
+)
 from ._observable_measuring_mixin import ObservableMeasuringMixin
+from ._solution_sampling_mixin import SolutionEntry, SolutionSamplingMixin
 from ._types import GraphProblemTypes
 from .aggregation import (
     AggregationStrategy,
@@ -39,13 +45,13 @@ from .ensemble import BatchConfig, BatchMode, ProgramEnsemble
 from .optimizers import (
     GridSearchOptimizer,
     MonteCarloOptimizer,
+    QNGOptimizer,
     ScipyMethod,
     ScipyOptimizer,
 )
 from .quantum_program import QuantumProgram
 from .variational_quantum_algorithm import (
     ParamHistoryMode,
-    SolutionEntry,
     VariationalQuantumAlgorithm,
 )
 from .workflows import (

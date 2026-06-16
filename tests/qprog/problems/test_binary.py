@@ -472,7 +472,7 @@ class TestQUBOInput:
         assert mixer_spo.size == 3
         assert set(mixer_spo.paulis.to_labels()) == {"IIX", "IXI", "XII"}
 
-        verify_metacircuit_dict(qaoa_problem, ["cost_circuit", "meas_circuit"])
+        verify_metacircuit_dict(qaoa_problem, ["cost_circuit", "sample_circuit"])
 
     def test_hubo_dict_initialization_native_builder(self, dummy_simulator):
         hubo = {
@@ -671,7 +671,7 @@ class TestQUBOInput:
         assert mixer_spo.size == 3
         assert set(mixer_spo.paulis.to_labels()) == {"IIX", "IXI", "XII"}
 
-        verify_metacircuit_dict(qaoa_problem, ["cost_circuit", "meas_circuit"])
+        verify_metacircuit_dict(qaoa_problem, ["cost_circuit", "sample_circuit"])
 
     @pytest.mark.e2e
     def test_binary_quadratic_model_minimize_correct(

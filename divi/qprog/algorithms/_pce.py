@@ -21,11 +21,11 @@ from divi.hamiltonians import (
     normalize_binary_polynomial_problem,
 )
 from divi.hamiltonians._polynomial import _evaluate_binary_polynomial
-from divi.pipeline import CircuitPipeline
-from divi.pipeline.stages import CircuitSpecStage, ParameterBindingStage, PCECostStage
+from divi.pipeline import PipelineSet, ResultFormat
+from divi.pipeline.stages import CircuitSpecStage, PCECostStage
+from divi.qprog._solution_sampling_mixin import SolutionEntry
 from divi.qprog.algorithms import VQE
 from divi.qprog.algorithms._numba_kernels import _popcount_parity_jit
-from divi.qprog.variational_quantum_algorithm import SolutionEntry
 
 
 def _fast_popcount_parity(arr_input: npt.NDArray[np.integer]) -> npt.NDArray[np.uint8]:
@@ -206,29 +206,32 @@ class PCE(VQE):
         # so it flows through unchanged.
         super().__init__(hamiltonian=placeholder_hamiltonian, **kwargs)
 
-    def _build_pipelines(self) -> dict:
-        """Build the PCE-specific cost and measurement pipelines."""
-        # PCECostStage is a standalone BundleStage (not a MeasurementStage
-        # subclass) that emits one "measure all qubits" QASM per circuit
-        # spec and computes the nonlinear binary-polynomial objective from
-        # raw shot histograms. QEMStage is intentionally excluded.
-        cost_pipeline = CircuitPipeline(
-            stages=[
-                CircuitSpecStage(),
-                PCECostStage(
-                    problem=self.problem,
-                    alpha=self.alpha,
-                    use_soft_objective=self._use_soft_objective,
-                    decode_parities_fn=self._decode_parities_fn,
-                    variable_masks_u64=self._variable_masks_u64,
+    def _build_pipelines(self) -> PipelineSet:
+        # PCE's cost terminal is a PCECostStage (a standalone BundleStage, not a
+        # MeasurementStage) that emits one "measure all qubits" QASM per circuit
+        # spec and computes the nonlinear binary-polynomial objective from raw
+        # shot histograms. The COUNTS format keeps QEM off this pipeline
+        # (extrapolation has no expectation value to act on; PCE forbids
+        # qem_protocol anyway). Sample is added by the mixin; replace only "cost".
+        return (
+            super()
+            ._build_pipelines()
+            .with_(
+                "cost",
+                self._assemble_pipeline(
+                    CircuitSpecStage(),
+                    PCECostStage(
+                        problem=self.problem,
+                        alpha=self.alpha,
+                        use_soft_objective=self._use_soft_objective,
+                        decode_parities_fn=self._decode_parities_fn,
+                        variable_masks_u64=self._variable_masks_u64,
+                    ),
+                    result_format=ResultFormat.COUNTS,
                 ),
-                ParameterBindingStage(),
-            ]
+                lambda: self.meta_circuit_factories["cost_circuit"],
+            )
         )
-        return {
-            "cost": cost_pipeline,
-            "measurement": self._build_measurement_pipeline(),
-        }
 
     def _evaluate_cost_param_sets(
         self, param_sets: np.ndarray, **kwargs
@@ -269,7 +272,7 @@ class PCE(VQE):
                 observable=self.cost_hamiltonian,
                 precision=self._precision,
             ),
-            "meas_circuit": MetaCircuit(
+            "sample_circuit": MetaCircuit(
                 circuit_bodies=(((), dag),),
                 parameters=flat_params,
                 measured_wires=tuple(range(self.n_qubits)),

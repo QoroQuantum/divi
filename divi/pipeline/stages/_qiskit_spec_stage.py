@@ -11,7 +11,7 @@ from qiskit import QuantumCircuit
 from qiskit.converters import circuit_to_dag
 
 from divi.circuits import MetaCircuit
-from divi.pipeline.abc import MetaCircuitBatch, PipelineEnv, StageToken
+from divi.pipeline.abc import MetaCircuitBatch, PipelineEnv, StageOutput
 from divi.pipeline.stages import CircuitSpecStage
 
 
@@ -40,7 +40,7 @@ class QiskitSpecStage(CircuitSpecStage):
         self,
         batch: QuantumCircuit | Sequence[QuantumCircuit] | Mapping[str, QuantumCircuit],
         env: PipelineEnv,
-    ) -> tuple[MetaCircuitBatch, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         """Convert QuantumCircuit(s) to MetaCircuit(s) and build a keyed batch."""
         return super().expand(self._convert(batch), env)
 

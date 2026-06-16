@@ -167,7 +167,10 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
                 seed=self._seed,
                 **self._extra_kwargs,
             )
-            template = probe._meta_circuit_factory(to_spo(self._hamiltonian), ham_id=0)
+            result = probe.trotterization_strategy.process_hamiltonian(
+                to_spo(self._hamiltonian)
+            )
+            template = probe._meta_circuit_factory(result, ham_id=0)
         except Exception:
             logger.warning(
                 "TimeEvolutionTrajectory: parametric template build failed; "

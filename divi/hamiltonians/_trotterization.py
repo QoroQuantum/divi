@@ -2,17 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Trotterization strategies for Hamiltonian simulation.
+"""Stateless trotterization strategies for Hamiltonian simulation."""
 
-Strategies consume and return :class:`qiskit.quantum_info.SparsePauliOp`.
-"""
-
-from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal, Protocol
 from warnings import warn
 
 import numpy as np
+import numpy.typing as npt
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.hamiltonians._term_ops import (
@@ -22,33 +19,18 @@ from divi.hamiltonians._term_ops import (
     generate_empty_spo,
 )
 
-# Maximum number of distinct input SPOs cached per strategy instance.
-_STRATEGY_CACHE_MAXSIZE = 8
 
+@dataclass(frozen=True)
+class TrotterizationResult:
+    """Output of one trotterization step: the Hamiltonian to build the circuit
+    from, plus (for sampling strategies) the exact sequence of sampled terms."""
 
-class _LRUCache(OrderedDict):
-    """``OrderedDict`` with a maxsize cap. Most-recent entry is at the end."""
+    effective_hamiltonian: SparsePauliOp
+    """Simplified Hamiltonian the observable/circuit is built from."""
 
-    def __init__(self, maxsize: int = _STRATEGY_CACHE_MAXSIZE) -> None:
-        super().__init__()
-        self._maxsize = maxsize
-
-    def __setitem__(self, key, value) -> None:  # type: ignore[override]
-        if key in self:
-            self.move_to_end(key)
-        super().__setitem__(key, value)
-        while len(self) > self._maxsize:
-            self.popitem(last=False)
-
-    def __getitem__(self, key):  # type: ignore[override]
-        value = super().__getitem__(key)
-        self.move_to_end(key)
-        return value
-
-    def get(self, key, default=None):  # type: ignore[override]
-        if key in self:
-            return self[key]
-        return default
+    sampled_terms: SparsePauliOp | None = None
+    """For sampling strategies such as QDrift, the drawn terms in order with
+    repeats kept (one entry per draw). ``None`` for deterministic strategies."""
 
 
 def _warn_truncation_no_op(
@@ -74,28 +56,31 @@ def _warn_truncation_no_op(
 class TrotterizationStrategy(Protocol):
     """Trotterization strategy protocol."""
 
-    @property
-    def stateful(self) -> bool:
-        """True if the strategy retains state across ``process_hamiltonian`` calls.
-        This should be true for strategies that might re-process the Hamiltonian during execution.
+    def process_hamiltonian(
+        self,
+        hamiltonian: SparsePauliOp,
+        *,
+        rng: np.random.Generator | None = None,
+    ) -> TrotterizationResult:
+        """Return a trotterization result without retaining call state."""
+        ...
+
+    def process_hamiltonian_batch(
+        self,
+        hamiltonian: SparsePauliOp,
+        n_samples: int,
+        *,
+        rng: np.random.Generator | None = None,
+    ) -> list[TrotterizationResult]:
+        """Return ``n_samples`` results from one Hamiltonian.
+
+        The default calls :meth:`process_hamiltonian` ``n_samples`` times;
+        strategies with expensive deterministic preprocessing (e.g. QDrift's
+        keep/sample split) override this to share that work across the batch.
         """
-        ...
-
-    @property
-    def last_sampled_spo(self) -> SparsePauliOp | None:
-        """SPO from the most recent sampling pass, or ``None`` when the
-        strategy does not sample (e.g. :class:`ExactTrotterization`).
-
-        Sampling strategies (e.g. :class:`QDrift`) populate this on every
-        ``process_hamiltonian`` call with a faithful concatenation of the
-        drawn terms — duplicates preserved so callers can emit one
-        evolution gate per draw without recomputing multiplicities.
-        """
-        ...
-
-    def process_hamiltonian(self, hamiltonian: SparsePauliOp) -> SparsePauliOp:
-        """Trotterize the Hamiltonian (SPO in, SPO out)."""
-        ...
+        return [
+            self.process_hamiltonian(hamiltonian, rng=rng) for _ in range(n_samples)
+        ]
 
 
 @dataclass(frozen=True)
@@ -106,9 +91,6 @@ class ExactTrotterization(TrotterizationStrategy):
     """Fraction of terms to keep by coefficient magnitude (largest first). Must be in (0, 1]. If None, keep all terms."""
     keep_top_n: int | None = None
     """Number of top terms to keep by coefficient magnitude. Must be >= 1. If None, keep all terms. Mutually exclusive with keep_fraction."""
-
-    # Bounded LRU cache of ``process_hamiltonian`` results keyed on ``id(spo)``.
-    _cache: _LRUCache = field(default_factory=_LRUCache, compare=False, hash=False)
 
     def __post_init__(self):
         if self.keep_fraction is not None and self.keep_top_n is not None:
@@ -130,39 +112,22 @@ class ExactTrotterization(TrotterizationStrategy):
                 f"keep_top_n must be a positive integer (>= 1), got {self.keep_top_n}"
             )
 
-    @property
-    def stateful(self) -> bool:
-        # Despite having a _cache, this strategy is stateless because it only
-        # uses the cache as memoization, not as state.
-        return False
-
-    @property
-    def last_sampled_spo(self) -> SparsePauliOp | None:
-        # ExactTrotterization never samples; the strategy contract returns
-        # ``None`` so callers can branch on the presence of sampled terms
-        # without duck-typing.
-        return None
-
-    def process_hamiltonian(self, hamiltonian: SparsePauliOp) -> SparsePauliOp:
+    def process_hamiltonian(
+        self,
+        hamiltonian: SparsePauliOp,
+        *,
+        rng: np.random.Generator | None = None,
+    ) -> TrotterizationResult:
         """Truncate the Hamiltonian to its top-magnitude terms."""
         if self.keep_fraction is None and self.keep_top_n is None:
-            return hamiltonian.simplify()
-
-        # Cache keyed on ``id(spo)``. The stored tuple holds a strong
-        # reference to the SPO so its id cannot be reused while cached.
-        cache_key = id(hamiltonian)
-        cached = self._cache.get(cache_key)
-        if cached is not None:
-            return cached[1]
+            return TrotterizationResult(hamiltonian.simplify())
 
         if _warn_truncation_no_op(
             self.keep_fraction, self.keep_top_n, hamiltonian.size
         ):
-            return hamiltonian.simplify()
+            return TrotterizationResult(hamiltonian.simplify())
 
-        result_spo = self._truncate_spo(hamiltonian)
-        self._cache[cache_key] = (hamiltonian, result_spo)
-        return result_spo
+        return TrotterizationResult(self._truncate_spo(hamiltonian))
 
     def _truncate_spo(self, spo: SparsePauliOp) -> SparsePauliOp:
         """Sort by |coeff|, slice to the kept tail, and re-attach the constant."""
@@ -195,6 +160,17 @@ class ExactTrotterization(TrotterizationStrategy):
 
 
 @dataclass(frozen=True)
+class _QDriftSamplingPlan:
+    """Deterministic QDrift keep/sample split, reused across one batch's draws."""
+
+    to_sample_spo: SparsePauliOp
+    keep_spo: SparsePauliOp | None
+    absolute_coeffs: npt.NDArray[np.floating]
+    coeff_sum: float
+    probs: npt.NDArray[np.floating] | None
+
+
+@dataclass(frozen=True)
 class QDrift(TrotterizationStrategy):
     """``QDrift`` Trotterization strategy."""
 
@@ -210,16 +186,6 @@ class QDrift(TrotterizationStrategy):
     """Random seed for reproducible sampling. If None, sampling is non-deterministic."""
     n_hamiltonians_per_iteration: int = 10
     """Number of Hamiltonian samples per cost evaluation; losses are averaged over them."""
-
-    # Caches the ``(keep_spo, to_sample_spo)`` split keyed on ``id(spo)``.
-    # ``to_sample_spo is None`` means all terms were kept (no sampling).
-    _cache: _LRUCache = field(default_factory=_LRUCache, compare=False, hash=False)
-    _rng: np.random.Generator = field(init=False, compare=False, hash=False)
-    # Sampled SPO from the most recent call, preserving duplicates from
-    # sampling-with-replacement; concatenated with deterministically-kept terms.
-    last_sampled_spo: SparsePauliOp | None = field(
-        default=None, init=False, compare=False, hash=False
-    )
 
     def __post_init__(self):
         if (
@@ -247,18 +213,25 @@ class QDrift(TrotterizationStrategy):
         if self.seed is not None and not isinstance(self.seed, int):
             raise ValueError(f"seed must be an integer, got {self.seed}")
 
+        if self.sampling_budget is not None and (
+            not isinstance(self.sampling_budget, int) or self.sampling_budget < 1
+        ):
+            raise ValueError(
+                f"sampling_budget must be a positive integer (>= 1), "
+                f"got {self.sampling_budget}"
+            )
+
         if self.n_hamiltonians_per_iteration < 1:
             raise ValueError(
                 f"n_hamiltonians_per_iteration must be >= 1, got {self.n_hamiltonians_per_iteration}"
             )
 
-        object.__setattr__(self, "_rng", np.random.default_rng(self.seed))
-
-    @property
-    def stateful(self) -> bool:
-        return True
-
-    def process_hamiltonian(self, hamiltonian: SparsePauliOp) -> SparsePauliOp:
+    def process_hamiltonian(
+        self,
+        hamiltonian: SparsePauliOp,
+        *,
+        rng: np.random.Generator | None = None,
+    ) -> TrotterizationResult:
         r"""Apply the ``QDrift`` randomized channel to a Hamiltonian.
 
         Implements the ``QDrift`` protocol (Campbell 2019): for H = Σ c_i P_i,
@@ -269,72 +242,83 @@ class QDrift(TrotterizationStrategy):
           - Weighted: term_i → (λ / (L · \|c_i\|)) · c_i · P_i
           - Uniform:  term_i → (N / L) · c_i · P_i
         """
+        prepared = self._plan(hamiltonian)
+        if isinstance(prepared, TrotterizationResult):
+            return prepared
+        if rng is None:
+            rng = np.random.default_rng(self.seed)
+        return self._sample(prepared, rng)
+
+    def process_hamiltonian_batch(
+        self,
+        hamiltonian: SparsePauliOp,
+        n_samples: int,
+        *,
+        rng: np.random.Generator | None = None,
+    ) -> list[TrotterizationResult]:
+        """Sample ``n_samples`` Hamiltonians, computing the deterministic
+        keep/sample split once and drawing only the random terms per sample."""
+        prepared = self._plan(hamiltonian)
+        if isinstance(prepared, TrotterizationResult):
+            return [prepared] * n_samples
+        if rng is None:
+            rng = np.random.default_rng(self.seed)
+        return [self._sample(prepared, rng) for _ in range(n_samples)]
+
+    def _plan(
+        self, hamiltonian: SparsePauliOp
+    ) -> "TrotterizationResult | _QDriftSamplingPlan":
+        """Deterministic part shared by every sample of one batch.
+
+        Returns a finished :class:`TrotterizationResult` for the cases needing
+        no random draw, otherwise a :class:`_QDriftSamplingPlan` for :meth:`_draw`.
+        """
         if (
             self.keep_fraction is None
             and self.keep_top_n is None
             and self.sampling_budget is None
         ):
-            return hamiltonian.simplify()
+            return TrotterizationResult(hamiltonian.simplify())
 
         if hamiltonian.size == 0:
             warn(
                 "No terms to sample; returning the kept Hamiltonian.",
                 UserWarning,
             )
-            return generate_empty_spo(
-                _require_qiskit_num_qubits(hamiltonian.num_qubits)
+            return TrotterizationResult(
+                generate_empty_spo(_require_qiskit_num_qubits(hamiltonian.num_qubits))
             )
 
         triggered_exact_trotterization = (
             self.keep_fraction is not None or self.keep_top_n is not None
         )
 
-        # Cache keyed on ``id(spo)``; the cached tuple's first slot holds a
-        # strong reference to the SPO so its id cannot be reused while cached.
-        cache_key = id(hamiltonian)
-        cached = self._cache.get(cache_key)
-        if cached is not None:
-            _, keep_spo, to_sample_spo = cached
-        else:
-            keep_spo = None
-
-            if triggered_exact_trotterization:
-                all_kept = (
-                    self.keep_fraction is not None and self.keep_fraction == 1.0
-                ) or (
-                    self.keep_top_n is not None and self.keep_top_n >= hamiltonian.size
+        keep_spo = None
+        if triggered_exact_trotterization:
+            all_kept = (
+                self.keep_fraction is not None and self.keep_fraction == 1.0
+            ) or (self.keep_top_n is not None and self.keep_top_n >= hamiltonian.size)
+            if all_kept:
+                _warn_truncation_no_op(
+                    self.keep_fraction, self.keep_top_n, hamiltonian.size
                 )
-                if all_kept:
-                    # Two warnings: the truncation no-op + "nothing left to sample".
-                    _warn_truncation_no_op(
-                        self.keep_fraction, self.keep_top_n, hamiltonian.size
-                    )
-                    warn(
-                        "All terms were kept; there are no terms left to sample. "
-                        "Returning the full Hamiltonian.",
-                        UserWarning,
-                    )
-                    self._cache[cache_key] = (hamiltonian, None, None)
-                    return hamiltonian
+                warn(
+                    "All terms were kept; there are no terms left to sample. "
+                    "Returning the full Hamiltonian.",
+                    UserWarning,
+                )
+                return TrotterizationResult(hamiltonian)
 
-                keep_spo = ExactTrotterization(
-                    keep_fraction=self.keep_fraction, keep_top_n=self.keep_top_n
-                )._truncate_spo(hamiltonian)
-                # ``atol=0`` to keep small but genuine residual terms in the
-                # sampling pool; default ``atol`` would silently drop them
-                # when the input has wide coefficient magnitudes.
-                to_sample_spo = (hamiltonian - keep_spo).simplify(atol=0)
-            else:
-                to_sample_spo = hamiltonian.simplify()
-
-            self._cache[cache_key] = (hamiltonian, keep_spo, to_sample_spo)
-
-        # All-kept branch (re-entered via cache).
-        if to_sample_spo is None:
-            return hamiltonian
+            keep_spo = ExactTrotterization(
+                keep_fraction=self.keep_fraction, keep_top_n=self.keep_top_n
+            )._truncate_spo(hamiltonian)
+            to_sample_spo = (hamiltonian - keep_spo).simplify(atol=0)
+        else:
+            to_sample_spo = hamiltonian.simplify()
 
         if self.sampling_budget is None:
-            return hamiltonian.simplify() if keep_spo is None else keep_spo
+            effective = hamiltonian.simplify() if keep_spo is None else keep_spo
+            return TrotterizationResult(effective)
 
         if to_sample_spo.size == 0:
             warn(
@@ -342,60 +326,81 @@ class QDrift(TrotterizationStrategy):
                 UserWarning,
             )
             if keep_spo is None:
-                return generate_empty_spo(
-                    _require_qiskit_num_qubits(hamiltonian.num_qubits)
-                )
-            return keep_spo
-
-        if to_sample_spo.size == 1:
-            sampled_spo = to_sample_spo
-        else:
-            absolute_coeffs = np.abs(to_sample_spo.coeffs)
-            coeff_sum = absolute_coeffs.sum()
-            if coeff_sum == 0:
-                warn(
-                    "All term coefficients are zero; returning the kept Hamiltonian.",
-                    UserWarning,
-                )
-                if keep_spo is None:
-                    return generate_empty_spo(
+                return TrotterizationResult(
+                    generate_empty_spo(
                         _require_qiskit_num_qubits(hamiltonian.num_qubits)
                     )
-                return keep_spo
-            if self.sampling_strategy == "weighted":
-                probs = absolute_coeffs / coeff_sum
-                # Guard against ``probs.sum() == 1 + ε`` for very large term
-                # counts; ``np.random.choice`` rejects probabilities that
-                # don't sum to exactly 1.
-                probs /= probs.sum()
-            else:
-                probs = None
-            indices = self._rng.choice(
-                to_sample_spo.size,
-                size=self.sampling_budget,
-                replace=True,
-                p=probs,
-            )
-
-            # Rescale so that E[H_sampled] = H.
-            if self.sampling_strategy == "weighted":
-                # p_i = |c_i|/λ → scale by λ / (L · |c_i|).
-                scale = coeff_sum / (self.sampling_budget * absolute_coeffs[indices])
-            else:
-                # p_i = 1/N → scale by N/L.
-                scale = np.full(
-                    self.sampling_budget,
-                    to_sample_spo.size / self.sampling_budget,
                 )
-            sampled_coeffs = scale * to_sample_spo.coeffs[indices]
-            sampled_spo = SparsePauliOp(to_sample_spo.paulis[indices], sampled_coeffs)
+            return TrotterizationResult(keep_spo)
 
-        if keep_spo is not None:
-            faithful_spo = sampled_spo + keep_spo
+        absolute_coeffs = np.abs(to_sample_spo.coeffs)
+        coeff_sum = absolute_coeffs.sum()
+        if coeff_sum == 0:
+            warn(
+                "All term coefficients are zero; returning the kept Hamiltonian.",
+                UserWarning,
+            )
+            if keep_spo is None:
+                return TrotterizationResult(
+                    generate_empty_spo(
+                        _require_qiskit_num_qubits(hamiltonian.num_qubits)
+                    )
+                )
+            return TrotterizationResult(keep_spo)
+        if self.sampling_strategy == "weighted":
+            probs = absolute_coeffs / coeff_sum
+            # Guard against ``probs.sum() == 1 + ε`` for very large term
+            # counts; ``np.random.choice`` rejects probabilities that
+            # don't sum to exactly 1.
+            probs /= probs.sum()
+        else:
+            probs = None
+        return _QDriftSamplingPlan(
+            to_sample_spo=to_sample_spo,
+            keep_spo=keep_spo,
+            absolute_coeffs=absolute_coeffs,
+            coeff_sum=coeff_sum,
+            probs=probs,
+        )
+
+    def _sample(
+        self, plan: "_QDriftSamplingPlan", rng: np.random.Generator
+    ) -> TrotterizationResult:
+        """Draw one sampled Hamiltonian from a prepared plan (the random part)."""
+        # _plan returns a finished result (never a plan) when sampling_budget
+        # is None, so reaching _sample guarantees it is set.
+        if self.sampling_budget is None:
+            raise RuntimeError("_sample requires sampling_budget; call _plan first.")
+        to_sample_spo = plan.to_sample_spo
+        indices = rng.choice(
+            to_sample_spo.size,
+            size=self.sampling_budget,
+            replace=True,
+            p=plan.probs,
+        )
+
+        # Rescale so that E[H_sampled] = H.
+        if self.sampling_strategy == "weighted":
+            # p_i = |c_i|/λ → scale by λ / (L · |c_i|).
+            scale = plan.coeff_sum / (
+                self.sampling_budget * plan.absolute_coeffs[indices]
+            )
+        else:
+            # p_i = 1/N → scale by N/L.
+            scale = np.full(
+                self.sampling_budget,
+                to_sample_spo.size / self.sampling_budget,
+            )
+        sampled_coeffs = scale * to_sample_spo.coeffs[indices]
+        sampled_spo = SparsePauliOp(to_sample_spo.paulis[indices], sampled_coeffs)
+
+        if plan.keep_spo is not None:
+            faithful_spo = sampled_spo + plan.keep_spo
+            effective = (sampled_spo + plan.keep_spo).simplify()
         else:
             faithful_spo = sampled_spo
-        object.__setattr__(self, "last_sampled_spo", faithful_spo)
-
-        if keep_spo is not None:
-            return (sampled_spo + keep_spo).simplify()
-        return sampled_spo.simplify()
+            effective = sampled_spo.simplify()
+        return TrotterizationResult(
+            effective_hamiltonian=effective,
+            sampled_terms=faithful_spo,
+        )

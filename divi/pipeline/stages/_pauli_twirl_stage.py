@@ -38,22 +38,23 @@ import copy
 import random
 from typing import Any
 
+from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
+from qiskit.circuit.library import CXGate, CZGate, IGate, XGate, YGate, ZGate
+from qiskit.converters import circuit_to_dag
 from qiskit.dagcircuit import DAGCircuit
+from qiskit.quantum_info import Clifford, Pauli
+from qiskit.transpiler.basepasses import TransformationPass
 
 from divi.circuits import MetaCircuit, build_template, dag_to_qasm_body, render_template
 from divi.circuits._conversions import _format_bound_param
-from divi.circuits._qem_passes import (
-    _TWIRL_DAG_TABLES,
-    _TWO_QUBIT_PAULI_LABELS,
-)
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
-    ExpansionResult,
     MetaCircuitBatch,
     PipelineEnv,
     Stage,
+    StageOutput,
     StageToken,
 )
 from divi.pipeline.transformations import group_by_base_key, strip_axis_from_label
@@ -63,7 +64,59 @@ TWIRL_AXIS = "twirl"
 # Must match ``ParameterBindingStage.PARAM_SET_AXIS``.  Duplicated here to
 # avoid an import cycle (ParameterBinding -> QEM -> PauliTwirl -> ParameterBinding).
 _PARAM_SET_AXIS = "param_set"
+_SINGLE_QUBIT_PAULI = {"I": IGate(), "X": XGate(), "Y": YGate(), "Z": ZGate()}
+_PAULI_CHARS = ("I", "X", "Y", "Z")
+_TWO_QUBIT_PAULI_LABELS = tuple(p1 + p0 for p1 in _PAULI_CHARS for p0 in _PAULI_CHARS)
 _TWIRL_LABEL_INDICES = tuple(range(len(_TWO_QUBIT_PAULI_LABELS)))
+
+
+def _strip_sign(label: str) -> str:
+    """Remove any global-phase prefix from a Pauli label."""
+    for prefix in ("-i", "+i", "-", "+", "i"):
+        if label.startswith(prefix):
+            return label[len(prefix) :]
+    return label
+
+
+def _build_twirl_table(gate) -> dict[str, str]:
+    """Return ``{pre_label: post_label}`` for every 2-qubit Pauli pre-op."""
+    cliff = Clifford(gate)
+    return {
+        label: _strip_sign(Pauli(label).evolve(cliff).to_label())
+        for label in _TWO_QUBIT_PAULI_LABELS
+    }
+
+
+def _build_twirl_sub_dag(gate, pre_label: str, post_label: str) -> DAGCircuit:
+    """Build a pre-Pauli · gate · post-Pauli sub-DAG for substitution."""
+    qc = QuantumCircuit(2)
+    p1, p0 = pre_label[0], pre_label[1]
+    if p0 != "I":
+        qc.append(_SINGLE_QUBIT_PAULI[p0], [0])
+    if p1 != "I":
+        qc.append(_SINGLE_QUBIT_PAULI[p1], [1])
+    qc.append(gate, [0, 1])
+    p1, p0 = post_label[0], post_label[1]
+    if p0 != "I":
+        qc.append(_SINGLE_QUBIT_PAULI[p0], [0])
+    if p1 != "I":
+        qc.append(_SINGLE_QUBIT_PAULI[p1], [1])
+    return circuit_to_dag(qc)
+
+
+def _precompute_twirl_dags(gate, twirl_table: dict[str, str]) -> dict[str, DAGCircuit]:
+    """Pre-build the substitution sub-DAG for every possible pre-label."""
+    return {
+        pre: _build_twirl_sub_dag(gate, pre, twirl_table[pre])
+        for pre in _TWO_QUBIT_PAULI_LABELS
+    }
+
+
+_CX_TWIRL_TABLE = _build_twirl_table(CXGate())
+_CZ_TWIRL_TABLE = _build_twirl_table(CZGate())
+_CX_TWIRL_DAGS = _precompute_twirl_dags(CXGate(), _CX_TWIRL_TABLE)
+_CZ_TWIRL_DAGS = _precompute_twirl_dags(CZGate(), _CZ_TWIRL_TABLE)
+_TWIRL_DAG_TABLES = {"cx": _CX_TWIRL_DAGS, "cz": _CZ_TWIRL_DAGS}
 _TWIRL_DAG_ARRAY_TABLES = {
     gate_name: tuple(sub_table[label] for label in _TWO_QUBIT_PAULI_LABELS)
     for gate_name, sub_table in _TWIRL_DAG_TABLES.items()
@@ -169,6 +222,34 @@ def _apply_twirl_substitute(
     return dag_copy
 
 
+class PauliTwirlPass(TransformationPass):
+    """Insert random Pauli gates around each 2-qubit Clifford in a DAG."""
+
+    def __init__(self, rng: random.Random | None = None):
+        super().__init__()
+        self._rng = rng or random.Random()
+
+    def run(self, dag: DAGCircuit) -> DAGCircuit:
+        twirl_specs = [
+            (node, _TWIRL_DAG_TABLES[node.op.name])
+            for node in dag.op_nodes()
+            if node.op.name in _TWIRL_DAG_TABLES
+        ]
+        if not twirl_specs:
+            return dag
+        return self._apply(dag, twirl_specs)
+
+    def _apply(
+        self,
+        dag: DAGCircuit,
+        twirl_specs: list,
+    ) -> DAGCircuit:
+        labels = self._rng.choices(_TWO_QUBIT_PAULI_LABELS, k=len(twirl_specs))
+        for (node, sub_table), pre_label in zip(twirl_specs, labels):
+            dag.substitute_node_with_dag(node, sub_table[pre_label])
+        return dag
+
+
 class PauliTwirlStage(BundleStage):
     """Fan out each DAG body into Pauli-twirled copies and average on reduce.
 
@@ -182,7 +263,7 @@ class PauliTwirlStage(BundleStage):
         return TWIRL_AXIS
 
     @property
-    def stateful(self) -> bool:
+    def volatile(self) -> bool:
         return False
 
     def __init__(self, n_twirls: int = 100, seed: int | None = None) -> None:
@@ -259,7 +340,7 @@ class PauliTwirlStage(BundleStage):
 
     def expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         out: MetaCircuitBatch = {}
 
         for parent_key, meta in batch.items():
@@ -268,11 +349,11 @@ class PauliTwirlStage(BundleStage):
             else:
                 out[parent_key] = self._expand_structural(meta)
 
-        return ExpansionResult(batch=out), None
+        return StageOutput(batch=out)
 
     def dry_expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         """Analytic path: emit ``n_bodies × n_twirls`` shape-correct placeholders.
 
         Skips label sampling, topology grouping, deep-copying, and QASM
@@ -285,7 +366,7 @@ class PauliTwirlStage(BundleStage):
         out: MetaCircuitBatch = {}
         for parent_key, meta in batch.items():
             out[parent_key] = self._expand_dry(meta)
-        return ExpansionResult(batch=out), None
+        return StageOutput(batch=out)
 
     def _expand_dry(self, meta: MetaCircuit) -> MetaCircuit:
         """Produce placeholder twirled bodies matching the real path's shape."""

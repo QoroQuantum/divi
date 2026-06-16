@@ -37,17 +37,15 @@ from divi.circuits._conversions import (
     _format_bound_param,
     bind_parameters_in_dag,
 )
-from divi.circuits.qem import _NoMitigation
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
-    ExpansionResult,
     MetaCircuitBatch,
     PipelineEnv,
     Stage,
+    StageOutput,
     StageToken,
 )
-from divi.pipeline.stages import ParameterBindingStage, QEMStage
 from divi.pipeline.stages._qasm_cache import _qasm_body_cached, _template_cached
 from divi.pipeline.transformations import (
     group_by_base_key,
@@ -126,57 +124,19 @@ def resolve_loss_reduction(
 
 
 class DataBindingStage(BundleStage):
-    """Fan a parametric circuit out over a classical feature batch.
+    """Bind a classical feature batch into a parametric circuit.
 
-    Each row of ``env.feature_batch`` becomes a body variant whose
-    ``data_params`` are pre-bound to that sample's values. Downstream
-    stages see a weight-only parametric circuit; the per-sample results
-    are aggregated on the backward pass via ``loss_reduction``.
-
-    The stage owns only the **data axis** — which parameters are bound from
-    data, how per-sample results are reduced, and the optional supervised
-    loss. The circuit and the weight parameters come from the incoming
-    ``MetaCircuit`` batch (weights are ``parameters`` minus ``data_params``,
-    order preserved), and the ``feature_batch`` / ``labels`` come from the
-    :class:`~divi.pipeline.abc.PipelineEnv` at run time — so one stage serves
-    any batch (train, mini-batch, or inference).
-
-    The stage owns two implementations of :meth:`expand`, selected at
-    pipeline-construction time via :meth:`validate`:
-
-    * **Template fast path** (default when no DAG-walking stage sits
-      downstream): builds the parametric QASM body from the incoming DAG
-      once (cached), renders per-sample partial bodies as strings (data
-      substituted, weight placeholders preserved), and parks them on
-      ``MetaCircuit.qasm_bodies`` keyed by ``body_tag``. All
-      variants share the incoming parametric DAG ref in ``circuit_bodies``
-      (~O(1) DAG memory regardless of batch size).
-      :class:`~divi.pipeline.stages.ParameterBindingStage`'s fast path
-      consults the pre-rendered bodies and skips its DAG → QASM step.
-
-    * **Eager fallback path** (used when QEM, Pauli twirling, or any
-      other stage with ``consumes_dag_bodies=True`` sits between this
-      stage and ParameterBinding): substitutes each sample's data into
-      its own bound DAG. Memory scales linearly with batch size, but
-      per-sample DAGs are required because downstream stages walk them.
+    :meth:`expand` creates one variant per row of ``env.feature_batch``, binding
+    ``data_params`` while leaving weight parameters symbolic. It uses QASM
+    templates unless a downstream stage requires concrete DAG bodies.
+    :meth:`reduce` collapses the resulting data-sample axis with
+    ``loss_reduction``, optionally applying a supervised ``sample_loss`` first.
 
     Args:
-        data_params: The Qiskit ``Parameter`` objects bound from data. Their
-            order must match ``env.feature_batch``'s column order. Everything
-            else in the incoming ``MetaCircuit.parameters`` is treated as a
-            weight and handed downstream (order preserved).
-        loss_reduction: Callable ``(n_samples,) → float`` applied during
-            :meth:`reduce` to collapse one base-key's per-sample expectation
-            values into a single scalar. Invoked once per observable when
-            the upstream measurement stage returns a per-observable list.
-        loss_constant: Constant added to each per-sample expectation value
-            *before* ``loss_reduction``, so reductions apply to the full
-            (unshifted) loss.
-        sample_loss: Optional per-sample loss ``(prediction, label) → float``
-            (e.g. squared error). When set and ``env.labels`` is provided, each
-            per-sample prediction is mapped through it against its label before
-            ``loss_reduction`` — turning the unsupervised aggregate into a
-            supervised training loss.
+        data_params: Parameters corresponding to feature-batch columns.
+        loss_reduction: Aggregation across per-sample results.
+        loss_constant: Constant added before reduction.
+        sample_loss: Optional supervised loss applied per prediction and label.
     """
 
     @property
@@ -237,38 +197,13 @@ class DataBindingStage(BundleStage):
         return tuple(p for p in mc.parameters if p not in data_set)
 
     def validate(self, before: tuple[Stage, ...], after: tuple[Stage, ...]) -> None:
-        """Pick template vs. eager path based on downstream DAG consumers.
-
-        The template path emits per-sample QASM strings and a shared
-        parametric DAG; it requires that no downstream stage walk
-        ``circuit_bodies`` gate-by-gate. A stage is treated as a
-        DAG-walker only when its forward pass is not structurally a
-        no-op:
-
-        * :class:`~divi.pipeline.stages.ParameterBindingStage` is
-          transparent — its fast path reads the parked ``qasm_bodies``
-          and never touches the shared DAG.
-        * :class:`~divi.pipeline.stages.QEMStage` with the default
-          :class:`~divi.circuits.qem._NoMitigation` protocol is
-          transparent — its ``expand`` returns the input DAG unchanged.
-        * Everything else with ``consumes_dag_bodies=True`` (active QEM
-          protocols, :class:`~divi.pipeline.stages.PauliTwirlStage`,
-          user-defined DAG-mutating stages) forces the eager fallback.
-        """
+        """Use the template path unless a downstream stage consumes DAG bodies."""
         super().validate(before, after)
 
-        def _walks_dag(stage: Stage) -> bool:
-            if not getattr(stage, "consumes_dag_bodies", False):
-                return False
-            if isinstance(stage, ParameterBindingStage):
-                return False
-            if isinstance(stage, QEMStage) and isinstance(
-                stage.protocol, _NoMitigation
-            ):
-                return False
-            return True
-
-        self._use_template_path = not any(_walks_dag(s) for s in after)
+        self._use_template_path = not any(
+            isinstance(stage, BundleStage) and stage.consumes_dag_bodies
+            for stage in after
+        )
 
     def _bind_sample_dag(self, sample: np.ndarray, body_dag: DAGCircuit) -> DAGCircuit:
         """Rebuild ``body_dag`` with this sample's data values bound in place.
@@ -294,7 +229,7 @@ class DataBindingStage(BundleStage):
 
     def expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         feature_batch = self._feature_batch(env)
         if self._use_template_path:
             return self._expand_template(batch, feature_batch)
@@ -302,7 +237,7 @@ class DataBindingStage(BundleStage):
 
     def _expand_template(
         self, batch: MetaCircuitBatch, feature_batch: np.ndarray
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         """Fast path: per-sample partial QASM bodies + shared parametric DAG.
 
         All variants share the incoming body DAG reference in
@@ -333,11 +268,11 @@ class DataBindingStage(BundleStage):
                 parameters=weight_params,
                 qasm_bodies=tuple(partial_bodies),
             )
-        return ExpansionResult(batch=out), None
+        return StageOutput(batch=out)
 
     def _expand_eager(
         self, batch: MetaCircuitBatch, feature_batch: np.ndarray
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         """Fallback path: one bound DAG per sample.
 
         Used when a DAG-walking stage (e.g. QEM, Pauli twirl) sits
@@ -356,11 +291,11 @@ class DataBindingStage(BundleStage):
                 for sample_idx, sample in enumerate(feature_batch)
             )
             out[key] = replace(mc, circuit_bodies=fanned, parameters=weight_params)
-        return ExpansionResult(batch=out), None
+        return StageOutput(batch=out)
 
     def dry_expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         """Dry path: share the incoming parametric DAG across all sample
         variants. Per-sample data substitution is skipped — dry-run only
         needs correct circuit counts and depth/width stats, both of which
@@ -376,7 +311,7 @@ class DataBindingStage(BundleStage):
                 for sample_idx in range(n_samples)
             )
             out[key] = replace(mc, circuit_bodies=fanned, parameters=weight_params)
-        return ExpansionResult(batch=out), None
+        return StageOutput(batch=out)
 
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken

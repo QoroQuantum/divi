@@ -279,8 +279,6 @@ class IterativeQAOA(QAOA):
         # pick up the new layer count.
         self._params = np.array([[b, g] for b, g in zip(betas, gammas)], dtype=object)
         self._pipelines = self._build_pipelines()
-        # Previous depth's factories embed wrong-shape DAGs; ``_cost_meta_cache``
-        # entries stay valid (keyed on ``params.size``).
         self._meta_circuit_factories = None
 
     def _reset_optimization_state(self) -> None:

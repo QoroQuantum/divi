@@ -34,6 +34,7 @@ from ._term_ops import to_spo
 from ._trotterization import (
     ExactTrotterization,
     QDrift,
+    TrotterizationResult,
     TrotterizationStrategy,
 )
 from ._types import (
@@ -58,6 +59,7 @@ __all__ = [
     "QUBOProblemTypes",
     "QuadratizedIsingConverter",
     "TrotterizationStrategy",
+    "TrotterizationResult",
     "bit_driver",
     "to_spo",
     "bit_flip_mixer",

@@ -30,7 +30,7 @@ from divi.circuits._pennylane_utils import (
 )
 from divi.hamiltonians._mixers import single_pauli_label
 from divi.hamiltonians._term_ops import _clean_hamiltonian_spo
-from divi.pipeline.stages import CircuitSpecStage, LossReductionFn, SampleLossFn
+from divi.pipeline.stages import LossReductionFn, SampleLossFn
 from divi.qprog.algorithms._data_binding import (
     _LOSS_FN_IGNORED_MSG,
     DataBindingMixin,
@@ -404,9 +404,6 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
             return qs
         symbols = sp.symbols(f"p0:{len(trainable)}")
         return qs.bind_new_parameters(list(symbols), trainable)
-
-    def _build_pipelines(self) -> dict:
-        return {"cost": self._build_cost_pipeline(CircuitSpecStage())}
 
     def _configure_data_binding(
         self,

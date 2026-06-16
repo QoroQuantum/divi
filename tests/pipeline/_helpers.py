@@ -13,12 +13,16 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.backends import CircuitRunner, ExecutionResult
 from divi.circuits import MetaCircuit
-from divi.pipeline import CircuitPipeline, PipelineEnv, PipelineTrace
+from divi.pipeline import (
+    CircuitPipeline,
+    PipelineEnv,
+    PipelineTrace,
+    StageOutput,
+)
 from divi.pipeline._compilation import _compile_batch
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
-    ExpansionResult,
     MetaCircuitBatch,
     SpecStage,
     Stage,
@@ -34,10 +38,8 @@ class DummySpecStage(SpecStage[str]):
         super().__init__(name=type(self).__name__)
         self._meta = meta or cast(MetaCircuit, object())
 
-    def expand(
-        self, items: str, env: PipelineEnv
-    ) -> tuple[MetaCircuitBatch, StageToken]:
-        return {(("spec", "circ"),): self._meta}, None
+    def expand(self, items: str, env: PipelineEnv) -> StageOutput[MetaCircuitBatch]:
+        return StageOutput(batch={(("spec", "circ"),): self._meta})
 
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken
@@ -55,13 +57,13 @@ class FanoutAndSumStage(BundleStage):
 
     def expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         out: MetaCircuitBatch = {}
         for parent_key, meta in batch.items():
             for idx in range(self._n_children):
                 child_key = parent_key + ((self._branch_prefix, idx),)
                 out[child_key] = meta
-        return ExpansionResult(batch=out), None
+        return StageOutput(batch=out)
 
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken
@@ -79,11 +81,14 @@ class FanoutAndSumStage(BundleStage):
 
 
 class StatefulFanoutStage(FanoutAndSumStage):
-    """Like FanoutAndSumStage but stateful=True to exercise run_forward_pass cache/partial rerun."""
+    """Fan-out stage whose output is keyed to one evaluation.
 
-    @property
-    def stateful(self) -> bool:
-        return True
+    Folds ``env.evaluation_counter`` into the cache key so its output is
+    reused across forward passes of one evaluation, then recomputed once the
+    counter advances — mirroring QDrift's per-evaluation resampling."""
+
+    def cache_key_extras(self, env):
+        return (env.evaluation_counter,)
 
 
 def run_binding_pipeline(

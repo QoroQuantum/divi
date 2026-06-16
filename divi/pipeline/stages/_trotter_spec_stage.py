@@ -2,15 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from typing import Any
 
+import numpy as np
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
 from divi.circuits._core import _assert_hermitian_spo
 from divi.hamiltonians import (
     ExactTrotterization,
+    QDrift,
     TrotterizationStrategy,
 )
 from divi.hamiltonians._term_ops import _clean_hamiltonian_spo
@@ -19,6 +21,7 @@ from divi.pipeline.abc import (
     MetaCircuitBatch,
     PipelineEnv,
     SpecStage,
+    StageOutput,
     StageToken,
 )
 from divi.pipeline.transformations import (
@@ -40,9 +43,19 @@ class TrotterSpecStage(SpecStage[SparsePauliOp]):
     def axis_name(self) -> str:
         return "ham"
 
-    @property
-    def stateful(self) -> bool:
-        return self._trotterization_strategy.stateful
+    def cache_key_extras(self, env: PipelineEnv) -> tuple[Hashable, ...]:
+        """Invalidate the forward-pass cache per evaluation for QDrift.
+
+        QDrift re-samples a fresh batch each optimizer evaluation, seeded
+        deterministically from ``env.evaluation_counter``; folding the counter
+        into the cache key reuses one sample across the cost and gradient
+        passes of a single evaluation, then resamples on the next. Deterministic
+        strategies (e.g. ``ExactTrotterization``) declare no extras and stay
+        cached for the pipeline's lifetime.
+        """
+        if isinstance(self._trotterization_strategy, QDrift):
+            return (env.evaluation_counter,)
+        return ()
 
     def __init__(
         self,
@@ -52,7 +65,8 @@ class TrotterSpecStage(SpecStage[SparsePauliOp]):
         """
         Args:
             trotterization_strategy: Strategy for term selection/sampling (e.g. ``ExactTrotterization``, ``QDrift``).
-            meta_circuit_factory: Factory callable ``(hamiltonian, ham_id) -> MetaCircuit``.
+            meta_circuit_factory: Factory callable
+                ``(TrotterizationResult, ham_id) -> MetaCircuit``.
         """
         super().__init__(name=type(self).__name__)
 
@@ -96,21 +110,22 @@ class TrotterSpecStage(SpecStage[SparsePauliOp]):
 
     def expand(
         self, batch: SparsePauliOp, env: PipelineEnv
-    ) -> tuple[MetaCircuitBatch, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         """Transform Hamiltonian into a keyed batch of MetaCircuits (one per strategy output)."""
         spo_clean, strategy, n_samples, token = self._prepare(batch)
 
-        metas: MetaCircuitBatch = {}
-        for ham_id in range(n_samples):
-            processed = strategy.process_hamiltonian(spo_clean)
-            meta = self._meta_circuit_factory(processed, ham_id)
-            metas[(("ham", ham_id),)] = meta
+        rng = self._rng_for_evaluation(strategy, env)
+        results = strategy.process_hamiltonian_batch(spo_clean, n_samples, rng=rng)
+        metas: MetaCircuitBatch = {
+            (("ham", ham_id),): self._meta_circuit_factory(result, ham_id)
+            for ham_id, result in enumerate(results)
+        }
 
-        return metas, token
+        return StageOutput(batch=metas, token=token)
 
     def dry_expand(
         self, batch: SparsePauliOp, env: PipelineEnv
-    ) -> tuple[MetaCircuitBatch, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         """Analytic path: build one prototype MetaCircuit, fan it out ``n_samples`` times.
 
         For stochastic strategies (e.g. QDrift) each sample would in
@@ -123,12 +138,36 @@ class TrotterSpecStage(SpecStage[SparsePauliOp]):
         spo_clean, strategy, n_samples, token = self._prepare(batch)
 
         prototype = self._meta_circuit_factory(
-            strategy.process_hamiltonian(spo_clean), 0
+            strategy.process_hamiltonian(
+                spo_clean, rng=self._rng_for_evaluation(strategy, env)
+            ),
+            0,
         )
         metas: MetaCircuitBatch = {
             (("ham", ham_id),): prototype for ham_id in range(n_samples)
         }
-        return metas, token
+        return StageOutput(batch=metas, token=token)
+
+    @staticmethod
+    def _rng_for_evaluation(
+        strategy: TrotterizationStrategy,
+        env: PipelineEnv,
+    ):
+        if not isinstance(strategy, QDrift):
+            return None
+        if strategy.seed is None:
+            if env.base_seed is None:
+                return None
+            # Unseeded: derive from the fixed per-program base entropy keyed by
+            # the evaluation counter, so the cost and metric pipelines draw the
+            # same cohort within one evaluation (env.rng is shared/mutable and
+            # would diverge between passes).
+            return np.random.default_rng(
+                np.random.SeedSequence([env.base_seed, env.evaluation_counter])
+            )
+        return np.random.default_rng(
+            np.random.SeedSequence([strategy.seed, env.evaluation_counter])
+        )
 
     def introspect(
         self, batch: MetaCircuitBatch, env: PipelineEnv, token: StageToken

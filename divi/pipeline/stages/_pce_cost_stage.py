@@ -22,10 +22,10 @@ from divi.hamiltonians._polynomial import (
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
-    ExpansionResult,
     MetaCircuitBatch,
     PipelineEnv,
     ResultFormat,
+    StageOutput,
     StageToken,
 )
 
@@ -156,23 +156,23 @@ class PCECostStage(BundleStage):
 
     def expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         """Emit a single Z-basis measurement circuit per circuit spec.
 
         Generates "measure all qubits" QASM and sets the result format to
         COUNTS so raw shot histograms reach reduce.
         """
-        env.result_format = ResultFormat.COUNTS
-
         out = {}
         for key, meta in batch.items():
             measure_qasm = "".join(
                 f"measure q[{i}] -> c[{i}];\n" for i in range(meta.n_qubits)
             )
             tagged = ((((PCE_MEAS_AXIS, 0),), measure_qasm),)
-            out[key] = meta.set_measurement_bodies(tagged)
+            out[key] = meta.set_measurement_bodies(tagged).set_result_format(
+                ResultFormat.COUNTS
+            )
 
-        return ExpansionResult(batch=out), None
+        return StageOutput(batch=out)
 
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken

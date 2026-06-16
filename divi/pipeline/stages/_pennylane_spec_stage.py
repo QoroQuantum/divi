@@ -19,7 +19,7 @@ from divi.circuits._pennylane_utils import (
     _qnode_to_symbolic_qscript,
     _validate_single_measurement,
 )
-from divi.pipeline.abc import MetaCircuitBatch, PipelineEnv, StageToken
+from divi.pipeline.abc import MetaCircuitBatch, PipelineEnv, StageOutput
 from divi.pipeline.stages import CircuitSpecStage
 
 #: Input types accepted by :class:`PennyLaneSpecStage`.
@@ -57,7 +57,7 @@ class PennyLaneSpecStage(CircuitSpecStage):
         self,
         batch: PennyLaneInput | Sequence[PennyLaneInput] | Mapping[str, PennyLaneInput],
         env: PipelineEnv,
-    ) -> tuple[MetaCircuitBatch, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         """Convert PennyLane circuit(s) to MetaCircuit(s) and build a keyed batch."""
         converted = self._convert(batch)
         self._reject_unbindable_param_sets(converted, env)

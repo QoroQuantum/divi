@@ -70,9 +70,9 @@ def verify_correct_circuit_count(obj: QuantumProgram):
 
     extra_computation_offset = 0
     if isinstance(obj, VariationalQuantumAlgorithm):
-        # VQA subclasses with a meas_circuit will run an extra computation
-        if "meas_circuit" in obj.meta_circuit_factories:
-            meas_meta = obj.meta_circuit_factories["meas_circuit"]
+        # VQA subclasses with a sample_circuit will run an extra computation
+        if "sample_circuit" in obj.meta_circuit_factories:
+            meas_meta = obj.meta_circuit_factories["sample_circuit"]
             extra_computation_offset = _get_n_obs_groups(meas_meta, supports_expval)
 
     adjusted_total_circuit_count = obj.total_circuit_count - extra_computation_offset

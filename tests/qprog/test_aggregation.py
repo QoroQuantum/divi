@@ -4,8 +4,8 @@
 
 import pytest
 
+from divi.qprog._solution_sampling_mixin import SolutionEntry
 from divi.qprog.aggregation import BeamSearchStrategy, HierarchicalStrategy
-from divi.qprog.variational_quantum_algorithm import SolutionEntry
 
 # ──────────────────────────────────────────────────────────────────────
 #  Helpers: lightweight mock VQA programs for testing

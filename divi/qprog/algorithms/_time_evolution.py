@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections.abc import Sequence
-from typing import Any
 
 import numpy as np
 from qiskit import transpile
@@ -15,9 +14,9 @@ from qiskit.synthesis import LieTrotter, SuzukiTrotter
 
 from divi.circuits import MetaCircuit
 from divi.circuits._conversions import _QISKIT_TO_QASM2
-from divi.circuits.qem import _NoMitigation
 from divi.hamiltonians import (
     ExactTrotterization,
+    TrotterizationResult,
     TrotterizationStrategy,
 )
 from divi.hamiltonians._term_ops import (
@@ -26,12 +25,10 @@ from divi.hamiltonians._term_ops import (
     _spo_to_qiskit_basis_gates,
     to_spo,
 )
-from divi.pipeline import CircuitPipeline
+from divi.pipeline import CircuitPipeline, PipelineSet, ResultFormat, Stage
 from divi.pipeline.stages import (
     MeasurementStage,
     ParameterBindingStage,
-    PauliTwirlStage,
-    QEMStage,
     TrotterSpecStage,
 )
 from divi.qprog import ObservableMeasuringMixin
@@ -206,30 +203,42 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
             )
         return results
 
-    def _build_pipelines(self) -> dict:
-        trotter = TrotterSpecStage(
+    def _build_pipelines(self) -> PipelineSet:
+        # Non-variational program: parameter binding is needed only for the
+        # trajectory-template path (binding the template's ``t`` to ``self.time``).
+        result_format = (
+            ResultFormat.EXPVALS if self.observable is not None else ResultFormat.PROBS
+        )
+        spec_stage = TrotterSpecStage(
             trotterization_strategy=self.trotterization_strategy,
             meta_circuit_factory=self._meta_circuit_factory,
         )
-        stages: list = [trotter]
-
-        if not isinstance(self._qem_protocol, _NoMitigation):
-            stages.append(QEMStage(protocol=self._qem_protocol))
-            n_twirls = getattr(self._qem_protocol, "n_twirls", 0)
-            if n_twirls > 0:
-                stages.append(PauliTwirlStage(n_twirls=n_twirls))
-
-        stages.append(
-            MeasurementStage(
-                grouping_strategy=self._grouping_strategy,
-                shot_distribution=self._shot_distribution,
-            )
+        terminal_stage = MeasurementStage(
+            grouping_strategy=self._grouping_strategy,
+            shot_distribution=self._shot_distribution,
         )
-        if self._template_meta is not None:
-            # ParameterBindingStage binds the trajectory template's
-            # ``t`` parameter to ``self.time`` via ``env.param_sets``.
-            stages.append(ParameterBindingStage())
-        return {"evolution": CircuitPipeline(stages=stages)}
+
+        if self._template_meta is None:
+            evolution = self._assemble_pipeline(
+                spec_stage,
+                terminal_stage,
+                result_format=result_format,
+            )
+        else:
+            mitigation_stages = self._mitigation_stages(result_format)
+            bind_early = (
+                bool(mitigation_stages) and self._qem_protocol.requires_bound_params
+            )
+            stages: list[Stage] = [spec_stage]
+            if bind_early:
+                stages.append(ParameterBindingStage())
+            stages.extend(mitigation_stages)
+            stages.append(terminal_stage)
+            if not bind_early:
+                stages.append(ParameterBindingStage())
+            evolution = CircuitPipeline(stages=stages)
+
+        return PipelineSet({"evolution": (evolution, lambda: self._hamiltonian)})
 
     def _build_pipeline_env(self, **overrides):
         if self._template_meta is not None and "param_sets" not in overrides:
@@ -241,19 +250,17 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
         """The evolution pipeline (thin accessor over ``self._pipelines``)."""
         return self._pipelines["evolution"]
 
-    def _get_initial_spec(self, name: str) -> Any:
-        if name == "evolution":
-            return self._hamiltonian
-        raise KeyError(f"No initial spec registered for pipeline {name!r}.")
-
     def _meta_circuit_factory(
-        self, processed_spo: SparsePauliOp, ham_id: int
+        self, result: TrotterizationResult, ham_id: int
     ) -> MetaCircuit:
-        """Factory for TrotterSpecStage: build a MetaCircuit for one Hamiltonian sample (SPO)."""
+        """Build a MetaCircuit from one explicit trotterization result."""
         if self._template_meta is not None:
             return self._template_meta
 
-        qc = self._build_qiskit_circuit(processed_spo)
+        qc = self._build_qiskit_circuit(
+            result.effective_hamiltonian,
+            sampled_terms=result.sampled_terms,
+        )
         dag = circuit_to_dag(qc)
 
         if self.observable is None:
@@ -281,12 +288,7 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
         Returns:
             TimeEvolution: Returns ``self`` for method chaining.
         """
-        env = self._build_pipeline_env()
-
-        result = self._pipeline.run(initial_spec=self._hamiltonian, env=env)
-        self._total_circuit_count += env.artifacts.get("circuit_count", 0)
-        self._total_run_time += env.artifacts.get("run_time", 0.0)
-        self._current_execution_result = env.artifacts.get("_current_execution_result")
+        result = self._run_pipeline("evolution")
 
         if len(result) != 1:
             raise RuntimeError(
@@ -327,7 +329,12 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
         # full wire register so a narrow observable matches the cost circuit.
         return to_spo(op, wires=self._circuit_wires)
 
-    def _build_qiskit_circuit(self, processed_spo: SparsePauliOp) -> QuantumCircuit:
+    def _build_qiskit_circuit(
+        self,
+        processed_spo: SparsePauliOp,
+        *,
+        sampled_terms: SparsePauliOp | None = None,
+    ) -> QuantumCircuit:
         """Build initial-state preparation + Trotter evolution as a ``QuantumCircuit``.
 
         Adjoint evolution is realized via negative time. Single-term
@@ -346,14 +353,13 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
         qc.compose(self.initial_state.build(self._circuit_wires), inplace=True)
         qubits = list(range(self.n_qubits))
 
-        sampled_spo = self.trotterization_strategy.last_sampled_spo
-        if sampled_spo is not None:
+        if sampled_terms is not None:
             # Faithful QDrift: one evolution gate per sampled term (preserving
             # sampling-with-replacement multiplicities), repeated ``n_steps``
             # times with ``time / n_steps`` per step. Adjoint via negative time.
             step_time = -self.time / self.n_steps
             for _ in range(self.n_steps):
-                _spo_to_qiskit_basis_gates(qc, sampled_spo, step_time, qubits)
+                _spo_to_qiskit_basis_gates(qc, sampled_terms, step_time, qubits)
             return qc
 
         # Standard Trotter-Suzuki for ExactTrotterization.

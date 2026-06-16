@@ -15,6 +15,7 @@ from qiskit.quantum_info import SparsePauliOp
 from divi.circuits import MetaCircuit
 from divi.hamiltonians import (
     ExactTrotterization,
+    TrotterizationResult,
     TrotterizationStrategy,
 )
 from divi.hamiltonians._term_ops import (
@@ -22,13 +23,12 @@ from divi.hamiltonians._term_ops import (
     _spo_wires,
     to_spo,
 )
-from divi.pipeline.stages import TrotterSpecStage
+from divi.pipeline import PipelineSet, ResultFormat
+from divi.pipeline.stages import MeasurementStage, TrotterSpecStage
+from divi.qprog._solution_sampling_mixin import SolutionEntry, SolutionSamplingMixin
 from divi.qprog.algorithms import InitialState
 from divi.qprog.problems import QAOAProblem
-from divi.qprog.variational_quantum_algorithm import (
-    SolutionEntry,
-    VariationalQuantumAlgorithm,
-)
+from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 _UNSET: Any = object()
 
 
-class QAOA(VariationalQuantumAlgorithm):
+class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
     """Quantum Approximate Optimization Algorithm (QAOA) implementation.
 
     QAOA is a hybrid quantum-classical algorithm designed to solve combinatorial
@@ -126,8 +126,6 @@ class QAOA(VariationalQuantumAlgorithm):
         self.trotterization_strategy = trotterization_strategy or ExactTrotterization()
         self._decoded_solution: Any = _UNSET
         self._solution_bitstring: Any = _UNSET
-        self._cost_meta_cache: dict[tuple[int, int], MetaCircuit] = {}
-
         # Circuit parameters — Qiskit ParameterVector, no sympy.
         betas = ParameterVector("β", self.n_layers)
         gammas = ParameterVector("γ", self.n_layers)
@@ -140,24 +138,29 @@ class QAOA(VariationalQuantumAlgorithm):
     def n_params_per_layer(self) -> int:
         return 2
 
-    def _build_pipelines(self) -> dict:
-        return {
-            "cost": self._build_cost_pipeline(
-                TrotterSpecStage(
-                    trotterization_strategy=self.trotterization_strategy,
-                    meta_circuit_factory=self._cost_meta_circuit_factory,
-                )
-            ),
-            "measurement": self._build_measurement_pipeline(),
-        }
-
-    def _get_initial_spec(self, name: str) -> Any:
-        # QAOA's cost pipeline is driven by a TrotterSpecStage, which expects
-        # a Hamiltonian (not a MetaCircuit) as its initial spec.  Measurement
-        # keeps the default (a pre-built MetaCircuit).
-        if name == "cost":
-            return self.cost_hamiltonian
-        return super()._get_initial_spec(name)
+    def _build_pipelines(self) -> PipelineSet:
+        # QAOA's cost pipeline trotterizes the cost Hamiltonian into the ansatz:
+        # a TrotterSpecStage seeded with the Hamiltonian (not a pre-built
+        # MetaCircuit). Sample is added by the mixin; replace only "cost".
+        return (
+            super()
+            ._build_pipelines()
+            .with_(
+                "cost",
+                self._assemble_pipeline(
+                    TrotterSpecStage(
+                        trotterization_strategy=self.trotterization_strategy,
+                        meta_circuit_factory=self._cost_meta_circuit_factory,
+                    ),
+                    MeasurementStage(
+                        grouping_strategy=self._grouping_strategy,
+                        shot_distribution=self._shot_distribution,
+                    ),
+                    result_format=ResultFormat.EXPVALS,
+                ),
+                lambda: self.cost_hamiltonian,
+            )
+        )
 
     def _save_subclass_state(self) -> dict[str, Any]:
         """Save QAOA-specific runtime state."""
@@ -257,46 +260,37 @@ class QAOA(VariationalQuantumAlgorithm):
         return qc
 
     def _cost_meta_circuit_factory(
-        self, processed_spo: SparsePauliOp, ham_id: int
+        self, result: TrotterizationResult, ham_id: int
     ) -> MetaCircuit:
         """Build a cost MetaCircuit for a given (possibly QDrift-sampled) SPO."""
-        stateless = not self.trotterization_strategy.stateful
-        # Cache key includes the parameter count so a depth change
-        # (IterativeQAOA) self-invalidates without external bookkeeping.
-        cache_key = (ham_id, self._params.size)
-        if stateless and cache_key in self._cost_meta_cache:
-            return self._cost_meta_cache[cache_key]
-
+        processed_spo = result.effective_hamiltonian
         qc = self._build_qaoa_qiskit_circuit(processed_spo)
-        meta = MetaCircuit(
+        return MetaCircuit(
             circuit_bodies=(((), circuit_to_dag(qc)),),
             parameters=tuple(self._params.flatten()),
             observable=processed_spo,
             precision=self._precision,
         )
-        if stateless:
-            self._cost_meta_cache[cache_key] = meta
-        return meta
 
     def _create_meta_circuit_factories(self) -> dict[str, MetaCircuit]:
-        """Generate meta-circuit factories for the QAOA problem.
+        """Generate compatibility templates for the QAOA problem.
 
-        The cost circuit is built via :meth:`_cost_meta_circuit_factory` so
-        the cost and measurement pipelines share one
-        ``_build_qaoa_qiskit_circuit`` pass through :attr:`_cost_meta_cache`.
-        Stateful strategies (e.g. QDrift) bypass the cache and resample per
-        call; the cost circuit built here serves only as the structural
-        template for the measurement DAG.
+        Executed cost, metric, and sample circuits come from the cost
+        pipeline's cached spec-stage cohort. These templates support callers
+        that inspect ``meta_circuit_factories`` without driving a pipeline.
         """
         flat_params = tuple(self._params.flatten())
-        cost_circuit = self._cost_meta_circuit_factory(self.cost_hamiltonian, 0)
-        meas_circuit = MetaCircuit(
+        cost_result = self.trotterization_strategy.process_hamiltonian(
+            self.cost_hamiltonian
+        )
+        cost_circuit = self._cost_meta_circuit_factory(cost_result, 0)
+        sample_circuit = MetaCircuit(
             circuit_bodies=cost_circuit.circuit_bodies,
             parameters=flat_params,
             measured_wires=tuple(range(self.n_qubits)),
             precision=self._precision,
         )
-        return {"cost_circuit": cost_circuit, "meas_circuit": meas_circuit}
+        return {"cost_circuit": cost_circuit, "sample_circuit": sample_circuit}
 
     def sample_solution(
         self,
@@ -309,7 +303,7 @@ class QAOA(VariationalQuantumAlgorithm):
         super().sample_solution(params, **kwargs)
 
         best_probs = next(iter(self._best_probs.values()))
-        best_bitstring = max(best_probs, key=best_probs.get)
+        best_bitstring = max(best_probs, key=best_probs.__getitem__)
         self._solution_bitstring = best_bitstring
         self._decoded_solution = self._decode_solution_fn(best_bitstring)
 

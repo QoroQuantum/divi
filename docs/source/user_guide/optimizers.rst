@@ -1,7 +1,7 @@
 Optimizers
 ==========
 
-Divi provides built-in support for optimizing quantum programs using three distinct methods, each suited to different problem types and user requirements.
+Divi provides built-in support for optimizing quantum programs using a range of optimization methods, each suited to different problem types and user requirements.
 
 All optimizers can be accessed through the ``divi.qprog.optimizers`` module. Scipy-based optimizers rely on the :class:`~divi.qprog.optimizers.ScipyMethod` enum to specify the optimizer used.
 
@@ -98,6 +98,119 @@ Differential Evolution [#storn1997]_ is a method that optimizes a problem by ite
 
    optimizer = PymooOptimizer(method=PymooMethod.DE)
 
+Quantum Natural Gradient
+------------------------
+
+The :class:`~divi.qprog.optimizers.QNGOptimizer` performs regularized natural-gradient descent:
+
+.. math::
+
+   \theta \leftarrow \theta - \eta \, (G + \lambda I)^{-1} \nabla L,
+
+where :math:`\nabla L` is the parameter-shift gradient and :math:`G` is a
+positive-semidefinite metric tensor. Preconditioning by the inverse metric
+rescales the gradient to follow the geometry of the quantum state manifold,
+which can dramatically reduce the number of iterations needed to converge
+compared to vanilla gradient descent — particularly in circuits with many
+parameters or pronounced curvature variation.
+
+**Metric estimators.** The optimizer is metric-agnostic: the metric is
+produced by an injected :class:`~divi.qprog.optimizers.MetricEstimator`
+strategy. Swapping the estimator changes the metric without touching the
+optimizer itself. Two estimators are provided:
+
+- :class:`~divi.qprog.optimizers.PullbackMetricEstimator` *(default)* —
+  Hamiltonian-aware pullback metric,
+  :math:`G_{ij} = \sum_r a_r^2 \,(\partial_i \langle P_r \rangle)(\partial_j \langle P_r \rangle)`,
+  computed from the per-Pauli-term expectation gradients of the loss
+  observable :math:`H = \sum_r a_r P_r`. The gradient and metric share one
+  parameter-shift measurement pass (a single memoized evaluation), so there
+  is no extra circuit overhead relative to a standard gradient step.
+  Compatible with VQE, QAOA, and ``CustomVQA`` programs whose loss is the
+  expectation value of the cost Hamiltonian. Rejects programs with a
+  classical loss objective (PCE) or a supervised data-bound loss.
+
+- :class:`~divi.qprog.optimizers.FubiniStudyMetricEstimator` — block-diagonal
+  Fubini–Study metric (quantum geometric tensor), computed from the covariance
+  of the Hermitian generators of each layer's parametric gates. Independent of
+  the loss observable, so it applies to any program with a Pauli-rotation
+  ansatz — including PCE. Provides only ``metric_fn``; the gradient falls back
+  to the program's own parameter-shift rule. Rejects ansatze that use
+  unsupported or composite-angle gates, and data-bound programs.
+
+**Solver options.** The optimizer regularizes the metric before inverting to
+prevent divergence along flat directions:
+
+- ``solver="tikhonov"`` *(default)* — solves :math:`(G + \lambda I)\,\delta = \nabla L`
+  via a Cholesky-based symmetric solve, exploiting the PSD structure.
+- ``solver="pinv"`` — applies the Moore–Penrose pseudo-inverse of the raw
+  (undamped) metric with cutoff ``rcond``.
+
+**Usage** is the same as any optimizer — pass an instance via the
+``optimizer=`` argument and call ``run()``:
+
+.. code-block:: python
+
+   from divi.qprog import VQE
+   from divi.qprog.optimizers import QNGOptimizer
+
+   vqe = VQE(
+       molecule=molecule,
+       backend=backend,
+       optimizer=QNGOptimizer(step_size=0.1, regularization=1e-3),
+       max_iterations=10,
+   )
+   vqe.run()
+
+To switch to the Fubini–Study metric, inject a different estimator:
+
+.. code-block:: python
+
+   from divi.qprog.optimizers import FubiniStudyMetricEstimator, QNGOptimizer
+
+   optimizer = QNGOptimizer(
+       metric_estimator=FubiniStudyMetricEstimator(),
+   )
+
+.. note::
+
+   QNG does not support checkpointing (``supports_checkpointing`` is
+   ``False``). Passing ``checkpoint_config`` with a checkpoint directory to
+   ``run()`` raises a ``ValueError`` upfront. The variational algorithm
+   already checkpoints the parameter history, so optimizer-level state is
+   not needed.
+
+.. note::
+
+   Both metric estimators compute the metric exactly per iteration and
+   require additional circuit evaluations beyond a plain gradient step.
+   QNG is best suited to simulators or small-to-moderate problems where
+   the measurement overhead is acceptable. For large hardware runs with
+   tight shot budgets, standard gradient-based optimizers may be more
+   practical.
+
+.. note::
+
+   **QNG with QDrift.** When a QAOA program uses a stochastic
+   :class:`~divi.hamiltonians.QDrift` trotterization, the gradient and the
+   metric must be evaluated on the *same* sampled Hamiltonian — otherwise the
+   natural-gradient step mixes mismatched operators. Divi guarantees this: the
+   cost, gradient, and metric pipelines all draw the same QDrift batch within
+   one optimizer evaluation (the sample is keyed on an internal per-evaluation
+   counter) and resample on the next. The draw is reproducible from the
+   ``QDrift(seed=...)`` you provide; with no seed it is still consistent within
+   each evaluation but varies across runs. ``n_hamiltonians_per_iteration``
+   controls how many independent samples are averaged per evaluation — higher
+   values reduce variance at a proportional increase in circuits.
+
+Use QNG when:
+
+- You are running VQE, QAOA, or PCE on a simulator and want faster
+  parameter convergence relative to vanilla gradient descent.
+- Your landscape has strong curvature variation across parameters.
+- You are using the pullback metric and want gradient + metric from a
+  single measurement pass.
+
 Grid Search
 -----------
 
@@ -144,6 +257,9 @@ Choosing the Right Optimizer
 
 **For :class:`~divi.qprog.algorithms.VQE`:**
 
+- **QNG (pullback)**: Best when the landscape is smooth and you want faster per-iteration
+  progress than L-BFGS-B at the cost of additional metric measurements; requires a
+  Hamiltonian-expectation-value loss (not PCE)
 - **L-BFGS-B**: Best for smooth, differentiable landscapes with good initial parameters
 - **Monte Carlo**: Excellent for exploration and avoiding local minima
 - **COBYLA**: Good for constrained problems or when gradients are unreliable
@@ -152,6 +268,8 @@ Choosing the Right Optimizer
 **For :class:`~divi.qprog.algorithms.QAOA`:**
 
 - **Grid Search**: Best for 1–2 layer QAOA where you want full landscape visibility
+- **QNG (pullback)**: Accelerates convergence in simulator runs; requires a cost
+  Hamiltonian expectation loss
 - **COBYLA**: Often the best starting point for :class:`~divi.qprog.algorithms.QAOA` problems
 - **Nelder-Mead**: Good for noisy landscapes and parameter initialization
 - **Monte Carlo**: Excellent for global exploration and avoiding barren plateaus
@@ -175,6 +293,9 @@ Choosing the Right Optimizer
 - **Parameter Initialization**: Start with small random values (typically [-0.1, 0.1]) for better convergence
 - **Circuit Depth**: Deeper circuits benefit from more robust optimizers like CMA-ES or :class:`~divi.qprog.optimizers.MonteCarloOptimizer`
 - **Noise Resilience**: Nelder-Mead and COBYLA are more robust to quantum noise than gradient-based methods
+- **Natural Gradient**: Use :class:`~divi.qprog.optimizers.QNGOptimizer` on simulators when the circuit has pronounced
+  curvature variation and you want metric-aware updates; not recommended for large hardware runs
+  where extra metric measurements are expensive
 
 Early Stopping
 --------------

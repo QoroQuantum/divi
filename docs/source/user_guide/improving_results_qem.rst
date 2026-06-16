@@ -20,18 +20,18 @@ Zero Noise Extrapolation (ZNE)
 
 Divi's ZNE runs the target circuit at several amplified noise levels and
 extrapolates the per-scale expectation values back to the zero-noise limit.
-Folding and extrapolation are both built-in — :class:`~divi.circuits.qem.ZNE`
-ships with global-unitary folding (:func:`~divi.circuits.qem.global_fold`)
-by default and uses :class:`~divi.circuits.qem.RichardsonExtrapolator`
+Folding and extrapolation are both built-in — :class:`~divi.circuits.zne.ZNE`
+ships with global-unitary folding (:func:`~divi.circuits.zne.global_fold`)
+by default and uses :class:`~divi.circuits.zne.RichardsonExtrapolator`
 unless a custom extrapolator is provided.  Both integer and fractional
 scale factors are supported; for per-gate folding on deep circuits or
-scales close to 1, switch to :func:`~divi.circuits.qem.local_fold`.
+scales close to 1, switch to :func:`~divi.circuits.zne.local_fold`.
 
 **Basic Usage:**
 
 .. code-block:: python
 
-   from divi.circuits.qem import ZNE, RichardsonExtrapolator
+   from divi.circuits.zne import ZNE, RichardsonExtrapolator
    from divi.qprog import VQE
    from divi.backends import QiskitSimulator
    import pennylane as qp
@@ -80,12 +80,12 @@ scales close to 1, switch to :func:`~divi.circuits.qem.local_fold`.
    )
 
 **Choosing a folding strategy.**  The default
-:func:`~divi.circuits.qem.global_fold` folds the entire circuit
+:func:`~divi.circuits.zne.global_fold` folds the entire circuit
 (``U · (U†·U)^k · L†·L``, with the tail ``L`` handling fractional
 remainders); it is deterministic and a sensible first choice when scale
 factors are widely spaced.  For deep circuits, scales close to 1, or
 finer-grained noise scaling, swap in
-:func:`~divi.circuits.qem.local_fold`, which folds each gate
+:func:`~divi.circuits.zne.local_fold`, which folds each gate
 independently (``G · (G†·G)^k``) and distributes fractional remainders
 across a random subset of gates:
 
@@ -93,7 +93,7 @@ across a random subset of gates:
 
 .. code-block:: python
 
-   from divi.circuits.qem import ZNE, local_fold
+   from divi.circuits.zne import ZNE, local_fold
 
    # Per-gate folding with fractional scale factors
    zne_local = ZNE(
@@ -112,7 +112,7 @@ target 2-qubit gate errors specifically:
 .. code-block:: python
 
    from functools import partial
-   from divi.circuits.qem import ZNE, local_fold
+   from divi.circuits.zne import ZNE, local_fold
 
    zne_selective = ZNE(
        scale_factors=[1.0, 1.5, 2.0],
@@ -185,8 +185,9 @@ on the ensemble circuits.
   ``sampling="montecarlo"``.
 - ``seed`` *(int, optional)* — RNG seed for Monte Carlo reproducibility.
 - ``n_twirls`` *(int, default 10)* — Pauli twirl count; ``0`` disables twirling.
-  The parameter ``bind_before_mitigation`` on :class:`~divi.circuits.quepp.QuEPP`
-  trades repeated structural work against path count when angles are symbolic.
+  ``sampling="exhaustive"`` binds parameters before mitigation so path enumeration
+  can use concrete angles; ``sampling="montecarlo"`` keeps the symbolic circuit and
+  binds path weights later.
 
 ZNE vs QuEPP
 ~~~~~~~~~~~~~

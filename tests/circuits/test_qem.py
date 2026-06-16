@@ -2,20 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for divi.circuits.qem (DAG-native QEM protocols)."""
+"""Tests for divi.circuits.qem base protocols."""
 
 import pytest
 from qiskit import QuantumCircuit
-from qiskit.converters import circuit_to_dag, dag_to_circuit
-from qiskit.quantum_info import Operator
+from qiskit.converters import circuit_to_dag
 
-from divi.circuits.qem import (
-    ZNE,
-    LinearExtrapolator,
-    QEMProtocol,
-    RichardsonExtrapolator,
-    _NoMitigation,
-)
+from divi.circuits.qem import QEMProtocol, _NoMitigation
+from divi.pipeline.abc import ResultFormat
 
 
 @pytest.fixture
@@ -31,22 +25,29 @@ class TestQEMProtocol:
         with pytest.raises(TypeError, match="Can't instantiate abstract class"):
             QEMProtocol()
 
-    def test_concrete_implementations_can_be_instantiated(self):
+    def test_concrete_implementation_can_be_instantiated(self):
         assert isinstance(_NoMitigation(), QEMProtocol)
-        assert isinstance(ZNE([1.0, 3.0]), QEMProtocol)
+
+    def test_twirl_and_bind_defaults(self):
+        proto = _NoMitigation()
+        assert proto.n_twirls == 0
+        assert proto.requires_bound_params is False
 
 
 class TestNoMitigation:
     def test_name(self):
         assert _NoMitigation().name == "NoMitigation"
 
+    def test_no_mitigation_vacuously_applies(self):
+        proto = _NoMitigation()
+        assert proto.applies_to(ResultFormat.EXPVALS) is True
+        assert proto.applies_to(ResultFormat.PROBS) is True
+        assert proto.applies_to(ResultFormat.COUNTS) is True
+
     def test_expand_is_identity(self, bell_dag):
         dags, ctx = _NoMitigation().expand(bell_dag)
         assert len(dags) == 1
         assert dags[0] is bell_dag
-        # ``dag_indices`` is set uniformly by every protocol's ``expand`` so
-        # that ``reduce`` can slice ``quantum_results`` consistently in both
-        # single- and multi-observable mode.
         assert ctx == {"dag_indices": [0]}
 
     def test_reduce_returns_single_value(self, bell_dag):
@@ -63,157 +64,6 @@ class TestNoMitigation:
             _NoMitigation().reduce([], {})
 
 
-class TestZNE:
-    def test_valid_initialization(self):
-        zne = ZNE(scale_factors=[1.0, 3.0, 5.0])
-        assert zne.name == "zne"
-        assert list(zne.scale_factors) == [1.0, 3.0, 5.0]
-        assert isinstance(zne.extrapolator, RichardsonExtrapolator)
-
-    def test_accepts_explicit_extrapolator(self):
-        extrapolator = LinearExtrapolator()
-        zne = ZNE(scale_factors=[1.0, 3.0], extrapolator=extrapolator)
-        assert zne.extrapolator is extrapolator
-
-    @pytest.mark.parametrize(
-        "bad_scale",
-        [
-            "not_a_sequence",
-            [1.0, "foo"],  # non-numeric
-        ],
-    )
-    def test_rejects_invalid_scale_factor_types(self, bad_scale):
-        with pytest.raises(ValueError, match="sequence of real numbers"):
-            ZNE(scale_factors=bad_scale)
-
-    def test_rejects_scale_factor_below_one(self):
-        with pytest.raises(ValueError, match="≥ 1"):
-            ZNE(scale_factors=[0.5, 1.0])
-
-    def test_rejects_non_extrapolator(self):
-        with pytest.raises(ValueError, match="ZNEExtrapolator"):
-            ZNE(scale_factors=[1.0, 3.0], extrapolator="not an extrapolator")
-
-    def test_expand_returns_one_dag_per_scale(self, bell_dag):
-        zne = ZNE(scale_factors=[1.0, 3.0, 5.0])
-        dags, ctx = zne.expand(bell_dag)
-        assert len(dags) == 3
-        # Effective scales are reported in the context for extrapolation.
-        assert ctx["effective_scales"] == (1.0, 3.0, 5.0)
-
-    def test_expand_preserves_unitary(self, bell_dag):
-        zne = ZNE(scale_factors=[1.0, 3.0, 5.0])
-        dags, _ = zne.expand(bell_dag)
-        u_orig = Operator(dag_to_circuit(bell_dag))
-        for d in dags:
-            assert Operator(dag_to_circuit(d)).equiv(u_orig)
-
-    def test_expand_scales_gate_count(self, bell_dag):
-        zne = ZNE(scale_factors=[1.0, 3.0, 5.0])
-        base = bell_dag.size()  # capture before expand (which consumes the input)
-        dags, _ = zne.expand(bell_dag)
-        assert [d.size() for d in dags] == [base, 3 * base, 5 * base]
-
-    def test_reduce_extrapolates_to_zero(self, bell_dag):
-        # y = 2 - s → intercept at s=0 is 2.
-        zne = ZNE(scale_factors=[1.0, 3.0, 5.0], extrapolator=LinearExtrapolator())
-        extrapolated = zne.reduce(
-            [1.0, -1.0, -3.0], {"effective_scales": (1.0, 3.0, 5.0)}
-        )
-        assert extrapolated == pytest.approx([2.0])
-
-    def test_reduce_falls_back_to_requested_scales_without_context(self, bell_dag):
-        """If a legacy context lacks effective_scales, reduce uses the requested values."""
-        zne = ZNE(scale_factors=[1.0, 3.0, 5.0], extrapolator=LinearExtrapolator())
-        assert zne.reduce([1.0, -1.0, -3.0], {}) == pytest.approx([2.0])
-
-    def test_expand_forwards_effective_scales_to_reduce(self, bell_dag):
-        """Effective scales survive the expand→reduce roundtrip unbiased."""
-        zne = ZNE(scale_factors=[1.0, 3.0, 5.0], extrapolator=LinearExtrapolator())
-        _, ctx = zne.expand(bell_dag)
-        # y = 2 - s evaluated at effective scales (1, 3, 5).
-        assert zne.reduce([1.0, -1.0, -3.0], ctx) == pytest.approx([2.0])
-
-    def test_expand_warns_when_scales_collapse(self, bell_dag):
-        """Small-d circuits can snap distinct requested scales to the same effective value."""
-        # bell_dag has d=2; requested 1.5 → eff=1.0, 2.5 → eff=3.0, 3.0 → eff=3.0.
-        zne = ZNE(scale_factors=[1.5, 2.5, 3.0])
-        with pytest.warns(UserWarning, match="collapse to effective scales"):
-            zne.expand(bell_dag)
-
-
-class TestZNEDryExpand:
-    """ZNE's analytic dry path: same fan-out/context as expand, zero mutation."""
-
-    def test_emits_one_dag_per_scale_without_folding(self, bell_dag):
-        zne = ZNE(scale_factors=[1.0, 3.0, 5.0])
-        base = bell_dag.size()
-        dags, ctx = zne.dry_expand(bell_dag)
-        assert len(dags) == 3
-        # No folding: every output aliases the unmodified input.
-        assert all(d is bell_dag for d in dags)
-        assert bell_dag.size() == base
-        assert ctx["dag_indices"] == [0, 1, 2]
-
-    def test_effective_scales_match_expand(self, bell_dag):
-        """The analytic effective scales agree with the real fold's."""
-        import copy
-
-        zne = ZNE(scale_factors=[1.0, 3.0, 5.0])
-        _, dry_ctx = zne.dry_expand(copy.deepcopy(bell_dag))
-        _, real_ctx = zne.expand(bell_dag)
-        assert dry_ctx["effective_scales"] == real_ctx["effective_scales"]
-
-    def test_aliased_batch_does_not_compound(self, bell_dag):
-        """Regression: dry batches may alias ONE dag across many entries
-        (DataBindingStage's shared-template fan-out). expand's absorb-the-
-        input fold compounded exponentially across aliases — dry_expand
-        must leave the shared dag untouched no matter how often it runs."""
-        zne = ZNE(scale_factors=[1.0, 3.0, 5.0])
-        base = bell_dag.size()
-        shared_entries = [bell_dag] * 10  # 10 "samples", one shared dag
-        for dag in shared_entries:
-            zne.dry_expand(dag)
-        assert bell_dag.size() == base
-
-    def test_warns_when_scales_collapse(self, bell_dag):
-        """The dry path surfaces the same granularity warning as expand —
-        dry-run is exactly when a user wants to learn about it."""
-        zne = ZNE(scale_factors=[1.5, 2.5, 3.0])
-        with pytest.warns(UserWarning, match="collapse to effective scales"):
-            zne.dry_expand(bell_dag)
-
-
-class TestLinearExtrapolator:
-    def test_fits_line_through_two_points(self):
-        e = LinearExtrapolator()
-        # y = 1 + 2*s → intercept = 1.
-        assert e.extrapolate([1.0, 3.0], [3.0, 7.0]) == pytest.approx(1.0)
-
-    def test_intercept_from_three_points(self):
-        e = LinearExtrapolator()
-        # Noisy y = 5 - 0.5*s; best linear fit intercept close to 5.
-        sfs = [1.0, 3.0, 5.0]
-        ys = [4.5, 3.5, 2.5]
-        assert e.extrapolate(sfs, ys) == pytest.approx(5.0)
-
-    def test_rejects_mismatched_lengths(self):
-        with pytest.raises(ValueError, match="lengths disagree"):
-            LinearExtrapolator().extrapolate([1.0, 3.0], [1.0])
-
-    def test_rejects_single_point(self):
-        with pytest.raises(ValueError, match="at least 2"):
-            LinearExtrapolator().extrapolate([1.0], [2.0])
-
-    def test_rejects_nan_input(self):
-        with pytest.raises(ValueError, match="NaN or Inf"):
-            LinearExtrapolator().extrapolate([1.0, 3.0], [float("nan"), 1.0])
-
-    def test_rejects_inf_input(self):
-        with pytest.raises(ValueError, match="NaN or Inf"):
-            LinearExtrapolator().extrapolate([1.0, float("inf")], [1.0, 2.0])
-
-
 class TestNoMitigationTupleObservable:
     """Tuple-observable expand/reduce on the trivial protocol."""
 
@@ -225,44 +75,3 @@ class TestNoMitigationTupleObservable:
     def test_reduce_with_per_obs_list(self, bell_dag):
         out = _NoMitigation().reduce([[0.7, -0.3]], {"dag_indices": [0]})
         assert out == [0.7, -0.3]
-
-
-def test_reduce_with_per_obs_list(bell_dag):
-    """ZNE on a tuple observable extrapolates per-observable element-wise."""
-    # y_obs1 = 2 - s → 2; y_obs2 = 4 - 2s → 4.
-    zne = ZNE(scale_factors=[1.0, 3.0], extrapolator=LinearExtrapolator())
-    _, ctx = zne.expand(bell_dag, observable=("a", "b"))
-    rows = [[1.0, 2.0], [-1.0, -2.0]]
-    out = zne.reduce(rows, ctx)
-    assert isinstance(out, list)
-    assert out[0] == pytest.approx(2.0)
-    assert out[1] == pytest.approx(4.0)
-
-
-class TestRichardsonExtrapolator:
-    def test_interpolates_polynomial_exactly(self):
-        e = RichardsonExtrapolator()
-        # y = 2 + 3*s - s**2 evaluated at s=1,2,3 → y=4,4,2. At s=0, y=2.
-        sfs = [1.0, 2.0, 3.0]
-        ys = [4.0, 4.0, 2.0]
-        assert e.extrapolate(sfs, ys) == pytest.approx(2.0)
-
-    def test_linear_through_two_points_matches_linear(self):
-        # For N=2 points, Richardson reduces to linear extrapolation.
-        sfs = [1.0, 3.0]
-        ys = [0.5, -0.5]
-        richardson = RichardsonExtrapolator().extrapolate(sfs, ys)
-        linear = LinearExtrapolator().extrapolate(sfs, ys)
-        assert richardson == pytest.approx(linear)
-
-    def test_rejects_mismatched_lengths(self):
-        with pytest.raises(ValueError, match="lengths disagree"):
-            RichardsonExtrapolator().extrapolate([1.0, 3.0], [1.0])
-
-    def test_rejects_duplicate_scale_factors(self):
-        with pytest.raises(ValueError, match="duplicates"):
-            RichardsonExtrapolator().extrapolate([1.0, 3.0, 3.0], [0.5, 0.3, 0.3])
-
-    def test_rejects_nan_input(self):
-        with pytest.raises(ValueError, match="NaN or Inf"):
-            RichardsonExtrapolator().extrapolate([1.0, 3.0], [float("nan"), 1.0])

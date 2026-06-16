@@ -11,7 +11,7 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
 from divi.circuits._conversions import _format_bound_param
-from divi.circuits.qem import ZNE
+from divi.circuits.zne import ZNE
 from divi.pipeline import CircuitPipeline, PipelineEnv
 from divi.pipeline.stages import (
     CircuitSpecStage,
@@ -67,7 +67,7 @@ def test_expand_emits_one_body_per_sample(composed):
     feature_batch = np.array([[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]])
     stage = DataBindingStage(data_params=data_params, loss_reduction=_mean)
     meta = _make_meta(qc, data_params, weight_params)
-    result, _ = stage.expand({(): meta}, env=_env(feature_batch=feature_batch))
+    result = stage.expand({(): meta}, env=_env(feature_batch=feature_batch))
     out_meta = result.batch[()]
     # One body per sample, tagged with (DATA_AXIS, i).
     assert len(out_meta.circuit_bodies) == feature_batch.shape[0]
@@ -87,7 +87,7 @@ def test_template_path_renders_partial_bodies_with_data_substituted(composed):
     # Default path is template — validate() has not been called.
     assert stage._use_template_path is True
     meta = _make_meta(qc, data_params, weight_params)
-    result, _ = stage.expand({(): meta}, env=_env(feature_batch=feature_batch))
+    result = stage.expand({(): meta}, env=_env(feature_batch=feature_batch))
     out_meta = result.batch[()]
     assert len(out_meta.qasm_bodies) == feature_batch.shape[0]
     for _, partial_body in out_meta.qasm_bodies:
@@ -112,7 +112,7 @@ def test_template_tags_map_each_sample_to_its_row_index(composed):
     qc, data_params, weight_params = composed
     feature_batch = np.array([[0.111, 0.0], [0.222, 0.0], [0.333, 0.0]])
     stage = DataBindingStage(data_params=data_params, loss_reduction=_mean)
-    result, _ = stage.expand(
+    result = stage.expand(
         {(): _make_meta(qc, data_params, weight_params)},
         env=_env(feature_batch=feature_batch),
     )
@@ -170,7 +170,7 @@ def test_eager_path_substitutes_data_into_dag(composed):
     stage = DataBindingStage(data_params=data_params, loss_reduction=_mean)
     stage._use_template_path = False  # force eager path for this assertion
     meta = _make_meta(qc, data_params, weight_params)
-    result, _ = stage.expand({(): meta}, env=_env(feature_batch=feature_batch))
+    result = stage.expand({(): meta}, env=_env(feature_batch=feature_batch))
     _, dag = result.batch[()].circuit_bodies[0]
     remaining_params = {
         sym
@@ -419,7 +419,7 @@ def test_expand_cross_multiplies_existing_body_count(composed):
         parameters=data_params + weight_params,
         observable=SparsePauliOp.from_list([("ZI", 1.0)]),
     )
-    result, _ = stage.expand({(): meta}, env=_env(feature_batch=feature_batch))
+    result = stage.expand({(): meta}, env=_env(feature_batch=feature_batch))
     bodies = result.batch[()].circuit_bodies
     assert len(bodies) == 2 * feature_batch.shape[0]
     sample_tags_per_prior = {0: set(), 1: set()}
@@ -502,7 +502,7 @@ def test_dry_expand_shares_one_dag_across_sample_variants(composed):
     feature_batch = np.array([[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]])
     stage = DataBindingStage(data_params=data_params, loss_reduction=_mean)
     meta = _make_meta(qc, data_params, weight_params)
-    result, _ = stage.dry_expand({(): meta}, env=_env(feature_batch=feature_batch))
+    result = stage.dry_expand({(): meta}, env=_env(feature_batch=feature_batch))
     bodies = result.batch[()].circuit_bodies
     assert len(bodies) == feature_batch.shape[0]
     # All variants share the same DAG instance — that's the "lazy" win.
@@ -528,8 +528,8 @@ def test_template_path_passes_through_incoming_dag(composed):
     meta = _make_meta(qc, data_params, weight_params)
     incoming_dag = meta.circuit_bodies[0][1]
     env = _env(feature_batch=feature_batch)
-    first, _ = stage.expand({(): meta}, env=env)
-    second, _ = stage.expand({(): meta}, env=env)
+    first = stage.expand({(): meta}, env=env)
+    second = stage.expand({(): meta}, env=env)
     first_dag = first.batch[()].circuit_bodies[0][1]
     second_dag = second.batch[()].circuit_bodies[0][1]
     assert first_dag is incoming_dag
@@ -545,8 +545,8 @@ def test_eager_path_builds_fresh_dags_each_call(composed):
     stage._use_template_path = False
     meta = _make_meta(qc, data_params, weight_params)
     env = _env(feature_batch=feature_batch)
-    first, _ = stage.expand({(): meta}, env=env)
-    second, _ = stage.expand({(): meta}, env=env)
+    first = stage.expand({(): meta}, env=env)
+    second = stage.expand({(): meta}, env=env)
     first_dag = first.batch[()].circuit_bodies[0][1]
     second_dag = second.batch[()].circuit_bodies[0][1]
     assert first_dag is not second_dag

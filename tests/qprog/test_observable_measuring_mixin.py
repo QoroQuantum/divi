@@ -8,6 +8,7 @@ import warnings
 
 import pytest
 
+from divi.pipeline import PipelineSet
 from divi.qprog import ObservableMeasuringMixin
 from divi.qprog.quantum_program import QuantumProgram
 
@@ -15,8 +16,8 @@ from divi.qprog.quantum_program import QuantumProgram
 class ConcreteObservableMeasuringProgram(ObservableMeasuringMixin, QuantumProgram):
     """Minimal concrete program for exercising the mixin in isolation."""
 
-    def _build_pipelines(self) -> None:
-        pass
+    def _build_pipelines(self) -> PipelineSet:
+        return PipelineSet({})
 
     def has_results(self) -> bool:
         return False
@@ -199,7 +200,7 @@ class TestMROGuard:
 
             class _WrongOrder(QuantumProgram, ObservableMeasuringMixin):
                 def _build_pipelines(self):
-                    pass
+                    return PipelineSet({})
 
                 def has_results(self):
                     return False
@@ -210,7 +211,7 @@ class TestMROGuard:
     def test_correct_order_succeeds(self):
         class _RightOrder(ObservableMeasuringMixin, QuantumProgram):
             def _build_pipelines(self):
-                pass
+                return PipelineSet({})
 
             def has_results(self):
                 return False

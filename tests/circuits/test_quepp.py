@@ -956,11 +956,11 @@ def test_hybrid_normalization():
 
 
 class TestBindBeforeMitigation:
-    def test_default_is_false(self):
-        assert QuEPP().bind_before_mitigation is False
+    def test_monte_carlo_sampling_keeps_symbolic_weights(self):
+        assert QuEPP().requires_bound_params is False
 
-    def test_stored_when_true(self):
-        assert QuEPP(bind_before_mitigation=True).bind_before_mitigation is True
+    def test_exhaustive_sampling_binds_before_mitigation(self):
+        assert QuEPP(sampling="exhaustive").requires_bound_params is True
 
 
 class TestQuEPPPipelineIntegration:

@@ -10,7 +10,7 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from queue import Queue
 from threading import Event, Lock, Thread
-from typing import Any
+from typing import Any, cast
 from warnings import warn
 
 import numpy as np
@@ -27,6 +27,7 @@ from divi.qprog._batch_coordinator import (
     _BatchCoordinator,
     _ProxyBackend,
 )
+from divi.qprog._solution_sampling_mixin import SolutionSamplingMixin
 from divi.qprog.quantum_program import QuantumProgram
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from divi.reporting import (
@@ -725,7 +726,9 @@ class ProgramEnsemble(ABC):
         program_to_id = {program: pid for pid, program in self._programs.items()}
 
         def _sample_solution_task(program: VariationalQuantumAlgorithm):
-            return program.sample_solution(resolved[program_to_id[program]])
+            return cast(SolutionSamplingMixin, program).sample_solution(
+                resolved[program_to_id[program]]
+            )
 
         return self._dispatch(
             task_fn=_sample_solution_task,

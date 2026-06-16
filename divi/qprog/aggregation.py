@@ -22,10 +22,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from divi.qprog.variational_quantum_algorithm import (
-    SolutionEntry,
-    VariationalQuantumAlgorithm,
-)
+from divi.qprog._solution_sampling_mixin import SolutionEntry, SolutionSamplingMixin
 
 __all__ = [
     "AggregationStrategy",
@@ -48,7 +45,7 @@ class AggregationStrategy(ABC):
     @abstractmethod
     def aggregate(
         self,
-        programs: dict[Any, VariationalQuantumAlgorithm],
+        programs: dict[Any, SolutionSamplingMixin],
         initial_solution: Sequence[int],
         extend_fn: ExtendFn,
         evaluate_fn: EvaluateFn,
@@ -104,7 +101,7 @@ class BeamSearchStrategy(AggregationStrategy):
 
     def aggregate(
         self,
-        programs: dict[Any, VariationalQuantumAlgorithm],
+        programs: dict[Any, SolutionSamplingMixin],
         initial_solution: Sequence[int],
         extend_fn: ExtendFn,
         evaluate_fn: EvaluateFn,
@@ -241,7 +238,7 @@ class HierarchicalStrategy(AggregationStrategy):
 
     def aggregate(
         self,
-        programs: dict[Any, VariationalQuantumAlgorithm],
+        programs: dict[Any, SolutionSamplingMixin],
         initial_solution: Sequence[int],
         extend_fn: ExtendFn,
         evaluate_fn: EvaluateFn,

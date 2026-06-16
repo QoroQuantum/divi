@@ -20,12 +20,14 @@ from ._dry_run import (
     format_dry_run,
 )
 from ._grouping import GroupingStrategy
+from ._pipeline_set import PipelineSet
 from ._shot_distribution import ShotDistStrategy
 from .abc import (
     ContractViolation,
     DiviPerformanceWarning,
     NodeKey,
     ResultFormat,
+    StageOutput,
 )
 from .transformations import reduce_merge_histograms
 
@@ -39,11 +41,13 @@ __all__ = [
     "GroupingStrategy",
     "PipelineEnv",
     "PipelineResult",
+    "PipelineSet",
     "PipelineTrace",
     "ShotDistStrategy",
     "SpecStage",
     "Stage",
     "StageInfo",
+    "StageOutput",
     "dry_run_pipeline",
     "format_dry_run",
     "format_pipeline_tree",

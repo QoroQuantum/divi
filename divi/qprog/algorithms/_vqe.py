@@ -18,7 +18,7 @@ from divi.hamiltonians._term_ops import (
     _require_qiskit_num_qubits,
     to_spo,
 )
-from divi.pipeline.stages import CircuitSpecStage
+from divi.qprog._solution_sampling_mixin import SolutionSamplingMixin
 from divi.qprog.algorithms import (
     Ansatz,
     HartreeFockAnsatz,
@@ -30,7 +30,7 @@ from divi.qprog.algorithms import (
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 
 
-class VQE(VariationalQuantumAlgorithm):
+class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
     """Variational Quantum Eigensolver (VQE) implementation.
 
     VQE is a hybrid quantum-classical algorithm used to find the ground state
@@ -117,12 +117,6 @@ class VQE(VariationalQuantumAlgorithm):
         # Build pipelines once (structure is fixed; only env changes per call)
 
         self._pipelines = self._build_pipelines()
-
-    def _build_pipelines(self) -> dict:
-        return {
-            "cost": self._build_cost_pipeline(CircuitSpecStage()),
-            "measurement": self._build_measurement_pipeline(),
-        }
 
     @property
     def n_params_per_layer(self):
@@ -230,7 +224,7 @@ class VQE(VariationalQuantumAlgorithm):
                 observable=self.cost_hamiltonian,
                 precision=self._precision,
             ),
-            "meas_circuit": MetaCircuit(
+            "sample_circuit": MetaCircuit(
                 circuit_bodies=(((), dag),),
                 parameters=flat_params,
                 measured_wires=tuple(range(self.n_qubits)),
@@ -251,7 +245,7 @@ class VQE(VariationalQuantumAlgorithm):
         if self._best_probs:
             best_measurement_probs = next(iter(self._best_probs.values()))
             eigenstate_bitstring = max(
-                best_measurement_probs, key=best_measurement_probs.get
+                best_measurement_probs, key=best_measurement_probs.__getitem__
             )
             self._eigenstate = np.fromiter(eigenstate_bitstring, dtype=np.int32)
 

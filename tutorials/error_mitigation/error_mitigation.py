@@ -22,8 +22,8 @@ from rich.console import Console
 from rich.table import Table
 
 from divi.backends import QiskitSimulator
-from divi.circuits.qem import ZNE, RichardsonExtrapolator
 from divi.circuits.quepp import QuEPP
+from divi.circuits.zne import ZNE, RichardsonExtrapolator
 from divi.qprog import VQE, HartreeFockAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 

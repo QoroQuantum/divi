@@ -20,10 +20,10 @@ from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
     DiviPerformanceWarning,
-    ExpansionResult,
     MetaCircuitBatch,
     PipelineEnv,
     Stage,
+    StageOutput,
     StageToken,
 )
 from divi.pipeline.stages import QEMStage
@@ -230,8 +230,12 @@ class ParameterBindingStage(BundleStage):
         return PARAM_SET_AXIS
 
     @property
-    def stateful(self) -> bool:
+    def volatile(self) -> bool:
         return True
+
+    @property
+    def consumes_dag_bodies(self) -> bool:
+        return False
 
     def __init__(self) -> None:
         super().__init__(name=type(self).__name__)
@@ -259,23 +263,23 @@ class ParameterBindingStage(BundleStage):
 
     def expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         param_sets = _validate_param_sets(env)
-        if self._template_path_enabled(env):
+        if self._template_path_enabled(batch, env):
             run = self._run_template
         else:
             run = self._run_fast if self._fast_path else self._run_slow
-        return ExpansionResult(batch=run(batch, param_sets)), None
+        return StageOutput(batch=run(batch, param_sets))
 
     def dry_expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         # Analytic path: only the param-set count matters, so skip the
         # finiteness check on values that are never rendered.
         param_sets = _validate_param_sets(env, assert_finite=False)
-        return ExpansionResult(batch=self._run_dry(batch, param_sets)), None
+        return StageOutput(batch=self._run_dry(batch, param_sets))
 
-    def _template_path_enabled(self, env: PipelineEnv) -> bool:
+    def _template_path_enabled(self, batch: MetaCircuitBatch, env: PipelineEnv) -> bool:
         """Whether to defer parameter binding to the backend for this run.
 
         Requires the fast-path condition (no downstream stage consumes DAG
@@ -285,7 +289,7 @@ class ParameterBindingStage(BundleStage):
         flat circuits (one per parameter set), which the deferred template
         payload (one template plus a parameter matrix) cannot express.
         """
-        if not self._fast_path or env.artifacts.get("per_group_shots"):
+        if not self._fast_path or any(meta.group_shots for meta in batch.values()):
             return False
         return isinstance(env.backend, SupportsCircuitTemplates)
 
@@ -421,7 +425,7 @@ class ParameterBindingStage(BundleStage):
             "n_param_sets": len(param_sets),
             "n_params": n_params,
             "fast_path": self._fast_path,
-            "template_path": self._template_path_enabled(env),
+            "template_path": self._template_path_enabled(batch, env),
         }
 
     def reduce(

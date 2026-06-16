@@ -14,6 +14,7 @@ from divi.pipeline.abc import (
     MetaCircuitBatch,
     PipelineEnv,
     SpecStage,
+    StageOutput,
     StageToken,
 )
 from divi.pipeline.transformations import group_by_base_key
@@ -44,7 +45,7 @@ class CircuitSpecStage(SpecStage[CircuitSpec]):
 
     def expand(
         self, batch: CircuitSpec, env: PipelineEnv
-    ) -> tuple[MetaCircuitBatch, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         """Wrap input MetaCircuit(s) into a keyed batch."""
         if isinstance(batch, MetaCircuit):
             out: MetaCircuitBatch = {(("circuit", 0),): batch}
@@ -60,7 +61,7 @@ class CircuitSpecStage(SpecStage[CircuitSpec]):
                 f"CircuitSpecStage expects a MetaCircuit, sequence, or mapping, "
                 f"got {type(batch).__name__}"
             )
-        return out, fmt
+        return StageOutput(batch=out, token=fmt)
 
     def introspect(
         self, batch: MetaCircuitBatch, env: PipelineEnv, token: StageToken

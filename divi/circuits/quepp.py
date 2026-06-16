@@ -29,7 +29,7 @@ dramatically reduce path count.
 import warnings
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import stim
@@ -54,6 +54,7 @@ from qiskit.dagcircuit import DAGCircuit
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits.qem import QEMContext, QEMProtocol
+from divi.pipeline.abc import ResultFormat
 
 __all__ = ["QuEPP"]
 
@@ -858,29 +859,24 @@ class QuEPP(QEMProtocol):
         coefficient_threshold: Prune paths whose absolute weight falls
             below this value during DFS enumeration.  Only used with
             ``sampling="exhaustive"``.
-        sampling: Path selection strategy — ``"montecarlo"`` (default) or
-            ``"exhaustive"``.
+        sampling: Path selection strategy — ``"montecarlo"`` (default) keeps
+            symbolic weights until parameter binding, while ``"exhaustive"``
+            binds parameters before mitigation so path enumeration can use
+            concrete rotation angles.
         n_samples: Number of Monte Carlo path samples (default 200).
         seed: RNG seed for Monte Carlo reproducibility.
         n_twirls: Number of Pauli twirling samples.  When non-zero, the
             pipeline builder appends a ``PauliTwirlStage``.  Default ``10``.
-        bind_before_mitigation: When ``False`` (default), QuEPP runs on the
-            parametric circuit and produces symbolically-weighted paths
-            (using Qiskit :class:`~qiskit.circuit.ParameterExpression`
-            arithmetic) that are later bound by the parameter-binding
-            stage.  Set to ``True`` to bind parameters first and mitigate
-            per-parameter-set.
     """
 
     def __init__(
         self,
         truncation_order: int = 2,
         coefficient_threshold: float | None = None,
-        sampling: str = "montecarlo",
+        sampling: Literal["montecarlo", "exhaustive"] = "montecarlo",
         n_samples: int = 200,
         seed: int | None = None,
         n_twirls: int = 10,
-        bind_before_mitigation: bool = False,
     ) -> None:
         if truncation_order < 0:
             raise ValueError("truncation_order must be non-negative.")
@@ -900,11 +896,15 @@ class QuEPP(QEMProtocol):
         self._n_samples = n_samples
         self._rng = np.random.default_rng(seed)
         self.n_twirls = n_twirls
-        self.bind_before_mitigation = bind_before_mitigation
+        self.requires_bound_params = sampling == "exhaustive"
 
     @property
     def name(self) -> str:
         return "quepp"
+
+    def applies_to(self, result_format: ResultFormat) -> bool:
+        # QuEPP reduces to expectation values; raw sampling has none.
+        return result_format is ResultFormat.EXPVALS
 
     def expand(
         self,
@@ -1258,7 +1258,8 @@ class QuEPP(QEMProtocol):
             raise ValueError(
                 "QuEPP weights are still symbolic — parameter values were "
                 "never substituted. Add ParameterBindingStage to the "
-                "pipeline or use QuEPP(bind_before_mitigation=True)."
+                "pipeline or use QuEPP(sampling='exhaustive') to bind "
+                "parameters before mitigation."
             )
         per_obs: list[dict] | None = context.get("per_obs")
         if per_obs is None:

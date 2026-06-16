@@ -174,7 +174,7 @@ Sampling from Pre-Trained Parameters
 
 :meth:`~divi.qprog.ensemble.ProgramEnsemble.sample_solution` mirrors the
 standalone
-:meth:`~divi.qprog.VariationalQuantumAlgorithm.sample_solution` across every
+:meth:`~divi.qprog.SolutionSamplingMixin.sample_solution` across every
 sub-program in one call. Use it when you already have trained parameters for
 each partition (e.g. from a prior ``run()``, a loaded checkpoint, or an
 external training routine) and only need to re-sample — no EXPECTATION jobs

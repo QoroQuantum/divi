@@ -2,13 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Hashable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from threading import Event
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, NamedTuple, TypeVar
 
 import numpy as np
 import numpy.typing as npt
@@ -27,6 +26,7 @@ __all__ = [
     "PipelineResult",
     "PipelineTrace",
     "ResultFormat",
+    "StageOutput",
     "SpecStage",
     "Stage",
 ]
@@ -35,7 +35,6 @@ NodeKey = tuple[AxisLabel, ...]  # Batch key: sequence of (axis_name, value) pai
 
 MetaCircuitBatch = dict[NodeKey, MetaCircuit]
 BranchKey = tuple[AxisLabel, ...]  # Full branch key: (axis_name, value) pairs.
-ParentBranchResults = dict[NodeKey, dict[BranchKey, Any]]
 ChildResults = dict[Any, Any]
 
 StageToken = Any
@@ -119,6 +118,13 @@ class ExpansionResult:
     """Stage name attached by planner for forward-pass traceability."""
 
 
+class StageOutput(NamedTuple, Generic[OutT]):
+    """Complete, cacheable output of one stage expansion."""
+
+    batch: OutT
+    token: StageToken = None
+
+
 @dataclass(frozen=True)
 class PipelineTrace:
     """Forward-pass pipeline trace for fan-out verification before execution."""
@@ -135,11 +141,9 @@ class PipelineTrace:
     stage_tokens: tuple[StageToken, ...]
     """Per-stage opaque tokens returned by each BundleStage's expand."""
 
-    result_format: "ResultFormat | None" = None
-    """Result format declared by the measurement stage during expand."""
-
-    env_artifacts: dict = field(default_factory=dict)
-    """Stage-produced artifacts (e.g. ham_ops) captured for cache restore."""
+    env_artifacts: dict[str, Any] = field(default_factory=dict)
+    """Measurement artifacts (``ham_ops``, ``per_group_shots``) reconstructed
+    from the final batch for backend submission and dry-run reporting."""
 
 
 @dataclass
@@ -167,9 +171,6 @@ class PipelineEnv:
     artifacts: dict = field(default_factory=dict)
     """Mutable output dict populated during execution (e.g. ``circuit_count``)."""
 
-    result_format: ResultFormat | None = None
-    """Canonical result format, set by the measurement stage during expand."""
-
     reporter: ProgressReporter | None = None
     """Progress reporter for async polling feedback."""
 
@@ -180,6 +181,16 @@ class PipelineEnv:
     """Random generator for stochastic stage decisions (e.g. ``weighted_random``
     shot allocation). When ``None``, stages that need randomness construct a
     fresh, unseeded generator, which means they are not reproducible."""
+
+    evaluation_counter: int = 0
+    """Index of the current optimizer evaluation, bumped once per cost call.
+    Stochastic spec stages (e.g. QDrift) seed deterministically from it so the
+    cost and metric pipelines sample the same batch within one evaluation."""
+
+    base_seed: int | None = None
+    """Fixed per-program entropy for unseeded stochastic stages. Combined with
+    ``evaluation_counter`` it gives a stable-within-evaluation seed even when no
+    explicit strategy seed is set, so the cost and metric pipelines still agree."""
 
 
 class ContractViolation(ValueError):
@@ -213,8 +224,9 @@ class Stage(ABC, Generic[InT, OutT]):
         return self._name
 
     @property
-    def stateful(self) -> bool:
-        """Whether this stage invalidates forward-pass reuse from this point."""
+    def volatile(self) -> bool:
+        """Whether this stage's output must be recomputed on every forward pass
+        (rather than reused from cache), invalidating reuse from this point on."""
         return False
 
     def cache_key_extras(self, env: "PipelineEnv") -> tuple[Hashable, ...]:
@@ -225,9 +237,9 @@ class Stage(ABC, Generic[InT, OutT]):
         ``cache_key_extras``.  Override this method to declare any live env
         state your stage reads during ``expand`` (for example
         ``env.backend.shots`` when shot allocation depends on the budget, or
-        a timestamp when the stage depends on external context).  Values not
-        listed here won't trigger cache invalidation when they change.  The
-        return value must be hashable; defaults to an empty tuple.
+        ``env.evaluation_counter`` for per-evaluation stochastic sampling).
+        Values not listed here won't trigger cache invalidation when they
+        change.  The return value must be hashable; defaults to an empty tuple.
         """
         return ()
 
@@ -251,11 +263,11 @@ class Stage(ABC, Generic[InT, OutT]):
         """
 
     @abstractmethod
-    def expand(self, batch: InT, env: PipelineEnv) -> tuple[OutT, StageToken]:
-        """Transform input for the forward pass and return a reduction token."""
+    def expand(self, batch: InT, env: PipelineEnv) -> StageOutput[OutT]:
+        """Transform input and return all cacheable outputs and effects."""
         ...
 
-    def dry_expand(self, batch: InT, env: PipelineEnv) -> tuple[OutT, StageToken]:
+    def dry_expand(self, batch: InT, env: PipelineEnv) -> StageOutput[OutT]:
         """Analytic forward pass for dry runs.
 
         Must emit a batch with the **same shape** as :meth:`expand` (same keys,
@@ -311,9 +323,7 @@ class SpecStage(Stage[InT, MetaCircuitBatch], ABC):
     """
 
     @abstractmethod
-    def expand(
-        self, batch: InT, env: PipelineEnv
-    ) -> tuple[MetaCircuitBatch, StageToken]:
+    def expand(self, batch: InT, env: PipelineEnv) -> StageOutput[MetaCircuitBatch]:
         """Transform input (e.g. Hamiltonian) into a keyed batch of MetaCircuits."""
         ...
 
@@ -324,36 +334,16 @@ class SpecStage(Stage[InT, MetaCircuitBatch], ABC):
         return results
 
 
-class BundleStage(Stage[MetaCircuitBatch, ExpansionResult], ABC):
+class BundleStage(Stage[MetaCircuitBatch, MetaCircuitBatch], ABC):
     """Abstract stage that transforms a keyed MetaCircuit batch.
 
     Subclasses declare two orthogonal contracts via class properties:
 
     - :attr:`handles_measurement` — this stage emits measurement QASMs and
-      sets :attr:`~divi.pipeline.PipelineEnv.result_format`.
+      records ``result_format`` on each circuit.
     - :attr:`consumes_dag_bodies` — this stage reads (and typically mutates)
       ``meta.circuit_bodies`` during ``expand``.
-
-    The pipeline is transformative by design: every ``BundleStage`` is
-    expected to either handle measurement or consume body DAGs (or both).
-    Declaring neither is almost always a misuse of the abstraction —
-    metadata-only or logging passes belong outside the ``Stage`` ABC —
-    so constructing such a stage emits a ``UserWarning`` at instantiation
-    time.
     """
-
-    def __init__(self, name: str) -> None:
-        super().__init__(name=name)
-        if not self.handles_measurement and not self.consumes_dag_bodies:
-            warnings.warn(
-                f"BundleStage {type(self).__name__!r} declares neither "
-                "measurement handling nor DAG consumption; it is a no-op "
-                "in the pipeline. If this is intentional, set one of "
-                "handles_measurement / consumes_dag_bodies to True; "
-                "otherwise use a non-Stage mechanism (hook, middleware).",
-                UserWarning,
-                stacklevel=3,
-            )
 
     @property
     def handles_measurement(self) -> bool:
@@ -380,7 +370,7 @@ class BundleStage(Stage[MetaCircuitBatch, ExpansionResult], ABC):
     @abstractmethod
     def expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
-    ) -> tuple[ExpansionResult, StageToken]:
+    ) -> StageOutput[MetaCircuitBatch]:
         """Transform keyed MetaCircuit batch and return expansion lineage plus token."""
         ...
 

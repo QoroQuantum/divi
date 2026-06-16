@@ -9,7 +9,12 @@ import pytest
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit, qscript_to_meta
-from divi.hamiltonians import ExactTrotterization
+from divi.hamiltonians import (
+    ExactTrotterization,
+    QDrift,
+    TrotterizationResult,
+    TrotterizationStrategy,
+)
 from divi.pipeline import CircuitPipeline, PipelineEnv, PipelineTrace
 from divi.pipeline._compilation import _compile_batch
 from divi.pipeline.abc import ChildResults
@@ -20,18 +25,17 @@ _Z0_Z1 = SparsePauliOp.from_list([("ZI", 1.0), ("IZ", 1.0)])
 _I0 = SparsePauliOp.from_list([("I", 1.0)])
 
 
-class _DummyStrategy:
+class _DummyStrategy(TrotterizationStrategy):
     """Trotterization strategy that returns the SPO unchanged N times."""
 
-    def __init__(self, n: int = 3, stateful: bool = False):
+    def __init__(self, n: int = 3):
         self.n_hamiltonians_per_iteration = n
-        self.stateful = stateful
 
-    def process_hamiltonian(self, hamiltonian):
-        return hamiltonian
+    def process_hamiltonian(self, hamiltonian, *, rng=None):
+        return TrotterizationResult(hamiltonian)
 
 
-def _meta_factory(processed_spo, ham_id):
+def _meta_factory(result, ham_id):
     """Test factory: build a PL observable matching the SPO's single ``Z(0)`` term
     so ``qscript_to_meta`` produces the same MetaCircuit shape that
     TrotterSpecStage would otherwise emit on its own."""
@@ -175,15 +179,38 @@ class TestProperties:
         stage = TrotterSpecStage(_DummyStrategy(), meta_circuit_factory=_meta_factory)
         assert stage.axis_name == "ham"
 
-    def test_stateful_delegates_to_strategy(self):
-        stage_stateless = TrotterSpecStage(
-            _DummyStrategy(stateful=False), meta_circuit_factory=_meta_factory
+    def test_qdrift_keys_cache_per_evaluation(self):
+        deterministic = TrotterSpecStage(
+            ExactTrotterization(), meta_circuit_factory=_meta_factory
         )
-        stage_stateful = TrotterSpecStage(
-            _DummyStrategy(stateful=True), meta_circuit_factory=_meta_factory
+        stochastic = TrotterSpecStage(
+            QDrift(sampling_budget=1), meta_circuit_factory=_meta_factory
         )
-        assert stage_stateless.stateful is False
-        assert stage_stateful.stateful is True
+        env = PipelineEnv(backend=None, evaluation_counter=3)
+        assert deterministic.cache_key_extras(env) == ()
+        assert stochastic.cache_key_extras(env) == (3,)
+
+    def test_unseeded_rng_is_stable_within_evaluation(self):
+        """Unseeded QDrift derives its RNG from (base_seed, evaluation_counter),
+        so repeated expansions in one evaluation draw the SAME cohort (cost and
+        metric agree) and advancing the counter resamples — without consuming the
+        shared, mutable env.rng."""
+        strategy = QDrift(sampling_budget=2, seed=None)
+        env = PipelineEnv(backend=None, base_seed=12345, evaluation_counter=3)
+
+        first = TrotterSpecStage._rng_for_evaluation(strategy, env).integers(
+            0, 10**6, 8
+        )
+        again = TrotterSpecStage._rng_for_evaluation(strategy, env).integers(
+            0, 10**6, 8
+        )
+        assert first.tolist() == again.tolist()
+
+        next_eval = PipelineEnv(backend=None, base_seed=12345, evaluation_counter=4)
+        advanced = TrotterSpecStage._rng_for_evaluation(strategy, next_eval).integers(
+            0, 10**6, 8
+        )
+        assert first.tolist() != advanced.tolist()
 
 
 def test_forward_pass_produces_ham_keyed_trace(dummy_expval_backend):

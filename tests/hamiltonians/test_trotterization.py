@@ -4,16 +4,12 @@
 
 """Tests for TrotterizationStrategy implementations (ExactTrotterization, QDrift)."""
 
-import warnings
-
 import numpy as np
 import pennylane as qp
 import pytest
 from qiskit.quantum_info import SparsePauliOp
 
-from divi import hamiltonians
 from divi.hamiltonians import ExactTrotterization, QDrift, to_spo
-from divi.hamiltonians._trotterization import _STRATEGY_CACHE_MAXSIZE
 
 
 @pytest.fixture
@@ -48,7 +44,7 @@ class TestExactTrotterization:
     def test_no_truncation_returns_simplified_hamiltonian(self, simple_hamiltonian):
         """When both keep_fraction and keep_top_n are None, returns Hamiltonian unchanged."""
         result = ExactTrotterization().process_hamiltonian(simple_hamiltonian)
-        assert result.simplify() == simple_hamiltonian.simplify()
+        assert result.effective_hamiltonian.simplify() == simple_hamiltonian.simplify()
 
     @pytest.mark.parametrize(
         "strategy_kwargs,warn_match",
@@ -66,7 +62,7 @@ class TestExactTrotterization:
             result = ExactTrotterization(**strategy_kwargs).process_hamiltonian(
                 simple_hamiltonian
             )
-        assert result.simplify() == simple_hamiltonian.simplify()
+        assert result.effective_hamiltonian.simplify() == simple_hamiltonian.simplify()
 
     @pytest.mark.parametrize(
         "single_term_pl",
@@ -79,7 +75,7 @@ class TestExactTrotterization:
         strategy = ExactTrotterization(keep_top_n=1)
         with pytest.warns(UserWarning, match="keep_top_n is greater than or equal"):
             result = strategy.process_hamiltonian(single_term_spo)
-        assert result.simplify() == single_term_spo.simplify()
+        assert result.effective_hamiltonian.simplify() == single_term_spo.simplify()
 
     @pytest.mark.parametrize(
         "single_term_pl",
@@ -91,7 +87,7 @@ class TestExactTrotterization:
         single_term_spo = to_spo(single_term_pl)
         strategy = ExactTrotterization(keep_fraction=0.5)
         result = strategy.process_hamiltonian(single_term_spo)
-        assert result.simplify() == single_term_spo.simplify()
+        assert result.effective_hamiltonian.simplify() == single_term_spo.simplify()
 
     def test_constant_only_hamiltonian_raises(self):
         """Constant-only Hamiltonian raises ValueError; rejected at boundary."""
@@ -120,8 +116,8 @@ class TestExactTrotterization:
             simple_hamiltonian
         )
         expected = SparsePauliOp.from_list(expected_terms)
-        assert result.size == keep_top_n
-        assert result.simplify() == expected.simplify()
+        assert result.effective_hamiltonian.size == keep_top_n
+        assert result.effective_hamiltonian.simplify() == expected.simplify()
 
     def test_keep_fraction_reduces_term_count(self, simple_hamiltonian):
         """keep_fraction < 1 yields fewer terms; kept terms have total |coeff| >= fraction of full."""
@@ -129,36 +125,16 @@ class TestExactTrotterization:
             simple_hamiltonian
         )
         full_sum_abs = float(np.sum(np.abs(simple_hamiltonian.coeffs.real)))
-        result_sum_abs = float(np.sum(np.abs(result.coeffs.real)))
-        assert result.size <= simple_hamiltonian.size
+        result_sum_abs = float(np.sum(np.abs(result.effective_hamiltonian.coeffs.real)))
+        assert result.effective_hamiltonian.size <= simple_hamiltonian.size
         assert result_sum_abs >= 0.5 * full_sum_abs
         # With 0.5 we keep exactly the largest term (3.0*Z(0)@Z(1))
-        assert result.simplify() == SparsePauliOp.from_list([("ZZ", 3.0)]).simplify()
+        assert (
+            result.effective_hamiltonian.simplify()
+            == SparsePauliOp.from_list([("ZZ", 3.0)]).simplify()
+        )
 
-    def test_exact_trotterization_stateful_is_false(self):
-        """ExactTrotterization reports stateful=False (cache is memoization only, not state)."""
-        assert ExactTrotterization(keep_top_n=2).stateful is False
-
-    @pytest.mark.parametrize(
-        "strategy_kwargs",
-        [{"keep_top_n": 2}, {"keep_fraction": 0.5}],
-        ids=["keep_top_n", "keep_fraction"],
-    )
-    def test_exact_trotterization_caches_result(
-        self, mocker, simple_hamiltonian, strategy_kwargs
-    ):
-        """Repeated process_hamiltonian with same Hamiltonian uses cache; returns same object."""
-        spy = mocker.spy(hamiltonians._trotterization, "_sort_hamiltonian_terms_spo")
-        strategy = ExactTrotterization(**strategy_kwargs)
-        result1 = strategy.process_hamiltonian(simple_hamiltonian)
-        result2 = strategy.process_hamiltonian(simple_hamiltonian)
-        assert result1 is result2
-        assert spy.call_count == 1
-
-    def test_exact_trotterization_different_hamiltonians_separate_cache(
-        self, simple_hamiltonian
-    ):
-        """Different Hamiltonians get separate cache entries; each returns correct result."""
+    def test_exact_trotterization_has_no_mutable_call_state(self, simple_hamiltonian):
         strategy = ExactTrotterization(keep_top_n=1)
         ham2 = to_spo((4.0 * qp.Z(0) + 5.0 * qp.Z(1)).simplify())
 
@@ -166,36 +142,19 @@ class TestExactTrotterization:
         result2 = strategy.process_hamiltonian(ham2)
         result3 = strategy.process_hamiltonian(simple_hamiltonian)
 
-        # Cached: result1 and result3 are same object
-        assert result1 is result3
-        # Different Hamiltonians yield different results
-        assert result1.simplify() != result2.simplify()
-        # Correct truncation
-        assert result1.simplify() == SparsePauliOp.from_list([("ZZ", 3.0)]).simplify()
-        assert result2.simplify() == SparsePauliOp.from_list([("ZI", 5.0)]).simplify()
-
-    @pytest.mark.parametrize(
-        "strategy_kwargs,warn_match",
-        [
-            ({}, None),
-            ({"keep_fraction": 1.0}, "keep_fraction is 1.0"),
-            ({"keep_top_n": 10}, "keep_top_n is greater than or equal"),
-        ],
-        ids=["no_truncation", "keep_fraction_one", "keep_top_n_exceeds_terms"],
-    )
-    def test_exact_trotterization_no_cache_on_early_return(
-        self, mocker, simple_hamiltonian, strategy_kwargs, warn_match
-    ):
-        """Early-return paths do not use cache; the sort helper is never called."""
-        spy = mocker.spy(hamiltonians._trotterization, "_sort_hamiltonian_terms_spo")
-        strategy = ExactTrotterization(**strategy_kwargs)
-        for _ in range(2):
-            if warn_match is not None:
-                with pytest.warns(UserWarning, match=warn_match):
-                    strategy.process_hamiltonian(simple_hamiltonian)
-            else:
-                strategy.process_hamiltonian(simple_hamiltonian)
-        assert spy.call_count == 0
+        assert result1 is not result3
+        assert (
+            result1.effective_hamiltonian.simplify()
+            != result2.effective_hamiltonian.simplify()
+        )
+        assert (
+            result1.effective_hamiltonian.simplify()
+            == SparsePauliOp.from_list([("ZZ", 3.0)]).simplify()
+        )
+        assert (
+            result2.effective_hamiltonian.simplify()
+            == SparsePauliOp.from_list([("ZI", 5.0)]).simplify()
+        )
 
 
 class TestQDrift:
@@ -217,14 +176,14 @@ class TestQDrift:
             UserWarning, match="Neither keep_fraction, keep_top_n, nor sampling_budget"
         ):
             result = QDrift().process_hamiltonian(simple_hamiltonian)
-        assert result.simplify() == simple_hamiltonian.simplify()
+        assert result.effective_hamiltonian.simplify() == simple_hamiltonian.simplify()
 
     def test_sample_budget_only_returns_valid_hamiltonian(self, simple_hamiltonian):
         """When only sample_budget is set (no keep_*), result is a valid SPO with at least one term."""
         result = QDrift(sampling_budget=4, seed=42).process_hamiltonian(
             simple_hamiltonian
         )
-        assert result.size >= 1
+        assert result.effective_hamiltonian.size >= 1
 
     def test_seed_gives_reproducible_result(self, simple_hamiltonian):
         """Same seed yields identical first sample across fresh instances."""
@@ -232,7 +191,9 @@ class TestQDrift:
         s2 = QDrift(sampling_budget=5, seed=123, sampling_strategy="uniform")
         r1 = s1.process_hamiltonian(simple_hamiltonian)
         r2 = s2.process_hamiltonian(simple_hamiltonian)
-        assert r1.simplify() == r2.simplify()
+        assert (
+            r1.effective_hamiltonian.simplify() == r2.effective_hamiltonian.simplify()
+        )
 
     def test_with_keep_fraction_and_sample_budget(self, simple_hamiltonian):
         """QDrift with keep_fraction and sample_budget returns keep terms + sampled terms."""
@@ -240,7 +201,7 @@ class TestQDrift:
             keep_fraction=0.5, sampling_budget=3, seed=0, sampling_strategy="weighted"
         ).process_hamiltonian(simple_hamiltonian)
         # Kept terms (from 0.5 fraction) + 3 sampled from the rest
-        assert result.size >= 3
+        assert result.effective_hamiltonian.size >= 3
 
     def test_keep_fraction_one_and_sample_budget_warns_no_terms_to_sample(
         self, simple_hamiltonian
@@ -253,7 +214,7 @@ class TestQDrift:
         # ExactTrotterization may warn "keep_fraction is 1.0..."; QDrift warns "no terms left to sample"
         messages = [str(w.message) for w in record]
         assert any("no terms left to sample" in m for m in messages)
-        assert result.simplify() == simple_hamiltonian.simplify()
+        assert result.effective_hamiltonian.simplify() == simple_hamiltonian.simplify()
 
     def test_sample_budget_none_equivalent_to_exact_trotterization(
         self, simple_hamiltonian
@@ -264,33 +225,40 @@ class TestQDrift:
         exact = ExactTrotterization(keep_fraction=0.5)
         qdrift_result = qdrift.process_hamiltonian(simple_hamiltonian)
         exact_result = exact.process_hamiltonian(simple_hamiltonian)
-        assert qdrift_result.simplify() == exact_result.simplify()
+        assert (
+            qdrift_result.effective_hamiltonian.simplify()
+            == exact_result.effective_hamiltonian.simplify()
+        )
 
-    def test_qdrift_caches_keep_hamiltonian(self, mocker, simple_hamiltonian):
-        """Repeated process_hamiltonian with same Hamiltonian uses cache; truncation runs once."""
-        spy = mocker.spy(ExactTrotterization, "_truncate_spo")
+    def test_qdrift_has_no_mutable_call_state(self, simple_hamiltonian):
         strategy = QDrift(
             keep_fraction=0.5, sampling_budget=3, seed=42, sampling_strategy="weighted"
         )
-        strategy.process_hamiltonian(simple_hamiltonian)
-        strategy.process_hamiltonian(simple_hamiltonian)
-        assert spy.call_count == 1
+        first = strategy.process_hamiltonian(simple_hamiltonian)
+        second = strategy.process_hamiltonian(simple_hamiltonian)
+        assert first is not second
+        assert not hasattr(strategy, "_rng")
+        assert not hasattr(strategy, "_cache")
 
-    def test_keep_fraction_one_warns_only_on_first_call(self, simple_hamiltonian):
-        """'No terms left to sample' warning is emitted only on first call, not on cached calls."""
+    def test_keep_fraction_one_warns_on_each_stateless_call(self, simple_hamiltonian):
         strategy = QDrift(keep_fraction=1.0, sampling_budget=5, seed=0)
         with pytest.warns(UserWarning) as first_record:
             first_result = strategy.process_hamiltonian(simple_hamiltonian)
         first_messages = [str(w.message) for w in first_record]
         assert any("no terms left to sample" in m for m in first_messages)
-        assert first_result.simplify() == simple_hamiltonian.simplify()
+        assert (
+            first_result.effective_hamiltonian.simplify()
+            == simple_hamiltonian.simplify()
+        )
 
-        with warnings.catch_warnings(record=True) as second_record:
-            warnings.simplefilter("always")
+        with pytest.warns(UserWarning) as second_record:
             second_result = strategy.process_hamiltonian(simple_hamiltonian)
         second_messages = [str(w.message) for w in second_record]
-        assert not any("no terms left to sample" in m for m in second_messages)
-        assert second_result.simplify() == simple_hamiltonian.simplify()
+        assert any("no terms left to sample" in m for m in second_messages)
+        assert (
+            second_result.effective_hamiltonian.simplify()
+            == simple_hamiltonian.simplify()
+        )
 
     @pytest.mark.parametrize(
         "single_term_pl",
@@ -307,7 +275,7 @@ class TestQDrift:
             result = QDrift(
                 keep_top_n=1, sampling_budget=2, seed=42
             ).process_hamiltonian(single_term_spo)
-        assert result.simplify() == single_term_spo.simplify()
+        assert result.effective_hamiltonian.simplify() == single_term_spo.simplify()
 
     @pytest.mark.parametrize(
         "single_term_pl",
@@ -315,21 +283,28 @@ class TestQDrift:
         ids=["sprod", "bare_pauli"],
     )
     def test_single_term_hamiltonian_with_sampling_budget_only(self, single_term_pl):
-        """Single-term operators work with QDrift sampling_budget only; returns term unchanged."""
+        """Single-term sampling preserves replacement multiplicity explicitly."""
         single_term_spo = to_spo(single_term_pl)
         result = QDrift(sampling_budget=3, seed=42).process_hamiltonian(single_term_spo)
-        assert result.simplify() == single_term_spo.simplify()
+        assert result.effective_hamiltonian.simplify() == single_term_spo.simplify()
+        assert result.sampled_terms is not None
+        assert result.sampled_terms.size == 3
+        np.testing.assert_allclose(
+            result.sampled_terms.coeffs,
+            np.repeat(single_term_spo.coeffs / 3, 3),
+        )
+
+    @pytest.mark.parametrize("sampling_budget", [0, -1, 1.5])
+    def test_sampling_budget_must_be_positive_integer(self, sampling_budget):
+        with pytest.raises(ValueError, match="sampling_budget must be"):
+            QDrift(sampling_budget=sampling_budget)
 
     def test_empty_hamiltonian_warns_and_returns_kept(self):
         """Empty to_sample_hamiltonian (no terms) warns and returns empty Hamiltonian."""
         empty_spo = SparsePauliOp(["I"], coeffs=[0])[np.zeros(0, dtype=int)]
         with pytest.warns(UserWarning, match="No terms to sample"):
             result = QDrift(sampling_budget=3, seed=42).process_hamiltonian(empty_spo)
-        assert result.size == 0
-
-    def test_qdrift_stateful_is_true(self):
-        """QDrift reports stateful=True (caches intermediate results)."""
-        assert QDrift(sampling_budget=5, seed=0).stateful is True
+        assert result.effective_hamiltonian.size == 0
 
     def test_n_hamiltonians_per_iteration_less_than_one_raises(self):
         """n_hamiltonians_per_iteration must be >= 1."""
@@ -341,13 +316,49 @@ class TestQDrift:
     def test_rng_produces_different_samples_on_repeated_calls(self, simple_hamiltonian):
         """Instance RNG produces different Hamiltonian samples on repeated calls."""
         strategy = QDrift(sampling_budget=4, seed=42, sampling_strategy="uniform")
-        r0 = strategy.process_hamiltonian(simple_hamiltonian)
-        r1 = strategy.process_hamiltonian(simple_hamiltonian)
-        r2 = strategy.process_hamiltonian(simple_hamiltonian)
+        rng = np.random.default_rng(42)
+        r0 = strategy.process_hamiltonian(simple_hamiltonian, rng=rng)
+        r1 = strategy.process_hamiltonian(simple_hamiltonian, rng=rng)
+        r2 = strategy.process_hamiltonian(simple_hamiltonian, rng=rng)
         # With 3 terms and sample_budget=4, sampling with replacement can produce
         # different orderings; at least two of the three should differ
-        results = [r0.simplify(), r1.simplify(), r2.simplify()]
+        results = [
+            r0.effective_hamiltonian.simplify(),
+            r1.effective_hamiltonian.simplify(),
+            r2.effective_hamiltonian.simplify(),
+        ]
         assert not all(r == results[0] for r in results)
+
+    def test_process_hamiltonian_batch_draws_are_independent(self, simple_hamiltonian):
+        """A multi-sample batch advances the RNG between draws (it is not reset
+        per draw), so the n sampled Hamiltonians are not all identical."""
+        strategy = QDrift(sampling_budget=2, seed=42, n_hamiltonians_per_iteration=3)
+        results = strategy.process_hamiltonian_batch(simple_hamiltonian, n_samples=3)
+        sampled = [r.effective_hamiltonian.simplify() for r in results]
+        assert len(sampled) == 3
+        assert not all(s == sampled[0] for s in sampled)
+
+    def test_process_hamiltonian_batch_matches_per_sample_calls(
+        self, simple_hamiltonian
+    ):
+        """The batch path is identical to calling process_hamiltonian n times on
+        the same RNG (partition-once is an optimization, not a behavior change)."""
+        budget, n = 3, 4
+        batched = QDrift(
+            sampling_budget=budget, seed=7, n_hamiltonians_per_iteration=n
+        ).process_hamiltonian_batch(
+            simple_hamiltonian, n_samples=n, rng=np.random.default_rng(7)
+        )
+        loose_strategy = QDrift(sampling_budget=budget, seed=7)
+        loose_rng = np.random.default_rng(7)
+        per_sample = [
+            loose_strategy.process_hamiltonian(simple_hamiltonian, rng=loose_rng)
+            for _ in range(n)
+        ]
+        for b, p in zip(batched, per_sample):
+            assert (
+                b.effective_hamiltonian.simplify() == p.effective_hamiltonian.simplify()
+            )
 
     @pytest.mark.parametrize("strategy", ["uniform", "weighted"])
     def test_qdrift_expected_value_matches_input_hamiltonian(self, strategy):
@@ -362,7 +373,7 @@ class TestQDrift:
             sampled = (
                 QDrift(sampling_budget=budget, seed=seed, sampling_strategy=strategy)
                 .process_hamiltonian(spo)
-                .simplify()
+                .effective_hamiltonian.simplify()
             )
             label_to_coeff = dict(zip(sampled.paulis.to_labels(), sampled.coeffs.real))
             sum_coeffs[0] += label_to_coeff.get("X", 0.0)
@@ -389,34 +400,5 @@ class TestQDrift:
         result = QDrift(
             keep_top_n=3, sampling_budget=2, seed=0, sampling_strategy=strategy
         ).process_hamiltonian(spo)
-        assert result.size >= 1
-        assert result.num_qubits == 5
-
-    @pytest.mark.parametrize(
-        "strategy_factory",
-        [
-            lambda: ExactTrotterization(keep_top_n=2),
-            lambda: QDrift(
-                keep_fraction=0.5,
-                sampling_budget=2,
-                seed=0,
-                sampling_strategy="weighted",
-            ),
-        ],
-        ids=["exact", "qdrift"],
-    )
-    def test_strategy_cache_is_bounded_by_lru_maxsize(self, strategy_factory):
-        """Processing many distinct SPOs through the same strategy instance
-        must not let the cache grow without bound."""
-        strategy = strategy_factory()
-        n_distinct = 100
-        last_spo = None
-        for i in range(n_distinct):
-            last_spo = SparsePauliOp.from_list(
-                [("ZZ", float(i + 1)), ("IZ", float(i + 2)), ("ZI", float(i + 3))]
-            )
-            strategy.process_hamiltonian(last_spo)
-
-        assert len(strategy._cache) <= _STRATEGY_CACHE_MAXSIZE
-        # Most-recent SPO is still cached (LRU correctness).
-        assert id(last_spo) in strategy._cache
+        assert result.effective_hamiltonian.size >= 1
+        assert result.effective_hamiltonian.num_qubits == 5
