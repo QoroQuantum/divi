@@ -10,6 +10,7 @@ from ._conversions import (
     measurement_qasms_from_groups,
     qscript_to_meta,
 )
+from ._fidelity import build_overlap_meta
 from ._pennylane_utils import qnode_to_meta
 from ._qasm_template import (
     QASMTemplate,
@@ -27,6 +28,7 @@ __all__ = [
     "QASMTag",
     "QASMTemplate",
     "TemplateEntry",
+    "build_overlap_meta",
     "build_template",
     "dag_to_qasm_body",
     "measurement_qasms_from_groups",

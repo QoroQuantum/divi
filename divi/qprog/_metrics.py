@@ -14,7 +14,7 @@ which metric is in play.
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -25,15 +25,18 @@ from qiskit.circuit import Parameter, ParameterExpression
 from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.circuits import MetaCircuit
+from divi.circuits import MetaCircuit, build_overlap_meta
+from divi.pipeline import ResultFormat
 from divi.pipeline._compilation import _extract_param_set_idx
 from divi.pipeline.abc import ContractViolation
-from divi.pipeline.stages import DataBindingStage, MeasurementStage
+from divi.pipeline.stages import CircuitSpecStage, DataBindingStage, MeasurementStage
 
 if TYPE_CHECKING:
     from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 
-Evaluators = dict[str, Callable[[npt.NDArray[np.float64]], Any]]
+# Evaluator callables vary in arity: ``metric_fn``/``jac`` take the parameter
+# vector; ``fidelity_fn`` takes ``(theta, perturbations)``. Hence ``Callable[...]``.
+Evaluators = dict[str, Callable[..., Any]]
 
 
 def _run_metric(
@@ -63,6 +66,44 @@ def _run_metric(
     }
 
 
+def _run_overlap(
+    program: "VariationalQuantumAlgorithm",
+    meta_circuit: MetaCircuit,
+    param_sets: npt.NDArray[np.float64],
+) -> dict[int, float]:
+    """Run a compute-uncompute ``meta_circuit`` as a probability measurement,
+    returning ``{param_set_idx: P(all-zeros)}`` — the state-overlap fidelity.
+
+    The probs sibling of :func:`_run_metric`: it assembles the program's PROBS
+    measurement pipeline on demand (as :class:`SolutionSamplingMixin` does) and
+    reads the all-zeros bitstring probability per parameter row.
+    """
+    pipeline = program._assemble_pipeline(
+        CircuitSpecStage(),
+        MeasurementStage(),
+        result_format=ResultFormat.PROBS,
+    )
+    result = program._execute(
+        pipeline, meta_circuit, param_sets=np.atleast_2d(param_sets)
+    )
+    zeros = "0" * meta_circuit.n_qubits
+    return {
+        _extract_param_set_idx(key, default=0): _zeros_probability(value, zeros)
+        for key, value in result.items()
+    }
+
+
+def _zeros_probability(
+    value: dict[str, float] | Sequence[dict[str, float]], zeros: str
+) -> float:
+    """All-zeros probability from one distribution (or the mean of several)."""
+    if isinstance(value, dict):
+        return float(value.get(zeros, 0.0))
+    if not value:
+        return 0.0
+    return float(np.mean([probs.get(zeros, 0.0) for probs in value]))
+
+
 class MetricEstimator(ABC):
     """Strategy that produces natural-gradient evaluators for a program."""
 
@@ -77,9 +118,14 @@ class MetricEstimator(ABC):
     def bind(self, program: "VariationalQuantumAlgorithm") -> Evaluators:
         """Return the evaluators this metric provides, keyed by name.
 
-        Always includes ``"metric_fn"``. Estimators that also produce the loss
-        gradient as a by-product (e.g. the pullback metric) include ``"jac"``;
-        otherwise the gradient falls back to the program's parameter-shift rule.
+        Deterministic estimators (pullback, Fubini–Study) provide ``"metric_fn"``
+        — a pure function of the parameters returning the metric matrix — and the
+        pullback estimator additionally returns the loss gradient under ``"jac"``.
+        The stochastic-fidelity estimator instead provides ``"fidelity_fn"``: the
+        QN-SPSA optimizer builds its metric from finite differences of that
+        fidelity rather than from a closed-form matrix. The variational algorithm
+        forwards whichever keys appear to the optimizer; keys absent fall back to
+        the algorithm's parameter-shift defaults.
         """
         raise NotImplementedError
 
@@ -339,6 +385,64 @@ class FubiniStudyMetricEstimator(MetricEstimator):
             return np.mean(cohort_metrics, axis=0)
 
         return {"metric_fn": metric_fn}
+
+
+class StochasticFidelityMetricEstimator(MetricEstimator):
+    r"""Stochastic Fubini–Study metric via state-overlap fidelities (QN-SPSA).
+
+    Provides a ``"fidelity_fn"`` evaluator rather than a closed-form
+    ``"metric_fn"``: the QN-SPSA optimizer reconstructs the metric from finite
+    differences of the state fidelity
+    :math:`F(\theta_1,\theta_2)=|\langle\psi(\theta_1)|\psi(\theta_2)\rangle|^2`,
+    estimated as the all-zeros probability of the compute-uncompute circuit
+    :math:`U(\theta_1)\,U(\theta_2)^\dagger`. Like the Fubini–Study metric it is
+    the geometry of the ansatz state — independent of the *loss observable* — so
+    it applies to any qiskit-invertible ansatz. It is built from the cost-ansatz
+    realization captured at construction (``meta_circuit_factories["cost_circuit"]``)
+    and does not re-sample with a per-evaluation stochastic trotterization, so for
+    QDrift QAOA the metric is the geometry of that one fixed realization
+    (intentionally decoupled from the per-evaluation cost cohort) and stays
+    consistent across the run.
+    """
+
+    def check_compatible(self, program: "VariationalQuantumAlgorithm") -> None:
+        try:
+            build_overlap_meta(program.meta_circuit_factories["cost_circuit"])
+        except Exception as exc:
+            raise ContractViolation(
+                "The stochastic-fidelity metric requires an invertible ansatz "
+                "(qiskit QuantumCircuit.inverse()); this program's cost circuit "
+                "could not be inverted."
+            ) from exc
+        if any(isinstance(s, DataBindingStage) for s in program._cost_pipeline.stages):
+            raise ContractViolation(
+                "The stochastic-fidelity metric does not support data-bound "
+                "programs: the ansatz state depends on the data input, so the "
+                "fidelity is data-dependent. Use a non-metric optimizer."
+            )
+
+    def bind(self, program: "VariationalQuantumAlgorithm") -> Evaluators:
+        overlap_meta = build_overlap_meta(
+            program.meta_circuit_factories["cost_circuit"]
+        )
+
+        def fidelity_fn(
+            theta: npt.NDArray[np.float64],
+            perturbations: list[npt.NDArray[np.float64]],
+        ) -> npt.NDArray[np.float64]:
+            """Fidelities ``F(theta, theta + p)`` for each ``p`` in ``perturbations``,
+            measured in a single batched submission (one row per overlap point)."""
+            theta = np.asarray(theta, dtype=np.float64).reshape(-1)
+            rows = np.vstack(
+                [
+                    np.concatenate([theta, theta + np.asarray(p, dtype=np.float64)])
+                    for p in perturbations
+                ]
+            )
+            indexed = _run_overlap(program, overlap_meta, rows)
+            return np.array([indexed[i] for i in range(len(perturbations))])
+
+        return {"fidelity_fn": fidelity_fn}
 
 
 def _fs_blocks(

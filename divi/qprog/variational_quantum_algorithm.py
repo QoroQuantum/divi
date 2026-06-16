@@ -1117,8 +1117,13 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             max_iterations=self.max_iterations,
             rng=self._rng,
         )
-        if "metric_fn" in extra_evaluators:
-            optimize_kwargs["metric_fn"] = extra_evaluators["metric_fn"]
+        # Forward every extra evaluator the optimizer declared except ``jac``,
+        # which is already folded into ``grad_fn`` above. Each optimizer pops the
+        # keys it understands (e.g. ``metric_fn``, ``fidelity_fn``) and ignores
+        # the rest.
+        for key, evaluator in extra_evaluators.items():
+            if key != "jac":
+                optimize_kwargs[key] = evaluator
 
         with self._install_cancellation_handler():
             try:

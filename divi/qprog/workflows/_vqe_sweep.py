@@ -16,7 +16,7 @@ import numpy.typing as npt
 import pennylane as qp
 
 from divi.qprog import VQE, Ansatz, ProgramEnsemble
-from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer, copy_optimizer
+from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
 
 
 class _ZMatrixEntry(NamedTuple):
@@ -501,7 +501,7 @@ class VQEHyperparameterSweep(ProgramEnsemble):
                 molecule=molecule,
                 hamiltonian=hamiltonian,
                 ansatz=ansatz,
-                optimizer=copy_optimizer(self._optimizer_template),
+                optimizer=self._optimizer_template.copy(),
                 progress_queue=self._queue,
             )
 

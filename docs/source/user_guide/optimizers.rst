@@ -211,6 +211,138 @@ Use QNG when:
 - You are using the pullback metric and want gradient + metric from a
   single measurement pass.
 
+Simultaneous Perturbation (SPSA / QN-SPSA)
+------------------------------------------
+
+SPSA and its quantum-natural variant estimate their search direction from a
+*constant* number of cost evaluations per step, independent of the number of
+parameters. This makes them attractive for many-parameter, shot-noisy circuits
+where the parameter-shift rule — which scales with the parameter count — is
+prohibitively expensive.
+
+SPSA
+^^^^
+
+The :class:`~divi.qprog.optimizers.SPSAOptimizer` [#spall1992]_ approximates the
+gradient from just **two** cost evaluations per step by perturbing all
+parameters simultaneously along a random Bernoulli :math:`\pm 1` direction
+:math:`h`:
+
+.. math::
+
+   \hat g_k = \frac{f(\theta + c_k h) - f(\theta - c_k h)}{2 c_k}\, h,
+   \qquad \theta \leftarrow \theta - a_k \hat g_k,
+
+with decaying gains :math:`a_k = a/(A + k + 1)^\alpha` and
+:math:`c_k = c/(k + 1)^\gamma`. The two perturbed points are evaluated as a
+single batch, so a stochastic cost (e.g. a :class:`~divi.hamiltonians.QDrift`
+QAOA cost) scores both against the same sampled Hamiltonian. SPSA is
+gradient-free: it ignores any parameter-shift gradient the algorithm would
+otherwise compute.
+
+.. code-block:: python
+
+   from divi.qprog.optimizers import SPSAOptimizer
+
+   optimizer = SPSAOptimizer(learning_rate=0.2, c=0.2)
+
+A good starting point is to set ``c`` near the standard deviation of the cost's
+shot noise (so the finite difference clears the noise floor) and tune
+``learning_rate`` from there. ``resamplings`` averages several gradient samples
+per step to reduce variance (at proportional cost). The optional ``blocking``
+guard performs *look-ahead* blocking — it evaluates the candidate's loss and
+rejects the step if it would worsen the loss by more than ``blocking_tol`` times
+the std of the recent window, otherwise accepting it. This prevents a single bad
+estimate (or a divergent preconditioned step in QN-SPSA) from corrupting the run,
+at the cost of one extra evaluation per step (plus one to seed the baseline).
+``blocking_tol`` — not ``resamplings`` — is the knob that absorbs cost noise in
+that single-evaluation accept/reject decision.
+
+.. note::
+
+   When ``blocking`` is off and a run diverges (most likely QN-SPSA in high
+   dimensions), best-iterate tracking would otherwise return an early finite
+   iterate with no signal that the run blew up. The optimizers emit a one-time
+   ``UserWarning`` when the loss grows by more than 1000× its starting value —
+   if you see it, enable ``blocking``, raise ``regularization``, or lower
+   ``learning_rate``.
+
+.. note::
+
+   The perturbation directions are drawn from a random generator, so runs vary
+   by default. Pass ``rng=`` (a ``numpy.random.Generator``) for reproducibility.
+   The loss reported to the history is the average of the two perturbed
+   evaluations — a free but ``O(c_k²)``-biased estimate of ``f(θ)``; set
+   ``exact_loss=True`` to spend one extra unperturbed evaluation per step for the
+   exact value (used for the recorded loss and best-iterate selection). Note that
+   a ``QDrift(seed=...)`` seed fixes only the Hamiltonian sampling, not these
+   perturbation directions.
+
+QN-SPSA
+^^^^^^^
+
+The :class:`~divi.qprog.optimizers.QNSPSAOptimizer` [#gacon2021]_ combines the
+SPSA gradient with a metric-preconditioned update, so it follows the geometry of
+the state manifold like :class:`~divi.qprog.optimizers.QNGOptimizer` while
+keeping a constant per-step circuit budget. Like QNG, the metric backend is
+pluggable via the ``metric_estimator`` argument:
+
+- :class:`~divi.qprog.optimizers.StochasticFidelityMetricEstimator` *(default)* —
+  the faithful QN-SPSA metric, estimated from state-overlap fidelities
+  :math:`F(\theta_1, \theta_2) = |\langle\psi(\theta_1)|\psi(\theta_2)\rangle|^2`
+  (measured as the all-zeros probability of the compute-uncompute circuit
+  :math:`U(\theta_1)\,U(\theta_2)^\dagger`) using two random directions and four
+  overlap evaluations per step. The samples are accumulated into a running
+  average seeded at the identity, conditioned as :math:`|\bar g| + \beta I`, and
+  used to precondition the SPSA gradient. Because the overlap depends only on the
+  ansatz state — not the loss observable — it applies to any qiskit-invertible
+  ansatz, and rejects data-bound programs (and any ansatz qiskit cannot invert).
+  For QDrift QAOA the metric is built from the fixed cost-ansatz realization
+  captured at construction (it does not re-sample per evaluation), so it stays
+  consistent across the run.
+
+- :class:`~divi.qprog.optimizers.FubiniStudyMetricEstimator` or
+  :class:`~divi.qprog.optimizers.PullbackMetricEstimator` — use the estimator's
+  *exact* metric (as in QNG) while keeping the SPSA gradient. The metric cost
+  then scales with the parameter count rather than staying constant.
+
+.. code-block:: python
+
+   from divi.qprog.optimizers import QNSPSAOptimizer
+
+   # Faithful stochastic-fidelity metric (default)
+   optimizer = QNSPSAOptimizer(learning_rate=0.01, c=0.2, regularization=1e-3)
+
+   # Or reuse an exact metric with the SPSA gradient
+   from divi.qprog.optimizers import FubiniStudyMetricEstimator
+
+   optimizer = QNSPSAOptimizer(
+       metric_estimator=FubiniStudyMetricEstimator(),
+   )
+
+QN-SPSA preconditions the step by the (inverse) metric, so it typically uses a
+smaller raw ``learning_rate`` than plain SPSA. The constant per-step cost buys a
+*noisier* metric estimate than QNG's exact metric. In high dimensions this noisy,
+low-rank metric estimate can occasionally drive a divergent step; raise
+``resamplings`` (less metric noise), increase ``regularization``, or enable
+``blocking`` (which rejects such steps outright) if the optimization is unstable.
+
+.. note::
+
+   Like QNG, neither SPSA nor QN-SPSA supports checkpointing
+   (``supports_checkpointing`` is ``False``): their only persistent state is the
+   parameter vector, which the variational algorithm already records. The
+   per-step gains, blocking history, and running-average metric are recomputed
+   each run.
+
+Use SPSA / QN-SPSA when:
+
+- Your circuit has many parameters and parameter-shift gradients are too costly.
+- The cost is shot-noisy and you want a method designed around stochastic
+  evaluations.
+- *(QN-SPSA)* You want metric-aware updates at a constant per-step circuit cost,
+  trading the exact metric for a stochastic estimate.
+
 Grid Search
 -----------
 
@@ -260,6 +392,10 @@ Choosing the Right Optimizer
 - **QNG (pullback)**: Best when the landscape is smooth and you want faster per-iteration
   progress than L-BFGS-B at the cost of additional metric measurements; requires a
   Hamiltonian-expectation-value loss (not PCE)
+- **QN-SPSA**: Metric-aware updates like QNG but at a constant per-step circuit
+  cost; best for many-parameter circuits where exact gradients/metrics are too expensive
+- **SPSA**: Gradient-free with two evaluations per step; best for many-parameter,
+  shot-noisy circuits
 - **L-BFGS-B**: Best for smooth, differentiable landscapes with good initial parameters
 - **Monte Carlo**: Excellent for exploration and avoiding local minima
 - **COBYLA**: Good for constrained problems or when gradients are unreliable
@@ -270,6 +406,8 @@ Choosing the Right Optimizer
 - **Grid Search**: Best for 1–2 layer QAOA where you want full landscape visibility
 - **QNG (pullback)**: Accelerates convergence in simulator runs; requires a cost
   Hamiltonian expectation loss
+- **QN-SPSA / SPSA**: Best for deep, many-layer QAOA on shot-noisy backends, where
+  the constant per-step cost beats parameter-shift gradients
 - **COBYLA**: Often the best starting point for :class:`~divi.qprog.algorithms.QAOA` problems
 - **Nelder-Mead**: Good for noisy landscapes and parameter initialization
 - **Monte Carlo**: Excellent for global exploration and avoiding barren plateaus
@@ -432,3 +570,7 @@ References
 .. [#hansen2001] Hansen, N., & Ostermeier, A. (2001). Completely derandomized self-adaptation in evolution strategies. *Evolutionary Computation*, 9(2), 159–195.
 
 .. [#storn1997] Storn, R., & Price, K. (1997). Differential evolution – a simple and efficient heuristic for global optimization over continuous spaces. *Journal of Global Optimization*, 11(4), 341–359.
+
+.. [#spall1992] Spall, J. C. (1992). Multivariate stochastic approximation using a simultaneous perturbation gradient approximation. *IEEE Transactions on Automatic Control*, 37(3), 332–341.
+
+.. [#gacon2021] Gacon, J., Zoufal, C., Carleo, G., & Woerner, S. (2021). Simultaneous perturbation stochastic approximation of the quantum Fisher information. *Quantum*, 5, 567.

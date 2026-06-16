@@ -16,7 +16,6 @@ from divi.qprog.optimizers import (
     PymooOptimizer,
     ScipyMethod,
     ScipyOptimizer,
-    copy_optimizer,
 )
 from tests.qprog._optimizer_contracts import (
     verify_load_state_raises_file_not_found,
@@ -1055,7 +1054,7 @@ class TestScipyOptimizer:
 
 
 class TestCopyOptimizer:
-    """Direct unit tests for the copy_optimizer helper."""
+    """Direct unit tests for ``Optimizer.copy()``."""
 
     @pytest.fixture(autouse=True)
     def setup(self):
@@ -1074,7 +1073,7 @@ class TestCopyOptimizer:
         )
         assert optimizer._curr_population is not None
 
-        copied = copy_optimizer(optimizer)
+        copied = optimizer.copy()
 
         assert isinstance(copied, MonteCarloOptimizer)
         assert copied.population_size == optimizer.population_size
@@ -1094,7 +1093,7 @@ class TestCopyOptimizer:
         )
         assert optimizer._curr_algorithm_obj is not None
 
-        copied = copy_optimizer(optimizer)
+        copied = optimizer.copy()
 
         assert isinstance(copied, PymooOptimizer)
         assert copied.method == optimizer.method
@@ -1105,7 +1104,7 @@ class TestCopyOptimizer:
 
     def test_copy_scipy_returns_fresh_optimizer(self):
         optimizer = ScipyOptimizer(method=ScipyMethod.COBYLA)
-        copied = copy_optimizer(optimizer)
+        copied = optimizer.copy()
 
         assert isinstance(copied, ScipyOptimizer)
         assert copied.method == optimizer.method
@@ -1114,7 +1113,7 @@ class TestCopyOptimizer:
         optimizer = GridSearchOptimizer(param_ranges=[(-1, 1), (-1, 1)], grid_points=5)
         optimizer.optimize(sphere_cost_fn_population, np.zeros((25, 2)))
 
-        copied = copy_optimizer(optimizer)
+        copied = optimizer.copy()
         assert isinstance(copied, GridSearchOptimizer)
         assert copied.n_param_sets == 25
         assert copied._best_params is None  # fresh state

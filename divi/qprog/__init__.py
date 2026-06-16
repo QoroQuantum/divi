@@ -6,6 +6,7 @@ from ._metrics import (
     FubiniStudyMetricEstimator,
     MetricEstimator,
     PullbackMetricEstimator,
+    StochasticFidelityMetricEstimator,
 )
 from ._observable_measuring_mixin import ObservableMeasuringMixin
 from ._solution_sampling_mixin import SolutionEntry, SolutionSamplingMixin
@@ -46,8 +47,10 @@ from .optimizers import (
     GridSearchOptimizer,
     MonteCarloOptimizer,
     QNGOptimizer,
+    QNSPSAOptimizer,
     ScipyMethod,
     ScipyOptimizer,
+    SPSAOptimizer,
 )
 from .quantum_program import QuantumProgram
 from .variational_quantum_algorithm import (
