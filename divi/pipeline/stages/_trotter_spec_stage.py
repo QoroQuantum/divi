@@ -114,12 +114,12 @@ class TrotterSpecStage(SpecStage[SparsePauliOp]):
         """Transform Hamiltonian into a keyed batch of MetaCircuits (one per strategy output)."""
         spo_clean, strategy, n_samples, token = self._prepare(batch)
 
-        metas: MetaCircuitBatch = {}
         rng = self._rng_for_evaluation(strategy, env)
-        for ham_id in range(n_samples):
-            result = strategy.process_hamiltonian(spo_clean, rng=rng)
-            meta = self._meta_circuit_factory(result, ham_id)
-            metas[(("ham", ham_id),)] = meta
+        results = strategy.process_hamiltonian_batch(spo_clean, n_samples, rng=rng)
+        metas: MetaCircuitBatch = {
+            (("ham", ham_id),): self._meta_circuit_factory(result, ham_id)
+            for ham_id, result in enumerate(results)
+        }
 
         return StageOutput(batch=metas, token=token)
 

@@ -62,6 +62,23 @@ class TrotterizationStrategy(Protocol):
         """Return a trotterization result without retaining call state."""
         ...
 
+    def process_hamiltonian_batch(
+        self,
+        hamiltonian: SparsePauliOp,
+        n_samples: int,
+        *,
+        rng: np.random.Generator | None = None,
+    ) -> list[TrotterizationResult]:
+        """Return ``n_samples`` results from one Hamiltonian.
+
+        The default calls :meth:`process_hamiltonian` ``n_samples`` times;
+        strategies with expensive deterministic preprocessing (e.g. QDrift's
+        keep/sample split) override this to share that work across the batch.
+        """
+        return [
+            self.process_hamiltonian(hamiltonian, rng=rng) for _ in range(n_samples)
+        ]
+
 
 @dataclass(frozen=True)
 class ExactTrotterization(TrotterizationStrategy):
@@ -140,6 +157,17 @@ class ExactTrotterization(TrotterizationStrategy):
 
 
 @dataclass(frozen=True)
+class _QDriftSamplingPlan:
+    """Deterministic QDrift keep/sample split, reused across one batch's draws."""
+
+    to_sample_spo: SparsePauliOp
+    keep_spo: SparsePauliOp | None
+    absolute_coeffs: np.ndarray
+    coeff_sum: float
+    probs: np.ndarray | None
+
+
+@dataclass(frozen=True)
 class QDrift(TrotterizationStrategy):
     """``QDrift`` Trotterization strategy."""
 
@@ -210,6 +238,37 @@ class QDrift(TrotterizationStrategy):
         Rescaling rules (L = sampling_budget, λ = Σ\|c_i\|, N = #terms):
           - Weighted: term_i → (λ / (L · \|c_i\|)) · c_i · P_i
           - Uniform:  term_i → (N / L) · c_i · P_i
+        """
+        prepared = self._prepare(hamiltonian)
+        if isinstance(prepared, TrotterizationResult):
+            return prepared
+        if rng is None:
+            rng = np.random.default_rng(self.seed)
+        return self._draw(prepared, rng)
+
+    def process_hamiltonian_batch(
+        self,
+        hamiltonian: SparsePauliOp,
+        n_samples: int,
+        *,
+        rng: np.random.Generator | None = None,
+    ) -> list[TrotterizationResult]:
+        """Sample ``n_samples`` Hamiltonians, computing the deterministic
+        keep/sample split once and drawing only the random terms per sample."""
+        prepared = self._prepare(hamiltonian)
+        if isinstance(prepared, TrotterizationResult):
+            return [prepared] * n_samples
+        if rng is None:
+            rng = np.random.default_rng(self.seed)
+        return [self._draw(prepared, rng) for _ in range(n_samples)]
+
+    def _prepare(
+        self, hamiltonian: SparsePauliOp
+    ) -> "TrotterizationResult | _QDriftSamplingPlan":
+        """Deterministic part shared by every sample of one batch.
+
+        Returns a finished :class:`TrotterizationResult` for the cases needing
+        no random draw, otherwise a :class:`_QDriftSamplingPlan` for :meth:`_draw`.
         """
         if (
             self.keep_fraction is None
@@ -293,19 +352,35 @@ class QDrift(TrotterizationStrategy):
             probs /= probs.sum()
         else:
             probs = None
-        if rng is None:
-            rng = np.random.default_rng(self.seed)
+        return _QDriftSamplingPlan(
+            to_sample_spo=to_sample_spo,
+            keep_spo=keep_spo,
+            absolute_coeffs=absolute_coeffs,
+            coeff_sum=coeff_sum,
+            probs=probs,
+        )
+
+    def _draw(
+        self, plan: "_QDriftSamplingPlan", rng: np.random.Generator
+    ) -> TrotterizationResult:
+        """Draw one sampled Hamiltonian from a prepared plan (the random part)."""
+        # _prepare returns a finished result (never a plan) when sampling_budget
+        # is None, so reaching _draw guarantees it is set.
+        assert self.sampling_budget is not None
+        to_sample_spo = plan.to_sample_spo
         indices = rng.choice(
             to_sample_spo.size,
             size=self.sampling_budget,
             replace=True,
-            p=probs,
+            p=plan.probs,
         )
 
         # Rescale so that E[H_sampled] = H.
         if self.sampling_strategy == "weighted":
             # p_i = |c_i|/λ → scale by λ / (L · |c_i|).
-            scale = coeff_sum / (self.sampling_budget * absolute_coeffs[indices])
+            scale = plan.coeff_sum / (
+                self.sampling_budget * plan.absolute_coeffs[indices]
+            )
         else:
             # p_i = 1/N → scale by N/L.
             scale = np.full(
@@ -315,9 +390,9 @@ class QDrift(TrotterizationStrategy):
         sampled_coeffs = scale * to_sample_spo.coeffs[indices]
         sampled_spo = SparsePauliOp(to_sample_spo.paulis[indices], sampled_coeffs)
 
-        if keep_spo is not None:
-            faithful_spo = sampled_spo + keep_spo
-            effective = (sampled_spo + keep_spo).simplify()
+        if plan.keep_spo is not None:
+            faithful_spo = sampled_spo + plan.keep_spo
+            effective = (sampled_spo + plan.keep_spo).simplify()
         else:
             faithful_spo = sampled_spo
             effective = sampled_spo.simplify()
