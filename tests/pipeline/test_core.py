@@ -327,6 +327,27 @@ class TestCircuitPipelineRunForwardPass:
         )
         assert trace3.final_batch is not trace1.final_batch
 
+    def test_volatile_tail_triggers_partial_rerun(self, dummy_pipeline_env):
+        """A volatile stage at index > 0 (ParameterBindingStage) takes the
+        partial-rerun path: the cached spec/measurement prefix is reused and
+        only the volatile tail re-runs (``recompute_from_idx`` > 0)."""
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=two_group_meta()),
+                MeasurementStage(),
+                ParameterBindingStage(),
+            ]
+        )
+        env = PipelineEnv(backend=dummy_pipeline_env.backend, param_sets=[[]])
+
+        trace1 = pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        trace2 = pipeline.run_forward_pass(initial_spec="ignored", env=env)
+
+        # Spec prefix reused from cache (same object); a fresh trace is produced
+        # because the volatile parameter-binding tail re-ran.
+        assert trace2.initial_batch is trace1.initial_batch
+        assert trace2 is not trace1
+
 
 class TestCompileBatch:
     """Spec: _compile_batch lowers MetaCircuit batch to QASM labels and lineage."""

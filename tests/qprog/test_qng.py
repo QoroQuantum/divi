@@ -15,7 +15,6 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.hamiltonians import QDrift
 from divi.pipeline.abc import ContractViolation
-from divi.pipeline.stages import TrotterSpecStage
 from divi.qprog import PCE, QAOA, VQE, CustomVQA, FubiniStudyMetricEstimator
 from divi.qprog._metrics import (
     PullbackMetricEstimator,
@@ -385,8 +384,10 @@ def test_vqe_runs_under_fubini_study_qng(toy_vqe):
     assert len(toy_vqe.losses_history) >= 1
 
 
-def test_qaoa_qdrift_qng_reuses_cost_cohort(dummy_simulator, mocker):
-    """Cost, gradient, and metric share one QDrift cohort per QNG evaluation."""
+def test_qaoa_qdrift_qng_reuses_cost_cohort(dummy_simulator):
+    """The metric measures the SAME QDrift cohort as the cost within one
+    evaluation: ``_pipeline_source_batch`` (what the metric estimators call)
+    returns the cost pipeline's cached spec batch object, not a fresh resample."""
     qaoa = QAOA(
         MaxCutProblem(nx.bull_graph()),
         n_layers=1,
@@ -399,16 +400,27 @@ def test_qaoa_qdrift_qng_reuses_cost_cohort(dummy_simulator, mocker):
         max_iterations=1,
         backend=dummy_simulator,
     )
-    trotter_stage = next(
-        stage
-        for stage in qaoa._cost_pipeline.stages
-        if isinstance(stage, TrotterSpecStage)
+    env = qaoa._build_pipeline_env()
+    cost_trace = qaoa._cost_pipeline.run_forward_pass(qaoa.cost_hamiltonian, env)
+
+    sourced = qaoa._pipeline_source_batch("cost")
+
+    assert sourced is cost_trace.initial_batch
+
+
+def test_qaoa_qdrift_qng_runs_end_to_end(dummy_simulator):
+    """QNG + QDrift completes and produces a solution."""
+    qaoa = QAOA(
+        MaxCutProblem(nx.bull_graph()),
+        n_layers=1,
+        trotterization_strategy=QDrift(
+            sampling_budget=2, n_hamiltonians_per_iteration=3, seed=42
+        ),
+        optimizer=QNGOptimizer(),
+        max_iterations=1,
+        backend=dummy_simulator,
     )
-    expand_spy = mocker.spy(trotter_stage, "expand")
-
     qaoa.run()
-
-    assert expand_spy.call_count == 1
     assert qaoa.best_probs
 
 

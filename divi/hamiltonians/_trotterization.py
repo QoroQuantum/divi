@@ -9,6 +9,7 @@ from typing import Literal, Protocol
 from warnings import warn
 
 import numpy as np
+import numpy.typing as npt
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.hamiltonians._term_ops import (
@@ -21,13 +22,15 @@ from divi.hamiltonians._term_ops import (
 
 @dataclass(frozen=True)
 class TrotterizationResult:
-    """Explicit output of a trotterization decision."""
+    """Output of one trotterization step: the Hamiltonian to build the circuit
+    from, plus (for sampling strategies) the exact sequence of sampled terms."""
 
     effective_hamiltonian: SparsePauliOp
-    """Simplified Hamiltonian used for observable construction."""
+    """Simplified Hamiltonian the observable/circuit is built from."""
 
     sampled_terms: SparsePauliOp | None = None
-    """Faithful sampled sequence with replacement multiplicities preserved."""
+    """For sampling strategies such as QDrift, the drawn terms in order with
+    repeats kept (one entry per draw). ``None`` for deterministic strategies."""
 
 
 def _warn_truncation_no_op(
@@ -162,9 +165,9 @@ class _QDriftSamplingPlan:
 
     to_sample_spo: SparsePauliOp
     keep_spo: SparsePauliOp | None
-    absolute_coeffs: np.ndarray
+    absolute_coeffs: npt.NDArray[np.floating]
     coeff_sum: float
-    probs: np.ndarray | None
+    probs: npt.NDArray[np.floating] | None
 
 
 @dataclass(frozen=True)
@@ -239,12 +242,12 @@ class QDrift(TrotterizationStrategy):
           - Weighted: term_i → (λ / (L · \|c_i\|)) · c_i · P_i
           - Uniform:  term_i → (N / L) · c_i · P_i
         """
-        prepared = self._prepare(hamiltonian)
+        prepared = self._plan(hamiltonian)
         if isinstance(prepared, TrotterizationResult):
             return prepared
         if rng is None:
             rng = np.random.default_rng(self.seed)
-        return self._draw(prepared, rng)
+        return self._sample(prepared, rng)
 
     def process_hamiltonian_batch(
         self,
@@ -255,14 +258,14 @@ class QDrift(TrotterizationStrategy):
     ) -> list[TrotterizationResult]:
         """Sample ``n_samples`` Hamiltonians, computing the deterministic
         keep/sample split once and drawing only the random terms per sample."""
-        prepared = self._prepare(hamiltonian)
+        prepared = self._plan(hamiltonian)
         if isinstance(prepared, TrotterizationResult):
             return [prepared] * n_samples
         if rng is None:
             rng = np.random.default_rng(self.seed)
-        return [self._draw(prepared, rng) for _ in range(n_samples)]
+        return [self._sample(prepared, rng) for _ in range(n_samples)]
 
-    def _prepare(
+    def _plan(
         self, hamiltonian: SparsePauliOp
     ) -> "TrotterizationResult | _QDriftSamplingPlan":
         """Deterministic part shared by every sample of one batch.
@@ -360,13 +363,14 @@ class QDrift(TrotterizationStrategy):
             probs=probs,
         )
 
-    def _draw(
+    def _sample(
         self, plan: "_QDriftSamplingPlan", rng: np.random.Generator
     ) -> TrotterizationResult:
         """Draw one sampled Hamiltonian from a prepared plan (the random part)."""
-        # _prepare returns a finished result (never a plan) when sampling_budget
-        # is None, so reaching _draw guarantees it is set.
-        assert self.sampling_budget is not None
+        # _plan returns a finished result (never a plan) when sampling_budget
+        # is None, so reaching _sample guarantees it is set.
+        if self.sampling_budget is None:
+            raise RuntimeError("_sample requires sampling_budget; call _plan first.")
         to_sample_spo = plan.to_sample_spo
         indices = rng.choice(
             to_sample_spo.size,

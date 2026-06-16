@@ -329,6 +329,37 @@ class TestQDrift:
         ]
         assert not all(r == results[0] for r in results)
 
+    def test_process_hamiltonian_batch_draws_are_independent(self, simple_hamiltonian):
+        """A multi-sample batch advances the RNG between draws (it is not reset
+        per draw), so the n sampled Hamiltonians are not all identical."""
+        strategy = QDrift(sampling_budget=2, seed=42, n_hamiltonians_per_iteration=3)
+        results = strategy.process_hamiltonian_batch(simple_hamiltonian, n_samples=3)
+        sampled = [r.effective_hamiltonian.simplify() for r in results]
+        assert len(sampled) == 3
+        assert not all(s == sampled[0] for s in sampled)
+
+    def test_process_hamiltonian_batch_matches_per_sample_calls(
+        self, simple_hamiltonian
+    ):
+        """The batch path is identical to calling process_hamiltonian n times on
+        the same RNG (partition-once is an optimization, not a behavior change)."""
+        budget, n = 3, 4
+        batched = QDrift(
+            sampling_budget=budget, seed=7, n_hamiltonians_per_iteration=n
+        ).process_hamiltonian_batch(
+            simple_hamiltonian, n_samples=n, rng=np.random.default_rng(7)
+        )
+        loose_strategy = QDrift(sampling_budget=budget, seed=7)
+        loose_rng = np.random.default_rng(7)
+        per_sample = [
+            loose_strategy.process_hamiltonian(simple_hamiltonian, rng=loose_rng)
+            for _ in range(n)
+        ]
+        for b, p in zip(batched, per_sample):
+            assert (
+                b.effective_hamiltonian.simplify() == p.effective_hamiltonian.simplify()
+            )
+
     @pytest.mark.parametrize("strategy", ["uniform", "weighted"])
     def test_qdrift_expected_value_matches_input_hamiltonian(self, strategy):
         """E[L · sampled-row-product / channel] → H. Concretely: average the

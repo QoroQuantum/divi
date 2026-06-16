@@ -388,7 +388,7 @@ def _average_probabilities(
 ) -> dict[str, float]:
     """Average one or more probability distributions."""
     if isinstance(value, dict):
-        return value
+        return dict(value)
     if not value:
         return {}
     bitstrings = set().union(*(probs.keys() for probs in value))

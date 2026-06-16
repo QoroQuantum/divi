@@ -190,6 +190,28 @@ class TestProperties:
         assert deterministic.cache_key_extras(env) == ()
         assert stochastic.cache_key_extras(env) == (3,)
 
+    def test_unseeded_rng_is_stable_within_evaluation(self):
+        """Unseeded QDrift derives its RNG from (base_seed, evaluation_counter),
+        so repeated expansions in one evaluation draw the SAME cohort (cost and
+        metric agree) and advancing the counter resamples — without consuming the
+        shared, mutable env.rng."""
+        strategy = QDrift(sampling_budget=2, seed=None)
+        env = PipelineEnv(backend=None, base_seed=12345, evaluation_counter=3)
+
+        first = TrotterSpecStage._rng_for_evaluation(strategy, env).integers(
+            0, 10**6, 8
+        )
+        again = TrotterSpecStage._rng_for_evaluation(strategy, env).integers(
+            0, 10**6, 8
+        )
+        assert first.tolist() == again.tolist()
+
+        next_eval = PipelineEnv(backend=None, base_seed=12345, evaluation_counter=4)
+        advanced = TrotterSpecStage._rng_for_evaluation(strategy, next_eval).integers(
+            0, 10**6, 8
+        )
+        assert first.tolist() != advanced.tolist()
+
 
 def test_forward_pass_produces_ham_keyed_trace(dummy_expval_backend):
     """Forward pass produces a trace with ham-keyed MetaCircuits."""

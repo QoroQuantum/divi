@@ -187,6 +187,11 @@ class PipelineEnv:
     Stochastic spec stages (e.g. QDrift) seed deterministically from it so the
     cost and metric pipelines sample the same batch within one evaluation."""
 
+    base_seed: int | None = None
+    """Fixed per-program entropy for unseeded stochastic stages. Combined with
+    ``evaluation_counter`` it gives a stable-within-evaluation seed even when no
+    explicit strategy seed is set, so the cost and metric pipelines still agree."""
+
 
 class ContractViolation(ValueError):
     """Raised when a stage's positional requirements are not met."""

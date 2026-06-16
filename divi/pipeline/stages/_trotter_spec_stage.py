@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from typing import Any
 
 import numpy as np
@@ -43,7 +43,7 @@ class TrotterSpecStage(SpecStage[SparsePauliOp]):
     def axis_name(self) -> str:
         return "ham"
 
-    def cache_key_extras(self, env):
+    def cache_key_extras(self, env: PipelineEnv) -> tuple[Hashable, ...]:
         """Invalidate the forward-pass cache per evaluation for QDrift.
 
         QDrift re-samples a fresh batch each optimizer evaluation, seeded
@@ -156,12 +156,15 @@ class TrotterSpecStage(SpecStage[SparsePauliOp]):
         if not isinstance(strategy, QDrift):
             return None
         if strategy.seed is None:
-            if env.rng is None:
+            if env.base_seed is None:
                 return None
-            seed = int(env.rng.integers(0, 2**63))
-            return np.random.default_rng(seed)
-        if env.evaluation_counter == 0:
-            return np.random.default_rng(strategy.seed)
+            # Unseeded: derive from the fixed per-program base entropy keyed by
+            # the evaluation counter, so the cost and metric pipelines draw the
+            # same cohort within one evaluation (env.rng is shared/mutable and
+            # would diverge between passes).
+            return np.random.default_rng(
+                np.random.SeedSequence([env.base_seed, env.evaluation_counter])
+            )
         return np.random.default_rng(
             np.random.SeedSequence([strategy.seed, env.evaluation_counter])
         )

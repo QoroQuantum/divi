@@ -203,35 +203,42 @@ class TestQAOAQDriftMultiSample:
         assert ham_ids == {0, 1, 2}
 
     @pytest.mark.e2e
-    def test_multi_sample_qaoa_e2e_solution(self, default_test_simulator):
+    def test_multi_sample_qaoa_e2e_solution(self, default_test_simulator, mocker):
         """QAOA with multi-sample QDrift runs to completion and finds correct MAXCUT."""
         G = make_bull_graph()
         default_test_simulator.set_seed(1997)
 
+        # p=2 + COBYLA so the optimal cut tops the distribution despite unseeded shots.
         strategy = QDrift(
             keep_fraction=0.5,
             sampling_budget=6,
-            n_hamiltonians_per_iteration=2,
+            n_hamiltonians_per_iteration=5,
             seed=123,
         )
         qaoa = QAOA(
             MaxCutProblem(G),
-            n_layers=1,
+            n_layers=2,
             trotterization_strategy=strategy,
             max_iterations=20,
             backend=default_test_simulator,
-            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+            optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             seed=1997,
         )
+
+        # COBYLA may converge before max_iterations; pin the history length to the
+        # per-iteration callback count rather than the nominal cap.
+        iteration_spy = mocker.spy(qaoa.reporter, "update")
         qaoa.run()
 
         assert qaoa.total_circuit_count > 0
         assert qaoa.total_run_time >= 0
-        assert len(qaoa.losses_history) == 20
+        assert len(qaoa.losses_history) == iteration_spy.call_count
         assert qaoa.best_loss < float("inf")
 
-        # At least one of the top solutions achieves the optimal cut (more stable than single best)
-        max_cut_val, _ = nx.algorithms.approximation.maxcut.one_exchange(G)
+        # At least one of the top solutions achieves the optimal cut (more stable
+        # than single best). Seed one_exchange: unseeded it falls back to the
+        # global RNG, making max_cut_val depend on test ordering under -n auto.
+        max_cut_val, _ = nx.algorithms.approximation.maxcut.one_exchange(G, seed=1997)
 
         def cut_value(partition1):
             partition0 = set(G.nodes()) - set(partition1)

@@ -9,6 +9,8 @@ from threading import Event
 from typing import Any
 from warnings import warn
 
+import numpy as np
+
 from divi.backends import AsyncJobBackend, CircuitRunner
 from divi.backends._cancellation import _best_effort_cancel_job, _sigint_to_event
 from divi.circuits import DEFAULT_PRECISION
@@ -86,6 +88,14 @@ class QuantumProgram(ABC):
         self._current_execution_result = None
         self._cancellation_event = None
         self._evaluation_counter = 0
+        # Fixed seed for unseeded stochastic stages: the explicit ``seed`` when
+        # given, otherwise drawn once so it stays stable across a program's
+        # evaluations (random across separate programs/runs).
+        self._base_seed = (
+            self._seed
+            if self._seed is not None
+            else int(np.random.default_rng().integers(0, 2**63))
+        )
 
         # --- Progress Reporting ---
         self.program_id = program_id
@@ -300,6 +310,7 @@ class QuantumProgram(ABC):
             "reporter": self.reporter,
             "cancellation_event": self._cancellation_event,
             "evaluation_counter": self._evaluation_counter,
+            "base_seed": self._base_seed,
         }
         env_kwargs.update(overrides)  # caller-supplied values win
         return PipelineEnv(**env_kwargs)

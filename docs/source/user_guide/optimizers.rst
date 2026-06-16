@@ -189,6 +189,20 @@ To switch to the Fubini–Study metric, inject a different estimator:
    tight shot budgets, standard gradient-based optimizers may be more
    practical.
 
+.. note::
+
+   **QNG with QDrift.** When a QAOA program uses a stochastic
+   :class:`~divi.hamiltonians.QDrift` trotterization, the gradient and the
+   metric must be evaluated on the *same* sampled Hamiltonian — otherwise the
+   natural-gradient step mixes mismatched operators. Divi guarantees this: the
+   cost, gradient, and metric pipelines all draw the same QDrift batch within
+   one optimizer evaluation (the sample is keyed on an internal per-evaluation
+   counter) and resample on the next. The draw is reproducible from the
+   ``QDrift(seed=...)`` you provide; with no seed it is still consistent within
+   each evaluation but varies across runs. ``n_hamiltonians_per_iteration``
+   controls how many independent samples are averaged per evaluation — higher
+   values reduce variance at a proportional increase in circuits.
+
 Use QNG when:
 
 - You are running VQE, QAOA, or PCE on a simulator and want faster
