@@ -141,6 +141,18 @@ class _SPSAConfigMixin:
         """Number of parameter sets per step — always ``1`` (single-point)."""
         return 1
 
+    def _resolve_max_iterations(self, kwargs: dict[str, Any]) -> int:
+        """Pop ``max_iterations`` (default 50); reject values < 1."""
+        max_iterations = kwargs.pop("max_iterations", None)
+        if max_iterations is None:
+            return 50
+        if max_iterations < 1:
+            raise ValueError(
+                f"max_iterations must be >= 1, got {max_iterations}; "
+                "SPSA performs no evaluation with zero steps."
+            )
+        return max_iterations
+
     def _step_loss(
         self,
         cost_fn: Callable[[npt.NDArray[np.float64]], float | npt.NDArray[np.float64]],
@@ -330,14 +342,12 @@ class SPSAOptimizer(_SPSAConfigMixin, Optimizer):
             initial_params: Starting parameters (1D, or 2D with a single row).
             callback_fn: Called after each step with an ``OptimizeResult`` whose
                 ``x`` is 2D and ``fun`` is 1D. May raise ``StopIteration``.
-            **kwargs: ``max_iterations`` (default 50) and ``rng`` (the source of
-                the perturbation directions — pass it for reproducible runs).
+            **kwargs: ``max_iterations`` (default 50, must be >= 1) and ``rng``
+                (the perturbation directions — pass it for reproducible runs).
                 ``jac`` and ``metric_fn`` are accepted and ignored (SPSA is
                 gradient-free).
         """
-        max_iterations = kwargs.pop("max_iterations", None)
-        if max_iterations is None:  # preserve an explicit 0 (e.g. dry-run / resume)
-            max_iterations = 50
+        max_iterations = self._resolve_max_iterations(kwargs)
         rng = kwargs.pop("rng", None)
         if rng is None:
             rng = np.random.default_rng()
@@ -535,15 +545,13 @@ class QNSPSAOptimizer(_SPSAConfigMixin, Optimizer):
             initial_params: Starting parameters (1D, or 2D with a single row).
             callback_fn: Called after each step with an ``OptimizeResult`` whose
                 ``x`` is 2D and ``fun`` is 1D. May raise ``StopIteration``.
-            **kwargs: ``max_iterations`` (default 50), ``rng`` (the source of the
+            **kwargs: ``max_iterations`` (default 50, must be >= 1), ``rng`` (the
                 perturbation directions — pass it for reproducible runs), and
                 exactly one metric evaluator — ``fidelity_fn`` (stochastic, the
                 default) or ``metric_fn`` (an exact estimator). ``jac`` is accepted
                 and ignored (QN-SPSA's gradient is the SPSA estimate).
         """
-        max_iterations = kwargs.pop("max_iterations", None)
-        if max_iterations is None:  # preserve an explicit 0 (e.g. dry-run / resume)
-            max_iterations = 50
+        max_iterations = self._resolve_max_iterations(kwargs)
         rng = kwargs.pop("rng", None)
         if rng is None:
             rng = np.random.default_rng()

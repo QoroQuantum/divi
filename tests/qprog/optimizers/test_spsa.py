@@ -25,6 +25,7 @@ from divi.qprog import (
     FubiniStudyMetricEstimator,
     QNSPSAOptimizer,
     SPSAOptimizer,
+    _metrics,
 )
 from divi.qprog._metrics import StochasticFidelityMetricEstimator, _zeros_probability
 from divi.qprog.algorithms import GenericLayerAnsatz
@@ -426,6 +427,15 @@ def test_spsa_requires_initial_params():
         SPSAOptimizer().optimize(_sphere, initial_params=None, max_iterations=3)
 
 
+@pytest.mark.parametrize("factory", [SPSAOptimizer, QNSPSAOptimizer])
+def test_zero_iterations_raises(factory):
+    """Zero steps would return success with an infinite loss — reject it."""
+    with pytest.raises(ValueError, match="max_iterations must be >= 1"):
+        factory().optimize(
+            _sphere, initial_params=np.array([1.0, 1.0]), max_iterations=0
+        )
+
+
 @pytest.mark.parametrize(
     "kwargs, match",
     [
@@ -761,6 +771,62 @@ def test_qnspsa_fidelity_fn_returns_valid_overlaps(toy_vqe):
     overlaps = fidelity_fn(theta, [np.zeros(n_params), 0.4 * np.ones(n_params)])
     assert overlaps[0] == pytest.approx(1.0)  # U·U† = identity → P(0ⁿ) = 1 exactly
     assert 0.0 <= overlaps[1] <= 1.0
+
+
+def test_stochastic_fidelity_bind_does_not_advance_rng(toy_vqe):
+    """Binding probes a structural flag via the pipeline env; it must not draw
+    from the program RNG, which would shift QN-SPSA's seeded perturbations."""
+    before = toy_vqe._rng.bit_generator.state
+    StochasticFidelityMetricEstimator().bind(toy_vqe)
+    assert toy_vqe._rng.bit_generator.state == before
+
+
+@pytest.mark.e2e
+def test_stochastic_fidelity_caches_overlap_circuit(toy_vqe, mocker):
+    """A deterministic ansatz builds the overlap circuit once and reuses it
+    across fidelity evaluations, and the cached circuit stays correct."""
+    spy = mocker.spy(_metrics, "build_overlap_meta")
+    fidelity_fn = StochasticFidelityMetricEstimator().bind(toy_vqe)["fidelity_fn"]
+    n_params = toy_vqe.n_layers * toy_vqe.n_params_per_layer
+    theta = np.linspace(0.1, 1.0, n_params)
+
+    results = [
+        fidelity_fn(theta, [np.zeros(n_params), 0.2 * np.ones(n_params)])
+        for _ in range(3)
+    ]
+
+    assert spy.call_count == 1  # built once, then served from the cache
+    # Zero perturbation is U·U† = identity → P(0ⁿ) = 1 exactly, every call: the
+    # cached circuit is reused without being corrupted between evaluations.
+    for overlaps in results:
+        assert overlaps[0] == pytest.approx(1.0)
+
+
+@pytest.mark.e2e
+def test_stochastic_fidelity_rebuilds_overlap_for_qdrift(dummy_simulator, mocker):
+    """A stochastic (QDrift) ansatz bypasses the cache: the overlap circuit is
+    rebuilt every fidelity call, since each evaluation may resample."""
+    qaoa = QAOA(
+        MaxCutProblem(nx.bull_graph()),
+        n_layers=1,
+        trotterization_strategy=QDrift(
+            sampling_budget=2, n_hamiltonians_per_iteration=3, seed=42
+        ),
+        optimizer=QNSPSAOptimizer(learning_rate=0.1, c=0.15),
+        max_iterations=2,
+        backend=dummy_simulator,
+    )
+    fidelity_fn = StochasticFidelityMetricEstimator().bind(qaoa)["fidelity_fn"]
+    n_params = len(qaoa.meta_circuit_factories["cost_circuit"].parameters)
+    theta = np.linspace(0.1, 1.0, n_params)
+
+    spy = mocker.spy(_metrics, "build_overlap_meta")
+    fidelity_fn(theta, [np.zeros(n_params)])
+    after_first = spy.call_count
+    fidelity_fn(theta, [np.zeros(n_params)])
+
+    assert after_first >= 1
+    assert spy.call_count == 2 * after_first  # rebuilt each call, never cached
 
 
 @pytest.mark.e2e

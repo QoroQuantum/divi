@@ -66,6 +66,37 @@ def _run_metric(
     }
 
 
+#: Cap on distinct overlap circuits cached per fidelity evaluator. A fixed
+#: ansatz needs one entry; the cap only bounds pathological growth.
+_OVERLAP_CACHE_CAP = 128
+
+#: One gate's contribution to an ansatz fingerprint: name, qubit indices, params.
+_GateKey = tuple[str, tuple[int, ...], tuple[str, ...]]
+#: Full ansatz fingerprint: ordered parameter names plus the gate sequence.
+_AnsatzKey = tuple[tuple[str, ...], tuple[_GateKey, ...]]
+
+
+def _ansatz_fingerprint(meta: MetaCircuit) -> _AnsatzKey:
+    """Structural key for a cost ansatz body — the exact input to
+    ``build_overlap_meta`` — so a deterministic ansatz is built once and reused.
+
+    Keyed on parameter *names* (the spec stage may re-instantiate ``Parameter``
+    objects between evaluations, but names are stable) in their forward-binding
+    order, plus the per-gate name, qubit indices, and params.
+    """
+    _, dag = meta.circuit_bodies[0]
+    bit_index = {bit: i for i, bit in enumerate(dag.qubits)}
+    gates = tuple(
+        (
+            node.op.name,
+            tuple(bit_index[q] for q in node.qargs),
+            tuple(str(p) for p in node.op.params),
+        )
+        for node in dag.topological_op_nodes()
+    )
+    return tuple(str(p) for p in meta.parameters), gates
+
+
 def _run_overlap(
     program: "VariationalQuantumAlgorithm",
     meta_circuit: MetaCircuit,
@@ -421,17 +452,40 @@ class StochasticFidelityMetricEstimator(MetricEstimator):
             )
 
     def bind(self, program: "VariationalQuantumAlgorithm") -> Evaluators:
+        # Cache the overlap circuit only for a stable ansatz; a stage that
+        # re-samples per evaluation (e.g. QDrift) declares cache_key_extras.
+        # Pass empty param_sets so probing the flag does not draw initial
+        # parameters from the program RNG (it only reads structural env state).
+        spec_stage = program._cost_pipeline.stages[0]
+        env = program._build_pipeline_env(param_sets=np.empty((0, 0)))
+        deterministic = not spec_stage.cache_key_extras(env)
+        overlap_cache: dict[_AnsatzKey, MetaCircuit] | None = (
+            {} if deterministic else None
+        )
+
+        def _overlap_for(source_meta: MetaCircuit) -> MetaCircuit:
+            if overlap_cache is None:
+                return build_overlap_meta(source_meta)
+            key = _ansatz_fingerprint(source_meta)
+            overlap = overlap_cache.get(key)
+            if overlap is None:
+                if len(overlap_cache) >= _OVERLAP_CACHE_CAP:
+                    overlap_cache.clear()
+                overlap = build_overlap_meta(source_meta)
+                overlap_cache[key] = overlap
+            return overlap
+
         def fidelity_fn(
             theta: npt.NDArray[np.float64],
             perturbations: list[npt.NDArray[np.float64]],
         ) -> npt.NDArray[np.float64]:
             """Fidelities ``F(theta, theta + p)`` for each ``p`` in ``perturbations``.
 
-            The overlap circuit is rebuilt from each member of the current cost
-            source cohort (so it tracks the per-evaluation sampled Hamiltonians,
-            not a stale construction-time circuit) and the overlaps are averaged
-            across the cohort. Each cohort member runs one batched submission,
-            one row per overlap point.
+            The overlap circuit comes from each member of the current cost source
+            cohort (so it tracks the per-evaluation sampled Hamiltonians, not a
+            stale construction-time circuit) and the overlaps are averaged across
+            the cohort. Each cohort member runs one batched submission, one row
+            per overlap point.
             """
             theta = np.asarray(theta, dtype=np.float64).reshape(-1)
             rows = np.vstack(
@@ -441,7 +495,7 @@ class StochasticFidelityMetricEstimator(MetricEstimator):
                 ]
             )
             runs = [
-                _run_overlap(program, build_overlap_meta(source_meta), rows)
+                _run_overlap(program, _overlap_for(source_meta), rows)
                 for source_meta in _cost_source_metas(program)
             ]
             return np.array(
