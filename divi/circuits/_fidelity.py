@@ -40,7 +40,15 @@ def build_overlap_meta(cost_circuit: MetaCircuit) -> MetaCircuit:
     fwd_params = list(cost_circuit.parameters)
     n_qubits = forward.num_qubits
 
-    bwd_params = ParameterVector("phi", len(fwd_params))
+    # Backward block lives in its own namespace so the flat (*θ_fwd, *θ_bwd)
+    # binding is unambiguous. The name must not clash with any forward parameter
+    # name, or compose() sees two distinct parameters sharing a name and raises.
+    fwd_names = {p.name for p in fwd_params}
+    bwd_prefix = "theta_uncompute"
+    bwd_params = ParameterVector(bwd_prefix, len(fwd_params))
+    while not fwd_names.isdisjoint(p.name for p in bwd_params):
+        bwd_prefix += "_"
+        bwd_params = ParameterVector(bwd_prefix, len(fwd_params))
     backward = forward.assign_parameters(
         dict(zip(fwd_params, bwd_params)), inplace=False
     )

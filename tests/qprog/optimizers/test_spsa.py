@@ -10,7 +10,7 @@ import networkx as nx
 import numpy as np
 import pytest
 from qiskit import QuantumCircuit
-from qiskit.circuit import Parameter
+from qiskit.circuit import Parameter, ParameterVector
 from qiskit.circuit.library import RYGate, RZGate
 from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit.quantum_info import SparsePauliOp, Statevector
@@ -668,6 +668,23 @@ def test_build_overlap_meta_shape():
     assert len(overlap.parameters) == 2 * len(params)
     assert overlap.measured_wires == (0, 1)
     assert overlap.observable is None
+
+
+def test_build_overlap_meta_avoids_parameter_name_collision():
+    """An ansatz whose own parameters share the backward namespace must not
+    clash — compose() rejects two distinct params sharing a name."""
+    theta = ParameterVector("theta_uncompute", 2)
+    qc = QuantumCircuit(1)
+    qc.ry(theta[0], 0)
+    qc.rz(theta[1], 0)
+    cost = MetaCircuit(
+        circuit_bodies=(((), circuit_to_dag(qc)),), parameters=tuple(theta)
+    )
+
+    overlap = build_overlap_meta(cost)  # must not raise; backward prefix bumps
+
+    assert len(overlap.parameters) == 4
+    assert len({p.name for p in overlap.parameters}) == 4  # all names distinct
 
 
 def _overlap_p_zero(qc, overlap, theta_fwd, theta_bwd):
