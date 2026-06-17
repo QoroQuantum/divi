@@ -28,25 +28,20 @@ from divi.qprog import (
 )
 from divi.qprog._metrics import StochasticFidelityMetricEstimator, _zeros_probability
 from divi.qprog.algorithms import GenericLayerAnsatz
-from divi.qprog.optimizers import (
+from divi.qprog.optimizers._linalg import _matrix_abs_psd
+from divi.qprog.optimizers._spsa import (
     _fidelity_metric_sample,
-    _matrix_abs_psd,
     _spsa_gain_a,
     _spsa_gain_c,
     _spsa_gradient,
 )
 from divi.qprog.problems import MaxCutProblem
+from tests.qprog.optimizers._contracts import sphere_cost_fn_batch_aware as _sphere
 
 # --------------------------------------------------------------------------- #
 # Batch-aware test costs (the real cost_fn handles 2D batches; SPSA evaluates
 # its ± perturbations as a single two-row batch)
 # --------------------------------------------------------------------------- #
-
-
-def _sphere(params: np.ndarray) -> float | np.ndarray:
-    params = np.atleast_2d(params)
-    values = np.sum(params**2, axis=1)
-    return values if params.shape[0] > 1 else float(values[0])
 
 
 def _quadratic(matrix: np.ndarray):
@@ -329,6 +324,25 @@ def test_diverging_run_emits_warning():
         )
 
 
+def test_spsa_diverging_run_emits_warning():
+    """SPSA (no metric) warns once when a too-large step size makes a run diverge."""
+    d = 20
+    a_matrix = np.diag(np.linspace(1.0, 40.0, d))
+
+    def quad(x):
+        x = np.atleast_2d(x)
+        v = 0.5 * np.einsum("ij,jk,ik->i", x, a_matrix, x)
+        return v if x.shape[0] > 1 else float(v[0])
+
+    with pytest.warns(UserWarning, match="diverging"):
+        SPSAOptimizer(learning_rate=0.5, c=0.1).optimize(
+            quad,
+            initial_params=np.ones(d),
+            max_iterations=120,
+            rng=np.random.default_rng(0),
+        )
+
+
 def test_spsa_resamplings_averages_over_extra_samples():
     """resamplings=N issues N gradient batches per step (one cost_fn call each)."""
     calls = {"n": 0}
@@ -385,6 +399,28 @@ def test_spsa_exact_loss_records_unperturbed_value():
         assert fun == pytest.approx(_sphere(theta))  # exact, not the c²-biased proxy
 
 
+def test_spsa_exact_loss_is_noop_under_blocking():
+    """exact_loss adds no extra eval when blocking is on — blocking already
+    carries the true f(theta) as the next step's loss."""
+
+    def count_calls(exact_loss):
+        calls = {"n": 0}
+
+        def counting(params):
+            calls["n"] += 1
+            return _sphere(params)
+
+        SPSAOptimizer(blocking=True, exact_loss=exact_loss).optimize(
+            counting,
+            initial_params=np.array([1.0, 1.0]),
+            max_iterations=3,
+            rng=np.random.default_rng(0),
+        )
+        return calls["n"]
+
+    assert count_calls(exact_loss=True) == count_calls(exact_loss=False)
+
+
 def test_spsa_requires_initial_params():
     with pytest.raises(ValueError, match="requires initial_params"):
         SPSAOptimizer().optimize(_sphere, initial_params=None, max_iterations=3)
@@ -435,12 +471,25 @@ def test_spsa_reset_allows_reuse():
 
 
 def test_copy_preserves_spsa_config():
-    opt = SPSAOptimizer(learning_rate=0.05, c=0.3, blocking=True, resamplings=2)
+    opt = SPSAOptimizer(
+        learning_rate=0.05,
+        c=0.3,
+        alpha=0.7,
+        gamma=0.2,
+        A=5.0,
+        blocking=True,
+        blocking_tol=3.0,
+        resamplings=2,
+    )
     clone = opt.copy()
     assert isinstance(clone, SPSAOptimizer)
     assert clone.learning_rate == 0.05
     assert clone.c == 0.3
+    assert clone.alpha == 0.7
+    assert clone.gamma == 0.2
+    assert clone.A == 5.0
     assert clone.blocking is True
+    assert clone.blocking_tol == 3.0
     assert clone.resamplings == 2
 
 
@@ -538,6 +587,31 @@ def test_qnspsa_does_not_support_checkpointing(tmp_path):
         opt.save_state(tmp_path)
     with pytest.raises(NotImplementedError):
         QNSPSAOptimizer.load_state(tmp_path)
+
+
+def test_qnspsa_blocking_counts_cost_and_fidelity_evals():
+    """QN-SPSA + blocking: cost_fn = 1 seed + steps×(resamplings + 1 candidate);
+    fidelity_fn = steps×resamplings (the metric path, separate from cost_fn)."""
+    cost_calls = {"n": 0}
+    fid_calls = {"n": 0}
+
+    def counting_cost(params):
+        cost_calls["n"] += 1
+        return _sphere(params)
+
+    def counting_fid(theta, perts):
+        fid_calls["n"] += 1
+        return np.ones(len(perts))
+
+    QNSPSAOptimizer(blocking=True).optimize(
+        counting_cost,
+        initial_params=np.array([1.0, 1.0]),
+        max_iterations=3,
+        fidelity_fn=counting_fid,
+        rng=np.random.default_rng(0),
+    )
+    assert cost_calls["n"] == 1 + 3 * (1 + 1)  # seed + steps×(grad batch + candidate)
+    assert fid_calls["n"] == 3 * 1  # steps × resamplings
 
 
 def test_copy_preserves_qnspsa_config():
@@ -665,6 +739,7 @@ def test_qnspsa_rejects_data_bound_program(dummy_simulator):
         QNSPSAOptimizer().validate_program(program)
 
 
+@pytest.mark.e2e
 def test_vqe_runs_under_spsa(toy_vqe):
     toy_vqe.backend.set_seed(1997)
     toy_vqe.optimizer = SPSAOptimizer(learning_rate=0.2, c=0.1)
@@ -674,6 +749,7 @@ def test_vqe_runs_under_spsa(toy_vqe):
     assert np.isfinite(toy_vqe.best_loss)
 
 
+@pytest.mark.e2e
 def test_qnspsa_fidelity_fn_returns_valid_overlaps(toy_vqe):
     """The bound fidelity_fn runs the overlap pipeline on a real backend:
     identical params give overlap 1, perturbed params stay in [0, 1]."""
@@ -687,6 +763,7 @@ def test_qnspsa_fidelity_fn_returns_valid_overlaps(toy_vqe):
     assert 0.0 <= overlaps[1] <= 1.0
 
 
+@pytest.mark.e2e
 def test_vqe_runs_under_qnspsa_stochastic_fidelity(toy_vqe):
     toy_vqe.backend.set_seed(1997)
     toy_vqe.optimizer = QNSPSAOptimizer(learning_rate=0.1, c=0.15)
@@ -695,6 +772,7 @@ def test_vqe_runs_under_qnspsa_stochastic_fidelity(toy_vqe):
     assert len(toy_vqe.losses_history) == 5
 
 
+@pytest.mark.e2e
 def test_vqe_runs_under_qnspsa_exact_fubini_study(toy_vqe):
     toy_vqe.backend.set_seed(1997)
     toy_vqe.optimizer = QNSPSAOptimizer(
@@ -705,6 +783,7 @@ def test_vqe_runs_under_qnspsa_exact_fubini_study(toy_vqe):
     assert len(toy_vqe.losses_history) == 5
 
 
+@pytest.mark.e2e
 def test_qaoa_qdrift_qnspsa_runs_end_to_end(dummy_simulator):
     """QN-SPSA + QDrift completes: the fidelity metric is Hamiltonian-independent,
     so the sampled cohort does not affect the overlap measurement."""
@@ -722,6 +801,7 @@ def test_qaoa_qdrift_qnspsa_runs_end_to_end(dummy_simulator):
     assert qaoa.best_probs
 
 
+@pytest.mark.e2e
 def test_qaoa_qdrift_qnspsa_blocking_runs_end_to_end(dummy_simulator):
     """QN-SPSA + QDrift + blocking completes: each step's seed/candidate cost evals
     draw their own cohort (different from the gradient batch), so this exercises

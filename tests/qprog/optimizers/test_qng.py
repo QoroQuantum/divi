@@ -478,6 +478,7 @@ def test_pullback_metric_is_symmetric_psd_low_rank(toy_vqe):
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.e2e
 def test_qng_vqe_h2_converges(default_test_simulator):
     """QNG drives a HartreeFock-ansatz VQE to the H2 ground-state energy."""
     seed = 1997
