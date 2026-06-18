@@ -377,6 +377,12 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         """
         # --- Random Number Generation ---
         self._rng = np.random.default_rng(self._seed)
+        # The optimizer draws perturbations from an independent stream, spawned
+        # from the same seed lineage, so env/metric/QDrift draws on self._rng can
+        # never shift optimizer randomness (and vice versa). Reproducible under a
+        # fixed seed; a stochastic optimizer's stream differs once from when it
+        # shared self._rng.
+        self._optimizer_rng = self._rng.spawn(1)[0]
 
         # --- Optimizer Configuration ---
         self.optimizer = optimizer if optimizer is not None else MonteCarloOptimizer()
@@ -792,9 +798,19 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         return self._pipelines["cost"]
 
     def _build_pipeline_env(self, **overrides) -> PipelineEnv:
-        """Construct a PipelineEnv for the provided parameter sets."""
+        """Construct a PipelineEnv for the provided parameter sets.
+
+        When no ``param_sets`` override is given, defaults to a deterministic
+        zeros placeholder of the right shape — building an env must not draw from
+        the program RNG (callers that need real initial parameters draw them via
+        :meth:`_resolve_initial_param_sets`; spec-stage / dry-run paths never bind
+        these values).
+        """
         if "param_sets" not in overrides:
-            overrides["param_sets"] = self._initialize_param_sets()
+            total_params = self.n_layers * self.n_params_per_layer
+            overrides["param_sets"] = np.zeros(
+                (self.optimizer.n_param_sets, total_params)
+            )
         if "rng" not in overrides:
             overrides["rng"] = self._rng
         return super()._build_pipeline_env(**overrides)
@@ -1115,10 +1131,15 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             callback_fn=_iteration_counter,
             jac=grad_fn,
             max_iterations=self.max_iterations,
-            rng=self._rng,
+            rng=self._optimizer_rng,
         )
-        if "metric_fn" in extra_evaluators:
-            optimize_kwargs["metric_fn"] = extra_evaluators["metric_fn"]
+        # Forward every extra evaluator the optimizer declared except ``jac``,
+        # which is already folded into ``grad_fn`` above. Each optimizer pops the
+        # keys it understands (e.g. ``metric_fn``, ``fidelity_fn``) and ignores
+        # the rest.
+        for key, evaluator in extra_evaluators.items():
+            if key != "jac":
+                optimize_kwargs[key] = evaluator
 
         with self._install_cancellation_handler():
             try:
@@ -1159,7 +1180,9 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                 x = np.atleast_2d(self.optimize_result.x)
                 self._best_params = x[np.argmin(self.optimize_result.fun)].copy()
 
-        self._final_params = self.optimize_result.x
+        # Canonical 1-D best parameters (the optimizer result contract); the
+        # early-stop/cancel branches above carry a 2-D (1, n) best, so squeeze.
+        self._final_params = np.atleast_1d(np.asarray(self.optimize_result.x).squeeze())
 
         if perform_final_computation and isinstance(self, SolutionSamplingMixin):
             self.sample_solution(**kwargs)

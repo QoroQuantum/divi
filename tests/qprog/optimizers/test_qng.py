@@ -182,6 +182,18 @@ def test_qng_reports_no_checkpointing_support():
     assert QNGOptimizer().supports_checkpointing is False
 
 
+def test_qng_zero_iterations_raises():
+    """Zero steps would return success with an infinite loss — reject it."""
+    with pytest.raises(ValueError, match="max_iterations must be >= 1"):
+        QNGOptimizer().optimize(
+            lambda x: 0.0,
+            initial_params=np.zeros(2),
+            max_iterations=0,
+            jac=lambda x: np.zeros(2),
+            metric_fn=lambda x: np.eye(2),
+        )
+
+
 # --------------------------------------------------------------------------- #
 # Pullback metric: assembly + integration
 # --------------------------------------------------------------------------- #
@@ -478,6 +490,7 @@ def test_pullback_metric_is_symmetric_psd_low_rank(toy_vqe):
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.e2e
 def test_qng_vqe_h2_converges(default_test_simulator):
     """QNG drives a HartreeFock-ansatz VQE to the H2 ground-state energy."""
     seed = 1997

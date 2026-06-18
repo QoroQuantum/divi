@@ -18,7 +18,8 @@ uniform return type for decoded solutions.
    :skip: FeatureMap, AngleEmbedding, ZZFeatureMap
    :skip: InitialState, ZerosState, OnesState, SuperpositionState, CustomPerQubitState, WState
    :skip: ScipyOptimizer, ScipyMethod, MonteCarloOptimizer, GridSearchOptimizer
-   :skip: QNGOptimizer, MetricEstimator, PullbackMetricEstimator, FubiniStudyMetricEstimator
+   :skip: QNGOptimizer, SPSAOptimizer, QNSPSAOptimizer
+   :skip: MetricEstimator, PullbackMetricEstimator, FubiniStudyMetricEstimator, StochasticFidelityMetricEstimator
    :skip: MoleculeTransformer, PartitioningProgramEnsemble, TimeEvolutionTrajectory, VQEHyperparameterSweep
    :skip: ProgramEnsemble, BatchConfig, BatchMode, EarlyStopping
    :skip: ParamHistoryMode

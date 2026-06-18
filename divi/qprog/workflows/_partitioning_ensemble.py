@@ -11,7 +11,7 @@ from divi.backends import CircuitRunner
 from divi.qprog.aggregation import AggregationStrategy, BeamSearchStrategy
 from divi.qprog.algorithms import PCE, QAOA, IterativeQAOA
 from divi.qprog.ensemble import ProgramEnsemble
-from divi.qprog.optimizers import Optimizer, copy_optimizer
+from divi.qprog.optimizers import Optimizer
 from divi.qprog.problems import BinaryOptimizationProblem, QAOAProblem
 
 
@@ -81,7 +81,7 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
         """Return common kwargs for instantiating a sub-program."""
         return dict(
             program_id=prog_id,
-            optimizer=copy_optimizer(self._optimizer_template),
+            optimizer=self._optimizer_template.copy(),
             early_stopping=copy.deepcopy(self._early_stopping_template),
             progress_queue=self._queue,
         )

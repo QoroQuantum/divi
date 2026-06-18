@@ -6,22 +6,16 @@
 
 import pytest
 
-from divi.qprog import MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
-from divi.qprog.optimizers import PymooMethod, PymooOptimizer
+from tests.qprog.optimizers._contracts import (
+    CHECKPOINTING_VARIANT_IDS,
+    OPTIMIZER_VARIANTS,
+)
 
-_ALL_OPTIMIZERS = [
-    ("MonteCarlo", lambda: MonteCarloOptimizer(population_size=5, n_best_sets=2)),
-    ("L_BFGS_B", lambda: ScipyOptimizer(method=ScipyMethod.L_BFGS_B)),
-    ("COBYLA", lambda: ScipyOptimizer(method=ScipyMethod.COBYLA)),
-    ("NELDER_MEAD", lambda: ScipyOptimizer(method=ScipyMethod.NELDER_MEAD)),
-    ("CMAES", lambda: PymooOptimizer(method=PymooMethod.CMAES, population_size=10)),
-    ("DE", lambda: PymooOptimizer(method=PymooMethod.DE, population_size=5)),
-]
 # Subset that supports save/load checkpointing.
 _CHECKPOINTING_OPTIMIZERS = [
     (opt_id, factory)
-    for opt_id, factory in _ALL_OPTIMIZERS
-    if opt_id in {"MonteCarlo", "CMAES", "DE"}
+    for opt_id, factory in OPTIMIZER_VARIANTS
+    if opt_id in CHECKPOINTING_VARIANT_IDS
 ]
 
 
@@ -30,7 +24,7 @@ def _fixture_kwargs(variants):
     return {"params": list(factories), "ids": list(ids)}
 
 
-@pytest.fixture(**_fixture_kwargs(_ALL_OPTIMIZERS))
+@pytest.fixture(**_fixture_kwargs(OPTIMIZER_VARIANTS))
 def optimizer(request):
     """Parametrize over every supported optimizer variant. Returns a fresh instance."""
     return request.param()
