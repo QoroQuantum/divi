@@ -454,11 +454,8 @@ class StochasticFidelityMetricEstimator(MetricEstimator):
     def bind(self, program: "VariationalQuantumAlgorithm") -> Evaluators:
         # Cache the overlap circuit only for a stable ansatz; a stage that
         # re-samples per evaluation (e.g. QDrift) declares cache_key_extras.
-        # Pass empty param_sets so probing the flag does not draw initial
-        # parameters from the program RNG (it only reads structural env state).
         spec_stage = program._cost_pipeline.stages[0]
-        env = program._build_pipeline_env(param_sets=np.empty((0, 0)))
-        deterministic = not spec_stage.cache_key_extras(env)
+        deterministic = not spec_stage.cache_key_extras(program._build_pipeline_env())
         overlap_cache: dict[_AnsatzKey, MetaCircuit] | None = (
             {} if deterministic else None
         )

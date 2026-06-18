@@ -141,18 +141,6 @@ class _SPSAConfigMixin:
         """Number of parameter sets per step — always ``1`` (single-point)."""
         return 1
 
-    def _resolve_max_iterations(self, kwargs: dict[str, Any]) -> int:
-        """Pop ``max_iterations`` (default 50); reject values < 1."""
-        max_iterations = kwargs.pop("max_iterations", None)
-        if max_iterations is None:
-            return 50
-        if max_iterations < 1:
-            raise ValueError(
-                f"max_iterations must be >= 1, got {max_iterations}; "
-                "SPSA performs no evaluation with zero steps."
-            )
-        return max_iterations
-
     def _step_loss(
         self,
         cost_fn: Callable[[npt.NDArray[np.float64]], float | npt.NDArray[np.float64]],
@@ -416,6 +404,14 @@ class SPSAOptimizer(_SPSAConfigMixin, Optimizer):
             else:
                 theta = proposed
 
+        # A step accepted on the final iteration carries its measured loss in
+        # current_loss but was not yet best-tracked (that runs at the top of the
+        # loop), so fold it in — otherwise a one-step accepted run returns the
+        # stale starting point.
+        if self.blocking and current_loss < best_fun:
+            best_fun = current_loss
+            best_x = theta.copy()
+
         return OptimizeResult(
             x=best_x,
             fun=np.atleast_1d(best_fun),
@@ -655,6 +651,14 @@ class QNSPSAOptimizer(_SPSAConfigMixin, Optimizer):
                 )
             else:
                 theta = proposed
+
+        # A step accepted on the final iteration carries its measured loss in
+        # current_loss but was not yet best-tracked (that runs at the top of the
+        # loop), so fold it in — otherwise a one-step accepted run returns the
+        # stale starting point.
+        if self.blocking and current_loss < best_fun:
+            best_fun = current_loss
+            best_x = theta.copy()
 
         return OptimizeResult(
             x=best_x,

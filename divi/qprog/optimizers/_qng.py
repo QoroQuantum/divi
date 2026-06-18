@@ -186,9 +186,7 @@ class QNGOptimizer(Optimizer):
         Returns:
             OptimizeResult: Best evaluated iterate over the run.
         """
-        max_iterations = kwargs.pop("max_iterations", None)
-        if max_iterations is None:  # preserve an explicit 0 (e.g. dry-run / resume)
-            max_iterations = 50
+        max_iterations = self._resolve_max_iterations(kwargs)
         jac = kwargs.pop("jac", None)
         metric_fn = kwargs.pop("metric_fn", None)
         kwargs.pop("rng", None)  # QNG is deterministic; ignore any provided RNG.

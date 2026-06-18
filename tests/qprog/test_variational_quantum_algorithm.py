@@ -303,6 +303,27 @@ class TestProgram:
         env = program._build_pipeline_env(param_sets=np.zeros((1, 4)))
         assert env.rng is program._rng
 
+    def test_build_pipeline_env_does_not_consume_rng(self, mocker):
+        """Building an env is pure: with no param_sets it uses deterministic zeros,
+        never an RNG draw, so it cannot shift the program or optimizer streams."""
+        program = self._create_sample_program(mocker)
+        rng_before = program._rng.bit_generator.state
+        opt_before = program._optimizer_rng.bit_generator.state
+
+        program._build_pipeline_env()  # no param_sets -> zeros placeholder
+
+        assert program._rng.bit_generator.state == rng_before
+        assert program._optimizer_rng.bit_generator.state == opt_before
+
+    def test_optimizer_rng_is_isolated_from_program_rng(self, mocker):
+        """The optimizer stream is spawned independently from the program RNG."""
+        program = self._create_sample_program(mocker)
+        assert program._optimizer_rng is not program._rng
+        assert (
+            program._optimizer_rng.bit_generator.state
+            != program._rng.bit_generator.state
+        )
+
     def test_evaluate_cost_param_sets_uses_initial_spec_hook(self, mocker):
         """Cost evaluation should delegate to the registered initial-spec factory."""
         program = self._create_sample_program(mocker)
@@ -554,7 +575,7 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         # Assertions
         assert program.best_loss == -0.9
         np.testing.assert_allclose(program.best_params, curr_params3.flatten())
-        np.testing.assert_allclose(program.final_params, curr_params3)
+        np.testing.assert_allclose(program.final_params, curr_params3.flatten())
         assert len(program.losses_history) == 3
         assert program.losses_history[0]["0"] == -0.8
         assert program.losses_history[2]["0"] == -0.9

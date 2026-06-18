@@ -260,6 +260,22 @@ def test_spsa_blocking_still_converges():
     assert result.fun[0] < 0.1
 
 
+def test_spsa_blocking_records_final_accepted_step():
+    """A step accepted on the final iteration is returned as best, not the stale
+    starting point. With this asymmetric start every Bernoulli direction yields
+    an improving one-step move, so the single accepted step must be reflected."""
+    start = np.array([1.0, 0.3])
+    opt = SPSAOptimizer(learning_rate=0.5, c=0.1, blocking=True)
+    result = opt.optimize(
+        _sphere,
+        initial_params=start,
+        max_iterations=1,
+        rng=np.random.default_rng(0),
+    )
+    assert result.fun[0] < _sphere(start)
+    assert not np.allclose(result.x, start)
+
+
 def test_blocking_prevents_divergence():
     """Look-ahead blocking keeps a would-be-divergent run bounded.
 
