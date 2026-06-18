@@ -1111,6 +1111,9 @@ class TestQoroServiceValidationHtmlE2E:
             except Exception:
                 pass
 
+    @pytest.mark.xfail(
+        reason="Composer Service 500: target_states is empty", strict=False
+    )
     def test_completed_job_full_shape(self, completed_validation_job):
         """Every user-facing field on a sweep+sensitivity result is the right
         shape and contains the keys downstream code reads.
@@ -1260,6 +1263,9 @@ class TestQoroServiceValidationHtmlE2E:
         assert isinstance(refetched.html, str)
         assert 'class="qvr-root"' in refetched.html
 
+    @pytest.mark.xfail(
+        reason="Composer Service 500: target_states is empty", strict=False
+    )
     def test_hardness_only_mode_returns_valid_report(self, hardness_only_job):
         """``target_states=[]`` with no sweep / sensitivity still completes.
 

@@ -17,7 +17,7 @@ jobs:
 
       - uses: ./.github/actions/setup-divi
         with:
-          python-version: "3.12"
+          python-version: "3.13"
           sync-args: --group dev
 
       - name: Cache pre-commit hooks

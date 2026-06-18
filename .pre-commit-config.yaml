@@ -18,10 +18,10 @@ repos:
       - id: trailing-whitespace
 
 -   repo: https://github.com/psf/black
-    rev: 26.3.1
+    rev: 26.5.1
     hooks:
       - id: black
-        language_version: python3
+        language_version: python3.13
 
 -   repo: https://github.com/pycqa/isort
     rev: 8.0.1
@@ -69,7 +69,7 @@ repos:
         args: []
 
 -   repo: https://github.com/facebook/pyrefly-pre-commit
-    rev: 0.62.0
+    rev: 1.1.0
     hooks:
       - id: pyrefly-check
         name: pyrefly type check

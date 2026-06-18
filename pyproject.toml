@@ -123,8 +123,12 @@ artifacts = ["divi/ai/_data/*"]
 [tool.hatch.build.targets.sdist]
 artifacts = ["divi/ai/_data/*"]
 
+[tool.black]
+target-version = ["py313"]
+
 [tool.isort]
 profile = "black"
+py_version = "313"
 skip_glob = ["**/__init__.py"]
 
 [tool.commitizen]
