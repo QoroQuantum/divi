@@ -303,12 +303,144 @@ def _counting_sphere():
 
 
 def test_cost_fn_supports_variance_detection():
-    """Capability sniffing: ``**kwargs`` or an explicit ``return_variance``
-    parameter counts as supporting the variance channel; a plain callable
-    does not."""
-    assert _cost_fn_supports_variance(lambda x, **kwargs: x)
-    assert _cost_fn_supports_variance(lambda x, return_variance=False: x)
+    """Variance capability is declared by the producer via a ``supports_variance``
+    attribute, not inferred from the signature — so a flagged callable is
+    variance-capable while any unflagged callable, whatever its signature shape,
+    is not (no fragile signature sniffing)."""
+
+    def declared(params, *, shots=None, return_variance=False):
+        return params
+
+    setattr(declared, "supports_variance", True)
+    assert _cost_fn_supports_variance(declared)
+
+    # No flag → not variance-capable, regardless of signature.
+    assert not _cost_fn_supports_variance(
+        lambda x, shots=None, return_variance=False: x
+    )
+    assert not _cost_fn_supports_variance(lambda x, **kwargs: x)
     assert not _cost_fn_supports_variance(lambda x: x)
+
+
+def test_quiver_falls_back_for_partial_variance_signatures():
+    """A loss-only callable that merely happens to accept ``**kwargs`` or
+    ``return_variance`` must run via the plain (variance-free) path rather than
+    crashing on the ``shots`` keyword or a bad unpack."""
+    partial_callables = [
+        lambda p: _sphere(p),
+        lambda p, **kw: _sphere(p),
+        lambda p, return_variance=False: _sphere(p),
+    ]
+    for fn in partial_callables:
+        result = QUIVEROptimizer(V_init=2).optimize(
+            fn,
+            initial_params=np.array([1.0, 1.0]),
+            max_iterations=5,
+            rng=np.random.default_rng(0),
+        )
+        assert np.isfinite(result.fun[0])
+
+
+def test_quiver_parameter_shift_uses_half_prefactor():
+    """parameter_shift mode must recover the true parameter-shift gradient
+    (½·(f₊−f₋)), not the 2/π-scaled finite-difference value. On the sinusoidal
+    cost f(θ)=−cos(θ) (a stand-in for a real PQC, unlike the quadratic sphere
+    where ÷2ε is coincidentally exact) the analytic gradient is sin(θ); the
+    first step must move by learning_rate·sin(θ₀)."""
+
+    def cost(params):  # batch-aware: (k, 1) -> (k,)
+        return -np.cos(np.atleast_2d(params)).sum(axis=1)
+
+    theta0 = np.array([1.0])
+    captured = []
+    QUIVEROptimizer(
+        learning_rate=0.5,
+        V_init=1,
+        adapt_V=False,
+        adapt_M=False,
+        derivative_mode="parameter_shift",
+    ).optimize(
+        cost,
+        initial_params=theta0,
+        max_iterations=2,
+        callback_fn=lambda r: captured.append(np.atleast_1d(r.x.squeeze()).copy()),
+        rng=np.random.default_rng(0),
+    )
+    # Callback fires before each step; captured[1] is θ after the first step.
+    ghat = (theta0 - captured[1]) / 0.5
+    np.testing.assert_allclose(ghat, np.sin(theta0), atol=1e-6)
+
+
+def test_quiver_exact_loss_records_final_step():
+    """With exact_loss and no blocking, a final step that lowers the exact loss is
+    returned as best — not the stale start (best-tracking otherwise runs only
+    before each step)."""
+    start = np.array([1.0, 0.3])
+    result = QUIVEROptimizer(
+        learning_rate=0.5, epsilon=0.1, V_init=2, adapt_V=False, exact_loss=True
+    ).optimize(
+        _sphere,
+        initial_params=start,
+        max_iterations=1,
+        rng=np.random.default_rng(0),
+    )
+    assert result.fun[0] < _sphere(start)
+    assert not np.allclose(result.x, start)
+
+
+def test_quiver_clear_error_for_non_batch_aware_cost_fn():
+    """A cost fn that collapses the two-row perturbation batch to a single value
+    raises a clear error instead of a cryptic IndexError (shared SPSA path)."""
+
+    def not_batch_aware(params):
+        return float(np.sum(params**2))
+
+    with pytest.raises(ValueError, match="one value per batch row"):
+        QUIVEROptimizer(V_init=2).optimize(
+            not_batch_aware,
+            initial_params=np.array([1.0, 1.0]),
+            max_iterations=2,
+            rng=np.random.default_rng(0),
+        )
+
+
+def test_quiver_rejects_multistart_initial_params():
+    """Single-point optimizer: a multi-row (m, n) array is rejected with a clear
+    error rather than silently flattened or crashing on a broadcast mismatch."""
+    with pytest.raises(ValueError, match="single-point optimizer"):
+        QUIVEROptimizer(V_init=2).optimize(
+            _sphere,
+            initial_params=np.zeros((3, 2)),
+            max_iterations=2,
+            rng=np.random.default_rng(0),
+        )
+
+
+def test_quiver_accepts_single_row_2d_initial_params():
+    """A (1, n) array is accepted and returns a 1-D parameter vector."""
+    result = QUIVEROptimizer(V_init=2).optimize(
+        _sphere,
+        initial_params=np.array([[1.0, -0.5]]),
+        max_iterations=3,
+        rng=np.random.default_rng(0),
+    )
+    assert result.x.shape == (2,)
+
+
+def test_quiver_blocking_records_final_accepted_step():
+    """A step accepted on the final blocking iteration is returned as best, not
+    the stale starting point (mirrors the SPSA guard)."""
+    start = np.array([1.0, 0.3])
+    result = QUIVEROptimizer(
+        learning_rate=0.5, epsilon=0.1, V_init=2, adapt_V=False, blocking=True
+    ).optimize(
+        _sphere,
+        initial_params=start,
+        max_iterations=1,
+        rng=np.random.default_rng(0),
+    )
+    assert result.fun[0] < _sphere(start)
+    assert not np.allclose(result.x, start)
 
 
 def test_quiver_adapt_v_changes_evaluation_count():
@@ -363,8 +495,9 @@ def test_quiver_blocking_converges_on_sphere():
 
 
 def test_quiver_exact_loss_spends_one_extra_evaluation_per_step():
-    """``exact_loss`` adds one unperturbed cost call per step on top of the
-    ``V`` perturbation calls (V fixed at 2, adaptation off)."""
+    """``exact_loss`` adds one unperturbed cost call per step on top of the ``V``
+    perturbation calls, plus a single final-iterate evaluation after the loop
+    (so best-tracking covers the last step). V fixed at 2, adaptation off."""
     calls_base, fn_base = _counting_sphere()
     QUIVEROptimizer(V_init=2, adapt_V=False, adapt_M=False, exact_loss=False).optimize(
         fn_base,
@@ -380,7 +513,8 @@ def test_quiver_exact_loss_spends_one_extra_evaluation_per_step():
         rng=np.random.default_rng(0),
     )
     assert calls_base["n"] == 2 * 5
-    assert calls_exact["n"] == calls_base["n"] + 5
+    # 5 per-step unperturbed evals + 1 final-iterate eval.
+    assert calls_exact["n"] == calls_base["n"] + 5 + 1
 
 
 def test_quiver_adapt_m_updates_shot_budget_to_backend():

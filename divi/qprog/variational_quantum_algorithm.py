@@ -1081,6 +1081,10 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             variances = variances if params.ndim > 1 else variances.item()
             return losses, variances
 
+        # Advertise the shot-variance channel so variance-aware optimizers (e.g.
+        # QUIVER) can use it without sniffing this closure's signature.
+        setattr(cost_fn, "supports_variance", True)
+
         self._grad_shift_mask = _compute_parameter_shift_mask(
             self.n_layers * self.n_params_per_layer
         )

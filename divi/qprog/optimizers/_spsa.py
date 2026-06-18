@@ -2,7 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import inspect
 import warnings
 from collections import deque
 from collections.abc import Callable
@@ -63,6 +62,12 @@ def _spsa_gradient(
     )
     batch = np.vstack([theta + c_k * h, theta - c_k * h])
     values = np.asarray(cost_fn(batch), dtype=np.float64).reshape(-1)
+    if values.size < 2:
+        raise ValueError(
+            "cost_fn must return one value per batch row; the two-row "
+            f"perturbation batch produced {values.size} value(s). Ensure the cost "
+            "function is batch-aware (returns a 1-D array for a 2-D input)."
+        )
     f_plus, f_minus = float(values[0]), float(values[1])
     ghat = (f_plus - f_minus) / (2.0 * c_k) * h
     return ghat, h, f_plus, f_minus
@@ -671,19 +676,16 @@ class QNSPSAOptimizer(_SPSAConfigMixin, Optimizer):
 
 
 def _cost_fn_supports_variance(cost_fn: Callable) -> bool:
-    """Whether ``cost_fn`` accepts the ``shots``/``return_variance`` kwargs.
+    """Whether ``cost_fn`` exposes the shot-variance channel.
 
-    The variational algorithm's cost closure does (so QUIVER can drive adaptive
-    shot budgets and read back measurement variance); a plain callable passed by
-    a direct ``optimize`` call does not, and QUIVER degrades gracefully.
+    Capability is *declared by the producer*, not inferred from the signature: a
+    producer that supports the variance channel sets ``supports_variance = True``
+    on its callable (the variational algorithm's cost closure does). A plain
+    callable from a direct ``optimize`` call carries no such flag, so QUIVER uses
+    the variance path only against a declaring producer and degrades gracefully
+    otherwise — no fragile signature sniffing.
     """
-    try:
-        params = inspect.signature(cost_fn).parameters
-    except (TypeError, ValueError):
-        return False
-    if any(p.kind == p.VAR_KEYWORD for p in params.values()):
-        return True
-    return "return_variance" in params
+    return bool(getattr(cost_fn, "supports_variance", False))
 
 
 class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
@@ -876,7 +878,17 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
         if initial_params is None:
             raise ValueError("QUIVEROptimizer requires initial_params.")
 
-        theta = np.atleast_1d(np.asarray(initial_params, dtype=np.float64).squeeze())
+        # Single-point optimizer: accept 1-D or a single-row (1, n) array, but
+        # reject any other 2-D shape rather than silently flattening a multi-start
+        # array into one long vector (or crashing later on a broadcast mismatch).
+        theta = np.asarray(initial_params, dtype=np.float64)
+        if theta.ndim == 2 and theta.shape[0] == 1:
+            theta = theta[0]
+        if theta.ndim != 1:
+            raise ValueError(
+                "QUIVEROptimizer is a single-point optimizer; initial_params must "
+                f"be 1-D or shape (1, n_params), got shape {theta.shape}."
+            )
         A = self.A if self.A is not None else 0.1 * max_iterations
         shift = (0.5 * np.pi) if self.derivative_mode == "parameter_shift" else None
 
@@ -928,6 +940,14 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
                 ghat_l, _, f_plus, f_minus = _spsa_gradient(
                     cost_only, theta, eps_k, rng
                 )
+                if shift is not None:
+                    # ``_spsa_gradient`` divides by ``2·eps_k``; the parameter-shift
+                    # rule for ±π/2 evaluations of an equal-eigenvalue (±½)
+                    # generator uses a ½ prefactor, i.e. divides by 2. Rescale by
+                    # ``eps_k`` so the estimate is the true parameter-shift
+                    # gradient (½(f₊−f₋)·v), not the ``2/π``-scaled value the
+                    # finite-difference normalization would give.
+                    ghat_l = ghat_l * eps_k
                 ghats.append(ghat_l)
                 losses.append(0.5 * (f_plus + f_minus))
                 v = last_variance
@@ -1006,6 +1026,24 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
                 sigma2 = float(np.mean(var_samples))
                 M_next = np.ceil(kappa * sigma2 / (2.0 * eps_k * eps_k * g2))
                 M_k = int(np.clip(M_next, self.M_min, self.M_max))
+
+        # Best-iterate tracking runs at the top of the loop, so the iterate
+        # reached by the final step is never tracked. Fold it in:
+        #   * blocking: the accepted step's loss is already measured in
+        #     current_loss, so no extra evaluation is needed.
+        #   * exact_loss (no blocking): the per-step loss is the true f(theta),
+        #     so spend one more exact evaluation on the final iterate to match
+        #     that contract. (The free-proxy path is left as-is: its recorded
+        #     loss is the perturbation average, not f(theta).)
+        if self.blocking:
+            if current_loss < best_fun:
+                best_fun = current_loss
+                best_x = theta.copy()
+        elif self.exact_loss:
+            final_loss = float(np.asarray(cost_only(theta)).reshape(-1)[0])
+            if final_loss < best_fun:
+                best_fun = final_loss
+                best_x = theta.copy()
 
         return OptimizeResult(
             x=best_x,
