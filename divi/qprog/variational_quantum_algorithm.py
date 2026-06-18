@@ -889,21 +889,67 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
     # ------------------------------------------------------------------ #
 
     def _evaluate_cost_param_sets(
-        self, param_sets: npt.NDArray[np.float64], **kwargs
+        self,
+        param_sets: npt.NDArray[np.float64],
+        *,
+        shots: int | None = None,
+        collect_variance: bool = False,
+        **kwargs,
     ) -> dict[int, float]:
         """Evaluate the cost pipeline for the provided parameter sets.
+
+        ``shots`` overrides the per-evaluation measurement budget without
+        mutating the immutable backend (see :attr:`PipelineEnv.effective_shots`).
+        ``collect_variance`` asks the pipeline to also estimate the shot-noise
+        variance of each cost value, stashed on ``_last_cost_variance`` and read
+        back via :meth:`_cost_shot_variances`.
 
         Subclasses should prefer overriding the initial-spec hook over
         replacing the full evaluator.
         """
-        result = self._run_pipeline("cost", param_sets=np.atleast_2d(param_sets))
+        env_overrides: dict[str, Any] = {}
+        if shots is not None:
+            env_overrides["shots_override"] = int(shots)
+        if collect_variance:
+            env_overrides["collect_variance"] = True
+
+        result = self._run_pipeline(
+            "cost", param_sets=np.atleast_2d(param_sets), **env_overrides
+        )
 
         constant = 0.0 if self._loss_constant_consumed else self.loss_constant
-        indexed = {
-            _extract_param_set_idx(key): float(value[0]) + constant
-            for key, value in result.items()
-        }
-        return dict(sorted(indexed.items()))
+        return dict(
+            sorted(
+                {
+                    _extract_param_set_idx(key): float(value[0]) + constant
+                    for key, value in result.items()
+                }.items()
+            )
+        )
+
+    def _cost_shot_variances(self, values: dict[int, float]) -> dict[int, float]:
+        """Map the last pipeline run's shot-noise variance to each param-set index.
+
+        The variance is computed at the counts stage with only the obs_group axis
+        stripped. For a plain expval cost (VQE/QAOA/CustomVQA) that leaves exactly
+        the param_set axis, so each index maps to one variance. A pipeline with
+        extra reduce axes (e.g. ZNE scales, a QNN data batch) yields several
+        entries per index; collapsing them to a single scalar would be wrong, so
+        such indices — and any value absent from the artifact (e.g. native-expval
+        backends produce none) — are reported as ``nan`` so the optimizer falls
+        back to its variance-free path.
+        """
+        raw_var = getattr(self, "_last_cost_variance", None) or {}
+        by_idx: dict[int, float] = {}
+        collided: set[int] = set()
+        for key, variance in raw_var.items():
+            idx = _extract_param_set_idx(key)
+            if idx in by_idx:
+                collided.add(idx)
+            by_idx[idx] = variance
+        for idx in collided:
+            by_idx[idx] = float("nan")
+        return {idx: by_idx.get(idx, float("nan")) for idx in values}
 
     def _evaluate_gradient_at(
         self, params: npt.NDArray[np.float64], **kwargs
@@ -1013,23 +1059,27 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                 UserWarning,
             )
 
-        def cost_fn(params):
+        def cost_fn(params, *, shots=None, return_variance=False):
             self._evaluation_counter += 1
             self.reporter.info(
                 message="💸 Computing Cost 💸", iteration=self.current_iteration
             )
 
-            losses = self._evaluate_cost_param_sets(np.atleast_2d(params), **kwargs)
-
-            losses = np.asarray(
-                [value for value in losses.values()],
-                dtype=np.float64,
+            values_map = self._evaluate_cost_param_sets(
+                np.atleast_2d(params),
+                shots=shots,
+                collect_variance=return_variance,
+                **kwargs,
             )
-
-            if params.ndim > 1:
+            losses = np.asarray(list(values_map.values()), dtype=np.float64)
+            losses = losses if params.ndim > 1 else losses.item()
+            if not return_variance:
                 return losses
-            else:
-                return losses.item()
+
+            var_map = self._cost_shot_variances(values_map)
+            variances = np.asarray(list(var_map.values()), dtype=np.float64)
+            variances = variances if params.ndim > 1 else variances.item()
+            return losses, variances
 
         self._grad_shift_mask = _compute_parameter_shift_mask(
             self.n_layers * self.n_params_per_layer

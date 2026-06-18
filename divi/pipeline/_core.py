@@ -24,6 +24,7 @@ from ._compilation import (
     _compile_template_batch,
 )
 from ._postprocessing import (
+    _counts_to_cost_variance,
     _counts_to_expvals,
     _counts_to_probs,
     _expval_dicts_to_indexed,
@@ -510,8 +511,15 @@ class CircuitPipeline:
                         None,
                     )
                     if ham_ops is not None:
+                        # Backend-native expval: no shot counts, so a shot-noise
+                        # variance is undefined; cost_variance is left unset and
+                        # consumers default to nan.
                         raw = _expval_dicts_to_indexed(raw, ham_ops)
                     else:
+                        if env.collect_variance:
+                            env.artifacts["cost_variance"] = _counts_to_cost_variance(
+                                raw, plan.final_batch
+                            )
                         raw = _counts_to_expvals(raw, plan.final_batch)
 
             result = PipelineResult(self._reduce(raw, env, plan.stage_tokens))

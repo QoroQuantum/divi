@@ -48,6 +48,7 @@ from .optimizers import (
     MonteCarloOptimizer,
     QNGOptimizer,
     QNSPSAOptimizer,
+    QUIVEROptimizer,
     ScipyMethod,
     ScipyOptimizer,
     SPSAOptimizer,

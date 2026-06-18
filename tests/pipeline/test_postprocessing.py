@@ -11,6 +11,7 @@ from divi.pipeline import CircuitPipeline
 from divi.pipeline._compilation import _compile_batch
 from divi.pipeline._postprocessing import (
     _batched_expectation,
+    _counts_to_cost_variance,
     _counts_to_expvals,
     _counts_to_probs,
     _expval_dicts_to_indexed,
@@ -107,6 +108,76 @@ class TestCountsToExpvals:
             assert d[0] == pytest.approx(0.4)  # <Z0>
             assert d[1] == pytest.approx(0.6)  # <Z1>
             assert d[2] == pytest.approx(0.8)  # <Z2>
+
+
+class TestCountsToCostVariance:
+    """Spec: _counts_to_cost_variance estimates shot-noise variance of the cost
+    Var(<H>) = Σ_i c_i²(1 − <P_i>²)/M_g from raw counts."""
+
+    def _single_z_trace(self, dummy_pipeline_env):
+        """Forward pass for a single-qubit ``<Z0>`` cost (one measurement group).
+
+        Uses ``wires`` grouping so a real counts-measured group is produced; the
+        default would promote to the backend-native expval path (no counts), on
+        which ``_counts_to_cost_variance`` is never invoked.
+        """
+        qscript = qp.tape.QuantumScript(
+            ops=[qp.Identity(0)],
+            measurements=[qp.expval(qp.Z(0))],
+        )
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=qscript_to_meta(qscript)),
+                MeasurementStage(grouping_strategy="wires"),
+            ]
+        )
+        trace = pipeline.run_forward_pass("x", dummy_pipeline_env)
+        _, lineage_by_label = _compile_batch(trace.final_batch)
+        return trace, lineage_by_label
+
+    def test_matches_analytic_formula(self, dummy_pipeline_env):
+        # <Z> = (75 - 25)/100 = 0.5, coeff = 1, M = 100
+        # Var = 1²·(1 - 0.5²)/100 = 0.0075
+        trace, lineage_by_label = self._single_z_trace(dummy_pipeline_env)
+        raw: ChildResults = {bk: {"0": 75, "1": 25} for bk in lineage_by_label.values()}
+        result = _counts_to_cost_variance(raw, trace.final_batch)
+        assert result
+        for v in result.values():
+            assert v == pytest.approx(0.0075)
+
+    def test_zero_shots_returns_nan(self, dummy_pipeline_env):
+        trace, lineage_by_label = self._single_z_trace(dummy_pipeline_env)
+        raw: ChildResults = {bk: {} for bk in lineage_by_label.values()}
+        result = _counts_to_cost_variance(raw, trace.final_batch)
+        assert result
+        assert all(np.isnan(v) for v in result.values())
+
+    def test_saturated_pauli_clamps_to_nonnegative_zero(self, dummy_pipeline_env):
+        # All shots in one eigenstate → <Z> = 1 → 1 − <Z>² = 0 (never negative).
+        trace, lineage_by_label = self._single_z_trace(dummy_pipeline_env)
+        raw: ChildResults = {bk: {"0": 100} for bk in lineage_by_label.values()}
+        result = _counts_to_cost_variance(raw, trace.final_batch)
+        assert result
+        for v in result.values():
+            assert v == pytest.approx(0.0)
+            assert v >= 0.0
+
+    def test_variance_scales_inversely_with_shots(self, dummy_pipeline_env):
+        trace, lineage_by_label = self._single_z_trace(dummy_pipeline_env)
+        raw_low: ChildResults = {
+            bk: {"0": 75, "1": 25} for bk in lineage_by_label.values()
+        }
+        raw_high: ChildResults = {
+            bk: {"0": 750, "1": 250} for bk in lineage_by_label.values()
+        }
+        var_low = next(
+            iter(_counts_to_cost_variance(raw_low, trace.final_batch).values())
+        )
+        var_high = next(
+            iter(_counts_to_cost_variance(raw_high, trace.final_batch).values())
+        )
+        # Same <Z>=0.5, 10× shots → exactly 10× smaller variance.
+        assert var_low == pytest.approx(10.0 * var_high)
 
 
 class TestBatchedExpectation:
