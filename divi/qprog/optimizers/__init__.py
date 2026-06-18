@@ -22,7 +22,11 @@ from divi.qprog.optimizers._monte_carlo import MonteCarloOptimizer, MonteCarloSt
 from divi.qprog.optimizers._pymoo import PymooMethod, PymooOptimizer, PymooState
 from divi.qprog.optimizers._qng import QNGOptimizer
 from divi.qprog.optimizers._scipy import ScipyMethod, ScipyOptimizer
-from divi.qprog.optimizers._spsa import QNSPSAOptimizer, SPSAOptimizer
+from divi.qprog.optimizers._spsa import (
+    QNSPSAOptimizer,
+    QUIVEROptimizer,
+    SPSAOptimizer,
+)
 
 __all__ = [
     "FubiniStudyMetricEstimator",
@@ -37,6 +41,7 @@ __all__ = [
     "PymooState",
     "QNGOptimizer",
     "QNSPSAOptimizer",
+    "QUIVEROptimizer",
     "SPSAOptimizer",
     "ScipyMethod",
     "ScipyOptimizer",

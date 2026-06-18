@@ -192,6 +192,31 @@ class PipelineEnv:
     ``evaluation_counter`` it gives a stable-within-evaluation seed even when no
     explicit strategy seed is set, so the cost and metric pipelines still agree."""
 
+    shots_override: int | None = None
+    """Per-evaluation shot budget overriding ``backend.shots`` without mutating
+    the immutable backend. Read via :attr:`effective_shots`; set by callers that
+    drive an adaptive shot count (e.g. QUIVER's ``M``-adaptivity). ``None`` falls
+    back to the backend's configured shots."""
+
+    collect_variance: bool = False
+    """When ``True``, measurement stages also estimate the shot-noise variance of
+    each cost value from raw counts and write it to ``artifacts['cost_variance']``
+    (``{param_set_idx: variance}``). Off by default — the estimate costs nothing
+    extra in circuits but adds a small classical post-processing pass."""
+
+    @property
+    def effective_shots(self) -> int:
+        """The shot budget to use for this run.
+
+        Returns :attr:`shots_override` when set, otherwise the backend's
+        configured ``shots``.
+        """
+        return (
+            self.shots_override
+            if self.shots_override is not None
+            else self.backend.shots
+        )
+
 
 class ContractViolation(ValueError):
     """Raised when a stage's positional requirements are not met."""

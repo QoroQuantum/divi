@@ -177,6 +177,106 @@ def _counts_to_expvals(
     return out
 
 
+def _observable_coeff_map(
+    node: MetaCircuit,
+) -> dict[str, float] | None:
+    """Big-endian ``{pauli_label: real_coeff}`` for a single-observable cost.
+
+    Returns ``None`` when the node carries multiple observables (a multi-output
+    program), for which a single scalar cost variance is undefined. Labels are
+    padded to ``node.n_qubits`` to match the stored measurement groups.
+    """
+    observable = node.observable
+    if not isinstance(observable, tuple) or len(observable) != 1:
+        return None
+    op = observable[0]
+    le_labels = op.paulis.to_labels()
+    coeffs = np.real(np.asarray(op.coeffs)).astype(np.float64)
+    n_qubits = node.n_qubits
+    coeff_map: dict[str, float] = {}
+    for le_label, coeff in zip(le_labels, coeffs, strict=True):
+        be_label = le_label[::-1].ljust(n_qubits, "I")
+        coeff_map[be_label] = coeff_map.get(be_label, 0.0) + float(coeff)
+    return coeff_map
+
+
+def _counts_to_cost_variance(
+    raw: ChildResults,
+    batch: dict[Any, MetaCircuit],
+) -> dict[tuple, float]:
+    """Estimate the shot-noise variance of each cost value from raw counts.
+
+    For a Hamiltonian ``H = Σ_i c_i P_i`` measured group-wise, the variance of
+    the (group-wise independent) mean estimator is approximated by
+    ``Var(<H>) = Σ_i c_i² (1 − <P_i>²) / M_g``, where ``M_g`` is the shot count
+    for the group containing ``P_i``. This drops intra-group Pauli covariance —
+    a standard, cheap first approximation. Each Pauli's ``<P_i>`` and the group
+    shot count come from the same counts :func:`_counts_to_expvals` consumes.
+
+    Returns ``{base_key: variance}`` summed over a spec's measurement groups,
+    where ``base_key`` is the branch key with the ``obs_group`` axis stripped —
+    matching the post-reduce cost keys. Specs with multiple observables yield
+    ``nan`` (single-scalar variance undefined).
+    """
+    batch_keys = set(batch.keys())
+    labels_by_bk: dict[tuple, dict[int, tuple[object, ...]]] = {}
+    nq_by_bk: dict[tuple, int] = {}
+    coeffs_by_bk: dict[tuple, dict[str, float] | None] = {}
+    for bk, node in batch.items():
+        nq_by_bk[bk] = node.n_qubits
+        labels_by_bk[bk] = {i: g for i, g in enumerate(node.measurement_groups)}
+        coeffs_by_bk[bk] = _observable_coeff_map(node)
+
+    out: dict[tuple, float] = {}
+    for branch_key, counts in raw.items():
+        bk = _find_batch_key(branch_key, batch_keys)
+        base_key = tuple(ax for ax in branch_key if ax[0] != "obs_group")
+        coeff_map = coeffs_by_bk[bk]
+        if coeff_map is None:
+            out[base_key] = float("nan")
+            continue
+
+        axis_values = dict(branch_key)
+        obs_group_idx = int(axis_values.get("obs_group", 0))
+        group_labels = labels_by_bk[bk][obs_group_idx]
+        n_qubits = nq_by_bk[bk]
+
+        if isinstance(counts, Mapping):
+            counts = {bitstring[::-1]: count for bitstring, count in counts.items()}
+            shots = sum(counts.values())
+        else:
+            # Non-count payload (shouldn't reach here on the shot path); skip.
+            out[base_key] = out.get(base_key, 0.0) + float("nan")
+            continue
+
+        if shots <= 0:
+            # Degenerate group with no measurements: invalidate the whole cost
+            # variance (nan) rather than silently omitting it, which would
+            # deflate the summed estimate. Matches the multi-observable and
+            # non-count paths above.
+            out[base_key] = float("nan")
+            continue
+
+        expvals = _batched_expectation(
+            [counts], [str(p) for p in group_labels], n_qubits
+        )[:, 0]
+
+        group_var = 0.0
+        for label, exp in zip(group_labels, expvals, strict=True):
+            coeff = coeff_map.get(str(label), 0.0)
+            if coeff == 0.0:
+                continue
+            # ``exp`` is a convex combination of ±1 eigenvalues, so 1−exp² ≥ 0
+            # mathematically; clamp to guard float rounding when |exp| ≈ 1.
+            group_var += coeff * coeff * max(0.0, 1.0 - float(exp) ** 2) / shots
+
+        prev = out.get(base_key, 0.0)
+        # Once a base key is nan (multi-observable / degenerate group) keep it nan.
+        out[base_key] = prev if np.isnan(prev) else prev + group_var
+
+    return out
+
+
 def _expval_dicts_to_indexed(raw: ChildResults, ham_ops: str) -> ChildResults:
     """Normalise ``{pauli_str: float}`` dicts from expval-native backends.
 

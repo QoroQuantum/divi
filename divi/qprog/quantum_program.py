@@ -86,6 +86,7 @@ class QuantumProgram(ABC):
         self._total_run_time = 0.0
         self._curr_circuits = []
         self._current_execution_result = None
+        self._last_cost_variance = None
         self._cancellation_event = None
         self._evaluation_counter = 0
         # Fixed seed for unseeded stochastic stages: the explicit ``seed`` when
@@ -326,6 +327,7 @@ class QuantumProgram(ABC):
         self._total_circuit_count += env.artifacts.get("circuit_count", 0)
         self._total_run_time += env.artifacts.get("run_time", 0.0)
         self._current_execution_result = env.artifacts.get("_current_execution_result")
+        self._last_cost_variance = env.artifacts.get("cost_variance")
         return result
 
     def _run_pipeline(self, name: str, *, initial_spec: Any = None, **env_overrides):

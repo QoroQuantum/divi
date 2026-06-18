@@ -343,6 +343,61 @@ Use SPSA / QN-SPSA when:
 - *(QN-SPSA)* You want metric-aware updates at a constant per-step circuit cost,
   trading the exact metric for a stochastic estimate.
 
+QUIVER (Adaptive Directional Gradients)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The :class:`~divi.qprog.optimizers.QUIVEROptimizer` [#coyle2026]_ reconstructs the
+full gradient from ``V`` random Rademacher (:math:`\pm 1`) directional
+derivatives, independent of the parameter count :math:`N`:
+
+.. math::
+
+   \tilde\nabla^{\mathsf F} f = \frac{1}{V}\sum_{\ell=1}^{V}
+   \frac{f(\theta + \varepsilon v_\ell) - f(\theta - \varepsilon v_\ell)}
+   {2\varepsilon}\, v_\ell,
+   \qquad \theta \leftarrow \theta - a_k\,\tilde\nabla^{\mathsf F} f,
+
+costing :math:`2V` evaluations per step. A single direction (:math:`V = 1`)
+recovers SPSA; :math:`V = N` recovers the full parameter-shift gradient — so
+``V`` dials between cheap-but-noisy and expensive-but-precise gradient estimates.
+
+QUIVER also adapts ``V`` and the per-direction shot count ``M`` each step
+(iCANS/gCANS-style), spending more directions when the gradient estimate is noisy
+relative to its magnitude, and more shots when measurement noise dominates:
+
+- ``V`` is driven by the spread of the ``V`` directional samples — it needs no
+  backend variance, so it adapts on any cost function.
+- ``M`` is driven by the measurement-variance estimate the cost closure exposes
+  on shot-based backends. On native-expectation-value backends (no shot counts)
+  it falls back to a fixed ``M`` and ``V``-from-spread only.
+
+.. code-block:: python
+
+   from divi.qprog.optimizers import QUIVEROptimizer
+
+   optimizer = QUIVEROptimizer(learning_rate=0.1, epsilon=0.1, V_init=2)
+
+Set ``derivative_mode="parameter_shift"`` to use a :math:`\pi/2` directional shift
+instead of the finite-difference step ``epsilon``; set ``adapt_V=False`` /
+``adapt_M=False`` to pin a fixed budget. QUIVER shares SPSA's ``blocking`` and
+``exact_loss`` options, is gradient-free, and does not support checkpointing.
+
+.. note::
+
+   An adapting ``M`` delivers its per-evaluation shot budget to the backend as
+   explicit per-circuit shot groups, which disables circuit-template batching for
+   that submission. On template-capable backends (e.g. the Qoro cloud) this trades
+   template reuse for shot adaptivity — prefer ``adapt_M=False`` there if
+   submission overhead dominates, and reserve ``adapt_M`` for local shot-based
+   simulators. ``adapt_M`` also assumes a uniform per-group shot count, so it is
+   not combined with a configured ``shot_distribution`` (a warning is emitted).
+
+Use QUIVER when:
+
+- You want SPSA's constant-cost appeal but with a tunable accuracy/cost trade-off
+  via ``V``.
+- You want the per-step measurement budget to adapt automatically to shot noise.
+
 Grid Search
 -----------
 
@@ -396,6 +451,9 @@ Choosing the Right Optimizer
   cost; best for many-parameter circuits where exact gradients/metrics are too expensive
 - **SPSA**: Gradient-free with two evaluations per step; best for many-parameter,
   shot-noisy circuits
+- **QUIVER**: Forward-gradient generalization of SPSA with a tunable direction
+  count ``V`` and adaptive shot allocation; best when you want to trade gradient
+  accuracy against measurement budget on shot-based backends
 - **L-BFGS-B**: Best for smooth, differentiable landscapes with good initial parameters
 - **Monte Carlo**: Excellent for exploration and avoiding local minima
 - **COBYLA**: Good for constrained problems or when gradients are unreliable
@@ -408,6 +466,8 @@ Choosing the Right Optimizer
   Hamiltonian expectation loss
 - **QN-SPSA / SPSA**: Best for deep, many-layer QAOA on shot-noisy backends, where
   the constant per-step cost beats parameter-shift gradients
+- **QUIVER**: When you want SPSA's low per-step cost on shot-noisy QAOA but with a
+  tunable direction count and adaptive shot allocation
 - **COBYLA**: Often the best starting point for :class:`~divi.qprog.algorithms.QAOA` problems
 - **Nelder-Mead**: Good for noisy landscapes and parameter initialization
 - **Monte Carlo**: Excellent for global exploration and avoiding barren plateaus
@@ -574,3 +634,5 @@ References
 .. [#spall1992] Spall, J. C. (1992). Multivariate stochastic approximation using a simultaneous perturbation gradient approximation. *IEEE Transactions on Automatic Control*, 37(3), 332–341.
 
 .. [#gacon2021] Gacon, J., Zoufal, C., Carleo, G., & Woerner, S. (2021). Simultaneous perturbation stochastic approximation of the quantum Fisher information. *Quantum*, 5, 567.
+
+.. [#coyle2026] Coyle, B., Raj, S., Umathe, V., Cherrat, E. A., & Kashefi, E. (2026). Adaptive directional gradients for parameterised quantum circuits. *arXiv preprint* arXiv:2606.09734.

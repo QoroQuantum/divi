@@ -101,14 +101,28 @@ def _allocate_per_group_shots(
             or ``None`` when ``shot_distribution`` is not configured.
     """
     n_groups = len(measurement_groups)
-    if shot_distribution is None or n_groups == 0:
+    if n_groups == 0:
         return list(range(n_groups)), {}, None
+
+    if shot_distribution is None:
+        # No distribution: every group gets the full per-evaluation budget. When
+        # an evaluation overrides the shot count (``shots_override``), materialise
+        # it as uniform per-group shots so it reaches the backend via the
+        # ``shot_groups`` submission path (the backend otherwise uses its own
+        # ``shots``); without an override leave allocation to the backend.
+        if env.shots_override is None:
+            return list(range(n_groups)), {}, None
+        return (
+            list(range(n_groups)),
+            {},
+            {i: env.shots_override for i in range(n_groups)},
+        )
 
     coefficients = np.asarray(observable.coeffs).real.astype(np.float64)
     group_norms = _compute_group_l1_norms(coefficients, partition_indices)
     per_group_shots = _compute_shot_distribution(
         group_norms,
-        env.backend.shots,
+        env.effective_shots,
         shot_distribution,
         rng=env.rng,
     )
@@ -235,18 +249,24 @@ class MeasurementStage(BundleStage):
         )
 
     def cache_key_extras(self, env) -> tuple[Hashable, ...]:
-        """Fold ``env.backend.shots`` into the forward-pass cache key.
+        """Fold the effective shot budget / variance flag into the forward-pass
+        cache key.
 
-        Any configured shot distribution (even the deterministic ones) reads
-        ``env.backend.shots`` during :meth:`expand` to compute the per-group
-        allocation. Including the current shot budget in the cache key means
-        a re-run with a different budget triggers fresh allocation rather
-        than replaying the stale one. Returns ``()`` when
-        ``shot_distribution`` is ``None``.
+        A configured shot distribution (even the deterministic ones) reads the
+        shot budget during :meth:`expand` to compute the per-group allocation;
+        so does an active ``shots_override`` (which materialises uniform
+        per-group shots). Including the budget means a re-run with a different
+        one triggers fresh allocation rather than replaying a stale one.
+        ``collect_variance`` is folded in too, since it changes the per-call
+        post-processing. Returns ``()`` in the default case (no distribution, no
+        override, no variance) so caching is unaffected.
         """
-        if self._shot_distribution is None:
-            return ()
-        return (env.backend.shots,)
+        extras: tuple[Hashable, ...] = ()
+        if self._shot_distribution is not None or env.shots_override is not None:
+            extras += (env.effective_shots,)
+        if env.collect_variance:
+            extras += (env.collect_variance,)
+        return extras
 
     def __init__(
         self,
@@ -497,7 +517,12 @@ class MeasurementStage(BundleStage):
                 .set_measurement_groups(measurement_groups)
                 .set_result_format(ResultFormat.EXPVALS)
             )
-            if surviving_shots is not None:
+            # The backend-native expval path evaluates analytically and rejects
+            # per-circuit shot_groups (incompatible with ham_ops). A shots
+            # override is meaningless there, so never materialise group shots on
+            # that path — the override is silently ignored, as analytic expval
+            # ignores shots by definition.
+            if surviving_shots is not None and strategy != "_backend_expval":
                 new_meta = new_meta.set_group_shots(surviving_shots)
             result[key] = new_meta
             postprocess_fn_by_spec[key] = postprocessing_fn
