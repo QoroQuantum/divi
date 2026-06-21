@@ -228,8 +228,6 @@ class QNN(DataBindingMixin, VariationalQuantumAlgorithm):
             observable, raise_on_constant=True
         )
 
-        self._pipelines = self._build_pipelines()
-
     # ------------------------------------------------------------------ #
     # Shape contracts the VQA base reads
     # ------------------------------------------------------------------ #
@@ -243,7 +241,7 @@ class QNN(DataBindingMixin, VariationalQuantumAlgorithm):
     # Plumbing
     # ------------------------------------------------------------------ #
 
-    def _create_meta_circuit_factories(self) -> dict[str, MetaCircuit]:
+    def _create_cost_circuit(self) -> MetaCircuit:
         """Single MetaCircuit carrying both parameter groups.
 
         ``DataBindingStage`` swaps in per-sample variants (data substituted
@@ -251,5 +249,4 @@ class QNN(DataBindingMixin, VariationalQuantumAlgorithm):
         before downstream stages run, so the parametric IR we hand to the
         spec stage is the full ``(data + weights)`` parameterization.
         """
-        meta = self._cost_meta_circuit(self._data_symbols + self._weight_symbols)
-        return {"cost_circuit": meta}
+        return self._cost_meta_circuit(self._data_symbols + self._weight_symbols)

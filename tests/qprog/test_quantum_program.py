@@ -11,9 +11,7 @@ import requests
 
 from divi.backends import AsyncJobBackend, ExecutionResult
 from divi.circuits import DEFAULT_PRECISION
-from divi.pipeline import PipelineSet
 from divi.qprog.quantum_program import QuantumProgram
-from tests.conftest import DummySimulator
 
 
 class ConcreteQuantumProgram(QuantumProgram):
@@ -24,9 +22,6 @@ class ConcreteQuantumProgram(QuantumProgram):
         self._total_circuit_count = 0
         self._total_run_time = 0.0
         self._ran = False
-
-    def _build_pipelines(self) -> PipelineSet:
-        return PipelineSet({})
 
     def has_results(self) -> bool:
         return self._ran
@@ -42,9 +37,9 @@ class ConcreteQuantumProgram(QuantumProgram):
 class TestQuantumProgramBase:
     """Tests for QuantumProgram abstract base class contract and core functionality."""
 
-    def test_initialization_with_all_params(self, mocker):
+    def test_initialization_with_all_params(self, mocker, dummy_simulator):
         """Test QuantumProgram initialization with all parameters."""
-        mock_backend = DummySimulator(shots=1)
+        mock_backend = dummy_simulator
         mock_queue = Queue()
 
         program = ConcreteQuantumProgram(
@@ -55,64 +50,62 @@ class TestQuantumProgramBase:
         assert program._seed == 42
         assert program._progress_queue == mock_queue
 
-    def test_initialization_with_program_id(self, mocker):
+    def test_initialization_with_program_id(self, mocker, dummy_simulator):
         """Test QuantumProgram initialization with explicit program_id."""
-        mock_backend = DummySimulator(shots=1)
 
         program = ConcreteQuantumProgram(
-            backend=mock_backend, program_id="test_program"
+            backend=dummy_simulator, program_id="test_program"
         )
 
-        assert program.backend == mock_backend
+        assert program.backend == dummy_simulator
         assert program._seed is None
         assert program._progress_queue is None
         assert program.program_id == "test_program"
 
-    def test_initialization_with_unexpected_kwargs_raises(self, mocker):
+    def test_initialization_with_unexpected_kwargs_raises(
+        self, mocker, dummy_simulator
+    ):
         """Unexpected constructor kwargs should fail fast."""
-        mock_backend = DummySimulator(shots=1)
 
         with pytest.raises(
             TypeError,
             match="Unexpected keyword argument\\(s\\): another_param, custom_param",
         ):
             ConcreteQuantumProgram(
-                backend=mock_backend, custom_param="test_value", another_param=123
+                backend=dummy_simulator, custom_param="test_value", another_param=123
             )
 
-    def test_abstract_class_behavior(self, mocker):
+    def test_abstract_class_behavior(self, mocker, dummy_simulator):
         """Test abstract class instantiation behavior."""
-        mock_backend = DummySimulator(shots=1)
 
         # Test that abstract class cannot be instantiated
         with pytest.raises(TypeError, match="Can't instantiate abstract class"):
-            QuantumProgram(backend=mock_backend)
+            QuantumProgram(backend=dummy_simulator)
 
         # Test that concrete implementations can be instantiated
-        program = ConcreteQuantumProgram(backend=mock_backend)
+        program = ConcreteQuantumProgram(backend=dummy_simulator)
         assert isinstance(program, QuantumProgram)
-        assert program.backend == mock_backend
+        assert program.backend == dummy_simulator
 
-    def test_abstract_methods_must_be_implemented(self, mocker):
+    def test_abstract_methods_must_be_implemented(self, mocker, dummy_simulator):
         """Test that abstract methods must be implemented in subclasses."""
-        mock_backend = DummySimulator(shots=1)
 
-        # Test missing abstract methods (run and _build_pipelines)
+        # Test missing abstract methods (run and has_results)
         class IncompleteProgram(QuantumProgram):
             pass
 
         with pytest.raises(TypeError, match="Can't instantiate abstract class"):
-            IncompleteProgram(backend=mock_backend)
+            IncompleteProgram(backend=dummy_simulator)
 
-    def test_build_pipelines_returns_pipeline_set(self):
-        program = ConcreteQuantumProgram(backend=DummySimulator(shots=1))
+    def test_preprocessors_default_empty(self, dummy_simulator):
+        """The base exposes no measurement routines until a subclass declares them."""
+        program = ConcreteQuantumProgram(backend=dummy_simulator)
 
-        assert isinstance(program._build_pipelines(), PipelineSet)
+        assert program._preprocessors() == ()
 
-    def test_cancellation_event(self, mocker):
+    def test_cancellation_event(self, mocker, dummy_simulator):
         """Test _set_cancellation_event method."""
-        mock_backend = DummySimulator(shots=1)
-        program = ConcreteQuantumProgram(backend=mock_backend)
+        program = ConcreteQuantumProgram(backend=dummy_simulator)
 
         event = Event()
         program._set_cancellation_event(event)
@@ -120,40 +113,37 @@ class TestQuantumProgramBase:
         assert hasattr(program, "_cancellation_event")
         assert program._cancellation_event == event
 
-    def test_total_circuit_count_property(self, mocker):
+    def test_total_circuit_count_property(self, mocker, dummy_simulator):
         """Test total_circuit_count property."""
-        mock_backend = DummySimulator(shots=1)
-        program = ConcreteQuantumProgram(backend=mock_backend)
+        program = ConcreteQuantumProgram(backend=dummy_simulator)
 
         program._total_circuit_count = 15
         assert program.total_circuit_count == 15
 
-    def test_total_run_time_property(self, mocker):
+    def test_total_run_time_property(self, mocker, dummy_simulator):
         """Test total_run_time property."""
-        mock_backend = DummySimulator(shots=1)
-        program = ConcreteQuantumProgram(backend=mock_backend)
+        program = ConcreteQuantumProgram(backend=dummy_simulator)
 
         program._total_run_time = 3.7
         assert program.total_run_time == 3.7
 
-    def test_properties_default_to_zero(self, mocker):
+    def test_properties_default_to_zero(self, mocker, dummy_simulator):
         """Test that properties default to zero when not set."""
-        mock_backend = DummySimulator(shots=1)
-        program = ConcreteQuantumProgram(mock_backend)
+        program = ConcreteQuantumProgram(backend=dummy_simulator)
         assert program.total_circuit_count == 0
         assert program.total_run_time == 0.0
 
-    def test_precision_property_defaults_to_module_constant(self, mocker):
+    def test_precision_property_defaults_to_module_constant(
+        self, mocker, dummy_simulator
+    ):
         """``QuantumProgram.precision`` defaults to ``DEFAULT_PRECISION``."""
-        mock_backend = DummySimulator(shots=1)
-        program = ConcreteQuantumProgram(backend=mock_backend)
+        program = ConcreteQuantumProgram(backend=dummy_simulator)
         assert program.precision == DEFAULT_PRECISION
         assert program._precision == DEFAULT_PRECISION
 
-    def test_precision_property_reflects_explicit_value(self, mocker):
+    def test_precision_property_reflects_explicit_value(self, mocker, dummy_simulator):
         """Explicit ``precision=`` kwarg is exposed verbatim."""
-        mock_backend = DummySimulator(shots=1)
-        program = ConcreteQuantumProgram(backend=mock_backend, precision=5)
+        program = ConcreteQuantumProgram(backend=dummy_simulator, precision=5)
         assert program.precision == 5
         assert program._precision == 5
 
@@ -161,20 +151,18 @@ class TestQuantumProgramBase:
 class TestQuantumProgramJobManagement:
     """Tests for QuantumProgram job management and cancellation."""
 
-    def test_cancel_unfinished_job_no_execution_result(self, mocker):
+    def test_cancel_unfinished_job_no_execution_result(self, mocker, dummy_simulator):
         """Test cancel_unfinished_job when _current_execution_result is None."""
-        mock_backend = DummySimulator(shots=1)
-        program = ConcreteQuantumProgram(backend=mock_backend)
+        program = ConcreteQuantumProgram(backend=dummy_simulator)
 
         with pytest.warns(
             UserWarning, match="Cannot cancel job: no current execution result"
         ):
             program.cancel_unfinished_job()
 
-    def test_cancel_unfinished_job_no_job_id(self, mocker):
+    def test_cancel_unfinished_job_no_job_id(self, mocker, dummy_simulator):
         """Test cancel_unfinished_job when execution result has no job_id."""
-        mock_backend = DummySimulator(shots=1)
-        program = ConcreteQuantumProgram(backend=mock_backend)
+        program = ConcreteQuantumProgram(backend=dummy_simulator)
         program._current_execution_result = ExecutionResult(job_id=None)
 
         with pytest.warns(

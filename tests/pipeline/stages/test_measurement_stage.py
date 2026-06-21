@@ -518,6 +518,7 @@ class TestMeasurementStageShotDistributionReducePath:
         assert list(reduced.values())[0] == pytest.approx([11.1])
 
 
+@pytest.mark.filterwarnings("ignore:shot_distribution is set but backend")
 def test_weighted_wires_e2e_yields_finite_energy(default_test_simulator):
     """Full pipeline with adaptive shot allocation against a real shot-based
     backend produces a finite, in-range energy (smoke test)."""
@@ -570,7 +571,7 @@ class TestMeasurementStageImagCoeffValidation:
 
 
 class TestMeasurementStageShotDistributionBackendExpval:
-    """Spec: shot_distribution is incompatible with _backend_expval strategy."""
+    """Spec: shot_distribution vs. expval-capable backends."""
 
     def test_explicit_backend_expval_raises(self, dummy_expval_backend):
         """Setting shot_distribution with explicit _backend_expval -> ValueError."""
@@ -587,10 +588,10 @@ class TestMeasurementStageShotDistributionBackendExpval:
         with pytest.raises(ValueError, match="_backend_expval"):
             pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
-    def test_shot_distribution_suppresses_auto_fallback(self, dummy_expval_backend):
-        """qwc + expval-supporting backend would normally auto-select
-        _backend_expval, but shot_distribution declares sampling intent —
-        the auto-fallback must be skipped so per-group shots are honoured."""
+    def test_shot_distribution_warns_on_analytic_backend(self, dummy_expval_backend):
+        """qwc + expval-supporting backend skips the _backend_expval auto-fallback
+        (so per-group shots are still recorded), but the backend evaluates
+        analytically, so the allocation can't change the result — ``expand`` warns."""
         env = PipelineEnv(backend=dummy_expval_backend)
         pipeline = CircuitPipeline(
             stages=[
@@ -598,7 +599,8 @@ class TestMeasurementStageShotDistributionBackendExpval:
                 MeasurementStage(grouping_strategy="qwc", shot_distribution="uniform"),
             ],
         )
-        trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        with pytest.warns(UserWarning, match="analytically"):
+            trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
         assert "per_group_shots" in trace.env_artifacts
         assert "ham_ops" not in trace.env_artifacts
 
@@ -938,6 +940,7 @@ def _tuple_observable_meta() -> MetaCircuit:
     )
 
 
+@pytest.mark.filterwarnings("ignore:shot_distribution is set but backend")
 class TestMeasurementStageTupleObservable:
     """When ``meta.observable`` is a tuple of SparsePauliOps the stage takes
     the multi-observable union-grouping path and emits a list[float]."""
@@ -959,13 +962,10 @@ class TestMeasurementStageTupleObservable:
         assert out[0] == pytest.approx(0.0, abs=0.05)
         assert out[1] == pytest.approx(1.0, abs=0.05)
 
-    def test_tuple_observable_suppresses_backend_expval_auto_promotion(
-        self, dummy_expval_backend
-    ):
-        """An expval-supporting backend would normally upgrade qwc →
-        ``_backend_expval`` when every meta carries the same observable.
-        For tuple observables the backend can't evaluate them in one shot,
-        so the auto-promotion must be skipped (no ``ham_ops`` in artifacts)."""
+    def test_tuple_observable_promotes_to_backend_expval(self, dummy_expval_backend):
+        """On an expval-supporting backend a multi-observable tuple auto-promotes
+        qwc → ``_backend_expval``: every observable is evaluated analytically in
+        one pass, so ``ham_ops`` lands in the artifacts."""
         env = PipelineEnv(backend=dummy_expval_backend)
         pipeline = CircuitPipeline(
             stages=[
@@ -974,13 +974,14 @@ class TestMeasurementStageTupleObservable:
             ],
         )
         trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
-        assert "ham_ops" not in trace.env_artifacts
+        assert "ham_ops" in trace.env_artifacts
 
-    def test_explicit_backend_expval_strategy_raises_for_multi(
+    def test_explicit_backend_expval_strategy_works_for_multi(
         self, dummy_expval_backend
     ):
-        """``_backend_expval`` requires a single observable per MetaCircuit;
-        a multi-observable tuple raises ``NotImplementedError``."""
+        """``_backend_expval`` evaluates a multi-observable tuple analytically
+        (one expectation per observable), so the forward pass succeeds and
+        records ``ham_ops``."""
         env = PipelineEnv(backend=dummy_expval_backend)
         pipeline = CircuitPipeline(
             stages=[
@@ -988,8 +989,8 @@ class TestMeasurementStageTupleObservable:
                 MeasurementStage(grouping_strategy="_backend_expval"),
             ],
         )
-        with pytest.raises(NotImplementedError, match="_backend_expval"):
-            pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        assert "ham_ops" in trace.env_artifacts
 
     def test_shot_distribution_with_tuple_works(self, make_dummy_simulator):
         """Adaptive shot allocation operates on the union L1 norm and is

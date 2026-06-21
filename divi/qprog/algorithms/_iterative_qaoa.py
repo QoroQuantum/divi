@@ -271,15 +271,17 @@ class IterativeQAOA(QAOA):
         return self._max_iterations_per_depth
 
     def _rebuild_for_depth(self, depth: int) -> None:
-        """Rebuild parameters and pipelines for a new circuit depth."""
+        """Rebuild parameters for a new circuit depth and drop stale pipelines."""
         self.n_layers = depth
         betas = ParameterVector("β", depth)
         gammas = ParameterVector("γ", depth)
         # Replaces the parent QAOA._params so the meta-circuit factories
         # pick up the new layer count.
         self._params = np.array([[b, g] for b, g in zip(betas, gammas)], dtype=object)
-        self._pipelines = self._build_pipelines()
-        self._meta_circuit_factories = None
+        # Drop the memoized protocol pipelines (and their forward caches): the
+        # ansatz changed shape, so the cost/sample circuits must be rebuilt.
+        self._preprocessor_pipeline_cache.clear()
+        self._cost_circuit = None
 
     def _reset_optimization_state(self) -> None:
         """Reset VQA optimization tracking state for a fresh run."""

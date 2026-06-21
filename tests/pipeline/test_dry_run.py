@@ -59,17 +59,46 @@ def _parametric_twirlable_meta() -> MetaCircuit:
     )
 
 
+def _dry_run(stages, env, *, dry=True, name="test", **pipeline_kwargs):
+    """Build a pipeline over ``stages``, run one forward pass, and return
+    ``(trace, report)`` for that pass.
+
+    A fresh ``CircuitPipeline`` is built per call, so a real and a dry pass
+    over equivalent ``stages`` never share a forward-pass cache.
+    """
+    pipeline = CircuitPipeline(stages=stages, **pipeline_kwargs)
+    trace = pipeline.run_forward_pass("ignored", env, dry=dry)
+    report = dry_run_pipeline(name, trace, pipeline.stages, env)
+    return trace, report
+
+
+def _assert_same_fanout(report_a, report_b):
+    """Two reports agree on total circuit count and per-stage fan-out factor."""
+    assert report_a.total_circuits == report_b.total_circuits
+    for stage_a, stage_b in zip(report_a.stages, report_b.stages):
+        assert (
+            stage_a.factor == stage_b.factor
+        ), f"{stage_a.name}: {stage_a.factor} != {stage_b.factor}"
+
+
+def _assert_report_dicts_match(reports_a, reports_b):
+    """Per-pipeline report dicts (``QuantumProgram.dry_run`` output) agree
+    pipeline-by-pipeline on totals and per-stage fan-out."""
+    assert set(reports_a) == set(reports_b)
+    for name in reports_a:
+        _assert_same_fanout(reports_a[name], reports_b[name])
+
+
 class TestDryRunPipeline:
     """Original dry-run report shape tests."""
 
     def test_basic_pipeline(self, dummy_pipeline_env):
         """Spec + Measurement produces correct fan-out."""
-        meta = two_group_meta()
-        pipeline = CircuitPipeline(
-            stages=[DummySpecStage(meta=meta), MeasurementStage()]
+        _, report = _dry_run(
+            [DummySpecStage(meta=two_group_meta()), MeasurementStage()],
+            dummy_pipeline_env,
+            dry=False,
         )
-        trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env)
-        report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
 
         assert report.pipeline_name == "test"
         assert len(report.stages) == 2
@@ -79,30 +108,29 @@ class TestDryRunPipeline:
 
     def test_total_matches_compile(self, dummy_pipeline_env):
         """Total circuits matches actual _compile_batch output (full-generation mode)."""
-        meta = two_group_meta()
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=meta),
+        trace, report = _dry_run(
+            [
+                DummySpecStage(meta=two_group_meta()),
                 MeasurementStage(),
                 QEMStage(protocol=_NoMitigation()),
-            ]
+            ],
+            dummy_pipeline_env,
+            dry=False,
         )
-        trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env)
-        report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
         compiled, _ = _compile_batch(trace.final_batch)
         assert report.total_circuits == len(compiled)
 
     def test_format_does_not_raise(self, dummy_pipeline_env):
         """format_dry_run prints without errors."""
-        meta = two_group_meta()
-        pipeline = CircuitPipeline(
-            stages=[DummySpecStage(meta=meta), MeasurementStage()]
+        _, report = _dry_run(
+            [DummySpecStage(meta=two_group_meta()), MeasurementStage()],
+            dummy_pipeline_env,
+            dry=False,
         )
-        trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env)
-        report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
         format_dry_run({"test": report})
 
 
+@pytest.mark.filterwarnings("ignore:shot_distribution is set but backend")
 class TestAnalyticDryRun:
     """Analytic dry path (dry=True) must produce identical counts to real expand."""
 
@@ -111,29 +139,17 @@ class TestAnalyticDryRun:
         meta = _parametric_twirlable_meta()
         dummy_pipeline_env.param_sets = np.asarray([[0.1, 0.2], [0.3, 0.4]])
 
-        def _build():
-            return CircuitPipeline(
-                stages=[
-                    DummySpecStage(meta=meta),
-                    ParameterBindingStage(),
-                    PauliTwirlStage(n_twirls=7, seed=0),
-                    MeasurementStage(),
-                ]
-            )
+        def stages():
+            return [
+                DummySpecStage(meta=meta),
+                ParameterBindingStage(),
+                PauliTwirlStage(n_twirls=7, seed=0),
+                MeasurementStage(),
+            ]
 
-        real_trace = _build().run_forward_pass("ignored", dummy_pipeline_env)
-        dry_trace = _build().run_forward_pass("ignored", dummy_pipeline_env, dry=True)
-
-        real_report = dry_run_pipeline(
-            "real", real_trace, _build().stages, dummy_pipeline_env
-        )
-        dry_report = dry_run_pipeline(
-            "dry", dry_trace, _build().stages, dummy_pipeline_env
-        )
-        assert real_report.total_circuits == dry_report.total_circuits
-        # Fan-outs per stage must match too.
-        for real_stage, dry_stage in zip(real_report.stages, dry_report.stages):
-            assert real_stage.factor == dry_stage.factor
+        _, real = _dry_run(stages(), dummy_pipeline_env, dry=False, name="real")
+        _, dry = _dry_run(stages(), dummy_pipeline_env, dry=True, name="dry")
+        _assert_same_fanout(real, dry)
 
     def test_param_binding_fast_path_counts_correctly(self, dummy_pipeline_env):
         """Fast-path ParameterBindingStage populates qasm_bodies; dry-run
@@ -141,16 +157,13 @@ class TestAnalyticDryRun:
         meta = _parametric_twirlable_meta()
         dummy_pipeline_env.param_sets = np.asarray([[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]])
 
-        pipeline = CircuitPipeline(
-            stages=[
+        _, dry_report = _dry_run(
+            [
                 DummySpecStage(meta=meta),
                 ParameterBindingStage(),
                 MeasurementStage(shot_distribution="weighted"),
-            ]
-        )
-        dry_trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
-        dry_report = dry_run_pipeline(
-            "dry", dry_trace, pipeline.stages, dummy_pipeline_env
+            ],
+            dummy_pipeline_env,
         )
 
         # 1 body × 3 param sets × 2 obs groups.
@@ -166,15 +179,15 @@ class TestAnalyticDryRun:
 
         spy = mocker.spy(_pauli_twirl_mod, "_apply_twirl_substitute")
 
-        pipeline = CircuitPipeline(
-            stages=[
+        _dry_run(
+            [
                 DummySpecStage(meta=meta),
                 ParameterBindingStage(),
                 PauliTwirlStage(n_twirls=50, seed=0),
                 MeasurementStage(),
-            ]
+            ],
+            dummy_pipeline_env,
         )
-        pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
         assert spy.call_count == 0, "dry path must skip twirl DAG substitution"
 
     def test_real_path_uses_pauli_twirl_deepcopy(self, dummy_pipeline_env, mocker):
@@ -184,27 +197,27 @@ class TestAnalyticDryRun:
 
         spy = mocker.spy(_pauli_twirl_mod, "_apply_twirl_substitute")
 
-        pipeline = CircuitPipeline(
-            stages=[
+        _dry_run(
+            [
                 DummySpecStage(meta=meta),
                 ParameterBindingStage(),
                 PauliTwirlStage(n_twirls=5, seed=0),
                 MeasurementStage(),
-            ]
+            ],
+            dummy_pipeline_env,
+            dry=False,
         )
-        pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=False)
         assert spy.call_count > 0, "real path must apply twirl DAG substitution"
 
     def test_dry_preserves_per_group_shots_artifact(self, dummy_pipeline_env):
         """Dry MeasurementStage must still populate per_group_shots via shot allocation."""
-        meta = two_group_meta()
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=meta),
+        trace, _ = _dry_run(
+            [
+                DummySpecStage(meta=two_group_meta()),
                 MeasurementStage(shot_distribution="weighted"),
-            ]
+            ],
+            dummy_pipeline_env,
         )
-        trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
         assert "per_group_shots" in trace.env_artifacts
 
     def test_introspect_metadata_survives_dry(self, dummy_pipeline_env):
@@ -215,8 +228,8 @@ class TestAnalyticDryRun:
         meta = _parametric_twirlable_meta()
         dummy_pipeline_env.param_sets = np.asarray([[0.1, 0.2]])
 
-        pipeline = CircuitPipeline(
-            stages=[
+        _, report = _dry_run(
+            [
                 DummySpecStage(meta=meta),
                 ParameterBindingStage(),
                 PauliTwirlStage(n_twirls=4, seed=0),
@@ -225,10 +238,9 @@ class TestAnalyticDryRun:
                 # on the dummy expval backend — the qwc grouping is what
                 # we want to inspect for n_groups / n_pauli_terms.
                 MeasurementStage(shot_distribution="weighted"),
-            ]
+            ],
+            dummy_pipeline_env,
         )
-        trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
-        report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
 
         by_name = {s.name: s for s in report.stages}
 
@@ -260,15 +272,13 @@ class TestAnalyticDryRun:
         for stage-produced state — callers should not need to drop into
         ``_build_pipeline_env`` or a pipeline's private spec factory to read
         shot allocations or other forward-pass artifacts."""
-        meta = two_group_meta()
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=meta),
+        trace, report = _dry_run(
+            [
+                DummySpecStage(meta=two_group_meta()),
                 MeasurementStage(shot_distribution="weighted"),
-            ]
+            ],
+            dummy_pipeline_env,
         )
-        trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
-        report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
         assert "per_group_shots" in report.env_artifacts
         assert (
             report.env_artifacts["per_group_shots"]
@@ -310,6 +320,7 @@ class TestAnalyticDryRun:
         )
 
 
+@pytest.mark.filterwarnings("ignore:shot_distribution is set but backend")
 class TestMeasurementStageReduction:
     """MeasurementStage must be reported as a reduction when observable grouping
     collapses multiple Pauli terms into fewer commuting groups. The spec stage's
@@ -331,18 +342,16 @@ class TestMeasurementStageReduction:
         """Two QWC-commuting Pauli terms collapse to one group — the spec stage
         reports one circuit per term (×2 baseline) and MeasurementStage reports
         the grouping as a reduction (``factor = 0.5``)."""
-        meta = self._qwc_single_group_meta()
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=meta),
+        _, report = _dry_run(
+            [
+                DummySpecStage(meta=self._qwc_single_group_meta()),
                 # Pin shot_distribution so MeasurementStage stays on the qwc
                 # branch (the dummy backend supports expval and would otherwise
                 # auto-promote to _backend_expval).
                 MeasurementStage(shot_distribution="weighted"),
-            ]
+            ],
+            dummy_pipeline_env,
         )
-        trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
-        report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
 
         spec, meas = report.stages
         assert spec.factor == 2.0  # one per Pauli term
@@ -366,15 +375,14 @@ class TestMeasurementStageReduction:
             observable=SparsePauliOp.from_list([("ZZ", 0.5), ("ZI", 0.5)]),
         )
 
-        pipeline = CircuitPipeline(
-            stages=[
+        _, report = _dry_run(
+            [
                 DummySpecStage(meta=meta),
                 ParameterBindingStage(),
                 MeasurementStage(shot_distribution="weighted"),
-            ]
+            ],
+            dummy_pipeline_env,
         )
-        trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
-        report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
 
         spec, param, meas = report.stages
         assert spec.factor == 2.0  # 1 body × 2 Pauli terms
@@ -397,11 +405,9 @@ class TestMeasurementStageReduction:
             circuit_bodies=(((), circuit_to_dag(qc)),),
             observable=observable,
         )
-        pipeline = CircuitPipeline(
-            stages=[DummySpecStage(meta=meta), MeasurementStage()]
+        _, report = _dry_run(
+            [DummySpecStage(meta=meta), MeasurementStage()], dummy_pipeline_env
         )
-        trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
-        report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
 
         spec, meas = report.stages
         # All 4 Paulis QWC-commute, so plain qwc would also yield 1 group —
@@ -422,11 +428,9 @@ class TestMeasurementStageReduction:
             circuit_bodies=(((), circuit_to_dag(qc)),),
             measured_wires=(0, 1),
         )
-        pipeline = CircuitPipeline(
-            stages=[DummySpecStage(meta=meta), MeasurementStage()]
+        _, report = _dry_run(
+            [DummySpecStage(meta=meta), MeasurementStage()], dummy_pipeline_env
         )
-        trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
-        report = dry_run_pipeline("test", trace, pipeline.stages, dummy_pipeline_env)
 
         spec, meas = report.stages
         assert spec.factor == 1.0  # 1 body, no observable
@@ -443,34 +447,33 @@ class TestQuEPPDryExpand:
         meta = _parametric_twirlable_meta()
         dummy_pipeline_env.param_sets = np.asarray([[0.1, 0.2]])
 
-        def _build():
-            return CircuitPipeline(
-                stages=[
-                    DummySpecStage(meta=meta),
-                    QEMStage(
-                        protocol=QuEPP(
-                            truncation_order=1, n_twirls=0, sampling="exhaustive"
-                        )
-                    ),
-                    PauliTwirlStage(n_twirls=3, seed=0),
-                    MeasurementStage(),
-                ],
-                suppress_performance_warnings=True,
-            )
+        def stages():
+            return [
+                DummySpecStage(meta=meta),
+                QEMStage(
+                    protocol=QuEPP(
+                        truncation_order=1, n_twirls=0, sampling="exhaustive"
+                    )
+                ),
+                PauliTwirlStage(n_twirls=3, seed=0),
+                MeasurementStage(),
+            ]
 
-        real_pipeline = _build()
-        dry_pipeline = _build()
-        real_trace = real_pipeline.run_forward_pass("ignored", dummy_pipeline_env)
-        dry_trace = dry_pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, dry=True
+        _, real_report = _dry_run(
+            stages(),
+            dummy_pipeline_env,
+            dry=False,
+            name="r",
+            suppress_performance_warnings=True,
         )
-        real_report = dry_run_pipeline(
-            "r", real_trace, real_pipeline.stages, dummy_pipeline_env
+        _, dry_report = _dry_run(
+            stages(),
+            dummy_pipeline_env,
+            dry=True,
+            name="d",
+            suppress_performance_warnings=True,
         )
-        dry_report = dry_run_pipeline(
-            "d", dry_trace, dry_pipeline.stages, dummy_pipeline_env
-        )
-        assert real_report.total_circuits == dry_report.total_circuits
+        _assert_same_fanout(real_report, dry_report)
 
         # QEMStage's introspect metadata must also survive the dry path —
         # n_rotations / n_paths are populated in QuEPP.dry_expand's context
@@ -488,8 +491,8 @@ class TestQuEPPDryExpand:
 
         spy = mocker.spy(_quepp_mod, "_simulate_clifford_ensemble")
 
-        pipeline = CircuitPipeline(
-            stages=[
+        _dry_run(
+            [
                 DummySpecStage(meta=meta),
                 QEMStage(
                     protocol=QuEPP(
@@ -499,14 +502,15 @@ class TestQuEPPDryExpand:
                 PauliTwirlStage(n_twirls=1, seed=0),
                 MeasurementStage(),
             ],
+            dummy_pipeline_env,
             suppress_performance_warnings=True,
         )
-        pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
         assert spy.call_count == 0, "dry QuEPP must skip Clifford simulation"
 
 
 @pytest.mark.usefixtures("suppress_quepp_warnings")
 @pytest.mark.filterwarnings("ignore::UserWarning:divi.qprog.algorithms._vqe")
+@pytest.mark.filterwarnings("ignore:shot_distribution is set but backend")
 class TestQuantumProgramDryRun:
     """``QuantumProgram.dry_run`` analytic default + ``force_circuit_generation`` escape hatch."""
 
@@ -519,32 +523,37 @@ class TestQuantumProgramDryRun:
             qem_protocol=QuEPP(truncation_order=1, n_twirls=3),
         )
 
-    def test_default_and_forced_match(self, time_evolution_program):
-        """``dry_run()`` (analytic) and ``dry_run(force_circuit_generation=True)``
-        must produce the same total circuit count."""
-        analytic = time_evolution_program.dry_run()
-        forced = time_evolution_program.dry_run(force_circuit_generation=True)
-        assert set(analytic) == set(forced)
-        for name in analytic:
-            assert analytic[name].total_circuits == forced[name].total_circuits
-            # Per-stage fan-outs must also agree.
-            for a_stage, f_stage in zip(analytic[name].stages, forced[name].stages):
-                assert a_stage.factor == f_stage.factor, (
-                    f"{name}/{a_stage.name}: analytic={a_stage.factor} "
-                    f"forced={f_stage.factor}"
-                )
-
-    def test_env_artifacts_exposed_via_dry_run(self, default_test_simulator):
-        """Callers can read ``per_group_shots`` (and any other stage artifact)
-        straight off the :class:`DryRunReport` — no private hooks needed."""
-        vqe = VQE(
+    def _h2_vqe(self, backend, optimizer, **kwargs):
+        """An H₂ HartreeFock VQE — the molecule boilerplate the program-level
+        dry-run tests share."""
+        return VQE(
             molecule=qp.qchem.Molecule(
                 symbols=["H", "H"],
                 coordinates=np.array([(0.0, 0.0, 0.0), (0.0, 0.0, 0.5)]),
             ),
             ansatz=HartreeFockAnsatz(),
             n_layers=1,
-            backend=default_test_simulator,
+            backend=backend,
+            optimizer=optimizer,
+            **kwargs,
+        )
+
+    def test_default_and_forced_match(self, time_evolution_program):
+        """``dry_run()`` (analytic) and ``dry_run(force_circuit_generation=True)``
+        must produce the same total circuit count and per-stage fan-out."""
+        _assert_report_dicts_match(
+            time_evolution_program.dry_run(),
+            time_evolution_program.dry_run(force_circuit_generation=True),
+        )
+
+    def test_env_artifacts_exposed_via_dry_run(
+        self, default_test_simulator, default_optimizer
+    ):
+        """Callers can read ``per_group_shots`` (and any other stage artifact)
+        straight off the :class:`DryRunReport` — no private hooks needed."""
+        vqe = self._h2_vqe(
+            default_test_simulator,
+            default_optimizer,
             grouping_strategy="qwc",
             shot_distribution="weighted",
         )
@@ -558,30 +567,33 @@ class TestQuantumProgramDryRun:
     @pytest.mark.filterwarnings(
         "ignore:Backend supports analytic expectation values:UserWarning"
     )
-    def test_default_and_forced_match_non_qem(self, default_test_simulator):
+    def test_default_and_forced_match_non_qem(
+        self, default_test_simulator, default_optimizer
+    ):
         """Parity between analytic and ``force_circuit_generation=True`` must
         also hold for programs without any QEM stage — the ``TimeEvolution``
         fixture above brings QuEPP, so the non-QEM path needs its own lock."""
-        vqe = VQE(
-            molecule=qp.qchem.Molecule(
-                symbols=["H", "H"],
-                coordinates=np.array([(0.0, 0.0, 0.0), (0.0, 0.0, 0.5)]),
-            ),
-            ansatz=HartreeFockAnsatz(),
-            n_layers=1,
-            backend=default_test_simulator,
-            grouping_strategy="qwc",
+        vqe = self._h2_vqe(
+            default_test_simulator, default_optimizer, grouping_strategy="qwc"
         )
-        analytic = vqe.dry_run()
-        forced = vqe.dry_run(force_circuit_generation=True)
-        assert set(analytic) == set(forced)
-        for name in analytic:
-            assert analytic[name].total_circuits == forced[name].total_circuits
-            for a_stage, f_stage in zip(analytic[name].stages, forced[name].stages):
-                assert a_stage.factor == f_stage.factor, (
-                    f"{name}/{a_stage.name}: analytic={a_stage.factor} "
-                    f"forced={f_stage.factor}"
-                )
+        _assert_report_dicts_match(
+            vqe.dry_run(), vqe.dry_run(force_circuit_generation=True)
+        )
+
+    def test_dry_run_skips_initial_spec_without_preprocessors(
+        self, default_test_simulator, default_optimizer, mocker
+    ):
+        """A program exposing no named pipelines returns ``{}`` from
+        ``dry_run()`` without invoking ``_initial_spec()`` — honoring the
+        documented opt-out for programs that never call ``evaluate()``."""
+        vqe = self._h2_vqe(default_test_simulator, default_optimizer)
+        mocker.patch.object(vqe, "_preprocessors", return_value=())
+        spec = mocker.patch.object(
+            vqe, "_initial_spec", side_effect=NotImplementedError
+        )
+
+        assert vqe.dry_run() == {}
+        spec.assert_not_called()
 
 
 class _NonDryDagConsumerStage(BundleStage):
@@ -634,22 +646,19 @@ class TestDrySafetyFallback:
     stage would mutate shared placeholder DAGs, warning the user and keeping
     the circuit count correct."""
 
-    def _build(self, meta):
-        return CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=meta),
-                PauliTwirlStage(n_twirls=4, seed=0),
-                _NonDryDagConsumerStage(),
-                MeasurementStage(),
-            ]
-        )
+    def _stages(self, meta):
+        return [
+            DummySpecStage(meta=meta),
+            PauliTwirlStage(n_twirls=4, seed=0),
+            _NonDryDagConsumerStage(),
+            MeasurementStage(),
+        ]
 
     def test_fallback_warning_names_upstream_and_culprit(self, dummy_pipeline_env):
         """The emitted warning names both the upstream dry-aware stage and
         the downstream non-dry-aware DAG consumer(s)."""
-        pipeline = self._build(_parametric_twirlable_meta())
         with pytest.warns(DiviPerformanceWarning) as record:
-            pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
+            _dry_run(self._stages(_parametric_twirlable_meta()), dummy_pipeline_env)
 
         messages = [str(w.message) for w in record.list]
         assert any(
@@ -664,17 +673,15 @@ class TestDrySafetyFallback:
         """When two or more downstream stages are unsafe, the warning's
         ``culprits`` list must name all of them — comma-joined, in pipeline
         order — so users can see every stage they need to fix."""
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_parametric_twirlable_meta()),
-                PauliTwirlStage(n_twirls=3, seed=0),
-                _NonDryDagConsumerStage(),
-                _SecondNonDryDagConsumerStage(),
-                MeasurementStage(),
-            ]
-        )
+        stages = [
+            DummySpecStage(meta=_parametric_twirlable_meta()),
+            PauliTwirlStage(n_twirls=3, seed=0),
+            _NonDryDagConsumerStage(),
+            _SecondNonDryDagConsumerStage(),
+            MeasurementStage(),
+        ]
         with pytest.warns(DiviPerformanceWarning) as record:
-            pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
+            _dry_run(stages, dummy_pipeline_env)
 
         messages = [str(w.message) for w in record.list]
         # Both distinct culprit class names must appear in a single warning,
@@ -691,9 +698,8 @@ class TestDrySafetyFallback:
         """The demoted stage's real expand ran (not the dry placeholder path)."""
         spy = mocker.spy(_pauli_twirl_mod, "_apply_twirl_substitute")
 
-        pipeline = self._build(_parametric_twirlable_meta())
         with pytest.warns(DiviPerformanceWarning):
-            pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
+            _dry_run(self._stages(_parametric_twirlable_meta()), dummy_pipeline_env)
         assert spy.call_count > 0, (
             "Fallback should have run the real PauliTwirl expand, which "
             "invokes _apply_twirl_substitute"
@@ -704,41 +710,27 @@ class TestDrySafetyFallback:
         fully-real forward pass."""
         meta = _parametric_twirlable_meta()
 
-        dry_pipeline = self._build(meta)
-        real_pipeline = self._build(meta)
-
         with pytest.warns(DiviPerformanceWarning):
-            dry_trace = dry_pipeline.run_forward_pass(
-                "ignored", dummy_pipeline_env, dry=True
-            )
-        real_trace = real_pipeline.run_forward_pass(
-            "ignored", dummy_pipeline_env, dry=False
-        )
-
-        dry_report = dry_run_pipeline(
-            "dry", dry_trace, dry_pipeline.stages, dummy_pipeline_env
-        )
-        real_report = dry_run_pipeline(
-            "real", real_trace, real_pipeline.stages, dummy_pipeline_env
+            _, dry_report = _dry_run(self._stages(meta), dummy_pipeline_env, name="dry")
+        _, real_report = _dry_run(
+            self._stages(meta), dummy_pipeline_env, dry=False, name="real"
         )
         assert dry_report.total_circuits == real_report.total_circuits
 
     def test_no_warning_when_all_downstream_dry_aware(self, dummy_pipeline_env):
         """Safe pipelines (every downstream stage overrides ``dry_expand``)
         must not emit the fallback warning."""
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_parametric_twirlable_meta()),
-                PauliTwirlStage(n_twirls=4, seed=0),
-                MeasurementStage(),
-            ]
-        )
+        stages = [
+            DummySpecStage(meta=_parametric_twirlable_meta()),
+            PauliTwirlStage(n_twirls=4, seed=0),
+            MeasurementStage(),
+        ]
         # Any ``DiviPerformanceWarning`` fired here would mean the pipeline
         # spuriously demoted a stage — promote it to an exception so the
         # test fails loudly rather than needing to inspect a record list.
         with warnings.catch_warnings():
             warnings.simplefilter("error", DiviPerformanceWarning)
-            pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
+            _dry_run(stages, dummy_pipeline_env)
 
 
 class TestTwoQubitDepth:
@@ -788,16 +780,16 @@ class TestCircuitStatsAggregate:
         # the same parametric structure, so depth/width stats are constant.
         meta = _parametric_twirlable_meta()
         dummy_pipeline_env.param_sets = np.asarray([[0.1, 0.2]])
-        pipeline = CircuitPipeline(
-            stages=[
+        _, report = _dry_run(
+            [
                 DummySpecStage(meta=meta),
                 ParameterBindingStage(),
                 PauliTwirlStage(n_twirls=3, seed=0),
                 MeasurementStage(),
-            ]
+            ],
+            dummy_pipeline_env,
+            name="t",
         )
-        trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=True)
-        report = dry_run_pipeline("t", trace, pipeline.stages, dummy_pipeline_env)
         stats = report.circuit_stats
         assert stats, "circuit_stats should be populated when DAG bodies exist"
         # Catch zeroing bugs: the parametric meta has gates, so mean_depth > 0.

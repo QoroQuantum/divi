@@ -32,7 +32,6 @@ from divi.pipeline import (
 )
 from divi.pipeline._compilation import (
     _batch_has_templates,
-    _collapse_to_parent_results,
     _compile_batch,
     _compile_template_batch,
 )
@@ -733,27 +732,6 @@ def test_dispatch_calls_submit_circuit_templates():
     templates, _ = backend.template_calls[0]
     assert len(templates) == 1  # single (body, meas) variant
     assert len(templates[0].parameter_sets) == 2
-
-
-class TestCollapseToParentResults:
-    """Spec: _collapse_to_parent_results maps backend labels back to BranchKeys."""
-
-    def test_maps_labels_to_branch_keys(self):
-        spec_circ = ("spec", "circ")
-        lineage = {
-            "a/obs_group:0": (spec_circ, ("obs_group", 0)),
-            "b/obs_group:1": (spec_circ, ("obs_group", 1)),
-        }
-        raw = {"a/obs_group:0": 1.0, "b/obs_group:1": 2.0}
-        out = _collapse_to_parent_results(raw, lineage)
-        assert out[(spec_circ, ("obs_group", 0))] == 1.0
-        assert out[(spec_circ, ("obs_group", 1))] == 2.0
-
-    def test_ignores_unknown_labels(self):
-        lineage = {"only": (("spec", "k"),)}
-        raw = {"only": 1, "unknown": 2}
-        out = _collapse_to_parent_results(raw, lineage)
-        assert out == {(("spec", "k"),): 1}
 
 
 class TestFormatPipelineTree:

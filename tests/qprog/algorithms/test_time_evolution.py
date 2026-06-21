@@ -17,6 +17,12 @@ from divi.pipeline.stages import MeasurementStage
 from divi.qprog import OnesState, SuperpositionState, TimeEvolution, ZerosState
 from tests.qprog._program_contracts import ObservableMeasuringContractsBase
 
+
+def _evolution_pipeline(te):
+    """The program's single pipeline for the evolution measurement protocol."""
+    return te._build_preprocessor_pipeline(te._evolution_preprocessor())
+
+
 # Tolerance for probability checks (5000 shots: ~0.02 std for p=0.5)
 _PROB_TOL = 0.05
 
@@ -82,7 +88,7 @@ class TestTimeEvolutionGenerateCircuits:
             backend=default_test_simulator,
         )
         env = te._build_pipeline_env()
-        trace = te._pipeline.run_forward_pass(te._hamiltonian, env)
+        trace = _evolution_pipeline(te).run_forward_pass(te._hamiltonian, env)
         # ExactTrotterization: 1 Hamiltonian sample → 1 circuit
         assert len(trace.final_batch) >= 1
 
@@ -99,7 +105,7 @@ class TestTimeEvolutionGenerateCircuits:
             backend=default_test_simulator,
         )
         env = te._build_pipeline_env()
-        trace = te._pipeline.run_forward_pass(te._hamiltonian, env)
+        trace = _evolution_pipeline(te).run_forward_pass(te._hamiltonian, env)
         # QDrift with 3 samples → at least 3 circuits
         assert len(trace.final_batch) >= 3
 
@@ -800,7 +806,7 @@ class TestTimeEvolutionQEM:
             observable=qp.PauliZ(0),
             backend=default_test_simulator,
         )
-        stage_names = [type(s).__name__ for s in te._pipeline.stages]
+        stage_names = [type(s).__name__ for s in _evolution_pipeline(te).stages]
         assert "QEMStage" not in stage_names
         assert "PauliTwirlStage" not in stage_names
 
@@ -812,7 +818,7 @@ class TestTimeEvolutionQEM:
             backend=default_test_simulator,
             qem_protocol=QuEPP(truncation_order=1, n_twirls=0),
         )
-        stage_names = [type(s).__name__ for s in te._pipeline.stages]
+        stage_names = [type(s).__name__ for s in _evolution_pipeline(te).stages]
         assert "QEMStage" in stage_names
         assert "PauliTwirlStage" not in stage_names
 
@@ -824,7 +830,7 @@ class TestTimeEvolutionQEM:
             backend=default_test_simulator,
             qem_protocol=QuEPP(truncation_order=1, n_twirls=5),
         )
-        stage_names = [type(s).__name__ for s in te._pipeline.stages]
+        stage_names = [type(s).__name__ for s in _evolution_pipeline(te).stages]
         assert "QEMStage" in stage_names
         assert "PauliTwirlStage" in stage_names
 
@@ -840,7 +846,7 @@ class TestTimeEvolutionQEM:
                 extrapolator=RichardsonExtrapolator(),
             ),
         )
-        stage_names = [type(s).__name__ for s in te._pipeline.stages]
+        stage_names = [type(s).__name__ for s in _evolution_pipeline(te).stages]
         assert "QEMStage" in stage_names
         assert "PauliTwirlStage" not in stage_names
 
@@ -853,7 +859,7 @@ class TestTimeEvolutionQEM:
             backend=default_test_simulator,
             qem_protocol=ZNE(scale_factors=[1.0, 3.0]),
         )
-        stage_names = [type(s).__name__ for s in te._pipeline.stages]
+        stage_names = [type(s).__name__ for s in _evolution_pipeline(te).stages]
         assert "QEMStage" not in stage_names
 
     def test_non_variational_pipeline_has_no_param_binding(
@@ -866,7 +872,7 @@ class TestTimeEvolutionQEM:
             observable=qp.PauliZ(0),
             backend=default_test_simulator,
         )
-        stage_names = [type(s).__name__ for s in te._pipeline.stages]
+        stage_names = [type(s).__name__ for s in _evolution_pipeline(te).stages]
         assert "ParameterBindingStage" not in stage_names
 
     def test_quepp_run_produces_mitigated_result(self):
@@ -924,7 +930,7 @@ class TestTimeEvolutionMeasurementConfig:
     def _measurement_stage(te: TimeEvolution):
         return next(
             stage
-            for stage in te._pipeline.stages
+            for stage in _evolution_pipeline(te).stages
             if isinstance(stage, MeasurementStage)
         )
 

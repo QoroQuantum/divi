@@ -19,13 +19,14 @@ def basic_ansatz():
 
 
 @pytest.fixture
-def vqe_program(dummy_simulator, basic_ansatz):
+def vqe_program(dummy_simulator, basic_ansatz, default_optimizer):
     return VQE(
         hamiltonian=qp.Z(0),
         n_electrons=1,
         ansatz=basic_ansatz,
         n_layers=1,
         backend=dummy_simulator,
+        optimizer=default_optimizer,
     )
 
 

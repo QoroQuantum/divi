@@ -17,6 +17,7 @@ from ._data_binding_stage import (
 )
 from ._measurement_stage import MeasurementStage
 from ._pce_cost_stage import PCECostStage
+from ._preprocess_stage import PreprocessStage
 from ._pennylane_spec_stage import PennyLaneSpecStage
 from ._qiskit_spec_stage import QiskitSpecStage
 from ._trotter_spec_stage import TrotterSpecStage
@@ -30,6 +31,7 @@ __all__ = [
     "PauliTwirlStage",
     "PCECostStage",
     "PennyLaneSpecStage",
+    "PreprocessStage",
     "QEMStage",
     "QiskitSpecStage",
     "SampleLossFn",

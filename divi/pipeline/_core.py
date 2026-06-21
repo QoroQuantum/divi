@@ -19,7 +19,6 @@ from divi.exceptions import ExecutionCancelledError
 
 from ._compilation import (
     _batch_has_templates,
-    _collapse_to_parent_results,
     _compile_batch,
     _compile_template_batch,
 )
@@ -29,6 +28,7 @@ from ._postprocessing import (
     _counts_to_probs,
     _expval_dicts_to_indexed,
 )
+from ._result_keys_operations import FOREIGN_KEY_ATTR, _collapse_to_parent_results
 from .abc import (
     BundleStage,
     ChildResults,
@@ -45,7 +45,6 @@ from .abc import (
     StageOutput,
     StageToken,
 )
-from .transformations import FOREIGN_KEY_ATTR
 
 logger = logging.getLogger(__name__)
 

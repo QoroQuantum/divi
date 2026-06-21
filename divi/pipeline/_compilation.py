@@ -11,27 +11,8 @@ from typing import Any
 import numpy as np
 
 from divi.circuits import MetaCircuit, TemplateEntry, dag_to_qasm_body
-from divi.pipeline.abc import BranchKey, ChildResults
-
-PARAM_SET_AXIS = "param_set"
-
-
-def _extract_param_set_idx(key: tuple, default: int | None = None) -> int:
-    """Extract the param_set index from a pipeline result key.
-
-    Raises ``KeyError`` when no ``param_set`` axis is present, unless ``default``
-    is given — a parameter-free body (e.g. an empty Fubini-Study prefix on the
-    ``|0>`` state) carries no such axis and is the sole set, so callers pass
-    ``default=0``.
-    """
-    for axis_name, idx in key:
-        if axis_name == PARAM_SET_AXIS:
-            return idx
-    if default is None:
-        raise KeyError(
-            f"No '{PARAM_SET_AXIS}' axis found in pipeline result key: {key}"
-        )
-    return default
+from divi.pipeline._result_keys_operations import PARAM_SET_AXIS
+from divi.pipeline.abc import BranchKey
 
 
 def _preamble(n_qubits: int) -> str:
@@ -180,25 +161,3 @@ def _compile_template_batch(
             )
 
     return entries, lineage_by_label
-
-
-def _collapse_to_parent_results(
-    raw_by_label: ChildResults, lineage_by_label: dict[str, BranchKey]
-) -> ChildResults:
-    """Map backend labels back to structured flat axis keys.
-
-    Example::
-
-        >>> raw_by_label = {'circuit:0': 0.42}
-        >>> lineage_by_label = {'circuit:0': (('circuit', 0),)}
-        >>> _collapse_to_parent_results(raw_by_label, lineage_by_label)
-        {(('circuit', 0),): 0.42}
-    """
-    regrouped: ChildResults = {}
-    for label, value in raw_by_label.items():
-        branch_key = lineage_by_label.get(label)
-        if branch_key is None:
-            continue
-        regrouped[branch_key] = value
-
-    return regrouped

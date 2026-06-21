@@ -26,7 +26,7 @@ from qiskit.converters import circuit_to_dag
 
 from divi.circuits import MetaCircuit
 from divi.pipeline import CircuitPipeline, ResultFormat
-from divi.pipeline._compilation import _extract_param_set_idx
+from divi.pipeline._result_keys_operations import extract_param_set_idx
 from divi.pipeline.abc import Stage
 from divi.pipeline.stages import (
     CircuitSpecStage,
@@ -341,7 +341,6 @@ class DataBindingMixin(_MixinBase):
         self._total_run_time += env.artifacts.get("run_time", 0.0)
 
         indexed = {
-            _extract_param_set_idx(key): float(value[0])
-            for key, value in result.items()
+            extract_param_set_idx(key): float(value[0]) for key, value in result.items()
         }
         return np.asarray([indexed[i] for i in range(len(indexed))], dtype=np.float64)

@@ -16,7 +16,7 @@ which metric is in play.
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -26,10 +26,12 @@ from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit, build_overlap_meta
-from divi.pipeline import ResultFormat
-from divi.pipeline._compilation import _extract_param_set_idx
+from divi.pipeline import CircuitPreprocessor, ResultFormat
+from divi.pipeline._result_keys_operations import (
+    average_by_param_set,
+    group_by_branch_and_param_set,
+)
 from divi.pipeline.abc import ContractViolation
-from divi.pipeline.stages import CircuitSpecStage, DataBindingStage, MeasurementStage
 
 if TYPE_CHECKING:
     from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
@@ -37,33 +39,28 @@ if TYPE_CHECKING:
 # Evaluator callables vary in arity: ``metric_fn``/``jac`` take the parameter
 # vector; ``fidelity_fn`` takes ``(theta, perturbations)``. Hence ``Callable[...]``.
 Evaluators = dict[str, Callable[..., Any]]
+_METRIC_BRANCH_AXES = ("ham", "circuit")
 
 
-def _run_metric(
+def _run_metric_by_branch(
     program: "VariationalQuantumAlgorithm",
-    meta_circuit: MetaCircuit,
+    preprocessor: CircuitPreprocessor,
     param_sets: npt.NDArray[np.float64],
-) -> dict[int, npt.NDArray[np.float64]]:
-    """Run ``meta_circuit`` through ``program``'s expectation pipeline, returning
-    ``{param_set_idx: per-observable expectations}``.
-
-    The single seam the estimators use: it runs the supplied MetaCircuit —
-    whatever observables and body it carries (the cost ansatz, or a truncated
-    prefix for the Fubini–Study metric) — through the program's generic
-    :meth:`~divi.qprog.VariationalQuantumAlgorithm._expectation_pipeline`, built on
-    demand so the program never registers a metric-specific pipeline.
-    """
-    result = program._execute(
-        program._expectation_pipeline(),
-        meta_circuit,
-        param_sets=np.atleast_2d(param_sets),
+) -> dict[tuple, dict[int, npt.NDArray[np.float64]]]:
+    """Run a metric preprocessor and keep selected source branches separate."""
+    result = cast(
+        dict[tuple, Any],
+        program.evaluate(
+            np.atleast_2d(param_sets),
+            preprocessor,
+            preserve_keys=True,
+            axes_to_preserve=_METRIC_BRANCH_AXES,
+        ),
     )
-    return {
-        _extract_param_set_idx(key, default=0): np.asarray(
-            value, dtype=np.float64
-        ).reshape(-1)
-        for key, value in result.items()
-    }
+    return group_by_branch_and_param_set(
+        result,
+        lambda value: np.asarray(value, dtype=np.float64).reshape(-1),
+    )
 
 
 #: Cap on distinct overlap circuits cached per fidelity evaluator. A fixed
@@ -97,31 +94,37 @@ def _ansatz_fingerprint(meta: MetaCircuit) -> _AnsatzKey:
     return tuple(str(p) for p in meta.parameters), gates
 
 
+def _overlap_preprocessor(
+    overlap_for: Callable[[MetaCircuit], MetaCircuit],
+) -> CircuitPreprocessor:
+    return CircuitPreprocessor(
+        "overlap",
+        preprocess=overlap_for,
+        result_format=ResultFormat.PROBS,
+        consumes_dag_bodies=True,
+        # Built once per ``bind`` and reused across fidelity calls (its
+        # ``overlap_for`` closure caches structurally, never resets), so the
+        # pipeline is safe to memoize for the run.
+        cache_key="overlap",
+    )
+
+
 def _run_overlap(
     program: "VariationalQuantumAlgorithm",
-    meta_circuit: MetaCircuit,
+    preprocessor: CircuitPreprocessor,
     param_sets: npt.NDArray[np.float64],
+    zeros: str,
 ) -> dict[int, float]:
-    """Run a compute-uncompute ``meta_circuit`` as a probability measurement,
-    returning ``{param_set_idx: P(all-zeros)}`` — the state-overlap fidelity.
-
-    The probs sibling of :func:`_run_metric`: it assembles the program's PROBS
-    measurement pipeline on demand (as :class:`SolutionSamplingMixin` does) and
-    reads the all-zeros bitstring probability per parameter row.
-    """
-    pipeline = program._assemble_pipeline(
-        CircuitSpecStage(),
-        MeasurementStage(),
-        result_format=ResultFormat.PROBS,
+    """Run an overlap preprocessor and return averaged all-zero probabilities."""
+    result = cast(
+        dict[tuple, Any],
+        program.evaluate(np.atleast_2d(param_sets), preprocessor, preserve_keys=True),
     )
-    result = program._execute(
-        pipeline, meta_circuit, param_sets=np.atleast_2d(param_sets)
+    averaged = average_by_param_set(
+        result,
+        lambda value: np.asarray([_zeros_probability(value, zeros)], dtype=np.float64),
     )
-    zeros = "0" * meta_circuit.n_qubits
-    return {
-        _extract_param_set_idx(key, default=0): _zeros_probability(value, zeros)
-        for key, value in result.items()
-    }
+    return {idx: float(value[0]) for idx, value in averaged.items()}
 
 
 def _zeros_probability(
@@ -172,18 +175,28 @@ class PullbackMetricEstimator(MetricEstimator):
 
     Requires the program's loss to be the expectation value of its cost
     Hamiltonian (VQE/QAOA, plain or unsupervised-data-bound CustomVQA).
+
+    When the cost fans out into several measurement branches (QDrift sampling,
+    a data cohort), the energy gradient averages linearly across branches while
+    the metric is the *mean of the per-branch metrics* ``E_b[G_b]``, not the
+    metric of the mean Jacobian ``G(E_b[J])``. This is deliberate and is the
+    only well-defined choice: each QDrift branch samples a different Hamiltonian
+    with its own term set and coefficients, so the branch Jacobians are not
+    commensurable to average. ``E_b[G_b]`` is the expected pullback metric over
+    the sampling distribution — the same empirical-Fisher averaging a batched
+    natural gradient uses. For the single-branch case (all deterministic VQAs)
+    the two forms coincide.
     """
 
     def check_compatible(self, program: "VariationalQuantumAlgorithm") -> None:
-        stages = program._cost_pipeline.stages
-        if not any(isinstance(s, MeasurementStage) for s in stages):
+        if program.cost_preprocessor().result_format is not ResultFormat.EXPVALS:
             raise ContractViolation(
                 "The pullback metric requires the loss to be the expectation "
-                "value of the cost Hamiltonian, but this program's cost pipeline "
-                "computes a classical objective (e.g. PCE). Use the Fubini–Study "
-                "estimator (FubiniStudyMetricEstimator) instead."
+                "value of the cost Hamiltonian, but this program's cost computes "
+                "a classical objective (e.g. PCE). Use the Fubini–Study estimator "
+                "(FubiniStudyMetricEstimator) instead."
             )
-        if any(getattr(s, "sample_loss", None) is not None for s in stages):
+        if getattr(program, "_sample_loss_fn", None) is not None:
             raise ContractViolation(
                 "The pullback metric is invalid for a supervised data-binding "
                 "loss: the per-sample loss is a non-linear function of the "
@@ -193,8 +206,15 @@ class PullbackMetricEstimator(MetricEstimator):
 
     def bind(self, program: "VariationalQuantumAlgorithm") -> Evaluators:
         shift_mask = program._grad_shift_mask
-        supports_expval = bool(getattr(program.backend, "supports_expval", False))
         cache: dict[str, Any] = {"key": None, "value": None}
+        if (
+            program.cost_circuit.observable is None
+            or len(program.cost_circuit.observable) != 1
+        ):
+            raise ContractViolation(
+                "The pullback metric requires the cost circuit to carry exactly "
+                "one loss observable."
+            )
 
         def grad_and_metric(
             params: npt.NDArray[np.float64],
@@ -204,25 +224,10 @@ class PullbackMetricEstimator(MetricEstimator):
                 np.asarray(params, dtype=np.float64).tobytes(),
             )
             if cache["key"] != key:
+                branch_payloads = _term_expectations(program, shift_mask + params)
                 gradients = []
                 metrics = []
-                for source_meta in _cost_source_metas(program):
-                    if (
-                        source_meta.observable is None
-                        or len(source_meta.observable) != 1
-                    ):
-                        raise ContractViolation(
-                            "The pullback metric requires each cost circuit to "
-                            "carry exactly one loss observable."
-                        )
-                    observables, coeffs = _split_into_terms(source_meta.observable[0])
-                    exp_vals = _term_expectations(
-                        program,
-                        observables,
-                        supports_expval,
-                        shift_mask + params,
-                        source_meta=source_meta,
-                    )
+                for exp_vals, coeffs in branch_payloads.values():
                     jacobian = 0.5 * (
                         exp_vals[0::2] - exp_vals[1::2]
                     )  # (m, v): d_i <P_r>
@@ -261,89 +266,64 @@ def _split_into_terms(
     return tuple(terms), np.asarray(coeffs, dtype=np.float64)
 
 
+def _zero_observable(n_qubits: int) -> SparsePauliOp:
+    """All-zeros observable for blocks/terms with no non-identity contribution."""
+    return SparsePauliOp("I" * n_qubits, coeffs=np.asarray([0.0]))
+
+
+def _split_observable_into_terms(meta: MetaCircuit) -> MetaCircuit:
+    """Expand a branch's single cost observable into its unit-coefficient
+    single-Pauli terms as a multi-observable tuple."""
+    if meta.observable is None or len(meta.observable) != 1:
+        raise ContractViolation(
+            "The pullback metric requires each cost branch to carry exactly "
+            "one loss observable."
+        )
+    terms, _ = _split_into_terms(meta.observable[0])
+    return replace(meta, observable=tuple(terms), _was_multi_obs=True)
+
+
+def _all_terms_preprocessor() -> CircuitPreprocessor:
+    """Cacheable preprocessor measuring every Pauli term of the cost observable
+    as separate expectation values in one multi-observable pass."""
+    return CircuitPreprocessor(
+        "metric-terms",
+        preprocess=_split_observable_into_terms,
+        cache_key="metric-terms",
+    )
+
+
 def _term_expectations(
     program: "VariationalQuantumAlgorithm",
-    observables: tuple[SparsePauliOp, ...],
-    supports_expval: bool,
     param_sets: npt.NDArray[np.float64],
-    *,
-    source_meta: MetaCircuit | None = None,
-) -> npt.NDArray[np.float64]:
-    """``(n_sets, n_terms)`` per-term expectations on the cost ansatz.
+) -> dict[tuple, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]]:
+    """Per-branch ``(n_sets, n_terms)`` term expectations and matching coefficients.
 
-    On expval-capable backends each term is measured as its own single-observable
-    run (analytic, no shot noise); otherwise all terms are measured together in a
-    single qubit-wise-commuting run from shot counts.
+    Measures every Pauli term of each branch's cost observable in one
+    multi-observable pass; the coefficients are recovered by inspecting the same
+    sampled cohort the cost evaluation used (``_post_spec_batch``),
+    rather than smuggled out through a closure.
     """
-    if supports_expval:
-        columns = []
-        for obs in observables:
-            indexed = _average_metric_runs(
-                [
-                    _run_metric(program, meta, param_sets)
-                    for meta in _cost_ansatz_metas(
-                        program, (obs,), source_meta=source_meta
-                    )
-                ]
+    by_branch = _run_metric_by_branch(program, _all_terms_preprocessor(), param_sets)
+    source = program._post_spec_batch()
+
+    payloads: dict[tuple, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]] = {}
+    for branch_key, by_param in by_branch.items():
+        source_meta = source.get(branch_key)
+        if source_meta is None or source_meta.observable is None:
+            raise ContractViolation(
+                "A measured metric branch is absent from the cost cohort or "
+                "carries no observable."
             )
-            columns.append(np.array([indexed[k][0] for k in sorted(indexed)]))
-        return np.column_stack(columns)
-
-    indexed = _average_metric_runs(
-        [
-            _run_metric(program, meta, param_sets)
-            for meta in _cost_ansatz_metas(
-                program, observables, source_meta=source_meta
+        _, coeffs = _split_into_terms(source_meta.observable[0])
+        rows = np.asarray([by_param[i] for i in sorted(by_param)], dtype=np.float64)
+        if rows.ndim != 2 or rows.shape[1] != len(coeffs):
+            raise ContractViolation(
+                "Per-term measurement count does not match the branch's "
+                "coefficient count."
             )
-        ]
-    )
-    return np.vstack([indexed[k] for k in sorted(indexed)])
-
-
-def _average_metric_runs(
-    runs: list[dict[int, npt.NDArray[np.float64]]],
-) -> dict[int, npt.NDArray[np.float64]]:
-    """Average identically-indexed metric results across a source cohort."""
-    if not runs:
-        raise RuntimeError("Metric source cohort cannot be empty.")
-    keys = runs[0].keys()
-    if any(run.keys() != keys for run in runs[1:]):
-        raise ContractViolation("Metric source cohort returned inconsistent indices.")
-    return {key: np.mean([run[key] for run in runs], axis=0) for key in keys}
-
-
-def _cost_source_metas(
-    program: "VariationalQuantumAlgorithm",
-) -> tuple[MetaCircuit, ...]:
-    """Return the cost pipeline's cached spec-stage circuit cohort."""
-    return tuple(program._pipeline_source_batch("cost").values())
-
-
-def _cost_ansatz_metas(
-    program: "VariationalQuantumAlgorithm",
-    observables: tuple[SparsePauliOp, ...],
-    *,
-    source_meta: MetaCircuit | None = None,
-) -> tuple[MetaCircuit, ...]:
-    """Cost ansatz cohort with each member measuring ``observables``."""
-    sources = (source_meta,) if source_meta is not None else _cost_source_metas(program)
-    return tuple(
-        replace(
-            meta,
-            observable=tuple(observables),
-            _was_multi_obs=True,
-        )
-        for meta in sources
-    )
-
-
-def _cost_ansatz_meta(
-    program: "VariationalQuantumAlgorithm",
-    observables: tuple[SparsePauliOp, ...],
-) -> MetaCircuit:
-    """The cost ansatz MetaCircuit with its observable replaced by ``observables``
-    — the per-term set the pullback metric measures on the full ansatz."""
-    return _cost_ansatz_metas(program, observables)[0]
+        payloads[branch_key] = (rows, coeffs)
+    return payloads
 
 
 #: Hermitian generator of each supported single-parameter rotation gate, as the
@@ -380,8 +360,8 @@ class FubiniStudyMetricEstimator(MetricEstimator):
 
     def check_compatible(self, program: "VariationalQuantumAlgorithm") -> None:
         # Generator extraction raises ContractViolation on any unsupported gate.
-        _fs_blocks(program.meta_circuit_factories["cost_circuit"])
-        if any(isinstance(s, DataBindingStage) for s in program._cost_pipeline.stages):
+        _fs_blocks(program.cost_circuit)
+        if getattr(program, "feature_batch", None) is not None:
             raise ContractViolation(
                 "The Fubini–Study metric does not support data-bound programs: "
                 "the ansatz state depends on the data input, so the metric is "
@@ -389,31 +369,26 @@ class FubiniStudyMetricEstimator(MetricEstimator):
             )
 
     def bind(self, program: "VariationalQuantumAlgorithm") -> Evaluators:
-        supports_expval = bool(getattr(program.backend, "supports_expval", False))
+        blocks, full_params, _ = _fs_blocks(program.cost_circuit)
 
         def metric_fn(params: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
             theta = np.asarray(params, dtype=np.float64).reshape(-1)
-            cohort_metrics = []
-            for source_meta in _cost_source_metas(program):
-                blocks, full_params, n_qubits = _fs_blocks(source_meta)
-                metric = np.zeros((len(full_params), len(full_params)))
-                for prefix_ops, gens in blocks:
-                    indices = [pidx for pidx, _ in gens]
-                    generators = [g for _, g in gens]
-                    block = _fs_block_covariance(
-                        program,
-                        prefix_ops,
-                        full_params,
-                        n_qubits,
-                        theta,
-                        generators,
-                        supports_expval,
+            branch_metrics: dict[tuple, npt.NDArray[np.float64]] = {}
+            for block_id, _ in enumerate(blocks):
+                blocks_by_branch = _fs_block_covariance(
+                    program,
+                    full_params,
+                    theta,
+                    block_id,
+                )
+                for branch_key, (indices, block) in blocks_by_branch.items():
+                    metric = branch_metrics.setdefault(
+                        branch_key, np.zeros((len(full_params), len(full_params)))
                     )
                     for a, ia in enumerate(indices):
                         for b, ib in enumerate(indices):
                             metric[ia, ib] = block[a, b]
-                cohort_metrics.append(metric)
-            return np.mean(cohort_metrics, axis=0)
+            return np.mean(list(branch_metrics.values()), axis=0)
 
         return {"metric_fn": metric_fn}
 
@@ -428,23 +403,21 @@ class StochasticFidelityMetricEstimator(MetricEstimator):
     estimated as the all-zeros probability of the compute-uncompute circuit
     :math:`U(\theta_1)\,U(\theta_2)^\dagger`. Like the Fubini–Study metric it is
     the geometry of the ansatz state — independent of the *loss observable* — so
-    it applies to any qiskit-invertible ansatz. The overlap circuits are built
-    from the *current* cost source cohort (``_cost_source_metas``) and averaged,
-    exactly as the pullback / Fubini–Study estimators do, so under a stochastic
-    trotterization (QDrift QAOA) the metric conditions the SPSA gradient with the
-    geometry of the same sampled Hamiltonians used for the current cost evaluation.
+    it applies to any qiskit-invertible ansatz. The overlap circuits are built by
+    a preprocessor from the program's normal post-spec ansatz cohort and averaged
+    over preserved pipeline axes.
     """
 
     def check_compatible(self, program: "VariationalQuantumAlgorithm") -> None:
         try:
-            build_overlap_meta(program.meta_circuit_factories["cost_circuit"])
+            build_overlap_meta(program.cost_circuit)
         except Exception as exc:
             raise ContractViolation(
                 "The stochastic-fidelity metric requires an invertible ansatz "
                 "(qiskit QuantumCircuit.inverse()); this program's cost circuit "
                 "could not be inverted."
             ) from exc
-        if any(isinstance(s, DataBindingStage) for s in program._cost_pipeline.stages):
+        if getattr(program, "feature_batch", None) is not None:
             raise ContractViolation(
                 "The stochastic-fidelity metric does not support data-bound "
                 "programs: the ansatz state depends on the data input, so the "
@@ -452,25 +425,20 @@ class StochasticFidelityMetricEstimator(MetricEstimator):
             )
 
     def bind(self, program: "VariationalQuantumAlgorithm") -> Evaluators:
-        # Cache the overlap circuit only for a stable ansatz; a stage that
-        # re-samples per evaluation (e.g. QDrift) declares cache_key_extras.
-        spec_stage = program._cost_pipeline.stages[0]
-        deterministic = not spec_stage.cache_key_extras(program._build_pipeline_env())
-        overlap_cache: dict[_AnsatzKey, MetaCircuit] | None = (
-            {} if deterministic else None
-        )
+        overlap_cache: dict[_AnsatzKey, MetaCircuit] = {}
 
-        def _overlap_for(source_meta: MetaCircuit) -> MetaCircuit:
-            if overlap_cache is None:
-                return build_overlap_meta(source_meta)
-            key = _ansatz_fingerprint(source_meta)
+        def _overlap_for(meta: MetaCircuit) -> MetaCircuit:
+            key = _ansatz_fingerprint(meta)
             overlap = overlap_cache.get(key)
             if overlap is None:
                 if len(overlap_cache) >= _OVERLAP_CACHE_CAP:
                     overlap_cache.clear()
-                overlap = build_overlap_meta(source_meta)
+                overlap = build_overlap_meta(meta)
                 overlap_cache[key] = overlap
             return overlap
+
+        preprocessor = _overlap_preprocessor(_overlap_for)
+        zeros = "0" * program.cost_circuit.n_qubits
 
         def fidelity_fn(
             theta: npt.NDArray[np.float64],
@@ -478,11 +446,8 @@ class StochasticFidelityMetricEstimator(MetricEstimator):
         ) -> npt.NDArray[np.float64]:
             """Fidelities ``F(theta, theta + p)`` for each ``p`` in ``perturbations``.
 
-            The overlap circuit comes from each member of the current cost source
-            cohort (so it tracks the per-evaluation sampled Hamiltonians, not a
-            stale construction-time circuit) and the overlaps are averaged across
-            the cohort. Each cohort member runs one batched submission, one row
-            per overlap point.
+            The overlap circuit is produced from each member of the post-spec
+            ansatz cohort, and overlaps are averaged across preserved cohort axes.
             """
             theta = np.asarray(theta, dtype=np.float64).reshape(-1)
             rows = np.vstack(
@@ -491,16 +456,8 @@ class StochasticFidelityMetricEstimator(MetricEstimator):
                     for p in perturbations
                 ]
             )
-            runs = [
-                _run_overlap(program, _overlap_for(source_meta), rows)
-                for source_meta in _cost_source_metas(program)
-            ]
-            return np.array(
-                [
-                    float(np.mean([run[i] for run in runs]))
-                    for i in range(len(perturbations))
-                ]
-            )
+            indexed = _run_overlap(program, preprocessor, rows, zeros)
+            return np.array([indexed[i] for i in range(len(perturbations))])
 
         return {"fidelity_fn": fidelity_fn}
 
@@ -562,47 +519,16 @@ def _fs_blocks(
 
 def _fs_block_covariance(
     program: "VariationalQuantumAlgorithm",
-    prefix_ops: list[tuple],
     full_params: list[Parameter],
-    n_qubits: int,
     theta: npt.NDArray[np.float64],
-    generators: list[SparsePauliOp],
-    supports_expval: bool,
-) -> npt.NDArray[np.float64]:
+    block_id: int,
+) -> dict[tuple, tuple[tuple[int, ...], npt.NDArray[np.float64]]]:
     """``g_ij = 1/2 <{K_i, K_j}> - <K_i><K_j>`` on the block's pre-state."""
-    k = len(generators)
-    anticommutators = [
-        [
-            (generators[i] @ generators[j] + generators[j] @ generators[i]).simplify()
-            for j in range(k)
-        ]
-        for i in range(k)
-    ]
-
-    needed: set[str] = set()
-
-    def collect(spo: SparsePauliOp) -> None:
-        for label, coeff in zip(spo.paulis.to_labels(), spo.coeffs):
-            if abs(coeff) > 1e-12 and set(label) != {"I"}:
-                needed.add(label)
-
-    for generator in generators:
-        collect(generator)
-    for row in anticommutators:
-        for ac in row:
-            collect(ac)
-
-    exp = _measure_prefix_paulis(
-        program,
-        prefix_ops,
-        full_params,
-        n_qubits,
-        theta,
-        sorted(needed),
-        supports_expval,
+    exp_by_branch, branch_data = _measure_prefix_paulis(
+        program, full_params, theta, block_id
     )
 
-    def spo_exp(spo: SparsePauliOp) -> float:
+    def spo_exp(spo: SparsePauliOp, exp: dict[str, float]) -> float:
         total = 0.0
         for label, coeff in zip(spo.paulis.to_labels(), spo.coeffs):
             if abs(coeff) <= 1e-12:
@@ -612,56 +538,188 @@ def _fs_block_covariance(
             )
         return total
 
-    single = np.array([spo_exp(generator) for generator in generators])
-    block = np.empty((k, k))
-    for i in range(k):
-        for j in range(k):
-            block[i, j] = 0.5 * spo_exp(anticommutators[i][j]) - single[i] * single[j]
-    return block
+    blocks: dict[tuple, tuple[tuple[int, ...], npt.NDArray[np.float64]]] = {}
+    for branch_key, exp in exp_by_branch.items():
+        indices, generators = branch_data[branch_key]
+        k = len(generators)
+        anticommutators = [
+            [
+                (
+                    generators[i] @ generators[j] + generators[j] @ generators[i]
+                ).simplify()
+                for j in range(k)
+            ]
+            for i in range(k)
+        ]
+        single = np.array([spo_exp(generator, exp) for generator in generators])
+        block = np.empty((k, k))
+        for i in range(k):
+            for j in range(k):
+                block[i, j] = (
+                    0.5 * spo_exp(anticommutators[i][j], exp) - single[i] * single[j]
+                )
+        blocks[branch_key] = (indices, block)
+    return blocks
 
 
 def _measure_prefix_paulis(
     program: "VariationalQuantumAlgorithm",
+    full_params: list[Parameter],
+    theta: npt.NDArray[np.float64],
+    block_id: int,
+) -> tuple[
+    dict[tuple, dict[str, float]],
+    dict[tuple, tuple[tuple[int, ...], tuple[SparsePauliOp, ...]]],
+]:
+    """Measure every Pauli label a Fubini-Study block needs on each sampled
+    block pre-state in one multi-observable pass.
+
+    Returns ``(exp_by_branch, branch_data)``: the per-branch ``{label: <P>}``
+    expectations and the per-branch ``(indices, generators)`` block structure,
+    the latter recomputed from the cost cohort (``_post_spec_batch``)
+    rather than smuggled out through a closure.
+    """
+    reference_blocks, _, n_qubits = _fs_blocks(program.cost_circuit)
+    if block_id >= len(reference_blocks):
+        raise ContractViolation(
+            "The Fubini-Study block index is outside the reference ansatz."
+        )
+
+    reference_prefix_ops, _ = reference_blocks[block_id]
+    reference_prefix_params = _fs_prefix_params(
+        reference_prefix_ops, full_params, n_qubits
+    )
+    reference_prefix_param_names = tuple(p.name for p in reference_prefix_params)
+    values = np.array(
+        [[theta[full_params.index(p)] for p in reference_prefix_params]],
+        dtype=np.float64,
+    )
+
+    preprocessor = _fs_prefix_labels_preprocessor(
+        block_id, reference_prefix_param_names
+    )
+    indexed = _run_metric_by_branch(program, preprocessor, values)
+    source = program._post_spec_batch()
+
+    exp_by_branch: dict[tuple, dict[str, float]] = {}
+    branch_data: dict[tuple, tuple[tuple[int, ...], tuple[SparsePauliOp, ...]]] = {}
+    for branch_key, values_by_param in indexed.items():
+        source_meta = source.get(branch_key)
+        if source_meta is None:
+            raise ContractViolation(
+                "A measured Fubini-Study branch is absent from the cost cohort."
+            )
+        _, _, indices, generators, labels = _fs_block_prefix(
+            source_meta, block_id, reference_prefix_param_names
+        )
+        branch_data[branch_key] = (indices, generators)
+        vec = np.asarray(values_by_param[0], dtype=np.float64).reshape(-1)
+        if labels and vec.shape[0] != len(labels):
+            raise ContractViolation(
+                "Fubini-Study per-label measurement count does not match the "
+                "branch's label count."
+            )
+        exp_by_branch[branch_key] = {
+            label: float(vec[i]) for i, label in enumerate(labels)
+        }
+    return exp_by_branch, branch_data
+
+
+def _fs_prefix_params(
     prefix_ops: list[tuple],
     full_params: list[Parameter],
     n_qubits: int,
-    theta: npt.NDArray[np.float64],
-    needed: list[str],
-    supports_expval: bool,
-) -> dict[str, float]:
-    """Measure each needed Pauli label on the block's pre-state, returning
-    ``{label: expectation}``. Expval backends measure each Pauli as its own
-    analytic single-observable run; sampling backends measure them together in
-    one qubit-wise-commuting run."""
-    if not needed:
-        return {}
+) -> tuple[Parameter, ...]:
+    prefix = QuantumCircuit(n_qubits)
+    for op, wires in prefix_ops:
+        prefix.append(op, wires)
+    return tuple(p for p in full_params if p in prefix.parameters)
+
+
+def _fs_needed_labels(generators: tuple[SparsePauliOp, ...]) -> tuple[str, ...]:
+    needed: set[str] = set()
+
+    def collect(spo: SparsePauliOp) -> None:
+        for label, coeff in zip(spo.paulis.to_labels(), spo.coeffs):
+            if abs(coeff) > 1e-12 and set(label) != {"I"}:
+                needed.add(label)
+
+    for generator in generators:
+        collect(generator)
+    for i, left in enumerate(generators):
+        for right in generators[i:]:
+            collect((left @ right + right @ left).simplify())
+    return tuple(sorted(needed))
+
+
+def _fs_block_prefix(
+    meta: MetaCircuit,
+    block_id: int,
+    reference_prefix_param_names: tuple[str, ...],
+) -> tuple[
+    QuantumCircuit,
+    tuple[Parameter, ...],
+    tuple[int, ...],
+    tuple[SparsePauliOp, ...],
+    tuple[str, ...],
+]:
+    """Block pre-state circuit and its generator/label data for one FS block.
+
+    Pure function of the (sampled) branch meta — used both to build the
+    measurement observable and to recompute per-branch block structure from the
+    cost cohort, so no data needs smuggling through a closure.
+    """
+    blocks, branch_params, n_qubits = _fs_blocks(meta)
+    if block_id >= len(blocks):
+        raise ContractViolation(
+            "A sampled metric branch has fewer Fubini-Study blocks than "
+            "the reference ansatz."
+        )
+
+    prefix_ops, entries = blocks[block_id]
+    indices = tuple(index for index, _ in entries)
+    generators = tuple(generator for _, generator in entries)
+    labels = _fs_needed_labels(generators)
 
     prefix = QuantumCircuit(n_qubits)
     for op, wires in prefix_ops:
         prefix.append(op, wires)
-    prefix_params = tuple(p for p in full_params if p in prefix.parameters)
-    values = np.array(
-        [[theta[full_params.index(p)] for p in prefix_params]], dtype=np.float64
-    )
-    prefix_dag = circuit_to_dag(prefix)
+    prefix_params = tuple(p for p in branch_params if p in prefix.parameters)
+    if tuple(p.name for p in prefix_params) != reference_prefix_param_names:
+        raise ContractViolation(
+            "A sampled metric branch has a different Fubini-Study prefix "
+            "parameter layout than the reference ansatz."
+        )
+    return prefix, prefix_params, indices, generators, labels
 
-    def meta(observable: tuple[SparsePauliOp, ...]) -> MetaCircuit:
+
+def _fs_prefix_labels_preprocessor(
+    block_id: int,
+    reference_prefix_param_names: tuple[str, ...],
+) -> CircuitPreprocessor:
+    """Cacheable preprocessor measuring every Pauli label a Fubini-Study block
+    needs on its pre-state in one multi-observable pass. Pure: the per-branch
+    block structure is recomputed from the cost cohort by the caller."""
+
+    def preprocess(meta: MetaCircuit) -> MetaCircuit:
+        prefix, prefix_params, _, _, labels = _fs_block_prefix(
+            meta, block_id, reference_prefix_param_names
+        )
+        observable = (
+            tuple(SparsePauliOp(label) for label in labels)
+            if labels
+            else (_zero_observable(prefix.num_qubits),)
+        )
         return MetaCircuit(
-            circuit_bodies=(((), prefix_dag),),
+            circuit_bodies=(((), circuit_to_dag(prefix)),),
             parameters=prefix_params,
             observable=observable,
             _was_multi_obs=True,
         )
 
-    if supports_expval:
-        return {
-            label: float(
-                _run_metric(program, meta((SparsePauliOp(label),)), values)[0][0]
-            )
-            for label in needed
-        }
-
-    vals = _run_metric(
-        program, meta(tuple(SparsePauliOp(label) for label in needed)), values
-    )[0]
-    return {label: float(vals[i]) for i, label in enumerate(needed)}
+    return CircuitPreprocessor(
+        "metric-prefix",
+        preprocess=preprocess,
+        consumes_dag_bodies=True,
+        cache_key=("metric-prefix", block_id),
+    )

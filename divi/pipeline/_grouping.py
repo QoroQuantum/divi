@@ -119,8 +119,9 @@ def _compute_measurement_groups(
     Args:
         observable: Non-empty ``tuple[SparsePauliOp, ...]``.
         strategy: ``"qwc"``, ``"default"``, ``"wires"``,
-            ``"_backend_expval"``, or ``None``.  ``"_backend_expval"`` is
-            valid only for length-1 observables.
+            ``"_backend_expval"``, or ``None``.  ``"_backend_expval"`` evaluates
+            each observable in the tuple analytically (single- or
+            multi-observable).
         n_qubits: Total qubit count in the circuit.
 
     Returns:
@@ -143,12 +144,6 @@ def _compute_measurement_groups(
     """
     if not observable:
         raise ValueError("_compute_measurement_groups: observable tuple is empty.")
-    if strategy == "_backend_expval" and len(observable) > 1:
-        raise ValueError(
-            "_compute_measurement_groups does not support '_backend_expval' "
-            "for multi-observable inputs (the backend evaluates a single "
-            "observable analytically). Use 'qwc' or 'wires'."
-        )
 
     union, per_obs_term_indices = flatten_observable_tuple(observable)
 

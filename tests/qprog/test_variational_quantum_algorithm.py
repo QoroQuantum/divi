@@ -11,18 +11,17 @@ import pytest
 import sympy as sp
 from scipy.optimize import OptimizeResult
 
-from divi.circuits import dag_to_qasm_body, qscript_to_meta
+from divi.circuits import MetaCircuit, dag_to_qasm_body, qscript_to_meta
 from divi.circuits._conversions import _qscript_to_dag
 from divi.exceptions import ExecutionCancelledError
-from divi.pipeline import PipelineSet
-from divi.pipeline.stages import MeasurementStage
+from divi.pipeline import CircuitPreprocessor
+from divi.qprog._program_state import ProgramState
 from divi.qprog._solution_sampling_mixin import SolutionEntry, SolutionSamplingMixin
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.early_stopping import EarlyStopping, StopReason
 from divi.qprog.optimizers import MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
 from divi.qprog.quantum_program import QuantumProgram
 from divi.qprog.variational_quantum_algorithm import (
-    ProgramState,
     VariationalQuantumAlgorithm,
     _compute_parameter_shift_mask,
 )
@@ -50,13 +49,12 @@ class SampleVQAProgram(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             qp.PauliX(0) + qp.PauliZ(1) + qp.PauliX(0) @ qp.PauliZ(1)
         )
         self.loss_constant = 0.0
-        self._pipelines = self._build_pipelines()
 
     @property
     def n_params_per_layer(self) -> int:
         return self._n_params_per_layer
 
-    def _create_meta_circuit_factories(self):
+    def _create_cost_circuit(self) -> MetaCircuit:
         symbols = [sp.Symbol("beta"), *sp.symarray("theta", 3)]
         ops = [
             qp.RX(symbols[0], wires=0),
@@ -66,8 +64,7 @@ class SampleVQAProgram(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         tape = qp.tape.QuantumScript(
             ops=ops, measurements=[qp.expval(self.cost_hamiltonian)]
         )
-        meta_circuit = qscript_to_meta(tape, precision=self._precision)
-        return {"cost_circuit": meta_circuit}
+        return qscript_to_meta(tape, precision=self._precision)
 
     def _run_solution_measurement_for(self, param_sets):
         # This double's circuit measures an expectation value, not a sampling
@@ -95,26 +92,8 @@ class SampleVQAProgram(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         ...
 
 
-class TestSolutionSamplingMixinGuard:
-    """``__init_subclass__`` rejects compositions where the mixin can't work."""
-
-    def test_wrong_order_raises_at_class_definition(self):
-        with pytest.raises(TypeError, match="must list SolutionSamplingMixin before"):
-
-            class _WrongOrder(VariationalQuantumAlgorithm, SolutionSamplingMixin):
-                pass
-
-    def test_correct_order_succeeds(self):
-        # SampleVQAProgram itself is the happy path; assert the MRO invariant.
-        mro = SampleVQAProgram.__mro__
-        assert mro.index(SolutionSamplingMixin) < mro.index(VariationalQuantumAlgorithm)
-
-
 class _BaseSampler(QuantumProgram):
-    """Minimal non-VQA host providing the cooperative pipeline registry."""
-
-    def _build_pipelines(self) -> PipelineSet:
-        return PipelineSet({})
+    """Minimal non-VQA host."""
 
     def has_results(self) -> bool:
         return bool(self._best_probs)
@@ -126,9 +105,8 @@ class _BaseSampler(QuantumProgram):
 class _NonVQASampler(SolutionSamplingMixin, _BaseSampler):
     """A solution sampler that is NOT a VariationalQuantumAlgorithm.
 
-    Provides only the documented host contract: ``meta_circuit_factories``,
-    ``_coerce_sample_params``, and a cooperative ``_build_pipelines`` (via
-    ``_BaseSampler``). It carries no variational parameter model.
+    Guards the host-agnostic contract: the mixin must not reach for any
+    variational-only attribute (``n_layers``, ``_best_params``, ...).
     """
 
     def __init__(self, backend, **kwargs):
@@ -138,14 +116,13 @@ class _NonVQASampler(SolutionSamplingMixin, _BaseSampler):
             measurements=[qp.probs(wires=[0, 1])],
         )
         self._meta = qscript_to_meta(tape, precision=self._precision)
-        self._pipelines = self._build_pipelines()
 
     @property
     def meta_circuit_factories(self):
         return {"cost_circuit": self._meta}
 
-    def _coerce_sample_params(self, params):
-        return np.asarray(params, dtype=np.float64)
+    def _initial_spec(self):
+        return self._meta
 
 
 def test_solution_sampling_mixin_works_on_non_vqa_host(dummy_simulator):
@@ -159,7 +136,7 @@ def test_solution_sampling_mixin_works_on_non_vqa_host(dummy_simulator):
     # State owned by the mixin's __init__, not inherited from any VQA.
     assert host._best_probs == {}
     assert host._decode_solution_fn("0101") == "0101"
-    assert "sample" in host._pipelines
+    assert "sample" in [protocol.name for protocol in host._preprocessors()]
 
     # No trainable parameters: one empty parameter set.
     host.sample_solution(params=np.empty((1, 0), dtype=np.float64))
@@ -263,19 +240,13 @@ class TestProgram:
             )
 
     def test_shot_distribution_threaded_to_measurement_stage(self, mocker):
-        """Implementation detail: the cost-pipeline assembler forwards
+        """Implementation detail: the program's measurement-stage factory forwards
         shot_distribution to MeasurementStage's constructor."""
         program = self._create_sample_program(
             mocker, shot_distribution="weighted_random"
         )
-        program._pipelines = program._build_pipelines()
 
-        meas_stage = next(
-            stage
-            for stage in program._cost_pipeline.stages
-            if isinstance(stage, MeasurementStage)
-        )
-        assert meas_stage._shot_distribution == "weighted_random"
+        assert program._make_measurement_stage()._shot_distribution == "weighted_random"
 
     def test_shot_distribution_callable_threaded_through(self, mocker):
         """Implementation detail: callable shot_distribution survives threading."""
@@ -284,14 +255,8 @@ class TestProgram:
             return [total] + [0] * (len(norms) - 1)
 
         program = self._create_sample_program(mocker, shot_distribution=custom)
-        program._pipelines = program._build_pipelines()
 
-        meas_stage = next(
-            stage
-            for stage in program._cost_pipeline.stages
-            if isinstance(stage, MeasurementStage)
-        )
-        assert meas_stage._shot_distribution is custom
+        assert program._make_measurement_stage()._shot_distribution is custom
 
     def test_program_rng_threaded_into_pipeline_env(self, mocker):
         """Spec: VariationalQuantumAlgorithm._build_pipeline_env populates
@@ -324,18 +289,16 @@ class TestProgram:
             != program._rng.bit_generator.state
         )
 
-    def test_evaluate_cost_param_sets_uses_initial_spec_hook(self, mocker):
-        """Cost evaluation should delegate to the registered initial-spec factory."""
+    def test_evaluate_cost_param_sets_uses_initial_spec_seed(self, mocker):
+        """Cost evaluation seeds from the ``_initial_spec`` hook, threads the param sets,
+        adds the loss constant, and returns results sorted by param-set index."""
         program = self._create_sample_program(mocker)
-        program._pipelines = program._build_pipelines()
         program.loss_constant = 10.0
 
-        spec_for_mock = mocker.patch.object(
-            program._pipelines, "spec_for", return_value="hook_spec"
-        )
-        pipeline_run = mocker.patch.object(
-            program._cost_pipeline,
-            "run",
+        mocker.patch.object(program, "_initial_spec", return_value="hook_spec")
+        execute = mocker.patch.object(
+            program,
+            "_execute",
             return_value={
                 (("param_set", 1),): [2.0],
                 (("param_set", 0),): [1.0],
@@ -345,12 +308,109 @@ class TestProgram:
         param_sets = np.array([[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]])
         losses = program._evaluate_cost_param_sets(param_sets)
 
-        spec_for_mock.assert_called_once_with("cost")
+        # ``_execute(pipeline, initial_spec, **env_overrides)``: the seed comes
+        # from the ``_initial_spec`` hook and the param sets ride the env overrides.
+        assert execute.call_args.args[1] == "hook_spec"
         np.testing.assert_array_equal(
-            pipeline_run.call_args.kwargs["env"].param_sets, param_sets
+            execute.call_args.kwargs["param_sets"], param_sets
         )
-        assert pipeline_run.call_args.kwargs["initial_spec"] == "hook_spec"
         assert list(losses.items()) == [(0, 11.0), (1, 12.0)]
+
+    def test_evaluate_routes_initial_spec_and_params_to_execute(self, mocker):
+        """``evaluate`` itself (not only ``_evaluate_cost_param_sets``) wires the
+        ``_initial_spec`` seed and param sets into the pipeline execution."""
+        program = self._create_sample_program(mocker)
+        mocker.patch.object(program, "_initial_spec", return_value="hook_spec")
+        execute = mocker.patch.object(
+            program, "_execute", return_value={(("param_set", 0),): [1.0]}
+        )
+
+        params = np.array([[0.1, 0.2, 0.3, 0.4]])
+        program.evaluate(params, program.cost_preprocessor())
+
+        assert execute.call_args.args[1] == "hook_spec"
+        np.testing.assert_array_equal(execute.call_args.kwargs["param_sets"], params)
+
+    def test_evaluate_shots_override_threads_to_execute(self, mocker):
+        program = self._create_sample_program(mocker)
+        execute = mocker.patch.object(
+            program, "_execute", return_value={(("param_set", 0),): [1.0]}
+        )
+
+        program.evaluate(np.zeros((1, 4)), program.cost_preprocessor(), shots=512)
+
+        assert execute.call_args.kwargs["shots_override"] == 512
+
+    def test_evaluate_return_variance_returns_values_and_variances(self, mocker):
+        program = self._create_sample_program(mocker)
+        mocker.patch.object(
+            program, "_execute", return_value={(("param_set", 0),): [0.5]}
+        )
+        program._last_cost_variance = {(("param_set", 0),): 0.01}
+
+        out = program.evaluate(
+            np.zeros((1, 4)), program.cost_preprocessor(), return_variance=True
+        )
+
+        assert isinstance(out, tuple) and len(out) == 2
+        values, variances = out
+        assert values == {0: [0.5]}
+        assert variances == {0: 0.01}
+
+    def test_evaluate_preserve_keys_returns_raw_pipeline_result(self, mocker):
+        program = self._create_sample_program(mocker)
+        raw = {
+            (("ham", 0), ("param_set", 0)): [0.5],
+            (("ham", 1), ("param_set", 0)): [0.7],
+        }
+        mocker.patch.object(program, "_execute", return_value=raw)
+
+        out = program.evaluate(
+            np.zeros((1, 4)), program.cost_preprocessor(), preserve_keys=True
+        )
+
+        assert out is raw
+
+    def test_evaluate_preserve_keys_rejects_variance(self, mocker):
+        program = self._create_sample_program(mocker)
+
+        with pytest.raises(ValueError, match="preserve_keys"):
+            program.evaluate(
+                np.zeros((1, 4)),
+                program.cost_preprocessor(),
+                preserve_keys=True,
+                return_variance=True,
+            )
+
+    def test_build_preprocessor_pipeline_memoizes_per_cache_key(self, mocker):
+        """A keyed preprocessor returns the cached pipeline (keyed by its
+        ``cache_key``, not object identity), so a fresh but equal preprocessor
+        hits and its forward cache survives across optimizer iterations."""
+        program = self._create_sample_program(mocker)
+
+        pipe_a = program._build_preprocessor_pipeline(program.cost_preprocessor())
+        # A freshly-constructed cost preprocessor is a distinct object but shares
+        # the "cost" cache key, so it must reuse the same pipeline.
+        pipe_b = program._build_preprocessor_pipeline(program.cost_preprocessor())
+
+        assert pipe_a is pipe_b
+        assert "cost" in program._preprocessor_pipeline_cache
+
+    def test_build_preprocessor_pipeline_does_not_cache_keyless_preprocessor(
+        self, mocker
+    ):
+        """A preprocessor with ``cache_key=None`` (the metric estimators, whose
+        transforms carry per-call state) is rebuilt every call and never retained,
+        so a stale closure can never be replayed across iterations."""
+        program = self._create_sample_program(mocker)
+        preprocessor = CircuitPreprocessor("metric")  # cache_key defaults to None
+
+        pipe_a = program._build_preprocessor_pipeline(preprocessor)
+        pipe_b = program._build_preprocessor_pipeline(preprocessor)
+
+        assert pipe_a is not pipe_b
+        assert program._initial_spec() is program.cost_circuit
+        assert not program._preprocessor_pipeline_cache
 
 
 class BaseVariationalQuantumAlgorithmTest:
@@ -499,11 +559,13 @@ class TestParametersBehavior(BaseVariationalQuantumAlgorithmTest):
 class TestOptimizerBehavior(BaseVariationalQuantumAlgorithmTest):
     """Test suite for optimizer initialization behavior."""
 
-    def test_optimizer_defaults_to_monte_carlo(self, mocker, mock_backend):
-        """Test that optimizer defaults to MonteCarloOptimizer when not provided."""
-        program = SampleVQAProgram(circ_count=1, run_time=0.1, backend=mock_backend)
-        assert isinstance(program.optimizer, MonteCarloOptimizer)
-        assert program.optimizer.n_param_sets == 10  # Default population_size
+    def test_optimizer_required_raises_value_error(self, mock_backend):
+        """Test that omitting optimizer raises ValueError."""
+        with pytest.raises(
+            ValueError,
+            match="A VariationalQuantumAlgorithm requires an explicit optimizer",
+        ):
+            SampleVQAProgram(circ_count=1, run_time=0.1, backend=mock_backend)
 
     def test_optimizer_can_be_passed_via_kwargs(self, mocker, mock_backend):
         """Test that optimizer can be passed via kwargs."""
@@ -762,9 +824,14 @@ class TestCheckpointing:
     """Tests for VariationalQuantumAlgorithm checkpointing functionality."""
 
     @pytest.fixture
-    def sample_program(self, mock_backend):
+    def sample_program(self, mock_backend, default_optimizer):
         """Create a sample program for testing."""
-        program = SampleVQAProgram(circ_count=0, run_time=0.0, backend=mock_backend)
+        program = SampleVQAProgram(
+            circ_count=0,
+            run_time=0.0,
+            backend=mock_backend,
+            optimizer=default_optimizer,
+        )
         # The mock optimizer controls iteration count; set max_iterations high
         # enough that ``run()``'s default check doesn't short-circuit with a
         # "max_iterations <= current_iteration" warning.
@@ -909,6 +976,44 @@ class TestCheckpointing:
             [[0.1, 0.2, 0.3, 0.4]],
         )
 
+    def test_program_state_restore_applies_fields_onto_fresh_program(
+        self, sample_program, mock_backend, default_optimizer, mocker
+    ):
+        """ProgramState.restore() writes every mapped attribute back onto a fresh
+        program (in-memory, no disk): scalars, numpy-coerced params, the ndarray
+        _param_history, the nested _best_probs, and the RNG bit-generator state."""
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(
+                sample_program,
+                n_iterations=3,
+                result_x=np.array([[0.1, 0.2, 0.3, 0.4]]),
+                result_fun=np.array([0.123]),
+            )
+        )
+        sample_program.run(max_iterations=3)
+        sample_program._best_probs = {0: {"0101": 1.0}}
+        state = ProgramState.model_validate(sample_program)
+
+        fresh = SampleVQAProgram(
+            circ_count=0,
+            run_time=0.0,
+            backend=mock_backend,
+            optimizer=default_optimizer,
+        )
+        state.restore(fresh)
+
+        assert fresh.current_iteration == 3
+        assert fresh._best_loss == 0.123
+        assert fresh._total_circuit_count == sample_program._total_circuit_count
+        assert fresh._best_probs == {0: {"0101": 1.0}}
+        # params restored as numpy, not lists; _param_history blocks are ndarrays.
+        np.testing.assert_allclose(fresh._best_params, [0.1, 0.2, 0.3, 0.4])
+        assert isinstance(fresh._best_params, np.ndarray)
+        assert all(isinstance(block, np.ndarray) for block in fresh._param_history)
+        assert fresh._param_history[0].dtype == np.float64
+        # RNG bit-generator state round-trips so resumed runs are reproducible.
+        assert fresh._rng.bit_generator.state == sample_program._rng.bit_generator.state
+
     def test_save_state_raises_error_before_optimization(
         self, sample_program, tmp_path
     ):
@@ -1038,15 +1143,24 @@ class TestCheckpointing:
 class TestPrecisionFunctionality(BaseVariationalQuantumAlgorithmTest):
     """Test suite for precision functionality in VariationalQuantumAlgorithm."""
 
-    def test_precision_defaults_to_8(self, mock_backend):
+    def test_precision_defaults_to_8(self, mock_backend, default_optimizer):
         """Test that precision defaults to 8 when not provided."""
-        program = SampleVQAProgram(circ_count=1, run_time=0.1, backend=mock_backend)
+        program = SampleVQAProgram(
+            circ_count=1,
+            run_time=0.1,
+            backend=mock_backend,
+            optimizer=default_optimizer,
+        )
         assert program._precision == 8
 
-    def test_precision_can_be_passed_as_kwarg(self, mock_backend):
+    def test_precision_can_be_passed_as_kwarg(self, mock_backend, default_optimizer):
         """Test that precision can be passed as a kwarg."""
         program = SampleVQAProgram(
-            circ_count=1, run_time=0.1, backend=mock_backend, precision=12
+            circ_count=1,
+            run_time=0.1,
+            backend=mock_backend,
+            optimizer=default_optimizer,
+            precision=12,
         )
         assert program._precision == 12
 
@@ -1064,19 +1178,20 @@ class TestPrecisionFunctionality(BaseVariationalQuantumAlgorithmTest):
         assert "0.12346" in body5  # 5 digits, rounded
         assert "0.123" in body3  # 3 digits, truncated
 
-    def test_different_precision_values(self, mock_backend):
+    def test_different_precision_values(self, mock_backend, default_optimizer):
         """Test that different precision values work correctly."""
         for precision in [1, 4, 8, 12, 16]:
             program = SampleVQAProgram(
                 circ_count=1,
                 run_time=0.1,
                 backend=mock_backend,
+                optimizer=default_optimizer,
                 precision=precision,
             )
             assert program._precision == precision
 
             # Verify precision propagates to created MetaCircuits
-            meta_circuit = program.meta_circuit_factories["cost_circuit"]
+            meta_circuit = program.cost_circuit
             assert meta_circuit.precision == precision
 
 

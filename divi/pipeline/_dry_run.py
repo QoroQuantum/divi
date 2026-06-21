@@ -28,28 +28,43 @@ from divi.pipeline.abc import (
 
 
 class StageInfo(NamedTuple):
-    """Per-stage dry-run report.
+    """Per-stage dry-run report."""
 
-    ``factor`` is the ratio of logical circuits after this stage to
-    circuits before it. ``factor > 1`` is a fan-out (e.g.
+    name: str
+    """Stage identifier — ``type(stage).__name__`` (e.g. ``"CircuitSpecStage"``,
+    ``"MeasurementStage"``). This is the value to match when checking a
+    pipeline's composition via ``[s.name for s in report.stages]``."""
+
+    axis: str | None
+    """The result-key axis this stage fans out over (the stage's ``axis_name``,
+    e.g. ``"param_set"``, ``"twirl"``, ``"obs_group"``), or ``None`` for stages
+    that add no axis."""
+
+    factor: float
+    """Ratio of logical circuits after this stage to circuits before it.
+    ``factor > 1`` is a fan-out (e.g.
     :class:`~divi.pipeline.stages.ParameterBindingStage`,
     :class:`~divi.pipeline.stages.PauliTwirlStage`); ``factor < 1`` is a
     reduction (e.g. observable grouping in
-    :class:`~divi.pipeline.stages.MeasurementStage` collapsing N Pauli
-    terms into M ≤ N commuting groups yields ``factor = M / N``).
-    """
+    :class:`~divi.pipeline.stages.MeasurementStage` collapsing N Pauli terms
+    into M ≤ N commuting groups yields ``factor = M / N``)."""
 
-    name: str
-    axis: str | None
-    factor: float
     metadata: dict[str, Any]
+    """Stage-specific introspection rendered by
+    :func:`~divi.pipeline.format_dry_run` — e.g. ``strategy`` / ``n_groups``
+    for :class:`~divi.pipeline.stages.MeasurementStage`, ``n_twirls`` for
+    :class:`~divi.pipeline.stages.PauliTwirlStage`."""
 
 
 class DryRunReport(NamedTuple):
     """Complete dry-run report for a single pipeline."""
 
     pipeline_name: str
+
     stages: tuple[StageInfo, ...]
+    """Ordered per-stage reports for the pipeline's forward pass — one
+    :class:`StageInfo` per stage, in execution order."""
+
     total_circuits: int
     env_artifacts: dict[str, Any] = {}
     """Stage-produced artifacts captured during the forward pass — e.g.

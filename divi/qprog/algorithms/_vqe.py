@@ -114,10 +114,6 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
                 stacklevel=2,
             )
 
-        # Build pipelines once (structure is fixed; only env changes per call)
-
-        self._pipelines = self._build_pipelines()
-
     @property
     def n_params_per_layer(self):
         """Number of trainable parameters per ansatz layer.
@@ -186,13 +182,12 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             cost_spo, raise_on_constant=True
         )
 
-    def _create_meta_circuit_factories(self) -> dict[str, MetaCircuit]:
-        """Create the meta-circuit factories for VQE.
+    def _create_cost_circuit(self) -> MetaCircuit:
+        """Create the cost MetaCircuit for VQE.
 
         Builds a single ``QuantumCircuit`` (initial state + ansatz) and
-        wraps its DAG into both a cost ``MetaCircuit`` (carrying the
-        cost ``SparsePauliOp`` as observable) and a measurement
-        ``MetaCircuit`` (with all qubits measured).
+        wraps its DAG into a cost ``MetaCircuit`` carrying the cost
+        ``SparsePauliOp`` as observable.
         """
         n_params = self.ansatz.n_params_per_layer(
             self.n_qubits, n_electrons=self.n_electrons
@@ -217,20 +212,12 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
 
         dag = circuit_to_dag(qc)
         flat_params = tuple(weights.flatten())
-        return {
-            "cost_circuit": MetaCircuit(
-                circuit_bodies=(((), dag),),
-                parameters=flat_params,
-                observable=self.cost_hamiltonian,
-                precision=self._precision,
-            ),
-            "sample_circuit": MetaCircuit(
-                circuit_bodies=(((), dag),),
-                parameters=flat_params,
-                measured_wires=tuple(range(self.n_qubits)),
-                precision=self._precision,
-            ),
-        }
+        return MetaCircuit(
+            circuit_bodies=(((), dag),),
+            parameters=flat_params,
+            observable=self.cost_hamiltonian,
+            precision=self._precision,
+        )
 
     def sample_solution(
         self,
@@ -240,7 +227,7 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         """Extract the eigenstate corresponding to the lowest energy found."""
         self.reporter.info(message="🏁 Computing Final Eigenstate 🏁", overwrite=True)
 
-        super().sample_solution(params, **kwargs)
+        super().sample_solution(self._resolve_sample_params(params), **kwargs)
 
         if self._best_probs:
             best_measurement_probs = next(iter(self._best_probs.values()))

@@ -287,8 +287,6 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
         if labels is None and loss_fn != "squared_error":
             warn(_LOSS_FN_IGNORED_MSG, UserWarning, stacklevel=2)
 
-        self._pipelines = self._build_pipelines()
-
     @staticmethod
     def _infer_data_arg_from_batch_input(qnode: QNode) -> str | None:
         """Read the data axis from a ``@qml.batch_input`` decorator, if present.
@@ -527,8 +525,8 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
 
         return tuple(param_shape)
 
-    def _create_meta_circuit_factories(self) -> dict[str, MetaCircuit]:
-        """Create the cost meta-circuit factory for CustomVQA.
+    def _create_cost_circuit(self) -> MetaCircuit:
+        """Create the cost MetaCircuit for CustomVQA.
 
         Uniform across input paths and data-binding mode:
         ``_composed_circuit`` always carries the full operation-parametric
@@ -538,4 +536,4 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
         active, swaps the data parameters out into per-sample variants
         downstream.
         """
-        return {"cost_circuit": self._cost_meta_circuit(self._base_params)}
+        return self._cost_meta_circuit(self._base_params)

@@ -20,7 +20,15 @@ from ._dry_run import (
     format_dry_run,
 )
 from ._grouping import GroupingStrategy
-from ._pipeline_set import PipelineSet
+from ._preprocessor import CircuitPreprocessor, cost_preprocessor, sample_preprocessor
+from ._result_keys_operations import (
+    extract_param_set_idx,
+    group_by_base_key,
+    reduce_mean,
+    reduce_merge_histograms,
+    reduce_postprocess_ordered,
+    strip_axis_from_label,
+)
 from ._shot_distribution import ShotDistStrategy
 from .abc import (
     ContractViolation,
@@ -29,7 +37,6 @@ from .abc import (
     ResultFormat,
     StageOutput,
 )
-from .transformations import reduce_merge_histograms
 
 __all__ = [
     "BundleStage",
@@ -39,19 +46,26 @@ __all__ = [
     "DryRunReport",
     "ExpansionResult",
     "GroupingStrategy",
+    "CircuitPreprocessor",
     "PipelineEnv",
     "PipelineResult",
-    "PipelineSet",
     "PipelineTrace",
     "ShotDistStrategy",
     "SpecStage",
     "Stage",
     "StageInfo",
     "StageOutput",
+    "cost_preprocessor",
     "dry_run_pipeline",
+    "extract_param_set_idx",
     "format_dry_run",
     "format_pipeline_tree",
+    "group_by_base_key",
     "NodeKey",
     "ResultFormat",
+    "reduce_mean",
     "reduce_merge_histograms",
+    "reduce_postprocess_ordered",
+    "sample_preprocessor",
+    "strip_axis_from_label",
 ]

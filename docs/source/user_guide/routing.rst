@@ -93,7 +93,15 @@ capacity constraints.
        depot=0,
    )
 
-   qaoa = QAOA(problem, backend=backend, max_iterations=10)
+   qaoa = QAOA(
+       problem,
+       optimizer=GridSearchOptimizer(
+           param_ranges=[(0, 3.14), (0, 3.14)],
+           grid_points=10,
+       ),
+       max_iterations=1,
+       backend=backend,
+   )
    qaoa.run()
 
 Binary Encoding

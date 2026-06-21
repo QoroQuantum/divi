@@ -35,6 +35,7 @@ To enable checkpointing, pass a :class:`~divi.qprog.checkpointing.CheckpointConf
    from pathlib import Path
    from divi.qprog import VQE, HartreeFockAnsatz
    from divi.qprog.checkpointing import CheckpointConfig
+   from divi.qprog.optimizers import MonteCarloOptimizer
    from divi.backends import MaestroSimulator
    import pennylane as qp
 
@@ -50,6 +51,7 @@ To enable checkpointing, pass a :class:`~divi.qprog.checkpointing.CheckpointConf
        ansatz=HartreeFockAnsatz(),
        n_layers=2,
        max_iterations=10,
+       optimizer=MonteCarloOptimizer(),
        backend=MaestroSimulator(),
    )
 
@@ -67,7 +69,7 @@ To save checkpoints less frequently, set the ``checkpoint_interval`` parameter:
 .. invisible-code-block: python
 
    vqe = VQE(molecule=mol, ansatz=HartreeFockAnsatz(), n_layers=2,
-             max_iterations=10, backend=MaestroSimulator())
+             max_iterations=10, optimizer=MonteCarloOptimizer(), backend=MaestroSimulator())
 
 .. code-block:: python
 
@@ -87,7 +89,7 @@ You can automatically generate a timestamped checkpoint directory:
 .. invisible-code-block: python
 
    vqe = VQE(molecule=mol, ansatz=HartreeFockAnsatz(), n_layers=2,
-             max_iterations=10, backend=MaestroSimulator())
+             max_iterations=10, optimizer=MonteCarloOptimizer(), backend=MaestroSimulator())
 
 .. code-block:: python
 
@@ -100,7 +102,7 @@ Or with a checkpoint interval:
 .. invisible-code-block: python
 
    vqe = VQE(molecule=mol, ansatz=HartreeFockAnsatz(), n_layers=2,
-             max_iterations=10, backend=MaestroSimulator())
+             max_iterations=10, optimizer=MonteCarloOptimizer(), backend=MaestroSimulator())
 
 .. code-block:: python
 

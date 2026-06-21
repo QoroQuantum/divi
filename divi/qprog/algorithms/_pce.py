@@ -3,12 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections.abc import Callable
+from functools import cached_property
 from typing import Literal
 from warnings import warn
 
 import numpy as np
 import numpy.typing as npt
 from qiskit.circuit import ParameterVector
+from qiskit.circuit.library import CXGate, RYGate, RZGate
 from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
@@ -21,10 +23,10 @@ from divi.hamiltonians import (
     normalize_binary_polynomial_problem,
 )
 from divi.hamiltonians._polynomial import _evaluate_binary_polynomial
-from divi.pipeline import PipelineSet, ResultFormat
-from divi.pipeline.stages import CircuitSpecStage, PCECostStage
+from divi.pipeline import CircuitPreprocessor, ResultFormat
+from divi.pipeline.stages import PCECostStage
 from divi.qprog._solution_sampling_mixin import SolutionEntry
-from divi.qprog.algorithms import VQE
+from divi.qprog.algorithms import VQE, GenericLayerAnsatz
 from divi.qprog.algorithms._numba_kernels import _popcount_parity_jit
 
 
@@ -168,6 +170,10 @@ class PCE(VQE):
                 (state_strings, variable_masks_u64) -> parities. Defaults to the
                 built-in parity decoder.
             **kwargs: Additional arguments passed to VQE (e.g. ansatz, backend).
+                ``ansatz`` defaults to a hardware-efficient, entangling
+                ``GenericLayerAnsatz([RYGate, RZGate], entangler=CXGate)`` —
+                the chemistry ansätze VQE defaults to do not apply to PCE's
+                qubit encoding.
         """
         self.problem: BinaryPolynomialProblem = normalize_binary_polynomial_problem(
             problem
@@ -194,11 +200,20 @@ class PCE(VQE):
         else:
             raise ValueError(f"Unknown encoding_type: {self.encoding_type}")
 
-        # Placeholder Hamiltonian required by VQE; we care about the measurement
-        # probability distribution, and Z-basis measurements provide it.
+        # Placeholder Hamiltonian required by the VQE constructor. PCE's cost path
+        # ignores it (PCECostStage computes a classical objective from Z-basis
+        # counts); it only sets the observable on the unused ``cost_circuit``
+        # factory entry. The sample pipeline measures the prepared state directly.
         placeholder_hamiltonian = SparsePauliOp.from_sparse_list(
             [("Z", [i], 1.0) for i in range(self.n_qubits)],
             num_qubits=self.n_qubits,
+        )
+        # PCE encodes a QUBO/HUBO and has no electrons, so VQE's chemistry
+        # default (HartreeFockAnsatz) is inapplicable — it would query
+        # n_electrons (None) and raise. Default to a hardware-efficient,
+        # entangling ansatz instead; an explicit ``ansatz`` still overrides.
+        kwargs.setdefault(
+            "ansatz", GenericLayerAnsatz([RYGate, RZGate], entangler=CXGate)
         )
         # ``grouping_strategy`` does not affect PCE's cost pipeline
         # (PCECostStage replaces MeasurementStage there), but it still
@@ -206,32 +221,31 @@ class PCE(VQE):
         # so it flows through unchanged.
         super().__init__(hamiltonian=placeholder_hamiltonian, **kwargs)
 
-    def _build_pipelines(self) -> PipelineSet:
+    @cached_property
+    def _pce_cost_preprocessor(self) -> CircuitPreprocessor:
         # PCE's cost terminal is a PCECostStage (a standalone BundleStage, not a
         # MeasurementStage) that emits one "measure all qubits" QASM per circuit
         # spec and computes the nonlinear binary-polynomial objective from raw
-        # shot histograms. The COUNTS format keeps QEM off this pipeline
-        # (extrapolation has no expectation value to act on; PCE forbids
-        # qem_protocol anyway). Sample is added by the mixin; replace only "cost".
-        return (
-            super()
-            ._build_pipelines()
-            .with_(
-                "cost",
-                self._assemble_pipeline(
-                    CircuitSpecStage(),
-                    PCECostStage(
-                        problem=self.problem,
-                        alpha=self.alpha,
-                        use_soft_objective=self._use_soft_objective,
-                        decode_parities_fn=self._decode_parities_fn,
-                        variable_masks_u64=self._variable_masks_u64,
-                    ),
-                    result_format=ResultFormat.COUNTS,
-                ),
-                lambda: self.meta_circuit_factories["cost_circuit"],
-            )
+        # shot histograms. COUNTS keeps QEM off this path (extrapolation has no
+        # expectation value to act on; PCE forbids qem_protocol anyway). Cached
+        # so ``PCECostStage`` (which re-runs ``compile_problem`` in its __init__)
+        # is built once rather than per optimizer iteration; ``cache_key="cost"``
+        # additionally lets the pipeline cache key on it like every other cost.
+        return CircuitPreprocessor(
+            "cost",
+            result_format=ResultFormat.COUNTS,
+            terminal_stage=PCECostStage(
+                problem=self.problem,
+                alpha=self.alpha,
+                use_soft_objective=self._use_soft_objective,
+                decode_parities_fn=self._decode_parities_fn,
+                variable_masks_u64=self._variable_masks_u64,
+            ),
+            cache_key="cost",
         )
+
+    def cost_preprocessor(self) -> CircuitPreprocessor:
+        return self._pce_cost_preprocessor
 
     def _evaluate_cost_param_sets(
         self, param_sets: np.ndarray, **kwargs
@@ -240,13 +254,15 @@ class PCE(VQE):
         if not self._use_soft_objective and self.backend.supports_expval:
             raise ValueError(
                 "PCE with alpha >= 5.0 (hard CVaR mode) requires shot histograms and "
-                "cannot use expectation-value backends. Use a sampling backend or set "
-                "force_sampling=True in JobConfig when using QoroService."
+                "cannot use expectation-value backends. Use a sampling backend: "
+                "QiskitSimulator(force_sampling=True), or QoroService with "
+                "JobConfig(force_sampling=True). MaestroSimulator is expval-only and "
+                "cannot be forced to sample."
             )
         return super()._evaluate_cost_param_sets(param_sets, **kwargs)
 
-    def _create_meta_circuit_factories(self) -> dict[str, MetaCircuit]:
-        """Create meta-circuit factories, handling the edge case of zero parameters."""
+    def _create_cost_circuit(self) -> MetaCircuit:
+        """Create the cost MetaCircuit, handling the edge case of zero parameters."""
         n_params = self.ansatz.n_params_per_layer(
             self.n_qubits, n_electrons=self.n_electrons
         )
@@ -265,20 +281,12 @@ class PCE(VQE):
 
         dag = circuit_to_dag(ansatz_qc)
         flat_params = tuple(weights.flatten())
-        return {
-            "cost_circuit": MetaCircuit(
-                circuit_bodies=(((), dag),),
-                parameters=flat_params,
-                observable=self.cost_hamiltonian,
-                precision=self._precision,
-            ),
-            "sample_circuit": MetaCircuit(
-                circuit_bodies=(((), dag),),
-                parameters=flat_params,
-                measured_wires=tuple(range(self.n_qubits)),
-                precision=self._precision,
-            ),
-        }
+        return MetaCircuit(
+            circuit_bodies=(((), dag),),
+            parameters=flat_params,
+            observable=self.cost_hamiltonian,
+            precision=self._precision,
+        )
 
     def sample_solution(
         self,
@@ -286,7 +294,7 @@ class PCE(VQE):
         **kwargs,
     ) -> "PCE":
         """Compute the final eigenstate and decode it into a PCE vector."""
-        super().sample_solution(params, **kwargs)
+        super().sample_solution(self._resolve_sample_params(params), **kwargs)
 
         if self._eigenstate is None:
             self._final_vector = None

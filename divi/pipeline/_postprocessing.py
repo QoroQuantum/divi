@@ -2,10 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Post-processing functions applied between execute and reduce.
+"""Value post-processing: convert raw backend results into reduce-chain values.
 
-These convert raw backend results (shot counts) into the value format expected
-by the reduce chain (expectation values or probability distributions).
+These turn shot counts (or expval-native dicts) into the value format the reduce
+chain expects — expectation values, probability distributions, or shot-noise
+variance. Operating on result *keys* (parsing, grouping, routing) lives in
+:mod:`divi.pipeline._result_keys_operations`.
 """
 
 from collections.abc import Mapping, Sequence
@@ -16,6 +18,7 @@ import numpy as np
 import numpy.typing as npt
 
 from divi.circuits import MetaCircuit
+from divi.pipeline._result_keys_operations import _find_batch_key
 from divi.pipeline.abc import ChildResults
 
 # ---------------------------------------------------------------------------
@@ -322,16 +325,3 @@ def _counts_to_probs(
         }
 
     return out
-
-
-def _find_batch_key(branch_key: tuple, batch_keys: set[tuple]) -> tuple:
-    """Find the batch key whose axis labels are a subset of *branch_key*."""
-    branch_axes = set(branch_key)
-    for bk in batch_keys:
-        if set(bk).issubset(branch_axes):
-            return bk
-
-    raise KeyError(
-        f"No batch key matches branch key {branch_key}; "
-        f"known batch keys: {batch_keys}"
-    )

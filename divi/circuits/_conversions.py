@@ -469,10 +469,16 @@ def dag_to_qasm_body(dag: DAGCircuit, precision: int = DEFAULT_PRECISION) -> str
         try:
             gate = _QISKIT_TO_QASM2[inst_name]
         except KeyError as e:
+            hint = (
+                " `barrier` is emitted by QuantumCircuit.measure_all(); use "
+                "explicit `measure(i, i)` on a circuit with a classical register "
+                "instead."
+                if inst_name == "barrier"
+                else " Decompose to basis gates before calling dag_to_qasm_body."
+            )
             raise ValueError(
                 f"Instruction {inst_name!r} not supported by the QASM body "
-                f"emitter — did you forget to decompose before calling "
-                f"dag_to_qasm_body?"
+                f"emitter.{hint}"
             ) from e
         if node.op.params:
             args = (

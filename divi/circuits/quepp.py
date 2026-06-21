@@ -855,15 +855,21 @@ class QuEPP(QEMProtocol):
     Args:
         truncation_order: Maximum number of sine branches in the CPT
             expansion (K_T).  Higher values reduce bias at the cost of
-            more auxiliary circuits.  Ignored when ``sampling="montecarlo"``.
+            more auxiliary circuits.  Used by ``sampling="exhaustive"`` and by
+            the montecarlo fallback on symbolic circuits (see ``sampling``).
         coefficient_threshold: Prune paths whose absolute weight falls
             below this value during DFS enumeration.  Only used with
-            ``sampling="exhaustive"``.
-        sampling: Path selection strategy — ``"montecarlo"`` (default) keeps
-            symbolic weights until parameter binding, while ``"exhaustive"``
-            binds parameters before mitigation so path enumeration can use
-            concrete rotation angles.
-        n_samples: Number of Monte Carlo path samples (default 200).
+            ``sampling="exhaustive"`` (disabled on symbolic circuits, whose
+            angle magnitudes are unknown).
+        sampling: Path selection strategy.  ``"exhaustive"`` enumerates paths up
+            to ``truncation_order``.  ``"montecarlo"`` (default) draws
+            ``n_samples`` random paths, but **only on concrete (parameter-bound)
+            circuits**; on a symbolic circuit — which is what variational
+            programs present at mitigation time, before parameter binding — it
+            warns and falls back to exhaustive enumeration, so ``n_samples`` has
+            no effect there.
+        n_samples: Number of Monte Carlo path samples (default 200); applies only
+            to the concrete-circuit montecarlo path.
         seed: RNG seed for Monte Carlo reproducibility.
         n_twirls: Number of Pauli twirling samples.  When non-zero, the
             pipeline builder appends a ``PauliTwirlStage``.  Default ``10``.

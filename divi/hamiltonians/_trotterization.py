@@ -10,12 +10,17 @@ from warnings import warn
 
 import numpy as np
 import numpy.typing as npt
+from qiskit import transpile
+from qiskit.circuit import QuantumCircuit
+from qiskit.circuit.library import PauliEvolutionGate
 from qiskit.quantum_info import SparsePauliOp
+from qiskit.synthesis import LieTrotter, SuzukiTrotter
 
 from divi.hamiltonians._term_ops import (
     _clean_hamiltonian_spo,
     _require_qiskit_num_qubits,
     _sort_hamiltonian_terms_spo,
+    _spo_to_qiskit_basis_gates,
     generate_empty_spo,
 )
 
@@ -31,6 +36,70 @@ class TrotterizationResult:
     sampled_terms: SparsePauliOp | None = None
     """For sampling strategies such as QDrift, the drawn terms in order with
     repeats kept (one entry per draw). ``None`` for deterministic strategies."""
+
+    def synthesize_evolution(
+        self,
+        qc: QuantumCircuit,
+        *,
+        time: float,
+        n_steps: int,
+        order: int,
+        qubits: list[int],
+        basis_gates: list[str],
+    ) -> QuantumCircuit:
+        """Append this result's time-evolution gates to ``qc``.
+
+        A sampling result (``sampled_terms`` set) applies one evolution gate
+        per sampled term — preserving sampling-with-replacement multiplicities
+        — repeated ``n_steps`` times at ``time / n_steps`` per step. A
+        deterministic result synthesizes ``exp(-i t H)`` from
+        ``effective_hamiltonian`` via
+        :class:`~qiskit.circuit.library.PauliEvolutionGate`
+        (:class:`~qiskit.synthesis.LieTrotter` for ``order == 1``, else
+        :class:`~qiskit.synthesis.SuzukiTrotter`), then lowers the circuit to
+        ``basis_gates``.
+
+        Adjoint evolution is realized via negative time; single-term
+        Hamiltonians use positive time to preserve the ``exp(-i t H)`` sign
+        convention even when ``H`` carries its own coefficient sign. Returns the
+        resulting circuit (a new object when synthesis required transpilation,
+        otherwise ``qc``).
+        """
+        if self.sampled_terms is not None:
+            step_time = -time / n_steps
+            for _ in range(n_steps):
+                _spo_to_qiskit_basis_gates(qc, self.sampled_terms, step_time, qubits)
+            return qc
+
+        if self.effective_hamiltonian.size >= 2:
+            synthesis = (
+                LieTrotter(reps=n_steps, preserve_order=True)
+                if order == 1
+                else SuzukiTrotter(order=order, reps=n_steps, preserve_order=True)
+            )
+            qc.append(
+                PauliEvolutionGate(
+                    self.effective_hamiltonian, time=-time, synthesis=synthesis
+                ),
+                qubits,
+            )
+            # Lower to the gate set the QASM body emitter accepts. Trotter
+            # synthesis can emit ``rxx``/``ryy``/``rzz``-style compound rotations
+            # the QASM2 emitter raises on; ``optimization_level=0`` keeps it to a
+            # cheap gate-by-gate substitution.
+            try:
+                return transpile(qc, basis_gates=basis_gates, optimization_level=0)
+            except Exception as exc:
+                raise RuntimeError(
+                    "Failed to lower the Trotter-synthesised circuit to the "
+                    "requested basis-gate set. This usually means "
+                    "PauliEvolutionGate synthesis emitted a gate the QASM2 "
+                    f"emitter does not handle. Supported gates: {sorted(basis_gates)}."
+                ) from exc
+
+        # Single-term Hamiltonian — positive-time convention.
+        _spo_to_qiskit_basis_gates(qc, self.effective_hamiltonian, time, qubits)
+        return qc
 
 
 def _warn_truncation_no_op(

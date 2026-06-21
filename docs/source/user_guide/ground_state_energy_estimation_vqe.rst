@@ -11,10 +11,13 @@ This page covers single-instance ground-state energy estimation with
 
 .. tip::
 
-   On sampling backends, pass ``shot_distribution="weighted"`` to focus the
-   same shot budget on the Hamiltonian's dominant terms — free variance
-   reduction on the skewed coefficient distributions typical of chemistry.
-   See `Spending Shots Where They Matter`_ below.
+   On sampling backends, pass ``shot_distribution="weighted"`` to focus a
+   single shot budget on the Hamiltonian's dominant terms — lower variance than
+   an equal-budget ``"uniform"`` split on the skewed coefficient distributions
+   typical of chemistry.  (The default gives every group the full shot count, a
+   larger total budget; ``shot_distribution`` splits one budget smartly — so
+   compare strategies at equal total shots.)  See
+   `Spending Shots Where They Matter`_ below.
 
 Basic :class:`~divi.qprog.algorithms.VQE` Usage
 -----------------------------------------------
@@ -99,6 +102,18 @@ Setting good initial parameters can significantly improve VQE convergence and pr
 - **Restarting failed optimizations**: Use parameters from partial convergence
 
 You can set initial parameters by passing ``initial_params`` to ``run()``. For detailed information and examples, see the :doc:`core_concepts` guide on Parameter Management.
+
+Initial State
+^^^^^^^^^^^^^
+
+By default VQE prepares the ``|0...0>`` reference (``ZerosState()``).  Pass a
+different :class:`~divi.qprog.algorithms.InitialState` via the ``initial_state``
+constructor argument — e.g. ``ZerosState()``, ``OnesState()``,
+``SuperpositionState()``, ``WState()``, or ``CustomPerQubitState(...)``.  The
+chemistry ansätze (Hartree-Fock, UCCSD, QCC) embed their own reference-state
+preparation, so combining them with a non-``ZerosState`` initial state prepends
+extra operators and emits a :class:`UserWarning` (it can produce unphysical
+circuits); custom or hardware-efficient ansätze are the usual place to set it.
 
 Available Ansätze
 -----------------
@@ -249,23 +264,19 @@ that matter:
        molecule=molecule,
        ansatz=UCCSDAnsatz(),
        optimizer=mc_optimizer,
-       backend=QiskitSimulator(shots=2000),
+       backend=QiskitSimulator(force_sampling=True, shots=2000),
        grouping_strategy="qwc",
        shot_distribution="weighted",  # focus shots on dominant terms
    )
 
 The ``"weighted"`` strategy allocates shots proportional to each group's
-coefficient L1 norm.  See the :ref:`adaptive-shot-allocation` section of
-the pipelines guide for the full list of strategies (``"uniform"``,
-``"weighted"``, ``"weighted_random"``, or a custom callable) and their
-trade-offs, including the bias-vs-budget implications when
-small-coefficient groups end up with zero allocated shots.
-
-This option requires sampling-based execution.  On expval-capable
-backends like :class:`~divi.backends.MaestroSimulator`, divi auto-selects
-an analytical strategy that ignores shots entirely; pass
-``grouping_strategy="qwc"`` (or ``"wires"`` / ``None``) explicitly to opt
-into sampling and unlock ``shot_distribution``.
+coefficient L1 norm.  Note that ``shot_distribution`` only takes effect on a
+sampling backend (``supports_expval=False``) — on an expval-native backend like
+:class:`~divi.backends.MaestroSimulator` the result is computed analytically and
+the allocation is ignored (with a :class:`UserWarning`).  The example above uses
+:class:`~divi.backends.QiskitSimulator`, which samples.  See the
+:ref:`adaptive-shot-allocation` section of the pipelines guide for the full list
+of strategies, the ``force_sampling`` recipe, and the bias-vs-budget trade-offs.
 
 Next Steps
 ----------

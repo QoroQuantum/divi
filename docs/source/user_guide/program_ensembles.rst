@@ -226,6 +226,7 @@ You can create custom program ensemble workflows by inheriting from :class:`~div
 .. code-block:: python
 
    from divi.qprog import ProgramEnsemble, VQE
+   from divi.qprog.optimizers import MonteCarloOptimizer
    from divi.backends import CircuitRunner, MaestroSimulator
    import pennylane as qp
    import numpy as np
@@ -241,6 +242,7 @@ You can create custom program ensemble workflows by inheriting from :class:`~div
            for i, mol in enumerate(self.molecules):
                vqe = VQE(
                    molecule=mol,
+                   optimizer=MonteCarloOptimizer(),
                    backend=self.backend,
                    max_iterations=10,
                )

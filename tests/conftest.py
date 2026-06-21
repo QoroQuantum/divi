@@ -25,6 +25,7 @@ from dotenv import load_dotenv
 
 from divi.backends import CircuitRunner, ExecutionResult, MaestroSimulator
 from divi.pipeline import DiviPerformanceWarning, PipelineEnv
+from divi.qprog.optimizers import MonteCarloOptimizer
 
 
 @pytest.fixture
@@ -131,6 +132,13 @@ def dummy_pipeline_env(dummy_expval_backend):
 @pytest.fixture
 def default_test_simulator():
     return MaestroSimulator(shots=5000)
+
+
+@pytest.fixture
+def default_optimizer():
+    """A fresh ``MonteCarloOptimizer`` for tests that don't care which optimizer
+    they use (``VariationalQuantumAlgorithm`` now requires one explicitly)."""
+    return MonteCarloOptimizer()
 
 
 def is_assertion_error(err, *_) -> bool:

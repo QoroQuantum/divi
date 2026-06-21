@@ -14,6 +14,10 @@ from divi.circuits import measurement_qasms_from_groups
 from divi.circuits._conversions import _sparse_pauli_op_to_ham_string
 from divi.pipeline import GroupingStrategy, ShotDistStrategy
 from divi.pipeline._grouping import _compute_measurement_groups
+from divi.pipeline._result_keys_operations import (
+    group_by_base_key,
+    reduce_postprocess_ordered,
+)
 from divi.pipeline._shot_distribution import (
     _compute_group_l1_norms,
     _compute_shot_distribution,
@@ -27,7 +31,6 @@ from divi.pipeline.abc import (
     StageOutput,
     StageToken,
 )
-from divi.pipeline.transformations import group_by_base_key, reduce_postprocess_ordered
 
 OBS_GROUP_AXIS = "obs_group"
 PROBS_MEAS_AXIS = "meas"
@@ -284,12 +287,14 @@ class MeasurementStage(BundleStage):
                 shot counts even when an observable is present.
             shot_distribution: How to split the backend's total shot budget
                 across measurement groups (``"uniform"``, ``"weighted"``,
-                ``"weighted_random"``, or a callable). Only valid for
-                sampling-based grouping strategies (``"qwc"``, ``"wires"``,
-                or ``None``); rejected for ``"_backend_expval"`` because
-                the backend computes expectation values analytically and
-                ignores shots. When ``None`` (default), every group is
-                submitted with the backend's full shot count.
+                ``"weighted_random"``, or a callable). Only affects results on
+                a sampling backend (``supports_expval=False``); on a backend
+                that computes expectation values analytically it is recorded
+                but does not change the exact result, and ``expand`` emits a
+                ``UserWarning`` saying so. Pairing it with an explicit
+                ``grouping_strategy="_backend_expval"`` raises ``ValueError``.
+                When ``None`` (default), every group is submitted with the
+                backend's full shot count.
         """
         super().__init__(name=type(self).__name__)
         self._grouping_strategy = grouping_strategy
@@ -433,31 +438,40 @@ class MeasurementStage(BundleStage):
         serialising diagonalising gates + ``measure`` instructions.
         """
         strategy = self._grouping_strategy
-        all_single_obs = all(
-            meta.observable is not None and len(meta.observable) == 1
-            for meta in batch.values()
-        )
         if (
             self._shot_distribution is None
             and strategy in ("qwc", "_backend_expval")
             and env.backend.supports_expval
-            and all_single_obs
         ):
+            # Promote to the backend's analytic expval path only when every
+            # circuit in the batch carries the same observable(s): that path
+            # emits a single shared ham_ops, so a batch with differing
+            # observables (single- or multi-observable) must stay on qwc.
             first_obs = next(iter(batch.values())).observable
             all_same_obs = all(meta.observable == first_obs for meta in batch.values())
             strategy = "_backend_expval" if all_same_obs else "qwc"
-        elif strategy == "_backend_expval" and not all_single_obs:
-            raise NotImplementedError(
-                "'_backend_expval' grouping strategy requires a single "
-                "observable per MetaCircuit (length-1 tuple); a multi-"
-                "observable tuple was supplied. Use 'qwc' or 'wires' instead."
-            )
 
         if self._shot_distribution is not None and strategy == "_backend_expval":
             raise ValueError(
                 "shot_distribution is incompatible with the '_backend_expval' grouping "
                 "strategy: the backend computes expectation values analytically and "
                 "ignores shots. Set grouping_strategy to 'qwc', 'wires', or None."
+            )
+        if self._shot_distribution is not None and env.backend.supports_expval:
+            # Reachable case the explicit-strategy guard above misses: a sampling
+            # grouping strategy on an expval-capable backend still routes to the
+            # native analytic path, so the allocation is recorded but never
+            # changes the (exact) result.
+            warnings.warn(
+                f"shot_distribution is set but backend "
+                f"{type(env.backend).__name__} computes expectation values "
+                "analytically (supports_expval=True), so per-group shot "
+                "allocation does not change the (exact) result. Use a "
+                "sampling backend for shot_distribution to take effect — e.g. "
+                "QiskitSimulator(force_sampling=True), or QoroService with "
+                "JobConfig(force_sampling=True).",
+                UserWarning,
+                stacklevel=2,
             )
 
         result: MetaCircuitBatch = {}

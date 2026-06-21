@@ -86,8 +86,12 @@ and reduction stay consistent:
 - **Reading single-circuit results**: Use :attr:`~divi.pipeline.PipelineResult.value`
   for the natural shape — a scalar for single-observable expectation values,
   a ``list[float]`` for multi-observable runs, a ``dict`` for probabilities and
-  counts.  For the canonical pipeline-internal form regardless of length (always
-  a list for expectation values), index the result directly via ``result[()]``.
+  counts.  ``result[()]`` is the canonical key for the pipeline-internal form
+  *after* the spec stage strips its own axis; it is not universally available
+  — it depends on the spec stage's ``reduce`` collapsing the circuit axis.
+  Built-in spec stages (``CircuitSpecStage``, ``PennyLaneSpecStage``,
+  ``QiskitSpecStage``) do this automatically for single-circuit batches.
+  Custom spec stages must mirror that behavior if you want ``result[()]`` to work.
 
 Built-in Stages
 ---------------
@@ -143,6 +147,8 @@ Divi ships with the following built-in stages:
        distribution; in hard mode it evaluates a discrete CVaR-style objective
        over sampled energies.
 
+
+.. _dry-run:
 
 Dry Run
 -------
@@ -203,7 +209,11 @@ saves — all before spending a single shot.
 ``dry_run()`` itself is print-free — it returns a
 ``dict[str, DryRunReport]`` keyed by pipeline name (e.g. ``"cost"``,
 ``"measurement"``), so you can inspect the report programmatically instead of
-(or in addition to) rendering it:
+(or in addition to) rendering it.  Note that ``dry_run()`` only reports
+**pre-registered** named pipelines (those the algorithm builds in its
+constructor or via its ``_preprocessors`` hook).  A program that assembles its
+pipeline dynamically inside ``run()`` — i.e. never calling ``evaluate()`` with
+a named preprocessor — returns ``{}`` from ``dry_run()``.
 
 .. skip: next
 
@@ -237,50 +247,56 @@ pipeline no longer sees it as unsafe.
 How Existing Algorithms Build Pipelines
 ---------------------------------------
 
-Every program builds its named pipelines in a ``_build_pipelines`` method,
-returning a :class:`~divi.pipeline.PipelineSet` (a ``name → (pipeline,
-seed_factory)`` registry).  Each pipeline is built by one generic helper —
-``_assemble_pipeline`` — so every routine shares the same stage ordering and
-error-mitigation logic.  :class:`~divi.qprog.algorithms.VQE` registers a
-``"cost"`` pipeline; solution-extracting programs gain a ``"sample"`` pipeline
-from :class:`~divi.qprog.SolutionSamplingMixin`.  Subclasses and mixins extend
-the set cooperatively with :meth:`~divi.pipeline.PipelineSet.with_`:
+A program declares **how it prepares its state** and **which measurement
+protocols** it runs over that state; one verb,
+:meth:`~divi.qprog.QuantumProgram.evaluate`, assembles and runs the single
+pipeline for any protocol.  State preparation is two hooks —
+``_spec_stage`` (the :class:`~divi.pipeline.SpecStage`) and
+``_initial_spec`` (its seed).  A
+:class:`~divi.pipeline.CircuitPreprocessor` pairs a post-spec ``MetaCircuit``
+transform with a :class:`~divi.pipeline.ResultFormat` and an optional terminal
+stage.  :class:`~divi.qprog.algorithms.VQE` exposes a ``cost`` protocol;
+solution-extracting programs add a ``sample`` protocol from
+:class:`~divi.qprog.SolutionSamplingMixin`:
 
 .. code-block:: python
 
-   # Simplified from variational_quantum_algorithm.py
-   def _assemble_pipeline(self, spec_stage, terminal_stage, *, result_format):
-       # spec  →  [error mitigation (+ Pauli twirls) when the QEM protocol
-       #           applies to result_format]  →  terminal  →  parameter
-       #           binding (last)
-       ...
+   # Simplified from quantum_program.py / variational_quantum_algorithm.py
+   def _spec_stage(self):
+       return CircuitSpecStage()                  # SpecStage → MetaCircuit batch
 
-   def _build_pipelines(self):
-       return PipelineSet({
-           "cost": (
-               self._assemble_pipeline(
-                   CircuitSpecStage(),     # SpecStage → MetaCircuit batch
-                   MeasurementStage(...),  # group observables
-                   result_format=ResultFormat.EXPVALS,
-               ),
-               lambda: self.meta_circuit_factories["cost_circuit"],  # lazy seed
-           ),
-       })
+   def _initial_spec(self):
+       # VariationalQuantumAlgorithm: returns self.cost_circuit (the cost ansatz).
+       # QAOA / TimeEvolution override this to return their Hamiltonian instead.
+       return self.cost_circuit
 
-   # SolutionSamplingMixin / QAOA / PCE extend or replace one entry:
-   def _build_pipelines(self):
-       # .with_(name, pipeline, seed_factory) — here a probability-sampling pipeline
-       return super()._build_pipelines().with_("sample", ..., lambda: ...)
+   def cost_preprocessor(self):
+       # Public + overridable (PCE returns a counts-based variant).
+       return CircuitPreprocessor("cost", cache_key="cost")   # identity, EXPVALS
 
-The **cost pipeline** evaluates expectation values (or a classical objective)
-during optimization, and the **sample pipeline** (when present) samples the
-probability distribution after optimization to extract the solution.  Whether
-error mitigation rides a given pipeline is decided by the QEM protocol itself
+   # A caller (e.g. an optimizer) measures the prepared state through one verb:
+   #   losses = program.evaluate(params, program.cost_preprocessor())
+
+The single pipeline is assembled by ``_assemble_pipeline`` — spec → the
+protocol's ``PreprocessStage`` (its post-spec transform) → [error mitigation
+(+ Pauli twirls) when the QEM protocol applies to the result format] → terminal
+measurement.  :class:`~divi.qprog.VariationalQuantumAlgorithm` appends a
+``ParameterBindingStage`` last; the base :class:`~divi.qprog.QuantumProgram`
+does **not** — a direct ``QuantumProgram`` subclass with a parameterized seed
+must add :class:`~divi.pipeline.stages.ParameterBindingStage` itself (or
+subclass ``VariationalQuantumAlgorithm``), or execution raises
+:class:`~divi.pipeline.abc.ContractViolation`.
+
+The **cost protocol** evaluates expectation values (or a classical objective)
+during optimization; the **sample protocol** samples the probability
+distribution afterward to extract the solution.  Whether error mitigation rides
+a protocol is decided by the QEM protocol itself
 (:meth:`~divi.circuits.qem.QEMProtocol.applies_to`), so extrapolation-style
-mitigation rides the expectation-value pipelines but not the
-probability-sampling one.  Natural-gradient optimizers measure their metric
-through ``_expectation_pipeline`` — a canonical expectation-value measurement
-the program builds on demand — so it is never a registered pipeline.
+mitigation rides expectation-value protocols but not the probability-sampling
+one. Natural-gradient optimizers measure their metric by passing a dynamic
+:class:`~divi.pipeline.CircuitPreprocessor` to
+:meth:`~divi.qprog.QuantumProgram.evaluate`, so a metric is never a separate
+registered pipeline.
 
 **Stage ordering affects performance.**  Because each stage in the expand pass
 fans out the batch it receives, any work-multiplying stage placed early forces
@@ -361,6 +377,106 @@ Under the hood, :class:`~divi.qprog.algorithms.CustomVQA` builds a cost pipeline
 You receive all VQA features (loss history, best parameters, checkpointing)
 without writing any pipeline or stage code.
 
+**Passthrough constructor kwargs.** :class:`~divi.qprog.algorithms.CustomVQA`,
+:class:`~divi.qprog.algorithms.VQE`, and :class:`~divi.qprog.algorithms.QNN`
+all route additional keyword arguments through ``**kwargs`` into the cost
+pipeline's :class:`~divi.pipeline.stages.MeasurementStage`.  Because they
+aren't explicit parameters in the subclass signature, two useful options are
+easy to miss:
+
+- ``grouping_strategy`` (``str``, default ``"qwc"``) — how Hamiltonian terms
+  are partitioned into measurement circuits (``"qwc"``, ``"wires"``, or
+  ``None``).
+- ``shot_distribution`` (``str`` or callable, default ``None``) — how the
+  shot budget is split across measurement groups.  See
+  `Adaptive Shot Allocation`_ for details and available strategies.
+
+Example::
+
+    vqe = VQE(molecule=mol, ..., shot_distribution="weighted", grouping_strategy="qwc")
+
+
+Feeding Parameter Values to a Standalone Pipeline
+--------------------------------------------------
+
+A standalone :class:`~divi.pipeline.CircuitPipeline` (built by hand, not via a
+program) reads parameter values from :class:`~divi.pipeline.PipelineEnv` —
+specifically ``env.param_sets``, a 2-D array-like of shape
+``(n_param_sets, n_params)``.  There is **no** ``params=`` argument on
+:meth:`~divi.pipeline.CircuitPipeline.run`; all per-run data flows through
+the env.
+
+The following example evaluates ⟨Z⟩ for two angles of a single-qubit Ry
+rotation:
+
+.. code-block:: python
+
+   import numpy as np
+   from qiskit import QuantumCircuit
+   from qiskit.circuit import Parameter
+   from qiskit.converters import circuit_to_dag
+   from qiskit.quantum_info import SparsePauliOp
+
+   from divi.circuits import MetaCircuit
+   from divi.pipeline import CircuitPipeline, PipelineEnv, extract_param_set_idx
+   from divi.pipeline.stages import CircuitSpecStage, MeasurementStage, ParameterBindingStage
+   from divi.backends import MaestroSimulator
+
+   # 1. Build a parametric circuit
+   ry_theta = Parameter("ry_theta")
+   ry_qc = QuantumCircuit(1)
+   ry_qc.ry(ry_theta, 0)
+
+   ry_meta = MetaCircuit(
+       circuit_bodies=(((), circuit_to_dag(ry_qc)),),
+       observable=SparsePauliOp.from_list([("Z", 1.0)]),
+       parameters=(ry_theta,),
+   )
+
+   # 2. Assemble pipeline — ParameterBindingStage must come after measurement
+   ry_pipeline = CircuitPipeline(stages=[
+       CircuitSpecStage(),
+       MeasurementStage(),
+       ParameterBindingStage(),   # reads env.param_sets; placed last
+   ])
+
+   # 3. Pass parameter values through PipelineEnv
+   ry_env = PipelineEnv(
+       backend=MaestroSimulator(),
+       param_sets=[[0.0], [np.pi / 2]],   # 2 param sets, 1 param each
+   )
+   ry_result = ry_pipeline.run(initial_spec=ry_meta, env=ry_env)
+
+   # 4. Read results back by param-set index using extract_param_set_idx
+   # ry_result.items() yields (NodeKey, value) pairs; NodeKeys look like
+   # (("param_set", 0),) — extract_param_set_idx pulls the int index out.
+   # For EXPVALS, each value is list[float] (unsqueezed); [0] gets the scalar.
+   by_idx = {extract_param_set_idx(k): v[0] for k, v in ry_result.items()}
+   # ⟨Z⟩ for theta=0 (|0⟩) ≈ 1.0; for theta=π/2 (|+y⟩) ≈ 0.0
+   assert abs(by_idx[0] - 1.0) < 0.15, f"Expected ~1.0, got {by_idx[0]}"
+   assert abs(by_idx[1] - 0.0) < 0.15, f"Expected ~0.0, got {by_idx[1]}"
+
+**Other useful** :class:`~divi.pipeline.PipelineEnv` **fields:**
+
+- ``shots_override`` — overrides ``backend.shots`` for this run without
+  mutating the backend (useful when adapting shot counts per evaluation).
+- ``collect_variance`` — when ``True``, measurement stages also estimate
+  shot-noise variance and record it on the env's own ``env.artifacts``
+  dict under ``"cost_variance"`` (keyed by :class:`~divi.pipeline.NodeKey`,
+  *not* on the returned :class:`~divi.pipeline.PipelineResult`).  Most callers
+  don't set this directly:
+  :meth:`~divi.qprog.QuantumProgram.evaluate` with ``return_variance=True``
+  flips it on and returns ``(values, per_set_variances)``.
+- ``axes_to_preserve`` — tuple of axis names that should not be reduced away
+  by downstream stages (advanced use; needed when you want branch-level
+  results after normal reductions).
+- ``feature_batch`` — classical feature matrix ``(n_samples, n_features)``
+  read by :class:`~divi.pipeline.stages.DataBindingStage` (QNN / CustomVQA
+  data-binding path; ``None`` for circuits without a data axis).
+- ``rng`` — ``numpy.random.Generator`` for stochastic stage decisions (e.g.
+  ``"weighted_random"`` shot allocation); when ``None``, stages construct a
+  fresh unseeded generator (non-reproducible).
+
 
 Example 2: Standalone Pipelines with PennyLane and Qiskit
 ----------------------------------------------------------
@@ -418,13 +534,17 @@ Both stages accept single circuits, sequences, or mappings as input.
 
 .. tip::
 
-   ``result.value`` returns the natural shape: a scalar ``float`` for a
-   single ``qp.expval(...)`` measurement, a ``list[float]`` for several
-   ``qp.expval(...)`` measurements (or when the user explicitly wrapped a
-   single observable in a list at the program layer), and a ``dict`` for
-   ``qp.probs`` / ``qp.counts``.  For the canonical pipeline-internal form
-   regardless of length (always a ``list[float]`` for expectation values),
-   use ``result[()]``.
+   ``result.value`` squeezes results to the natural shape: a scalar
+   ``float`` for a single ``qp.expval(...)`` measurement, a ``list[float]``
+   for several measurements (or when the user explicitly wrapped a single
+   observable in a list), and a ``dict`` for ``qp.probs`` / ``qp.counts``.
+   ``result[()]`` gives the pipeline-internal form without squeezing —
+   always a ``list[float]`` for expectation values — but only when the
+   spec stage's ``reduce`` collapses the circuit axis (which the built-in
+   stages do).  ``evaluate(...)`` returns ``{param_set_idx: value}`` where
+   the value is **not** squeezed — e.g. ``{0: [1.0]}`` for a single
+   expectation value, not ``{0: 1.0}``; use ``result.value`` for the
+   squeezed scalar.
 
 
 Example 3: Writing a Custom SpecStage
@@ -465,6 +585,7 @@ Bell-state circuit and measures its probabilities:
        PipelineEnv,
        SpecStage,
        StageOutput,
+       group_by_base_key,
    )
    from divi.pipeline.abc import MetaCircuitBatch
    from divi.pipeline.stages import MeasurementStage
@@ -478,7 +599,7 @@ Bell-state circuit and measures its probabilities:
 
        @property
        def axis_name(self):
-           return None          # No fan-out axis
+           return "bell"
 
        def expand(self, spec, env):
            # Build the Bell-state circuit as a Qiskit QuantumCircuit and
@@ -499,7 +620,14 @@ Bell-state circuit and measures its probabilities:
            return StageOutput(batch=batch)
 
        def reduce(self, results, env, token):
-           return results       # Pass results through unchanged
+           # Strip the "bell" axis — mirrors how CircuitSpecStage.reduce works.
+           # Groups child results by their base key (without the "bell" axis)
+           # so that a single-circuit batch collapses to key ().
+           grouped = group_by_base_key(results, self.axis_name, indexed=False)
+           return {
+               key: values[0] if len(values) == 1 else values
+               for key, values in grouped.items()
+           }
 
 
    # Build a minimal pipeline
@@ -509,16 +637,404 @@ Bell-state circuit and measures its probabilities:
    ])
 
    # Run the pipeline
-   backend = MaestroSimulator()
-   env = PipelineEnv(backend=backend)
+   env = PipelineEnv(backend=MaestroSimulator())
    result = pipeline.run(initial_spec=None, env=env)
 
-   print(result)
-   # Result is keyed by NodeKey: result[(("bell", 0),)] ≈ {"00": ~0.5, "11": ~0.5}
+   # BellSpecStage.reduce strips the "bell" axis, so the result collapses
+   # to key () — use result.value for the natural dict shape.
+   probs = result.value   # ≈ {"00": ~0.5, "11": ~0.5}
+   assert isinstance(probs, dict)
+   assert set(probs.keys()) == {"00", "11"} or len(probs) >= 1
+   # result[()] is equivalent when the spec axis has been stripped.
+   assert result[()] == probs
 
 This pattern composes naturally — you can insert any ``BundleStage`` between the
 spec stage and the measurement stage to add parameter binding, error mitigation,
 or any custom transformation.
+
+
+Example 4: Writing a Custom BundleStage
+-----------------------------------------
+
+A :class:`~divi.pipeline.BundleStage` fans out a :class:`~divi.circuits.MetaCircuit`
+batch by appending axis-tagged bodies to ``meta.circuit_bodies`` — it does **not**
+extend the ``NodeKey`` in ``expand``.  The axis name (returned by the stage's
+``axis_name`` property) appears as a new ``(axis_name, idx)`` pair appended to
+each body's ``QASMTag`` tuple.  After execute, ``reduce`` uses
+:func:`~divi.pipeline.group_by_base_key` to strip that suffix and collapse
+the fan-out back to the parent key.
+
+The canonical reference is :class:`~divi.pipeline.stages.PauliTwirlStage`:
+its ``_expand_structural`` method iterates ``meta.circuit_bodies``, computes
+twirl variants, and emits one MetaCircuit per parent key with all variants as
+separate tagged bodies via ``meta.set_circuit_bodies(tuple(updated_bodies))``.
+
+The following minimal example replicates each circuit body twice along a
+``"replica"`` axis and averages the results in ``reduce``:
+
+.. code-block:: python
+
+   from qiskit import QuantumCircuit
+   from qiskit.converters import circuit_to_dag
+   from qiskit.quantum_info import SparsePauliOp
+
+   from divi.circuits import MetaCircuit
+   from divi.pipeline import (
+       BundleStage,
+       CircuitPipeline,
+       PipelineEnv,
+       StageOutput,
+       group_by_base_key,
+       reduce_mean,
+   )
+   from divi.pipeline.abc import MetaCircuitBatch
+   from divi.pipeline.stages import CircuitSpecStage, MeasurementStage
+   from divi.backends import MaestroSimulator
+
+   N_REPLICAS = 2
+
+   class ReplicaBundleStage(BundleStage):
+       """Fan out each circuit into N identical replicas and average results."""
+
+       def __init__(self, n: int = N_REPLICAS):
+           super().__init__(name="replica")
+           self._n = n
+
+       @property
+       def axis_name(self):
+           return "replica"
+
+       def expand(self, batch: MetaCircuitBatch, env: PipelineEnv) -> StageOutput:
+           out: MetaCircuitBatch = {}
+           for parent_key, meta in batch.items():
+               # Fan out: append (axis_name, idx) to each body's QASMTag.
+               # Each entry in circuit_bodies is (QASMTag, DAGCircuit).
+               new_bodies = []
+               for body_tag, dag in meta.circuit_bodies:
+                   for i in range(self._n):
+                       # Extend the tag tuple with the replica axis label.
+                       new_tag = (*body_tag, (self.axis_name, i))
+                       new_bodies.append((new_tag, dag))
+               # set_circuit_bodies returns a new immutable MetaCircuit copy.
+               out[parent_key] = meta.set_circuit_bodies(tuple(new_bodies))
+           return StageOutput(batch=out)
+
+       def reduce(self, results, env, token):
+           # Strip the "replica" axis and average grouped expectation values.
+           grouped = group_by_base_key(results, self.axis_name, indexed=False)
+           return reduce_mean(grouped)
+
+
+   # Build and run a minimal pipeline using the custom bundle stage.
+   # CircuitSpecStage wraps the MetaCircuit and assigns the "circuit" axis;
+   # ReplicaBundleStage appends a "replica" axis to each body.
+   qc = QuantumCircuit(1)
+   qc.h(0)
+   meta = MetaCircuit(
+       circuit_bodies=(((), circuit_to_dag(qc)),),
+       observable=SparsePauliOp.from_list([("Z", 1.0)]),
+   )
+
+   pipeline = CircuitPipeline(stages=[
+       CircuitSpecStage(),
+       ReplicaBundleStage(n=N_REPLICAS),
+       MeasurementStage(),
+   ])
+
+   env = PipelineEnv(backend=MaestroSimulator())
+   result = pipeline.run(initial_spec=meta, env=env)
+   expval = result.value   # scalar float — averaged over N_REPLICAS replicas
+   assert isinstance(expval, float)
+
+The key mechanic: ``set_circuit_bodies`` replaces the body list on an
+**immutable** :class:`~divi.circuits.MetaCircuit` (backed by
+``dataclasses.replace``), so each stage works on its own copy.  The tag suffix
+``(axis_name, idx)`` is the pipeline's bookkeeping token; ``reduce`` uses
+:func:`~divi.pipeline.group_by_base_key` to strip that suffix and collapse
+values back to the parent key.  Use :func:`~divi.pipeline.reduce_mean` for
+EXPVALS, :func:`~divi.pipeline.reduce_merge_histograms` for PROBS/COUNTS.
+
+
+Example 5: Custom QuantumProgram with evaluate
+-----------------------------------------------
+
+For full control over state preparation and measurement, subclass
+:class:`~divi.qprog.QuantumProgram` directly and implement ``_spec_stage`` and
+``_initial_spec``.  Call :meth:`~divi.qprog.QuantumProgram.evaluate` with a
+:class:`~divi.pipeline.CircuitPreprocessor` to measure the prepared state.
+
+:meth:`~divi.qprog.QuantumProgram.run` is ``@abstractmethod`` — every
+``QuantumProgram`` subclass must implement it, even as a thin wrapper, or
+instantiation raises ``TypeError: Can't instantiate abstract class``.
+
+``_initial_spec`` is only required when your subclass calls ``evaluate``; it
+is intentionally not abstract so programs that never call ``evaluate`` (e.g.
+those that assemble their own pipeline directly inside ``run``) do not need to
+implement it.
+
+A :class:`~divi.circuits.MetaCircuit` for EXPVALS mode is constructed with an
+``observable`` keyword (a ``SparsePauliOp``); for PROBS/COUNTS mode use
+``measured_wires`` instead.
+
+Direct ``QuantumProgram`` subclasses with parameterized seed circuits must
+override ``_assemble_pipeline`` to add :class:`~divi.pipeline.stages.ParameterBindingStage`
+themselves — the base class does not append one.  Skipping it raises
+:class:`~divi.pipeline.abc.ContractViolation` at execution time.
+
+.. code-block:: python
+
+   import numpy as np
+   from qiskit import QuantumCircuit
+   from qiskit.circuit import Parameter
+   from qiskit.converters import circuit_to_dag
+   from qiskit.quantum_info import SparsePauliOp
+
+   from divi.circuits import MetaCircuit
+   from divi.backends import MaestroSimulator
+   from divi.pipeline import CircuitPipeline, CircuitPreprocessor, ResultFormat
+   from divi.pipeline.stages import (
+       CircuitSpecStage,
+       MeasurementStage,
+       ParameterBindingStage,
+   )
+   from divi.qprog import QuantumProgram
+
+   class SingleQubitRotation(QuantumProgram):
+       """Minimal QuantumProgram subclass: parameterized Ry rotation, measures Z."""
+
+       def __init__(self, backend):
+           super().__init__(backend=backend)
+           theta = Parameter("theta")
+           qc = QuantumCircuit(1)
+           qc.ry(theta, 0)
+           self._meta = MetaCircuit(
+               circuit_bodies=(((), circuit_to_dag(qc)),),
+               observable=SparsePauliOp.from_list([("Z", 1.0)]),
+               parameters=(theta,),
+           )
+           self._result = None
+
+       def has_results(self) -> bool:
+           return self._result is not None
+
+       def _spec_stage(self):
+           return CircuitSpecStage()
+
+       def _initial_spec(self):
+           return self._meta
+
+       def _assemble_pipeline(self, spec_stage, terminal_stage, *, result_format, extra_stages=()):
+           # Direct QuantumProgram subclasses with parameterized circuits must add
+           # ParameterBindingStage — the base class does not.
+           return CircuitPipeline(stages=[
+               spec_stage,
+               *extra_stages,
+               *self._mitigation_stages(result_format),
+               terminal_stage,
+               ParameterBindingStage(),   # must come last
+           ])
+
+       def run(self):
+           preprocessor = CircuitPreprocessor(
+               name="cost",
+               result_format=ResultFormat.EXPVALS,
+               terminal_stage=MeasurementStage(),
+           )
+           # evaluate() returns {param_set_idx: value} — value is unsqueezed:
+           # a list[float] for EXPVALS, not a scalar.
+           params = np.array([[0.0]])   # shape (n_param_sets=1, n_params=1)
+           raw = self.evaluate(params, preprocessor)
+           # raw == {0: [1.0]}  for theta=0 (|0⟩ state, ⟨Z⟩=1.0) — unsqueezed list
+           self._result = raw[0][0]    # index the list to get the scalar
+
+   program = SingleQubitRotation(backend=MaestroSimulator())
+   program.run()
+   # ⟨Z⟩ for theta=0 (|0⟩ state) ≈ 1.0
+   assert abs(program._result - 1.0) < 0.15
+
+``evaluate()`` returns ``{param_set_idx: value}`` where ``value`` is the
+**unsqueezed** pipeline-internal form — e.g. ``{0: [1.0]}`` for a single
+expectation value, not ``{0: 1.0}``.  Use
+:attr:`~divi.pipeline.PipelineResult.value` (on the result of ``pipeline.run(...)``)
+for the auto-squeezed scalar, or index the list directly as shown above.
+
+
+Example 6: Injecting a Custom Stage into an Optimizer-Driven Algorithm
+-----------------------------------------------------------------------
+
+:class:`~divi.qprog.VariationalQuantumAlgorithm` (the base of
+:class:`~divi.qprog.algorithms.CustomVQA`, :class:`~divi.qprog.algorithms.VQE`,
+:class:`~divi.qprog.algorithms.QNN`, etc.) assembles its pipeline in
+``_assemble_pipeline``.  The ``extra_stages`` keyword is the injection seam:
+stages passed there are inserted immediately after the spec stage, before any
+mitigation stages and the terminal measurement.  To inject a custom stage into a
+VQA-family program, override ``_assemble_pipeline`` and delegate to ``super()``:
+
+.. code-block:: python
+
+   import numpy as np
+   import pennylane as qp
+   from divi.qprog import CustomVQA
+   from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
+   from divi.pipeline import ResultFormat
+   from divi.backends import MaestroSimulator
+
+   # Re-using ReplicaBundleStage from Example 4 — it is in scope because
+   # code-blocks within one .rst file share a namespace and run in order.
+
+   class ReplicatedCustomVQA(CustomVQA):
+       """CustomVQA subclass that replicates every circuit N times."""
+
+       def __init__(self, *args, n_replicas: int = 2, **kwargs):
+           super().__init__(*args, **kwargs)
+           self._n_replicas = n_replicas
+
+       def _assemble_pipeline(self, spec_stage, terminal_stage, *, result_format, extra_stages=()):
+           return super()._assemble_pipeline(
+               spec_stage,
+               terminal_stage,
+               result_format=result_format,
+               extra_stages=(*extra_stages, ReplicaBundleStage(n=self._n_replicas)),
+           )
+
+   # Build a minimal two-qubit Ising Hamiltonian for the test.
+   H = -1.0 * qp.Z(0) @ qp.Z(1) + 0.5 * qp.X(0) + 0.5 * qp.X(1)
+   ops = [qp.RY(0.0, wires=0), qp.RY(0.0, wires=1), qp.CNOT(wires=[0, 1])]
+   qscript = qp.tape.QuantumScript(ops=ops, measurements=[qp.expval(H)])
+   qscript.trainable_params = [0, 1]
+
+   program = ReplicatedCustomVQA(
+       qscript,
+       param_shape=(2,),
+       n_replicas=2,
+       max_iterations=3,
+       backend=MaestroSimulator(),
+       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+       seed=42,
+   )
+
+   # Verify the custom stage is present in the cost pipeline. ``dry_run`` is the
+   # public way to introspect the assembled stages (no private access needed).
+   # ``StageInfo.name`` is the stage *class* name (``type(stage).__name__``), not
+   # the ``name=`` you may pass to a stage's constructor — match the class name.
+   stage_names = [s.name for s in program.dry_run()["cost"].stages]
+   assert "ReplicaBundleStage" in stage_names, f"Expected ReplicaBundleStage in {stage_names}"
+
+   program.run()
+   assert program.best_loss is not None
+
+The ``extra_stages`` tuple is passed through every ``_assemble_pipeline``
+override in the MRO, so multiple mixins can each append their own stages
+without conflicting.  The canonical example of this pattern is
+:class:`~divi.qprog.algorithms.PCE`, which injects its preprocessor stage via
+exactly this seam.
+
+
+Stage-Author Toolkit
+--------------------
+
+``divi.pipeline`` exposes the reduction helpers the built-in stages use
+internally, so a custom stage can reduce results the same way. A ``reduce``
+takes and returns a mapping of result key → value.
+
+**Stage-authoring helpers** (use inside ``reduce``):
+
+- :func:`~divi.pipeline.group_by_base_key` — group child results by stripping one
+  axis from each key.  Works with any result format.  Pass ``indexed=True`` to
+  produce ``{base_key: {int: value}}`` instead of the default
+  ``{base_key: [values]}`` list form — the indexed form is required by
+  :func:`~divi.pipeline.reduce_postprocess_ordered`.
+- :func:`~divi.pipeline.strip_axis_from_label` — drop a single axis from one key.
+  Works with any result format.
+- :func:`~divi.pipeline.reduce_mean` — average grouped values (scalars or
+  per-observable lists).  **Use for EXPVALS** (expectation-value results). Do
+  not use for probability or counts dicts — use ``reduce_merge_histograms`` instead.
+- :func:`~divi.pipeline.reduce_merge_histograms` — average grouped probability
+  histograms across branches.  **Use for PROBS or COUNTS** result formats.
+- :func:`~divi.pipeline.reduce_postprocess_ordered` — sort each group by axis
+  index, then apply a postprocessing function.  **Works with any result format**;
+  used by QEM and observable grouping stages.
+
+**Quick reference: helper → result format**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - Helper
+     - Appropriate result format
+   * - ``reduce_mean``
+     - EXPVALS (scalar floats or per-observable ``list[float]``)
+   * - ``reduce_merge_histograms``
+     - PROBS or COUNTS (probability / counts dicts)
+   * - ``reduce_postprocess_ordered``
+     - Any format (sorts by axis index, applies a postprocessor)
+   * - ``group_by_base_key``, ``strip_axis_from_label``
+     - Any format (key manipulation only)
+
+Each stage names its own fan-out axis (returned from ``axis_name``).
+:func:`~divi.pipeline.extract_param_set_idx` parses the param-set index from a
+**result key** — a ``NodeKey`` tuple such as the keys in a raw
+:class:`~divi.pipeline.PipelineResult` (e.g. ``pipeline.run(...)``) that still
+carry the full axis chain.  It iterates the key as ``(axis, idx)`` pairs and
+returns the ``param_set`` index.
+
+Do **not** apply it to the output of ``evaluate()`` — that method already
+collapses the pipeline-internal keys and returns ``{param_set_idx: value}``,
+where each key is a plain ``int``.  The int *is* the param-set index;
+calling ``extract_param_set_idx`` on an int raises ``TypeError`` and is
+redundant.
+
+.. code-block:: python
+
+   from divi.pipeline import (
+       extract_param_set_idx,
+       group_by_base_key,
+       reduce_mean,
+       reduce_postprocess_ordered,
+   )
+
+   # --- Non-indexed path (list form) — use with reduce_mean for EXPVALS ---
+   results = {(("circ", 0), ("obs", 0)): 1.0, (("circ", 0), ("obs", 1)): 3.0}
+   grouped = group_by_base_key(results, "obs")
+   # grouped == {(('circ', 0),): [1.0, 3.0]}
+   averaged = reduce_mean(grouped)
+   assert averaged == {(("circ", 0),): 2.0}
+
+   # --- Indexed path — use with reduce_postprocess_ordered ---
+   # indexed=True produces {base_key: {int: value}} so the values can be
+   # ordered by axis index before the postprocess function is applied.
+   # This is exactly the input reduce_postprocess_ordered expects.
+   results2 = {(("circ", 0), ("qem", 0)): 0.8, (("circ", 0), ("qem", 1)): 1.2}
+   grouped_indexed = group_by_base_key(results2, "qem", indexed=True)
+   # grouped_indexed == {(('circ', 0),): {0: 0.8, 1: 1.2}}
+   # Postprocess: sorted by index [0.8, 1.2], then apply fn
+   extrapolated = reduce_postprocess_ordered(grouped_indexed, lambda xs: 2 * xs[-1] - xs[0])
+   # 2 * 1.2 - 0.8 = 1.6 (allow for floating-point rounding)
+   assert abs(extrapolated[(("circ", 0),)] - 1.6) < 1e-9
+
+   # extract_param_set_idx reads from a NodeKey tuple, not from evaluate() output.
+   # The key (("param_set", 2), ("obs", 0)) belongs to param-set index 2.
+   key = (("param_set", 2), ("obs", 0))
+   assert extract_param_set_idx(key) == 2
+
+**Contributing dry-run metadata.** The per-stage ``metadata`` that
+:func:`~divi.pipeline.format_dry_run` renders under each stage comes from the
+stage's ``introspect(batch, env, token)`` method.  The base ``Stage`` returns
+``{}`` (no metadata); override it to surface stage-specific detail in the
+dry-run tree and on :attr:`StageInfo.metadata <divi.pipeline.StageInfo>`.  It is
+called after ``expand`` with the post-expand batch, so it can report shapes the
+stage just produced:
+
+.. code-block:: python
+
+   from typing import Any
+   from divi.pipeline.abc import MetaCircuitBatch, PipelineEnv, StageToken
+
+   def introspect(
+       self, batch: MetaCircuitBatch, env: PipelineEnv, token: StageToken
+   ) -> dict[str, Any]:
+       return {"n_variants": self._n}
 
 
 .. _adaptive-shot-allocation:
@@ -528,10 +1044,14 @@ Adaptive Shot Allocation
 
 By default, every measurement group produced by
 :class:`~divi.pipeline.stages.MeasurementStage` is sampled with the
-backend's full shot count — even tiny terms with little impact on the
-final energy.  Setting the ``shot_distribution`` argument splits the same
-total budget across groups according to their importance, reducing
-estimator variance without spending more shots:
+backend's full shot count — so with ``G`` groups the default spends
+``G × shots`` in total, even on tiny terms with little impact on the final
+energy.  Setting the ``shot_distribution`` argument instead caps the total at a
+single ``shots`` budget split across groups by importance.  At that equal
+budget it gives lower estimator variance than a ``"uniform"`` split (the
+dominant terms get more samples); compare strategies at the *same* total
+budget, since the default's per-group full count is a larger budget, not a
+fairer baseline:
 
 .. code-block:: python
 
@@ -552,6 +1072,43 @@ The available strategies (see :data:`~divi.pipeline.ShotDistStrategy`):
 - A callable ``(group_l1_norms, total_shots) -> per_group_shots`` for
   fully custom allocation.
 
+The equal-budget claim is easy to check without spending a shot: a
+:meth:`~divi.qprog.QuantumProgram.dry_run` records the per-group allocation
+under ``env_artifacts["per_group_shots"]``, so ``"uniform"`` and ``"weighted"``
+can be compared at the *same* total budget directly:
+
+.. code-block:: python
+
+   from divi.backends import QiskitSimulator
+   from divi.qprog.algorithms import VQE
+   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+
+   # A sampling backend (supports_expval=False) so shot_distribution takes effect.
+   sampling_backend = QiskitSimulator(force_sampling=True, shots=1200)
+
+   def group_allocation(strategy):
+       vqe = VQE(
+           molecule=molecule,
+           backend=sampling_backend,
+           optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+           grouping_strategy="qwc",
+           shot_distribution=strategy,
+       )
+       # per_group_shots maps each spec key to {group_index: shots}; the cost
+       # pipeline has a single spec key, so take its allocation.
+       report = vqe.dry_run()["cost"]
+       allocation = next(iter(report.env_artifacts["per_group_shots"].values()))
+       return list(allocation.values())
+
+   uniform = group_allocation("uniform")
+   weighted = group_allocation("weighted")
+
+   # Identical total budget — the comparison is apples-to-apples.
+   assert sum(uniform) == sum(weighted) == 1200
+   # "weighted" concentrates shots on the dominant terms, so it spreads the
+   # budget unevenly while "uniform" stays flat.
+   assert (max(weighted) - min(weighted)) > (max(uniform) - min(uniform))
+
 Variational algorithms accept the same option directly as a constructor
 keyword (e.g. ``VQE(..., shot_distribution="weighted")``); it is threaded
 through to the cost pipeline's measurement stage.  See
@@ -563,12 +1120,23 @@ stage emits a :class:`UserWarning` reporting the dropped fraction of the
 Hamiltonian's L1 norm so you can quantify the resulting bias.
 
 Adaptive shot allocation only applies to sampling-based execution.
-Combining ``shot_distribution`` with the analytical
-``grouping_strategy="_backend_expval"`` path (which divi auto-selects on
-expval-capable backends like :class:`~divi.backends.MaestroSimulator`)
-raises a :class:`ValueError` — pass an explicit
-``grouping_strategy="qwc"`` (or ``"wires"`` / ``None``) to opt into
-sampling.
+:class:`~divi.pipeline.stages.MeasurementStage` routes single-observable
+expectation values to the backend's native expval path whenever
+``backend.supports_expval`` is ``True`` — regardless of
+``grouping_strategy``.  :class:`~divi.backends.MaestroSimulator` always
+reports ``supports_expval=True``, so it takes the analytic path by default.
+``grouping_strategy`` controls how observable *terms* are grouped into
+measurement circuits; it does **not** by itself force shot-based sampling.
+
+To force genuine shot-based sampling — and unlock ``shot_distribution`` — use
+a backend with ``supports_expval=False``:
+``QiskitSimulator(force_sampling=True)``, or for
+:class:`~divi.backends.QoroService` set
+``JobConfig(force_sampling=True)``.  Setting ``shot_distribution`` on an
+expval-capable backend is not silent: it emits a :class:`UserWarning` (the
+per-group allocation is recorded but cannot change the exact, analytically
+computed result), and explicitly pairing it with
+``grouping_strategy="_backend_expval"`` raises :class:`ValueError`.
 
 
 Stage Validation
@@ -576,22 +1144,69 @@ Stage Validation
 
 The pipeline validates stage ordering at construction time.  Built-in stages
 declare their own constraints — for example, :class:`~divi.pipeline.stages.QEMStage`
-with QuEPP requires a measurement-handling stage after it.
+with QuEPP requires a measurement-handling stage after it.  The pipeline also
+validates that at least one stage handles measurement before custom ``validate``
+hooks run, so a custom constraint requiring a ``MeasurementStage`` after it is
+pre-empted and unreachable.  Pick constraints that the built-in check does **not**
+cover, for example ordering relative to another custom stage.
 
 Custom stages can participate in this by overriding the ``validate`` method:
 
-.. skip: next
-
 .. code-block:: python
 
-   from divi.pipeline.abc import ContractViolation
+   import pytest
+   from divi.pipeline import BundleStage, CircuitPipeline, StageOutput
+   from divi.pipeline.abc import ContractViolation, MetaCircuitBatch
+   from divi.pipeline.stages import CircuitSpecStage, MeasurementStage
 
-   class MyStage(BundleStage):
+   class PreprocessStage(BundleStage):
+       """Pass-through stage that must run before any ReplicaBundleStage.
+
+       This constraint is custom — the built-in pipeline check only validates
+       structural rules (one SpecStage first, one measurement stage).
+       """
+
+       def __init__(self):
+           super().__init__(name="preprocess")
+
+       @property
+       def axis_name(self):
+           return "preprocess"
+
        def validate(self, before, after):
-           if not any(isinstance(s, MeasurementStage) for s in after):
+           # Ordering constraint: no ReplicaBundleStage may precede this stage.
+           if any(type(s).__name__ == "ReplicaBundleStage" for s in before):
                raise ContractViolation(
-                   "MyStage requires a MeasurementStage after it."
+                   "PreprocessStage must come before any ReplicaBundleStage."
                )
+
+       def expand(self, batch: MetaCircuitBatch, env) -> StageOutput:
+           return StageOutput(batch=batch)
+
+       def reduce(self, results, env, token):
+           return results
+
+   # Re-using ReplicaBundleStage from Example 4 — it is in scope because
+   # code-blocks within one .rst file share a namespace and run in order.
+   # Both pipelines below have a SpecStage first and one MeasurementStage,
+   # satisfying the built-in structural check; the difference is only ordering.
+
+   # Valid: PreprocessStage before ReplicaBundleStage — no ContractViolation.
+   pipeline_ok = CircuitPipeline(stages=[
+       CircuitSpecStage(),
+       PreprocessStage(),
+       ReplicaBundleStage(n=2),
+       MeasurementStage(),
+   ])
+
+   # Wrong ordering: ReplicaBundleStage before PreprocessStage — constraint fires.
+   with pytest.raises(ContractViolation):
+       CircuitPipeline(stages=[
+           CircuitSpecStage(),
+           ReplicaBundleStage(n=2),
+           PreprocessStage(),
+           MeasurementStage(),
+       ])
 
 The ``before`` and ``after`` arguments are tuples of stage instances, so you can
 inspect any property (``handles_measurement``, ``axis_name``, protocol

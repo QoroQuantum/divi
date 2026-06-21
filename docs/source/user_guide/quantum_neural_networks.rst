@@ -74,20 +74,34 @@ contains only the **weights** —
 ``ansatz.n_params_per_layer(n_qubits) * n_layers`` of them. The feature columns
 never appear in the parameter vector.
 
+**Loss trajectory.** After ``run()`` completes, the training history is exposed
+on the program via
+:attr:`~divi.qprog.VariationalQuantumAlgorithm.min_losses_per_iteration` and
+:attr:`~divi.qprog.VariationalQuantumAlgorithm.losses_history` — see
+:ref:`reading results <reading-results>` in core concepts for their
+semantics and types.
+
+Per-iteration INFO log lines are emitted to the ``divi`` logger during
+optimization.  To silence them: ``from divi.reporting import disable_logging``
+(call ``enable_logging()`` to restore).
+
 Inference
 ---------
 
 After ``run()``, score a fresh feature batch with
-:meth:`~divi.qprog.algorithms.DataBindingMixin.predict`. It binds each row's features with the
-trained weights, estimates the cost observable per sample (the same shot-based
-readout the loss optimizes), and returns the sign as a class label in
-``{-1, +1}``:
+:meth:`~divi.qprog.algorithms.DataBindingMixin.predict`. It binds each row's
+features with the trained weights, estimates the cost observable per sample, and
+returns the **sign** as a class label in ``{-1, +1}``.  For continuous /
+regression output — or to apply a custom threshold — pass
+``return_scores=True`` to get the raw ``⟨H⟩`` value per sample instead.  Either
+way ``predict`` returns a ``numpy.ndarray`` of shape ``(n_samples,)``:
 
 .. invisible-code-block: python
 
    import numpy as np
    from qiskit.circuit.library import CXGate, RYGate, RZGate
    from divi.qprog import QNN, AngleEmbedding, GenericLayerAnsatz
+   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
    program = QNN(
@@ -98,6 +112,7 @@ readout the loss optimizes), and returns the sign as a class label in
            entangling_layout="linear",
        ),
        feature_batch=np.array([[0.1, 0.2], [2.0, 2.1]]),
+       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        backend=MaestroSimulator(),
    )
    trained_weights = np.array([0.5, 1.0, 1.5, 2.0])
@@ -113,6 +128,21 @@ When called after training, ``params`` defaults to ``best_params``. Pass
 ``return_scores=True`` to :meth:`~divi.qprog.algorithms.DataBindingMixin.predict` for the
 continuous scores if you want to apply your own decision threshold. The same method is
 available on :class:`~divi.qprog.algorithms.CustomVQA` when it has a data axis.
+
+**Regression use.** ``return_scores=True`` returns the raw ⟨H⟩ value per sample —
+a continuous output in the observable's readout range.  For the default all-qubit
+parity observable (``Z ⊗ Z ⊗ … ⊗ Z``) that range is ``[-1, 1]``.  When training
+a regressor, scale your continuous targets into this range; using targets outside
+it makes the supervised loss asymmetric and can slow or prevent convergence.  For a
+custom observable, inspect its eigenvalue range and scale accordingly.
+
+**Low-dimensional inputs.** The built-in feature maps
+(:class:`~divi.qprog.algorithms.AngleEmbedding` and
+:class:`~divi.qprog.algorithms.ZZFeatureMap`) consume exactly **one feature per
+qubit**: ``feature_batch`` must have ``n_qubits`` columns.  If your dataset has
+fewer features than qubits, pad the feature vectors or use a custom
+:class:`~divi.qprog.algorithms.FeatureMap` subclass that maps fewer inputs to more
+qubits (e.g. via data re-uploading).
 
 Feature Maps
 ------------
@@ -194,9 +224,12 @@ the readout range (e.g. ``-1`` / ``+1`` for the parity observable):
    )
    clf.run(perform_final_computation=False)
 
-A supervised loss requires a single-readout observable (one prediction per
-sample), so keep the default parity observable or another single-qubit/parity
-operator. The same ``labels`` / ``loss_fn`` pair is available on
+A supervised loss requires a single :class:`~qiskit.quantum_info.SparsePauliOp`
+observable whose terms sum to one scalar prediction per sample.  A multi-term
+``SparsePauliOp`` is supported — its terms are evaluated together and their
+weighted sum is the prediction.  A **list** of observables is not supported on
+the supervised path; keep the default parity observable or pass a single
+``SparsePauliOp``.  The same ``labels`` / ``loss_fn`` pair is available on
 :class:`~divi.qprog.algorithms.CustomVQA`'s data-binding path
 (:doc:`framework_integration`) when you bring your own circuit.
 

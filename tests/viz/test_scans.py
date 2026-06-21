@@ -31,13 +31,14 @@ def basic_ansatz():
 
 
 @pytest.fixture
-def vqe_program(dummy_simulator, basic_ansatz):
+def vqe_program(dummy_simulator, basic_ansatz, default_optimizer):
     return VQE(
         hamiltonian=qp.Z(0),
         n_electrons=1,
         ansatz=basic_ansatz,
         n_layers=1,
         backend=dummy_simulator,
+        optimizer=default_optimizer,
     )
 
 
@@ -52,23 +53,26 @@ def qaoa_program(dummy_simulator):
 
 
 @pytest.fixture
-def pce_program_soft(dummy_simulator, basic_ansatz):
+def pce_program_soft(dummy_simulator, basic_ansatz, default_optimizer):
     return PCE(
         problem=np.array([[1.0, 0.2], [0.2, 2.0]]),
         ansatz=basic_ansatz,
         n_layers=1,
         backend=dummy_simulator,
+        optimizer=default_optimizer,
         alpha=2.0,
     )
 
 
 @pytest.fixture
-def custom_vqa_program(dummy_simulator):
+def custom_vqa_program(dummy_simulator, default_optimizer):
     qscript = qp.tape.QuantumScript(
         ops=[qp.RX(0.0, wires=0), qp.RZ(0.0, wires=0)],
         measurements=[qp.expval(qp.Z(0))],
     )
-    return CustomVQA(qscript=qscript, backend=dummy_simulator)
+    return CustomVQA(
+        qscript=qscript, backend=dummy_simulator, optimizer=default_optimizer
+    )
 
 
 class TestDirectAPI:
@@ -124,13 +128,14 @@ class TestDirectAPI:
         assert result.program_type == "PCE"
 
     def test_scan_1d_pce_preserves_hard_mode_backend_guard(
-        self, dummy_expval_backend, basic_ansatz
+        self, dummy_expval_backend, basic_ansatz, default_optimizer
     ):
         pce = PCE(
             problem=np.array([[1.0, 0.2], [0.2, 2.0]]),
             ansatz=basic_ansatz,
             n_layers=1,
             backend=dummy_expval_backend,
+            optimizer=default_optimizer,
             alpha=6.0,
         )
         center = np.zeros(pce.get_expected_param_shape()[1])
@@ -270,12 +275,13 @@ class TestDirectAPI:
         finally:
             plt.close(fig)
 
-    def test_iterative_qaoa_scan_is_rejected(self, dummy_simulator):
+    def test_iterative_qaoa_scan_is_rejected(self, dummy_simulator, default_optimizer):
         program = IterativeQAOA(
             problem=MaxCutProblem(nx.path_graph(2)),
             max_depth=2,
             strategy=InterpolationStrategy.INTERP,
             backend=dummy_simulator,
+            optimizer=default_optimizer,
         )
         center = np.zeros(2)
 

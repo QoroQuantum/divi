@@ -5,15 +5,13 @@
 import logging
 import pickle
 from abc import abstractmethod
-from datetime import datetime
 from pathlib import Path
 from queue import Queue
-from typing import Any, ClassVar, Literal, TypeAlias
+from typing import Any, ClassVar, Literal, TypeAlias, cast
 from warnings import warn
 
 import numpy as np
 import numpy.typing as npt
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 from qiskit.quantum_info import SparsePauliOp
 from scipy.optimize import OptimizeResult
 
@@ -22,20 +20,17 @@ from divi.circuits import MetaCircuit
 from divi.exceptions import ExecutionCancelledError
 from divi.pipeline import (
     CircuitPipeline,
+    CircuitPreprocessor,
     GroupingStrategy,
     PipelineEnv,
-    PipelineSet,
     ResultFormat,
     ShotDistStrategy,
     Stage,
 )
-from divi.pipeline._compilation import _extract_param_set_idx
-from divi.pipeline.stages import (
-    CircuitSpecStage,
-    MeasurementStage,
-    ParameterBindingStage,
-)
+from divi.pipeline import cost_preprocessor as _default_cost_preprocessor
+from divi.pipeline.stages import ParameterBindingStage
 from divi.qprog import ObservableMeasuringMixin
+from divi.qprog._program_state import OptimizerConfig, ProgramState, SubclassState
 from divi.qprog._solution_sampling_mixin import SolutionSamplingMixin
 from divi.qprog.checkpointing import (
     PROGRAM_STATE_FILE,
@@ -65,123 +60,6 @@ _RUN_INSTRUCTION = "Call run() to execute the optimization."
 ParamHistoryMode: TypeAlias = Literal["all_evaluated", "best_per_iteration"]
 
 
-class SubclassState(BaseModel):
-    """Container for subclass-specific state."""
-
-    data: dict[str, Any] = Field(default_factory=dict)
-
-
-class OptimizerConfig(BaseModel):
-    """Configuration for reconstructing an optimizer."""
-
-    type: str
-    config: dict[str, Any] = Field(default_factory=dict)
-
-
-class ProgramState(BaseModel):
-    """Pydantic model for VariationalQuantumAlgorithm state."""
-
-    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
-
-    # Metadata
-    program_type: str = Field(validation_alias="_serialized_program_type")
-    version: str = "1.0"
-    timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
-
-    # Core Algorithm State (mapped to private attributes)
-    current_iteration: int
-    max_iterations: int
-    losses_history: list[dict[str, float]] = Field(validation_alias="_losses_history")
-    param_history: list[list[list[float]]] = Field(
-        default_factory=list, validation_alias="_param_history"
-    )
-    best_loss: float = Field(validation_alias="_best_loss")
-    # Only solution-sampling programs (SolutionSamplingMixin) carry _best_probs;
-    # it maps a parameter-set index to that set's {bitstring: probability} dict.
-    best_probs: dict[int, dict[str, float]] = Field(
-        default_factory=dict, validation_alias="_best_probs"
-    )
-    total_circuit_count: int = Field(validation_alias="_total_circuit_count")
-    total_run_time: float = Field(validation_alias="_total_run_time")
-    seed: int | None = Field(validation_alias="_seed")
-    stop_reason: str | None = Field(
-        default=None, validation_alias="_serialized_stop_reason"
-    )
-    grouping_strategy: str | None = Field(validation_alias="_grouping_strategy")
-
-    # Arrays
-    best_params: list[float] | None = Field(
-        default=None, validation_alias="_best_params"
-    )
-    final_params: list[float] | None = Field(
-        default=None, validation_alias="_final_params"
-    )
-
-    # Complex State (mapped to new adapter properties)
-    rng_state_bytes: bytes | None = Field(
-        default=None, validation_alias="_serialized_rng_state"
-    )
-    optimizer_config: OptimizerConfig = Field(
-        validation_alias="_serialized_optimizer_config"
-    )
-    subclass_state: SubclassState = Field(validation_alias="_serialized_subclass_state")
-
-    @field_serializer("rng_state_bytes")
-    def serialize_bytes(self, v: bytes | None, _info):
-        return v.hex() if v is not None else None
-
-    @field_validator("rng_state_bytes", mode="before")
-    @classmethod
-    def validate_bytes(cls, v):
-        return bytes.fromhex(v) if isinstance(v, str) else v
-
-    @field_validator("param_history", mode="before")
-    @classmethod
-    def normalize_param_history(cls, v):
-        """Accept nested lists or per-iteration ndarray snapshots from disk or program."""
-        if not v:
-            return []
-        rows: list[list[list[float]]] = []
-        for item in v:
-            arr = np.asarray(item, dtype=np.float64)
-            rows.append(arr.tolist())
-        return rows
-
-    @field_serializer("best_params", "final_params")
-    def serialize_arrays(self, v: npt.NDArray | list | None, _info):
-        if isinstance(v, np.ndarray):
-            return v.tolist()
-        return v
-
-    def restore(self, program: "VariationalQuantumAlgorithm") -> None:
-        """Apply this state object back to a program instance."""
-        # 1. Bulk restore standard attributes
-        for name, field in self.__class__.model_fields.items():
-            alias = field.validation_alias
-            target_attr = alias if isinstance(alias, str) else name
-
-            # Skip adapter properties (they are read-only / calculated)
-            if target_attr.startswith("_serialized_"):
-                continue
-
-            val = getattr(self, name)
-
-            if target_attr == "_param_history" and val is not None:
-                val = [np.asarray(block, dtype=np.float64) for block in val]
-            # Handle numpy conversion
-            elif "params" in target_attr and val is not None:
-                val = np.array(val)
-
-            if hasattr(program, target_attr):
-                setattr(program, target_attr, val)
-
-        # 2. Restore complex state
-        if self.rng_state_bytes:
-            program._rng.bit_generator.state = pickle.loads(self.rng_state_bytes)
-
-        program._load_subclass_state(self.subclass_state.data)
-
-
 def _compute_parameter_shift_mask(n_params: int) -> npt.NDArray[np.float64]:
     """
     Generate a binary matrix mask for the parameter shift rule.
@@ -207,6 +85,18 @@ def _compute_parameter_shift_mask(n_params: int) -> npt.NDArray[np.float64]:
     binary_matrix *= 0.5 * np.pi
 
     return binary_matrix
+
+
+def _argmin_finite(values: npt.NDArray[np.float64]) -> int | None:
+    """Index of the smallest finite entry, or ``None`` if every entry is non-finite.
+
+    Keeps a NaN/inf loss from being selected as the best parameter set.
+    """
+    arr = np.asarray(values, dtype=np.float64).ravel()
+    finite = np.isfinite(arr)
+    if not finite.any():
+        return None
+    return int(np.argmin(np.where(finite, arr, np.inf)))
 
 
 class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
@@ -240,7 +130,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         _grouping_strategy: Strategy for grouping quantum operations.
         _qem_protocol: Quantum error mitigation protocol.
         _cancellation_event: Event for graceful termination.
-        _meta_circuit_factories (dict): Lazily-built mapping of circuit names to MetaCircuit factories.
+        _cost_circuit: Lazily-built cost MetaCircuit for this program (or ``None``).
     """
 
     # Subclass-populated declarations.
@@ -253,6 +143,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
     # AttributeError.
     _supports_fixed_param_scans: ClassVar[bool] = True
     current_iteration: int
+    max_iterations: int
     n_layers: int
     loss_constant: float
     cost_hamiltonian: SparsePauliOp
@@ -262,7 +153,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
     _shot_distribution: ShotDistStrategy | None
     _best_params: npt.NDArray[np.float64]
     _final_params: npt.NDArray[np.float64]
-    _meta_circuit_factories: dict[str, MetaCircuit] | None
+    _cost_circuit: MetaCircuit | None
 
     def __init__(
         self,
@@ -287,8 +178,8 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
 
         Args:
             backend (CircuitRunner): Quantum circuit execution backend.
-            optimizer (Optimizer | None): The optimizer to use for parameter optimization.
-                Defaults to MonteCarloOptimizer().
+            optimizer (Optimizer): The optimizer to use for parameter optimization.
+                Required — passing ``None`` (or omitting it) raises ``ValueError``.
             seed (int | None): Random seed for parameter initialization. Defaults to None.
             progress_queue (Queue | None): Queue for progress reporting. Defaults to None.
             early_stopping (EarlyStopping | None): Early stopping controller. When
@@ -385,14 +276,19 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         self._optimizer_rng = self._rng.spawn(1)[0]
 
         # --- Optimizer Configuration ---
-        self.optimizer = optimizer if optimizer is not None else MonteCarloOptimizer()
+        if optimizer is None:
+            raise ValueError(
+                "A VariationalQuantumAlgorithm requires an explicit optimizer; "
+                "pass one (e.g. optimizer=MonteCarloOptimizer())."
+            )
+        self.optimizer = optimizer
 
         # --- Early Stopping ---
         self._early_stopping = early_stopping
         self._stop_reason: StopReason | None = None
 
         # --- Circuit Factory & Templates ---
-        self._meta_circuit_factories = None
+        self._cost_circuit = None
 
     def _has_run_optimization(self) -> bool:
         """Check if optimization has been run at least once.
@@ -600,23 +496,18 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         return self._stop_reason.value if self._stop_reason is not None else None
 
     @property
-    def meta_circuit_factories(self) -> dict[str, MetaCircuit]:
-        """Get the meta-circuit factories used by this program.
+    def cost_circuit(self) -> MetaCircuit:
+        """The cost MetaCircuit for this program (lazily built, cached).
 
-        Returns:
-            dict[str, MetaCircuit]: Dictionary mapping circuit names to their
-                MetaCircuit factories.
+        Note: When used with ProgramEnsemble, this is initialized sequentially
+        in the main thread before parallel execution to avoid thread-safety issues.
         """
-        # Lazy initialization: each instance has its own _meta_circuit_factories.
-        # Note: When used with ProgramEnsemble, meta_circuit_factories is initialized sequentially
-        # in the main thread before parallel execution to avoid thread-safety issues.
-        if self._meta_circuit_factories is None:
-            self._meta_circuit_factories = self._create_meta_circuit_factories()
-
-        return self._meta_circuit_factories
+        if self._cost_circuit is None:
+            self._cost_circuit = self._create_cost_circuit()
+        return self._cost_circuit
 
     @abstractmethod
-    def _create_meta_circuit_factories(self) -> dict[str, MetaCircuit]:
+    def _create_cost_circuit(self) -> MetaCircuit:
         pass
 
     @property
@@ -792,11 +683,6 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
     # Pipeline builders
     # ------------------------------------------------------------------ #
 
-    @property
-    def _cost_pipeline(self) -> CircuitPipeline:
-        """The cost-evaluation pipeline that drives optimization."""
-        return self._pipelines["cost"]
-
     def _build_pipeline_env(self, **overrides) -> PipelineEnv:
         """Construct a PipelineEnv for the provided parameter sets.
 
@@ -850,39 +736,41 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         stages.append(terminal_stage)
         if not bind_early:
             stages.append(ParameterBindingStage())
-        return CircuitPipeline(stages=stages)
-
-    def _expectation_pipeline(self) -> CircuitPipeline:
-        """The canonical pipeline measuring an arbitrary observable-carrying
-        MetaCircuit as expectation values on this program's ansatz.
-
-        Used both as the default ``"cost"`` pipeline (VQE/CustomVQA) and, on
-        demand, by natural-gradient metric estimators (which supply their own
-        MetaCircuit). QAOA/PCE replace ``"cost"`` with a specialized pipeline but
-        still expose this for the metric.
-        """
-        return self._assemble_pipeline(
-            CircuitSpecStage(),
-            MeasurementStage(
-                grouping_strategy=self._grouping_strategy,
-                shot_distribution=self._shot_distribution,
-            ),
-            result_format=ResultFormat.EXPVALS,
+        return CircuitPipeline(
+            stages=stages,
+            suppress_performance_warnings=self._suppress_performance_warnings,
         )
 
-    def _build_pipelines(self) -> PipelineSet:
-        """Register the ``"cost"`` pipeline (an expectation measurement of the cost
-        ansatz). ``"sample"`` is added by :class:`SolutionSamplingMixin`; QAOA/PCE
-        replace ``"cost"`` — all via cooperative ``super()._build_pipelines().with_(...)``.
+    def _preprocessors(self) -> tuple[CircuitPreprocessor, ...]:
+        """Expose the cost routine for introspection. ``SolutionSamplingMixin``
+        adds the sample routine cooperatively."""
+        return (*super()._preprocessors(), self.cost_preprocessor())
+
+    def cost_preprocessor(self) -> CircuitPreprocessor:
+        """The preprocessor driving optimization: expectation of the cost observable.
+
+        Pass it to :meth:`~divi.qprog.QuantumProgram.evaluate` to measure the
+        cost at chosen parameters, e.g.
+        ``program.evaluate(params, program.cost_preprocessor())``.
         """
-        return PipelineSet(
-            {
-                "cost": (
-                    self._expectation_pipeline(),
-                    lambda: self.meta_circuit_factories["cost_circuit"],
-                ),
-            }
-        )
+        return _default_cost_preprocessor()
+
+    def _initial_spec(self) -> Any:
+        """The cost ansatz seed. QAOA overrides this with its cost Hamiltonian."""
+        return self.cost_circuit
+
+    def _post_spec_batch(self):
+        """The cohort of seed circuits emitted by the cost pipeline's spec stage.
+
+        Runs the (memoized) cost pipeline's spec stage, reusing its cached
+        forward-pass output so a metric estimator measures on the same sampled
+        batch the cost evaluation used this iteration (deterministic
+        per-evaluation seeding reproduces it on a cache miss).
+        """
+        pipeline = self._build_preprocessor_pipeline(self.cost_preprocessor())
+        return pipeline.run_spec_stage(
+            self._initial_spec(), self._build_pipeline_env()
+        ).batch
 
     # ------------------------------------------------------------------ #
     # Execution
@@ -907,49 +795,19 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         Subclasses should prefer overriding the initial-spec hook over
         replacing the full evaluator.
         """
-        env_overrides: dict[str, Any] = {}
-        if shots is not None:
-            env_overrides["shots_override"] = int(shots)
-        if collect_variance:
-            env_overrides["collect_variance"] = True
-
-        result = self._run_pipeline(
-            "cost", param_sets=np.atleast_2d(param_sets), **env_overrides
+        out = self.evaluate(
+            np.atleast_2d(param_sets),
+            self.cost_preprocessor(),
+            shots=shots,
+            return_variance=collect_variance,
         )
+        if collect_variance:
+            result, _ = cast("tuple[dict[int, Any], dict[int, float]]", out)
+        else:
+            result = cast("dict[int, Any]", out)
 
         constant = 0.0 if self._loss_constant_consumed else self.loss_constant
-        return dict(
-            sorted(
-                {
-                    _extract_param_set_idx(key): float(value[0]) + constant
-                    for key, value in result.items()
-                }.items()
-            )
-        )
-
-    def _cost_shot_variances(self, values: dict[int, float]) -> dict[int, float]:
-        """Map the last pipeline run's shot-noise variance to each param-set index.
-
-        The variance is computed at the counts stage with only the obs_group axis
-        stripped. For a plain expval cost (VQE/QAOA/CustomVQA) that leaves exactly
-        the param_set axis, so each index maps to one variance. A pipeline with
-        extra reduce axes (e.g. ZNE scales, a QNN data batch) yields several
-        entries per index; collapsing them to a single scalar would be wrong, so
-        such indices — and any value absent from the artifact (e.g. native-expval
-        backends produce none) — are reported as ``nan`` so the optimizer falls
-        back to its variance-free path.
-        """
-        raw_var = getattr(self, "_last_cost_variance", None) or {}
-        by_idx: dict[int, float] = {}
-        collided: set[int] = set()
-        for key, variance in raw_var.items():
-            idx = _extract_param_set_idx(key)
-            if idx in by_idx:
-                collided.add(idx)
-            by_idx[idx] = variance
-        for idx in collided:
-            by_idx[idx] = float("nan")
-        return {idx: by_idx.get(idx, float("nan")) for idx in values}
+        return {idx: float(value[0]) + constant for idx, value in result.items()}
 
     def _evaluate_gradient_at(
         self, params: npt.NDArray[np.float64], **kwargs
@@ -966,15 +824,16 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         neg_shifts = exp_vals_arr[1::2]
         return 0.5 * (pos_shifts - neg_shifts)
 
-    def _coerce_sample_params(
+    def _resolve_sample_params(
         self, params: npt.NDArray[np.float64] | None
     ) -> npt.NDArray[np.float64]:
-        """Resolve and validate parameters for :meth:`SolutionSamplingMixin.sample_solution`.
+        """Resolve and validate parameters for :meth:`~SolutionSamplingMixin.sample_solution`.
 
-        With ``params=None`` falls back to the trained ``_best_params`` (raising if
-        optimization has not run); otherwise validates the trailing axis against
-        ``n_layers * n_params_per_layer``. Supplies the variational parameter-model
-        knowledge that :class:`SolutionSamplingMixin` is agnostic to.
+        Supplies the variational parameter-model knowledge that
+        :class:`~divi.qprog._solution_sampling_mixin.SolutionSamplingMixin` is
+        agnostic to: ``None`` falls back to ``_best_params`` (raising if
+        optimization has not run), and explicit params are validated against
+        ``n_layers * n_params_per_layer``.
         """
         if params is None:
             if len(self._best_params) == 0:
@@ -1130,11 +989,15 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                 ).copy()
             )
 
-            current_loss = np.min(intermediate_result.fun)
-            if current_loss < self._best_loss:
-                self._best_loss = current_loss
-                best_idx = np.argmin(intermediate_result.fun)
-                self._best_params = intermediate_result.x[best_idx].copy()
+            fun = np.asarray(intermediate_result.fun, dtype=np.float64).ravel()
+            best_idx = _argmin_finite(fun)
+            if best_idx is None:
+                current_loss = float("nan")
+            else:
+                current_loss = float(fun[best_idx])
+                if current_loss < self._best_loss:
+                    self._best_loss = current_loss
+                    self._best_params = intermediate_result.x[best_idx].copy()
 
             self.current_iteration += 1
 
@@ -1230,9 +1093,13 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                 self.optimize_result.success = True
                 self.optimize_result.message = "Optimization converged."
 
-                # Set _best_params from final result (source of truth)
+                # Set _best_params from final result (source of truth); a
+                # non-finite loss never wins (falls back to the iteration-tracked
+                # best when every final loss is non-finite).
                 x = np.atleast_2d(self.optimize_result.x)
-                self._best_params = x[np.argmin(self.optimize_result.fun)].copy()
+                best_idx = _argmin_finite(self.optimize_result.fun)
+                if best_idx is not None:
+                    self._best_params = x[best_idx].copy()
 
         # Canonical 1-D best parameters (the optimizer result contract); the
         # early-stop/cancel branches above carry a 2-D (1, n) best, so squeeze.
