@@ -7,6 +7,62 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0](https://github.com/QoroQuantum/divi/compare/v0.12.1...v0.13.0) (2026-06-29)
+
+
+### ✨ Added
+
+* add hierarchical aggregation as alternative to beam search ([159c4a7](https://github.com/QoroQuantum/divi/commit/159c4a735a83c2d10be255eccf50c27b3b024bb1))
+* **backends:** expose noise config fields and validate ExecutionConfig ([#90](https://github.com/QoroQuantum/divi/issues/90)) ([5f10796](https://github.com/QoroQuantum/divi/commit/5f107966ec552940f8d677f822746b2d3cf8c095))
+* **qprog:** add quantum natural gradient optimizer and metric estimators ([f5a8634](https://github.com/QoroQuantum/divi/commit/f5a8634f86a93a6b6cadd97449e61d0bd932be7f))
+* **qprog:** add QUIVER adaptive directional-gradient optimizer ([2f68b8c](https://github.com/QoroQuantum/divi/commit/2f68b8ccbf27819202e9e2c1dc97b9c7db443dc3))
+* **qprog:** add SPSA and QN-SPSA optimizers ([e8b7a97](https://github.com/QoroQuantum/divi/commit/e8b7a973189730f16e9bed75c972866ab51414c3))
+* **qprog:** add SPSA and QN-SPSA optimizers ([d769665](https://github.com/QoroQuantum/divi/commit/d7696651b56c7227112bfb67b3f23fc33d5fbe38))
+* **qprog:** aggregation strategies as first-class objects ([927cfc6](https://github.com/QoroQuantum/divi/commit/927cfc6a738e58550d7e9403abb9a408ad26ba99))
+* **qprog:** aggregation strategies as first-class objects ([ea657ec](https://github.com/QoroQuantum/divi/commit/ea657ecec95d2fb1eeea97b4202975e063958247))
+* **qprog:** QNG+QDrift via deterministic per-evaluation sampling ([d7c534c](https://github.com/QoroQuantum/divi/commit/d7c534c0223f6f270b9006b67d711f2f14c79c8c))
+* **qprog:** Quantum Natural Gradient (QNG) optimizer ([14d9369](https://github.com/QoroQuantum/divi/commit/14d9369b8ee770dfa7522f6c588a3701cb562627))
+* **qprog:** QUIVER adaptive directional-gradient optimizer ([a3f8bdb](https://github.com/QoroQuantum/divi/commit/a3f8bdbb9fbd59de3cf0df950500459e326227c8))
+* **qprog:** unified measurement API via evaluate() + CircuitPreprocessor ([4e791f3](https://github.com/QoroQuantum/divi/commit/4e791f37b8abd451803eb9cb3812821afefddf23))
+* **qprog:** unified measurement API via evaluate() + CircuitPreprocessor ([485cfdd](https://github.com/QoroQuantum/divi/commit/485cfdd2905bfaa971aff7f5b08485db6ba69674))
+
+
+### 🐛 Fixed
+
+* **circuits:** keep build_overlap_meta backward params disjoint from the ansatz ([bc8f2fd](https://github.com/QoroQuantum/divi/commit/bc8f2fd73d44ed49910eb589f955fd67dae04ab0))
+* **pipeline:** reverse counts endianness in expectation conversion ([160b224](https://github.com/QoroQuantum/divi/commit/160b2244786cd1731b61615c0b0dad1e82045a8a))
+* **qprog:** address QUIVER review findings ([ade6347](https://github.com/QoroQuantum/divi/commit/ade63477d4382177e072dee8271149a8599ae810))
+* **qprog:** address SPSA/QN-SPSA review findings ([a477bbf](https://github.com/QoroQuantum/divi/commit/a477bbfd7cd72a022c057d09bea53188df8af331))
+* **qprog:** isolate optimizer RNG and purify pipeline-env building ([c399229](https://github.com/QoroQuantum/divi/commit/c399229c3e7f04e2b3d270254ef0d2d784683a3e))
+* **qprog:** keep unseeded QDrift cohort-consistent for QNG ([875d4e1](https://github.com/QoroQuantum/divi/commit/875d4e1ceab5d3fbc51dbeb55efa2f52e87941c2))
+* resolve review findings across ZNE, QNG, sampling, and counts conversion ([c670032](https://github.com/QoroQuantum/divi/commit/c670032ce02a8ac9fae2d9cce696d3f48034946f))
+
+
+### 🔄 Changed
+
+* **hamiltonians:** compute the QDrift keep/sample split once per batch ([2c59220](https://github.com/QoroQuantum/divi/commit/2c5922097c35c068c9612a2aa232a0d2beba7083))
+* **pipeline:** add PipelineSet registry and shared run/accounting seam ([3555bde](https://github.com/QoroQuantum/divi/commit/3555bded9ddeab3577291b687fb87cba0747d071))
+* **pipeline:** carry measurement metadata on MetaCircuit ([d1f4fae](https://github.com/QoroQuantum/divi/commit/d1f4faeaec52a8798a5d9ec27a848cbc871c6071))
+* **pipeline:** clarify cache identifier names ([3471e25](https://github.com/QoroQuantum/divi/commit/3471e2562c0c3b5bc8042d4e8220be728d7f0dcb))
+* **pipeline:** introduce StageOutput as the stage return type ([94f14fe](https://github.com/QoroQuantum/divi/commit/94f14fe631d63d279321b9bfc36222b8ef897e01))
+* **qem:** extract ZNE into zne.py and derive QEMStage.consumes_dag_bodies ([d5ed005](https://github.com/QoroQuantum/divi/commit/d5ed00502159fdfdb2fc8efa6125623b66670220))
+* **qprog:** build cost pipelines from a reusable expectation measurement and extract SolutionSamplingMixin ([0503927](https://github.com/QoroQuantum/divi/commit/05039279beb614ec571e37e094cb4fd33979c6e7))
+* **qprog:** cache QN-SPSA overlap circuit, reject zero-iteration runs ([c9bbc68](https://github.com/QoroQuantum/divi/commit/c9bbc68105b6f979002f8b45f3a7cd79fb8add0c))
+* **qprog:** split optimizers into a package and harden selection ([e9f14e8](https://github.com/QoroQuantum/divi/commit/e9f14e80f440814816d4bc315a4918da8af09d13))
+
+
+### 🔧 Internal
+
+* **backends:** drop xfail from noise config e2e ([fe24ddb](https://github.com/QoroQuantum/divi/commit/fe24ddbc88e46899839c231f7fa3bc2fe0062fea))
+* enable uv package cache in setup-divi ([f893bad](https://github.com/QoroQuantum/divi/commit/f893badef13e059ca58447e4b710d69562090cb7))
+* enable uv package cache in setup-divi ([d1a75c7](https://github.com/QoroQuantum/divi/commit/d1a75c77bd49ad595cf42653d29ca6ff76c3833d))
+* Merge pull request [#91](https://github.com/QoroQuantum/divi/issues/91) from QoroQuantum/feat/hierarchical-aggregation ([927cfc6](https://github.com/QoroQuantum/divi/commit/927cfc6a738e58550d7e9403abb9a408ad26ba99))
+* Merge pull request [#92](https://github.com/QoroQuantum/divi/issues/92) from QoroQuantum/feat/qng ([14d9369](https://github.com/QoroQuantum/divi/commit/14d9369b8ee770dfa7522f6c588a3701cb562627))
+* Merge pull request [#93](https://github.com/QoroQuantum/divi/issues/93) from QoroQuantum/feat/spsa ([e8b7a97](https://github.com/QoroQuantum/divi/commit/e8b7a973189730f16e9bed75c972866ab51414c3))
+* Merge pull request [#94](https://github.com/QoroQuantum/divi/issues/94) from QoroQuantum/feat/quiver ([a3f8bdb](https://github.com/QoroQuantum/divi/commit/a3f8bdbb9fbd59de3cf0df950500459e326227c8))
+* Merge pull request [#95](https://github.com/QoroQuantum/divi/issues/95) from QoroQuantum/refactor/measurement-protocols ([4e791f3](https://github.com/QoroQuantum/divi/commit/4e791f37b8abd451803eb9cb3812821afefddf23))
+* update pre-commit hooks to latest and apply Python 3.13 standards ([1a57ec3](https://github.com/QoroQuantum/divi/commit/1a57ec383fa3b341bba25c87a9e5f3c5e8cdfbfe))
+
 ## [0.12.1](https://github.com/QoroQuantum/divi/compare/v0.12.0...v0.12.1) (2026-06-09)
 
 
