@@ -15,6 +15,7 @@ kwargs become silent no-ops.
 from warnings import warn
 
 from divi.pipeline import GroupingStrategy, ShotDistStrategy
+from divi.pipeline.stages import MeasurementStage
 
 # Distinguishes "user accepted the default" from "user explicitly passed
 # a value" so the override warning only fires for explicit choices.
@@ -134,3 +135,10 @@ class ObservableMeasuringMixin:
             "qwc" if grouping_strategy is _UNSET else grouping_strategy
         )
         self._shot_distribution = shot_distribution
+
+    def _make_measurement_stage(self) -> MeasurementStage:
+        """The measurement terminal carrying this program's grouping / shot strategy."""
+        return MeasurementStage(
+            grouping_strategy=self._grouping_strategy,
+            shot_distribution=self._shot_distribution,
+        )

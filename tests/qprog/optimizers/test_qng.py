@@ -4,6 +4,9 @@
 
 """Tests for the Quantum Natural Gradient optimizer and its pullback metric."""
 
+from dataclasses import replace
+from typing import Any, cast
+
 import networkx as nx
 import numpy as np
 import pennylane as qp
@@ -11,16 +14,24 @@ import pytest
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
 from qiskit.circuit.library import RYGate, RZGate
+from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
+from divi.circuits import MetaCircuit
 from divi.hamiltonians import QDrift
+from divi.pipeline import CircuitPreprocessor
+from divi.pipeline._result_keys_operations import average_by_param_set
 from divi.pipeline.abc import ContractViolation
 from divi.qprog import PCE, QAOA, VQE, CustomVQA, FubiniStudyMetricEstimator
 from divi.qprog._metrics import (
     PullbackMetricEstimator,
-    _cost_ansatz_meta,
-    _run_metric,
+    _all_terms_preprocessor,
+    _fs_block_prefix,
+    _fs_prefix_labels_preprocessor,
+    _measure_prefix_paulis,
     _split_into_terms,
+    _split_observable_into_terms,
+    _term_expectations,
 )
 from divi.qprog.algorithms import GenericLayerAnsatz, HartreeFockAnsatz
 from divi.qprog.checkpointing import CheckpointConfig
@@ -200,7 +211,7 @@ def test_qng_zero_iterations_raises():
 
 
 @pytest.fixture
-def toy_vqe(default_test_simulator):
+def toy_vqe(default_test_simulator, default_optimizer):
     """A small 2-qubit VQE with a generic RY-RZ ansatz (no chemistry inputs)."""
     hamiltonian = SparsePauliOp.from_list([("ZI", 0.5), ("IZ", -0.3), ("XX", 0.2)])
     return VQE(
@@ -208,11 +219,12 @@ def toy_vqe(default_test_simulator):
         ansatz=GenericLayerAnsatz([RYGate, RZGate]),
         n_layers=1,
         backend=default_test_simulator,
+        optimizer=default_optimizer,
         seed=1997,
     )
 
 
-def test_pullback_metric_assembly(dummy_simulator, monkeypatch):
+def test_pullback_metric_assembly(dummy_simulator, default_optimizer, monkeypatch):
     """grad and G are assembled correctly from the per-term Jacobian. Uses a
     sampling backend (one qwc run) and injects per-term expectations by patching
     the measurement seam, so only the assembly math is under test."""
@@ -221,6 +233,7 @@ def test_pullback_metric_assembly(dummy_simulator, monkeypatch):
         ansatz=GenericLayerAnsatz([RYGate, RZGate]),
         n_layers=1,
         backend=dummy_simulator,  # supports_expval=False -> single qwc run
+        optimizer=default_optimizer,
         seed=1997,
     )
     coeffs = np.array([0.5, -0.3, 0.2])
@@ -230,10 +243,8 @@ def test_pullback_metric_assembly(dummy_simulator, monkeypatch):
 
     vqe._grad_shift_mask = np.zeros((2 * n_params, n_params))
     monkeypatch.setattr(
-        "divi.qprog._metrics._run_metric",
-        lambda _program, _meta, param_sets: {
-            i: fake[i] for i in range(len(param_sets))
-        },
+        "divi.qprog._metrics._term_expectations",
+        lambda _program, _param_sets: {(("circuit", 0),): (fake, coeffs)},
     )
 
     evaluators = PullbackMetricEstimator().bind(vqe)
@@ -254,20 +265,34 @@ def test_metric_pipeline_terms_sum_to_energy(toy_vqe):
     params = np.random.default_rng(1).uniform(0, 2 * np.pi, size=(1, n_params))
 
     terms, coeffs = _split_into_terms(toy_vqe.cost_hamiltonian)
-    indexed = _run_metric(toy_vqe, _cost_ansatz_meta(toy_vqe, terms), params)
+    preprocessor = CircuitPreprocessor(
+        "metric",
+        preprocess=lambda meta: replace(
+            meta, observable=tuple(terms), _was_multi_obs=True
+        ),
+    )
+    result = cast(
+        dict[tuple, Any],
+        toy_vqe.evaluate(params, preprocessor, preserve_keys=True),
+    )
+    indexed = average_by_param_set(
+        result,
+        lambda value: np.asarray(value, dtype=np.float64).reshape(-1),
+    )
     reconstructed = float(indexed[0] @ coeffs) + toy_vqe.loss_constant
 
     energy = toy_vqe._evaluate_cost_param_sets(params)[0]
     assert reconstructed == pytest.approx(energy, abs=0.1)
 
 
-def test_fubini_study_metric_smoke(default_test_simulator):
+def test_fubini_study_metric_smoke(default_test_simulator, default_optimizer):
     """The FS metric runs end-to-end and is a symmetric PSD matrix."""
     vqe = VQE(
         hamiltonian=SparsePauliOp.from_list([("ZI", 0.5), ("IZ", 0.5)]),
         ansatz=GenericLayerAnsatz([RYGate]),
         n_layers=2,
         backend=default_test_simulator,
+        optimizer=default_optimizer,
         seed=1997,
     )
     vqe.backend.set_seed(1997)
@@ -280,7 +305,9 @@ def test_fubini_study_metric_smoke(default_test_simulator):
     assert np.linalg.eigvalsh(g).min() >= -1e-6
 
 
-def test_fubini_study_matches_pennylane_block_diag(default_test_simulator):
+def test_fubini_study_matches_pennylane_block_diag(
+    default_test_simulator, default_optimizer
+):
     """The block-diagonal FS metric agrees with PennyLane's reference, including
     off-diagonal blocks from an entangled prefix."""
     n, layers = 3, 2
@@ -294,7 +321,9 @@ def test_fubini_study_matches_pennylane_block_diag(default_test_simulator):
             qc.cx(q, q + 1)
     qc.measure(range(n), range(n))
 
-    program = CustomVQA(qscript=qc, backend=default_test_simulator)
+    program = CustomVQA(
+        qscript=qc, backend=default_test_simulator, optimizer=default_optimizer
+    )
     program.backend.set_seed(1997)
 
     dev = qp.device("default.qubit", wires=n)
@@ -316,11 +345,59 @@ def test_fubini_study_matches_pennylane_block_diag(default_test_simulator):
     )
 
     # Align divi's parameter order to the logical weight index before comparing.
-    full_params = program.meta_circuit_factories["cost_circuit"].parameters
+    full_params = program.cost_circuit.parameters
     order = [int(p.name[1:]) for p in full_params]
     divi_metric = FubiniStudyMetricEstimator().bind(program)["metric_fn"](values[order])
 
     np.testing.assert_allclose(divi_metric, pl_metric[np.ix_(order, order)], atol=1e-2)
+
+
+def test_fubini_study_prefix_preprocessor_uses_incoming_branch_meta(monkeypatch):
+    """FS prefix measurement derives the prefix + per-branch block structure
+    from the sampled branch meta (recomputed from the cost cohort) and measures
+    every label in one multi-observable pass."""
+    theta = Parameter("theta")
+    qc = QuantumCircuit(1)
+    qc.rx(theta, 0)
+    sampled_meta = MetaCircuit(
+        circuit_bodies=(((), circuit_to_dag(qc)),),
+        parameters=(theta,),
+    )
+    seen = []
+
+    def fake_fs_blocks(meta):
+        seen.append(meta)
+        return [([], [(0, SparsePauliOp("X"))])], [theta], 1
+
+    captured_observables = []
+
+    def fake_run_metric_by_branch(_program, preprocessor, _param_sets):
+        # The pure single-arg transform builds the multi-observable prefix meta.
+        out_meta = preprocessor.preprocess(sampled_meta)
+        captured_observables.append([str(o.paulis[0]) for o in out_meta.observable])
+        return {(("ham", 0),): {0: np.array([0.25])}}
+
+    monkeypatch.setattr("divi.qprog._metrics._fs_blocks", fake_fs_blocks)
+    monkeypatch.setattr(
+        "divi.qprog._metrics._run_metric_by_branch", fake_run_metric_by_branch
+    )
+
+    program = type(
+        "Program",
+        (),
+        {
+            "cost_circuit": sampled_meta,
+            "_post_spec_batch": lambda self: {(("ham", 0),): sampled_meta},
+        },
+    )()
+    exp_by_branch, branch_data = _measure_prefix_paulis(
+        program, [theta], np.array([0.1]), block_id=0
+    )
+
+    assert sampled_meta in seen
+    assert captured_observables == [["X"]]
+    assert branch_data[(("ham", 0),)][0] == (0,)
+    assert exp_by_branch[(("ham", 0),)]["X"] == pytest.approx(0.25)
 
 
 # --------------------------------------------------------------------------- #
@@ -328,30 +405,33 @@ def test_fubini_study_matches_pennylane_block_diag(default_test_simulator):
 # --------------------------------------------------------------------------- #
 
 
-def _small_pce(backend):
+def _small_pce(backend, optimizer):
     return PCE(
         problem=np.array([[1.0, 0.2], [0.2, 2.0]]),
         ansatz=GenericLayerAnsatz([RYGate]),
         n_layers=1,
         backend=backend,
+        optimizer=optimizer,
     )
 
 
-def test_pce_rejects_pullback_metric(dummy_simulator):
+def test_pce_rejects_pullback_metric(dummy_simulator, default_optimizer):
     """PCE's loss is a classical objective, not <cost_hamiltonian>, so the
     pullback metric is rejected up front rather than run on the placeholder."""
-    pce = _small_pce(dummy_simulator)
+    pce = _small_pce(dummy_simulator, default_optimizer)
     with pytest.raises(ContractViolation, match="cost Hamiltonian"):
         QNGOptimizer().validate_program(pce)
 
 
-def test_pce_accepts_fubini_study_metric(dummy_simulator):
+def test_pce_accepts_fubini_study_metric(dummy_simulator, default_optimizer):
     """FS is observable-agnostic, so it is valid for PCE."""
-    pce = _small_pce(dummy_simulator)
+    pce = _small_pce(dummy_simulator, default_optimizer)
     QNGOptimizer(metric_estimator=FubiniStudyMetricEstimator()).validate_program(pce)
 
 
-def test_supervised_custom_vqa_rejects_pullback_metric(dummy_simulator):
+def test_supervised_custom_vqa_rejects_pullback_metric(
+    dummy_simulator, default_optimizer
+):
     """A supervised data-binding loss is non-linear in the expectations, so the
     pullback metric is rejected."""
     x = Parameter("x")
@@ -366,22 +446,98 @@ def test_supervised_custom_vqa_rejects_pullback_metric(dummy_simulator):
         feature_batch=np.array([[0.1], [0.3]]),
         labels=[1.0, -1.0],
         backend=dummy_simulator,
+        optimizer=default_optimizer,
     )
     with pytest.raises(ContractViolation, match="supervised"):
         QNGOptimizer().validate_program(program)
 
 
-def test_fubini_study_rejects_composite_angle(dummy_simulator):
+def test_fubini_study_rejects_composite_angle(dummy_simulator, default_optimizer):
     """FS needs a bare-parameter Pauli rotation; a composite angle is rejected."""
     x = Parameter("x")
     qc = QuantumCircuit(1, 1)
     qc.rx(2 * x, 0)
     qc.measure(0, 0)
-    program = CustomVQA(qscript=qc, backend=dummy_simulator)
+    program = CustomVQA(
+        qscript=qc, backend=dummy_simulator, optimizer=default_optimizer
+    )
     with pytest.raises(ContractViolation, match="Fubini"):
         QNGOptimizer(metric_estimator=FubiniStudyMetricEstimator()).validate_program(
             program
         )
+
+
+def test_metric_preprocessors_are_cacheable(dummy_simulator, default_optimizer):
+    """The consolidated metric transforms are pure, so their preprocessors carry
+    stable cache keys and ``_build_preprocessor_pipeline`` reuses one pipeline
+    object across iterations (its forward cache survives)."""
+    vqe = VQE(
+        hamiltonian=SparsePauliOp.from_list([("ZI", 0.5), ("IZ", -0.3), ("XX", 0.2)]),
+        ansatz=GenericLayerAnsatz([RYGate]),
+        n_layers=1,
+        backend=dummy_simulator,
+        optimizer=default_optimizer,
+    )
+    assert _all_terms_preprocessor().cache_key == "metric-terms"
+    assert _fs_prefix_labels_preprocessor(0, ()).cache_key == ("metric-prefix", 0)
+
+    # Fresh-but-equal preprocessors hit the cache -> same pipeline object.
+    p1 = vqe._build_preprocessor_pipeline(_all_terms_preprocessor())
+    p2 = vqe._build_preprocessor_pipeline(_all_terms_preprocessor())
+    assert p1 is p2
+
+
+def test_fs_block_prefix_rejects_out_of_range_block():
+    """A branch with fewer FS blocks than the requested index fails loudly."""
+    a = Parameter("a")
+    qc = QuantumCircuit(1)
+    qc.ry(a, 0)
+    meta = MetaCircuit(circuit_bodies=(((), circuit_to_dag(qc)),), parameters=(a,))
+    with pytest.raises(ContractViolation, match="fewer Fubini-Study blocks"):
+        _fs_block_prefix(meta, block_id=5, reference_prefix_param_names=())
+
+
+def test_fs_block_prefix_rejects_prefix_param_layout_mismatch():
+    """A branch whose prefix-parameter layout differs from the reference ansatz
+    fails loudly rather than mis-aligning the metric."""
+    a = Parameter("a")
+    qc = QuantumCircuit(1)
+    qc.ry(a, 0)
+    meta = MetaCircuit(circuit_bodies=(((), circuit_to_dag(qc)),), parameters=(a,))
+    with pytest.raises(ContractViolation, match="different Fubini-Study prefix"):
+        _fs_block_prefix(meta, block_id=0, reference_prefix_param_names=("z",))
+
+
+def test_term_expectations_rejects_term_count_mismatch(
+    dummy_simulator, default_optimizer, monkeypatch
+):
+    """A branch whose measured term count disagrees with its coefficient count
+    fails loudly rather than mis-assembling the metric."""
+    vqe = VQE(
+        hamiltonian=SparsePauliOp.from_list([("ZI", 0.5)]),
+        ansatz=GenericLayerAnsatz([RYGate]),
+        n_layers=1,
+        backend=dummy_simulator,
+        optimizer=default_optimizer,
+    )
+    branch_key = next(iter(vqe._post_spec_batch()))
+    monkeypatch.setattr(
+        "divi.qprog._metrics._run_metric_by_branch",
+        lambda _p, _prep, _ps: {branch_key: {0: np.array([0.5, 0.3])}},
+    )
+    with pytest.raises(ContractViolation, match="Per-term measurement count"):
+        _term_expectations(vqe, np.zeros((1, vqe.n_layers * vqe.n_params_per_layer)))
+
+
+def test_all_terms_preprocessor_rejects_branch_without_observable():
+    """The pullback term-expansion transform raises on a branch that carries no
+    single loss observable, rather than silently producing a wrong metric."""
+    qc = QuantumCircuit(1)
+    qc.rx(Parameter("a"), 0)
+    meta = MetaCircuit(circuit_bodies=(((), circuit_to_dag(qc)),), observable=None)
+
+    with pytest.raises(ContractViolation, match="one loss observable"):
+        _split_observable_into_terms(meta)
 
 
 def test_vqe_runs_under_fubini_study_qng(toy_vqe):
@@ -397,9 +553,8 @@ def test_vqe_runs_under_fubini_study_qng(toy_vqe):
 
 
 def test_qaoa_qdrift_qng_reuses_cost_cohort(dummy_simulator):
-    """The metric measures the SAME QDrift cohort as the cost within one
-    evaluation: ``_pipeline_source_batch`` (what the metric estimators call)
-    returns the cost pipeline's cached spec batch object, not a fresh resample."""
+    """The cost pipeline exposes the same cached QDrift cohort within one
+    evaluation, instead of resampling when the source batch is inspected."""
     qaoa = QAOA(
         MaxCutProblem(nx.bull_graph()),
         n_layers=1,
@@ -412,12 +567,41 @@ def test_qaoa_qdrift_qng_reuses_cost_cohort(dummy_simulator):
         max_iterations=1,
         backend=dummy_simulator,
     )
+    pipeline = qaoa._build_preprocessor_pipeline(qaoa.cost_preprocessor())
     env = qaoa._build_pipeline_env()
-    cost_trace = qaoa._cost_pipeline.run_forward_pass(qaoa.cost_hamiltonian, env)
+    cost_trace = pipeline.run_forward_pass(qaoa.cost_hamiltonian, env)
 
-    sourced = qaoa._pipeline_source_batch("cost")
+    sourced = qaoa._post_spec_batch()
 
     assert sourced is cost_trace.initial_batch
+
+
+def test_qaoa_qdrift_pullback_uses_sampled_branch_observables(dummy_simulator):
+    """Pullback term coefficients come from each sampled QDrift branch, not the
+    static reference cost circuit."""
+    qaoa = QAOA(
+        MaxCutProblem(nx.bull_graph()),
+        n_layers=1,
+        trotterization_strategy=QDrift(
+            sampling_budget=2,
+            n_hamiltonians_per_iteration=3,
+            seed=42,
+        ),
+        optimizer=QNGOptimizer(),
+        max_iterations=1,
+        backend=dummy_simulator,
+    )
+    assert qaoa.cost_circuit.observable is not None
+    param_sets = np.zeros((1, len(qaoa.cost_circuit.parameters)))
+
+    branch_payloads = _term_expectations(qaoa, param_sets)
+    sourced = qaoa._post_spec_batch()
+
+    assert set(branch_payloads) == set(sourced)
+    for branch_key, meta in sourced.items():
+        assert meta.observable is not None
+        _, sampled_coeffs = _split_into_terms(meta.observable[0])
+        np.testing.assert_allclose(branch_payloads[branch_key][1], sampled_coeffs)
 
 
 def test_qaoa_qdrift_qng_runs_end_to_end(dummy_simulator):

@@ -22,7 +22,7 @@ from divi.qprog.checkpointing import CheckpointConfig
 from tests.qprog._program_contracts import (
     ObservableMeasuringContractsBase,
     verify_correct_circuit_count,
-    verify_metacircuit_dict,
+    verify_cost_circuit,
 )
 
 
@@ -54,13 +54,16 @@ ANSAETZE_TO_TEST = {
 }
 
 
-def test_vqe_basic_initialization_with_molecule(default_test_simulator, h2_molecule):
+def test_vqe_basic_initialization_with_molecule(
+    default_test_simulator, h2_molecule, default_optimizer
+):
     """Test VQE initialization with a molecule object."""
     vqe_problem = VQE(
         molecule=h2_molecule,
         ansatz=HartreeFockAnsatz(),
         n_layers=1,  # n_layers is passed to VQE again
         backend=default_test_simulator,
+        optimizer=default_optimizer,
     )
 
     assert vqe_problem.backend.shots == 5000
@@ -70,11 +73,11 @@ def test_vqe_basic_initialization_with_molecule(default_test_simulator, h2_molec
     assert vqe_problem.n_qubits == 4
 
     assert isinstance(vqe_problem.cost_hamiltonian, SparsePauliOp)
-    verify_metacircuit_dict(vqe_problem, ["cost_circuit", "sample_circuit"])
+    verify_cost_circuit(vqe_problem)
 
 
 def test_vqe_basic_initialization_with_hamiltonian(
-    default_test_simulator, h2_hamiltonian
+    default_test_simulator, h2_hamiltonian, default_optimizer
 ):
     """Test VQE initialization with a Hamiltonian object."""
     vqe_problem = VQE(
@@ -83,6 +86,7 @@ def test_vqe_basic_initialization_with_hamiltonian(
         ansatz=HartreeFockAnsatz(),
         n_layers=1,
         backend=default_test_simulator,
+        optimizer=default_optimizer,
     )
 
     assert vqe_problem.backend.shots == 5000
@@ -91,10 +95,12 @@ def test_vqe_basic_initialization_with_hamiltonian(
     assert vqe_problem.n_qubits == 4
 
     assert isinstance(vqe_problem.cost_hamiltonian, SparsePauliOp)
-    verify_metacircuit_dict(vqe_problem, ["cost_circuit", "sample_circuit"])
+    verify_cost_circuit(vqe_problem)
 
 
-def test_vqe_clean_hamiltonian_logic(h2_hamiltonian, dummy_simulator):
+def test_vqe_clean_hamiltonian_logic(
+    h2_hamiltonian, dummy_simulator, default_optimizer
+):
     """Test that the Hamiltonian is cleaned correctly, separating the constant."""
     constant_value = 5.0
     hamiltonian_with_constant = h2_hamiltonian + qp.Identity(0) * constant_value
@@ -104,6 +110,7 @@ def test_vqe_clean_hamiltonian_logic(h2_hamiltonian, dummy_simulator):
         n_electrons=2,
         ansatz=HartreeFockAnsatz(),
         backend=dummy_simulator,
+        optimizer=default_optimizer,
     )
 
     coeffs, ops = h2_hamiltonian.terms()
@@ -120,7 +127,7 @@ def test_vqe_clean_hamiltonian_logic(h2_hamiltonian, dummy_simulator):
     ), "Identity operator should have been removed"
 
 
-def test_vqe_fail_with_constant_only_hamiltonian(dummy_simulator):
+def test_vqe_fail_with_constant_only_hamiltonian(dummy_simulator, default_optimizer):
     """Test VQE initialization fails with a constant-only Hamiltonian."""
     hamiltonian = qp.Identity(0) * 5.0
     with pytest.raises(ValueError, match="Hamiltonian contains only constant terms."):
@@ -129,10 +136,13 @@ def test_vqe_fail_with_constant_only_hamiltonian(dummy_simulator):
             n_electrons=2,
             ansatz=HartreeFockAnsatz(),
             backend=dummy_simulator,
+            optimizer=default_optimizer,
         )
 
 
-def test_vqe_fail_with_neither_hamiltonian_nor_molecule(dummy_simulator):
+def test_vqe_fail_with_neither_hamiltonian_nor_molecule(
+    dummy_simulator, default_optimizer
+):
     """VQE raises ValueError when neither hamiltonian nor molecule is provided."""
     with pytest.raises(
         ValueError, match="Either one of `molecule` and `hamiltonian` must be provided"
@@ -140,6 +150,7 @@ def test_vqe_fail_with_neither_hamiltonian_nor_molecule(dummy_simulator):
         VQE(
             ansatz=HartreeFockAnsatz(),
             backend=dummy_simulator,
+            optimizer=default_optimizer,
         )
 
 
@@ -148,7 +159,9 @@ def test_vqe_fail_with_neither_hamiltonian_nor_molecule(dummy_simulator):
     [0.5 * qp.Z(0), qp.Z(0)],
     ids=["sprod", "bare_pauli"],
 )
-def test_vqe_single_term_hamiltonian_succeeds(dummy_simulator, hamiltonian):
+def test_vqe_single_term_hamiltonian_succeeds(
+    dummy_simulator, hamiltonian, default_optimizer
+):
     """Single-term Hamiltonians (SProd, bare Pauli) initialize without operands error."""
     vqe_problem = VQE(
         hamiltonian=hamiltonian,
@@ -156,6 +169,7 @@ def test_vqe_single_term_hamiltonian_succeeds(dummy_simulator, hamiltonian):
         ansatz=HartreeFockAnsatz(),
         n_layers=1,
         backend=dummy_simulator,
+        optimizer=default_optimizer,
     )
     assert vqe_problem.cost_hamiltonian is not None
     assert vqe_problem.n_qubits == 1
@@ -163,16 +177,19 @@ def test_vqe_single_term_hamiltonian_succeeds(dummy_simulator, hamiltonian):
 
 @pytest.mark.parametrize("ansatz_obj", **ANSAETZE_TO_TEST)
 @pytest.mark.parametrize("n_layers", [1, 2])
-def test_meta_circuit_qasm(ansatz_obj, n_layers, h2_molecule, dummy_simulator):
+def test_meta_circuit_qasm(
+    ansatz_obj, n_layers, h2_molecule, dummy_simulator, default_optimizer
+):
     """Test the QASM representation of the meta circuits."""
     vqe_problem = VQE(
         molecule=h2_molecule,
         ansatz=ansatz_obj,
         n_layers=n_layers,
         backend=dummy_simulator,
+        optimizer=default_optimizer,
     )
 
-    meta_circuit_obj = vqe_problem.meta_circuit_factories["cost_circuit"]
+    meta_circuit_obj = vqe_problem.cost_circuit
     # Parameters are stored as Qiskit ParameterVector elements named "w_i[j]".
     pattern = r"w_(\d+)\[(\d+)\]"
     matches = [re.match(pattern, p.name).groups() for p in meta_circuit_obj.parameters]
@@ -319,13 +336,14 @@ def test_vqe_h2_molecule_e2e_checkpointing_resume(
 
 class TestObservableMeasuringContracts(ObservableMeasuringContractsBase):
     @pytest.fixture
-    def make_program(self, h2_hamiltonian, dummy_simulator):
+    def make_program(self, h2_hamiltonian, dummy_simulator, default_optimizer):
         def _make(**kwargs):
             return VQE(
                 hamiltonian=h2_hamiltonian,
                 n_electrons=2,
                 ansatz=HartreeFockAnsatz(),
                 backend=dummy_simulator,
+                optimizer=default_optimizer,
                 **kwargs,
             )
 

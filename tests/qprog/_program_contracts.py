@@ -23,19 +23,13 @@ from divi.qprog import (
     ScipyOptimizer,
     VariationalQuantumAlgorithm,
 )
+from divi.qprog._solution_sampling_mixin import SolutionSamplingMixin
 
 
-def verify_metacircuit_dict(obj: QuantumProgram, expected_keys: list[str]):
+def verify_cost_circuit(obj: QuantumProgram) -> None:
     assert isinstance(
-        obj.meta_circuit_factories, dict
-    ), "Meta circuits object not a dict"
-    assert all(
-        isinstance(val, MetaCircuit) for val in obj.meta_circuit_factories.values()
-    ), "All values on meta circuit must be of type MetaCircuit"
-    assert all(
-        key == expected
-        for key, expected in zip(obj.meta_circuit_factories.keys(), expected_keys)
-    )
+        obj.cost_circuit, MetaCircuit
+    ), "cost_circuit must be a MetaCircuit"
 
 
 def _get_n_obs_groups(meta: MetaCircuit, supports_expval: bool) -> int:
@@ -69,26 +63,19 @@ def verify_correct_circuit_count(obj: QuantumProgram):
     supports_expval = obj.backend.supports_expval
 
     extra_computation_offset = 0
-    if isinstance(obj, VariationalQuantumAlgorithm):
-        # VQA subclasses with a sample_circuit will run an extra computation
-        if "sample_circuit" in obj.meta_circuit_factories:
-            meas_meta = obj.meta_circuit_factories["sample_circuit"]
-            extra_computation_offset = _get_n_obs_groups(meas_meta, supports_expval)
+    if isinstance(obj, SolutionSamplingMixin):
+        extra_computation_offset = 1  # sample_solution() runs one all-wires measurement
 
     adjusted_total_circuit_count = obj.total_circuit_count - extra_computation_offset
 
     if isinstance(obj.optimizer, MonteCarloOptimizer):
-        circuits_per_param_set = _get_n_obs_groups(
-            obj.meta_circuit_factories["cost_circuit"], supports_expval
-        )
+        circuits_per_param_set = _get_n_obs_groups(obj.cost_circuit, supports_expval)
         assert (
             adjusted_total_circuit_count
             == obj.optimizer.n_param_sets * circuits_per_param_set
         )
     elif isinstance(obj.optimizer, ScipyOptimizer):
-        circuits_per_param_set = _get_n_obs_groups(
-            obj.meta_circuit_factories["cost_circuit"], supports_expval
-        )
+        circuits_per_param_set = _get_n_obs_groups(obj.cost_circuit, supports_expval)
         if obj.optimizer.method in (ScipyMethod.NELDER_MEAD, ScipyMethod.COBYLA):
             assert (
                 adjusted_total_circuit_count

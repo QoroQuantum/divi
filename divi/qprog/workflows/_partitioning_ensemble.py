@@ -24,7 +24,7 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
 
     Args:
         problem: A :class:`~divi.qprog.problems.QAOAProblem` configured for decomposition
-            (e.g. ``MaxCutProblem(graph, partitioning_config=...)``).
+            (e.g. ``MaxCutProblem(graph, config=...)``).
         n_layers: Number of ansatz layers per sub-program.
         backend: Backend for circuit execution.
         optimizer: Optimizer for each sub-program.

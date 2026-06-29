@@ -9,6 +9,7 @@ from typing import Any
 
 from divi.circuits import MetaCircuit
 from divi.pipeline._dry_run import _two_qubit_depth
+from divi.pipeline._result_keys_operations import group_by_base_key
 from divi.pipeline.abc import (
     ChildResults,
     MetaCircuitBatch,
@@ -17,7 +18,6 @@ from divi.pipeline.abc import (
     StageOutput,
     StageToken,
 )
-from divi.pipeline.transformations import group_by_base_key
 
 #: Accepted input types for ``CircuitSpecStage.expand``.
 CircuitSpec = MetaCircuit | Sequence[MetaCircuit] | Mapping[str, MetaCircuit]
@@ -87,6 +87,8 @@ class CircuitSpecStage(SpecStage[CircuitSpec]):
         self, results: ChildResults, env: PipelineEnv, token: StageToken
     ) -> ChildResults:
         """Strip the ``'circuit'`` axis from result keys."""
+        if self.axis_name in env.axes_to_preserve:
+            return results
         grouped = group_by_base_key(results, self.axis_name, indexed=False)
         return {
             key: values[0] if len(values) == 1 else values

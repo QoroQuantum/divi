@@ -155,7 +155,8 @@ class QiskitSimulator(CircuitRunner):
 
         Args:
             n_processes (int | None, optional): Number of parallel processes to use for transpilation and
-                simulation. If None, defaults to half the available CPU cores (min 2, max 8).
+                simulation. If None, defaults to all-but-one core (<= 16 cores) or 3/4 of cores
+                capped at 16 (> 16 cores); 2 when not running on the main thread/process.
                 Controls both transpilation parallelism and execution parallelism. The execution
                 parallelism mode (circuit or shot) is automatically selected based on workload
                 characteristics.

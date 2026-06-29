@@ -25,6 +25,42 @@ from divi.qprog.problems import MaxCutProblem
 from tests.qprog.algorithms._helpers import gate_names, gate_qubits
 
 
+@pytest.fixture
+def two_z_hamiltonian():
+    """``Z₀ + Z₁`` — the shared two-qubit Hamiltonian for the integration tests."""
+    return qp.PauliZ(0) + qp.PauliZ(1)
+
+
+@pytest.fixture
+def make_time_evolution(two_z_hamiltonian, default_test_simulator):
+    def _make(**overrides):
+        return TimeEvolution(
+            **{
+                "hamiltonian": two_z_hamiltonian,
+                "backend": default_test_simulator,
+                **overrides,
+            }
+        )
+
+    return _make
+
+
+@pytest.fixture
+def make_vqe(two_z_hamiltonian, default_test_simulator, default_optimizer):
+    def _make(**overrides):
+        return VQE(
+            **{
+                "hamiltonian": two_z_hamiltonian,
+                "ansatz": QAOAAnsatz(),
+                "optimizer": default_optimizer,
+                "backend": default_test_simulator,
+                **overrides,
+            }
+        )
+
+    return _make
+
+
 class TestZerosState:
     def test_build_emits_nothing(self):
         qc = ZerosState().build([0, 1, 2])
@@ -110,24 +146,11 @@ class TestBlockXYMixer:
         with pytest.raises(ValueError, match="Expected 6 wires"):
             build_block_xy_mixer_graph(3, 2, [0, 1, 2])
 
-    def test_preserves_one_hot_subspace(self):
-        """XY mixer applied to a W-state should produce only one-hot outputs."""
-        n = 3
-        wires = list(range(n))
-
-        xy_graph = build_block_xy_mixer_graph(n, 1, wires)
-        mixer = xy_mixer(xy_graph)
-
-        qc = WState(n, 1).build(wires)
-        U = Operator(scipy.linalg.expm(-1j * 1.5 * mixer.to_matrix()))
-        probs = Statevector(qc).evolve(U).probabilities()
-
-        one_hot_indices = [1 << i for i in range(n)]  # 001, 010, 100
-        total_one_hot = sum(probs[i] for i in one_hot_indices)
-        assert total_one_hot == pytest.approx(1.0, abs=1e-10)
-
-    def test_preserves_one_hot_multi_block(self):
-        block_size, n_blocks = 3, 2
+    @pytest.mark.parametrize("block_size, n_blocks, t", [(3, 1, 1.5), (3, 2, 2.0)])
+    def test_preserves_one_hot_subspace(self, block_size, n_blocks, t):
+        """The XY mixer evolving a W-state keeps all amplitude in the
+        per-block one-hot subspace (each block has exactly one excitation).
+        With ``n_blocks=1`` this is the plain single-block one-hot case."""
         wires = list(range(block_size * n_blocks))
         n = len(wires)
 
@@ -135,66 +158,56 @@ class TestBlockXYMixer:
         mixer = xy_mixer(xy_graph)
 
         qc = WState(block_size, n_blocks).build(wires)
-        U = Operator(scipy.linalg.expm(-1j * 2.0 * mixer.to_matrix()))
+        U = Operator(scipy.linalg.expm(-1j * t * mixer.to_matrix()))
         probs = Statevector(qc).evolve(U).probabilities()
 
-        total_valid = 0.0
-        for idx in range(2**n):
-            bits = format(idx, f"0{n}b")
-            valid = all(
-                sum(int(bits[b * block_size + j]) for j in range(block_size)) == 1
+        total_valid = sum(
+            probs[idx]
+            for idx in range(2**n)
+            if all(
+                sum(
+                    int(bit)
+                    for bit in format(idx, f"0{n}b")[b * block_size :][:block_size]
+                )
+                == 1
                 for b in range(n_blocks)
             )
-            if valid:
-                total_valid += probs[idx]
+        )
         assert total_valid == pytest.approx(1.0, abs=1e-10)
 
 
 class TestTimeEvolutionCustomInitialState:
     """Test that TimeEvolution accepts and uses custom string initial states."""
 
-    def test_custom_string_10_behaves_like_swapped_ones(self, default_test_simulator):
+    def test_custom_string_10_behaves_like_swapped_ones(self, make_time_evolution):
         """H=Z₀+Z₁ with initial_state='10' is an eigenstate, so P(10)≈1."""
-        te = TimeEvolution(
-            hamiltonian=qp.PauliZ(0) + qp.PauliZ(1),
-            time=0.5,
-            initial_state=CustomPerQubitState("10"),
-            backend=default_test_simulator,
-        )
+        te = make_time_evolution(time=0.5, initial_state=CustomPerQubitState("10"))
         te.run()
-        assert te.total_circuit_count >= 1
-        probs = te.results
-        assert probs.get("10", 0.0) >= 0.95
+        assert te.results.get("10", 0.0) >= 0.95
 
-    def test_custom_string_plus_minus(self, default_test_simulator):
-        """Smoke test: '+-' creates |+⟩|−⟩ and runs successfully."""
-        te = TimeEvolution(
-            hamiltonian=qp.PauliZ(0) + qp.PauliZ(1),
-            time=0.1,
-            initial_state=CustomPerQubitState("+-"),
-            backend=default_test_simulator,
-        )
+    def test_custom_string_plus_minus(self, make_time_evolution):
+        """'+-' prepares |+⟩|−⟩; both qubits are X-eigenstates, so the Z-basis
+        readout is uniform over all four bitstrings (the Z-diagonal evolution
+        leaves those probabilities unchanged)."""
+        te = make_time_evolution(time=0.1, initial_state=CustomPerQubitState("+-"))
         te.run()
-        assert te.total_circuit_count >= 1
-        assert te.results is not None
+        for bitstring in ("00", "01", "10", "11"):
+            assert te.results.get(bitstring, 0.0) == pytest.approx(0.25, abs=0.05)
 
-    def test_invalid_custom_string_raises(self, default_test_simulator):
+    def test_invalid_custom_string_raises(self, make_time_evolution):
         with pytest.raises(TypeError):
-            TimeEvolution(
-                hamiltonian=qp.PauliZ(0) + qp.PauliZ(1),
-                initial_state="xy",
-                backend=default_test_simulator,
-            )
+            make_time_evolution(initial_state="xy")
 
 
-def test_custom_string_accepted(default_test_simulator):
-    """QAOA with initial_state=CustomPerQubitState('00') should behave like ZerosState."""
-    graph = nx.Graph([(0, 1)])
+def test_qaoa_accepts_custom_string_initial_state(
+    default_test_simulator, default_optimizer
+):
+    """QAOA accepts a ``CustomPerQubitState`` and stores it as its initial state."""
     qaoa = QAOA(
-        MaxCutProblem(graph),
+        MaxCutProblem(nx.Graph([(0, 1)])),
         initial_state=CustomPerQubitState("00"),
+        optimizer=default_optimizer,
         backend=default_test_simulator,
-        max_iterations=1,
     )
     assert isinstance(qaoa.initial_state, CustomPerQubitState)
 
@@ -202,30 +215,16 @@ def test_custom_string_accepted(default_test_simulator):
 class TestVQEInitialState:
     """Test that VQE accepts and uses the initial_state parameter."""
 
-    def test_initial_state_default_is_zeros(self, default_test_simulator):
-        vqe = VQE(
-            hamiltonian=qp.PauliZ(0) + qp.PauliZ(1),
-            ansatz=QAOAAnsatz(),
-            backend=default_test_simulator,
-        )
-        assert isinstance(vqe.initial_state, ZerosState)
+    def test_initial_state_default_is_zeros(self, make_vqe):
+        assert isinstance(make_vqe().initial_state, ZerosState)
 
-    def test_initial_state_superposition_runs(self, default_test_simulator):
-        vqe = VQE(
-            hamiltonian=qp.PauliZ(0) + qp.PauliZ(1),
-            ansatz=QAOAAnsatz(),
-            initial_state=SuperpositionState(),
-            backend=default_test_simulator,
-            max_iterations=1,
-        )
+    def test_initial_state_superposition_runs(self, make_vqe):
+        vqe = make_vqe(initial_state=SuperpositionState(), max_iterations=1)
         vqe.run()
-        assert vqe.total_circuit_count >= 1
+        assert len(vqe.losses_history) == 1
 
-    def test_chemistry_ansatz_warns(self, default_test_simulator):
+    def test_chemistry_ansatz_warns(self, make_vqe):
         with pytest.warns(UserWarning, match="chemistry ansatz"):
-            VQE(
-                hamiltonian=qp.PauliZ(0) + qp.PauliZ(1),
-                initial_state=SuperpositionState(),
-                n_electrons=1,
-                backend=default_test_simulator,
-            )
+            # ansatz=None selects the default chemistry ansatz, which warns when
+            # paired with an explicit initial_state.
+            make_vqe(ansatz=None, initial_state=SuperpositionState(), n_electrons=1)

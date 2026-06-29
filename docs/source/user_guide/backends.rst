@@ -420,6 +420,22 @@ Choosing the right backend depends on what stage of development you're in.
 * **For Production Runs**, use :class:`~divi.backends.QoroService` for cloud simulation, real quantum hardware, and scalable execution.
 * **For Research**, start with :class:`~divi.backends.MaestroSimulator` for prototyping, then use :class:`~divi.backends.QoroService` for validation against real hardware.
 
+Analytic vs Sampling Execution
+------------------------------
+
+Each backend declares a ``supports_expval`` capability.  When it is ``True``,
+expectation values are computed analytically from the state representation and
+shot-based options — ``shots`` and ``shot_distribution`` — do not change the
+(exact) result.  :class:`~divi.backends.MaestroSimulator` always reports
+``supports_expval=True`` and has no way to force sampling.
+:class:`~divi.backends.QiskitSimulator` and :class:`~divi.backends.QoroService`
+report ``supports_expval=False`` (i.e. they sample) when sampling is forced:
+``QiskitSimulator(force_sampling=True)`` (also implied by passing a
+``qiskit_backend`` or ``noise_model``), or ``JobConfig(force_sampling=True)`` for
+the cloud service.  Setting ``shot_distribution`` on an expval-native backend is
+not silent — it emits a :class:`UserWarning`.  See :ref:`adaptive-shot-allocation`
+for how shot allocation interacts with this capability.
+
 Backend Comparison
 ------------------
 

@@ -203,7 +203,7 @@ def test_quiver_warns_once_when_step_leaves_stability_regime():
 # --------------------------------------------------------------------------- #
 
 
-def _shot_based_vqe():
+def _shot_based_vqe(optimizer):
     """A VQE on a shot-based simulator, where the cost closure can expose a
     measurement-variance estimate and honour a per-evaluation shot budget."""
     return VQE(
@@ -211,12 +211,13 @@ def _shot_based_vqe():
         ansatz=GenericLayerAnsatz([RYGate, RZGate]),
         n_layers=1,
         backend=QiskitSimulator(shots=4000, force_sampling=True),
+        optimizer=optimizer,
         seed=1997,
     )
 
 
-def test_quiver_runs_under_vqe():
-    vqe = _shot_based_vqe()
+def test_quiver_runs_under_vqe(default_optimizer):
+    vqe = _shot_based_vqe(default_optimizer)
     vqe.backend.set_seed(1997)
     vqe.optimizer = QUIVEROptimizer(learning_rate=0.2, epsilon=0.1, V_init=2)
     vqe.max_iterations = 8
@@ -230,10 +231,10 @@ def test_quiver_runs_under_vqe():
 # --------------------------------------------------------------------------- #
 
 
-def test_shots_override_threads_to_backend_without_mutation():
+def test_shots_override_threads_to_backend_without_mutation(default_optimizer):
     """A per-evaluation ``shots`` budget reaches the backend as ``shot_groups``
     and never mutates the immutable backend's configured ``shots``."""
-    vqe = _shot_based_vqe()
+    vqe = _shot_based_vqe(default_optimizer)
     vqe.backend.set_seed(7)
     theta = np.linspace(0.1, 1.0, vqe.n_layers * vqe.n_params_per_layer)
 
@@ -253,10 +254,10 @@ def test_shots_override_threads_to_backend_without_mutation():
     assert vqe.backend.shots == 4000  # unchanged
 
 
-def test_cost_variance_is_positive_and_scales_inversely_with_shots():
+def test_cost_variance_is_positive_and_scales_inversely_with_shots(default_optimizer):
     """The returned shot-noise variance is finite and positive, and shrinks ~1/M
     as the per-evaluation shot budget grows."""
-    vqe = _shot_based_vqe()
+    vqe = _shot_based_vqe(default_optimizer)
     vqe.backend.set_seed(7)
     theta = np.linspace(0.1, 1.0, vqe.n_layers * vqe.n_params_per_layer)
 
@@ -274,7 +275,7 @@ def test_cost_variance_is_positive_and_scales_inversely_with_shots():
     assert 3.0 < var_low[0] / var_high[0] < 80.0
 
 
-def test_cost_variance_is_nan_on_native_expval_backend():
+def test_cost_variance_is_nan_on_native_expval_backend(default_optimizer):
     """On a native-expval backend no counts are produced, so the variance is nan
     and QUIVER falls back to fixed-M (V-from-spread only)."""
     vqe = VQE(
@@ -282,6 +283,7 @@ def test_cost_variance_is_nan_on_native_expval_backend():
         ansatz=GenericLayerAnsatz([RYGate, RZGate]),
         n_layers=1,
         backend=QiskitSimulator(shots=4000),  # analytic expval, no force_sampling
+        optimizer=default_optimizer,
         seed=1997,
     )
     theta = np.linspace(0.1, 1.0, vqe.n_layers * vqe.n_params_per_layer)
@@ -517,10 +519,10 @@ def test_quiver_exact_loss_spends_one_extra_evaluation_per_step():
     assert calls_exact["n"] == calls_base["n"] + 5 + 1
 
 
-def test_quiver_adapt_m_updates_shot_budget_to_backend():
+def test_quiver_adapt_m_updates_shot_budget_to_backend(default_optimizer):
     """The headline feature: with ``adapt_M`` the per-evaluation shot budget
     forwarded to the backend changes across iterations (the closed loop)."""
-    vqe = _shot_based_vqe()
+    vqe = _shot_based_vqe(default_optimizer)
     vqe.backend.set_seed(11)
     vqe.optimizer = QUIVEROptimizer(
         learning_rate=0.2, epsilon=0.1, V_init=2, M_init=80, M_min=10, M_max=5000
@@ -542,19 +544,19 @@ def test_quiver_adapt_m_updates_shot_budget_to_backend():
     assert len(set(seen_shots)) >= 2
 
 
-def test_quiver_adapt_m_warns_with_shot_distribution():
+def test_quiver_adapt_m_warns_with_shot_distribution(default_optimizer):
     """``adapt_M`` assumes uniform per-group shots; combining it with a shot
     distribution is flagged at program-validation time."""
-    vqe = _shot_based_vqe()
+    vqe = _shot_based_vqe(default_optimizer)
     vqe._shot_distribution = "weighted"
     with pytest.warns(UserWarning, match="shot_distribution"):
         QUIVEROptimizer(adapt_M=True).validate_program(vqe)
 
 
-def test_quiver_no_shot_distribution_warning_when_safe(recwarn):
+def test_quiver_no_shot_distribution_warning_when_safe(recwarn, default_optimizer):
     """No shot-distribution warning when ``adapt_M`` is off or no distribution
     is configured."""
-    vqe = _shot_based_vqe()
+    vqe = _shot_based_vqe(default_optimizer)
     QUIVEROptimizer(adapt_M=True).validate_program(vqe)  # no distribution
     vqe._shot_distribution = "weighted"
     QUIVEROptimizer(adapt_M=False).validate_program(vqe)  # adaptation off
@@ -577,25 +579,22 @@ def test_quiver_runs_under_qaoa_with_variance():
     assert qaoa._last_cost_variance is not None
 
 
-def test_variance_nan_when_keys_collapse_across_extra_axes(mocker):
+def test_variance_nan_when_keys_collapse_across_extra_axes(default_optimizer):
     """A pipeline with reduce axes beyond ``param_set`` (e.g. ZNE scales) yields
     several variance entries per parameter set; they cannot be collapsed to one
     scalar, so the variance is reported as nan and the optimizer falls back."""
-    vqe = _shot_based_vqe()
-    fake_result = {(("circuit", 0), ("param_set", 0)): np.array([0.5])}
-    mocker.patch.object(vqe, "_run_pipeline", return_value=fake_result)
+    vqe = _shot_based_vqe(default_optimizer)
+    # Two variance entries collapse onto the same param-set index (an extra
+    # ZNE-scale axis); they cannot be reduced to one scalar, so report nan.
     vqe._last_cost_variance = {
         (("circuit", 0), ("zne_scale", 1), ("param_set", 0)): 0.01,
         (("circuit", 0), ("zne_scale", 3), ("param_set", 0)): 0.04,
     }
-    theta = np.zeros((1, vqe.n_layers * vqe.n_params_per_layer))
-    variances = vqe._cost_shot_variances(
-        vqe._evaluate_cost_param_sets(theta, collect_variance=True)
-    )
+    variances = vqe._cost_shot_variances({0: 0.5})
     assert np.isnan(variances[0])
 
 
-def _analytic_vqe():
+def _analytic_vqe(optimizer):
     """A VQE on an analytic backend — its cost pipeline promotes to the
     backend-native expval path (uses ham_ops, ignores shots)."""
     return VQE(
@@ -603,14 +602,15 @@ def _analytic_vqe():
         ansatz=GenericLayerAnsatz([RYGate, RZGate]),
         n_layers=1,
         backend=QiskitSimulator(shots=4000),
+        optimizer=optimizer,
         seed=1997,
     )
 
 
-def test_shots_override_is_ignored_on_analytic_expval_backend():
+def test_shots_override_is_ignored_on_analytic_expval_backend(default_optimizer):
     """A per-evaluation shots override on the backend-native expval path is a
     no-op (analytic expval ignores shots), not a ham_ops/shot_groups crash."""
-    vqe = _analytic_vqe()
+    vqe = _analytic_vqe(default_optimizer)
     theta = np.linspace(0.1, 1.0, vqe.n_layers * vqe.n_params_per_layer)
     losses = vqe._evaluate_cost_param_sets(
         theta[None, :], shots=128, collect_variance=True
@@ -620,11 +620,11 @@ def test_shots_override_is_ignored_on_analytic_expval_backend():
     assert np.isnan(variances[0])
 
 
-def test_quiver_runs_on_analytic_backend():
+def test_quiver_runs_on_analytic_backend(default_optimizer):
     """QUIVER always sends a shots override; on an analytic backend that override
     must be silently ignored rather than crashing, with variance falling back to
     nan (fixed-M, V-from-spread only)."""
-    vqe = _analytic_vqe()
+    vqe = _analytic_vqe(default_optimizer)
     vqe.optimizer = QUIVEROptimizer(
         learning_rate=0.2, epsilon=0.1, V_init=2, adapt_M=True
     )

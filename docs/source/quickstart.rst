@@ -76,11 +76,13 @@ Divi offers specialized algorithms for different problem types:
    .. code-block:: python
 
       from divi.qprog import VQE, UCCSDAnsatz
+      from divi.qprog.optimizers import MonteCarloOptimizer
 
       vqe = VQE(
           molecule=h2_molecule,
           ansatz=UCCSDAnsatz(),  # More sophisticated than Hartree-Fock
           n_layers=2,
+          optimizer=MonteCarloOptimizer(),
           backend=MaestroSimulator()
       )
 
@@ -92,15 +94,21 @@ Divi offers specialized algorithms for different problem types:
       import networkx as nx
       from divi.qprog import QAOA
       from divi.qprog.problems import MaxCutProblem
+      from divi.qprog.optimizers import MonteCarloOptimizer
 
       # Create your problem graph
-      graph = nx.erdos_renyi_graph(10, 0.5)
+      graph = nx.erdos_renyi_graph(10, 0.5, seed=42)
 
       qaoa = QAOA(
           MaxCutProblem(graph),
           n_layers=2,
+          max_iterations=10,
+          optimizer=MonteCarloOptimizer(),
           backend=MaestroSimulator()
       )
+      qaoa.run()
+      print(f"Best loss: {qaoa.best_loss:.4f}")
+      print(f"Solution: {qaoa.solution}")
 
 **PCE – QUBO/HUBO with Pauli Correlation Encoding**
    Use :class:`~divi.qprog.algorithms.PCE` for QUBO and higher-order (HUBO) binary optimization with parity-based encoding. PCE is a VQE variant that uses far fewer qubits than standard QAOA for the same problem size — see :doc:`/user_guide/combinatorial_optimization_qaoa_pce` for the encoding details and scaling trade-offs.
@@ -112,6 +120,8 @@ Divi offers specialized algorithms for different problem types:
       from divi.qprog import PCE, GenericLayerAnsatz
       from divi.backends import MaestroSimulator
 
+      from divi.qprog.optimizers import MonteCarloOptimizer
+
       qubo_matrix = np.array([[-1.0, 2.0], [0.0, 1.0]])
       pce = PCE(
           problem=qubo_matrix,
@@ -120,6 +130,7 @@ Divi offers specialized algorithms for different problem types:
               entangler=CXGate,
               entangling_layout="all-to-all",
           ),
+          optimizer=MonteCarloOptimizer(),
           backend=MaestroSimulator(),
       )
       pce.run()

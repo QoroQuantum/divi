@@ -2,12 +2,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for divi.pipeline.transformations."""
+"""Tests for divi.pipeline._result_keys_operations."""
 
+import numpy as np
 import pytest
 
-from divi.pipeline.transformations import (
+from divi.pipeline._result_keys_operations import (
+    _collapse_to_parent_results,
+    _find_batch_key,
+    average_by_param_set,
+    extract_param_set_idx,
     group_by_base_key,
+    group_by_branch_and_param_set,
     reduce_mean,
     reduce_merge_histograms,
     reduce_postprocess_ordered,
@@ -61,6 +67,24 @@ class TestGroupByBaseKey:
         }
 
 
+class TestExtractParamSetIdx:
+    def test_parses_param_set_axis_from_nodekey(self):
+        assert extract_param_set_idx((("ham", 0), ("param_set", 2))) == 2
+
+    def test_missing_axis_raises_keyerror(self):
+        with pytest.raises(KeyError, match="param_set"):
+            extract_param_set_idx((("ham", 0),))
+
+    def test_default_returned_when_axis_absent(self):
+        assert extract_param_set_idx((("ham", 0),), default=0) == 0
+
+    def test_non_tuple_key_raises_actionable_typeerror(self):
+        """Calling it on evaluate() output (int keys) gives an actionable error,
+        not a bare 'int object is not iterable'."""
+        with pytest.raises(TypeError, match="NodeKey tuple"):
+            extract_param_set_idx(0)
+
+
 class TestReduceMean:
     def test_averages_per_key(self):
         grouped = {("a",): [1.0, 2.0, 3.0], ("b",): [10.0, 20.0]}
@@ -87,6 +111,13 @@ class TestReduceMean:
         out = reduce_mean(grouped)
         assert out[("scalar",)] == pytest.approx(2.0)
         assert out[("list",)] == pytest.approx([2.0, 3.0])
+
+    def test_rejects_probability_dicts_with_actionable_error(self):
+        """A PROBS/COUNTS histogram dict raises a TypeError naming the right
+        helper, instead of a raw 'int + dict' TypeError from the sum()."""
+        grouped = {(("circ", 0),): [{"00": 0.6, "11": 0.4}, {"00": 0.8, "11": 0.2}]}
+        with pytest.raises(TypeError, match="reduce_merge_histograms"):
+            reduce_mean(grouped)
 
 
 class TestReducePostprocessOrdered:
@@ -177,3 +208,85 @@ class TestReduceMergeHistograms:
         assert result[(("circ", 0),)]["11"] == pytest.approx(0.3)
         assert result[(("circ", 1),)]["01"] == pytest.approx(0.75)
         assert result[(("circ", 1),)]["10"] == pytest.approx(0.25)
+
+    def test_rejects_expval_values_with_actionable_error(self):
+        """An EXPVALS float raises a TypeError naming the right helper, instead
+        of a raw 'float has no attribute keys' AttributeError."""
+        grouped = {(("circ", 0),): [1.0, 3.0]}
+        with pytest.raises(TypeError, match="reduce_mean"):
+            reduce_merge_histograms(grouped)
+
+
+def test_average_by_param_set_collapses_preserved_axes():
+    result = {
+        (("ham", 0), ("param_set", 0)): [1.0, 3.0],
+        (("ham", 1), ("param_set", 0)): [3.0, 5.0],
+        (("ham", 0), ("param_set", 1)): [10.0, 12.0],
+    }
+
+    averaged = average_by_param_set(result, lambda value: np.asarray(value))
+
+    assert set(averaged) == {0, 1}
+    np.testing.assert_allclose(averaged[0], [2.0, 4.0])
+    np.testing.assert_allclose(averaged[1], [10.0, 12.0])
+
+
+def test_group_by_branch_and_param_set_keeps_preserved_axes():
+    result = {
+        (("ham", 0), ("param_set", 0)): [1.0],
+        (("ham", 0), ("param_set", 1)): [2.0],
+        (("ham", 1), ("param_set", 0)): [3.0],
+    }
+
+    grouped = group_by_branch_and_param_set(result, lambda value: np.asarray(value))
+
+    assert set(grouped) == {(("ham", 0),), (("ham", 1),)}
+    np.testing.assert_allclose(grouped[(("ham", 0),)][0], [1.0])
+    np.testing.assert_allclose(grouped[(("ham", 0),)][1], [2.0])
+    np.testing.assert_allclose(grouped[(("ham", 1),)][0], [3.0])
+
+
+class TestCollapseToParentResults:
+    """Spec: _collapse_to_parent_results maps backend labels back to BranchKeys."""
+
+    def test_maps_labels_to_branch_keys(self):
+        spec_circ = ("spec", "circ")
+        lineage = {
+            "a/obs_group:0": (spec_circ, ("obs_group", 0)),
+            "b/obs_group:1": (spec_circ, ("obs_group", 1)),
+        }
+        raw = {"a/obs_group:0": 1.0, "b/obs_group:1": 2.0}
+        out = _collapse_to_parent_results(raw, lineage)
+        assert out[(spec_circ, ("obs_group", 0))] == 1.0
+        assert out[(spec_circ, ("obs_group", 1))] == 2.0
+
+    def test_ignores_unknown_labels(self):
+        lineage = {"only": (("spec", "k"),)}
+        raw = {"only": 1, "unknown": 2}
+        out = _collapse_to_parent_results(raw, lineage)
+        assert out == {(("spec", "k"),): 1}
+
+
+class TestFindBatchKey:
+    """Spec: _find_batch_key routes a branch key to its subset batch key."""
+
+    def test_exact_match(self):
+        batch_keys = {("a", "b"), ("c",)}
+        assert _find_batch_key(("a", "b"), batch_keys) == ("a", "b")
+
+    def test_subset_match(self):
+        batch_keys = {("x",)}
+        assert _find_batch_key(("x", "y", "z"), batch_keys) == ("x",)
+
+    def test_empty_batch_key_matches_anything(self):
+        batch_keys = {()}
+        assert _find_batch_key(("a", "b"), batch_keys) == ()
+
+    def test_no_match_raises_key_error(self):
+        batch_keys = {("x", "y")}
+        with pytest.raises(KeyError, match="No batch key matches branch key"):
+            _find_batch_key(("a", "b"), batch_keys)
+
+    def test_empty_batch_keys_set_raises_key_error(self):
+        with pytest.raises(KeyError, match="No batch key matches branch key"):
+            _find_batch_key(("a",), set())

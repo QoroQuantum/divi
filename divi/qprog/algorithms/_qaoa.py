@@ -23,8 +23,8 @@ from divi.hamiltonians._term_ops import (
     _spo_wires,
     to_spo,
 )
-from divi.pipeline import PipelineSet, ResultFormat
-from divi.pipeline.stages import MeasurementStage, TrotterSpecStage
+from divi.pipeline import Stage
+from divi.pipeline.stages import TrotterSpecStage
 from divi.qprog._solution_sampling_mixin import SolutionEntry, SolutionSamplingMixin
 from divi.qprog.algorithms import InitialState
 from divi.qprog.problems import QAOAProblem
@@ -131,36 +131,30 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         gammas = ParameterVector("γ", self.n_layers)
         self._params = np.array([[b, g] for b, g in zip(betas, gammas)], dtype=object)
 
-        self._pipelines = self._build_pipelines()
-        self._meta_circuit_factories: dict[str, MetaCircuit] | None = None
-
     @property
     def n_params_per_layer(self) -> int:
         return 2
 
-    def _build_pipelines(self) -> PipelineSet:
-        # QAOA's cost pipeline trotterizes the cost Hamiltonian into the ansatz:
-        # a TrotterSpecStage seeded with the Hamiltonian (not a pre-built
-        # MetaCircuit). Sample is added by the mixin; replace only "cost".
-        return (
-            super()
-            ._build_pipelines()
-            .with_(
-                "cost",
-                self._assemble_pipeline(
-                    TrotterSpecStage(
-                        trotterization_strategy=self.trotterization_strategy,
-                        meta_circuit_factory=self._cost_meta_circuit_factory,
-                    ),
-                    MeasurementStage(
-                        grouping_strategy=self._grouping_strategy,
-                        shot_distribution=self._shot_distribution,
-                    ),
-                    result_format=ResultFormat.EXPVALS,
-                ),
-                lambda: self.cost_hamiltonian,
+    def _spec_stage(self) -> Stage:
+        # QAOA trotterizes the cost Hamiltonian into the ansatz: seeded with
+        # the Hamiltonian, not a pre-built MetaCircuit.
+        def _make_meta(result: TrotterizationResult, _ham_id: int) -> MetaCircuit:
+            spo = result.effective_hamiltonian
+            dag = circuit_to_dag(self._build_qaoa_qiskit_circuit(spo))
+            return MetaCircuit(
+                circuit_bodies=(((), dag),),
+                parameters=tuple(self._params.flatten()),
+                observable=spo,
+                precision=self._precision,
             )
+
+        return TrotterSpecStage(
+            trotterization_strategy=self.trotterization_strategy,
+            meta_circuit_factory=_make_meta,
         )
+
+    def _initial_spec(self) -> SparsePauliOp:
+        return self.cost_hamiltonian
 
     def _save_subclass_state(self) -> dict[str, Any]:
         """Save QAOA-specific runtime state."""
@@ -259,38 +253,22 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
 
         return qc
 
-    def _cost_meta_circuit_factory(
-        self, result: TrotterizationResult, ham_id: int
-    ) -> MetaCircuit:
-        """Build a cost MetaCircuit for a given (possibly QDrift-sampled) SPO."""
-        processed_spo = result.effective_hamiltonian
-        qc = self._build_qaoa_qiskit_circuit(processed_spo)
-        return MetaCircuit(
-            circuit_bodies=(((), circuit_to_dag(qc)),),
-            parameters=tuple(self._params.flatten()),
-            observable=processed_spo,
-            precision=self._precision,
-        )
+    def _create_cost_circuit(self) -> MetaCircuit:
+        """Generate the cost MetaCircuit for the QAOA problem.
 
-    def _create_meta_circuit_factories(self) -> dict[str, MetaCircuit]:
-        """Generate compatibility templates for the QAOA problem.
-
-        Executed cost, metric, and sample circuits come from the cost
-        pipeline's cached spec-stage cohort. These templates support callers
-        that inspect ``meta_circuit_factories`` without driving a pipeline.
+        Executed circuits come from the cost pipeline's cached spec-stage cohort.
+        This template supports callers that inspect ``cost_circuit`` without
+        driving a pipeline.
         """
-        flat_params = tuple(self._params.flatten())
-        cost_result = self.trotterization_strategy.process_hamiltonian(
-            self.cost_hamiltonian
-        )
-        cost_circuit = self._cost_meta_circuit_factory(cost_result, 0)
-        sample_circuit = MetaCircuit(
-            circuit_bodies=cost_circuit.circuit_bodies,
-            parameters=flat_params,
-            measured_wires=tuple(range(self.n_qubits)),
+        result = self.trotterization_strategy.process_hamiltonian(self.cost_hamiltonian)
+        spo = result.effective_hamiltonian
+        dag = circuit_to_dag(self._build_qaoa_qiskit_circuit(spo))
+        return MetaCircuit(
+            circuit_bodies=(((), dag),),
+            parameters=tuple(self._params.flatten()),
+            observable=spo,
             precision=self._precision,
         )
-        return {"cost_circuit": cost_circuit, "sample_circuit": sample_circuit}
 
     def sample_solution(
         self,
@@ -300,7 +278,7 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         """Run measurement circuits with the given parameters and decode the solution."""
         self.reporter.info(message="🏁 Computing Final Solution 🏁", overwrite=True)
 
-        super().sample_solution(params, **kwargs)
+        super().sample_solution(self._resolve_sample_params(params), **kwargs)
 
         best_probs = next(iter(self._best_probs.values()))
         best_bitstring = max(best_probs, key=best_probs.__getitem__)

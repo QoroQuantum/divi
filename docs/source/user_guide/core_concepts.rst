@@ -91,6 +91,8 @@ Here's how a typical :class:`~divi.qprog.algorithms.VQE` program flows through t
 - **Early-Stopping Controllers** — Accepts :class:`~divi.qprog.early_stopping.EarlyStopping` and reports :class:`~divi.qprog.early_stopping.StopReason`
 - **Checkpoint/Resume Support** — Supports :class:`~divi.qprog.checkpointing.CheckpointConfig` in ``run(...)`` and state recovery via ``load_state(...)`` (see :doc:`resuming_long_runs` and :doc:`../api_reference/qprog/checkpointing`)
 
+.. _reading-results:
+
 **Key Properties:**
 
 The most commonly accessed properties for result analysis:
@@ -98,7 +100,14 @@ The most commonly accessed properties for result analysis:
 - ``best_loss`` - The best (lowest) loss value found during optimization
 - ``best_params`` - The parameters that achieved ``best_loss`` (may differ from final parameters)
 - ``final_params`` - The parameters from the last optimization iteration
-- ``min_losses_per_iteration`` - Convenience property returning minimum loss per iteration
+- :attr:`~divi.qprog.VariationalQuantumAlgorithm.losses_history` - Full loss
+  history as ``list[dict]``; each entry maps a parameter-set index to its loss
+  for that iteration.  With population-based optimizers
+  (:class:`~divi.qprog.optimizers.MonteCarloOptimizer`, CMA-ES) this carries one
+  entry per population member per iteration
+- :attr:`~divi.qprog.VariationalQuantumAlgorithm.min_losses_per_iteration` -
+  Convenience property returning the minimum loss per iteration as
+  ``list[float]``; use it to plot the convergence curve
 
 .. note::
    **Understanding best vs final parameters:**
@@ -115,6 +124,41 @@ The most commonly accessed properties for result analysis:
    These may differ if the optimizer explores away from the best solution.
    For full property details, see
    :class:`~divi.qprog.VariationalQuantumAlgorithm`.
+
+Reading Results by Algorithm
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Each algorithm exposes result attributes suited to its output type.  Use this
+table to find the right property after calling ``run()``:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 35 45
+
+   * - Algorithm
+     - Result attribute(s)
+     - Type / notes
+   * - :class:`~divi.qprog.algorithms.VQE`
+     - ``best_loss`` / ``best_params``
+     - ``float`` / ``np.ndarray`` — optimal energy and circuit parameters
+   * - :class:`~divi.qprog.algorithms.CustomVQA`
+     - ``best_loss`` / ``best_params``
+     - ``float`` / ``np.ndarray`` — same as VQE
+   * - :class:`~divi.qprog.algorithms.QAOA`
+     - ``best_loss`` / ``solution``
+     - ``float`` / problem-decoded result (graph partition, QUBO binary vector, etc.)
+   * - :class:`~divi.qprog.algorithms.QNN`
+     - ``best_loss``
+     - ``float`` — training loss; use ``.predict(X)`` for inference after training
+   * - :class:`~divi.qprog.algorithms.TimeEvolution`
+     - ``results``
+     - ``dict[str, float]`` (probs) · ``float`` (single observable) · ``list[float]`` (multi-observable)
+
+For QAOA, ``solution`` decodes the highest-probability bitstring via the
+problem's decode function (e.g. node indices for graph problems, a NumPy array
+for QUBO).  ``solution_bitstring`` gives the raw bitstring.  For multiple
+candidates ranked by probability, use
+:meth:`~divi.qprog.algorithms.QAOA.get_top_solutions`.
 
 Variational Run Controls and Outputs
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -206,7 +250,8 @@ For deeper variational workflow details, use these focused guides:
 
       # Skip the training loop entirely — just sample with the known-good
       # parameters and decode the result.
-      vqe_sample = VQE(molecule=molecule, n_layers=2, backend=MaestroSimulator())
+      vqe_sample = VQE(molecule=molecule, n_layers=2, backend=MaestroSimulator(),
+                       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA))
       vqe_sample.sample_solution(best_params)
       print(vqe_sample.eigenstate)
 

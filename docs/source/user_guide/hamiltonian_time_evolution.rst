@@ -107,6 +107,55 @@ Two cost-saving mechanisms apply automatically:
 When a quantum error mitigation protocol is set, the savings extend further;
 see :ref:`qem-multi-observable`.
 
+Trotter Steps and Order
+-----------------------
+
+By default the evolution uses a single first-order Trotter step
+(``n_steps=1``, ``order=1``).  Increasing ``n_steps`` or the Suzuki-Trotter
+``order`` reduces the Trotter error at the cost of deeper circuits.  ``order``
+must be ``1`` or an even integer ``>= 2`` (a non-conforming value raises
+``ValueError``); higher even orders converge faster per step but add gates.
+
+.. code-block:: python
+
+   import pennylane as qp
+   from divi.backends import MaestroSimulator
+   from divi.qprog import TimeEvolution
+
+   backend = MaestroSimulator(shots=5000)
+   H = 0.7 * qp.PauliZ(0) + 0.4 * qp.PauliX(0)
+
+   # Second-order Suzuki-Trotter with 8 steps for tighter accuracy.
+   te = TimeEvolution(
+       hamiltonian=H,
+       time=1.0,
+       n_steps=8,
+       order=2,
+       observable=qp.PauliZ(0),
+       backend=backend,
+   )
+   te.run()
+   print(te.expval())
+
+The default term-selection strategy is
+:class:`~divi.hamiltonians.ExactTrotterization`, which keeps every Hamiltonian
+term.  Pass it explicitly to truncate small-coefficient terms — ``keep_top_n``
+keeps the N largest-magnitude terms, ``keep_fraction`` keeps a fraction in
+``(0, 1]`` (the two are mutually exclusive):
+
+.. code-block:: python
+
+   from divi.hamiltonians import ExactTrotterization
+
+   te = TimeEvolution(
+       hamiltonian=H,
+       trotterization_strategy=ExactTrotterization(keep_top_n=1),
+       time=1.0,
+       observable=qp.PauliZ(0),
+       backend=backend,
+   )
+   te.run()
+
 QDrift Trotterization
 ---------------------
 
@@ -182,19 +231,9 @@ The trajectory supports all the same options as ``TimeEvolution``
 
 Each time point becomes its own program in a
 :class:`~divi.qprog.ensemble.ProgramEnsemble`, so the trajectory inherits
-the ensemble's circuit-batching machinery.  The default ``BatchConfig()``
-already merges every program's submission into a single backend call:
-
-.. skip: next
-
-.. code-block:: python
-
-   from divi.qprog import BatchConfig
-
-   # Default — single merged call for all time points
-   trajectory.run(blocking=True, batch_config=BatchConfig())
-
-For dense trajectories (e.g. 512 time points) on
+the ensemble's circuit-batching machinery — the default ``BatchConfig()``
+already merges every program's submission into a single backend call.  For
+dense trajectories (e.g. 512 time points) on
 :class:`~divi.backends.QoroService`, set ``max_concurrent_programs=-1`` so
 all time points run concurrently and the entire ensemble submits as one
 cloud job, reducing overhead significantly:

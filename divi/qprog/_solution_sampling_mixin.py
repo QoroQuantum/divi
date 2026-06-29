@@ -8,38 +8,34 @@ Sampling a solution — running a circuit, measuring it as a probability
 distribution over bitstrings, then ranking/decoding those bitstrings — is not
 tied to the variational parameter model. This mixin owns that capability's own
 state (the measured ``_best_probs`` distribution and the ``_decode_solution_fn``
-decode hook) and leans only on the shared :class:`~divi.qprog.QuantumProgram`
-seams (:meth:`~divi.qprog.QuantumProgram._assemble_pipeline`,
-:meth:`~divi.qprog.QuantumProgram._run_pipeline`).
+decode hook) and leans only on the shared :meth:`~divi.qprog.QuantumProgram.evaluate`
+entry point, to which it hands a :func:`~divi.pipeline.sample_preprocessor`.
 
-The host program must provide three things:
+The host program must provide two things:
 
-* a cooperative ``_build_pipelines`` returning a
-  :class:`~divi.pipeline.PipelineSet` — the mixin extends it with the ``"sample"``
-  entry via ``super()._build_pipelines().with_(...)``;
-* a ``meta_circuit_factories`` mapping carrying a ``"cost_circuit"`` (and
-  optionally a ``"sample_circuit"``) :class:`~divi.circuits.MetaCircuit` to seed
-  the sample pipeline;
-* a ``_coerce_sample_params`` method turning caller-supplied parameters into the
-  array fed to the pipeline.
+* a ``_initial_spec`` method returning the cost
+  :class:`~divi.circuits.MetaCircuit` (the program's seed circuit);
+* a ``_resolve_sample_params`` method that maps caller-supplied parameters
+  (including ``None``) to the numeric array fed to
+  :meth:`~divi.qprog.QuantumProgram.evaluate`. The base
+  :meth:`SolutionSamplingMixin.sample_solution` calls it for the ``None``
+  fallback; a host without it must pass explicit ``params``.
 
-The third hook is where any model-specific parameter handling lives — e.g.
+That hook is where any model-specific parameter handling lives — e.g.
 :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm`
 implements it with a shape check against ``n_layers * n_params_per_layer`` and a
-fallback to the trained ``_best_params``.
+fallback to the trained ``_best_params``. VQE/QAOA/PCE additionally call it in
+their ``sample_solution`` overrides to validate explicit params before decoding.
 """
 
 from collections.abc import Callable
-from dataclasses import replace
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 from warnings import warn
 
 import numpy as np
 import numpy.typing as npt
 
-from divi.pipeline import CircuitPipeline, PipelineSet, ResultFormat
-from divi.pipeline._compilation import _extract_param_set_idx
-from divi.pipeline.stages import CircuitSpecStage, MeasurementStage
+from divi.pipeline import CircuitPreprocessor, sample_preprocessor
 
 if TYPE_CHECKING:
     # Type-check the mixin as if mixed into its host, so ``super()`` calls and the
@@ -59,7 +55,11 @@ class SolutionEntry(NamedTuple):
         bitstring: Binary string representing a computational basis state.
         prob: Measured probability in range [0.0, 1.0].
         decoded: Optional problem-specific decoded representation. Defaults to None.
-        energy: Optional objective energy for this solution. Defaults to None.
+        energy: Optional objective energy for this solution. ``None`` from the
+            default probability-ranked path; populated only by feasibility-aware
+            retrieval, e.g. :meth:`~divi.qprog.algorithms.QAOA.get_top_solutions`
+            with ``feasibility="filter"`` or ``"repair"`` (which scores each
+            bitstring via the problem's ``compute_energy``). Defaults to None.
     """
 
     bitstring: str
@@ -79,9 +79,8 @@ class SolutionSamplingMixin(_SamplingMixinBase):
     silently returning nothing.
 
     The mixin owns its result state (``_best_probs``) and decode hook
-    (``_decode_solution_fn``); the host supplies ``meta_circuit_factories``, a
-    cooperative ``_build_pipelines``, and ``_coerce_sample_params`` (see the module
-    docstring for the full contract).
+    (``_decode_solution_fn``); the host supplies ``_initial_spec`` and
+    ``_resolve_sample_params`` (see the module docstring for the full contract).
     """
 
     def __init__(
@@ -105,47 +104,13 @@ class SolutionSamplingMixin(_SamplingMixinBase):
         self._best_probs: dict[int, dict[str, float]] = {}
         self._decode_solution_fn = decode_solution_fn or (lambda bitstring: bitstring)
 
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-        # The mixin's cooperative ``_build_pipelines`` must run before the host's
-        # base one — i.e. the mixin must precede the host in the MRO — or the
-        # "sample" pipeline is silently dropped. Reject the misordering at
-        # class-definition time.
-        from divi.qprog.variational_quantum_algorithm import (
-            VariationalQuantumAlgorithm,
-        )
+    def _preprocessors(self) -> tuple[CircuitPreprocessor, ...]:
+        """Expose the sample routine for introspection alongside the host's."""
+        return (*super()._preprocessors(), self._sample_preprocessor())
 
-        mro = cls.__mro__
-        if VariationalQuantumAlgorithm in mro and mro.index(
-            SolutionSamplingMixin
-        ) > mro.index(VariationalQuantumAlgorithm):
-            raise TypeError(
-                f"{cls.__name__} must list SolutionSamplingMixin before "
-                f"VariationalQuantumAlgorithm in its bases; otherwise the mixin's "
-                f"_build_pipelines is bypassed and the sample pipeline is omitted."
-            )
-
-    def _build_pipelines(self) -> PipelineSet:
-        return (
-            super()
-            ._build_pipelines()
-            .with_(
-                "sample",
-                self._assemble_pipeline(
-                    CircuitSpecStage(),
-                    MeasurementStage(),
-                    result_format=ResultFormat.PROBS,
-                ),
-                lambda: self.meta_circuit_factories.get(
-                    "sample_circuit", self.meta_circuit_factories["cost_circuit"]
-                ),
-            )
-        )
-
-    @property
-    def _sample_pipeline(self) -> CircuitPipeline:
-        """The solution-sampling pipeline."""
-        return self._pipelines["sample"]
+    def _sample_preprocessor(self) -> CircuitPreprocessor:
+        """The preprocessor sampling the prepared state in the computational basis."""
+        return sample_preprocessor()
 
     @property
     def best_probs(self) -> dict[int, dict[str, float]]:
@@ -179,10 +144,13 @@ class SolutionSamplingMixin(_SamplingMixinBase):
         Example:
             >>> program.run()
             >>> probs = program.best_probs
-            >>> for bitstring, prob in probs.items():
-            ...     print(f"{bitstring}: {prob:.2%}")
-            0101: 42.50%
-            1010: 31.20%
+            >>> for idx, distribution in probs.items():
+            ...     print(f"parameter set {idx}:")
+            ...     for bitstring, prob in distribution.items():
+            ...         print(f"  {bitstring}: {prob:.2%}")
+            parameter set 0:
+              0101: 42.50%
+              1010: 31.20%
             ...
         """
         if not self._best_probs:
@@ -333,12 +301,11 @@ class SolutionSamplingMixin(_SamplingMixinBase):
         subclass-specific solution fields (e.g. ``solution_bitstring`` for QAOA,
         ``_eigenstate`` for VQE).
 
-        Parameter coercion (default-fallback and shape validation) is delegated to
-        the host's :meth:`_coerce_sample_params`.
-
         Args:
-            params: Optional parameter set to evaluate. When ``None`` (the
-                default), the host falls back to its trained parameters.
+            params: Parameter set to evaluate. Must be a numeric array; pass
+                ``None`` only when the host has an override that resolves the
+                fallback (e.g. :class:`~divi.qprog.VariationalQuantumAlgorithm`
+                falls back to ``_best_params``).
             **kwargs: Subclass-specific keyword arguments.
 
         Returns:
@@ -347,40 +314,38 @@ class SolutionSamplingMixin(_SamplingMixinBase):
         Note:
             Subclasses override this method to add their algorithm-specific
             decoding step. They should call ``super().sample_solution(params)``
-            to perform coercion and the measurement-pipeline dispatch, then read
-            from ``self._best_probs`` to extract algorithm-specific solution state.
+            to perform the measurement-pipeline dispatch, then read from
+            ``self._best_probs`` to extract algorithm-specific solution state.
         """
-        params_arr = self._coerce_sample_params(params)
+        if params is None:
+            # Defer the fallback to the host's resolution hook (VQA maps None to
+            # the trained _best_params). A host with no resolver and no explicit
+            # params is a contract violation — fail loud rather than sampling at
+            # ``np.asarray(None)`` == NaN.
+            resolver = getattr(self, "_resolve_sample_params", None)
+            if resolver is None:
+                raise TypeError(
+                    "sample_solution() received params=None on a host that does "
+                    "not define _resolve_sample_params. Pass explicit params or "
+                    "mix in a host (e.g. VariationalQuantumAlgorithm) that resolves "
+                    "the trained-parameter fallback."
+                )
+            params = resolver(None)
+        params_arr = np.asarray(params, dtype=np.float64)
         self._run_solution_measurement_for(np.atleast_2d(params_arr))
         return self
 
     def _run_solution_measurement_for(
         self, param_sets: npt.NDArray[np.float64]
     ) -> None:
-        """Execute sample circuits via the pipeline for the provided parameter sets."""
-        initial_spec = None
-        if "cost" in self._pipelines:
-            initial_spec = [
-                replace(
-                    meta,
-                    observable=None,
-                    measured_wires=tuple(range(meta.n_qubits)),
-                    measurement_qasms=(),
-                    measurement_groups=(),
-                )
-                for meta in self._pipeline_source_batch("cost").values()
-            ]
-        result = self._run_pipeline(
-            "sample",
-            initial_spec=initial_spec,
-            param_sets=np.atleast_2d(param_sets),
+        """Sample the prepared state for the provided parameter sets."""
+        result = cast(
+            "dict[int, dict[str, float] | list[dict[str, float]]]",
+            self.evaluate(np.atleast_2d(param_sets), self._sample_preprocessor()),
         )
-
-        indexed = {
-            _extract_param_set_idx(key, default=0): _average_probabilities(value)
-            for key, value in result.items()
+        self._best_probs = {
+            idx: _average_probabilities(value) for idx, value in result.items()
         }
-        self._best_probs = dict(sorted(indexed.items()))
 
 
 def _average_probabilities(

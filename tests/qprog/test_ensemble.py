@@ -20,7 +20,6 @@ from rich.traceback import Traceback
 import divi.qprog.ensemble as ensemble_module
 from divi.backends import AsyncJobBackend, ExecutionResult
 from divi.exceptions import ExecutionCancelledError
-from divi.pipeline import PipelineSet
 from divi.qprog._batch_coordinator import _BatchCoordinator, _ProxyBackend
 from divi.qprog.ensemble import (
     BatchConfig,
@@ -53,9 +52,6 @@ class _StubProgram(QuantumProgram):
     def __init__(self, *, backend, **kwargs):
         super().__init__(backend=backend, **kwargs)
         self._ran = False
-
-    def _build_pipelines(self) -> PipelineSet:
-        return PipelineSet({})
 
     def has_results(self) -> bool:
         return self._ran

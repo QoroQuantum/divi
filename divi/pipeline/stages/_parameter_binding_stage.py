@@ -15,7 +15,7 @@ from qiskit.dagcircuit import DAGCircuit
 from divi.backends import SupportsCircuitTemplates
 from divi.circuits import MetaCircuit, render_template
 from divi.circuits._conversions import _assert_finite, _format_bound_param
-from divi.pipeline._compilation import PARAM_SET_AXIS
+from divi.pipeline._result_keys_operations import PARAM_SET_AXIS
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,

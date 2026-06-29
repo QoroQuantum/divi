@@ -10,6 +10,7 @@ import numpy as np
 from divi.circuits import MetaCircuit
 from divi.circuits.qem import QEMContext, QEMProtocol, _NoMitigation
 from divi.circuits.quepp import QuEPP
+from divi.pipeline._result_keys_operations import FOREIGN_KEY_ATTR, group_by_base_key
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
@@ -22,7 +23,6 @@ from divi.pipeline.abc import (
     StageToken,
 )
 from divi.pipeline.stages import PauliTwirlStage
-from divi.pipeline.transformations import FOREIGN_KEY_ATTR, group_by_base_key
 
 QEM_AXIS = "qem"
 

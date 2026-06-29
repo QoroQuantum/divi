@@ -92,10 +92,28 @@ class TestComputeMeasurementGroupsMulti:
         with pytest.raises(ValueError, match="empty"):
             _compute_measurement_groups((), "qwc", 2)
 
-    def test_backend_expval_strategy_rejected_for_multi(self):
+    def test_backend_expval_strategy_supports_multi(self):
+        """``_backend_expval`` accepts a multi-observable tuple: one analytic
+        group over the deduplicated union, with the postprocess re-fanning the
+        shared term back to each observable."""
         obs = SparsePauliOp.from_list([("Z", 1.0)])
-        with pytest.raises(ValueError, match="_backend_expval"):
-            _compute_measurement_groups((obs, obs), "_backend_expval", 1)
+        groups, partition, postproc, union = _compute_measurement_groups(
+            (obs, obs), "_backend_expval", 1
+        )
+        assert groups == ((),)
+        assert partition == [[0]]
+        assert postproc([{0: 0.5}]) == pytest.approx([0.5, 0.5])
+
+    def test_backend_expval_strategy_distinct_observables(self):
+        """Distinct observables occupy separate union slots; the postprocess
+        re-fans each slot to its own per-observable value."""
+        obs1 = SparsePauliOp.from_list([("Z", 1.0)])
+        obs2 = SparsePauliOp.from_list([("X", 1.0)])
+        groups, partition, postproc, _ = _compute_measurement_groups(
+            (obs1, obs2), "_backend_expval", 1
+        )
+        assert groups == ((),)
+        assert postproc([{0: 0.3, 1: -0.7}]) == pytest.approx([0.3, -0.7])
 
     def test_postprocessing_returns_list_in_input_order(self):
         obs1 = SparsePauliOp.from_list([("IZ", 1.0)])

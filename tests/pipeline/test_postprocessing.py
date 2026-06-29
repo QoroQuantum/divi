@@ -15,7 +15,6 @@ from divi.pipeline._postprocessing import (
     _counts_to_expvals,
     _counts_to_probs,
     _expval_dicts_to_indexed,
-    _find_batch_key,
 )
 from divi.pipeline.abc import ChildResults
 from divi.pipeline.stages import MeasurementStage
@@ -278,32 +277,6 @@ class TestBatchedExpectation:
         result = _batched_expectation([histogram], [label], n_qubits=n_qubits)
         # All-zero bitstring → all Z eigenvalues +1 → product = +1
         assert result[0, 0] == pytest.approx(1.0)
-
-
-class TestFindBatchKey:
-    """Tests for _find_batch_key."""
-
-    def test_exact_match(self):
-        batch_keys = {("a", "b"), ("c",)}
-        assert _find_batch_key(("a", "b"), batch_keys) == ("a", "b")
-
-    def test_subset_match(self):
-        batch_keys = {("x",)}
-        result = _find_batch_key(("x", "y", "z"), batch_keys)
-        assert result == ("x",)
-
-    def test_empty_batch_key_matches_anything(self):
-        batch_keys = {()}
-        assert _find_batch_key(("a", "b"), batch_keys) == ()
-
-    def test_no_match_raises_key_error(self):
-        batch_keys = {("x", "y")}
-        with pytest.raises(KeyError, match="No batch key matches branch key"):
-            _find_batch_key(("a", "b"), batch_keys)
-
-    def test_empty_batch_keys_set_raises_key_error(self):
-        with pytest.raises(KeyError, match="No batch key matches branch key"):
-            _find_batch_key(("a",), set())
 
 
 class TestCountsToProbs:

@@ -37,6 +37,10 @@ from divi.circuits._conversions import (
     _format_bound_param,
     bind_parameters_in_dag,
 )
+from divi.pipeline._result_keys_operations import (
+    group_by_base_key,
+    reduce_postprocess_ordered,
+)
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
@@ -47,10 +51,6 @@ from divi.pipeline.abc import (
     StageToken,
 )
 from divi.pipeline.stages._qasm_cache import _qasm_body_cached, _template_cached
-from divi.pipeline.transformations import (
-    group_by_base_key,
-    reduce_postprocess_ordered,
-)
 
 DATA_AXIS = "data_sample"
 

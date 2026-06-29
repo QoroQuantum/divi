@@ -27,7 +27,7 @@ from divi.qprog.problems import (
     MinVertexCoverProblem,
 )
 from divi.qprog.workflows import PartitioningProgramEnsemble
-from tests.qprog._program_contracts import verify_metacircuit_dict
+from tests.qprog._program_contracts import verify_cost_circuit
 from tests.qprog.problems._helpers import (
     make_bull_graph,
     make_string_node_graph,
@@ -376,7 +376,7 @@ class TestGraphInput:
         assert qaoa_problem.problem.graph == G
         assert qaoa_problem.n_layers == 1
 
-        verify_metacircuit_dict(qaoa_problem, ["cost_circuit", "sample_circuit"])
+        verify_cost_circuit(qaoa_problem)
 
     def test_graph_unsuppported_initial_state(self, dummy_simulator):
         with pytest.raises(TypeError):
@@ -396,24 +396,28 @@ class TestGraphInput:
                 backend=dummy_simulator,
             )
 
-    def test_graph_initial_state_recommended(self, dummy_simulator):
+    def test_graph_initial_state_recommended(self, dummy_simulator, default_optimizer):
         qaoa_problem = QAOA(
             MaxCliqueProblem(nx.bull_graph(), is_constrained=True),
             backend=dummy_simulator,
+            optimizer=default_optimizer,
         )
 
         assert isinstance(qaoa_problem.initial_state, ZerosState)
 
-    def test_graph_initial_state_superposition(self, dummy_simulator):
+    def test_graph_initial_state_superposition(
+        self, dummy_simulator, default_optimizer
+    ):
         qaoa_problem = QAOA(
             MaxCliqueProblem(nx.bull_graph(), is_constrained=True),
             initial_state=SuperpositionState(),
             backend=dummy_simulator,
+            optimizer=default_optimizer,
         )
 
         assert isinstance(qaoa_problem.initial_state, SuperpositionState)
         # SuperpositionState seeds each qubit with a Hadamard; verify via DAG.
-        _, dag = qaoa_problem.meta_circuit_factories["cost_circuit"].circuit_bodies[0]
+        _, dag = qaoa_problem.cost_circuit.circuit_bodies[0]
         n_hadamards = sum(1 for n in dag.op_nodes() if n.op.name == "h")
         assert n_hadamards >= nx.bull_graph().number_of_nodes()
 

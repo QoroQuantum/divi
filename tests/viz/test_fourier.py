@@ -13,11 +13,12 @@ from divi.viz import fourier_analysis_2d, scan_2d
 
 
 @pytest.fixture
-def qaoa_program(dummy_simulator):
+def qaoa_program(dummy_simulator, default_optimizer):
     return QAOA(
         MaxCutProblem(nx.path_graph(2)),
         n_layers=1,
         backend=dummy_simulator,
+        optimizer=default_optimizer,
     )
 
 

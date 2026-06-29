@@ -52,6 +52,14 @@ Use L-BFGS-B when:
 - You require fast convergence to a local minimum.
 - Your cost function is smooth and differentiable.
 
+.. note::
+
+   On small or barren-plateau circuits the parameter-shift gradient can be
+   near-zero at the start, so L-BFGS-B may hit its ``gtol`` and stop after a
+   couple of iterations (a flat, uninformative loss trajectory). If that
+   happens, switch to a gradient-free optimizer (COBYLA, Nelder-Mead) or the
+   Monte Carlo optimizer for a more illustrative run.
+
 .. code-block:: python
 
    optimizer = ScipyOptimizer(method=ScipyMethod.L_BFGS_B)
@@ -578,9 +586,16 @@ is always populated and its ``message`` field includes the stop reason.
 Inspecting Optimizer Results
 ----------------------------
 
-After running a variational algorithm, you can inspect the raw result object
-returned by the underlying optimizer via the
-``optimize_result`` property.
+After running a variational algorithm, the loss history is available directly
+on the program object via
+:attr:`~divi.qprog.VariationalQuantumAlgorithm.min_losses_per_iteration` and
+:attr:`~divi.qprog.VariationalQuantumAlgorithm.losses_history` — see
+:ref:`reading results <reading-results>` in core concepts for their
+semantics and types.
+
+Beyond the loss history, you can inspect the raw result object returned by the
+underlying optimizer
+via the ``optimize_result`` property.
 This exposes optimizer-specific diagnostics such as:
 
 - ``nfev`` – number of cost-function evaluations

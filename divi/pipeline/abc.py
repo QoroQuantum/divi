@@ -64,8 +64,15 @@ class PipelineResult(dict):
         scalar-in/scalar-out symmetry of higher-level programs like
         :class:`~divi.qprog.algorithms.TimeEvolution`.  Probability and
         count dicts pass through unchanged; multi-observable lists are
-        returned as-is.  For the canonical raw form regardless of length,
-        use ``result[()]``.
+        returned as-is.
+
+        ``result[()]`` gives the unsqueezed pipeline-internal form, but only
+        when the spec stage's ``reduce`` collapses its own axis (which the
+        built-in spec stages do for single-circuit batches).  Custom spec
+        stages must mirror that behavior; if they do not, the result will
+        not have a ``()`` key.  ``evaluate()`` returns
+        ``{param_set_idx: value}`` where ``value`` is the unsqueezed form
+        (e.g. ``[1.0]`` for a single expectation value, not ``1.0``).
 
         When the source MetaCircuit was constructed with
         ``_was_multi_obs=True`` (e.g. the user wrote ``observable=[O]``),
@@ -203,6 +210,10 @@ class PipelineEnv:
     each cost value from raw counts and write it to ``artifacts['cost_variance']``
     (``{param_set_idx: variance}``). Off by default — the estimate costs nothing
     extra in circuits but adds a small classical post-processing pass."""
+
+    axes_to_preserve: tuple[str, ...] = ()
+    """Stage axes that should not be reduced away. Advanced callers use this
+    when they need branch-level results after normal downstream reductions."""
 
     @property
     def effective_shots(self) -> int:

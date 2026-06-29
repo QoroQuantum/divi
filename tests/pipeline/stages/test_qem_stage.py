@@ -26,13 +26,13 @@ from divi.circuits.quepp import QuEPP
 from divi.circuits.zne import ZNE, LinearExtrapolator
 from divi.pipeline import CircuitPipeline, ContractViolation, DiviPerformanceWarning
 from divi.pipeline._compilation import _compile_batch
+from divi.pipeline._result_keys_operations import FOREIGN_KEY_ATTR
 from divi.pipeline.stages import (
     MeasurementStage,
     ParameterBindingStage,
     PauliTwirlStage,
     QEMStage,
 )
-from divi.pipeline.transformations import FOREIGN_KEY_ATTR
 from tests.pipeline._helpers import DummySpecStage, ones_execute_fn, two_group_meta
 
 

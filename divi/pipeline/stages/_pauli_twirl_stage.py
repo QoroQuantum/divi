@@ -48,6 +48,11 @@ from qiskit.transpiler.basepasses import TransformationPass
 
 from divi.circuits import MetaCircuit, build_template, dag_to_qasm_body, render_template
 from divi.circuits._conversions import _format_bound_param
+from divi.pipeline._result_keys_operations import (
+    PARAM_SET_AXIS,
+    group_by_base_key,
+    strip_axis_from_label,
+)
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
@@ -57,13 +62,8 @@ from divi.pipeline.abc import (
     StageOutput,
     StageToken,
 )
-from divi.pipeline.transformations import group_by_base_key, strip_axis_from_label
 
 TWIRL_AXIS = "twirl"
-
-# Must match ``ParameterBindingStage.PARAM_SET_AXIS``.  Duplicated here to
-# avoid an import cycle (ParameterBinding -> QEM -> PauliTwirl -> ParameterBinding).
-_PARAM_SET_AXIS = "param_set"
 _SINGLE_QUBIT_PAULI = {"I": IGate(), "X": XGate(), "Y": YGate(), "Z": ZGate()}
 _PAULI_CHARS = ("I", "X", "Y", "Z")
 _TWO_QUBIT_PAULI_LABELS = tuple(p1 + p0 for p1 in _PAULI_CHARS for p0 in _PAULI_CHARS)
@@ -281,7 +281,7 @@ class PauliTwirlStage(BundleStage):
             getattr(s, "consumes_dag_bodies", True) for s in after
         )
         param_set_upstream = any(
-            getattr(s, "axis_name", None) == _PARAM_SET_AXIS for s in before
+            getattr(s, "axis_name", None) == PARAM_SET_AXIS for s in before
         )
         self._fast_path = no_dag_consumer_after and param_set_upstream
 
@@ -455,7 +455,7 @@ class PauliTwirlStage(BundleStage):
         topology_groups: dict[tuple, list[tuple[tuple, DAGCircuit]]] = {}
         group_order: list[tuple] = []
         for tag, dag in meta.circuit_bodies:
-            key = strip_axis_from_label(tag, _PARAM_SET_AXIS)
+            key = strip_axis_from_label(tag, PARAM_SET_AXIS)
             if key not in topology_groups:
                 topology_groups[key] = []
                 group_order.append(key)

@@ -9,6 +9,7 @@ import pytest
 from qiskit.circuit.library import CXGate, RYGate, RZGate
 from qiskit.quantum_info import SparsePauliOp
 
+from divi.pipeline import CircuitPreprocessor
 from divi.qprog import (
     QNN,
     AngleEmbedding,
@@ -20,7 +21,7 @@ from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from tests.qprog._program_contracts import (
     ObservableMeasuringContractsBase,
-    verify_metacircuit_dict,
+    verify_cost_circuit,
 )
 
 
@@ -48,42 +49,40 @@ def feature_batch_2x2():
     return np.array([[0.1, 0.2], [0.3, 0.4], [0.5, 0.6], [0.7, 0.8]])
 
 
-def _make_qnn(
+@pytest.fixture
+def make_qnn(
     simple_feature_map,
     simple_ansatz,
     two_qubit_observable,
     feature_batch_2x2,
-    backend,
-    **kwargs,
+    dummy_simulator,
+    default_optimizer,
 ):
-    return QNN(
-        n_qubits=2,
-        feature_map=simple_feature_map,
-        ansatz=simple_ansatz,
-        observable=two_qubit_observable,
-        feature_batch=feature_batch_2x2,
-        backend=backend,
-        **kwargs,
-    )
+    """Build a 2-qubit QNN from the standard test building blocks.
+
+    Each building block is a default that any test can override by keyword
+    (e.g. ``make_qnn(observable=None)`` for the parity default,
+    ``make_qnn(backend=default_test_simulator, n_layers=2)`` for e2e runs).
+    """
+    defaults = {
+        "n_qubits": 2,
+        "feature_map": simple_feature_map,
+        "ansatz": simple_ansatz,
+        "observable": two_qubit_observable,
+        "feature_batch": feature_batch_2x2,
+        "backend": dummy_simulator,
+        "optimizer": default_optimizer,
+    }
+
+    def _make(**overrides):
+        return QNN(**{**defaults, **overrides})
+
+    return _make
 
 
 class TestInitialization:
-    def test_basic_initialization(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        dummy_simulator,
-    ):
-        program = _make_qnn(
-            simple_feature_map,
-            simple_ansatz,
-            two_qubit_observable,
-            feature_batch_2x2,
-            dummy_simulator,
-            n_layers=2,
-        )
+    def test_basic_initialization(self, make_qnn):
+        program = make_qnn(n_layers=2)
 
         assert program.n_qubits == 2
         assert program.n_layers == 2
@@ -92,62 +91,26 @@ class TestInitialization:
         assert program._n_data_params == 2
         assert program._n_weight_params == 8
         assert program.feature_batch.shape == (4, 2)
-        verify_metacircuit_dict(program, ["cost_circuit"])
+        verify_cost_circuit(program)
 
-    def test_default_observable_is_all_z_parity(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        feature_batch_2x2,
-        dummy_simulator,
-    ):
+    def test_default_observable_is_all_z_parity(self, make_qnn):
         """Omitting ``observable`` falls back to ``Z ⊗ Z ⊗ … ⊗ Z``."""
-        program = QNN(
-            n_qubits=2,
-            feature_map=simple_feature_map,
-            ansatz=simple_ansatz,
-            feature_batch=feature_batch_2x2,
-            backend=dummy_simulator,
-        )
+        program = make_qnn(observable=None)
         labels = [str(p) for p in program.cost_hamiltonian.paulis]
         assert labels == ["ZZ"]
         assert program.loss_constant == 0.0
 
-    def test_loss_constant_extracted_from_observable(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        feature_batch_2x2,
-        dummy_simulator,
-    ):
+    def test_loss_constant_extracted_from_observable(self, make_qnn):
         """Identity terms in the observable land on ``loss_constant``."""
-        observable = SparsePauliOp.from_list([("ZI", 1.0), ("II", 3.0)])
-        program = _make_qnn(
-            simple_feature_map,
-            simple_ansatz,
-            observable,
-            feature_batch_2x2,
-            dummy_simulator,
+        program = make_qnn(
+            observable=SparsePauliOp.from_list([("ZI", 1.0), ("II", 3.0)])
         )
         assert program.loss_constant == pytest.approx(3.0)
         assert program.cost_hamiltonian.size == 1
 
-    def test_meta_circuit_parameter_ordering(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        dummy_simulator,
-    ):
-        program = _make_qnn(
-            simple_feature_map,
-            simple_ansatz,
-            two_qubit_observable,
-            feature_batch_2x2,
-            dummy_simulator,
-        )
-        params = program.meta_circuit_factories["cost_circuit"].parameters
+    def test_meta_circuit_parameter_ordering(self, make_qnn):
+        program = make_qnn()
+        params = program.cost_circuit.parameters
         # Data params come first, then weight params
         assert len(params) == program._n_data_params + program._n_weight_params
         data_names = {str(p) for p in params[: program._n_data_params]}
@@ -163,442 +126,146 @@ class TestConstructionValidation:
             ("n_layers", 0, "n_layers must be positive"),
         ],
     )
-    def test_layer_counts_must_be_positive(
-        self,
-        bad_kwarg,
-        bad_value,
-        match,
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        dummy_simulator,
-    ):
+    def test_layer_counts_must_be_positive(self, bad_kwarg, bad_value, match, make_qnn):
         with pytest.raises(ValueError, match=match):
-            _make_qnn(
-                simple_feature_map,
-                simple_ansatz,
-                two_qubit_observable,
-                feature_batch_2x2,
-                dummy_simulator,
-                **{bad_kwarg: bad_value},
-            )
+            make_qnn(**{bad_kwarg: bad_value})
 
     @pytest.mark.parametrize("bad_n_qubits", [0, -1])
-    def test_n_qubits_must_be_positive(
-        self,
-        bad_n_qubits,
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        dummy_simulator,
-    ):
+    def test_n_qubits_must_be_positive(self, bad_n_qubits, make_qnn):
         with pytest.raises(ValueError, match="n_qubits must be positive"):
-            QNN(
+            make_qnn(
                 n_qubits=bad_n_qubits,
-                feature_map=simple_feature_map,
-                ansatz=simple_ansatz,
-                observable=two_qubit_observable,
                 feature_batch=np.zeros((1, max(bad_n_qubits, 1))),
-                backend=dummy_simulator,
             )
 
-    def test_wrong_observable_qubits(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        feature_batch_2x2,
-        dummy_simulator,
-    ):
-        bad_obs = SparsePauliOp.from_list([("ZIII", 1.0)])
+    def test_wrong_observable_qubits(self, make_qnn):
         with pytest.raises(ValueError, match="acts on 4 qubits"):
-            _make_qnn(
-                simple_feature_map,
-                simple_ansatz,
-                bad_obs,
-                feature_batch_2x2,
-                dummy_simulator,
-            )
+            make_qnn(observable=SparsePauliOp.from_list([("ZIII", 1.0)]))
 
-    def test_non_sparsepauli_observable_rejected(
-        self, simple_feature_map, simple_ansatz, feature_batch_2x2, dummy_simulator
-    ):
+    def test_non_sparsepauli_observable_rejected(self, make_qnn):
         with pytest.raises(TypeError, match="observable must be a SparsePauliOp"):
-            _make_qnn(
-                simple_feature_map,
-                simple_ansatz,
-                "ZI",  # a string, not a SparsePauliOp
-                feature_batch_2x2,
-                dummy_simulator,
-            )
+            make_qnn(observable="ZI")  # a string, not a SparsePauliOp
 
-    def test_callable_loss_reduction_accepted(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        dummy_simulator,
-    ):
+    def test_callable_loss_reduction_accepted(self, make_qnn):
         def reduction(arr):
             return float(np.max(arr))
 
-        program = _make_qnn(
-            simple_feature_map,
-            simple_ansatz,
-            two_qubit_observable,
-            feature_batch_2x2,
-            dummy_simulator,
-            loss_reduction=reduction,
-        )
+        program = make_qnn(loss_reduction=reduction)
         assert program.loss_reduction is reduction
         assert callable(program._loss_reduction_fn)
 
-    def test_loss_fn_without_labels_warns_at_caller(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        dummy_simulator,
-    ):
+    def test_loss_fn_without_labels_warns_at_caller(self, make_qnn):
         # loss_fn is ignored without labels; the warning must be attributed to
         # the user's constructor call, not to a frame inside divi.
         with pytest.warns(UserWarning, match="loss_fn is ignored") as record:
-            _make_qnn(
-                simple_feature_map,
-                simple_ansatz,
-                two_qubit_observable,
-                feature_batch_2x2,
-                dummy_simulator,
-                loss_fn=lambda pred, label: (pred - label) ** 2,
-            )
+            make_qnn(loss_fn=lambda pred, label: (pred - label) ** 2)
         ignored = [w for w in record if "loss_fn is ignored" in str(w.message)]
         assert ignored and ignored[0].filename == __file__
 
-    def test_feature_batch_wrong_columns(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        dummy_simulator,
-    ):
+    def test_feature_batch_wrong_columns(self, make_qnn):
         bad_batch = np.array([[0.1, 0.2, 0.3]])  # 3 columns but only 2 data params
         with pytest.raises(ValueError, match="binds 2 data parameters"):
-            _make_qnn(
-                simple_feature_map,
-                simple_ansatz,
-                two_qubit_observable,
-                bad_batch,
-                dummy_simulator,
-            )
+            make_qnn(feature_batch=bad_batch)
 
-    def test_feature_batch_1d_rejected(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        dummy_simulator,
-    ):
+    def test_feature_batch_1d_rejected(self, make_qnn):
         with pytest.raises(ValueError, match="feature_batch must be 2D"):
-            _make_qnn(
-                simple_feature_map,
-                simple_ansatz,
-                two_qubit_observable,
-                np.array([0.1, 0.2]),
-                dummy_simulator,
-            )
+            make_qnn(feature_batch=np.array([0.1, 0.2]))
 
-    def test_feature_batch_empty_rejected(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        dummy_simulator,
-    ):
+    def test_feature_batch_empty_rejected(self, make_qnn):
         with pytest.raises(ValueError, match="at least one sample"):
-            _make_qnn(
-                simple_feature_map,
-                simple_ansatz,
-                two_qubit_observable,
-                np.empty((0, 2)),
-                dummy_simulator,
-            )
+            make_qnn(feature_batch=np.empty((0, 2)))
 
-    def test_non_feature_map_rejected(
-        self,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        dummy_simulator,
-    ):
+    def test_non_feature_map_rejected(self, make_qnn):
         with pytest.raises(TypeError, match="feature_map must be"):
-            QNN(
-                n_qubits=2,
-                feature_map="not a feature map",  # type: ignore[arg-type]
-                ansatz=simple_ansatz,
-                observable=two_qubit_observable,
-                feature_batch=feature_batch_2x2,
-                backend=dummy_simulator,
-            )
+            make_qnn(feature_map="not a feature map")  # type: ignore[arg-type]
 
-    def test_non_ansatz_rejected(
-        self,
-        simple_feature_map,
-        two_qubit_observable,
-        feature_batch_2x2,
-        dummy_simulator,
-    ):
+    def test_non_ansatz_rejected(self, make_qnn):
         with pytest.raises(TypeError, match="ansatz must be"):
-            QNN(
-                n_qubits=2,
-                feature_map=simple_feature_map,
-                ansatz="not an ansatz",  # type: ignore[arg-type]
-                observable=two_qubit_observable,
-                feature_batch=feature_batch_2x2,
-                backend=dummy_simulator,
-            )
+            make_qnn(ansatz="not an ansatz")  # type: ignore[arg-type]
 
-    def test_invalid_loss_reduction(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        dummy_simulator,
-    ):
+    def test_invalid_loss_reduction(self, make_qnn):
         with pytest.raises(ValueError, match="loss_reduction must be"):
-            _make_qnn(
-                simple_feature_map,
-                simple_ansatz,
-                two_qubit_observable,
-                feature_batch_2x2,
-                dummy_simulator,
-                loss_reduction="median",  # type: ignore[arg-type]
-            )
+            make_qnn(loss_reduction="median")  # type: ignore[arg-type]
 
-    def test_constant_only_observable_rejected(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        feature_batch_2x2,
-        dummy_simulator,
-    ):
-        identity_only = SparsePauliOp.from_list([("II", 5.0)])
+    def test_constant_only_observable_rejected(self, make_qnn):
         with pytest.raises(ValueError, match="only constant terms"):
-            _make_qnn(
-                simple_feature_map,
-                simple_ansatz,
-                identity_only,
-                feature_batch_2x2,
-                dummy_simulator,
-            )
+            make_qnn(observable=SparsePauliOp.from_list([("II", 5.0)]))
 
-    def test_labels_default_unsupervised(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        dummy_simulator,
-    ):
-        program = _make_qnn(
-            simple_feature_map,
-            simple_ansatz,
-            two_qubit_observable,
-            feature_batch_2x2,
-            dummy_simulator,
-        )
+    def test_labels_default_unsupervised(self, make_qnn):
+        program = make_qnn()
         assert program.labels is None
         assert program._sample_loss_fn is None
 
-    def test_labels_stored_when_supervised(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        dummy_simulator,
-    ):
-        program = _make_qnn(
-            simple_feature_map,
-            simple_ansatz,
-            two_qubit_observable,
-            feature_batch_2x2,
-            dummy_simulator,
-            labels=[0.0, 1.0, 0.0, 1.0],
-        )
+    def test_labels_stored_when_supervised(self, make_qnn):
+        program = make_qnn(labels=[0.0, 1.0, 0.0, 1.0])
         np.testing.assert_array_equal(program.labels, [0.0, 1.0, 0.0, 1.0])
         assert callable(program._sample_loss_fn)
 
-    def test_labels_wrong_length_rejected(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        dummy_simulator,
-    ):
+    def test_labels_wrong_length_rejected(self, make_qnn):
         with pytest.raises(ValueError, match="labels has 2 entries but feature_batch"):
-            _make_qnn(
-                simple_feature_map,
-                simple_ansatz,
-                two_qubit_observable,
-                feature_batch_2x2,
-                dummy_simulator,
-                labels=[0.0, 1.0],
-            )
+            make_qnn(labels=[0.0, 1.0])
 
-    def test_invalid_loss_fn_rejected(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        dummy_simulator,
-    ):
+    def test_invalid_loss_fn_rejected(self, make_qnn):
         with pytest.raises(ValueError, match="loss_fn must be"):
-            _make_qnn(
-                simple_feature_map,
-                simple_ansatz,
-                two_qubit_observable,
-                feature_batch_2x2,
-                dummy_simulator,
+            make_qnn(
                 labels=[0.0, 1.0, 0.0, 1.0],
                 loss_fn="huber",  # type: ignore[arg-type]
             )
 
-    def test_out_of_range_labels_warn_for_default_observable(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        feature_batch_2x2,
-        dummy_simulator,
-    ):
+    def test_out_of_range_labels_warn_for_default_observable(self, make_qnn):
         # Default parity observable reads out in [-1, 1]; {0, 2} labels can't be
         # matched, so squared error floors above zero — warn the user.
         with pytest.warns(UserWarning, match=r"reads out in \[-1, 1\]"):
-            QNN(
-                n_qubits=2,
-                feature_map=simple_feature_map,
-                ansatz=simple_ansatz,
-                feature_batch=feature_batch_2x2,
-                labels=[0.0, 2.0, 0.0, 2.0],
-                backend=dummy_simulator,
-            )
+            make_qnn(observable=None, labels=[0.0, 2.0, 0.0, 2.0])
 
-    def test_loss_fn_without_labels_warns(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        dummy_simulator,
-    ):
+    def test_loss_fn_without_labels_warns(self, make_qnn):
         with pytest.warns(UserWarning, match="loss_fn"):
-            _make_qnn(
-                simple_feature_map,
-                simple_ansatz,
-                two_qubit_observable,
-                feature_batch_2x2,
-                dummy_simulator,
-                loss_fn=lambda pred, label: abs(pred - label),
-            )
+            make_qnn(loss_fn=lambda pred, label: abs(pred - label))
 
 
 class TestDryRun:
-    def test_data_axis_appears_with_correct_factor(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        dummy_simulator,
-    ):
+    def test_data_axis_appears_with_correct_factor(self, make_qnn, feature_batch_2x2):
         """dry_run must surface the data axis with ``n_samples`` fan-out."""
-        program = _make_qnn(
-            simple_feature_map,
-            simple_ansatz,
-            two_qubit_observable,
-            feature_batch_2x2,
-            dummy_simulator,
-            n_layers=2,
-        )
+        program = make_qnn(n_layers=2)
         reports = program.dry_run()
         data_stage = next(s for s in reports["cost"].stages if s.axis == "data_sample")
         assert data_stage.factor == feature_batch_2x2.shape[0]
         assert data_stage.metadata["n_samples"] == feature_batch_2x2.shape[0]
 
     def test_total_circuits_includes_data_and_param_set_axes(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        dummy_simulator,
+        self, make_qnn, feature_batch_2x2
     ):
         """Total dry-run count = n_samples × n_param_sets for a single-group obs."""
-        program = _make_qnn(
-            simple_feature_map,
-            simple_ansatz,
-            two_qubit_observable,
-            feature_batch_2x2,
-            dummy_simulator,
-        )
+        program = make_qnn()
         reports = program.dry_run()
         expected = feature_batch_2x2.shape[0] * program.optimizer.n_param_sets
         assert reports["cost"].total_circuits == expected
 
 
 class TestQNNPipelines:
-    def test_no_sample_pipeline(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        dummy_simulator,
-    ):
-        program = _make_qnn(
-            simple_feature_map,
-            simple_ansatz,
-            two_qubit_observable,
-            feature_batch_2x2,
-            dummy_simulator,
-        )
-        assert "sample" not in program._pipelines
-        assert "metric" not in program._pipelines  # built on demand
-        assert "cost" in program._pipelines
+    def test_no_sample_pipeline(self, make_qnn):
+        program = make_qnn()
+        names = [protocol.name for protocol in program._preprocessors()]
+        # Metric is built on demand, never enumerated.
+        assert "sample" not in names
+        assert "cost" in names
 
-    def test_data_binding_injected_into_cost_and_expectation_pipeline(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        dummy_simulator,
-    ):
-        program = _make_qnn(
-            simple_feature_map,
-            simple_ansatz,
-            two_qubit_observable,
-            feature_batch_2x2,
-            dummy_simulator,
-        )
+    def test_data_binding_injected_into_cost_and_metric_pipeline(self, make_qnn):
+        program = make_qnn()
         # The data axis fans out in both the cost pipeline and the on-demand
-        # expectation (metric) pipeline.
-        for pipeline in (program._pipelines["cost"], program._expectation_pipeline()):
+        # metric pipeline.
+        pipelines = (
+            program._build_preprocessor_pipeline(program.cost_preprocessor()),
+            program._build_preprocessor_pipeline(CircuitPreprocessor("metric")),
+        )
+        for pipeline in pipelines:
             types = [type(s).__name__ for s in pipeline.stages]
             assert "DataBindingStage" in types
 
 
 @pytest.mark.e2e
 def test_batch_loss_matches_per_sample_mean(
-    simple_feature_map,
-    simple_ansatz,
-    two_qubit_observable,
-    feature_batch_2x2,
-    default_test_simulator,
+    make_qnn, feature_batch_2x2, default_test_simulator
 ):
     """End-to-end integration check: the batched cost equals the mean of
     per-sample costs, modulo shot noise from independent simulator runs.
@@ -610,26 +277,15 @@ def test_batch_loss_matches_per_sample_mean(
     weights = np.array([[0.5, 1.0, 1.5, 2.0]])
 
     default_test_simulator.set_seed(1997)
-    batched = _make_qnn(
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        default_test_simulator,
-        n_layers=1,
-        seed=1997,
-    )
+    batched = make_qnn(backend=default_test_simulator, n_layers=1, seed=1997)
     batched_loss = batched._evaluate_cost_param_sets(weights)[0]
 
     per_sample_losses = []
     for row in feature_batch_2x2:
         default_test_simulator.set_seed(1997)
-        single = _make_qnn(
-            simple_feature_map,
-            simple_ansatz,
-            two_qubit_observable,
-            row[None, :],
-            default_test_simulator,
+        single = make_qnn(
+            feature_batch=row[None, :],
+            backend=default_test_simulator,
             n_layers=1,
             seed=1997,
         )
@@ -644,10 +300,7 @@ def test_batch_loss_matches_per_sample_mean(
 
 
 def test_identity_constant_scales_with_sample_count_under_sum_reduction(
-    simple_feature_map,
-    simple_ansatz,
-    feature_batch_2x2,
-    default_test_simulator,
+    make_qnn, feature_batch_2x2, default_test_simulator
 ):
     """Regression for the post-hoc ``loss_constant`` add at the VQA layer.
 
@@ -663,12 +316,8 @@ def test_identity_constant_scales_with_sample_count_under_sum_reduction(
     constant = 2.5
 
     default_test_simulator.set_seed(1997)
-    no_const = _make_qnn(
-        simple_feature_map,
-        simple_ansatz,
-        SparsePauliOp.from_list([("ZI", 1.0)]),
-        feature_batch_2x2,
-        default_test_simulator,
+    no_const = make_qnn(
+        backend=default_test_simulator,
         n_layers=1,
         seed=1997,
         loss_reduction="sum",
@@ -676,12 +325,9 @@ def test_identity_constant_scales_with_sample_count_under_sum_reduction(
     base_loss = no_const._evaluate_cost_param_sets(weights)[0]
 
     default_test_simulator.set_seed(1997)
-    with_const = _make_qnn(
-        simple_feature_map,
-        simple_ansatz,
-        SparsePauliOp.from_list([("ZI", 1.0), ("II", constant)]),
-        feature_batch_2x2,
-        default_test_simulator,
+    with_const = make_qnn(
+        observable=SparsePauliOp.from_list([("ZI", 1.0), ("II", constant)]),
+        backend=default_test_simulator,
         n_layers=1,
         seed=1997,
         loss_reduction="sum",
@@ -698,11 +344,7 @@ def test_identity_constant_scales_with_sample_count_under_sum_reduction(
 
 @pytest.mark.e2e
 def test_supervised_loss_matches_manual_mse(
-    simple_feature_map,
-    simple_ansatz,
-    two_qubit_observable,
-    feature_batch_2x2,
-    default_test_simulator,
+    make_qnn, feature_batch_2x2, default_test_simulator
 ):
     """A supervised QNN's batched loss equals the MSE of per-sample predictions
     against the labels, modulo shot noise.
@@ -715,12 +357,8 @@ def test_supervised_loss_matches_manual_mse(
     labels = np.array([0.3, -0.2, 0.5, -0.6])
 
     default_test_simulator.set_seed(1997)
-    supervised = _make_qnn(
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        default_test_simulator,
+    supervised = make_qnn(
+        backend=default_test_simulator,
         n_layers=1,
         seed=1997,
         labels=labels,
@@ -731,12 +369,9 @@ def test_supervised_loss_matches_manual_mse(
     predictions = []
     for row in feature_batch_2x2:
         default_test_simulator.set_seed(1997)
-        single = _make_qnn(
-            simple_feature_map,
-            simple_ansatz,
-            two_qubit_observable,
-            row[None, :],
-            default_test_simulator,
+        single = make_qnn(
+            feature_batch=row[None, :],
+            backend=default_test_simulator,
             n_layers=1,
             seed=1997,
         )
@@ -748,21 +383,10 @@ def test_supervised_loss_matches_manual_mse(
 
 @pytest.mark.e2e
 class TestE2E:
-    def test_optimization_loop_runs(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        default_test_simulator,
-    ):
+    def test_optimization_loop_runs(self, make_qnn, default_test_simulator):
         default_test_simulator.set_seed(1997)
-        program = _make_qnn(
-            simple_feature_map,
-            simple_ansatz,
-            two_qubit_observable,
-            feature_batch_2x2,
-            default_test_simulator,
+        program = make_qnn(
+            backend=default_test_simulator,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             max_iterations=3,
             n_layers=2,
@@ -775,43 +399,22 @@ class TestE2E:
             program.n_params_per_layer * program.n_layers,
         )
 
-    def test_zz_feature_map_runs(
-        self,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        default_test_simulator,
-    ):
+    def test_zz_feature_map_runs(self, make_qnn, default_test_simulator):
         default_test_simulator.set_seed(1997)
-        program = QNN(
-            n_qubits=2,
+        program = make_qnn(
             feature_map=ZZFeatureMap(entangling_layout="linear"),
-            ansatz=simple_ansatz,
-            observable=two_qubit_observable,
-            feature_batch=feature_batch_2x2,
+            backend=default_test_simulator,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             max_iterations=2,
-            backend=default_test_simulator,
             seed=1997,
         )
         program.run(perform_final_computation=False)
         assert len(program.losses_history) == 2
 
-    def test_supervised_optimization_runs(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        default_test_simulator,
-    ):
+    def test_supervised_optimization_runs(self, make_qnn, default_test_simulator):
         default_test_simulator.set_seed(1997)
-        program = _make_qnn(
-            simple_feature_map,
-            simple_ansatz,
-            two_qubit_observable,
-            feature_batch_2x2,
-            default_test_simulator,
+        program = make_qnn(
+            backend=default_test_simulator,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             max_iterations=3,
             n_layers=2,
@@ -829,57 +432,18 @@ class TestE2E:
 class TestPredictValidation:
     """predict() input checks that raise before any measurement runs."""
 
-    def test_predict_before_training_raises(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        dummy_simulator,
-    ):
-        program = _make_qnn(
-            simple_feature_map,
-            simple_ansatz,
-            two_qubit_observable,
-            feature_batch_2x2,
-            dummy_simulator,
-        )
+    def test_predict_before_training_raises(self, make_qnn, feature_batch_2x2):
+        program = make_qnn()
         with pytest.raises(RuntimeError, match="trained weights"):
             program.predict(feature_batch_2x2)
 
-    def test_predict_wrong_feature_columns_raises(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        dummy_simulator,
-    ):
-        program = _make_qnn(
-            simple_feature_map,
-            simple_ansatz,
-            two_qubit_observable,
-            feature_batch_2x2,
-            dummy_simulator,
-        )
+    def test_predict_wrong_feature_columns_raises(self, make_qnn):
+        program = make_qnn()
         with pytest.raises(ValueError, match="binds 2 data parameters"):
             program.predict(np.zeros((3, 5)), params=np.zeros(4))
 
-    def test_predict_wrong_params_length_raises(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        dummy_simulator,
-    ):
-        program = _make_qnn(
-            simple_feature_map,
-            simple_ansatz,
-            two_qubit_observable,
-            feature_batch_2x2,
-            dummy_simulator,
-        )
+    def test_predict_wrong_params_length_raises(self, make_qnn, feature_batch_2x2):
+        program = make_qnn()
         with pytest.raises(ValueError, match="weight parameters"):
             program.predict(feature_batch_2x2, params=np.zeros(3))
 
@@ -887,23 +451,10 @@ class TestPredictValidation:
 @pytest.mark.e2e
 class TestPredict:
     def test_predict_returns_class_labels(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        default_test_simulator,
+        self, make_qnn, feature_batch_2x2, default_test_simulator
     ):
         default_test_simulator.set_seed(1997)
-        program = _make_qnn(
-            simple_feature_map,
-            simple_ansatz,
-            two_qubit_observable,
-            feature_batch_2x2,
-            default_test_simulator,
-            n_layers=1,
-            seed=1997,
-        )
+        program = make_qnn(backend=default_test_simulator, n_layers=1, seed=1997)
         weights = np.array([0.5, 1.0, 1.5, 2.0])  # n_params_per_layer * n_layers
 
         labels = program.predict(feature_batch_2x2, params=weights)
@@ -923,24 +474,12 @@ class TestPredict:
         assert set(np.unique(single)).issubset({-1.0, 1.0})
 
     def test_predict_does_not_drive_progress_reporter(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        default_test_simulator,
-        mocker,
+        self, make_qnn, feature_batch_2x2, default_test_simulator, mocker
     ):
         # predict() runs a pipeline outside the optimizer loop; it must stay
         # silent. A spinner opened here is never closed and hijacks stdout in
         # notebooks, recursing on the next print().
-        program = _make_qnn(
-            simple_feature_map,
-            simple_ansatz,
-            two_qubit_observable,
-            feature_batch_2x2,
-            default_test_simulator,
-        )
+        program = make_qnn(backend=default_test_simulator)
         info_spy = mocker.spy(program.reporter, "info")
         update_spy = mocker.spy(program.reporter, "update")
 
@@ -953,25 +492,8 @@ class TestPredict:
 
 class TestObservableMeasuringContracts(ObservableMeasuringContractsBase):
     @pytest.fixture
-    def make_program(
-        self,
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        dummy_simulator,
-    ):
-        def _make(**kwargs):
-            return _make_qnn(
-                simple_feature_map,
-                simple_ansatz,
-                two_qubit_observable,
-                feature_batch_2x2,
-                dummy_simulator,
-                **kwargs,
-            )
-
-        return _make
+    def make_program(self, make_qnn):
+        return make_qnn
 
 
 def test_data_binding_mixin_wrong_mro_order_rejected():
@@ -984,21 +506,9 @@ def test_data_binding_mixin_wrong_mro_order_rejected():
             pass
 
 
-def test_build_pipeline_env_honors_reporter_override(
-    simple_feature_map,
-    simple_ansatz,
-    two_qubit_observable,
-    feature_batch_2x2,
-    dummy_simulator,
-):
+def test_build_pipeline_env_honors_reporter_override(make_qnn):
     """A caller-supplied ``reporter=None`` must win over ``self.reporter`` — the
     mechanism that lets predict() run silently."""
-    program = _make_qnn(
-        simple_feature_map,
-        simple_ansatz,
-        two_qubit_observable,
-        feature_batch_2x2,
-        dummy_simulator,
-    )
+    program = make_qnn()
     assert program._build_pipeline_env().reporter is program.reporter
     assert program._build_pipeline_env(reporter=None).reporter is None

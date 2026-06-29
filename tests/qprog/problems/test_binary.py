@@ -27,7 +27,7 @@ from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.problems import BinaryOptimizationProblem
 from divi.qprog.problems._binary import _merge_substates, _sanitize_problem_input
 from divi.qprog.workflows import PartitioningProgramEnsemble
-from tests.qprog._program_contracts import verify_metacircuit_dict
+from tests.qprog._program_contracts import verify_cost_circuit
 from tests.qprog.problems._helpers import (
     HUBO_CUBIC,
     QUBO_MATRIX,
@@ -472,7 +472,7 @@ class TestQUBOInput:
         assert mixer_spo.size == 3
         assert set(mixer_spo.paulis.to_labels()) == {"IIX", "IXI", "XII"}
 
-        verify_metacircuit_dict(qaoa_problem, ["cost_circuit", "sample_circuit"])
+        verify_cost_circuit(qaoa_problem)
 
     def test_hubo_dict_initialization_native_builder(self, dummy_simulator):
         hubo = {
@@ -671,7 +671,7 @@ class TestQUBOInput:
         assert mixer_spo.size == 3
         assert set(mixer_spo.paulis.to_labels()) == {"IIX", "IXI", "XII"}
 
-        verify_metacircuit_dict(qaoa_problem, ["cost_circuit", "sample_circuit"])
+        verify_cost_circuit(qaoa_problem)
 
     @pytest.mark.e2e
     def test_binary_quadratic_model_minimize_correct(

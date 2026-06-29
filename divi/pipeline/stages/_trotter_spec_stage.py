@@ -16,6 +16,11 @@ from divi.hamiltonians import (
     TrotterizationStrategy,
 )
 from divi.hamiltonians._term_ops import _clean_hamiltonian_spo
+from divi.pipeline._result_keys_operations import (
+    group_by_base_key,
+    reduce_mean,
+    reduce_merge_histograms,
+)
 from divi.pipeline.abc import (
     ChildResults,
     MetaCircuitBatch,
@@ -23,11 +28,6 @@ from divi.pipeline.abc import (
     SpecStage,
     StageOutput,
     StageToken,
-)
-from divi.pipeline.transformations import (
-    group_by_base_key,
-    reduce_mean,
-    reduce_merge_histograms,
 )
 
 
@@ -185,6 +185,8 @@ class TrotterSpecStage(SpecStage[SparsePauliOp]):
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken
     ) -> ChildResults:
+        if self.axis_name in env.axes_to_preserve:
+            return results
         grouped = group_by_base_key(results, self.axis_name, indexed=False)
         # Auto-detect: scalar results → average, dict results → merge histograms
         sample = next((v for vals in grouped.values() for v in vals), None)

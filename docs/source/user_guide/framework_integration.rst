@@ -55,6 +55,7 @@ optimization:
 
    import pennylane as qp
    from divi.qprog import CustomVQA
+   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
    qscript = qp.tape.QuantumScript(
@@ -71,6 +72,7 @@ optimization:
 
    program = CustomVQA(
        qscript=qscript,
+       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        backend=MaestroSimulator(),
    )
    program.run(perform_final_computation=False)
@@ -84,6 +86,13 @@ matrices).
 ``CustomVQA`` also accepts a PennyLane ``QNode`` (its trainable arguments become
 the parameters) and a Qiskit ``QuantumCircuit`` (computational-basis
 measurements map to a sum-of-Z observable).
+
+.. note::
+
+   Add computational-basis measurements with explicit ``circuit.measure(i, i)``
+   on a circuit that has a classical register.  Avoid
+   ``QuantumCircuit.measure_all()`` — it inserts a ``barrier``, which the QASM
+   body emitter does not support, raising a ``ValueError``.
 
 Data Binding (Quantum Neural Networks)
 --------------------------------------
@@ -101,6 +110,7 @@ the per-sample losses are aggregated by ``loss_reduction`` (``"mean"``,
    import numpy as np
    import pennylane as qp
    from divi.qprog import CustomVQA
+   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
    n_qubits = 3
@@ -118,6 +128,7 @@ the per-sample losses are aggregated by ``loss_reduction`` (``"mean"``,
        arg_shapes={"weights": (1, n_qubits, 3)},
        data_arg="inputs",
        feature_batch=feature_batch,
+       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        backend=MaestroSimulator(),
        max_iterations=2,
    )

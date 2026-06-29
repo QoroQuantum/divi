@@ -33,6 +33,7 @@ scales close to 1, switch to :func:`~divi.circuits.zne.local_fold`.
 
    from divi.circuits.zne import ZNE, RichardsonExtrapolator
    from divi.qprog import VQE
+   from divi.qprog.optimizers import MonteCarloOptimizer
    from divi.backends import QiskitSimulator
    import pennylane as qp
    import numpy as np
@@ -56,6 +57,7 @@ scales close to 1, switch to :func:`~divi.circuits.zne.local_fold`.
    vqe = VQE(
        molecule=h2_molecule,
        qem_protocol=zne_protocol,
+       optimizer=MonteCarloOptimizer(),
        backend=QiskitSimulator(qiskit_backend="auto"),
        max_iterations=10,
    )
@@ -148,6 +150,7 @@ on the ensemble circuits.
 
    from divi.circuits.quepp import QuEPP
    from divi.qprog import VQE
+   from divi.qprog.optimizers import MonteCarloOptimizer
    from divi.backends import QiskitSimulator
    import pennylane as qp
    import numpy as np
@@ -161,6 +164,7 @@ on the ensemble circuits.
        molecule=h2_molecule,
        qem_protocol=QuEPP(truncation_order=2),
        backend=QiskitSimulator(qiskit_backend="auto"),
+       optimizer=MonteCarloOptimizer(),
        max_iterations=10,
    )
 
@@ -170,24 +174,25 @@ on the ensemble circuits.
 **Parameters:**
 
 - ``truncation_order`` *(int, default 2)* — Maximum CPT expansion order *K*.
-  For ``sampling="exhaustive"``, higher *K* includes more Pauli paths (cost
-  grows combinatorially with the number of non-Clifford gates). For the default
-  ``sampling="montecarlo"``, paths are drawn with a fixed budget instead; order
-  still affects diagnostics such as the shallow-circuit warning, but path count
-  is controlled primarily by ``n_samples``.
+  Higher *K* includes more Pauli paths (cost grows combinatorially with the
+  number of non-Clifford gates).  It governs path enumeration for
+  ``sampling="exhaustive"`` **and** for the montecarlo fallback on symbolic
+  circuits (see ``sampling``).
 - ``coefficient_threshold`` *(float, optional)* — Prune paths whose absolute
   weight falls below this threshold during DFS enumeration (``sampling="exhaustive"``
-  only; see the QuEPP class docstring for symbolic-circuit behavior).
-- ``sampling`` — ``"montecarlo"`` *(default)* uses ``n_samples`` random paths;
-  ``"exhaustive"`` enumerates paths up to ``truncation_order`` (deterministic;
-  cost grows with order and circuit size).
-- ``n_samples`` *(int, default 200)* — Monte Carlo path budget when
-  ``sampling="montecarlo"``.
+  only; disabled on symbolic circuits, whose angle magnitudes are unknown).
+- ``sampling`` — ``"exhaustive"`` enumerates paths up to ``truncation_order``
+  (deterministic; cost grows with order and circuit size).  ``"montecarlo"``
+  *(default)* draws ``n_samples`` random paths, **but only on concrete
+  (parameter-bound) circuits**.  Variational programs (VQE/QAOA/TimeEvolution)
+  present a *symbolic* circuit at mitigation time — error mitigation runs before
+  parameter binding — so ``montecarlo`` warns and falls back to exhaustive
+  enumeration governed by ``truncation_order``; ``n_samples`` has no effect in
+  that case.
+- ``n_samples`` *(int, default 200)* — Monte Carlo path budget, used only on the
+  concrete-circuit montecarlo path (see ``sampling``).
 - ``seed`` *(int, optional)* — RNG seed for Monte Carlo reproducibility.
 - ``n_twirls`` *(int, default 10)* — Pauli twirl count; ``0`` disables twirling.
-  ``sampling="exhaustive"`` binds parameters before mitigation so path enumeration
-  can use concrete angles; ``sampling="montecarlo"`` keeps the symbolic circuit and
-  binds path weights later.
 
 ZNE vs QuEPP
 ~~~~~~~~~~~~~
@@ -233,21 +238,18 @@ before committing to a full run, and pipe the returned reports through
        molecule=h2_molecule,
        qem_protocol=QuEPP(truncation_order=2, n_twirls=10),
        backend=QiskitSimulator(qiskit_backend="auto"),
+       optimizer=MonteCarloOptimizer(),
    )
 
    # Collect the analytic reports and render a per-stage factor tree per pipeline.
    format_dry_run(vqe.dry_run())
 
-The output shows the factor each pipeline stage contributes — including how
-many Pauli paths QuEPP generates, the Clifford simulation count, and the
-twirl fan-out.  Observable grouping in
-:class:`~divi.pipeline.stages.MeasurementStage` appears as a *reduction*
-(``÷K``) rather than a fan-out: commuting Pauli terms are collapsed into
-shared measurement circuits, which claws some cost back.  Use this to tune
+The QEM-relevant entries are how many Pauli paths QuEPP generates, the
+Clifford simulation count, and the twirl fan-out — use these to tune
 ``truncation_order``, ``coefficient_threshold``, and ``n_twirls`` before
-spending any shots.
-
-See :doc:`pipelines` for full documentation of the dry-run tool.
+spending any shots.  See the :ref:`dry-run` section of the pipelines guide
+for how to read the per-stage factor tree (fan-out ``×K`` vs grouping
+reduction ``÷K``) and for programmatic access to the reports.
 
 Signal Destruction and Automatic Fallback
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -296,8 +298,10 @@ non-Clifford rotations is comparable to K.  The paper validates QuEPP on
 
 If you see this warning:
 
-- **Reduce truncation_order** to ``K=1`` or use ``sampling="montecarlo"`` which
-  does not enumerate all branches.
+- **Reduce truncation_order** to ``K=1`` to cut the number of enumerated
+  branches.  (``sampling="montecarlo"`` does *not* help here: on the symbolic
+  circuits variational programs produce it falls back to exhaustive enumeration
+  anyway — see ``sampling`` above.)
 - **Use a deeper circuit** (more qubits or Trotter steps).
 - **Use ZNE instead** for shallow circuits where QuEPP is unreliable.
 
@@ -385,6 +389,7 @@ pipeline uses — and must implement three members:
    vqe = VQE(
        molecule=h2_molecule,
        qem_protocol=WeightedAveraging(),
+       optimizer=MonteCarloOptimizer(),
        backend=MaestroSimulator(),
    )
 

@@ -53,21 +53,20 @@ class TestGeneralQAOA:
             backend=default_test_simulator,
         )
 
-        # Spy on the cost pipeline's run method
-        spy = mocker.spy(qaoa_problem._cost_pipeline, "run")
-
-        # Mock final computation to isolate optimization phase
+        # Spy on the program's one entry point; isolate the optimization phase.
+        spy = mocker.spy(qaoa_problem, "evaluate")
         mocker.patch.object(qaoa_problem, "sample_solution")
 
         qaoa_problem.run()
 
-        # Cost pipeline should be called once per iteration
+        # The cost protocol is evaluated at least once per iteration.
         assert spy.call_count >= 1
+        assert any(call.args[1].name == "cost" for call in spy.call_args_list)
 
-    def test_qaoa_cost_pipeline_uses_cost_hamiltonian_initial_spec(
+    def test_qaoa_cost_seed_is_the_cost_hamiltonian(
         self, mocker, default_test_simulator
     ):
-        """QAOA should customize cost evaluation via the initial-spec hook only."""
+        """QAOA prepares its state by trotterizing the cost Hamiltonian."""
         qaoa_problem = QAOA(
             MaxCliqueProblem(nx.bull_graph(), is_constrained=True),
             n_layers=1,
@@ -76,21 +75,15 @@ class TestGeneralQAOA:
             backend=default_test_simulator,
         )
 
-        spy = mocker.spy(qaoa_problem._cost_pipeline, "run")
-        mocker.patch.object(qaoa_problem, "sample_solution")
+        assert qaoa_problem._initial_spec() is qaoa_problem.cost_hamiltonian
 
-        qaoa_problem.run()
-
-        assert spy.call_args.kwargs["initial_spec"] is qaoa_problem.cost_hamiltonian
-
-    def test_qaoa_final_computation_runs_sample_pipeline(
+    def test_qaoa_final_computation_runs_sample_preprocessor(
         self, mocker, optimizer, default_test_simulator
     ):
-        """The sample pipeline is invoked during final computation.
+        """Final computation evaluates the sample protocol exactly once.
 
-        Note: this is an implementation-coupling test that spies on an internal
-        pipeline. The behavioral outcomes (solution extraction) are verified
-        by dedicated end-to-end tests.
+        Note: implementation-coupling test; the behavioral outcomes (solution
+        extraction) are verified by dedicated end-to-end tests.
         """
         qaoa_problem = QAOA(
             MaxCliqueProblem(nx.bull_graph(), is_constrained=True),
@@ -103,13 +96,12 @@ class TestGeneralQAOA:
         qaoa_problem._final_params = np.array([[0.1, 0.2]])
         qaoa_problem._best_params = np.array([[0.1, 0.2]])
 
-        # Spy on sample pipeline
-        spy = mocker.spy(qaoa_problem._sample_pipeline, "run")
+        spy = mocker.spy(qaoa_problem, "evaluate")
 
         qaoa_problem.sample_solution()
 
-        # Sample pipeline should be called once
         assert spy.call_count == 1
+        assert spy.call_args.args[1].name == "sample"
 
     def test_graph_correct_circuits_count_and_energies(
         self, optimizer, dummy_simulator
@@ -138,8 +130,9 @@ class TestQAOAQDriftMultiSample:
 
     @staticmethod
     def _find_trotter_stage(qaoa):
-        """Walk ``_cost_pipeline._stages`` to locate the TrotterSpecStage."""
-        for stage in qaoa._cost_pipeline._stages:
+        """Locate the TrotterSpecStage in the (memoized) cost-protocol pipeline."""
+        pipeline = qaoa._build_preprocessor_pipeline(qaoa.cost_preprocessor())
+        for stage in pipeline.stages:
             if isinstance(stage, TrotterSpecStage):
                 return stage
         raise AssertionError("TrotterSpecStage not found in cost pipeline")
@@ -348,40 +341,56 @@ class TestQAOAQDriftMultiSample:
 class TestFinalComputationDecode:
     """Test that sample_solution handles arbitrary decode returns."""
 
-    def test_decode_returns_none(self, default_test_simulator):
+    def test_decode_returns_none(self, default_test_simulator, default_optimizer):
         """When decode_fn returns None, solution is None."""
         problem = BinaryOptimizationProblem(QUBO_MATRIX)
-        qaoa = QAOA(problem, backend=default_test_simulator, max_iterations=1)
+        qaoa = QAOA(
+            problem,
+            backend=default_test_simulator,
+            max_iterations=1,
+            optimizer=default_optimizer,
+        )
         # Override the decode fn on the QAOA instance after construction
         qaoa._decode_solution_fn = lambda bs: None
         qaoa.run()
         assert qaoa.solution is None
 
-    def test_decode_returns_custom_type(self, default_test_simulator):
+    def test_decode_returns_custom_type(
+        self, default_test_simulator, default_optimizer
+    ):
         """When decode_fn returns a custom type, solution passes it through."""
         problem = BinaryOptimizationProblem(QUBO_MATRIX)
-        qaoa = QAOA(problem, backend=default_test_simulator, max_iterations=1)
+        qaoa = QAOA(
+            problem,
+            backend=default_test_simulator,
+            max_iterations=1,
+            optimizer=default_optimizer,
+        )
         qaoa._decode_solution_fn = lambda bs: [0, 2, 1, 0]
         qaoa.run()
         assert qaoa.solution == [0, 2, 1, 0]
 
-    def test_default_decode(self, default_test_simulator):
+    def test_default_decode(self, default_test_simulator, default_optimizer):
         """Default QUBO decode returns a binary int array."""
         qaoa = QAOA(
             BinaryOptimizationProblem(QUBO_MATRIX),
             backend=default_test_simulator,
             max_iterations=1,
+            optimizer=default_optimizer,
         )
         qaoa.run()
         sol = qaoa.solution
         assert all(b in (0, 1) for b in sol)
 
-    def test_solution_bitstring_after_run(self, default_test_simulator):
+    def test_solution_bitstring_after_run(
+        self, default_test_simulator, default_optimizer
+    ):
         """``solution_bitstring`` exposes the raw measured bitstring as a string."""
         qaoa = QAOA(
             BinaryOptimizationProblem(QUBO_MATRIX),
             backend=default_test_simulator,
             max_iterations=1,
+            optimizer=default_optimizer,
         )
         qaoa.run()
         bs = qaoa.solution_bitstring
@@ -391,12 +400,15 @@ class TestFinalComputationDecode:
         # Bitstring corresponds to the same state ``solution`` was decoded from.
         assert [int(c) for c in bs] == list(qaoa.solution)
 
-    def test_solution_bitstring_before_run_raises(self, default_test_simulator):
+    def test_solution_bitstring_before_run_raises(
+        self, default_test_simulator, default_optimizer
+    ):
         """Accessing ``solution_bitstring`` before ``.run()`` is an error."""
         qaoa = QAOA(
             BinaryOptimizationProblem(QUBO_MATRIX),
             backend=default_test_simulator,
             max_iterations=1,
+            optimizer=default_optimizer,
         )
         with pytest.raises(RuntimeError, match="Call .run\\(\\) first"):
             _ = qaoa.solution_bitstring
@@ -405,17 +417,20 @@ class TestFinalComputationDecode:
 class TestSampleSolution:
     """Tests for ``sample_solution(params)`` — sampling without training."""
 
-    def _make_qaoa(self, backend, n_layers=1):
+    def _make_qaoa(self, backend, optimizer, n_layers=1):
         return QAOA(
             BinaryOptimizationProblem(QUBO_MATRIX),
             n_layers=n_layers,
             backend=backend,
             max_iterations=1,
+            optimizer=optimizer,
         )
 
-    def test_populates_solution_and_bitstring(self, default_test_simulator):
+    def test_populates_solution_and_bitstring(
+        self, default_test_simulator, default_optimizer
+    ):
         """``sample_solution`` produces the same kind of outputs as ``run()``'s final step."""
-        qaoa = self._make_qaoa(default_test_simulator)
+        qaoa = self._make_qaoa(default_test_simulator, default_optimizer)
         params = np.array([0.1, 0.2])
 
         qaoa.sample_solution(params)
@@ -426,20 +441,23 @@ class TestSampleSolution:
         assert qaoa.best_probs  # measurement probs were populated
         assert qaoa.total_circuit_count > 0
 
-    def test_skips_cost_pipeline(self, mocker, default_test_simulator):
+    def test_skips_cost_pipeline(
+        self, mocker, default_test_simulator, default_optimizer
+    ):
         """``sample_solution`` must not dispatch any EXPECTATION job."""
-        qaoa = self._make_qaoa(default_test_simulator)
-        cost_spy = mocker.spy(qaoa._cost_pipeline, "run")
-        meas_spy = mocker.spy(qaoa._sample_pipeline, "run")
+        qaoa = self._make_qaoa(default_test_simulator, default_optimizer)
+        spy = mocker.spy(qaoa, "evaluate")
 
         qaoa.sample_solution(np.array([0.1, 0.2]))
 
-        assert cost_spy.call_count == 0
-        assert meas_spy.call_count == 1
+        # Only the sample protocol runs — the cost protocol is never evaluated.
+        assert [call.args[1].name for call in spy.call_args_list] == ["sample"]
 
-    def test_does_not_mutate_best_params(self, default_test_simulator):
+    def test_does_not_mutate_best_params(
+        self, default_test_simulator, default_optimizer
+    ):
         """After ``run()`` then ``sample_solution(other_params)``, ``best_params`` is unchanged."""
-        qaoa = self._make_qaoa(default_test_simulator)
+        qaoa = self._make_qaoa(default_test_simulator, default_optimizer)
         qaoa.run()
         trained = qaoa.best_params.copy()
 
@@ -448,28 +466,32 @@ class TestSampleSolution:
 
         np.testing.assert_array_equal(qaoa.best_params, trained)
 
-    def test_wrong_shape_raises(self, default_test_simulator):
+    def test_wrong_shape_raises(self, default_test_simulator, default_optimizer):
         """``params`` with mismatched per-set size raises ``ValueError``."""
-        qaoa = self._make_qaoa(default_test_simulator, n_layers=2)  # expects 4 params
+        qaoa = self._make_qaoa(
+            default_test_simulator, default_optimizer, n_layers=2
+        )  # expects 4 params
 
         with pytest.raises(ValueError, match="does not match"):
             qaoa.sample_solution(np.array([0.1, 0.2, 0.3]))  # 3 != 4
 
-    def test_no_args_before_run_raises(self, default_test_simulator):
+    def test_no_args_before_run_raises(self, default_test_simulator, default_optimizer):
         """``sample_solution()`` before ``run()`` raises a clear ``RuntimeError``."""
-        qaoa = self._make_qaoa(default_test_simulator)
+        qaoa = self._make_qaoa(default_test_simulator, default_optimizer)
 
         with pytest.raises(RuntimeError, match="call run\\(\\) first"):
             qaoa.sample_solution()
 
-    def test_returns_self(self, default_test_simulator):
+    def test_returns_self(self, default_test_simulator, default_optimizer):
         """``sample_solution`` returns the program for method chaining."""
-        qaoa = self._make_qaoa(default_test_simulator)
+        qaoa = self._make_qaoa(default_test_simulator, default_optimizer)
         assert qaoa.sample_solution(np.array([0.1, 0.2])) is qaoa
 
-    def test_does_not_mutate_optimizer_state(self, default_test_simulator):
+    def test_does_not_mutate_optimizer_state(
+        self, default_test_simulator, default_optimizer
+    ):
         """``sample_solution`` leaves optimizer-side state (losses, iterations) untouched."""
-        qaoa = self._make_qaoa(default_test_simulator)
+        qaoa = self._make_qaoa(default_test_simulator, default_optimizer)
 
         qaoa.sample_solution(np.array([0.1, 0.2]))
 
@@ -479,9 +501,9 @@ class TestSampleSolution:
         assert qaoa.current_iteration == 0
         assert qaoa.optimize_result is None
 
-    def test_followed_by_run_works(self, default_test_simulator):
+    def test_followed_by_run_works(self, default_test_simulator, default_optimizer):
         """Calling ``run()`` after ``sample_solution()`` produces a normal training run."""
-        qaoa = self._make_qaoa(default_test_simulator)
+        qaoa = self._make_qaoa(default_test_simulator, default_optimizer)
         qaoa.sample_solution(np.array([0.1, 0.2]))
 
         qaoa.run()
@@ -523,7 +545,7 @@ def _make_problem(cost: SparsePauliOp, mixer: SparsePauliOp, wire_labels=None):
 
 
 class TestWireSpaceInvariant:
-    def test_mixer_wider_than_cost_raises(self, dummy_simulator):
+    def test_mixer_wider_than_cost_raises(self, dummy_simulator, default_optimizer):
         prob = _make_problem(
             cost=SparsePauliOp.from_list([("IZZ", 1.0), ("ZZI", 1.0)]),
             mixer=SparsePauliOp.from_list(
@@ -534,9 +556,9 @@ class TestWireSpaceInvariant:
             ValueError,
             match=r"wire_labels has 3 entries.*mixer_hamiltonian\.num_qubits is 4",
         ):
-            QAOA(prob, backend=dummy_simulator)
+            QAOA(prob, backend=dummy_simulator, optimizer=default_optimizer)
 
-    def test_cost_wider_than_mixer_raises(self, dummy_simulator):
+    def test_cost_wider_than_mixer_raises(self, dummy_simulator, default_optimizer):
         prob = _make_problem(
             cost=SparsePauliOp.from_list([("IIZZ", 1.0), ("ZZII", 1.0)]),
             mixer=SparsePauliOp.from_list([("IIX", 1.0), ("IXI", 1.0), ("XII", 1.0)]),
@@ -545,9 +567,11 @@ class TestWireSpaceInvariant:
             ValueError,
             match=r"wire_labels has 4 entries.*mixer_hamiltonian\.num_qubits is 3",
         ):
-            QAOA(prob, backend=dummy_simulator)
+            QAOA(prob, backend=dummy_simulator, optimizer=default_optimizer)
 
-    def test_wire_labels_misaligned_with_hamiltonians_raises(self, dummy_simulator):
+    def test_wire_labels_misaligned_with_hamiltonians_raises(
+        self, dummy_simulator, default_optimizer
+    ):
         # cost & mixer both 3-qubit but wire_labels claims 4 — qubit `i` of
         # the SPOs no longer maps to wire_labels[i].
         prob = _make_problem(
@@ -559,16 +583,22 @@ class TestWireSpaceInvariant:
             ValueError,
             match=r"wire_labels has 4 entries.*cost_hamiltonian\.num_qubits is 3",
         ):
-            QAOA(prob, backend=dummy_simulator)
+            QAOA(prob, backend=dummy_simulator, optimizer=default_optimizer)
 
-    def test_isolated_node_graph_with_wire_labels_succeeds(self, dummy_simulator):
+    def test_isolated_node_graph_with_wire_labels_succeeds(
+        self, dummy_simulator, default_optimizer
+    ):
         g = nx.Graph()
         g.add_edges_from([(0, 1), (1, 2), (0, 2)])
         g.add_node(3)
-        qaoa = QAOA(MaxCutProblem(g), backend=dummy_simulator)
+        qaoa = QAOA(
+            MaxCutProblem(g), backend=dummy_simulator, optimizer=default_optimizer
+        )
         assert qaoa.n_qubits == 4
 
-    def test_isolated_node_maxcut_runs_end_to_end(self, default_test_simulator):
+    def test_isolated_node_maxcut_runs_end_to_end(
+        self, default_test_simulator, default_optimizer
+    ):
         g = nx.Graph()
         g.add_edges_from([(0, 1), (1, 2), (0, 2)])
         g.add_node(3)
@@ -577,6 +607,7 @@ class TestWireSpaceInvariant:
             backend=default_test_simulator,
             max_iterations=1,
             n_layers=1,
+            optimizer=default_optimizer,
         )
         qaoa.run()
         assert len(qaoa.solution_bitstring) == 4
@@ -588,24 +619,33 @@ class TestCostPipelineCache:
     """QAOA cost-circuit construction reuses each pipeline's forward cache."""
 
     @staticmethod
-    def _make_qaoa(strategy, backend):
+    def _make_qaoa(strategy, backend, optimizer):
         return QAOA(
             MaxCutProblem(make_bull_graph()),
             n_layers=1,
             trotterization_strategy=strategy,
             backend=backend,
             max_iterations=1,
+            optimizer=optimizer,
         )
 
     @staticmethod
+    def _cost_pipeline(qaoa):
+        return qaoa._build_preprocessor_pipeline(qaoa.cost_preprocessor())
+
+    @staticmethod
     def _forward(qaoa):
-        return qaoa._cost_pipeline.run_forward_pass(
+        return TestCostPipelineCache._cost_pipeline(qaoa).run_forward_pass(
             qaoa.cost_hamiltonian,
             qaoa._build_pipeline_env(),
         )
 
-    def test_deterministic_strategy_reuses_stage_output(self, dummy_simulator, mocker):
-        qaoa = self._make_qaoa(ExactTrotterization(), dummy_simulator)
+    def test_deterministic_strategy_reuses_stage_output(
+        self, dummy_simulator, mocker, default_optimizer
+    ):
+        qaoa = self._make_qaoa(
+            ExactTrotterization(), dummy_simulator, default_optimizer
+        )
         spy = mocker.spy(qaoa, "_build_qaoa_qiskit_circuit")
 
         first = self._forward(qaoa)
@@ -614,13 +654,15 @@ class TestCostPipelineCache:
         assert second.initial_batch is first.initial_batch
         assert spy.call_count == 1
 
-    def test_qdrift_reuses_only_within_evaluation(self, dummy_simulator):
+    def test_qdrift_reuses_only_within_evaluation(
+        self, dummy_simulator, default_optimizer
+    ):
         strategy = QDrift(
             sampling_budget=2,
             n_hamiltonians_per_iteration=1,
             seed=42,
         )
-        qaoa = self._make_qaoa(strategy, dummy_simulator)
+        qaoa = self._make_qaoa(strategy, dummy_simulator, default_optimizer)
         first = self._forward(qaoa)
         same_evaluation = self._forward(qaoa)
         qaoa._evaluation_counter += 1
@@ -644,7 +686,7 @@ class TestCostPipelineCache:
         )
         trotter_stage = next(
             stage
-            for stage in qaoa._cost_pipeline.stages
+            for stage in self._cost_pipeline(qaoa).stages
             if isinstance(stage, TrotterSpecStage)
         )
         expand_spy = mocker.spy(trotter_stage, "expand")
@@ -653,26 +695,37 @@ class TestCostPipelineCache:
 
         assert expand_spy.call_count >= 2
 
-    def test_construction_does_not_eager_build(self, dummy_simulator):
+    def test_construction_does_not_eager_build(
+        self, dummy_simulator, default_optimizer
+    ):
         """Construction leaves the compatibility factory unpopulated."""
-        qaoa = self._make_qaoa(ExactTrotterization(), dummy_simulator)
-        assert qaoa._meta_circuit_factories is None
+        qaoa = self._make_qaoa(
+            ExactTrotterization(), dummy_simulator, default_optimizer
+        )
+        assert qaoa._cost_circuit is None
 
-    def test_cache_independent_per_instance(self, dummy_simulator):
-        qaoa1 = self._make_qaoa(ExactTrotterization(), dummy_simulator)
-        qaoa2 = self._make_qaoa(ExactTrotterization(), dummy_simulator)
-
-        assert (
-            qaoa1._cost_pipeline._forward_cache
-            is not qaoa2._cost_pipeline._forward_cache
+    def test_cache_independent_per_instance(self, dummy_simulator, default_optimizer):
+        qaoa1 = self._make_qaoa(
+            ExactTrotterization(), dummy_simulator, default_optimizer
+        )
+        qaoa2 = self._make_qaoa(
+            ExactTrotterization(), dummy_simulator, default_optimizer
         )
 
-    def test_depth_rebuild_invalidates_persistent_entries(self, dummy_simulator):
+        assert (
+            self._cost_pipeline(qaoa1)._forward_cache
+            is not self._cost_pipeline(qaoa2)._forward_cache
+        )
+
+    def test_depth_rebuild_invalidates_persistent_entries(
+        self, dummy_simulator, default_optimizer
+    ):
         qaoa = IterativeQAOA(
             MaxCutProblem(make_bull_graph()),
             max_depth=2,
             backend=dummy_simulator,
             max_iterations_per_depth=1,
+            optimizer=default_optimizer,
         )
         first = self._forward(qaoa)
 
@@ -684,11 +737,12 @@ class TestCostPipelineCache:
 
 class TestObservableMeasuringContracts(ObservableMeasuringContractsBase):
     @pytest.fixture
-    def make_program(self, dummy_simulator):
+    def make_program(self, dummy_simulator, default_optimizer):
         def _make(**kwargs):
             return QAOA(
                 MaxCliqueProblem(nx.bull_graph(), is_constrained=True),
                 backend=dummy_simulator,
+                optimizer=default_optimizer,
                 **kwargs,
             )
 
