@@ -6,17 +6,22 @@
 ======================================
 
 Demonstrates how the Divi Characterization Service can shortcut the QAOA
-parameter-search loop. The characterizer runs an exact (statevector)
-parameter sweep server-side and returns the optimal (γ, β); QAOA can then
-skip its outer optimizer and run a single shot-based evaluation at those
+parameter-search loop, and how its verdict/classical-baseline machinery
+tells you *before* running QAOA whether it is even worth it. The
+characterizer runs an exact (statevector) parameter sweep server-side,
+computes a real approximation ratio and a classical (greedy/SA) baseline
+on the same QUBO, and returns the optimal (γ, β); QAOA can then skip its
+outer optimizer and run a single shot-based evaluation at those
 parameters.
 
 Workflow:
   1. Build a MaxCut QUBO (10-qubit Petersen graph).
   2. Compute the classical ground truth via brute force.
-  3. **Characterize** — exact (γ, β) sweep via the Qoro service.
+  3. **Characterize** — exact (γ, β) sweep, verdict, and classical
+     baseline via the Qoro service.
   4. **Compare** — QAOA with the characterizer's params (1 evaluation)
-     vs unguided optimization (5 random seeds × 80 COBYLA iterations).
+     vs unguided optimization (5 random seeds × 80 COBYLA iterations),
+     checked against the verdict from step 3.
 
 Requirements:
     - ``QORO_API_KEY`` in ``.env`` or environment variable.
@@ -108,9 +113,9 @@ def main() -> None:
     # 3. Characterize — parameter sweep + diagnostic report
     # ──────────────────────────────────────────────────────────────────
     console.print(
-        "\n[bold cyan]3. Characterization Service — Parameter Sweep[/bold cyan]"
+        "\n[bold cyan]3. Characterization Service — Verdict & Parameter Sweep[/bold cyan]"
     )
-    console.print("   Sweeping (γ, β)...\n")
+    console.print("   Sweeping (γ, β) and checking against a classical baseline...\n")
 
     sweep_result = characterize_and_validate(
         problem,
@@ -125,10 +130,26 @@ def main() -> None:
 
     bp = sweep_result.best_parameters
     optimal_gamma, optimal_beta = bp["gamma"], bp["beta"]
+    verdict = sweep_result.verdict or {}
+    baseline = sweep_result.classical_baseline or {}
+    swept_ar = sweep_result.approximation_ratio
 
     console.print(
         f"   [green]Sweep returned: γ = {optimal_gamma:.4f}, "
-        f"β = {optimal_beta:.4f}[/green]\n"
+        f"β = {optimal_beta:.4f}[/green]"
+    )
+    console.print(
+        f"   [bold]Verdict: {verdict.get('verdict', 'n/a')}[/bold] — "
+        f"{verdict.get('rationale', 'no rationale returned')}"
+    )
+    console.print(
+        f"   Characterizer's classical baseline (its own reference, computed "
+        f"without brute force): best_energy={baseline.get('best_energy', float('nan')):.4f} "
+        f"(greedy={baseline.get('greedy_energy', float('nan')):.4f}, "
+        f"SA={baseline.get('sa_energy', float('nan')):.4f})\n"
+        f"   Swept approximation ratio: "
+        f"{swept_ar if swept_ar is None else f'{swept_ar:.4f}'} "
+        f"— compare against our own QAOA's ratio in step 4.\n"
     )
     sweep_result.display()
 
@@ -191,6 +212,8 @@ def main() -> None:
             blind_min=blind_min,
             blind_max=blind_max,
             best_cut=best_cut,
+            verdict=verdict,
+            swept_ar=swept_ar,
         )
     )
 
@@ -332,8 +355,10 @@ def _summary_panel(
     blind_min: float,
     blind_max: float,
     best_cut: float,
+    verdict: dict,
+    swept_ar: float | None,
 ) -> Panel:
-    """Honest summary: circuit savings + reproducibility, no quality overclaim."""
+    """Honest summary: circuit savings + reproducibility, tied to the verdict."""
     speedup = total_random_circuits / max(seeded_circuits, 1)
     delta_vs_mean = seeded_cut - blind_mean
     # Where the seeded result falls inside the blind seed lottery — be honest
@@ -350,6 +375,8 @@ def _summary_panel(
             f"inside the blind range [{blind_min:.2f}, {blind_max:.2f}] — "
             "near the p=1 ceiling, not above it"
         )
+    verdict_label = verdict.get("verdict", "n/a")
+    swept_ar_str = "n/a" if swept_ar is None else f"{swept_ar:.3f}"
     return Panel(
         f"[bold]Characterizer-guided[/bold]: "
         f"[green]{seeded_circuits} circuits[/green], "
@@ -361,12 +388,17 @@ def _summary_panel(
         f"Seeded result is [bold]{delta_vs_mean:+.2f}[/bold] vs the blind "
         f"mean and {position}.\n\n"
         f"Both methods saturate near the p=1 ceiling — neither finds the "
-        f"exact optimum ({best_cut:.2f}). The characterizer's value here is "
-        f"[bold green]{speedup:.0f}× fewer circuits[/bold green] and a "
-        f"deterministic answer instead of seed-dependent variance, plus the "
-        f"static QUBO diagnostics (spectral gap, condition number, "
-        f"sensitivity) — a structural fingerprint of your QUBO that persists "
-        f"as a reusable artifact even when you do run full optimization.",
+        f"exact optimum ({best_cut:.2f}). The characterizer already flagged "
+        f"this as [bold]{verdict_label}[/bold] (swept AR {swept_ar_str} vs. "
+        f"its classical baseline) *before* either run above spent a single "
+        f"circuit — this p=1 ceiling was predictable, not a surprise. The "
+        f"characterizer's value here is "
+        f"[bold green]{speedup:.0f}× fewer circuits[/bold green] to reach "
+        f"the same ceiling deterministically, plus the cost-spectrum "
+        f"hardness metrics (cost gap, ground-state degeneracy, treewidth, "
+        f"frustration index) and sensitivity report — a scale-invariant "
+        f"structural fingerprint of your QUBO that persists as a reusable "
+        f"artifact even when you do run full optimization.",
         title="Summary",
         border_style="cyan",
     )

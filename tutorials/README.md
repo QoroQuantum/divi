@@ -86,7 +86,7 @@ Escape hatches and specialized algorithms beyond the core QAOA/VQE flow: run cir
 ### `backends/`
 
 - **`qasm_thru_service.py`** — Submit raw QASM circuits to the Qoro cloud
-- **`characterize_maxcut_qubo.py`** — Skip optimization via the Qoro Characterization Service
+- **`characterize_maxcut_qubo.py`** — Get a verdict + classical baseline before running QAOA, and skip optimization via the Qoro Characterization Service
 - **`backend_properties_conversion.py`** — Converting Qiskit `BackendProperties` to a `BackendV2`
 
 ## Requirements

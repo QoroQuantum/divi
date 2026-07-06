@@ -13,6 +13,7 @@ Tests cover:
 
 from http import HTTPStatus
 
+import dimod
 import numpy as np
 import pytest
 import requests
@@ -1024,6 +1025,223 @@ def qoro_service(api_key):
     fixtures in test modules don't propagate across files.
     """
     return QoroService(auth_token=api_key)
+
+
+# Report/hardness matching the redesigned canonical composer-service schema.
+CANONICAL_REPORT = {
+    "formulation_quality": 72.0,
+    "target_achievability": 61.0,
+    "concentration_ratio": 1.4,
+    "approximation_ratio": 0.87,
+    "feasibility_rate": 0.9,
+    "verdict": {
+        "verdict": "promising",
+        "rationale": "QAOA AR 0.87 exceeds the classical baseline 0.80.",
+        "qaoa_approximation_ratio": 0.87,
+    },
+    "classical_baseline": {
+        "greedy_energy": -2.0,
+        "sa_energy": -2.0,
+        "best_energy": -2.0,
+        "exact_ground_energy": -2.0,
+        "distinct_optima": 1,
+    },
+    "constraint_diagnostics": [
+        {
+            "index": 0,
+            "type": "max_cardinality",
+            "violation_rate": 0.1,
+            "is_redundant": False,
+        }
+    ],
+    "penalty_lambda_min_feasible": 2.0,
+    "penalty_lambda_safe": 3.5,
+    "penalty_recommendation": 3.5,
+    "penalty_tuning": {"is_well_tuned": True, "optimal_lambda": 2.0},
+}
+CANONICAL_HARDNESS = {
+    "difficulty": "moderate",
+    "cost_gap": 1.0,
+    "cost_gap_normalized": 0.33,
+    "ground_state_degeneracy": 2,
+    "treewidth_estimate": 2,
+    "frustration_index": 0.25,
+    "matrix_spectral_gap": 0.0,
+}
+
+
+class TestRedesignedResultFields:
+    """Client reads the canonical redesigned schema (verdict, AR, cost gap)."""
+
+    def _result(self):
+        return CharacterizationResult(
+            job_id="c1",
+            status="COMPLETED",
+            hardness=CANONICAL_HARDNESS,
+            report=CANONICAL_REPORT,
+            html="",
+        )
+
+    def test_quality_prefers_target_achievability(self):
+        assert self._result().quality_score == 61.0
+
+    def test_formulation_and_target_quality(self):
+        r = self._result()
+        assert r.formulation_quality == 72.0
+        assert r.target_achievability == 61.0
+
+    def test_approximation_ratio_is_real(self):
+        assert self._result().approximation_ratio == 0.87
+
+    def test_verdict(self):
+        assert self._result().verdict["verdict"] == "promising"
+
+    def test_classical_baseline(self):
+        assert self._result().classical_baseline["best_energy"] == -2.0
+
+    def test_hardness_cost_spectrum_fields(self):
+        r = self._result()
+        assert r.cost_gap == 1.0
+        assert r.ground_state_degeneracy == 2
+        assert r.treewidth_estimate == 2
+        assert r.frustration_index == 0.25
+
+    def test_penalty_interval(self):
+        r = self._result()
+        assert r.penalty_lambda_min_feasible == 2.0
+        assert r.penalty_lambda_safe == 3.5
+
+    def test_constraint_diagnostics(self):
+        assert self._result().constraint_diagnostics[0]["type"] == "max_cardinality"
+
+    def test_summary_shows_verdict_and_ar(self):
+        s = self._result().summary()
+        assert "promising" in s
+        assert "0.87" in s
+
+    def test_summary_shows_penalty_safe_range_and_diagnostics_count(self):
+        s = self._result().summary()
+        assert "λ ∈ [2.00, 3.50]" in s
+        assert "Constraint Diagnostics: 1 constraint(s)" in s
+
+    def test_summary_falls_back_to_safe_bound_without_min_feasible(self):
+        report = {**CANONICAL_REPORT, "penalty_lambda_min_feasible": None}
+        r = CharacterizationResult(
+            job_id="c1",
+            status="COMPLETED",
+            hardness=CANONICAL_HARDNESS,
+            report=report,
+            html="",
+        )
+        assert "λ ≤ 3.50" in r.summary()
+
+    def test_render_shows_penalty_interval_and_constraint_table(self, capsys):
+        self._result().display()
+        out = capsys.readouterr().out
+        assert "Safe range" in out
+        assert "2.00" in out and "3.50" in out
+        assert "Constraint Diagnostics" in out
+        assert "max_cardinality" in out
+        assert "10.0%" in out
+
+    def test_empty_result_new_fields_are_none(self):
+        r = CharacterizationResult(job_id="x", status="FAILED", html="")
+        assert r.formulation_quality is None
+        assert r.verdict is None
+        assert r.classical_baseline is None
+        assert r.cost_gap is None
+        assert r.constraint_diagnostics is None
+
+    def test_field_falls_through_explicit_null_to_next_fallback(self):
+        """A present-but-null key must not short-circuit the fallback chain.
+
+        Regression test: ``_field`` used to check ``k in self.report`` before
+        reading the value, so a key present with an explicit ``None`` (e.g. an
+        optional analysis that wasn't requested) would short-circuit and
+        return ``None`` instead of falling through to a populated fallback.
+        """
+        report = {"target_achievability": None, "formulation_quality": 72.0}
+        r = CharacterizationResult(
+            job_id="n1", status="COMPLETED", report=report, html=""
+        )
+        assert r.quality_score == 72.0
+
+
+class TestNamedVariableBQMSerialization:
+    """String-named BQMs must serialize to integer-index wire keys."""
+
+    def test_string_named_bqm_serializes_to_integer_indices(self):
+        bqm = dimod.BinaryQuadraticModel(
+            {"a": -1.0, "b": -1.0}, {("a", "b"): 2.0}, 0.0, dimod.BINARY
+        )
+        problem = BinaryOptimizationProblem(bqm)
+        wire = _serialize_qubo_for_wire(problem)
+        # Keys are integer-index strings ("0", "0,1"), never the names "a"/"b".
+        for key in wire:
+            for part in key.split(","):
+                assert part.lstrip("-").isdigit(), f"non-integer key part: {part!r}"
+        assert set(wire.keys()) == {"0", "1", "0,1"}
+
+    def test_out_of_order_variable_names_map_correctly(self):
+        """Variable names that are non-trivially ordered must still map
+        through ``variable_to_idx`` correctly.
+
+        ``{"a": ..., "b": ...}`` can't distinguish a correct mapping from one
+        that accidentally works only because insertion order matched index
+        order. Non-integer labels are ordered lexicographically by ``repr``
+        (see ``_default_variable_order``), so "x10" < "x2" < "x9" -- neither
+        insertion order nor numeric order -- which is exactly what would
+        expose an off-by-one or ordering bug in the remap.
+        """
+        bqm = dimod.BinaryQuadraticModel(
+            {"x9": -1.0, "x10": -2.0, "x2": -3.0},
+            {("x9", "x2"): 1.5, ("x10", "x9"): 0.5},
+            0.0,
+            dimod.BINARY,
+        )
+        problem = BinaryOptimizationProblem(bqm)
+        idx = problem.canonical_problem.variable_to_idx
+        assert idx == {"x10": 0, "x2": 1, "x9": 2}
+
+        wire = _serialize_qubo_for_wire(problem)
+        assert wire["0"] == -2.0  # x10
+        assert wire["1"] == -3.0  # x2
+        assert wire["2"] == -1.0  # x9
+        assert wire["1,2"] == 1.5  # (x9, x2) -> sorted by index -> (1, 2)
+        assert wire["0,2"] == 0.5  # (x10, x9) -> sorted by index -> (0, 2)
+
+
+class TestFactoredWireContract:
+    """The factored_v1 payload must satisfy composer's from_wire decode."""
+
+    def test_factored_payload_matches_server_decode_contract(self):
+        rng = np.random.default_rng(0)
+        u = rng.standard_normal((80, 1))
+        Q = u @ u.T  # rank-1 -> factored encoding wins over legacy
+        terms: dict = {}
+        for i in range(80):
+            if abs(Q[i, i]) > 0:
+                terms[(i,)] = float(Q[i, i])
+            for j in range(i + 1, 80):
+                v = Q[i, j] + Q[j, i]
+                if abs(v) > 0:
+                    terms[(i, j)] = float(v)
+        wire = _serialize_qubo_for_wire(BinaryOptimizationProblem(terms))
+        assert wire.get("_format") == "factored_v1"
+
+        # Decode exactly as composer-service FactoredQUBO.from_wire does and
+        # confirm the byte-length / sign contract and the reconstruction.
+        n, k = wire["n"], wire["k"]
+        f_bytes = bytes.fromhex(wire["F"])
+        assert len(f_bytes) == n * k * 8
+        f = np.frombuffer(f_bytes, dtype=np.float64).reshape(n, k)
+        signs = np.asarray(wire["signs"], dtype=np.float64)
+        assert len(signs) == k and np.all((signs == 1.0) | (signs == -1.0))
+        diag_bytes = bytes.fromhex(wire["diag"])
+        assert len(diag_bytes) == n * 8
+        residual = np.frombuffer(diag_bytes, dtype=np.float64)
+        q_recon = f @ np.diag(signs) @ f.T + np.diag(residual)
+        assert np.allclose(q_recon, Q, atol=1e-6)
 
 
 @pytest.mark.requires_api_key
