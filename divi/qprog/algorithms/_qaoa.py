@@ -47,6 +47,20 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
     cost Hamiltonian, mixer Hamiltonian, initial state, loss constant, and
     decode function.
 
+    **Warm-starting via** ``run(initial_params=...)``: each parameter set is a
+    flat row of length ``2 * n_layers``, ordered **per layer, cost angle then
+    mixer angle**: ``[γ_0, β_0, γ_1, β_1, ..., γ_{p-1}, β_{p-1}]`` (``γ`` drives
+    the cost layer, ``β`` the mixer). Shape is ``(n_param_sets, 2 * n_layers)``;
+    a single set may be passed as a 1-D array of length ``2 * n_layers``. To
+    warm-start from a characterization result's ``ar_vs_depth[p]`` entry, zip its
+    ``gammas`` and ``betas`` in this interleaved order — e.g. for ``p`` layers::
+
+        pt = result.ar_vs_depth[p - 1]
+        initial_params = [x for g, b in zip(pt["gammas"], pt["betas"]) for x in (g, b)]
+
+    Only the shape is validated; an interleave in the wrong order is a silent
+    mis-start, so match this layout exactly.
+
     Args:
         problem: A :class:`~divi.qprog.problems.QAOAProblem` instance providing the QAOA ingredients.
         initial_state: Override the problem's recommended initial state.

@@ -24,15 +24,17 @@ from qiskit_aer import AerSimulator
 from qiskit_aer.library import SaveExpectationValue
 from qiskit_aer.noise import NoiseModel
 
-from divi.backends import CircuitRunner, ExecutionResult
-from divi.backends._shot_allocation import (
+from divi.exceptions import ExecutionCancelledError
+
+from ._circuit_runner import CircuitRunner
+from ._execution_result import ExecutionResult
+from ._shot_allocation import (
     ShotRange,
     bucket_by_shots,
     from_wire,
     per_circuit,
     validate,
 )
-from divi.exceptions import ExecutionCancelledError
 
 logger = logging.getLogger(__name__)
 

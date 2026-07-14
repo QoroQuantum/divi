@@ -10,8 +10,9 @@ import threading
 from contextlib import contextmanager
 from threading import Event
 
-from divi.backends._async_job_backend import AsyncJobBackend
 from divi.exceptions import ExecutionCancelledError
+
+from ._async_job_backend import AsyncJobBackend
 
 logger = logging.getLogger(__name__)
 

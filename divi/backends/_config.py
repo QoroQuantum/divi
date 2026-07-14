@@ -6,7 +6,7 @@ import warnings
 from dataclasses import InitVar, dataclass, field, fields
 from enum import IntEnum
 
-from divi.backends import QPUSystem, SimulatorCluster
+from ._systems import QPUSystem, SimulatorCluster
 
 
 class Simulator(IntEnum):

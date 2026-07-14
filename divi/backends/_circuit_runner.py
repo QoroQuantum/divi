@@ -9,8 +9,9 @@ from typing import Protocol, runtime_checkable
 
 import numpy as np
 
-from divi.backends import ExecutionResult
 from divi.circuits import TemplateEntry
+
+from ._execution_result import ExecutionResult
 
 
 @runtime_checkable

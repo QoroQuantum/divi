@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.abspath("../../"))
 
 extensions = [
     "sphinx.ext.autodoc",
+    "sphinxcontrib.autodoc_pydantic",  # Renders pydantic model fields (loaded after autodoc)
     "sphinx.ext.napoleon",  # Supports Google-style and NumPy-style docstrings
     "sphinx.ext.viewcode",
     "sphinx.ext.intersphinx",
@@ -67,6 +68,22 @@ nitpicky = True
 root_doc = "index"
 autoclass_content = "both"
 autodoc_default_options = {"member-order": "bysource", "exclude-members": "__weakref__"}
+
+# -- autodoc_pydantic configuration ------------------------------------------
+# https://autodoc-pydantic.readthedocs.io/
+# Pydantic model fields live in ``model_fields``, invisible to plain autodoc
+# (which showed only ``model_config``). Render fields with their docstrings and
+# defaults, but suppress the JSON schema / config / validator noise so the page
+# reads like the rest of the API reference.
+autodoc_pydantic_model_show_json = False
+autodoc_pydantic_model_show_config_summary = False
+autodoc_pydantic_model_show_validator_summary = False
+autodoc_pydantic_model_show_validator_members = False
+autodoc_pydantic_model_show_field_summary = True
+autodoc_pydantic_model_member_order = "bysource"
+autodoc_pydantic_field_list_validators = False
+autodoc_pydantic_field_show_constraints = True
+autodoc_pydantic_field_doc_policy = "docstring"
 
 
 # -- sphinx-automodapi configuration -----------------------------------------

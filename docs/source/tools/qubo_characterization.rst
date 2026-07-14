@@ -5,8 +5,9 @@ The Qoro **QUBO Characterization Service** is a hosted diagnostic that
 answers a decision-first question before you spend QAOA runs on a
 problem: *is quantum worth it here?* It runs a classical reference
 solver alongside a QAOA parameter sweep on the same QUBO/HUBO, then
-returns a verdict, the classical baseline it was measured against, a
-real solution-quality number (:attr:`~divi.backends.CharacterizationResult.approximation_ratio`),
+returns an analysis regime and structural certificate, the classical
+baseline it was measured against, an achievable upper-bound
+approximation ratio (:attr:`~divi.backends.characterization.CharacterizationResult.approximation_ratio`),
 hardness metrics, and actionable recommendations — all from a single
 short call.
 
@@ -23,14 +24,17 @@ Characterization is useful whenever you would otherwise *guess* at a QAOA
 setup, or spend real QAOA runs finding out something a classical solver
 could have told you in seconds. Common scenarios:
 
-* **Before running QAOA at all**, to get a :attr:`~divi.backends.CharacterizationResult.verdict`
-  — ``classically_easy``, ``marginal``, or ``promising`` — backed by a
-  real classical baseline, so you don't burn quantum runs on a QUBO a
-  greedy or simulated-annealing solver already solves.
+* **Before running QAOA at all**, to check the
+  :attr:`~divi.backends.characterization.CharacterizationResult.certificate` — does a
+  provable classical shortcut exist (bounded treewidth, submodular
+  couplings), or do literature markers say low-depth QAOA is unlikely to
+  help (high frustration, global bit-flip symmetry)? — backed by a real
+  classical baseline, so you don't burn quantum runs on a QUBO a greedy
+  or simulated-annealing solver already solves.
 * **Before tuning a QAOA**, to find good initial ``γ``, ``β`` values via
   a server-side parameter sweep and skip a long optimizer warm-up.
 * **When picking a penalty multiplier** for constrained problems —
-  auto-tuning returns a guaranteed-safe ``λ`` and an empirical minimum
+  penalty tuning returns a guaranteed-safe ``λ`` and an empirical minimum
   feasible ``λ``, and flags whether the current value is well-tuned.
 * **For HUBO problems**, where ``BinaryOptimizationProblem`` already
   accepts higher-order terms; characterization works on the same
@@ -43,16 +47,16 @@ Quick Start
 -----------
 
 The single-call entry point is
-:func:`~divi.backends.characterize_and_validate`:
+:func:`~divi.backends.characterization.characterize_and_validate`:
 
 .. skip: next
 
 .. code-block:: python
 
    import numpy as np
-   from divi.backends import (
+   from divi.backends import QoroService
+   from divi.backends.characterization import (
        CharacterizationOptions,
-       QoroService,
        characterize_and_validate,
    )
    from divi.qprog.problems import BinaryOptimizationProblem
@@ -63,63 +67,164 @@ The single-call entry point is
 
    result = characterize_and_validate(
        problem,
-       target_states=["01", "10"],   # known/expected solutions, if any
+       reference_states=["01", "10"],   # optional reference solution bitstrings
        service=QoroService(),
        options=CharacterizationOptions(parameter_sweep=True),
    )
 
    result.display()                        # rich console report
-   print(result.verdict["verdict"])        # "classically_easy" / "marginal" / "promising"
-   print(result.approximation_ratio)       # QAOA solution quality, 0-1
+   print(result.regime, result.confidence) # e.g. "estimate", "estimated"
+   print(result.certificate)               # certified_easy / no_lowdepth_advantage_expected / uncertain
+   print(result.approximation_ratio)       # achievable upper bound, 0-1 (None if regime == "refuse")
 
-.. _the-verdict:
+``reference_states`` are reference solution bitstrings for
+reference-dependent diagnostics. They are not constraints, not the warm start,
+and they do not have to be proven optima. If you do not have candidate or known
+solutions, pass ``[]``; Composer can derive a classical reference solution when
+an analysis branch needs one.
 
-The Verdict: Is Quantum Worth It?
-----------------------------------
+.. _the-certificate:
 
-:attr:`~divi.backends.CharacterizationResult.verdict` is the headline
-result. It is a dict with three parts:
+The Certificate: Is Quantum Worth It?
+---------------------------------------
 
-* ``verdict`` — ``"classically_easy"`` (a classical solver already
-  reaches the optimum or near it), ``"marginal"`` (QAOA and classical
-  solvers land close together), or ``"promising"`` (QAOA's swept
-  approximation ratio beats the classical baseline by a meaningful
-  margin).
-* ``rationale`` — a human-readable sentence explaining the call, e.g.
-  *"QAOA AR 0.87 exceeds the classical baseline 0.80."* ("AR" is the
-  approximation ratio described below — 1.0 is optimal.)
-* ``qaoa_approximation_ratio`` and ``classical_best_energy`` — the raw
-  numbers behind the rationale.
+Characterization answers "is quantum worth it here?" with three
+independent pieces of information rather than a single ternary label:
 
-The verdict is only as good as the reference it is measured against —
-:attr:`~divi.backends.CharacterizationResult.classical_baseline`.
+* :attr:`~divi.backends.characterization.CharacterizationResult.regime` — how
+  :math:`\langle C \rangle` (the QAOA ansatz's expected cost) was
+  computed, based on the size of the interaction light cone:
+  ``"exact"`` (small enough to compute exactly), ``"structured"``
+  (exact via exploited structure, e.g. low treewidth), ``"estimate"``
+  (truncated Pauli-propagation, with an error bound), or ``"refuse"``
+  (the light cone is wider than the feasibility budget, so no
+  cheap-and-correct estimate exists — no approximation ratio is given;
+  see :attr:`~divi.backends.characterization.CharacterizationResult.refuse_reason`).
+* :attr:`~divi.backends.characterization.CharacterizationResult.confidence` — the
+  confidence behind that regime: ``"proven"`` (exact light cone),
+  ``"estimated"`` (± :attr:`~divi.backends.characterization.CharacterizationResult.approximation_ratio_error_bound`
+  truncation error), or ``"open"`` (refused).
+* :attr:`~divi.backends.characterization.CharacterizationResult.certificate` — a dict of
+  independently-firing structural flags, not a ternary verdict:
+
+  * ``certified_easy`` — a provable classical shortcut exists (bounded
+    treewidth or submodular couplings); ``easy_witnesses`` names which
+    one fired.
+  * ``no_lowdepth_advantage_expected`` — literature markers suggest
+    low-depth QAOA is unlikely to help (high frustration, global
+    bit-flip symmetry); ``lowdepth_markers`` names which one fired.
+  * ``uncertain`` — neither of the above fired. When set, the optional
+    :attr:`~divi.backends.characterization.CharacterizationResult.quantum_curiosity`
+    sub-dict reports a ``status``, ``depth_to_escape_locality``, and a
+    ``next_step`` suggestion.
+  * ``structural`` (optional) — ``is_psd``, ``rank``, ``submodular``,
+    ``bounded_treewidth``, also exposed directly as
+    :attr:`~divi.backends.characterization.CharacterizationResult.is_psd` and
+    :attr:`~divi.backends.characterization.CharacterizationResult.rank`.
+
+The certificate never claims a QUBO is "promising" for quantum — it
+only rules easy cases in or out. A ``"refuse"`` regime means the
+interaction light cone is wider than the feasibility budget at the
+requested depth, so no cheap-and-correct assessment exists — this is
+driven by the light-cone width (which grows with circuit depth and
+connectivity), **not** by coupling density, and does not mean the QUBO
+is intractable or uninteresting. The
+:attr:`~divi.backends.characterization.CharacterizationResult.refuse_reason`
+distinguishes ``"lightcone_too_wide"`` (an a-priori size limit) from
+``"estimate_unreachable"`` (the truncated estimator could not reach its
+error tolerance within budget), and
+:attr:`~divi.backends.characterization.CharacterizationResult.regime_diagnostics`
+reports the light-cone sizes. Hardness, penalty, and classical-baseline
+data are still returned in full.
+
+.. note::
+
+   A few **cost-spectrum** hardness fields (``cost_gap``,
+   ``cost_gap_normalized``, ``ground_state_degeneracy``) are exact only for
+   small problems and return ``None`` above the exact-enumeration size (check
+   ``hardness["cost_spectrum_estimated"]``). This is independent of the
+   ``"refuse"`` regime — a large problem can be ``"structured"`` and still have
+   these particular fields estimated/omitted; ``difficulty``, ``frustration_index``,
+   and the certificate remain available.
+
+The certificate is only as useful as the reference it is measured
+against — :attr:`~divi.backends.characterization.CharacterizationResult.classical_baseline`.
 That dict reports what cheap classical solvers achieve on the same
 QUBO: ``greedy_energy``, ``sa_energy`` (simulated annealing),
 ``best_energy`` (the best of the two), ``distinct_optima``, and, for
 small problems, the exact ``exact_ground_energy`` from brute-force
 enumeration. When a continuous relaxation was computed, its bound is
-also exposed as :attr:`~divi.backends.CharacterizationResult.relaxation_bound`
+also exposed as :attr:`~divi.backends.characterization.CharacterizationResult.relaxation_bound`
 — a provable lower bound on the true minimum, independent of any
 classical heuristic; the closer it sits to ``best_energy``, the more
 confidence you can have that the classical baseline is already
-near-optimal. This baseline is what turns
-:attr:`~divi.backends.CharacterizationResult.approximation_ratio` from
-an isolated number into an interpretable one — an AR of 0.87 only
-tells you QAOA is *worth it* if you also know a classical solver on the
-same problem tops out at, say, 0.80.
+near-optimal.
 
-``approximation_ratio`` is computed as
+When the regime allows it (anything but ``"refuse"``),
+:attr:`~divi.backends.characterization.CharacterizationResult.approximation_ratio` is
+computed as
 
 .. math::
 
    r = \frac{\langle C \rangle - C_{\max}}{C_{\min} - C_{\max}} \in [0, 1]
 
-where :math:`\langle C \rangle` is the QAOA ansatz's expected cost at
-the swept ``best_parameters``, and :math:`C_{\min}`, :math:`C_{\max}`
-are the exact optimal and worst-case costs. ``r = 1`` means QAOA
-reaches the optimum at that depth; this is the same quantity you would
-compute from your own QAOA run, evaluated server-side so you get it
-before spending any circuits.
+evaluated at the uniform :math:`|{+}\rangle` state by the light-cone
+engine, where :math:`\langle C \rangle` is the ansatz's expected cost
+at the swept ``best_parameters`` and :math:`C_{\min}`, :math:`C_{\max}`
+are the exact optimal and worst-case costs. This is an **achievable
+upper bound** — what a real, cold-started QAOA run can reach at that
+depth, not a live measurement or a guarantee any particular run gets
+there — paired with
+:attr:`~divi.backends.characterization.CharacterizationResult.approximation_ratio_error_bound`
+for the ``±ε`` uncertainty band (``0`` in the ``"exact"``/``"structured"``
+regimes, positive for the truncated ``"estimate"`` regime). It is
+``None`` in the ``"refuse"`` regime: the server declined to estimate
+rather than ship an unreliable number. This baseline turns
+``approximation_ratio`` from an isolated number into an interpretable
+one — an upper bound of 0.87 means little if a classical solver on the
+same problem already tops out at 0.80.
+
+.. note::
+
+   For **penalty-encoded constrained problems**, the ratio is taken over the
+   full penalized cost spectrum, whose worst-case states are the
+   constraint-violating ones. A high ``approximation_ratio`` there means "close
+   to the best penalized energy", **not** "this fraction of the way to a good
+   *feasible* solution" — read it alongside ``feasibility_rate``. Because the
+   spectrum is stretched by ``penalty_weight``, the ratio also shifts with the
+   penalty multiplier, so it is not comparable across different weights.
+
+Warm-starting a real QAOA run
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The swept angles come back in two places, for two uses:
+
+* :attr:`~divi.backends.characterization.CharacterizationResult.best_parameters`
+  — the single best ``γ``/``β`` from the **p=1** sweep. Use it to warm-start a
+  one-layer run.
+* :attr:`~divi.backends.characterization.CharacterizationResult.ar_vs_depth` —
+  a per-depth curve; entry ``[p-1]`` carries the ``gammas``/``betas`` lists for a
+  ``p``-layer circuit. Use it to warm-start at the
+  :attr:`~divi.backends.characterization.CharacterizationResult.recommended_min_layers`.
+
+The result assembles either of these into the exact ``initial_params`` layout
+``QAOA.run`` expects — call
+:meth:`~divi.backends.characterization.CharacterizationResult.qaoa_initial_params`
+and pass it straight through, so warm-starting is one line:
+
+.. skip: next
+
+.. code-block:: python
+
+   p = result.recommended_min_layers
+   qaoa = QAOA(problem, n_layers=p, optimizer=ScipyOptimizer(), backend=MaestroSimulator())
+   qaoa.run(initial_params=result.qaoa_initial_params())
+
+Under the hood that is a flat row ordered **per layer, cost angle then mixer
+angle** — ``[γ₀, β₀, γ₁, β₁, …]``, shape ``(1, 2 * n_layers)``. Only the shape
+is validated, so if you build it by hand match this order exactly; the helper
+does it for you. ``qaoa_initial_params()`` returns ``None`` in the ``"refuse"``
+regime or when no sweep ran, so guard it before use.
 
 Viewing the Report
 ------------------
@@ -147,14 +252,14 @@ a standalone artifact:
 
 If the HTML endpoint is unreachable at fetch time, the result is still
 returned but ``result.html`` is an empty string and a warning is logged.
-The structured fields (``verdict``, ``quality_score``, ``recommendations``,
-etc.) remain available either way.
+The structured fields (``regime``, ``certificate``, ``quality_score``,
+``recommendations``, etc.) remain available either way.
 
 What You Get Back
 -----------------
 
-:func:`~divi.backends.characterize_and_validate` returns a
-:class:`~divi.backends.CharacterizationResult` with typed properties for
+:func:`~divi.backends.characterization.characterize_and_validate` returns a
+:class:`~divi.backends.characterization.CharacterizationResult` with typed properties for
 the most useful fields:
 
 .. list-table::
@@ -163,10 +268,18 @@ the most useful fields:
 
    * - Property
      - What it means
-   * - ``verdict``
-     - Decision-first summary — ``classically_easy`` / ``marginal`` /
-       ``promising`` — plus a ``rationale`` and the comparison numbers.
-       See :ref:`the-verdict` above.
+   * - ``regime``
+     - How :math:`\langle C \rangle` was computed, or whether it could
+       be — ``exact`` / ``structured`` / ``estimate`` / ``refuse``. See
+       :ref:`the-certificate` above.
+   * - ``confidence``
+     - Confidence behind ``regime`` — ``proven`` / ``estimated`` /
+       ``open``.
+   * - ``certificate``
+     - Independently-firing structural flags (``certified_easy``,
+       ``no_lowdepth_advantage_expected``, ``uncertain``) with
+       witnesses — never a ternary "promising" call. See
+       :ref:`the-certificate` above.
    * - ``classical_baseline``
      - Greedy and simulated-annealing energies on the same QUBO, the
        best of the two, and (for small problems) the exact ground
@@ -177,13 +290,19 @@ the most useful fields:
        computed — a provable lower bound independent of any classical
        heuristic. Read alongside ``classical_baseline``.
    * - ``approximation_ratio``
-     - The real approximation ratio QAOA reaches at the swept
-       ``best_parameters`` — ``1.0`` is the exact optimum. The headline
-       solution-quality number; interpret it against
+     - Achievable **upper bound** on the approximation ratio at the
+       swept ``best_parameters`` (± ``approximation_ratio_error_bound``)
+       — ``1.0`` is the exact optimum. Not a live-run guarantee; ``None``
+       in the ``refuse`` regime. Interpret it against
        ``classical_baseline``.
+   * - ``approximation_ratio_error_bound``
+     - The ``±ε`` uncertainty band on ``approximation_ratio`` — ``0``
+       for the exact light-cone computation (``exact``/``structured``
+       regimes), positive for the truncated estimate (``estimate``
+       regime).
    * - ``quality_score``
      - QAOA amenability score (0–100) at the best swept parameters —
-       an alias for ``target_achievability`` when a sweep ran, falling
+       an alias for ``reference_concentration_score`` when a sweep ran, falling
        back to ``formulation_quality`` otherwise. **Not** the solution
        quality; use ``approximation_ratio`` for that.
    * - ``formulation_quality``
@@ -191,11 +310,11 @@ the most useful fields:
        parameter sweep — a scale-invariant composite of cost gap,
        ground-state degeneracy, density, and weight balance. Tells you
        how well-formed the QUBO is for QAOA in general.
-   * - ``target_achievability``
+   * - ``reference_concentration_score``
      - QAOA quality (0–100) at the best swept parameters specifically
-       — target-dependent, requires ``parameter_sweep=True``.
+       — reference-dependent, requires ``parameter_sweep=True``.
    * - ``concentration_ratio``
-     - Probability mass on target states relative to the uniform
+     - Probability mass on reference states relative to the uniform
        baseline. ``1.0`` is uniform; values around ``1.5×`` or below
        are flagged as too uniform and suggest deeper circuits.
    * - ``best_parameters``
@@ -255,7 +374,7 @@ server-side for transparency but is not surfaced as a client property.
 Configuring the Run
 --------------------
 
-Pass a :class:`~divi.backends.CharacterizationOptions` to control which
+Pass a :class:`~divi.backends.characterization.CharacterizationOptions` to control which
 sub-analyses run. All fields are optional; the default-constructed object
 runs a basic report.
 
@@ -263,17 +382,24 @@ runs a basic report.
 
 .. code-block:: python
 
-   from divi.backends import CharacterizationOptions
+   from divi.backends.characterization import CharacterizationOptions
 
    opts = CharacterizationOptions(
        parameter_sweep=True,             # sweep γ, β server-side
-       sensitivity=True,                 # per-qubit fragility report
-       auto_tune=True,                   # recommend a penalty λ
+       structural_sensitivity=True,                 # per-qubit flip-cost criticality report
+       penalty_tuning=True,                   # recommend a penalty λ
        ansatz={"mixer": "x", "layers": 1},
+       subspace={"auto_warmstart": True, "max_variable_qubits": 12},
    )
 
-Setting ``sensitivity=True`` adds a per-qubit fragility breakdown to the
-result's ``sensitivity`` field, identifying which variable assignments
+``ansatz`` controls the QAOA circuit shape only: currently the mixer and
+layer count. Supported mixers are ``"x"``, ``"xy"``, and ``"I"`` (identity/no
+mixer, useful as a diagnostic baseline). ``subspace`` controls how the
+service chooses or bounds the simulated/search subspace, including warm-start
+behavior and the number of variable qubits to explore.
+
+Setting ``structural_sensitivity=True`` adds a per-qubit flip-cost criticality
+breakdown to the result's ``structural_sensitivity`` field, identifying which variables
 have the largest impact on the objective — useful for spotting brittle
 encodings that small perturbations can flip.
 
@@ -288,9 +414,18 @@ API call.
 Penalty Tuning for Constrained Problems
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+.. important::
+
+   Declaring a constraint in ``options.constraints`` does **not** encode it into
+   the QUBO. Those descriptors drive the feasibility/penalty *diagnostics* only;
+   you must still build the penalty terms yourself (e.g. slack bits for an
+   inequality, a squared cardinality penalty) and pass them via
+   ``BinaryOptimizationProblem(cost, penalty=..., penalty_weight=...)``. The
+   service tunes and reports on the penalty you supply; it does not synthesize one.
+
 For QUBOs that encode constraints as quadratic penalties, you can split
 the formulation into the cost-only and penalty-only halves and pass them
-both. With ``auto_tune=True``, the service returns an **interval**
+both. With ``penalty_tuning=True``, the service returns an **interval**
 rather than a single number:
 
 * ``penalty_lambda_min_feasible`` — the empirical smallest ``λ`` at
@@ -313,23 +448,75 @@ landscape QAOA has to search).
 
 .. code-block:: python
 
+   problem = BinaryOptimizationProblem(
+       cost_terms,                       # objective/cost QUBO or HUBO
+       penalty=penalty_terms,            # penalty-only QUBO or HUBO
+       penalty_weight=10.0,              # current multiplier in the full QUBO
+   )
    opts = CharacterizationOptions(
-       cost_qubo=cost_problem,           # BinaryOptimizationProblem
-       penalty_qubo=penalty_problem,     # BinaryOptimizationProblem
        constraints=[...],                # constraint descriptors
-       auto_tune=True,
+       penalty_tuning=True,
    )
 
    result = characterize_and_validate(
-       problem, target_states=[...], service=QoroService(), options=opts
+       problem, reference_states=[...], service=QoroService(), options=opts
    )
    print(result.penalty_lambda_min_feasible, result.penalty_lambda_safe)
    print(result.constraint_diagnostics)
 
 ``constraint_diagnostics`` breaks the aggregate ``feasibility_rate``
 down per constraint — each entry carries an ``index``, the constraint
-``type``, its ``violation_rate``, and an ``is_redundant`` flag for
-constraints that never bind given the others.
+``type``, its ``violation_rate``, and an ``is_redundant`` flag.
+
+.. note::
+
+   ``feasibility_rate``, ``violation_rate`` and ``is_redundant`` are
+   **QAOA-distribution weighted** — they measure the probability mass on
+   (in)feasible states under the diagnostic p=1 ansatz, *not* the raw
+   fraction of the search space that is feasible. So ``is_redundant`` means
+   "carries negligible QAOA probability mass," not "logically implied by the
+   other constraints." And ``penalty_lambda_min_feasible`` is only exact for
+   small problems: above ~15 variables it is a subspace-search estimate
+   (check ``penalty_lambda_min_feasible_estimated``) — rely on
+   ``penalty_lambda_safe`` / ``penalty_recommendation``, which are analytic.
+
+.. _constraint-schema:
+
+Constraint Descriptors
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Each entry in ``constraints`` is a plain dict:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 24 76
+
+   * - ``type``
+     - Meaning (with ``bound``)
+   * - ``max_cardinality``
+     - at most ``bound`` variables set to 1
+   * - ``min_cardinality``
+     - at least ``bound`` variables set to 1
+   * - ``eq_cardinality``
+     - exactly ``bound`` variables set to 1
+   * - ``inequality``
+     - weighted sum ``Σ wᵢ·xᵢ ≤ bound``; requires ``weights``
+   * - ``equality``
+     - weighted sum ``Σ wᵢ·xᵢ == bound``; requires ``weights``
+
+``weights`` is a dict ``{qubit_index: weight}``; the optional ``qubits``
+key restricts a cardinality constraint to a subset of variables (defaults
+to all). All indices must lie in ``[0, n_qubits)`` or the request is
+rejected with a clear error.
+
+.. skip: next
+
+.. code-block:: python
+
+   constraints = [
+       {"type": "max_cardinality", "bound": 3},
+       {"type": "inequality", "bound": 10, "weights": {0: 4, 1: 5, 2: 7}},
+   ]
 
 .. _reading-recommendations:
 
@@ -378,14 +565,15 @@ Re-fetching a Previous Result
 -------------------------------
 
 Every characterization run has a ``job_id`` that you can hand back to
-:func:`~divi.backends.get_characterization_result` to retrieve the stored
+:func:`~divi.backends.characterization.get_characterization_result` to retrieve the stored
 result without re-running the analysis.
 
 .. skip: next
 
 .. code-block:: python
 
-   from divi.backends import QoroService, get_characterization_result
+   from divi.backends import QoroService
+   from divi.backends.characterization import get_characterization_result
 
    result = get_characterization_result(
        "4d0550f5-ffb0-...",
@@ -412,8 +600,8 @@ See Also
 
 * :doc:`../user_guide/combinatorial_optimization_qaoa_pce` — the QAOA
   workflow that characterization is designed to support.
-* :class:`~divi.backends.CharacterizationResult` — full property list.
-* :class:`~divi.backends.CharacterizationOptions` — every configurable
-  field, including constraint and ansatz schemas.
+* :class:`~divi.backends.characterization.CharacterizationResult` — full property list.
+* :class:`~divi.backends.characterization.CharacterizationOptions` — every configurable
+  field, including constraint, ansatz, and subspace schemas.
 * :class:`~divi.backends.QoroService` — the cloud client that drives the
   underlying API calls.

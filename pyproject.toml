@@ -110,6 +110,7 @@ docs = [
     "sphinxcontrib-spelling>=8.0.1,<9.0.0",
     "sphinx-automodapi>=0.18",
     "sphinx-copybutton>=0.5.2",
+    "autodoc-pydantic>=2.0,<3.0",
 ]
 
 

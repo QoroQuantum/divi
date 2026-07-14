@@ -7,7 +7,7 @@ from collections.abc import Mapping
 
 import numpy as np
 
-from divi.backends._numba_kernels import _decompress_histogram_jit
+from ._numba_kernels import _decompress_histogram_jit
 
 
 def _decode_qh1_b64(encoded: dict) -> dict[str, int]:

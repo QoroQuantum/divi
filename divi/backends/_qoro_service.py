@@ -24,37 +24,35 @@ from qiskit import QuantumCircuit
 from requests.adapters import HTTPAdapter, Retry
 from rich.console import Console
 
-from divi.backends import (
-    CircuitRunner,
-    ExecutionConfig,
-    ExecutionResult,
-    JobConfig,
-    QPUSystem,
-    SimulatorCluster,
-)
-from divi.backends._cancellation import _auto_cancellation_scope
-from divi.backends._pauli_serde import compress_ham_ops
-from divi.backends._results_processing import _decode_qh1_b64
-from divi.backends._shot_allocation import (
-    from_wire,
-    restrict_to_chunk,
-    to_wire,
-    validate,
-)
-from divi.backends._systems import (
-    get_qpu_system,
-    get_simulator_cluster,
-    parse_qpu_systems,
-    parse_simulator_clusters,
-    update_qpu_systems_cache,
-    update_simulator_clusters_cache,
-)
 from divi.circuits import TemplateEntry
 from divi.exceptions import ExecutionCancelledError
 from divi.qasm import (
     _format_validation_error_with_context,
     is_valid_qasm,
     validate_qasm,
+)
+
+from ._cancellation import _auto_cancellation_scope
+from ._circuit_runner import CircuitRunner
+from ._config import ExecutionConfig, JobConfig
+from ._execution_result import ExecutionResult
+from ._pauli_serde import compress_ham_ops
+from ._results_processing import _decode_qh1_b64
+from ._shot_allocation import (
+    from_wire,
+    restrict_to_chunk,
+    to_wire,
+    validate,
+)
+from ._systems import (
+    QPUSystem,
+    SimulatorCluster,
+    get_qpu_system,
+    get_simulator_cluster,
+    parse_qpu_systems,
+    parse_simulator_clusters,
+    update_qpu_systems_cache,
+    update_simulator_clusters_cache,
 )
 
 API_URL = "https://app.qoroquantum.net/api"
@@ -1280,7 +1278,7 @@ class QoroService(CircuitRunner):
         self,
         qubo: dict | None = None,
         *,
-        target_states: list[str] | None = None,
+        reference_states: list[str] | None = None,
         options: dict | None = None,
         job_id: str | None = None,
         tag: str = "divi-characterize",
@@ -1304,13 +1302,13 @@ class QoroService(CircuitRunner):
                 bandwidth-efficient ``factored_v1`` envelope
                 (``{"_format": "factored_v1", "n": N, "k": K, "F": <hex>,
                 "signs": [...], "diag": <hex>}``). Required in submit mode.
-            target_states: Bitstrings to evaluate against. Defaults to
+            reference_states: Bitstrings to evaluate against. Defaults to
                 ``[]`` when submitting (e.g. for hardness-only runs).
             options: Optional dict forwarded to ``submit_qubo``. Keys
                 may include ``ansatz``, ``analysis``, ``cost_qubo``,
                 ``penalty_qubo``, ``n_qubits``, ``constraints``.
             job_id: Identifier of an existing characterization job to fetch.
-                When set, ``qubo`` / ``target_states`` / ``options`` /
+                When set, ``qubo`` / ``reference_states`` / ``options`` /
                 ``tag`` are ignored.
             tag: Job tag used during init (submit mode only).
 
@@ -1319,7 +1317,7 @@ class QoroService(CircuitRunner):
             ``job_id``, ``status``, ``hardness``, ``report``,
             ``recommendations``, ``created_at``, ``completed_at``. For a
             rich client-side wrapper, prefer
-            :func:`~divi.backends.characterize_and_validate`.
+            :func:`~divi.backends.characterization.characterize_and_validate`.
 
         Raises:
             ValueError: If neither ``qubo`` nor ``job_id`` is provided.
@@ -1351,7 +1349,7 @@ class QoroService(CircuitRunner):
             # non-PENDING job and cascade to 409.
             submit_payload: dict = {
                 "qubo": qubo,
-                "target_states": target_states or [],
+                "reference_states": reference_states or [],
             }
             if options:
                 submit_payload["options"] = options

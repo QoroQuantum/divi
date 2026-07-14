@@ -33,8 +33,9 @@ else:
 
 from qiskit import QuantumCircuit
 
-from divi.backends import CircuitRunner, ExecutionResult
-from divi.backends._shot_allocation import from_wire, per_circuit, validate
+from ._circuit_runner import CircuitRunner
+from ._execution_result import ExecutionResult
+from ._shot_allocation import from_wire, per_circuit, validate
 
 logger = logging.getLogger(__name__)
 

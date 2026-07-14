@@ -4,6 +4,7 @@
 
 """Binary optimization (QUBO / HUBO) problem class for QAOA."""
 
+import math
 from collections.abc import Callable, Hashable
 from typing import Any, Literal
 
@@ -51,7 +52,39 @@ def _sanitize_problem_input(qubo):
             vartype=dimod.Vartype.BINARY,
         )
 
+    if isinstance(qubo, dict):
+        linear = {}
+        quadratic = {}
+        for key, coeff in qubo.items():
+            if not isinstance(key, tuple):
+                raise ValueError(f"Got an unsupported QUBO input format: {type(qubo)}")
+            if len(key) == 1:
+                linear[key[0]] = linear.get(key[0], 0.0) + float(coeff)
+            elif len(key) == 2:
+                u, v = key
+                if u == v:
+                    linear[u] = linear.get(u, 0.0) + float(coeff)
+                else:
+                    quadratic[(u, v)] = quadratic.get((u, v), 0.0) + float(coeff)
+            else:
+                raise ValueError("Decomposition only supports quadratic problems.")
+        return qubo, dimod.BinaryQuadraticModel(
+            linear, quadratic, 0.0, vartype=dimod.Vartype.BINARY
+        )
+
     raise ValueError(f"Got an unsupported QUBO input format: {type(qubo)}")
+
+
+def _combine_polynomial_terms(cost_canonical, penalty_canonical, penalty_weight: float):
+    """Return objective + penalty_weight * penalty in canonical term form."""
+    terms = dict(cost_canonical.terms)
+    for term_key, coeff in penalty_canonical.terms.items():
+        combined = float(terms.get(term_key, 0.0)) + penalty_weight * float(coeff)
+        if combined == 0.0:
+            terms.pop(term_key, None)
+        else:
+            terms[term_key] = combined
+    return terms
 
 
 class BinaryOptimizationProblem(QAOAProblem):
@@ -89,7 +122,13 @@ class BinaryOptimizationProblem(QAOAProblem):
     decomposition-related methods raise ``RuntimeError``.
 
     Args:
-        problem: QUBO matrix, BQM, HUBO dict, or BinaryPolynomial.
+        problem: Objective/cost QUBO matrix, BQM, HUBO dict, or BinaryPolynomial.
+        penalty: Optional penalty-only QUBO/HUBO component. When provided, the
+            QAOA problem is the penalized objective
+            ``problem + penalty_weight * penalty`` while the objective/penalty
+            split remains available for characterization.
+        penalty_weight: Multiplier applied to ``penalty`` when building the
+            penalized QUBO/HUBO. Defaults to ``1.0``.
         hamiltonian_builder: ``"native"`` (default) or ``"quadratized"``.
         quadratization_strength: Penalty strength for the quadratized
             builder. ``None`` (default) auto-picks
@@ -118,6 +157,8 @@ class BinaryOptimizationProblem(QAOAProblem):
         self,
         problem: QUBOProblemTypes | HUBOProblemTypes,
         *,
+        penalty: QUBOProblemTypes | HUBOProblemTypes | None = None,
+        penalty_weight: float = 1.0,
         hamiltonian_builder: Literal["native", "quadratized"] = "native",
         quadratization_strength: float | None = None,
         decomposer: hybrid.traits.ProblemDecomposer | None = None,
@@ -127,9 +168,31 @@ class BinaryOptimizationProblem(QAOAProblem):
             raise ValueError(
                 "hamiltonian_builder must be either 'native' or 'quadratized'."
             )
+        penalty_weight = float(penalty_weight)
+        if not math.isfinite(penalty_weight):
+            raise ValueError("penalty_weight must be finite.")
 
-        self._raw_problem = problem
-        self._canonical_problem = normalize_binary_polynomial_problem(problem)
+        self._objective_problem = problem
+        self._objective_canonical_problem = normalize_binary_polynomial_problem(problem)
+        self._penalty_problem = penalty
+        self._penalty_canonical_problem = (
+            normalize_binary_polynomial_problem(penalty)
+            if penalty is not None
+            else None
+        )
+        self._penalty_weight = penalty_weight
+        if self._penalty_canonical_problem is None:
+            self._raw_problem = problem
+            self._canonical_problem = self._objective_canonical_problem
+        else:
+            self._raw_problem = _combine_polynomial_terms(
+                self._objective_canonical_problem,
+                self._penalty_canonical_problem,
+                penalty_weight,
+            )
+            self._canonical_problem = normalize_binary_polynomial_problem(
+                self._raw_problem
+            )
         self._hamiltonian_builder: Literal["native", "quadratized"] = (
             hamiltonian_builder
         )
@@ -141,7 +204,7 @@ class BinaryOptimizationProblem(QAOAProblem):
         self._decomposer = decomposer
         self._bqm: dimod.BinaryQuadraticModel | None
         if decomposer is not None:
-            _, self._bqm = _sanitize_problem_input(problem)
+            _, self._bqm = _sanitize_problem_input(self._raw_problem)
             self._partitioning = hybrid.Unwind(decomposer)
             self._aggregating = hybrid.Reduce(hybrid.Lambda(_merge_substates)) | (
                 composer or hybrid.SplatComposer()
@@ -215,8 +278,37 @@ class BinaryOptimizationProblem(QAOAProblem):
         return self._canonical_problem
 
     @property
+    def objective_problem(self):
+        """The objective/cost component passed as ``problem``."""
+        return self._objective_problem
+
+    @property
+    def objective_canonical_problem(self):
+        """The normalized objective/cost component."""
+        return self._objective_canonical_problem
+
+    @property
+    def penalty_problem(self):
+        """The penalty-only component, if one was provided."""
+        return self._penalty_problem
+
+    @property
+    def penalty_canonical_problem(self):
+        """The normalized penalty-only component, if one was provided."""
+        return self._penalty_canonical_problem
+
+    @property
+    def penalty_weight(self) -> float:
+        """Multiplier applied to ``penalty_problem`` in the full QUBO/HUBO."""
+        return self._penalty_weight
+
+    @property
     def raw_problem(self):
-        """The original QUBO/HUBO input passed at construction time."""
+        """The QUBO/HUBO input used for QAOA.
+
+        This is the original objective when no penalty was provided, otherwise
+        the combined penalized objective.
+        """
         return self._raw_problem
 
     def decompose(self) -> dict[Hashable, QAOAProblem]:

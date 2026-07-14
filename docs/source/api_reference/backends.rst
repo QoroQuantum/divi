@@ -18,3 +18,20 @@ interface for handling both synchronous and asynchronous backend responses.
    :no-inheritance-diagram:
    :no-inherited-members:
    :include-all-objects:
+
+Characterization
+----------------
+
+The ``divi.backends.characterization`` module provides QUBO/HUBO
+characterization and validation helpers that submit through
+:class:`~divi.backends.QoroService`.
+
+.. automodapi:: divi.backends.characterization
+   :no-heading:
+   :no-inheritance-diagram:
+   :no-inherited-members:
+   :include-all-objects:
+   :skip: CharacterizationOptions
+
+.. autopydantic_model:: divi.backends.characterization.CharacterizationOptions
+   :members:

@@ -87,6 +87,31 @@ class TestBinaryOptimizationProblem:
         qubo_problem_sparse = BinaryOptimizationProblem(sps.csc_matrix(test_array))
         assert qubo_problem_sparse.canonical_problem.terms == expected_terms
 
+    def test_penalty_component_builds_weighted_full_problem(self):
+        problem = BinaryOptimizationProblem(
+            {(0,): -1.0},
+            penalty={(1,): -2.0, (0, 1): 3.0},
+            penalty_weight=4.0,
+        )
+
+        assert problem.objective_canonical_problem.terms == {(0,): -1.0}
+        assert problem.penalty_canonical_problem.terms == {
+            (1,): -2.0,
+            (0, 1): 3.0,
+        }
+        assert problem.penalty_weight == 4.0
+        assert problem.canonical_problem.terms == {
+            (0,): -1.0,
+            (1,): -8.0,
+            (0, 1): 12.0,
+        }
+
+    def test_penalty_weight_must_be_finite(self):
+        with pytest.raises(ValueError, match="penalty_weight must be finite"):
+            BinaryOptimizationProblem(
+                {(0,): -1.0}, penalty={(0,): 1.0}, penalty_weight=np.inf
+            )
+
     def test_binary_quadratic_model_with_spin_raises_error(self):
         # Create a BQM with SPIN vartype (non-binary)
         bqm = dimod.BinaryQuadraticModel(
